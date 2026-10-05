@@ -1,0 +1,45 @@
+# Findings
+
+## Initial State
+- Ego Lite TaskSpace: 20, page `p1`, local app at `http://127.0.0.1:5173/`.
+- Existing projects: `断崖试锋`, `雨停之后`; both must remain untouched.
+- Enabled providers/models visible in settings: DeepSeek text (`deepseek-v4-pro`), Rightcode image (`gpt-image-2.5`, `-flare`, `-sunburst`), Seedance video (`doubao-seedance-2-0-mini-260615`).
+- Seedance configuration: 4-15 second clips, 480p and 720p, text/first-frame/first-last-frame/reference/edit/extend modes.
+
+## Workflow Constraint
+- Export checks all project shots. A complete story can live in the script while only its opening scenes are converted into shots. A separate production range is a product gap.
+
+## Script Generation Attempt
+- Submitted one 120-second script draft request through the UI using `deepseek-v4-pro`. The app reported `文本模型未返回符合格式的剧本 JSON`.
+- The visible model output begins with extended Chinese planning/reasoning and contains a usable 13-scene outline but no accepted JSON. No second request was submitted; the story will be entered through the editor.
+- The first five scene durations in that outline are 8 + 6 + 5 + 18 + 8 = 45 seconds; the remaining eight scenes complete a 120-second story.
+- A single retry after fixing Responses text extraction failed with a provider timeout. The app now contains a manually entered, saved 13-scene/120-second script; the first five scenes total 45 seconds. No further text calls are planned for this pilot.
+
+## Competitor Observations (Read-Only)
+- LibLib's canvas exposes storyboards, character styling, generation history, image/video/audio/script nodes, smart editing, and batch storyboard creation in one workspace.
+- Xiaoyunque exposes a short-drama Agent with script upload/creation, style and ratio setup, segment reshooting, a 3D director, smart previsualization, and audio. Its creation entry displays credit consumption before generation and offers a sample-first mode.
+- The current local app has basic shots, candidates, exact trims, and continuous preview, but lacks an explicit production range, cost estimate, character reference library, sound workflow, and shot-level remake controls.
+
+## First Keyframe Attempt
+- The opening Rightcode `gpt-image-2.5` image task failed with `fetch failed`. Its configured base URL shown in the UI is `https://www.right.codes/v1`; the saved key and model are enabled. The generic error does not identify whether the failure was DNS, TLS, connection, timeout, or another transport issue.
+- The `开始生成` control queues a new image request immediately. Inspection unintentionally submitted a second image task at 02:04. A generation summary and cost confirmation are needed before billable submission. Await its outcome before any further request.
+- The second image request succeeded, producing asset `a37fdf0ea58b4c0098c8be4c25271b26` at 1536x1024. Visual review: the suspended stone bridge and central lightning seal read well, Shen Ji's sword and cape are clear, and the frame preserves a consistent bridge axis. The rendering is more painterly than strict cel animation. The 3:2 source may require crop-aware 16:9 video framing.
+- The first failure lasted about one minute. The same model, dimensions, and Rightcode base URL succeeded for previous projects, so a permanently invalid connection configuration is unlikely; current logging cannot distinguish generation POST failure from asset download failure.
+- A 1536x864 center crop of the keyframe keeps the bridge axis, seal, Shen Ji, and drawn sword visible. It was imported as `tinglei-opening-16x9.png` and selected as the first-frame reference. The lack of crop controls inside the app required this manual local step.
+- The first-frame generation confirmation showed Seedance mini, 8 seconds, 720p, `adaptive` ratio, one candidate, the cropped reference, and audio enabled. It did not estimate a price because no model tariff is configured. The video job was submitted once and assigned a provider task ID.
+- The generated keyframe placed Shen Ji's sword already drawn, contrary to the original planned exit state and later drawing action. Shot 01 prompt and exit state were corrected. Shot 03 and the script action still need a continuity pass before generating those shots.
+- Shot 01 Seedance result is 8.096s at 1280x720. Start, middle, and end frames retain Shen Ji's clothing, sword hand, and bridge axis; camera pushes toward her as intended. The seal changes from embedded floor markings to a large hovering glyph. This can fit a magical projection beat, but the tool has no explicit physical-state constraints or approval gate for such deviations.
+- Script scene 03 still says Shen Ji draws her sword; its shot prompt and entry/cut state now say she raises the already-drawn sword. The script should be reconciled in the editor so the story and production instructions agree.
+- Script scenes 01 and 03 have now been reconciled in the UI and the complete 13-scene script saved. The first video is selected at 0-8s; the remaining six shots are still unselected.
+- Current Rightcode image models accept text-only `images/generations` templates. They cannot use the existing bridge frame for image editing/reference through the current UI. Shot 02 is a single text-to-video probe for Lu Jin and style continuity; if it drifts, further fight generation should wait for reference-aware image workflows and a character library.
+- Shot 02 text-to-video is 6.08s at 1280x720. Lu Jin retains a full red mask, red armor, and a long spear, but the image has flatter linework than shot 01. The bridge rail/portal layout and hovering seal move relative to the prior shot, weakening the edit. Mid/end browser screenshots contained a buffering spinner; raw MP4 frames do not, so this was a viewer overlay rather than a rendered defect. Lu Jin's face exits the frame during much of the clip, making the mask harder to recognize at the cut.
+- LibLib's current canvas visibly combines storyboards, character styling, generation history, and image/video/audio/script nodes; Xiaoyunque exposes segment remake, a 3D director, previsualization, and audio. The pilot's drift illustrates why saved character/scene references, contact sheets, and explicit shot acceptance are more valuable next than simply adding more generation buttons.
+- The current app can accept multiple project images in Seedance reference mode, but creating useful character stills required local FFmpeg extraction and manual upload. It cannot label roles, freeze character appearance across shots, or show which reference fulfills which role beyond filenames. Shot 03 tests whether two extracted frames can sustain identities and bridge geography at 5 seconds.
+- Shot 03's two-image reference result sustains both character identities, left/right positions, swords and spear, and a central bridge seal over 5 seconds. It is a useful continuity anchor. It does not deliver the script's two spoken lines; a dedicated dialogue/voice and sound mix workflow is necessary to make the plot legible in the film.
+- The built-in "use previous shot tail frame as first frame" action successfully extracted shot 03's selected tail and switched shot 04 into first-frame mode. This is the least costly continuity test for the first physical attack. The UI shows the source filename but no before/after motion contact sheet or explicit cost estimate.
+- Shot 04 proves tail-frame continuation can preserve the cut while allowing more dynamic contact. It also shows why first-frame constraints alone are insufficient: Lu Jin's full mask partially opens during the clash, before the planned reveal. The rest of the opening must keep the left-neck mark hidden until shot 07; a candidate-review record should capture this deviation without losing the useful clip.
+- The production-range feature now lets a complete story and additional planned shots coexist with an opening-only export. Its initial project range is all shots, preserving old behavior; the current pilot still has exactly seven opening shots.
+- Shot 05 confirms that a prior tail frame can bridge from a weapon-contact close-up to a wider action beat. The low sweep is readable and the geography holds. It also shows that the mask deviation persists; production notes must describe the observed costume state instead of repeating the original planned state.
+- Candidate review now makes deviations explicit. The shot 05 approval note records the mask state, hidden neck mark, and missing dialogue. Rejections would clear the timeline selection; this keeps a visually appealing but narratively broken candidate from silently entering the export.
+- Shot 06 sustains the fighter identities and direction but stops with the sword vertically between the faces, rather than at the mask edge. The next shot had to be revised before generation. This manual reconciliation is recurring production work and should become a structured continuity state with an explicit approval gate.
+- A code audit found that candidate-review stills used full source duration even for a selected, trimmed clip. This can misrepresent the actual film entrance/exit; a focused fix is in progress.

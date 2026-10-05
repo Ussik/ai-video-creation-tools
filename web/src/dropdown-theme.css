@@ -1,0 +1,151 @@
+/* Shared by form controls and portal menus, including the immersive canvas. */
+:root {
+  --select-surface: #242424;
+  --select-control: #202020;
+  --select-border: #414141;
+  --select-text: #e5e5e5;
+  --select-muted: #a0a0a0;
+  --select-hover: #343434;
+  --select-checked: #3d3d3d;
+}
+
+.app-select-input,
+.app-select-search {
+  border: 1px solid var(--select-border);
+  border-radius: 8px;
+  background: var(--select-control);
+  color: var(--select-text);
+  font-size: 13px;
+  transition: border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
+}
+
+.app-select-input:hover:not(:disabled):not([data-disabled]),
+.app-select-search:hover:not(:disabled) { border-color: #646464; }
+
+.app-select-input:focus:not([data-error]),
+.app-select-input:focus-visible:not([data-error]),
+.app-select-input[data-expanded]:not([data-error]),
+.app-multiselect-input:focus-within:not([data-error]),
+.app-select-search:focus,
+.app-select-search:focus-visible {
+  border-color: #858585;
+  outline: none;
+  box-shadow: 0 0 0 2px #ffffff0d;
+}
+
+.app-select-input::placeholder,
+.app-select-input-field::placeholder,
+.app-select-search::placeholder { color: var(--select-muted); opacity: 1; }
+
+.app-select-input:disabled,
+.app-select-input[data-disabled],
+.app-select-search:disabled {
+  border-color: #363636;
+  background: #242424;
+  color: #989898;
+  opacity: 1;
+  -webkit-text-fill-color: #989898;
+  cursor: not-allowed;
+}
+
+.app-select-input[data-error] { border-color: var(--mantine-color-error); }
+.app-select-section { color: #ababab; }
+.app-select-section svg { color: inherit; }
+.app-select-input-field { color: var(--select-text); }
+.app-select-input-field:focus-visible { outline: none; }
+
+.app-select-dropdown {
+  --combobox-padding: 6px;
+  --combobox-option-fz: 13px;
+  min-width: min(180px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  padding: var(--combobox-padding);
+  border: 1px solid var(--select-border);
+  border-radius: 12px;
+  background: var(--select-surface);
+  color: var(--select-text);
+  box-shadow: 0 16px 42px #00000070, 0 3px 10px #0000003b;
+  color-scheme: dark;
+}
+
+.app-select-options { padding: 0; }
+.app-select-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  margin-block: 2px;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--select-text);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.app-select-option:hover:not([data-combobox-disabled]),
+.app-select-option:active:not([data-combobox-disabled]) {
+  background: var(--select-hover);
+  color: #fff;
+}
+
+.app-select-option[data-checked] {
+  background: var(--select-checked);
+  color: #fff;
+  font-weight: 500;
+}
+
+.app-select-option[data-checked]:hover:not([data-combobox-disabled]) { background: #484848; }
+
+/* Keyboard highlight is separate from the value already chosen. */
+.app-select-option[data-combobox-selected]:not([data-combobox-disabled]),
+.app-select-option:focus-visible:not([data-combobox-disabled]) {
+  border-color: #818181;
+  outline: none;
+  background: #414141;
+  color: #fff;
+}
+
+.app-select-option[data-combobox-disabled],
+.app-select-option[data-combobox-disabled]:hover {
+  border-color: transparent;
+  background: transparent;
+  color: #909090;
+  opacity: 1;
+  cursor: not-allowed;
+}
+
+.app-select-option[data-checked] svg { color: #ededed; opacity: 1; }
+.app-select-option[data-combobox-disabled] svg { color: #909090; }
+
+.app-select-search {
+  width: 100%;
+  min-height: 36px;
+  margin: 0 0 6px;
+  padding-inline: 10px;
+  border-width: 1px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.app-select-dropdown:has([data-mantine-scrollbar]) .app-select-search { max-width: 100%; }
+.app-select-empty { padding: 18px 12px; color: var(--select-muted); font-size: 12px; line-height: 1.6; }
+.app-select-group-label { padding: 10px 10px 5px; color: #9c9c9c; font-size: 11px; font-weight: 500; }
+.app-select-group-label::after { background: #414141; }
+.app-select-header,
+.app-select-footer { border-color: #3b3b3b; color: var(--select-muted); font-size: 12px; }
+.app-select-pill { border: 1px solid #484848; border-radius: 6px; background: #353535; color: #ddd; }
+.app-select-pill button { color: #aaa; }
+.app-select-pill button:hover { background: #4a4a4a; color: #fff; }
+.app-select-dropdown [data-mantine-scrollbar] { padding: 1px; }
+.app-select-dropdown [data-mantine-scrollbar] > div { background: #5d5d5d; }
+
+@media (prefers-reduced-motion: reduce) {
+  .app-select-input,
+  .app-select-search,
+  .app-select-option { transition: none; }
+}

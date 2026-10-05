@@ -1,0 +1,104 @@
+:root {
+  --fc-canvas: #08090a;
+  --fc-surface: #0f1012;
+  --fc-surface-muted: #1b1d20;
+  --fc-surface-hover: #24272a;
+  --fc-text: #e8eaec;
+  --fc-text-muted: #94999f;
+  --fc-text-subtle: #696f76;
+  --fc-border: #282b2f;
+  --fc-border-soft: #202226;
+  --fc-primary: #38afc2;
+  --fc-primary-hover: #55c0d0;
+  --fc-primary-soft: #163139;
+  --fc-success: #70d6ad;
+  --fc-danger: #ed897e;
+  --fc-focus: #38afc2;
+  --fc-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  background: var(--fc-canvas);
+  color: var(--fc-text);
+  font-family: "SF Pro Display", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 14px;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[role="tab"]:focus-visible,
+[role="option"]:focus-visible {
+  outline: 2px solid var(--fc-focus);
+  outline-offset: 2px;
+}
+
+.mantine-Button-root:focus-visible,
+.mantine-ActionIcon-root:focus-visible,
+.mantine-SegmentedControl-label:focus-visible,
+.mantine-Tabs-tab:focus-visible {
+  outline: 2px solid var(--fc-focus);
+  outline-offset: 2px;
+}
+
+.mantine-Input-input:focus,
+.mantine-TextInput-input:focus,
+.mantine-Textarea-input:focus,
+.mantine-Select-input:focus,
+.mantine-NumberInput-input:focus,
+.mantine-PasswordInput-input:focus {
+  border-color: var(--fc-focus);
+  box-shadow: 0 0 0 2px rgba(19, 213, 255, 0.18);
+}
+
+.mantine-Input-input::placeholder,
+.mantine-TextInput-input::placeholder,
+.mantine-Textarea-input::placeholder,
+.mantine-Select-input::placeholder {
+  color: #858585;
+}
+
+.mantine-Modal-body {
+  padding-top: 18px;
+}
+
+.mantine-Modal-content .mantine-Button-root:disabled,
+.mantine-Modal-content .mantine-Button-root[data-disabled] {
+  opacity: 1;
+  border: 1px solid #4c595e;
+  background: #303a3e;
+  color: #b5c3c8;
+  --button-color: #b5c3c8;
+}
+
+.mantine-Modal-content .mantine-Button-root[data-variant='filled']:disabled,
+.mantine-Modal-content .mantine-Button-root[data-variant='filled'][data-disabled] {
+  border-color: #48616a;
+  background: #2d454d;
+  color: #b8ccd2;
+  --button-color: #b8ccd2;
+}
+
+.mantine-SegmentedControl-label {
+  white-space: nowrap;
+}
+
+.mantine-SegmentedControl-label[data-active] {
+  color: var(--fc-text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mantine-Button-root,
+  .mantine-ActionIcon-root {
+    transition: none;
+  }
+}

@@ -1,0 +1,4008 @@
+.script-director-panel {
+  --director-bg: #1b1b1d;
+  --director-raised: #242426;
+  --director-card: #29292b;
+  --director-line: #3b3b3e;
+  --director-muted: #96969d;
+  --director-text: #f4f4f5;
+  --director-accent: #6bd6e8;
+  position: fixed;
+  z-index: 75;
+  top: 14px;
+  right: 14px;
+  bottom: 14px;
+  width: min(430px, calc(100vw - 28px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #4a4a4f;
+  border-radius: 23px;
+  background: var(--director-bg);
+  color: var(--director-text);
+  box-shadow: -18px 22px 70px #00000085, inset 0 1px #ffffff0b;
+  font-size: 13px;
+}
+
+.script-director-header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:20px 20px 14px; flex:none; }
+.script-director-title { display:grid; gap:5px; min-width:0; }
+.script-director-title strong { font-size:18px; letter-spacing:-.02em; }
+.script-director-eyebrow { display:flex; align-items:center; gap:6px; color:var(--director-accent); font-size:10px; font-weight:650; letter-spacing:.08em; text-transform:uppercase; }
+.script-director-header-actions { display:flex; gap:3px; }
+.script-director-header-actions button,.script-director-preview-head button,.script-director-error button,.script-director-prompt-head button,.script-director-prompt-toggle { display:inline-flex; align-items:center; justify-content:center; border:0; background:transparent; color:#c4c4c8; cursor:pointer; }
+.script-director-header-actions button { width:30px; height:30px; border-radius:9px; }
+.script-director-header-actions button:hover,.script-director-preview-head button:hover,.script-director-prompt-toggle:hover { background:#343438; color:#fff; }
+.script-director-header-actions button:disabled { opacity:.4; cursor:not-allowed; }
+.script-director-header-actions .is-muted { color:#7f7f86; }
+.script-director-header-actions .is-active { background:#343438; color:var(--director-accent); }
+.script-director-history { position:absolute; z-index:4; top:58px; right:52px; width:min(270px,calc(100% - 36px)); max-height:280px; overflow:auto; padding:9px; border:1px solid #48484c; border-radius:11px; background:#27272a; box-shadow:0 15px 35px #0008; }
+.script-director-history>strong { display:block; padding:4px 7px 8px; color:#a7a7ad; font-size:10px; font-weight:600; }
+.script-director-history>button { display:flex; align-items:center; gap:8px; width:100%; min-height:34px; padding:6px 8px; border:0; border-radius:7px; background:transparent; color:#dedee1; text-align:left; cursor:pointer; }
+.script-director-history>button:hover { background:#37373b; }
+.script-director-history>button svg { flex:none; color:#8e8e95; }
+.script-director-history>button span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.script-director-history>p { padding:5px 7px 7px; color:#85858c; font-size:10px; }
+.script-director-context { display:flex; align-items:center; gap:7px; margin:0 18px 10px; padding:9px 11px; border:1px solid #303034; border-radius:10px; color:#a8a8ad; font-size:11px; }
+.script-director-context svg { color:var(--director-accent); }
+.script-director-context-dot { color:#65656b; }
+.script-director-progress { flex:none; margin:0 18px 10px; padding:10px 11px 9px; border:1px solid #303034; border-radius:11px; background:#202023; }
+.script-director-progress-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.script-director-progress-head div { display:flex; align-items:baseline; gap:7px; min-width:0; }
+.script-director-progress-head span { color:#88888f; font-size:10px; }
+.script-director-progress-head strong { overflow:hidden; color:#e5e5e8; font-size:11px; font-weight:600; text-overflow:ellipsis; white-space:nowrap; }
+.script-director-progress-head button { display:grid; place-items:center; width:24px; height:24px; border:0; border-radius:7px; background:transparent; color:#96969d; cursor:pointer; }
+.script-director-progress-head button:hover,.script-director-progress-head button.is-active { background:#303035; color:var(--director-accent); }
+.script-director-stage-list { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:2px; margin:11px 0 0; padding:0; list-style:none; }
+.script-director-stage-list li { position:relative; display:grid; justify-items:center; gap:5px; min-width:0; color:#67676e; font-size:9px; text-align:center; }
+.script-director-stage-list li::before { position:absolute; top:8px; left:calc(-50% + 10px); right:calc(50% + 10px); height:1px; background:#35353a; content:""; }
+.script-director-stage-list li:first-child::before { display:none; }
+.script-director-stage-list li.is-complete::before { background:#42757b; }
+.script-director-stage-marker { position:relative; z-index:1; display:grid; place-items:center; width:17px; height:17px; border:1px solid #45454b; border-radius:50%; background:#202023; color:#818188; font-size:8px; }
+.script-director-stage-list li.is-complete .script-director-stage-marker { border-color:#4f9ca5; background:#2c5a60; color:#b9f2f4; }
+.script-director-stage-list li.is-active .script-director-stage-marker { border-color:var(--director-accent); color:var(--director-accent); box-shadow:0 0 0 3px #6bd6e814; }
+.script-director-stage-list li.is-active .script-director-stage-label { color:#d9e6e8; }
+.script-director-stage-label { overflow:hidden; max-width:100%; text-overflow:ellipsis; white-space:nowrap; }
+.script-director-process-summary { display:grid; gap:4px; margin:10px 0 0; padding:9px 10px; border-top:1px solid #35353a; color:#b9b9bf; font-size:10px; line-height:1.55; }
+.script-director-process-summary strong { color:#dfdfe2; font-size:10px; font-weight:600; }
+.script-director-process-summary p { margin:0; }
+.script-director-process-summary small { color:#77777f; font-size:9px; }
+.script-director-process-events { display:grid; gap:6px; margin:0; padding:0; list-style:none; }
+.script-director-process-events li { display:grid; gap:2px; padding:5px 7px; border-left:2px solid #5eb3bf; background:#ffffff05; }
+.script-director-process-events li span { color:#78cbd5; font-size:9px; }
+.script-director-process-events li p { color:#b9b9bf; font-size:10px; }
+.script-director-messages { flex:1; min-height:100px; overflow-y:auto; display:grid; align-content:start; gap:15px; padding:10px 18px 18px; scrollbar-color:#46464a transparent; }
+.script-director-message { display:flex; gap:8px; align-items:flex-start; max-width:96%; line-height:1.6; color:#d4d4d8; }
+.script-director-message.user { margin-left:auto; justify-content:flex-end; }
+.script-director-avatar { width:24px; height:24px; display:grid; place-items:center; flex:none; border-radius:8px; background:#263d41; color:var(--director-accent); }
+.script-director-bubble { white-space:pre-wrap; }
+.script-director-bubble.is-pending { display:grid; grid-template-columns:13px minmax(0,1fr); align-items:start; column-gap:6px; white-space:normal; }
+.script-director-bubble.is-pending > span { min-width:0; white-space:pre-wrap; }
+.script-director-message.user .script-director-bubble { max-width:88%; padding:9px 11px; border-radius:13px 13px 3px 13px; background:#303c5a; color:#e7ebfa; }
+.script-director-spinner { animation:script-director-spin .85s linear infinite; flex:none; }
+.script-director-bubble.is-pending > .script-director-spinner { margin-top:calc(.8em - 6.5px); }
+@keyframes script-director-spin { to { transform:rotate(360deg); } }
+.script-director-artifacts { flex:none; margin:0 18px 9px; border:1px solid #34353a; border-radius:11px; background:#202124; overflow:hidden; }
+.script-director-artifacts-toggle { display:flex; align-items:center; gap:7px; width:100%; min-height:36px; padding:0 10px; border:0; background:transparent; color:#cfcfd3; cursor:pointer; text-align:left; }
+.script-director-artifacts-toggle:hover { background:#292a2d; }
+.script-director-artifacts-toggle > span:first-child { display:flex; align-items:center; gap:7px; color:#dcdce0; font-size:11px; }
+.script-director-artifacts-toggle > span:first-child svg { color:var(--director-accent); }
+.script-director-artifacts-count { margin-left:auto; color:#7f7f87; font-size:10px; }
+.script-director-artifacts-toggle > svg { color:#8d8d95; transition:transform .16s ease; }
+.script-director-artifacts.is-open .script-director-artifacts-toggle > svg { transform:rotate(90deg); }
+.script-director-artifacts-body { display:grid; gap:7px; padding:0 9px 9px; }
+.script-director-artifacts-body article { display:grid; gap:4px; padding:8px 9px; border:1px solid #34363a; border-radius:8px; background:#25272a; }
+.script-director-artifacts-body article header { display:flex; align-items:center; gap:5px; color:#9e9ea5; font-size:10px; }
+.script-director-artifacts-body article header svg { color:#70cbd8; }
+.script-director-artifacts-body article header em { margin-left:auto; color:#73737a; font-style:normal; }
+.script-director-artifacts-body article p { display:-webkit-box; max-height:53px; margin:0; overflow:hidden; color:#bfc0c4; font-size:10px; line-height:1.55; white-space:pre-line; -webkit-box-orient:vertical; -webkit-line-clamp:3; }
+.script-director-storyboard-handoff { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:9px; flex:none; margin:0 18px 9px; padding:9px 10px; border:1px solid #343b48; border-radius:10px; background:#20242b; }
+.script-director-storyboard-handoff > div { display:grid; gap:3px; min-width:0; }
+.script-director-storyboard-handoff > div > span { display:flex; align-items:center; gap:6px; color:#dce6f8; font-size:11px; }
+.script-director-storyboard-handoff > div > span svg { color:#82adff; }
+.script-director-storyboard-handoff small { overflow:hidden; color:#8e99aa; font-size:9px; text-overflow:ellipsis; white-space:nowrap; }
+.script-director-storyboard-handoff button { display:inline-flex; align-items:center; justify-content:center; gap:5px; min-height:28px; padding:0 9px; border:1px solid #496493; border-radius:7px; background:#263c62; color:#d4e3ff; font:inherit; font-size:10px; cursor:pointer; white-space:nowrap; }
+.script-director-storyboard-handoff button:hover:not(:disabled) { border-color:#79a7ff; background:#304c7a; }
+.script-director-storyboard-handoff button:disabled { opacity:.5; cursor:not-allowed; }
+.script-director-artifacts-editor { display:inline-flex; align-items:center; justify-content:center; gap:5px; min-height:27px; border:1px solid #3e5558; border-radius:7px; background:#26383b; color:#a8e4e9; font-size:10px; cursor:pointer; }
+.script-director-artifacts-editor:hover { background:#30494d; }
+.script-director-quick-replies { display:flex; flex-wrap:wrap; gap:5px; flex:none; margin:0 18px 10px; }
+.script-director-quick-replies button { display:inline-flex; align-items:center; gap:3px; min-height:26px; padding:0 8px; border:1px solid #3d4b4e; border-radius:999px; background:#222f31; color:#acdfe3; font-size:10px; cursor:pointer; }
+.script-director-quick-replies button:hover:not(:disabled) { border-color:#68bfc8; background:#2b4447; color:#e2fbfc; }
+.script-director-quick-replies button:disabled { opacity:.45; cursor:not-allowed; }
+
+.script-director-settings { flex:none; margin:0 18px 10px; border-top:1px solid #303034; border-bottom:1px solid #303034; }
+.script-director-settings-toggle { display:flex; align-items:center; justify-content:space-between; width:100%; min-height:42px; padding:0 2px; border:0; background:transparent; color:#c9c9cd; cursor:pointer; }
+.script-director-settings-toggle span { display:flex; align-items:center; gap:7px; font-size:12px; }
+.script-director-settings-toggle:hover { color:#fff; }
+.script-director-settings-body { display:grid; grid-template-columns:1fr 1fr; gap:9px; padding:2px 0 13px; }
+.script-director-field { display:grid; gap:5px; min-width:0; }
+.script-director-field span { color:#88888e; font-size:10px; }
+.script-director-field input { width:100%; min-height:30px; padding:5px 8px; border:1px solid #3c3c40; border-radius:7px; outline:none; background:#252527; color:#ebebee; font-size:11px; }
+.script-director-field input:focus { border-color:#5eabb7; box-shadow:0 0 0 2px #5eabb722; }
+.script-director-field input::placeholder { color:#68686e; }
+
+/* The settings editor is a focused workspace rather than another block in the
+   conversation. It keeps the chat visible behind a restrained modal and gives
+   the editable fields enough room to scan. */
+.script-director-settings-trigger {
+  display:flex;
+  align-items:center;
+  gap:8px;
+  width:100%;
+  min-height:30px;
+  margin:-2px 0 8px;
+  padding:0 2px 8px;
+  border:0;
+  border-bottom:1px solid #303338;
+  background:transparent;
+  color:#d5d8da;
+  cursor:pointer;
+  text-align:left;
+}
+.script-director-settings-trigger:hover:not(:disabled) { color:#f3f5f6; }
+.script-director-settings-trigger > span { display:flex; align-items:center; gap:7px; font-size:11px; font-weight:600; }
+.script-director-settings-trigger > span svg { color:#8dbbd3; }
+.script-director-settings-trigger > small { margin-left:auto; max-width:45%; overflow:hidden; color:#7e898f; font-size:9px; text-overflow:ellipsis; white-space:nowrap; }
+.script-director-settings-trigger > svg { flex:none; color:#879096; }
+.script-director-settings-trigger:disabled { opacity:.45; cursor:not-allowed; }
+.script-director-settings-layer {
+  position:fixed;
+  z-index:120;
+  inset:0;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:28px;
+  background:#090a0bcc;
+  backdrop-filter:blur(4px);
+}
+.script-director-settings-modal {
+  display:grid;
+  grid-template-columns:238px minmax(0,1fr);
+  width:min(1180px,calc(100vw - 56px));
+  max-height:min(700px,calc(100vh - 56px));
+  overflow:hidden;
+  border:1px solid #3b3e43;
+  border-radius:22px;
+  background:#1a1b1d;
+  box-shadow:0 28px 90px #000b, inset 0 1px #ffffff09;
+}
+.script-director-settings-modal.is-presets-hidden { grid-template-columns: minmax(0, 1fr); }
+.script-director-settings-presets {
+  display:flex;
+  flex-direction:column;
+  min-height:0;
+  padding:22px 14px 16px;
+  border-right:1px solid #303338;
+  background:#17181a;
+}
+.script-director-settings-presets > header { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; padding:0 8px 17px; color:#91b9c8; }
+.script-director-settings-presets > header div { display:grid; gap:4px; }
+.script-director-settings-presets > header strong { color:#f0f1f2; font-size:14px; font-weight:650; }
+.script-director-settings-presets > header small { color:#777f85; font-size:9px; }
+.script-director-settings-preset-list { display:grid; gap:4px; overflow:auto; padding-right:2px; }
+.script-director-settings-preset-list button {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  min-height:39px;
+  padding:0 9px;
+  border:1px solid transparent;
+  border-radius:9px;
+  background:transparent;
+  color:#aeb4b8;
+  font:inherit;
+  font-size:11px;
+  cursor:pointer;
+  text-align:left;
+}
+.script-director-settings-preset-list button svg { color:#69747a; }
+.script-director-settings-preset-list button:hover { background:#24272a; color:#e8ecee; }
+.script-director-settings-preset-list button.is-active { border-color:#415b63; background:#26363b; color:#d9f0f3; }
+.script-director-settings-preset-list button.is-active svg { color:#8dbbd3; }
+.script-director-settings-custom { display:inline-flex; align-items:center; gap:6px; min-height:32px; margin:12px 7px 0; padding:0 8px; border:1px solid #34393d; border-radius:8px; background:#202326; color:#9eaaaf; font:inherit; font-size:10px; cursor:pointer; }
+.script-director-settings-custom:hover { border-color:#526a72; color:#e0e8ea; }
+.script-director-settings-main { display:flex; flex-direction:column; min-width:0; min-height:0; }
+.script-director-settings-modal-head { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; padding:24px 28px 17px; }
+.script-director-settings-modal-head > div { display:grid; gap:5px; }
+.script-director-settings-modal-head span { color:#f1f2f3; font-size:17px; font-weight:650; }
+.script-director-settings-modal-head small { color:#7f878c; font-size:10px; }
+.script-director-settings-modal-head button { display:grid; place-items:center; width:29px; height:29px; border:0; border-radius:8px; background:transparent; color:#a9b0b4; cursor:pointer; }
+.script-director-settings-modal-head button:hover { background:#2a2d30; color:#fff; }
+.script-director-settings-scroll { min-height:0; overflow-y:auto; padding:0 28px 22px; scrollbar-color:#4b565b transparent; scrollbar-width:thin; }
+.script-director-settings-theme { display:grid; gap:13px; padding:17px 18px 18px; border:1px solid #353b3f; border-radius:15px; background:#202225; }
+.script-director-settings-theme > div:first-child { display:flex; align-items:baseline; gap:10px; }
+.script-director-settings-theme > div:first-child span { color:#899398; font-size:10px; }
+.script-director-settings-theme > div:first-child strong { color:#eef2f3; font-size:16px; font-weight:620; }
+.script-director-settings-chips { display:flex; flex-wrap:wrap; gap:6px; }
+.script-director-settings-chips button { min-height:27px; padding:0 9px; border:1px solid #3b4448; border-radius:999px; background:#191c1e; color:#9da8ad; font:inherit; font-size:10px; cursor:pointer; }
+.script-director-settings-chips button:hover { border-color:#69858d; color:#e2eef0; }
+.script-director-settings-chips button.is-active { border-color:#6b9da9; background:#2b454b; color:#e2f6f8; }
+.script-director-settings-theme label { display:grid; gap:6px; }
+.script-director-settings-theme label span { color:#818b90; font-size:10px; }
+.script-director-settings-theme label input { min-height:34px; padding:7px 9px; border:1px solid #3b4246; border-radius:8px; outline:0; background:#17191b; color:#e7ecee; font:inherit; font-size:11px; }
+.script-director-settings-theme label input:focus { border-color:#6b9da9; box-shadow:0 0 0 2px #6b9da91c; }
+.script-director-settings-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-top:15px; }
+.script-director-settings-grid .script-director-field { min-height:72px; padding:9px 12px; border:0; border-radius:0; background:transparent; }
+.script-director-settings-grid .script-director-field span { color:#89969b; font-size:10px; }
+.script-director-settings-grid .script-director-field input { min-height:31px; padding:4px 0; border:0; border-bottom:1px solid #33383b; border-radius:0; outline:0; background:transparent; font-size:11px; box-shadow:none; }
+.script-director-settings-grid .script-director-field input:focus,
+.script-director-settings-grid .script-director-field input:focus-visible { border:0; border-bottom:1px solid #789ca7; outline:0; box-shadow:none; }
+.script-director-structure-picker {
+  position: relative;
+  min-width: 0;
+  min-height: 72px;
+}
+.script-director-structure-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-content: center;
+  width: 100%;
+  min-height: 72px;
+  padding: 9px 26px 9px 12px;
+  border: 0;
+  border-bottom: 1px solid #33383b;
+  background: transparent;
+  color: #e7ecee;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.script-director-structure-card:hover,
+.script-director-structure-picker.is-open .script-director-structure-card { background: #22282b; }
+.script-director-structure-label { color: #89969b; font-size: 10px; }
+.script-director-structure-value { min-width: 0; overflow: hidden; color: #e5ecee; font-size: 11px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.script-director-structure-meta { align-self: end; color: #7c8b91; font-size: 9px; line-height: 1.4; }
+.script-director-structure-chevron { position: absolute; top: 12px; right: 8px; color: #82939a; transition: transform .18s ease; }
+.script-director-structure-picker.is-open .script-director-structure-chevron { transform: rotate(180deg); color: #a9d4dd; }
+.script-director-structure-popover {
+  position: absolute;
+  z-index: 8;
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: min(286px, calc(100vw - 72px));
+  padding: 12px;
+  border: 1px solid #3d4b50;
+  border-radius: 13px;
+  background: #202528;
+  box-shadow: 0 17px 35px #0009, inset 0 1px #ffffff0a;
+}
+.script-director-structure-popover-head { display: flex; align-items: baseline; justify-content: space-between; gap: 9px; padding: 1px 2px 9px; }
+.script-director-structure-popover-head strong { color: #e9f0f1; font-size: 11px; font-weight: 650; }
+.script-director-structure-popover-head span { color: #7f8f94; font-size: 9px; }
+.script-director-structure-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+.script-director-structure-options button {
+  min-height: 28px;
+  padding: 0 7px;
+  border: 1px solid #39464a;
+  border-radius: 7px;
+  background: #1b2022;
+  color: #a8b5b9;
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+.script-director-structure-options button:hover { border-color: #688b95; color: #e0f0f2; }
+.script-director-structure-options button.is-selected { border-color: #76acb7; background: #294148; color: #e3f5f7; }
+.script-director-episode-control { margin-top: 13px; padding-top: 11px; border-top: 1px solid #364145; }
+.script-director-episode-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #9eaaad; font-size: 10px; }
+.script-director-episode-head strong { color: #dcecef; font-size: 11px; font-weight: 620; }
+.script-director-episode-control input[type='range'] { display: block; width: 100%; height: 18px; margin: 7px 0 2px; accent-color: #8dbbd3; cursor: pointer; }
+.script-director-episode-scale { display: flex; justify-content: space-between; color: #69797e; font-size: 9px; }
+.script-director-settings-modal-foot { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 28px 19px; border-top:1px solid #303438; }
+.script-director-settings-modal-foot > span { color:#778287; font-size:9px; }
+.script-director-settings-modal-foot > div { display:flex; gap:7px; }
+.script-director-settings-cancel,.script-director-settings-confirm { min-height:32px; padding:0 14px; border-radius:9px; font:inherit; font-size:11px; cursor:pointer; }
+.script-director-settings-cancel { border:1px solid #3b4145; background:#25282b; color:#afb7ba; }
+.script-director-settings-cancel:hover { background:#303438; color:#edf1f2; }
+.script-director-settings-confirm { border:1px solid #8dbbd3; background:#8dbbd3; color:#162228; font-weight:650; }
+.script-director-settings-confirm:hover { background:#a1c8d5; }
+
+.script-director-error { display:flex; align-items:center; gap:8px; margin:0 18px 9px; padding:8px 10px; border:1px solid #714843; border-radius:8px; background:#3d2726; color:#f4b9ae; font-size:11px; }
+.script-director-error button { margin-left:auto; color:#f4b9ae; }
+.script-director-preview { flex:none; max-height:47%; margin:0 18px 10px; overflow:hidden; border:1px solid #455054; border-radius:13px; background:#232629; }
+.script-director-preview-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:11px 12px; border-bottom:1px solid #383d40; }
+.script-director-preview-head div { display:flex; align-items:center; gap:8px; }
+.script-director-preview-head span { color:var(--director-accent); font-size:11px; }
+.script-director-preview-head strong { color:#dfdfe1; font-size:11px; font-weight:600; }
+.script-director-preview-scroll { max-height:240px; overflow-y:auto; display:grid; gap:9px; padding:10px 12px; }
+.script-director-preview-scroll label { display:grid; gap:4px; color:#96969c; font-size:10px; }
+.script-director-preview-scroll textarea { min-height:43px; resize:vertical; padding:7px 8px; border:1px solid #3c3e40; border-radius:7px; outline:none; background:#1c1e20; color:#e9e9eb; font-size:11px; line-height:1.5; }
+.script-director-scene-preview { padding:8px 9px; border:1px solid #363b3e; border-radius:8px; background:#1f2224; }
+.script-director-scene-preview header { display:flex; align-items:center; gap:7px; }
+.script-director-scene-preview header span { color:#70cbd8; font-size:10px; }
+.script-director-scene-preview header input { min-width:0; flex:1; border:0; outline:0; background:transparent; color:#e4e4e7; font-size:11px; font-weight:600; }
+.script-director-scene-preview header input.script-director-scene-duration { flex:0 0 36px; width:36px; padding:2px 3px; border:1px solid #3c3e40; border-radius:5px; color:#c9cbd0; text-align:right; font-size:10px; font-weight:500; }
+.script-director-scene-preview header em { color:#89898f; font-size:10px; font-style:normal; }
+.script-director-scene-preview > input,
+.script-director-scene-preview > textarea { width:100%; margin-top:6px; padding:6px 7px; border:1px solid #373b3e; border-radius:6px; outline:0; background:#1c1e20; color:#dfe1e4; font:inherit; font-size:10px; line-height:1.45; }
+.script-director-scene-preview > textarea { min-height:40px; resize:vertical; }
+.script-director-scene-preview > input:focus,
+.script-director-scene-preview > textarea:focus,
+.script-director-preview-scroll textarea:focus { border-color:#6d747a; }
+.script-director-preview-actions { display:flex; justify-content:flex-end; gap:7px; padding:10px 12px 12px; border-top:1px solid #383d40; }
+.script-director-secondary,.script-director-primary { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:31px; padding:0 11px; border-radius:8px; font-size:11px; cursor:pointer; }
+.script-director-secondary { border:1px solid #45474a; background:transparent; color:#b7b7bb; }
+.script-director-primary { border:1px solid #70d8e7; background:#6bd6e8; color:#172326; font-weight:650; }
+.script-director-primary:disabled { opacity:.55; cursor:not-allowed; }
+
+.script-director-composer { flex:none; min-height:0; margin:8px 12px 12px; padding:10px; border:1px solid #444448; border-radius:15px; background:#242426; box-shadow:inset 0 1px #ffffff08; }
+.script-director-composer > textarea { display:block; width:100%; min-height:112px; max-height:240px; resize:vertical; padding:2px 2px 8px; border:0; outline:0; background:transparent; color:#ececef; font-size:12px; line-height:1.55; }
+.script-director-composer > textarea:focus,
+.script-director-composer > textarea:focus-visible { border:0; outline:none; box-shadow:none; }
+.script-director-composer > textarea::placeholder { color:#77777e; }
+.script-director-composer.is-prompt-open > textarea { min-height:64px; max-height:96px; }
+.script-director-prompt-editor { display:grid; gap:6px; padding:8px 0; border-top:1px solid #38383c; }
+.script-director-prompt-head { display:flex; align-items:center; justify-content:space-between; color:#99999f; font-size:10px; }
+.script-director-prompt-head button { color:#79cbd6; font-size:10px; }
+.script-director-prompt-editor textarea { min-height:90px; max-height:180px; resize:vertical; padding:8px; border:1px solid #3d3d41; border-radius:8px; outline:0; background:#1c1c1e; color:#dedee1; font-size:10px; line-height:1.5; }
+.script-director-composer.is-prompt-open .script-director-prompt-editor textarea { min-height:128px; max-height:220px; }
+.script-director-prompt-editor small { color:#ef9c8c; font-size:10px; }
+.script-director-composer-toolbar { display:flex; align-items:center; gap:3px; min-height:31px; margin-top:8px; }
+.script-director-mode-select { width:98px; flex:0 0 98px; }
+.script-director-model-select { width:132px; min-width:0; flex:1 1 132px; }
+.script-director-composer-toolbar .script-director-mode-select .mantine-Select-input,
+.script-director-composer-toolbar .script-director-model-select .mantine-Select-input {
+  min-height:29px;
+  height:29px;
+  padding-top:0;
+  padding-bottom:0;
+  border:1px solid #3b3b3f;
+  border-radius:7px;
+  background:#2b2b2e;
+  color:#dedee2;
+  font-size:10px;
+}
+.script-director-composer-toolbar .script-director-mode-select .mantine-Select-input { padding-left:26px; padding-right:20px; }
+.script-director-composer-toolbar .script-director-model-select .mantine-Select-input { padding-left:8px; padding-right:21px; }
+.script-director-composer-toolbar .script-director-mode-select .mantine-Select-input:hover,
+.script-director-composer-toolbar .script-director-model-select .mantine-Select-input:hover { border-color:#56565c; background:#303034; }
+.script-director-composer-toolbar .script-director-mode-select .mantine-Select-section,
+.script-director-composer-toolbar .script-director-model-select .mantine-Select-section { color:#a7a7ad; }
+.script-director-composer-toolbar .script-director-mode-select .mantine-Select-section[data-position='left'] { left:8px; }
+.script-director-composer-toolbar .script-director-mode-select .mantine-Select-section[data-position='right'],
+.script-director-composer-toolbar .script-director-model-select .mantine-Select-section[data-position='right'] { right:6px; }
+.script-director-composer-toolbar .script-director-mode-select .mantine-Select-input::placeholder,
+.script-director-composer-toolbar .script-director-model-select .mantine-Select-input::placeholder { color:#a3a3aa; }
+.script-director-prompt-toggle { width:29px; height:29px; border-radius:7px; }
+.script-director-draft { display:inline-flex; align-items:center; justify-content:center; width:29px; height:29px; flex:none; border:0; border-radius:7px; background:transparent; color:#c4c4c8; cursor:pointer; }
+.script-director-draft:hover:not(:disabled) { background:#343438; color:#fff; }
+.script-director-draft:disabled { opacity:.4; cursor:not-allowed; }
+.script-director-send { display:inline-flex; align-items:center; justify-content:center; width:31px; height:31px; margin-left:auto; border:0; border-radius:10px; background:var(--director-accent); color:#172326; cursor:pointer; }
+.script-director-send:hover:not(:disabled) { background:#8be4ef; }
+.script-director-send:disabled { opacity:.4; cursor:not-allowed; }
+.script-director-model-link { display:block; margin:8px 0 0; padding:0; border:0; background:transparent; color:#75d3e0; font-size:10px; cursor:pointer; }
+.script-director-model-link:hover { color:#a2ecf3; }
+.script-director-editor-link { display:inline-flex; align-items:center; gap:5px; margin-top:8px; padding:0; border:0; background:transparent; color:#75d3e0; font-size:10px; cursor:pointer; }
+.script-director-editor-link:hover { color:#a2ecf3; }
+.script-director-hint { margin:8px 0 0; color:#6e6e74; font-size:9px; }
+
+@media (max-width:620px) {
+  .script-director-panel { top:0; right:0; bottom:0; width:100vw; border-radius:0; }
+  .script-director-settings-body { grid-template-columns:1fr; }
+  .script-director-settings-layer { align-items:flex-end; padding:0; }
+  .script-director-settings-modal { width:100%; max-height:calc(100vh - 18px); grid-template-columns:1fr; border-radius:18px 18px 0 0; }
+  .script-director-settings-presets { display:none; }
+  .script-director-settings-modal-head { padding:18px 18px 14px; }
+  .script-director-settings-scroll { padding:0 18px 18px; }
+  .script-director-settings-grid { grid-template-columns:1fr 1fr; }
+  .script-director-settings-modal-foot { padding:12px 18px 16px; }
+  .script-director-structure-popover { right: 0; bottom: calc(100% + 8px); }
+}
+
+@media (max-width:400px) {
+  .script-director-mode-select { width:86px; flex-basis:86px; }
+  .script-director-model-select { flex-basis:100px; }
+  .script-director-prompt-toggle,.script-director-draft { width:26px; }
+  .script-director-send { width:28px; }
+}
+
+/* Match the canvas with the blue production accent. The panel keeps its
+   graphite surfaces; blue is used for progress, links and primary actions. */
+.script-director-panel {
+  --director-accent: #79a7ff;
+}
+.script-director-eyebrow,
+.script-director-context svg,
+.script-director-progress-head button:hover,
+.script-director-progress-head button.is-active,
+.script-director-preview-head span { color: #79a7ff; }
+.script-director-stage-list li.is-complete::before { background: #426ca8; }
+.script-director-stage-list li.is-complete .script-director-stage-marker {
+  border-color: #527fbd;
+  background: #294a7a;
+  color: #c5dcff;
+}
+.script-director-stage-list li.is-active .script-director-stage-marker {
+  border-color: #79a7ff;
+  color: #79a7ff;
+  box-shadow: 0 0 0 3px #79a7ff22;
+}
+.script-director-process-events li { border-left-color: #6f9dff; }
+.script-director-process-events li span { color: #8ab6ff; }
+.script-director-avatar { background: #263552; color: #79a7ff; }
+.script-director-artifacts-toggle > span:first-child svg { color: #82adff; }
+.script-director-artifacts-editor {
+  border-color: #3e5680;
+  background: #202f46;
+  color: #bdd3ff;
+}
+.script-director-artifacts-editor:hover { background: #29486c; }
+.script-director-quick-replies button {
+  border-color: #40537a;
+  background: #202b40;
+  color: #b5d0ff;
+}
+.script-director-quick-replies button:hover:not(:disabled) {
+  border-color: #608fd8;
+  background: #293f66;
+  color: #e8f1ff;
+}
+.script-director-field input:focus { border-color: #608fd8; box-shadow: 0 0 0 2px #608fd822; }
+.script-director-primary {
+  border-color: #82adff;
+  background: #79a7ff;
+  color: #15243d;
+}
+.script-director-prompt-head button,
+.script-director-model-link,
+.script-director-editor-link { color: #82adff; }
+.script-director-prompt-head button:hover,
+.script-director-model-link:hover,
+.script-director-editor-link:hover { color: #a6c6ff; }
+.script-director-send { background: #79a7ff; color: #15243d; }
+.script-director-send:hover:not(:disabled) { background: #91b7ff; }
+
+/* Keep the director panel aligned with the softer blue-gray canvas palette. */
+.script-director-panel { --director-accent: #8dbbd3; }
+.script-director-eyebrow,
+.script-director-context svg,
+.script-director-progress-head button:hover,
+.script-director-progress-head button.is-active,
+.script-director-preview-head span { color: #8dbbd3; }
+.script-director-stage-list li.is-complete::before { background: #547482; }
+.script-director-stage-list li.is-complete .script-director-stage-marker { border-color: #6b909e; background: #344c56; color: #c7e0e8; }
+.script-director-stage-list li.is-active .script-director-stage-marker { border-color: #8dbbd3; color: #8dbbd3; box-shadow: 0 0 0 3px #8dbbd322; }
+.script-director-process-events li { border-left-color: #769eac; }
+.script-director-process-events li span { color: #9ebfca; }
+.script-director-avatar { background: #2c3a40; color: #8dbbd3; }
+.script-director-artifacts-toggle > span:first-child svg { color: #9bbdca; }
+.script-director-quick-replies button { border-color: #4b5d65; background: #273237; color: #bfd2d8; }
+.script-director-quick-replies button:hover:not(:disabled) { border-color: #779aa7; background: #35484f; color: #edf6f8; }
+.script-director-primary { border-color: #a1c8d5; background: #8dbbd3; color: #18262b; }
+.script-director-prompt-head button,
+.script-director-model-link,
+.script-director-editor-link { color: #9bbdca; }
+.script-director-prompt-head button:hover,
+.script-director-model-link:hover,
+.script-director-editor-link:hover { color: #c1dce4; }
+.script-director-send { background: #8dbbd3; color: #18262b; }
+.script-director-send:hover:not(:disabled) { background: #a4c8d5; }
+
+/* Dark editor reference palette: cyan is an interaction accent, not a panel
+   fill. Keep the director surface close to black and graphite. */
+.script-director-panel {
+  --director-bg: #111214;
+  --director-raised: #17181a;
+  --director-card: #202124;
+  --director-line: #2b2e33;
+  --director-muted: #858a92;
+  --director-accent: #38afc2;
+  background: #111214;
+  border-color: #303338;
+}
+.script-director-eyebrow,
+.script-director-context svg,
+.script-director-progress-head button:hover,
+.script-director-progress-head button.is-active,
+.script-director-preview-head span { color: #38afc2; }
+.script-director-stage-list li.is-complete::before { background: #356b73; }
+.script-director-stage-list li.is-complete .script-director-stage-marker { border-color: #4d8992; background: #203b40; color: #a9dce2; }
+.script-director-stage-list li.is-active .script-director-stage-marker { border-color: #38afc2; color: #38afc2; box-shadow: 0 0 0 3px #38afc222; }
+.script-director-process-events li { border-left-color: #4f9aa5; }
+.script-director-process-events li span { color: #82c3cc; }
+.script-director-avatar { background: #24363a; color: #38afc2; }
+.script-director-quick-replies button { border-color: #3b5359; background: #1b292d; color: #b3d1d5; }
+.script-director-quick-replies button:hover:not(:disabled) { border-color: #4f8e98; background: #263d42; color: #e4f3f5; }
+.script-director-primary { border-color: #55b9c7; background: #38afc2; color: #07191c; }
+.script-director-prompt-head button,
+.script-director-model-link,
+.script-director-editor-link { color: #69bfca; }
+.script-director-prompt-head button:hover,
+.script-director-model-link:hover,
+.script-director-editor-link:hover { color: #a0d9e0; }
+.script-director-send { background: #38afc2; color: #07191c; }
+.script-director-send:hover:not(:disabled) { background: #55c0d0; }
+
+/* Structured asset task card: keeps the reference-inspired-style "read → confirm → create"
+   flow visible without hiding the source script in a generic chat reply. */
+.script-director-asset-task {
+  flex:none;
+  margin:0 18px 10px;
+  padding:11px;
+  border:1px solid #2f4146;
+  border-radius:13px;
+  background:#171d20;
+  box-shadow:inset 0 1px #ffffff06;
+}
+.script-director-asset-task.is-working { border-color:#315866; }
+.script-director-asset-task.is-ready { border-color:#38696e; background:#172123; }
+.script-director-asset-task.is-failed { border-color:#6e4545; background:#24191a; }
+.script-director-asset-task-head { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+.script-director-asset-task-title { display:flex; align-items:flex-start; gap:8px; min-width:0; }
+.script-director-asset-task-title > div { display:grid; gap:3px; min-width:0; }
+.script-director-asset-task-title strong { color:#e6eef0; font-size:11px; font-weight:650; }
+.script-director-asset-task-title small { color:#84969a; font-size:9px; line-height:1.45; }
+.script-director-asset-task-icon { display:grid; place-items:center; width:26px; height:26px; flex:none; border:1px solid #38565c; border-radius:8px; background:#213338; color:#7fc1c9; }
+.script-director-asset-task-status { display:inline-flex; align-items:center; gap:4px; flex:none; padding-top:3px; color:#84979c; font-size:9px; white-space:nowrap; }
+.script-director-asset-task-status i { width:5px; height:5px; border-radius:50%; background:#6f8b90; }
+.script-director-asset-task.is-working .script-director-asset-task-status { color:#8fcbd3; }
+.script-director-asset-task.is-working .script-director-asset-task-status i { background:#38afc2; box-shadow:0 0 0 3px #38afc21c; animation:script-director-task-pulse 1.15s ease-in-out infinite; }
+.script-director-asset-task.is-ready .script-director-asset-task-status { color:#9bd5cf; }
+.script-director-asset-task.is-ready .script-director-asset-task-status i { background:#61c2a8; }
+@keyframes script-director-task-pulse { 50% { opacity:.35; transform:scale(.7); } }
+.script-director-asset-task-fields { display:flex; flex-wrap:wrap; gap:4px; margin:9px 0 8px 34px; }
+.script-director-asset-task-fields span { padding:3px 6px; border:1px solid #30484c; border-radius:999px; color:#9cb6ba; background:#1d2a2e; font-size:9px; }
+.script-director-asset-task-source { margin:0 0 9px; padding:8px 9px; border:1px solid #2a373a; border-radius:8px; background:#14191b; }
+.script-director-asset-task-source > div { display:flex; align-items:center; gap:5px; color:#82aab0; font-size:9px; }
+.script-director-asset-task-source > div svg { color:#5faeb9; }
+.script-director-asset-task-source p { display:-webkit-box; max-height:39px; margin:4px 0 0; overflow:hidden; color:#a9b5b8; font-size:10px; line-height:1.5; white-space:pre-line; -webkit-box-orient:vertical; -webkit-line-clamp:2; }
+.script-director-asset-task-actions { display:flex; justify-content:flex-end; gap:6px; }
+.script-director-task-secondary,.script-director-task-primary { display:inline-flex; align-items:center; justify-content:center; gap:5px; min-height:28px; padding:0 9px; border-radius:7px; font-size:10px; cursor:pointer; }
+.script-director-task-secondary { border:1px solid #34464a; background:transparent; color:#9db2b6; }
+.script-director-task-secondary:hover { border-color:#577a81; color:#d5e4e6; background:#1d292c; }
+.script-director-task-primary { border:1px solid #50a9b2; background:#2c7780; color:#e8fbfc; font-weight:600; }
+.script-director-task-primary:hover { background:#358d97; }
+.script-director-asset-task-progress { display:flex; align-items:center; gap:6px; min-height:28px; color:#8dbfc5; font-size:10px; }
+.script-director-asset-task-prompt { display:grid; gap:6px; }
+.script-director-asset-task-prompt-head { display:flex; align-items:center; justify-content:space-between; color:#a9c1c4; font-size:9px; }
+.script-director-asset-task-prompt-head button { display:inline-flex; align-items:center; gap:3px; border:0; background:transparent; color:#82c5ce; font-size:9px; cursor:pointer; }
+.script-director-asset-task-prompt-head button:hover { color:#bce9ed; }
+.script-director-asset-task-prompt textarea { min-height:78px; max-height:150px; resize:vertical; padding:7px 8px; border:1px solid #38545a; border-radius:7px; outline:0; background:#111719; color:#d4e5e7; font-size:10px; line-height:1.5; }
+.script-director-asset-task-prompt textarea:focus { border-color:#4d9fa9; box-shadow:0 0 0 2px #38afc21a; }
+.script-director-asset-task-ready { display:flex; align-items:center; gap:5px; color:#8dc9bd; font-size:9px; }
+.script-director-asset-task-ready svg { color:#61c2a8; }
+.script-director-asset-task-ready.is-error { color:#e39a8e; }
+.script-director-asset-task-generate-row { display:flex; align-items:center; gap:6px; }
+.script-director-asset-task-generate-row .mantine-Select-root { min-width:0; flex:1; }
+.script-director-asset-task-generate-row .mantine-Select-input { min-height:29px; height:29px; border:1px solid #38545a; border-radius:7px; background:#111719; color:#d4e5e7; font-size:10px; }
+.script-director-task-primary,.script-director-task-secondary { display:inline-flex; align-items:center; justify-content:center; gap:5px; min-height:29px; padding:0 9px; border-radius:7px; font-size:10px; cursor:pointer; white-space:nowrap; }
+.script-director-task-primary { border:1px solid #55b9c7; background:#38afc2; color:#07191c; }
+.script-director-task-primary:hover:not(:disabled) { background:#55c0d0; }
+.script-director-task-primary:disabled,.script-director-task-secondary:disabled { opacity:.45; cursor:not-allowed; }
+.script-director-task-secondary { border:1px solid #3e5558; background:#1b272a; color:#a9cdd1; }
+.script-director-task-secondary:hover:not(:disabled) { border-color:#63939b; background:#263b3f; }
+.script-director-asset-result { display:grid; grid-template-columns:52px minmax(0,1fr) auto; align-items:center; gap:8px; padding-top:7px; border-top:1px solid #2c3c3f; }
+.script-director-asset-result img { width:52px; height:52px; border-radius:7px; object-fit:cover; background:#0d1011; }
+.script-director-asset-result > div { display:grid; gap:3px; min-width:0; }
+.script-director-asset-result strong { overflow:hidden; color:#dbe8e9; font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
+.script-director-asset-result span { color:#8da4a7; font-size:9px; }
+
+/* Keep the composer anchored to the bottom of the panel. The conversation
+   list owns the flexible space and scrolls when it grows, so the initial
+   state never leaves an unused block below the input area. */
+.script-director-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  scrollbar-color: #4c5961 transparent;
+  scrollbar-width: thin;
+  touch-action: pan-y;
+}
+.script-director-panel::-webkit-scrollbar { width: 8px; }
+.script-director-panel::-webkit-scrollbar-track { background: transparent; }
+.script-director-panel::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: #4c5961; background-clip: padding-box; }
+.script-director-panel::-webkit-scrollbar-thumb:hover { background: #667985; background-clip: padding-box; }
+.script-director-header {
+  flex: none;
+}
+.script-director-messages {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  overscroll-behavior-y: contain;
+  /* The stream updates the last bubble frequently. Keep the browser from
+     applying its own anchor correction while the React scroll controller
+     decides whether the viewport should follow the stream. */
+  overflow-anchor: none;
+  scrollbar-gutter: stable;
+  scroll-behavior: auto;
+  contain: layout paint;
+  scrollbar-width: thin;
+  scrollbar-color: #46464a transparent;
+}
+.script-director-message {
+  /* Isolate each message's text reflow from the rest of the conversation.
+     This avoids repainting the entire list for every streamed token without
+     changing the visual layout or the height reported by the scroll host. */
+  contain: layout style;
+}
+.script-director-composer {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  margin-top: 0;
+  margin-bottom: 12px;
+  box-shadow: inset 0 1px #ffffff08;
+}
+
+/* The active question is a bottom input surface, separate from the scrolling
+   conversation. While it is open the free-form composer is replaced by this
+   surface, matching the reference interaction. */
+.script-director-choice-dock {
+  flex: none;
+  min-height: 0;
+  max-height: min(52%, 410px);
+  margin: 0 12px 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #3b4448 transparent;
+}
+.script-director-choice-dock::-webkit-scrollbar { width: 6px; }
+.script-director-choice-dock::-webkit-scrollbar-track { background: transparent; }
+.script-director-choice-dock::-webkit-scrollbar-thumb { border-radius: 999px; background: #3b4448; }
+.script-director-choice-dock .script-director-choice-card {
+  width: 100%;
+  margin: 0;
+}
+
+/* reference-inspired-style structured question cards. Keep the card neutral graphite so
+   the selected state is clear without turning the whole panel blue. */
+.script-director-choice-card {
+  width: min(100%, 392px);
+  margin-top: 1px;
+  padding: 10px 10px 8px;
+  border: 1px solid #34383c;
+  border-radius: 12px;
+  background: #151719;
+  box-shadow: inset 0 1px #ffffff06;
+}
+.script-director-choice-card > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 1px 7px;
+  color: #e1e4e6;
+}
+.script-director-choice-card > header strong {
+  min-width: 0;
+  color: #e1e4e6;
+  font-size: 11.5px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+.script-director-choice-card > header span {
+  flex: none;
+  color: #777f84;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.script-director-choice-pagination {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.script-director-choice-pagination button {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #70777d;
+}
+.script-director-choice-pagination button:disabled { opacity: .72; }
+.script-director-choice-intro,
+.script-director-choice-followup {
+  display: -webkit-box;
+  margin: 0 1px 6px;
+  overflow: hidden;
+  color: #9ba3a8;
+  font-size: 9.5px;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+}
+.script-director-choice-list {
+  display: grid;
+  gap: 2px;
+}
+.script-director-choice-list button {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 7px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: #c2c8cc;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .14s ease, background .14s ease, color .14s ease;
+}
+.script-director-choice-list button:hover,
+.script-director-choice-list button:focus-visible,
+.script-director-choice-list button.is-selected {
+  border-color: #454c50;
+  background: #24282b;
+  color: #edf0f1;
+  outline: none;
+}
+.script-director-choice-list button > span {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  border-radius: 6px;
+  background: #2b3034;
+  color: #aeb6bb;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+.script-director-choice-list button.is-selected > span {
+  background: #e5e8e9;
+  color: #25292c;
+}
+.script-director-choice-list button.is-muted { color: #70777d; }
+.script-director-choice-list button.is-muted > span { background: #292e32; color: #858d92; }
+.script-director-choice-list button.is-muted:hover { color: #bac1c5; }
+.script-director-choice-list button > strong {
+  min-width: 0;
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.script-director-choice-card > footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 7px;
+  padding-top: 6px;
+  border-top: 1px solid #2a2e31;
+}
+.script-director-choice-card > footer button {
+  min-height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #858e94;
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+.script-director-choice-card > footer button:hover,
+.script-director-choice-card > footer button:focus-visible {
+  background: #24282b;
+  color: #d7dddf;
+  outline: none;
+}
+.script-director-choice-card > footer button:last-child {
+  min-width: 46px;
+  background: #e1e5e6;
+  color: #24282a;
+  font-weight: 650;
+}
+.script-director-choice-card > footer button:last-child:hover,
+.script-director-choice-card > footer button:last-child:focus-visible {
+  background: #f0f2f2;
+  color: #1f2325;
+}
+.script-director-choice-card > footer button:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+.script-director-choice-dismissed {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid #2b3034;
+  border-radius: 8px;
+  background: #17191b;
+  color: #858d92;
+  font-size: 10px;
+}
+.script-director-choice-dismissed span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.script-director-choice-dismissed em { color: #666e73; font-style: normal; }
+
+/* Settings workspace: the reference interaction uses a quiet two-pane surface,
+   a visual topic relationship and compact cards that reveal choices on demand. */
+.script-director-settings-modal {
+  grid-template-columns: 264px minmax(0, 1fr);
+  gap: 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+.script-director-settings-presets {
+  min-height: 0;
+  border: 1px solid #303236;
+  border-radius: 24px;
+  background: #202123;
+  box-shadow: inset 0 1px #ffffff08;
+  padding: 25px 15px 17px;
+}
+.script-director-settings-presets > header { padding: 0 10px 17px; }
+.script-director-settings-presets > header strong { font-size: 16px; }
+.script-director-settings-preset-list { gap: 8px; }
+.script-director-settings-preset-list button {
+  min-height: 57px;
+  padding: 0 13px;
+  border: 1px solid #34363a;
+  border-radius: 14px;
+  background: #242527;
+  color: #d7d8da;
+  font-size: 11px;
+  box-shadow: inset 0 1px #ffffff05;
+}
+.script-director-settings-preset-list button:nth-child(1),
+.script-director-settings-preset-list button:nth-child(2),
+.script-director-settings-preset-list button:nth-child(3),
+.script-director-settings-preset-list button:nth-child(4),
+.script-director-settings-preset-list button:nth-child(5),
+.script-director-settings-preset-list button:nth-child(6),
+.script-director-settings-preset-list button:nth-child(7),
+.script-director-settings-preset-list button:nth-child(8) {
+  background-position: center;
+  background-size: cover;
+}
+.script-director-settings-preset-list button:hover { border-color: #55575c; background-color: #2a2b2e; }
+.script-director-settings-preset-list button.is-active { border-color: #696b6f; background-color: #303134; color: #f1f2f3; }
+.script-director-settings-preset-list button svg { color: #9b9da1; }
+.script-director-settings-custom { margin: 13px 8px 0; border: 0; background: transparent; color: #96999f; }
+.script-director-settings-main {
+  height: 100%;
+  min-height: 0;
+  border: 1px solid #303236;
+  border-radius: 24px;
+  background: #202123;
+  box-shadow: inset 0 1px #ffffff08;
+  overflow: visible;
+}
+.script-director-settings-modal-head { padding: 25px 26px 11px; }
+.script-director-settings-modal-head span { font-size: 18px; }
+.script-director-settings-scroll { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; padding: 0 26px 20px; overflow-x: visible; }
+.script-director-settings-theme {
+  flex: 1 1 auto;
+  min-height: 330px;
+  padding: 5px 0 0;
+  border: 0;
+  background: transparent;
+}
+.script-director-settings-theme-layout { display: grid; grid-template-columns: 164px minmax(0, 1fr); gap: 12px; min-height: 326px; }
+.script-director-settings-theme-layout.has-fusion-rail { grid-template-columns: 164px minmax(320px, 1fr) 164px; }
+.script-director-theme-rail { display: grid; align-content: center; gap: 7px; min-width: 0; padding: 10px 0; }
+.script-director-theme-rail.is-infinite { grid-template-rows: 20px minmax(0, 1fr) 20px auto; align-content: center; gap: 2px; min-height: 286px; padding: 5px 0; overflow: hidden; outline: 0; }
+.script-director-theme-rail-viewport { position: relative; display: grid; grid-template-rows: repeat(5, minmax(0, 1fr)); min-height: 220px; max-height: 230px; overflow: hidden; mask-image: linear-gradient(to bottom, transparent 0, #000 12%, #000 88%, transparent 100%); }
+.script-director-theme-rail.is-fusion .script-director-theme-rail-viewport { mask-image: linear-gradient(to bottom, transparent 0, #000 12%, #000 88%, transparent 100%); }
+.script-director-theme-rail button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 29px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #85878d;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item { position: relative; min-height: 38px; padding: 0 6px; border-radius: 9px; color: #777b81; transition: color .18s ease, background .18s ease, opacity .18s ease, transform .18s ease; animation: script-director-theme-rail-item-in .24s ease both; }
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item[data-offset='-2'],
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item[data-offset='2'] { opacity: .34; transform: scale(.94); }
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item[data-offset='-1'],
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item[data-offset='1'] { opacity: .64; transform: scale(.97); }
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item.is-primary,
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item.is-fusion { color: #eceff1; background: #2b2d30; box-shadow: inset 0 1px #ffffff0a; opacity: 1; transform: scale(1); }
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item:hover { color: #f2f4f5; background: #292c2f; opacity: 1; transform: scale(1); }
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item .script-director-theme-dot { width: 20px; height: 20px; }
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item small { margin-left: auto; }
+.script-director-theme-rail-caret { position: absolute; left: -9px; color: #eef2f3; font-size: 13px; line-height: 1; }
+.script-director-theme-rail.is-fusion .script-director-theme-rail-caret { left: auto; right: -9px; }
+.script-director-theme-rail-nudge { justify-content: center; min-height: 20px !important; padding: 0 !important; border-radius: 5px !important; color: #656b71 !important; }
+.script-director-theme-rail-nudge:hover { background: #292c2f !important; color: #c6cbd0 !important; }
+.script-director-theme-rail.is-infinite .script-director-theme-other { justify-content: flex-start; min-height: 29px; padding: 0 6px; }
+.script-director-theme-rail button:hover { background: #292a2d; color: #dadcdf; }
+.script-director-theme-rail button.is-primary { color: #e5e7e9; }
+.script-director-theme-rail button.is-fusion { color: #c7c9cc; }
+.script-director-theme-rail button small { margin-left: auto; color: #777b81; font-size: 9px; }
+.script-director-theme-dot { width: 20px; height: 20px; flex: none; border-radius: 50%; background: #3f4246; box-shadow: inset 0 1px #ffffff2a; }
+.script-director-theme-dot.tone-fantasy { background: radial-gradient(circle at 30% 25%, #bec5d0, #566175 45%, #242936); }
+.script-director-theme-dot.tone-city { background: radial-gradient(circle at 68% 28%, #abb4b4, #596064 46%, #282b2d); }
+.script-director-theme-dot.tone-heritage { background: radial-gradient(circle at 36% 35%, #b6a69a, #665651 48%, #2a292a); }
+.script-director-theme-dot.tone-mystery { background: radial-gradient(circle at 70% 28%, #7e7f88, #454650 45%, #25262b); }
+.script-director-theme-dot.tone-future { background: radial-gradient(circle at 35% 30%, #9ba8ad, #53636a 45%, #252b2d); }
+.script-director-theme-dot.tone-bright { background: radial-gradient(circle at 30% 30%, #d8c5a5, #7f7165 48%, #322d2a); }
+.script-director-theme-dot.tone-culture { background: radial-gradient(circle at 32% 28%, #f0c18a, #9c514a 47%, #32232c); }
+.script-director-theme-dot.tone-thriller { background: radial-gradient(circle at 70% 28%, #a2b5c0, #3c4b58 45%, #11161e); }
+.script-director-theme-dot.tone-crime { background: radial-gradient(circle at 68% 25%, #d0ac70, #505661 44%, #11151d); }
+.script-director-theme-dot.tone-family { background: radial-gradient(circle at 32% 28%, #e3c496, #81655b 45%, #2c292e); }
+.script-director-theme-dot.tone-comedy { background: radial-gradient(circle at 30% 27%, #f3c681, #d47778 45%, #4d395b); }
+.script-director-theme-dot.tone-sports { background: radial-gradient(circle at 28% 30%, #b8d6ce, #4d807e 45%, #182c2a); }
+.script-director-theme-dot.tone-hero { background: radial-gradient(circle at 32% 28%, #e9c08b, #b97b60 47%, #303942); }
+.script-director-theme-other { color: #71757a !important; }
+.script-director-theme-other svg { color: #8e9196; }
+.script-director-theme-stage { position: relative; display: grid; grid-template-rows: auto 1fr auto; min-width: 0; padding: 20px 4px 0 8px; }
+.script-director-theme-stage-label { display: flex; align-items: baseline; gap: 8px; color: #a2a4a8; font-size: 10px; }
+.script-director-theme-stage-label small { color: #65696f; font-size: 9px; }
+.script-director-theme-orbit { position: relative; display: flex; align-items: center; justify-content: center; min-height: 234px; isolation: isolate; }
+.script-director-theme-circle { position: relative; display: grid; place-items: center; width: 158px; height: 158px; flex: none; border: 1px solid #aeb7c5; border-radius: 50%; color: #eceeef; box-shadow: 0 0 26px #afb4bf36, inset 0 0 22px #0008; overflow: hidden; isolation: isolate; animation: script-director-waterball-float 7s ease-in-out infinite; }
+.script-director-theme-circle::before { position: absolute; z-index: 0; inset: 0; background: radial-gradient(circle at 36% 26%, #ffffffb5, transparent 24%), linear-gradient(135deg, transparent 30%, #ffffff13 31%, transparent 48%), radial-gradient(circle at 70% 78%, #0008, transparent 46%); content: ''; }
+.script-director-theme-circle::after { position: absolute; z-index: 1; inset: 3px; border: 1px solid #f3f8fc66; border-radius: inherit; box-shadow: inset 0 0 0 1px #c7d8e425, 0 0 10px #d9e8f41a; content: ''; opacity: .68; pointer-events: none; transform-origin: center; animation: script-director-waterball-ring 5.2s ease-in-out infinite; }
+.script-director-theme-circle > span { position: relative; z-index: 2; max-width: 70%; text-align: center; font-size: 0; font-weight: 550; text-shadow: 0 2px 8px #000; opacity: 0; }
+.script-director-theme-circle.tone-neutral > span { font-size: 13px; opacity: .82; }
+.script-director-theme-fusion-wrap { position: relative; z-index: 4; width: 158px; height: 158px; flex: none; margin-left: -16px; overflow: visible; }
+.script-director-theme-circle.is-fusion { z-index: 4; width: 100%; height: 100%; margin-left: 0; border-color: #aeb7c5; color: #c9cbd0; overflow: hidden; animation-delay: -2.4s; }
+.script-director-theme-circle.is-fusion > span { font-size: 0; }
+.script-director-theme-fusion-wrap > button { position: absolute; top: -9px; right: -9px; z-index: 8; display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid #e7edf266; border-radius: 50%; background: #262a2fcc; box-shadow: 0 4px 12px #000a; color: #d7d9dc; cursor: pointer; opacity: 1; transition: background .18s ease, transform .18s ease; }
+.script-director-theme-fusion-wrap > button:hover { background: #454c54; transform: scale(1.06); }
+.script-director-theme-circle.tone-fantasy { background-image: none; }
+.script-director-theme-circle.tone-city { background-image: none; }
+.script-director-theme-circle.tone-heritage { background-image: none; }
+.script-director-theme-circle.tone-mystery { background-image: none; }
+.script-director-theme-circle.tone-future { background-image: none; }
+.script-director-theme-circle.tone-bright { background-image: none; }
+.script-director-theme-circle.tone-culture { background-image: none; }
+.script-director-theme-circle.tone-thriller { background-image: none; }
+.script-director-theme-circle.tone-crime { background-image: none; }
+.script-director-theme-circle.tone-family { background-image: none; }
+.script-director-theme-circle.tone-comedy { background-image: none; }
+.script-director-theme-circle.tone-sports { background-image: none; }
+.script-director-theme-circle.tone-hero { background-image: none; }
+.script-director-theme-circle.tone-city,
+.script-director-theme-circle.tone-heritage,
+.script-director-theme-circle.tone-fantasy,
+.script-director-theme-circle.tone-mystery,
+.script-director-theme-circle.tone-future,
+.script-director-theme-circle.tone-bright,
+.script-director-theme-circle.tone-culture,
+.script-director-theme-circle.tone-thriller,
+.script-director-theme-circle.tone-crime,
+.script-director-theme-circle.tone-family,
+.script-director-theme-circle.tone-comedy,
+.script-director-theme-circle.tone-sports,
+.script-director-theme-circle.tone-hero { background-size: cover; background-position: center; }
+.script-director-theme-circle.tone-fantasy,
+.script-director-theme-circle.tone-city,
+.script-director-theme-circle.tone-heritage,
+.script-director-theme-circle.tone-mystery,
+.script-director-theme-circle.tone-future,
+.script-director-theme-circle.tone-bright,
+.script-director-theme-circle.tone-culture,
+.script-director-theme-circle.tone-thriller,
+.script-director-theme-circle.tone-crime,
+.script-director-theme-circle.tone-family,
+.script-director-theme-circle.tone-comedy,
+.script-director-theme-circle.tone-sports,
+.script-director-theme-circle.tone-hero { background-size: cover; background-position: center; }
+.script-director-theme-orbit.has-fusion::before { position: absolute; z-index: 0; left: 50%; width: 74px; height: 48px; border-radius: 50%; background: radial-gradient(ellipse at center, #e3edf744 0, #b9cddd25 42%, transparent 74%); box-shadow: 0 0 28px #c6e0ff25; content: ''; filter: blur(11px); transform: translate(-50%, 1px); animation: script-director-waterball-bridge 6s ease-in-out infinite; }
+.script-director-theme-orbit.has-fusion::after { position: absolute; z-index: 2; left: 50%; width: 62px; height: 42px; border-radius: 48% 52% 50% 50% / 54% 46% 54% 46%; background: radial-gradient(ellipse at 9% 50%, #e7f1f63c 0, #dfeaf71a 25%, transparent 54%), radial-gradient(ellipse at 91% 50%, #e7f1f63c 0, #dfeaf71a 25%, transparent 54%), linear-gradient(90deg, transparent 14%, #e8f3fa2e 42%, #ffffff24 53%, transparent 86%); box-shadow: 0 0 18px #d8e8f31c; content: ''; filter: blur(2px); pointer-events: none; transform: translateX(-50%); animation: script-director-waterball-bridge 6s ease-in-out -1.6s infinite; }
+.script-director-theme-orbit.has-fusion .script-director-theme-circle.is-primary { z-index: 1; }
+.script-director-theme-fusion-bridge { position: absolute; z-index: 3; left: 50%; width: 58px; height: 40px; border: 1px solid #dbe9f344; border-radius: 48% 52% 50% 50% / 54% 46% 54% 46%; background: radial-gradient(ellipse at 15% 50%, #d9e8f333 0, transparent 48%), radial-gradient(ellipse at 85% 50%, #d9e8f333 0, transparent 48%), linear-gradient(90deg, transparent 9%, #eef7fc62 45%, #ffffff47 54%, transparent 91%); box-shadow: 0 0 16px #d7e6f32e, inset 0 0 10px #ffffff15; filter: blur(1.2px); pointer-events: none; transform: translateX(-50%); animation: script-director-waterball-bridge 6s ease-in-out -2.8s infinite; }
+.script-director-theme-fusion-bridge::before { position: absolute; top: 50%; left: 50%; width: 43px; height: 16px; border-radius: 50%; background: linear-gradient(90deg, #dcecf43b, #ffffff70 50%, #dcecf43b); box-shadow: 0 0 12px #e2f1fa45; content: ''; transform: translate(-50%, -50%); animation: script-director-waterball-neck 4.6s ease-in-out infinite; }
+.script-director-theme-fusion-bridge::after { position: absolute; top: 8px; left: 50%; width: 18px; height: 7px; border-radius: 50%; background: #ffffff52; content: ''; filter: blur(2px); transform: translateX(-50%); animation: script-director-waterball-shimmer 3.8s ease-in-out infinite; }
+.script-director-theme-fusion-trigger { position: relative; z-index: 1; display: grid; place-items: center; width: 128px; height: 128px; margin-left: -32px; border: 1px dashed #87909b; border-radius: 50%; background: radial-gradient(circle at 30% 25%, #aeb8c833, #394047 55%, #25292e 100%); color: #e2e8ed; cursor: pointer; animation: script-director-waterball-float 7s ease-in-out -1.2s infinite; }
+.script-director-theme-fusion-trigger:hover { border-color: #d7e6f2; background: radial-gradient(circle at 30% 25%, #c8d7e355, #45515a 55%, #293036 100%); box-shadow: 0 0 24px #bfdaef2d; }
+.script-director-theme-fusion-trigger span { font-size: 27px; line-height: 1; }
+.script-director-theme-fusion-trigger small { margin-top: -21px; color: #aeb1b6; font-size: 10px; }
+.script-director-theme-fusion-trigger span { font-weight: 300; }
+@keyframes script-director-waterball-float {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); border-radius: 49% 51% 52% 48% / 51% 48% 52% 49%; }
+  35% { transform: translate3d(2px, -4px, 0) scale(1.012); border-radius: 52% 48% 49% 51% / 47% 53% 48% 52%; }
+  68% { transform: translate3d(-2px, 2px, 0) scale(.994); border-radius: 48% 52% 51% 49% / 53% 47% 51% 49%; }
+}
+@keyframes script-director-theme-rail-item-in {
+  from { opacity: 0; transform: translateY(8px) scale(.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes script-director-waterball-bridge {
+  0%, 100% { transform: translateX(-50%) rotate(-2deg) scaleX(.96); opacity: .66; }
+  50% { transform: translateX(-50%) rotate(2deg) scaleX(1.06); opacity: .9; }
+}
+@keyframes script-director-waterball-ring {
+  0%, 100% { border-radius: 49% 51% 52% 48% / 51% 48% 52% 49%; transform: scale(1); opacity: .56; }
+  34% { border-radius: 53% 47% 48% 52% / 47% 54% 46% 53%; transform: scale(1.014, .992); opacity: .84; }
+  67% { border-radius: 47% 53% 54% 46% / 54% 46% 51% 49%; transform: scale(.994, 1.01); opacity: .64; }
+}
+@keyframes script-director-waterball-neck {
+  0%, 100% { transform: translate(-50%, -50%) scaleX(.84) scaleY(.88); opacity: .58; }
+  50% { transform: translate(-50%, -50%) scaleX(1.08) scaleY(1.08); opacity: .92; }
+}
+@keyframes script-director-waterball-shimmer {
+  0%, 100% { transform: translateX(-50%) translateY(0) scaleX(.82); opacity: .34; }
+  50% { transform: translateX(-50%) translateY(3px) scaleX(1.12); opacity: .78; }
+}
+.script-director-settings-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-top: 2px; }
+.script-director-auto-field { position: relative; min-width: 0; }
+.script-director-auto-card { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 76px; padding: 10px 9px; border: 1px dashed #46484c; border-radius: 14px; background: #242527; color: #d6d8db; font: inherit; text-align: left; cursor: pointer; }
+.script-director-auto-card:hover, .script-director-auto-field.is-open .script-director-auto-card { border-color: #777a80; background: #2b2c2f; }
+.script-director-auto-icon { display: grid; place-items: center; width: 28px; height: 28px; flex: none; border-radius: 8px; background: #36383b; color: #b2b5bb; }
+.script-director-auto-copy { display: grid; gap: 5px; min-width: 0; }
+.script-director-auto-copy small { color: #989ba1; font-size: 9px; white-space: nowrap; }
+.script-director-auto-copy strong { overflow: hidden; color: #e0e2e5; font-size: 11px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.script-director-auto-chevron { margin-left: auto; flex: none; color: #777b81; }
+.script-director-auto-popover { position: absolute; z-index: 20; right: 0; bottom: calc(100% + 8px); width: 240px; padding: 12px; border: 1px solid #44474c; border-radius: 14px; background: #292a2d; box-shadow: 0 16px 40px #000b, inset 0 1px #ffffff0b; }
+.script-director-auto-popover-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding-bottom: 9px; }
+.script-director-auto-popover-head strong { color: #f0f1f3; font-size: 11px; }
+.script-director-auto-popover-head span { color: #85888e; font-size: 9px; }
+.script-director-auto-options { display: flex; flex-wrap: wrap; gap: 5px; }
+.script-director-auto-options button { min-height: 26px; padding: 0 8px; border: 1px solid #45484d; border-radius: 999px; background: #222326; color: #aeb1b7; font: inherit; font-size: 10px; cursor: pointer; }
+.script-director-auto-options button:hover, .script-director-auto-options button.is-selected { border-color: #8b8e95; background: #3a3b3f; color: #f0f1f3; }
+.script-director-auto-popover input { width: 100%; min-height: 30px; margin-top: 9px; padding: 5px 7px; border: 1px solid #474a4f; border-radius: 7px; outline: 0; background: #202124; color: #e2e4e7; font: inherit; font-size: 10px; }
+.script-director-auto-popover input:focus { border-color: #8c9097; }
+.script-director-auto-field:nth-child(1) .script-director-auto-popover,
+.script-director-auto-field:nth-child(2) .script-director-auto-popover { left: 0; right: auto; }
+.script-director-auto-field:nth-child(n + 3) .script-director-auto-popover { right: 0; }
+.script-director-structure-picker { min-height: 76px; }
+.script-director-structure-card { min-height: 76px; padding: 10px 25px 10px 45px; border: 1px dashed #46484c; border-radius: 14px; background: #242527; }
+.script-director-structure-card:hover, .script-director-structure-picker.is-open .script-director-structure-card { border-color: #777a80; background: #2b2c2f; }
+.script-director-structure-card::before { position: absolute; top: 23px; left: 9px; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: #36383b; color: #b2b5bb; content: '▦'; font-size: 15px; }
+.script-director-structure-card .script-director-structure-label { grid-column: 1; grid-row: 1; white-space: nowrap; }
+.script-director-structure-card .script-director-structure-value { grid-column: 1; grid-row: 2; white-space: nowrap; }
+.script-director-structure-card .script-director-structure-meta { grid-column: 2; grid-row: 1 / span 2; align-self: center; white-space: nowrap; }
+.script-director-structure-popover { width: 286px; border-color: #484a4d; background: #27282a; }
+.script-director-structure-popover-head strong { color: #f0f1f2; }
+.script-director-structure-options button { border-color: #4a4c4f; background: #202223; color: #b6b9bd; }
+.script-director-structure-options button:hover { border-color: #8d9195; background: #2e3032; color: #f0f1f2; }
+.script-director-structure-options button.is-selected { border-color: #b9bdc1; background: #3a3b3d; color: #ffffff; }
+.script-director-settings-modal-foot { padding: 14px 26px 20px; }
+.script-director-presets-switch { display: inline-flex; align-items: center; gap: 9px; min-height: 28px; padding: 0; border: 0; background: transparent; color: #a7a9ae; font: inherit; font-size: 10px; cursor: pointer; }
+.script-director-presets-switch > span { position: relative; width: 35px; height: 20px; border-radius: 999px; background: #34363a; box-shadow: inset 0 0 0 1px #4a4c51; transition: background .15s ease; }
+.script-director-presets-switch > span::after { position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #d0d2d5; content: ''; transition: transform .15s ease; }
+.script-director-presets-switch.is-on > span { background: #e9eaec; box-shadow: none; }
+.script-director-presets-switch.is-on > span::after { transform: translateX(15px); background: #242527; }
+.script-director-presets-switch em { color: inherit; font-style: normal; }
+.script-director-settings-confirm { border-color: #eceeef; background: #eceeef; color: #242527; }
+.script-director-settings-confirm:hover { background: #fff; }
+@media (max-width: 900px) {
+  .script-director-settings-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .script-director-settings-theme-layout { grid-template-columns: 135px minmax(0, 1fr); }
+}
+@media (max-width: 620px) {
+  .script-director-settings-modal { grid-template-columns: 1fr; gap: 0; overflow: hidden; }
+  .script-director-settings-main { border-radius: 18px 18px 0 0; }
+  .script-director-settings-presets { display: none; }
+  .script-director-settings-grid { grid-template-columns: 1fr 1fr; }
+  .script-director-settings-theme-layout { grid-template-columns: 110px minmax(0, 1fr); gap: 6px; }
+  .script-director-theme-stage { padding-left: 2px; }
+  .script-director-theme-circle { width: 126px; height: 126px; }
+  .script-director-theme-fusion-wrap { width: 126px; height: 126px; margin-left: -10px; }
+  .script-director-theme-fusion-trigger { width: 92px; height: 92px; }
+  .script-director-theme-fusion-bridge { width: 48px; height: 34px; }
+}
+
+/* Neutral orb styling remains visible while user supplied covers are absent.
+   The fusion remove control sits outside the clipped orb so it stays clickable. */
+.script-director-theme-circle.is-fusion { z-index: 4; overflow: hidden; }
+.script-director-theme-fusion-wrap > button { z-index: 8; }
+
+/* Keep topic choices visually legible at the compact rail size. Each dot
+   receives its semantic user supplied cover through the inline style; the
+   neutral base remains when that file has not been added yet. */
+.script-director-theme-dot { background-size: cover; background-position: center; }
+.script-director-theme-dot.tone-fantasy { background-image: none; }
+.script-director-theme-dot.tone-city { background-image: none; }
+.script-director-theme-dot.tone-heritage { background-image: none; }
+.script-director-theme-dot.tone-mystery { background-image: none; }
+.script-director-theme-dot.tone-future { background-image: none; }
+.script-director-theme-dot.tone-culture { background-image: none; }
+.script-director-theme-dot.tone-thriller { background-image: none; }
+.script-director-theme-dot.tone-crime { background-image: none; }
+.script-director-theme-dot.tone-family { background-image: none; }
+.script-director-theme-dot.tone-comedy { background-image: none; }
+.script-director-theme-dot.tone-sports { background-image: none; }
+.script-director-theme-dot.tone-hero { background-image: none; }
+
+@media (max-width: 900px) {
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 135px minmax(0, 1fr) 135px;
+    gap: 8px;
+  }
+}
+
+/* Measured proportions for the two-pane selector. The rails stay narrow so
+   the central relationship artwork remains the focal point. */
+.script-director-settings-modal {
+  width: min(1140px, calc(100vw - 48px));
+  max-height: min(660px, calc(100vh - 48px));
+}
+
+.script-director-settings-theme {
+  flex: 0 0 auto !important;
+  min-height: 0 !important;
+}
+
+.script-director-settings-theme-layout,
+.script-director-settings-theme-layout.has-fusion-rail {
+  grid-template-columns: 136px minmax(0, 1fr) !important;
+  min-height: 306px;
+  gap: 14px;
+}
+
+.script-director-settings-theme-layout.has-fusion-rail {
+  grid-template-columns: 136px minmax(0, 1fr) 136px !important;
+}
+
+.script-director-theme-rail-column,
+.script-director-theme-rail.is-infinite {
+  min-height: 306px;
+}
+
+.script-director-theme-rail-viewport {
+  min-height: 246px;
+  max-height: 258px;
+}
+
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item {
+  width: 112px;
+  min-height: 48px;
+  padding-inline: 4px;
+}
+
+.script-director-theme-rail.is-primary .script-director-theme-rail-item {
+  justify-content: flex-start;
+}
+
+.script-director-theme-rail.is-fusion .script-director-theme-rail-item {
+  margin-left: auto;
+  justify-content: flex-end;
+}
+
+.script-director-theme-orbit {
+  min-height: 306px;
+}
+
+.script-director-theme-orb-wrap,
+.script-director-theme-fusion-wrap {
+  width: 204px;
+  height: 204px;
+}
+
+.script-director-theme-fusion-wrap {
+  margin-left: -52px;
+}
+
+.script-director-theme-fusion-trigger {
+  width: 120px;
+  height: 120px;
+  margin-left: -18px;
+}
+
+.script-director-theme-fusion-trigger span {
+  font-size: 34px;
+}
+
+.script-director-theme-fusion-trigger small {
+  font-size: 11px;
+}
+
+.script-director-theme-fusion-bridge {
+  width: 84px;
+  height: 56px;
+}
+
+.script-director-settings-grid {
+  gap: 9px;
+}
+
+.script-director-auto-card,
+.script-director-structure-card {
+  min-height: 76px;
+  border-radius: 14px;
+}
+
+.script-director-auto-card {
+  padding: 9px 10px;
+}
+
+.script-director-auto-icon,
+.script-director-structure-card::before {
+  width: 30px;
+  height: 30px;
+}
+
+@media (max-width: 900px) {
+  .script-director-settings-modal {
+    width: min(100%, calc(100vw - 30px));
+  }
+
+  .script-director-settings-theme-layout,
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 132px minmax(0, 1fr) !important;
+  }
+
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 132px minmax(0, 1fr) 132px !important;
+  }
+
+  .script-director-theme-orb-wrap,
+  .script-director-theme-fusion-wrap {
+    width: 190px;
+    height: 190px;
+  }
+}
+
+@media (max-width: 620px) {
+  .script-director-settings-modal {
+    width: 100%;
+  }
+
+  .script-director-settings-theme-layout,
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 112px minmax(0, 1fr) !important;
+    min-height: 250px;
+  }
+
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 112px minmax(0, 1fr) 112px !important;
+  }
+
+  .script-director-theme-rail-column,
+  .script-director-theme-rail.is-infinite {
+    min-height: 250px;
+  }
+
+  .script-director-theme-rail.is-infinite .script-director-theme-rail-item {
+    width: 100%;
+    font-size: 11px;
+  }
+
+  .script-director-theme-rail-viewport {
+    min-height: 204px;
+    max-height: 216px;
+  }
+
+  .script-director-theme-orb-wrap,
+  .script-director-theme-fusion-wrap {
+    width: 132px;
+    height: 132px;
+  }
+
+  .script-director-theme-fusion-wrap {
+    margin-left: -30px;
+  }
+}
+
+/* Compact the desktop settings surface. The previous fixed 660px surface
+   left the flex scroll area with a large unused tail below the parameter
+   cards. Keep the action footer at the bottom of a shorter surface and let
+   the ranked preset list scroll independently when its eight entries need
+   more room. */
+@media (min-width: 901px) {
+  .script-director-settings-modal {
+    height: min(560px, calc(100vh - 48px));
+    max-height: min(560px, calc(100vh - 48px));
+  }
+
+  .script-director-settings-presets {
+    overflow: hidden;
+  }
+
+  .script-director-settings-preset-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: #42484d transparent;
+  }
+
+  .script-director-settings-preset-list button {
+    min-height: 50px;
+    height: 50px;
+  }
+
+  .script-director-settings-theme {
+    padding-top: 2px;
+    padding-bottom: 5px;
+  }
+
+  .script-director-settings-theme-layout,
+  .script-director-settings-theme-layout.has-fusion-rail {
+    height: 278px;
+    min-height: 278px;
+    max-height: 278px;
+  }
+
+  .script-director-theme-rail-column,
+  .script-director-theme-rail.is-infinite {
+    min-height: 278px;
+    max-height: 278px;
+  }
+
+  .script-director-theme-rail-viewport {
+    min-height: 224px;
+    max-height: 238px;
+  }
+
+  .script-director-settings-grid {
+    gap: 8px;
+    padding-top: 10px;
+  }
+
+  .script-director-settings-modal-foot {
+    padding-top: 5px;
+    padding-bottom: 10px;
+  }
+}
+
+/* Reference-style settings pass: presets behave like a ranked list, while
+   the relationship area gets the visual weight of the page. */
+.script-director-settings-presets {
+  padding: 28px 16px 18px;
+}
+
+.script-director-settings-presets > header {
+  padding: 0 10px 18px;
+}
+
+.script-director-settings-presets > header strong {
+  color: #f2f3f4;
+  font-size: 17px;
+  letter-spacing: .01em;
+}
+
+.script-director-settings-presets > header small {
+  display: none;
+}
+
+.script-director-settings-preset-list {
+  gap: 9px;
+}
+
+.script-director-settings-preset-list button {
+  justify-content: flex-start;
+  min-height: 64px;
+  padding: 0 13px;
+  border-color: #3a3c40;
+  border-radius: 15px;
+  background-color: #242527;
+  background-image: none;
+  color: #d9dade;
+  font-size: 12px;
+}
+
+.script-director-settings-preset-list button:nth-child(n + 4) {
+  /* The selected preset injects its own cover URL inline. Keep this neutral
+     only as the missing-image fallback. */
+  background-image: none;
+  background-color: #242527;
+}
+
+.script-director-settings-preset-list button:hover,
+.script-director-settings-preset-list button.is-active {
+  border-color: #696c72;
+  background-color: #303236;
+}
+
+.script-director-preset-copy {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+}
+
+.script-director-preset-copy > b {
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  flex: none;
+  border: 1px solid #62656a;
+  border-radius: 50%;
+  background: #2f3135;
+  color: #f0f1f2;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.script-director-preset-copy > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.script-director-settings-preset-list button:nth-child(-n + 3) .script-director-preset-copy > b {
+  border-color: #d3d6d9aa;
+  background: #20222566;
+}
+
+.script-director-settings-preset-list button svg {
+  display: none;
+}
+
+.script-director-settings-modal-head {
+  padding: 28px 31px 11px;
+}
+
+.script-director-settings-modal-head span {
+  font-size: 20px;
+}
+
+.script-director-settings-modal-head small {
+  display: none;
+}
+
+.script-director-settings-scroll {
+  padding-inline: 31px;
+}
+
+.script-director-settings-theme-layout,
+.script-director-settings-theme-layout.has-fusion-rail {
+  grid-template-columns: 188px minmax(0, 1fr) !important;
+  min-height: 370px;
+  gap: 14px;
+}
+
+.script-director-settings-theme-layout.has-fusion-rail {
+  grid-template-columns: 188px minmax(0, 1fr) 188px !important;
+}
+
+.script-director-theme-rail-column,
+.script-director-theme-rail.is-infinite {
+  min-height: 370px;
+}
+
+.script-director-theme-rail-viewport {
+  min-height: 308px;
+  max-height: 320px;
+}
+
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item {
+  min-height: 50px;
+  padding-inline: 5px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item.is-primary,
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item.is-fusion {
+  background: transparent !important;
+  box-shadow: none !important;
+  color: #f1f2f3;
+  font-size: 14px;
+}
+
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item:hover {
+  background: #ffffff08;
+}
+
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item .script-director-theme-dot {
+  width: 29px;
+  height: 29px;
+}
+
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item small {
+  display: none;
+}
+
+.script-director-theme-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.script-director-theme-stage-label {
+  display: none;
+}
+
+.script-director-theme-orbit {
+  width: 100%;
+  min-height: 350px;
+  overflow: visible;
+}
+
+.script-director-theme-orb-wrap {
+  width: 224px;
+  height: 224px;
+}
+
+.script-director-theme-fusion-wrap {
+  width: 224px;
+  height: 224px;
+  margin-left: -64px;
+}
+
+.script-director-theme-fusion-bridge {
+  width: 92px;
+  height: 60px;
+}
+
+.script-director-theme-liquid-gel {
+  width: 70px;
+  height: 48px;
+}
+
+.script-director-settings-grid {
+  gap: 13px;
+}
+
+.script-director-auto-card,
+.script-director-structure-card {
+  min-height: 92px;
+  border-radius: 15px;
+}
+
+.script-director-auto-card {
+  padding: 12px 11px;
+}
+
+.script-director-auto-icon,
+.script-director-structure-card::before {
+  width: 34px;
+  height: 34px;
+}
+
+.script-director-auto-copy {
+  gap: 6px;
+}
+
+.script-director-auto-copy small,
+.script-director-structure-label {
+  font-size: 10px;
+}
+
+.script-director-auto-copy strong,
+.script-director-structure-value {
+  font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .script-director-settings-theme-layout,
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 164px minmax(0, 1fr) !important;
+    gap: 10px;
+  }
+
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 164px minmax(0, 1fr) 164px !important;
+    gap: 7px;
+  }
+
+  .script-director-theme-orb-wrap,
+  .script-director-theme-fusion-wrap {
+    width: 190px;
+    height: 190px;
+  }
+}
+
+@media (max-width: 620px) {
+  .script-director-settings-theme-layout,
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 120px minmax(0, 1fr) !important;
+    min-height: 260px;
+    gap: 6px;
+  }
+
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 120px minmax(0, 1fr) 120px !important;
+    gap: 4px;
+  }
+
+  .script-director-theme-rail-column,
+  .script-director-theme-rail.is-infinite {
+    min-height: 260px;
+  }
+
+  .script-director-theme-rail-viewport {
+    min-height: 214px;
+    max-height: 226px;
+  }
+
+  .script-director-theme-orb-wrap,
+  .script-director-theme-fusion-wrap {
+    width: 132px;
+    height: 132px;
+  }
+
+  .script-director-theme-fusion-wrap {
+    margin-left: -30px;
+  }
+
+  .script-director-auto-card,
+  .script-director-structure-card {
+    min-height: 82px;
+  }
+}
+
+@media (max-width: 620px) {
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 110px minmax(0, 1fr) 110px;
+    gap: 4px;
+  }
+}
+
+/* The topic rail keeps every available topic in one scrollable lane.  The
+   visible window stays compact while the list can be browsed continuously,
+   including topics that are not part of the initial selection. */
+.script-director-theme-rail:not(.is-infinite) {
+  align-content: start;
+  max-height: 302px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
+  scrollbar-color: #4f575c transparent;
+}
+.script-director-theme-rail::-webkit-scrollbar { width: 4px; }
+.script-director-theme-rail::-webkit-scrollbar-track { background: transparent; }
+.script-director-theme-rail::-webkit-scrollbar-thumb { border-radius: 999px; background: #4f575c; }
+
+/* Use the available modal height for the controls instead of stretching the
+   topic section and leaving an empty band above the parameter cards. */
+.script-director-settings-theme {
+  flex: 0 0 auto;
+  min-height: 0;
+  padding: 9px 16px 12px;
+}
+.script-director-settings-theme-layout {
+  grid-template-columns: 188px minmax(0, 1fr);
+  gap: 18px;
+  min-height: 286px;
+}
+.script-director-settings-theme-layout.has-fusion-rail {
+  grid-template-columns: 188px minmax(360px, 1fr) 188px;
+}
+.script-director-theme-stage { padding: 8px 8px 0 10px; }
+.script-director-theme-orbit { min-height: 258px; }
+.script-director-theme-circle { width: 182px; height: 182px; }
+.script-director-theme-fusion-wrap { width: 182px; height: 182px; margin-left: -20px; }
+.script-director-theme-fusion-trigger { width: 148px; height: 148px; margin-left: -34px; }
+.script-director-theme-fusion-bridge { width: 66px; height: 45px; }
+.script-director-theme-orbit.has-fusion::before { width: 82px; height: 54px; }
+.script-director-theme-orbit.has-fusion::after { width: 72px; height: 48px; }
+.script-director-settings-grid { gap: 12px; margin-top: 12px; }
+.script-director-auto-card,
+.script-director-structure-card { min-height: 84px; }
+.script-director-auto-icon { width: 32px; height: 32px; }
+
+@media (max-width: 900px) {
+  .script-director-settings-theme-layout { grid-template-columns: 136px minmax(0, 1fr); gap: 10px; }
+  .script-director-settings-theme-layout.has-fusion-rail { grid-template-columns: 132px minmax(250px, 1fr) 132px; gap: 7px; }
+}
+
+@media (max-width: 620px) {
+  .script-director-theme-rail { max-height: 210px; }
+  .script-director-settings-theme-layout { grid-template-columns: 110px minmax(0, 1fr); gap: 6px; }
+  .script-director-settings-theme-layout.has-fusion-rail { grid-template-columns: 102px minmax(220px, 1fr) 102px; gap: 4px; }
+  .script-director-theme-stage { padding-left: 2px; }
+  .script-director-theme-orbit { min-height: 196px; }
+  .script-director-theme-circle { width: 126px; height: 126px; }
+  .script-director-theme-fusion-wrap { width: 126px; height: 126px; margin-left: -10px; }
+  .script-director-theme-fusion-trigger { width: 92px; height: 92px; }
+  .script-director-theme-fusion-bridge { width: 48px; height: 34px; }
+}
+
+/* Liquid topic orbs: the outer silhouette is a separate animated layer so
+   the edge can breathe outside the clipped artwork. The inner image remains
+   clipped while the rim and highlight deform independently. */
+.script-director-theme-orb-wrap {
+  position: relative;
+  z-index: 1;
+  width: 210px;
+  height: 210px;
+  flex: none;
+  isolation: isolate;
+}
+.script-director-theme-ripple {
+  position: absolute;
+  z-index: 0;
+  inset: -12px;
+  width: calc(100% + 24px);
+  height: calc(100% + 24px);
+  overflow: visible;
+  pointer-events: none;
+}
+.script-director-theme-ripple path {
+  fill: none;
+  stroke: #edf9ff9a;
+  stroke-width: 1.85;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 4px #d7f0ff8e) drop-shadow(0 0 12px #b9e2ff4a);
+  animation: script-director-ripple-glow 4.8s ease-in-out infinite;
+}
+.script-director-theme-ripple.is-fusion { inset: -13px; width: calc(100% + 26px); height: calc(100% + 26px); }
+.script-director-theme-ripple.is-fusion path { stroke: #effaff88; animation-delay: -2.1s; }
+.script-director-theme-orb-wrap::before,
+.script-director-theme-fusion-wrap::before {
+  border: 0 !important;
+  background: transparent;
+  box-shadow: 0 0 26px #d4efff35, 0 0 48px #abdfff18;
+}
+.script-director-theme-orb-wrap::after,
+.script-director-theme-fusion-wrap::after { border: 0 !important; box-shadow: none !important; opacity: 0 !important; }
+.script-director-theme-orb-wrap::before,
+.script-director-theme-fusion-wrap::before {
+  position: absolute;
+  z-index: -1;
+  inset: -8px;
+  border: 1px solid #d9eaf777;
+  border-radius: 46% 54% 51% 49% / 56% 44% 55% 45%;
+  background: radial-gradient(ellipse at 22% 28%, #eaf7ff22, transparent 38%), radial-gradient(ellipse at 78% 75%, #b7e5ff1a, transparent 42%);
+  box-shadow: 0 0 0 2px #cce7f21b, 0 0 16px #c4e5f33a, 0 0 34px #b0dcf51c;
+  content: '';
+  pointer-events: none;
+  filter: blur(.25px);
+  animation: script-director-waterball-outer 6.6s ease-in-out infinite;
+}
+.script-director-theme-orb-wrap::after,
+.script-director-theme-fusion-wrap::after {
+  position: absolute;
+  z-index: -1;
+  inset: -3px;
+  border: 1px solid #f0f8ff55;
+  border-radius: 54% 46% 48% 52% / 45% 55% 47% 53%;
+  box-shadow: 0 0 0 3px #e0f2fa12, 0 0 12px #e1f5ff35;
+  content: '';
+  pointer-events: none;
+  animation: script-director-waterball-rim 4.4s ease-in-out -1.2s infinite;
+}
+.script-director-theme-orb-wrap .script-director-theme-circle {
+  width: 100%;
+  height: 100%;
+  border-color: #dcecf77c;
+  box-shadow: inset 0 0 24px #000a, inset 0 0 0 1px #ffffff14, 0 0 20px #c8e7f329;
+}
+.script-director-theme-orb-wrap .script-director-theme-circle::before {
+  background:
+    radial-gradient(ellipse at 31% 24%, #ffffffc2 0, #ffffff50 7%, transparent 27%),
+    radial-gradient(ellipse at 79% 76%, #a6def52e 0, transparent 33%),
+    linear-gradient(137deg, transparent 26%, #ffffff1b 34%, transparent 47%),
+    radial-gradient(ellipse at 50% 112%, #000b 0, transparent 58%);
+  transform-origin: 36% 28%;
+  animation: script-director-waterball-surface 7.2s ease-in-out infinite;
+}
+.script-director-theme-orb-wrap .script-director-theme-circle::after {
+  inset: 4px;
+  border-color: #f6fbff78;
+  box-shadow: inset 0 0 0 1px #bfe3f433, inset 0 0 13px #e8f7ff1c;
+  animation: script-director-waterball-inner-rim 5.3s ease-in-out infinite;
+}
+.script-director-theme-fusion-wrap {
+  width: 194px;
+  height: 194px;
+  margin-left: -28px;
+  overflow: visible;
+}
+.script-director-theme-fusion-wrap::before { animation-delay: -2.9s; }
+.script-director-theme-fusion-wrap::after { animation-delay: -3.6s; }
+.script-director-theme-fusion-wrap .script-director-theme-circle.is-fusion {
+  width: 100%;
+  height: 100%;
+  border-color: #e2eef477;
+  box-shadow: inset 0 0 24px #000a, inset 0 0 0 1px #ffffff16, 0 0 20px #c8e7f329;
+}
+.script-director-theme-fusion-wrap .script-director-theme-circle.is-fusion::before {
+  animation-delay: -2.4s;
+}
+.script-director-theme-fusion-wrap .script-director-theme-circle.is-fusion::after {
+  animation-delay: -1.8s;
+}
+.script-director-theme-orbit.has-fusion::before,
+.script-director-theme-orbit.has-fusion::after { display: none; }
+.script-director-theme-fusion-bridge {
+  top: 50%;
+  width: 78px;
+  height: 52px;
+  border-color: #e4f4fc88;
+  border-radius: 51% 49% 57% 43% / 45% 55% 46% 54%;
+  background:
+    radial-gradient(ellipse at 8% 50%, #dff5ff6e 0, #dff5ff1d 24%, transparent 57%),
+    radial-gradient(ellipse at 92% 50%, #dff5ff6e 0, #dff5ff1d 24%, transparent 57%),
+    radial-gradient(ellipse at 50% 50%, #ffffff58 0, #d8effa2e 43%, transparent 78%);
+  box-shadow: 0 0 0 2px #d9f2fb1b, 0 0 18px #d6f1ff55, inset 0 0 14px #ffffff32;
+  filter: blur(.8px);
+  transform: translate(-50%, -50%);
+  animation: script-director-waterball-bridge 5.2s ease-in-out -2.8s infinite;
+}
+.script-director-theme-fusion-bridge::before {
+  width: 48px;
+  height: 20px;
+  background: radial-gradient(ellipse, #ffffffb8 0, #e5f7ff72 38%, transparent 76%);
+  box-shadow: 0 0 13px #e7f8ff88;
+  animation: script-director-waterball-neck 3.8s ease-in-out infinite;
+}
+.script-director-theme-fusion-bridge::after {
+  top: 13px;
+  width: 28px;
+  height: 9px;
+  background: #ffffffa0;
+  box-shadow: 0 0 11px #fff;
+  animation: script-director-waterball-shimmer 3.1s ease-in-out infinite;
+}
+@keyframes script-director-waterball-outer {
+  0%, 100% {
+    border-radius: 46% 54% 51% 49% / 56% 44% 55% 45%;
+    transform: rotate(-1deg) scale(1, 1);
+    opacity: .72;
+  }
+  24% {
+    border-radius: 39% 61% 47% 53% / 48% 52% 61% 39%;
+    transform: rotate(1.8deg) scale(1.025, .986);
+    opacity: .96;
+  }
+  52% {
+    border-radius: 57% 43% 61% 39% / 42% 58% 44% 56%;
+    transform: rotate(-1.4deg) scale(.985, 1.025);
+    opacity: .8;
+  }
+  78% {
+    border-radius: 63% 37% 42% 58% / 56% 44% 60% 40%;
+    transform: rotate(1deg) scale(1.012, .992);
+    opacity: .9;
+  }
+}
+@keyframes script-director-waterball-rim {
+  0%, 100% {
+    border-radius: 54% 46% 48% 52% / 45% 55% 47% 53%;
+    transform: scale(1) rotate(0deg);
+    opacity: .48;
+  }
+  50% {
+    border-radius: 42% 58% 57% 43% / 59% 41% 53% 47%;
+    transform: scale(1.025, .978) rotate(-2deg);
+    opacity: .95;
+  }
+}
+@keyframes script-director-waterball-surface {
+  0%, 100% { transform: scale(1) rotate(0deg); opacity: .9; }
+  50% { transform: scale(1.05, .96) rotate(3deg); opacity: 1; }
+}
+@keyframes script-director-waterball-inner-rim {
+  0%, 100% { border-radius: 49% 51% 52% 48% / 51% 48% 52% 49%; transform: scale(1); opacity: .55; }
+  35% { border-radius: 42% 58% 47% 53% / 58% 42% 55% 45%; transform: scale(1.018, .986); opacity: .94; }
+  68% { border-radius: 59% 41% 56% 44% / 43% 57% 47% 53%; transform: scale(.988, 1.018); opacity: .68; }
+}
+@keyframes script-director-waterball-bridge {
+  0%, 100% { border-radius: 51% 49% 57% 43% / 45% 55% 46% 54%; transform: translate(-50%, -50%) rotate(-3deg) scale(.86, .9); opacity: .58; }
+  34% { border-radius: 40% 60% 48% 52% / 60% 40% 56% 44%; transform: translate(-50%, -50%) rotate(1deg) scale(1.08, 1.02); opacity: .94; }
+  67% { border-radius: 62% 38% 44% 56% / 42% 58% 61% 39%; transform: translate(-50%, -50%) rotate(4deg) scale(.95, 1.08); opacity: .76; }
+}
+@media (max-width: 620px) {
+  .script-director-theme-orb-wrap { width: 138px; height: 138px; }
+  .script-director-theme-fusion-wrap { width: 128px; height: 128px; margin-left: -14px; }
+  .script-director-theme-fusion-bridge { width: 54px; height: 38px; }
+}
+
+/* Liquid topic pair ------------------------------------------------------
+   The artwork stays crisp inside each lobe while the silhouette and the
+   connecting neck move independently. This keeps the two choices legible,
+   but gives their relationship the soft, hand-shaped water look. */
+.script-director-theme-orb-wrap {
+  width: 214px;
+  height: 214px;
+  z-index: 1;
+}
+.script-director-theme-orb-wrap::before {
+  inset: -7px;
+  border: 1px solid #eaf7ff9a;
+  border-radius: 45% 55% 40% 60% / 56% 44% 62% 38%;
+  background: radial-gradient(ellipse at 27% 23%, #f5fbff22, transparent 34%), radial-gradient(ellipse at 72% 76%, #b7e6ff16, transparent 42%);
+  box-shadow: 0 0 18px #d9f0ff5c, 0 0 38px #9ed9ff24;
+  filter: blur(.2px);
+  animation: script-director-waterball-wave 7.4s ease-in-out infinite;
+}
+.script-director-theme-orb-wrap::after {
+  inset: -2px;
+  border: 0;
+  border-radius: 58% 42% 48% 52% / 43% 57% 61% 39%;
+  box-shadow: none;
+  opacity: 0;
+  animation: script-director-waterball-wave-inner 5.2s ease-in-out -1.1s infinite;
+}
+.script-director-theme-orb-wrap .script-director-theme-circle {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 43% 57% 48% 52% / 54% 46% 57% 43%;
+  box-shadow: inset 0 0 28px #000b, inset 0 0 0 1px #ffffff17, 0 0 20px #c8eaff36;
+  animation: script-director-waterball-lobe 8.2s ease-in-out infinite;
+}
+.script-director-theme-orb-wrap .script-director-theme-circle::after {
+  inset: 4px;
+  border: 0;
+  box-shadow: none;
+  opacity: 0;
+  animation: script-director-waterball-lobe-rim 5.8s ease-in-out infinite;
+}
+.script-director-theme-fusion-wrap {
+  width: 196px;
+  height: 196px;
+  margin-left: -22px;
+  z-index: 4;
+}
+.script-director-theme-fusion-wrap::before {
+  inset: -7px;
+  border: 1px solid #eaf7ff8c;
+  border-radius: 58% 42% 51% 49% / 43% 57% 62% 38%;
+  background: radial-gradient(ellipse at 24% 24%, #ffffff20, transparent 35%), radial-gradient(ellipse at 75% 76%, #b4e2ff16, transparent 43%);
+  box-shadow: 0 0 18px #d4edff55, 0 0 36px #9ed9ff21;
+  animation: script-director-waterball-wave 7.8s ease-in-out -3s infinite;
+}
+.script-director-theme-fusion-wrap::after {
+  inset: -2px;
+  border: 0;
+  border-radius: 43% 57% 58% 42% / 60% 40% 45% 55%;
+  box-shadow: none;
+  opacity: 0;
+  animation: script-director-waterball-wave-inner 5.8s ease-in-out -2.3s infinite;
+}
+.script-director-theme-fusion-wrap .script-director-theme-circle.is-fusion {
+  border: 0;
+  border-radius: 58% 42% 47% 53% / 47% 53% 58% 42%;
+  box-shadow: inset 0 0 28px #000b, inset 0 0 0 1px #ffffff1a, 0 0 20px #c8eaff36;
+  animation: script-director-waterball-lobe-fusion 8.7s ease-in-out -2.8s infinite;
+}
+.script-director-theme-fusion-wrap .script-director-theme-circle.is-fusion::after {
+  border: 0;
+  box-shadow: none;
+  opacity: 0;
+  animation: script-director-waterball-lobe-rim 5.8s ease-in-out -2.2s infinite;
+}
+.script-director-theme-liquid-gel {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  left: 50%;
+  width: 58px;
+  height: 42px;
+  border: 1px solid #e6f6ff58;
+  border-radius: 43% 57% 55% 45% / 46% 54% 44% 56%;
+  background: radial-gradient(ellipse at 15% 50%, #cfefff2f 0, #cfefff10 29%, transparent 63%), radial-gradient(ellipse at 85% 50%, #cfefff2f 0, #cfefff10 29%, transparent 63%), radial-gradient(ellipse at 50% 50%, #ffffff46 0, #d6f1ff1d 38%, transparent 76%);
+  box-shadow: 0 0 0 1px #d7f1ff12, 0 0 17px #cbeeff2d, inset 0 0 11px #ffffff19;
+  filter: blur(4px) contrast(1.12);
+  opacity: .58;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  animation: script-director-waterball-gel 5.8s ease-in-out infinite;
+}
+.script-director-theme-liquid-gel::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 31px;
+  height: 10px;
+  border-radius: 50%;
+  background: #f5fcff5c;
+  box-shadow: 0 0 12px #effaff73;
+  content: '';
+  filter: blur(4px);
+  transform: translate(-50%, -50%);
+  animation: script-director-waterball-neck-highlight 3.6s ease-in-out infinite;
+}
+.script-director-theme-fusion-bridge {
+  z-index: 5;
+  width: 54px;
+  height: 34px;
+  border: 1px solid #e9f7ff42;
+  border-radius: 42% 58% 57% 43% / 48% 52% 44% 56%;
+  background: radial-gradient(ellipse at 10% 50%, #dff5ff31 0, #dff5ff0e 27%, transparent 61%), radial-gradient(ellipse at 90% 50%, #dff5ff31 0, #dff5ff0e 27%, transparent 61%), linear-gradient(90deg, transparent 9%, #eefaff38 43%, #ffffff25 54%, transparent 91%);
+  box-shadow: 0 0 0 1px #dcf4ff0e, 0 0 12px #d6f1ff27, inset 0 0 8px #ffffff12;
+  filter: blur(1px);
+  animation: script-director-waterball-bridge-vivid 5.4s ease-in-out -2.2s infinite;
+}
+.script-director-theme-fusion-bridge::before {
+  width: 35px;
+  height: 10px;
+  background: radial-gradient(ellipse, #ffffff6e 0, #e5f7ff3c 39%, transparent 77%);
+  box-shadow: 0 0 9px #e7f8ff54;
+  animation: script-director-waterball-neck-highlight 3.8s ease-in-out infinite;
+}
+.script-director-theme-fusion-bridge::after {
+  top: 12px;
+  width: 17px;
+  height: 5px;
+  background: #ffffff64;
+  box-shadow: 0 0 7px #ffffff70;
+  animation: script-director-waterball-shimmer 3.1s ease-in-out infinite;
+}
+@keyframes script-director-waterball-lobe {
+  0%, 100% { border-radius: 43% 57% 48% 52% / 54% 46% 57% 43%; transform: translate3d(0, 0, 0) rotate(-1deg) scale(1); }
+  24% { border-radius: 36% 64% 57% 43% / 62% 38% 44% 56%; transform: translate3d(2px, -3px, 0) rotate(1deg) scale(1.012, .99); }
+  52% { border-radius: 57% 43% 39% 61% / 43% 57% 63% 37%; transform: translate3d(-1px, 2px, 0) rotate(-1.5deg) scale(.988, 1.012); }
+  78% { border-radius: 34% 66% 62% 38% / 56% 44% 39% 61%; transform: translate3d(1px, 1px, 0) rotate(.8deg) scale(1.008, .996); }
+}
+@keyframes script-director-waterball-lobe-fusion {
+  0%, 100% { border-radius: 58% 42% 47% 53% / 47% 53% 58% 42%; transform: translate3d(0, 0, 0) rotate(1deg) scale(1); }
+  25% { border-radius: 64% 36% 41% 59% / 41% 59% 62% 38%; transform: translate3d(-2px, -2px, 0) rotate(-1.2deg) scale(1.01, .99); }
+  54% { border-radius: 40% 60% 62% 38% / 57% 43% 41% 59%; transform: translate3d(1px, 3px, 0) rotate(1.4deg) scale(.99, 1.015); }
+  80% { border-radius: 60% 40% 35% 65% / 48% 52% 65% 35%; transform: translate3d(-1px, 1px, 0) rotate(-.6deg) scale(1.006, .996); }
+}
+@keyframes script-director-waterball-lobe-rim {
+  0%, 100% { transform: scale(1); opacity: .18; }
+  50% { transform: scale(1.02, .98); opacity: .32; }
+}
+@keyframes script-director-waterball-wave {
+  0%, 100% { border-radius: 40% 60% 48% 52% / 57% 43% 63% 37%; transform: rotate(-1deg) scale(1); opacity: .68; }
+  28% { border-radius: 31% 69% 59% 41% / 65% 35% 42% 58%; transform: rotate(1.7deg) scale(1.024, .984); opacity: .94; }
+  56% { border-radius: 62% 38% 35% 65% / 40% 60% 69% 31%; transform: rotate(-1.2deg) scale(.988, 1.024); opacity: .75; }
+  82% { border-radius: 34% 66% 66% 34% / 59% 41% 35% 65%; transform: rotate(.8deg) scale(1.016, .994); opacity: .88; }
+}
+@keyframes script-director-waterball-wave-inner {
+  0%, 100% { border-radius: 58% 42% 48% 52% / 43% 57% 61% 39%; transform: scale(1) rotate(0deg); opacity: 0; }
+  50% { border-radius: 28% 72% 68% 32% / 68% 32% 35% 65%; transform: scale(1.028, .974) rotate(-2.2deg); opacity: 0; }
+}
+@keyframes script-director-waterball-gel {
+  0%, 100% { border-radius: 43% 57% 55% 45% / 46% 54% 44% 56%; transform: translate(-50%, -50%) rotate(-2deg) scale(.82, .88); opacity: .42; }
+  34% { border-radius: 61% 39% 41% 59% / 62% 38% 56% 44%; transform: translate(-50%, -50%) rotate(1deg) scale(1.05, 1.04); opacity: .88; }
+  68% { border-radius: 34% 66% 65% 35% / 38% 62% 44% 56%; transform: translate(-50%, -50%) rotate(3deg) scale(.94, 1.08); opacity: .64; }
+}
+@keyframes script-director-waterball-bridge-vivid {
+  0%, 100% { border-radius: 42% 58% 57% 43% / 48% 52% 44% 56%; transform: translate(-50%, -50%) rotate(-3deg) scale(.8, .86); opacity: .52; }
+  35% { border-radius: 62% 38% 42% 58% / 63% 37% 57% 43%; transform: translate(-50%, -50%) rotate(1deg) scale(1.12, 1.06); opacity: .95; }
+  70% { border-radius: 34% 66% 67% 33% / 39% 61% 44% 56%; transform: translate(-50%, -50%) rotate(4deg) scale(.94, 1.1); opacity: .72; }
+}
+@keyframes script-director-waterball-neck-highlight {
+  0%, 100% { transform: translate(-50%, -50%) scaleX(.76) scaleY(.82); opacity: .38; }
+  50% { transform: translate(-50%, -50%) scaleX(1.12) scaleY(1.08); opacity: .88; }
+}
+@keyframes script-director-ripple-glow {
+  0%, 100% { opacity: .48; stroke-width: 1.4; }
+  50% { opacity: .96; stroke-width: 2.1; }
+}
+@media (max-width: 620px) {
+  .script-director-theme-orb-wrap { width: 138px; height: 138px; }
+  .script-director-theme-fusion-wrap { width: 128px; height: 128px; margin-left: -28px; }
+  .script-director-theme-liquid-gel { width: 72px; height: 54px; }
+  .script-director-theme-fusion-bridge { width: 60px; height: 42px; }
+}
+
+/* The SVG ripple is the single visible perimeter. Keep the older glow layers
+   from drawing extra circular rings around it. */
+.script-director-theme-orb-wrap::before,
+.script-director-theme-fusion-wrap::before {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: 0 0 26px #d4efff35, 0 0 48px #abdfff18 !important;
+}
+.script-director-theme-orb-wrap::after,
+.script-director-theme-fusion-wrap::after {
+  border: 0 !important;
+  box-shadow: none !important;
+  opacity: 0 !important;
+}
+.script-director-theme-ripple { z-index: 1; }
+.script-director-theme-orb-wrap .script-director-theme-circle,
+.script-director-theme-fusion-wrap .script-director-theme-circle { z-index: 2; }
+.script-director-theme-ripple path { stroke-width: 2.2; }
+.script-director-theme-ripple path.is-halo {
+  stroke-width: 6;
+  stroke: #bfe8ff4c;
+  opacity: .26;
+  filter: blur(4px) drop-shadow(0 0 10px #b9e2ff5c);
+}
+
+/* Final settings layout pass: the separator belongs above the parameter
+   cards, while the modal footer stays visually quiet. */
+.script-director-settings-grid {
+  margin-top: 0;
+  padding-top: 14px;
+  border-top: 1px solid #303438;
+}
+.script-director-settings-modal-foot {
+  padding-top: 8px;
+  border-top: 0;
+}
+.script-director-settings-theme-layout.has-fusion-rail {
+  grid-template-columns: 176px minmax(540px, 720px) 176px;
+  justify-content: center;
+  gap: 12px;
+}
+.script-director-settings-theme-layout:not(.has-fusion-rail) {
+  grid-template-columns: 188px minmax(520px, 760px);
+  justify-content: center;
+  gap: 18px;
+}
+
+/* The fusion action is a quiet, centered control rather than a large text
+   block. Its mark and label now read as one deliberate action. */
+.script-director-theme-fusion-trigger {
+  display: grid;
+  grid-template-rows: auto auto;
+  align-content: center;
+  justify-items: center;
+  row-gap: 10px;
+  width: 148px;
+  height: 148px;
+  margin-left: -26px;
+  border: 1px solid #72818a;
+  background: radial-gradient(circle at 35% 25%, #b8cbd31c, #3a444b 56%, #252b30 100%);
+  box-shadow: inset 0 1px #ffffff10, 0 0 20px #b8d5e018;
+  animation: script-director-waterball-float 7s ease-in-out -1.2s infinite;
+}
+.script-director-theme-fusion-trigger span {
+  font-size: 42px;
+  line-height: .8;
+  font-weight: 300;
+}
+.script-director-theme-fusion-trigger small {
+  margin-top: 0;
+  color: #c0c9ce;
+  font-size: 13px;
+  line-height: 1;
+}
+
+/* Keep the changing silhouette, but remove the bright white coil. The
+   artwork itself remains the full cover layer inside the moving lobe. */
+.script-director-theme-ripple path {
+  stroke: #94acb5a8;
+  stroke-width: 1.25;
+  filter: drop-shadow(0 0 5px #8fb6c044);
+}
+.script-director-theme-ripple path.is-halo {
+  stroke: #a9c9d033;
+  stroke-width: 5;
+  opacity: .13;
+  filter: blur(5px);
+}
+.script-director-theme-circle,
+.script-director-theme-circle.is-fusion {
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-color: #20282c;
+}
+.script-director-theme-orb-wrap .script-director-theme-circle,
+.script-director-theme-fusion-wrap .script-director-theme-circle.is-fusion {
+  box-shadow: inset 0 0 16px #0008, 0 0 16px #b8d7e21e;
+}
+
+@media (max-width: 900px) {
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 132px minmax(250px, 1fr) 132px;
+    justify-content: stretch;
+    gap: 7px;
+  }
+  .script-director-settings-theme-layout:not(.has-fusion-rail) {
+    grid-template-columns: 136px minmax(250px, 1fr);
+    justify-content: stretch;
+    gap: 10px;
+  }
+}
+@media (max-width: 620px) {
+  .script-director-settings-theme-layout:not(.has-fusion-rail) {
+    grid-template-columns: 110px minmax(0, 1fr);
+    justify-content: stretch;
+    gap: 6px;
+  }
+  .script-director-theme-fusion-trigger {
+    width: 92px;
+    height: 92px;
+    margin-left: -18px;
+    row-gap: 6px;
+  }
+  .script-director-theme-fusion-trigger span { font-size: 32px; }
+  .script-director-theme-fusion-trigger small { font-size: 10px; }
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 102px minmax(220px, 1fr) 102px;
+    gap: 4px;
+  }
+}
+
+/* Final topic settings pass ------------------------------------------------
+   The divider belongs between the relationship area and the parameter cards.
+   Keep the action footer quiet so it does not read like a second content row. */
+.script-director-settings-divider {
+  width: 100%;
+  height: 1px;
+  flex: none;
+  margin: 0 0 0;
+  background: #34383b;
+}
+.script-director-settings-grid {
+  margin-top: 0 !important;
+  padding-top: 14px;
+  border-top: 0 !important;
+}
+.script-director-settings-modal-foot {
+  border-top: 0 !important;
+  padding-top: 6px;
+  padding-bottom: 12px;
+}
+
+/* Let the relationship stage use the full width of the modal. Fixed maximum
+   tracks were leaving a large empty block to the right when fusion was off,
+   and could overflow once the second rail opened. */
+.script-director-settings-theme-layout {
+  width: 100%;
+  grid-template-columns: 220px minmax(0, 1fr) !important;
+  gap: 14px;
+  min-height: 316px;
+  align-items: stretch;
+}
+.script-director-settings-theme-layout.has-fusion-rail {
+  grid-template-columns: 220px minmax(0, 1fr) 220px !important;
+  gap: 14px;
+}
+.script-director-theme-stage {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 0 0;
+}
+.script-director-theme-stage-label {
+  padding: 0 8px;
+}
+.script-director-theme-orbit {
+  width: 100%;
+  min-width: 0;
+  min-height: 288px;
+  justify-content: center;
+}
+
+/* A wider, taller five-item window makes the focused topic easy to hit and
+   keeps the labels on one line. */
+.script-director-theme-rail.is-infinite {
+  position: relative;
+  z-index: 10;
+  min-height: 316px;
+  padding: 5px 8px;
+  pointer-events: auto;
+}
+.script-director-theme-rail-viewport {
+  min-height: 258px;
+  max-height: 270px;
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item {
+  min-height: 46px;
+  padding: 0 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item .script-director-theme-dot {
+  width: 26px;
+  height: 26px;
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item.is-primary,
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item.is-fusion {
+  box-shadow: inset 0 0 0 1px #ffffff0d, 0 5px 18px #0003;
+}
+.script-director-theme-rail.is-fusion .script-director-theme-rail-item {
+  text-align: right;
+  justify-content: flex-end;
+}
+.script-director-theme-rail.is-fusion .script-director-theme-rail-item .script-director-theme-dot {
+  order: 2;
+}
+.script-director-theme-rail.is-fusion .script-director-theme-rail-item small {
+  order: 3;
+  margin-left: 6px;
+}
+.script-director-settings-scroll {
+  padding-bottom: 0;
+}
+
+/* The image is the body of the lobe. Its animated border-radius clips the
+   complete cover layer, so deformation never exposes an empty corner. */
+.script-director-theme-circle,
+.script-director-theme-circle.is-fusion {
+  background-size: cover !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  background-clip: padding-box;
+  will-change: border-radius, transform;
+}
+.script-director-theme-orb-wrap .script-director-theme-circle,
+.script-director-theme-fusion-wrap .script-director-theme-circle.is-fusion {
+  border: 0;
+  box-shadow: inset 0 0 18px #0009, 0 0 8px #b8d7e214;
+}
+.script-director-theme-circle::after {
+  border: 0 !important;
+  box-shadow: none !important;
+  opacity: 0 !important;
+}
+
+/* A muted breathing contour replaces the bright white circular coil. */
+.script-director-theme-ripple path {
+  stroke: #b8d2d955 !important;
+  stroke-width: 1.05 !important;
+  filter: drop-shadow(0 0 4px #9fbcc933) !important;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation:
+    script-director-ripple-breathe 7s ease-in-out infinite,
+    script-director-ripple-glow 7.2s ease-in-out infinite !important;
+  will-change: transform, opacity;
+}
+.script-director-theme-ripple path.is-halo {
+  stroke: #a9c7d31b !important;
+  stroke-width: 4 !important;
+  opacity: .08 !important;
+  filter: blur(5px) !important;
+  animation:
+    script-director-ripple-halo 7s ease-in-out infinite,
+    script-director-ripple-glow 7.2s ease-in-out infinite !important;
+}
+
+/* Animate the already-rasterizable contour instead of its SVG path data. */
+@keyframes script-director-ripple-breathe {
+  0%, 100% { transform: rotate(-1deg) scale(1, .985); }
+  50% { transform: rotate(1deg) scale(1.015, 1); }
+}
+@keyframes script-director-ripple-halo {
+  0%, 100% { transform: scale(.99); }
+  50% { transform: scale(1.025); }
+}
+
+/* Keep the two lobes readable while the organic bridge still joins them. */
+.script-director-theme-fusion-wrap {
+  width: 196px;
+  height: 196px;
+  margin-left: -8px;
+}
+.script-director-theme-fusion-bridge {
+  width: 66px;
+  height: 42px;
+  opacity: .72;
+}
+.script-director-theme-liquid-gel {
+  width: 52px;
+  height: 38px;
+  opacity: .42;
+}
+
+/* Preset cards use the user supplied Top cover files. Missing files remain a
+   neutral card; they never fall back to legacy bundled artwork. */
+@media (max-width: 900px) {
+  .script-director-settings-theme-layout,
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 170px minmax(0, 1fr) !important;
+    gap: 10px;
+  }
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 170px minmax(0, 1fr) 170px !important;
+    gap: 7px;
+  }
+}
+
+@media (max-width: 620px) {
+  .script-director-settings-theme-layout,
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 128px minmax(0, 1fr) !important;
+    gap: 6px;
+  }
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 128px minmax(0, 1fr) 128px !important;
+    gap: 4px;
+  }
+  .script-director-theme-fusion-wrap { margin-left: -7px; }
+}
+
+/* Final topic selector layout. Keep the two rails as real grid tracks so a
+   flex rule from an older layout cannot squeeze their labels into a sliver. */
+.script-director-settings-theme-layout {
+  display: grid !important;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: minmax(196px, 220px) minmax(0, 1fr) !important;
+  gap: 14px;
+  min-height: 350px;
+  align-items: stretch;
+}
+
+.script-director-settings-theme-layout.has-fusion-rail {
+  grid-template-columns: minmax(196px, 220px) minmax(0, 1fr) minmax(196px, 220px) !important;
+}
+
+.script-director-theme-rail-column,
+.script-director-theme-rail,
+.script-director-theme-rail-viewport {
+  width: 100%;
+  min-width: 0;
+}
+
+.script-director-theme-rail-column {
+  display: flex;
+  min-height: 350px;
+}
+
+.script-director-theme-rail.is-infinite {
+  flex: 1 1 auto;
+  min-height: 350px;
+  padding-inline: 8px;
+  touch-action: none;
+  overscroll-behavior: contain;
+}
+
+.script-director-theme-rail-viewport {
+  min-height: 292px;
+  max-height: 304px;
+}
+
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item {
+  width: 100%;
+  min-width: 0;
+  min-height: 50px;
+}
+
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item > span:not(.script-director-theme-dot):not(.script-director-theme-rail-caret) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.script-director-settings-theme {
+  min-height: 0;
+}
+
+.script-director-settings-scroll {
+  padding-bottom: 0;
+}
+
+@media (max-width: 900px) {
+  .script-director-settings-theme-layout,
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: minmax(156px, 170px) minmax(0, 1fr) !important;
+    gap: 10px;
+  }
+
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: minmax(156px, 170px) minmax(0, 1fr) minmax(156px, 170px) !important;
+    gap: 7px;
+  }
+}
+
+@media (max-width: 620px) {
+  .script-director-settings-theme-layout,
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: minmax(112px, 128px) minmax(0, 1fr) !important;
+    gap: 6px;
+    min-height: 250px;
+  }
+
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: minmax(112px, 128px) minmax(0, 1fr) minmax(112px, 128px) !important;
+    gap: 4px;
+  }
+
+  .script-director-theme-rail-column,
+  .script-director-theme-rail.is-infinite {
+    min-height: 250px;
+  }
+
+  .script-director-theme-rail-viewport {
+    min-height: 204px;
+    max-height: 216px;
+  }
+}
+
+/* Keep the settings surface inside the viewport and let the lower cards use
+   the modal's own scroll area. The relationship stage is intentionally
+   compact so the central topic artwork remains the visual focus. */
+.script-director-settings-modal {
+  height: min(660px, calc(100vh - 48px));
+  max-height: min(660px, calc(100vh - 48px));
+  min-height: 0;
+  overflow: hidden;
+}
+.script-director-settings-main {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+.script-director-settings-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: visible;
+  overflow-y: auto;
+}
+.script-director-settings-theme {
+  flex: 0 0 auto !important;
+  min-height: 0 !important;
+  height: auto;
+  padding-top: 6px;
+  padding-bottom: 10px;
+}
+.script-director-settings-theme-layout,
+.script-director-settings-theme-layout.has-fusion-rail {
+  display: grid !important;
+  grid-template-columns: 136px minmax(0, 1fr) !important;
+  height: 300px;
+  min-height: 300px;
+  max-height: 300px;
+  gap: 14px;
+  align-items: stretch !important;
+  align-content: stretch !important;
+}
+.script-director-settings-theme-layout.has-fusion-rail {
+  grid-template-columns: 136px minmax(0, 1fr) 136px !important;
+}
+.script-director-theme-rail-column,
+.script-director-theme-rail.is-infinite {
+  min-height: 300px;
+  max-height: 300px;
+}
+.script-director-theme-rail-viewport {
+  min-height: 246px;
+  max-height: 258px;
+}
+.script-director-theme-stage {
+  min-height: 0;
+  padding-top: 4px;
+}
+.script-director-theme-orbit {
+  min-height: 252px;
+}
+
+.script-director-theme-orb-wrap {
+  width: 200px;
+  height: 200px;
+}
+.script-director-theme-circle.is-primary {
+  width: 100%;
+  height: 100%;
+}
+.script-director-theme-fusion-trigger {
+  width: 120px;
+  height: 120px;
+  margin-left: -24px;
+}
+.script-director-auto-card,
+.script-director-structure-card {
+  min-height: 76px;
+  height: 76px;
+  padding-top: 9px;
+  padding-bottom: 9px;
+  border-radius: 12px;
+}
+
+.script-director-settings-preset-list button {
+  min-height: 57px;
+  height: 57px;
+}
+
+/* Keep the lower-ranked cards quiet with a neutral base; their inline cover
+   image remains visible when the user supplies the corresponding JPG. */
+.script-director-settings-preset-list button:nth-child(n + 4) {
+  background-image: none;
+  background-color: #242527 !important;
+}
+
+@media (max-width: 900px) {
+  .script-director-settings-modal {
+    height: min(660px, calc(100vh - 32px));
+    max-height: calc(100vh - 32px);
+  }
+  .script-director-settings-theme-layout,
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 136px minmax(0, 1fr) !important;
+    height: 286px;
+    min-height: 286px;
+    max-height: 286px;
+    align-items: stretch !important;
+    align-content: stretch !important;
+  }
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 136px minmax(0, 1fr) 136px !important;
+  }
+  .script-director-theme-rail-column,
+  .script-director-theme-rail.is-infinite {
+    min-height: 286px;
+    max-height: 286px;
+  }
+}
+
+@media (max-width: 620px) {
+  .script-director-settings-modal {
+    height: min(680px, calc(100vh - 18px));
+    max-height: calc(100vh - 18px);
+  }
+  .script-director-settings-theme-layout,
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 112px minmax(0, 1fr) !important;
+    height: 250px;
+    min-height: 250px;
+    max-height: 250px;
+    align-items: stretch !important;
+    align-content: stretch !important;
+  }
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 112px minmax(0, 1fr) 112px !important;
+  }
+  .script-director-theme-rail-column,
+  .script-director-theme-rail.is-infinite {
+    min-height: 250px;
+    max-height: 250px;
+  }
+}
+
+/* Last layout pass: keep the desktop dialog close to the content height so
+   the parameter cards and actions do not float in a large empty tail. */
+@media (min-width: 901px) {
+  .script-director-settings-modal {
+    height: min(560px, calc(100vh - 48px));
+    max-height: min(560px, calc(100vh - 48px));
+  }
+  .script-director-settings-presets {
+    overflow: hidden;
+  }
+  .script-director-settings-preset-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .script-director-settings-preset-list button {
+    min-height: 50px;
+    height: 50px;
+  }
+  .script-director-settings-theme {
+    padding-top: 2px;
+    padding-bottom: 5px;
+  }
+  .script-director-settings-theme-layout,
+  .script-director-settings-theme-layout.has-fusion-rail {
+    height: 278px;
+    min-height: 278px;
+    max-height: 278px;
+  }
+  .script-director-theme-rail-column,
+  .script-director-theme-rail.is-infinite {
+    min-height: 278px;
+    max-height: 278px;
+  }
+  .script-director-theme-rail-viewport {
+    min-height: 224px;
+    max-height: 238px;
+  }
+  .script-director-settings-grid {
+    gap: 8px;
+    padding-top: 10px;
+  }
+  .script-director-settings-modal-foot {
+    padding-top: 5px;
+    padding-bottom: 10px;
+  }
+}
+
+/* Keep the rail transition as the only movement. The old per-item entrance
+   animation made each wheel tick look like a hard reset. */
+.script-director-theme-rail.is-infinite .script-director-theme-rail-viewport {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  --rail-row-height: 44px;
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item {
+  position: absolute !important;
+  inset-inline: 0;
+  top: calc(50% + var(--rail-y) - 22px);
+  width: 100%;
+  min-height: 44px;
+  height: 44px;
+  margin: 0;
+  animation: none !important;
+  transition: top .34s cubic-bezier(.22, .8, .24, 1), transform .34s cubic-bezier(.22, .8, .24, 1), opacity .28s ease, color .2s ease, background-color .2s ease;
+  will-change: top, transform, opacity;
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item[data-offset='-3'],
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item[data-offset='3'] {
+  opacity: .14;
+  transform: scale(.9);
+  pointer-events: none;
+}
+
+/* Final compact desktop settings pass. Keep the confirmation footer at the
+   bottom while preventing the flex scroll area from reserving a large empty
+   tail below the parameter cards. */
+@media (min-width: 901px) {
+  .script-director-settings-modal {
+    height: min(560px, calc(100vh - 48px));
+    max-height: min(560px, calc(100vh - 48px));
+  }
+
+  .script-director-settings-presets {
+    overflow: hidden;
+  }
+
+  .script-director-settings-preset-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: #42484d transparent;
+  }
+
+  .script-director-settings-preset-list button {
+    min-height: 50px;
+    height: 50px;
+  }
+
+  .script-director-settings-theme {
+    padding-top: 2px;
+    padding-bottom: 5px;
+  }
+
+  .script-director-settings-theme-layout,
+  .script-director-settings-theme-layout.has-fusion-rail {
+    height: 278px;
+    min-height: 278px;
+    max-height: 278px;
+  }
+
+  .script-director-theme-rail-column,
+  .script-director-theme-rail.is-infinite {
+    min-height: 278px;
+    max-height: 278px;
+  }
+
+  .script-director-theme-rail-viewport {
+    min-height: 224px;
+    max-height: 238px;
+  }
+
+  .script-director-settings-grid {
+    gap: 8px;
+    padding-top: 10px;
+  }
+
+  .script-director-settings-modal-foot {
+    padding-top: 5px;
+    padding-bottom: 10px;
+  }
+}
+
+/* Final rail motion overrides. Adjacent topic entries stay mounted while
+   the center changes, so wheel and touchpad gestures glide between slots. */
+.script-director-theme-rail.is-infinite .script-director-theme-rail-viewport {
+  position: relative !important;
+  display: block !important;
+  overflow: hidden;
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item {
+  position: absolute !important;
+  inset-inline: 0;
+  top: calc(50% + var(--rail-y) - 19px);
+  width: 100%;
+  min-height: 38px;
+  height: 38px;
+  margin: 0;
+  animation: none !important;
+  transition:
+    top .34s cubic-bezier(.22, .8, .24, 1),
+    transform .34s cubic-bezier(.22, .8, .24, 1),
+    opacity .28s ease,
+    color .2s ease,
+    background-color .2s ease;
+  will-change: top, transform, opacity;
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item[data-offset='-3'],
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item[data-offset='3'] {
+  opacity: .14;
+  transform: scale(.9);
+  pointer-events: none;
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item[data-offset='-2'],
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item[data-offset='2'] {
+  opacity: .34;
+  transform: scale(.94);
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item[data-offset='-1'],
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item[data-offset='1'] {
+  opacity: .64;
+  transform: scale(.97);
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item[data-offset='0'] {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* Keep the structure editor above the topic rails when it opens upward from
+   the bottom row. The rails intentionally have their own stacking layer for
+   drag and wheel interaction; without a higher layer they paint over the
+   popover contents and make the options look displaced. */
+.script-director-structure-picker.is-open {
+  position: relative;
+  z-index: 40;
+}
+.script-director-structure-popover {
+  z-index: 80;
+}
+
+/* Popovers from the lower setting cards must sit above the topic rails. The
+   rails intentionally form their own stacking layer for smooth motion, so a
+   low popover z-index lets their labels bleed through the structure dialog. */
+.script-director-settings-grid {
+  position: relative;
+  z-index: 30;
+}
+.script-director-structure-picker {
+  position: relative;
+  z-index: 31;
+}
+.script-director-structure-popover {
+  z-index: 80 !important;
+  background: #27282a;
+  opacity: 1;
+  isolation: isolate;
+}
+
+/* Top presets use independent user supplied cinematic cover files. */
+.script-director-settings-preset-list button:nth-child(-n + 8) {
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+}
+/* Final topic rail pass: present the selector as a calm five-item window.
+   Wheel, trackpad drag, keyboard arrows, and item clicks remain available;
+   the extra nudge buttons are hidden because they compete with the list. */
+.script-director-settings-theme-layout,
+.script-director-settings-theme-layout.has-fusion-rail {
+  grid-template-columns: minmax(220px, 248px) minmax(0, 1fr) !important;
+  gap: 16px;
+}
+.script-director-settings-theme-layout.has-fusion-rail {
+  grid-template-columns: minmax(220px, 248px) minmax(0, 1fr) minmax(220px, 248px) !important;
+}
+.script-director-theme-rail.is-infinite {
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 4px;
+  padding: 0 4px;
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-nudge {
+  display: none !important;
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-viewport {
+  min-height: 248px;
+  max-height: none;
+  height: 248px;
+  mask-image: linear-gradient(to bottom, transparent 0, #000 10%, #000 90%, transparent 100%);
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item {
+  top: calc(50% + var(--rail-y) + var(--rail-drag-y, 0px) - 24px);
+  min-height: 48px;
+  height: 48px;
+  padding: 0 14px;
+  border-radius: 12px;
+  gap: 12px;
+  color: #777d83;
+  font-size: 14px;
+  font-weight: 450;
+  letter-spacing: .01em;
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item[data-offset='-2'],
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item[data-offset='2'] {
+  opacity: .34;
+  transform: scale(.94);
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item[data-offset='-1'],
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item[data-offset='1'] {
+  opacity: .66;
+  transform: scale(.98);
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item[data-offset='0'] {
+  opacity: 1;
+  transform: scale(1);
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item.is-primary,
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item.is-fusion {
+  background: transparent !important;
+  box-shadow: none !important;
+  color: #f1f2f3;
+  font-size: 15px;
+  font-weight: 560;
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item:hover {
+  background: #ffffff08;
+  color: #f4f5f6;
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item .script-director-theme-dot {
+  width: 36px;
+  height: 36px;
+  box-shadow: inset 0 1px #ffffff30, 0 3px 9px #0007;
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-item > span:not(.script-director-theme-dot):not(.script-director-theme-rail-caret) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.script-director-theme-rail.is-primary .script-director-theme-rail-item {
+  justify-content: flex-start;
+  padding-left: 28px;
+  padding-right: 24px;
+}
+.script-director-theme-rail.is-fusion .script-director-theme-rail-item {
+  justify-content: flex-end;
+  padding-left: 24px;
+  padding-right: 28px;
+}
+.script-director-theme-rail.is-fusion .script-director-theme-rail-item .script-director-theme-dot {
+  order: 3;
+  margin-left: auto;
+}
+.script-director-theme-rail.is-fusion .script-director-theme-rail-item > span:not(.script-director-theme-dot):not(.script-director-theme-rail-caret) {
+  order: 2;
+}
+.script-director-theme-rail.is-fusion .script-director-theme-rail-caret {
+  order: 1;
+}
+.script-director-theme-rail.is-primary .script-director-theme-rail-caret {
+  left: auto;
+  right: 4px;
+}
+.script-director-theme-rail.is-fusion .script-director-theme-rail-caret {
+  left: 4px;
+  right: auto;
+}
+.script-director-theme-rail.is-infinite .script-director-theme-other {
+  display: none !important;
+}
+.script-director-theme-rail.is-infinite .script-director-theme-other-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: 50%;
+  color: #aeb4ba;
+  background: #2c3034;
+  box-shadow: inset 0 1px #ffffff16;
+}
+.script-director-theme-rail.is-infinite .script-director-theme-other-icon svg {
+  width: 16px;
+  height: 16px;
+}
+.script-director-theme-rail.is-infinite .script-director-theme-other {
+  min-height: 30px;
+  height: 30px;
+  padding: 0 14px;
+  color: #8e949a;
+  font-size: 12px;
+}
+.script-director-theme-rail.is-infinite .script-director-theme-other:hover {
+  background: transparent;
+  color: #e0e2e4;
+}
+.script-director-theme-fusion-wrap > button {
+  top: 4px;
+  right: -2px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid #aeb9c566;
+  border-radius: 50%;
+  background: #252b31e8;
+  box-shadow: 0 4px 14px #0009, inset 0 1px #ffffff18;
+  color: #dce3e8;
+  line-height: 0;
+  transform: none;
+}
+.script-director-theme-fusion-wrap > button:hover {
+  background: #39434c;
+  color: #fff;
+  transform: scale(1.06);
+}
+
+/* Give the two relationship controls enough visual weight beside the topic
+   avatars and orbs. */
+.script-director-theme-rail-caret {
+  width: 18px;
+  font-size: 19px !important;
+  font-weight: 650;
+  line-height: 1;
+}
+.script-director-theme-fusion-trigger > span {
+  font-size: 35px !important;
+  font-weight: 300;
+  line-height: .9;
+}
+
+/* The primary orb is the stable anchor. The optional fusion orb or trigger
+   floats beside it without changing that anchor's center position. */
+.script-director-theme-orbit {
+  position: relative;
+  display: block !important;
+  overflow: visible;
+}
+.script-director-theme-orbit > .script-director-theme-orb-wrap.is-primary {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  margin: 0;
+  transform: translate(-50%, -50%);
+}
+.script-director-theme-orbit > .script-director-theme-fusion-wrap,
+.script-director-theme-orbit > .script-director-theme-fusion-trigger {
+  position: absolute;
+  top: 50%;
+  left: calc(50% + 66px);
+  margin: 0;
+  transform: translateY(-50%);
+}
+.script-director-theme-orbit.has-fusion > .script-director-theme-fusion-wrap {
+  left: calc(50% + 30px);
+}
+.script-director-theme-orbit.has-fusion > .script-director-theme-fusion-bridge {
+  left: calc(50% + 24px);
+}
+.script-director-theme-orbit.has-fusion::before,
+.script-director-theme-orbit.has-fusion::after {
+  left: calc(50% + 24px);
+}
+.script-director-theme-orbit > .script-director-theme-fusion-wrap {
+  z-index: 4;
+}
+.script-director-theme-orbit > .script-director-theme-fusion-trigger {
+  z-index: 3;
+  animation: none;
+}
+.script-director-theme-rail-caret {
+  width: 18px;
+  font-size: 18px !important;
+  font-family: system-ui, sans-serif;
+  font-weight: 700;
+  line-height: .8;
+}
+
+/* Keep each infinite rail inside its own grid track. Without an explicit
+   clipping boundary, the absolutely positioned edge item can paint over the
+   central relationship orbs when the fusion rail is open. */
+.script-director-theme-rail-column {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+}
+.script-director-theme-stage {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+}
+.script-director-theme-rail.is-infinite {
+  position: relative;
+  z-index: 2;
+  min-width: 0;
+  overflow: hidden;
+}
+.script-director-settings-theme-layout {
+  /* Reserve the fusion column even while it is closed, so the primary orb
+     does not jump horizontally when the right rail is opened. */
+  grid-template-columns: 196px minmax(438px, 1fr) 196px !important;
+}
+.script-director-settings-theme-layout.has-fusion-rail > .script-director-theme-rail.is-fusion {
+  isolation: isolate;
+}
+
+@media (max-width: 620px) {
+  .script-director-theme-orbit > .script-director-theme-fusion-wrap,
+  .script-director-theme-orbit > .script-director-theme-fusion-trigger {
+    left: calc(50% + 46px);
+  }
+}
+
+/* Let a pointer drag follow the hand directly. On release the selected
+   topic changes once and the normal transition settles the window. */
+.script-director-theme-rail.is-infinite[data-dragging='true'] .script-director-theme-rail-item {
+  transition: none !important;
+}
+.script-director-settings-grid {
+  margin-top: 20px !important;
+}
+
+@media (max-width: 900px) {
+  .script-director-settings-theme-layout,
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: minmax(172px, 194px) minmax(0, 1fr) !important;
+    gap: 10px;
+  }
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: minmax(172px, 194px) minmax(0, 1fr) minmax(172px, 194px) !important;
+  }
+  .script-director-theme-rail.is-infinite .script-director-theme-rail-viewport {
+    height: 228px;
+  }
+  .script-director-theme-rail.is-infinite .script-director-theme-rail-item {
+    font-size: 14px;
+  }
+}
+
+@media (max-width: 620px) {
+  .script-director-settings-theme-layout,
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: minmax(116px, 132px) minmax(0, 1fr) !important;
+    gap: 6px;
+  }
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: minmax(116px, 132px) minmax(0, 1fr) minmax(116px, 132px) !important;
+  }
+  .script-director-theme-rail.is-infinite .script-director-theme-rail-viewport {
+    height: 206px;
+  }
+  .script-director-theme-rail.is-infinite .script-director-theme-rail-item {
+    padding-inline: 6px;
+    gap: 7px;
+    font-size: 12px;
+  }
+  .script-director-theme-rail.is-infinite .script-director-theme-rail-item .script-director-theme-dot {
+    width: 28px;
+    height: 28px;
+  }
+}
+
+/* Stable topic artwork --------------------------------------------------
+   The topic chooser is a frequently opened modal. Keep its artwork static:
+   the previous stack of animated pseudo-elements, SVG contours and blur
+   filters continuously repainted two large surfaces and could saturate the
+   browser GPU process. The image and selection states remain unchanged. */
+.script-director-settings-modal .script-director-theme-orb-wrap,
+.script-director-settings-modal .script-director-theme-fusion-wrap,
+.script-director-settings-modal .script-director-theme-circle,
+.script-director-settings-modal .script-director-theme-circle::before,
+.script-director-settings-modal .script-director-theme-circle::after,
+.script-director-settings-modal .script-director-theme-orb-wrap::before,
+.script-director-settings-modal .script-director-theme-orb-wrap::after,
+.script-director-settings-modal .script-director-theme-fusion-wrap::before,
+.script-director-settings-modal .script-director-theme-fusion-wrap::after,
+.script-director-settings-modal .script-director-theme-fusion-bridge,
+.script-director-settings-modal .script-director-theme-fusion-bridge::before,
+.script-director-settings-modal .script-director-theme-fusion-bridge::after,
+.script-director-settings-modal .script-director-theme-liquid-gel,
+.script-director-settings-modal .script-director-theme-liquid-gel::after,
+.script-director-settings-modal .script-director-theme-fusion-trigger {
+  animation: none !important;
+  will-change: auto !important;
+}
+
+.script-director-settings-modal .script-director-theme-orb-wrap,
+.script-director-settings-modal .script-director-theme-fusion-wrap {
+  filter: none !important;
+}
+.script-director-settings-modal .script-director-theme-orb-wrap::before,
+.script-director-settings-modal .script-director-theme-fusion-wrap::before {
+  inset: -2px !important;
+  border: 1px solid #b8c5cb2e !important;
+  border-radius: 50% !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  filter: none !important;
+  opacity: 1 !important;
+}
+.script-director-settings-modal .script-director-theme-orb-wrap::after,
+.script-director-settings-modal .script-director-theme-fusion-wrap::after {
+  display: none !important;
+}
+.script-director-settings-modal .script-director-theme-circle,
+.script-director-settings-modal .script-director-theme-circle.is-fusion {
+  border: 1px solid #aebbc255 !important;
+  border-radius: 50% !important;
+  box-shadow: inset 0 0 22px #0009 !important;
+  transform: none !important;
+}
+.script-director-settings-modal .script-director-theme-circle::before {
+  transform: none !important;
+  opacity: .8 !important;
+}
+.script-director-settings-modal .script-director-theme-circle::after {
+  display: none !important;
+}
+.script-director-settings-modal .script-director-theme-fusion-bridge {
+  width: 58px !important;
+  height: 32px !important;
+  border: 1px solid #d8e7ed38 !important;
+  border-radius: 50% !important;
+  background: linear-gradient(90deg, transparent, #d8e7ed26 50%, transparent) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  opacity: .72 !important;
+  transform: translate(-50%, -50%) !important;
+}
+.script-director-settings-modal .script-director-theme-fusion-bridge::before,
+.script-director-settings-modal .script-director-theme-fusion-bridge::after,
+.script-director-settings-modal .script-director-theme-liquid-gel {
+  display: none !important;
+}
+.script-director-settings-modal .script-director-theme-fusion-trigger {
+  border: 1px solid #8f9ba355 !important;
+  background: #2b3034 !important;
+  box-shadow: 0 0 16px #b8d5e014 !important;
+  transform: translateY(-50%) !important;
+}
+
+/* Do not keep a full-screen backdrop blur/compositor layer alive while the
+   dialog is open. A translucent overlay preserves the visual separation at a
+   fraction of the paint cost. */
+.script-director-settings-layer {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* These rows move by normal layout during a drag; advertising permanent
+   compositor layers for them increases GPU memory without improving motion. */
+.script-director-settings-modal .script-director-theme-rail-item,
+.script-director-settings-modal .script-director-theme-circle,
+.script-director-settings-modal .script-director-theme-fusion-trigger {
+  will-change: auto !important;
+}
+
+/* Final water-pair alignment pass. Keep both lobes on one coordinate system. */
+.script-director-settings-theme-layout { grid-template-columns: 196px minmax(438px, 1fr) 196px; align-items: stretch; min-height: 326px; }
+.script-director-settings-theme-layout.has-fusion-rail { grid-template-columns: 196px minmax(438px, 1fr) 196px; }
+.script-director-theme-rail-column, .script-director-settings-theme-layout > .script-director-theme-rail { min-width: 0; align-self: stretch; }
+.script-director-theme-stage { display: flex; flex-direction: column; min-width: 0; min-height: 326px; padding: 8px 0 0; }
+.script-director-theme-stage-label { flex: none; min-height: 24px; justify-content: center; white-space: nowrap; }
+.script-director-theme-orbit { flex: 1 1 auto; min-height: 274px; height: 274px; display: block; position: relative; overflow: visible; }
+.script-director-theme-orb-wrap.is-primary { position: absolute; top: 50%; left: 50%; margin: 0; transform: translate(calc(-50% - 94px), calc(-50% + 10px)); }
+.script-director-theme-fusion-wrap, .script-director-theme-fusion-trigger { position: absolute; top: 50%; left: 50%; margin: 0; transform: translate(calc(-50% + 94px), calc(-50% - 12px)); }
+.script-director-theme-orbit.has-fusion .script-director-theme-liquid-gel, .script-director-theme-orbit.has-fusion .script-director-theme-fusion-bridge { top: calc(50% - 1px); left: 50%; }
+.script-director-theme-circle, .script-director-theme-circle::before, .script-director-theme-circle::after { background-position: center; background-size: cover; }
+.script-director-theme-rail.is-infinite { min-height: 286px; height: 100%; }
+@media (max-width: 900px) {
+  .script-director-settings-theme-layout.has-fusion-rail { grid-template-columns: 132px minmax(300px, 1fr) 132px; }
+  .script-director-theme-orb-wrap.is-primary { transform: translate(calc(-50% - 72px), calc(-50% + 8px)); }
+  .script-director-theme-fusion-wrap, .script-director-theme-fusion-trigger { transform: translate(calc(-50% + 72px), calc(-50% - 8px)); }
+}
+@media (max-width: 620px) {
+  .script-director-settings-theme-layout.has-fusion-rail { grid-template-columns: 102px minmax(220px, 1fr) 102px; }
+  .script-director-theme-orbit { min-height: 210px; height: 210px; }
+  .script-director-theme-orb-wrap.is-primary { transform: translate(calc(-50% - 52px), calc(-50% + 5px)); }
+  .script-director-theme-fusion-wrap, .script-director-theme-fusion-trigger { transform: translate(calc(-50% + 52px), calc(-50% - 5px)); }
+}
+
+/* Override the legacy modal fallback styling: the settings dialog now uses the
+   same soft, organic water silhouettes as the reference pair. */
+.script-director-settings-modal .script-director-theme-circle,
+.script-director-settings-modal .script-director-theme-circle.is-fusion {
+  border: 1px solid #dcecf77c !important;
+  border-radius: 43% 57% 48% 52% / 54% 46% 57% 43% !important;
+  box-shadow: inset 0 0 24px #000b, inset 0 0 0 1px #ffffff17, 0 0 8px #c8e7ff24 !important;
+  transform: none !important;
+}
+.script-director-settings-modal .script-director-theme-circle.is-fusion {
+  border-radius: 58% 42% 47% 53% / 47% 53% 58% 42% !important;
+}
+.script-director-settings-modal .script-director-theme-circle::before {
+  display: block !important;
+  background: radial-gradient(ellipse at 31% 24%, #ffffffc2 0, #ffffff50 7%, transparent 27%), radial-gradient(ellipse at 79% 76%, #a6def52e 0, transparent 33%), linear-gradient(137deg, transparent 26%, #ffffff1b 34%, transparent 47%), radial-gradient(ellipse at 50% 112%, #000b 0, transparent 58%) !important;
+  opacity: .9 !important;
+}
+.script-director-settings-modal .script-director-theme-fusion-trigger {
+  transform: translate(calc(-50% + 94px), calc(-50% - 12px)) !important;
+}
+@media (max-width: 900px) {
+  .script-director-settings-modal .script-director-theme-fusion-trigger { transform: translate(calc(-50% + 72px), calc(-50% - 8px)) !important; }
+}
+@media (max-width: 620px) {
+  .script-director-settings-modal .script-director-theme-fusion-trigger { transform: translate(calc(-50% + 52px), calc(-50% - 5px)) !important; }
+}
+
+/* Canvas renderer for the paired topic water balls. The canvas owns the
+   silhouettes and connection; controls remain DOM elements above it. */
+.script-director-theme-water-canvas { position: absolute; z-index: 3; inset: -72px; display: block; width: calc(100% + 144px); height: calc(100% + 144px); pointer-events: none; }
+.script-director-theme-orbit .script-director-theme-liquid-gel,
+.script-director-theme-orbit .script-director-theme-fusion-bridge { display: none !important; }
+.script-director-theme-orbit .script-director-theme-orb-wrap::before,
+.script-director-theme-orbit .script-director-theme-orb-wrap::after,
+.script-director-theme-orbit .script-director-theme-fusion-wrap::before,
+.script-director-theme-orbit .script-director-theme-fusion-wrap::after {
+  display: none !important;
+  content: none !important;
+}
+.script-director-theme-orbit .script-director-theme-fusion-wrap { z-index: 8; inset: 0; width: auto; height: auto; margin: 0; pointer-events: none; transform: none !important; }
+.script-director-theme-orbit.has-fusion > .script-director-theme-fusion-wrap { left: 0 !important; right: 0 !important; width: auto !important; }
+.script-director-theme-orbit .script-director-theme-fusion-wrap > button { position: absolute; top: calc(50% - 122px); left: calc(50% + 160px); margin: 0; pointer-events: auto; }
+.script-director-theme-orbit .script-director-theme-fusion-trigger { z-index: 8; }
+@media (max-width: 900px) { .script-director-theme-orbit .script-director-theme-fusion-wrap > button { left: calc(50% + 104px); } }
+@media (max-width: 620px) { .script-director-theme-orbit .script-director-theme-fusion-wrap > button { top: calc(50% - 84px); left: calc(50% + 76px); } }
+
+/* Match the reference stage box: the preview is 438 x 284. The static
+   relationship layer is allowed to overhang it by 72px on each side. */
+@media (min-width: 901px) {
+  .script-director-settings-theme-layout,
+  .script-director-settings-theme-layout.has-fusion-rail {
+    min-height: 284px !important;
+  }
+  .script-director-theme-stage {
+    min-height: 284px !important;
+    padding-top: 0 !important;
+  }
+  .script-director-theme-orbit {
+    flex: none !important;
+    min-height: 284px !important;
+    height: 284px !important;
+    top: -8px;
+  }
+  .script-director-theme-rail-column,
+  .script-director-theme-rail.is-infinite {
+    min-height: 284px !important;
+    height: 284px !important;
+  }
+  .script-director-theme-orbit .script-director-theme-fusion-trigger {
+    left: 50% !important;
+    transform: translate(calc(-50% + 110px), calc(-50% + 47px)) !important;
+  }
+  .script-director-theme-orbit .script-director-theme-fusion-wrap > button {
+    top: calc(50% - 107px) !important;
+    left: calc(50% + 168px) !important;
+    width: 24px;
+    height: 24px;
+  }
+}
+
+/* Rail alignment pass ---------------------------------------------------
+   Keep each selector on its own outer edge and make the active row a compact
+   group. This leaves the middle stage clear while keeping the relationship
+   caret beside the selected option. */
+@media (min-width: 901px) {
+  .script-director-theme-rail.is-infinite .script-director-theme-rail-item {
+    width: 168px !important;
+    min-width: 168px;
+    padding-left: 8px;
+    padding-right: 8px;
+    gap: 8px;
+  }
+  .script-director-theme-rail.is-primary .script-director-theme-rail-item {
+    align-self: flex-start;
+    justify-content: flex-start;
+  }
+  .script-director-theme-rail.is-fusion .script-director-theme-rail-item {
+    align-self: flex-end;
+    justify-content: flex-end;
+  }
+  .script-director-theme-rail.is-primary .script-director-theme-rail-caret {
+    position: static;
+    order: 3;
+    width: 12px;
+    margin-left: 2px;
+    margin-right: 0;
+    font-size: 11px !important;
+    line-height: 1;
+  }
+  .script-director-theme-rail.is-primary .script-director-theme-rail-item .script-director-theme-dot {
+    order: 1;
+  }
+  .script-director-theme-rail.is-primary .script-director-theme-rail-item > span:not(.script-director-theme-dot):not(.script-director-theme-rail-caret) {
+    order: 2;
+    min-width: 0;
+  }
+  .script-director-theme-rail.is-fusion .script-director-theme-rail-caret {
+    position: static;
+    order: 1;
+    width: 12px;
+    margin: 0 2px 0 0;
+    font-size: 11px !important;
+    line-height: 1;
+  }
+  .script-director-theme-rail.is-fusion .script-director-theme-rail-item .script-director-theme-dot {
+    order: 3;
+    margin-left: 0;
+  }
+  .script-director-theme-rail.is-fusion .script-director-theme-rail-item > span:not(.script-director-theme-dot):not(.script-director-theme-rail-caret) {
+    order: 2;
+    min-width: 0;
+  }
+}
+
+/* Frosted glass fusion action ------------------------------------------
+   Keep the add-fusion control translucent so the water artwork and canvas
+   highlights remain visible through it. This final rule comes after the
+   modal fallback styling above. */
+.script-director-settings-modal .script-director-theme-fusion-trigger {
+  background: rgba(30, 40, 48, .34) !important;
+  border: 1px solid rgba(220, 238, 248, .42) !important;
+  box-shadow: inset 0 1px rgba(255, 255, 255, .13), 0 8px 24px rgba(0, 0, 0, .38), 0 0 22px rgba(184, 213, 224, .12) !important;
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  backdrop-filter: blur(10px) saturate(140%);
+}
+.script-director-settings-modal .script-director-theme-fusion-trigger:hover {
+  background: rgba(55, 72, 82, .48) !important;
+  border-color: rgba(230, 244, 252, .64) !important;
+  box-shadow: inset 0 1px rgba(255, 255, 255, .2), 0 10px 28px rgba(0, 0, 0, .46), 0 0 28px rgba(184, 213, 224, .2) !important;
+}
+.script-director-settings-modal .script-director-theme-fusion-trigger:focus-visible {
+  outline: 2px solid rgba(220, 236, 247, .67);
+  outline-offset: 3px;
+}
+
+/* The relationship preview is static while the settings dialog is open.
+   These orbit pseudo-elements used to keep two blurred keyframe loops alive
+   even after the WebGL renderer was removed, which still caused continuous
+   compositor work on the GPU. Preserve their bridge artwork as a single
+   frame and remove the blur filter from the paint path. */
+.script-director-settings-modal .script-director-theme-orbit.has-fusion::before,
+.script-director-settings-modal .script-director-theme-orbit.has-fusion::after {
+  animation: none !important;
+  filter: none !important;
+}
+.script-director-settings-modal .script-director-theme-fusion-trigger {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+/* The trigger is a normal static control now; avoid creating a local blur
+   compositor layer just to tint the background behind it. */
+.script-director-settings-modal .script-director-theme-fusion-trigger {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+/* The rail items are absolutely positioned by the infinite scroller. Clear
+   the earlier full-width inset so each compact group can sit against its own
+   outer edge, leaving balanced breathing room around the relationship stage. */
+@media (min-width: 901px) {
+  .script-director-theme-rail.is-infinite .script-director-theme-rail-item {
+    inset-inline: auto !important;
+  }
+  .script-director-theme-rail.is-primary .script-director-theme-rail-item {
+    left: 0 !important;
+    right: auto !important;
+  }
+.script-director-theme-rail.is-fusion .script-director-theme-rail-item {
+    left: auto !important;
+    right: 0 !important;
+  }
+  .script-director-theme-rail.is-primary .script-director-theme-rail-caret,
+  .script-director-theme-rail.is-fusion .script-director-theme-rail-caret {
+    width: 10px;
+    font-size: 9px !important;
+    line-height: 1;
+  }
+}
+
+/* Top three preset cards: give the most-used ideas a clear editorial lift
+   while keeping the remaining ranked options quiet. The badge and glow are
+   static accents with short hover transitions, so the list feels premium
+   without constant flashing animation. */
+.script-director-settings-preset-list button:nth-child(-n + 3) {
+  position: relative;
+  min-height: 68px;
+  overflow: hidden;
+  isolation: isolate;
+  border-color: #6c7077;
+  box-shadow: inset 0 1px #ffffff18, 0 5px 16px #00000024;
+  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease, filter .18s ease;
+}
+.script-director-settings-preset-list button:nth-child(-n + 3)::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: radial-gradient(circle at 92% 8%, var(--preset-glow, #cdd4db) 0, transparent 36%), linear-gradient(115deg, transparent 45%, #ffffff0b 72%, #ffffff19 100%);
+  content: '';
+  opacity: .36;
+  pointer-events: none;
+}
+.script-director-settings-preset-list button:nth-child(-n + 3)::after {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  min-height: 17px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--preset-glow, #cdd4db) 68%, transparent);
+  border-radius: 999px;
+  background: #10151db8;
+  color: var(--preset-glow, #dce3e9);
+  content: '✦ 爆款';
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: .05em;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.script-director-settings-preset-list button:nth-child(1) { --preset-glow: #f0c674; }
+.script-director-settings-preset-list button:nth-child(2) { --preset-glow: #8fe2ff; }
+.script-director-settings-preset-list button:nth-child(3) { --preset-glow: #ff9f80; }
+.script-director-settings-preset-list button:nth-child(-n + 3) .script-director-preset-copy {
+  position: relative;
+  z-index: 3;
+  padding-right: 46px;
+}
+.script-director-settings-preset-list button:nth-child(-n + 3) .script-director-preset-copy > b {
+  border-color: var(--preset-glow);
+  background: #1d2228b5;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--preset-glow) 20%, transparent), 0 0 14px color-mix(in srgb, var(--preset-glow) 25%, transparent);
+}
+.script-director-settings-preset-list button:nth-child(-n + 3):hover,
+.script-director-settings-preset-list button:nth-child(-n + 3).is-active {
+  border-color: var(--preset-glow);
+  box-shadow: inset 0 1px #ffffff2a, 0 7px 22px #0000003b, 0 0 0 1px color-mix(in srgb, var(--preset-glow) 20%, transparent);
+  filter: saturate(1.08);
+  transform: translateX(2px);
+}
+.script-director-settings-preset-list button:nth-child(-n + 3).is-active::before {
+  opacity: .56;
+}
+
+/* Show the complete user supplied cover in the small rail thumbnail. The
+   previous cover fit cropped poster edges, and the viewport mask hid the top
+   and bottom thumbnails even when their rows were fully inside the rail. */
+.script-director-theme-dot {
+  background-size: contain !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  background-color: #252a2f;
+}
+.script-director-theme-rail.is-infinite .script-director-theme-rail-viewport {
+  mask-image: none;
+  -webkit-mask-image: none;
+}
+
+/* Restore the visible waterball layers. The relationship canvas is only the
+   connector/highlight layer; each lobe keeps its own cover so the artwork can
+   drift a few pixels inside the moving silhouette instead of sliding with it. */
+.script-director-settings-modal .script-director-theme-orb-wrap.is-primary {
+  display: block;
+}
+.script-director-settings-modal .script-director-theme-orb-wrap.is-primary .script-director-theme-circle,
+.script-director-settings-modal .script-director-theme-fusion-wrap > .script-director-theme-circle.is-fusion {
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  isolation: isolate;
+  background-image: none !important;
+}
+.script-director-settings-modal .script-director-theme-fusion-wrap > .script-director-theme-circle.is-fusion {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 196px;
+  height: 196px;
+  margin: 0;
+  transform: translate(calc(-50% + 94px), calc(-50% - 12px));
+}
+.script-director-settings-modal .script-director-theme-circle > .script-director-theme-cover {
+  position: absolute;
+  z-index: 0;
+  inset: -6%;
+  display: block;
+  border-radius: inherit;
+  background-image: var(--theme-artwork, none);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  filter: saturate(.96) contrast(1.02);
+  opacity: 1 !important;
+  width: auto !important;
+  height: auto !important;
+  max-width: none !important;
+  max-height: none !important;
+  transform-origin: center;
+  animation: script-director-waterball-cover-wobble 6.8s ease-in-out infinite;
+  will-change: transform;
+}
+.script-director-settings-modal .script-director-theme-orb-wrap.is-primary .script-director-theme-circle {
+  animation: script-director-waterball-lobe 6.8s ease-in-out infinite !important;
+}
+.script-director-settings-modal .script-director-theme-fusion-wrap > .script-director-theme-circle.is-fusion {
+  animation: script-director-waterball-lobe-fusion 7.2s ease-in-out -2.8s infinite !important;
+}
+.script-director-settings-modal .script-director-theme-fusion-wrap > .script-director-theme-circle.is-fusion > .script-director-theme-cover {
+  animation-duration: 7.2s;
+  animation-delay: -2.8s;
+}
+.script-director-settings-modal .script-director-theme-circle::before {
+  z-index: 1;
+}
+.script-director-settings-modal .script-director-theme-circle::after {
+  z-index: 2;
+}
+.script-director-settings-modal .script-director-theme-circle > span:not(.script-director-theme-cover) {
+  z-index: 3;
+}
+@keyframes script-director-waterball-cover-wobble {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(-.35deg) scale(1.035, 1.03); }
+  24% { transform: translate3d(1.5px, -1.5px, 0) rotate(.35deg) scale(1.045, 1.025); }
+  52% { transform: translate3d(-1px, 1.5px, 0) rotate(-.55deg) scale(1.025, 1.045); }
+  78% { transform: translate3d(1px, .5px, 0) rotate(.25deg) scale(1.04, 1.03); }
+}
+
+/* Final waterball alignment -------------------------------------------------
+   Keep the selector rails narrow enough to leave a real centre stage. The
+   previous fallback stretched the fusion wrapper over the whole orbit and
+   positioned its circle from that oversized box, which made the second ball
+   drift down and right. Both lobes now use the same stage coordinate system. */
+.script-director-settings-theme-layout {
+  grid-template-columns: 176px minmax(0, 1fr) !important;
+  gap: 10px !important;
+}
+.script-director-settings-theme-layout.has-fusion-rail {
+  grid-template-columns: 176px minmax(360px, 1fr) 176px !important;
+  gap: 10px !important;
+}
+.script-director-theme-stage {
+  min-width: 0;
+  overflow: visible;
+}
+.script-director-theme-orbit {
+  width: 100%;
+  height: 284px !important;
+  min-height: 284px !important;
+  overflow: visible;
+}
+.script-director-theme-orbit > .script-director-theme-orb-wrap.is-primary {
+  position: absolute !important;
+  top: 50% !important;
+  left: 50% !important;
+  width: 200px !important;
+  height: 200px !important;
+  margin: 0 !important;
+  transform: translate(calc(-50% - 72px), calc(-50% - 34px)) !important;
+  z-index: 2;
+}
+.script-director-theme-orbit > .script-director-theme-fusion-wrap {
+  position: absolute !important;
+  inset: auto !important;
+  top: 50% !important;
+  left: 50% !important;
+  width: 196px !important;
+  height: 196px !important;
+  margin: 0 !important;
+  overflow: visible !important;
+  pointer-events: none;
+  transform: translate(calc(-50% + 72px), calc(-50% + 34px)) !important;
+  z-index: 4;
+}
+/* The old has-fusion rule set left:0/right:0 with higher specificity. Keep
+   this matching selector so that override cannot stretch the wrapper again. */
+.script-director-theme-orbit.has-fusion > .script-director-theme-fusion-wrap {
+  position: absolute !important;
+  inset: auto !important;
+  top: 50% !important;
+  left: 50% !important;
+  right: auto !important;
+  bottom: auto !important;
+  width: 196px !important;
+  height: 196px !important;
+  margin: 0 !important;
+  transform: translate(calc(-50% + 72px), calc(-50% + 34px)) !important;
+}
+.script-director-theme-orbit > .script-director-theme-fusion-wrap > .script-director-theme-circle.is-fusion {
+  position: relative !important;
+  inset: auto !important;
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0 !important;
+  transform: none !important;
+  pointer-events: auto;
+}
+.script-director-theme-orbit > .script-director-theme-fusion-wrap > button {
+  top: 16px !important;
+  right: 2px !important;
+  left: auto !important;
+  width: 24px !important;
+  height: 24px !important;
+  border: 1px solid rgba(231, 237, 242, .40) !important;
+  border-radius: 50% !important;
+  background: rgba(38, 42, 47, .82) !important;
+  box-shadow: 0 3px 9px rgba(0, 0, 0, .48), inset 0 1px rgba(255, 255, 255, .08) !important;
+  color: #d7d9dc !important;
+  transform: none !important;
+  pointer-events: auto;
+}
+.script-director-theme-orbit > .script-director-theme-fusion-wrap > button:hover {
+  background: rgba(62, 68, 75, .92) !important;
+  transform: none !important;
+}
+
+/* The empty canvas span is retained for semantic labelling, but it must not
+   create a transparent stacking layer over the two image lobes. */
+.script-director-theme-water-canvas {
+  display: none !important;
+}
+
+/* A small diffuse highlight and a thin inner rim read as reflected light on
+   the water surface. They stay inside each lobe while the cover gently moves. */
+.script-director-settings-modal .script-director-theme-circle::before {
+  display: block !important;
+  inset: 0 !important;
+  z-index: 1 !important;
+  background:
+    /* Keep the broad reflection tight: a large soft white patch reads as fog,
+       while the reference has a compact studio highlight on the glass shell. */
+    radial-gradient(ellipse 34% 13% at 30% 10%, #ffffffa3 0, #ffffff40 24%, #ffffff12 50%, transparent 78%),
+    radial-gradient(ellipse 12% 34% at 5% 38%, #f4f4f430 0, #f4f4f415 30%, transparent 80%),
+    radial-gradient(ellipse 13% 29% at 96% 57%, #e7e9eb32 0, #e7e9eb13 35%, transparent 82%),
+    /* A broken, narrow silver arc gives the rim thickness without tinting the
+       cover blue or placing a uniform glow over the whole image. */
+    radial-gradient(ellipse 53% 55% at 49% 49%, transparent 94%, #ffffff55 95%, #ffffff20 96.5%, transparent 98%),
+    linear-gradient(137deg, transparent 28%, #ffffff19 37%, transparent 51%),
+    radial-gradient(ellipse at 52% 112%, #000b 0, transparent 59%) !important;
+  opacity: .86 !important;
+  transform-origin: 28% 16%;
+  animation: script-director-waterball-surface 7.2s ease-in-out infinite !important;
+  pointer-events: none;
+}
+.script-director-settings-modal .script-director-theme-circle::after {
+  display: block !important;
+  position: absolute !important;
+  inset: 4px !important;
+  z-index: 2 !important;
+  border: 1px solid #f1f2f27a !important;
+  border-radius: inherit !important;
+  box-shadow: inset 0 0 0 1px #e2e3e333, inset 0 0 15px #ededed20 !important;
+  content: '' !important;
+  opacity: .68 !important;
+  pointer-events: none;
+  animation: script-director-waterball-inner-rim 5.6s ease-in-out infinite !important;
+}
+.script-director-theme-fusion-wrap .script-director-theme-circle.is-fusion::before {
+  animation-delay: -2.4s !important;
+}
+.script-director-theme-fusion-wrap .script-director-theme-circle.is-fusion::after {
+  animation-delay: -1.8s !important;
+}
+
+/* One restrained liquid connector sits behind the fusion lobe. */
+.script-director-theme-orbit.has-fusion > .script-director-theme-fusion-bridge {
+  display: block !important;
+  top: 50% !important;
+  left: 50% !important;
+  width: 54px !important;
+  height: 20px !important;
+  z-index: 3 !important;
+  border: 0 !important;
+  border-radius: 999px !important;
+  background: linear-gradient(90deg, transparent 0%, #e7e9e91c 30%, #ffffff3d 50%, #e7e9e91c 70%, transparent 100%) !important;
+  box-shadow: none !important;
+  filter: blur(.6px) !important;
+  opacity: .42 !important;
+  transform: translate(-50%, -50%) !important;
+  animation: script-director-waterball-bridge-vivid 6.8s ease-in-out -2.2s infinite !important;
+  pointer-events: none;
+}
+.script-director-theme-orbit.has-fusion > .script-director-theme-fusion-bridge::before {
+  display: none !important;
+}
+.script-director-theme-orbit.has-fusion > .script-director-theme-fusion-bridge::after {
+  display: none !important;
+}
+
+@media (max-width: 900px) {
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 148px minmax(300px, 1fr) 148px !important;
+  }
+  .script-director-theme-orbit > .script-director-theme-orb-wrap.is-primary {
+    transform: translate(calc(-50% - 58px), calc(-50% - 26px)) !important;
+  }
+  .script-director-theme-orbit > .script-director-theme-fusion-wrap {
+    transform: translate(calc(-50% + 58px), calc(-50% + 26px)) !important;
+  }
+}
+@media (max-width: 620px) {
+  .script-director-settings-theme-layout,
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 112px minmax(0, 1fr) !important;
+  }
+  .script-director-settings-theme-layout.has-fusion-rail {
+    grid-template-columns: 112px minmax(220px, 1fr) 112px !important;
+  }
+  .script-director-theme-orbit {
+    height: 230px !important;
+    min-height: 230px !important;
+  }
+  .script-director-theme-orbit > .script-director-theme-orb-wrap.is-primary {
+    width: 138px !important;
+    height: 138px !important;
+    transform: translate(calc(-50% - 46px), calc(-50% - 20px)) !important;
+  }
+  .script-director-theme-orbit > .script-director-theme-fusion-wrap {
+    width: 132px !important;
+    height: 132px !important;
+    transform: translate(calc(-50% + 46px), calc(-50% + 20px)) !important;
+  }
+}
+
+/* WebGL water surface -----------------------------------------------------
+   The canvas is the only visual surface for the relationship preview. The
+   old circles remain as transparent DOM hit/label layers so the existing
+   remove button and accessibility tree keep working without stacking a
+   second CSS water effect above the shader. */
+.script-director-settings-modal .script-director-theme-water-canvas {
+  position: absolute !important;
+  z-index: 3 !important;
+  inset: -72px !important;
+  display: block !important;
+  width: calc(100% + 144px) !important;
+  height: calc(100% + 144px) !important;
+  max-width: none !important;
+  pointer-events: none !important;
+  background: transparent !important;
+  filter: drop-shadow(0 4px 7px rgba(0, 0, 0, .20)) drop-shadow(0 0 5px rgba(224, 224, 224, .04));
+}
+
+/* The add-fusion control is a real frosted surface, matching the translucent
+   control over the mature project's single waterball. */
+.script-director-settings-modal .script-director-theme-fusion-trigger {
+  background: rgba(54, 65, 73, .30) !important;
+  border: 1px solid rgba(232, 232, 232, .48) !important;
+  box-shadow: inset 0 1px rgba(255, 255, 255, .18), 0 8px 22px rgba(0, 0, 0, .34), 0 0 18px rgba(224, 224, 224, .14) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(145%) !important;
+  backdrop-filter: blur(12px) saturate(145%) !important;
+}
+.script-director-settings-modal .script-director-theme-fusion-trigger:hover {
+  background: rgba(78, 92, 101, .42) !important;
+}
+.script-director-settings-modal .script-director-theme-circle,
+.script-director-settings-modal .script-director-theme-circle.is-fusion {
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  opacity: 0 !important;
+}
+.script-director-settings-modal .script-director-theme-circle::before,
+.script-director-settings-modal .script-director-theme-circle::after,
+.script-director-settings-modal .script-director-theme-cover {
+  display: none !important;
+  opacity: 0 !important;
+  content: none !important;
+}
+.script-director-settings-modal .script-director-theme-orbit:has(.script-director-theme-water-canvas) .script-director-theme-circle,
+.script-director-settings-modal .script-director-theme-orbit:has(.script-director-theme-water-canvas) .script-director-theme-circle.is-fusion {
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  opacity: 0 !important;
+}
+.script-director-settings-modal .script-director-theme-orbit:has(.script-director-theme-water-canvas) .script-director-theme-circle::before,
+.script-director-settings-modal .script-director-theme-orbit:has(.script-director-theme-water-canvas) .script-director-theme-circle::after,
+.script-director-settings-modal .script-director-theme-orbit:has(.script-director-theme-water-canvas) .script-director-theme-cover {
+  display: none !important;
+  opacity: 0 !important;
+  content: none !important;
+}
+.script-director-settings-modal .script-director-theme-orbit:has(.script-director-theme-water-canvas) > .script-director-theme-orb-wrap.is-primary,
+.script-director-settings-modal .script-director-theme-orbit:has(.script-director-theme-water-canvas) > .script-director-theme-fusion-wrap {
+  pointer-events: none !important;
+}
+.script-director-settings-modal .script-director-theme-orbit:has(.script-director-theme-water-canvas) > .script-director-theme-fusion-wrap > button {
+  pointer-events: auto !important;
+}
+
+/* Water controls share one fixed stage with the shader, including while a
+   second topic is entering/leaving. Empty rail space no longer moves canvas. */
+.script-director-settings-modal .script-director-settings-theme-layout,
+.script-director-settings-modal .script-director-settings-theme-layout.has-fusion-rail,
+.script-director-settings-modal .script-director-settings-theme-layout:not(.has-fusion-rail) {
+  grid-template-columns: 176px minmax(0, 1fr) 176px !important;
+  gap: 10px !important;
+}
+.script-director-settings-modal .script-director-theme-orbit { --water-unit: 100px; }
+.script-director-settings-modal .script-director-theme-water-canvas { margin-left: 0 !important; }
+.script-director-settings-modal .script-director-theme-orbit > .script-director-theme-orb-wrap.is-primary {
+  width: calc(var(--water-unit) * 1.96666) !important;
+  height: calc(var(--water-unit) * 1.96666) !important;
+  transform: translate(-50%, -50%) !important;
+}
+.script-director-settings-modal .script-director-theme-orbit.has-fusion > .script-director-theme-orb-wrap.is-primary {
+  transform: translate(calc(-50% - var(--water-unit) * .94), calc(-50% + var(--water-unit) * .19)) !important;
+}
+.script-director-settings-modal .script-director-theme-orbit > .script-director-theme-fusion-wrap,
+.script-director-settings-modal .script-director-theme-orbit.has-fusion > .script-director-theme-fusion-wrap {
+  width: calc(var(--water-unit) * 1.96666) !important;
+  height: calc(var(--water-unit) * 1.96666) !important;
+  transform: translate(calc(-50% + var(--water-unit) * .94), calc(-50% - var(--water-unit) * .23)) !important;
+}
+
+/* A dashed glass disk overlaps the lower-right portion of the single ball. */
+.script-director-settings-modal .script-director-theme-fusion-trigger {
+  position: absolute !important;
+  top: 50% !important;
+  left: 50% !important;
+  display: flex !important;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px !important;
+  width: calc(var(--water-unit) * 1.2) !important;
+  height: calc(var(--water-unit) * 1.2) !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  transform: translate(calc(-50% + var(--water-unit) * 1.10), calc(-50% + var(--water-unit) * .47)) !important;
+  border: 1px dashed rgba(218, 227, 232, .52) !important;
+  border-radius: 50% !important;
+  background: rgba(61, 61, 63, .52) !important;
+  box-shadow: inset 0 1px #ffffff0a, 0 2px 8px #00000016 !important;
+  -webkit-backdrop-filter: blur(14px) saturate(110%) !important;
+  backdrop-filter: blur(14px) saturate(110%) !important;
+  animation: none !important;
+}
+.script-director-settings-modal .script-director-theme-fusion-trigger > span {
+  margin: 0 !important;
+  font-size: 34px !important;
+  font-weight: 200 !important;
+  line-height: 1 !important;
+  color: #f0f1f2 !important;
+}
+.script-director-settings-modal .script-director-theme-fusion-trigger > small {
+  margin: 0 !important;
+  color: #e5e5e6 !important;
+  font-size: 13px !important;
+  line-height: 1.3 !important;
+  letter-spacing: 0 !important;
+}
+.script-director-settings-modal .script-director-theme-fusion-trigger:hover {
+  background: rgba(73, 73, 76, .58) !important;
+  border-color: rgba(235, 242, 246, .78) !important;
+  box-shadow: inset 0 1px #ffffff16, 0 2px 10px #00000024 !important;
+}
+.script-director-settings-modal .script-director-theme-orbit > .script-director-theme-fusion-wrap > button {
+  top: calc(var(--water-unit) * .16) !important;
+  right: 2px !important;
+  left: auto !important;
+  width: 24px !important;
+  height: 24px !important;
+  padding: 0 !important;
+  display: grid !important;
+  place-items: center !important;
+  border: 1px dashed rgba(221, 232, 239, .66) !important;
+  border-radius: 50% !important;
+  background: rgba(51, 53, 56, .5) !important;
+  color: #eff7fa !important;
+  box-shadow: 0 1px 5px #00000024 !important;
+  -webkit-backdrop-filter: blur(4px) !important;
+  backdrop-filter: blur(4px) !important;
+  transform: none !important;
+  transition: background-color .16s ease, border-color .16s ease !important;
+  animation: script-director-fusion-remove-enter 620ms ease-out both;
+}
+.script-director-settings-modal .script-director-theme-orbit > .script-director-theme-fusion-wrap > button:hover {
+  border-color: #f1f8fbe0 !important;
+  background: rgba(76, 80, 85, .68) !important;
+  box-shadow: 0 1px 5px #00000024 !important;
+  transform: none !important;
+}
+.script-director-settings-modal .script-director-theme-orbit > .script-director-theme-fusion-wrap > button:focus-visible {
+  outline: 2px solid #ddefefb8 !important;
+  outline-offset: 2px;
+}
+@keyframes script-director-fusion-remove-enter {
+  0%, 58% { opacity: 0; }
+  100% { opacity: 1; }
+}
+@media (max-width: 900px) {
+  .script-director-settings-modal .script-director-settings-theme-layout,
+  .script-director-settings-modal .script-director-settings-theme-layout.has-fusion-rail,
+  .script-director-settings-modal .script-director-settings-theme-layout:not(.has-fusion-rail) {
+    grid-template-columns: 148px minmax(0, 1fr) 148px !important;
+  }
+  .script-director-settings-modal .script-director-theme-orbit { --water-unit: 72px; }
+  .script-director-settings-modal .script-director-theme-fusion-trigger > span { font-size: 28px !important; }
+  .script-director-settings-modal .script-director-theme-fusion-trigger > small { font-size: 11px !important; }
+}
+@media (max-width: 620px) {
+  .script-director-settings-modal .script-director-settings-theme-layout,
+  .script-director-settings-modal .script-director-settings-theme-layout.has-fusion-rail,
+  .script-director-settings-modal .script-director-settings-theme-layout:not(.has-fusion-rail) {
+    grid-template-columns: 112px minmax(0, 1fr) 112px !important;
+  }
+  .script-director-settings-modal .script-director-theme-orbit { --water-unit: 66px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .script-director-settings-modal .script-director-theme-orbit > .script-director-theme-fusion-wrap > button { animation: none; }
+}
+
+/* The WebGL SDF is the single source of truth for the fusion neck.  Keep only
+   a very faint connector sheen; the old bridge glow sat over the SDF overlap
+   and read as a separate circular light ring in the middle of the pair. */
+.script-director-settings-modal .script-director-theme-orbit.has-fusion > .script-director-theme-fusion-bridge {
+  opacity: .16 !important;
+  filter: blur(1px) !important;
+  box-shadow: none !important;
+}

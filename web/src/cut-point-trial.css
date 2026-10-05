@@ -1,0 +1,71 @@
+.cut-trial {
+  display: grid;
+  gap: 13px;
+  padding: 15px 0;
+  border-top: 1px solid #394448;
+  border-bottom: 1px solid #394448;
+}
+
+.cut-trial-heading,
+.cut-trial-control > div:first-child,
+.cut-trial-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.cut-trial-heading > div { display: grid; gap: 3px; }
+.cut-trial-heading strong { color: #f0f4f4; font-size: 13px; }
+.cut-trial-heading span { color: #a8b8bb; font-size: 11px; }
+.cut-trial-delta { white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.cut-trial-controls,
+.cut-trial-frames {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 13px;
+}
+
+.cut-trial-control {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid #3b494c;
+  border-radius: 5px;
+  background: #252b2d;
+}
+
+.cut-trial-control label { color: #dce6e7; font-size: 11px; font-weight: 680; }
+.cut-trial-control > div:first-child span { color: #9bd8e2; font-size: 12px; font-variant-numeric: tabular-nums; }
+.cut-trial-control small { color: #9aaaae; font-size: 10px; }
+.cut-trial-control .mantine-Slider-root { margin: 8px 3px 2px; }
+
+.cut-trial-frame { display: grid; gap: 5px; min-width: 0; }
+.cut-trial-image {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  background: #111718;
+  border: 1px solid #384447;
+  border-radius: 4px;
+}
+.cut-trial-image img { width: 100%; height: 100%; object-fit: contain; }
+.cut-trial-image span { color: #e6a19b; font-size: 11px; }
+.cut-trial-frame > span { color: #aab9bc; font-size: 10px; font-variant-numeric: tabular-nums; }
+
+.cut-trial-preview { display: grid; gap: 8px; }
+.cut-trial-preview > span { color: #c7d3d5; font-size: 11px; font-weight: 680; }
+.cut-trial-preview .timeline-preview-stage { max-height: 285px; }
+.cut-trial-hint { display: flex; align-items: center; gap: 7px; color: #e7b68f; font-size: 11px; line-height: 1.5; }
+.cut-trial-actions { justify-content: flex-end; flex-wrap: wrap; }
+
+@media (max-width: 700px) {
+  .cut-trial-controls { grid-template-columns: 1fr; }
+  .cut-trial-heading { align-items: flex-start; }
+  .cut-trial-heading .cut-trial-delta { white-space: normal; text-align: right; }
+  .cut-trial-preview .timeline-preview-stage { max-height: 210px; }
+  .cut-trial-actions .mantine-Button-root { flex: 1; }
+}

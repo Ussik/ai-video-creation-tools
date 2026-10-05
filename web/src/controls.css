@@ -1,0 +1,126 @@
+.audio-preview {
+  width: 100%;
+  max-width: 290px;
+  margin: auto;
+  padding: 0 12px;
+}
+
+.reference-upload {
+  justify-self: start;
+}
+
+.generation-issue {
+  width: 100%;
+  color: #a65242;
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.inspector-actions {
+  flex-wrap: wrap;
+}
+
+.library-actions {
+  gap: 5px;
+}
+
+.library-media {
+  display: grid;
+  place-items: center;
+}
+
+.example-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.project-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.settings-form textarea,
+.model-edit textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  tab-size: 2;
+}
+
+.provider-row small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-row-open {
+  flex-wrap: wrap;
+}
+
+.model-edit {
+  flex: 0 0 100%;
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid #edf1ed;
+  margin-top: 4px;
+  padding-top: 12px;
+}
+
+.model-edit .model-edit-actions {
+  align-items: center;
+}
+
+.model-edit-actions .danger {
+  margin-right: auto;
+}
+
+.model-toggle input:focus-visible + span {
+  outline: 2px solid #267b63;
+  outline-offset: 3px;
+}
+
+@media (max-width: 700px) {
+  .sidebar .brand > div:last-child {
+    display: block;
+    min-width: 0;
+  }
+
+  .sidebar .brand strong,
+  .sidebar .brand span {
+    display: block;
+  }
+}
+
+@media (max-width: 390px) {
+  .settings-form .field-row,
+  .model-edit .field-row {
+    grid-template-columns: 1fr;
+  }
+
+  .candidate-info {
+    display: grid;
+  }
+
+  .candidate-info small {
+    white-space: normal;
+  }
+
+  .topbar-actions .button-primary {
+    font-size: 11px;
+  }
+
+  .topbar-start {
+    gap: 5px;
+  }
+}

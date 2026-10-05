@@ -1,0 +1,10 @@
+node_modules/
+web/dist/
+backend/dist/
+data/
+*.tsbuildinfo
+.DS_Store
+
+# Generated exports and local media
+exports/*
+!exports/.gitkeep
