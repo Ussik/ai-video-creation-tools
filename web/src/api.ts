@@ -279,6 +279,7 @@ export interface ContinuityShotReport {
   issues: ContinuityCheck[]
 }
 export interface ContinuityReport {
+  semantic_review: { status: 'not_checked' | 'checked' | 'stale'; model_id: string | null; checked_at: string | null }
   production_range: ProductionRange
   shots: ContinuityShotReport[]
   issues: ContinuityCheck[]

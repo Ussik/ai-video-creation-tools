@@ -251,6 +251,7 @@ function App() {
   const [shotId, setShotId] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('projects')
   const [scriptDirectorOpen, setScriptDirectorOpen] = useState(false)
+  const [scriptDirectorOpenRequest, setScriptDirectorOpenRequest] = useState(0)
   const [scriptDirectorFocus, setScriptDirectorFocus] = useState<ScriptAction>('all')
   const [scriptDirectorContext, setScriptDirectorContext] = useState('')
   const [scriptEditorSection, setScriptEditorSection] = useState<DocumentSection>('outline')
@@ -281,6 +282,8 @@ function App() {
   const [rangeDraft, setRangeDraft] = useState<ProductionRange>({ start_shot_id: null, end_shot_id: null })
   const [productionTarget, setProductionTarget] = useState<number | string>(45)
   const [continuity, setContinuity] = useState<ContinuityReport | null>(null)
+  const [continuityModelId, setContinuityModelId] = useState('')
+  const [semanticChecking, setSemanticChecking] = useState(false)
   const [continuityLoading, setContinuityLoading] = useState(false)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
@@ -342,6 +345,7 @@ function App() {
   const validHandoff = !!currentHandoff && currentHandoff.sourceClipId === previousClip?.id && currentHandoff.sourceOutMs === previousClip.out_ms
   const shotAssets = detail?.assets.filter((asset) => ((asset.shot_id === shotId && asset.source !== 'export') || asset.id === currentShot?.selected_asset_id) && asset.kind !== 'audio') || []
   const imageAssets = detail?.assets.filter((asset) => asset.kind === 'image') || []
+  const continuityModels = models.filter(model => model.modality === 'text' && model.enabled && providers.some(provider => provider.id === model.provider_id && provider.enabled))
   const availableModels = models.filter((model) => model.modality === generation.modality && model.enabled && providers.find((provider) => provider.id === model.provider_id)?.enabled)
   const activeModel = availableModels.find((model) => model.id === generation.model_id)
   const activeProvider = providers.find((provider) => provider.id === activeModel?.provider_id)
@@ -444,6 +448,16 @@ function App() {
     } finally {
       if (requestId === continuityRequest.current) setContinuityLoading(false)
     }
+  }
+
+  async function analyzeContinuity() {
+    if (!projectId || !continuityModelId || semanticChecking) return
+    const targetProject = projectId
+    setSemanticChecking(true)
+    try {
+      await api(`/projects/${targetProject}/continuity/analyze`, json('POST', { model_id: continuityModelId }))
+      await refreshContinuity(targetProject)
+    } catch (error) { report(error) } finally { setSemanticChecking(false) }
   }
 
   function report(error: unknown) {
@@ -978,6 +992,7 @@ function App() {
   }
 
   function openScriptDirector(focusArtifact: ScriptAction = 'all') {
+    setScriptDirectorOpenRequest(request => request + 1)
     setScriptDirectorFocus(focusArtifact)
     setScriptEditorOpen(false)
     setScriptDirectorOpen(true)
@@ -1108,6 +1123,7 @@ function App() {
 
       {detail && scriptDirectorOpen && !scriptEditorOpen && <ScriptDirectorPanel
         key={`script-director-${detail.id}`}
+        openRequestId={scriptDirectorOpenRequest}
         detail={detail}
         models={models}
         providers={providers}
@@ -1177,6 +1193,11 @@ function App() {
                 <div><strong>连续性检查</strong><span>仅检查当前制作范围的镜头与相邻接镜</span></div>
                 <Button variant="default" size="xs" loading={continuityLoading} onClick={() => void refreshContinuity()} leftSection={<RefreshCcw size={14} />}>刷新检查</Button>
               </div>
+              <div className="continuity-semantic-controls">
+                <Select aria-label="连续性语义检查模型" placeholder="选择文本模型" value={continuityModelId || null} onChange={value => setContinuityModelId(value || '')} data={continuityModels.map(model => ({ value: model.id, label: model.name }))} disabled={semanticChecking} />
+                <Button variant="default" size="xs" loading={semanticChecking} disabled={!continuityModels.some(model => model.id === continuityModelId)} onClick={() => void analyzeContinuity()}>模型检查接镜状态</Button>
+                <small>{continuity.semantic_review?.status === 'checked' ? '镜头文字状态已检查' : continuity.semantic_review?.status === 'stale' ? '镜头或资料已变化，请重新进行模型检查' : '素材与时长已检查，镜头文字状态尚未进行模型检查'}</small>
+              </div>
               <div className="continuity-summary">
                 <Badge variant="light" color={continuity.summary.error_count ? 'red' : 'teal'}>{continuity.summary.error_count} 个错误</Badge>
                 <Badge variant="light" color={continuity.summary.warning_count ? 'yellow' : 'gray'}>{continuity.summary.warning_count} 个提醒</Badge>
@@ -1187,7 +1208,7 @@ function App() {
                   <div className="continuity-issue-head"><Badge size="xs" variant="light" color={continuitySeverityColor(item.severity)}>{continuitySeverityLabel(item.severity)}</Badge><strong>{item.heading}</strong></div>
                   <ul>{item.checks.map((check) => <li key={`${item.key}-${check.code}`}>{check.message}</li>)}</ul>
                 </div>)}
-              </div> : <div className="continuity-empty"><Check size={15} />未发现连续性风险</div>}
+              </div> : <div className="continuity-empty"><Check size={15} />未发现素材与时长问题{continuity.semantic_review?.status === 'checked' ? '，文字状态检查无提醒' : '；文字状态尚未完成模型检查'}</div>}
             </section>}
           </> : <div className="no-shot"><Clapperboard size={30} /><h2>建立第一个镜头</h2>{detail.script.scenes.length > 0 && <Button variant="default" onClick={() => openScriptEditor()} leftSection={<ScrollText size={16} />}>打开剧本创作</Button>}<Button onClick={() => addShot()} leftSection={<Plus size={16} />}>添加镜头</Button></div>}
         </section>

@@ -13,7 +13,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 dom.window.requestAnimationFrame = callback => { callback(0); return 1 }
 const { createRoot } = await import('react-dom/client')
 after(() => dom.window.close())
-const choice = parseMessageChoices(JSON.stringify({ kind: 'choices', question: '选哪个故事？', options: [{ id: 'a', title: '御剑考执照', text: '御剑考执照：天才剑修被规则限制，进入凡人补考班。' }, { id: 'b', text: '师兄入魔了：师弟希望带师兄回家。' }, { id: 'other', text: '我有别的想法' }] }))!
+const choice = parseMessageChoices(JSON.stringify({ kind: 'choices', question: '选哪个故事？', options: [{ id: 'a', title: '御剑考执照', text: '御剑考执照：天才剑修被规则限制，进入凡人补考班。' }, { id: 'b', text: '师兄入魔了：师弟希望带师兄回家。' }, { id: 'other', text: '我有别的想法', kind: 'custom' }] }))!
 
 async function mount(onContinue: (answer: string) => Promise<void>, initial: ChoiceAnswer = { custom: false, text: '' }, unavailable = false) {
   const container = document.createElement('div'); document.body.append(container)

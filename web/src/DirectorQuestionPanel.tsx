@@ -1,7 +1,6 @@
 import { useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Check } from 'lucide-react'
-import { isCustomChoice } from './director-choices'
 import type { ParsedMessageChoices } from './director-choices'
 import { shouldSendDirectorMessage } from './director-window'
 
@@ -22,7 +21,7 @@ export default function DirectorQuestionPanel({ choice, answer, busy, unavailabl
   const submitLock = useRef(false)
   const [submitting, setSubmitting] = useState(false)
   const textarea = useRef<HTMLTextAreaElement>(null)
-  const options = choice.options.filter(option => !isCustomChoice(option.text))
+  const options = choice.options.filter(option => option.kind !== 'custom')
   const selected = options.find(option => option.label === answer.selectedId)
   const reply = answer.custom ? answer.text.trim() : selected?.text || ''
   const disabled = busy || submitting

@@ -140,3 +140,11 @@
   .sd-chat .script-director-messages { padding: 12px 14px 20px; }
   .sd-chat .script-director-mode-select { width: 96px; min-width: 84px; flex-basis: 96px; }
 }
+
+.sd-message-adopt { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0 16px; }
+.sd-message-adopt button { border: 1px solid #3a3a3a; border-radius: 8px; background: transparent; color: #aaa; font-size: 12px; padding: 7px 10px; cursor: pointer; }
+.sd-message-adopt button:hover { color: #ededed; background: #303030; }
+.sd-message-adopt button:disabled { opacity: .4; cursor: default; }
+.sd-message-adopt label { color: #aaa; font-size: 12px; }
+.sd-message-adopt input { width: 52px; color: #ededed; background: #171717; border: 1px solid #3a3a3a; border-radius: 6px; padding: 5px; }
+.script-director-storyboard-handoff select { color: #ededed; background: #171717; border: 1px solid #3a3a3a; border-radius: 6px; padding: 5px; }

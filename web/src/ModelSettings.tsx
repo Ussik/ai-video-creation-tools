@@ -77,12 +77,9 @@ const modalityLabels: Record<Modality, string> = { text: '文本', image: '图�
 const modalityIcons = { text: Type, image: ImageIcon, video: Film }
 
 function suggestedModality(model: CatalogItem): Modality | null {
-  if (model.modality_hint) return model.modality_hint
-  const name = `${model.remote_id} ${model.name}`.toLowerCase()
-  if (/(?:^|[\s._/-])(image|img|banana|flux|seedream|midjourney|ideogram|recraft|dall-e)(?=$|[\s._/-]|\d)/.test(name)) return 'image'
-  if (/(?:^|[\s._/-])(video|veo|sora|seedance|kling|runway|hailuo|pika)(?=$|[\s._/-]|\d)/.test(name)) return 'video'
-  if (/(?:^|[\s._/-])(gpt|claude|deepseek|qwen|gemini|llama|mistral|doubao)(?=$|[\s._/-]|\d)/.test(name)) return 'text'
-  return null
+  // Capabilities come from provider metadata or the creator's explicit choice.
+  // A model name is not evidence of supported output modalities.
+  return model.modality_hint || null
 }
 
 function modelFamily(model: CatalogItem): string {

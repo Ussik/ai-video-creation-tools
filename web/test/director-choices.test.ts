@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { choiceTitle, isCustomChoice, parseMessageChoices } from '../src/director-choices'
+import { choiceTitle, parseMessageChoices } from '../src/director-choices'
 
 test('legacy choices retain complete explanations and derive short button titles', () => {
   const text = '天道悬疑：小宗门验尸弟子发现了埋在禁地的飞升者遗骸。他必须在师父飞升前查明真相。'
@@ -21,7 +21,11 @@ test('ambiguous ids and incomplete choices do not create unusable question contr
     assert.equal(parseMessageChoices(JSON.stringify({ kind: 'choices', question: '选择？', options })), null)
   }
   assert.equal(parseMessageChoices('普通对话'), null)
-  assert.equal(isCustomChoice('我有别的想法'), true)
-  assert.equal(isCustomChoice('其他方向'), true)
-  assert.equal(isCustomChoice('另一条完整故事方向'), false)
+})
+test('custom choice behavior comes from structured metadata instead of option wording', () => {
+  const parsed = parseMessageChoices(JSON.stringify({ kind: 'choices', question: '选择？', options: [
+    { id: 'a', text: '其他方向' }, { id: 'b', text: '自由输入', kind: 'custom' },
+  ] }))!
+  assert.equal(parsed.options[0].kind, undefined)
+  assert.equal(parsed.options[1].kind, 'custom')
 })

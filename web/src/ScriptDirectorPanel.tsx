@@ -40,13 +40,13 @@ import './script-director.css'
 import './script-director-chat.css'
 import DirectorQuestionPanel from './DirectorQuestionPanel'
 import type { ChoiceAnswer } from './DirectorQuestionPanel'
-import { isCustomChoice, parseMessageChoices } from './director-choices'
+import { parseMessageChoices } from './director-choices'
 import { CanvasTextPreview } from './CanvasTextEditor'
 import { parseScriptDocument } from './script-rich-document'
 import { textDocumentText } from './text-document'
 import { clampDirectorWindow, defaultDirectorWindow, shouldSendDirectorMessage, type DirectorWindowRect } from './director-window'
 import { ScriptThemeWaterCanvas as WebGLScriptThemeWaterCanvas } from './ScriptThemeWaterCanvas'
-import { artifactKey, explicitSeriesSpecs, workflowFromMessage, workflowLabels, workflowStages } from './script-workflow'
+import { artifactKey, workflowLabels, workflowStages } from './script-workflow'
 import type { WorkflowDraft, WorkflowRequest, WorkflowStage } from './script-workflow'
 
 type GeneratedScene = {
@@ -98,6 +98,8 @@ type ProcessEvent = {
 }
 
 type StreamEvent = {
+  workflow?: WorkflowRequest
+  generation_options?: ScriptGenerationOptions
   draft?: WorkflowDraft
   type?: string
   text?: string
@@ -162,6 +164,7 @@ export interface ScriptDirectorPanelProps {
   providers: Provider[]
   focusArtifact?: ScriptAction
   initialContext?: string
+  openRequestId?: number
   onRefresh: () => Promise<unknown>
   onClose: () => void
   onOpenModels: () => void
@@ -588,20 +591,7 @@ const directorThemeArtwork: Record<string, string> = {
 }
 
 function directorArtworkForTheme(theme: string): string | undefined {
-  const direct = directorThemeArtwork[theme]
-  if (direct) return direct
-  if (/玄幻|修仙|仙侠|仙门|东方奇幻/.test(theme)) return directorXianxiaArtwork
-  if (/都市|职场|现实/.test(theme)) return '/topic-art/covers/topics/urban.jpg'
-  if (/古装|历史/.test(theme)) return '/topic-art/covers/topics/costume-romance.jpg'
-  if (/悬疑|推理|怪谈|惊悚/.test(theme)) return '/topic-art/covers/topics/mystery.jpg'
-  if (/末世|科幻/.test(theme)) return '/topic-art/covers/topics/apocalypse.jpg'
-  if (/文旅|非遗|国潮/.test(theme)) return '/topic-art/covers/topics/heritage.jpg'
-  if (/犯罪|谍战|复仇/.test(theme)) return '/topic-art/covers/topics/crime-spy.jpg'
-  if (/家庭|伦理/.test(theme)) return '/topic-art/covers/topics/family.jpg'
-  if (/喜剧/.test(theme)) return '/topic-art/covers/topics/comedy.jpg'
-  if (/体育|竞技/.test(theme)) return '/topic-art/covers/topics/sports.jpg'
-  if (/主旋律/.test(theme)) return '/topic-art/covers/topics/hero.jpg'
-  return undefined
+  return directorThemeArtwork[theme]
 }
 
 function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, onFusionSettled }: { primary: string; fusion: string; primaryArtwork?: string; onFusionSettled?: (hasFusion: boolean) => void }) {
@@ -615,18 +605,12 @@ function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, onFusionSettl
 }
 
 function directorThemeTone(value: string): string {
-  if (/玄幻|修仙|仙/.test(value)) return 'fantasy'
-  if (/都市|职场|现实/.test(value)) return 'city'
-  if (/古装|历史/.test(value)) return 'heritage'
-  if (/文旅|非遗|国潮/.test(value)) return 'culture'
-  if (/悬疑|惊悚|怪谈/.test(value)) return 'thriller'
-  if (/犯罪|谍战|重生|复仇/.test(value)) return 'crime'
-  if (/家庭|伦理/.test(value)) return 'family'
-  if (/末世|科幻/.test(value)) return 'future'
-  if (/喜剧/.test(value)) return 'comedy'
-  if (/体育|竞技/.test(value)) return 'sports'
-  if (/主旋律/.test(value)) return 'hero'
-  return 'neutral'
+  const tones: Record<string, string> = {
+    '玄幻修仙': 'fantasy', '都市现实': 'city', '古装言情': 'heritage', '历史传奇': 'heritage',
+    '文旅非遗': 'culture', '悬疑推理': 'thriller', '惊悚怪谈': 'thriller', '犯罪谍战': 'crime', '重生复仇': 'crime',
+    '家庭伦理': 'family', '末世科幻': 'future', '喜剧': 'comedy', '体育竞技': 'sports', '主旋律': 'hero',
+  }
+  return tones[value] || 'neutral'
 }
 
 const directorAutoFieldOptions: Record<'audience' | 'character_notes' | 'era' | 'core_hook' | 'visual_style', string[]> = {
@@ -786,7 +770,7 @@ function readComposerDraft(projectId: string) {
   catch { return '' }
 }
 
-function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all', initialContext, onRefresh, onClose, onOpenModels, onOpenDocument, onNotice }: ScriptDirectorPanelProps) {
+function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all', initialContext, openRequestId, onRefresh, onClose, onOpenModels, onOpenDocument, onNotice }: ScriptDirectorPanelProps) {
   const [windowLayout, setWindowLayout] = useState(readWindowLayout)
   const [minimized, setMinimized] = useState(false)
   const [workflowOpen, setWorkflowOpen] = useState(false)
@@ -824,6 +808,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const [promptLoading, setPromptLoading] = useState(false)
   const [promptError, setPromptError] = useState<string | null>(null)
   const [input, setInput] = useState(initialContext || readComposerDraft(detail.id))
+  const [adoptingMessageId, setAdoptingMessageId] = useState<string | null>(null)
+  const [handoffEpisode, setHandoffEpisode] = useState(0)
   const [working, setWorking] = useState<'chat' | 'prompt' | 'generate' | 'save' | 'shots' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [generated, setGenerated] = useState<GeneratedScript | null>(() => restoreWorkflowDraft(detail.id))
@@ -859,7 +845,9 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const streamMessageUpdateRef = useRef<{ pendingId: string; text: string } | null>(null)
   const hasSavedScript = scriptExists(detail)
   const linkedSceneIds = useMemo(() => new Set(detail.shots.map((shot) => shot.source_scene_id).filter((id): id is string => !!id)), [detail.shots])
-  const pendingSceneCount = (detail.script?.scenes || []).filter((scene) => !linkedSceneIds.has(scene.id)).length
+  const handoffScenes = (detail.script?.scenes || []).filter(scene => !handoffEpisode || scene.episode_number === handoffEpisode)
+  const pendingSceneCount = handoffScenes.filter(scene => !linkedSceneIds.has(scene.id)).length
+  const savedEpisodes = (detail.script.artifacts || []).filter(artifact => artifact.artifact_type === 'episode_script' && (artifact.episode_number || 0) > 0).sort((a, b) => (a.episode_number || 0) - (b.episode_number || 0))
   const promptRequestId = useRef(0)
   const selectedModel = availableModels.find((model) => model.id === modelId)
   const modelSelector = <Select
@@ -902,12 +890,11 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     }
     return [...cards.values()]
   }, [detail.script.artifacts, generated, generatedStructure, scriptSaved])
-  const quickReplies = useMemo(() => {
-    if (busy) return []
-    if (generated && !scriptSaved) return ['确认写入项目剧本']
-    if (activeFocus !== 'all') return []
-    if (workflowStage === 'episode') return [`开始写第 ${episodeNumber} 集`, '补充人物关系']
-    return [`生成${workflowLabels[workflowStage]}`, '给我几个故事方向选']
+  const quickReplies = useMemo<Array<{ label: string; action: 'save' | 'workflow' | 'chat' }>>(() => {
+    if (busy || activeFocus !== 'all') return []
+    if (generated && !scriptSaved) return [{ label: '确认写入项目剧本', action: 'save' }]
+    return [{ label: workflowStage === 'episode' ? `开始写第 ${episodeNumber} 集` : `生成${workflowLabels[workflowStage]}`, action: 'workflow' },
+      { label: workflowStage === 'episode' ? '补充人物关系' : '给我几个故事方向选', action: 'chat' }]
   }, [busy, generated, scriptSaved, workflowStage, episodeNumber, activeFocus])
   const activeChoice = useMemo(() => {
     const retry = messages.find(message => message.id === answeringChoiceId)
@@ -969,6 +956,16 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   useEffect(() => {
     if (initialContext) setInput(initialContext)
   }, [initialContext])
+
+  useEffect(() => {
+    if (openRequestId === undefined) return
+    // Reopening the existing conversation should reveal its messages without
+    // remounting it, replacing the draft or interrupting a running request.
+    setMinimized(false)
+    setReaderKey(null)
+    setArtifactsOpen(false)
+    setWorkflowOpen(false)
+  }, [openRequestId])
 
   useEffect(() => {
     if (syncedOptionsKey.current === optionsSyncKey) return
@@ -1325,10 +1322,18 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     const decoder = new TextDecoder()
     let buffer = ''
     let reply = ''
+    let documentWorkflow = Boolean(body.workflow || body.adopt_source)
+    let completed = false
     let sseLines: string[] = []
 
     const applyEvent = (event: StreamEvent) => {
       const kind = String(event.type || '').toLowerCase()
+      if (kind === 'intent') {
+        documentWorkflow = Boolean(event.workflow)
+        if (event.generation_options) setOptions(event.generation_options)
+        if (event.generation_options?.episode_duration) setEpisodeDuration(event.generation_options.episode_duration)
+        return
+      }
       if (kind === 'progress' || kind === 'stage') {
         if (!reply && event.text) queueStreamMessage(pendingId, event.text)
         return
@@ -1341,6 +1346,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         throw new Error(event.message || event.text || '流式生成失败')
       }
       if (kind === 'done' || kind === 'complete') {
+        completed = true
         if (typeof event.reply === 'string') reply = event.reply
         if (event.draft) receiveWorkflowDraft(event.draft)
         return
@@ -1348,7 +1354,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       const chunk = typeof event.delta === 'string' ? event.delta : typeof event.text === 'string' ? event.text : ''
       if (chunk) {
         reply += chunk
-        queueStreamMessage(pendingId, body.workflow ? '正在编写阶段草稿，完成后可预览和确认…' : isStructuredChoiceStream(reply) ? '正在整理可选方向…' : reply)
+        queueStreamMessage(pendingId, documentWorkflow ? '正在编写阶段草稿，完成后可预览和确认…' : isStructuredChoiceStream(reply) ? '正在整理可选方向…' : reply)
       }
     }
 
@@ -1395,6 +1401,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       flushQueuedStreamMessage()
       reader.releaseLock()
     }
+    if (!completed) throw new Error('连接中断，创作结果尚未完整返回；请重试，项目内容未修改')
     if (!reply.trim()) {
       const current = messages.find((item) => item.id === pendingId)?.text || ''
       reply = current.trim()
@@ -1518,6 +1525,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       scenes: draft.scenes.map(scene => ({ ...normaliseScene(scene), episode_number: draft.episode_number })),
     })
     setWorkflowStage(draft.stage)
+    setEpisodeNumber(draft.episode_number)
     setScriptSaved(false)
     setPreviewOpen(true)
     setWorkflowOpen(false)
@@ -1543,17 +1551,14 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     }
   }
 
-  async function sendChatMessage(overrideInput?: string, skipAssetStatus = false, workflowOverride?: WorkflowRequest, preserveComposer = false): Promise<string | null> {
+  async function sendChatMessage(overrideInput?: string, skipAssetStatus = false, workflowOverride?: WorkflowRequest, preserveComposer = false, adoptSource?: { text: string; episode_number: number }): Promise<string | null> {
     const message = (overrideInput ?? input).trim()
     if (!message) return null
     if (busy) return null
-    const workflow = activeFocus === 'all' && !preserveComposer ? workflowOverride || workflowFromMessage(message, episodeDuration) : undefined
-    if (workflow && generated && !scriptSaved) { setPreviewOpen(true); setError('请先确认保存或放弃当前草稿'); return null }
+    const workflow = activeFocus === 'all' && !preserveComposer ? workflowOverride : undefined
+    if ((workflow || adoptSource) && generated && !scriptSaved) { setPreviewOpen(true); setError('请先确认保存或放弃当前草稿'); return null }
     if (!modelId || !selectedModel) { setError('请选择文本模型'); return null }
-    const specs = explicitSeriesSpecs(message)
-    const generationOptions = { ...options, ...(specs.episode_count ? { episode_count: specs.episode_count } : {}), ...(specs.target_duration ? { episode_duration: specs.target_duration } : {}) }
-    if (specs.episode_count || specs.target_duration) setOptions(generationOptions)
-    if (specs.target_duration) setEpisodeDuration(specs.target_duration)
+    const generationOptions = options
     setError(null)
     if (activeFocus !== 'all' && !skipAssetStatus) setAssetTaskStatus('analyzing')
     const userMessage: Message = { id: crypto.randomUUID(), role: 'user', text: message }
@@ -1575,6 +1580,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         focus_artifact: activeFocus,
         generation_options: generationOptions,
         ...(workflow ? { workflow } : {}),
+        ...(adoptSource ? { adopt_source: adoptSource } : {}),
+        intent_context: { selected_episode: episodeNumber, ...(generated && !scriptSaved ? { pending_draft: generated.workflow || { stage: 'episode', episode_number: episodeNumber } } : {}) },
         messages: conversation,
       }
       let reply: string
@@ -1582,8 +1589,10 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         reply = await streamDirectorChat(pendingId, requestBody, controller.signal)
       } catch (issue) {
         if (!(issue instanceof StreamUnavailableError)) throw issue
-        const result = await api<{ reply: string; draft?: WorkflowDraft }>(`/projects/${detail.id}/script/director/chat`, json('POST', requestBody))
+        const result = await api<{ reply: string; draft?: WorkflowDraft; generation_options?: ScriptGenerationOptions }>(`/projects/${detail.id}/script/director/chat`, json('POST', requestBody))
         reply = result.reply
+        if (result.generation_options) setOptions(result.generation_options)
+        if (result.generation_options?.episode_duration) setEpisodeDuration(result.generation_options.episode_duration)
         if (result.draft) receiveWorkflowDraft(result.draft)
       }
       setMessages((current) => current.map((item) => item.id === pendingId
@@ -1608,6 +1617,11 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       setWorking(null)
     }
     return null
+  }
+
+  async function adoptMessage(message: Message) {
+    setAdoptingMessageId(null)
+    await sendChatMessage(`将选中的正文采用为第 ${episodeNumber} 集，保留原文并整理分场。`, false, undefined, false, { text: message.text, episode_number: episodeNumber })
   }
 
   async function handleAssetConfirm() {
@@ -1700,16 +1714,10 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     streamAbortController.current?.abort()
   }
 
-  function handleQuickReply(reply: string) {
-    if (reply === '确认写入项目剧本' && generated) {
-      void saveGenerated()
-      return
-    }
-    if (reply === '生成剧本草稿' || reply === '整理对话并生成剧本草稿') {
-      generateWorkflow()
-      return
-    }
-    void sendChatMessage(reply)
+  function handleQuickReply(reply: { label: string; action: 'save' | 'workflow' | 'chat' }) {
+    if (reply.action === 'save') { void saveGenerated(); return }
+    if (reply.action === 'workflow') { generateWorkflow(); return }
+    void sendChatMessage(reply.label)
   }
 
   async function generateScript() {
@@ -1802,7 +1810,10 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         setScriptSaved(true)
         const nextStage = workflowStages[Math.min(workflowStages.indexOf(completed) + 1, workflowStages.length - 1)]!
         setWorkflowStage(nextStage)
-        if (completed === 'episode') setEpisodeNumber(Math.min(options.episode_count || 200, generated.workflow.episode_number + 1))
+        if (completed === 'episode') {
+          setHandoffEpisode(generated.workflow.episode_number)
+          setEpisodeNumber(Math.min(options.episode_count || 200, generated.workflow.episode_number + 1))
+        }
         appendMessage('assistant', `${completed === 'episode' ? `第 ${generated.workflow.episode_number} 集` : workflowLabels[completed]}已保存。${completed === 'episode' ? '可以继续下一集，或将场次加入故事板。' : `接下来可生成${workflowLabels[nextStage]}。`}`)
         await onRefresh().catch(() => onNotice('草稿已保存，项目刷新失败，请稍后重试'))
         onNotice('当前阶段已保存')
@@ -1859,7 +1870,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
 
   async function createSceneShots() {
     if (working || pendingSceneCount === 0) return
-    const sceneIds = (detail.script?.scenes || []).filter((scene) => !linkedSceneIds.has(scene.id)).map((scene) => scene.id)
+    const sceneIds = handoffScenes.filter((scene) => !linkedSceneIds.has(scene.id)).map((scene) => scene.id)
     if (!sceneIds.length) {
       onNotice('所有场次都已有分镜')
       return
@@ -2008,7 +2019,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         if (parsedChoices) return <div className="script-director-message assistant" key={message.id}>
           <div className="sd-choice-explanation">
             {parsedChoices.intro && <DirectorMessageText text={parsedChoices.intro} />}
-            {parsedChoices.options.filter(option => !isCustomChoice(option.text)).map(option => <div className="sd-choice-direction" key={option.label}>
+            {parsedChoices.options.filter(option => option.kind !== 'custom').map(option => <div className="sd-choice-direction" key={option.label}>
               {!option.text.replace(/[*#`]/g, '').startsWith(option.title.split(/[｜|]/)[0].trim()) && <strong>{option.title}</strong>}
               <DirectorMessageText text={option.text} />
             </div>)}
@@ -2023,18 +2034,27 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
             {message.pending ? <><LoaderCircle size={13} className="script-director-spinner" /><span>{message.text}</span></> : message.role === 'assistant' ? <DirectorMessageText text={message.text} /> : message.text}
           </div>
           {message.activity?.length && !message.pending ? <details className="sd-message-activity"><summary>创作依据</summary>{message.activity.map(event => <p key={event.id}>{event.summary}</p>)}</details> : null}
+          {activeFocus === 'all' && message.role === 'assistant' && message.id !== 'welcome' && !message.pending && !message.failed && <div className="sd-message-adopt">
+            {adoptingMessageId === message.id ? <>
+              <label>采用为第 <input type="number" min={1} max={200} value={episodeNumber} aria-label="采用为第几集" onChange={event => setEpisodeNumber(Math.max(1, Math.min(200, Number(event.currentTarget.value) || 1)))} /> 集</label>
+              <button type="button" disabled={busy} onClick={() => void adoptMessage(message)}>整理为分集草稿</button>
+              <button type="button" onClick={() => setAdoptingMessageId(null)}>取消</button>
+            </> : <button type="button" disabled={busy || Boolean(generated && !scriptSaved)} onClick={() => setAdoptingMessageId(message.id)}>采用为分集剧本</button>}
+          </div>}
         </div>
       })}
     {hasSavedScript && detail.script.scenes.length > 0 && <section className="script-director-storyboard-handoff" aria-label="故事板制作">
-      <div><span><Clapperboard size={14} />故事板制作</span><small>{pendingSceneCount ? `${pendingSceneCount} 场尚未加入画布` : '所有场次都已加入画布'}</small></div>
+      <div><span><Clapperboard size={14} />故事板制作</span>
+        {!!savedEpisodes.length && <select aria-label="选择制作分镜的集数" value={handoffEpisode} onChange={event => setHandoffEpisode(Number(event.currentTarget.value))}><option value={0}>全部场次</option>{savedEpisodes.map(artifact => <option key={artifact.id} value={artifact.episode_number}>第 {artifact.episode_number} 集</option>)}</select>}
+        <small>{pendingSceneCount ? `${pendingSceneCount} 场尚未加入画布` : '所有场次都已加入画布'}</small></div>
       <button type="button" onClick={() => void createSceneShots()} disabled={busy || pendingSceneCount === 0}>
         {working === 'shots' ? <LoaderCircle size={13} className="script-director-spinner" /> : <Clapperboard size={13} />}
-        {pendingSceneCount ? '将场次加入画布' : '已加入画布'}
+        {pendingSceneCount ? '将本集场次加入画布' : '已加入画布'}
       </button>
     </section>}
 
     {!activeChoice && !!quickReplies.length && <div className="script-director-quick-replies" aria-label="快捷回复">
-      {quickReplies.map((reply) => <button type="button" key={reply} onClick={() => handleQuickReply(reply)} disabled={busy || (!selectedModel && reply !== '确认写入项目剧本')}><ChevronRight size={13} />{reply}</button>)}
+      {quickReplies.map((reply) => <button type="button" key={reply.action} onClick={() => handleQuickReply(reply)} disabled={busy || (!selectedModel && reply.action !== 'save')}><ChevronRight size={13} />{reply.label}</button>)}
     </div>}
 
     </div>

@@ -1,0 +1,109 @@
+/* Shared neutral palette for canvas nodes and the script conversation. */
+:root {
+  --creation-surface: #212121;
+  --creation-recessed: #171717;
+  --creation-raised: #303030;
+  --creation-hover: #353535;
+  --creation-border: #3a3a3a;
+  --creation-border-hover: #555555;
+  --creation-border-selected: #777777;
+  --creation-text: #ededed;
+  --creation-secondary: #cecece;
+  --creation-muted: #929292;
+}
+
+.script-director-panel.sd-chat {
+  --director-bg: var(--creation-surface);
+  --director-text: var(--creation-text);
+  --director-muted: var(--creation-muted);
+  background: var(--creation-surface);
+  border-color: var(--creation-border);
+}
+
+.project-canvas {
+  --pc-node-surface: var(--creation-surface);
+  --pc-node-surface-raised: var(--creation-raised);
+  --pc-node-surface-sunken: var(--creation-recessed);
+  --pc-node-line: var(--creation-border);
+  --pc-node-line-strong: var(--creation-border-hover);
+  --pc-node-text: var(--creation-text);
+  --pc-node-muted: var(--creation-muted);
+  --pc-node-accent: #bcbcbc;
+}
+
+/* Override the older type-specific selection outlines, including text chooser. */
+.project-canvas .pc-node.pc-node {
+  background: var(--creation-surface);
+  border-color: var(--creation-border) !important;
+  color: var(--creation-text);
+  box-shadow: 0 16px 34px #0004;
+}
+.project-canvas .pc-node.pc-node:hover { border-color: var(--creation-border-hover) !important; }
+.project-canvas .pc-node.pc-node.is-selected,
+.project-canvas .pc-node.pc-node.is-selected:hover {
+  border-color: var(--creation-border-selected) !important;
+  box-shadow: 0 16px 34px #0006, 0 0 0 1px #ffffff14 !important;
+}
+.project-canvas .pc-node-label-icon,
+.project-canvas .pc-node-label .pc-node-dimension,
+.project-canvas .pc-node-kicker,
+.project-canvas .pc-project-script-heading time,
+.project-canvas .pc-node-try-label,
+.project-canvas .pc-node-floating-meta { color: var(--creation-muted); }
+.project-canvas .pc-node-model { color: var(--creation-secondary); }
+.project-canvas .pc-node-heading svg { color: #aaaaaa; }
+.project-canvas .pc-node-foot { border-top-color: var(--creation-border); }
+.project-canvas .pc-node-group { background: var(--creation-raised); border-color: var(--creation-border-hover); color: var(--creation-secondary); }
+
+.project-canvas .pc-project-script-tabs,
+.project-canvas .pc-project-script-empty,
+.project-canvas .pc-node-media,
+.project-canvas .pc-node-output,
+.project-canvas .pc-node:not(.is-selected) .pc-node-preview-empty {
+  background: var(--creation-recessed);
+  border-color: var(--creation-border);
+  color: var(--creation-secondary);
+}
+.project-canvas .pc-node.pc-node-text .pc-rich-text-content,
+.project-canvas .pc-node.pc-node-text .pc-rich-text-preview,
+.project-canvas .pc-node.pc-node-text .pc-node-text-preview { background: var(--creation-surface); color: var(--creation-text); }
+.project-canvas .pc-node-placeholder { color: #686868; }
+.project-canvas .pc-project-script-tabs button { color: var(--creation-muted); }
+.project-canvas .pc-project-script-tabs button:hover { background: #292929; color: var(--creation-text); }
+.project-canvas .pc-project-script-tabs button.is-active {
+  background: var(--creation-raised);
+  color: var(--creation-text);
+  box-shadow: inset 0 0 0 1px var(--creation-border-hover);
+}
+.project-canvas .pc-node-try-actions-media { background: var(--creation-surface); }
+.project-canvas .pc-node-try-action,
+.project-canvas .pc-node-try-list .pc-node-try-action,
+.project-canvas .pc-project-script-actions button { background: #292929; border-color: var(--creation-border); color: var(--creation-secondary); }
+.project-canvas .pc-node-try-action svg,
+.project-canvas .pc-node-try-list .pc-node-try-action svg,
+.project-canvas .pc-project-script-actions button svg { color: #aaaaaa; }
+.project-canvas .pc-node-try-action:hover,
+.project-canvas .pc-node-try-action:focus-visible,
+.project-canvas .pc-node-try-list .pc-node-try-action:hover,
+.project-canvas .pc-node-try-list .pc-node-try-action:focus-visible,
+.project-canvas .pc-project-script-actions button:hover { background: var(--creation-hover); border-color: var(--creation-border-hover); color: var(--creation-text); }
+
+.project-canvas .pc-prompt-composer.pc-prompt-composer,
+.project-canvas .pc-node-floating-editor,
+.project-canvas .pc-node-floating-editor::before,
+.project-canvas .pc-text-format-bar { background: var(--creation-surface); border-color: var(--creation-border); box-shadow: 0 16px 50px #0004; }
+.project-canvas .pc-prompt-composer-input textarea { color: var(--creation-text); }
+.project-canvas .pc-prompt-composer-input textarea::placeholder,
+.project-canvas .pc-node-prompt-input::placeholder { color: var(--creation-muted); }
+.project-canvas .pc-node-model-select,
+.project-canvas .pc-node-prompt-input,
+.project-canvas .pc-node-floating-prompt,
+.project-canvas .pc-node-floating-model { background: var(--creation-recessed); border-color: var(--creation-border); color: var(--creation-text); }
+.project-canvas .pc-node-model-select:focus-visible,
+.project-canvas .pc-node-prompt-input:focus-visible { border-color: #bcbcbc; box-shadow: 0 0 0 2px #ffffff14; }
+.project-canvas .pc-styled-select.pc-composer-model .mantine-Select-input { background: var(--creation-raised); color: var(--creation-secondary); }
+.project-canvas .pc-styled-select.pc-composer-model .mantine-Select-input:hover { background: var(--creation-hover); }
+.project-canvas .pc-prompt-composer .pc-composer-model-icon { color: var(--creation-secondary); }
+.project-canvas .pc-prompt-composer.pc-prompt-composer .pc-composer-submit { background: #d1d1d1; color: #252525; }
+.project-canvas .pc-prompt-composer.pc-prompt-composer .pc-composer-submit:hover:not(:disabled) { background: #ededed; }
+.project-canvas .pc-prompt-composer.pc-prompt-composer .pc-composer-submit:disabled { background: #575757; color: #303030; }

@@ -13,6 +13,8 @@ import { decryptKey, encryptKey } from './secrets.js'
 import { generate, recoverImage, streamText } from './providers.js'
 import { parseStructuredOutput } from './structured-output.js'
 import { workflowRequest, workflowDraftSchema, workflowInstructions, parseWorkflowDraft, workflowReply } from './script-workflow.js'
+import { scriptSettingsSchema, scriptIntentPrompt, parseScriptIntent } from './script-intent.js'
+import { semanticContinuityPrompt, parseSemanticContinuity } from './continuity-semantics.js'
 import { fetchModelCatalog, type ModelCatalogConfig } from './model-catalog.js'
 import { extractVideoFrame, probeVideoDurationMs, render, type RenderClip } from './render.js'
 
@@ -46,18 +48,8 @@ const scriptSceneFields = z.object({
   dialogue: z.string().max(10000).default(''), narration: z.string().max(10000).default(''),
   duration: z.number().int().min(1).max(30).default(5),
 })
-const scriptGenerationOptions = z.object({
-  genre: z.string().trim().max(300).optional(),
-  genre_fusion: z.string().trim().max(500).optional(),
-  audience: z.string().trim().max(300).optional(),
-  era: z.string().trim().max(300).optional(),
-  core_hook: z.string().trim().max(1000).optional(),
-  visual_style: z.string().trim().max(1000).optional(),
-  story_structure: z.string().trim().max(1000).optional(),
-  character_notes: z.string().trim().max(2000).optional(),
-  episode_count: z.number().int().min(1).max(200).optional(),
-  episode_duration: z.number().int().min(5).max(600).optional(),
-})
+const scriptGenerationOptions = scriptSettingsSchema
+
 const scriptInput = z.object({
   brief: z.string().max(20000).optional(),
   outline: z.string().max(20000), characters: z.string().max(20000),
@@ -108,11 +100,13 @@ const scriptDirectorChatInput = z.object({
   focus_artifact: z.enum(['all', 'character', 'location', 'prop']).default('all'),
   generation_options: scriptGenerationOptions.default({}),
   workflow: workflowRequest.optional(),
+  intent_context: z.object({ pending_draft: workflowRequest.optional(), selected_episode: z.number().int().min(1).max(200).optional() }).strict().optional(),
+  adopt_source: z.object({ text: z.string().trim().min(1).max(20000), episode_number: z.number().int().min(1).max(200) }).strict().optional(),
   messages: z.array(z.object({
     role: z.enum(['assistant', 'user']), text: z.string().trim().min(1).max(8000),
   }).strict()).min(1).max(32),
 }).strict().superRefine((value, context) => {
-  if (value.workflow && value.focus_artifact !== 'all') {
+  if ((value.workflow || value.adopt_source) && value.focus_artifact !== 'all') {
     context.addIssue({ code: 'custom', message: '阶段创作不能用于视觉资产对话', path: ['workflow'] })
   }
   if (value.messages.at(-1)?.role !== 'user') {
@@ -597,78 +591,24 @@ interface ContinuityIssue {
   current_value?: string
 }
 
-interface ContinuityKeywordGroup {
-  category: string
-  code: string
-  terms: Array<{ key: string; label: string; patterns: RegExp[] }>
-}
-
-const continuityKeywordGroups: ContinuityKeywordGroup[] = [
-  {
-    category: '站位', code: 'position_conflict', terms: [
-      { key: 'left', label: '左侧', patterns: [/左侧/, /左边/, /左方/, /画面左/] },
-      { key: 'right', label: '右侧', patterns: [/右侧/, /右边/, /右方/, /画面右/] },
-      { key: 'center', label: '中间', patterns: [/中间/, /中央/, /画面中心/] },
-    ],
-  },
-  {
-    category: '武器', code: 'weapon_conflict', terms: [
-      { key: 'sword', label: '剑', patterns: [/(?:长|利|宝)?剑/] },
-      { key: 'knife', label: '刀', patterns: [/匕首/, /短刀/] },
-      { key: 'spear', label: '枪/矛', patterns: [/长矛/, /方天画戟/, /(?:长)?枪(?!械|手|步)/] },
-      { key: 'bow', label: '弓', patterns: [/弓箭/, /弓/] },
-      { key: 'staff', label: '棍/杖', patterns: [/法杖/, /长棍/, /棍棒/, /棍/] },
-      { key: 'whip', label: '鞭', patterns: [/长鞭/, /鞭/] },
-      { key: 'gun', label: '枪械', patterns: [/手枪/, /步枪/, /枪械/, /火铳/] },
-    ],
-  },
-  {
-    category: '姿态', code: 'pose_conflict', terms: [
-      { key: 'standing', label: '站立', patterns: [/站立/, /站着/, /直立/] },
-      { key: 'crouching', label: '蹲伏', patterns: [/蹲下/, /蹲伏/, /半蹲/, /蹲/] },
-      { key: 'kneeling', label: '跪地', patterns: [/跪地/, /跪下/, /跪/] },
-      { key: 'lying', label: '倒地/躺卧', patterns: [/倒地/, /躺下/, /平躺/, /趴地/] },
-      { key: 'airborne', label: '腾空', patterns: [/腾空/, /跃起/, /跳起/, /飞身/] },
-    ],
-  },
-  {
-    category: '面具', code: 'mask_conflict', terms: [
-      { key: 'masked', label: '戴面具', patterns: [/戴(?:着)?面具/, /戴(?:着)?面罩/, /蒙面/, /面具遮/] },
-      { key: 'unmasked', label: '未戴面具', patterns: [/摘(?:下|掉)?面具/, /取下面具/, /露出(?:真容|脸)/, /没有面具/, /未戴面具/, /面具脱落/] },
-    ],
-  },
-]
-
-function stateKeywords(state: string, group: ContinuityKeywordGroup): Array<{ key: string; label: string }> {
-  const normalized = state.toLowerCase()
-  return group.terms.filter(term => term.patterns.some(pattern => pattern.test(normalized)))
-    .map(term => ({ key: term.key, label: term.label }))
-}
-
 function continuityIssue(issue: Omit<ContinuityIssue, 'severity'> & { severity?: ContinuitySeverity }): ContinuityIssue {
   return { severity: issue.severity ?? 'warning', ...issue }
 }
 
-function adjacentStateIssues(previous: Shot, current: Shot, sceneCharacters: Map<string, string[]>): ContinuityIssue[] {
-  const issues: ContinuityIssue[] = []
-  if (!previous.end_state.trim() || !current.start_state.trim()) return issues
-  const previousCharacters = sceneCharacters.get(previous.source_scene_id ?? '') ?? []
-  const currentCharacters = sceneCharacters.get(current.source_scene_id ?? '') ?? []
-  if (previousCharacters.length !== 1 || currentCharacters.length !== 1 || previousCharacters[0] !== currentCharacters[0]) return issues
-  for (const group of continuityKeywordGroups) {
-    const previousKeywords = stateKeywords(previous.end_state, group)
-    const currentKeywords = stateKeywords(current.start_state, group)
-    if (!previousKeywords.length || !currentKeywords.length) continue
-    if (previousKeywords.some(previousKeyword => currentKeywords.some(currentKeyword => previousKeyword.key === currentKeyword.key))) continue
-    const previousValue = previousKeywords.map(keyword => keyword.label).join('、')
-    const currentValue = currentKeywords.map(keyword => keyword.label).join('、')
-    issues.push(continuityIssue({
-      code: group.code, severity: 'warning', shot_id: current.id, related_shot_id: previous.id,
-      field: 'start_state', category: group.category, previous_value: previousValue, current_value: currentValue,
-      message: `镜头「${previous.title}」结束时${group.category}为${previousValue}，镜头「${current.title}」开始时变为${currentValue}，请确认是否需要交代动作或转场`,
-    }))
-  }
-  return issues
+function semanticContinuityContext(projectId: string) {
+  const range = projectProductionRange(projectId)
+  const shots = selectedProductionShots(all<Shot>('SELECT * FROM shots WHERE project_id=? ORDER BY position', projectId), range)
+  const script = projectScript(projectId)
+  const scenes = new Map(script.scenes.map(scene => [scene.id, scene]))
+  const side = (shot: Shot) => ({ id: shot.id, title: shot.title, prompt: shot.prompt,
+    start_state: shot.start_state, end_state: shot.end_state, cut_note: shot.cut_note,
+    scene: scenes.get(shot.source_scene_id || '') || null })
+  const pairs = shots.slice(1).map((current, index) => ({ previous: side(shots[index]!), current: side(current) }))
+  const context = { range, pairs, characters: script.characters,
+    documents: (script.artifacts || []).filter(item => ['characters', 'relationships', 'locations', 'props'].includes(item.artifact_type))
+      .map(item => ({ type: item.artifact_type, content: item.content })) }
+  const signature = createHash('sha256').update(JSON.stringify(context)).digest('hex')
+  return { context, signature }
 }
 
 interface ContinuityShotReport {
@@ -754,7 +694,7 @@ function scriptSettingLines(options: z.infer<typeof scriptGenerationOptions>): s
   ]
   return entries
     .flatMap(([label, value]) => {
-      if (typeof value === 'number') return [`${label}：${value} 集`]
+      if (typeof value === 'number') return [`${label}：${value} ${label === '剧本集数' ? '集' : '秒'}`]
       if (typeof value === 'string' && value.trim()) return [`${label}：${value.trim()}`]
       return []
     })
@@ -797,7 +737,7 @@ function buildScriptGenerationPrompt(project: Project, data: z.infer<typeof scri
     `每场写清楚可拍摄的视觉内容，人物与场景在各场保持一致。`
 }
 
-function buildScriptDirectorChatPrompt(project: Project, data: z.infer<typeof scriptDirectorChatInput>): string {
+function buildScriptDirectorChatPrompt(project: Project, data: z.infer<typeof scriptDirectorChatInput>, task?: { brief?: string; sourceText?: string }): string {
   const script = projectScript(project.id)
   const generationOptions = { ...script.generation_options, ...data.generation_options }
   const modeGuidance = data.mode === 'all'
@@ -819,7 +759,7 @@ function buildScriptDirectorChatPrompt(project: Project, data: z.infer<typeof sc
       outline: script.outline.slice(0, 4000), characters: script.characters.slice(0, 4000),
       artifacts: (script.artifacts || [])
         .filter(artifact => !data.workflow || !artifact.episode_number || artifact.episode_number === data.workflow.episode_number || artifact.episode_number === data.workflow.episode_number - 1)
-        .slice(0, 16).map(artifact => ({ type: artifact.artifact_type, episode_number: artifact.episode_number, title: artifact.title, content: artifact.content.slice(0, 3000), status: artifact.status })),
+        .slice(0, 16).map(artifact => ({ type: artifact.artifact_type, episode_number: artifact.episode_number, title: artifact.title, content: artifact.content.slice(0, data.workflow ? 20000 : 3000), status: artifact.status })),
       generation_options: generationOptions,
       recent_scenes: script.scenes.filter(scene => !data.workflow || !scene.episode_number || scene.episode_number === data.workflow.episode_number || scene.episode_number === data.workflow.episode_number - 1).slice(-8).map(scene => ({
         episode_number: scene.episode_number,
@@ -834,7 +774,8 @@ function buildScriptDirectorChatPrompt(project: Project, data: z.infer<typeof sc
     `${message.role === 'assistant' ? '导演' : '创作者'}：${message.text}`).join('\n')
   if (data.workflow) return `你是项目「${project.name}」的影视编剧。${modeGuidance}\n` +
     `项目中已确认的事实优先保持；根据最新创作者决定补充本轮文档。每条人物、地点和道具资料都应具体并服务于后续拍摄，避免泛泛而谈。\n` +
-    `项目与剧本上下文：\n${JSON.stringify(context)}\n对话记录：\n${conversation}\n${workflowInstructions(data.workflow)}`
+    `项目与剧本上下文：\n${JSON.stringify(context)}\n本次创作要求：\n${task?.brief || data.messages.at(-1)!.text}\n${workflowInstructions(data.workflow)}` +
+    (task?.sourceText ? `\n这是采用已有正文任务：不要重新创作或更改正文。只将以下原文拆成可制作的场次，保留人物、事件、对白和顺序；正文必须逐字保留。不要因制作片段预算缩短完整剧本。如果原文不是完整或部分剧本正文，不得虚构场次，返回空 scenes 表示无法采用。\n待采用正文：\n${task.sourceText}` : '')
   return `你是项目「${project.name}」的剧本导演，正在和创作者进行多轮剧本讨论。\n` +
     `当前创作模式：${data.mode}；当前任务：${focusLabels[data.focus_artifact]}。${modeGuidance}\n` +
     `${focusGuidance}\n` +
@@ -848,10 +789,51 @@ function buildScriptDirectorChatPrompt(project: Project, data: z.infer<typeof sc
     `请直接给出导演的下一条回复。先确认故事方向，再推进大纲、人物、场景、道具和指定集正文。只追问尚未明确且会改变创作结果的信息；创作者已经给出集数、时长或选择时，不要重复询问。`
 }
 
-function directorResult(raw: string, data: z.infer<typeof scriptDirectorChatInput>) {
+type DirectorInput = z.infer<typeof scriptDirectorChatInput>
+
+async function resolveDirectorIntent(project: Project, data: DirectorInput, model: Model, provider: Provider,
+  signal?: AbortSignal): Promise<{ data: DirectorInput; brief?: string; sourceText?: string; reply?: string }> {
+  if (data.adopt_source) {
+    if (data.intent_context?.pending_draft) return { data, reply: '当前还有待确认草稿。请先保存或放弃它，再采用这段正文。' }
+    return { data: { ...data, workflow: { stage: 'episode', episode_number: data.adopt_source.episode_number,
+      target_duration: data.generation_options.episode_duration } }, sourceText: data.adopt_source.text,
+      brief: '将创作者选中的既有正文整理为本集草稿，逐字保留正文，只整理分场。' }
+  }
+  // A button selection already supplies a typed operation; never reinterpret it as prose.
+  if (data.workflow && data.intent_context?.pending_draft) return { data, reply: '当前还有待确认草稿。请先保存或放弃它，再开始新的文档创作。' }
+  if (data.focus_artifact !== 'all') return { data }
+  const script = projectScript(project.id)
+  const prompt = scriptIntentPrompt({
+    project: { name: project.name, brief: project.brief, ratio: project.ratio },
+    saved_settings: script.generation_options, current_settings: data.generation_options,
+    documents: (script.artifacts || []).map(item => ({ type: item.artifact_type,
+      episode_number: item.episode_number, title: item.title, status: item.status, summary: item.content.slice(0, 800) })),
+    state: data.intent_context || {}, mode: data.mode, explicit_workflow: data.workflow,
+    messages: data.messages.map((message, index) => ({ index, ...message })),
+  })
+  const raw = await streamText(model, provider, { prompt }, item => decryptKey(item.key_ciphertext || null), () => {}, signal)
+  const intent = parseScriptIntent(raw)
+  const next = { ...data, generation_options: { ...script.generation_options, ...data.generation_options, ...intent.settings_patch } }
+  if (intent.action === 'clarify') return { data: next, reply: intent.reply }
+  if (intent.action === 'discuss') return { data: next }
+  if (data.intent_context?.pending_draft) return { data: next, reply: '当前还有待确认草稿。请先保存或放弃它，再开始新的文档创作。' }
+  let sourceText: string | undefined
+  if (intent.operation === 'adopt') {
+    if ((data.workflow || intent.workflow).stage !== 'episode') invalid('采用正文的目标必须是分集剧本，项目内容未修改')
+    const source = data.messages[intent.source_message_index!]
+    if (!source || source.role !== 'assistant') invalid('要采用的正文必须来自已有助手消息，项目内容未修改')
+    sourceText = source.text
+  }
+  return { data: { ...next, workflow: { ...(data.workflow || intent.workflow),
+    ...((data.workflow || intent.workflow).stage === 'episode' && !(data.workflow || intent.workflow).target_duration && next.generation_options.episode_duration
+      ? { target_duration: next.generation_options.episode_duration } : {}) } }, brief: intent.creative_brief, sourceText }
+}
+
+function directorResult(raw: string, data: DirectorInput, sourceText?: string) {
   if (data.workflow) {
     const draft = parseWorkflowDraft(raw, data.workflow)
     if (!draft) throw Object.assign(new Error('模型未返回有效的阶段草稿，请重试；已有剧本未修改'), { statusCode: 422 })
+    if (sourceText) draft.artifacts[0]!.content = sourceText
     return { reply: workflowReply(draft), draft }
   }
   const reply = normalizeScriptDirectorReply(raw)
@@ -912,7 +894,7 @@ function normalizeScriptDirectorReply(raw: string): string {
     if (typeof option.text !== 'string' || !option.text.trim()) return []
     const id = typeof option.id === 'string' && option.id.trim() ? option.id.trim() : String(index + 1)
     const title = typeof option.title === 'string' && option.title.trim() ? option.title.trim().slice(0, 80) : undefined
-    return [{ id: id.slice(0, 80), ...(title ? { title } : {}), text: option.text.trim().slice(0, 1200) }]
+    return [{ id: id.slice(0, 80), ...(title ? { title } : {}), ...(option.kind === 'custom' ? { kind: 'custom' } : {}), text: option.text.trim().slice(0, 1200) }]
   })
   if (options.length < 2 || options.length > 8 || new Set(options.map(option => option.id)).size !== options.length) return trimmed
   const intro = [trimmed.slice(0, start).trim(), typeof payload.intro === 'string' ? payload.intro.trim() : '']
@@ -1286,8 +1268,6 @@ export function buildApp(): FastifyInstance {
     const assets = all<Asset>('SELECT * FROM assets WHERE project_id=?', id)
     const reviews = all<AssetReview>(`SELECT asset_reviews.* FROM asset_reviews
       JOIN shots ON shots.id=asset_reviews.shot_id WHERE shots.project_id=?`, id)
-    const sceneCharacters = new Map(all<ScriptScene>('SELECT * FROM script_scenes WHERE project_id=?', id)
-      .map(scene => [scene.id, scene.characters.split(/[、,，;；]/).map(name => name.trim()).filter(Boolean)]))
     const clipsByShot = new Map(clips.map(clip => [clip.shot_id, clip]))
     const assetsById = new Map(assets.map(asset => [asset.id, asset]))
     const reviewsByAsset = new Map(reviews.map(review => [`${review.shot_id}:${review.asset_id}`, review]))
@@ -1368,18 +1348,20 @@ export function buildApp(): FastifyInstance {
       issues.push(...shotIssues)
     }
 
-    for (let index = 1; index < shots.length; index += 1) {
-      const previous = shots[index - 1]!
-      const current = shots[index]!
-      const adjacentIssues = adjacentStateIssues(previous, current, sceneCharacters)
-      issues.push(...adjacentIssues)
-      const currentReport = reports[index]
-      if (currentReport) currentReport.issues.push(...adjacentIssues)
+    const snapshot = semanticContinuityContext(id)
+    const stored = one<{ signature: string; issues: string; model_id: string; updated_at: string }>(
+      'SELECT * FROM continuity_analyses WHERE project_id=?', id)
+    const semanticStatus = !stored ? 'not_checked' : stored.signature === snapshot.signature ? 'checked' : 'stale'
+    if (semanticStatus === 'checked') {
+      const semanticIssues = JSON.parse(stored!.issues) as ContinuityIssue[]
+      issues.push(...semanticIssues)
+      for (const report of reports) report.issues.push(...semanticIssues.filter(issue => issue.shot_id === report.shot_id))
     }
     const errorCount = issues.filter(issue => issue.severity === 'error').length
     const warningCount = issues.filter(issue => issue.severity === 'warning').length
     return {
       production_range: range,
+      semantic_review: { status: semanticStatus, model_id: stored?.model_id || null, checked_at: stored?.updated_at || null },
       shots: reports,
       issues,
       summary: {
@@ -1390,6 +1372,28 @@ export function buildApp(): FastifyInstance {
         status: errorCount > 0 ? 'blocked' : warningCount > 0 ? 'warning' : 'ready',
       },
     }
+  })
+  app.post('/api/projects/:id/continuity/analyze', async request => {
+    const { id } = parse(idParams, request.params)
+    required<Project>('projects', id)
+    const data = parse(z.object({ model_id: z.string().min(1) }).strict(), request.body)
+    const model = required<Model>('models', data.model_id)
+    if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
+    checkProtocol(model.modality, model.protocol)
+    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>)
+    const provider = required<Provider>('providers', model.provider_id)
+    if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用')
+    const snapshot = semanticContinuityContext(id)
+    if (Buffer.byteLength(JSON.stringify(snapshot.context), 'utf8') > 200_000) invalid('制作范围过大，请缩小范围后进行语义检查')
+    const issues = snapshot.context.pairs.length ? parseSemanticContinuity(
+      await generateTextOutput(model, provider, id, semanticContinuityPrompt(snapshot.context)), snapshot.context.pairs) : []
+    if (semanticContinuityContext(id).signature !== snapshot.signature) {
+      throw Object.assign(new Error('检查期间镜头或剧本资料已变化，请重新检查'), { statusCode: 409 })
+    }
+    run(`INSERT INTO continuity_analyses (project_id, model_id, signature, issues, updated_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(project_id) DO UPDATE SET model_id=excluded.model_id, signature=excluded.signature,
+      issues=excluded.issues, updated_at=excluded.updated_at`, id, model.id, snapshot.signature, JSON.stringify(issues), now())
+    return { status: 'checked', issue_count: issues.length }
   })
   app.patch('/api/projects/:id', async request => {
     const { id } = parse(idParams, request.params)
@@ -2028,8 +2032,10 @@ export function buildApp(): FastifyInstance {
     validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>)
     const provider = required<Provider>('providers', model.provider_id)
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
-    const raw = await generateTextOutput(model, provider, id, buildScriptDirectorChatPrompt(project, data))
-    return directorResult(raw, data)
+    const resolved = await resolveDirectorIntent(project, data, model, provider)
+    const result = resolved.reply ? { reply: resolved.reply } : directorResult(
+      await generateTextOutput(model, provider, id, buildScriptDirectorChatPrompt(project, resolved.data, resolved)), resolved.data, resolved.sourceText)
+    return { ...result, generation_options: resolved.data.generation_options }
   })
   app.post('/api/projects/:id/script/director/chat/stream', async (request, reply) => {
     const { id } = parse(idParams, request.params)
@@ -2060,15 +2066,20 @@ export function buildApp(): FastifyInstance {
     }
     send({ type: 'progress', stage: 'preparing', text: '正在整理项目设定和对话内容…' })
     try {
-      const prompt = buildScriptDirectorChatPrompt(project, data)
-      send({ type: 'progress', stage: 'analysis', text: data.workflow ? '正在编写当前阶段的可编辑文档…' : '正在分析故事结构、人物动机和当前问题…' })
+      send({ type: 'progress', stage: 'intent', text: '正在理解本次创作意图…' })
+      const resolved = await resolveDirectorIntent(project, data, model, provider, controller.signal)
+      if (controller.signal.aborted) return
+      send({ type: 'intent', workflow: resolved.data.workflow, generation_options: resolved.data.generation_options })
+      if (resolved.reply) { send({ type: 'done', reply: resolved.reply }); return }
+      const prompt = buildScriptDirectorChatPrompt(project, resolved.data, resolved)
+      send({ type: 'progress', stage: 'analysis', text: resolved.data.workflow ? '正在编写当前阶段的可编辑文档…' : '正在分析故事结构、人物动机和当前问题…' })
       const fullText = await streamText(
         model, provider, { prompt },
         item => decryptKey(item.key_ciphertext || null),
         event => send(event),
         controller.signal,
       )
-      const result = directorResult(fullText, data)
+      const result = directorResult(fullText, resolved.data, resolved.sourceText)
       send({ type: 'done', ...result })
     } catch (error) {
       send({ type: 'error', message: error instanceof Error ? error.message : String(error) })

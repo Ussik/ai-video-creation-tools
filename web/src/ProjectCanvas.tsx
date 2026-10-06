@@ -5,7 +5,7 @@ import {
 import {
   ArrowLeftRight, ArrowRight, Check, ChevronDown, CircleAlert, Clock3, FileText, Film, FolderOpen,
   Image as ImageIcon, LayoutGrid, Layers3, LoaderCircle, LocateFixed, Map as MapIcon, Maximize2, MoreHorizontal, MousePointer2,
-  Music2, PanelLeftClose, PanelLeftOpen, PenLine, Plus, RefreshCcw, Save, ScrollText,
+  MessageSquare, Music2, PanelLeftClose, PanelLeftOpen, PenLine, Plus, RefreshCcw, Save, ScrollText,
   Search, Settings2, SlidersHorizontal, Sparkles,
   Eye, EyeOff, LayoutDashboard,
   Redo2, Trash2, Undo2, Upload, WandSparkles, X,
@@ -558,7 +558,7 @@ function StudioNode({ data, selected }: NodeProps<FlowNode>) {
     : node.type === 'image' ? <ImageIcon size={15} />
       : node.type === 'video' ? <Film size={15} /> : <TextChoiceIcon />
   const tryButton = (action: NodeQuickAction, label: string, buttonIcon: React.ReactNode) => <button type="button" className="pc-node-try-action nodrag" onClick={(event) => { event.stopPropagation(); data.onTryAction(node.id, action) }}>{buttonIcon}<span>{label}</span></button>
-  const [scriptSection, setScriptSection] = useState<'outline' | 'characters' | 'locations' | 'props'>('outline')
+  const [scriptSection, setScriptSection] = useState<'outline' | 'characters' | 'locations' | 'props' | 'episodes'>('outline')
   const nodeTitle = isProjectScriptRef
     ? (data.scriptTitle || node.title || '项目剧本')
     : node.title || asset?.filename || (node.type === 'generation' ? '生成节点' : node.type === 'image' ? '图片节点' : node.type === 'video' ? '视频节点' : '文本节点')
@@ -583,26 +583,35 @@ function StudioNode({ data, selected }: NodeProps<FlowNode>) {
     <div className="pc-node-label"><span className="pc-node-label-icon">{icon}</span><strong title={nodeTitle}>{nodeTitle}</strong>{nodeDimensionLabel(node, data.model) && <span className="pc-node-dimension">{nodeDimensionLabel(node, data.model)}</span>}</div>
     {!isProjectScriptRef && <Handle className="pc-node-handle" type="target" position={Position.Left} title="连接到此节点" />}
     {isProjectScriptRef ? <div className="pc-project-script-card">
+      <div className="pc-project-script-controls nodrag nopan">
+        <button type="button" className="pc-project-script-edit" aria-label="打开剧本对话" onClick={(event) => { event.stopPropagation(); data.onOpenScriptDirector('all') }}>
+          <MessageSquare size={14} />{data.scriptExists ? '剧本对话' : '开始创作'}
+        </button>
+        {data.scriptExists && <button type="button" className="pc-project-script-edit" aria-label="编辑剧本" onClick={(event) => { event.stopPropagation(); data.onOpenScriptCreator() }}>
+          <PenLine size={14} />编辑
+        </button>}
+      </div>
       <div className="pc-project-script-heading">
         <strong>{data.scriptTitle || node.title || '项目剧本'}</strong>
         {data.scriptUpdatedAt && <time>{data.scriptUpdatedAt}</time>}
       </div>
       <div className="pc-project-script-tabs" role="tablist" aria-label="剧本内容分类">
         {([
-          ['outline', '故事大纲'], ['characters', '人物小传'], ['locations', '场景设计'], ['props', '道具设计'],
+          ['outline', '故事大纲'], ['characters', '人物小传'], ['locations', '场景设计'], ['props', '道具设计'], ['episodes', '分集剧本'],
         ] as const).map(([value, label]) => <button key={value} type="button" role="tab" aria-selected={scriptSection === value}
           className={scriptSection === value ? 'is-active' : ''} onClick={(event) => { event.stopPropagation(); setScriptSection(value) }}>{label}</button>)}
       </div>
       <div className="pc-project-script-empty nowheel nodrag nopan">
         {(() => {
+          if (scriptSection === 'episodes') {
+            const episodes = (data.scriptArtifacts || []).filter(item => item.artifact_type === 'episode_script' && (item.episode_number || 0) > 0).sort((a, b) => (a.episode_number || 0) - (b.episode_number || 0))
+            return episodes.length ? <div className="pc-script-episodes">{episodes.map(artifact => <button key={artifact.id} type="button" onClick={event => { event.stopPropagation(); data.onOpenScriptDocument?.(artifact) }}><FileText size={16} /><span><strong>{artifact.title}</strong><small>已保存 · 点击编辑本集</small></span><ChevronDown size={14} /></button>)}</div> : <div>暂无已保存的分集剧本。可在剧本对话中创作，或采用已有正文并确认保存。<button type="button" onClick={event => { event.stopPropagation(); data.onOpenScriptDirector('all') }}>打开剧本对话</button></div>
+          }
           const artifact = data.scriptArtifacts?.find((item) => item.artifact_type === scriptSection)
           const content = artifact?.content?.trim() || (scriptSection === 'outline' ? data.scriptOutline?.trim() : '')
           return content ? <CanvasTextPreview text={content} document={parseScriptDocument(content)} /> : `暂无${scriptSection === 'outline' ? '故事大纲' : scriptSection === 'characters' ? '人物小传' : scriptSection === 'locations' ? '场景设计' : '道具设计'}，可在导演对话中生成`
         })()}
       </div>
-      <button type="button" className="pc-project-script-edit nodrag nopan" aria-label={data.scriptExists ? '编辑剧本' : '打开剧本创作'} onClick={(event) => { event.stopPropagation(); (data.scriptExists ? data.onOpenScriptCreator : data.onOpenScriptDirector)() }}>
-        <PenLine size={14} />{data.scriptExists ? '编辑' : '开始创作'}
-      </button>
     </div> : node.type === 'generation' ? <>
       <div className="pc-node-content pc-node-preview-content pc-node-idle-content">
         {asset ? <div className="pc-node-output"><NodeMedia asset={asset} controls={selected} /></div> : idlePlaceholder}
@@ -1254,9 +1263,9 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       scriptUpdatedAt: scriptUpdatedLabel(detail),
       scriptExists: !!(detail.brief?.trim() || detail.script?.outline?.trim() || detail.script?.characters?.trim() || detail.script?.scenes?.length),
       onOpenScriptDirector: openScriptDirector,
-      onOpenScriptCreator },
+      onOpenScriptCreator, onOpenScriptDocument },
     }
-  }), [graph, selectedNodeId, selectedNodeIds, assetMap, shotMap, jobMap, modelMap, models, providers, busy, changeGraph, editNodePrompt, updateNodeById, updateNodeSettingsById, selectNodeModel, selectNodeForView, tryNodeAction, detail.shots, detail.script, detail.name, detail.brief, detail.updated_at, onNavigate, openScriptDirector, onOpenScriptCreator])
+  }), [graph, selectedNodeId, selectedNodeIds, assetMap, shotMap, jobMap, modelMap, models, providers, busy, changeGraph, editNodePrompt, updateNodeById, updateNodeSettingsById, selectNodeModel, selectNodeForView, tryNodeAction, detail.shots, detail.script, detail.name, detail.brief, detail.updated_at, onNavigate, openScriptDirector, onOpenScriptCreator, onOpenScriptDocument])
   const flowEdges = useMemo<Edge[]>(() => (graph?.edges || []).map((edge) => {
     const selected = edge.id === selectedEdgeId
     const relatedNodeIds = new Set(selectedNodeIds)

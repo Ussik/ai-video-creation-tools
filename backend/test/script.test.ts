@@ -270,7 +270,7 @@ test('director chat uses project and script context without persisting the conve
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (_input, init) => {
     submittedPrompt = (JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> }).messages[0]?.content || ''
-    return new Response(JSON.stringify({ choices: [{ message: { content: modelReply } }] }), {
+    return new Response(JSON.stringify({ choices: [{ message: { content: submittedPrompt.includes('本次独立调用只理解创作者意图') ? JSON.stringify({ action: 'discuss', settings_patch: {} }) : modelReply } }] }), {
       status: 200, headers: { 'Content-Type': 'application/json' },
     })
   }
@@ -371,7 +371,7 @@ test('workflow generation streams reviewable drafts with selected episode contex
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (_input, init) => {
     submittedPrompt = (JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> }).messages[0]?.content || ''
-    return new Response(JSON.stringify({ choices: [{ message: { content: modelReply } }] }), { headers: { 'Content-Type': 'application/json' } })
+    return new Response(JSON.stringify({ choices: [{ message: { content: submittedPrompt.includes('本次独立调用只理解创作者意图') ? JSON.stringify({ action: 'draft', operation: 'create', workflow: { stage: 'outline' }, creative_brief: '林照追查明日报纸，遵守已确认资料。' }) : modelReply } }] }), { headers: { 'Content-Type': 'application/json' } })
   }
   t.after(() => { globalThis.fetch = originalFetch })
   const provider = await call<{ id: string }>('POST', '/api/providers', { name: '阶段生成测试', base_url: 'https://workflow.example/v1' })

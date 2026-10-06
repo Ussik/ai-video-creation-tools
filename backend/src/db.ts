@@ -289,6 +289,11 @@ export function initDb(): void {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (project_id, from_shot_id, to_shot_id)
     );
+    CREATE TABLE IF NOT EXISTS continuity_analyses (
+      project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+      model_id TEXT NOT NULL, signature TEXT NOT NULL,
+      issues TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS timeline_clips (
       id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       shot_id TEXT NOT NULL UNIQUE REFERENCES shots(id) ON DELETE CASCADE,

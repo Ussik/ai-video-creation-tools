@@ -13,6 +13,7 @@ import './workspace-theme.css'
 import './asset-library.css'
 import './dropdown-theme.css'
 import './canvas-generation-controls.css'
+import './creation-surfaces.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

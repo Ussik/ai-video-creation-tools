@@ -837,6 +837,9 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
   const standaloneDocument = standaloneDocumentItems.find((item) => item.type === activeDocumentSection)
   const episodeDocuments = draft.artifacts.filter(item => item.artifact_type === 'episode_script' && (item.episode_number || 0) > 0).sort((a, b) => (a.episode_number || 0) - (b.episode_number || 0))
   const selectedEpisode = episodeDocuments.find(item => `episode-${item.episode_number}` === activeDocumentSection)
+  const productionSceneCandidates = selectedEpisode
+    ? draft.scenes.filter(scene => scene.episode_number === selectedEpisode.episode_number)
+    : draft.scenes
 
   return <section className="script-page" aria-label="剧本创作">
     <header className="script-page-header script-editor-topbar">
@@ -876,7 +879,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
       </div>
       <div className="script-page-actions">
         {generated && <Button variant="subtle" leftSection={<FileText size={15} />} onClick={() => setShowGenerated(true)} disabled={disabled}>查看生成结果</Button>}
-        <Button variant="subtle" leftSection={<Clapperboard size={15} />} disabled={disabled || dirty || !draft.scenes.some(scene => scene.id && !linkedSceneIds.has(scene.id))} onClick={() => { setSelectedSceneIds([]); setShowConvert(true) }}>制作分镜</Button>
+        <Button variant="subtle" leftSection={<Clapperboard size={15} />} disabled={disabled || dirty || !productionSceneCandidates.some(scene => scene.id && !linkedSceneIds.has(scene.id))} onClick={() => { setSelectedSceneIds([]); setShowConvert(true) }}>制作分镜</Button>
         <Button variant="subtle" leftSection={<Sparkles size={15} />} onClick={openGenerate} disabled={disabled}>生成剧本</Button>
         <Button leftSection={working === 'save' ? <LoaderCircle size={15} className="spin" /> : <Save size={15} />} onClick={saveScript} disabled={!dirty || disabled}>保存</Button>
         <button type="button" className="script-editor-exit" onClick={onOpenCanvas} aria-label="退出编辑器" title="退出编辑器"><Minimize2 size={16} /></button>
@@ -997,14 +1000,14 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
       </div>}
     </Modal>
 
-    <Modal opened={showConvert} onClose={() => !working && setShowConvert(false)} title="选择制作场次" classNames={{ content: 'script-modal-content', body: 'script-modal-body' }}>
+    <Modal opened={showConvert} onClose={() => !working && setShowConvert(false)} title={selectedEpisode ? `第 ${selectedEpisode.episode_number} 集 · 选择制作场次` : '选择制作场次'} classNames={{ content: 'script-modal-content', body: 'script-modal-body' }}>
       <div className="script-modal-stack">
         <p className="script-confirm-copy">完整剧本会保留。仅将选中的场次创建为镜头，不会调用生成模型；已有镜头不会重复创建。</p>
         <div className="script-scene-production-list">
-          {draft.scenes.map(scene => <label key={scene.clientId}>
+          {productionSceneCandidates.map(scene => <label key={scene.clientId}>
             <Checkbox aria-label={`制作场次：${scene.heading}`} disabled={disabled || !scene.id || linkedSceneIds.has(scene.id)} checked={!!scene.id && selectedSceneIds.includes(scene.id)}
               onChange={event => { const checked = event.currentTarget.checked; if (scene.id) setSelectedSceneIds(ids => checked ? [...ids, scene.id!] : ids.filter(id => id !== scene.id)) }} />
-            <strong>{scene.heading}</strong><small>{scene.id && linkedSceneIds.has(scene.id) ? '已创建镜头' : `${scene.duration} 秒`}</small>
+            <strong>{!selectedEpisode && scene.episode_number ? `第 ${scene.episode_number} 集 · ` : ''}{scene.heading}</strong><small>{scene.id && linkedSceneIds.has(scene.id) ? '已创建镜头' : `${scene.duration} 秒`}</small>
           </label>)}
         </div>
         <p className="script-confirm-copy">已选 {quickConvertScenes.length} 场 · {quickConvertScenes.reduce((sum, scene) => sum + scene.duration, 0)} 秒</p>

@@ -114,6 +114,8 @@
 .pc-project-script-edit { position: absolute; top: 20px; right: 20px; display: inline-flex; align-items: center; gap: 7px; min-height: 32px; padding: 0 12px; border: 0; border-radius: 8px; background: #ffffff0f; color: #f7f7f7; font-size: 13px; cursor: pointer; }
 .pc-project-script-edit:hover { background: #ffffff18; color: #fff; }
 .pc-project-script-edit svg { color: #c9c9c9; }
+.pc-project-script-controls { display: flex; flex: none; justify-content: flex-end; gap: 8px; width: 100%; margin-bottom: 12px; }
+.pc-project-script-controls .pc-project-script-edit { position: static; min-height: 30px; font-size: 12px; }
 .pc-node:hover { border-color: #778d7c; box-shadow: 0 22px 44px #07100bb5, inset 0 1px #ffffff0d; }
 .pc-node.is-selected { border-color: var(--pc-teal); box-shadow: 0 0 0 1px var(--pc-teal), 0 24px 48px #07100bc7, inset 0 1px #d9fff013; }
 .pc-node-heading { flex: 0 0 48px; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 0 14px; border-bottom: 1px solid #46544b; }
@@ -3024,3 +3026,9 @@
 .project-canvas .pc-node:not(.is-selected) .pc-node-idle-content .pc-node-output { flex: 1; height: 100%; min-height: 0; border-radius: 14px; }
 .project-canvas .pc-project-script-empty { white-space: normal; }
 .project-canvas .pc-project-script-empty .pc-text-preview { height: auto; overflow: visible; }
+
+.pc-script-episodes { display: flex; flex-direction: column; gap: 8px; }
+.pc-script-episodes button { display: flex; gap: 12px; align-items: center; width: 100%; padding: 12px; border: 1px solid #3a3a3a; border-radius: 8px; background: #212121; color: #ededed; text-align: left; cursor: pointer; }
+.pc-script-episodes button:hover { background: #303030; }
+.pc-script-episodes button span { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.pc-script-episodes small { color: #929292; }

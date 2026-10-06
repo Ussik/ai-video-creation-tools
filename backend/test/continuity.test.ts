@@ -111,10 +111,10 @@ test('continuity checks only the production range and reports material and state
   assert.ok(issueCodes.has('pending_review'), '没有审核记录的选片应被报告')
   assert.ok(issueCodes.has('rejected_material'), '被拒绝的选片应被报告')
   assert.ok(issueCodes.has('invalid_clip'), '过短时间线片段应被报告')
-  assert.ok(issueCodes.has('position_conflict'), '左右站位冲突应被报告')
-  assert.ok(issueCodes.has('weapon_conflict'), '武器冲突应被报告')
-  assert.ok(issueCodes.has('pose_conflict'), '姿态冲突应被报告')
-  assert.ok(issueCodes.has('mask_conflict'), '面具状态冲突应被报告')
+  assert.equal(issueCodes.has('position_conflict'), false, '基础检查不得用关键词猜测镜头语义')
+  assert.equal(issueCodes.has('weapon_conflict'), false)
+  assert.equal(issueCodes.has('pose_conflict'), false)
+  assert.equal(issueCodes.has('mask_conflict'), false)
   assert.ok(report.summary.error_count > 0)
   assert.ok(report.summary.warning_count > 0)
   assert.equal(report.summary.status, 'blocked')
@@ -150,4 +150,44 @@ test('different characters do not trigger a weapon continuity warning', async ()
 test('continuity returns not found for an unknown project', async () => {
   const response = await app.inject({ method: 'GET', url: '/api/projects/missing-project/continuity' })
   assert.equal(response.statusCode, 404)
+})
+
+test('model continuity analysis is explicit, cached, scoped and invalidated when states change', async t => {
+  const project = await call<{ id: string }>('POST', '/api/projects', { name: '语义接镜' })
+  const first = await call<{ id: string }>('POST', `/api/projects/${project.id}/shots`, { title: '交接', end_state: '林将伞交给周' })
+  const second = await call<{ id: string }>('POST', `/api/projects/${project.id}/shots`, { title: '接伞', start_state: '周空着双手，林仍拿着伞' })
+  const provider = await call<{ id: string }>('POST', '/api/providers', { name: '校验模型', base_url: 'https://continuity.example/v1' })
+  const model = await call<{ id: string }>('POST', '/api/models', { provider_id: provider.id, name: '文本校验', remote_id: 'test', modality: 'text', protocol: 'chat_completions', settings: {
+    request_path: 'chat/completions', request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] }, text_path: 'choices.0.message.content',
+  } })
+  let requests = 0
+  let raw = JSON.stringify({ issues: [{ code: 'prop_conflict', shot_id: second.id, related_shot_id: first.id,
+    category: '道具归属', message: '上一镜伞交给周，下一镜仍由林持伞，需要交代交回动作。' }] })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (_input, init) => {
+    requests++
+    const prompt = JSON.parse(String(init?.body)).messages[0].content as string
+    assert.match(prompt, /不能靠左右、武器、面具等关键词/)
+    assert.match(prompt, /林将伞交给周/)
+    return new Response(JSON.stringify({ choices: [{ message: { content: raw } }] }), { headers: { 'Content-Type': 'application/json' } })
+  }
+  t.after(() => { globalThis.fetch = originalFetch })
+  const url = `/api/projects/${project.id}/continuity`
+  const before = await call<ContinuityResponse & { semantic_review: { status: string } }>('GET', url)
+  assert.equal(before.semantic_review.status, 'not_checked')
+  assert.equal(requests, 0)
+  await call('POST', `${url}/analyze`, { model_id: model.id })
+  const checked = await call<ContinuityResponse & { semantic_review: { status: string } }>('GET', url)
+  assert.equal(checked.semantic_review.status, 'checked')
+  assert.ok(checked.issues.some(issue => issue.code === 'prop_conflict'))
+  await call('GET', url)
+  assert.equal(requests, 1, '刷新不得重复调用模型')
+  run('UPDATE shots SET start_state=? WHERE id=?', '周接住伞', second.id)
+  const stale = await call<ContinuityResponse & { semantic_review: { status: string } }>('GET', url)
+  assert.equal(stale.semantic_review.status, 'stale')
+  assert.equal(stale.issues.some(issue => issue.code === 'prop_conflict'), false)
+  raw = JSON.stringify({ issues: [{ code: 'prop_conflict', shot_id: first.id, related_shot_id: second.id, category: '道具', message: '顺序错误的模型输出' }] })
+  const invalid = await app.inject({ method: 'POST', url: `${url}/analyze`, payload: { model_id: model.id } })
+  assert.equal(invalid.statusCode, 422)
+  assert.equal((await call<ContinuityResponse & { semantic_review: { status: string } }>('GET', url)).semantic_review.status, 'stale')
 })

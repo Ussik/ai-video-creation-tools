@@ -1,9 +1,5 @@
-export type MessageChoice = { label: string; title: string; text: string }
+export type MessageChoice = { label: string; title: string; text: string; kind?: 'direction' | 'custom' }
 export type ParsedMessageChoices = { intro: string; question: string; options: MessageChoice[]; trailing: string }
-
-export function isCustomChoice(text: string): boolean {
-  return /^(?:我有)?(?:别的|其他)(?:想法|方向|选择)[。！!]?$/u.test(text.trim())
-}
 
 export function choiceTitle(text: string): string {
   const plain = text.replace(/[*#`]/g, '').trim()
@@ -28,7 +24,7 @@ export function parseMessageChoices(text: string): ParsedMessageChoices | null {
     const text = option.text.trim()
     const label = typeof option.id === 'string' && option.id.trim() ? option.id.trim() : String(index + 1)
     const title = typeof option.title === 'string' && option.title.trim() ? option.title.trim().slice(0, 80) : choiceTitle(text)
-    return [{ label, title, text }]
+    return [{ label, title, text, ...(option.kind === 'custom' ? { kind: 'custom' as const } : {}) }]
   })
   if (options.length < 2 || options.length > 8 || new Set(options.map(option => option.label)).size !== options.length) return null
   return {
