@@ -1,0 +1,19 @@
+{
+  "file": "production/2026-10-06-lamp-debt/lamp-debt-30s.mp4",
+  "bytes": 5681208,
+  "decodeExit": 0,
+  "streamsAndVolume": [
+    "  Duration: 00:00:30.02, start: 0.000000, bitrate: 1513 kb/s",
+    "  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1280x720 [SAR 1:1 DAR 16:9], 1378 kb/s, 24 fps, 24 tbr, 12288 tbn (default)",
+    "  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 130 kb/s (default)",
+    "  Stream #0:0(und): Video: wrapped_avframe, yuv420p(progressive), 1280x720 [SAR 1:1 DAR 16:9], q=2-31, 200 kb/s, 24 fps, 24 tbn (default)",
+    "  Stream #0:1(und): Audio: pcm_s16le, 48000 Hz, stereo, s16, 1536 kb/s (default)",
+    "[Parsed_volumedetect_0 @ 0x14070f460] mean_volume: -22.6 dB",
+    "[Parsed_volumedetect_0 @ 0x14070f460] max_volume: -2.4 dB"
+  ],
+  "video_duration_ms": 30000,
+  "container_note": "AAC编码填充使容器约30.02秒；视频为720帧、24fps，正好30秒。",
+  "video_frame_count": 720,
+  "video_fps": 24,
+  "last_frame_pts_seconds": 29.9784
+}

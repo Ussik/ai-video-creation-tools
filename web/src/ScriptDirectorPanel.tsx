@@ -2,23 +2,24 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Select } from '@mantine/core'
 import {
-  Check,
+  ArrowDown,
+  ArrowUp,
+  PanelRight,
+  Maximize2,
+  Plus,
+  Square,
   Clapperboard,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
-  Circle,
   FileText,
   History,
-  Info,
   LoaderCircle,
   MessageCirclePlus,
   Minus,
   PenLine,
-  Send,
   Settings2,
-  Sparkles,
   UserRound,
   MapPin,
   Package,
@@ -36,9 +37,20 @@ import { api, json } from './api'
 import type { Asset, Job, Model, ProjectDetail, Provider, ScriptArtifact, ScriptArtifactType, ScriptGenerationOptions } from './api'
 import type { ScriptAction } from './ProjectCanvas'
 import './script-director.css'
+import './script-director-chat.css'
+import DirectorQuestionPanel from './DirectorQuestionPanel'
+import type { ChoiceAnswer } from './DirectorQuestionPanel'
+import { isCustomChoice, parseMessageChoices } from './director-choices'
+import { CanvasTextPreview } from './CanvasTextEditor'
+import { parseScriptDocument } from './script-rich-document'
+import { textDocumentText } from './text-document'
+import { clampDirectorWindow, defaultDirectorWindow, shouldSendDirectorMessage, type DirectorWindowRect } from './director-window'
 import { ScriptThemeWaterCanvas as WebGLScriptThemeWaterCanvas } from './ScriptThemeWaterCanvas'
+import { artifactKey, explicitSeriesSpecs, workflowFromMessage, workflowLabels, workflowStages } from './script-workflow'
+import type { WorkflowDraft, WorkflowRequest, WorkflowStage } from './script-workflow'
 
 type GeneratedScene = {
+  episode_number?: number
   heading: string
   location: string
   time_of_day: string
@@ -50,12 +62,15 @@ type GeneratedScene = {
 }
 
 type GeneratedArtifact = {
+  episode_number?: number
   artifact_type: ScriptArtifactType
   title: string
   content: string
 }
 
 type GeneratedScript = {
+  workflow?: WorkflowRequest
+  generation_options?: ScriptGenerationOptions
   outline: string
   characters: string
   scenes: GeneratedScene[]
@@ -67,36 +82,8 @@ type Message = {
   role: 'assistant' | 'user'
   text: string
   pending?: boolean
-}
-
-type MessageChoice = { label: string; text: string }
-type ParsedMessageChoices = { intro: string; question: string; options: MessageChoice[]; trailing: string }
-
-function parseMessageChoices(text: string): ParsedMessageChoices | null {
-  const trimmed = text.trim()
-  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
-  const source = fenced?.[1] || trimmed
-  if (!source.startsWith('{')) return null
-  let value: unknown
-  try { value = JSON.parse(source) } catch { return null }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-  const payload = value as Record<string, unknown>
-  if (payload.kind !== 'choices' || typeof payload.question !== 'string' || !payload.question.trim() || !Array.isArray(payload.options) || payload.options.length > 8) return null
-  const options = payload.options.flatMap((entry, index): MessageChoice[] => {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return []
-    const option = entry as Record<string, unknown>
-    const optionText = typeof option.text === 'string' ? option.text : ''
-    if (!optionText.trim()) return []
-    const label = typeof option.id === 'string' && option.id.trim() ? option.id.trim() : String(index + 1)
-    return [{ label, text: optionText.trim() }]
-  })
-  if (options.length < 2 || options.length > 8) return null
-  return {
-    intro: typeof payload.intro === 'string' ? payload.intro.trim() : '',
-    question: payload.question.trim(),
-    options,
-    trailing: typeof payload.trailing === 'string' ? payload.trailing.trim() : '',
-  }
+  failed?: boolean
+  activity?: ProcessEvent[]
 }
 
 function isStructuredChoiceStream(text: string): boolean {
@@ -111,6 +98,7 @@ type ProcessEvent = {
 }
 
 type StreamEvent = {
+  draft?: WorkflowDraft
   type?: string
   text?: string
   delta?: string
@@ -137,17 +125,6 @@ type PersistedConversation = {
 }
 
 type DirectorMode = 'all' | 'script' | 'director'
-
-type DirectorStageKey = 'idea' | 'outline' | 'characters' | 'scenes' | 'props' | 'episode'
-
-const directorStages: Array<{ key: DirectorStageKey; label: string; hint: string }> = [
-  { key: 'idea', label: '创作方向', hint: '题材、受众和核心冲突' },
-  { key: 'outline', label: '故事大纲', hint: '故事主线与结构节奏' },
-  { key: 'characters', label: '人物设定', hint: '人物小传与关系网络' },
-  { key: 'scenes', label: '场景设计', hint: '分场、动作与对白' },
-  { key: 'props', label: '道具设计', hint: '关键道具与视觉线索' },
-  { key: 'episode', label: '分集剧本', hint: '确认后继续写单集' },
-]
 
 const welcomeMessage: Message = {
   id: 'welcome', role: 'assistant',
@@ -184,9 +161,11 @@ export interface ScriptDirectorPanelProps {
   models: Model[]
   providers: Provider[]
   focusArtifact?: ScriptAction
+  initialContext?: string
   onRefresh: () => Promise<unknown>
   onClose: () => void
   onOpenModels: () => void
+  onOpenDocument?: (artifact: ScriptArtifact) => void
   onNotice: (message: string) => void
 }
 
@@ -204,6 +183,7 @@ const emptyOptions: ScriptGenerationOptions = {
 
 function normaliseScene(scene: Partial<GeneratedScene>): GeneratedScene {
   return {
+    ...(scene.episode_number !== undefined ? { episode_number: scene.episode_number } : {}),
     heading: typeof scene.heading === 'string' ? scene.heading : '',
     location: typeof scene.location === 'string' ? scene.location : '',
     time_of_day: typeof scene.time_of_day === 'string' ? scene.time_of_day : '',
@@ -228,9 +208,28 @@ function normaliseArtifact(artifact: Partial<GeneratedArtifact>): GeneratedArtif
   if (!type || !(type in generatedArtifactTitles) || typeof artifact.content !== 'string' || !artifact.content.trim()) return null
   return {
     artifact_type: type,
+    ...(artifact.episode_number !== undefined ? { episode_number: artifact.episode_number } : {}),
     title: typeof artifact.title === 'string' && artifact.title.trim() ? artifact.title.trim() : generatedArtifactTitles[type],
     content: artifact.content.trim(),
   }
+}
+
+function restoreWorkflowDraft(projectId: string): GeneratedScript | null {
+  try {
+    const source = window.localStorage.getItem(`script-director-draft:${projectId}`)
+    if (!source || source.length > 500000) return null
+    const value = JSON.parse(source) as GeneratedScript
+    if (!value.workflow || !workflowStages.includes(value.workflow.stage) || !Array.isArray(value.artifacts) || !Array.isArray(value.scenes)) return null
+    if (!Number.isInteger(value.workflow.episode_number) || value.workflow.episode_number < 1 || value.workflow.episode_number > 200) return null
+    return {
+      workflow: value.workflow,
+      ...(value.generation_options && typeof value.generation_options === 'object' ? { generation_options: value.generation_options } : {}),
+      outline: typeof value.outline === 'string' ? value.outline : '',
+      characters: typeof value.characters === 'string' ? value.characters : '',
+      artifacts: value.artifacts.filter(item => item && typeof item === 'object').map(normaliseArtifact).filter((item): item is GeneratedArtifact => item !== null),
+      scenes: value.scenes.filter(item => item && typeof item === 'object').map(normaliseScene),
+    }
+  } catch { return null }
 }
 
 function optionsFromDetail(detail: ProjectDetail): ScriptGenerationOptions {
@@ -268,40 +267,19 @@ function promptForMode(prompt: string, mode: DirectorMode): string {
   return `${prompt.trim()}\n\n创作模式要求：${direction}`
 }
 
-function stageIndex(detail: ProjectDetail, generated: GeneratedScript | null, scriptSaved: boolean): number {
+function stageIndex(detail: ProjectDetail, _generated: GeneratedScript | null, _scriptSaved: boolean): number {
   const artifacts = detail.script?.artifacts || []
   const hasArtifact = (type: ScriptArtifactType) => artifacts.some((artifact) => artifact.artifact_type === type && artifact.content.trim())
-    || Boolean(generated?.artifacts.some((artifact) => artifact.artifact_type === type && artifact.content.trim()))
-  if (scriptSaved) return 5
   const complete = [
     Boolean(detail.brief?.trim()),
-    Boolean(generated?.outline?.trim() || detail.script?.outline?.trim() || hasArtifact('outline')),
-    Boolean(generated?.characters?.trim() || detail.script?.characters?.trim() || hasArtifact('characters') || hasArtifact('relationships')),
-    Boolean(generated?.scenes?.length || detail.script?.scenes?.length || hasArtifact('locations') || hasArtifact('structure')),
+    Boolean(detail.script?.outline?.trim() || hasArtifact('outline')),
+    Boolean(detail.script?.characters?.trim() || hasArtifact('characters') || hasArtifact('relationships')),
+    Boolean(detail.script?.scenes?.length || hasArtifact('locations') || hasArtifact('structure')),
     Boolean(hasArtifact('props')),
-    scriptSaved,
+    Boolean(detail.script?.scenes?.length || hasArtifact('episode_script')),
   ]
   const firstOpen = complete.findIndex((value) => !value)
   return firstOpen === -1 ? complete.length - 1 : firstOpen
-}
-
-function processSummaryFor(stage: number, hasScript: boolean, hasDraft: boolean): string {
-  if (hasScript) return '项目已有剧本。你可以继续补充人物关系、场景动作和道具线索，确认后回到画布故事板继续制作。'
-  if (hasDraft) return '已根据当前对话整理出故事大纲、人物设定和分场草稿。你可以先检查内容，再写入项目。'
-  if (stage > 0) return '已记录你的创作方向，接下来会按故事大纲、人物关系、场景设计逐步整理，所有产物都会在确认后写入项目。'
-  return '先提供题材、人物或一个场景想法，导演会据此整理创作方向。'
-}
-
-function stageCompleted(detail: ProjectDetail, generated: GeneratedScript | null, scriptSaved: boolean, index: number): boolean {
-  const artifacts = detail.script?.artifacts || []
-  const hasArtifact = (type: ScriptArtifactType) => artifacts.some((artifact) => artifact.artifact_type === type && artifact.content.trim())
-    || Boolean(generated?.artifacts.some((artifact) => artifact.artifact_type === type && artifact.content.trim()))
-  if (index === 0) return Boolean(detail.brief?.trim())
-  if (index === 1) return Boolean(generated?.outline?.trim() || detail.script?.outline?.trim() || hasArtifact('outline'))
-  if (index === 2) return Boolean(generated?.characters?.trim() || detail.script?.characters?.trim() || hasArtifact('characters') || hasArtifact('relationships'))
-  if (index === 3) return Boolean(generated?.scenes?.length || detail.script?.scenes?.length || hasArtifact('locations') || hasArtifact('structure'))
-  if (index === 4) return Boolean(hasArtifact('props'))
-  return scriptSaved
 }
 
 const directorStoryStructures = [
@@ -672,59 +650,6 @@ const directorAutoFieldMeta: Array<{
   { key: 'visual_style', label: '画风', placeholder: '例如：电影感、二维动画', icon: Palette },
 ]
 
-function DirectorChoiceCard({
-  messageId,
-  choice,
-  selectedLabel,
-  busy,
-  onSelect,
-  onDismiss,
-  onContinue,
-}: {
-  messageId: string
-  choice: ParsedMessageChoices
-  selectedLabel?: string
-  busy: boolean
-  onSelect: (label: string) => void
-  onDismiss: () => void
-  onContinue: (text: string) => void
-}) {
-  const selectedOption = choice.options.find((option) => option.label === selectedLabel)
-  const pageSize = 5
-  const pageCount = Math.max(1, Math.ceil(choice.options.length / pageSize))
-  const [page, setPage] = useState(0)
-  useEffect(() => setPage(0), [messageId])
-  const pageOptions = choice.options.slice(page * pageSize, (page + 1) * pageSize)
-  return <section className="script-director-choice-card" aria-label="导演建议选项">
-    <header>
-      <strong>{choice.question}</strong>
-      <span className="script-director-choice-pagination">
-        <button type="button" aria-label="上一组问题" disabled={page === 0} onClick={() => setPage((current) => Math.max(0, current - 1))}><ChevronLeft size={14} /></button>
-        <span>{page + 1}/{pageCount}</span>
-        <button type="button" aria-label="下一组问题" disabled={page >= pageCount - 1} onClick={() => setPage((current) => Math.min(pageCount - 1, current + 1))}><ChevronRight size={14} /></button>
-      </span>
-    </header>
-    {choice.intro && <p className="script-director-choice-intro">{choice.intro}</p>}
-    <div className="script-director-choice-list" role="group" aria-label="导演建议选项">
-      {pageOptions.map((option, index) => <button
-        type="button"
-        key={`${messageId}-${option.label}`}
-        className={`${selectedLabel === option.label ? 'is-selected' : ''} ${/我有别的想法|其他想法/.test(option.text) ? 'is-muted' : ''}`.trim()}
-        aria-pressed={selectedLabel === option.label}
-        onClick={() => onSelect(option.label)}
-      >
-        <span>{page * pageSize + index + 1}</span>
-        <strong>{option.text}</strong>
-      </button>)}
-    </div>
-    {choice.trailing && <p className="script-director-choice-followup">{choice.trailing}</p>}
-    <footer>
-      <button type="button" onClick={onDismiss}>忽略</button>
-      <button type="button" disabled={!selectedOption || busy} onClick={() => selectedOption && onContinue(selectedOption.text)}>继续</button>
-    </footer>
-  </section>
-}
-
 const focusArtifactLabels: Record<ScriptAction, string> = {
   all: '全能创作',
   character: '角色视觉资产',
@@ -824,7 +749,53 @@ function AssetTaskCard({
   </section>
 }
 
-function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all', onRefresh, onClose, onOpenModels, onNotice }: ScriptDirectorPanelProps) {
+function DirectorMessageText({ text }: { text: string }) {
+  const document = useMemo(() => parseScriptDocument(text), [text])
+  return <CanvasTextPreview text={textDocumentText(document)} document={document} />
+}
+
+function readWindowLayout() {
+  const viewport = { width: window.innerWidth, height: window.innerHeight }
+  try {
+    const value = JSON.parse(window.localStorage.getItem('script-director-window') || '') as { rect?: DirectorWindowRect; docked?: boolean }
+    if (value.rect && [value.rect.x, value.rect.y, value.rect.width, value.rect.height].every(Number.isFinite)) {
+      return { rect: clampDirectorWindow(value.rect, viewport), docked: value.docked === true }
+    }
+  } catch { /* Use the default window when preferences are unavailable. */ }
+  return { rect: defaultDirectorWindow(viewport), docked: false }
+}
+
+function readQuestionState(projectId: string): { answers: Record<string, ChoiceAnswer>; dismissed: Record<string, boolean>; retryId: string | null } {
+  const fallback = { answers: {}, dismissed: {}, retryId: null }
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(`script-director-questions:${projectId}`) || '{}')
+    const answers: Record<string, ChoiceAnswer> = {}
+    for (const [id, value] of Object.entries(saved.answers || {}).slice(-160)) {
+      if (!value || typeof value !== 'object') continue
+      const answer = value as ChoiceAnswer
+      if (typeof answer.custom !== 'boolean' || typeof answer.text !== 'string') continue
+      answers[id] = { custom: answer.custom, text: answer.text.slice(0, 4000), ...(answer.status === 'answered' || answer.status === 'skipped' ? { status: answer.status } : {}), ...(typeof answer.selectedId === 'string' ? { selectedId: answer.selectedId } : {}) }
+    }
+    const dismissed = Object.fromEntries(Object.entries(saved.dismissed || {}).filter(([, value]) => value === true).slice(-160)) as Record<string, boolean>
+    return { answers, dismissed, retryId: typeof saved.retryId === 'string' ? saved.retryId : null }
+  } catch { return fallback }
+}
+
+function readComposerDraft(projectId: string) {
+  try { return (window.localStorage.getItem(`script-director-input:${projectId}`) || '').slice(0, 8000) }
+  catch { return '' }
+}
+
+function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all', initialContext, onRefresh, onClose, onOpenModels, onOpenDocument, onNotice }: ScriptDirectorPanelProps) {
+  const [windowLayout, setWindowLayout] = useState(readWindowLayout)
+  const [minimized, setMinimized] = useState(false)
+  const [workflowOpen, setWorkflowOpen] = useState(false)
+  const [composerMenuOpen, setComposerMenuOpen] = useState(false)
+  const [readerKey, setReaderKey] = useState<string | null>(null)
+  const [showLatest, setShowLatest] = useState(false)
+  const [closing, setClosing] = useState(false)
+  const composerRef = useRef<HTMLTextAreaElement>(null)
+  const gestureRef = useRef<{ pointer: number; x: number; y: number; rect: DirectorWindowRect; resize: boolean } | null>(null)
   const availableModels = useMemo(() => models.filter((model) => {
     const provider = providers.find((item) => item.id === model.provider_id)
     return model.modality === 'text' && model.enabled && !!provider?.enabled && provider.adapter !== 'demo'
@@ -833,9 +804,9 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     const provider = providers.find((item) => item.id === model.provider_id)
     return model.modality === 'image' && model.enabled && !!provider?.enabled && provider.adapter !== 'demo'
   }), [models, providers])
-  const [options, setOptions] = useState<ScriptGenerationOptions>(() => optionsFromDetail(detail))
+  const [options, setOptions] = useState<ScriptGenerationOptions>(() => restoreWorkflowDraft(detail.id)?.generation_options || optionsFromDetail(detail))
   const [idea, setIdea] = useState(detail.brief || '')
-  const [modelId, setModelId] = useState('')
+  const [modelId, setModelId] = useState(() => { try { return window.localStorage.getItem(`script-director-model:${detail.id}`) || '' } catch { return '' } })
   const [activeFocus, setActiveFocus] = useState<ScriptAction>(focusArtifact)
   const [mode, setMode] = useState<DirectorMode>('script')
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -852,15 +823,16 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const [promptCustomized, setPromptCustomized] = useState(false)
   const [promptLoading, setPromptLoading] = useState(false)
   const [promptError, setPromptError] = useState<string | null>(null)
-  const [input, setInput] = useState('')
+  const [input, setInput] = useState(initialContext || readComposerDraft(detail.id))
   const [working, setWorking] = useState<'chat' | 'prompt' | 'generate' | 'save' | 'shots' | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [generated, setGenerated] = useState<GeneratedScript | null>(null)
-  const [previewOpen, setPreviewOpen] = useState(false)
+  const [generated, setGenerated] = useState<GeneratedScript | null>(() => restoreWorkflowDraft(detail.id))
+  const [previewOpen, setPreviewOpen] = useState(() => Boolean(restoreWorkflowDraft(detail.id)))
   const [artifactsOpen, setArtifactsOpen] = useState(false)
-  const [processSummaryOpen, setProcessSummaryOpen] = useState(false)
-  const [processEvents, setProcessEvents] = useState<ProcessEvent[]>([])
   const [scriptSaved, setScriptSaved] = useState(false)
+  const [workflowStage, setWorkflowStage] = useState<WorkflowStage>(() => generated?.workflow?.stage || workflowStages[Math.max(0, stageIndex(detail, null, false) - 1)]!)
+  const [episodeNumber, setEpisodeNumber] = useState(() => generated?.workflow?.episode_number || Math.min(options.episode_count || 200, Math.max(0, ...(detail.script.artifacts || []).map(item => item.artifact_type === 'episode_script' ? item.episode_number || 0 : 0)) + 1))
+  const [episodeDuration, setEpisodeDuration] = useState<number | undefined>(() => generated?.workflow?.target_duration || options.episode_duration)
   const [assetTaskStatus, setAssetTaskStatus] = useState<AssetTaskStatus>(focusArtifact === 'all' ? 'idle' : 'analyzing')
   const [assetPrompt, setAssetPrompt] = useState('')
   const [assetImageModelId, setAssetImageModelId] = useState('')
@@ -868,8 +840,9 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const [assetTaskId, setAssetTaskId] = useState<string | null>(null)
   const [messages, setMessages] = useState<Message[]>(() => loadDirectorState(detail.id).messages)
   const [history, setHistory] = useState<ConversationSnapshot[]>(() => loadDirectorState(detail.id).history)
-  const [choiceSelections, setChoiceSelections] = useState<Record<string, string>>({})
-  const [choiceDismissed, setChoiceDismissed] = useState<Record<string, boolean>>({})
+  const [choiceAnswers, setChoiceAnswers] = useState<Record<string, ChoiceAnswer>>(() => readQuestionState(detail.id).answers)
+  const [choiceDismissed, setChoiceDismissed] = useState<Record<string, boolean>>(() => readQuestionState(detail.id).dismissed)
+  const [answeringChoiceId, setAnsweringChoiceId] = useState<string | null>(() => readQuestionState(detail.id).retryId)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [conversationId, setConversationId] = useState<string | null>(null)
   const conversationSyncReady = useRef(false)
@@ -889,50 +862,128 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const pendingSceneCount = (detail.script?.scenes || []).filter((scene) => !linkedSceneIds.has(scene.id)).length
   const promptRequestId = useRef(0)
   const selectedModel = availableModels.find((model) => model.id === modelId)
+  const modelSelector = <Select
+          className="script-director-model-select"
+          aria-label="文本模型"
+          placeholder="选择文本模型"
+          value={modelId || null}
+          data={availableModels.map((model) => ({
+            value: model.id,
+            label: model.name,
+          }))}
+          allowDeselect={false}
+          searchable
+          size="xs"
+          comboboxProps={{ withinPortal: true, zIndex: 400, position: 'top-start' }}
+          onChange={(value) => { setModelId(value || ''); try { window.localStorage.setItem(`script-director-model:${detail.id}`, value || '') } catch { /* Keep the selection in memory. */ } }}
+        />
+
   const assetJob = assetJobId ? detail.jobs.find((job) => job.id === assetJobId) : undefined
   const assetResult = assetJob?.result_asset_id ? detail.assets.find((asset) => asset.id === assetJob.result_asset_id) : undefined
   // Project detail is refreshed periodically by the shell. Compare the
   // serialized values instead of the nested object reference so that a
   // background refresh cannot replace an in-progress local edit.
   const persistedOptionsKey = JSON.stringify(optionsFromDetail(detail))
+  const optionsSyncKey = `${detail.id}:${detail.brief}:${persistedOptionsKey}`
+  const syncedOptionsKey = useRef(optionsSyncKey)
   const busy = working !== null
-  const currentStage = stageIndex(detail, generated, scriptSaved)
-  const hasScript = Boolean(scriptSaved || hasSavedScript)
   const generatedStructure = generated?.scenes.map((scene, index) => `第${index + 1}场｜${scene.heading || scene.location || '未命名场景'}\n${scene.action || scene.dialogue || scene.narration || ''}`).join('\n\n') || ''
-  const artifactCards: Array<Pick<ScriptArtifact, 'artifact_type' | 'title' | 'content' | 'status'> & { sceneCount?: number; duration?: number }> = generated
-    ? [
-      ...generated.artifacts.map((artifact) => ({ artifact_type: artifact.artifact_type, title: artifact.title, content: artifact.content, status: 'ready' as const })),
-      ...(generated.artifacts.some((artifact) => artifact.artifact_type === 'outline') ? [] : [{ artifact_type: 'outline' as const, title: '故事大纲', content: generated.outline, status: 'ready' as const }]),
-      ...(generated.artifacts.some((artifact) => artifact.artifact_type === 'characters') ? [] : [{ artifact_type: 'characters' as const, title: '人物小传', content: generated.characters, status: 'ready' as const }]),
-      ...(generated.artifacts.some((artifact) => artifact.artifact_type === 'structure') ? [] : [{ artifact_type: 'structure' as const, title: '全剧分段', content: generatedStructure, status: 'ready' as const }]),
-    ].map((artifact) => artifact.artifact_type === 'structure'
-      ? { ...artifact, sceneCount: generated.scenes.length, duration: generated.scenes.reduce((sum, scene) => sum + scene.duration, 0) }
-      : artifact).filter((artifact) => {
-        const withMeta = artifact as typeof artifact & { sceneCount?: number }
-        return Boolean(artifact.content.trim() || withMeta.sceneCount)
-      }) as Array<Pick<ScriptArtifact, 'artifact_type' | 'title' | 'content' | 'status'> & { sceneCount?: number; duration?: number }>
-    : (detail.script?.artifacts || []).map((artifact) => ({ artifact_type: artifact.artifact_type, title: artifact.title, content: artifact.content, status: artifact.status }))
+  const artifactCards = useMemo(() => {
+    const cards = new Map<string, GeneratedArtifact & { status: ScriptArtifact['status']; isUnsaved: boolean }>()
+    detail.script.artifacts?.forEach(artifact => cards.set(artifactKey(artifact), { ...artifact, isUnsaved: false }))
+    if (generated) {
+      const draftArtifacts = [...generated.artifacts]
+      if (!generated.workflow) {
+        if (!draftArtifacts.some(item => item.artifact_type === 'outline')) draftArtifacts.push({ artifact_type: 'outline', title: '故事大纲', content: generated.outline })
+        if (!draftArtifacts.some(item => item.artifact_type === 'characters')) draftArtifacts.push({ artifact_type: 'characters', title: '人物小传', content: generated.characters })
+        if (!draftArtifacts.some(item => item.artifact_type === 'structure')) draftArtifacts.push({ artifact_type: 'structure', title: '全剧分段', content: generatedStructure })
+      }
+      draftArtifacts.filter(artifact => artifact.content.trim()).forEach(artifact => cards.set(artifactKey(artifact), { ...artifact, status: scriptSaved ? 'ready' : 'draft', isUnsaved: !scriptSaved }))
+    }
+    return [...cards.values()]
+  }, [detail.script.artifacts, generated, generatedStructure, scriptSaved])
   const quickReplies = useMemo(() => {
     if (busy) return []
-    if (generated && !scriptSaved) return ['继续补充场景与道具', '确认写入项目剧本']
-    if (hasScript) return ['补充人物关系', '完善场景动作', '开始写第 1 集']
-    return ['先整理故事大纲', '补充人物关系', '整理对话并生成剧本草稿']
-  }, [busy, generated, hasScript, scriptSaved])
+    if (generated && !scriptSaved) return ['确认写入项目剧本']
+    if (activeFocus !== 'all') return []
+    if (workflowStage === 'episode') return [`开始写第 ${episodeNumber} 集`, '补充人物关系']
+    return [`生成${workflowLabels[workflowStage]}`, '给我几个故事方向选']
+  }, [busy, generated, scriptSaved, workflowStage, episodeNumber, activeFocus])
   const activeChoice = useMemo(() => {
+    const retry = messages.find(message => message.id === answeringChoiceId)
+    const retryChoice = retry && !choiceDismissed[retry.id] ? parseMessageChoices(retry.text) : null
+    if (retry && retryChoice) return { messageId: retry.id, choice: retryChoice }
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index]
+      if (message.role === 'user') return null
       if (message.role !== 'assistant' || message.pending) continue
       const choice = parseMessageChoices(message.text)
-      if (!choice) continue
+      if (!choice) return null
       return choiceDismissed[message.id] ? null : { messageId: message.id, choice }
     }
     return null
-  }, [choiceDismissed, messages])
+  }, [answeringChoiceId, choiceDismissed, messages])
+
+  const readerArtifact = artifactCards.find(artifact => artifactKey(artifact) === readerKey)
 
   useEffect(() => {
+    try { window.localStorage.setItem('script-director-window', JSON.stringify(windowLayout)) } catch { /* Keep the current geometry in memory. */ }
+  }, [windowLayout])
+  useEffect(() => {
+    const resize = () => setWindowLayout(current => ({ ...current, rect: clampDirectorWindow(current.rect, { width: window.innerWidth, height: window.innerHeight }) }))
+    window.addEventListener('resize', resize)
+    return () => window.removeEventListener('resize', resize)
+  }, [])
+  useEffect(() => {
+    try { window.localStorage.setItem(`script-director-input:${detail.id}`, input) } catch { /* Keep the unsent input in memory. */ }
+    const textarea = composerRef.current
+    if (textarea) { textarea.style.height = 'auto'; textarea.style.height = `${Math.min(160, Math.max(72, textarea.scrollHeight))}px` }
+  }, [input, minimized, readerKey])
+  useEffect(() => {
+    const composer = directorPanelRef.current?.querySelector('.sd-question-panel, .script-director-composer')
+    if (!composer) return
+    const observer = new ResizeObserver(() => directorPanelRef.current?.style.setProperty('--composer-height', `${composer.getBoundingClientRect().height}px`))
+    observer.observe(composer)
+    return () => observer.disconnect()
+  }, [minimized, readerKey, previewOpen, activeChoice?.messageId])
+  useEffect(() => {
+    if (!composerMenuOpen && !historyOpen) return
+    const closeMenus = (event: PointerEvent) => {
+      const target = event.target as HTMLElement
+      if (!target.closest('.sd-composer-menu, .sd-composer-add')) setComposerMenuOpen(false)
+      if (!target.closest('.script-director-history, [aria-label="历史对话"]')) setHistoryOpen(false)
+    }
+    document.addEventListener('pointerdown', closeMenus)
+    return () => document.removeEventListener('pointerdown', closeMenus)
+  }, [composerMenuOpen, historyOpen])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(`script-director-questions:${detail.id}`, JSON.stringify({
+        answers: Object.fromEntries(Object.entries(choiceAnswers).slice(-160)),
+        dismissed: Object.fromEntries(Object.entries(choiceDismissed).slice(-160)), retryId: answeringChoiceId,
+      }))
+    } catch { /* Answers remain available in the current panel. */ }
+  }, [detail.id, choiceAnswers, choiceDismissed, answeringChoiceId])
+
+  useEffect(() => {
+    if (initialContext) setInput(initialContext)
+  }, [initialContext])
+
+  useEffect(() => {
+    if (syncedOptionsKey.current === optionsSyncKey) return
+    syncedOptionsKey.current = optionsSyncKey
     setOptions(optionsFromDetail(detail))
     setIdea(detail.brief || '')
-  }, [detail.id, detail.brief, persistedOptionsKey])
+  }, [detail.id, detail.brief, optionsSyncKey])
+
+  useEffect(() => {
+    try {
+      const key = `script-director-draft:${detail.id}`
+      if (generated?.workflow && !scriptSaved) window.localStorage.setItem(key, JSON.stringify({ ...generated, generation_options: options }))
+      else window.localStorage.removeItem(key)
+    } catch { /* Draft preview remains available when local storage is full. */ }
+  }, [detail.id, generated, scriptSaved, options])
 
   useEffect(() => {
     setActiveFocus(focusArtifact)
@@ -995,7 +1046,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       if (!viewport || !followMessagesRef.current) return
       viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'auto' })
     })
-  }, [messages, processEvents, processSummaryOpen, assetTaskStatus, artifactsOpen, previewOpen])
+  }, [messages, assetTaskStatus, artifactsOpen, previewOpen, workflowOpen, minimized, readerKey])
 
   useEffect(() => () => {
     if (messageScrollFrameRef.current !== null) {
@@ -1028,7 +1079,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
           if (current) {
             setConversationId(current.id)
             setMessages(current.messages.length
-              ? current.messages.map(({ id, role, text }) => ({ id, role, text }))
+              ? current.messages.map(({ id, role, text }) => ({ ...messages.find(message => message.id === id), id, role, text }))
               : [welcomeMessage])
           }
           setHistory(rest.map((conversation) => ({
@@ -1183,30 +1234,11 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     // moving on to outline and character work.
     // Keep existing documents and scenes intact while only replacing the
     // generation options and the current project brief.
-    void api<ProjectDetail['script']>(`/projects/${detail.id}/script/commit`, json('PUT', {
+    void api<ProjectDetail['script']>(`/projects/${detail.id}/script`, json('PUT', {
       brief: idea.trim() || detail.brief || undefined,
       outline: detail.script?.outline || '',
       characters: detail.script?.characters || '',
       generation_options: confirmed,
-      scenes: (detail.script?.scenes || []).map((scene) => ({
-        id: scene.id,
-        heading: scene.heading,
-        location: scene.location,
-        time_of_day: scene.time_of_day,
-        characters: scene.characters,
-        action: scene.action,
-        dialogue: scene.dialogue,
-        narration: scene.narration,
-        duration: scene.duration,
-      })),
-      artifacts: (detail.script?.artifacts || []).map((artifact) => ({
-        id: artifact.id,
-        artifact_type: artifact.artifact_type,
-        title: artifact.title,
-        content: artifact.content,
-        position: artifact.position,
-        status: artifact.status,
-      })),
     })).then(async () => {
       await onRefresh()
       onNotice('剧本设定已保存')
@@ -1227,6 +1259,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     // includes the composer and other fixed sections, so checking it here
     // incorrectly disables follow mode after the first message grows.
     followMessagesRef.current = isAtBottom(messagesViewportRef.current)
+    setShowLatest(!followMessagesRef.current)
   }
 
   function flushQueuedStreamMessage() {
@@ -1254,26 +1287,17 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     })
   }
 
-  function appendProcessEvent(event: StreamEvent) {
-    const stageLabels: Record<string, string> = {
-      preparing: '准备创作',
-      analysis: '分析故事结构',
-      writing: '整理文字内容',
-      revising: '校对创作内容',
-    }
-    const rawLabel = typeof event.label === 'string' && event.label.trim() ? event.label.trim() : '创作进度'
-    const label = stageLabels[rawLabel] || rawLabel
-    const summary = typeof event.summary === 'string' && event.summary.trim()
-      ? event.summary.trim()
-      : typeof event.text === 'string' ? event.text.trim() : ''
+  function appendProcessEvent(pendingId: string, event: StreamEvent) {
+    const summary = (event.summary || event.text || '').trim()
     if (!summary) return
-    setProcessEvents((current) => {
-      const existingIndex = current.findIndex((item) => item.label === label)
-      const next = { id: existingIndex >= 0 ? current[existingIndex]!.id : crypto.randomUUID(), label, summary }
-      if (existingIndex < 0) return [...current, next].slice(-8)
-      return current.map((item, index) => index === existingIndex ? next : item)
-    })
-    setProcessSummaryOpen(true)
+    const label = event.label || '创作依据'
+    setMessages(current => current.map(message => {
+      if (message.id !== pendingId) return message
+      const events = message.activity || []
+      const existing = events.find(item => item.label === label)
+      const next = { id: existing?.id || crypto.randomUUID(), label, summary }
+      return { ...message, activity: existing ? events.map(item => item.id === existing.id ? next : item) : [...events, next].slice(-8) }
+    }))
   }
 
   async function streamDirectorChat(
@@ -1305,12 +1329,12 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
 
     const applyEvent = (event: StreamEvent) => {
       const kind = String(event.type || '').toLowerCase()
-      if (kind === 'stage' || kind === 'process' || kind === 'summary' || kind === 'progress' || kind === 'reasoning_summary') {
-        appendProcessEvent({
-          ...event,
-          label: event.label || event.stage || (kind === 'reasoning_summary' ? '生成依据' : '创作进度'),
-          summary: event.summary || event.text,
-        })
+      if (kind === 'progress' || kind === 'stage') {
+        if (!reply && event.text) queueStreamMessage(pendingId, event.text)
+        return
+      }
+      if (kind === 'process' || kind === 'summary' || kind === 'reasoning_summary') {
+        appendProcessEvent(pendingId, event)
         return
       }
       if (kind === 'error') {
@@ -1318,12 +1342,13 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       }
       if (kind === 'done' || kind === 'complete') {
         if (typeof event.reply === 'string') reply = event.reply
+        if (event.draft) receiveWorkflowDraft(event.draft)
         return
       }
       const chunk = typeof event.delta === 'string' ? event.delta : typeof event.text === 'string' ? event.text : ''
       if (chunk) {
         reply += chunk
-        queueStreamMessage(pendingId, isStructuredChoiceStream(reply) ? '正在整理可选方向…' : reply)
+        queueStreamMessage(pendingId, body.workflow ? '正在编写阶段草稿，完成后可预览和确认…' : isStructuredChoiceStream(reply) ? '正在整理可选方向…' : reply)
       }
     }
 
@@ -1394,18 +1419,20 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   }
 
   function startNewConversation() {
+    setInput('')
+    setReaderKey(null)
     followMessagesRef.current = true
     if (messages.some((message) => message.role === 'user')) {
+      const currentId = conversationId || crypto.randomUUID()
       const firstIdea = messages.find((message) => message.role === 'user')?.text || '未命名对话'
       setHistory((current) => [{
-        id: conversationId || crypto.randomUUID(),
+        id: currentId,
         label: firstIdea.length > 28 ? `${firstIdea.slice(0, 28)}…` : firstIdea,
         messages,
-      }, ...current].slice(0, 20))
+      }, ...current.filter(item => item.id !== currentId)].slice(0, 20))
     }
     setMessages([{ id: crypto.randomUUID(), role: 'assistant', text: '新的创作已经开始。告诉我你的故事想法，我会先和你讨论创作方向。' }])
-    setChoiceSelections({})
-    setChoiceDismissed({})
+    setAnsweringChoiceId(null)
     setConversationId(crypto.randomUUID())
     // `idea` is also used as the fallback when building the generation input.
     // Clear any idea captured from the previous conversation while retaining
@@ -1414,8 +1441,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     setGenerated(null)
     setPreviewOpen(false)
     setArtifactsOpen(false)
-    setProcessSummaryOpen(false)
-    setProcessEvents([])
+    setWorkflowOpen(false)
     setScriptSaved(false)
     setError(null)
     setHistoryOpen(false)
@@ -1426,18 +1452,21 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   }
 
   function switchConversation(conversation: ConversationSnapshot) {
+    if (busy) return
+    setInput('')
+    setReaderKey(null)
     followMessagesRef.current = true
     if (messages.some((message) => message.role === 'user')) {
+      const currentId = conversationId || crypto.randomUUID()
       const firstIdea = messages.find((message) => message.role === 'user')?.text || '未命名对话'
       setHistory((current) => [{
-        id: conversationId || crypto.randomUUID(),
+        id: currentId,
         label: firstIdea.length > 28 ? `${firstIdea.slice(0, 28)}…` : firstIdea,
         messages,
-      }, ...current].slice(0, 20))
+      }, ...current.filter(item => item.id !== currentId && item.id !== conversation.id)].slice(0, 20))
     }
     setMessages(conversation.messages)
-    setChoiceSelections({})
-    setChoiceDismissed({})
+    setAnsweringChoiceId(null)
     setConversationId(conversation.id)
     // Do not prepend the current conversation's unsaved idea to a restored
     // history. A restored conversation should be generated from its own
@@ -1447,8 +1476,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     setGenerated(null)
     setPreviewOpen(false)
     setArtifactsOpen(false)
-    setProcessSummaryOpen(false)
-    setProcessEvents([])
+    setWorkflowOpen(false)
     setScriptSaved(false)
     setError(null)
   }
@@ -1481,22 +1509,62 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     }
   }
 
-  async function sendChatMessage(overrideInput?: string, skipAssetStatus = false): Promise<string | null> {
+  function receiveWorkflowDraft(draft: WorkflowDraft) {
+    setGenerated({
+      workflow: { stage: draft.stage, episode_number: draft.episode_number, target_duration: draft.target_duration },
+      outline: draft.artifacts.find(item => item.artifact_type === 'outline')?.content || detail.script.outline,
+      characters: draft.artifacts.find(item => item.artifact_type === 'characters')?.content || detail.script.characters,
+      artifacts: draft.artifacts.map(item => ({ ...item, episode_number: draft.stage === 'episode' ? draft.episode_number : 0 })),
+      scenes: draft.scenes.map(scene => ({ ...normaliseScene(scene), episode_number: draft.episode_number })),
+    })
+    setWorkflowStage(draft.stage)
+    setScriptSaved(false)
+    setPreviewOpen(true)
+    setWorkflowOpen(false)
+    setArtifactsOpen(false)
+  }
+
+  function generateWorkflow() {
+    if (busy || generated && !scriptSaved) return
+    const request: WorkflowRequest = { stage: workflowStage, episode_number: episodeNumber,
+      ...(workflowStage === 'episode' && episodeDuration ? { target_duration: episodeDuration } : {}) }
+    const instruction = workflowStage === 'episode' ? `开始写第 ${episodeNumber} 集` : `生成${workflowLabels[workflowStage]}`
+    const message = input.trim() ? `${input.trim()}\n\n${instruction}` : instruction
+    void sendChatMessage(message, false, request)
+  }
+
+  async function answerQuestion(messageId: string, question: string, answer: string) {
+    setAnsweringChoiceId(messageId)
+    const reply = await sendChatMessage(`关于“${question}”，我的回答是：${answer}`, false, undefined, true)
+    if (reply !== null) {
+      setChoiceAnswers(current => ({ ...current, [messageId]: { ...current[messageId], custom: current[messageId]?.custom || false, text: current[messageId]?.text || '', status: 'answered' } }))
+      setChoiceDismissed(current => ({ ...current, [messageId]: true }))
+      setAnsweringChoiceId(null)
+    }
+  }
+
+  async function sendChatMessage(overrideInput?: string, skipAssetStatus = false, workflowOverride?: WorkflowRequest, preserveComposer = false): Promise<string | null> {
     const message = (overrideInput ?? input).trim()
     if (!message) return null
+    if (busy) return null
+    const workflow = activeFocus === 'all' && !preserveComposer ? workflowOverride || workflowFromMessage(message, episodeDuration) : undefined
+    if (workflow && generated && !scriptSaved) { setPreviewOpen(true); setError('请先确认保存或放弃当前草稿'); return null }
     if (!modelId || !selectedModel) { setError('请选择文本模型'); return null }
+    const specs = explicitSeriesSpecs(message)
+    const generationOptions = { ...options, ...(specs.episode_count ? { episode_count: specs.episode_count } : {}), ...(specs.target_duration ? { episode_duration: specs.target_duration } : {}) }
+    if (specs.episode_count || specs.target_duration) setOptions(generationOptions)
+    if (specs.target_duration) setEpisodeDuration(specs.target_duration)
     setError(null)
     if (activeFocus !== 'all' && !skipAssetStatus) setAssetTaskStatus('analyzing')
     const userMessage: Message = { id: crypto.randomUUID(), role: 'user', text: message }
     const pendingId = crypto.randomUUID()
     const pendingMessage: Message = { id: pendingId, role: 'assistant', text: '正在整理你的想法…', pending: true }
-    const priorMessages = messages.filter((item) => item.id !== 'welcome' && !item.pending).slice(-31).map(({ role, text }) => ({ role, text }))
+    const priorMessages = messages.filter((item) => item.id !== 'welcome' && !item.pending && !item.failed).slice(-31).map(({ role, text }) => ({ role, text }))
     const conversation = [...priorMessages, { role: userMessage.role, text: userMessage.text }]
     followMessagesRef.current = true
     setMessages((current) => [...current, userMessage, pendingMessage].slice(-80))
-    setInput('')
+    if (!preserveComposer) setInput('')
     if (!idea.trim()) setIdea(message)
-    setProcessEvents([])
     setWorking('chat')
     const controller = new AbortController()
     streamAbortController.current = controller
@@ -1505,7 +1573,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         model_id: modelId,
         mode,
         focus_artifact: activeFocus,
-        generation_options: options,
+        generation_options: generationOptions,
+        ...(workflow ? { workflow } : {}),
         messages: conversation,
       }
       let reply: string
@@ -1513,8 +1582,9 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         reply = await streamDirectorChat(pendingId, requestBody, controller.signal)
       } catch (issue) {
         if (!(issue instanceof StreamUnavailableError)) throw issue
-        const result = await api<{ reply: string }>(`/projects/${detail.id}/script/director/chat`, json('POST', requestBody))
+        const result = await api<{ reply: string; draft?: WorkflowDraft }>(`/projects/${detail.id}/script/director/chat`, json('POST', requestBody))
         reply = result.reply
+        if (result.draft) receiveWorkflowDraft(result.draft)
       }
       setMessages((current) => current.map((item) => item.id === pendingId
         ? { ...item, text: reply, pending: false } : item))
@@ -1524,15 +1594,15 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       if (controller.signal.aborted || isAbortError(issue)) {
         flushQueuedStreamMessage()
         setMessages((current) => current.map((item) => item.id === pendingId
-          ? { ...item, text: item.text && item.text !== '正在整理你的想法…' ? `${item.text}\n\n已停止生成` : '已停止生成', pending: false }
-          : item))
+          ? { ...item, text: item.text && item.text !== '正在整理你的想法…' ? `${item.text}\n\n已停止生成` : '已停止生成', pending: false, failed: true }
+          : item.id === userMessage.id ? { ...item, failed: true } : item))
         return null
       }
       flushQueuedStreamMessage()
       const messageText = `对话失败：${readableError(issue)}`
       setError(messageText)
       setMessages((current) => current.map((item) => item.id === pendingId
-        ? { ...item, text: messageText, pending: false } : item))
+        ? { ...item, text: messageText, pending: false, failed: true } : item.id === userMessage.id ? { ...item, failed: true } : item))
     } finally {
       if (streamAbortController.current === controller) streamAbortController.current = null
       setWorking(null)
@@ -1636,7 +1706,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       return
     }
     if (reply === '生成剧本草稿' || reply === '整理对话并生成剧本草稿') {
-      void generateScript()
+      generateWorkflow()
       return
     }
     void sendChatMessage(reply)
@@ -1719,9 +1789,29 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     setWorking('save')
     setError(null)
     try {
+      if (generated.workflow) {
+        await api<ProjectDetail['script']>(`/projects/${detail.id}/script/director/draft`, json('PUT', {
+          ...generated.workflow,
+          ...(!detail.brief.trim() ? { brief } : {}),
+          generation_options: options,
+          artifacts: generated.artifacts.map(({ artifact_type, title, content }) => ({ artifact_type, title, content })),
+          scenes: generated.scenes.map(({ episode_number: _episode, ...scene }) => scene),
+        }))
+        const completed = generated.workflow.stage
+        setPreviewOpen(false)
+        setScriptSaved(true)
+        const nextStage = workflowStages[Math.min(workflowStages.indexOf(completed) + 1, workflowStages.length - 1)]!
+        setWorkflowStage(nextStage)
+        if (completed === 'episode') setEpisodeNumber(Math.min(options.episode_count || 200, generated.workflow.episode_number + 1))
+        appendMessage('assistant', `${completed === 'episode' ? `第 ${generated.workflow.episode_number} 集` : workflowLabels[completed]}已保存。${completed === 'episode' ? '可以继续下一集，或将场次加入故事板。' : `接下来可生成${workflowLabels[nextStage]}。`}`)
+        await onRefresh().catch(() => onNotice('草稿已保存，项目刷新失败，请稍后重试'))
+        onNotice('当前阶段已保存')
+        return
+      }
       const linkedSceneIds = new Set(detail.shots.map((shot) => shot.source_scene_id).filter((id): id is string => !!id))
-      const linkedScenes = detail.script.scenes.filter((scene) => linkedSceneIds.has(scene.id)).map((scene) => ({
+      const linkedScenes = detail.script.scenes.filter((scene) => linkedSceneIds.has(scene.id) || (scene.episode_number || 0) > 0).map((scene) => ({
         id: scene.id,
+        episode_number: scene.episode_number,
         heading: scene.heading,
         location: scene.location,
         time_of_day: scene.time_of_day,
@@ -1731,13 +1821,14 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         narration: scene.narration,
         duration: scene.duration,
       }))
-      const artifactMap = new Map<ScriptArtifactType, GeneratedArtifact>()
-      generated.artifacts.forEach((artifact) => artifactMap.set(artifact.artifact_type, artifact))
-      if (!artifactMap.has('outline') && generated.outline.trim()) artifactMap.set('outline', { artifact_type: 'outline', title: '故事大纲', content: generated.outline })
-      if (!artifactMap.has('characters') && generated.characters.trim()) artifactMap.set('characters', { artifact_type: 'characters', title: '人物小传', content: generated.characters })
-      if (!artifactMap.has('structure') && generatedStructure.trim()) artifactMap.set('structure', { artifact_type: 'structure', title: '全剧分段', content: generatedStructure })
-      const artifactPayload: Array<{ artifact_type: ScriptArtifactType; title: string; content: string; position: number; status: 'ready' }> = [...artifactMap.values()]
-        .map((artifact, position) => ({ artifact_type: artifact.artifact_type, title: artifact.title, content: artifact.content, position, status: 'ready' as const }))
+      const artifactMap = new Map<string, GeneratedArtifact>()
+      detail.script.artifacts?.forEach(artifact => artifactMap.set(artifactKey(artifact), artifact))
+      generated.artifacts.forEach(artifact => artifactMap.set(artifactKey(artifact), artifact))
+      if (!artifactMap.has('outline:0') && generated.outline.trim()) artifactMap.set('outline:0', { artifact_type: 'outline', title: '故事大纲', content: generated.outline })
+      if (!artifactMap.has('characters:0') && generated.characters.trim()) artifactMap.set('characters:0', { artifact_type: 'characters', title: '人物小传', content: generated.characters })
+      if (!artifactMap.has('structure:0') && generatedStructure.trim()) artifactMap.set('structure:0', { artifact_type: 'structure', title: '全剧分段', content: generatedStructure })
+      const artifactPayload = [...artifactMap.values()]
+        .map((artifact, position) => ({ ...artifact, position, status: 'ready' as const }))
       await api<ProjectDetail['script']>(`/projects/${detail.id}/script/commit`, json('PUT', {
         brief,
         outline: generated.outline,
@@ -1788,44 +1879,106 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   }
 
   function handleInputKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+    if (shouldSendDirectorMessage({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing, keyCode: event.nativeEvent.keyCode })) {
       event.preventDefault()
       void sendChatMessage()
     }
   }
 
+  function startWindowGesture(event: React.PointerEvent<HTMLElement>, resize = false) {
+    if (windowLayout.docked || event.button !== 0 || (!resize && (event.target as HTMLElement).closest('button, input'))) return
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    gestureRef.current = { pointer: event.pointerId, x: event.clientX, y: event.clientY, rect: windowLayout.rect, resize }
+  }
+  function moveWindowGesture(event: React.PointerEvent<HTMLElement>) {
+    const gesture = gestureRef.current
+    if (!gesture || gesture.pointer !== event.pointerId) return
+    const dx = event.clientX - gesture.x, dy = event.clientY - gesture.y
+    const rect = gesture.resize ? { ...gesture.rect, width: gesture.rect.width + dx, height: gesture.rect.height + dy }
+      : { ...gesture.rect, x: gesture.rect.x + dx, y: gesture.rect.y + dy }
+    setWindowLayout(current => ({ ...current, rect: clampDirectorWindow(rect, { width: window.innerWidth, height: window.innerHeight }) }))
+  }
+  function latestMessages() {
+    followMessagesRef.current = true
+    setShowLatest(false)
+    messagesViewportRef.current?.scrollTo({ top: messagesViewportRef.current.scrollHeight, behavior: 'smooth' })
+  }
+
+  async function closeDirector() {
+    if (closing) return
+    if (busy) {
+      setMinimized(true)
+      onNotice('任务仍在运行，对话已收起，可展开查看或停止生成')
+      return
+    }
+    setClosing(true)
+    // Flush the active conversation before unmounting; the normal debounce
+    // would otherwise drop a just-completed reply when the user closes it.
+    ++conversationSaveSerial.current
+    if (remoteConversationSaveTimer.current !== null) window.clearTimeout(remoteConversationSaveTimer.current)
+    try { window.localStorage.setItem(directorStorageKey(detail.id), JSON.stringify({ messages: messages.slice(-80), history: history.slice(0, 20) })) } catch { /* API remains available. */ }
+    if (conversationSyncReady.current) {
+      const snapshots = [...history.slice(0, 20), { id: conversationId || crypto.randomUUID(), label: messages.find(message => message.role === 'user')?.text || '当前对话', messages }]
+      try {
+        for (const conversation of snapshots) await api(`/projects/${detail.id}/script/conversations`, json('PUT', {
+          id: conversation.id, label: conversation.label,
+          messages: conversation.messages.filter(message => !message.pending).slice(-80).map(({ id, role, text }) => ({ id, role, text })),
+        }))
+      } catch { onNotice('对话已缓存在本机，服务端保存失败，请稍后重试') }
+    }
+    onClose()
+  }
+
   return <aside
-    className="script-director-panel"
+    className={`script-director-panel sd-chat${previewOpen && generated ? ' is-reviewing' : ''}${windowLayout.docked ? ' is-docked' : ''}${minimized ? ' is-minimized' : ''}${(windowLayout.docked ? window.innerHeight : windowLayout.rect.height) <= 520 ? ' is-compact' : ''}`}
+    style={{ '--chat-x': `${windowLayout.rect.x}px`, '--chat-y': `${windowLayout.rect.y}px`, '--chat-width': `${windowLayout.rect.width}px`, '--chat-height': `${windowLayout.rect.height}px` } as CSSProperties}
+    data-canvas-overlay
+    onKeyDown={event => {
+      if (event.key !== 'Escape') return
+      if (settingsOpen) setSettingsOpen(false)
+      else if (composerMenuOpen) setComposerMenuOpen(false)
+      else if (historyOpen) setHistoryOpen(false)
+      else if (workflowOpen) setWorkflowOpen(false)
+      else if (artifactsOpen) setArtifactsOpen(false)
+      else if (readerKey) setReaderKey(null)
+      else return
+      event.preventDefault(); event.stopPropagation()
+    }}
     aria-label="剧本导演"
     ref={directorPanelRef}
   >
-    <header className="script-director-header">
+    <header className="script-director-header" onPointerDown={startWindowGesture} onPointerMove={moveWindowGesture} onPointerUp={() => { gestureRef.current = null }} onPointerCancel={() => { gestureRef.current = null }}>
       <div className="script-director-title">
-        <strong>剧本创作</strong>
+        <strong title={messages.find(message => message.role === 'user')?.text || '剧本创作'}>{messages.find(message => message.role === 'user')?.text.replace(/[#*`]/g, '').slice(0, 32) || '剧本创作'}</strong><small>{detail.name || '未命名项目'}</small>
       </div>
       <div className="script-director-header-actions">
         <button type="button" title="新建对话" aria-label="新建对话" onClick={startNewConversation} disabled={busy}><MessageCirclePlus size={17} /></button>
         <button type="button" title="历史对话" aria-label="历史对话" className={historyOpen ? 'is-active' : 'is-muted'} onClick={() => setHistoryOpen((value) => !value)}><History size={16} /></button>
-        <button type="button" title="关闭" aria-label="关闭剧本导演" onClick={onClose}><X size={18} /></button>
+        <button type="button" title="剧本设定" aria-label="剧本设定" onClick={openSettings}><Settings2 size={16} /></button>
+        <button type="button" title={`项目文档 · ${artifactCards.length}`} aria-label="项目文档" aria-expanded={artifactsOpen} onClick={() => { setArtifactsOpen(value => !value); setWorkflowOpen(false); setReaderKey(null); setMinimized(false) }}><FileText size={16} /></button>
+        <button type="button" title={windowLayout.docked ? '切换为浮窗' : '停靠到右侧'} aria-label={windowLayout.docked ? '切换为浮窗' : '停靠到右侧'} onClick={() => setWindowLayout(current => ({ ...current, docked: !current.docked }))}><PanelRight size={16} /></button>
+        <button type="button" title={minimized ? '展开对话' : '收起对话'} aria-label={minimized ? '展开对话' : '收起对话'} onClick={() => setMinimized(value => !value)}>{minimized ? <Maximize2 size={16} /> : <Minus size={16} />}</button>
+        <button type="button" title={busy ? '收起运行中的对话' : '关闭'} aria-label="关闭剧本导演" disabled={closing} onClick={() => void closeDirector()}>{closing ? <LoaderCircle size={16} className="script-director-spinner" /> : <X size={18} />}</button>
       </div>
     </header>
     {historyOpen && <div className="script-director-history" role="listbox" aria-label="历史对话">
       <strong>历史对话</strong>
-      {history.length ? history.map((conversation) => <button type="button" key={conversation.id} onClick={() => switchConversation(conversation)}>
+      {history.length ? history.map((conversation) => <button type="button" key={conversation.id} disabled={busy} onClick={() => switchConversation(conversation)}>
         <History size={13} /><span>{conversation.label}</span>
       </button>) : <p>当前还没有历史对话</p>}
     </div>}
 
-    <div className="script-director-context">
-      <FileText size={15} />
-      <span>{detail.name || '未命名项目'}</span>
-      <span className="script-director-context-dot">·</span>
-      <span>{detail.ratio}</span>
-      <span className="script-director-context-dot">·</span>
-      <span>{focusArtifactLabels[activeFocus]}</span>
-    </div>
-
-    {activeFocus !== 'all' && <AssetTaskCard
+    <div className="sd-chat-main" hidden={minimized || Boolean(readerArtifact)}>
+    <div
+      className="script-director-messages"
+      role="log"
+      aria-label="导演对话消息"
+      aria-live="polite"
+      ref={messagesViewportRef}
+      onScroll={updateMessageFollow}
+    >
+      {activeFocus !== 'all' && <AssetTaskCard
       detail={detail}
       generated={generated}
       focus={activeFocus}
@@ -1843,63 +1996,35 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       onCopy={copyAssetPrompt}
       onOpenModels={onOpenModels}
     />}
-
-    <section className="script-director-progress" aria-label="剧本创作阶段">
-      <div className="script-director-progress-head">
-        <div><span>创作进度</span><strong>{directorStages[currentStage]?.label || '创作方向'}</strong></div>
-        <button type="button" className={processSummaryOpen ? 'is-active' : ''} onClick={() => setProcessSummaryOpen((value) => !value)} aria-expanded={processSummaryOpen} title="查看创作过程摘要"><Info size={14} /></button>
-      </div>
-      <ol className="script-director-stage-list">
-        {directorStages.map((stage, index) => {
-          const completed = stageCompleted(detail, generated, scriptSaved, index)
-          const active = index === currentStage
-          return <li className={`${completed ? 'is-complete' : ''} ${active ? 'is-active' : ''}`} key={stage.key}>
-            <span className="script-director-stage-marker">{completed ? <Check size={11} /> : active ? <Circle size={8} fill="currentColor" /> : index + 1}</span>
-            <span className="script-director-stage-label">{stage.label}</span>
-          </li>
-        })}
-      </ol>
-      {processSummaryOpen && <div className="script-director-process-summary">
-        <strong>创作过程摘要</strong>
-        {processEvents.length ? <ol className="script-director-process-events">
-          {processEvents.map((event) => <li key={event.id}><span>{event.label}</span><p>{event.summary}</p></li>)}
-        </ol> : <p>{processSummaryFor(currentStage, hasScript, Boolean(generated))}</p>}
-        <small>这里展示阶段进度与生成依据，不包含模型的内部隐式思考内容。</small>
-      </div>}
-    </section>
-
-    <div
-      className="script-director-messages"
-      aria-live="polite"
-      ref={messagesViewportRef}
-      onScroll={updateMessageFollow}
-    >
-      {messages.map((message) => {
+      {messages.map((message, messageIndex) => {
         const parsedChoices = message.role === 'assistant' && !message.pending
           ? parseMessageChoices(message.text)
           : null
         const dismissed = Boolean(choiceDismissed[message.id])
-        if (parsedChoices && !dismissed) return null
+        const storedAnswer = choiceAnswers[message.id]
+        const answer = storedAnswer?.status === 'skipped' ? undefined : storedAnswer?.status === 'answered'
+          ? storedAnswer.custom ? storedAnswer.text : parsedChoices?.options.find(option => option.label === storedAnswer.selectedId)?.text
+          : parsedChoices ? messages.slice(messageIndex + 1).find(item => item.role === 'user')?.text : undefined
+        if (parsedChoices) return <div className="script-director-message assistant" key={message.id}>
+          <div className="sd-choice-explanation">
+            {parsedChoices.intro && <DirectorMessageText text={parsedChoices.intro} />}
+            {parsedChoices.options.filter(option => !isCustomChoice(option.text)).map(option => <div className="sd-choice-direction" key={option.label}>
+              {!option.text.replace(/[*#`]/g, '').startsWith(option.title.split(/[｜|]/)[0].trim()) && <strong>{option.title}</strong>}
+              <DirectorMessageText text={option.text} />
+            </div>)}
+            {parsedChoices.trailing && <DirectorMessageText text={parsedChoices.trailing} />}
+          </div>
+          {activeChoice?.messageId === message.id ? <span className="sd-question-status">请在下方回答</span>
+            : <details className="sd-answered-question"><summary>{answer ? '已回答' : dismissed ? '已跳过' : '待确认问题'}</summary><p>{parsedChoices.question}</p><p>{answer || '暂未回答'}</p></details>}
+          {message.activity?.length ? <details className="sd-message-activity"><summary>创作依据</summary>{message.activity.map(event => <p key={event.id}>{event.summary}</p>)}</details> : null}
+        </div>
         return <div className={`script-director-message ${message.role}`} key={message.id}>
-          {parsedChoices && dismissed ? <div className="script-director-choice-dismissed"><span>{parsedChoices.question}</span><em>已忽略</em></div> : <div className={`script-director-bubble${message.pending ? ' is-pending' : ''}`}>
-            {message.pending ? <><LoaderCircle size={13} className="script-director-spinner" /><span>{message.text}</span></> : message.text}
-          </div>}
+          <div className={`script-director-bubble${message.pending ? ' is-pending' : ''}`}>
+            {message.pending ? <><LoaderCircle size={13} className="script-director-spinner" /><span>{message.text}</span></> : message.role === 'assistant' ? <DirectorMessageText text={message.text} /> : message.text}
+          </div>
+          {message.activity?.length && !message.pending ? <details className="sd-message-activity"><summary>创作依据</summary>{message.activity.map(event => <p key={event.id}>{event.summary}</p>)}</details> : null}
         </div>
       })}
-    </div>
-
-    {!!artifactCards.length && <section className={`script-director-artifacts ${artifactsOpen ? 'is-open' : ''}`} aria-label="剧本产物">
-      <button type="button" className="script-director-artifacts-toggle" onClick={() => setArtifactsOpen((value) => !value)} aria-expanded={artifactsOpen}>
-        <span><FileText size={14} />剧本产物</span><span className="script-director-artifacts-count">{artifactCards.length} 项</span><ChevronRight size={14} />
-      </button>
-      {artifactsOpen && <div className="script-director-artifacts-body">
-        {artifactCards.map((artifact) => <article key={artifact.artifact_type}>
-          <header><span>{artifact.title}</span>{artifact.status === 'ready' || artifact.status === 'edited' ? <Check size={12} /> : <em>待完善</em>}</header>
-          <p>{artifact.content || '尚未填写内容'}</p>
-        </article>)}
-      </div>}
-    </section>}
-
     {hasSavedScript && detail.script.scenes.length > 0 && <section className="script-director-storyboard-handoff" aria-label="故事板制作">
       <div><span><Clapperboard size={14} />故事板制作</span><small>{pendingSceneCount ? `${pendingSceneCount} 场尚未加入画布` : '所有场次都已加入画布'}</small></div>
       <button type="button" onClick={() => void createSceneShots()} disabled={busy || pendingSceneCount === 0}>
@@ -1912,14 +2037,43 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       {quickReplies.map((reply) => <button type="button" key={reply} onClick={() => handleQuickReply(reply)} disabled={busy || (!selectedModel && reply !== '确认写入项目剧本')}><ChevronRight size={13} />{reply}</button>)}
     </div>}
 
+    </div>
+    {artifactsOpen && <section className="sd-utility-panel" aria-label="项目文档列表">
+      <header><strong>项目文档 · {artifactCards.length}</strong><button type="button" aria-label="关闭项目文档" onClick={() => setArtifactsOpen(false)}><X size={16} /></button></header>
+      <div className="sd-utility-body">
+        {artifactCards.length ? artifactCards.map(artifact => <button type="button" className="sd-artifact-card" key={artifactKey(artifact)} aria-label={`阅读文档：${artifact.title}`} onClick={() => { setReaderKey(artifactKey(artifact)); setArtifactsOpen(false) }}>
+          <FileText size={18} /><span><strong>{artifact.title}</strong><small>{artifact.isUnsaved ? '草稿待确认' : '已保存文档'}{artifact.episode_number ? ` · 第 ${artifact.episode_number} 集` : ''}</small></span><ChevronRight size={14} />
+        </button>) : <p className="sd-utility-empty">还没有项目文档。可以先讨论故事方向，再生成并确认保存大纲、人物和分集正文。</p>}
+      </div>
+    </section>}
+    {workflowOpen && <section className="sd-utility-panel" aria-label="分阶段生成面板">
+      <header><strong>分阶段生成</strong><button type="button" aria-label="关闭分阶段生成" onClick={() => setWorkflowOpen(false)}><X size={16} /></button></header>
+      <div className="sd-utility-body">
+        <p>选择本次要整理的文档，生成后可编辑、确认保存。</p>
+        {availableModels.length ? modelSelector : <button type="button" className="script-director-model-link" onClick={onOpenModels}>配置可用文本模型</button>}
+        <Select label="创作阶段" aria-label="创作阶段" value={workflowStage} allowDeselect={false}
+          data={workflowStages.map(stage => ({ value: stage, label: workflowLabels[stage] }))}
+          disabled={busy || Boolean(generated && !scriptSaved)} onChange={value => value && setWorkflowStage(value as WorkflowStage)} />
+        {workflowStage === 'episode' && <div className="script-director-episode-fields">
+          <label>第 <input type="number" min={1} max={200} value={episodeNumber} aria-label="生成第几集" disabled={busy} onChange={event => setEpisodeNumber(Math.max(1, Math.min(200, Number(event.currentTarget.value) || 1)))} /> 集</label>
+          <label>单集 <input type="number" min={5} max={600} value={episodeDuration ?? ''} placeholder="自动" aria-label="单集目标秒数" disabled={busy} onChange={event => { const duration = event.currentTarget.value ? Math.max(5, Math.min(600, Number(event.currentTarget.value) || 5)) : undefined; setEpisodeDuration(duration); setOptions(current => ({ ...current, episode_duration: duration })) }} /> 秒</label>
+        </div>}
+        {generated && !scriptSaved ? <div className="script-director-workflow-actions">
+          <button type="button" onClick={() => { setWorkflowOpen(false); setPreviewOpen(true) }}>查看待确认草稿</button>
+          <button type="button" disabled={busy} onClick={() => { setGenerated(null); setPreviewOpen(false); setError(null) }}>放弃草稿</button>
+        </div> : <button type="button" className="script-director-workflow-generate" disabled={busy || !selectedModel || !input.trim() && !idea.trim() && !messages.some(message => message.role === 'user')} onClick={() => { setWorkflowOpen(false); if (promptCustomized) void generateScript(); else generateWorkflow() }}><FileText size={13} />{promptCustomized ? '按自定义提示词生成完整草稿' : `生成${workflowStage === 'episode' ? `第 ${episodeNumber} 集正文` : workflowLabels[workflowStage]}`}</button>}
+      </div>
+    </section>}
+    {showLatest && <button type="button" className="sd-latest" onClick={latestMessages}><ArrowDown size={14} />回到最新消息</button>}
+
     {error && <div className="script-director-error" role="alert">{error}<button type="button" onClick={() => setError(null)} aria-label="关闭错误"><X size={14} /></button></div>}
 
     {previewOpen && generated && <section className="script-director-preview" aria-label="剧本草稿预览">
-      <div className="script-director-preview-head"><div><span>生成草稿</span><strong>{generated.scenes.length} 场 · {generated.scenes.reduce((sum, scene) => sum + scene.duration, 0)} 秒</strong></div><button type="button" onClick={() => setPreviewOpen(false)} aria-label="收起预览"><ChevronUp size={16} /></button></div>
+      <div className="script-director-preview-head"><div><span>{generated.workflow ? generated.workflow.stage === 'episode' ? `第 ${generated.workflow.episode_number} 集草稿` : workflowLabels[generated.workflow.stage] : '生成草稿'}</span><strong>{generated.scenes.length ? `${generated.scenes.length} 场 · ${generated.scenes.reduce((sum, scene) => sum + scene.duration, 0)} 秒` : `${generated.artifacts.length} 份文档`}</strong></div><button type="button" onClick={() => setPreviewOpen(false)} aria-label="收起预览"><ChevronUp size={16} /></button></div>
       <div className="script-director-preview-scroll">
-        <label>故事大纲<textarea value={generated.outline} onChange={(event) => setGenerated({ ...generated, outline: event.currentTarget.value })} /></label>
-        <label>人物设定<textarea value={generated.characters} onChange={(event) => setGenerated({ ...generated, characters: event.currentTarget.value })} /></label>
-        {generated.artifacts.filter((artifact) => artifact.artifact_type !== 'outline' && artifact.artifact_type !== 'characters' && artifact.artifact_type !== 'structure').map((artifact) => <label key={artifact.artifact_type}>{artifact.title}<textarea value={artifact.content} onChange={(event) => setGenerated({ ...generated, artifacts: generated.artifacts.map((item) => item.artifact_type === artifact.artifact_type ? { ...item, content: event.currentTarget.value } : item) })} /></label>)}
+        {!generated.workflow && <><label>故事大纲<textarea value={generated.outline} onChange={(event) => setGenerated({ ...generated, outline: event.currentTarget.value })} /></label>
+        <label>人物设定<textarea value={generated.characters} onChange={(event) => setGenerated({ ...generated, characters: event.currentTarget.value })} /></label></>}
+        {generated.artifacts.filter((artifact) => generated.workflow || artifact.artifact_type !== 'outline' && artifact.artifact_type !== 'characters' && artifact.artifact_type !== 'structure').map((artifact, index) => <label key={artifactKey(artifact)}>{artifact.title}<textarea value={artifact.content} onChange={(event) => setGenerated({ ...generated, artifacts: generated.artifacts.map((item) => artifactKey(item) === artifactKey(artifact) ? { ...item, content: event.currentTarget.value } : item) })} aria-label={`草稿文档 ${index + 1} ${artifact.title}`} /></label>)}
         {generated.scenes.map((scene, index) => <article key={`${scene.heading}-${index}`} className="script-director-scene-preview">
           <header><span>{String(index + 1).padStart(2, '0')}</span><input value={scene.heading} onChange={(event) => setGenerated({ ...generated, scenes: generated.scenes.map((item, itemIndex) => itemIndex === index ? { ...item, heading: event.currentTarget.value } : item) })} /><input className="script-director-scene-duration" type="number" min={1} max={30} value={scene.duration} aria-label={`第${index + 1}场时长`} onChange={(event) => setGenerated({ ...generated, scenes: generated.scenes.map((item, itemIndex) => itemIndex === index ? { ...item, duration: Math.max(1, Math.min(30, Number(event.currentTarget.value) || 1)) } : item) })} /><em>s</em></header>
           <input value={scene.location} placeholder="地点" aria-label={`第${index + 1}场地点`} onChange={(event) => setGenerated({ ...generated, scenes: generated.scenes.map((item, itemIndex) => itemIndex === index ? { ...item, location: event.currentTarget.value } : item) })} />
@@ -1927,44 +2081,35 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
           <textarea value={scene.dialogue} placeholder="对白（可留空）" aria-label={`第${index + 1}场对白`} onChange={(event) => setGenerated({ ...generated, scenes: generated.scenes.map((item, itemIndex) => itemIndex === index ? { ...item, dialogue: event.currentTarget.value } : item) })} />
         </article>)}
       </div>
-      <div className="script-director-preview-actions"><button type="button" className="script-director-secondary" onClick={() => setPreviewOpen(false)}>稍后处理</button><button type="button" className="script-director-primary" onClick={() => void saveGenerated()} disabled={working === 'save'}>{working === 'save' ? <LoaderCircle size={15} className="script-director-spinner" /> : <PenLine size={15} />} 写入项目剧本</button></div>
+      <div className="script-director-preview-actions"><button type="button" className="script-director-secondary" onClick={() => setPreviewOpen(false)}>稍后处理</button><button type="button" className="script-director-primary" onClick={() => void saveGenerated()} disabled={busy || scriptSaved}>{working === 'save' ? <LoaderCircle size={15} className="script-director-spinner" /> : <PenLine size={15} />} {generated.workflow ? '确认保存当前阶段' : '写入项目剧本'}</button></div>
     </section>}
 
-    {activeChoice && <div className="script-director-choice-dock" aria-label="待确认的问题">
-      <DirectorChoiceCard
-        messageId={activeChoice.messageId}
-        choice={activeChoice.choice}
-        selectedLabel={choiceSelections[activeChoice.messageId]}
-        busy={busy}
-        onSelect={(label) => setChoiceSelections((current) => ({ ...current, [activeChoice.messageId]: label }))}
-        onDismiss={() => setChoiceDismissed((current) => ({ ...current, [activeChoice.messageId]: true }))}
-        onContinue={(text) => {
-          setChoiceDismissed((current) => ({ ...current, [activeChoice.messageId]: true }))
-          void sendChatMessage(text)
-        }}
-      />
-    </div>}
-
-    {!activeChoice && <div className={`script-director-composer ${promptOpen ? 'is-prompt-open' : ''}`}>
-      <button type="button" className="script-director-settings-trigger" onClick={openSettings} disabled={busy}>
-        <span><Settings2 size={14} />剧本设定器</span>
-        <small>{options.genre || '未设置，交给模型判断'}</small>
-        <ChevronDown size={14} />
-      </button>
-      <textarea value={input} maxLength={8000} onChange={(event) => setInput(event.currentTarget.value)} onKeyDown={handleInputKeyDown} placeholder={activeFocus === 'all' ? '聊聊你的故事想法…' : `描述你希望如何处理${focusArtifactLabels[activeFocus]}…`} aria-label="剧本创作对话" disabled={busy} />
+    {activeChoice && !previewOpen ? <DirectorQuestionPanel key={activeChoice.messageId}
+      choice={activeChoice.choice} answer={choiceAnswers[activeChoice.messageId] || { custom: false, text: '' }} busy={busy} unavailable={!selectedModel} controls={availableModels.length ? modelSelector : undefined} onConfigure={onOpenModels} onStop={working === 'chat' ? stopChatGeneration : undefined}
+      onChange={answer => setChoiceAnswers(current => ({ ...current, [activeChoice.messageId]: answer }))}
+      onSkip={() => { setChoiceAnswers(current => ({ ...current, [activeChoice.messageId]: { ...current[activeChoice.messageId], custom: current[activeChoice.messageId]?.custom || false, text: current[activeChoice.messageId]?.text || '', status: 'skipped' } })); setChoiceDismissed(current => ({ ...current, [activeChoice.messageId]: true })); setAnsweringChoiceId(null) }}
+      onContinue={answer => answerQuestion(activeChoice.messageId, activeChoice.choice.question, answer)} />
+      : <div className={`script-director-composer ${promptOpen ? 'is-prompt-open' : ''}`}>
+      <textarea ref={composerRef} value={input} maxLength={8000} onChange={(event) => setInput(event.currentTarget.value)} onKeyDown={handleInputKeyDown} placeholder={activeFocus === 'all' ? '聊聊你的故事想法…' : `描述你希望如何处理${focusArtifactLabels[activeFocus]}…`} aria-label="剧本创作对话" disabled={busy} />
       {promptOpen && <div className="script-director-prompt-editor">
         <div className="script-director-prompt-head"><span>实际发送提示词</span><button type="button" onClick={() => void refreshPrompt()} disabled={promptLoading || busy}>恢复自动提示词</button></div>
         <textarea value={prompt} onChange={(event) => { setPromptCustomized(true); setPrompt(event.currentTarget.value) }} placeholder="正在生成提示词…" disabled={promptLoading || busy} />
         {promptError && <small>{promptError}</small>}
       </div>}
       <div className="script-director-composer-toolbar">
+        <button type="button" className="sd-composer-add" aria-label="对话工具" aria-expanded={composerMenuOpen} onClick={() => setComposerMenuOpen(value => !value)}><Plus size={19} /></button>
+        {composerMenuOpen && <div className="sd-composer-menu" role="menu" aria-label="对话工具菜单">
+          <button type="button" role="menuitem" disabled={busy} onClick={() => { setComposerMenuOpen(false); openSettings() }}><Settings2 size={15} />剧本设定</button>
+          <button type="button" role="menuitem" onClick={() => { setComposerMenuOpen(false); setWorkflowOpen(true); setArtifactsOpen(false) }}><FileText size={15} />分阶段生成</button>
+          <button type="button" role="menuitem" onClick={() => { setComposerMenuOpen(false); setArtifactsOpen(true); setWorkflowOpen(false) }}><FileText size={15} />项目文档 · {artifactCards.length}</button>
+          <button type="button" role="menuitem" onClick={() => { setComposerMenuOpen(false); void refreshPrompt() }} disabled={busy}><PenLine size={15} />编辑发送提示词</button>
+        </div>}
         <Select
           className="script-director-mode-select"
           aria-label="创作模式"
           value={mode}
           data={[{ value: 'all', label: '全能创作' }, { value: 'script', label: '剧本创编' }, { value: 'director', label: '导演执导' }]}
           allowDeselect={false}
-          leftSection={<Sparkles size={13} />}
           rightSection={<ChevronDown size={13} />}
           size="xs"
           comboboxProps={{ withinPortal: true, zIndex: 400, position: 'top-start' }}
@@ -1975,27 +2120,27 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
             if (!promptCustomized && basePrompt) setPrompt(promptForMode(basePrompt, nextMode))
           }}
         />
-        <Select
-          className="script-director-model-select"
-          aria-label="文本模型"
-          placeholder="选择文本模型"
-          value={modelId || null}
-          data={availableModels.map((model) => ({
-            value: model.id,
-            label: model.name,
-          }))}
-          allowDeselect={false}
-          searchable
-          size="xs"
-          comboboxProps={{ withinPortal: true, zIndex: 400, position: 'top-start' }}
-          onChange={(value) => setModelId(value || '')}
-        />
-        <button type="button" className="script-director-prompt-toggle" onClick={() => void refreshPrompt()} title="编辑发送提示词" disabled={busy}><PenLine size={14} /></button>
-        <button type="button" className="script-director-draft" onClick={() => void generateScript()} disabled={busy || !input.trim() && !idea.trim()} title="生成剧本草稿" aria-label="生成剧本草稿">{working === 'prompt' || working === 'generate' ? <LoaderCircle size={15} className="script-director-spinner" /> : <FileText size={15} />}</button>
-        <button type="button" className="script-director-send" onClick={() => working === 'chat' ? stopChatGeneration() : void sendChatMessage()} disabled={working === 'chat' ? false : busy || !input.trim() || !selectedModel} aria-label={working === 'chat' ? '停止生成' : '发送消息'} title={working === 'chat' ? '停止生成' : '发送消息'}>{working === 'chat' ? <X size={17} /> : <Send size={17} />}</button>
+        {modelSelector}
+        <button type="button" className="script-director-send" onClick={() => working === 'chat' ? stopChatGeneration() : void sendChatMessage()} disabled={working === 'chat' ? false : busy || !input.trim() || !selectedModel} aria-label={working === 'chat' ? '停止生成' : '发送消息'} title={working === 'chat' ? '停止生成' : '发送消息'}>{working === 'chat' ? <Square size={15} fill="currentColor" /> : <ArrowUp size={20} />}</button>
       </div>
       {!availableModels.length && <button type="button" className="script-director-model-link" onClick={onOpenModels}>还没有可用文本模型，前往模型设置添加</button>}
+      <div className="sd-composer-hint"><span>Enter 发送 · Shift+Enter 换行</span><span>{input.length ? `${input.length}/8000` : ''}</span></div>
     </div>}
+    </div>
+
+    {readerArtifact && !minimized && <section className="sd-document-reader" aria-label="导演文档阅读器">
+      <header><button type="button" aria-label="返回导演对话" onClick={() => setReaderKey(null)}><ChevronLeft size={18} /></button><strong>{readerArtifact.title}</strong><button type="button" aria-label="关闭文档阅读器" onClick={() => setReaderKey(null)}><X size={17} /></button></header>
+      <article><small>{readerArtifact.isUnsaved ? '草稿待确认' : readerArtifact.status === 'draft' ? '已保存草稿' : '已保存文档'}</small><DirectorMessageText text={readerArtifact.content} /></article>
+      <footer><button type="button" onClick={() => { setInput(current => `${current}${current.trim() ? '\n\n' : ''}参考文档「${readerArtifact.title}」：\n${readerArtifact.content.slice(0, 5500)}`.slice(0, 8000)); setReaderKey(null); window.requestAnimationFrame(() => composerRef.current?.focus()) }}><Plus size={14} />引用到对话</button>
+        {readerArtifact.isUnsaved ? <button type="button" onClick={() => { setReaderKey(null); setPreviewOpen(true) }}>编辑待确认草稿</button> : onOpenDocument && <button type="button" onClick={() => { const saved = detail.script.artifacts?.find(artifact => artifactKey(artifact) === readerKey); if (saved) onOpenDocument(saved) }}>编辑文档</button>}
+      </footer>
+    </section>}
+    {!windowLayout.docked && !minimized && <button type="button" className="sd-window-resize" aria-label="调整对话窗口大小" title="拖动或用方向键调整窗口大小" onPointerDown={event => startWindowGesture(event, true)} onPointerMove={moveWindowGesture} onPointerUp={() => { gestureRef.current = null }} onPointerCancel={() => { gestureRef.current = null }} onKeyDown={event => {
+      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return
+      event.preventDefault()
+      const step = event.shiftKey ? 40 : 10
+      setWindowLayout(current => ({ ...current, rect: clampDirectorWindow({ ...current.rect, width: current.rect.width + (event.key === 'ArrowRight' ? step : event.key === 'ArrowLeft' ? -step : 0), height: current.rect.height + (event.key === 'ArrowDown' ? step : event.key === 'ArrowUp' ? -step : 0) }, { width: window.innerWidth, height: window.innerHeight }) }))
+    }} />}
 
     {settingsOpen && <div className="script-director-settings-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSettingsOpen(false) }}>
       <section className={`script-director-settings-modal${showSettingPresets ? '' : ' is-presets-hidden'}`} role="dialog" aria-modal="true" aria-label="剧本设定器" onMouseDown={(event) => event.stopPropagation()}>

@@ -32,6 +32,7 @@ export interface TimelineClip {
 }
 export interface ScriptScene {
   id: string; project_id: string; position: number; heading: string;
+  episode_number: number;
   location: string; time_of_day: string; characters: string; action: string;
   dialogue: string; narration: string; duration: number;
   created_at: string; updated_at: string
@@ -47,6 +48,7 @@ export interface ScriptGenerationOptions {
   character_notes?: string
   /** Target number of episodes for a generated series. */
   episode_count?: number
+  episode_duration?: number
 }
 export interface ScriptConversation {
   id: string; project_id: string; label: string;
@@ -62,6 +64,7 @@ export type ScriptArtifactType =
   | 'episode_outline' | 'episode_script'
 export interface ScriptArtifact {
   id: string; project_id: string; artifact_type: ScriptArtifactType; title: string;
+  episode_number: number;
   content: string; position: number; status: 'draft' | 'ready' | 'edited';
   created_at: string; updated_at: string
 }
@@ -369,6 +372,31 @@ export function initDb(): void {
   const scriptColumns = db.pragma('table_info(scripts)') as Array<{ name: string }>
   if (!scriptColumns.some(column => column.name === 'generation_options')) {
     db.exec("ALTER TABLE scripts ADD COLUMN generation_options TEXT NOT NULL DEFAULT '{}'")
+  }
+
+  const sceneColumns = db.pragma('table_info(script_scenes)') as Array<{ name: string }>
+  if (!sceneColumns.some(column => column.name === 'episode_number')) {
+    db.exec('ALTER TABLE script_scenes ADD COLUMN episode_number INTEGER NOT NULL DEFAULT 0')
+  }
+  const artifactColumns = db.pragma('table_info(script_artifacts)') as Array<{ name: string }>
+  if (!artifactColumns.some(column => column.name === 'episode_number')) {
+    // Preserve document IDs: asset tasks keep bindings to these documents.
+    db.transaction(() => db.exec(`
+      CREATE TABLE script_artifacts_by_episode (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        artifact_type TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL DEFAULT '',
+        position INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'ready', 'edited')),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        episode_number INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(project_id, artifact_type, episode_number)
+      );
+      INSERT INTO script_artifacts_by_episode
+        SELECT *, 0 FROM script_artifacts;
+      DROP TABLE script_artifacts;
+      ALTER TABLE script_artifacts_by_episode RENAME TO script_artifacts;
+      CREATE INDEX idx_script_artifacts_project ON script_artifacts(project_id, position);
+    `))()
   }
 
   const shotColumns = db.pragma('table_info(shots)') as Array<{ name: string }>

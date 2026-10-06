@@ -285,6 +285,7 @@ export async function streamText(
   request: TextStreamRequest,
   resolveApiKey?: (provider: GenerationProvider) => string | Promise<string>,
   onEvent: (event: TextStreamEvent) => void | Promise<void> = () => {},
+  signal?: AbortSignal,
 ): Promise<string> {
   if (provider.adapter === 'demo') throw new Error('演示模型已停用')
   if (model.modality !== 'text') throw new Error('流式调用只支持文本模型')
@@ -315,7 +316,7 @@ export async function streamText(
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(10 * 60_000),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10 * 60_000)]) : AbortSignal.timeout(10 * 60_000),
     })
   } catch (error) {
     throw new Error(`文本模型流式请求失败：${error instanceof Error ? error.message : String(error)}`)

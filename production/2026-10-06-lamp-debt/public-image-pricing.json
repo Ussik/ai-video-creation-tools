@@ -1,0 +1,83 @@
+{
+  "source": "https://www.right.codes/models/public",
+  "checked_at": "2026-10-05T16:58:11.579Z",
+  "models": [
+    {
+      "upstream": "画图",
+      "prefix": "/draw",
+      "currency": "USD",
+      "name": "gpt-image-2.5",
+      "is_available": true,
+      "input_price": null,
+      "output_price": null,
+      "cache_read_input_price": null,
+      "cache_creation_input_price": null,
+      "request_price": 0.06,
+      "billing_mode": "request",
+      "tiers": [],
+      "time_periods": null,
+      "param_rules": null,
+      "base_price_config": {
+        "request_price": "0.06"
+      },
+      "effective_price_config": {
+        "request_price": "0.06"
+      },
+      "effective_upstream_rate": "1",
+      "effective_model_rate": "1",
+      "effective_total_multiplier": "1",
+      "pricing_source": "DEFAULT",
+      "pricing_version": 1
+    },
+    {
+      "upstream": "画图",
+      "prefix": "/draw",
+      "currency": "USD",
+      "name": "gpt-image-2.5-flare",
+      "is_available": false,
+      "input_price": null,
+      "output_price": null,
+      "cache_read_input_price": null,
+      "cache_creation_input_price": null,
+      "request_price": 0.25,
+      "billing_mode": "request",
+      "tiers": [],
+      "time_periods": null,
+      "param_rules": null,
+      "base_price_config": {
+        "request_price": "0.25"
+      },
+      "effective_price_config": {},
+      "effective_upstream_rate": "1",
+      "effective_model_rate": null,
+      "effective_total_multiplier": null,
+      "pricing_source": null,
+      "pricing_version": null
+    },
+    {
+      "upstream": "画图",
+      "prefix": "/draw",
+      "currency": "USD",
+      "name": "gpt-image-2.5-sunburst",
+      "is_available": false,
+      "input_price": null,
+      "output_price": null,
+      "cache_read_input_price": null,
+      "cache_creation_input_price": null,
+      "request_price": 0.25,
+      "billing_mode": "request",
+      "tiers": [],
+      "time_periods": null,
+      "param_rules": null,
+      "base_price_config": {
+        "request_price": "0.25"
+      },
+      "effective_price_config": {},
+      "effective_upstream_rate": "1",
+      "effective_model_rate": null,
+      "effective_total_multiplier": null,
+      "pricing_source": null,
+      "pricing_version": null
+    }
+  ]
+}

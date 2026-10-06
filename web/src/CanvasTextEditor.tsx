@@ -12,11 +12,12 @@ type Props = {
   text: string
   document?: JSONContent | null
   selected: boolean
+  inline?: boolean
   label: string
   onChange: (text: string, document: JSONContent) => void
 }
 
-function TextEditingSurface({ text, document, selected, label, onChange, onExpand, expanded = false }: Props & {
+function TextEditingSurface({ text, document, selected, inline, label, onChange, onExpand, expanded = false }: Props & {
   onExpand?: () => void
   expanded?: boolean
 }) {
@@ -30,6 +31,7 @@ function TextEditingSurface({ text, document, selected, label, onChange, onExpan
     },
     onUpdate({ editor: current }) {
       const next = normalizeTextDocument(current.getJSON())
+      if (JSON.stringify(next) === JSON.stringify(normalizeTextDocument(resolveTextDocument(text, document)))) return
       onChange(textDocumentText(next), next)
     },
   }, [])
@@ -93,7 +95,7 @@ function TextEditingSurface({ text, document, selected, label, onChange, onExpan
   </div>
 
   return <>
-    {expanded ? toolbar : <NodeToolbar isVisible={selected} position={Position.Top} offset={Math.max(44, 36 * zoom + 10)} align="center" className="pc-text-node-toolbar">{toolbar}</NodeToolbar>}
+    {expanded || inline ? toolbar : <NodeToolbar isVisible={selected} position={Position.Top} offset={Math.max(44, 36 * zoom + 10)} align="center" className="pc-text-node-toolbar">{toolbar}</NodeToolbar>}
     <EditorContent editor={editor} className="pc-rich-text-editor nodrag nowheel" onDoubleClick={event => event.stopPropagation()} />
   </>
 }

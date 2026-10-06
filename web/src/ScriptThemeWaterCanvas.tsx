@@ -15,9 +15,7 @@ void main() {
 }
 `
 
-// mature project uses a WebGL SDF surface rather than two CSS circles. Keep the same
-// stages locally: droplet fields, smooth union, a short raymarch for normals,
-// lens mapping for the cover, and three restrained studio reflections.
+// A single liquid surface owns the silhouette, lens, reflections and halo.
 const fragmentSource = `
 precision highp float;
 uniform vec2 u_resolution;
@@ -114,52 +112,54 @@ vec3 normalAt(vec3 p) {
 vec3 photograph(sampler2D photo, vec3 p, vec3 center, float r, vec3 normal) {
   vec2 local = (p.xy - center.xy) / max(r, 0.001);
   float radial = clamp(length(local), 0.0, 1.0);
-  float dome = mix(1.0, 1.0 / max(sqrt(max(1.0 - radial * radial, 0.001)), 0.2), 0.019 * 1.15);
-  // the mature project's default lens amount is about .02, so its zoom stays near .50.
-  // Using .36 here cropped the artwork into a soft, cloudy close-up.
-  vec2 mapped = clamp(local * 0.50 * dome - normal.xy * 0.15 + 0.5, 0.005, 0.995);
-  vec2 wave = vec2(
-    sin(local.y * 5.8 + u_time * 0.52) * 0.006,
-    cos(local.x * 5.2 - u_time * 0.43) * 0.0055
-  ) * (1.0 - smoothstep(0.62, 1.08, radial));
-  mapped = clamp(mapped + wave, 0.005, 0.995);
-  vec3 sharp = texture2D(photo, mapped).rgb;
-  float rim = smoothstep(0.78, 1.0, radial);
-  vec2 tap = vec2(0.0035);
-  vec3 edge = texture2D(photo, mapped).rgb * 0.55;
-  edge += texture2D(photo, clamp(mapped + tap, 0.005, 0.995)).rgb * 0.1125;
-  edge += texture2D(photo, clamp(mapped - tap, 0.005, 0.995)).rgb * 0.1125;
-  edge += texture2D(photo, clamp(mapped + vec2(tap.x, -tap.y), 0.005, 0.995)).rgb * 0.1125;
-  edge += texture2D(photo, clamp(mapped + vec2(-tap.x, tap.y), 0.005, 0.995)).rgb * 0.1125;
-  return mix(sharp, edge, rim * 0.22);
+  float sphere = sqrt(max(1.0 - radial * radial, 0.001));
+  float lens = mix(1.0, 1.0 / max(sphere, 0.2), 0.026);
+  vec2 uv = local * 0.497 * lens - normal.xy * 0.092 + 0.5;
+  uv += vec2(sin(local.y * 5.8 + u_time * 0.52), cos(local.x * 5.2 - u_time * 0.43))
+    * 0.003 * (1.0 - smoothstep(0.60, 0.98, radial));
+  uv = clamp(uv, 0.005, 0.995);
+  vec3 sharp = texture2D(photo, uv).rgb;
+  // A narrow band of inverted, softened artwork reads as light passing
+  // through a thick glass wall; the centre stays crisp.
+  vec2 rimUv = vec2(uv.x, 1.0 - uv.y);
+  vec2 tap = vec2(0.027);
+  vec3 bleed = texture2D(photo, rimUv).rgb * 0.40;
+  bleed += texture2D(photo, clamp(rimUv + tap, 0.005, 0.995)).rgb * 0.15;
+  bleed += texture2D(photo, clamp(rimUv - tap, 0.005, 0.995)).rgb * 0.15;
+  bleed += texture2D(photo, clamp(rimUv + vec2(tap.x, -tap.y), 0.005, 0.995)).rgb * 0.15;
+  bleed += texture2D(photo, clamp(rimUv + vec2(-tap.x, tap.y), 0.005, 0.995)).rgb * 0.15;
+  return mix(sharp, bleed, smoothstep(0.80, 0.985, radial) * 0.68);
 }
 
-// Reflections should read as the clear neutral shell, while the artwork
-// beneath remains fully saturated. Keep only a trace of the cover's hue in
-// the lighting so a blue cover cannot turn the whole droplet cyan.
-vec3 glassTone(vec3 coverTint) {
-  float luma = max(dot(coverTint, vec3(0.30, 0.59, 0.11)), 0.08);
-  vec3 normalized = clamp(coverTint / luma, vec3(0.45), vec3(1.75));
-  return mix(vec3(1.0), normalized, 0.08);
+vec3 coverEnvironment(sampler2D photo) {
+  return texture2D(photo, vec2(0.5)).rgb * 0.40
+    + texture2D(photo, vec2(0.28, 0.28)).rgb * 0.15
+    + texture2D(photo, vec2(0.72, 0.28)).rgb * 0.15
+    + texture2D(photo, vec2(0.28, 0.72)).rgb * 0.15
+    + texture2D(photo, vec2(0.72, 0.72)).rgb * 0.15;
 }
 
-vec3 studioReflection(vec3 direction, vec3 coverTint) {
+vec3 glassTone(vec3 tint) {
+  float luma = max(dot(tint, vec3(0.30, 0.59, 0.11)), 0.08);
+  return clamp(tint / luma, vec3(0.45), vec3(1.65));
+}
+
+vec3 studioReflection(vec3 direction, vec3 tint) {
+  // Three softboxes reflected in the curved surface, with a dark interval
+  // between the crown light and the diagonal lower-right fill.
   float c = cos(-0.15);
   float s = sin(-0.15);
-  vec2 xy = vec2(direction.x * c - direction.y * s, direction.x * s + direction.y * c);
-  vec3 ray = vec3(xy.x, -xy.y, direction.z);
-  vec2 strip = (ray.xy - vec2(-0.52, 0.18)) / vec2(0.22, 1.64);
-  float key = exp(-dot(strip, strip));
-  vec2 top = (ray.xy - vec2(0.12, 0.78)) / vec2(1.10, 0.28);
-  float fill = exp(-dot(top, top));
-  vec2 side = (ray.xy - vec2(0.69, -0.52)) / vec2(0.40, 0.60);
-  float rim = exp(-dot(side, side));
-  vec3 tone = glassTone(coverTint);
-  // mature project keeps the studio light nearly neutral; the cover supplies the
-  // environment tint. Avoid a cyan wash that makes the whole droplet blue.
-  return mix(vec3(0.94, 0.94, 0.92), tone, 0.28) * key * 0.34
-    + mix(vec3(0.86, 0.87, 0.85), tone, 0.24) * fill * 0.13
-    + mix(vec3(0.68, 0.70, 0.69), tone, 0.38) * rim * 0.54;
+  vec2 ray = vec2(direction.x * c - direction.y * s, -direction.x * s - direction.y * c);
+  vec2 key = (ray - vec2(-0.53, 0.18)) / vec2(0.20, 1.38);
+  vec2 crown = (ray - vec2(0.10, 0.78)) / vec2(0.95, 0.22);
+  vec2 fill = (ray - vec2(0.70, -0.53)) / vec2(0.32, 0.48);
+  float strip = exp(-key.x * key.x - key.y * key.y * key.y * key.y);
+  float top = exp(-crown.x * crown.x * crown.x * crown.x - crown.y * crown.y);
+  float side = exp(-dot(fill, fill));
+  vec3 tone = glassTone(tint);
+  return mix(vec3(0.94, 0.97, 1.0), tone, 0.32) * strip * 1.48
+    + mix(vec3(0.91, 0.95, 1.0), tone, 0.22) * top * 1.10
+    + mix(vec3(0.72, 0.86, 0.96), tone, 0.42) * side * 1.24;
 }
 
 void main() {
@@ -181,7 +181,20 @@ void main() {
   float outline = surface(vec3(screen, 0.0));
   float aa = 0.8 / (u_sceneScale * u_dpr);
   float alpha = 1.0 - smoothstep(-aa, aa, outline);
-  if (alpha < 0.001) { gl_FragColor = vec4(0.0); return; }
+  vec3 tintA = coverEnvironment(u_primary);
+  vec3 tintB = fusion > 0.5 ? coverEnvironment(u_fusion) : tintA;
+  // Draw the ambient light outside the union, never through the join. Its
+  // colour follows each cover rather than using a universal white glow.
+  vec2 flatFields = fields(vec3(screen, 0.0));
+  float haloA = exp(-max(flatFields.x, 0.0) * 8.5);
+  float haloB = exp(-max(flatFields.y, 0.0) * 8.5) * split;
+  float haloWeight = haloA + haloB;
+  vec3 haloColor = (tintA * haloA + tintB * haloB) / max(haloWeight, 0.001);
+  float haloAlpha = min(0.15, haloWeight * 0.12) * (1.0 - alpha);
+  if (alpha < 0.001) {
+    gl_FragColor = vec4(haloColor, haloAlpha);
+    return;
+  }
 
   vec3 hit = vec3(screen, 1.8);
   for (int i = 0; i < 16; i++) {
@@ -196,81 +209,35 @@ void main() {
   vec3 primary = photograph(u_primary, hit, centerA, radius.x, normal);
   vec3 secondary = fusion > 0.5 ? photograph(u_fusion, hit, centerB, radius.y, normal) : primary;
   vec3 photo = mix(secondary, primary, blend);
-  vec3 primaryTint = texture2D(u_primary, vec2(0.5)).rgb;
-  vec3 coverTint = fusion > 0.5
-    ? mix(texture2D(u_fusion, vec2(0.5)).rgb, primaryTint, blend)
-    : primaryTint;
-  float radialA = length((hit.xy - centerA.xy) / max(radius.x, 0.001));
-  float radialB = length((hit.xy - centerB.xy) / max(radius.y, 0.001));
-  float sphereRadius = fusion > 0.5 ? mix(radialB, radialA, blend) : radialA;
-  float edgeInside = 1.0 - smoothstep(0.0, 0.32, clamp(1.0 - sphereRadius, 0.0, 1.0));
-  float fresnel = 0.025 + 0.975 * pow(1.0 - clamp(normal.z, 0.0, 1.0), 1.0);
+  vec3 coverTint = mix(tintB, tintA, blend);
+  vec3 tone = glassTone(coverTint);
+  float facing = clamp(normal.z, 0.0, 1.0);
+  float grazing = 1.0 - facing;
+  float fresnel = 0.025 + 0.975 * pow(grazing, 1.4);
   vec3 reflected = studioReflection(reflect(vec3(0.0, 0.0, -1.0), normal), coverTint);
-  vec3 reflectionTone = glassTone(coverTint);
-  float grazing = pow(1.0 - clamp(normal.z, 0.0, 1.0), 1.15);
-  vec3 base = pow(max(photo, vec3(0.0)), vec3(1.08));
-  base *= mix(1.0, 0.74, grazing);
-  vec3 color = base * (0.92 + 0.08 * normal.z);
-  color *= mix(1.0, 0.82, edgeInside * 0.55);
-  // The source covers can contain symbols near their crop edge. At the
-  // fusion neck those pixels should sit behind the liquid thickness instead
-  // of becoming a visible circular mark, so mute the artwork locally while
-  // retaining a narrow reflective transition.
-  float neckMask = fusion * (1.0 - smoothstep(0.0, 0.14, abs(d.x - d.y)));
-  vec3 neckGlass = mix(color * 0.46, reflectionTone * 0.56, 0.28);
-  color = mix(color, neckGlass, neckMask * 0.42);
-  // Keep the cover legible through the shell. Reflections are deliberately
-  // split into a low-opacity body reflection and a much brighter edge pass;
-  // putting all of the energy in reflected makes the ball look fogged over.
-  color = mix(color, max(reflected, color * 0.72), clamp(0.045 + 0.070 * fresnel, 0.0, 0.34));
-  color += reflected * (0.020 + fresnel * 0.038);
-  // A curved key reflection follows the sphere normal. This is the bright
-  // upper-left arc visible on mature project, rather than a flat white ellipse.
-  float arcDot = max(dot(normal, normalize(vec3(-0.50, -0.62, 0.70))), 0.0);
-  float arc = pow(arcDot, 12.0);
-  float arcSoft = pow(arcDot, 4.5);
-  float arcTight = pow(arcDot, 28.0);
-  // Keep the broad upper-left key restrained so it does not erase the cover
-  // detail inside the ball; the narrow grazing rim below carries the shine.
-  color += mix(vec3(0.92, 0.93, 0.92), reflectionTone, 0.16) * arc * 0.16;
-  color += mix(vec3(0.80, 0.82, 0.81), reflectionTone, 0.24) * arcSoft * 0.045;
-  color += vec3(0.98, 0.98, 0.95) * arcTight * 0.22;
-  // Keep the brighter reflection confined to the grazing-angle rim. This
-  // strengthens the glass edge without washing a white veil over the cover.
-  float edgeFresnel = pow(1.0 - clamp(normal.z, 0.0, 1.0), 2.45);
-  vec3 shellLight = mix(vec3(0.68, 0.71, 0.70), reflectionTone, 0.14);
-  color += shellLight * edgeFresnel * 0.72;
-  // A tighter pass gives the contour the fine, wet-looking line visible in
-  // the reference instead of a broad gray halo.
-  float edgeSpark = pow(1.0 - clamp(normal.z, 0.0, 1.0), 6.6);
-  color += mix(vec3(0.90, 0.92, 0.91), reflectionTone, 0.10) * edgeSpark * 0.52;
-  // A restrained cool environmental glint appears only on the grazing side.
-  // This gives the right lobe the blue glass reflection seen in the reference
-  // while keeping the cover and the upper highlight neutral.
-  float sideGlint = pow(max(dot(normal, normalize(vec3(0.72, 0.18, 0.68))), 0.0), 7.0);
-  color += mix(vec3(0.48, 0.69, 0.78), reflectionTone, 0.30) * sideGlint * 0.16;
-  // Let the bright rim bleed into the artwork by a short radial distance. A
-  // normal-only Fresnel term makes the whole edge uniformly hazy; this local
-  // radius fade creates the visible glass wall in the reference and naturally
-  // blends across the neck when two droplets are fused.
-  // The WebGL union already supplies the glass neck.  Do not stack the
-  // lobe's inward rim on the overlap region, otherwise the two inner rims
-  // close into the isolated halo visible at the centre of the pair.
-  float neckRimFade = 1.0 - neckMask * 0.66;
-  float innerSpread = edgeInside * (0.30 + 0.70 * edgeFresnel) * neckRimFade;
-  color += mix(vec3(0.40, 0.43, 0.42), reflectionTone, 0.14) * innerSpread * 0.17;
-  color += vec3(0.56, 0.57, 0.55) * pow(edgeInside, 1.9) * 0.075 * neckRimFade;
-  float innerRim = pow(max(dot(normal, normalize(vec3(-0.48, -0.56, 0.68))), 0.0), 5.0);
-  color += mix(vec3(0.86, 0.87, 0.84), reflectionTone, 0.13) * innerRim * 0.42 * neckRimFade;
-  // Keep the fusion neck as a soft material transition. A bright contact ring
-  // makes the seam look like a floating halo, which is not present in the
-  // reference glass blob.
-  float contact = fusion * (1.0 - smoothstep(0.0, 0.075, abs(d.x - d.y)));
-  color += mix(vec3(0.84, 0.84, 0.81), reflectionTone, 0.30) * contact * 0.045;
-  float edge = exp(-abs(outline) * 340.0 / 1.72);
-  color += mix(vec3(0.70, 0.72, 0.70), reflectionTone, 0.14) * edge * 0.44;
-  color = color / (1.0 + color * 0.24);
-  gl_FragColor = vec4(color, alpha * 0.98);
+
+  // Preserve the photograph's contrast. The shell gets darker at oblique
+  // angles, with reflected softboxes replacing that light selectively.
+  vec3 color = photo * (1.0 - 0.38 * pow(grazing, 0.65));
+  color = mix(color, max(reflected, color * 0.48), 0.045 + fresnel * 0.40);
+  color += reflected * (0.13 + fresnel * 0.20);
+
+  float keySpot = pow(max(dot(normal, normalize(vec3(-0.50, -0.62, 0.70))), 0.0), 32.0);
+  color += vec3(0.95, 0.98, 1.0) * keySpot * 0.12;
+  float caustic = pow(max(dot(normal, normalize(vec3(0.52, 0.72, 0.23))), 0.0), 11.5);
+  color += mix(vec3(0.80, 0.92, 1.0), tone, 0.55) * caustic * 0.34;
+
+  // Use the union's contour, so the two inward rims cannot form a bright
+  // circular seam at the fusion neck.
+  float rim = exp(-abs(outline) * 118.0);
+  float directionalRim = 0.18 + 0.82 * pow(max(dot(normal.xy, normalize(vec2(-0.70, -0.72))), 0.0), 2.0);
+  color += mix(vec3(0.83, 0.92, 1.0), tone, 0.26) * rim * directionalRim * 0.50;
+  float contact = fusion * (1.0 - smoothstep(0.0, 0.085, abs(d.x - d.y)));
+  color += mix(vec3(0.82, 0.94, 1.0), tone, 0.35) * contact * 0.04;
+  color = clamp(color, 0.0, 1.0);
+  float outputAlpha = alpha + haloAlpha;
+  gl_FragColor = vec4((color * alpha + haloColor * haloAlpha) / max(outputAlpha, 0.001), outputAlpha);
+
 }
 `
 
@@ -426,8 +393,9 @@ export function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, fusion
       gl.clearColor(0, 0, 0, 0)
       gl.clear(gl.COLOR_BUFFER_BIT)
       gl.useProgram(program)
-      gl.enable(gl.BLEND)
-      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
+      gl.disable(gl.BLEND)
+      // Full-screen pass writes straight alpha; blending here would apply
+      // the transparent halo alpha twice before browser compositing.
       gl.uniform2f(resolution, cssWidth, cssHeight)
       gl.uniform1f(dprUniform, devicePixelRatio)
       gl.uniform1f(sceneScale, sceneUnit)

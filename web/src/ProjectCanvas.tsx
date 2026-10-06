@@ -5,7 +5,7 @@ import {
 import {
   ArrowLeftRight, ArrowRight, Check, ChevronDown, CircleAlert, Clock3, FileText, Film, FolderOpen,
   Image as ImageIcon, LayoutGrid, Layers3, LoaderCircle, LocateFixed, Map as MapIcon, Maximize2, MoreHorizontal, MousePointer2,
-  Music2, PanelLeftClose, PanelLeftOpen, PenLine, Plus, Minus as MinusIcon, RefreshCcw, Save, ScrollText,
+  Music2, PanelLeftClose, PanelLeftOpen, PenLine, Plus, RefreshCcw, Save, ScrollText,
   Search, Settings2, SlidersHorizontal, Sparkles,
   Eye, EyeOff, LayoutDashboard,
   Redo2, Trash2, Undo2, Upload, WandSparkles, X,
@@ -20,19 +20,23 @@ import { api, json } from './api'
 import type { Asset, Job, Model, ProjectDetail, Provider, ScriptArtifact, Shot } from './api'
 import CanvasTextEditor, { CanvasTextPreview } from './CanvasTextEditor'
 import CanvasSelect from './CanvasSelect'
+import StoryboardWorkspace from './StoryboardWorkspace'
 import CanvasComposerToolbar from './CanvasComposerToolbar'
 import { useAppDialog } from './AppDialog'
 import { CanvasGenerationParameters, CanvasVideoModeMenu } from './CanvasGenerationControls'
 import type { JSONContent } from '@tiptap/core'
+import { generationCost, imageParameterOptions, modelDefaultResolution, resolutionRatio, usesModelParameter } from './canvas-model-parameters'
+import { parseScriptDocument } from './script-rich-document'
 import './project-canvas.css'
 
 type CanvasMode = 'text' | 'first_frame' | 'first_last_frame' | 'reference' | 'edit' | 'extend'
 type CanvasView = 'canvas' | 'storyboard'
+export type CanvasLocation = { view: CanvasView; storyboardId: string | null }
 type CanvasModality = 'text' | 'image' | 'video'
 type TextNodeMode = 'write'
 export type ScriptAction = 'character' | 'location' | 'prop' | 'all'
-type NodeQuickAction = 'image-to-image' | 'image-upscale' | 'video-first-frame' | 'video-first-last' | 'video-extend'
-type CanvasNode = {
+type NodeQuickAction = 'image-to-image' | 'video-first-frame' | 'video-first-last' | 'video-extend'
+export type CanvasNode = {
   id: string
   type: 'text' | 'image' | 'video' | 'generation' | 'project_script_ref'
   x: number
@@ -68,7 +72,7 @@ type CanvasNode = {
   }
 }
 type CanvasEdge = { id: string; source: string; target: string }
-type CanvasGraph = { nodes: CanvasNode[]; edges: CanvasEdge[]; revision: string }
+export type CanvasGraph = { nodes: CanvasNode[]; edges: CanvasEdge[]; revision: string }
 type CanvasViewport = { x: number; y: number; zoom: number }
 type MiniMapPosition = { x: number; y: number }
 type CanvasContextMenu = {
@@ -99,6 +103,8 @@ type FlowData = Record<string, unknown> & {
   job?: Job
   model?: Model
   promptText: string
+  imageEditingModels: string[]
+  videoQuickModes: CanvasMode[]
   modelOptions: { value: string; label: string }[]
   busy: boolean
   onPromptChange: (id: string, value: string) => void
@@ -118,6 +124,7 @@ type FlowData = Record<string, unknown> & {
   scriptExists?: boolean
   onOpenScriptDirector: (focusArtifact?: ScriptAction) => void
   onOpenScriptCreator: () => void
+  onOpenScriptDocument?: (artifact: ScriptArtifact) => void
 }
 type FlowNode = Node<FlowData, 'studio'>
 type GenerationRequest = {
@@ -143,7 +150,6 @@ type GenerationReview = {
   model: Model
   provider?: Provider
   referenceNames: string[]
-  cost: string | null
 }
 type ConflictReview = { remote: CanvasGraph; merged: CanvasGraph; conflicts: number }
 
@@ -174,9 +180,12 @@ export interface ProjectCanvasProps {
   onRefresh: () => Promise<void>
   onRenameProject?: (name: string) => Promise<boolean>
   onOpenModels: () => void
-  onNavigate: (destination: 'projects' | 'assets' | 'jobs' | 'models') => void
+  onNavigate: (destination: 'projects' | 'studio' | 'assets' | 'jobs' | 'models') => void
   onOpenScriptCreator: () => void
-  onOpenScriptDirector?: (focusArtifact?: ScriptAction) => void
+  onOpenScriptDocument?: (artifact: ScriptArtifact) => void
+  onOpenScriptDirector?: (focusArtifact?: ScriptAction, context?: string) => void
+  initialLocation?: CanvasLocation
+  onLocationChange?: (location: CanvasLocation) => void
 }
 
 function draftKey(projectId: string) { return `project-canvas-draft:${projectId}` }
@@ -425,30 +434,9 @@ function modelResolutions(model?: Model): string[] {
     : model?.modality === 'image' ? ['1K', '2K', '4K'] : ['480p', '720p', '1080p']
 }
 
-const defaultImageQualities = ['low', 'standard', 'high', 'ultra', 'extreme']
-const defaultImageBackgrounds = ['auto', 'preserve', 'transparent']
-const defaultImageClarities = ['1K', '2K', '4K']
-
-function modelImageQualities(model?: Model): string[] {
-  const configured = model?.settings.image_qualities ?? model?.settings.qualities
-  return Array.isArray(configured) && configured.some(value => typeof value === 'string')
-    ? configured.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-    : defaultImageQualities
-}
-
-function modelImageBackgrounds(model?: Model): string[] {
-  const configured = model?.settings.image_backgrounds ?? model?.settings.backgrounds
-  return Array.isArray(configured) && configured.some(value => typeof value === 'string')
-    ? configured.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-    : defaultImageBackgrounds
-}
-
-function modelImageClarities(model?: Model): string[] {
-  const configured = model?.settings.image_clarities ?? model?.settings.clarities
-  return Array.isArray(configured) && configured.some(value => typeof value === 'string')
-    ? configured.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-    : defaultImageClarities
-}
+const modelImageQualities = (model?: Model) => imageParameterOptions(model, 'quality')
+const modelImageBackgrounds = (model?: Model) => imageParameterOptions(model, 'background')
+const modelImageClarities = (model?: Model) => imageParameterOptions(model, 'clarity')
 
 function modelRatios(model?: Model): string[] {
   const values = model?.settings.ratios
@@ -478,22 +466,6 @@ function supportedModes(model?: Model): CanvasMode[] {
   return modeOptions.map(({ value }) => value).filter((value) => supported.includes(value))
 }
 
-function costEstimate(model: Model, request: GenerationRequest): string | null {
-  const settings = model.settings.pricing
-  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return null
-  const pricing = settings as Record<string, unknown>
-  const resolutionRates = pricing.per_second_by_resolution
-  const perResolution = resolutionRates && typeof resolutionRates === 'object' && !Array.isArray(resolutionRates)
-    ? (resolutionRates as Record<string, unknown>)[request.resolution || ''] : undefined
-  const rate = typeof perResolution === 'number' ? perResolution : pricing.per_second
-  const amount = model.modality === 'video' && typeof rate === 'number' ? rate * request.duration
-    : model.modality === 'image' && typeof pricing.per_image === 'number' ? pricing.per_image
-      : typeof pricing.per_generation === 'number' ? pricing.per_generation : null
-  if (amount === null || !Number.isFinite(amount)) return null
-  const digits = amount >= 100 ? 2 : amount >= 1 ? 3 : 4
-  return `${typeof pricing.currency === 'string' ? pricing.currency : '¥'}${amount.toFixed(digits).replace(/\.?0+$/, '')}`
-}
-
 function isCanvasEditingTarget(target: EventTarget | null): boolean {
   const element = target instanceof HTMLElement ? target : null
   if (!element) return false
@@ -507,12 +479,17 @@ function NodeMedia({ asset, controls = false }: { asset?: Asset; controls?: bool
   return <div className="pc-node-text">{asset.text || asset.filename}</div>
 }
 
-function nodeDimensionLabel(node: CanvasNode): string {
+function nodeDimensionLabel(node: CanvasNode, model?: Model): string {
+  if (node.type === 'generation' && node.settings.modality === 'image' && model && !usesModelParameter(model, 'ratio')) {
+    const resolution = node.settings.resolution || modelDefaultResolution(model, modelResolutions(model))
+    return [resolution, resolutionRatio(resolution)].filter(Boolean).join(' · ')
+  }
   if (node.type === 'text') return ''
   const resolution = typeof node.settings.clarity === 'string' && node.settings.clarity.trim()
     ? node.settings.clarity.trim()
     : typeof node.settings.resolution === 'string' ? node.settings.resolution.trim() : ''
-  const ratio = typeof node.settings.ratio === 'string' ? node.settings.ratio.trim() : ''
+  const ratio = node.settings.modality === 'video' && ['first_frame', 'first_last_frame', 'edit', 'extend'].includes(node.settings.mode || '')
+    ? '自适应' : typeof node.settings.ratio === 'string' ? node.settings.ratio.trim() : ''
   return [resolution, ratio].filter(Boolean).join(' · ')
 }
 
@@ -574,6 +551,8 @@ const edgeTypes = { studio: StudioEdge }
 
 function StudioNode({ data, selected }: NodeProps<FlowNode>) {
   const { node, asset, job } = data
+  const imageEditingAvailable = data.model?.modality === 'image' ? data.imageEditingModels.includes(data.model.id) : data.modelOptions.some(option => data.imageEditingModels.includes(option.value))
+  const videoQuickModes = data.model?.modality === 'video' ? supportedModes(data.model) : data.videoQuickModes
   const isProjectScriptRef = node.type === 'project_script_ref'
   const icon = isProjectScriptRef ? <ScrollText size={15} /> : node.type === 'generation' ? <WandSparkles size={15} />
     : node.type === 'image' ? <ImageIcon size={15} />
@@ -583,22 +562,25 @@ function StudioNode({ data, selected }: NodeProps<FlowNode>) {
   const nodeTitle = isProjectScriptRef
     ? (data.scriptTitle || node.title || '项目剧本')
     : node.title || asset?.filename || (node.type === 'generation' ? '生成节点' : node.type === 'image' ? '图片节点' : node.type === 'video' ? '视频节点' : '文本节点')
-  const idlePlaceholder = <div className="pc-node-idle-placeholder" aria-hidden="true"><span /><span /><span /><span /></div>
+  const idlePlaceholder = <div className="pc-node-placeholder" aria-label={job?.status === 'running' || job?.status === 'queued' ? '生成中' : job?.status === 'failed' ? '生成失败' : '尚未生成'}>
+    {job?.status === 'running' || job?.status === 'queued' ? <LoaderCircle size={42} className="pc-spin" />
+      : job?.status === 'failed' ? <><CircleAlert size={40} /><span>生成失败，请查看任务记录</span></>
+        : node.settings.modality === 'video' ? <Film size={54} strokeWidth={1.2} /> : <ImageIcon size={54} strokeWidth={1.2} />}
+  </div>
   const generationTryActions = <div className="pc-node-try-list" aria-label="尝试操作">
     <span className="pc-node-try-label">尝试:</span>
     {(node.settings.modality === 'video' ? <>
-      {tryButton('video-first-frame', '首帧生成视频', <ImageIcon size={15} />)}
-      {tryButton('video-first-last', '首尾帧生成', <ArrowLeftRight size={15} />)}
-      {tryButton('video-extend', '延长视频', <Film size={15} />)}
-    </> : node.settings.modality === 'image' ? <>
+      {videoQuickModes.includes('first_frame') && tryButton('video-first-frame', '首帧生成视频', <ImageIcon size={15} />)}
+      {videoQuickModes.includes('first_last_frame') && tryButton('video-first-last', '首尾帧生成', <ArrowLeftRight size={15} />)}
+      {videoQuickModes.includes('extend') && tryButton('video-extend', '延长视频', <Film size={15} />)}
+    </> : node.settings.modality === 'image' && imageEditingAvailable ? <>
       {tryButton('image-to-image', '图生图', <ImageIcon size={15} />)}
-      {tryButton('image-upscale', '图片高清', <Sparkles size={15} />)}
     </> : null)}
   </div>
   return <>
   <div className={`pc-node pc-node-${node.type} ${selected ? 'is-selected' : ''}`}>
     {!isProjectScriptRef && <NodeResizer isVisible={selected} minWidth={nodeMinSize(node).width} minHeight={nodeMinSize(node).height} />}
-    <div className="pc-node-label"><span className="pc-node-label-icon">{icon}</span><strong title={nodeTitle}>{nodeTitle}</strong>{nodeDimensionLabel(node) && <span className="pc-node-dimension">{nodeDimensionLabel(node)}</span>}</div>
+    <div className="pc-node-label"><span className="pc-node-label-icon">{icon}</span><strong title={nodeTitle}>{nodeTitle}</strong>{nodeDimensionLabel(node, data.model) && <span className="pc-node-dimension">{nodeDimensionLabel(node, data.model)}</span>}</div>
     {!isProjectScriptRef && <Handle className="pc-node-handle" type="target" position={Position.Left} title="连接到此节点" />}
     {isProjectScriptRef ? <div className="pc-project-script-card">
       <div className="pc-project-script-heading">
@@ -611,18 +593,12 @@ function StudioNode({ data, selected }: NodeProps<FlowNode>) {
         ] as const).map(([value, label]) => <button key={value} type="button" role="tab" aria-selected={scriptSection === value}
           className={scriptSection === value ? 'is-active' : ''} onClick={(event) => { event.stopPropagation(); setScriptSection(value) }}>{label}</button>)}
       </div>
-      <div className="pc-project-script-empty">
+      <div className="pc-project-script-empty nowheel nodrag nopan">
         {(() => {
           const artifact = data.scriptArtifacts?.find((item) => item.artifact_type === scriptSection)
           const content = artifact?.content?.trim() || (scriptSection === 'outline' ? data.scriptOutline?.trim() : '')
-          return content || `暂无${scriptSection === 'outline' ? '故事大纲' : scriptSection === 'characters' ? '人物小传' : scriptSection === 'locations' ? '场景设计' : '道具设计'}，可在导演对话中生成`
+          return content ? <CanvasTextPreview text={content} document={parseScriptDocument(content)} /> : `暂无${scriptSection === 'outline' ? '故事大纲' : scriptSection === 'characters' ? '人物小传' : scriptSection === 'locations' ? '场景设计' : '道具设计'}，可在导演对话中生成`
         })()}
-      </div>
-      <div className="pc-project-script-actions" role="toolbar" aria-label="剧本创作快捷操作">
-        <button type="button" className="nodrag nopan" onClick={(event) => { event.stopPropagation(); data.onOpenScriptDirector('character') }}><ImageIcon size={13} />生成角色图</button>
-        <button type="button" className="nodrag nopan" onClick={(event) => { event.stopPropagation(); data.onOpenScriptDirector('location') }}><ImageIcon size={13} />生成场景图</button>
-        <button type="button" className="nodrag nopan" onClick={(event) => { event.stopPropagation(); data.onOpenScriptDirector('prop') }}><Sparkles size={13} />生成道具图</button>
-        <button type="button" className="nodrag nopan" onClick={(event) => { event.stopPropagation(); data.onOpenScriptDirector('all') }}><WandSparkles size={13} />全能创作</button>
       </div>
       <button type="button" className="pc-project-script-edit nodrag nopan" aria-label={data.scriptExists ? '编辑剧本' : '打开剧本创作'} onClick={(event) => { event.stopPropagation(); (data.scriptExists ? data.onOpenScriptCreator : data.onOpenScriptDirector)() }}>
         <PenLine size={14} />{data.scriptExists ? '编辑' : '开始创作'}
@@ -630,12 +606,11 @@ function StudioNode({ data, selected }: NodeProps<FlowNode>) {
     </div> : node.type === 'generation' ? <>
       <div className="pc-node-content pc-node-preview-content pc-node-idle-content">
         {asset ? <div className="pc-node-output"><NodeMedia asset={asset} controls={selected} /></div> : idlePlaceholder}
-        {!selected && generationTryActions}
+        {!selected && !asset && ((node.settings.modality === 'video' && videoQuickModes.some(mode => ['first_frame', 'first_last_frame', 'extend'].includes(mode))) || imageEditingAvailable) && generationTryActions}
       </div>
       {selected && <div className={`pc-node-foot ${job ? `pc-job-${job.status}` : ''}`}>
-        {job ? <><span className="pc-status-dot" />{jobLabels[job.status]}</> : '等待配置'}
-        {node.asset_id && <span>已有结果</span>}
-      </div>}
+        {job ? <><span className="pc-status-dot" />{jobLabels[job.status]}</> : asset ? '已有结果' : '等待配置'}
+              </div>}
     </> : node.type === 'text' ? <>
       {selected ? <div className="pc-node-content">
         <CanvasTextEditor text={node.text} document={node.settings.text_document} selected
@@ -646,10 +621,10 @@ function StudioNode({ data, selected }: NodeProps<FlowNode>) {
       </div>}
       {selected && <div className="pc-node-foot">文本提示词</div>}
     </> : <>
-      <div className="pc-node-media"><NodeMedia asset={asset} /></div>
+      <div className="pc-node-media"><NodeMedia asset={asset} controls={selected} /></div>
       {!selected && <div className="pc-node-try-actions pc-node-try-actions-media" aria-label="尝试操作">
-        {node.type === 'image' ? <>{tryButton('image-to-image', '图生图', <ImageIcon size={13} />)}{tryButton('image-upscale', '图片高清', <Sparkles size={13} />)}</>
-          : <>{tryButton('video-first-frame', '首帧生成', <ImageIcon size={13} />)}{tryButton('video-first-last', '首尾帧', <ArrowLeftRight size={13} />)}{tryButton('video-extend', '延长视频', <Film size={13} />)}</>}
+        {node.type === 'image' ? imageEditingAvailable && <>{tryButton('image-to-image', '图生图', <ImageIcon size={13} />)}</>
+          : <>{videoQuickModes.includes('first_frame') && tryButton('video-first-frame', '首帧生成', <ImageIcon size={13} />)}{videoQuickModes.includes('first_last_frame') && tryButton('video-first-last', '首尾帧', <ArrowLeftRight size={13} />)}{videoQuickModes.includes('extend') && tryButton('video-extend', '延长视频', <Film size={13} />)}</>}
       </div>}
     </>}
     {!isProjectScriptRef && <Handle className="pc-node-handle" type="source" position={Position.Right} title="从此节点连接" />}
@@ -659,92 +634,11 @@ function StudioNode({ data, selected }: NodeProps<FlowNode>) {
 
 const nodeTypes = { studio: StudioNode }
 
-type StoryboardWorkspaceProps = {
-  detail: ProjectDetail
-  graph: CanvasGraph
-  assetMap: Map<string, Asset>
-  shotMap: Map<string, Shot>
-  selectedId: string | null
-  onSelect: (id: string) => void
-  onOpenDirector: () => void
-  onOpenSettings: (id: string) => void
-}
-
-function StoryboardWorkspace({ detail, graph, assetMap, shotMap, selectedId, onSelect, onOpenDirector, onOpenSettings }: StoryboardWorkspaceProps) {
-  const scriptNode = graph.nodes.find((node) => node.type === 'project_script_ref')
-  const documentNodes = graph.nodes.filter((node) => node.type === 'project_script_ref' || node.type === 'text' || node.type === 'generation')
-    .sort((a, b) => {
-      if (a.type === 'project_script_ref') return -1
-      if (b.type === 'project_script_ref') return 1
-      return (shotMap.get(a.shot_id || '')?.position ?? 999999) - (shotMap.get(b.shot_id || '')?.position ?? 999999)
-    })
-  const mediaNodes = graph.nodes.filter((node) => node.type === 'image' || node.type === 'video')
-  const selected = graph.nodes.find((node) => node.id === selectedId) || scriptNode || documentNodes[0]
-  const scenes = [...detail.script.scenes].sort((a, b) => a.position - b.position)
-  const scriptDuration = scenes.reduce((total, scene) => total + (scene.duration || 0), 0)
-  const selectedShot = selected ? shotMap.get(selected.shot_id || '') : undefined
-  const selectedAsset = selected ? assetMap.get(selected.asset_id || '') : undefined
-  const title = selected?.type === 'project_script_ref' ? detail.name : selected?.title || selectedShot?.title || '未命名节点'
-  const intro = selected?.type === 'project_script_ref'
-    ? `创作稿基准  |  剧情演绎体  |  约 ${scriptDuration || detail.shots.reduce((sum, shot) => sum + shot.duration, 0)} 秒  |  出场：${detail.script.characters?.split(/[，,、\n]/).filter(Boolean).slice(0, 5).join('、') || '待补充'}`
-    : selected?.type === 'generation' ? `镜头 ${String((selectedShot?.position ?? 0) + 1).padStart(2, '0')}  |  ${selectedShot?.duration || detail.script.scenes[0]?.duration || 5} 秒  |  ${selectedShot?.title || '待关联镜头'}`
-      : '文本节点  |  可继续编辑并加入导演对话'
-
-  return <div className="pc-storyboard-lib" aria-label="故事板工作区">
-    <aside className="pc-storyboard-assets">
-      <header><strong>文本</strong><span>{documentNodes.length}</span></header>
-      <div className="pc-storyboard-assets-scroll">
-        <div className="pc-storyboard-asset-list">
-          {documentNodes.map((node) => <button key={node.id} type="button" className={`pc-storyboard-asset-row ${selected?.id === node.id ? 'is-selected' : ''}`} onClick={() => onSelect(node.id)}>
-            <span className="pc-storyboard-asset-icon">{node.type === 'project_script_ref' ? <ScrollText size={15} /> : node.type === 'generation' ? <Film size={15} /> : <FileText size={15} />}</span>
-            <span className="pc-storyboard-asset-name">{node.type === 'project_script_ref' ? detail.name : node.title || shotMap.get(node.shot_id || '')?.title || '未命名节点'}</span>
-          </button>)}
-          {!documentNodes.length && <div className="pc-storyboard-assets-empty">暂无文本节点</div>}
-        </div>
-        <section className="pc-storyboard-asset-section">
-          <header><strong>图片</strong><span>{mediaNodes.filter((node) => node.type === 'image').length}</span><button type="button" aria-label="放大图片"><Maximize2 size={14} /></button></header>
-          {mediaNodes.filter((node) => node.type === 'image').map((node) => <button key={node.id} type="button" className={`pc-storyboard-asset-row ${selected?.id === node.id ? 'is-selected' : ''}`} onClick={() => onSelect(node.id)}><span className="pc-storyboard-asset-icon"><ImageIcon size={15} /></span><span className="pc-storyboard-asset-name">{node.title || assetMap.get(node.asset_id || '')?.filename || '图片素材'}</span></button>)}
-          {!mediaNodes.some((node) => node.type === 'image') && <div className="pc-storyboard-media-empty"><ImageIcon size={17} /><span>暂无图片</span></div>}
-        </section>
-        <section className="pc-storyboard-asset-section">
-          <header><strong>视频</strong><span>{mediaNodes.filter((node) => node.type === 'video').length}</span><button type="button" aria-label="放大视频"><Maximize2 size={14} /></button></header>
-          {mediaNodes.filter((node) => node.type === 'video').map((node) => <button key={node.id} type="button" className={`pc-storyboard-asset-row ${selected?.id === node.id ? 'is-selected' : ''}`} onClick={() => onSelect(node.id)}><span className="pc-storyboard-asset-icon"><Film size={15} /></span><span className="pc-storyboard-asset-name">{node.title || assetMap.get(node.asset_id || '')?.filename || '视频素材'}</span></button>)}
-          {!mediaNodes.some((node) => node.type === 'video') && <div className="pc-storyboard-media-empty"><Film size={17} /><span>暂无视频</span></div>}
-        </section>
-      </div>
-    </aside>
-    <main className="pc-storyboard-reader">
-      <header className="pc-storyboard-reader-head">
-        <button type="button" aria-label="返回故事板列表" onClick={() => onSelect(scriptNode?.id || selected?.id || '')}><ArrowRight size={18} className="pc-storyboard-reader-back" /></button>
-        <h1>{title}</h1>
-        <div className="pc-storyboard-reader-head-actions"><button type="button" aria-label="添加到导演对话" onClick={onOpenDirector}><Plus size={17} /></button><button type="button" aria-label="关闭阅读器" onClick={() => onSelect(scriptNode?.id || '')}><X size={18} /></button></div>
-      </header>
-      <div className="pc-storyboard-reader-scroll">
-        <div className="pc-storyboard-reader-intro">{intro}</div>
-        {selected?.type === 'project_script_ref' ? <article className="pc-storyboard-script-document">
-          {detail.script.outline && <section><h2>故事大纲</h2><p className="pc-storyboard-outline">{detail.script.outline}</p></section>}
-          {scenes.length ? scenes.map((scene, index) => <section key={scene.id} className="pc-storyboard-scene"><h2>场景 {index + 1}：{scene.heading || `${scene.location} · ${scene.time_of_day}`}</h2><ol>
-            {[scene.action, scene.dialogue, scene.narration].filter((item): item is string => !!item?.trim()).flatMap((item) => item.split(/\n+/).filter(Boolean)).map((line, lineIndex) => <li key={`${scene.id}-${lineIndex}`}>{line}</li>)}
-          </ol></section>) : <p className="pc-storyboard-reader-placeholder">暂未生成场景正文，先在导演对话中完成剧本创作。</p>}
-        </article> : selected?.type === 'generation' ? <article className="pc-storyboard-shot-document">
-          {selectedAsset && <div className="pc-storyboard-shot-media"><NodeMedia asset={selectedAsset} controls /></div>}
-          <h2>{selectedShot?.title || selected.title || '生成节点'}</h2>
-          <p>{selectedShot?.prompt || selected.prompt || '暂无镜头提示词'}</p>
-          <button type="button" onClick={() => onOpenSettings(selected.id)}><Settings2 size={15} />编辑镜头参数</button>
-        </article> : selected?.type === 'text' ? <article className="pc-storyboard-text-document"><p>{selected.text || '暂无文本内容'}</p></article> : <article className="pc-storyboard-shot-document"><div className="pc-storyboard-shot-media"><NodeMedia asset={selectedAsset} controls /></div><h2>{title}</h2></article>}
-      </div>
-    </main>
-    <aside className="pc-storyboard-director">
-      <header><strong>分镜与视频生成</strong><div><button type="button" aria-label="新建对话" onClick={onOpenDirector}><Plus size={15} /></button><button type="button" aria-label="导演设置" onClick={onOpenDirector}><Settings2 size={15} /></button><button type="button" aria-label="收起导演面板" onClick={onOpenDirector}><MinusIcon size={15} /></button></div></header>
-      <div className="pc-storyboard-director-body"><div className="pc-storyboard-director-status"><FileText size={16} /><span>创作文本已保存</span></div><div className="pc-storyboard-director-card"><ScrollText size={18} /><div><strong>{detail.name}</strong><small>{scenes.length || detail.shots.length} 场 · {scriptDuration || 30} 秒</small></div></div><p>从故事板中选择文本或镜头，继续完善剧本、分镜和视频生成流程。</p><button type="button" className="pc-storyboard-director-open" onClick={onOpenDirector}>打开导演对话 <ArrowRight size={15} /></button></div>
-    </aside>
-  </div>
-}
-
-function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProject, onOpenModels, onNavigate, onOpenScriptCreator, onOpenScriptDirector: onOpenDirectorPanel }: ProjectCanvasProps) {
+function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProject, onOpenModels, onNavigate, onOpenScriptCreator, onOpenScriptDocument, onOpenScriptDirector: onOpenDirectorPanel, initialLocation, onLocationChange }: ProjectCanvasProps) {
   const { confirm, dialog } = useAppDialog()
   const [graph, setGraph] = useState<CanvasGraph | null>(null)
-  const [viewMode, setViewMode] = useState<CanvasView>('canvas')
+  const startLocation = useRef(initialLocation)
+  const [viewMode, setViewMode] = useState<CanvasView>(initialLocation?.view || 'canvas')
   // Liblib-style left rail: it keeps the canvas graph discoverable while node
   // content and generation settings stay in the canvas itself.
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -763,7 +657,12 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const [notice, setNotice] = useState<string | null>(null)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([])
-  const [storyboardSelectedId, setStoryboardSelectedId] = useState<string | null>(null)
+  const [storyboardSelectedId, setStoryboardSelectedId] = useState<string | null>(initialLocation?.storyboardId || null)
+  useEffect(() => {
+    onLocationChange?.({ view: viewMode, storyboardId: storyboardSelectedId })
+  }, [viewMode, storyboardSelectedId, onLocationChange])
+  const pendingCanvasFocus = useRef<string | null>(null)
+  const [composerRevealKey, setComposerRevealKey] = useState(0)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [showEdges, setShowEdges] = useState(true)
   const [showMinimap, setShowMinimap] = useState(true)
@@ -1085,7 +984,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
 
   useEffect(() => {
     let active = true
-    setViewMode('canvas')
+    setViewMode(startLocation.current?.view || 'canvas')
     const rememberedViewport = readCanvasViewport(detail.id)
     setSavedViewport(rememberedViewport)
     setViewportZoom(Math.round((rememberedViewport?.zoom || 1) * 100))
@@ -1167,7 +1066,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         let resultNode = nodes.find((item) => item.asset_id === asset.id && item.type === asset.kind)
         if (!resultNode && nodes.length < 500 && (asset.kind === 'image' || asset.kind === 'video' || asset.kind === 'text')) {
           resultNode = { ...blankNode(asset.kind, live.x + live.width + 170, live.y),
-            title: asset.filename, text: asset.kind === 'text' ? asset.text || '' : '',
+            title: `${live.title || '生成节点'} · ${asset.kind === 'video' ? '视频' : asset.kind === 'image' ? '图片' : '文本'}`, text: asset.kind === 'text' ? asset.text || '' : '',
             asset_id: asset.id, shot_id: live.shot_id }
           nodes.push(resultNode)
           changed = true
@@ -1215,7 +1114,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         modality: model?.modality || node.settings.modality,
         mode: node.settings.mode && (!model || modes.includes(node.settings.mode)) ? node.settings.mode : modes[0] || 'text',
         duration: model?.modality === 'video' ? modelDuration(model, node.settings.duration || shotMap.get(node.shot_id || '')?.duration || 5) : node.settings.duration,
-        resolution: model?.modality === 'text' ? null : modelResolutions(model)[0] || null,
+        resolution: model?.modality === 'text' ? null : modelDefaultResolution(model, modelResolutions(model)) || null,
         clarity: model?.modality === 'image' ? modelImageClarities(model)[0] || null : undefined,
         quality: model?.modality === 'image' ? modelImageQualities(model)[0] || null : undefined,
         background: model?.modality === 'image' ? modelImageBackgrounds(model)[0] || null : undefined,
@@ -1229,6 +1128,13 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     }
     const source = queueRef.current?.graph.nodes.find((node) => node.id === sourceId)
     if (!source) return
+    if (source.type === 'generation' && action.startsWith('video-') && !source.asset_id) {
+      const mode = action === 'video-first-frame' ? 'first_frame' : action === 'video-first-last' ? 'first_last_frame' : 'extend'
+      updateNodeSettingsById(source.id, { mode })
+      setSelectedNodeId(source.id); setSelectedNodeIds([source.id])
+      setNotice(mode === 'first_frame' ? '通过参考添加1张首帧图片' : mode === 'first_last_frame' ? '通过参考按顺序添加首帧和尾帧图片' : '请添加参考视频地址')
+      return
+    }
     if (action === 'video-first-frame' && source.type === 'image') {
       setNotice('请在视频节点中使用首帧生成视频')
       return
@@ -1249,7 +1155,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     }
     const modality: CanvasModality = action.startsWith('video-') ? 'video' : 'image'
     const node = blankNode('generation', source.x + source.width + 170, source.y)
-    node.title = action === 'image-upscale' ? '图片高清' : action === 'video-first-frame' ? '首帧生成视频'
+    node.title = action === 'video-first-frame' ? '首帧生成视频'
         : action === 'video-first-last' ? '首尾帧生成视频' : '延长视频'
     node.settings = { modality, ratio: detail.ratio,
       ...(action === 'video-first-frame' ? { mode: 'first_frame' as CanvasMode } : {}),
@@ -1321,6 +1227,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       selected: node.id === selectedNodeId || selectedNodeIds.includes(node.id),
       data: { node, asset: assetMap.get(node.asset_id || ''), shot: shotMap.get(node.shot_id || ''),
       job: jobMap.get(node.job_id || ''), model: modelMap.get(node.model_id || ''),
+      videoQuickModes: [...new Set(availableModels.filter(model => model.modality === 'video').flatMap(model => supportedModes(model)))],
+      imageEditingModels: availableModels.filter(model => model.modality === 'image' && ['image', 'images', 'image_references'].some(field => usesModelParameter(model, field))).map(model => model.id),
       promptText: graph ? promptForNode(node, graph, detail.shots, detail.script) : '',
       modelOptions: availableModels.filter((model) => {
         const desiredModality = node.settings.modality || (node.type === 'image' ? 'image' : node.type === 'video' ? 'video' : undefined)
@@ -1349,12 +1257,6 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       onOpenScriptCreator },
     }
   }), [graph, selectedNodeId, selectedNodeIds, assetMap, shotMap, jobMap, modelMap, models, providers, busy, changeGraph, editNodePrompt, updateNodeById, updateNodeSettingsById, selectNodeModel, selectNodeForView, tryNodeAction, detail.shots, detail.script, detail.name, detail.brief, detail.updated_at, onNavigate, openScriptDirector, onOpenScriptCreator])
-  useEffect(() => {
-    if (viewMode !== 'storyboard' || !graph?.nodes.length) return
-    if (!storyboardSelectedId || !graph.nodes.some((node) => node.id === storyboardSelectedId)) {
-      setStoryboardSelectedId(graph.nodes.find((node) => node.type === 'project_script_ref')?.id || graph.nodes[0].id)
-    }
-  }, [viewMode, graph?.nodes, storyboardSelectedId])
   const flowEdges = useMemo<Edge[]>(() => (graph?.edges || []).map((edge) => {
     const selected = edge.id === selectedEdgeId
     const relatedNodeIds = new Set(selectedNodeIds)
@@ -1376,6 +1278,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     }
   }), [graph?.edges, selectedEdgeId, selectedNodeId, selectedNodeIds, showEdges])
   const selectedNode = graph?.nodes.find((node) => node.id === selectedNodeId)
+  const selectedJob = jobMap.get(selectedNode?.job_id || '')
+  const selectedNodeGenerating = selectedNode?.type === 'generation' && (selectedJob?.status === 'queued' || selectedJob?.status === 'running')
   const selectedShot = shotMap.get(selectedNode?.shot_id || '')
   const selectedModel = modelMap.get(selectedNode?.model_id || '')
   const composerModel = selectedModel
@@ -1384,16 +1288,17 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     ? selectedNode.settings.modality || composerModel?.modality
     : selectedNode?.type === 'image' ? 'image' : selectedNode?.type === 'video' ? 'video' : undefined
   const composerResolutions = modelResolutions(composerModel)
-  const composerResolution = selectedNode?.settings.resolution || composerResolutions[0] || ''
+  const composerResolution = selectedNode?.settings.resolution || modelDefaultResolution(composerModel, composerResolutions)
   const composerClarities = composerModality === 'image' ? modelImageClarities(composerModel) : []
-  const composerClarity = selectedNode?.settings.clarity || composerClarities[0] || ''
+  const composerClarity = composerClarities.includes(selectedNode?.settings.clarity || '') ? selectedNode!.settings.clarity || '' : composerClarities[0] || ''
   const composerQualities = composerModality === 'image' ? modelImageQualities(composerModel) : []
-  const composerQuality = selectedNode?.settings.quality || composerQualities[0] || ''
+  const composerQuality = composerQualities.includes(selectedNode?.settings.quality || '') ? selectedNode!.settings.quality || '' : composerQualities[0] || ''
   const composerBackgrounds = composerModality === 'image' ? modelImageBackgrounds(composerModel) : []
-  const composerBackground = selectedNode?.settings.background || composerBackgrounds[0] || ''
+  const composerBackground = composerBackgrounds.includes(selectedNode?.settings.background || '') ? selectedNode!.settings.background || '' : composerBackgrounds[0] || ''
   const selectedMode = selectedNode?.settings.mode || 'text'
   const composerUsesReferenceRatio = composerModality === 'video' && ['first_frame', 'first_last_frame', 'edit', 'extend'].includes(selectedMode)
-  const composerRatio = composerUsesReferenceRatio ? 'adaptive' : selectedNode?.settings.ratio || detail.ratio
+  const imageSizeRatio = composerModality === 'image' && !usesModelParameter(composerModel, 'ratio') ? resolutionRatio(composerResolution) : null
+  const composerRatio = composerUsesReferenceRatio ? 'adaptive' : imageSizeRatio || selectedNode?.settings.ratio || detail.ratio
   const incoming = graph?.edges.filter((edge) => edge.target === selectedNodeId)
     .map((edge) => graph.nodes.find((node) => node.id === edge.source)).filter((node): node is CanvasNode => !!node) || []
   // A generator-to-result edge records provenance, not an extra reference.
@@ -1449,7 +1354,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       const nodes = queueRef.current?.graph.nodes || []
       const focus = nodes.find((node) => node.id === selectedNodeId) || nodes.find((node) => node.type === 'generation') || nodes[0]
       if (focus) void setCenter(focus.x + focus.width / 2 + (width > 900 ? 210 : 0),
-        focus.y + focus.height / 2, { zoom: 1, duration: 300 })
+        focus.y + focus.height / 2, { zoom: 1, duration: 0 }).then(() => setComposerRevealKey(key => key + 1))
     })
     observer.observe(viewport)
     return () => observer.disconnect()
@@ -1481,6 +1386,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     setSelectedEdgeId(null)
     
     
+    if (viewMode === 'storyboard') setStoryboardSelectedId(node.id)
     setAddMenu(null)
   }
 
@@ -1501,11 +1407,11 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     setSelectedEdgeId(null)
   }
 
-  function openScriptDirector(focusArtifact: ScriptAction = 'all') {
+  function openScriptDirector(focusArtifact: ScriptAction = 'all', context?: string) {
     setContextMenu(null)
     setAddMenu(null)
     ensureProjectScriptCard()
-    if (onOpenDirectorPanel) onOpenDirectorPanel(focusArtifact)
+    if (onOpenDirectorPanel) onOpenDirectorPanel(focusArtifact, context)
     else onOpenScriptCreator()
   }
 
@@ -1534,6 +1440,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       ...blankNode('generation', position.x, position.y),
       title: modality === 'video' ? '视频生成' : '图片生成',
       text: prompt,
+      shot_id: selectedNode.shot_id || assetMap.get(selectedNode.asset_id || '')?.shot_id || null,
       model_id: model?.id || null,
       settings: { modality, prompt_override: true, ratio: nextRatios.includes(composerRatio) ? composerRatio : nextRatios[0],
         resolution: nextResolutions.includes(composerResolution) ? composerResolution : nextResolutions[0] || null,
@@ -1573,12 +1480,17 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   function focusSidebarNode(id: string) {
     const node = graph?.nodes.find((item) => item.id === id)
     if (!node) return
+    if (viewMode === 'storyboard') pendingCanvasFocus.current = id
     setViewMode('canvas')
     setSelectedNodeId(id)
     setSelectedNodeIds([id])
     setSelectedEdgeId(null)
+    if (pendingCanvasFocus.current) return
     const wide = (viewportRef.current?.clientWidth || 0) > 900
-    void setCenter(node.x + node.width / 2 + (wide ? 80 : 0), node.y + node.height / 2, { zoom: 1, duration: 350 })
+    // Reveal after the explicit navigation finishes. A concurrent centering
+    // animation otherwise overwrites the composer's safe viewport.
+    void setCenter(node.x + node.width / 2 + (wide ? 80 : 0), node.y + node.height / 2, { zoom: 1, duration: 0 })
+      .then(() => setComposerRevealKey(key => key + 1))
   }
 
   function addAssetNode(asset: Asset, at?: { x: number; y: number }) {
@@ -1590,11 +1502,15 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         setNotice('该素材已连接到当前节点')
         return
       }
-      const reference = { ...blankNode(asset.kind, target.x - 540, target.y), title: asset.filename,
+      const existingReference = currentGraph.nodes.find(node => node.type === asset.kind && node.asset_id === asset.id)
+      const reference = existingReference || { ...blankNode(asset.kind, target.x - 540, target.y), title: asset.filename,
         text: asset.kind === 'text' ? asset.text || '' : '', asset_id: asset.id, shot_id: asset.shot_id }
       const nearbyCount = currentGraph.edges.filter(edge => edge.target === target.id).length
-      reference.y += nearbyCount * 100
-      changeGraph(current => ({ ...current, nodes: [...current.nodes, reference],
+      if (!existingReference) reference.y += nearbyCount * 100
+      changeGraph(current => ({ ...current, nodes: [
+        ...current.nodes.map(node => node.id === target.id && !node.shot_id && asset.shot_id ? { ...node, shot_id: asset.shot_id } : node),
+        ...(!existingReference ? [reference] : []),
+      ],
         edges: [...current.edges, { id: crypto.randomUUID(), source: reference.id, target: target.id }] }))
       setSelectedNodeId(target.id)
       setSelectedNodeIds([target.id])
@@ -2025,6 +1941,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
 
   function prepareGeneration() {
     if (!selectedNode || selectedNode.type !== 'generation') return
+    if (selectedNodeGenerating) { setNotice('此节点正在生成，请等待任务完成'); return }
     const shot = selectedShot
     const model = selectedModel
     if (!model || !availableModels.some((item) => item.id === model.id)) {
@@ -2072,10 +1989,10 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       return
     }
     const ratio = ['first_frame', 'first_last_frame', 'edit', 'extend'].includes(mode)
-      ? 'adaptive' : selectedNode.settings.ratio || detail.ratio
+      ? 'adaptive' : imageSizeRatio || selectedNode.settings.ratio || detail.ratio
     const clarity = model.modality === 'image'
-      ? selectedNode.settings.clarity || modelImageClarities(model)[0] || null : null
-    const resolution = selectedNode.settings.resolution || (model.modality === 'text' ? null : resolutions[0] || null)
+      ? (modelImageClarities(model).includes(selectedNode.settings.clarity || '') ? selectedNode.settings.clarity : modelImageClarities(model)[0] || null) : null
+    const resolution = selectedNode.settings.resolution || (model.modality === 'text' ? null : modelDefaultResolution(model, resolutions) || null)
     const supportedResolutions = modelResolutions(model)
     if (model.modality !== 'text' && resolution && !supportedResolutions.includes(resolution)) {
       setNotice('当前模型不支持所选分辨率，请重新选择')
@@ -2085,8 +2002,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       setNotice('当前模型不支持所选画幅，请重新选择')
       return
     }
-    const quality = model.modality === 'image' ? selectedNode.settings.quality || modelImageQualities(model)[0] || null : null
-    const background = model.modality === 'image' ? selectedNode.settings.background || modelImageBackgrounds(model)[0] || null : null
+    const quality = model.modality === 'image' ? (modelImageQualities(model).includes(selectedNode.settings.quality || '') ? selectedNode.settings.quality : modelImageQualities(model)[0] || null) : null
+    const background = model.modality === 'image' ? (modelImageBackgrounds(model).includes(selectedNode.settings.background || '') ? selectedNode.settings.background : modelImageBackgrounds(model)[0] || null) : null
     const request: GenerationRequest = {
       shot_id: shot?.id || '', model_id: model.id, prompt: compiledPrompt.trim(), mode,
       reference_asset_ids: inputImages.map((asset) => asset.id),
@@ -2097,7 +2014,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     setCandidateCount(selectedNode.settings.candidate_count || 1)
     setReview({ nodeId: selectedNode.id, request, shot: shot || { title: selectedNode.title || `镜头 ${String(detail.shots.length + 1).padStart(2, '0')}` }, model,
       provider: providers.find((provider) => provider.id === model.provider_id),
-      referenceNames: inputImages.map((asset) => asset.filename), cost: costEstimate(model, request) })
+      referenceNames: inputImages.map((asset) => asset.filename) })
   }
 
   async function submitGeneration() {
@@ -2251,7 +2168,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const sidebarAssets = useMemo(() => {
     const query = sidebarAssetSearch.trim().toLocaleLowerCase()
     return detail.assets
-      .filter((asset) => asset.saved && asset.source !== 'export')
+      .filter((asset) => (asset.saved || !!referenceTargetNodeId) && asset.source !== 'export')
       .filter((asset) => sidebarAssetFilter === 'all' || asset.kind === sidebarAssetFilter)
       .filter((asset) => {
         if (!query) return true
@@ -2259,7 +2176,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         return `${asset.filename} ${shotTitle}`.toLocaleLowerCase().includes(query)
       })
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
-  }, [detail.assets, detail.shots, sidebarAssetFilter, sidebarAssetSearch])
+  }, [detail.assets, detail.shots, sidebarAssetFilter, sidebarAssetSearch, referenceTargetNodeId])
   const contextNode = contextMenu?.nodeId ? graph?.nodes.find((node) => node.id === contextMenu.nodeId) : undefined
   const contextEdge = contextMenu?.edgeId ? graph?.edges.find((edge) => edge.id === contextMenu.edgeId) : undefined
 
@@ -2342,6 +2259,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         <Menu shadow="md" width={172} position="bottom-start"><Menu.Target><ActionIcon variant="subtle" aria-label="切换创作页面"><ChevronDown size={16} /></ActionIcon></Menu.Target><Menu.Dropdown>
           <Menu.Item leftSection={<FolderOpen size={15} />} onClick={() => onNavigate('projects')}>项目</Menu.Item>
           <Menu.Item leftSection={<ScrollText size={15} />} onClick={() => openScriptDirector('all')}>剧本创作</Menu.Item>
+          <Menu.Item leftSection={<Film size={15} />} onClick={() => onNavigate('studio')} disabled={!detail.shots.length}>剪辑与导出</Menu.Item>
           <Menu.Item leftSection={<Layers3 size={15} />} onClick={() => onNavigate('assets')}>资产</Menu.Item>
           <Menu.Item leftSection={<Clock3 size={15} />} onClick={() => onNavigate('jobs')}>任务记录</Menu.Item>
           <Menu.Item leftSection={<Settings2 size={15} />} onClick={() => void openModelsSafely()}>模型设置</Menu.Item>
@@ -2365,7 +2283,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           <button type="button" role="tab" aria-selected={sidebarTab === 'canvas'} className={sidebarTab === 'canvas' ? 'active' : ''}
             onClick={() => setSidebarTab('canvas')}><Layers3 size={15} />画布 <span>{graph?.nodes.length || 0}</span></button>
           <button type="button" role="tab" aria-selected={sidebarTab === 'assets'} className={sidebarTab === 'assets' ? 'active' : ''}
-            onClick={() => setSidebarTab('assets')}><ImageIcon size={15} />资产 <span>{detail.assets.filter((asset) => asset.saved && asset.source !== 'export').length}</span></button>
+            onClick={() => setSidebarTab('assets')}><ImageIcon size={15} />资产 <span>{detail.assets.filter((asset) => (asset.saved || !!referenceTargetNodeId) && asset.source !== 'export').length}</span></button>
           <Tooltip label="收起侧栏"><ActionIcon variant="subtle" aria-label="收起画布侧栏" onClick={() => setSidebarOpen(false)}><PanelLeftClose size={16} /></ActionIcon></Tooltip>
         </div>
         {sidebarTab === 'canvas' ? <>
@@ -2467,6 +2385,16 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           // viewport should not jump back to every node after each update.
           minZoom={0.1} maxZoom={8}
           defaultViewport={savedViewport || undefined}
+          onInit={instance => {
+            const id = pendingCanvasFocus.current
+            pendingCanvasFocus.current = null
+            const node = queueRef.current?.graph.nodes.find(item => item.id === id)
+            if (node) window.requestAnimationFrame(() => {
+              const wide = (viewportRef.current?.clientWidth || 0) > 900
+              void instance.setCenter(node.x + node.width / 2 + (wide ? 80 : 0), node.y + node.height / 2, { zoom: 1, duration: 0 })
+                .then(() => setComposerRevealKey(key => key + 1))
+            })
+          }}
           onMove={(_, viewport) => setViewportZoom(Math.round(viewport.zoom * 100))}
           onMoveEnd={(_, viewport) => {
             const next = { x: viewport.x, y: viewport.y, zoom: viewport.zoom }
@@ -2513,7 +2441,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
               void setViewport({ x: 0, y: 0, zoom: 1 }, { duration: 240 })
             }}><RefreshCcw size={15} /></ActionIcon></Tooltip>
           </div>
-          {selectedNode && selectedNode.type !== 'text' && selectedNode.type !== 'project_script_ref' && selectedNodeIds.length === 1 && selectedNodeIds[0] === selectedNodeId && <CanvasComposerToolbar key={selectedNode.id} nodeId={selectedNode.id} expanded={composerExpanded}>
+          {!review && selectedNode && selectedNode.type !== 'text' && selectedNode.type !== 'project_script_ref' && selectedNodeIds.length === 1 && selectedNodeIds[0] === selectedNodeId && <CanvasComposerToolbar key={selectedNode.id} nodeId={selectedNode.id} expanded={composerExpanded} revealKey={composerRevealKey}>
             <div className={`pc-prompt-composer nowheel ${composerExpanded ? 'is-expanded' : ''}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
               <div className="pc-prompt-composer-head">
                 <div className="pc-prompt-composer-chips">
@@ -2533,9 +2461,10 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                     onClick={() => changeGraph(current => ({ ...current, edges: current.edges.filter(edge => !(edge.source === node.id && edge.target === selectedNode.id)) }))}><X size={12} /></button>
                 </div>)}
               </div>}
+              {composerModality === 'video' && ['reference', 'edit', 'extend'].includes(selectedMode) && <TextInput aria-label="参考视频地址" placeholder="https://…（或连接已生成视频）" value={selectedNode.settings.reference_video_url || inputVideo?.remote_url || ''} onChange={event => updateNodeSettingsById(selectedNode.id, { reference_video_url: event.currentTarget.value })} className="pc-reference-video-input" />}
               <Textarea className="pc-prompt-composer-input" aria-label="创作提示词" autosize minRows={composerExpanded ? 9 : 6} maxRows={composerExpanded ? 16 : 10} maxLength={20000}
                 styles={{ input: { background: 'transparent', border: 0, boxShadow: 'none', minHeight: composerExpanded ? 240 : 160 } }}
-                placeholder={composerModality === 'video' ? '描述画面、动作和运镜，可通过「参考」添加素材' : '可直接文字生图，也可上传图片输入文字指令对图片进行编辑，如：将背景改为雪夜'}
+                placeholder={composerModality === 'video' ? '描述画面、动作和运镜，可通过「参考」添加素材' : supportsImageReferences ? '描述画面，可通过「参考」添加图片进行编辑' : '描述主体、场景、光线与构图'}
                 value={composerPrompt} onChange={(event) => {
                   const value = event.currentTarget.value
                   if (selectedNode?.type === 'generation') editNodePrompt(selectedNode.id, value)
@@ -2558,7 +2487,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                   {composerModel && composerModel.modality !== 'text' && <>
                     <span className="pc-composer-divider" />
                     <CanvasGenerationParameters key={`params:${selectedNode.id}:${composerModel.id}`} modality={composerModel.modality}
-                      ratios={composerUsesReferenceRatio ? ['adaptive'] : modelRatios(composerModel)} ratio={composerRatio} resolutions={composerResolutions} resolution={composerResolution}
+                      ratios={composerUsesReferenceRatio ? ['adaptive'] : composerModality === 'image' && !usesModelParameter(composerModel, 'ratio') ? [] : modelRatios(composerModel)} ratio={composerRatio} resolutions={composerResolutions} resolution={composerResolution}
                       clarities={composerClarities} clarity={composerClarity} qualities={composerQualities} quality={composerQuality} backgrounds={composerBackgrounds} background={composerBackground}
                       duration={composerDuration} minDuration={durationMin} maxDuration={durationMax}
                       showDuration={composerModel.modality === 'video' && selectedMode !== 'edit'}
@@ -2569,7 +2498,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                   </>}
                 </div>
                 <div className="pc-prompt-composer-actions">
-                  <button type="button" className="pc-composer-submit" aria-label="开始生成" disabled={busy || !composerPrompt.trim() || !composerModelId} onClick={submitComposer}><ArrowRight size={19} /></button>
+                  <button type="button" className="pc-composer-submit" aria-label={selectedNodeGenerating ? '生成中，请等待' : '开始生成'} disabled={busy || selectedNodeGenerating || !composerPrompt.trim() || !composerModelId} onClick={submitComposer}>{selectedNodeGenerating ? <LoaderCircle size={19} className="pc-spin" /> : <ArrowRight size={19} />}</button>
                 </div>
               </div>
             </div>
@@ -2591,7 +2520,6 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           </> : <>
             <div className="pc-context-heading"><span>画布操作</span><strong>在当前位置创建</strong></div>
             <button role="menuitem" onClick={() => { addNode('text', undefined, contextMenu.position); setContextMenu(null) }}><FileText size={16} />添加文本</button>
-            <button role="menuitem" onClick={() => openScriptDirector('all')}><ScrollText size={16} />剧本创作</button>
             <button role="menuitem" onClick={() => { addNode('generation', 'image', contextMenu.position); setContextMenu(null) }}><ImageIcon size={16} />图片生成</button>
             <button role="menuitem" onClick={() => { addNode('generation', 'video', contextMenu.position); setContextMenu(null) }}><Film size={16} />视频生成</button>
             {detail.shots.length > 0 && <button role="menuitem" onClick={() => { importShots(); setContextMenu(null) }}><ScrollText size={16} />导入分镜</button>}
@@ -2608,12 +2536,23 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       {viewMode === 'storyboard' && (graph ? <StoryboardWorkspace
           detail={detail}
           graph={graph}
-          assetMap={assetMap}
-          shotMap={shotMap}
+          models={models}
           selectedId={storyboardSelectedId}
-          onSelect={(id) => { setStoryboardSelectedId(id); setSelectedNodeId(id); setSelectedNodeIds([id]); setSelectedEdgeId(null) }}
-          onOpenDirector={() => openScriptDirector('all')}
-          onOpenSettings={(id) => { setViewMode('canvas'); selectNodeForView(id) }}
+          saveState={saveState}
+          onSelect={(id) => {
+            setStoryboardSelectedId(id)
+            const node = graph.nodes.find(item => item.id === id)
+            setSelectedNodeId(node?.id || null)
+            setSelectedNodeIds(node ? [node.id] : [])
+            setSelectedEdgeId(null)
+          }}
+          onOpenDirector={context => openScriptDirector('all', context)}
+          onOpenScript={artifact => artifact && onOpenScriptDocument ? onOpenScriptDocument(artifact) : onOpenScriptCreator()}
+          onOpenSettings={focusSidebarNode}
+          onTextChange={(id, text, document) => changeGraph(current => ({
+            ...current, nodes: current.nodes.map(node => node.id === id
+              ? { ...node, text, settings: { ...node.settings, text_document: document } } : node),
+          }))}
         /> : <div className="pc-loading"><LoaderCircle size={20} className="pc-spin" />正在载入故事板</div>)}
       <div className="pc-create-dock pc-create-dock-tools">
         <Tooltip label="撤销"><ActionIcon variant="subtle" aria-label="撤销画布操作" onClick={undoGraph} disabled={!historyRef.current.past.length}><Undo2 size={18} /></ActionIcon></Tooltip>
@@ -2634,7 +2573,6 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         <button role="menuitem" onClick={() => addNode('text', undefined, addMenu.position)}><FileText size={17} />文本</button>
         <button role="menuitem" onClick={() => addNode('generation', 'image', addMenu.position)}><ImageIcon size={17} />图片生成</button>
         <button role="menuitem" onClick={() => addNode('generation', 'video', addMenu.position)}><Film size={17} />视频生成</button>
-        <button role="menuitem" onClick={() => openScriptDirector('all')}><ScrollText size={17} />剧本创作</button>
         <button role="menuitem" onClick={() => showSidebarAssets('audio')}><Music2 size={17} />音频素材</button>
         <button role="menuitem" onClick={() => { setAddMenu(null); openCanvasUpload() }}><Upload size={17} />上传素材</button>
         <button role="menuitem" onClick={() => showSidebarAssets()}><Layers3 size={17} />素材库</button>
@@ -2649,8 +2587,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     <Modal opened={!!review} onClose={() => { if (!busy) setReview(null) }} closeOnEscape={!busy} closeOnClickOutside={!busy} title="确认生成任务" centered size="lg">
       {review && <div className="pc-confirm">
         <dl><div><dt>目标镜头</dt><dd>{review.shot.title}</dd></div><div><dt>模型</dt><dd>{review.model.name} · {review.provider?.name || '未知服务商'}</dd></div><div><dt>类型与模式</dt><dd>{review.model.modality === 'video' ? modeOptions.find((item) => item.value === review.request.mode)?.label : review.model.modality === 'image' ? '生成图片' : '生成文本'}</dd></div><div><dt>参数</dt><dd>{review.model.modality === 'image'
-          ? [`画质 ${review.request.quality || '标准画质'}`, `清晰度 ${review.request.clarity || '2K'}`, `背景 ${review.request.background || '自动'}`].join(' · ')
-          : review.request.resolution || '默认'}{review.model.modality === 'video' ? ` · ${review.request.duration} 秒` : ''}{review.model.modality !== 'text' ? ` · ${review.request.ratio}` : ''}{review.request.draft ? ' · 样片' : ''}</dd></div>{review.model.modality === 'video' && <div><dt>生成声音</dt><dd>{review.request.generate_audio ? '开启' : '关闭'}</dd></div>}<div><dt>参考图</dt><dd>{review.referenceNames.length ? review.referenceNames.map((name, index) => ['first_frame', 'first_last_frame'].includes(review.request.mode) ? `${index === 0 ? '首帧' : '尾帧'}：${name}` : name).join('、') : '无'}</dd></div>{review.request.reference_video_url && <div><dt>参考视频</dt><dd>{review.request.reference_video_url}</dd></div>}<div><dt>费用预估</dt><dd>{review.cost ? `约 ${review.cost}` : '模型未配置费用预估'}</dd></div></dl>
+          ? [review.request.resolution, review.request.quality && `画质 ${review.request.quality}`, review.request.clarity, review.request.background && `背景 ${review.request.background}`].filter(Boolean).join(' · ')
+          : review.request.resolution || '默认'}{review.model.modality === 'video' ? ` · ${review.request.duration} 秒` : ''}{review.model.modality !== 'text' ? ` · ${review.request.ratio}` : ''}{review.request.draft ? ' · 样片' : ''}</dd></div>{review.model.modality === 'video' && <div><dt>生成声音</dt><dd>{review.request.generate_audio ? '开启' : '关闭'}</dd></div>}<div><dt>参考图</dt><dd>{review.referenceNames.length ? review.referenceNames.map((name, index) => ['first_frame', 'first_last_frame'].includes(review.request.mode) ? `${index === 0 ? '首帧' : '尾帧'}：${name}` : name).join('、') : '无'}</dd></div>{review.request.reference_video_url && <div><dt>参考视频</dt><dd>{review.request.reference_video_url}</dd></div>}<div><dt>{candidateCount} 个候选总费用预估</dt><dd>{generationCost(review.model, review.request, candidateCount) ? `约 ${generationCost(review.model, review.request, candidateCount)}` : '模型未配置费用，提交前请核对厂商价格'}</dd></div></dl>
         <div className="pc-confirm-prompt"><span>实际提交提示词</span><p>{review.request.prompt}</p></div>
         <div className="pc-candidate-count"><NumberInput label="候选数量" description="同一提示词提交多个候选，完成后可在任务或素材库中审核选择。" min={1} max={4} allowDecimal={false} disabled={busy} clampBehavior="strict" value={candidateCount} onChange={(value) => setCandidateCount(Math.max(1, Math.min(4, Math.trunc(Number(value) || 1))))} /></div>
         <div className="pc-confirm-actions"><Button variant="default" disabled={busy} onClick={() => setReview(null)}>返回修改</Button><Button loading={busy} onClick={() => void submitGeneration()} leftSection={<Sparkles size={15} />}>确认提交 {candidateCount} 个候选</Button></div>

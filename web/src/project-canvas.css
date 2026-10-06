@@ -3015,3 +3015,12 @@
   .project-canvas .pc-storyboard-reader { min-height: 560px; }
   .project-canvas .pc-storyboard-reader-scroll { padding: 20px 16px 40px; }
 }
+
+/* Media states and saved script reading. */
+.project-canvas .pc-node-placeholder { display: flex; flex: 1; min-height: 140px; align-items: center; justify-content: center; flex-direction: column; gap: 12px; color: #5e6065; }
+.project-canvas .pc-node-placeholder span { color: #a5a5aa; font-size: 13px; }
+.project-canvas .pc-node-idle-content:has(.pc-node-output) { padding: 0; }
+.project-canvas .pc-node-idle-content .pc-node-output,
+.project-canvas .pc-node:not(.is-selected) .pc-node-idle-content .pc-node-output { flex: 1; height: 100%; min-height: 0; border-radius: 14px; }
+.project-canvas .pc-project-script-empty { white-space: normal; }
+.project-canvas .pc-project-script-empty .pc-text-preview { height: auto; overflow: visible; }

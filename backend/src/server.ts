@@ -12,6 +12,7 @@ import type { Asset, AssetReview, AssetTask, AssetTaskEvent, CanvasEdge, CanvasN
 import { decryptKey, encryptKey } from './secrets.js'
 import { generate, recoverImage, streamText } from './providers.js'
 import { parseStructuredOutput } from './structured-output.js'
+import { workflowRequest, workflowDraftSchema, workflowInstructions, parseWorkflowDraft, workflowReply } from './script-workflow.js'
 import { fetchModelCatalog, type ModelCatalogConfig } from './model-catalog.js'
 import { extractVideoFrame, probeVideoDurationMs, render, type RenderClip } from './render.js'
 
@@ -38,6 +39,7 @@ const shotPatch = z.object({
   cut_note: z.string().max(2000).optional(),
 })
 const scriptSceneFields = z.object({
+  episode_number: z.number().int().min(0).max(200).default(0),
   heading: z.string().trim().min(1).max(120),
   location: z.string().max(500).default(''), time_of_day: z.string().max(120).default(''),
   characters: z.string().max(2000).default(''), action: z.string().max(10000).default(''),
@@ -54,6 +56,7 @@ const scriptGenerationOptions = z.object({
   story_structure: z.string().trim().max(1000).optional(),
   character_notes: z.string().trim().max(2000).optional(),
   episode_count: z.number().int().min(1).max(200).optional(),
+  episode_duration: z.number().int().min(5).max(600).optional(),
 })
 const scriptInput = z.object({
   brief: z.string().max(20000).optional(),
@@ -68,6 +71,7 @@ const scriptArtifactType = z.enum([
 const scriptArtifactInput = z.object({
   id: z.string().trim().min(1).max(120).optional(),
   artifact_type: scriptArtifactType,
+  episode_number: z.number().int().min(0).max(200).default(0),
   title: z.string().trim().min(1).max(160),
   content: z.string().max(100000).default(''),
   position: z.number().int().min(0).max(100).optional(),
@@ -103,10 +107,14 @@ const scriptDirectorChatInput = z.object({
   mode: z.enum(['all', 'script', 'director']),
   focus_artifact: z.enum(['all', 'character', 'location', 'prop']).default('all'),
   generation_options: scriptGenerationOptions.default({}),
+  workflow: workflowRequest.optional(),
   messages: z.array(z.object({
     role: z.enum(['assistant', 'user']), text: z.string().trim().min(1).max(8000),
   }).strict()).min(1).max(32),
 }).strict().superRefine((value, context) => {
+  if (value.workflow && value.focus_artifact !== 'all') {
+    context.addIssue({ code: 'custom', message: '阶段创作不能用于视觉资产对话', path: ['workflow'] })
+  }
   if (value.messages.at(-1)?.role !== 'user') {
     context.addIssue({ code: 'custom', message: '最后一条对话必须是创作者消息', path: ['messages'] })
   }
@@ -126,6 +134,10 @@ const scriptDraft = z.object({
   artifacts: z.array(scriptDraftArtifact).max(20).optional(),
 })
 const scriptCommitInput = scriptInput.extend({ artifacts: z.array(scriptArtifactInput).max(40).default([]) }).strict()
+const workflowCommitInput = workflowDraftSchema.safeExtend({
+  brief: z.string().trim().min(1).max(20000).optional(),
+  generation_options: scriptGenerationOptions.optional(),
+})
 const sceneConversionInput = z.object({ scene_ids: z.array(z.string().min(1)).min(1).max(100) })
 const shotPlanningInput = z.object({
   model_id: z.string().min(1), scene_ids: z.array(z.string().min(1)).min(1).max(10),
@@ -738,6 +750,7 @@ function scriptSettingLines(options: z.infer<typeof scriptGenerationOptions>): s
     ['故事结构', options.story_structure],
     ['人物方向与角色关系', options.character_notes],
     ['剧本集数', options.episode_count],
+    ['每集时长（秒）', options.episode_duration],
   ]
   return entries
     .flatMap(([label, value]) => {
@@ -804,9 +817,12 @@ function buildScriptDirectorChatPrompt(project: Project, data: z.infer<typeof sc
     project: { name: project.name, brief: project.brief.slice(0, 4000), ratio: project.ratio },
     script: {
       outline: script.outline.slice(0, 4000), characters: script.characters.slice(0, 4000),
-      artifacts: (script.artifacts || []).slice(0, 14).map(artifact => ({ type: artifact.artifact_type, title: artifact.title, content: artifact.content.slice(0, 3000), status: artifact.status })),
+      artifacts: (script.artifacts || [])
+        .filter(artifact => !data.workflow || !artifact.episode_number || artifact.episode_number === data.workflow.episode_number || artifact.episode_number === data.workflow.episode_number - 1)
+        .slice(0, 16).map(artifact => ({ type: artifact.artifact_type, episode_number: artifact.episode_number, title: artifact.title, content: artifact.content.slice(0, 3000), status: artifact.status })),
       generation_options: generationOptions,
-      recent_scenes: script.scenes.slice(-8).map(scene => ({
+      recent_scenes: script.scenes.filter(scene => !data.workflow || !scene.episode_number || scene.episode_number === data.workflow.episode_number || scene.episode_number === data.workflow.episode_number - 1).slice(-8).map(scene => ({
+        episode_number: scene.episode_number,
         heading: scene.heading.slice(0, 200), location: scene.location.slice(0, 200),
         time_of_day: scene.time_of_day.slice(0, 100), characters: scene.characters.slice(0, 500),
         action: scene.action.slice(0, 1600), dialogue: scene.dialogue.slice(0, 800),
@@ -816,16 +832,31 @@ function buildScriptDirectorChatPrompt(project: Project, data: z.infer<typeof sc
   }
   const conversation = data.messages.map(message =>
     `${message.role === 'assistant' ? '导演' : '创作者'}：${message.text}`).join('\n')
+  if (data.workflow) return `你是项目「${project.name}」的影视编剧。${modeGuidance}\n` +
+    `项目中已确认的事实优先保持；根据最新创作者决定补充本轮文档。每条人物、地点和道具资料都应具体并服务于后续拍摄，避免泛泛而谈。\n` +
+    `项目与剧本上下文：\n${JSON.stringify(context)}\n对话记录：\n${conversation}\n${workflowInstructions(data.workflow)}`
   return `你是项目「${project.name}」的剧本导演，正在和创作者进行多轮剧本讨论。\n` +
     `当前创作模式：${data.mode}；当前任务：${focusLabels[data.focus_artifact]}。${modeGuidance}\n` +
     `${focusGuidance}\n` +
     `请结合项目与现有剧本上下文，接续最后一条创作者消息。先针对当前问题给出具体、有判断的回应；需要补充信息时一次只问一个关键问题。尊重对话中已确定的设定，发现冲突时指出冲突并提出修正建议。不要擅自声称已修改或保存项目数据；除非创作者明确要求，否则不要一次性重写整份剧本。\n` +
     `当你需要创作者从多个方向中明确选择时，必须只返回一个合法 JSON 对象，不加 Markdown 代码围栏或其他文字，格式为：` +
-    `{"kind":"choices","question":"要回答的问题","intro":"可选的简短说明","options":[{"id":"稳定标识","text":"一个完整、明确的选择"},{"id":"另一个标识","text":"另一个选择"}],"trailing":"可选补充"}。` +
-    `options 必须包含 2 到 8 个有意义且互不重复的选择，每项都要有简短 id 和完整 text。不要用字母、数字、项目符号等普通文本列表代替这个结构。普通讨论、解释或开放式追问继续直接用自然语言，不要输出 JSON。\n` +
+    `{"kind":"choices","question":"本轮唯一待回答的问题","intro":"对当前需求的具体回应与方向说明","options":[{"id":"稳定标识","title":"简短选择标题","text":"完整解释这个方向的故事核心、冲突和情绪效果"},{"id":"另一个标识","title":"另一个简短标题","text":"另一个方向的完整说明"}],"trailing":"推荐理由或选定后如何推进"}。` +
+    `options 必须包含 2 到 8 个有意义且互不重复的选择，每项都要有唯一的简短 id、供底部选择按钮使用的 title（建议不超过30字）和供对话正文展示的完整 text。text 必须独立完整且包含方向标题，不能只返回标签；intro、text 和 trailing 应清楚说明创作建议及取舍，不要压缩成泛泛的选项列表。界面始终提供自由填写其他想法的入口，无需另加“我有别的想法”选项。一次只问一个关键问题。不要用字母、数字、项目符号等普通文本列表代替这个结构。普通讨论、解释或开放式追问继续直接用自然语言，不要输出 JSON。\n` +
+    `项目默认集数、时长是暂定值，不能把创作者尚未确认的默认值称为已确认；需要建议时说明理由并允许修改。\n` +
     `项目与剧本上下文：\n${JSON.stringify(context)}\n` +
     `对话记录：\n${conversation}\n` +
-    `请直接给出导演的下一条回复。`
+    `请直接给出导演的下一条回复。先确认故事方向，再推进大纲、人物、场景、道具和指定集正文。只追问尚未明确且会改变创作结果的信息；创作者已经给出集数、时长或选择时，不要重复询问。`
+}
+
+function directorResult(raw: string, data: z.infer<typeof scriptDirectorChatInput>) {
+  if (data.workflow) {
+    const draft = parseWorkflowDraft(raw, data.workflow)
+    if (!draft) throw Object.assign(new Error('模型未返回有效的阶段草稿，请重试；已有剧本未修改'), { statusCode: 422 })
+    return { reply: workflowReply(draft), draft }
+  }
+  const reply = normalizeScriptDirectorReply(raw)
+  if (!reply) throw Object.assign(new Error('文本模型未返回对话内容'), { statusCode: 502 })
+  return { reply }
 }
 
 function normalizeScriptDirectorReply(raw: string): string {
@@ -880,9 +911,10 @@ function normalizeScriptDirectorReply(raw: string): string {
     const option = entry as Record<string, unknown>
     if (typeof option.text !== 'string' || !option.text.trim()) return []
     const id = typeof option.id === 'string' && option.id.trim() ? option.id.trim() : String(index + 1)
-    return [{ id: id.slice(0, 80), text: option.text.trim().slice(0, 1200) }]
+    const title = typeof option.title === 'string' && option.title.trim() ? option.title.trim().slice(0, 80) : undefined
+    return [{ id: id.slice(0, 80), ...(title ? { title } : {}), text: option.text.trim().slice(0, 1200) }]
   })
-  if (options.length < 2 || options.length > 8) return trimmed
+  if (options.length < 2 || options.length > 8 || new Set(options.map(option => option.id)).size !== options.length) return trimmed
   const intro = [trimmed.slice(0, start).trim(), typeof payload.intro === 'string' ? payload.intro.trim() : '']
     .filter(Boolean).join('\n\n')
   const trailing = [typeof payload.trailing === 'string' ? payload.trailing.trim() : '', trimmed.slice(end).trim()]
@@ -942,10 +974,10 @@ function buildShotPlanningPrompt(project: Project, scenes: ScriptScene[], shotsP
 function insertScriptScene(projectId: string, position: number, scene: z.infer<typeof scriptSceneFields>): ScriptScene {
   const id = newId(), timestamp = now()
   run(`INSERT INTO script_scenes
-    (id, project_id, position, heading, location, time_of_day, characters, action, dialogue, narration, duration, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    (id, project_id, position, heading, location, time_of_day, characters, action, dialogue, narration, duration, created_at, updated_at, episode_number)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     id, projectId, position, scene.heading, scene.location, scene.time_of_day, scene.characters,
-    scene.action, scene.dialogue, scene.narration, scene.duration, timestamp, timestamp)
+    scene.action, scene.dialogue, scene.narration, scene.duration, timestamp, timestamp, scene.episode_number)
   return required<ScriptScene>('script_scenes', id)
 }
 
@@ -1501,9 +1533,9 @@ export function buildApp(): FastifyInstance {
             if (existing.project_id !== id) invalid('场次不属于当前项目')
             retained.add(scene.id)
             run(`UPDATE script_scenes SET position=?, heading=?, location=?, time_of_day=?, characters=?,
-              action=?, dialogue=?, narration=?, duration=?, updated_at=? WHERE id=?`,
+              action=?, dialogue=?, narration=?, duration=?, episode_number=?, updated_at=? WHERE id=?`,
               position, scene.heading, scene.location, scene.time_of_day, scene.characters,
-              scene.action, scene.dialogue, scene.narration, scene.duration, timestamp, scene.id)
+              scene.action, scene.dialogue, scene.narration, scene.duration, scene.episode_number, timestamp, scene.id)
           } else {
             retained.add(insertScriptScene(id, position, scene).id)
           }
@@ -1544,9 +1576,9 @@ export function buildApp(): FastifyInstance {
             if (existing.project_id !== id) invalid('场次不属于当前项目')
             retained.add(scene.id)
             run(`UPDATE script_scenes SET position=?, heading=?, location=?, time_of_day=?, characters=?,
-              action=?, dialogue=?, narration=?, duration=?, updated_at=? WHERE id=?`,
+              action=?, dialogue=?, narration=?, duration=?, episode_number=?, updated_at=? WHERE id=?`,
               position, scene.heading, scene.location, scene.time_of_day, scene.characters,
-              scene.action, scene.dialogue, scene.narration, scene.duration, timestamp, scene.id)
+              scene.action, scene.dialogue, scene.narration, scene.duration, scene.episode_number, timestamp, scene.id)
           } else {
             retained.add(insertScriptScene(id, position, scene).id)
           }
@@ -1556,29 +1588,82 @@ export function buildApp(): FastifyInstance {
         }
       }
 
-      // The commit represents the user's confirmed document. Upsert by type
+      // The commit represents the user's confirmed document. Upsert by type and episode
       // to keep asset-task bindings stable, then remove obsolete document
       // types. Tasks that referenced a removed type must be confirmed again.
       const previousArtifacts = all<ScriptArtifact>('SELECT * FROM script_artifacts WHERE project_id=?', id)
-      const incomingTypes = new Set(data.artifacts.map((artifact) => artifact.artifact_type))
+      const artifactKey = (artifact: { artifact_type: string; episode_number: number }) => `${artifact.artifact_type}:${artifact.episode_number}`
+      const incomingKeys = new Set(data.artifacts.map(artifactKey))
+      if (incomingKeys.size !== data.artifacts.length) invalid('剧本文档不能重复')
       data.artifacts.forEach((artifact, index) => {
-        const existing = previousArtifacts.find((item) => item.artifact_type === artifact.artifact_type)
+        const existing = previousArtifacts.find((item) => artifactKey(item) === artifactKey(artifact))
         const artifactId = existing?.id || newId()
         if (existing) {
           run('UPDATE script_artifacts SET title=?, content=?, position=?, status=?, updated_at=? WHERE id=? AND project_id=?',
             artifact.title, artifact.content, artifact.position ?? index, artifact.status, timestamp, artifactId, id)
         } else {
-          run(`INSERT INTO script_artifacts (id, project_id, artifact_type, title, content, position, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          run(`INSERT INTO script_artifacts (id, project_id, artifact_type, title, content, position, status, created_at, updated_at, episode_number)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             artifactId, id, artifact.artifact_type, artifact.title, artifact.content, artifact.position ?? index,
-            artifact.status, timestamp, timestamp)
+            artifact.status, timestamp, timestamp, artifact.episode_number)
         }
       })
-      const removed = previousArtifacts.filter((artifact) => !incomingTypes.has(artifact.artifact_type))
+      const removed = previousArtifacts.filter((artifact) => !incomingKeys.has(artifactKey(artifact)))
       removed.forEach((artifact) => run('DELETE FROM script_artifacts WHERE id=? AND project_id=?', artifact.id, id))
       if (removed.length) {
         run(`UPDATE asset_tasks SET source_artifact_ids='[]', status='awaiting_confirmation', prompt='', error=?, updated_at=?
           WHERE project_id=? AND status <> 'generating'`, '剧本文档已更新，请重新确认资料', timestamp, id)
+      }
+      touchProject(id)
+    })()
+    return projectScript(id)
+  })
+  app.put('/api/projects/:id/script/director/draft', async request => {
+    const { id } = parse(idParams, request.params)
+    required<Project>('projects', id)
+    const data = parse(workflowCommitInput, request.body)
+    db.transaction(() => {
+      const current = projectScript(id)
+      const timestamp = now()
+      const episode = data.stage === 'episode' ? data.episode_number : 0
+      const outline = data.artifacts.find(item => item.artifact_type === 'outline')?.content ?? current.outline
+      const characters = data.artifacts.find(item => item.artifact_type === 'characters')?.content ?? current.characters
+      run(`INSERT INTO scripts (project_id, outline, characters, generation_options, updated_at) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(project_id) DO UPDATE SET outline=excluded.outline, characters=excluded.characters,
+          generation_options=excluded.generation_options, updated_at=excluded.updated_at`,
+        id, outline, characters, JSON.stringify(data.generation_options ?? current.generation_options), timestamp)
+      if (data.brief) run('UPDATE projects SET brief=? WHERE id=?', data.brief, id)
+      data.artifacts.forEach((artifact, index) => {
+        const existing = current.artifacts?.find(item => item.artifact_type === artifact.artifact_type && item.episode_number === episode)
+        if (existing) {
+          run("UPDATE script_artifacts SET title=?, content=?, status='ready', updated_at=? WHERE id=?",
+            artifact.title, artifact.content, timestamp, existing.id)
+        } else {
+          run(`INSERT INTO script_artifacts (id, project_id, artifact_type, title, content, position, status, created_at, updated_at, episode_number)
+            VALUES (?, ?, ?, ?, ?, ?, 'ready', ?, ?, ?)`, newId(), id, artifact.artifact_type,
+            artifact.title, artifact.content, (current.artifacts?.length || 0) + index, timestamp, timestamp, episode)
+        }
+      })
+      if (data.stage === 'episode') {
+        const previous = current.scenes.filter(scene => scene.episode_number === episode)
+        const replacementIds: string[] = []
+        data.scenes.forEach((scene, index) => {
+          const previousScene = previous[index]
+          if (previousScene) {
+            // Keep scene IDs and existing shot/material bindings stable on revision.
+            run(`UPDATE script_scenes SET heading=?, location=?, time_of_day=?, characters=?, action=?,
+              dialogue=?, narration=?, duration=?, updated_at=? WHERE id=?`, scene.heading, scene.location,
+              scene.time_of_day, scene.characters, scene.action, scene.dialogue, scene.narration,
+              scene.duration, timestamp, previousScene.id)
+            replacementIds.push(previousScene.id)
+          } else replacementIds.push(insertScriptScene(id, current.scenes.length + index, { ...scene, episode_number: episode }).id)
+        })
+        for (const scene of previous.slice(data.scenes.length)) run('DELETE FROM script_scenes WHERE id=?', scene.id)
+        const firstPosition = current.scenes.findIndex(scene => scene.episode_number === episode)
+        const ordered = current.scenes.filter(scene => scene.episode_number !== episode).map(scene => scene.id)
+        const laterEpisode = current.scenes.filter(scene => scene.episode_number !== episode).findIndex(scene => scene.episode_number > episode)
+        ordered.splice(firstPosition >= 0 ? firstPosition : laterEpisode >= 0 ? laterEpisode : ordered.length, 0, ...replacementIds)
+        ordered.forEach((sceneId, position) => run('UPDATE script_scenes SET position=? WHERE id=?', position, sceneId))
       }
       touchProject(id)
     })()
@@ -1591,14 +1676,14 @@ export function buildApp(): FastifyInstance {
     db.transaction(() => {
       const timestamp = now()
       data.artifacts.forEach((artifact, index) => {
-        const existing = one<ScriptArtifact>('SELECT * FROM script_artifacts WHERE project_id=? AND artifact_type=?', id, artifact.artifact_type)
+        const existing = one<ScriptArtifact>('SELECT * FROM script_artifacts WHERE project_id=? AND artifact_type=? AND episode_number=?', id, artifact.artifact_type, artifact.episode_number)
         const artifactId = existing?.id || artifact.id || newId()
         if (existing) {
           run('UPDATE script_artifacts SET title=?, content=?, position=?, status=?, updated_at=? WHERE id=? AND project_id=?',
             artifact.title, artifact.content, artifact.position ?? index, artifact.status, timestamp, artifactId, id)
         } else {
-          run('INSERT INTO script_artifacts (id, project_id, artifact_type, title, content, position, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            artifactId, id, artifact.artifact_type, artifact.title, artifact.content, artifact.position ?? index, artifact.status, timestamp, timestamp)
+          run('INSERT INTO script_artifacts (id, project_id, artifact_type, title, content, position, status, created_at, updated_at, episode_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            artifactId, id, artifact.artifact_type, artifact.title, artifact.content, artifact.position ?? index, artifact.status, timestamp, timestamp, artifact.episode_number)
         }
       })
       touchProject(id)
@@ -1944,9 +2029,7 @@ export function buildApp(): FastifyInstance {
     const provider = required<Provider>('providers', model.provider_id)
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
     const raw = await generateTextOutput(model, provider, id, buildScriptDirectorChatPrompt(project, data))
-    const reply = normalizeScriptDirectorReply(raw)
-    if (!reply) throw Object.assign(new Error('文本模型未返回对话内容'), { statusCode: 502 })
-    return { reply }
+    return directorResult(raw, data)
   })
   app.post('/api/projects/:id/script/director/chat/stream', async (request, reply) => {
     const { id } = parse(idParams, request.params)
@@ -1968,6 +2051,9 @@ export function buildApp(): FastifyInstance {
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
     })
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    reply.raw.once('close', abort)
     const send = (event: Record<string, unknown>) => {
       if (reply.raw.writableEnded || reply.raw.destroyed) return
       try { reply.raw.write(`data: ${JSON.stringify(event)}\n\n`) } catch { /* Client disconnected. */ }
@@ -1975,19 +2061,20 @@ export function buildApp(): FastifyInstance {
     send({ type: 'progress', stage: 'preparing', text: '正在整理项目设定和对话内容…' })
     try {
       const prompt = buildScriptDirectorChatPrompt(project, data)
-      send({ type: 'progress', stage: 'analysis', text: '正在分析故事结构、人物动机和当前问题…' })
+      send({ type: 'progress', stage: 'analysis', text: data.workflow ? '正在编写当前阶段的可编辑文档…' : '正在分析故事结构、人物动机和当前问题…' })
       const fullText = await streamText(
         model, provider, { prompt },
         item => decryptKey(item.key_ciphertext || null),
         event => send(event),
+        controller.signal,
       )
-      const result = normalizeScriptDirectorReply(fullText)
-      if (!result) throw Object.assign(new Error('文本模型未返回对话内容'), { statusCode: 502 })
-      send({ type: 'done', reply: result })
+      const result = directorResult(fullText, data)
+      send({ type: 'done', ...result })
     } catch (error) {
       send({ type: 'error', message: error instanceof Error ? error.message : String(error) })
     } finally {
       send({ type: 'close' })
+      reply.raw.removeListener('close', abort)
       reply.raw.end()
     }
   })

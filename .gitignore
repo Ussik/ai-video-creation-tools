@@ -8,3 +8,14 @@ data/
 # Generated exports and local media
 exports/*
 !exports/.gitkeep
+
+# Keep production scripts and validation records in Git; media stays local.
+production/**/*.png
+production/**/*.jpg
+production/**/*.jpeg
+production/**/*.webp
+production/**/*.mp4
+production/**/*.mov
+production/**/*.mp3
+production/**/*.wav
+production/**/*.m4a

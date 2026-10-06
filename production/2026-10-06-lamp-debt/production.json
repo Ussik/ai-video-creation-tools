@@ -1,0 +1,136 @@
+{
+  "project_id": "14ef240db39944559de7527b56258338",
+  "script_seconds": 120,
+  "production_seconds": 30,
+  "paid_jobs": [
+    "111d1d8fb4324d7c997704b2c266364a",
+    "19a4f47bf2894682b8de6a682a94dc06",
+    "9394f503a6594fed8ace8dc7ba9e4ef7",
+    "c9d31764b8e944b4b362f77fcba99961"
+  ],
+  "budget": null,
+  "shot_ids": [
+    "93ee25fcd8f24459b0e9120164f5d3fe",
+    "1eb28147e6b648329f19f657c19b04f3",
+    "3ca73581c4e24b34a7a076fca9df7c03"
+  ],
+  "image_model_id": "c3e43a14843940bd8023691c5e10e9e5",
+  "video_model_id": "3124833df238401b9f20b02420c1d365",
+  "generation_plan": {
+    "images": 1,
+    "videos": 3,
+    "duration_seconds_each": 10,
+    "resolution": "720p",
+    "candidates": 1
+  },
+  "results": {
+    "image": "efce11e099964d03ac754730dbe8b39e",
+    "generated_videos": [
+      "a88a24654ae344b091b8764cd0cc644c",
+      "35bdedef29ef430595f3f0f7b38510fe",
+      "a3fbd878cba14e52aef2dbe047c96ff8"
+    ],
+    "edited_third": "2d54b3bd62f04a678b32eb4031c8e322",
+    "export": "79d4e6ed41cb43ab9bdcced50b5e97f7",
+    "export_job": "4ade83a9b83d4bc99f7c7d19d63c380f"
+  },
+  "status": "complete",
+  "output_file": "lamp-debt-30s.mp4",
+  "paid_retry_count": 0,
+  "third_shot_edit": {
+    "reason": "原第三段后半程人物外貌漂移",
+    "source_in_seconds": 0,
+    "source_out_seconds": 4,
+    "output_seconds": 10,
+    "visual_speed": 0.4,
+    "audio_speed": 1,
+    "method": "本地剪辑后通过本项目导入素材与选片入口使用，原素材保留并拒绝审核"
+  },
+  "timeline": [
+    {
+      "id": "fcb6ba868f5d4d5681faf5829c7371ba",
+      "project_id": "14ef240db39944559de7527b56258338",
+      "shot_id": "93ee25fcd8f24459b0e9120164f5d3fe",
+      "asset_id": "a88a24654ae344b091b8764cd0cc644c",
+      "in_ms": 0,
+      "out_ms": 10000,
+      "source_duration_ms": 10040,
+      "source_audio_gain": 1,
+      "source_audio_fade_ms": 80
+    },
+    {
+      "id": "caf658fabc8947fcaa218c61ab022dd1",
+      "project_id": "14ef240db39944559de7527b56258338",
+      "shot_id": "1eb28147e6b648329f19f657c19b04f3",
+      "asset_id": "35bdedef29ef430595f3f0f7b38510fe",
+      "in_ms": 0,
+      "out_ms": 10000,
+      "source_duration_ms": 10040,
+      "source_audio_gain": 1,
+      "source_audio_fade_ms": 80
+    },
+    {
+      "id": "b8b2f732d92a4c55acb1ebb3c15e568a",
+      "project_id": "14ef240db39944559de7527b56258338",
+      "shot_id": "3ca73581c4e24b34a7a076fca9df7c03",
+      "asset_id": "2d54b3bd62f04a678b32eb4031c8e322",
+      "in_ms": 0,
+      "out_ms": 10000,
+      "source_duration_ms": 10000,
+      "source_audio_gain": 1,
+      "source_audio_fade_ms": 80
+    }
+  ],
+  "continuity": {
+    "total_shots": 3,
+    "checked_shots": 3,
+    "pass_count": 3,
+    "warning_count": 0,
+    "error_count": 0,
+    "expected_duration_ms": 30000,
+    "actual_duration_ms": 30000,
+    "status": "ready"
+  },
+  "cut_reviews": [
+    {
+      "from": "93ee25fcd8f24459b0e9120164f5d3fe",
+      "to": "1eb28147e6b648329f19f657c19b04f3",
+      "status": "approved",
+      "stale": false,
+      "note": "已对照实际10秒尾帧与下一镜0秒首帧：沈照侧脸、束发、靛青衣袖、提灯位置与街道轴线一致；第二镜沿用第一镜尾帧，无反向跳切。"
+    },
+    {
+      "from": "1eb28147e6b648329f19f657c19b04f3",
+      "to": "3ca73581c4e24b34a7a076fca9df7c03",
+      "status": "approved",
+      "stale": false,
+      "note": "已核对第二镜10秒实际尾帧与剪辑版第三镜0秒首帧：同一提灯玻璃裂纹、灯顶结构、手指、靛青袖口和琥珀火焰一致，直接沿用前镜尾帧进入墙影近景。"
+    }
+  ],
+  "generation_jobs": [
+    {
+      "id": "111d1d8fb4324d7c997704b2c266364a",
+      "status": "succeeded",
+      "external_id": "cgt-20261006042127-l4qwb",
+      "result_asset_id": "a3fbd878cba14e52aef2dbe047c96ff8"
+    },
+    {
+      "id": "19a4f47bf2894682b8de6a682a94dc06",
+      "status": "succeeded",
+      "external_id": "cgt-20261006041708-ksrj5",
+      "result_asset_id": "35bdedef29ef430595f3f0f7b38510fe"
+    },
+    {
+      "id": "9394f503a6594fed8ace8dc7ba9e4ef7",
+      "status": "succeeded",
+      "external_id": "cgt-20261006041315-q68qg",
+      "result_asset_id": "a88a24654ae344b091b8764cd0cc644c"
+    },
+    {
+      "id": "c9d31764b8e944b4b362f77fcba99961",
+      "status": "succeeded",
+      "external_id": null,
+      "result_asset_id": "efce11e099964d03ac754730dbe8b39e"
+    }
+  ]
+}

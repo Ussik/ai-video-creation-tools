@@ -74,7 +74,7 @@ export function CanvasVideoModeMenu({ value, supportedModes, onChange }: CanvasV
     classNames={{ dropdown: 'pc-generation-mode-menu', item: 'pc-generation-mode-item', label: 'pc-generation-menu-heading' }}>
     <Menu.Target>
       <button type="button" className="pc-generation-control pc-generation-mode-trigger nodrag nowheel" data-canvas-overlay
-        aria-label={`视频生成模式：${current.label}`} aria-expanded={opened} {...overlayEvents} onKeyDown={stopPropagation}>
+        aria-label={`视频生成模式：${current.label}`} aria-expanded={opened} {...overlayEvents} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') setOpened(false) }}>
         <Icon size={15} /><span>{current.label}</span><ChevronDown size={13} />
       </button>
     </Menu.Target>
@@ -144,15 +144,15 @@ export function CanvasGenerationParameters({ modality, ratios, ratio, resolution
   const selectedDuration = snapDuration(Number.isFinite(duration) ? duration : min)
   const durationEnabled = modality === 'video' && showDuration
   const audioEnabled = modality === 'video' && audioSupported
-  const summary = [ratio === 'adaptive' ? '自适应' : ratio, modality === 'image' ? clarity : resolution,
+  const summary = [ratio === 'adaptive' ? '自适应' : ratio, modality === 'image' ? clarity || resolution : resolution,
     durationEnabled ? `${duration}s` : '', `${count}${modality === 'image' ? '张' : '个'}`].filter(Boolean).join(' · ')
-  return <Popover opened={opened} onChange={setOpened} position="top-start" offset={10} width={modality === 'image' ? 680 : 360} withinPortal
+  return <Popover opened={opened} onChange={setOpened} position="top-start" offset={10} width={modality === 'image' && ratios.length > 6 ? 680 : 360} withinPortal
     middlewares={floatingMiddlewares} zIndex={220} trapFocus returnFocus preventPositionChangeWhenVisible={false}
     classNames={{ dropdown: 'pc-generation-parameters-popover' }}>
     <Popover.Target>
       <button type="button" className="pc-generation-control pc-generation-parameters-trigger nodrag nowheel" data-canvas-overlay
         aria-label={`生成参数：${summary}${audioEnabled ? generateAudio ? '，声音开启' : '，声音关闭' : ''}`}
-        aria-expanded={opened} aria-haspopup="dialog" {...overlayEvents} onKeyDown={stopPropagation} onClick={event => { event.stopPropagation(); setOpened(value => !value) }}>
+        aria-expanded={opened} aria-haspopup="dialog" {...overlayEvents} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') setOpened(false) }} onClick={event => { event.stopPropagation(); setOpened(value => !value) }}>
         <SlidersHorizontal size={15} /><span>{summary}</span>
         {audioEnabled && (generateAudio ? <Volume2 size={15} /> : <VolumeX size={15} />)}<ChevronDown size={13} />
       </button>
@@ -174,9 +174,9 @@ export function CanvasGenerationParameters({ modality, ratios, ratio, resolution
             onClick={() => onChange({ clarity: option })}>{option}</button>)}
         </div>
       </section>}
-      {modality !== 'image' && resolutions.length > 0 && <section className="pc-generation-parameter-section">
-        <div className="pc-generation-parameter-heading"><span>清晰度</span><small>{resolution}</small></div>
-        <div className="pc-generation-options" role="group" aria-label="清晰度">
+      {(modality !== 'image' || clarities.length === 0) && resolutions.length > 0 && <section className="pc-generation-parameter-section">
+        <div className="pc-generation-parameter-heading"><span>{modality === 'image' ? '图片尺寸' : '清晰度'}</span><small>{resolution}</small></div>
+        <div className="pc-generation-options" role="group" aria-label={modality === 'image' ? '图片尺寸' : '清晰度'}>
           {[...new Set(resolutions)].map(option => <button type="button" key={option} aria-pressed={resolution === option}
             onClick={() => onChange({ resolution: option })}>{option}</button>)}
         </div>

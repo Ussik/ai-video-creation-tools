@@ -10,6 +10,7 @@ import './controls.css'
 import './theme.css'
 import './workspace.css'
 import './workspace-theme.css'
+import './asset-library.css'
 import './dropdown-theme.css'
 import './canvas-generation-controls.css'
 

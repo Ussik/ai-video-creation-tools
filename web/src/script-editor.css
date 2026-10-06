@@ -1628,3 +1628,8 @@
   .script-scenes-title { align-items: flex-start; }
   .script-scenes-title-actions { flex-wrap: wrap; justify-content: flex-end; }
 }
+
+.script-scene-production-list { max-height: min(440px, 55vh); overflow: auto; }
+.script-scene-production-list > label { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid #363638; cursor: pointer; }
+.script-scene-production-list strong { flex: 1; color: #ddd; font-size: 13px; font-weight: 500; }
+.script-scene-production-list small { color: #999; font-variant-numeric: tabular-nums; white-space: nowrap; }

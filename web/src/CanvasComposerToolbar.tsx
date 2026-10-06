@@ -8,6 +8,7 @@ export interface CanvasComposerToolbarProps {
   nodeId: string
   children: ReactNode
   expanded?: boolean
+  revealKey?: number
 }
 
 /** Translate a screen-sized composer into its available canvas area. */
@@ -59,7 +60,7 @@ export function composerViewportFit(viewport: CanvasViewport, node: ComposerNode
   return { ...next, x: next.x + shift.x, y: next.y + shift.y }
 }
 
-export default function CanvasComposerToolbar({ nodeId, children, expanded = false }: CanvasComposerToolbarProps) {
+export default function CanvasComposerToolbar({ nodeId, children, expanded = false, revealKey = 0 }: CanvasComposerToolbarProps) {
   const { getNode, getViewport, setViewport } = useReactFlow()
   const [anchor, setAnchor] = useState<HTMLDivElement | null>(null)
   const frameRef = useRef<number | null>(null)
@@ -124,7 +125,7 @@ export default function CanvasComposerToolbar({ nodeId, children, expanded = fal
     }
     // Pan/zoom and textarea scroll are intentionally not dependencies: after
     // the initial reveal the user is free to move around the canvas.
-  }, [anchor, nodeId, expanded, getNode, getViewport, setViewport])
+  }, [anchor, nodeId, expanded, revealKey, getNode, getViewport, setViewport])
 
   return <NodeToolbar nodeId={nodeId} isVisible position={Position.Bottom} offset={24} align="center"
     className="pc-node-toolbar" data-canvas-overlay>

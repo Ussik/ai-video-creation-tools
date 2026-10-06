@@ -326,6 +326,8 @@
   box-shadow: 0 16px 35px #0005;
 }
 
+.app-notice-close { pointer-events: auto; }
+
 .eyebrow {
   margin-bottom: 5px;
   color: #999;

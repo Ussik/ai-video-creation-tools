@@ -80,7 +80,7 @@ function mockWebGL() {
     getUniformLocation: (_program: unknown, name: string) => name,
     uniform1f: (name: string, value: number) => { uniforms.set(name, value) },
     uniform1i: noop, uniform2f: noop, viewport: noop, clearColor: noop,
-    clear: noop, enable: noop, blendFunc: noop, activeTexture: noop, drawArrays: noop,
+    clear: noop, enable: noop, disable: noop, blendFunc: noop, activeTexture: noop, drawArrays: noop,
   }
 }
 

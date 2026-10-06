@@ -6,7 +6,7 @@ import {
 import { Dropzone } from '@mantine/dropzone'
 import {
   ArrowDown, ArrowDownWideNarrow, ArrowRight, ArrowUp, ArrowUpWideNarrow, Check, Clapperboard,
-  Clock3, Download, Eye, FileText, Film, Image as ImageIcon, Layers3, LoaderCircle, Menu,
+  Clock3, Download, Eye, FileText, Film, Image as ImageIcon, Layers3, LayoutGrid, List, LoaderCircle, Menu,
   MoreHorizontal, Music2, PanelLeftClose, PanelLeftOpen, Play, Plus, RefreshCcw, Save, Scissors, ScrollText, Search, Settings2,
   Sparkles, Trash2, Upload, FolderOpen, TriangleAlert, WandSparkles, X,
 } from 'lucide-react'
@@ -16,13 +16,14 @@ import ModelSettings from './ModelSettings'
 import TimelinePreview from './TimelinePreview'
 import CutReviewPanel from './CutReviewPanel'
 import CandidateCompare from './CandidateCompare'
-import ProjectCanvas, { type ScriptAction } from './ProjectCanvas'
+import ProjectCanvas, { type CanvasLocation, type ScriptAction } from './ProjectCanvas'
 import ScriptDirectorPanel from './ScriptDirectorPanel'
-import ScriptEditor from './ScriptEditor'
+import ScriptEditor, { type DocumentSection } from './ScriptEditor'
 import { useAppDialog } from './AppDialog'
+import { filterLibraryAssets, libraryCollection, libraryEmptyText } from './asset-library'
+import type { AssetLibraryView } from './asset-library'
 
 type Tab = 'projects' | 'canvas' | 'studio' | 'assets' | 'jobs' | 'models'
-type AssetLibraryView = 'history' | 'personal'
 type Generation = {
   modality: Modality
   model_id: string
@@ -251,6 +252,9 @@ function App() {
   const [tab, setTab] = useState<Tab>('projects')
   const [scriptDirectorOpen, setScriptDirectorOpen] = useState(false)
   const [scriptDirectorFocus, setScriptDirectorFocus] = useState<ScriptAction>('all')
+  const [scriptDirectorContext, setScriptDirectorContext] = useState('')
+  const [scriptEditorSection, setScriptEditorSection] = useState<DocumentSection>('outline')
+  const canvasLocations = useRef(new Map<string, CanvasLocation>())
   const [scriptEditorOpen, setScriptEditorOpen] = useState(false)
   const [projectCovers, setProjectCovers] = useState<Record<string, Asset | null>>({})
   const [projectQuery, setProjectQuery] = useState('')
@@ -388,19 +392,12 @@ function App() {
           ? right.created_at.localeCompare(left.created_at)
           : right.updated_at.localeCompare(left.updated_at))
   }, [projectQuery, projectSort, projects])
-  const libraryAssets = useMemo(() => detail?.assets.filter((asset) => asset.saved) || [], [detail])
-  const historyAssets = useMemo(() => detail?.assets.filter((asset) => asset.source === 'generated') || [], [detail])
+  const libraryAssets = useMemo(() => libraryCollection(detail?.assets || [], 'personal'), [detail])
+  const historyAssets = useMemo(() => libraryCollection(detail?.assets || [], 'history'), [detail])
   const assetCollection = assetLibraryView === 'history' ? historyAssets : libraryAssets
   const visibleLibraryAssets = useMemo(() => {
     if (!detail) return []
-    const query = assetQuery.trim().toLocaleLowerCase()
-    return assetCollection
-      .filter((asset) => assetKindFilter === 'all' || asset.kind === assetKindFilter)
-      .filter((asset) => assetSourceFilter === 'all' || asset.source === assetSourceFilter)
-      .filter((asset) => !query || `${asset.filename} ${asset.prompt || ''} ${detail.shots.find((shot) => shot.id === asset.shot_id)?.title || ''}`.toLocaleLowerCase().includes(query))
-      .sort((left, right) => assetSort === 'oldest'
-        ? left.created_at.localeCompare(right.created_at)
-        : right.created_at.localeCompare(left.created_at))
+    return filterLibraryAssets(assetCollection, detail.shots, { kind: assetKindFilter, source: assetSourceFilter, query: assetQuery, sort: assetSort })
   }, [assetCollection, assetKindFilter, assetQuery, assetSort, assetSourceFilter, detail])
   const selectedVisibleAssetCount = visibleLibraryAssets.filter((asset) => selectedAssetIds.includes(asset.id)).length
   const referenceCount = generation.reference_asset_ids.length
@@ -644,6 +641,21 @@ function App() {
       setProjectId(created.id)
       setTab('canvas')
     }, '已复制项目设置，新项目从空画布开始')
+  }
+
+  function switchAssetLibrary(view: AssetLibraryView) {
+    setAssetLibraryView(view)
+    setAssetKindFilter('all')
+    setAssetSourceFilter('all')
+    setAssetQuery('')
+    setSelectedAssetIds([])
+  }
+
+  function clearAssetFilters() {
+    setAssetKindFilter('all')
+    setAssetSourceFilter('all')
+    setAssetQuery('')
+    setSelectedAssetIds([])
   }
 
   function toggleAssetSelection(id: string) {
@@ -972,7 +984,8 @@ function App() {
     setTab('canvas')
   }
 
-  function openScriptEditor() {
+  function openScriptEditor(section: DocumentSection = 'outline') {
+    setScriptEditorSection(section)
     setScriptDirectorOpen(false)
     setScriptEditorOpen(true)
     setTab('canvas')
@@ -1032,13 +1045,14 @@ function App() {
       {tab !== 'projects' && !scriptEditorOpen && <header className="topbar">
         <div className="topbar-start"><ActionIcon className="mobile-toggle" variant="subtle" aria-label="打开导航" onClick={() => setMobileMenu(!mobileMenu)}><Menu size={20} /></ActionIcon><button className="breadcrumb-link" onClick={() => selectedNav('projects')}>项目</button><span className="breadcrumb-sep">/</span><strong>{tab === 'models' ? '模型设置' : detail?.name || '未选择项目'}</strong></div>
         <div className="topbar-actions">
+          {tab === 'studio' && detail && <Button variant="default" onClick={() => setTab('canvas')} leftSection={<Layers3 size={16} />}>返回画布</Button>}
           {tab === 'studio' && detail && <span className="topbar-meta">{detail.shots.length} 个镜头 · {detail.ratio}</span>}
           {tab === 'studio' && latestExportAsset && <Button component="a" variant="default" href={latestExportAsset.url} download title="下载最近成片" leftSection={<Download size={16} />}>最近成片</Button>}
           {tab === 'studio' && detail && <Button onClick={exportVideo} disabled={busy || !canExport} title={!canExport ? '请先为制作范围内的镜头选定有效片段' : '导出视频'} leftSection={<Download size={16} />}>导出视频</Button>}
         </div>
       </header>}
 
-      {notice && <Notification className="app-notice" role="status" onClose={() => setNotice(null)} color={notice.includes('失败') || notice.includes('错误') ? 'red' : 'teal'}>{notice}</Notification>}
+      {notice && <Notification className="app-notice" role="status" style={{ pointerEvents: 'none' }} closeButtonProps={{ 'aria-label': '关闭提示', className: 'app-notice-close' }} onClose={() => setNotice(null)} color={notice.includes('失败') || notice.includes('错误') ? 'red' : 'teal'}>{notice}</Notification>}
 
       {tab === 'projects' && <section className="project-page" aria-label="项目">
         <div className="project-page-head">
@@ -1067,6 +1081,7 @@ function App() {
       {detail && scriptEditorOpen && <div className="script-page-host script-page-overlay">
         <ScriptEditor
           key={`script-editor-${detail.id}`}
+          initialSection={scriptEditorSection}
           detail={detail}
           models={models}
           providers={providers}
@@ -1078,23 +1093,30 @@ function App() {
       </div>}
 
       {detail && canvasOpen && <ProjectCanvas key={detail.id} detail={detail} models={models} providers={providers}
+        initialLocation={canvasLocations.current.get(detail.id)}
+        onLocationChange={location => { canvasLocations.current.set(detail.id, location) }}
         onRefresh={async () => { await refreshDetail(detail.id) }}
         onRenameProject={renameCurrentProject}
         onOpenModels={() => setTab('models')}
-        onOpenScriptCreator={openScriptEditor}
-        onOpenScriptDirector={(focusArtifact = 'all') => {
+        onOpenScriptCreator={() => openScriptEditor()}
+        onOpenScriptDocument={artifact => openScriptEditor(artifact.episode_number ? `episode-${artifact.episode_number}` : artifact.artifact_type)}
+        onOpenScriptDirector={(focusArtifact = 'all', context) => {
+          setScriptDirectorContext(context || '')
           openScriptDirector(focusArtifact)
         }}
         onNavigate={(destination) => { setScriptDirectorOpen(false); setTab(destination) }} />}
 
       {detail && scriptDirectorOpen && !scriptEditorOpen && <ScriptDirectorPanel
+        key={`script-director-${detail.id}`}
         detail={detail}
         models={models}
         providers={providers}
         focusArtifact={scriptDirectorFocus}
+        initialContext={scriptDirectorContext}
         onRefresh={async () => { await refreshDetail(detail.id) }}
-        onClose={() => { setScriptDirectorOpen(false); setTab('canvas') }}
+        onClose={() => { setScriptDirectorOpen(false); setScriptDirectorContext(''); setTab('canvas') }}
         onOpenModels={() => setTab('models')}
+        onOpenDocument={artifact => openScriptEditor(artifact.episode_number ? `episode-${artifact.episode_number}` : artifact.artifact_type)}
         onNotice={setNotice}
       />}
 
@@ -1167,7 +1189,7 @@ function App() {
                 </div>)}
               </div> : <div className="continuity-empty"><Check size={15} />未发现连续性风险</div>}
             </section>}
-          </> : <div className="no-shot"><Clapperboard size={30} /><h2>建立第一个镜头</h2>{detail.script.scenes.length > 0 && <Button variant="default" onClick={openScriptEditor} leftSection={<ScrollText size={16} />}>打开剧本创作</Button>}<Button onClick={() => addShot()} leftSection={<Plus size={16} />}>添加镜头</Button></div>}
+          </> : <div className="no-shot"><Clapperboard size={30} /><h2>建立第一个镜头</h2>{detail.script.scenes.length > 0 && <Button variant="default" onClick={() => openScriptEditor()} leftSection={<ScrollText size={16} />}>打开剧本创作</Button>}<Button onClick={() => addShot()} leftSection={<Plus size={16} />}>添加镜头</Button></div>}
         </section>
 
         <aside className="inspector" aria-label="镜头设置">
@@ -1229,41 +1251,58 @@ function App() {
 
       {detail && tab === 'assets' && <section className="page-section asset-library-page">
         <div className="asset-library-shell">
-          <main className="asset-library-main">
+          <main className="asset-library-main" aria-label={assetLibraryView === 'history' ? '生成历史' : '个人资产库'}>
             <div className="asset-history-head">
-              <div><h1>{assetLibraryView === 'history' ? '生成历史' : '个人资产库'}</h1>{currentShot && <p>当前镜头：{currentShot.title}</p>}</div>
-              <div className="asset-history-actions"><Button variant="default" size="sm" aria-label={assetSort === 'newest' ? '按创建时间倒序排列' : '按创建时间正序排列'} title={assetSort === 'newest' ? '按创建时间倒序排列' : '按创建时间正序排列'} onClick={() => setAssetSort((current) => current === 'newest' ? 'oldest' : 'newest')} leftSection={assetSort === 'newest' ? <ArrowDownWideNarrow size={15} /> : <ArrowUpWideNarrow size={15} />}>{assetSort === 'newest' ? '最新创建' : '最早创建'}</Button>{assetLibraryView === 'personal' && <Button variant="subtle" size="sm" onClick={() => fileInput.current?.click()} leftSection={<Upload size={15} />}>导入素材</Button>}</div>
+              <div><h1>{assetLibraryView === 'history' ? '生成历史' : '个人资产库'}</h1></div>
+              <div className="asset-history-actions">
+                <Tooltip label={assetSort === 'newest' ? '最新创建在前' : '最早创建在前'}><ActionIcon variant="subtle" aria-label={assetSort === 'newest' ? '按创建时间倒序排列' : '按创建时间正序排列'} onClick={() => setAssetSort(current => current === 'newest' ? 'oldest' : 'newest')}>{assetSort === 'newest' ? <ArrowDownWideNarrow size={18} /> : <ArrowUpWideNarrow size={18} />}</ActionIcon></Tooltip>
+                {assetLibraryView === 'personal' && <Button className="asset-import-button" variant="subtle" size="sm" disabled={busy} onClick={() => fileInput.current?.click()} leftSection={<Upload size={16} />}>导入素材</Button>}
+              </div>
             </div>
             <div className="asset-history-tabs" role="tablist" aria-label="素材类型筛选">
-              {[{ value: 'all', label: '全部' }, { value: 'image', label: '图片' }, { value: 'video', label: '视频' }, { value: 'audio', label: '音频' }].map((item) => <button type="button" role="tab" aria-selected={assetKindFilter === item.value} className={assetKindFilter === item.value ? 'active' : ''} key={item.value} onClick={() => setAssetKindFilter(item.value as typeof assetKindFilter)}>{item.label} <span>{item.value === 'all' ? assetCollection.length : assetCollection.filter((asset) => asset.kind === item.value).length}</span></button>)}
+              {[{ value: 'all', label: '全部' }, { value: 'image', label: '图片' }, { value: 'video', label: '视频' }, { value: 'audio', label: '音频' }, ...(assetCollection.some(asset => asset.kind === 'text') ? [{ value: 'text', label: '文本' }] : [])].map((item) => <button type="button" role="tab" aria-selected={assetKindFilter === item.value} className={assetKindFilter === item.value ? 'active' : ''} key={item.value} onClick={() => { setAssetKindFilter(item.value as typeof assetKindFilter); setSelectedAssetIds([]) }}>{item.label} <span>{item.value === 'all' ? assetCollection.length : assetCollection.filter((asset) => asset.kind === item.value).length}</span></button>)}
             </div>
             {(assetCollection.length > 0 || assetQuery) && <div className="asset-library-tools">
-              <TextInput className="asset-search" aria-label="搜索素材" placeholder="搜索文件名、提示词或镜头" leftSection={<Search size={15} />} value={assetQuery} onChange={(event) => setAssetQuery(event.currentTarget.value)} />
-              <Select aria-label="素材来源筛选" value={assetSourceFilter} onChange={(value) => { if (value) setAssetSourceFilter(value as typeof assetSourceFilter) }} data={[{ value: 'all', label: '全部来源' }, { value: 'generated', label: '模型生成' }, { value: 'upload', label: '本地导入' }, { value: 'export', label: '成片导出' }]} allowDeselect={false} />
-              <SegmentedControl className="asset-view-switch" size="xs" aria-label="素材展示方式" value={assetViewMode} onChange={(value) => setAssetViewMode(value as typeof assetViewMode)} data={[{ value: 'grid', label: '网格' }, { value: 'list', label: '列表' }]} />
+              <TextInput className="asset-search" aria-label="搜索素材" placeholder="搜索文件名、提示词或镜头" leftSection={<Search size={15} />} value={assetQuery} onChange={(event) => { setAssetQuery(event.currentTarget.value); setSelectedAssetIds([]) }} />
+              {assetLibraryView === 'personal' && <Select aria-label="素材来源筛选" value={assetSourceFilter} onChange={(value) => { if (value) { setAssetSourceFilter(value as typeof assetSourceFilter); setSelectedAssetIds([]) } }} data={[{ value: 'all', label: '全部来源' }, { value: 'generated', label: '模型生成' }, { value: 'upload', label: '本地导入' }, { value: 'export', label: '成片导出' }]} allowDeselect={false} />}
+              <div className="asset-display-controls">
+                {visibleLibraryAssets.length > 0 && <Checkbox aria-label="全选当前筛选素材" checked={selectedVisibleAssetCount === visibleLibraryAssets.length} indeterminate={selectedVisibleAssetCount > 0 && selectedVisibleAssetCount < visibleLibraryAssets.length} onChange={toggleVisibleAssets} />}
+                <Tooltip label={assetViewMode === 'grid' ? '切换为列表' : '切换为网格'}><ActionIcon variant="subtle" aria-label={assetViewMode === 'grid' ? '切换为列表' : '切换为网格'} onClick={() => setAssetViewMode(current => current === 'grid' ? 'list' : 'grid')}>{assetViewMode === 'grid' ? <List size={18} /> : <LayoutGrid size={18} />}</ActionIcon></Tooltip>
+              </div>
             </div>}
-            {assetLibraryView === 'personal' && <Dropzone className="asset-dropzone" onDrop={(files) => void uploadFiles(files)} onReject={() => setNotice('仅支持 PNG/JPG/WebP、MP4/MOV、MP3/WAV/M4A，单文件不超过 300 MB')} maxSize={300 * 1024 * 1024} accept={['image/png', 'image/jpeg', 'image/webp', 'video/mp4', 'video/quicktime', 'audio/mpeg', 'audio/wav', 'audio/mp4']}>
-              <Upload size={20} /><strong>拖放素材到这里</strong><span>图片、视频与音频</span>
-            </Dropzone>}
-            {assetCollection.length > 0 && <div className="asset-bulk-bar"><Checkbox aria-label="全选当前筛选素材" checked={visibleLibraryAssets.length > 0 && selectedVisibleAssetCount === visibleLibraryAssets.length} indeterminate={selectedVisibleAssetCount > 0 && selectedVisibleAssetCount < visibleLibraryAssets.length} onChange={toggleVisibleAssets} label={selectedAssetIds.length ? `已选 ${selectedAssetIds.length} 个` : '选择素材'} /><div className="asset-bulk-actions">{selectedAssetIds.length > 0 && <><Button size="xs" variant="default" onClick={() => void addAssetsToCanvas(selectedAssetIds)} leftSection={<Layers3 size={14} />}>加入画布</Button><Button size="xs" variant="default" onClick={() => downloadAssets(selectedAssetIds)} leftSection={<Download size={14} />}>下载</Button><Button size="xs" variant="subtle" onClick={() => setSelectedAssetIds([])}>清除选择</Button></>}</div></div>}
+
+            {selectedAssetIds.length > 0 && <div className="asset-bulk-bar"><span>已选 {selectedAssetIds.length} 个</span><div className="asset-bulk-actions"><Button size="xs" variant="default" onClick={() => void addAssetsToCanvas(selectedAssetIds)} leftSection={<Layers3 size={14} />}>加入画布</Button><Button size="xs" variant="default" onClick={() => downloadAssets(selectedAssetIds)} leftSection={<Download size={14} />}>下载</Button><Button size="xs" variant="subtle" onClick={() => setSelectedAssetIds([])}>清除选择</Button></div></div>}
+            <Dropzone className="asset-content-dropzone" enablePointerEvents activateOnClick={false} activateOnKeyboard={false} activateOnDrag={assetLibraryView === 'personal'} disabled={busy} loading={busy && assetLibraryView === 'personal'}
+              onDrop={files => { if (assetLibraryView === 'personal') void uploadFiles(files) }} onReject={() => assetLibraryView === 'personal' && setNotice('仅支持 PNG/JPG/WebP、MP4/MOV、MP3/WAV/M4A，单文件不超过 300 MB')} maxSize={300 * 1024 * 1024}
+              accept={['image/png', 'image/jpeg', 'image/webp', 'video/mp4', 'video/quicktime', 'audio/mpeg', 'audio/wav', 'audio/mp4']}>
+              {assetLibraryView === 'personal' && <div className="asset-drag-hint" aria-hidden="true"><Upload size={24} /><span>松开以导入图片、视频或音频</span></div>}
             <div className={`asset-grid asset-grid-${assetViewMode}`}>{visibleLibraryAssets.map((asset) => {
           const review = reviewsByAsset.get(asset.id)
           const selected = selectedAssetIds.includes(asset.id)
           return <div className={`library-item ${selected ? 'is-selected' : ''}`} key={asset.id}>
-          <div className="library-media" role="button" tabIndex={0} aria-label={`预览 ${asset.filename}`} onClick={() => setAssetPreview(asset)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setAssetPreview(asset) } }}><AssetPreview asset={asset} compact={asset.kind !== 'audio'} /><label className="library-select" onClick={(event) => event.stopPropagation()}><Checkbox aria-label={`选择 ${asset.filename}`} checked={selected} onChange={() => toggleAssetSelection(asset.id)} /></label></div>
+          <div className="library-media" role="button" tabIndex={0} aria-label={`预览 ${asset.filename}`} onClick={() => setAssetPreview(asset)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setAssetPreview(asset) } }}><AssetPreview asset={asset} compact /><label className="library-select" onClick={(event) => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}><Checkbox aria-label={`选择 ${asset.filename}`} checked={selected} onChange={() => toggleAssetSelection(asset.id)} /></label></div>
           <div className="library-copy"><strong className="truncate" title={asset.filename}>{asset.filename}</strong><small>{assetKindLabel(asset.kind)} · {assetSourceLabel(asset.source)} · {dateLabel(asset.created_at)}</small>{asset.shot_id && <small className="library-shot">镜头：{detail.shots.find((shot) => shot.id === asset.shot_id)?.title || '未命名镜头'}</small>}{shotId && review && <Badge size="xs" variant="light" color={review.status === 'approved' ? 'teal' : review.status === 'rejected' ? 'red' : 'gray'}>{reviewStatusText[review.status]}</Badge>}</div>
-          <div className="library-actions">
-            {(asset.kind === 'image' || asset.kind === 'video') && shotId && <><Button variant="default" size="xs" onClick={() => openCandidateReview(asset)} disabled={busy} leftSection={<Eye size={14} />}>审核</Button><Button variant={currentShot?.selected_asset_id === asset.id ? 'light' : 'default'} color={currentShot?.selected_asset_id === asset.id ? 'teal' : 'cyan'} size="xs" disabled={busy || review?.status === 'rejected' || currentShot?.selected_asset_id === asset.id} onClick={() => useLibraryAsset(asset.id)} leftSection={currentShot?.selected_asset_id === asset.id ? <Check size={14} /> : undefined}>{review?.status === 'rejected' ? '已拒绝' : currentShot?.selected_asset_id === asset.id ? '已用于当前镜头' : '选入当前镜头'}</Button></>}
-            {asset.kind === 'audio' && <Button variant={detail.music_asset_id === asset.id ? 'light' : 'default'} color={detail.music_asset_id === asset.id ? 'teal' : 'cyan'} size="xs" onClick={() => action(async () => { await api(`/projects/${detail.id}`, json('PATCH', { music_asset_id: detail.music_asset_id === asset.id ? null : asset.id })); await refreshDetail() })}>{detail.music_asset_id === asset.id ? '已用作配乐' : '用作配乐'}</Button>}
-            {asset.kind !== 'audio' && <Button variant="subtle" size="xs" onClick={() => void addAssetsToCanvas([asset.id])} leftSection={<Layers3 size={13} />}>加入画布</Button>}
-            <a className="icon-button" title="下载素材" href={asset.url} download={asset.filename}><Download size={15} /></a>
+          <div className="library-actions"><MantineMenu shadow="md" width={210} position="bottom-end"><MantineMenu.Target><ActionIcon variant="subtle" className="asset-card-more" aria-label={`素材操作：${asset.filename}`}><MoreHorizontal size={18} /></ActionIcon></MantineMenu.Target><MantineMenu.Dropdown>
+            {!asset.saved && <MantineMenu.Item leftSection={<Save size={14} />} onClick={() => void saveAssetToLibrary(asset)} disabled={busy}>保存到资产库</MantineMenu.Item>}
+            {(asset.kind === 'image' || asset.kind === 'video') && shotId && <>
+              <MantineMenu.Item leftSection={<Eye size={14} />} onClick={() => openCandidateReview(asset)} disabled={busy}>审核素材</MantineMenu.Item>
+              <MantineMenu.Item leftSection={<Check size={14} />} disabled={busy || review?.status === 'rejected' || currentShot?.selected_asset_id === asset.id} onClick={() => useLibraryAsset(asset.id)}>{review?.status === 'rejected' ? '已拒绝' : currentShot?.selected_asset_id === asset.id ? '已用于当前镜头' : '选入当前镜头'}</MantineMenu.Item>
+            </>}
+            {asset.kind === 'audio' && <MantineMenu.Item disabled={busy} leftSection={<Music2 size={14} />} onClick={() => action(async () => { await api(`/projects/${detail.id}`, json('PATCH', { music_asset_id: detail.music_asset_id === asset.id ? null : asset.id })); await refreshDetail() })}>{detail.music_asset_id === asset.id ? '取消用作配乐' : '用作配乐'}</MantineMenu.Item>}
+            {asset.kind !== 'audio' && <MantineMenu.Item leftSection={<Layers3 size={14} />} onClick={() => void addAssetsToCanvas([asset.id])} disabled={busy}>加入画布</MantineMenu.Item>}
+            <MantineMenu.Item component="a" href={asset.url} download={asset.filename} leftSection={<Download size={14} />}>下载素材</MantineMenu.Item>
+            </MantineMenu.Dropdown></MantineMenu>
           </div>
         </div>})}</div>
-            {!visibleLibraryAssets.length && <div className="asset-history-empty"><Clock3 size={28} /><strong>{assetLibraryView === 'history' ? '暂无历史记录' : '暂无个人资产'}</strong><span>{assetLibraryView === 'history' ? '生成结果会显示在这里' : '保存后的素材会显示在这里'}</span></div>}
+            {!visibleLibraryAssets.length && <div className="asset-history-empty" role="status">
+              <span>{libraryEmptyText(assetLibraryView, assetCollection.length)}</span>
+              {assetCollection.length > 0 && <button type="button" onClick={clearAssetFilters}>清除筛选</button>}
+            </div>}
+            </Dropzone>
           </main>
           <aside className="asset-library-rail" aria-label="资产分类">
-            <button type="button" className={assetLibraryView === 'history' ? 'active' : ''} onClick={() => { setAssetLibraryView('history'); setAssetKindFilter('all'); setSelectedAssetIds([]) }}><Clock3 size={18} /><span>生成历史</span><b>{historyAssets.length}</b></button>
-            <button type="button" className={assetLibraryView === 'personal' ? 'active' : ''} onClick={() => { setAssetLibraryView('personal'); setAssetKindFilter('all'); setSelectedAssetIds([]) }}><FolderOpen size={18} /><span>个人资产库</span><b>{libraryAssets.length}</b></button>
+            <button type="button" className={assetLibraryView === 'history' ? 'active' : ''} aria-current={assetLibraryView === 'history' ? 'page' : undefined} onClick={() => switchAssetLibrary('history')}><Clock3 size={18} /><span>生成历史</span><b>{historyAssets.length}</b></button>
+            <button type="button" className={assetLibraryView === 'personal' ? 'active' : ''} aria-current={assetLibraryView === 'personal' ? 'page' : undefined} onClick={() => switchAssetLibrary('personal')}><FolderOpen size={18} /><span>个人资产库</span><b>{libraryAssets.length}</b></button>
           </aside>
         </div>
       </section>}

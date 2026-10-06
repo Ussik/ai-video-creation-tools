@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { ActionIcon, Button, Modal, NumberInput, Select, Textarea, TextInput, Tooltip } from '@mantine/core'
+import { ActionIcon, Button, Checkbox, Modal, NumberInput, Select, Textarea, TextInput, Tooltip } from '@mantine/core'
 import { EditorContent, useEditor } from '@tiptap/react'
 import type { Editor, JSONContent } from '@tiptap/core'
 import {
@@ -16,6 +16,7 @@ import { parseScriptDocument, serializeScriptDocument } from './script-rich-docu
 import { normalizeTextDocument, textDocumentText } from './text-document'
 
 type SceneFields = {
+  episode_number?: number
   heading: string
   location: string
   time_of_day: string
@@ -33,6 +34,7 @@ type ScriptArtifact = {
   id: string
   project_id?: string
   artifact_type: ScriptArtifactType
+  episode_number?: number
   title: string
   content: string
   position: number
@@ -49,6 +51,7 @@ type ScriptDraft = {
   scenes: EditorScene[]
   artifacts: ScriptArtifact[]
 }
+export type DocumentSection = ScriptArtifactType | 'scenes' | `episode-${number}`
 type GeneratedArtifact = { artifact_type: ScriptArtifactType; title?: string; content: string }
 type GeneratedScript = { outline: string; characters: string; scenes: SceneFields[]; artifacts?: GeneratedArtifact[] }
 type ScriptDetail = ProjectDetail & {
@@ -96,6 +99,7 @@ function RichArtifactEditor({ value, label, placeholder, disabled, document, onF
     onUpdate({ editor: current }) {
       if (!readyRef.current) return
       const next = normalizeTextDocument(current.getJSON())
+      if (JSON.stringify(next) === JSON.stringify(normalizeTextDocument(resolveScriptArtifactDocument(value, document)))) return
       // Store the structured document in the existing text column as the
       // supported Markdown subset. This keeps formatting after a save/reload
       // without widening the API payload or adding a second persistence table.
@@ -130,19 +134,19 @@ const artifactCatalog: Array<{ type: ScriptArtifactType; title: string; descript
   { type: 'foreshadowing', title: '伏笔预设', description: '提前埋下、后续回收的信息', group: '叙事规划' },
   { type: 'reversals', title: '反转预设', description: '改变观众判断的关键节点', group: '叙事规划' },
   { type: 'constraints', title: '创作禁区', description: '风格、人物和内容上的限制', group: '叙事规划' },
-  { type: 'episode_outline', title: '单集大纲', description: '当前单集的起承转合', group: '单集创作' },
+  { type: 'episode_outline', title: '分集大纲', description: '各集的事件、冲突和结尾悬念', group: '叙事规划' },
   { type: 'episode_script', title: '单集正文', description: '可直接进入分场制作的正文', group: '单集创作' },
 ]
 
 const matureArtifactTypes: ScriptArtifactType[] = [
   'outline', 'synopsis', 'world', 'structure', 'hooks', 'foreshadowing', 'reversals', 'constraints',
-  'characters', 'locations', 'props',
+  'characters', 'relationships', 'locations', 'props', 'episode_outline', 'episode_script',
 ]
 const matureArtifactCatalog = artifactCatalog.filter((item) => matureArtifactTypes.includes(item.type))
-const standaloneArtifactTypes: ScriptArtifactType[] = ['characters', 'locations', 'props']
+const standaloneArtifactTypes: ScriptArtifactType[] = ['characters', 'locations', 'props', 'episode_script']
 const storyArtifactCatalog = matureArtifactCatalog.filter((item) => !standaloneArtifactTypes.includes(item.type))
-const standaloneDocumentHeadings: Record<'characters' | 'locations' | 'props', string> = {
-  characters: '人物清单', locations: '场景清单', props: '道具清单',
+const standaloneDocumentHeadings: Record<'characters' | 'locations' | 'props' | 'episode_script', string> = {
+  characters: '人物清单', locations: '场景清单', props: '道具清单', episode_script: '单集正文',
 }
 
 function defaultArtifacts(script: { outline?: string; characters?: string; scenes?: SavedScene[]; generation_options?: ScriptGenerationOptions }): ScriptArtifact[] {
@@ -172,6 +176,7 @@ export interface ScriptEditorProps {
   models: Model[]
   providers: Provider[]
   busy?: boolean
+  initialSection?: DocumentSection
   onRefresh: () => Promise<ProjectDetail | undefined>
   onOpenModels: () => void
   onOpenCanvas: () => void
@@ -181,6 +186,7 @@ export interface ScriptEditorProps {
 
 function sceneFields(scene: Partial<SceneFields>): SceneFields {
   return {
+    ...(scene.episode_number !== undefined ? { episode_number: scene.episode_number } : {}),
     heading: typeof scene.heading === 'string' ? scene.heading : '',
     location: typeof scene.location === 'string' ? scene.location : '',
     time_of_day: typeof scene.time_of_day === 'string' ? scene.time_of_day : '',
@@ -197,14 +203,14 @@ function fromDetail(detail: ProjectDetail): ScriptDraft {
   const script = (detail as ScriptDetail).script
   const fallback = defaultArtifacts(script || {})
   const remoteArtifacts = Array.isArray(script?.artifacts) ? script.artifacts : []
-  const artifacts = artifactCatalog.map((catalogItem, index) => {
-    const artifact = remoteArtifacts.find((item) => item.artifact_type === catalogItem.type) || fallback[index]
-    return {
+  const artifacts = artifactCatalog.flatMap((catalogItem, index) => {
+    const matching = remoteArtifacts.filter(item => item.artifact_type === catalogItem.type)
+    return (matching.length ? matching : [fallback[index]!]).map(artifact => ({
       ...artifact,
       position: Number.isFinite(artifact.position) ? artifact.position : index,
       content: typeof artifact.content === 'string' ? artifact.content : '',
       title: typeof artifact.title === 'string' && artifact.title.trim() ? artifact.title : artifactCatalog.find((item) => item.type === artifact.artifact_type)?.title || '未命名章节',
-    }
+    }))
   })
   return {
     brief: detail.brief || '',
@@ -220,6 +226,7 @@ function fromDetail(detail: ProjectDetail): ScriptDraft {
       visual_style: script?.generation_options?.visual_style || '',
       story_structure: script?.generation_options?.story_structure || '',
       episode_count: script?.generation_options?.episode_count ?? 20,
+      episode_duration: script?.generation_options?.episode_duration,
     },
     scenes: (script?.scenes || []).map((scene) => ({ ...sceneFields(scene), id: scene.id, clientId: scene.id })),
     artifacts,
@@ -241,7 +248,7 @@ function plannedSceneIssue(scene: PlannedScene): string | null {
   return null
 }
 
-function ScriptEditor({ detail, models, providers, busy = false, onRefresh, onOpenModels, onOpenCanvas, onNotice, onDirtyChange }: ScriptEditorProps) {
+function ScriptEditor({ detail, models, providers, busy = false, initialSection, onRefresh, onOpenModels, onOpenCanvas, onNotice, onDirtyChange }: ScriptEditorProps) {
   const { confirm, dialog } = useAppDialog()
   const [draft, setDraft] = useState<ScriptDraft>(() => fromDetail(detail))
   const [saved, setSaved] = useState<ScriptDraft>(() => fromDetail(detail))
@@ -250,7 +257,7 @@ function ScriptEditor({ detail, models, providers, busy = false, onRefresh, onOp
   const historyActionRef = useRef(false)
   const [historyRevision, setHistoryRevision] = useState(0)
   const [activeSceneId, setActiveSceneId] = useState<string | null>(() => fromDetail(detail).scenes[0]?.clientId || null)
-  const [activeDocumentSection, setActiveDocumentSection] = useState<ScriptArtifactType | 'scenes'>('outline')
+  const [activeDocumentSection, setActiveDocumentSection] = useState<DocumentSection>(initialSection || 'outline')
   const [editorZoom, setEditorZoom] = useState(100)
   const [formatMenu, setFormatMenu] = useState<'heading' | 'list' | null>(null)
   const [, setSelectionRevision] = useState(0)
@@ -398,8 +405,8 @@ function ScriptEditor({ detail, models, providers, busy = false, onRefresh, onOp
       const visible = entries.filter((entry) => entry.isIntersecting)
         .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0]
       const section = visible?.target instanceof HTMLElement ? visible.target.dataset.scriptSection : undefined
-      if (section && (section === 'scenes' || artifactCatalog.some((item) => item.type === section))) {
-        setActiveDocumentSection(section as ScriptArtifactType | 'scenes')
+      if (section && (section === 'scenes' || /^episode-\d+$/.test(section) || artifactCatalog.some((item) => item.type === section))) {
+        setActiveDocumentSection(section as DocumentSection)
       }
     }, { root: scrollRoot, rootMargin: '-16px 0px -55% 0px', threshold: 0.01 })
     sections.forEach((section) => observer.observe(section))
@@ -450,14 +457,14 @@ function ScriptEditor({ detail, models, providers, busy = false, onRefresh, onOp
     return () => document.removeEventListener('pointerdown', closeMenu)
   }, [formatMenu])
 
-  function updateArtifact(type: ScriptArtifactType, content: string, document?: JSONContent) {
+  function updateArtifact(type: ScriptArtifactType, content: string, document?: JSONContent, episodeNumber = 0) {
     const plainContent = document ? textDocumentText(document) : content
     setDraft((current) => {
-      const artifact = current.artifacts.find((item) => item.artifact_type === type)
+      const artifact = current.artifacts.find((item) => item.artifact_type === type && (item.episode_number || 0) === episodeNumber)
       if (artifact?.content === content && JSON.stringify(artifact.document || null) === JSON.stringify(document || null)) return current
       return {
         ...current,
-        artifacts: current.artifacts.map((item) => item.artifact_type === type
+        artifacts: current.artifacts.map((item) => item.artifact_type === type && (item.episode_number || 0) === episodeNumber
           ? { ...item, content, document, status: 'edited' } : item),
         ...(type === 'outline' ? { outline: plainContent } : {}),
         ...(type === 'characters' ? { characters: plainContent } : {}),
@@ -487,7 +494,11 @@ function ScriptEditor({ detail, models, providers, busy = false, onRefresh, onOp
     return !!editor?.isActive(name, attrs)
   }
 
-  function selectDocumentSection(section: ScriptArtifactType | 'scenes', resetDocument = false) {
+  useEffect(() => {
+    if (initialSection) selectDocumentSection(initialSection)
+  }, [initialSection, detail.id])
+
+  function selectDocumentSection(section: DocumentSection, resetDocument = false) {
     setActiveDocumentSection(section)
     focusedEditorRef.current = null
     focusedArtifactRef.current = null
@@ -498,7 +509,7 @@ function ScriptEditor({ detail, models, providers, busy = false, onRefresh, onOp
       const editor = document.querySelector<HTMLElement>('.script-document-editor')
       const target = document.getElementById(`script-section-${section}`)
       if (!editor) return
-      if (resetDocument || standaloneArtifactTypes.includes(section as ScriptArtifactType)) {
+      if (resetDocument || section.startsWith('episode-') || standaloneArtifactTypes.includes(section as ScriptArtifactType)) {
         editor.scrollTo({ top: 0, behavior: 'smooth' })
         return
       }
@@ -611,7 +622,7 @@ function ScriptEditor({ detail, models, providers, busy = false, onRefresh, onOp
 
   function applyGenerated() {
     if (!generated) return
-    const linkedScenes = draft.scenes.filter((scene) => scene.id && linkedSceneIds.has(scene.id))
+    const linkedScenes = draft.scenes.filter((scene) => (scene.episode_number || 0) > 0 || scene.id && linkedSceneIds.has(scene.id))
     const scenes = [
       ...linkedScenes,
       ...generated.scenes.map((scene) => ({ ...sceneFields(scene), clientId: crypto.randomUUID() })),
@@ -621,6 +632,7 @@ function ScriptEditor({ detail, models, providers, busy = false, onRefresh, onOp
       outline: generated.outline,
       characters: generated.characters,
       artifacts: current.artifacts.map((artifact) => {
+        if (artifact.episode_number) return artifact
         const generatedArtifact = generated.artifacts?.find((item) => item.artifact_type === artifact.artifact_type)
         if (artifact.artifact_type === 'outline') return { ...artifact, content: generated.outline, status: 'edited' }
         if (artifact.artifact_type === 'characters') return { ...artifact, content: generated.characters, status: 'edited' }
@@ -819,9 +831,12 @@ function ScriptEditor({ detail, models, providers, busy = false, onRefresh, onOp
   }
 
   const sceneForDeletion = draft.scenes.find((scene) => scene.clientId === deleteSceneId)
-  const storyOutlineItems = storyArtifactCatalog.filter((item) => item.group === '故事基底' || item.group === '叙事规划')
-  const standaloneDocumentItems = matureArtifactCatalog.filter((item) => standaloneArtifactTypes.includes(item.type))
+  const storyOutlineItems = storyArtifactCatalog
+  const standaloneDocumentItems = matureArtifactCatalog.filter((item) => standaloneArtifactTypes.includes(item.type)
+    && (item.type !== 'episode_script' || draft.artifacts.some(artifact => artifact.artifact_type === 'episode_script' && !artifact.episode_number && artifact.content.trim())))
   const standaloneDocument = standaloneDocumentItems.find((item) => item.type === activeDocumentSection)
+  const episodeDocuments = draft.artifacts.filter(item => item.artifact_type === 'episode_script' && (item.episode_number || 0) > 0).sort((a, b) => (a.episode_number || 0) - (b.episode_number || 0))
+  const selectedEpisode = episodeDocuments.find(item => `episode-${item.episode_number}` === activeDocumentSection)
 
   return <section className="script-page" aria-label="剧本创作">
     <header className="script-page-header script-editor-topbar">
@@ -861,6 +876,7 @@ function ScriptEditor({ detail, models, providers, busy = false, onRefresh, onOp
       </div>
       <div className="script-page-actions">
         {generated && <Button variant="subtle" leftSection={<FileText size={15} />} onClick={() => setShowGenerated(true)} disabled={disabled}>查看生成结果</Button>}
+        <Button variant="subtle" leftSection={<Clapperboard size={15} />} disabled={disabled || dirty || !draft.scenes.some(scene => scene.id && !linkedSceneIds.has(scene.id))} onClick={() => { setSelectedSceneIds([]); setShowConvert(true) }}>制作分镜</Button>
         <Button variant="subtle" leftSection={<Sparkles size={15} />} onClick={openGenerate} disabled={disabled}>生成剧本</Button>
         <Button leftSection={working === 'save' ? <LoaderCircle size={15} className="spin" /> : <Save size={15} />} onClick={saveScript} disabled={!dirty || disabled}>保存</Button>
         <button type="button" className="script-editor-exit" onClick={onOpenCanvas} aria-label="退出编辑器" title="退出编辑器"><Minimize2 size={16} /></button>
@@ -878,20 +894,36 @@ function ScriptEditor({ detail, models, providers, busy = false, onRefresh, onOp
           </div>
         </div>
         {standaloneDocumentItems.map((item) => <button type="button" key={item.type} className={`script-document-nav-primary script-document-nav-standalone ${activeDocumentSection === item.type ? 'is-active' : ''}`} onClick={() => selectDocumentSection(item.type)}>{item.title}</button>)}
+        {episodeDocuments.map(artifact => <button type="button" key={artifact.id} className={`script-document-nav-primary script-document-nav-standalone ${selectedEpisode?.id === artifact.id ? 'is-active' : ''}`} onClick={() => selectDocumentSection(`episode-${artifact.episode_number!}`)}>{artifact.title}</button>)}
       </aside>
       <article
         className="script-document-editor"
         style={{ '--script-editor-scale': editorZoom / 100 } as CSSProperties}
       >
         <div className="script-long-document">
-          {standaloneDocument ? <>
+          {selectedEpisode ? <>
+            <header className="script-long-document-cover script-standalone-cover"><span className="script-kicker">分集剧本</span><h1>{selectedEpisode.title}</h1><p>只修改当前集，其他集和已保存资料保留。</p></header>
+            <section id={`script-section-episode-${selectedEpisode.episode_number}`} data-script-section={`episode-${selectedEpisode.episode_number}`} className="script-long-section script-standalone-section">
+              <RichArtifactEditor
+                key={selectedEpisode.id}
+                label={selectedEpisode.title}
+                placeholder="填写本集分场正文"
+                value={selectedEpisode.content}
+                document={selectedEpisode.document}
+                disabled={disabled}
+                onFocus={editor => { focusedEditorRef.current = editor; focusedArtifactRef.current = 'episode_script' }}
+                onSelectionChange={editor => { focusedEditorRef.current = editor; setSelectionRevision(value => value + 1) }}
+                onChange={(content, document) => updateArtifact('episode_script', content, document, selectedEpisode.episode_number)}
+              />
+            </section>
+          </> : standaloneDocument ? <>
             <header className="script-long-document-cover script-standalone-cover">
               <span className="script-kicker">{standaloneDocument.group}</span>
-              <h1>{standaloneDocumentHeadings[standaloneDocument.type as 'characters' | 'locations' | 'props']}</h1>
+              <h1>{standaloneDocumentHeadings[standaloneDocument.type as 'characters' | 'locations' | 'props' | 'episode_script']}</h1>
               <p>{standaloneDocument.description}</p>
             </header>
             {(() => {
-              const artifact = draft.artifacts.find((entry) => entry.artifact_type === standaloneDocument.type)
+              const artifact = draft.artifacts.find((entry) => entry.artifact_type === standaloneDocument.type && !entry.episode_number)
               if (!artifact) return null
               return <section id={`script-section-${standaloneDocument.type}`} data-script-section={standaloneDocument.type} className={`script-long-section script-standalone-section ${artifact.content.trim() ? '' : 'is-empty'} ${activeDocumentSection === standaloneDocument.type ? 'is-active' : ''}`}>
                 <header className="script-long-section-heading"><div><span className="script-section-index">01</span><div><span className="script-kicker">{standaloneDocument.group}</span><h2>{standaloneDocument.title}</h2></div></div></header>
@@ -965,8 +997,19 @@ function ScriptEditor({ detail, models, providers, busy = false, onRefresh, onOp
       </div>}
     </Modal>
 
-    <Modal opened={showConvert} onClose={() => setShowConvert(false)} title="按场创建分镜" classNames={{ content: 'script-modal-content', body: 'script-modal-body' }}>
-      <div className="script-modal-stack"><p className="script-confirm-copy">所选 {quickConvertScenes.length} 场将各创建一个初始镜头。已有分镜的场次不会重复创建；现有镜头和素材不会被覆盖。</p><div className="script-confirm-list">{quickConvertScenes.map((scene, index) => <div key={scene.clientId}><span>{String(index + 1).padStart(2, '0')}</span><strong>{scene.heading}</strong><small>{scene.duration} 秒</small></div>)}</div><div className="script-modal-actions"><Button variant="default" onClick={() => setShowConvert(false)}>取消</Button><Button disabled={disabled || dirty || quickConvertScenes.length === 0} onClick={convertToShots} leftSection={<Clapperboard size={16} />}>确认创建</Button></div></div>
+    <Modal opened={showConvert} onClose={() => !working && setShowConvert(false)} title="选择制作场次" classNames={{ content: 'script-modal-content', body: 'script-modal-body' }}>
+      <div className="script-modal-stack">
+        <p className="script-confirm-copy">完整剧本会保留。仅将选中的场次创建为镜头，不会调用生成模型；已有镜头不会重复创建。</p>
+        <div className="script-scene-production-list">
+          {draft.scenes.map(scene => <label key={scene.clientId}>
+            <Checkbox aria-label={`制作场次：${scene.heading}`} disabled={disabled || !scene.id || linkedSceneIds.has(scene.id)} checked={!!scene.id && selectedSceneIds.includes(scene.id)}
+              onChange={event => { const checked = event.currentTarget.checked; if (scene.id) setSelectedSceneIds(ids => checked ? [...ids, scene.id!] : ids.filter(id => id !== scene.id)) }} />
+            <strong>{scene.heading}</strong><small>{scene.id && linkedSceneIds.has(scene.id) ? '已创建镜头' : `${scene.duration} 秒`}</small>
+          </label>)}
+        </div>
+        <p className="script-confirm-copy">已选 {quickConvertScenes.length} 场 · {quickConvertScenes.reduce((sum, scene) => sum + scene.duration, 0)} 秒</p>
+        <div className="script-modal-actions"><Button variant="default" disabled={disabled} onClick={() => setShowConvert(false)}>取消</Button><Button loading={working === 'convert'} disabled={disabled || dirty || quickConvertScenes.length === 0} onClick={convertToShots} leftSection={<Clapperboard size={16} />}>确认创建</Button></div>
+      </div>
     </Modal>
 
     <Modal opened={showPlan} onClose={() => void closePlan()} title="AI 拆分分镜" size="xl" closeOnEscape={!working} closeOnClickOutside={!working} classNames={{ content: 'script-modal-content', body: 'script-modal-body' }}>

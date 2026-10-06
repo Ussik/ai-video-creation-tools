@@ -43,6 +43,7 @@ export interface ScriptScene {
   id: string
   project_id: string
   position: number
+  episode_number?: number
   heading: string
   location: string
   time_of_day: string
@@ -57,6 +58,7 @@ export interface ScriptScene {
 export type Scene = ScriptScene
 export interface ScriptSceneInput {
   id?: string
+  episode_number?: number
   heading: string
   location?: string
   time_of_day?: string
@@ -74,6 +76,7 @@ export interface ScriptArtifact {
   id: string
   project_id: string
   artifact_type: ScriptArtifactType
+  episode_number?: number
   title: string
   content: string
   position: number
@@ -99,6 +102,7 @@ export interface ScriptGenerationOptions {
   character_notes?: string
   /** Target number of episodes for a generated series. */
   episode_count?: number
+  episode_duration?: number
 }
 export interface ScriptDraft {
   outline: string

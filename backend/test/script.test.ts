@@ -27,11 +27,20 @@ db.exec(`
     position INTEGER NOT NULL, title TEXT NOT NULL, prompt TEXT NOT NULL DEFAULT '',
     duration INTEGER NOT NULL DEFAULT 5, selected_asset_id TEXT, created_at TEXT NOT NULL
   );
+  CREATE TABLE script_artifacts (
+    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    artifact_type TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'draft',
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(project_id, artifact_type)
+  );
 `)
 const timestamp = now()
 run('INSERT INTO projects VALUES (?, ?, ?, ?, ?, ?, ?)', 'legacy-project', '旧项目', '', '16:9', null, timestamp, timestamp)
 run('INSERT INTO scripts VALUES (?, ?, ?, ?)', 'legacy-project', '', '', timestamp)
 run('INSERT INTO shots VALUES (?, ?, ?, ?, ?, ?, ?, ?)', 'legacy-shot', 'legacy-project', 0, '旧镜头', '原提示词', 5, null, timestamp)
+run('INSERT INTO projects VALUES (?, ?, ?, ?, ?, ?, ?)', 'migration-project', '旧剧本文档', '', '16:9', null, timestamp, timestamp)
+run('INSERT INTO script_artifacts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  'legacy-artifact', 'migration-project', 'episode_script', '旧正文', '保留旧正文及ID', 0, 'ready', timestamp, timestamp)
 
 const { buildApp } = await import('../src/server.js')
 const app = buildApp()
@@ -301,6 +310,8 @@ test('director chat uses project and script context without persisting the conve
   assert.match(submittedPrompt, /姐姐可能还活着/)
   assert.match(submittedPrompt, /编剧视角讨论故事结构/)
   assert.match(submittedPrompt, /"kind":"choices"/)
+  assert.match(submittedPrompt, /供底部选择按钮使用的 title/)
+  assert.match(submittedPrompt, /不能把创作者尚未确认的默认值称为已确认/)
   assert.match(submittedPrompt, /不要用字母、数字、项目符号等普通文本列表代替这个结构/)
   const scriptAfter = await call<{ script: Script }>('GET', `/api/projects/${project.id}`)
   assert.deepEqual(scriptAfter.script, scriptBefore.script)
@@ -310,7 +321,7 @@ test('director chat uses project and script context without persisting the conve
   modelReply = `悬疑故事可以从角色最害怕失去的东西切入，再让线索逐步逼近这个弱点。\n${JSON.stringify({
     kind: 'choices', question: '姐姐留下了什么线索？',
     options: [
-      { id: 'voice-message', text: '一段标注明日日期的语音留言' },
+      { id: 'voice-message', title: '未来语音', text: '一段标注明日日期的语音留言' },
       { id: 'train-ticket', text: '一张指向旧车站的褪色车票' },
       { id: 'family-photo', text: '一张多出陌生身影的家庭合照' },
     ],
@@ -323,7 +334,7 @@ test('director chat uses project and script context without persisting the conve
     kind: 'choices', question: '姐姐留下了什么线索？',
     intro: '悬疑故事可以从角色最害怕失去的东西切入，再让线索逐步逼近这个弱点。',
     options: [
-      { id: 'voice-message', text: '一段标注明日日期的语音留言' },
+      { id: 'voice-message', title: '未来语音', text: '一段标注明日日期的语音留言' },
       { id: 'train-ticket', text: '一张指向旧车站的褪色车票' },
       { id: 'family-photo', text: '一张多出陌生身影的家庭合照' },
     ],
@@ -340,6 +351,109 @@ test('director chat uses project and script context without persisting the conve
     model_id: model.id, mode: 'all', messages: [{ role: 'assistant', text: '没有新的创作者消息' }],
   } })
   assert.equal(invalid.statusCode, 422)
+})
+
+test('episode document migration preserves old IDs and supports separate episode documents', async () => {
+  const migrated = one<{ id: string; content: string; episode_number: number }>('SELECT * FROM script_artifacts WHERE id=?', 'legacy-artifact')
+  assert.equal(migrated?.content, '保留旧正文及ID')
+  assert.equal(migrated?.episode_number, 0)
+  const saved = await call<{ artifacts: Array<{ id: string; episode_number: number }> }>('PUT', '/api/projects/migration-project/script/artifacts', {
+    artifacts: [1, 2].map(episode_number => ({ artifact_type: 'episode_script', episode_number, title: `第${episode_number}集`, content: '新正文', status: 'ready' })),
+  })
+  assert.equal(saved.artifacts.length, 3)
+  assert.equal(saved.artifacts.find(item => item.episode_number === 0)?.id, 'legacy-artifact')
+  assert.deepEqual(db.pragma('foreign_key_check'), [])
+})
+
+test('workflow generation streams reviewable drafts with selected episode context and never writes them', async t => {
+  let modelReply = JSON.stringify({ artifacts: [{ artifact_type: 'outline', title: '故事大纲', content: '林照追查明日报纸。' }], scenes: [] })
+  let submittedPrompt = ''
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (_input, init) => {
+    submittedPrompt = (JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> }).messages[0]?.content || ''
+    return new Response(JSON.stringify({ choices: [{ message: { content: modelReply } }] }), { headers: { 'Content-Type': 'application/json' } })
+  }
+  t.after(() => { globalThis.fetch = originalFetch })
+  const provider = await call<{ id: string }>('POST', '/api/providers', { name: '阶段生成测试', base_url: 'https://workflow.example/v1' })
+  const model = await call<{ id: string }>('POST', '/api/models', {
+    provider_id: provider.id, name: '阶段文本', remote_id: 'workflow', modality: 'text', protocol: 'chat_completions', settings: {
+      request_path: 'chat/completions', request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] }, text_path: 'choices.0.message.content',
+    },
+  })
+  const project = await call<{ id: string }>('POST', '/api/projects', { name: '借光的人', brief: '改变未来就会失去记忆' })
+  const request = { model_id: model.id, mode: 'script', messages: [{ role: 'user', text: '总共3集，每集60秒，先整理大纲' }], generation_options: { episode_count: 3 }, workflow: { stage: 'outline' } }
+  const draft = await call<{ reply: string; draft: { stage: string; scenes: Scene[] } }>('POST', `/api/projects/${project.id}/script/director/chat`, request)
+  assert.equal(draft.draft.stage, 'outline')
+  assert.deepEqual(draft.draft.scenes, [])
+  assert.match(submittedPrompt, /episode_outline/)
+  assert.doesNotMatch(submittedPrompt, /"kind":"choices"/)
+  assert.equal((await call<{ script: Script }>('GET', `/api/projects/${project.id}`)).script.outline, '')
+  await call('PUT', `/api/projects/${project.id}/script/director/draft`, draft.draft)
+  await call('PUT', `/api/projects/${project.id}/script/artifacts`, { artifacts: [
+    { artifact_type: 'props', title: '道具设计', content: '红色齿轮挂件，边缘有缺口', status: 'ready' },
+    { artifact_type: 'episode_script', episode_number: 1, title: '第1集', content: '上一集末尾林照忘记弟弟的名字。', status: 'ready' },
+  ] })
+  modelReply = JSON.stringify({ artifacts: [{ artifact_type: 'episode_script', title: '模型标题', content: '第二集：报纸改变。' }], scenes: [
+    { heading: '修车铺', location: '修车铺', action: '林照抓住红色挂件', duration: 20 },
+    { heading: '出租车', action: '报纸字迹改变', dialogue: '你认识我吗？', duration: 25 },
+    { heading: '天桥', action: '陌生乘客出现', duration: 15 },
+  ] })
+  const before = await call<{ script: Script }>('GET', `/api/projects/${project.id}`)
+  const streamed = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat/stream`, payload: {
+    ...request, workflow: { stage: 'episode', episode_number: 2, target_duration: 60 }, messages: [{ role: 'user', text: '开始写第2集' }],
+  } })
+  assert.equal(streamed.statusCode, 200, streamed.body)
+  const events = streamed.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)))
+  const done = events.find(event => event.type === 'done')
+  assert.equal(done?.draft.episode_number, 2)
+  assert.equal(done?.draft.artifacts[0].title, '第 2 集剧本')
+  assert.equal(done?.draft.scenes.reduce((sum: number, scene: Scene) => sum + scene.duration, 0), 60)
+  assert.match(submittedPrompt, /只写第 2 集，不写其他集/)
+  assert.match(submittedPrompt, /上一集末尾林照忘记弟弟的名字/)
+  assert.match(submittedPrompt, /红色齿轮挂件/)
+  assert.deepEqual((await call<{ script: Script }>('GET', `/api/projects/${project.id}`)).script, before.script)
+  modelReply = JSON.stringify({ artifacts: [{ artifact_type: 'props', title: '错误阶段', content: '不应该保存' }], scenes: [] })
+  const malformed = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload: request })
+  assert.equal(malformed.statusCode, 422)
+  assert.deepEqual((await call<{ script: Script }>('GET', `/api/projects/${project.id}`)).script, before.script)
+})
+
+test('confirming stages preserves other documents, episodes, scene IDs and existing shots', async () => {
+  const project = await call<{ id: string }>('POST', '/api/projects', { name: '分阶段保存' })
+  await call('PUT', `/api/projects/${project.id}/script/director/draft`, {
+    stage: 'outline', brief: '追查失踪的弟弟', generation_options: { episode_count: 3 },
+    artifacts: [{ artifact_type: 'outline', title: '故事大纲', content: '三次改变未来' }],
+  })
+  const characterDraft = { stage: 'characters', artifacts: [{ artifact_type: 'characters', title: '人物小传', content: '林照：夜班司机。' }] }
+  await call('PUT', `/api/projects/${project.id}/script/director/draft`, characterDraft)
+  await call('PUT', `/api/projects/${project.id}/script/director/draft`, { stage: 'props', artifacts: [{ artifact_type: 'props', title: '道具', content: '明日报纸' }] })
+  const episodeDraft = (episode_number: number, action: string) => ({ stage: 'episode', episode_number,
+    artifacts: [{ artifact_type: 'episode_script', title: `第${episode_number}集剧本`, content: action }],
+    scenes: [{ heading: '出租车', action, duration: 12 }],
+  })
+  const first = await call<{ scenes: Scene[]; artifacts: Array<{ id: string; episode_number: number; content: string }> }>('PUT', `/api/projects/${project.id}/script/director/draft`, episodeDraft(1, '第一集正文'))
+  const sceneId = first.scenes[0]!.id
+  const docId = first.artifacts.find(item => item.episode_number === 1)!.id
+  const shots = await call<{ shots: Shot[] }>('POST', `/api/projects/${project.id}/script/convert-to-shots`, { scene_ids: [sceneId] })
+  await call('PUT', `/api/projects/${project.id}/script/director/draft`, episodeDraft(2, '第二集正文'))
+  const revised = await call<{ outline: string; characters: string; scenes: Array<Scene & { episode_number: number }>; artifacts: Array<{ id: string; artifact_type: string; episode_number: number; content: string }> }>('PUT', `/api/projects/${project.id}/script/director/draft`, episodeDraft(1, '第一集修订'))
+  assert.equal(revised.outline, '三次改变未来')
+  assert.equal(revised.characters, '林照：夜班司机。')
+  assert.equal(revised.scenes.length, 2)
+  assert.equal(revised.scenes[0]?.id, sceneId)
+  assert.equal(revised.scenes[1]?.action, '第二集正文')
+  assert.equal(revised.artifacts.find(item => item.episode_number === 1)?.id, docId)
+  assert.equal(revised.artifacts.find(item => item.episode_number === 2)?.content, '第二集正文')
+  assert.equal(revised.artifacts.find(item => item.artifact_type === 'props')?.content, '明日报纸')
+  const detail = await call<{ script: typeof revised; shots: Shot[] }>('GET', `/api/projects/${project.id}`)
+  assert.equal(detail.shots[0]?.source_scene_id, sceneId)
+  assert.equal(detail.shots[0]?.prompt, shots.shots[0]?.prompt)
+  const invalid = await app.inject({ method: 'PUT', url: `/api/projects/${project.id}/script/director/draft`, payload: { ...characterDraft, scenes: [{ heading: '不该出现', duration: 5 }] } })
+  assert.equal(invalid.statusCode, 422)
+  assert.deepEqual((await call<{ script: typeof revised }>('GET', `/api/projects/${project.id}`)).script, detail.script)
+  const full = await call<{ artifacts: typeof revised.artifacts }>('PUT', `/api/projects/${project.id}/script/commit`, { outline: revised.outline, characters: revised.characters, scenes: revised.scenes, artifacts: revised.artifacts.map(({ artifact_type, episode_number, content }) => ({ artifact_type, episode_number, content, title: `${artifact_type}${episode_number}` })) })
+  assert.equal(full.artifacts.length, revised.artifacts.length)
+  assert.equal(full.artifacts.find(item => item.episode_number === 1)?.id, docId)
 })
 
 test('script director conversations persist per project and replace their messages atomically', async () => {
