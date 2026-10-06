@@ -218,3 +218,28 @@ test('a replaced cover request cannot overwrite the newer selected topic texture
     assert.equal(view.gl.uploads.at(-1)?.source, '/new-fusion.jpg')
   } finally { view.dispose() }
 })
+
+test('missing and failed covers use neutral mist and cannot retain another topic photo', () => {
+  const view = mount({ fusion: '民俗恐怖', fusionArtwork: undefined })
+  try {
+    view.tick(0)
+    assert.equal(view.gl.uniforms.get('u_fusionHasPhoto'), 0)
+    assert.ok(PendingImage.instances.some(image => image.src.endsWith('/neutral.svg')))
+    view.finishImages()
+    view.tick(16)
+    assert.equal(view.gl.uniforms.get('u_primaryHasPhoto'), 1)
+    assert.equal(view.gl.uniforms.get('u_fusionHasPhoto'), 0, 'unknown fusion never borrows primary cover')
+    view.render({ primaryArtwork: '/broken.jpg' })
+    view.tick(32)
+    assert.equal(view.gl.uniforms.get('u_primaryHasPhoto'), 0, 'reset old artwork while loading another genre')
+    PendingImage.instances.find(image => image.src === '/broken.jpg')!.onerror?.()
+    view.tick(48)
+    assert.equal(view.gl.uniforms.get('u_primaryHasPhoto'), 0)
+    view.render({ primaryArtwork: undefined })
+    view.tick(64)
+    view.finishImages()
+    view.tick(80)
+    assert.equal(view.gl.uniforms.get('u_primaryHasPhoto'), 0)
+    assert.equal(view.gl.programCount, 1)
+  } finally { view.dispose() }
+})

@@ -1,0 +1,61 @@
+.script-director-theme-selection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 16px 32px;
+  padding: 6px 0 0;
+}
+.script-director-theme-selected {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(360px, 100%);
+  min-width: 0;
+}
+.script-director-theme-selected img {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #414a49;
+}
+.script-director-theme-selected > div { display: flex; flex-direction: column; min-width: 0; }
+.script-director-theme-selected-label,
+.script-director-theme-cover-note { color: #929997; font-size: 11px; line-height: 1.6; }
+.script-director-theme-selected-name { display: flex; align-items: center; gap: 8px; }
+.script-director-theme-selected-name strong { color: #e2e6e3; font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.script-director-theme-selected-name small { color: #a7b0aa; font-size: 10px; white-space: nowrap; }
+.script-director-theme-selection .script-director-theme-match-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  background: transparent;
+  color: #aeb7b1;
+  border: 0;
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.script-director-theme-selection .script-director-theme-match-retry:hover { color: #ecf0ed; background: #ffffff08; }
+.script-director-theme-selection .script-director-theme-match-retry:focus-visible { outline: 1px solid #b3c1b9; outline-offset: 2px; }
+@media (max-width: 620px) {
+  .script-director-settings-modal .script-director-settings-theme-layout,
+  .script-director-settings-modal .script-director-theme-stage,
+  .script-director-settings-modal .script-director-theme-rail.is-infinite,
+  .script-director-settings-modal .script-director-theme-orbit { min-height: 230px !important; height: 230px !important; }
+}
+/* Reserve room for the current-topic caption without pushing the six
+   setting controls below the footer on a laptop-height viewport. */
+.script-director-settings-modal .script-director-settings-theme-layout,
+.script-director-settings-modal .script-director-theme-stage,
+.script-director-settings-modal .script-director-theme-rail.is-infinite {
+  min-height: 236px !important;
+  height: 236px !important;
+}
+.script-director-settings-modal .script-director-theme-orbit {
+  min-height: 236px !important;
+  height: 236px !important;
+}

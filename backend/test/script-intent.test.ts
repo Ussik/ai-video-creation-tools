@@ -28,6 +28,173 @@ const episode = { artifacts: [{ artifact_type: 'episode_script', title: '第1集
   { heading: '雨夜门厅', location: '旅馆', characters: '林', action: '林接起电话', dialogue: '别让他们走', duration: 10 },
 ] }
 
+test('project generation after episode one ignores stale episode state, reads all episodes and only commits project documents', async t => {
+  const { model, project } = await fixture()
+  await call('PUT', `/api/projects/${project.id}/script`, { outline: '', characters: '', scenes: [
+    { ...episode.scenes[0], episode_number: 1 }, { ...episode.scenes[0], heading: '第五集结尾', episode_number: 5 },
+  ] })
+  await call('PUT', `/api/projects/${project.id}/script/artifacts`, { artifacts: [
+    { artifact_type: 'episode_script', episode_number: 1, title: '已保存第一集', content: '第一集确认事实', status: 'ready' },
+    { artifact_type: 'episode_script', episode_number: 5, title: '已保存第五集', content: '远集标记：第五集已确认事实', status: 'ready' },
+  ] })
+  const before = (await call<{ script: { scenes: unknown[]; artifacts: Array<{ artifact_type: string; episode_number: number }> } }>('GET', `/api/projects/${project.id}`)).script
+  const originalFetch = globalThis.fetch
+  let selectedStage = 'outline'
+  globalThis.fetch = async (_url, init) => {
+    const prompt = JSON.parse(String(init?.body)).messages[0].content as string
+    let content: unknown
+    if (prompt.includes('本次独立调用只理解创作者意图')) {
+      assert.ok(prompt.includes(`"explicit_workflow":{"stage":"${selectedStage}","scope":"project","episode_number":0}`))
+      assert.doesNotMatch(prompt, /"selected_episode":2/)
+      // The coordinator's target must not override a typed project button.
+      content = { action: 'draft', operation: 'create', workflow: { stage: 'episode', episode_number: 9 }, creative_brief: '继续第二集，按已确认事实补全资料。' }
+    } else {
+      assert.match(prompt, /任务范围：整个项目的全剧资料，不属于任何单集/)
+      assert.ok(prompt.includes('远集标记：第五集已确认事实'), 'project tasks see saved episodes beyond the selected and previous episode')
+      assert.ok(prompt.includes(`"task_scope":{"stage":"${selectedStage}","scope":"project","episode_number":0}`))
+      assert.doesNotMatch(prompt, /只写第 2 集|本集总时长目标/)
+      content = { artifacts: [{ artifact_type: selectedStage, title: `全剧${selectedStage}`, content: '全剧确认资料' }], scenes: [] }
+    }
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }), { headers: { 'Content-Type': 'application/json' } })
+  }
+  t.after(() => { globalThis.fetch = originalFetch })
+  for (const stage of ['outline', 'characters', 'locations', 'props']) {
+    selectedStage = stage
+    for (const suffix of ['', '/stream']) {
+      const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat${suffix}`, payload: {
+        model_id: model.id, mode: 'script', workflow: { stage, episode_number: 2, target_duration: 300 },
+        intent_context: { selected_episode: 2 }, messages: [{ role: 'assistant', text: '第1集已保存，下次可以开始第2集。' }, { role: 'user', text: '生成全剧资料。' }],
+      } })
+      assert.equal(response.statusCode, 200, response.body)
+      const result = suffix ? response.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5))).find(event => event.type === 'done') : response.json()
+      assert.equal(result.draft.stage, stage)
+      assert.equal(result.draft.scope, 'project')
+      assert.equal(result.draft.episode_number, 0)
+      assert.equal(result.draft.target_duration, undefined)
+      assert.deepEqual((await call<{ script: unknown }>('GET', `/api/projects/${project.id}`)).script, before, 'draft generation never saves implicitly')
+      if (stage === 'props' && suffix === '/stream') {
+        const saved = await call<typeof before>('PUT', `/api/projects/${project.id}/script/director/draft`, result.draft)
+        assert.deepEqual(saved.scenes, before.scenes)
+        assert.deepEqual(saved.artifacts.filter(item => item.episode_number > 0), before.artifacts)
+        assert.equal(saved.artifacts.find(item => item.artifact_type === 'props')?.episode_number, 0)
+      }
+    }
+  }
+})
+
+test('incompatible workflow scope and a zero target episode are rejected before any model request', async () => {
+  const { model, project } = await fixture()
+  for (const workflow of [{ stage: 'outline', scope: 'episode', episode_number: 2 }, { stage: 'episode', scope: 'project', episode_number: 2 }, { stage: 'episode', scope: 'episode', episode_number: 0 }]) {
+    const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload: {
+      model_id: model.id, mode: 'script', workflow, messages: [{ role: 'user', text: '生成文档' }],
+    } })
+    assert.equal(response.statusCode, 422, response.body)
+  }
+})
+
+test('skip tells the discussion model what remains undecided in both chat transports without drafting or saving', async t => {
+  const { model, project } = await fixture()
+  const question = '主人公与搭档的关系是什么？'
+  const prompts: string[] = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (_url, init) => {
+    prompts.push(JSON.parse(String(init?.body)).messages[0].content)
+    return new Response(JSON.stringify({ choices: [{ message: { content: '关系先保留待定。我们可以先确定开场发生的地点。' } }] }), { headers: { 'Content-Type': 'application/json' } })
+  }
+  t.after(() => { globalThis.fetch = originalFetch })
+  const before = (await call<{ script: unknown }>('GET', `/api/projects/${project.id}`)).script
+  const payload = { model_id: model.id, mode: 'script', question_response: { status: 'skipped', question },
+    intent_context: { pending_draft: { stage: 'episode', episode_number: 1 } },
+    messages: [{ role: 'assistant', text: question }, { role: 'user', text: `跳过“${question}”，请继续推进。` }] }
+  for (const suffix of ['', '/stream']) {
+    const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat${suffix}`, payload })
+    assert.equal(response.statusCode, 200, response.body)
+    const result = suffix ? response.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5))).find(event => event.type === 'done') : response.json()
+    assert.match(result.reply, /先确定开场/)
+    assert.equal(result.draft, undefined)
+  }
+  assert.equal(prompts.length, 2, 'one discussion call per skip, no intent classifier or drafting call')
+  for (const prompt of prompts) {
+    assert.match(prompt, /本轮创作者点击了“跳过”/)
+    assert.ok(prompt.includes(question))
+    assert.match(prompt, /跳过不等于确认任何选项/)
+    assert.match(prompt, /不要立即重复这个问题/)
+  }
+  assert.deepEqual((await call<{ script: unknown }>('GET', `/api/projects/${project.id}`)).script, before)
+})
+
+test('skip cannot be combined with document operations or visual-asset routing', async () => {
+  const { model, project } = await fixture()
+  const payload = { model_id: model.id, mode: 'script', question_response: { status: 'skipped', question: '选哪个方向？' }, messages: [{ role: 'user', text: '跳过' }] }
+  for (const extra of [{ workflow: { stage: 'episode', episode_number: 1 } }, { adopt_source: { text: '正文', episode_number: 1 } }, { focus_artifact: 'character' }, { question_response: { status: 'answered', question: '选哪个方向？' } }]) {
+    const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload: { ...payload, ...extra } })
+    assert.equal(response.statusCode, 422, response.body)
+  }
+})
+
+test('long Chinese conversations above 40 KB can continue or skip over either transport with full selected messages', async t => {
+  const { model, project } = await fixture()
+  const question = '主角的姓名和性别如何确定？'
+  const history = Array.from({ length: 20 }, (_, index) => ({ id: `long-history-${index}`, role: index % 2 ? 'assistant' as const : 'user' as const,
+    text: `完整历史${index}：${'项目背景'.repeat(400)}` }))
+  assert.ok(history.reduce((total, message) => total + Buffer.byteLength(message.text), 0) > 40_000)
+  await call('PUT', `/api/projects/${project.id}/script/conversations`, { id: `long-${project.id}`, messages: history })
+  const before = await call<unknown>('GET', `/api/projects/${project.id}/script/conversations`)
+  const prompts: string[] = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (_url, init) => {
+    const prompt = JSON.parse(String(init?.body)).messages[0].content as string
+    prompts.push(prompt)
+    const content = prompt.includes('本次独立调用只理解创作者意图') ? JSON.stringify({ action: 'discuss' }) : '已接续讨论。'
+    return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { headers: { 'Content-Type': 'application/json' } })
+  }
+  t.after(() => { globalThis.fetch = originalFetch })
+  for (const skip of [false, true]) for (const suffix of ['', '/stream']) {
+    const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat${suffix}`, payload: {
+      model_id: model.id, mode: 'script',
+      ...(skip ? { question_response: { status: 'skipped', question } } : {}),
+      messages: [...history.map(({ role, text }) => ({ role, text })), { role: 'assistant', text: question }, { role: 'user', text: skip ? '这项跳过，请继续。' : '主角为男性，先暂用林远。' }],
+    } })
+    assert.equal(response.statusCode, 200, response.body)
+    const result = suffix ? response.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5))).find(event => event.type === 'done') : response.json()
+    assert.equal(result.reply, '已接续讨论。')
+    assert.equal(result.draft, undefined)
+  }
+  assert.equal(prompts.length, 6)
+  for (const prompt of prompts) {
+    assert.ok(prompt.includes(history[0]!.text), 'the first selected message reaches the model intact')
+    assert.ok(prompt.includes(history.at(-1)!.text), 'the last selected message reaches the model intact')
+    assert.ok(prompt.includes(question))
+  }
+  assert.deepEqual(await call<unknown>('GET', `/api/projects/${project.id}/script/conversations`), before, 'request windowing must not alter saved history')
+})
+
+test('oversized caller-supplied context is still rejected before any provider call', async () => {
+  const { model, project } = await fixture()
+  const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload: {
+    model_id: model.id, mode: 'script', messages: Array.from({ length: 32 }, () => ({ role: 'user', text: '中'.repeat(8000) })),
+  } })
+  assert.equal(response.statusCode, 422)
+  assert.match(response.body, /256 KB/)
+})
+
+test('valid long text with full references is not rejected by the default transport body limit after JSON escaping', async t => {
+  const { model, project } = await fixture()
+  const messages = Array.from({ length: 31 }, (_, index) => ({ role: 'user', text: '\\'.repeat(8000),
+    ...(index < 2 ? { reference_documents: Array.from({ length: 3 }, (_, reference) => ({ key: `doc-${index}-${reference}`, title: '参考资料', artifact_type: 'outline', episode_number: 0, content: 'x'.repeat(99700) })) } : {}),
+  }))
+  const payload = { model_id: model.id, mode: 'script', question_response: { status: 'skipped', question: '选择方向？' }, messages }
+  assert.ok(Buffer.byteLength(JSON.stringify(payload)) > 1024 * 1024)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: '继续讨论。' } }] }), { headers: { 'Content-Type': 'application/json' } })
+  t.after(() => { globalThis.fetch = originalFetch })
+  for (const suffix of ['', '/stream']) {
+    const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat${suffix}`, payload })
+    assert.equal(response.statusCode, 200, response.body)
+    assert.ok(response.body.includes('继续讨论。'))
+  }
+})
+
 // These tests check that model decisions, rather than matching request wording,
 // control execution, and that the resulting drafts remain reviewable and scoped.
 test('model intent routes colloquial requests, confirmed settings and selected episode into isolated drafting', async t => {

@@ -56,7 +56,7 @@ export interface ScriptConversation {
 }
 export interface ScriptMessage {
   id: string; conversation_id: string; position: number;
-  role: 'assistant' | 'user'; text: string; created_at: string
+  role: 'assistant' | 'user'; text: string; reference_documents?: string; created_at: string
 }
 export type ScriptArtifactType =
   | 'outline' | 'synopsis' | 'world' | 'characters' | 'relationships' | 'locations'
@@ -211,6 +211,12 @@ export function initDb(): void {
       position INTEGER NOT NULL, role TEXT NOT NULL CHECK (role IN ('assistant', 'user')),
       text TEXT NOT NULL, created_at TEXT NOT NULL,
       PRIMARY KEY (conversation_id, id)
+    );
+    CREATE TABLE IF NOT EXISTS script_reply_classifications (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      message_id TEXT NOT NULL, text_hash TEXT NOT NULL, classification TEXT NOT NULL,
+      model_id TEXT NOT NULL, created_at TEXT NOT NULL,
+      PRIMARY KEY (project_id, message_id, text_hash)
     );
     CREATE TABLE IF NOT EXISTS script_artifacts (
       id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -377,6 +383,11 @@ export function initDb(): void {
   const scriptColumns = db.pragma('table_info(scripts)') as Array<{ name: string }>
   if (!scriptColumns.some(column => column.name === 'generation_options')) {
     db.exec("ALTER TABLE scripts ADD COLUMN generation_options TEXT NOT NULL DEFAULT '{}'")
+  }
+
+  const messageColumns = db.pragma('table_info(script_messages)') as Array<{ name: string }>
+  if (!messageColumns.some(column => column.name === 'reference_documents')) {
+    db.exec("ALTER TABLE script_messages ADD COLUMN reference_documents TEXT NOT NULL DEFAULT '[]'")
   }
 
   const sceneColumns = db.pragma('table_info(script_scenes)') as Array<{ name: string }>

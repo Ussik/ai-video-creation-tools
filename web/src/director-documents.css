@@ -1,0 +1,153 @@
+/* The document workspace shares the conversation's neutral surface palette. */
+.sd-chat .sd-deliverables { margin: 24px 0 20px; padding: 14px; border: 0; border-radius: 14px; background: #282828; }
+.sd-deliverables > header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; color: #a5a5a5; font-size: 11px; }
+.sd-deliverables > header button { display: inline-flex; align-items: center; gap: 6px; padding: 4px 0 4px 8px; border: 0; background: transparent; color: #bdbdbd; font: inherit; cursor: pointer; }
+.sd-deliverables > header button > span { color: #8f8f8f; font-variant-numeric: tabular-nums; }
+.sd-chat .sd-deliverable-document { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 4px; border: 0; border-radius: 8px; background: transparent; color: #e4e4e4; text-align: left; font: inherit; cursor: pointer; }
+.sd-deliverable-document > span:nth-child(2) { flex: 1; min-width: 0; }
+.sd-deliverable-document strong { display: block; font-size: 14px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.sd-deliverable-document small { display: block; margin-top: 4px; color: #a2a2a2; font-size: 11px; line-height: 1.6; }
+.sd-document-icon { display: grid; place-items: center; flex: none; width: 34px; height: 38px; border-radius: 8px; background: #343434; color: #c8c8c8; }
+.sd-chat .sd-document-status { flex: none; display: inline-flex; align-items: center; gap: 4px; color: #b7b7b7; font-size: 10px; white-space: nowrap; }
+.sd-document-status::before { width: 4px; height: 4px; border-radius: 50%; background: currentColor; content: ''; }
+.sd-production-row { margin-top: 14px; padding: 14px 4px 2px; border-top: 1px solid #ffffff0a; }
+.sd-production-target { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.sd-production-target > span { display: flex; align-items: center; gap: 7px; color: #bcbcbc; font-size: 12px; }
+.sd-production-target .sd-episode-select { flex: 0 1 130px; width: 130px; min-width: 80px; }
+.sd-chat .sd-production-target .mantine-Select-input { height: 30px; min-height: 30px; padding-left: 8px; border: 0; border-radius: 7px; background: transparent; color: #d5d5d5; font-size: 12px; box-shadow: none; cursor: pointer; }
+.sd-chat .sd-production-target .mantine-Select-input:focus { border: 0; box-shadow: none; outline: none; }
+.sd-production-action { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
+.sd-production-action > small { color: #9b9b9b; font-size: 11px; line-height: 1.6; }
+.sd-chat .sd-document-primary,.sd-chat .sd-document-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 8px 12px; border: 0; border-radius: 9px; font: inherit; font-size: 12px; line-height: 1.4; cursor: pointer; }
+.sd-chat .sd-document-primary { background: #dedede; color: #252525; font-weight: 600; }
+.sd-chat .sd-document-secondary { background: #303030; color: #c2c2c2; }
+.sd-chat .sd-document-primary:hover:not(:disabled) { background: #f4f4f4; }
+.sd-chat .sd-document-secondary:hover:not(:disabled),.sd-chat .sd-deliverable-document:hover,.sd-chat .sd-deliverables > header button:hover { background: #323232; color: #f0f0f0; }
+.sd-chat .sd-document-primary:disabled,.sd-chat .sd-document-secondary:disabled { opacity: .45; cursor: default; }
+.sd-chat .sd-document-toolbar { display: flex; align-items: center; gap: 12px; flex: none; padding: 12px 20px 0; }
+.sd-document-select { flex: 1; min-width: 0; }
+.sd-chat .sd-document-select .mantine-Select-input { height: 36px; min-height: 36px; padding-left: 10px; border: 0; border-radius: 8px; background: #2b2b2b; box-shadow: none; color: #ddd; font-size: 12px; cursor: pointer; }
+.sd-chat .sd-document-select .mantine-Select-input:focus { border: 0; box-shadow: none; outline: none; }
+.sd-view-switch { display: flex; align-items: center; gap: 2px; flex: none; padding: 3px; border-radius: 8px; background: #191919; }
+.sd-view-switch button { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 4px 9px; border: 0; border-radius: 6px; background: transparent; color: #aaa; font: inherit; font-size: 11px; cursor: pointer; }
+.sd-view-switch button[aria-pressed="true"] { background: #3a3a3a; color: #f0f0f0; }
+.sd-view-switch button:disabled { opacity: .4; cursor: default; }
+.sd-document-meta { display: flex; justify-content: space-between; align-items: center; flex: none; gap: 10px; padding: 10px 22px 14px; color: #969696; font-size: 10px; line-height: 1.6; }
+.sd-document-meta > span:last-child { text-align: right; }
+.sd-chat .sd-document-reader { background: #212121; }
+.sd-chat .sd-document-reader > header { padding: 12px 18px; border-bottom-color: #ffffff0a; }
+.sd-chat .sd-document-reader > header strong { color: #d5d5d5; font-size: 13px; }
+.sd-chat .sd-document-reader > article { padding: 8px 24px 28px; scrollbar-color: #484848 transparent; }
+.sd-chat .sd-document-reader > footer { justify-content: space-between; padding: 14px 20px 18px; border-top-color: #ffffff0a; }
+.sd-chat .sd-draft-review { display: flex; flex-direction: column; border: 0; border-radius: 0; background: #212121; }
+.sd-chat.is-reviewing .sd-draft-review { margin: 0; }
+.sd-chat .sd-draft-review .script-director-preview-head { flex: none; padding: 12px 20px; border-bottom: 1px solid #ffffff0a; }
+.sd-chat .sd-draft-review .script-director-preview-head div { gap: 8px; color: #bcbcbc; }
+.sd-chat .sd-draft-review .script-director-preview-head strong { color: #e0e0e0; font-size: 13px; }
+.sd-chat .sd-draft-review .script-director-preview-head button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: #aaa; cursor: pointer; }
+.sd-chat .sd-draft-review .script-director-preview-scroll { display: block; flex: 1; min-height: 0; max-height: none; padding: 8px 24px 28px; scrollbar-color: #484848 transparent; }
+.sd-chat .sd-draft-review .script-director-preview-actions { justify-content: space-between; padding: 14px 20px 18px; border-top: 1px solid #ffffff0a; }
+.sd-chat .sd-document-page h2 { margin: 8px 0 24px; color: #f0f0f0; font-size: 20px; font-weight: 600; line-height: 1.55; overflow-wrap: anywhere; }
+.sd-chat .sd-document-page .pc-rich-text-preview { color: #d0d0d0; font-size: 14px; line-height: 1.95; }
+.sd-chat .sd-document-page .pc-rich-text-preview p { margin-bottom: 18px; }
+.sd-chat .sd-document-page .pc-rich-text-preview h2,.sd-chat .sd-document-page .pc-rich-text-preview h3 { margin-top: 28px; font-size: 15px; line-height: 1.7; }
+.sd-chat .sd-document-edit-label > span { margin-bottom: 6px; color: #969696; font-size: 11px; }
+.sd-chat .sd-draft-review textarea.sd-document-editor { min-height: 360px; width: 100%; resize: vertical; padding: 14px; border: 1px solid #454545; border-radius: 9px; background: #1b1b1b; color: #dedede; font: inherit; font-size: 14px; line-height: 1.9; }
+.sd-scene-list { display: grid; gap: 4px; }
+.sd-scene { min-width: 0; border-bottom: 1px solid #ffffff0a; }
+.sd-scene > summary { display: flex; align-items: center; gap: 10px; padding: 14px 0; list-style: none; cursor: pointer; }
+.sd-scene > summary::-webkit-details-marker { display: none; }
+.sd-scene > summary > span:nth-child(2) { flex: 1; min-width: 0; }
+.sd-scene > summary strong { display: block; color: #dedede; font-size: 13px; font-weight: 600; line-height: 1.6; overflow-wrap: anywhere; }
+.sd-scene > summary small { display: block; margin-top: 3px; color: #969696; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.sd-scene > summary em { flex: none; color: #969696; font-size: 11px; font-style: normal; font-variant-numeric: tabular-nums; }
+.sd-scene > summary > svg { flex: none; color: #969696; transition: transform .15s; }
+.sd-scene[open] > summary > svg { transform: rotate(180deg); }
+.sd-scene-number { align-self: flex-start; padding-top: 3px; color: #858585; font-size: 12px; font-variant-numeric: tabular-nums; }
+.sd-scene-content { display: grid; gap: 18px; padding: 4px 0 22px 26px; }
+.sd-scene-passage > small { display: block; margin-bottom: 7px; color: #969696; font-size: 10px; }
+.sd-scene-passage.is-dialogue { padding-left: 12px; border-left: 2px solid #525252; }
+.sd-chat .sd-scene-passage .pc-rich-text-preview { font-size: 13px; line-height: 1.85; color: #d0d0d0; }
+.sd-scene-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.sd-chat .sd-scene-content label { display: grid; gap: 5px; color: #aaa; font-size: 11px; }
+.sd-chat .sd-scene-content input,.sd-chat .sd-scene-content textarea { width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid #454545; border-radius: 7px; background: #1b1b1b; color: #ddd; font: inherit; font-size: 13px; line-height: 1.7; }
+.sd-chat .sd-scene-content textarea { min-height: 96px; resize: vertical; }
+.sd-chat .sd-artifact-card { padding: 14px 12px; border: 0; border-radius: 10px; background: #2b2b2b; color: #d0d0d0; }
+.sd-chat .sd-artifact-card:hover { background: #343434; }
+.sd-chat .sd-artifact-card > svg:first-child { color: #b4b4b4; }
+.sd-chat .sd-artifact-card strong { font-size: 13px; line-height: 1.6; }
+.sd-chat .sd-artifact-card small { margin-top: 5px; color: #999; font-size: 11px; }
+.sd-chat :is(.sd-deliverables,.sd-document-reader,.sd-draft-review) button:focus-visible,.sd-chat .sd-scene > summary:focus-visible { outline: 1px solid #aaa; outline-offset: 3px; }
+.sd-chat :is(.sd-document-select,.sd-episode-select) .mantine-Select-input:focus-visible { outline: 1px solid #888; outline-offset: 2px; }
+.sd-chat .script-director-model-select .mantine-Select-input[readonly] { cursor: pointer; caret-color: transparent; }
+@media (max-width: 480px) {
+  .sd-chat .sd-document-toolbar { gap: 6px; padding-right: 14px; padding-left: 14px; }
+  .sd-chat .sd-document-meta { padding-right: 16px; padding-left: 16px; flex-wrap: wrap; }
+  .sd-chat .sd-document-reader > article,.sd-chat .sd-draft-review .script-director-preview-scroll { padding-right: 16px; padding-left: 16px; }
+  .sd-deliverable-document > .sd-document-status { display: none; }
+}
+.script-director-panel .sd-reference-list {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding: 3px 0 8px;
+  max-width: 100%;
+  scrollbar-width: thin;
+}
+.script-director-panel .sd-reference-card {
+  flex: 0 0 184px;
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  background: #2b2b2b;
+}
+.script-director-panel .sd-reference-open {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  padding: 12px;
+  border: 0;
+  color: #ddd;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background 160ms ease;
+}
+.script-director-panel .sd-reference-open:hover { background: #333; }
+.script-director-panel .sd-reference-open:focus-visible,
+.script-director-panel .sd-reference-remove:focus-visible { outline: 2px solid #aaa; outline-offset: -3px; }
+.script-director-panel .sd-reference-preview {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  height: 48px;
+  padding-right: 15px;
+  font-size: 11px;
+  line-height: 16px;
+  color: #a0a0a0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.script-director-panel .sd-reference-title { display: flex; align-items: center; gap: 7px; width: 100%; }
+.script-director-panel .sd-reference-title svg { flex-shrink: 0; color: #bbb; }
+.script-director-panel .sd-reference-title strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; font-weight: 500; }
+.script-director-panel .sd-reference-caption { color: #999; font-size: 10px; line-height: 1.4; }
+.script-director-panel .sd-reference-remove {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 50%;
+  color: #bbb;
+  background: #2b2b2b;
+  cursor: pointer;
+}
+.script-director-panel .sd-reference-remove:hover { background: #444; color: #fff; }
+.script-director-panel .script-director-message.user .sd-reference-list { justify-content: flex-end; }
+.script-director-panel .script-director-message.user:has(.sd-reference-list) { flex-direction: column; align-items: flex-end; gap: 0; }

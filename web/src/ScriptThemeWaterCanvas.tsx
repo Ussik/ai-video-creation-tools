@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { neutralThemeArtwork } from '../../backend/src/script-theme-catalog'
 
 type ScriptThemeWaterCanvasProps = {
   primary: string
@@ -26,6 +27,8 @@ uniform float u_hasFusion;
 uniform float u_fusionProgress;
 uniform sampler2D u_primary;
 uniform sampler2D u_fusion;
+uniform float u_primaryHasPhoto;
+uniform float u_fusionHasPhoto;
 
 vec3 centerA;
 vec3 centerB;
@@ -209,6 +212,8 @@ void main() {
   vec3 primary = photograph(u_primary, hit, centerA, radius.x, normal);
   vec3 secondary = fusion > 0.5 ? photograph(u_fusion, hit, centerB, radius.y, normal) : primary;
   vec3 photo = mix(secondary, primary, blend);
+  float hasPhoto = mix(u_fusionHasPhoto, u_primaryHasPhoto, blend);
+  if (fusion < 0.5) hasPhoto = u_primaryHasPhoto;
   vec3 coverTint = mix(tintB, tintA, blend);
   vec3 tone = glassTone(coverTint);
   float facing = clamp(normal.z, 0.0, 1.0);
@@ -219,19 +224,19 @@ void main() {
   // Preserve the photograph's contrast. The shell gets darker at oblique
   // angles, with reflected softboxes replacing that light selectively.
   vec3 color = photo * (1.0 - 0.38 * pow(grazing, 0.65));
-  color = mix(color, max(reflected, color * 0.48), 0.045 + fresnel * 0.40);
-  color += reflected * (0.13 + fresnel * 0.20);
+  color = mix(color, max(reflected, color * 0.48), (0.045 + fresnel * 0.40) * mix(0.28, 1.0, hasPhoto));
+  color += reflected * (0.13 + fresnel * 0.20) * mix(0.20, 1.0, hasPhoto);
 
   float keySpot = pow(max(dot(normal, normalize(vec3(-0.50, -0.62, 0.70))), 0.0), 32.0);
-  color += vec3(0.95, 0.98, 1.0) * keySpot * 0.12;
+  color += vec3(0.95, 0.98, 1.0) * keySpot * 0.12 * mix(0.25, 1.0, hasPhoto);
   float caustic = pow(max(dot(normal, normalize(vec3(0.52, 0.72, 0.23))), 0.0), 11.5);
-  color += mix(vec3(0.80, 0.92, 1.0), tone, 0.55) * caustic * 0.34;
+  color += mix(vec3(0.80, 0.92, 1.0), tone, 0.55) * caustic * 0.34 * mix(0.18, 1.0, hasPhoto);
 
   // Use the union's contour, so the two inward rims cannot form a bright
   // circular seam at the fusion neck.
   float rim = exp(-abs(outline) * 118.0);
   float directionalRim = 0.18 + 0.82 * pow(max(dot(normal.xy, normalize(vec2(-0.70, -0.72))), 0.0), 2.0);
-  color += mix(vec3(0.83, 0.92, 1.0), tone, 0.26) * rim * directionalRim * 0.50;
+  color += mix(vec3(0.83, 0.92, 1.0), tone, 0.26) * rim * directionalRim * mix(0.18, 0.50, hasPhoto);
   float contact = fusion * (1.0 - smoothstep(0.0, 0.085, abs(d.x - d.y)));
   color += mix(vec3(0.82, 0.94, 1.0), tone, 0.35) * contact * 0.04;
   color = clamp(color, 0.0, 1.0);
@@ -253,6 +258,21 @@ function compileShader(gl: WebGLRenderingContext, kind: number, source: string):
   return shader
 }
 
+// Synchronous mist while the neutral SVG/cover loads, and on cover failure.
+// Never retain another genre's photo or show a flat blue metallic surface.
+function neutralTexture(gl: WebGLRenderingContext) {
+  const size = 64
+  const pixels = new Uint8Array(size * size * 4)
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const light = Math.exp(-((x - 21) ** 2 + (y - 18) ** 2) / 1100)
+    const mist = Math.sin(x * .12 + Math.sin(y * .09) * 2) * Math.cos(y * .11 + x * .025)
+    const value = 32 + light * 42 + mist * 12
+    const offset = (y * size + x) * 4
+    pixels.set([value, value + 6, value + 4, 255], offset)
+  }
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+}
+
 function createTexture(gl: WebGLRenderingContext): WebGLTexture | null {
   const texture = gl.createTexture()
   if (!texture) return null
@@ -261,16 +281,14 @@ function createTexture(gl: WebGLRenderingContext): WebGLTexture | null {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([72, 102, 120, 255]))
+  neutralTexture(gl)
   return texture
 }
 
-function loadTexture(gl: WebGLRenderingContext, texture: WebGLTexture, source: string | undefined): () => void {
-  if (!source) {
-    gl.bindTexture(gl.TEXTURE_2D, texture)
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([72, 102, 120, 255]))
-    return () => {}
-  }
+function loadTexture(gl: WebGLRenderingContext, texture: WebGLTexture, source: string | undefined, onReady: (hasPhoto: boolean) => void): () => void {
+  gl.bindTexture(gl.TEXTURE_2D, texture)
+  neutralTexture(gl)
+  onReady(false)
   const image = new Image()
   let cancelled = false
   image.decoding = 'async'
@@ -281,9 +299,16 @@ function loadTexture(gl: WebGLRenderingContext, texture: WebGLTexture, source: s
     // orientation unchanged so covers do not appear upside down in the ball.
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0)
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image)
+    onReady(Boolean(source && source !== neutralThemeArtwork))
   }
-  image.src = source
-  return () => { cancelled = true; image.onload = null }
+  image.onerror = () => {
+    if (cancelled) return
+    gl.bindTexture(gl.TEXTURE_2D, texture)
+    neutralTexture(gl)
+    onReady(false)
+  }
+  image.src = source || neutralThemeArtwork
+  return () => { cancelled = true; image.onload = null; image.onerror = null }
 }
 
 export function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, fusionArtwork, onFusionSettled }: ScriptThemeWaterCanvasProps) {
@@ -295,7 +320,7 @@ export function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, fusion
   const visualStateRef = useRef({
     lastFusion: fusion.trim(),
     visualFusion: fusion.trim(),
-    visualArtwork: fusionArtwork || primaryArtwork,
+    visualArtwork: fusionArtwork,
     primaryArtwork,
     progress: fusion.trim() ? 1 : 0,
     from: fusion.trim() ? 1 : 0,
@@ -306,7 +331,7 @@ export function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, fusion
   useEffect(() => {
     const state = visualStateRef.current
     const nextFusion = fusion.trim()
-    const nextArtwork = fusionArtwork || primaryArtwork
+    const nextArtwork = fusionArtwork
     state.primaryArtwork = primaryArtwork
     if (nextFusion !== state.lastFusion) {
       if (nextFusion) {
@@ -321,7 +346,7 @@ export function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, fusion
         state.startedAt = performance.now()
       }
       state.lastFusion = nextFusion
-    } else if (nextFusion && nextArtwork && nextArtwork !== state.visualArtwork) {
+    } else if (nextFusion && nextArtwork !== state.visualArtwork) {
       state.visualArtwork = nextArtwork
     }
   }, [fusion, fusionArtwork, primaryArtwork])
@@ -345,8 +370,10 @@ export function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, fusion
     const primaryTexture = createTexture(gl)
     const fusionTexture = createTexture(gl)
     if (!buffer || !primaryTexture || !fusionTexture) return
-    let cancelPrimaryLoad = loadTexture(gl, primaryTexture, primaryArtwork)
-    let cancelFusionLoad = loadTexture(gl, fusionTexture, fusionArtwork || primaryArtwork)
+    let primaryHasPhoto = false
+    let fusionHasPhoto = false
+    let cancelPrimaryLoad = loadTexture(gl, primaryTexture, primaryArtwork, value => { primaryHasPhoto = value })
+    let cancelFusionLoad = loadTexture(gl, fusionTexture, fusionArtwork, value => { fusionHasPhoto = value })
 
     gl.useProgram(program)
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
@@ -362,10 +389,12 @@ export function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, fusion
     const fusionProgress = gl.getUniformLocation(program, 'u_fusionProgress')
     const primarySampler = gl.getUniformLocation(program, 'u_primary')
     const fusionSampler = gl.getUniformLocation(program, 'u_fusion')
+    const primaryPhotoUniform = gl.getUniformLocation(program, 'u_primaryHasPhoto')
+    const fusionPhotoUniform = gl.getUniformLocation(program, 'u_fusionHasPhoto')
     let frame = 0
     const start = performance.now()
     let loadedPrimarySource = primaryArtwork
-    let loadedFusionSource = fusionArtwork || primaryArtwork
+    let loadedFusionSource = fusionArtwork
     let cssWidth = 0
     let cssHeight = 0
     let sceneUnit = 100
@@ -424,16 +453,18 @@ export function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, fusion
       if (state.primaryArtwork !== loadedPrimarySource) {
         loadedPrimarySource = state.primaryArtwork
         cancelPrimaryLoad()
-        cancelPrimaryLoad = loadTexture(gl, primaryTexture, state.primaryArtwork)
+        cancelPrimaryLoad = loadTexture(gl, primaryTexture, state.primaryArtwork, value => { primaryHasPhoto = value })
       }
-      if (state.visualArtwork && state.visualArtwork !== loadedFusionSource) {
+      if (state.visualFusion && state.visualArtwork !== loadedFusionSource) {
         loadedFusionSource = state.visualArtwork
         cancelFusionLoad()
-        cancelFusionLoad = loadTexture(gl, fusionTexture, state.visualArtwork)
+        cancelFusionLoad = loadTexture(gl, fusionTexture, state.visualArtwork, value => { fusionHasPhoto = value })
       }
       const hasFusionValue = state.visualFusion ? 1 : 0
       gl.uniform1f(hasFusion, hasFusionValue)
       gl.uniform1f(fusionProgress, state.progress)
+      gl.uniform1f(primaryPhotoUniform, primaryHasPhoto ? 1 : 0)
+      gl.uniform1f(fusionPhotoUniform, fusionHasPhoto ? 1 : 0)
       gl.activeTexture(gl.TEXTURE0)
       gl.bindTexture(gl.TEXTURE_2D, primaryTexture)
       gl.uniform1i(primarySampler, 0)

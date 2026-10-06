@@ -1,17 +1,36 @@
 import type { Model } from './api'
 
-/** Show a setting only when the configured provider body consumes it. */
-export function usesModelParameter(model: Model | undefined, field: string): boolean {
+export const imageRatios = ['1:1', '1:2', '2:1', '9:16', '16:9', '3:4', '4:3', '3:2', '2:3', '5:4', '4:5', '21:9', '9:21']
+const imageOptions = {
+  quality: ['low', 'standard', 'high', 'ultra', 'extreme'],
+  clarity: ['1K', '2K', '4K'],
+  background: ['auto', 'preserve', 'transparent'],
+}
+type ImageParameter = keyof typeof imageOptions
+
+export function usesModelParameter(model: Model | undefined, field: string, mode?: string): boolean {
   if (!model) return false
-  const templates = [model.settings.request_template, model.settings.request_templates, model.settings.content_template]
+  const templates = mode
+    ? [(model.settings.request_templates as Record<string, unknown> | undefined)?.[mode] ?? model.settings.request_template, model.settings.content_template]
+    : [model.settings.request_template, model.settings.request_templates, model.settings.content_template]
   return templates.some(template => JSON.stringify(template || {}).includes(`{{${field}}}`))
 }
 
-export function imageParameterOptions(model: Model | undefined, field: 'quality' | 'clarity' | 'background'): string[] {
-  if (!usesModelParameter(model, field)) return []
+export function imageParameterOptions(model: Model | undefined, field: ImageParameter): string[] {
+  if (model?.modality !== 'image') return []
   const key = field === 'quality' ? 'qualities' : field === 'clarity' ? 'clarities' : 'backgrounds'
   const configured = model?.settings[`image_${key}`] ?? model?.settings[key]
-  return Array.isArray(configured) ? [...new Set(configured.filter((value): value is string => typeof value === 'string' && !!value.trim()))] : []
+  const options = Array.isArray(configured)
+    ? [...new Set(configured.filter((value): value is string => typeof value === 'string' && !!value.trim()))] : []
+  return options.length ? options : [...imageOptions[field]]
+}
+
+export function imageParameterValue(model: Model | undefined, field: ImageParameter, selected?: string | null): string {
+  const options = imageParameterOptions(model, field)
+  const configured = model?.settings[`default_${field}`]
+  const preferred = field === 'quality' ? 'standard' : field === 'clarity' ? '1K' : 'auto'
+  return options.includes(selected || '') ? selected! : typeof configured === 'string' && options.includes(configured)
+    ? configured : options.includes(preferred) ? preferred : options[0] || ''
 }
 
 export function resolutionRatio(resolution: string): string | null {
@@ -22,6 +41,79 @@ export function resolutionRatio(resolution: string): string | null {
   let a = width, b = height
   while (b) { const remainder = a % b; a = b; b = remainder }
   return `${width / a}:${height / a}`
+}
+
+export function imageSizeChoices(resolutions: string[]): Array<{ resolution: string; ratio: string; clarity: string }> {
+  return [...new Set(resolutions)].flatMap(resolution => {
+    const dimensions = /^(\d{1,7})x(\d{1,7})$/.exec(resolution)
+    const ratio = dimensions ? resolutionRatio(resolution) : null
+    if (!dimensions || !ratio) return []
+    // Group equivalent pixel areas together so landscape and portrait sizes
+    // share a clarity level; the provider still receives the exact dimensions.
+    const scale = Math.sqrt(Number(dimensions[1]) * Number(dimensions[2])) / 1024
+    const level = [1, 2, 4].reduce((closest, candidate) => Math.abs(candidate - scale) < Math.abs(closest - scale) ? candidate : closest)
+    return [{ resolution, ratio, clarity: `${level}K` }]
+  })
+}
+
+export function selectImageSize(resolutions: string[], currentResolution: string, selection: { ratio?: string; clarity?: string }) {
+  const choices = imageSizeChoices(resolutions)
+  const current = choices.find(choice => choice.resolution === currentResolution)
+  const matches = choices.filter(choice => (!selection.ratio || choice.ratio === selection.ratio)
+    && (!selection.clarity || choice.clarity === selection.clarity))
+  return matches.find(choice => selection.ratio ? choice.clarity === current?.clarity : choice.ratio === current?.ratio)
+    || matches[0] || null
+}
+
+/** Keep the API size valid while carrying independent creative preferences. */
+export function imageRequestResolution(model: Model, currentResolution: string, selection: { ratio: string; clarity: string }): string {
+  const resolutions = Array.isArray(model.settings.resolutions)
+    ? model.settings.resolutions.filter((value): value is string => typeof value === 'string') : []
+  if (!resolutions.length) return currentResolution
+  const current = resolutions.includes(currentResolution) ? currentResolution : modelDefaultResolution(model, resolutions)
+  if (resolutions.includes(selection.clarity)) return selection.clarity
+  if (usesModelParameter(model, 'ratio', 'text')) return current
+  const exact = selectImageSize(resolutions, current, selection) || selectImageSize(resolutions, current, { ratio: selection.ratio })
+  if (exact) return exact.resolution
+  const [width, height] = selection.ratio.split(':').map(Number)
+  if (!width || !height) return current
+  const choices = imageSizeChoices(resolutions)
+  const distance = (choice: typeof choices[number]) => {
+    const [w, h] = choice.ratio.split(':').map(Number)
+    return Math.abs(Math.log((w / h) / (width / height)))
+  }
+  return choices.reduce<typeof choices[number] | undefined>((best, choice) => !best || distance(choice) < distance(best) ? choice : best,
+    choices.find(choice => choice.resolution === current))?.resolution || current
+}
+
+const qualityRequirements: Record<string, string> = {
+  low: '低画质，简化细节',
+  standard: '标准画质，清楚呈现主体与构图',
+  medium: '标准画质，清楚呈现主体与构图',
+  high: '高画质，精细纹理与光影',
+  ultra: '超高画质，更丰富的微小细节与材质层次',
+  extreme: '极致画质，尽可能精确的细节、纹理与光影表现',
+}
+const backgroundRequirements: Record<string, string> = {
+  auto: '自动选择适合画面的背景',
+  preserve: '保留原有场景背景；有参考图时保留参考图的背景',
+  keep: '保留原有场景背景；有参考图时保留参考图的背景',
+  transparent: '透明背景，仅保留主体，不要绘制棋盘格或实色背景',
+}
+
+export function imagePreferencePrompt(model: Model, prompt: string, request: {
+  ratio: string; resolution: string | null; quality: string | null; clarity: string | null; background: string | null
+}): string {
+  if (model.modality !== 'image') return prompt
+  const requirements: string[] = []
+  const nativeSize = imageSizeChoices([request.resolution || ''])[0]
+  const usesSize = usesModelParameter(model, 'size', 'text') || usesModelParameter(model, 'resolution', 'text')
+  if (!usesModelParameter(model, 'ratio', 'text') && (!usesSize || nativeSize?.ratio !== request.ratio)) requirements.push(`画面比例：${request.ratio}`)
+  if (request.clarity && !usesModelParameter(model, 'clarity', 'text') && (!usesSize || nativeSize?.clarity !== request.clarity)
+    && !(usesSize && request.resolution === request.clarity)) requirements.push(`清晰度要求：${request.clarity}`)
+  if (request.quality && !usesModelParameter(model, 'quality', 'text')) requirements.push(`画质要求：${qualityRequirements[request.quality] || request.quality}`)
+  if (request.background && !usesModelParameter(model, 'background', 'text')) requirements.push(`背景要求：${backgroundRequirements[request.background] || request.background}`)
+  return requirements.length ? `${prompt}\n\n图片生成要求：\n${requirements.join('\n')}` : prompt
 }
 
 export function modelDefaultResolution(model: Model | undefined, resolutions: string[]): string {

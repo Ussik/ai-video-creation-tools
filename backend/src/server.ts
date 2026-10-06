@@ -12,8 +12,12 @@ import type { Asset, AssetReview, AssetTask, AssetTaskEvent, CanvasEdge, CanvasN
 import { decryptKey, encryptKey } from './secrets.js'
 import { generate, recoverImage, streamText } from './providers.js'
 import { parseStructuredOutput } from './structured-output.js'
-import { workflowRequest, workflowDraftSchema, workflowInstructions, parseWorkflowDraft, workflowReply } from './script-workflow.js'
+import { workflowRequest, workflowDraftInput, normalizeWorkflowRequest, workflowInstructions, parseWorkflowDraft, workflowReply } from './script-workflow.js'
 import { scriptSettingsSchema, scriptIntentPrompt, parseScriptIntent } from './script-intent.js'
+import { themeVisualInput, themeVisualPrompt, parseThemeVisuals } from './script-theme-visuals.js'
+import { isScriptThemeCategory } from './script-theme-catalog.js'
+import { inputFields, replyClassification, replyClassificationPrompt, parseReplyClassifications, replyClassificationVersion, replyFollowingMessages, type ReplySource } from './script-reply-classification.js'
+import { referenceDocuments, decodeReferenceDocuments, referenceContext } from './script-references.js'
 import { semanticContinuityPrompt, parseSemanticContinuity } from './continuity-semantics.js'
 import { fetchModelCatalog, type ModelCatalogConfig } from './model-catalog.js'
 import { extractVideoFrame, probeVideoDurationMs, render, type RenderClip } from './render.js'
@@ -80,6 +84,7 @@ const scriptConversationMessage = z.object({
   id: z.string().trim().min(1).max(120).optional(),
   role: z.enum(['assistant', 'user']),
   text: z.string().trim().min(1).max(8000),
+  reference_documents: referenceDocuments.optional(),
 }).strict()
 const scriptConversationInput = z.object({
   id: z.string().trim().min(1).max(120).optional(),
@@ -93,6 +98,7 @@ const scriptGenerationInput = z.object({
   target_duration: z.number().int().min(5).max(600).optional(),
   generation_options: scriptGenerationOptions.default({}),
   prompt_override: z.string().trim().min(1).max(500000).optional(),
+  reference_documents: referenceDocuments.optional(),
 })
 const scriptDirectorChatInput = z.object({
   model_id: z.string().min(1),
@@ -102,21 +108,34 @@ const scriptDirectorChatInput = z.object({
   workflow: workflowRequest.optional(),
   intent_context: z.object({ pending_draft: workflowRequest.optional(), selected_episode: z.number().int().min(1).max(200).optional() }).strict().optional(),
   adopt_source: z.object({ text: z.string().trim().min(1).max(20000), episode_number: z.number().int().min(1).max(200) }).strict().optional(),
+  question_response: z.object({ status: z.literal('skipped'), question: z.string().trim().min(1).max(1000) }).strict().optional(),
   messages: z.array(z.object({
     role: z.enum(['assistant', 'user']), text: z.string().trim().min(1).max(8000),
+    reference_documents: referenceDocuments.optional(),
   }).strict()).min(1).max(32),
 }).strict().superRefine((value, context) => {
+  if (Buffer.byteLength(JSON.stringify(value.messages.map(message => message.reference_documents || [])), 'utf8') > 610000) {
+    context.addIssue({ code: 'custom', message: '本轮引用文档总量不能超过 600 KB', path: ['messages'] })
+  }
+  if (value.messages.some(message => message.role !== 'user' && message.reference_documents?.length)) {
+    context.addIssue({ code: 'custom', message: '只有创作者消息可以引用文档', path: ['messages'] })
+  }
   if ((value.workflow || value.adopt_source) && value.focus_artifact !== 'all') {
     context.addIssue({ code: 'custom', message: '阶段创作不能用于视觉资产对话', path: ['workflow'] })
+  }
+  if (value.question_response && (value.workflow || value.adopt_source || value.focus_artifact !== 'all')) {
+    context.addIssue({ code: 'custom', message: '跳过问题只能继续剧本讨论，不能同时生成或采用文档', path: ['question_response'] })
   }
   if (value.messages.at(-1)?.role !== 'user') {
     context.addIssue({ code: 'custom', message: '最后一条对话必须是创作者消息', path: ['messages'] })
   }
-  if (value.messages.reduce((total, message) => total + Buffer.byteLength(message.text, 'utf8'), 0) > 40_000) {
-    context.addIssue({ code: 'custom', message: '对话内容不能超过 40 KB', path: ['messages'] })
+  // Match web/src/director-chat-context.ts. The former 40 KB cap rejected
+  // ordinary Chinese conversations well before their 32-message limit.
+  if (value.messages.reduce((total, message) => total + Buffer.byteLength(message.text, 'utf8'), 0) > 256_000) {
+    context.addIssue({ code: 'custom', message: '本轮对话上下文超过 256 KB，请减少历史消息', path: ['messages'] })
   }
 })
-const scriptGenerationPromptInput = scriptGenerationInput.omit({ model_id: true, prompt_override: true })
+const scriptGenerationPromptInput = scriptGenerationInput.omit({ model_id: true, prompt_override: true, reference_documents: true })
 const scriptDraftArtifact = z.object({
   artifact_type: scriptArtifactType,
   title: z.string().trim().max(160).optional(),
@@ -128,10 +147,10 @@ const scriptDraft = z.object({
   artifacts: z.array(scriptDraftArtifact).max(20).optional(),
 })
 const scriptCommitInput = scriptInput.extend({ artifacts: z.array(scriptArtifactInput).max(40).default([]) }).strict()
-const workflowCommitInput = workflowDraftSchema.safeExtend({
+const workflowCommitInput = workflowDraftInput.safeExtend({
   brief: z.string().trim().min(1).max(20000).optional(),
   generation_options: scriptGenerationOptions.optional(),
-})
+}).transform(normalizeWorkflowRequest)
 const sceneConversionInput = z.object({ scene_ids: z.array(z.string().min(1)).min(1).max(100) })
 const shotPlanningInput = z.object({
   model_id: z.string().min(1), scene_ids: z.array(z.string().min(1)).min(1).max(10),
@@ -739,6 +758,8 @@ function buildScriptGenerationPrompt(project: Project, data: z.infer<typeof scri
 
 function buildScriptDirectorChatPrompt(project: Project, data: z.infer<typeof scriptDirectorChatInput>, task?: { brief?: string; sourceText?: string }): string {
   const script = projectScript(project.id)
+  const episodeWorkflow = data.workflow?.stage === 'episode' ? data.workflow : undefined
+  const projectWorkflow = Boolean(data.workflow && !episodeWorkflow)
   const generationOptions = { ...script.generation_options, ...data.generation_options }
   const modeGuidance = data.mode === 'all'
     ? '兼顾故事构思、角色塑造、分场剧本和可制作性；根据创作者当前问题选择最相关的方向。'
@@ -754,14 +775,17 @@ function buildScriptDirectorChatPrompt(project: Project, data: z.infer<typeof sc
         ? '当前聚焦道具视觉资产。优先读取道具设计、剧情线索和相关场次，整理形态、材质、年代、使用痕迹、关键细节和叙事作用，后续可用于生成道具图。'
         : '当前为全能创作，按创作者的问题选择最相关的剧本产物，并在进入生成前确认范围和制作方式。'
   const context = {
+    ...(data.workflow ? { task_scope: data.workflow } : {}),
     project: { name: project.name, brief: project.brief.slice(0, 4000), ratio: project.ratio },
     script: {
       outline: script.outline.slice(0, 4000), characters: script.characters.slice(0, 4000),
       artifacts: (script.artifacts || [])
-        .filter(artifact => !data.workflow || !artifact.episode_number || artifact.episode_number === data.workflow.episode_number || artifact.episode_number === data.workflow.episode_number - 1)
+        .filter(artifact => (!projectWorkflow || !artifact.episode_number) && (!episodeWorkflow || !artifact.episode_number || artifact.episode_number === episodeWorkflow.episode_number || artifact.episode_number === episodeWorkflow.episode_number - 1))
         .slice(0, 16).map(artifact => ({ type: artifact.artifact_type, episode_number: artifact.episode_number, title: artifact.title, content: artifact.content.slice(0, data.workflow ? 20000 : 3000), status: artifact.status })),
       generation_options: generationOptions,
-      recent_scenes: script.scenes.filter(scene => !data.workflow || !scene.episode_number || scene.episode_number === data.workflow.episode_number || scene.episode_number === data.workflow.episode_number - 1).slice(-8).map(scene => ({
+      ...(projectWorkflow ? { saved_episodes: (script.artifacts || []).filter(artifact => artifact.artifact_type === 'episode_script' && artifact.episode_number)
+        .map(artifact => ({ episode_number: artifact.episode_number, title: artifact.title, summary: artifact.content.slice(0, 800) })) } : {}),
+      recent_scenes: script.scenes.filter(scene => !episodeWorkflow || !scene.episode_number || scene.episode_number === episodeWorkflow.episode_number || scene.episode_number === episodeWorkflow.episode_number - 1).slice(-8).map(scene => ({
         episode_number: scene.episode_number,
         heading: scene.heading.slice(0, 200), location: scene.location.slice(0, 200),
         time_of_day: scene.time_of_day.slice(0, 100), characters: scene.characters.slice(0, 500),
@@ -774,7 +798,7 @@ function buildScriptDirectorChatPrompt(project: Project, data: z.infer<typeof sc
     `${message.role === 'assistant' ? '导演' : '创作者'}：${message.text}`).join('\n')
   if (data.workflow) return `你是项目「${project.name}」的影视编剧。${modeGuidance}\n` +
     `项目中已确认的事实优先保持；根据最新创作者决定补充本轮文档。每条人物、地点和道具资料都应具体并服务于后续拍摄，避免泛泛而谈。\n` +
-    `项目与剧本上下文：\n${JSON.stringify(context)}\n本次创作要求：\n${task?.brief || data.messages.at(-1)!.text}\n${workflowInstructions(data.workflow)}` +
+    `项目与剧本上下文：\n${JSON.stringify(context)}${referenceContext(data.messages)}\n本次创作要求：\n${task?.brief || data.messages.at(-1)!.text}\n${workflowInstructions(data.workflow)}` +
     (task?.sourceText ? `\n这是采用已有正文任务：不要重新创作或更改正文。只将以下原文拆成可制作的场次，保留人物、事件、对白和顺序；正文必须逐字保留。不要因制作片段预算缩短完整剧本。如果原文不是完整或部分剧本正文，不得虚构场次，返回空 scenes 表示无法采用。\n待采用正文：\n${task.sourceText}` : '')
   return `你是项目「${project.name}」的剧本导演，正在和创作者进行多轮剧本讨论。\n` +
     `当前创作模式：${data.mode}；当前任务：${focusLabels[data.focus_artifact]}。${modeGuidance}\n` +
@@ -782,10 +806,13 @@ function buildScriptDirectorChatPrompt(project: Project, data: z.infer<typeof sc
     `请结合项目与现有剧本上下文，接续最后一条创作者消息。先针对当前问题给出具体、有判断的回应；需要补充信息时一次只问一个关键问题。尊重对话中已确定的设定，发现冲突时指出冲突并提出修正建议。不要擅自声称已修改或保存项目数据；除非创作者明确要求，否则不要一次性重写整份剧本。\n` +
     `当你需要创作者从多个方向中明确选择时，必须只返回一个合法 JSON 对象，不加 Markdown 代码围栏或其他文字，格式为：` +
     `{"kind":"choices","question":"本轮唯一待回答的问题","intro":"对当前需求的具体回应与方向说明","options":[{"id":"稳定标识","title":"简短选择标题","text":"完整解释这个方向的故事核心、冲突和情绪效果"},{"id":"另一个标识","title":"另一个简短标题","text":"另一个方向的完整说明"}],"trailing":"推荐理由或选定后如何推进"}。` +
-    `options 必须包含 2 到 8 个有意义且互不重复的选择，每项都要有唯一的简短 id、供底部选择按钮使用的 title（建议不超过30字）和供对话正文展示的完整 text。text 必须独立完整且包含方向标题，不能只返回标签；intro、text 和 trailing 应清楚说明创作建议及取舍，不要压缩成泛泛的选项列表。界面始终提供自由填写其他想法的入口，无需另加“我有别的想法”选项。一次只问一个关键问题。不要用字母、数字、项目符号等普通文本列表代替这个结构。普通讨论、解释或开放式追问继续直接用自然语言，不要输出 JSON。\n` +
+    `options 必须包含 2 到 8 个有意义且互不重复的选择，每项都要有唯一的简短 id、供底部选择按钮使用的 title（建议不超过30字）和供对话正文展示的完整 text。text 必须独立完整且包含方向标题，不能只返回标签；intro、text 和 trailing 应清楚说明创作建议及取舍，不要压缩成泛泛的选项列表。界面始终提供自由填写其他想法的入口，无需另加“我有别的想法”选项。一次只问一个关键问题。不要用字母、数字、项目符号等普通文本列表代替这个结构。普通讨论和解释继续直接用自然语言。\n` +
+    `需要创作者填写具体设定而非从完整方案择一时，直接返回 {"kind":"input_request","question":"本轮要确定的事项","intro":"为什么需要确认这项","fields":[{"id":"稳定标识","label":"待填写事项","suggestions":["可选参考"]}],"trailing":"填写后如何推进"}。fields 为1到4个同一决策相关的必要字段。suggestions 可省略；提供参考时明确只是参考且允许自定义，不把人物身份例子编成互斥的完整组合。不要只在普通正文末尾追问而不给填写入口；不要重复询问已确定的信息。开放追问用 input_request，不强迫生成 choices。\n` +
+    `已确认的上一轮选择与新问题必须区分。不要将数个开放追问和选择题塞进同一段；先用 choices 问当前最关键的一项。二选一、全部保留还是只保留部分等范围选择也必须使用 choices。如果某个原方案必须补充具体人选或范围，在该选项上增加 requires_details:true；不要替创作者决定未指定的人选。\n` +
     `项目默认集数、时长是暂定值，不能把创作者尚未确认的默认值称为已确认；需要建议时说明理由并允许修改。\n` +
+    (data.question_response ? `本轮创作者点击了“跳过”，对应问题：${JSON.stringify(data.question_response.question)}。这项保留待定，跳过不等于确认任何选项，也不授权生成或保存文档。先简短承接跳过决定，再基于已确认内容给出有用的推进建议或下一个必要的不同事项。不要立即重复这个问题，不要擅自把未提交的填写内容当作已确认设定；若必须使用相关假设，明确标注为暂定建议。\n` : '') +
     `项目与剧本上下文：\n${JSON.stringify(context)}\n` +
-    `对话记录：\n${conversation}\n` +
+    `${referenceContext(data.messages)}对话记录：\n${conversation}\n` +
     `请直接给出导演的下一条回复。先确认故事方向，再推进大纲、人物、场景、道具和指定集正文。只追问尚未明确且会改变创作结果的信息；创作者已经给出集数、时长或选择时，不要重复询问。`
 }
 
@@ -793,9 +820,11 @@ type DirectorInput = z.infer<typeof scriptDirectorChatInput>
 
 async function resolveDirectorIntent(project: Project, data: DirectorInput, model: Model, provider: Provider,
   signal?: AbortSignal): Promise<{ data: DirectorInput; brief?: string; sourceText?: string; reply?: string }> {
+  // Skipping is an explicit UI operation, not an ambiguous request to draft.
+  if (data.question_response) return { data }
   if (data.adopt_source) {
     if (data.intent_context?.pending_draft) return { data, reply: '当前还有待确认草稿。请先保存或放弃它，再采用这段正文。' }
-    return { data: { ...data, workflow: { stage: 'episode', episode_number: data.adopt_source.episode_number,
+    return { data: { ...data, workflow: { stage: 'episode', scope: 'episode', episode_number: data.adopt_source.episode_number,
       target_duration: data.generation_options.episode_duration } }, sourceText: data.adopt_source.text,
       brief: '将创作者选中的既有正文整理为本集草稿，逐字保留正文，只整理分场。' }
   }
@@ -808,8 +837,9 @@ async function resolveDirectorIntent(project: Project, data: DirectorInput, mode
     saved_settings: script.generation_options, current_settings: data.generation_options,
     documents: (script.artifacts || []).map(item => ({ type: item.artifact_type,
       episode_number: item.episode_number, title: item.title, status: item.status, summary: item.content.slice(0, 800) })),
-    state: data.intent_context || {}, mode: data.mode, explicit_workflow: data.workflow,
-    messages: data.messages.map((message, index) => ({ index, ...message })),
+    state: data.workflow?.scope === 'project' ? { pending_draft: data.intent_context?.pending_draft } : data.intent_context || {}, mode: data.mode, explicit_workflow: data.workflow,
+    messages: data.messages.map(({ role, text, reference_documents }, index) => ({ index, role, text,
+      reference_documents: reference_documents?.map(({ content: _content, ...metadata }) => metadata) })),
   })
   const raw = await streamText(model, provider, { prompt }, item => decryptKey(item.key_ciphertext || null), () => {}, signal)
   const intent = parseScriptIntent(raw)
@@ -841,6 +871,24 @@ function directorResult(raw: string, data: DirectorInput, sourceText?: string) {
   return { reply }
 }
 
+function replyTextHash(text: string, context?: unknown) { return createHash('sha256').update(JSON.stringify([replyClassificationVersion, text.trim(), context ?? null])).digest('hex') }
+
+function cachedReplyClassification(projectId: string, source: ReplySource) {
+  for (const hash of [replyTextHash(source.text, source.following_messages || []), replyTextHash(source.text)]) {
+    const cached = one<{ classification: string }>('SELECT classification FROM script_reply_classifications WHERE project_id=? AND message_id=? AND text_hash=?', projectId, source.id, hash)
+    if (cached) { const parsed = replyClassification.safeParse(JSON.parse(cached.classification)); if (parsed.success) return parsed.data }
+  }
+  return null
+}
+
+function classifiedMessage(projectId: string, message: ScriptMessage, following_messages: ReplySource['following_messages']) {
+  const decoded = { ...message, reference_documents: decodeReferenceDocuments(message.reference_documents) }
+  if (message.role !== 'assistant') return decoded
+  const classification = cachedReplyClassification(projectId, { ...message, following_messages })
+  return classification ? { ...decoded, classification, classification_version: replyClassificationVersion,
+    ...(['choice_request', 'input_request'].includes(classification.type) ? { classification_context: JSON.stringify(following_messages) } : {}) } : decoded
+}
+
 function normalizeScriptDirectorReply(raw: string): string {
   const trimmed = raw.trim()
   let value: unknown
@@ -851,7 +899,7 @@ function normalizeScriptDirectorReply(raw: string): string {
     const envelope = value as Record<string, unknown>
     if (envelope.kind === 'text' && typeof envelope.text === 'string' && envelope.text.trim()) return envelope.text.trim()
   }
-  if (!value || typeof value !== 'object' || Array.isArray(value) || (value as Record<string, unknown>).kind !== 'choices') {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !['choices', 'input_request'].includes(String((value as Record<string, unknown>).kind))) {
     value = null
     for (let candidateStart = 0; candidateStart < trimmed.length; candidateStart++) {
       if (trimmed[candidateStart] !== '{') continue
@@ -871,7 +919,7 @@ function normalizeScriptDirectorReply(raw: string): string {
         else if (char === '}' && --depth === 0) {
           try {
             const parsed: unknown = JSON.parse(trimmed.slice(candidateStart, index + 1))
-            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && (parsed as Record<string, unknown>).kind === 'choices') {
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && ['choices', 'input_request'].includes(String((parsed as Record<string, unknown>).kind))) {
               value = parsed
               start = candidateStart
               end = index + 1
@@ -886,6 +934,13 @@ function normalizeScriptDirectorReply(raw: string): string {
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return trimmed
   const payload = value as Record<string, unknown>
+  if (payload.kind === 'input_request') {
+    const fields = inputFields.safeParse(payload.fields)
+    if (!fields.success || typeof payload.question !== 'string' || !payload.question.trim()) return trimmed
+    return JSON.stringify({ kind: 'input_request', question: payload.question.trim(), fields: fields.data,
+      intro: [trimmed.slice(0, start).trim(), typeof payload.intro === 'string' ? payload.intro.trim() : ''].filter(Boolean).join('\n\n'),
+      trailing: [typeof payload.trailing === 'string' ? payload.trailing.trim() : '', trimmed.slice(end).trim()].filter(Boolean).join('\n\n') })
+  }
   if (payload.kind !== 'choices') return trimmed
   if (typeof payload.question !== 'string' || !payload.question.trim() || !Array.isArray(payload.options)) return trimmed
   const options = payload.options.flatMap((entry, index) => {
@@ -894,7 +949,8 @@ function normalizeScriptDirectorReply(raw: string): string {
     if (typeof option.text !== 'string' || !option.text.trim()) return []
     const id = typeof option.id === 'string' && option.id.trim() ? option.id.trim() : String(index + 1)
     const title = typeof option.title === 'string' && option.title.trim() ? option.title.trim().slice(0, 80) : undefined
-    return [{ id: id.slice(0, 80), ...(title ? { title } : {}), ...(option.kind === 'custom' ? { kind: 'custom' } : {}), text: option.text.trim().slice(0, 1200) }]
+    return [{ id: id.slice(0, 80), ...(title ? { title } : {}), ...(option.kind === 'custom' ? { kind: 'custom' } : {}),
+      ...(option.requires_details === true ? { requires_details: true } : {}), text: option.text.trim().slice(0, 1200) }]
   })
   if (options.length < 2 || options.length > 8 || new Set(options.map(option => option.id)).size !== options.length) return trimmed
   const intro = [trimmed.slice(0, start).trim(), typeof payload.intro === 'string' ? payload.intro.trim() : '']
@@ -1816,13 +1872,73 @@ export function buildApp(): FastifyInstance {
     const { id } = parse(idParams, request.params)
     required<Project>('projects', id)
     const conversations = all<ScriptConversation>('SELECT * FROM script_conversations WHERE project_id=? ORDER BY updated_at DESC LIMIT 30', id)
-      .map(conversation => ({
-        ...conversation,
-        messages: all<ScriptMessage>('SELECT id, conversation_id, position, role, text, created_at FROM script_messages WHERE conversation_id=? ORDER BY position', conversation.id),
-      }))
+      .map(conversation => {
+        const messages = all<ScriptMessage>('SELECT id, conversation_id, position, role, text, reference_documents, created_at FROM script_messages WHERE conversation_id=? ORDER BY position', conversation.id)
+        return { ...conversation, messages: messages.map((message, index) => classifiedMessage(id, message, replyFollowingMessages(messages, index))) }
+      })
     return { conversations }
   })
-  app.put('/api/projects/:id/script/conversations', async request => {
+  app.post('/api/projects/:id/script/themes/visuals', async request => {
+    const { id } = parse(idParams, request.params)
+    required<Project>('projects', id)
+    const data = parse(themeVisualInput, request.body)
+    // An exact catalog identity is metadata, not a semantic inference.
+    if ((!data.genre || isScriptThemeCategory(data.genre)) && (!data.genre_fusion || isScriptThemeCategory(data.genre_fusion))) {
+      return { primary: data.genre || null, fusion: data.genre_fusion || null }
+    }
+    const model = required<Model>('models', data.model_id)
+    if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
+    checkProtocol(model.modality, model.protocol)
+    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>)
+    const provider = required<Provider>('providers', model.provider_id)
+    if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用')
+    // A read-only, isolated classification; it never patches generation options
+    // or advances the director's conversation/workflow.
+    return parseThemeVisuals(await generateTextOutput(model, provider, id, themeVisualPrompt(data)), data)
+  })
+  app.post('/api/projects/:id/script/replies/classify', async request => {
+    const { id } = parse(idParams, request.params)
+    required<Project>('projects', id)
+    const data = parse(z.object({
+      model_id: z.string().min(1),
+      force: z.boolean().optional(),
+      messages: z.array(z.object({
+        id: z.string().trim().min(1).max(120), text: z.string().trim().min(1).max(8000),
+        following_messages: z.array(z.object({ role: z.enum(['assistant', 'user']), text: z.string().max(300) }).strict()).max(8).optional(),
+      }).strict()).min(1).max(10),
+    }).strict(), request.body)
+    if (new Set(data.messages.map(item => item.id)).size !== data.messages.length) invalid('消息 ID 不可重复')
+    if (data.force && data.messages.length !== 1) invalid('重新识别仅支持当前单条回复')
+    if (Buffer.byteLength(JSON.stringify(data.messages), 'utf8') > 40_000) invalid('识别内容不能超过 40 KB')
+    const model = required<Model>('models', data.model_id)
+    if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
+    checkProtocol(model.modality, model.protocol)
+    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>)
+    const provider = required<Provider>('providers', model.provider_id)
+    if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用')
+    const results: Array<{ id: string; classification: z.infer<typeof replyClassification> }> = []
+    const missing = data.messages.filter(message => {
+      const cached = data.force ? null : cachedReplyClassification(id, message)
+      if (!cached) return true
+      results.push({ id: message.id, classification: cached })
+      return false
+    })
+    if (missing.length) {
+      const analyzed = parseReplyClassifications(await generateTextOutput(model, provider, id, replyClassificationPrompt(missing)), missing.map(item => item.id))
+      db.transaction(() => {
+        for (const result of analyzed) {
+          const source = missing.find(item => item.id === result.id)!
+          if (data.force) run('DELETE FROM script_reply_classifications WHERE project_id=? AND message_id=? AND text_hash IN (?, ?)',
+            id, source.id, replyTextHash(source.text), replyTextHash(source.text, source.following_messages || []))
+          run(`INSERT OR REPLACE INTO script_reply_classifications (project_id, message_id, text_hash, classification, model_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)`, id, result.id, replyTextHash(source.text, ['choice_request', 'input_request'].includes(result.classification.type) ? source.following_messages || [] : undefined), JSON.stringify(result.classification), model.id, now())
+        }
+      })()
+      results.push(...analyzed)
+    }
+    return { classification_version: replyClassificationVersion, messages: results }
+  })
+  app.put('/api/projects/:id/script/conversations', { bodyLimit: 26 * 1024 * 1024 }, async request => {
     const { id } = parse(idParams, request.params)
     required<Project>('projects', id)
     const data = parse(scriptConversationInput, request.body)
@@ -1844,8 +1960,8 @@ export function buildApp(): FastifyInstance {
         run('INSERT INTO script_conversations (id, project_id, label, created_at, updated_at) VALUES (?, ?, ?, ?, ?)', conversationId, id, label, timestamp, timestamp)
       }
       data.messages.forEach((message, position) => run(
-        'INSERT INTO script_messages (id, conversation_id, position, role, text, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-        message.id || newId(), conversationId, position, message.role, message.text, timestamp,
+        'INSERT INTO script_messages (id, conversation_id, position, role, text, reference_documents, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        message.id || newId(), conversationId, position, message.role, message.text, JSON.stringify(message.reference_documents || []), timestamp,
       ))
       run(`DELETE FROM script_conversations WHERE project_id=? AND id NOT IN (
         SELECT id FROM script_conversations WHERE project_id=? ORDER BY updated_at DESC LIMIT 30
@@ -1853,7 +1969,7 @@ export function buildApp(): FastifyInstance {
     })()
     return {
       ...required<ScriptConversation>('script_conversations', conversationId),
-      messages: all<ScriptMessage>('SELECT id, conversation_id, position, role, text, created_at FROM script_messages WHERE conversation_id=? ORDER BY position', conversationId),
+      messages: all<ScriptMessage>('SELECT id, conversation_id, position, role, text, reference_documents, created_at FROM script_messages WHERE conversation_id=? ORDER BY position', conversationId).map(message => ({ ...message, reference_documents: decodeReferenceDocuments(message.reference_documents) })),
     }
   })
   app.post('/api/projects/:id/script/scenes', async request => {
@@ -2022,7 +2138,7 @@ export function buildApp(): FastifyInstance {
     const data = parse(scriptGenerationPromptInput, request.body)
     return { prompt: buildScriptGenerationPrompt(project, data) }
   })
-  app.post('/api/projects/:id/script/director/chat', async request => {
+  app.post('/api/projects/:id/script/director/chat', { bodyLimit: 3 * 1024 * 1024 }, async request => {
     const { id } = parse(idParams, request.params)
     const project = required<Project>('projects', id)
     const data = parse(scriptDirectorChatInput, request.body)
@@ -2037,7 +2153,7 @@ export function buildApp(): FastifyInstance {
       await generateTextOutput(model, provider, id, buildScriptDirectorChatPrompt(project, resolved.data, resolved)), resolved.data, resolved.sourceText)
     return { ...result, generation_options: resolved.data.generation_options }
   })
-  app.post('/api/projects/:id/script/director/chat/stream', async (request, reply) => {
+  app.post('/api/projects/:id/script/director/chat/stream', { bodyLimit: 3 * 1024 * 1024 }, async (request, reply) => {
     const { id } = parse(idParams, request.params)
     const project = required<Project>('projects', id)
     const data = parse(scriptDirectorChatInput, request.body)
@@ -2114,9 +2230,9 @@ export function buildApp(): FastifyInstance {
     validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>)
     const provider = required<Provider>('providers', model.provider_id)
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
-    const prompt = data.prompt_override
+    const prompt = (data.prompt_override
       ? appendMissingScriptSettings(data.prompt_override, data.generation_options)
-      : buildScriptGenerationPrompt(project, data)
+      : buildScriptGenerationPrompt(project, data)) + referenceContext([{ role: 'user', text: data.idea || '生成完整剧本草稿', reference_documents: data.reference_documents }])
     const raw = await generateTextOutput(model, provider, id, prompt)
     const draft = parseStructuredOutput(raw, scriptDraft)
     if (!draft) return reply.code(422).send({

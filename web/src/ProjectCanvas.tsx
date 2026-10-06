@@ -25,8 +25,9 @@ import CanvasComposerToolbar from './CanvasComposerToolbar'
 import { useAppDialog } from './AppDialog'
 import { CanvasGenerationParameters, CanvasVideoModeMenu } from './CanvasGenerationControls'
 import type { JSONContent } from '@tiptap/core'
-import { generationCost, imageParameterOptions, modelDefaultResolution, resolutionRatio, usesModelParameter } from './canvas-model-parameters'
+import { generationCost, imageParameterOptions, imageParameterValue, imagePreferencePrompt, imageRatios, imageRequestResolution, modelDefaultResolution, usesModelParameter } from './canvas-model-parameters'
 import { parseScriptDocument } from './script-rich-document'
+import { textDocumentText } from './text-document'
 import './project-canvas.css'
 
 type CanvasMode = 'text' | 'first_frame' | 'first_last_frame' | 'reference' | 'edit' | 'extend'
@@ -191,7 +192,7 @@ export interface ProjectCanvasProps {
 function draftKey(projectId: string) { return `project-canvas-draft:${projectId}` }
 function autoImportKey(projectId: string) { return `project-canvas-imported:${projectId}` }
 function viewportKey(projectId: string) { return `project-canvas-viewport:${projectId}` }
-function minimapKey(projectId: string) { return `project-canvas-minimap:${projectId}` }
+function minimapKey(projectId: string) { return `project-canvas-minimap:v2:${projectId}` }
 
 function readCanvasViewport(projectId: string): CanvasViewport | null {
   try {
@@ -443,7 +444,7 @@ function modelRatios(model?: Model): string[] {
   return Array.isArray(values) && values.some((value) => typeof value === 'string')
     ? values.filter((value): value is string => typeof value === 'string')
     : model?.modality === 'image'
-      ? ['1:1', '1:2', '2:1', '9:16', '16:9', '3:4', '4:3', '3:2', '2:3', '5:4', '4:5', '21:9', '9:21']
+      ? imageRatios
       : ['16:9', '9:16', '4:3', '3:4', '1:1', '21:9', 'adaptive']
 }
 
@@ -480,9 +481,8 @@ function NodeMedia({ asset, controls = false }: { asset?: Asset; controls?: bool
 }
 
 function nodeDimensionLabel(node: CanvasNode, model?: Model): string {
-  if (node.type === 'generation' && node.settings.modality === 'image' && model && !usesModelParameter(model, 'ratio')) {
-    const resolution = node.settings.resolution || modelDefaultResolution(model, modelResolutions(model))
-    return [resolution, resolutionRatio(resolution)].filter(Boolean).join(' · ')
+  if (node.type === 'generation' && node.settings.modality === 'image' && model) {
+    return [imageParameterValue(model, 'clarity', node.settings.clarity), node.settings.ratio].filter(Boolean).join(' · ')
   }
   if (node.type === 'text') return ''
   const resolution = typeof node.settings.clarity === 'string' && node.settings.clarity.trim()
@@ -605,11 +605,17 @@ function StudioNode({ data, selected }: NodeProps<FlowNode>) {
         {(() => {
           if (scriptSection === 'episodes') {
             const episodes = (data.scriptArtifacts || []).filter(item => item.artifact_type === 'episode_script' && (item.episode_number || 0) > 0).sort((a, b) => (a.episode_number || 0) - (b.episode_number || 0))
-            return episodes.length ? <div className="pc-script-episodes">{episodes.map(artifact => <button key={artifact.id} type="button" onClick={event => { event.stopPropagation(); data.onOpenScriptDocument?.(artifact) }}><FileText size={16} /><span><strong>{artifact.title}</strong><small>已保存 · 点击编辑本集</small></span><ChevronDown size={14} /></button>)}</div> : <div>暂无已保存的分集剧本。可在剧本对话中创作，或采用已有正文并确认保存。<button type="button" onClick={event => { event.stopPropagation(); data.onOpenScriptDirector('all') }}>打开剧本对话</button></div>
+            return episodes.length ? <div className="pc-script-episodes">{episodes.map(artifact => <button key={artifact.id} type="button" onClick={event => { event.stopPropagation(); data.onOpenScriptDocument?.(artifact) }}><FileText size={16} /><span><strong>{artifact.title}</strong><small>已保存 · 点击编辑本集</small></span><ChevronDown size={14} /></button>)}</div> : <div className="pc-script-empty-state">
+              <strong>还没有分集剧本</strong>
+              <p>在对话中创作本集，确认保存后即可制作分镜。</p>
+              <button type="button" className="pc-project-script-edit" aria-label="打开分集创作对话" onClick={event => { event.stopPropagation(); data.onOpenScriptDirector('all') }}><MessageSquare size={14} />打开剧本对话</button>
+            </div>
           }
           const artifact = data.scriptArtifacts?.find((item) => item.artifact_type === scriptSection)
           const content = artifact?.content?.trim() || (scriptSection === 'outline' ? data.scriptOutline?.trim() : '')
-          return content ? <CanvasTextPreview text={content} document={parseScriptDocument(content)} /> : `暂无${scriptSection === 'outline' ? '故事大纲' : scriptSection === 'characters' ? '人物小传' : scriptSection === 'locations' ? '场景设计' : '道具设计'}，可在导演对话中生成`
+          if (!content) return `暂无${scriptSection === 'outline' ? '故事大纲' : scriptSection === 'characters' ? '人物小传' : scriptSection === 'locations' ? '场景设计' : '道具设计'}，可在导演对话中生成`
+          const document = parseScriptDocument(content)
+          return <CanvasTextPreview text={textDocumentText(document)} document={document} />
         })()}
       </div>
     </div> : node.type === 'generation' ? <>
@@ -674,7 +680,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const [composerRevealKey, setComposerRevealKey] = useState(0)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [showEdges, setShowEdges] = useState(true)
-  const [showMinimap, setShowMinimap] = useState(true)
+  const [showMinimap, setShowMinimap] = useState(false)
   const [minimapPosition, setMinimapPosition] = useState<MiniMapPosition | null>(null)
   const [viewportZoom, setViewportZoom] = useState(100)
   const [savedViewport, setSavedViewport] = useState<CanvasViewport | null>(null)
@@ -998,6 +1004,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     setSavedViewport(rememberedViewport)
     setViewportZoom(Math.round((rememberedViewport?.zoom || 1) * 100))
     setMinimapPosition(readMiniMapPosition(detail.id))
+    setShowMinimap(false)
     setShowEdges(true)
     dragSnapshotRef.current = null
     initialViewApplied.current = false
@@ -1124,9 +1131,9 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         mode: node.settings.mode && (!model || modes.includes(node.settings.mode)) ? node.settings.mode : modes[0] || 'text',
         duration: model?.modality === 'video' ? modelDuration(model, node.settings.duration || shotMap.get(node.shot_id || '')?.duration || 5) : node.settings.duration,
         resolution: model?.modality === 'text' ? null : modelDefaultResolution(model, modelResolutions(model)) || null,
-        clarity: model?.modality === 'image' ? modelImageClarities(model)[0] || null : undefined,
-        quality: model?.modality === 'image' ? modelImageQualities(model)[0] || null : undefined,
-        background: model?.modality === 'image' ? modelImageBackgrounds(model)[0] || null : undefined,
+        clarity: model?.modality === 'image' ? imageParameterValue(model, 'clarity') : undefined,
+        quality: model?.modality === 'image' ? imageParameterValue(model, 'quality') : undefined,
+        background: model?.modality === 'image' ? imageParameterValue(model, 'background') : undefined,
         ratio: modelRatios(model).includes(detail.ratio) ? detail.ratio : modelRatios(model)[0], draft: false } }
       : node) }))
   }, [changeGraph, modelMap, shotMap, detail.ratio])
@@ -1299,15 +1306,14 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const composerResolutions = modelResolutions(composerModel)
   const composerResolution = selectedNode?.settings.resolution || modelDefaultResolution(composerModel, composerResolutions)
   const composerClarities = composerModality === 'image' ? modelImageClarities(composerModel) : []
-  const composerClarity = composerClarities.includes(selectedNode?.settings.clarity || '') ? selectedNode!.settings.clarity || '' : composerClarities[0] || ''
+  const composerClarity = imageParameterValue(composerModel, 'clarity', selectedNode?.settings.clarity)
   const composerQualities = composerModality === 'image' ? modelImageQualities(composerModel) : []
-  const composerQuality = composerQualities.includes(selectedNode?.settings.quality || '') ? selectedNode!.settings.quality || '' : composerQualities[0] || ''
+  const composerQuality = imageParameterValue(composerModel, 'quality', selectedNode?.settings.quality)
   const composerBackgrounds = composerModality === 'image' ? modelImageBackgrounds(composerModel) : []
-  const composerBackground = composerBackgrounds.includes(selectedNode?.settings.background || '') ? selectedNode!.settings.background || '' : composerBackgrounds[0] || ''
+  const composerBackground = imageParameterValue(composerModel, 'background', selectedNode?.settings.background)
   const selectedMode = selectedNode?.settings.mode || 'text'
   const composerUsesReferenceRatio = composerModality === 'video' && ['first_frame', 'first_last_frame', 'edit', 'extend'].includes(selectedMode)
-  const imageSizeRatio = composerModality === 'image' && !usesModelParameter(composerModel, 'ratio') ? resolutionRatio(composerResolution) : null
-  const composerRatio = composerUsesReferenceRatio ? 'adaptive' : imageSizeRatio || selectedNode?.settings.ratio || detail.ratio
+  const composerRatio = composerUsesReferenceRatio ? 'adaptive' : selectedNode?.settings.ratio || detail.ratio
   const incoming = graph?.edges.filter((edge) => edge.target === selectedNodeId)
     .map((edge) => graph.nodes.find((node) => node.id === edge.source)).filter((node): node is CanvasNode => !!node) || []
   // A generator-to-result edge records provenance, not an extra reference.
@@ -1443,7 +1449,6 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     const modality: CanvasModality = model?.modality || 'image'
     const position = { x: selectedNode.x + selectedNode.width + 170, y: selectedNode.y }
     const nextResolutions = modelResolutions(model)
-    const nextClarities = modelImageClarities(model)
     const nextRatios = modelRatios(model)
     const node: CanvasNode = {
       ...blankNode('generation', position.x, position.y),
@@ -1454,13 +1459,13 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       settings: { modality, prompt_override: true, ratio: nextRatios.includes(composerRatio) ? composerRatio : nextRatios[0],
         resolution: nextResolutions.includes(composerResolution) ? composerResolution : nextResolutions[0] || null,
         clarity: modality === 'image'
-          ? (nextClarities.includes(composerClarity) ? composerClarity : nextClarities[0] || null)
+          ? imageParameterValue(model, 'clarity', composerClarity)
           : undefined,
         quality: modality === 'image'
-          ? (modelImageQualities(model).includes(composerQuality) ? composerQuality : modelImageQualities(model)[0] || null)
+          ? imageParameterValue(model, 'quality', composerQuality)
           : undefined,
         background: modality === 'image'
-          ? (modelImageBackgrounds(model).includes(composerBackground) ? composerBackground : modelImageBackgrounds(model)[0] || null)
+          ? imageParameterValue(model, 'background', composerBackground)
           : undefined,
         duration: modality === 'video' ? composerDuration : undefined, generate_audio: selectedNode.settings.generate_audio,
         candidate_count: selectedNode.settings.candidate_count,
@@ -1998,10 +2003,11 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       return
     }
     const ratio = ['first_frame', 'first_last_frame', 'edit', 'extend'].includes(mode)
-      ? 'adaptive' : imageSizeRatio || selectedNode.settings.ratio || detail.ratio
+      ? 'adaptive' : selectedNode.settings.ratio || detail.ratio
     const clarity = model.modality === 'image'
-      ? (modelImageClarities(model).includes(selectedNode.settings.clarity || '') ? selectedNode.settings.clarity : modelImageClarities(model)[0] || null) : null
-    const resolution = selectedNode.settings.resolution || (model.modality === 'text' ? null : modelDefaultResolution(model, resolutions) || null)
+      ? imageParameterValue(model, 'clarity', selectedNode.settings.clarity) : null
+    const baseResolution = selectedNode.settings.resolution || (model.modality === 'text' ? null : modelDefaultResolution(model, resolutions) || null)
+    const resolution = model.modality === 'image' ? imageRequestResolution(model, baseResolution || '', { ratio, clarity: clarity || '' }) : baseResolution
     const supportedResolutions = modelResolutions(model)
     if (model.modality !== 'text' && resolution && !supportedResolutions.includes(resolution)) {
       setNotice('当前模型不支持所选分辨率，请重新选择')
@@ -2011,10 +2017,11 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       setNotice('当前模型不支持所选画幅，请重新选择')
       return
     }
-    const quality = model.modality === 'image' ? (modelImageQualities(model).includes(selectedNode.settings.quality || '') ? selectedNode.settings.quality : modelImageQualities(model)[0] || null) : null
-    const background = model.modality === 'image' ? (modelImageBackgrounds(model).includes(selectedNode.settings.background || '') ? selectedNode.settings.background : modelImageBackgrounds(model)[0] || null) : null
+    const quality = model.modality === 'image' ? imageParameterValue(model, 'quality', selectedNode.settings.quality) : null
+    const background = model.modality === 'image' ? imageParameterValue(model, 'background', selectedNode.settings.background) : null
     const request: GenerationRequest = {
-      shot_id: shot?.id || '', model_id: model.id, prompt: compiledPrompt.trim(), mode,
+      shot_id: shot?.id || '', model_id: model.id,
+      prompt: imagePreferencePrompt(model, compiledPrompt.trim(), { ratio, resolution, clarity, quality, background }), mode,
       reference_asset_ids: inputImages.map((asset) => asset.id),
       reference_video_url: videoUrl || null, resolution, clarity, quality, background, duration, ratio,
       generate_audio: supportsAudio ? selectedNode.settings.generate_audio ?? true : false,
@@ -2496,7 +2503,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                   {composerModel && composerModel.modality !== 'text' && <>
                     <span className="pc-composer-divider" />
                     <CanvasGenerationParameters key={`params:${selectedNode.id}:${composerModel.id}`} modality={composerModel.modality}
-                      ratios={composerUsesReferenceRatio ? ['adaptive'] : composerModality === 'image' && !usesModelParameter(composerModel, 'ratio') ? [] : modelRatios(composerModel)} ratio={composerRatio} resolutions={composerResolutions} resolution={composerResolution}
+                      ratios={composerUsesReferenceRatio ? ['adaptive'] : modelRatios(composerModel)} ratio={composerRatio} resolutions={composerResolutions} resolution={composerResolution}
                       clarities={composerClarities} clarity={composerClarity} qualities={composerQualities} quality={composerQuality} backgrounds={composerBackgrounds} background={composerBackground}
                       duration={composerDuration} minDuration={durationMin} maxDuration={durationMax}
                       showDuration={composerModel.modality === 'video' && selectedMode !== 'edit'}
@@ -2593,14 +2600,14 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
 
     </div>
     {notice && <div className="pc-notice" role="status"><span>{notice}</span><button aria-label="关闭提示" onClick={() => setNotice(null)}><X size={14} /></button></div>}
-    <Modal opened={!!review} onClose={() => { if (!busy) setReview(null) }} closeOnEscape={!busy} closeOnClickOutside={!busy} title="确认生成任务" centered size="lg">
+    <Modal classNames={{ content: 'pc-confirm-modal', header: 'pc-confirm-modal-header', body: 'pc-confirm-modal-body', close: 'pc-confirm-modal-close' }} opened={!!review} onClose={() => { if (!busy) setReview(null) }} closeOnEscape={!busy} closeOnClickOutside={!busy} title="确认生成任务" centered size={560}>
       {review && <div className="pc-confirm">
         <dl><div><dt>目标镜头</dt><dd>{review.shot.title}</dd></div><div><dt>模型</dt><dd>{review.model.name} · {review.provider?.name || '未知服务商'}</dd></div><div><dt>类型与模式</dt><dd>{review.model.modality === 'video' ? modeOptions.find((item) => item.value === review.request.mode)?.label : review.model.modality === 'image' ? '生成图片' : '生成文本'}</dd></div><div><dt>参数</dt><dd>{review.model.modality === 'image'
           ? [review.request.resolution, review.request.quality && `画质 ${review.request.quality}`, review.request.clarity, review.request.background && `背景 ${review.request.background}`].filter(Boolean).join(' · ')
           : review.request.resolution || '默认'}{review.model.modality === 'video' ? ` · ${review.request.duration} 秒` : ''}{review.model.modality !== 'text' ? ` · ${review.request.ratio}` : ''}{review.request.draft ? ' · 样片' : ''}</dd></div>{review.model.modality === 'video' && <div><dt>生成声音</dt><dd>{review.request.generate_audio ? '开启' : '关闭'}</dd></div>}<div><dt>参考图</dt><dd>{review.referenceNames.length ? review.referenceNames.map((name, index) => ['first_frame', 'first_last_frame'].includes(review.request.mode) ? `${index === 0 ? '首帧' : '尾帧'}：${name}` : name).join('、') : '无'}</dd></div>{review.request.reference_video_url && <div><dt>参考视频</dt><dd>{review.request.reference_video_url}</dd></div>}<div><dt>{candidateCount} 个候选总费用预估</dt><dd>{generationCost(review.model, review.request, candidateCount) ? `约 ${generationCost(review.model, review.request, candidateCount)}` : '模型未配置费用，提交前请核对厂商价格'}</dd></div></dl>
         <div className="pc-confirm-prompt"><span>实际提交提示词</span><p>{review.request.prompt}</p></div>
         <div className="pc-candidate-count"><NumberInput label="候选数量" description="同一提示词提交多个候选，完成后可在任务或素材库中审核选择。" min={1} max={4} allowDecimal={false} disabled={busy} clampBehavior="strict" value={candidateCount} onChange={(value) => setCandidateCount(Math.max(1, Math.min(4, Math.trunc(Number(value) || 1))))} /></div>
-        <div className="pc-confirm-actions"><Button variant="default" disabled={busy} onClick={() => setReview(null)}>返回修改</Button><Button loading={busy} onClick={() => void submitGeneration()} leftSection={<Sparkles size={15} />}>确认提交 {candidateCount} 个候选</Button></div>
+        <div className="pc-confirm-actions"><Button variant="default" disabled={busy} onClick={() => setReview(null)}>返回修改</Button><Button loading={busy} onClick={() => void submitGeneration()}>确认提交 {candidateCount} 个候选</Button></div>
       </div>}
     </Modal>
     <Modal opened={!!conflictReview} onClose={() => setConflictReview(null)} title="画布版本冲突" centered size="md">

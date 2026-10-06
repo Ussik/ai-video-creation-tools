@@ -2,12 +2,54 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { JSONContent } from '@tiptap/core'
 import { parseScriptDocument, serializeScriptDocument } from '../src/script-rich-document.ts'
+import { textDocumentText } from '../src/text-document.ts'
 
 function roundTrip(value: string): [JSONContent, string, JSONContent] {
   const parsed = parseScriptDocument(value)
   const markdown = serializeScriptDocument(parsed)
   return [parsed, markdown, parseScriptDocument(markdown)]
 }
+
+test('recognizes compact Chinese headings from generated outlines without blank separators', () => {
+  const source = '#全剧故事大纲\n##项目信息\n项目名称：未命名项目\n##故事主线\n正文\n###人物目标\n目标正文'
+  const [parsed, markdown, reloaded] = roundTrip(source)
+  assert.deepEqual(parsed.content?.map(node => [node.type, node.attrs?.level, textDocumentText(node)]), [
+    ['heading', 1, '全剧故事大纲'],
+    ['heading', 2, '项目信息'],
+    ['paragraph', undefined, '项目名称：未命名项目'],
+    ['heading', 2, '故事主线'],
+    ['paragraph', undefined, '正文'],
+    ['heading', 3, '人物目标'],
+    ['paragraph', undefined, '目标正文'],
+  ])
+  assert.match(markdown, /^# 全剧故事大纲\n\n## 项目信息/)
+  assert.deepEqual(reloaded, parsed)
+})
+
+test('recognizes numeric Chinese headings in director replies at paragraph and list boundaries', () => {
+  const source = '先确认故事方向。\n##20集暂定总体结构\n目前按20集推进。\n- 第一阶段\n###1至5集家庭记忆裂缝\n调查旧相框。'
+  const [parsed, markdown, reloaded] = roundTrip(source)
+  assert.deepEqual(parsed.content?.map(node => [node.type, node.attrs?.level, textDocumentText(node)]), [
+    ['paragraph', undefined, '先确认故事方向。'],
+    ['heading', 2, '20集暂定总体结构'],
+    ['paragraph', undefined, '目前按20集推进。'],
+    ['bulletList', undefined, '第一阶段'],
+    ['heading', 3, '1至5集家庭记忆裂缝'],
+    ['paragraph', undefined, '调查旧相框。'],
+  ])
+  assert.match(markdown, /## 20集暂定总体结构/)
+  assert.deepEqual(reloaded, parsed)
+})
+
+test('preserves literal compact heading markers, hashtags and inline hashes', () => {
+  for (const text of ['#全剧故事大纲', '##项目信息', '###人物目标', '##20集暂定总体结构', '###1至5集家庭记忆裂缝', '#tag', '#123', '编号 #全剧故事大纲']) {
+    const document: JSONContent = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] }
+    assert.deepEqual(parseScriptDocument(serializeScriptDocument(document)), document)
+  }
+  for (const text of ['#tag', '#123', '##2026', '##123abc', '编号 #全剧故事大纲', '编号 ##20集', '\\#全剧故事大纲', '\\##20集', '####更深层标题']) {
+    assert.equal(parseScriptDocument(text).content?.[0]?.type, 'paragraph')
+  }
+})
 
 test('round trips headings, Chinese marks, combined marks, hard breaks, quote and nested lists', () => {
   const source = [

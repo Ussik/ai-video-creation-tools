@@ -29,3 +29,13 @@ test('custom choice behavior comes from structured metadata instead of option wo
   assert.equal(parsed.options[0].kind, undefined)
   assert.equal(parsed.options[1].kind, 'custom')
 })
+
+test('structured open questions retain original suggestions without fabricating options; invalid fields fail closed', () => {
+  const fields = [{ id: 'family', label: '直系亲属' }, { id: 'inlaw', label: '姻亲身份', suggestions: ['儿媳', '女婿'] }]
+  const parsed = parseMessageChoices(JSON.stringify({ kind: 'input_request', question: '确定人物身份', fields }))!
+  assert.deepEqual(parsed.fields, fields)
+  assert.deepEqual(parsed.options, [])
+  for (const invalid of [[], [fields[0], fields[0]], [{ id: 'bad', label: '  ' }], [{ id: 'bad', label: '身份', suggestions: [3] }]]) {
+    assert.equal(parseMessageChoices(JSON.stringify({ kind: 'input_request', question: '确定人物', fields: invalid })), null)
+  }
+})

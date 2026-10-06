@@ -1,11 +1,28 @@
 import { z } from 'zod'
 import { parseStructuredOutput } from './structured-output.js'
 
-export const workflowRequest = z.object({
+const workflowRequestFields = z.object({
   stage: z.enum(['outline', 'characters', 'locations', 'props', 'episode']),
-  episode_number: z.number().int().min(1).max(200).default(1),
+  scope: z.enum(['project', 'episode']).optional(),
+  episode_number: z.number().int().min(0).max(200).default(1),
   target_duration: z.number().int().min(5).max(600).optional(),
 }).strict()
+
+function validateScope(request: z.infer<typeof workflowRequestFields>, ctx: z.RefinementCtx) {
+  const scope = request.stage === 'episode' ? 'episode' : 'project'
+  if (request.scope && request.scope !== scope) ctx.addIssue({ code: 'custom', message: '创作范围与阶段不一致', path: ['scope'] })
+  if (scope === 'episode' && request.episode_number < 1) ctx.addIssue({ code: 'custom', message: '分集正文必须指定目标集数', path: ['episode_number'] })
+}
+
+// Older callers attached their selected episode to every stage. Project
+// documents have no target episode or runtime, regardless of that stale state.
+export function normalizeWorkflowRequest<T extends z.infer<typeof workflowRequestFields>>(request: T) {
+  const { scope: _scope, episode_number, target_duration, ...rest } = request
+  return { ...rest, scope: request.stage === 'episode' ? 'episode' as const : 'project' as const,
+    episode_number: request.stage === 'episode' ? episode_number : 0,
+    ...(request.stage === 'episode' && target_duration !== undefined ? { target_duration } : {}) }
+}
+export const workflowRequest = workflowRequestFields.superRefine(validateScope).transform(normalizeWorkflowRequest)
 
 export const workflowScene = z.object({
   heading: z.string().trim().min(1).max(120),
@@ -23,11 +40,11 @@ const stageTypes = {
   outline: ['outline', 'synopsis', 'world', 'episode_outline'],
   characters: ['characters', 'relationships'], locations: ['locations'], props: ['props'], episode: ['episode_script'],
 } as const
-export const workflowLabels = { outline: '故事大纲', characters: '人物设定', locations: '场景设计', props: '道具设计', episode: '分集剧本' }
-export const workflowDraftSchema = workflowRequest.extend({
+export const workflowLabels = { outline: '全剧故事大纲', characters: '全剧人物设定', locations: '全剧场景设计', props: '全剧道具设计', episode: '分集剧本' }
+export const workflowDraftInput = workflowRequestFields.extend({
   artifacts: z.array(workflowArtifact).min(1).max(4),
   scenes: z.array(workflowScene).max(100).default([]),
-}).strict().superRefine((draft, ctx) => {
+}).strict().superRefine(validateScope).superRefine((draft, ctx) => {
   const allowed: readonly string[] = stageTypes[draft.stage]
   const types = draft.artifacts.map(artifact => artifact.artifact_type)
   if (types.some(type => !allowed.includes(type)) || new Set(types).size !== types.length || !types.includes(allowed[0] as typeof types[number])) {
@@ -37,6 +54,7 @@ export const workflowDraftSchema = workflowRequest.extend({
     ctx.addIssue({ code: 'custom', message: '仅分集正文阶段需要分场剧本', path: ['scenes'] })
   }
 })
+export const workflowDraftSchema = workflowDraftInput.transform(normalizeWorkflowRequest)
 export type WorkflowDraft = z.infer<typeof workflowDraftSchema>
 
 export function workflowInstructions(request: z.infer<typeof workflowRequest>): string {
@@ -47,7 +65,10 @@ export function workflowInstructions(request: z.infer<typeof workflowRequest>): 
     props: '输出 props：列出关键道具的形态、材质、使用者、剧情功能、状态变化及连续性约束。不生成图片。',
     episode: `只写第 ${request.episode_number} 集，不写其他集。输出 episode_script 正文和该集 scenes；必须承接已确认的分集大纲、人物、地点、道具和前集状态。正文包含集标题、分场标题、可拍动作、对白和结尾钩子。${request.target_duration ? `本集总时长目标约 ${request.target_duration} 秒（不是全剧时长）。` : '按创作者明确的单集时长写作；未指定时由故事节奏判断。'} 每场1至30秒，按对白和动作分配，不机械均分。`,
   }
-  return `\n本轮为“${workflowLabels[request.stage]}”文档生成。只完成本轮阶段，不提问、不声称已保存或已完成其他阶段。\n${stages[request.stage]}\n` +
+  const boundary = request.stage === 'episode'
+    ? `任务范围：仅第 ${request.episode_number} 集正文。全剧资料和前集正文用于承接，不得修改其他集或全剧文档。`
+    : '任务范围：整个项目的全剧资料，不属于任何单集。聊天中最近写过的集数、下一集计划以及创作要求中的单集措辞仅作背景，不能把本轮改为该集或下一集的文档。人物、地点和道具覆盖全剧已确认的内容；大纲覆盖全剧主线与结局。保持已保存各集事实，未知设定标为待定，不把建议当成已确认事实。只更新所选资料，不生成、改写或推进分集正文。'
+  return `\n本轮为“${workflowLabels[request.stage]}”文档生成。只完成本轮阶段，不提问、不声称已保存或已完成其他阶段。\n${boundary}\n${stages[request.stage]}\n` +
     '只输出一个合法 JSON 对象，不要解释或代码围栏。格式：' +
     '{"artifacts":[{"artifact_type":"文档类型","title":"文档标题","content":"完整可编辑正文"}],"scenes":[' +
     '{"heading":"场次标题","location":"地点","time_of_day":"日/夜","characters":"出场人物","action":"画面动作","dialogue":"对白","narration":"旁白","duration":秒数}]}。' +

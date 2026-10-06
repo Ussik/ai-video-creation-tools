@@ -116,6 +116,13 @@
 .pc-project-script-edit svg { color: #c9c9c9; }
 .pc-project-script-controls { display: flex; flex: none; justify-content: flex-end; gap: 8px; width: 100%; margin-bottom: 12px; }
 .pc-project-script-controls .pc-project-script-edit { position: static; min-height: 30px; font-size: 12px; }
+.pc-project-script-empty:has(> .pc-script-empty-state) { display: flex; align-items: center; justify-content: center; padding: 12px 18px; white-space: normal; }
+.pc-script-empty-state { display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: 420px; white-space: normal; text-align: center; }
+.pc-script-empty-state > strong { color: var(--pc-node-text); font-size: 13px; font-weight: 500; line-height: 1.5; }
+.pc-script-empty-state p { margin: 0; color: var(--pc-node-muted); font-size: 12px; line-height: 1.6; text-wrap: balance; }
+.pc-script-empty-state .pc-project-script-edit { position: static; flex: none; min-height: 30px; margin-top: 4px; padding: 0 12px; font: inherit; font-size: 12px; color: var(--pc-node-text); transition: background .2s ease, color .2s ease, transform .2s ease; }
+.pc-script-empty-state .pc-project-script-edit:focus-visible { outline: 2px solid var(--creation-border-selected); outline-offset: 3px; }
+.pc-script-empty-state .pc-project-script-edit:active { transform: translateY(1px); }
 .pc-node:hover { border-color: #778d7c; box-shadow: 0 22px 44px #07100bb5, inset 0 1px #ffffff0d; }
 .pc-node.is-selected { border-color: var(--pc-teal); box-shadow: 0 0 0 1px var(--pc-teal), 0 24px 48px #07100bc7, inset 0 1px #d9fff013; }
 .pc-node-heading { flex: 0 0 48px; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 0 14px; border-bottom: 1px solid #46544b; }
@@ -2104,7 +2111,10 @@
 .project-canvas .pc-storyboard-column-empty button { border-color: #4d7594; background: #21445f; color: #caeafa; }
 .project-canvas .pc-storyboard-column-empty button:hover { background: #2c5a7a; color: #fff; }
 
-.project-canvas .pc-notice { border-color: #4b718f; background: #1d3a51; }
+.project-canvas .pc-notice { border-color: #454545; background: #262626; color: #e2e2e2; }
+.project-canvas .pc-notice button { color: #aaa; cursor: pointer; }
+.project-canvas .pc-notice button:hover { color: #f2f2f2; }
+.project-canvas .pc-notice button:focus-visible { outline: 1px solid #aaa; outline-offset: 2px; }
 .project-canvas .pc-script-scene { border-color: #3e5a73; background: #182a3b; }
 .project-canvas .pc-script-scene-title > strong { background: #24445d; color: #a9dcff; }
 .project-canvas .pc-reference-order > div { background: #20384d; border-left-color: #70bff0; }
@@ -2342,8 +2352,8 @@
 .project-canvas .pc-minimap-dock {
   position: absolute;
   z-index: 8;
-  right: 28px;
-  bottom: 72px;
+  right: clamp(28px, 8vw, 120px);
+  bottom: 84px;
   width: 154px;
   height: 108px;
   /* This is only the movable hit area. The React Flow panel below owns the

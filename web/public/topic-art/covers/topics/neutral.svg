@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <radialGradient id="base" cx="35%" cy="28%" r="85%">
+      <stop stop-color="#727c7b"/><stop offset=".48" stop-color="#414a49"/><stop offset="1" stop-color="#242b2b"/>
+    </radialGradient>
+    <filter id="mist" x="-25%" y="-25%" width="150%" height="150%">
+      <feTurbulence type="fractalNoise" baseFrequency=".007 .011" numOctaves="3" seed="17"/>
+      <feColorMatrix type="saturate" values="0"/><feGaussianBlur stdDeviation="11"/>
+      <feComponentTransfer><feFuncA type="linear" slope=".25"/></feComponentTransfer>
+    </filter>
+    <filter id="soft"><feGaussianBlur stdDeviation="32"/></filter>
+  </defs>
+  <path fill="url(#base)" d="M0 0h512v512H0z"/>
+  <path d="M-50 300C95 140 215 395 345 165S560 155 580 40" fill="none" stroke="#b1beb8" stroke-width="55" opacity=".2" filter="url(#soft)"/>
+  <path d="M-30 410C160 200 295 455 550 195" fill="none" stroke="#111a1c" stroke-width="95" opacity=".45" filter="url(#soft)"/>
+  <path fill="#a7b1ac" filter="url(#mist)" d="M0 0h512v512H0z"/>
+</svg>

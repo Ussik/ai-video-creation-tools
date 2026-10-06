@@ -58,14 +58,20 @@
 .pc-generation-options button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex: 1 0 60px; min-height: 35px; padding: 7px 9px; border: 1px solid #444; border-radius: 9px; background: #303030; color: #bcbcbc; font: inherit; font-size: 12px; cursor: pointer; }
 .pc-generation-options button:hover { background: #383838; border-color: #666; color: #fff; }
 .pc-generation-options button[aria-pressed="true"] { border-color: #aaa; background: #414141; color: #fff; }
-.pc-generation-image-quality-options,
-.pc-generation-image-clarity-options,
-.pc-generation-image-background-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
-.pc-generation-image-quality-options button,
-.pc-generation-image-clarity-options button,
-.pc-generation-image-background-options button { min-height: 64px; flex: initial; font-size: 16px; }
-.pc-generation-image-ratios .pc-generation-ratio { min-height: 124px; padding: 18px 3px 16px; gap: 13px; font-size: 14px; }
-.pc-generation-image-ratios .pc-generation-ratio-preview { height: 47px; }
+.pc-generation-image-parameters { max-height: calc(100dvh - 32px); padding: 12px; background: #252525; }
+.pc-generation-image-parameters .pc-generation-parameter-section + .pc-generation-parameter-section { margin-top: 11px; }
+.pc-generation-image-parameters .pc-generation-parameter-heading { margin-bottom: 7px; color: #989898; font-size: 12px; font-weight: 500; }
+.pc-generation-image-parameters .pc-generation-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.pc-generation-image-parameters .pc-generation-options button { height: 32px; min-height: 32px; min-width: 0; padding: 4px; border-radius: 7px; background: transparent; color: #a3a3a3; font-size: 12px; }
+.pc-generation-image-parameters .pc-generation-options button:hover:not(:disabled),
+.pc-generation-image-parameters .pc-generation-ratio:hover:not(:disabled) { background: #303030; color: #f2f2f2; }
+.pc-generation-image-parameters .pc-generation-options button[aria-pressed="true"],
+.pc-generation-image-parameters .pc-generation-ratio[aria-pressed="true"] { border-color: #e3e3e3; background: #3b3b3b; color: #f5f5f5; }
+.pc-generation-image-ratios { gap: 6px; }
+.pc-generation-image-ratios .pc-generation-ratio { height: 62px; min-height: 62px; padding: 7px 3px; gap: 4px; border-radius: 7px; background: transparent; font-size: 11px; }
+.pc-generation-image-ratios .pc-generation-ratio-preview { height: 23px; }
+.pc-generation-image-parameters .pc-generation-options button:disabled,
+.pc-generation-image-parameters .pc-generation-ratio:disabled { border-color: #454545; background: transparent; color: #777; cursor: not-allowed; opacity: 1; }
 .pc-generation-duration { display: flex; align-items: center; gap: 16px; }
 .pc-generation-duration-slider { flex: 1; }
 .pc-generation-duration-track { --slider-track-bg: #4a4a4a; }
@@ -82,12 +88,8 @@
 .pc-generation-audio-thumb { background: #efefef; }
 .pc-generation-audio-track[data-checked] .pc-generation-audio-thumb { background: #292929; }
 
-@media (max-width: 720px) {
-  .pc-generation-image-ratios { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .pc-generation-image-quality-options,
-  .pc-generation-image-clarity-options,
-  .pc-generation-image-background-options { gap: 8px; }
-  .pc-generation-image-quality-options button,
-  .pc-generation-image-clarity-options button,
-  .pc-generation-image-background-options button { min-height: 48px; font-size: 13px; }
+@media (max-width: 420px) {
+  .pc-generation-image-parameters { padding: 10px; }
+  .pc-generation-image-parameters .pc-generation-options button { font-size: 11px; }
+  .pc-generation-image-ratios .pc-generation-ratio { font-size: 10px; }
 }

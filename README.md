@@ -46,6 +46,8 @@ npm run dev
 
 文本模型支持 Responses 和 Chat Completions 风格的同步 HTTP 请求。剧本导演对话会优先使用流式接口，按 SSE 或 NDJSON 增量显示回复；模型设置可用 `stream_request_template` 覆盖流式请求体，用 `stream_text_paths` 指定增量文本路径，未显式关闭时会自动补 `stream: true`。界面只展示供应商返回的公开摘要和创作阶段，不透传 `reasoning_content`、`<think>` 等隐式推理内容。图片模型支持返回 Base64 或 URL 的生成接口。视频模型通过可配置的创建路径、状态路径、结果路径和轮询状态处理异步任务。不同厂商的特殊参数可写进模型的 JSON 请求模板或按生成模式设置覆盖值。
 
+画布图片参数默认提供五档画质、1K/2K/4K、自动/保留/透明背景和十三种比例，选择保存在节点上。模型可用 `image_qualities`、`image_clarities`、`image_backgrounds` 和 `ratios` 配置选项，用 `default_quality`、`default_clarity`、`default_background` 配置默认值。请求模板消费对应变量时直接传参；没有原生映射时，画布会把选择补充进实际提交的提示词，并从已配置尺寸中匹配可用的请求尺寸。提示词要求不保证厂商返回精确的像素尺寸或带 Alpha 的透明背景，提交确认会显示请求尺寸及完整提示词。
+
 第一版的通用连接覆盖 JSON REST 接口与固定请求头认证；要求签名鉴权、Multipart 上传或 WebSocket 的厂商仍需增加对应协议实现。
 
 注意：参考视频通常需要厂商可访问的公网 URL。火山方舟 Seedance 的 `asset://` 预置素材地址可在对应模型的 `reference_video_schemes` 中启用；普通本地视频路径或 Files API 的 `file-...` ID 不能直接替代。视频、图片服务返回的临时 URL 会立即下载到本地。

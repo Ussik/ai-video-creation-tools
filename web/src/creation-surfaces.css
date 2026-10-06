@@ -12,6 +12,133 @@
   --creation-muted: #929292;
 }
 
+.pc-confirm-modal {
+  --fc-surface: var(--creation-recessed);
+  --fc-border: var(--creation-border);
+  --fc-border-soft: var(--creation-border);
+  --fc-text: var(--creation-text);
+  --fc-text-muted: var(--creation-secondary);
+  --fc-text-subtle: var(--creation-muted);
+  --fc-focus: var(--creation-border-selected);
+  max-width: calc(100vw - 32px);
+  border-radius: 8px;
+  background: var(--creation-surface);
+  color: var(--creation-text);
+}
+.pc-confirm-modal .pc-confirm-modal-header {
+  padding: 18px 20px;
+  background: var(--creation-surface);
+}
+.pc-confirm-modal .pc-confirm-modal-close {
+  border-radius: 6px;
+  color: var(--creation-muted);
+}
+.pc-confirm-modal .pc-confirm-modal-close:hover {
+  background: var(--creation-hover);
+  color: var(--creation-text);
+}
+.pc-confirm-modal .pc-confirm-modal-close:focus-visible {
+  outline: 2px solid var(--creation-border-selected);
+  outline-offset: 2px;
+}
+.pc-confirm-modal .pc-confirm-modal-body { padding: 18px 20px 20px; }
+.pc-confirm-modal .pc-confirm { gap: 18px; }
+.pc-confirm-modal .pc-confirm dl { gap: 8px; }
+.pc-confirm-modal .pc-confirm dl > div {
+  grid-template-columns: 104px minmax(0, 1fr);
+  gap: 12px;
+  line-height: 1.6;
+}
+.pc-confirm-modal .pc-confirm dt { color: var(--creation-muted); }
+.pc-confirm-modal .pc-confirm dd { color: var(--creation-secondary); }
+.pc-confirm-modal .pc-confirm-prompt {
+  gap: 8px;
+  padding: 12px;
+  border-color: var(--creation-border);
+  border-radius: 6px;
+  background: var(--creation-recessed);
+  color: var(--creation-secondary);
+  font-size: 12px;
+}
+.pc-confirm-modal .pc-confirm-prompt span {
+  color: var(--creation-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+.pc-confirm-modal .pc-confirm-prompt p {
+  margin: 0;
+  padding-right: 6px;
+  line-height: 1.75;
+  scrollbar-width: thin;
+  scrollbar-color: var(--creation-border-hover) transparent;
+}
+.pc-confirm-modal .pc-candidate-count { max-width: 260px; }
+.pc-confirm-modal .mantine-NumberInput-input { font-variant-numeric: tabular-nums; }
+.pc-confirm-modal .mantine-NumberInput-input:focus {
+  border-color: var(--creation-border-selected);
+  box-shadow: 0 0 0 2px #ffffff14;
+}
+.pc-confirm-modal .mantine-NumberInput-control {
+  border-color: var(--creation-border);
+  color: var(--creation-muted);
+}
+.pc-confirm-modal .mantine-NumberInput-control:hover:not(:disabled) {
+  background: var(--creation-hover);
+  color: var(--creation-text);
+}
+.pc-confirm-modal .pc-confirm-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--creation-border);
+}
+.pc-confirm-modal .pc-confirm-actions .mantine-Button-root {
+  height: 36px;
+  border-radius: 6px;
+  font-weight: 600;
+}
+.pc-confirm-modal .pc-confirm-actions .mantine-Button-root[data-variant='default'] {
+  border-color: var(--creation-border);
+  background: var(--creation-raised);
+  color: var(--creation-secondary);
+}
+.pc-confirm-modal .pc-confirm-actions .mantine-Button-root[data-variant='default']:hover:not(:disabled) {
+  border-color: var(--creation-border-hover);
+  background: var(--creation-hover);
+  color: var(--creation-text);
+}
+.pc-confirm-modal .pc-confirm-actions .mantine-Button-root[data-variant='filled'] {
+  border-color: #d1d1d1;
+  background: #d1d1d1;
+  color: #252525;
+}
+.pc-confirm-modal .pc-confirm-actions .mantine-Button-root[data-variant='filled']:hover:not(:disabled):not([data-loading]) {
+  border-color: var(--creation-text);
+  background: var(--creation-text);
+}
+.pc-confirm-modal .pc-confirm-actions .mantine-Button-root:focus-visible {
+  outline: 2px solid var(--creation-border-selected);
+  outline-offset: 3px;
+}
+.pc-confirm-modal .pc-confirm-actions .mantine-Button-root:disabled,
+.pc-confirm-modal .pc-confirm-actions .mantine-Button-root[data-disabled] {
+  border-color: var(--creation-border);
+  background: var(--creation-raised);
+  color: var(--creation-muted);
+}
+.pc-confirm-modal .pc-confirm-actions .mantine-Button-root[data-loading] {
+  border-color: #d1d1d1;
+  background: #d1d1d1;
+  color: #252525;
+}
+
+@media (max-width: 480px) {
+  .pc-confirm-modal .pc-confirm-modal-header { padding: 16px; }
+  .pc-confirm-modal .pc-confirm-modal-body { padding: 16px; }
+  .pc-confirm-modal .pc-confirm dl > div { grid-template-columns: 88px minmax(0, 1fr); gap: 10px; }
+  .pc-confirm-modal .pc-confirm-actions .mantine-Button-root { flex: 1 1 auto; }
+}
+
 .script-director-panel.sd-chat {
   --director-bg: var(--creation-surface);
   --director-text: var(--creation-text);

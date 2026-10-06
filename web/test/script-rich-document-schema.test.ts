@@ -28,6 +28,20 @@ function withEditor(content: JSONContent, run: (editor: Editor) => void) {
   try { run(editor) } finally { editor.destroy(); element.remove() }
 }
 
+test('compact Chinese outline headings render as real Tiptap headings and survive saving', () => {
+  const parsed = parseScriptDocument('#全剧故事大纲\n##20集暂定总体结构\n正文\n###1至5集家庭记忆裂缝\n目标正文')
+  withEditor(parsed, editor => {
+    assert.equal(editor.view.dom.querySelector('h1')?.textContent, '全剧故事大纲')
+    assert.equal(editor.view.dom.querySelector('h2')?.textContent, '20集暂定总体结构')
+    assert.equal(editor.view.dom.querySelector('h3')?.textContent, '1至5集家庭记忆裂缝')
+    const stored = serializeScriptDocument(normalizeTextDocument(editor.getJSON()))
+    withEditor(parseScriptDocument(stored), reloaded => {
+      assert.equal(reloaded.view.dom.querySelector('h2')?.textContent, '20集暂定总体结构')
+      assert.deepEqual(normalizeTextDocument(reloaded.getJSON()), normalizeTextDocument(editor.getJSON()))
+    })
+  })
+})
+
 test('serialized rich script content is accepted by the real Tiptap schema', () => {
   const original: JSONContent = {
     type: 'doc',

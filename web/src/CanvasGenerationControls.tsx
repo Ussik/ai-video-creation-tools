@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties, type SyntheticEvent } from 'react'
 import { Menu, NumberInput, Popover, Slider, Switch } from '@mantine/core'
 import { ArrowLeftRight, Check, ChevronDown, Film, Image, Images, Scan, SlidersHorizontal, SquarePen, Type, Volume2, VolumeX } from 'lucide-react'
+import { imageSizeChoices, selectImageSize } from './canvas-model-parameters'
 
 export type CanvasVideoMode = 'text' | 'first_frame' | 'first_last_frame' | 'reference' | 'edit' | 'extend'
 /** Parameters shared by the canvas generation popover and provider templates.
@@ -96,10 +97,10 @@ export function CanvasVideoModeMenu({ value, supportedModes, onChange }: CanvasV
   </Menu>
 }
 
-function ratioShape(ratio: string): CSSProperties {
+function ratioShape(ratio: string, maxSize = 29): CSSProperties {
   const [width, height] = ratio.split(':').map(Number)
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return { width: 23, height: 20 }
-  const factor = 29 / Math.max(width, height)
+  const factor = maxSize / Math.max(width, height)
   return { width: Math.max(9, Math.round(width * factor)), height: Math.max(9, Math.round(height * factor)) }
 }
 
@@ -144,11 +145,19 @@ export function CanvasGenerationParameters({ modality, ratios, ratio, resolution
   const selectedDuration = snapDuration(Number.isFinite(duration) ? duration : min)
   const durationEnabled = modality === 'video' && showDuration
   const audioEnabled = modality === 'video' && audioSupported
-  const summary = [ratio === 'adaptive' ? '自适应' : ratio, modality === 'image' ? clarity || resolution : resolution,
+  const fixedSizes = modality === 'image' && ratios.length === 0 ? imageSizeChoices(resolutions) : []
+  const imageClarity = clarity || fixedSizes.find(option => option.resolution === resolution)?.clarity || resolution
+  const supportedClarities = [...new Set(clarities.length ? clarities : fixedSizes.length ? fixedSizes.map(option => option.clarity) : resolutions)]
+  const displayRatios = [...new Set(fixedSizes.length ? fixedSizes.map(option => option.ratio) : ratios)]
+  const changeImageSize = (selection: { ratio?: string; clarity?: string }) => {
+    const next = selectImageSize(resolutions, resolution, selection)
+    if (next) onChange({ resolution: next.resolution, ratio: next.ratio })
+  }
+  const summary = [ratio === 'adaptive' ? '自适应' : ratio, modality === 'image' ? imageClarity : resolution,
     durationEnabled ? `${duration}s` : '', `${count}${modality === 'image' ? '张' : '个'}`].filter(Boolean).join(' · ')
-  return <Popover opened={opened} onChange={setOpened} position="top-start" offset={10} width={modality === 'image' && ratios.length > 6 ? 680 : 360} withinPortal
+  return <Popover opened={opened} onChange={setOpened} position="top-start" offset={8} width={modality === 'image' ? 'min(320px, calc(100vw - 24px))' : 360} withinPortal
     middlewares={floatingMiddlewares} zIndex={220} trapFocus returnFocus preventPositionChangeWhenVisible={false}
-    classNames={{ dropdown: 'pc-generation-parameters-popover' }}>
+    classNames={{ dropdown: `pc-generation-parameters-popover${modality === 'image' ? ' pc-generation-image-parameters' : ''}` }}>
     <Popover.Target>
       <button type="button" className="pc-generation-control pc-generation-parameters-trigger nodrag nowheel" data-canvas-overlay
         aria-label={`生成参数：${summary}${audioEnabled ? generateAudio ? '，声音开启' : '，声音关闭' : ''}`}
@@ -159,41 +168,44 @@ export function CanvasGenerationParameters({ modality, ratios, ratio, resolution
     </Popover.Target>
     <Popover.Dropdown className="nodrag nowheel" data-canvas-overlay role="dialog" aria-label="生成参数" {...overlayEvents}
       onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') setOpened(false) }}>
-      <div className="pc-generation-parameters-heading">生成参数</div>
+      {modality === 'video' && <div className="pc-generation-parameters-heading">生成参数</div>}
       {modality === 'image' && qualities.length > 0 && <section className="pc-generation-parameter-section">
-        <div className="pc-generation-parameter-heading"><span>画质</span><small>{quality ? imageQualityLabel(quality) : '未选择'}</small></div>
+        <div className="pc-generation-parameter-heading"><span>画质</span></div>
         <div className="pc-generation-options pc-generation-image-quality-options" role="group" aria-label="画质">
           {[...new Set(qualities)].map(option => <button type="button" key={option} aria-pressed={quality === option}
             onClick={() => onChange({ quality: option })}>{imageQualityLabel(option)}</button>)}
         </div>
       </section>}
-      {modality === 'image' && clarities.length > 0 && <section className="pc-generation-parameter-section">
-        <div className="pc-generation-parameter-heading"><span>清晰度</span><small>{clarity}</small></div>
+      {modality === 'image' && supportedClarities.length > 0 && <section className="pc-generation-parameter-section">
+        <div className="pc-generation-parameter-heading"><span>清晰度</span></div>
         <div className="pc-generation-options pc-generation-image-clarity-options" role="group" aria-label="清晰度">
-          {[...new Set(clarities)].map(option => <button type="button" key={option} aria-pressed={clarity === option}
-            onClick={() => onChange({ clarity: option })}>{option}</button>)}
+          {supportedClarities.map(option => <button type="button" key={option} aria-pressed={imageClarity === option}
+            title={!clarities.length ? fixedSizes.filter(size => size.clarity === option).map(size => size.resolution).join(' / ') || option : option}
+            onClick={() => clarities.length ? onChange({ clarity: option }) : fixedSizes.length ? changeImageSize({ clarity: option }) : onChange({ resolution: option })}>{option}</button>)}
         </div>
       </section>}
-      {(modality !== 'image' || clarities.length === 0) && resolutions.length > 0 && <section className="pc-generation-parameter-section">
-        <div className="pc-generation-parameter-heading"><span>{modality === 'image' ? '图片尺寸' : '清晰度'}</span><small>{resolution}</small></div>
-        <div className="pc-generation-options" role="group" aria-label={modality === 'image' ? '图片尺寸' : '清晰度'}>
+      {modality === 'video' && resolutions.length > 0 && <section className="pc-generation-parameter-section">
+        <div className="pc-generation-parameter-heading"><span>清晰度</span><small>{resolution}</small></div>
+        <div className="pc-generation-options" role="group" aria-label="清晰度">
           {[...new Set(resolutions)].map(option => <button type="button" key={option} aria-pressed={resolution === option}
             onClick={() => onChange({ resolution: option })}>{option}</button>)}
         </div>
       </section>}
       {modality === 'image' && backgrounds.length > 0 && <section className="pc-generation-parameter-section">
-        <div className="pc-generation-parameter-heading"><span>背景</span><small>{background ? imageBackgroundLabel(background) : '未选择'}</small></div>
+        <div className="pc-generation-parameter-heading"><span>背景</span></div>
         <div className="pc-generation-options pc-generation-image-background-options" role="group" aria-label="背景">
           {[...new Set(backgrounds)].map(option => <button type="button" key={option} aria-pressed={background === option}
             onClick={() => onChange({ background: option })}>{imageBackgroundLabel(option)}</button>)}
         </div>
       </section>}
-      {ratios.length > 0 && <section className="pc-generation-parameter-section">
-        <div className="pc-generation-parameter-heading"><span>比例</span><small>{ratio === 'adaptive' ? '自适应' : ratio}</small></div>
-        <div className={`pc-generation-ratios ${modality === 'image' ? 'pc-generation-image-ratios' : ''}`} role="group" aria-label="比例">
-          {[...new Set(ratios)].map(option => <button type="button" key={option} className="pc-generation-ratio" aria-pressed={ratio === option}
-            onClick={() => onChange({ ratio: option })}>
-            <span className="pc-generation-ratio-preview">{option === 'adaptive' ? <Scan size={26} /> : <i style={ratioShape(option)} />}</span>
+      {displayRatios.length > 0 && <section className="pc-generation-parameter-section">
+        <div className="pc-generation-parameter-heading"><span>比例</span>{modality === 'video' && <small>{ratio === 'adaptive' ? '自适应' : ratio}</small>}</div>
+        <div className={`pc-generation-ratios ${modality === 'image' ? 'pc-generation-image-ratios' : ''}`} role="group" aria-label="比例"
+          style={modality === 'image' ? { gridTemplateColumns: `repeat(${Math.min(5, displayRatios.length)}, minmax(0, 1fr))` } : undefined}>
+          {displayRatios.map(option => <button type="button" key={option} className="pc-generation-ratio" aria-pressed={ratio === option}
+            title={option}
+            onClick={() => fixedSizes.length ? changeImageSize({ ratio: option }) : onChange({ ratio: option })}>
+            <span className="pc-generation-ratio-preview">{option === 'adaptive' ? <Scan size={26} /> : <i style={ratioShape(option, modality === 'image' ? 22 : 29)} />}</span>
             <span>{option === 'adaptive' ? '自适应' : option}</span>
           </button>)}
         </div>
@@ -231,10 +243,10 @@ export function CanvasGenerationParameters({ modality, ratios, ratio, resolution
           color="gray" classNames={{ track: 'pc-generation-audio-track', thumb: 'pc-generation-audio-thumb' }} />
       </section>}
       <section className="pc-generation-parameter-section">
-        <div className="pc-generation-parameter-heading"><span>生成数量</span><small>候选</small></div>
+        <div className="pc-generation-parameter-heading"><span>生成数量</span>{modality === 'video' && <small>候选</small>}</div>
         <div className="pc-generation-options" role="group" aria-label="生成候选数量">
           {[1, 2, 4].map(option => <button type="button" key={option} aria-pressed={count === option} onClick={() => onCountChange(option)}>
-            {option}{modality === 'image' ? ' 张' : ' 个'}{option === count && <Check size={14} />}
+            {option}{modality === 'image' ? '张' : ' 个'}{modality === 'video' && option === count && <Check size={14} />}
           </button>)}
         </div>
       </section>

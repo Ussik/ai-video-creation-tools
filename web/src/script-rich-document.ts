@@ -6,6 +6,8 @@ type Mark = 'bold' | 'italic' | 'strike'
 const markOrder: Mark[] = ['bold', 'italic', 'strike']
 const delimiters: Record<Mark, string> = { bold: '**', italic: '_', strike: '~~' }
 const punctuation = /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/
+// Generated Chinese headings, including episode counts, may omit the space.
+const headingPattern = /^ {0,3}(#{1,3})(?:[ \t]+|(?=\d*\p{Script=Han})|$)(.*)$/u
 
 function textNode(text: string, marks: Mark[] = []): JSONContent {
   return { type: 'text', text, ...(marks.length ? { marks: markOrder.filter(mark => marks.includes(mark)).map(type => ({ type })) } : {}) }
@@ -101,7 +103,7 @@ function explicitBreak(line: string): boolean {
 }
 
 function blockStart(line: string): boolean {
-  return !!listLine(line) || /^ {0,3}(?:#{1,3}(?:\s|$)|>\s?)/.test(line) || /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)
+  return !!listLine(line) || headingPattern.test(line) || /^ {0,3}>\s?/.test(line) || /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)
 }
 
 function parseBlocks(lines: string[], depth = 0): JSONContent[] {
@@ -128,7 +130,7 @@ function parseBlocks(lines: string[], depth = 0): JSONContent[] {
       continue
     }
     const line = lines[index]
-    const heading = /^ {0,3}(#{1,3})(?:[ \t]+(.*)|$)/.exec(line)
+    const heading = headingPattern.exec(line)
     if (heading) {
       const parts = [heading[2] || '']
       while (explicitBreak(parts[parts.length - 1]) && index + 1 < lines.length) parts.push(lines[++index])
@@ -266,7 +268,7 @@ function inlineMarkdown(nodes: JSONContent[]): string {
 }
 
 function escapeBlockStart(value: string): string {
-  return value.replace(/^( {0,3})(#{1,6}(?=\s|$)|[-+•](?=\s|$)|\d+[.)](?=\s|$)|>(?=\s|$)|(?:-{3,}|\*{3,}|_{3,})\s*$)/, (_match, indent: string, marker: string) => {
+  return value.replace(/^( {0,3})(#{1,6}(?=\s|$|\d*\p{Script=Han})|[-+•](?=\s|$)|\d+[.)](?=\s|$)|>(?=\s|$)|(?:-{3,}|\*{3,}|_{3,})\s*$)/u, (_match, indent: string, marker: string) => {
     // A paragraph beginning with a block marker must be escaped before the
     // next parse, otherwise a literal `---` becomes a horizontal rule and a
     // literal `> quote` becomes a blockquote.

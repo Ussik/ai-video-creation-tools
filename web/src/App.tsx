@@ -1001,7 +1001,8 @@ function App() {
 
   function openScriptEditor(section: DocumentSection = 'outline') {
     setScriptEditorSection(section)
-    setScriptDirectorOpen(false)
+    // Keep the director mounted while reading/editing documents so its running
+    // requests, pending messages and draft preview survive the round trip.
     setScriptEditorOpen(true)
     setTab('canvas')
   }
@@ -1121,8 +1122,9 @@ function App() {
         }}
         onNavigate={(destination) => { setScriptDirectorOpen(false); setTab(destination) }} />}
 
-      {detail && scriptDirectorOpen && !scriptEditorOpen && <ScriptDirectorPanel
+      {detail && scriptDirectorOpen && <ScriptDirectorPanel
         key={`script-director-${detail.id}`}
+        hidden={scriptEditorOpen}
         openRequestId={scriptDirectorOpenRequest}
         detail={detail}
         models={models}
