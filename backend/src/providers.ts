@@ -70,6 +70,7 @@ const dataDir = process.env.VIDEO_STUDIO_DATA_DIR ?? join(root, 'data')
 export const mediaDir = join(dataDir, 'media')
 const maxImageBytes = 30 * 1024 * 1024
 const maxVideoBytes = 600 * 1024 * 1024
+const textRequestTimeoutMs = 10 * 60_000
 
 function asSettings(model: GenerationModel): Settings {
   if (typeof model.settings !== 'string') return model.settings ?? {}
@@ -123,7 +124,7 @@ function imageNetworkError(stage: '厂商请求' | '结果图片下载', started
 }
 
 async function requestJson(method: 'GET' | 'POST', url: string, headers: Record<string, string>, body?: unknown,
-  imageStage?: '厂商请求'): Promise<Record<string, unknown>> {
+  modality?: Modality): Promise<Record<string, unknown>> {
   const startedAt = Date.now()
   let response: Response
   let raw: string
@@ -132,17 +133,20 @@ async function requestJson(method: 'GET' | 'POST', url: string, headers: Record<
       method,
       headers: { ...headers, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(90_000),
+      signal: AbortSignal.timeout(modality === 'text' ? textRequestTimeoutMs : 90_000),
     })
     raw = await response.text()
   } catch (error) {
-    if (imageStage && isNetworkFailure(error)) throw imageNetworkError(imageStage, startedAt, error)
+    if (modality === 'image' && isNetworkFailure(error)) throw imageNetworkError('厂商请求', startedAt, error)
+    if (modality === 'text' && networkCode(error) === 'TIMEOUT') {
+      throw new Error('文本模型请求超时（最长等待 10 分钟），请稍后重试或切换文本模型。')
+    }
     throw error
   }
   let parsed: unknown
   try { parsed = JSON.parse(raw) } catch { parsed = null }
   if (!response.ok) {
-    if (imageStage) throw new Error(`图片生成请求失败（阶段：厂商请求；HTTP ${response.status}；耗时：${((Date.now() - startedAt) / 1000).toFixed(1)} 秒）。厂商可能已计费，请先核对厂商记录。`)
+    if (modality === 'image') throw new Error(`图片生成请求失败（阶段：厂商请求；HTTP ${response.status}；耗时：${((Date.now() - startedAt) / 1000).toFixed(1)} 秒）。厂商可能已计费，请先核对厂商记录。`)
     const message = parsed && typeof parsed === 'object' ? JSON.stringify(parsed) : raw
     throw new Error(`模型接口返回 ${response.status}: ${message.slice(0, 800)}`)
   }
@@ -316,7 +320,7 @@ export async function streamText(
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10 * 60_000)]) : AbortSignal.timeout(10 * 60_000),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(textRequestTimeoutMs)]) : AbortSignal.timeout(textRequestTimeoutMs),
     })
   } catch (error) {
     throw new Error(`文本模型流式请求失败：${error instanceof Error ? error.message : String(error)}`)
@@ -666,7 +670,7 @@ async function configuredNetwork(
   if (model.modality !== 'video') {
     const payload = await requestJson('POST', apiUrl(provider.base_url, settingString(settings, 'request_path')), headers,
       compactTemplate(renderTemplate(requestTemplate(settings, request, { model: '{{model}}', prompt: '{{prompt}}' }), variables)),
-      model.modality === 'image' ? '厂商请求' : undefined)
+      model.modality)
     if (model.modality === 'text') {
       return { path: await saveBytes(projectId, '.txt', Buffer.from(responseText(payload, settings, model.protocol))), remoteUrl: null }
     }

@@ -65,25 +65,28 @@ export function selectImageSize(resolutions: string[], currentResolution: string
     || matches[0] || null
 }
 
-/** Keep the API size valid while carrying independent creative preferences. */
-export function imageRequestResolution(model: Model, currentResolution: string, selection: { ratio: string; clarity: string }): string {
+/** A requested aspect ratio must map to an exact size or a native ratio parameter. */
+export function imageRequestResolution(model: Model, currentResolution: string, selection: { ratio: string; clarity: string; mode?: string }): string {
   const resolutions = Array.isArray(model.settings.resolutions)
     ? model.settings.resolutions.filter((value): value is string => typeof value === 'string') : []
-  if (!resolutions.length) return currentResolution
-  const current = resolutions.includes(currentResolution) ? currentResolution : modelDefaultResolution(model, resolutions)
-  if (resolutions.includes(selection.clarity)) return selection.clarity
-  if (usesModelParameter(model, 'ratio', 'text')) return current
-  const exact = selectImageSize(resolutions, current, selection) || selectImageSize(resolutions, current, { ratio: selection.ratio })
-  if (exact) return exact.resolution
-  const [width, height] = selection.ratio.split(':').map(Number)
-  if (!width || !height) return current
-  const choices = imageSizeChoices(resolutions)
-  const distance = (choice: typeof choices[number]) => {
-    const [w, h] = choice.ratio.split(':').map(Number)
-    return Math.abs(Math.log((w / h) / (width / height)))
+  const current = !resolutions.length || resolutions.includes(currentResolution) ? currentResolution : modelDefaultResolution(model, resolutions)
+  const mode = selection.mode || 'text'
+  if (usesModelParameter(model, 'ratio', mode)) {
+    // A native ratio API does not need a pixel-size field. Keep a resolution
+    // only when the same template explicitly exposes one as well.
+    if (!usesModelParameter(model, 'resolution', mode) && !usesModelParameter(model, 'size', mode)) return ''
+    return resolutions.includes(selection.clarity) ? selection.clarity : current
   }
-  return choices.reduce<typeof choices[number] | undefined>((best, choice) => !best || distance(choice) < distance(best) ? choice : best,
-    choices.find(choice => choice.resolution === current))?.resolution || current
+  if (!resolutions.length) return resolutionRatio(current) === selection.ratio ? current : ''
+  const exact = selectImageSize(resolutions, current, selection) || selectImageSize(resolutions, current, { ratio: selection.ratio })
+  return exact?.resolution || ''
+}
+
+export function imageRatioError(model: Model, resolution: string, ratio: string, mode = 'text'): string | null {
+  if (usesModelParameter(model, 'ratio', mode)) return null
+  const usesSize = usesModelParameter(model, 'size', mode) || usesModelParameter(model, 'resolution', mode)
+  if (usesSize && resolutionRatio(resolution) === ratio) return null
+  return `当前模型配置无法提交 ${ratio} 画幅，请在模型设置中配置对应的图片尺寸或原生比例参数。`
 }
 
 const qualityRequirements: Record<string, string> = {
@@ -103,16 +106,16 @@ const backgroundRequirements: Record<string, string> = {
 
 export function imagePreferencePrompt(model: Model, prompt: string, request: {
   ratio: string; resolution: string | null; quality: string | null; clarity: string | null; background: string | null
-}): string {
+}, mode = 'text'): string {
   if (model.modality !== 'image') return prompt
   const requirements: string[] = []
   const nativeSize = imageSizeChoices([request.resolution || ''])[0]
-  const usesSize = usesModelParameter(model, 'size', 'text') || usesModelParameter(model, 'resolution', 'text')
-  if (!usesModelParameter(model, 'ratio', 'text') && (!usesSize || nativeSize?.ratio !== request.ratio)) requirements.push(`画面比例：${request.ratio}`)
-  if (request.clarity && !usesModelParameter(model, 'clarity', 'text') && (!usesSize || nativeSize?.clarity !== request.clarity)
+  const usesSize = usesModelParameter(model, 'size', mode) || usesModelParameter(model, 'resolution', mode)
+  if (!usesModelParameter(model, 'ratio', mode) && (!usesSize || nativeSize?.ratio !== request.ratio)) requirements.push(`画面比例：${request.ratio}`)
+  if (request.clarity && !usesModelParameter(model, 'clarity', mode) && (!usesSize || nativeSize?.clarity !== request.clarity)
     && !(usesSize && request.resolution === request.clarity)) requirements.push(`清晰度要求：${request.clarity}`)
-  if (request.quality && !usesModelParameter(model, 'quality', 'text')) requirements.push(`画质要求：${qualityRequirements[request.quality] || request.quality}`)
-  if (request.background && !usesModelParameter(model, 'background', 'text')) requirements.push(`背景要求：${backgroundRequirements[request.background] || request.background}`)
+  if (request.quality && !usesModelParameter(model, 'quality', mode)) requirements.push(`画质要求：${qualityRequirements[request.quality] || request.quality}`)
+  if (request.background && !usesModelParameter(model, 'background', mode)) requirements.push(`背景要求：${backgroundRequirements[request.background] || request.background}`)
   return requirements.length ? `${prompt}\n\n图片生成要求：\n${requirements.join('\n')}` : prompt
 }
 

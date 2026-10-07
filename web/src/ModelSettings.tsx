@@ -11,6 +11,7 @@ import {
 import { api, json } from './api'
 import type { Model, Modality, Protocol, Provider } from './api'
 import { normalizeProviderBaseUrl } from './provider-url'
+import { imageRatios } from './canvas-model-parameters'
 import './model-settings.css'
 
 type Props = {
@@ -101,11 +102,11 @@ const starterSettings: Record<Protocol, Record<string, unknown>> = {
   },
   image_generations: {
     request_path: 'images/generations',
-    request_template: { model: '{{model}}', prompt: '{{prompt}}', size: '{{size}}' },
+    request_template: { model: '{{model}}', prompt: '{{prompt}}', ratio: '{{ratio}}' },
     image_base64_path: 'data.0.b64_json',
     image_url_path: 'data.0.url',
-    resolutions: ['1024x1024', '1536x1024', '1024x1536'],
-    default_resolution: '1024x1024',
+    ratios: imageRatios,
+    default_ratio: '1:1',
   },
   async_video: {
     create_path: 'contents/generations/tasks',

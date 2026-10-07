@@ -37,6 +37,7 @@ import {
 import { api, json } from './api'
 import type { Asset, Job, Model, ProjectDetail, Provider, ScriptArtifact, ScriptArtifactType, ScriptGenerationOptions } from './api'
 import type { ScriptAction } from './ProjectCanvas'
+import VisualPreparation from './VisualPreparation'
 import './script-director.css'
 import './script-director-chat.css'
 import './director-documents.css'
@@ -813,6 +814,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const [input, setInput] = useState(initialContext || readComposerDraft(detail.id))
   const [adoptingMessageId, setAdoptingMessageId] = useState<string | null>(null)
   const [handoffEpisode, setHandoffEpisode] = useState(() => Math.max(0, ...(detail.script.artifacts || []).filter(item => item.artifact_type === 'episode_script').map(item => item.episode_number || 0)))
+  const [visualPreparationOpen, setVisualPreparationOpen] = useState(false)
   const [working, setWorking] = useState<'chat' | 'prompt' | 'generate' | 'save' | 'shots' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [generated, setGenerated] = useState<GeneratedScript | null>(() => restoreWorkflowDraft(detail.id))
@@ -2064,6 +2066,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       onClose()
     } catch (issue) {
       setError(`加入画布失败：${readableError(issue)}`)
+      throw issue
     } finally {
       setWorking(null)
     }
@@ -2254,7 +2257,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
             data={[{ value: '0', label: '全部场次' }, ...savedEpisodes.map(artifact => ({ value: String(artifact.episode_number), label: `第 ${artifact.episode_number} 集` }))]}
             onChange={value => value !== null && setHandoffEpisode(Number(value))} />}
         </div>
-        <div className="sd-production-action"><small>{pendingSceneCount ? `${pendingSceneCount} 场待加入画布` : '所有场次都已加入画布'}</small><button type="button" className="sd-document-primary" onClick={() => void createSceneShots()} disabled={busy || pendingSceneCount === 0}>
+        <div className="sd-production-action"><button type="button" className="sd-document-secondary" title="人物、场景、道具信息图" disabled={busy} onClick={() => setVisualPreparationOpen(true)}><Palette size={14} />视觉设定</button><small>{pendingSceneCount ? `${pendingSceneCount} 场待加入画布` : '所有场次都已加入画布'}</small><button type="button" className="sd-document-primary" onClick={() => setVisualPreparationOpen(true)} disabled={busy || pendingSceneCount === 0}>
           {working === 'shots' ? <LoaderCircle size={13} className="script-director-spinner" /> : pendingSceneCount ? <Plus size={14} /> : <CheckCircle2 size={14} />}{pendingSceneCount ? '加入画布' : '已加入画布'}
         </button></div>
       </section>}
@@ -2296,6 +2299,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
 
     {error && <div className="script-director-error" role="alert">{error}<button type="button" onClick={() => setError(null)} aria-label="关闭错误"><X size={14} /></button></div>}
 
+    {visualPreparationOpen && <VisualPreparation detail={detail} models={models} sceneIds={handoffScenes.map(scene => scene.id)} onRefresh={onRefresh} onClose={() => setVisualPreparationOpen(false)} onContinue={pendingSceneCount ? createSceneShots : undefined} />}
     {previewOpen && generated && <DirectorDraftReview draft={generated} busy={busy} saving={working === 'save'} saved={scriptSaved} onChange={setGenerated} onClose={() => setPreviewOpen(false)} onSave={() => void saveGenerated()} />}
 
     {activeFocus === 'all' && !previewOpen && !artifactsOpen && !workflowOpen && <nav className="sd-creation-actions" aria-label="创作操作">

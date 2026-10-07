@@ -11,7 +11,8 @@ import {
   Sparkles, Trash2, Upload, FolderOpen, TriangleAlert, WandSparkles, X,
 } from 'lucide-react'
 import { api, json } from './api'
-import type { Asset, ContinuityReport, Model, Modality, ProductionRange, Project, ProjectDetail, Provider, Shot, TimelineClip } from './api'
+import type { Asset, ContinuityReport, Model, Modality, ProductionRange, Project, ProjectDetail, Provider, Shot, TimelineClip, VisualReferenceMode } from './api'
+import VisualPreparation from './VisualPreparation'
 import ModelSettings from './ModelSettings'
 import TimelinePreview from './TimelinePreview'
 import CutReviewPanel from './CutReviewPanel'
@@ -25,6 +26,7 @@ import type { AssetLibraryView } from './asset-library'
 
 type Tab = 'projects' | 'canvas' | 'studio' | 'assets' | 'jobs' | 'models'
 type Generation = {
+  visual_reference_mode?: VisualReferenceMode
   modality: Modality
   model_id: string
   mode: 'text' | 'first_frame' | 'first_last_frame' | 'reference' | 'edit' | 'extend'
@@ -39,6 +41,9 @@ type Generation = {
 type Handoff = { assetId: string; modelId: string; sourceClipId: string; sourceOutMs: number }
 type ShotForm = { title: string; prompt: string; duration: number; start_state: string; end_state: string; cut_note: string }
 type GenerationRequest = {
+  visual_reference_mode?: VisualReferenceMode
+  visual_source_prompt?: string
+  visual_signature?: string
   shot_id: string
   model_id: string
   prompt: string
@@ -271,6 +276,7 @@ function App() {
   const [shotForm, setShotForm] = useState<ShotForm>({ title: '', prompt: '', duration: 5, start_state: '', end_state: '', cut_note: '' })
   const [generation, setGeneration] = useState<Generation>(initialGeneration)
   const [generationReview, setGenerationReview] = useState<GenerationReview | null>(null)
+  const [visualPreparationOpen, setVisualPreparationOpen] = useState(false)
   const [candidateReview, setCandidateReview] = useState<CandidateReview | null>(null)
   const [trimIn, setTrimIn] = useState<number | string>(0)
   const [trimOut, setTrimOut] = useState<number | string>(0)
@@ -405,11 +411,12 @@ function App() {
   }, [assetCollection, assetKindFilter, assetQuery, assetSort, assetSourceFilter, detail])
   const selectedVisibleAssetCount = visibleLibraryAssets.filter((asset) => selectedAssetIds.includes(asset.id)).length
   const referenceCount = generation.reference_asset_ids.length
+  const visualBindings = (detail?.shot_visual_bindings || []).filter(binding => binding.shot_id === currentShot?.id)
   const generationIssue = generation.modality === 'video'
     ? generation.mode === 'first_frame' && referenceCount !== 1 ? '首帧模式需要选 1 张图片'
       : generation.mode === 'first_last_frame' && referenceCount !== 2 ? '首尾帧模式需要选 2 张图片'
         : ['edit', 'extend'].includes(generation.mode) && !generation.reference_video_url.trim() ? '编辑或延长需要填写参考视频地址'
-          : generation.mode === 'reference' && referenceCount === 0 && !generation.reference_video_url.trim() ? '参考生成需要图片或视频地址'
+          : generation.mode === 'reference' && referenceCount === 0 && !generation.reference_video_url.trim() && !(visualBindings.length && (generation.visual_reference_mode || 'profiles') === 'profiles') ? '参考生成需要图片或视频地址'
             : null
     : null
 
@@ -840,7 +847,8 @@ function App() {
 
   function reviewGeneration() {
     if (busy || !projectId || !currentShot || !activeModel || !shotForm.prompt.trim() || generationIssue) return
-    const request: GenerationRequest = {
+    const input: GenerationRequest = {
+      visual_reference_mode: generation.visual_reference_mode || 'profiles',
       shot_id: currentShot.id,
       model_id: activeModel.id,
       prompt: shotForm.prompt.trim(),
@@ -853,19 +861,22 @@ function App() {
       generate_audio: generation.generate_audio,
       draft: generation.draft,
     }
-    setGenerationReview({
-      projectId,
-      shot: { ...shotForm },
-      shotNumber: shotIndex + 1,
-      modality: generation.modality,
-      providerName: activeProvider?.name || '未命名提供商',
-      modelName: activeModel.name,
-      remoteModelId: activeModel.remote_id,
-      referenceNames: request.reference_asset_ids.map((id) => assetMap.get(id)?.filename || id),
-      supportsAudio,
-      supportsDraft: generation.modality === 'video' && activeModel.settings.supports_draft === true,
-      estimatedCost: estimatedGenerationCost(activeModel, generation.modality, request),
-      request,
+    void action(async () => {
+      const request = await api<GenerationRequest>(`/projects/${projectId}/generate/preview`, json('POST', input))
+      setGenerationReview({
+        projectId,
+        shot: { ...shotForm },
+        shotNumber: shotIndex + 1,
+        modality: generation.modality,
+        providerName: activeProvider?.name || '未命名提供商',
+        modelName: activeModel.name,
+        remoteModelId: activeModel.remote_id,
+        referenceNames: request.reference_asset_ids.map((id) => assetMap.get(id)?.filename || id),
+        supportsAudio,
+        supportsDraft: generation.modality === 'video' && activeModel.settings.supports_draft === true,
+        estimatedCost: estimatedGenerationCost(activeModel, generation.modality, request),
+        request,
+      })
     })
   }
 
@@ -1227,6 +1238,8 @@ function App() {
               <div className="generation-title"><WandSparkles size={17} /><strong>生成候选</strong></div>
               <SegmentedControl className="generation-segment" aria-label="生成类型" fullWidth value={generation.modality} data={[{ value: 'text', label: '文本' }, { value: 'image', label: '图片' }, { value: 'video', label: '视频' }]} onChange={(value) => { const modality = value as Modality; setGeneration({ ...generation, modality, mode: 'text', reference_asset_ids: [], resolution: modality === 'image' ? '1.5K' : '720p' }) }} />
               <Select label="生成模型" searchable allowDeselect={false} value={generation.model_id || null} data={availableModels.map((model) => ({ value: model.id, label: model.name }))} onChange={(value) => { if (!value) return; const model = models.find((item) => item.id === value); setGeneration({ ...generation, model_id: value, mode: 'text', resolution: defaultResolution(model, generation.modality), duration: Math.min(durationBounds(model).max, Math.max(durationBounds(model).min, generation.duration)), ratio: modelRatios(model).includes(generation.ratio) ? generation.ratio : modelRatios(model)[0], reference_asset_ids: [], draft: false }) }} />
+              <Button variant="default" leftSection={<ImageIcon size={15} />} onClick={() => setVisualPreparationOpen(true)}>视觉设定 · {visualBindings.length}</Button>
+              {!!visualBindings.length && <Select label="视觉设定引用方式" value={generation.visual_reference_mode || 'profiles'} allowDeselect={false} data={[{ value: 'profiles', label: '设定信息图 + 文字' }, ...(generation.modality === 'video' ? [{ value: 'keyframe', label: '关键帧承接 + 文字' }] : []), { value: 'text_only', label: '仅文字设定' }]} onChange={value => value && setGeneration({ ...generation, visual_reference_mode: value as VisualReferenceMode })} />}
               {!availableModels.length && <button className="model-empty-link" onClick={() => setTab('models')}>暂无可用模型，前往模型设置添加 <ArrowRight size={14} /></button>}
               {activeProvider && <div className="model-hint">{activeProvider.has_key ? '已配置 API Key' : '请到模型设置中配置 API Key'}</div>}
               {activeModel && generation.modality === 'video' && <>
@@ -1402,6 +1415,7 @@ function App() {
         <div className="generation-review-actions"><Button variant="default" onClick={() => setGenerationReview(null)} disabled={busy}>返回修改</Button><Button onClick={generateCandidate} loading={busy} leftSection={<Sparkles size={16} />}>确认提交 1 个候选</Button></div>
       </div>}
     </Modal>
+    {visualPreparationOpen && detail && <VisualPreparation detail={detail} models={models} shotId={currentShot?.id} onRefresh={() => refreshDetail()} onClose={() => setVisualPreparationOpen(false)} />}
     <Modal className="candidate-review-modal" opened={!!candidateReview} onClose={() => { if (!busy) setCandidateReview(null) }} closeOnEscape={!busy} closeOnClickOutside={!busy} title="候选审核" size="xl" centered>
       {candidateReview && reviewAsset && <div className="candidate-review-detail">
         <div className="candidate-review-heading"><div><strong>{detail?.shots.find((shot) => shot.id === candidateReview.shotId)?.title}</strong><span>{reviewAsset.source === 'upload' ? '本地导入' : models.find((model) => model.id === reviewAsset.model_id)?.name || '生成素材'} · {dateLabel(reviewAsset.created_at)}</span></div><Badge variant="light" color={reviewRecord?.status === 'approved' ? 'teal' : reviewRecord?.status === 'rejected' ? 'red' : 'gray'}>{reviewStatusText[reviewRecord?.status || 'pending']}</Badge></div>

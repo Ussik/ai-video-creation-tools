@@ -17,7 +17,8 @@ import {
 import type { Connection, ConnectionLineComponentProps, Edge, EdgeChange, EdgeProps, Node, NodeChange, NodeProps } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { api, json } from './api'
-import type { Asset, Job, Model, ProjectDetail, Provider, ScriptArtifact, Shot } from './api'
+import type { Asset, Job, Model, ProjectDetail, Provider, ScriptArtifact, Shot, VisualReferenceMode } from './api'
+import VisualPreparation from './VisualPreparation'
 import CanvasTextEditor, { CanvasTextPreview } from './CanvasTextEditor'
 import CanvasSelect from './CanvasSelect'
 import StoryboardWorkspace from './StoryboardWorkspace'
@@ -25,7 +26,7 @@ import CanvasComposerToolbar from './CanvasComposerToolbar'
 import { useAppDialog } from './AppDialog'
 import { CanvasGenerationParameters, CanvasVideoModeMenu } from './CanvasGenerationControls'
 import type { JSONContent } from '@tiptap/core'
-import { generationCost, imageParameterOptions, imageParameterValue, imagePreferencePrompt, imageRatios, imageRequestResolution, modelDefaultResolution, usesModelParameter } from './canvas-model-parameters'
+import { generationCost, imageParameterOptions, imageParameterValue, imagePreferencePrompt, imageRatioError, imageRatios, imageRequestResolution, modelDefaultResolution, usesModelParameter } from './canvas-model-parameters'
 import { parseScriptDocument } from './script-rich-document'
 import { textDocumentText } from './text-document'
 import { fitImageNode, imageNodeMinimum } from './canvas-image-layout'
@@ -53,6 +54,7 @@ export type CanvasNode = {
   job_id: string | null
   prompt: string
   settings: {
+    visual_reference_mode?: VisualReferenceMode
     role?: 'script'
     text_mode?: TextNodeMode
     text_document?: JSONContent | null
@@ -131,6 +133,9 @@ type FlowData = Record<string, unknown> & {
 }
 type FlowNode = Node<FlowData, 'studio'>
 type GenerationRequest = {
+  visual_reference_mode?: VisualReferenceMode
+  visual_source_prompt?: string
+  visual_signature?: string
   shot_id: string
   model_id: string
   prompt: string
@@ -694,6 +699,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const [pendingRunNodeId, setPendingRunNodeId] = useState<string | null>(null)
   const [composerExpanded, setComposerExpanded] = useState(false)
   const [review, setReview] = useState<GenerationReview | null>(null)
+  const [visualPreparationOpen, setVisualPreparationOpen] = useState(false)
+  const previewingRef = useRef(false)
   const [conflictReview, setConflictReview] = useState<ConflictReview | null>(null)
   const [candidateCount, setCandidateCount] = useState(1)
   const [busy, setBusy] = useState(false)
@@ -1322,6 +1329,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const selectedJob = jobMap.get(selectedNode?.job_id || '')
   const selectedNodeGenerating = selectedNode?.type === 'generation' && (selectedJob?.status === 'queued' || selectedJob?.status === 'running')
   const selectedShot = shotMap.get(selectedNode?.shot_id || '')
+  const visualBindings = (detail.shot_visual_bindings || []).filter(binding => binding.shot_id === selectedShot?.id)
+  const visualReferenceMode = selectedNode?.settings.visual_reference_mode || 'profiles'
   const selectedModel = modelMap.get(selectedNode?.model_id || '')
   const composerModel = selectedModel
   const composerModelId = selectedNode?.model_id || ''
@@ -1595,10 +1604,11 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
             settings = { ...settings, mode: request.mode, resolution: request.resolution, clarity: request.clarity,
               quality: request.quality, background: request.background, duration: request.duration,
               ratio: request.ratio, generate_audio: request.generate_audio, draft: request.draft,
+              visual_reference_mode: request.visual_reference_mode,
               reference_video_url: request.reference_video_url }
             referenceIds = Array.isArray(request.reference_asset_ids)
               ? request.reference_asset_ids.filter((id): id is string => typeof id === 'string') : []
-            prompt = typeof request.prompt === 'string' ? request.prompt : shot.prompt
+            prompt = request.visual_source_prompt ?? (typeof request.prompt === 'string' ? request.prompt : shot.prompt)
           } catch { /* Keep the shot defaults for legacy jobs. */ }
         }
         const shotGenerations = nodes.filter((node) => node.type === 'generation' && node.shot_id === shot.id)
@@ -1978,7 +1988,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     setAddMenu(null)
   }
 
-  function prepareGeneration() {
+  async function prepareGeneration() {
+    if (previewingRef.current) return
     if (!selectedNode || selectedNode.type !== 'generation') return
     if (selectedNodeGenerating) { setNotice('此节点正在生成，请等待任务完成'); return }
     const shot = selectedShot
@@ -2018,7 +2029,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     const videoUrl = ['reference', 'edit', 'extend'].includes(mode)
       ? (selectedNode.settings.reference_video_url || inputVideo?.remote_url || '').trim() : ''
     if (['edit', 'extend'].includes(mode) && !videoUrl) { setNotice('编辑或延长模式需要参考视频地址'); return }
-    if (mode === 'reference' && !inputImages.length && !videoUrl) { setNotice('参考生成需要图片连接或视频地址'); return }
+    if (mode === 'reference' && !inputImages.length && !videoUrl && !(visualBindings.length && visualReferenceMode === 'profiles')) { setNotice('参考生成需要图片连接或视频地址'); return }
     // Image generation has no duration parameter. Keep the request value
     // neutral so a newly created image task does not look like a 5-second
     // video in the confirmation dialog or create an unnecessarily long shot.
@@ -2032,7 +2043,12 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     const clarity = model.modality === 'image'
       ? imageParameterValue(model, 'clarity', selectedNode.settings.clarity) : null
     const baseResolution = selectedNode.settings.resolution || (model.modality === 'text' ? null : modelDefaultResolution(model, resolutions) || null)
-    const resolution = model.modality === 'image' ? imageRequestResolution(model, baseResolution || '', { ratio, clarity: clarity || '' }) : baseResolution
+    const imageMode = inputImages.length || visualBindings.length && visualReferenceMode === 'profiles' ? 'reference' : 'text'
+    const resolution = model.modality === 'image' ? (imageRequestResolution(model, baseResolution || '', { ratio, clarity: clarity || '', mode: imageMode }) || null) : baseResolution
+    if (model.modality === 'image') {
+      const ratioError = imageRatioError(model, resolution || '', ratio, imageMode)
+      if (ratioError) { setNotice(ratioError); return }
+    }
     const supportedResolutions = modelResolutions(model)
     if (model.modality !== 'text' && resolution && !supportedResolutions.includes(resolution)) {
       setNotice('当前模型不支持所选分辨率，请重新选择')
@@ -2046,16 +2062,24 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     const background = model.modality === 'image' ? imageParameterValue(model, 'background', selectedNode.settings.background) : null
     const request: GenerationRequest = {
       shot_id: shot?.id || '', model_id: model.id,
-      prompt: imagePreferencePrompt(model, compiledPrompt.trim(), { ratio, resolution, clarity, quality, background }), mode,
+      visual_reference_mode: visualReferenceMode,
+      prompt: imagePreferencePrompt(model, compiledPrompt.trim(), { ratio, resolution, clarity, quality, background }),
+      mode: model.modality === 'image' ? imageMode : mode,
       reference_asset_ids: inputImages.map((asset) => asset.id),
       reference_video_url: videoUrl || null, resolution, clarity, quality, background, duration, ratio,
       generate_audio: supportsAudio ? selectedNode.settings.generate_audio ?? true : false,
       draft: model.settings.supports_draft === true && selectedNode.settings.draft === true,
     }
-    setCandidateCount(selectedNode.settings.candidate_count || 1)
-    setReview({ nodeId: selectedNode.id, request, shot: shot || { title: selectedNode.title || `镜头 ${String(detail.shots.length + 1).padStart(2, '0')}` }, model,
-      provider: providers.find((provider) => provider.id === model.provider_id),
-      referenceNames: inputImages.map((asset) => asset.filename) })
+    previewingRef.current = true
+    setBusy(true)
+    try {
+      const prepared = await api<GenerationRequest>(`/projects/${detail.id}/generate/preview`, json('POST', { ...request, shot_id: request.shot_id || null }))
+      setCandidateCount(selectedNode.settings.candidate_count || 1)
+      setReview({ nodeId: selectedNode.id, request: { ...prepared, shot_id: prepared.shot_id || '' }, shot: shot || { title: selectedNode.title || `镜头 ${String(detail.shots.length + 1).padStart(2, '0')}` }, model,
+        provider: providers.find((provider) => provider.id === model.provider_id),
+        referenceNames: prepared.reference_asset_ids.map(id => assetMap.get(id)?.filename || id) })
+    } catch (issue) { showError(issue) }
+    finally { previewingRef.current = false; setBusy(false) }
   }
 
   async function submitGeneration() {
@@ -2099,7 +2123,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   useEffect(() => {
     if (!pendingRunNodeId || pendingRunNodeId !== selectedNodeId || !selectedNode) return
     setPendingRunNodeId(null)
-    prepareGeneration()
+    void prepareGeneration()
   }, [pendingRunNodeId, selectedNodeId, selectedNode])
 
   async function uploadCanvasFiles(files: FileList | File[], at?: { x: number; y: number }) {
@@ -2300,6 +2324,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         <Menu shadow="md" width={172} position="bottom-start"><Menu.Target><ActionIcon variant="subtle" aria-label="切换创作页面"><ChevronDown size={16} /></ActionIcon></Menu.Target><Menu.Dropdown>
           <Menu.Item leftSection={<FolderOpen size={15} />} onClick={() => onNavigate('projects')}>项目</Menu.Item>
           <Menu.Item leftSection={<ScrollText size={15} />} onClick={() => openScriptDirector('all')}>剧本创作</Menu.Item>
+          <Menu.Item leftSection={<ImageIcon size={15} />} onClick={() => setVisualPreparationOpen(true)}>视觉设定</Menu.Item>
           <Menu.Item leftSection={<Film size={15} />} onClick={() => onNavigate('studio')} disabled={!detail.shots.length}>剪辑与导出</Menu.Item>
           <Menu.Item leftSection={<Layers3 size={15} />} onClick={() => onNavigate('assets')}>资产</Menu.Item>
           <Menu.Item leftSection={<Clock3 size={15} />} onClick={() => onNavigate('jobs')}>任务记录</Menu.Item>
@@ -2307,6 +2332,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         </Menu.Dropdown></Menu>
       </div>
       <div className="pc-mode-switch" role="tablist" aria-label="创作视图">
+        <Tooltip label="视觉设定"><ActionIcon variant="subtle" aria-label="打开视觉设定" onClick={() => setVisualPreparationOpen(true)}><ImageIcon size={17} /></ActionIcon></Tooltip>
         <button type="button" role="tab" aria-selected={viewMode === 'canvas'} className={viewMode === 'canvas' ? 'is-active' : ''}
           onClick={() => { setContextMenu(null); setAddMenu(null); setViewMode('canvas') }}><MousePointer2 size={15} />工作流</button>
         <button type="button" role="tab" aria-selected={viewMode === 'storyboard'} className={viewMode === 'storyboard' ? 'is-active' : ''}
@@ -2490,6 +2516,13 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                 </div>
                 <button type="button" className="pc-composer-expand" aria-label={composerExpanded ? '收起创作区' : '展开创作区'} title={composerExpanded ? '收起创作区' : '展开创作区'} onClick={() => setComposerExpanded((value) => !value)}><Maximize2 size={17} /></button>
               </div>
+              {selectedShot && <div className="pc-visual-context">
+                <button type="button" onClick={() => setVisualPreparationOpen(true)}>视觉设定 · {visualBindings.length}</button>
+                {visualBindings.length > 0 && <><span>{visualBindings.filter(binding => binding.required && !binding.board_asset_id).length ? '必需信息图待确认' : '已绑定'}</span>
+                  <select aria-label="视觉设定引用方式" value={visualReferenceMode} onChange={event => updateNodeSettingsById(selectedNode.id, { visual_reference_mode: event.currentTarget.value as VisualReferenceMode })}>
+                    <option value="profiles">设定信息图 + 文字</option>{composerModality === 'video' && <option value="keyframe">关键帧承接 + 文字</option>}<option value="text_only">仅文字设定</option>
+                  </select></>}
+              </div>}
               {composerReferences.length > 0 && <div className="pc-composer-references" aria-label="已连接的参考">
                 {composerReferences.map((node, index) => <div className="pc-composer-reference" key={node.id}>
                   <button type="button" title={node.title || '参考节点'} aria-label={`定位参考：${node.title || index + 1}`} onClick={() => focusSidebarNode(node.id)}>
@@ -2630,11 +2663,14 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         <dl><div><dt>目标镜头</dt><dd>{review.shot.title}</dd></div><div><dt>模型</dt><dd>{review.model.name} · {review.provider?.name || '未知服务商'}</dd></div><div><dt>类型与模式</dt><dd>{review.model.modality === 'video' ? modeOptions.find((item) => item.value === review.request.mode)?.label : review.model.modality === 'image' ? '生成图片' : '生成文本'}</dd></div><div><dt>参数</dt><dd>{review.model.modality === 'image'
           ? [review.request.resolution, review.request.quality && `画质 ${review.request.quality}`, review.request.clarity, review.request.background && `背景 ${review.request.background}`].filter(Boolean).join(' · ')
           : review.request.resolution || '默认'}{review.model.modality === 'video' ? ` · ${review.request.duration} 秒` : ''}{review.model.modality !== 'text' ? ` · ${review.request.ratio}` : ''}{review.request.draft ? ' · 样片' : ''}</dd></div>{review.model.modality === 'video' && <div><dt>生成声音</dt><dd>{review.request.generate_audio ? '开启' : '关闭'}</dd></div>}<div><dt>参考图</dt><dd>{review.referenceNames.length ? review.referenceNames.map((name, index) => ['first_frame', 'first_last_frame'].includes(review.request.mode) ? `${index === 0 ? '首帧' : '尾帧'}：${name}` : name).join('、') : '无'}</dd></div>{review.request.reference_video_url && <div><dt>参考视频</dt><dd>{review.request.reference_video_url}</dd></div>}<div><dt>{candidateCount} 个候选总费用预估</dt><dd>{generationCost(review.model, review.request, candidateCount) ? `约 ${generationCost(review.model, review.request, candidateCount)}` : '模型未配置费用，提交前请核对厂商价格'}</dd></div></dl>
+        <div className="pc-visual-thumbnails">{review.request.reference_asset_ids.map(id => assetMap.get(id)).filter((asset): asset is Asset => !!asset).map(asset => <a key={asset.id} href={asset.url} target="_blank" rel="noreferrer"><img src={asset.url} alt={asset.filename} title={asset.filename} /></a>)}</div>
+        {review.request.visual_signature && <p>{review.request.visual_reference_mode === 'text_only' ? '仅使用文字设定' : review.request.visual_reference_mode === 'keyframe' ? '使用关键帧与文字设定' : '使用设定信息图与文字设定'}</p>}
         <div className="pc-confirm-prompt"><span>实际提交提示词</span><p>{review.request.prompt}</p></div>
         <div className="pc-candidate-count"><NumberInput label="候选数量" description="同一提示词提交多个候选，完成后可在任务或素材库中审核选择。" min={1} max={4} allowDecimal={false} disabled={busy} clampBehavior="strict" value={candidateCount} onChange={(value) => setCandidateCount(Math.max(1, Math.min(4, Math.trunc(Number(value) || 1))))} /></div>
         <div className="pc-confirm-actions"><Button variant="default" disabled={busy} onClick={() => setReview(null)}>返回修改</Button><Button loading={busy} onClick={() => void submitGeneration()}>确认提交 {candidateCount} 个候选</Button></div>
       </div>}
     </Modal>
+    {visualPreparationOpen && <VisualPreparation detail={detail} models={models} shotId={selectedShot?.id || storyboardSelectedId || undefined} onRefresh={onRefresh} onClose={() => setVisualPreparationOpen(false)} />}
     <Modal opened={!!conflictReview} onClose={() => setConflictReview(null)} title="画布版本冲突" centered size="md">
       {conflictReview && <div className="pc-conflict"><p>服务器上的画布已被其他编辑更新。本地修改仍保留。合并会保留双方独立新增的节点；同一内容同时修改时以本地版本为准。</p><strong>{conflictReview.conflicts} 处内容冲突</strong><div><Button variant="default" onClick={useServerVersion}>加载服务器版本</Button><Button onClick={() => void applyMerge()} leftSection={<Save size={15} />}>合并并保存</Button></div></div>}
     </Modal>

@@ -64,6 +64,73 @@ test('configured text and image APIs use templates, response paths and provider 
   }
 })
 
+test('non-streaming text can finish after the former 90-second deadline', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  t.mock.method(AbortSignal, 'timeout', (milliseconds: number) => {
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(new DOMException('deadline', 'TimeoutError')), milliseconds)
+    return controller.signal
+  })
+  let requestSignal: AbortSignal | undefined
+  let body: ReadableStreamDefaultController<Uint8Array> | undefined
+  let started!: () => void
+  const waiting = new Promise<void>(resolve => { started = resolve })
+  let calls = 0
+  t.mock.method(globalThis, 'fetch', async (_input: unknown, init: RequestInit) => {
+    calls++
+    requestSignal = init.signal!
+    return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+      body = controller
+      requestSignal!.addEventListener('abort', () => controller.error(requestSignal!.reason), { once: true })
+      started()
+    } }))
+  })
+  const result = generate({ id: 'slow-text', remote_id: 'slow-text', modality: 'text', settings: {
+    request_path: '/text', text_path: 'output_text',
+  } }, { adapter: 'http', base_url: 'https://example.invalid' }, { prompt: '整理视觉设定' }, [], 'slow-text', () => {})
+  await waiting
+  t.mock.timers.tick(90_001)
+  assert.equal(requestSignal!.aborted, false)
+  body!.enqueue(new TextEncoder().encode(JSON.stringify({ output_text: '设定草稿已完成' })))
+  body!.close()
+  assert.equal(await readFile((await result).path, 'utf8'), '设定草稿已完成')
+  assert.equal(calls, 1)
+})
+
+test('text timeouts cover both waiting for a response and reading its body without retrying', async t => {
+  for (const stage of ['response', 'body']) await t.test(stage, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    t.mock.method(AbortSignal, 'timeout', (milliseconds: number) => {
+      const controller = new AbortController()
+      setTimeout(() => controller.abort(new DOMException('deadline', 'TimeoutError')), milliseconds)
+      return controller.signal
+    })
+    let started!: () => void
+    const waiting = new Promise<void>(resolve => { started = resolve })
+    let calls = 0
+    t.mock.method(globalThis, 'fetch', async (_input: unknown, init: RequestInit) => {
+      calls++
+      const signal = init.signal!
+      if (stage === 'response') return new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+        started()
+      })
+      return new Response(new ReadableStream({ start(controller) {
+        signal.addEventListener('abort', () => controller.error(signal.reason), { once: true })
+        started()
+      } }))
+    })
+    const failure = assert.rejects(generate({ id: 'timeout-text', remote_id: 'timeout-text', modality: 'text', settings: {
+      request_path: '/text', text_path: 'output_text',
+    } }, { adapter: 'http', base_url: 'https://example.invalid' }, { prompt: '整理视觉设定' }, [], 'timeout-text', () => {}),
+    /文本模型请求超时（最长等待 10 分钟）/)
+    await waiting
+    t.mock.timers.tick(10 * 60_000)
+    await failure
+    assert.equal(calls, 1)
+  })
+})
+
 test('configured text paths read content blocks without exposing reasoning text', async () => {
   const responses: Record<string, unknown>[] = [
     { choices: [{ message: { content: [{ type: 'reasoning', text: '内部推理' }, { type: 'text', text: '正文一' }] } }] },

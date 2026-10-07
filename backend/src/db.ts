@@ -144,7 +144,7 @@ export function run(sql: string, ...params: unknown[]): void {
   db.prepare(sql).run(...params)
 }
 
-export function required<T>(table: 'projects' | 'shots' | 'timeline_clips' | 'script_scenes' | 'script_conversations' | 'script_artifacts' | 'providers' | 'models' | 'assets' | 'jobs' | 'asset_tasks', id: string): T {
+export function required<T>(table: 'projects' | 'shots' | 'timeline_clips' | 'script_scenes' | 'script_conversations' | 'script_artifacts' | 'providers' | 'models' | 'assets' | 'jobs' | 'asset_tasks' | 'visual_profiles', id: string): T {
   const value = one<T>(`SELECT * FROM ${table} WHERE id=?`, id)
   if (!value) throw Object.assign(new Error('记录不存在'), { statusCode: 404 })
   return value
@@ -339,6 +339,32 @@ export function initDb(): void {
       message TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS visual_profiles (
+      id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK (kind IN ('character', 'location', 'prop')),
+      name TEXT NOT NULL, variant TEXT NOT NULL DEFAULT '默认',
+      definition TEXT NOT NULL, view_requirements TEXT NOT NULL,
+      revision INTEGER NOT NULL DEFAULT 1,
+      board_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+      asset_task_id TEXT REFERENCES asset_tasks(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      UNIQUE(project_id, kind, name, variant)
+    );
+    CREATE TABLE IF NOT EXISTS scene_visual_bindings (
+      scene_id TEXT NOT NULL REFERENCES script_scenes(id) ON DELETE CASCADE,
+      profile_id TEXT NOT NULL REFERENCES visual_profiles(id) ON DELETE CASCADE,
+      required INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (scene_id, profile_id)
+    );
+    CREATE TABLE IF NOT EXISTS shot_visual_bindings (
+      shot_id TEXT NOT NULL REFERENCES shots(id) ON DELETE CASCADE,
+      profile_id TEXT NOT NULL REFERENCES visual_profiles(id) ON DELETE CASCADE,
+      required INTEGER NOT NULL DEFAULT 1,
+      revision INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, variant TEXT NOT NULL,
+      definition TEXT NOT NULL, view_requirements TEXT NOT NULL,
+      board_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+      PRIMARY KEY (shot_id, profile_id)
+    );
     CREATE TABLE IF NOT EXISTS canvas_nodes (
       id TEXT NOT NULL,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -531,6 +557,29 @@ export function initDb(): void {
   }
   if (!modelColumns.some(column => column.name === 'archived')) {
     db.exec('ALTER TABLE models ADD COLUMN archived INTEGER NOT NULL DEFAULT 0')
+  }
+  if (!one('SELECT 1 FROM studio_migrations WHERE id=?', 'image-ratio-parameters-v1')) {
+    const imageRatios = ['1:1', '1:2', '2:1', '9:16', '16:9', '3:4', '4:3', '3:2', '2:3', '5:4', '4:5', '21:9', '9:21']
+    db.transaction(() => {
+      for (const model of all<Model>("SELECT * FROM models WHERE modality='image'")) {
+        let settings: Record<string, unknown>
+        try { settings = JSON.parse(model.settings) as Record<string, unknown> } catch { continue }
+        const template = settings.request_template
+        const oldSizes = settings.resolutions
+        if (!template || typeof template !== 'object' || Array.isArray(template) ||
+          (template as Record<string, unknown>).size !== '{{size}}' || !Array.isArray(oldSizes)) continue
+        const nextTemplate = { ...(template as Record<string, unknown>) }
+        delete nextTemplate.size
+        nextTemplate.ratio = '{{ratio}}'
+        delete settings.resolutions
+        delete settings.default_resolution
+        settings.request_template = nextTemplate
+        settings.ratios = imageRatios
+        settings.default_ratio = '1:1'
+        run('UPDATE models SET settings=? WHERE id=?', JSON.stringify(settings), model.id)
+      }
+      run('INSERT INTO studio_migrations (id, applied_at) VALUES (?, ?)', 'image-ratio-parameters-v1', now())
+    })()
   }
   if (Number(db.pragma('user_version', { simple: true })) < 3) {
     db.transaction(() => {

@@ -5,7 +5,7 @@ import React, { act, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { MantineProvider } from '@mantine/core'
 import { CanvasGenerationParameters, type CanvasGenerationParametersProps } from '../src/CanvasGenerationControls'
-import { imageParameterOptions, imageParameterValue, imagePreferencePrompt, imageRatios, imageRequestResolution } from '../src/canvas-model-parameters'
+import { imageParameterOptions, imageParameterValue, imagePreferencePrompt, imageRatioError, imageRatios, imageRequestResolution } from '../src/canvas-model-parameters'
 import type { Model } from '../src/api'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
@@ -82,7 +82,7 @@ test('configured image quality, clarity, background and ratios remain selectable
   } finally { await view.destroy() }
 })
 
-test('complete image panel keeps all reference controls selectable and preserves preferences for submission', async () => {
+test('complete image panel preserves selections and rejects unavailable pixel ratios', async () => {
   const model = { modality: 'image', settings: { request_template: {prompt:'{{prompt}}', size:'{{size}}'}, resolutions: defaults.resolutions } } as Model
   const view = await mount({
     ratios: imageRatios, clarities: imageParameterOptions(model, 'clarity'), clarity: imageParameterValue(model, 'clarity'),
@@ -107,7 +107,8 @@ test('complete image panel keeps all reference controls selectable and preserves
     assert.deepEqual(view.changes.slice(-5), [{quality:'extreme'}, {clarity:'4K'}, {background:'transparent'}, {ratio:'16:9'}, {count:4}])
     const resolution = imageRequestResolution(model, '1024x1024', {ratio:'16:9',clarity:'4K'})
     const prompt = imagePreferencePrompt(model, '旧相框', {ratio:'16:9',clarity:'4K',quality:'extreme',background:'transparent',resolution})
-    assert.equal(resolution, '1536x1024')
+    assert.equal(resolution, '')
+    assert.ok(imageRatioError(model, resolution, '16:9')?.includes('16:9'))
     assert.ok(prompt.includes('16:9') && prompt.includes('4K') && prompt.includes('极致画质') && prompt.includes('透明背景'))
   } finally { await view.destroy() }
 })

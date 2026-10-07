@@ -17,7 +17,7 @@ export function formatProcessingDuration(durationMs: number): string {
   return minutes < 60 ? `${minutes} 分 ${seconds % 60} 秒` : `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分 ${seconds % 60} 秒`
 }
 
-export default function DirectorMessageTiming({ pending, processing_started_at: startedAt, processing_duration_ms: completed }: MessageTiming & { pending?: boolean }) {
+export default function DirectorMessageTiming({ pending, processing_started_at: startedAt, processing_duration_ms: completed, title = '从提交请求到本条回复结束的处理用时' }: MessageTiming & { pending?: boolean; title?: string }) {
   const [now, setNow] = useState(() => performance.now())
   const running = Boolean(pending && typeof startedAt === 'number' && Number.isFinite(startedAt))
   useEffect(() => {
@@ -28,7 +28,7 @@ export default function DirectorMessageTiming({ pending, processing_started_at: 
   }, [running, startedAt])
   const duration = running ? Math.max(0, now - startedAt!) : completed
   if (typeof duration !== 'number' || !Number.isFinite(duration) || duration < 0) return null
-  return <div className="sd-message-timing" title="从提交请求到本条回复结束的处理用时">
+  return <div className="sd-message-timing" title={title}>
     <Clock3 size={12} aria-hidden="true" /><span>{running ? '处理中' : '用时'} {formatProcessingDuration(duration)}</span>
   </div>
 }

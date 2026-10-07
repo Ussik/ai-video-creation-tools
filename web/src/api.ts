@@ -251,6 +251,46 @@ export interface ProjectDetail extends Project {
   assets: Asset[]
   jobs: Job[]
   asset_tasks: AssetTask[]
+  visual_profiles?: VisualProfile[]
+  scene_visual_bindings?: SceneVisualBinding[]
+  shot_visual_bindings?: ShotVisualBinding[]
+}
+
+export type VisualKind = 'character' | 'location' | 'prop'
+export type VisualReferenceMode = 'profiles' | 'keyframe' | 'text_only'
+export interface VisualProfileDraft {
+  kind: VisualKind
+  name: string
+  variant: string
+  definition: string
+  view_requirements: string
+  scene_ids: string[]
+}
+export interface VisualProfile extends Omit<VisualProfileDraft, 'scene_ids'> {
+  id: string
+  project_id: string
+  revision: number
+  board_asset_id: string | null
+  asset_task_id: string | null
+  board_prompt: string
+}
+export interface SceneVisualBinding { scene_id: string; profile_id: string; required: boolean }
+export interface ShotVisualBinding extends Omit<VisualProfile, 'id' | 'project_id' | 'asset_task_id' | 'board_prompt'> {
+  shot_id: string
+  profile_id: string
+  required: boolean
+}
+export interface VisualProjectData {
+  visual_profiles: VisualProfile[]
+  scene_visual_bindings: SceneVisualBinding[]
+  shot_visual_bindings: ShotVisualBinding[]
+}
+export interface VisualBoardPreview {
+  prompt: string
+  mode: 'text' | 'reference'
+  reference_asset_ids: string[]
+  reference_names: string[]
+  reference_signature: string
 }
 
 export type ContinuitySeverity = 'error' | 'warning'

@@ -12,6 +12,8 @@ import type { Asset, AssetReview, AssetTask, AssetTaskEvent, CanvasEdge, CanvasN
 import { decryptKey, encryptKey } from './secrets.js'
 import { generate, recoverImage, streamText } from './providers.js'
 import { parseStructuredOutput } from './structured-output.js'
+import { imageReferenceConfigError } from './image-reference-config.js'
+import { inheritSceneVisualBindings, prepareVisualGeneration, registerVisualProfileRoutes, visualProjectData } from './visual-profiles.js'
 import { workflowRequest, workflowDraftInput, normalizeWorkflowRequest, workflowInstructions, parseWorkflowDraft, workflowReply } from './script-workflow.js'
 import { scriptSettingsSchema, scriptIntentPrompt, parseScriptIntent } from './script-intent.js'
 import { themeVisualInput, themeVisualPrompt, parseThemeVisuals } from './script-theme-visuals.js'
@@ -235,6 +237,9 @@ const generationInput = z.object({
   duration: z.number().int().min(1).max(120).default(5), ratio: z.string().default('16:9'),
   generate_audio: z.boolean().default(true), draft: z.boolean().default(false),
   source_artifact_type: z.enum(['character', 'location', 'prop']).nullable().optional(),
+  visual_reference_mode: z.enum(['profiles', 'keyframe', 'text_only']).optional(),
+  visual_source_prompt: z.string().trim().min(1).optional(),
+  visual_signature: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 })
 const canvasId = z.string().min(1).max(100)
 type CanvasTextMark = { type: 'bold' | 'italic' }
@@ -301,6 +306,7 @@ const canvasTextDocument = z.unknown().superRefine((value, context) => {
   }
 })
 const canvasSettings = z.object({
+  visual_reference_mode: z.enum(['profiles', 'keyframe', 'text_only']).optional(),
   role: z.enum(['script']).optional(),
   text_mode: z.enum(['choose', 'write', 'video']).optional(),
   text_document: canvasTextDocument.nullable().optional(),
@@ -1232,6 +1238,19 @@ export function buildApp(): FastifyInstance {
     if (code === 500) console.error(error)
   })
 
+  registerVisualProfileRoutes(app, {
+    script: projectScript,
+    generateText: async (projectId, modelId, prompt) => {
+      const model = required<Model>('models', modelId)
+      if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
+      checkProtocol(model.modality, model.protocol)
+      validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>)
+      const provider = required<Provider>('providers', model.provider_id)
+      if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用')
+      return generateTextOutput(model, provider, projectId, prompt)
+    },
+  })
+
   app.get('/api/health', async () => ({ ok: true }))
   app.get('/api/projects', async () => all<Project>('SELECT * FROM projects ORDER BY updated_at DESC'))
   app.post('/api/projects', async request => {
@@ -1252,6 +1271,7 @@ export function buildApp(): FastifyInstance {
       assets: all<Asset>('SELECT * FROM assets WHERE project_id=? ORDER BY created_at DESC', id).map(assetPublic),
       jobs: all<Job>('SELECT * FROM jobs WHERE project_id=? ORDER BY created_at DESC', id).map(jobPublic),
       asset_tasks: all<AssetTask>('SELECT * FROM asset_tasks WHERE project_id=? ORDER BY updated_at DESC, rowid DESC', id).map(assetTaskPublic),
+      ...visualProjectData(id),
     }
   })
   app.get('/api/projects/:id/canvas', async request => {
@@ -1855,6 +1875,9 @@ export function buildApp(): FastifyInstance {
     if (new Set(data.reference_asset_ids).size !== data.reference_asset_ids.length) invalid('参考图片不能重复')
     if (references.some((asset) => asset.project_id !== task.project_id || asset.kind !== 'image')) invalid('参考图片必须来自当前项目')
     if (data.mode === 'reference' && !references.length) invalid('参考模式至少需要一张参考图片')
+    if (references.length && data.mode !== 'reference') invalid('选择参考图片后请使用参考生成模式')
+    const referenceError = imageReferenceConfigError(JSON.parse(model.settings) as Record<string, unknown>, references.length, data.mode)
+    if (referenceError) invalid(referenceError)
     const prompt = data.prompt || task.prompt
     if (!prompt.trim()) invalid('请先填写图片生成提示词')
     const jobId = newId(), timestamp = now()
@@ -2033,6 +2056,7 @@ export function buildApp(): FastifyInstance {
         run(`INSERT INTO shots (id, project_id, position, title, prompt, duration, selected_asset_id, created_at, source_scene_id)
           VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
           shotId, id, position++, scene.heading, scenePrompt(scene), scene.duration, now(), scene.id)
+        inheritSceneVisualBindings(shotId, scene.id)
         shots.push(required<Shot>('shots', shotId))
       }
       if (shots.length) touchProject(id)
@@ -2126,6 +2150,7 @@ export function buildApp(): FastifyInstance {
             VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
             shotId, id, provisionalPosition++, shot.title, shot.prompt, shot.duration, now(), scene.id,
             shot.start_state, shot.end_state, shot.cut_note)
+          inheritSceneVisualBindings(shotId, scene.id)
           createdIds.push(shotId)
           additions.push({ id: shotId, source_scene_id: scene.id })
         }
@@ -2259,6 +2284,7 @@ export function buildApp(): FastifyInstance {
       start_state, end_state, cut_note)
       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`, shotId, id, position, data.title, data.prompt,
       data.duration, now(), data.source_scene_id ?? null, data.start_state, data.end_state, data.cut_note)
+    inheritSceneVisualBindings(shotId, data.source_scene_id ?? null)
     touchProject(id)
     return required<Shot>('shots', shotId)
   })
@@ -2619,19 +2645,26 @@ export function buildApp(): FastifyInstance {
     run('DELETE FROM models WHERE id=?', id)
     return { ok: true }
   })
-  app.post('/api/projects/:id/generate', async request => {
-    const { id } = parse(idParams, request.params)
-    required<Project>('projects', id)
-    const data = parse(generationInput, request.body)
-    const shot = data.shot_id ? required<Shot>('shots', data.shot_id) : null
-    const model = required<Model>('models', data.model_id)
-    if ((shot && shot.project_id !== id) || !model.enabled || model.archived) invalid('分镜或模型不可用')
-    // Project-level asset cards use this route only for image generation. A
-    // video task without a shot would have nowhere to enter the edit timeline.
-    if (!shot && (model.modality !== 'image' || !data.source_artifact_type)) invalid('视频生成需要先关联分镜')
+  function generationRequest(projectId: string, body: unknown, preview: boolean) {
+    required<Project>('projects', projectId)
+    const input = parse(generationInput, body)
+    const shot = input.shot_id ? required<Shot>('shots', input.shot_id) : null
+    const model = required<Model>('models', input.model_id)
+    if ((shot && shot.project_id !== projectId) || !model.enabled || model.archived) invalid('分镜或模型不可用')
+    if (!preview && !shot && (model.modality !== 'image' || !input.source_artifact_type)) invalid('视频生成需要先关联分镜')
     const provider = required<Provider>('providers', model.provider_id)
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
-    validateGeneration(data, model, id)
+    const data = prepareVisualGeneration(input, model, preview)
+    validateGeneration(data, model, projectId)
+    return { data, shot, model }
+  }
+  app.post('/api/projects/:id/generate/preview', async request => {
+    const { id } = parse(idParams, request.params)
+    return generationRequest(id, request.body, true).data
+  })
+  app.post('/api/projects/:id/generate', async request => {
+    const { id } = parse(idParams, request.params)
+    const { data, shot, model } = generationRequest(id, request.body, false)
     const jobId = newId(), timestamp = now()
     run("INSERT INTO jobs VALUES (?, ?, ?, ?, 'generation', ?, 'queued', NULL, NULL, NULL, ?, ?)", jobId, id, shot?.id || null, model.id, JSON.stringify(data), timestamp, timestamp)
     return jobPublic(required<Job>('jobs', jobId))

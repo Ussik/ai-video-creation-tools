@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Model } from '../src/api'
-import { generationCost, imageParameterOptions, imageParameterValue, imagePreferencePrompt, imageRatios, imageRequestResolution, imageSizeChoices, modelDefaultResolution, resolutionRatio, selectImageSize, usesModelParameter } from '../src/canvas-model-parameters'
+import { generationCost, imageParameterOptions, imageParameterValue, imagePreferencePrompt, imageRatioError, imageRatios, imageRequestResolution, imageSizeChoices, modelDefaultResolution, resolutionRatio, selectImageSize, usesModelParameter } from '../src/canvas-model-parameters'
 
 const model = (settings: Model['settings'], modality: Model['modality'] = 'image') => ({ settings, modality } as Model)
 
@@ -30,32 +30,74 @@ test('explicit model choices and configured defaults remain usable', () => {
   assert.equal(imageParameterValue(model({}), 'quality'), 'standard')
 })
 
-test('every requested ratio and clarity stays independent from a fixed-size provider', () => {
+test('fixed-size providers never replace a requested ratio with a nearby ratio', () => {
   const image = model({ request_template: { prompt: '{{prompt}}', size: '{{size}}' }, resolutions: ['1024x1024', '1536x1024', '1024x1536'] })
   for (const ratio of imageRatios) for (const clarity of ['1K', '2K', '4K']) {
     const resolution = imageRequestResolution(image, '1024x1024', {ratio, clarity})
-    assert.ok((image.settings.resolutions as string[]).includes(resolution))
-    const prompt = imagePreferencePrompt(image, '一个旧相框', {ratio, clarity, resolution, quality: 'extreme', background: 'transparent'})
-    assert.ok(prompt.startsWith('一个旧相框\n\n图片生成要求：'))
-    if (resolutionRatio(resolution) !== ratio) assert.ok(prompt.includes(`画面比例：${ratio}`))
+    if (['1:1', '3:2', '2:3'].includes(ratio)) {
+      assert.equal(resolutionRatio(resolution), ratio)
+      assert.equal(imageRatioError(image, resolution, ratio), null)
+    } else {
+      assert.equal(resolution, '')
+      assert.ok(imageRatioError(image, resolution, ratio)?.includes(ratio))
+    }
+  }
+  assert.ok(imageRatioError(image, '1536x1024', '16:9'))
+  assert.ok(imageRatioError(image, '1024x1536', '9:16'))
+})
+
+test('exact widescreen sizes and native ratio parameters preserve the requested ratio', () => {
+  const image = model({ request_template: { size: '{{size}}' }, resolutions: ['1024x1024', '1536x864', '864x1536'] })
+  for (const [ratio, expected] of [['16:9', '1536x864'], ['9:16', '864x1536']]) {
+    const resolution = imageRequestResolution(image, '1024x1024', {ratio, clarity: '1K'})
+    assert.equal(resolution, expected)
+    assert.equal(imageRatioError(image, resolution, ratio), null)
+  }
+  const native = model({ request_template: { aspect_ratio: '{{ratio}}', image_size: '{{resolution}}' }, resolutions: ['1K', '2K', '4K'] })
+  for (const ratio of imageRatios) {
+    assert.equal(imageRequestResolution(native, '1K', {ratio, clarity: '2K'}), '2K')
+    assert.equal(imageRatioError(native, '2K', ratio), null)
+  }
+})
+
+test('ratio validation requires an actual parameter mapping for the active mode', () => {
+  const noSize = model({ request_template: { prompt: '{{prompt}}' }, resolutions: ['1536x864'] })
+  assert.ok(imageRatioError(noSize, '1536x864', '16:9'))
+  const perMode = model({
+    request_template: { size: '{{size}}' },
+    request_templates: { reference: { aspect_ratio: '{{ratio}}', resolution: '{{resolution}}' } },
+    resolutions: ['1K', '2K', '4K'],
+  })
+  assert.equal(imageRequestResolution(perMode, '1K', {ratio: '16:9', clarity: '2K', mode: 'reference'}), '2K')
+  assert.equal(imageRatioError(perMode, '2K', '16:9', 'reference'), null)
+  assert.ok(imageRatioError(perMode, '2K', '16:9', 'text'))
+  assert.equal(imageRequestResolution(model({request_template:{size:'{{size}}'}}), '1536x864', {ratio:'16:9',clarity:''}), '1536x864')
+  assert.equal(imageRequestResolution(model({request_template:{size:'{{size}}'}}), '1536x1024', {ratio:'16:9',clarity:''}), '')
+})
+
+test('unmapped clarity, quality and background preferences remain in the prompt', () => {
+  const image = model({ request_template: { prompt: '{{prompt}}', size: '{{size}}' }, resolutions: ['1536x864'] })
+  for (const clarity of ['1K', '2K', '4K']) {
+    const resolution = imageRequestResolution(image, '1536x864', {ratio: '16:9', clarity})
+    const prompt = imagePreferencePrompt(image, '一个旧相框', {ratio: '16:9', clarity, resolution, quality: 'extreme', background: 'transparent'})
+    assert.equal(resolution, '1536x864')
+    assert.ok(!prompt.includes('画面比例：'))
     if (clarity !== '1K') assert.ok(prompt.includes(`清晰度要求：${clarity}`))
     assert.ok(prompt.includes('极致画质'))
     assert.ok(prompt.includes('透明背景'))
   }
-  assert.equal(imageRequestResolution(image, '1024x1024', { ratio: '16:9', clarity: '2K' }), '1536x1024')
-  assert.equal(imageRequestResolution(image, '1024x1024', { ratio: '9:16', clarity: '4K' }), '1024x1536')
 })
 
 test('native parameters do not duplicate prompt requirements and follow the active template', () => {
   const image = model({request_templates: {
     text: {prompt: '{{prompt}}', ratio: '{{ratio}}', quality: '{{quality}}', clarity: '{{clarity}}', background: '{{background}}'},
   }, resolutions: ['1K', '2K', '4K']})
-  assert.equal(imageRequestResolution(image, '1K', {ratio: '16:9', clarity: '4K'}), '4K')
+  assert.equal(imageRequestResolution(image, '1K', {ratio: '16:9', clarity: '4K'}), '')
   assert.equal(imagePreferencePrompt(image, '原始提示词', {ratio:'16:9', resolution:'4K', clarity:'4K', quality:'high', background:'preserve'}), '原始提示词')
   const otherMode = model({request_template:{prompt:'{{prompt}}', size:'{{size}}'}, request_templates: { reference: {quality:'{{quality}}'} }})
   assert.ok(imagePreferencePrompt(otherMode, '相框', {ratio:'1:1', resolution:'1024x1024', clarity:'1K', quality:'ultra', background:'auto'}).includes('超高画质'))
-  assert.equal(imageRequestResolution(model({}), '1K', {ratio:'16:9', clarity:'2K'}), '1K')
-  assert.equal(imageRequestResolution(model({request_template:{size:'{{size}}'},resolutions:['1K','2K','4K']}), '1K', {ratio:'16:9',clarity:'4K'}), '4K')
+  assert.equal(imageRequestResolution(model({}), '1K', {ratio:'16:9', clarity:'2K'}), '')
+  assert.equal(imageRequestResolution(model({request_template:{size:'{{size}}'},resolutions:['1K','2K','4K']}), '1K', {ratio:'16:9',clarity:'4K'}), '')
 })
 
 test('fixed image sizes map to clarity and aspect ratios without inventing supported dimensions', () => {

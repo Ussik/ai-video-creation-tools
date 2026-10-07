@@ -20,7 +20,7 @@ type DialogRequest = (BaseOptions & {
 
 type Resolver = (value: boolean | string | null) => void
 
-export function useAppDialog() {
+export function useAppDialog(options: { zIndex?: number } = {}) {
   const [request, setRequest] = useState<DialogRequest | null>(null)
   const [value, setValue] = useState('')
   const resolver = useRef<Resolver | null>(null)
@@ -49,6 +49,7 @@ export function useAppDialog() {
 
   const dialog = request ? <Modal
     opened
+    zIndex={options.zIndex}
     onClose={() => finish(request.kind === 'prompt' ? null : false)}
     centered
     size="sm"
