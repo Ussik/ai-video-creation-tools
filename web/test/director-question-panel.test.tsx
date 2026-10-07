@@ -65,7 +65,7 @@ test('custom answers survive an unsuccessful request and can retry; IME and Shif
   } finally { await view.destroy() }
 })
 
-test('unavailable models cannot submit or skip into a dead end but can still change answers', async () => {
+test('unavailable models cannot submit or delegate into a dead end but can still change answers', async () => {
   const view = await mount(async () => assert.fail('must not submit'), { custom: true, text: '' }, true)
   try {
     assert.equal(button(view.container, '继续').disabled, true)
@@ -75,14 +75,14 @@ test('unavailable models cannot submit or skip into a dead end but can still cha
   } finally { await view.destroy() }
 })
 
-test('skipping incomplete fields sends once, locks answers while pending and preserves values for a failed-request retry', async () => {
+test('delegating incomplete fields sends once, locks answers while pending and preserves values for a failed-request retry', async () => {
   const form = parseMessageChoices(JSON.stringify({ kind: 'input_request', question: '确定亲属身份', fields: [
     { id: 'family', label: '直系亲属' }, { id: 'inlaw', label: '姻亲身份' },
   ] }))!
   let calls = 0
   let finish!: () => void
   const pending = new Promise<void>(resolve => { finish = resolve })
-  const view = await mount(async () => assert.fail('skip must not submit partial answers'), { custom: false, text: '', fields: { family: '暂未决定' } }, false, form,
+  const view = await mount(async () => assert.fail('delegation must not submit partial answers'), { custom: false, text: '', fields: { family: '暂未决定' } }, false, form,
     async () => { calls++; await pending })
   try {
     assert.equal(button(view.container, '继续').disabled, true)
@@ -95,6 +95,18 @@ test('skipping incomplete fields sends once, locks answers while pending and pre
     assert.equal(view.container.querySelector('textarea')!.value, '暂未决定')
     await act(async () => button(view.container, '跳过').click())
     assert.equal(calls, 2)
+  } finally { await view.destroy() }
+})
+
+test('delegating with an unsubmitted option does not submit the selected answer or custom details', async () => {
+  let calls = 0
+  const view = await mount(async () => assert.fail('delegation must not confirm the selected answer'),
+    { custom: false, selectedId: choice.options[0].label, text: '未提交的补充' }, false, choice, async () => { calls++ })
+  try {
+    assert.equal(button(view.container, '继续').disabled, false)
+    await act(async () => button(view.container, '跳过').click())
+    assert.equal(calls, 1)
+    assert.equal(button(view.container, '御剑考执照').getAttribute('aria-checked'), 'true')
   } finally { await view.destroy() }
 })
 

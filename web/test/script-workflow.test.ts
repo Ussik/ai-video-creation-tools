@@ -19,3 +19,12 @@ test('project buttons after episode one never carry the next episode or its runt
   assert.deepEqual(episode, { stage: 'episode', scope: 'episode', episode_number: 2, target_duration: 300 })
   assert.match(workflowInstruction(episode), /仅处理第 2 集正文/)
 })
+
+test('all workflow buttons preserve concrete decisions delegated to the model and distinguish other unknowns', () => {
+  for (const stage of workflowStages) {
+    const instruction = workflowInstruction(workflowRequestForStage(stage, 1))
+    assert.match(instruction, /沿用我明确交给模型决定后已经作出的具体设定/)
+    assert.match(instruction, /不再将这些设定标为待定/)
+    assert.match(instruction, /其他尚未确定且未授权模型决定的设定标为待定/)
+  }
+})

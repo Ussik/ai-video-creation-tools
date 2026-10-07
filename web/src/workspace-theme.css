@@ -225,8 +225,8 @@ body {
   top: 70px;
   right: 20px;
   border: 1px solid var(--workspace-line-strong);
-  background: #24272b;
-  color: #f1f3f4;
+  background: var(--workspace-panel-raised);
+  color: var(--workspace-text);
   box-shadow: 0 18px 42px #0009;
 }
 
@@ -915,7 +915,14 @@ body,
 .modal-backdrop { background: #050607dd; }
 
 .notice,
-.app-notice { background: #1c2e32; border-color: #31565d; }
+.app-notice {
+  background: var(--workspace-panel-raised);
+  border-color: var(--workspace-line-strong);
+  color: var(--workspace-text);
+}
+.app-notice .mantine-Notification-description { color: var(--workspace-text); }
+.app-notice-close { color: var(--workspace-muted); }
+.app-notice-close:hover { background: var(--workspace-hover); color: var(--workspace-text); }
 
 /* Mantine controls share the same graphite face on pages outside canvas. */
 .mantine-Input-input,

@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { parseStructuredOutput } from './structured-output.js'
-export const replyClassificationVersion = 5
+export const replyClassificationVersion = 6
 export type ReplySource = { id: string; text: string; following_messages?: Array<{ role: 'assistant' | 'user'; text: string }> }
 
 export function replyFollowingMessages(messages: Array<{ role: 'assistant' | 'user'; text: string }>, index: number) {
@@ -49,7 +49,7 @@ export function replyClassificationPrompt(messages: ReplySource[]): string {
     `混合追问不能整体归为 other：同一回复可能同时有开放式问题和明确备选方案。只要其中有一个仍待创作者决定的选择，提取该选择作为本轮问题，其他开放问题保留在原文中。方案可以在一句话中以语义对照表达，不要求编号或列表。\n` +
     `例如“人员关系已确认。亲属具体是谁？顾问是律师、管家、医生全部保留，还是只选一到两人？”应提取“外部顾问如何保留？”及原文的两个方案：“律师、管家、医生全部保留”与“只保留一到两人”。后一个选项 requires_details 为 true，界面会让创作者补充具体人选；不擅自确定人选，不排列原文没有给出的组合。\n` +
     `requires_details 仅在选择该原方案后仍必须补充具体对象或范围时为 true（如“只选其中一两个”需要说明选谁），否则省略或 false。这不允许创造新方案。纯开放追问用 input_request；角色对白、比较介绍和已结束的选择仍不能弹出。\n` +
-    `following_messages 是这条消息之后的实际对话。choice_request 和 input_request 都结合语义判断问题状态：pending 尚待回答；answered 创作者已选择或提供所需信息；superseded 问题已撤销、创作者明确跳过该项或当前对话已转到不需该决定的事项。跳过只是暂不确定，不能当成已确认设定；只跳过本轮问题，不继承到后续的新问题。普通无关回复不自动算回答。没有后续消息且正在请用户决定或填写时是 pending。无法确定是否仍待回答时保守使用 superseded，不能重复弹出历史问题。\n` +
+    `following_messages 是这条消息之后的实际对话。choice_request 和 input_request 都结合语义判断问题状态：pending 尚待回答；answered 创作者已选择、提供所需信息或明确交给模型决定该项；superseded 问题已撤销、创作者明确暂不决定或当前对话已转到不需该决定的事项。明确交给模型决定意味着无需创作者再次回答；模型在这一授权下作出的具体决定视为已确定，不重复弹出原问题。仅说暂不确定而未授权模型决定时，不能当成已确认设定。授权只针对本轮事项，不继承到后续的新问题，未获授权的模型建议也不自动算回答。普通无关回复不自动算回答。没有后续消息且正在请用户决定或填写时是 pending。无法确定是否仍待回答时保守使用 superseded，不能重复弹出历史问题。\n` +
     `若本条已经提供某一明确集数的具体创作设定、场次节奏、单集大纲或正文试写片段，且可以让创作者点击展开该集完整正文，标记 episode_preparation 并填写明确的 episode_number。这类准备资料不能采用为完整分集剧本；只提供开始创作该集的操作，必须由创作者点击才执行。不能仅凭提到集数或承诺写作就标记；题材讨论、尚待决定关键设定、含糊建议、多集规划、生成/保存通知都不属于准备就绪。若仍在请创作者决定关键设定，优先 choice_request 或 input_request。\n` +
     `其他故事方向讨论、创作建议、人物资料、承诺稍后写正文、草稿生成/保存通知、用于说明建议而非该集创作基础的局部示例，都标记 other。即使含有集数、对白示例或“第1集完”，也不能因此视为正文。混合多集正文或不能确认用途时标记 other，避免错误采用。\n` +
     `episode_number 仅在消息内容明确属于某一集时填写；不明确则省略，不能猜测为第一集。必须逐一返回给定的所有 ID，不改写文本。\n` +

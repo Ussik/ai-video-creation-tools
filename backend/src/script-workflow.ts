@@ -67,8 +67,9 @@ export function workflowInstructions(request: z.infer<typeof workflowRequest>): 
   }
   const boundary = request.stage === 'episode'
     ? `任务范围：仅第 ${request.episode_number} 集正文。全剧资料和前集正文用于承接，不得修改其他集或全剧文档。`
-    : '任务范围：整个项目的全剧资料，不属于任何单集。聊天中最近写过的集数、下一集计划以及创作要求中的单集措辞仅作背景，不能把本轮改为该集或下一集的文档。人物、地点和道具覆盖全剧已确认的内容；大纲覆盖全剧主线与结局。保持已保存各集事实，未知设定标为待定，不把建议当成已确认事实。只更新所选资料，不生成、改写或推进分集正文。'
+    : '任务范围：整个项目的全剧资料，不属于任何单集。聊天中最近写过的集数、下一集计划以及创作要求中的单集措辞仅作背景，不能把本轮改为该集或下一集的文档。人物、地点和道具覆盖全剧已确认的内容；大纲覆盖全剧主线与结局。保持已保存各集事实。只更新所选资料，不生成、改写或推进分集正文。'
   return `\n本轮为“${workflowLabels[request.stage]}”文档生成。只完成本轮阶段，不提问、不声称已保存或已完成其他阶段。\n${boundary}\n${stages[request.stage]}\n` +
+    '创作者明确授权模型决定后已经作出的具体设定应沿用，不标为待定；创作者后续修改优先。其他未知且未授权模型决定的设定标为待定，不把未获授权的建议当成已确认事实。\n' +
     '只输出一个合法 JSON 对象，不要解释或代码围栏。格式：' +
     '{"artifacts":[{"artifact_type":"文档类型","title":"文档标题","content":"完整可编辑正文"}],"scenes":[' +
     '{"heading":"场次标题","location":"地点","time_of_day":"日/夜","characters":"出场人物","action":"画面动作","dialogue":"对白","narration":"旁白","duration":秒数}]}。' +

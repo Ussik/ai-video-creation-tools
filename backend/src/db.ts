@@ -57,6 +57,7 @@ export interface ScriptConversation {
 export interface ScriptMessage {
   id: string; conversation_id: string; position: number;
   role: 'assistant' | 'user'; text: string; reference_documents?: string; created_at: string
+  processing_duration_ms?: number | null
 }
 export type ScriptArtifactType =
   | 'outline' | 'synopsis' | 'world' | 'characters' | 'relationships' | 'locations'
@@ -388,6 +389,9 @@ export function initDb(): void {
   const messageColumns = db.pragma('table_info(script_messages)') as Array<{ name: string }>
   if (!messageColumns.some(column => column.name === 'reference_documents')) {
     db.exec("ALTER TABLE script_messages ADD COLUMN reference_documents TEXT NOT NULL DEFAULT '[]'")
+  }
+  if (!messageColumns.some(column => column.name === 'processing_duration_ms')) {
+    db.exec('ALTER TABLE script_messages ADD COLUMN processing_duration_ms INTEGER')
   }
 
   const sceneColumns = db.pragma('table_info(script_scenes)') as Array<{ name: string }>

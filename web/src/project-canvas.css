@@ -3034,6 +3034,17 @@
 .project-canvas .pc-node-idle-content:has(.pc-node-output) { padding: 0; }
 .project-canvas .pc-node-idle-content .pc-node-output,
 .project-canvas .pc-node:not(.is-selected) .pc-node-idle-content .pc-node-output { flex: 1; height: 100%; min-height: 0; border-radius: 14px; }
+.project-canvas .pc-node.pc-node-image-result .pc-node-content {
+  padding: 0;
+  gap: 0;
+  border-radius: inherit;
+}
+.project-canvas .pc-node.pc-node-image-result .pc-node-output {
+  border: 0;
+  border-radius: inherit;
+}
+.project-canvas .pc-node.pc-node-image-result .pc-node-output img { object-fit: cover; }
+.project-canvas .pc-node.pc-node-image-result .pc-node-foot { display: none; }
 .project-canvas .pc-project-script-empty { white-space: normal; }
 .project-canvas .pc-project-script-empty .pc-text-preview { height: auto; overflow: visible; }
 

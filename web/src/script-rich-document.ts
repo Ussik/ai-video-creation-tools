@@ -6,8 +6,8 @@ type Mark = 'bold' | 'italic' | 'strike'
 const markOrder: Mark[] = ['bold', 'italic', 'strike']
 const delimiters: Record<Mark, string> = { bold: '**', italic: '_', strike: '~~' }
 const punctuation = /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/
-// Generated Chinese headings, including episode counts, may omit the space.
-const headingPattern = /^ {0,3}(#{1,3})(?:[ \t]+|(?=\d*\p{Script=Han})|$)(.*)$/u
+// Generated Chinese headings may omit the space before titles or numbering.
+const headingPattern = /^ {0,3}(#{1,3})(?:[ \t]+|(?=(?:\d+[.、．)）][ \t]*)?\d*\p{Script=Han}|[《〈「『【〔（“‘][ \t]*\d*\p{Script=Han})|$)(.*)$/u
 
 function textNode(text: string, marks: Mark[] = []): JSONContent {
   return { type: 'text', text, ...(marks.length ? { marks: markOrder.filter(mark => marks.includes(mark)).map(type => ({ type })) } : {}) }
@@ -268,6 +268,8 @@ function inlineMarkdown(nodes: JSONContent[]): string {
 }
 
 function escapeBlockStart(value: string): string {
+  // Use the same heading rule when persisting literal paragraph text.
+  if (headingPattern.test(value)) return value.replace(/^( {0,3})#/, '$1\\#')
   return value.replace(/^( {0,3})(#{1,6}(?=\s|$|\d*\p{Script=Han})|[-+•](?=\s|$)|\d+[.)](?=\s|$)|>(?=\s|$)|(?:-{3,}|\*{3,}|_{3,})\s*$)/u, (_match, indent: string, marker: string) => {
     // A paragraph beginning with a block marker must be escaped before the
     // next parse, otherwise a literal `---` becomes a horizontal rule and a

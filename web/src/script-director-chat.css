@@ -33,6 +33,8 @@
 .sd-reply-actions button { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 3px 0; border: 0; border-radius: 4px; background: transparent; color: #999; font: inherit; font-size: 12px; cursor: pointer; }
 .sd-reply-actions button:hover:not(:disabled) { color: #ededed; }
 .sd-reply-actions button:disabled { opacity: .4; cursor: default; }
+.sd-message-timing { display: flex; align-items: center; gap: 5px; min-height: 18px; margin-top: 8px; color: var(--director-muted); font-size: 11px; line-height: 1.6; font-variant-numeric: tabular-nums; }
+.sd-message-timing svg { flex: none; }
 .sd-chat .pc-rich-text-preview { padding: 0; color: inherit; font-size: 14px; line-height: 1.8; border: 0; background: none; white-space: normal; }
 .sd-chat .pc-rich-text-preview p { margin: 0 0 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .sd-chat .pc-rich-text-preview h1,.sd-chat .pc-rich-text-preview h2,.sd-chat .pc-rich-text-preview h3 { margin: 18px 0 10px; color: #efefef; font-size: 16px; font-weight: 600; line-height: 1.6; }

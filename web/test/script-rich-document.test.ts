@@ -41,12 +41,39 @@ test('recognizes numeric Chinese headings in director replies at paragraph and l
   assert.deepEqual(reloaded, parsed)
 })
 
+test('recognizes compact book titles and numbered Chinese headings across block boundaries', () => {
+  const source = '#《旧祠堂门》全剧故事大纲\n##编剧视角总述\n正文\n##1.林晚与奶奶\n关系正文\n- 关系变化\n###2、父女关系\n变化正文'
+  const [parsed, markdown, reloaded] = roundTrip(source)
+  assert.deepEqual(parsed.content?.map(node => [node.type, node.attrs?.level, textDocumentText(node)]), [
+    ['heading', 1, '《旧祠堂门》全剧故事大纲'],
+    ['heading', 2, '编剧视角总述'],
+    ['paragraph', undefined, '正文'],
+    ['heading', 2, '1.林晚与奶奶'],
+    ['paragraph', undefined, '关系正文'],
+    ['bulletList', undefined, '关系变化'],
+    ['heading', 3, '2、父女关系'],
+    ['paragraph', undefined, '变化正文'],
+  ])
+  assert.match(markdown, /^# 《旧祠堂门》全剧故事大纲/)
+  assert.deepEqual(reloaded, parsed)
+})
+
+test('recognizes Chinese quoted titles without consuming title punctuation or numbering', () => {
+  for (const title of ['《旧祠堂门》全剧故事大纲', '〈故事设定〉', '「人物关系」', '『故事方向』', '【场景设计】', '〔创作禁区〕', '（背景设定）', '“故事主线”', '‘故事主线’', '【20集大纲】', '1．人物目标', '2）人物关系', '3) 场景设计']) {
+    const [parsed, , reloaded] = roundTrip(`##${title}`)
+    assert.equal(parsed.content?.[0]?.type, 'heading', title)
+    assert.equal(parsed.content?.[0]?.attrs?.level, 2, title)
+    assert.equal(textDocumentText(parsed), title)
+    assert.deepEqual(reloaded, parsed)
+  }
+})
+
 test('preserves literal compact heading markers, hashtags and inline hashes', () => {
-  for (const text of ['#全剧故事大纲', '##项目信息', '###人物目标', '##20集暂定总体结构', '###1至5集家庭记忆裂缝', '#tag', '#123', '编号 #全剧故事大纲']) {
+  for (const text of ['#全剧故事大纲', '##项目信息', '###人物目标', '##20集暂定总体结构', '###1至5集家庭记忆裂缝', '#《旧祠堂门》全剧故事大纲', '##【人物关系】', '##1.林晚', '###2、父女关系', '#tag', '#123', '编号 #全剧故事大纲']) {
     const document: JSONContent = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] }
     assert.deepEqual(parseScriptDocument(serializeScriptDocument(document)), document)
   }
-  for (const text of ['#tag', '#123', '##2026', '##123abc', '编号 #全剧故事大纲', '编号 ##20集', '\\#全剧故事大纲', '\\##20集', '####更深层标题']) {
+  for (const text of ['#tag', '#123', '##2026', '##123abc', '#[tag]', '##1.2', '编号 #全剧故事大纲', '编号 ##20集', '正文 #《旧祠堂门》', '\\#全剧故事大纲', '\\##20集', '\\#《旧祠堂门》', '\\##1.林晚', '####更深层标题']) {
     assert.equal(parseScriptDocument(text).content?.[0]?.type, 'paragraph')
   }
 })

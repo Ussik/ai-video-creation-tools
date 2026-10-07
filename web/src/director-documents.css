@@ -1,7 +1,7 @@
 /* The document workspace shares the conversation's neutral surface palette. */
 .sd-chat .sd-deliverables { margin: 24px 0 20px; padding: 14px; border: 0; border-radius: 14px; background: #282828; }
 .sd-deliverables > header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; color: #a5a5a5; font-size: 11px; }
-.sd-deliverables > header button { display: inline-flex; align-items: center; gap: 6px; padding: 4px 0 4px 8px; border: 0; background: transparent; color: #bdbdbd; font: inherit; cursor: pointer; }
+.sd-deliverables > header button { display: inline-flex; align-items: center; gap: 6px; padding: 4px 0 4px 8px; border: 0; border-radius: 6px; background: transparent; color: #bdbdbd; font: inherit; cursor: pointer; }
 .sd-deliverables > header button > span { color: #8f8f8f; font-variant-numeric: tabular-nums; }
 .sd-chat .sd-deliverable-document { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 4px; border: 0; border-radius: 8px; background: transparent; color: #e4e4e4; text-align: left; font: inherit; cursor: pointer; }
 .sd-deliverable-document > span:nth-child(2) { flex: 1; min-width: 0; }

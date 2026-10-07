@@ -85,7 +85,12 @@ const scriptConversationMessage = z.object({
   role: z.enum(['assistant', 'user']),
   text: z.string().trim().min(1).max(8000),
   reference_documents: referenceDocuments.optional(),
-}).strict()
+  processing_duration_ms: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+}).strict().superRefine((message, context) => {
+  if (message.role !== 'assistant' && message.processing_duration_ms !== undefined) {
+    context.addIssue({ code: 'custom', message: '仅模型回复可记录处理用时', path: ['processing_duration_ms'] })
+  }
+})
 const scriptConversationInput = z.object({
   id: z.string().trim().min(1).max(120).optional(),
   label: z.string().trim().min(1).max(120).optional(),
@@ -808,19 +813,20 @@ function buildScriptDirectorChatPrompt(project: Project, data: z.infer<typeof sc
     `{"kind":"choices","question":"本轮唯一待回答的问题","intro":"对当前需求的具体回应与方向说明","options":[{"id":"稳定标识","title":"简短选择标题","text":"完整解释这个方向的故事核心、冲突和情绪效果"},{"id":"另一个标识","title":"另一个简短标题","text":"另一个方向的完整说明"}],"trailing":"推荐理由或选定后如何推进"}。` +
     `options 必须包含 2 到 8 个有意义且互不重复的选择，每项都要有唯一的简短 id、供底部选择按钮使用的 title（建议不超过30字）和供对话正文展示的完整 text。text 必须独立完整且包含方向标题，不能只返回标签；intro、text 和 trailing 应清楚说明创作建议及取舍，不要压缩成泛泛的选项列表。界面始终提供自由填写其他想法的入口，无需另加“我有别的想法”选项。一次只问一个关键问题。不要用字母、数字、项目符号等普通文本列表代替这个结构。普通讨论和解释继续直接用自然语言。\n` +
     `需要创作者填写具体设定而非从完整方案择一时，直接返回 {"kind":"input_request","question":"本轮要确定的事项","intro":"为什么需要确认这项","fields":[{"id":"稳定标识","label":"待填写事项","suggestions":["可选参考"]}],"trailing":"填写后如何推进"}。fields 为1到4个同一决策相关的必要字段。suggestions 可省略；提供参考时明确只是参考且允许自定义，不把人物身份例子编成互斥的完整组合。不要只在普通正文末尾追问而不给填写入口；不要重复询问已确定的信息。开放追问用 input_request，不强迫生成 choices。\n` +
-    `已确认的上一轮选择与新问题必须区分。不要将数个开放追问和选择题塞进同一段；先用 choices 问当前最关键的一项。二选一、全部保留还是只保留部分等范围选择也必须使用 choices。如果某个原方案必须补充具体人选或范围，在该选项上增加 requires_details:true；不要替创作者决定未指定的人选。\n` +
+    `已确认的上一轮选择与新问题必须区分。不要将数个开放追问和选择题塞进同一段；先用 choices 问当前最关键的一项。二选一、全部保留还是只保留部分等范围选择也必须使用 choices。如果某个原方案必须补充具体人选或范围，在该选项上增加 requires_details:true；创作者未明确授权时，不要替创作者决定未指定的人选。\n` +
+    `创作者明确交给模型决定的事项，要结合已有故事和已确认约束作出具体选择或补齐设定，简短说明理由后继续推进，不保留待定、不再追问同项确认。后续沿用这一授权下作出的具体决定，除非创作者提出修改；未获授权的建议或未提交的输入不能当成已确认设定。授权决定一项设定不等于授权生成或保存整份文档。\n` +
     `项目默认集数、时长是暂定值，不能把创作者尚未确认的默认值称为已确认；需要建议时说明理由并允许修改。\n` +
-    (data.question_response ? `本轮创作者点击了“跳过”，对应问题：${JSON.stringify(data.question_response.question)}。这项保留待定，跳过不等于确认任何选项，也不授权生成或保存文档。先简短承接跳过决定，再基于已确认内容给出有用的推进建议或下一个必要的不同事项。不要立即重复这个问题，不要擅自把未提交的填写内容当作已确认设定；若必须使用相关假设，明确标注为暂定建议。\n` : '') +
+    (data.question_response ? `本轮创作者点击了“跳过”，对应问题：${JSON.stringify(data.question_response.question)}。这是明确授权你决定该项，不是暂不确定。有备选方案时选定最合适的一项，需要具体信息时自行补齐完整设定；遵守已确认事实和创作约束。先明确说明你的具体决定及简短理由，再推进下一个必要的不同事项。不要把这项保留待定，不要重复询问这个问题或要求创作者再次确认；不要把未提交的选择或填写内容当成创作者的确认。这次操作只继续讨论，不自动生成或保存文档。\n` : '') +
     `项目与剧本上下文：\n${JSON.stringify(context)}\n` +
     `${referenceContext(data.messages)}对话记录：\n${conversation}\n` +
-    `请直接给出导演的下一条回复。先确认故事方向，再推进大纲、人物、场景、道具和指定集正文。只追问尚未明确且会改变创作结果的信息；创作者已经给出集数、时长或选择时，不要重复询问。`
+    `请直接给出导演的下一条回复。先确定故事方向，再推进大纲、人物、场景、道具和指定集正文。只追问尚未明确、未授权模型决定且会改变创作结果的信息；创作者已经给出集数、时长或选择，或模型已在授权下作出具体决定时，不要重复询问。`
 }
 
 type DirectorInput = z.infer<typeof scriptDirectorChatInput>
 
 async function resolveDirectorIntent(project: Project, data: DirectorInput, model: Model, provider: Provider,
   signal?: AbortSignal): Promise<{ data: DirectorInput; brief?: string; sourceText?: string; reply?: string }> {
-  // Skipping is an explicit UI operation, not an ambiguous request to draft.
+  // Delegating a question is an explicit discussion operation.
   if (data.question_response) return { data }
   if (data.adopt_source) {
     if (data.intent_context?.pending_draft) return { data, reply: '当前还有待确认草稿。请先保存或放弃它，再采用这段正文。' }
@@ -1873,7 +1879,7 @@ export function buildApp(): FastifyInstance {
     required<Project>('projects', id)
     const conversations = all<ScriptConversation>('SELECT * FROM script_conversations WHERE project_id=? ORDER BY updated_at DESC LIMIT 30', id)
       .map(conversation => {
-        const messages = all<ScriptMessage>('SELECT id, conversation_id, position, role, text, reference_documents, created_at FROM script_messages WHERE conversation_id=? ORDER BY position', conversation.id)
+        const messages = all<ScriptMessage>('SELECT id, conversation_id, position, role, text, reference_documents, processing_duration_ms, created_at FROM script_messages WHERE conversation_id=? ORDER BY position', conversation.id)
         return { ...conversation, messages: messages.map((message, index) => classifiedMessage(id, message, replyFollowingMessages(messages, index))) }
       })
     return { conversations }
@@ -1960,8 +1966,8 @@ export function buildApp(): FastifyInstance {
         run('INSERT INTO script_conversations (id, project_id, label, created_at, updated_at) VALUES (?, ?, ?, ?, ?)', conversationId, id, label, timestamp, timestamp)
       }
       data.messages.forEach((message, position) => run(
-        'INSERT INTO script_messages (id, conversation_id, position, role, text, reference_documents, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        message.id || newId(), conversationId, position, message.role, message.text, JSON.stringify(message.reference_documents || []), timestamp,
+        'INSERT INTO script_messages (id, conversation_id, position, role, text, reference_documents, processing_duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        message.id || newId(), conversationId, position, message.role, message.text, JSON.stringify(message.reference_documents || []), message.processing_duration_ms ?? null, timestamp,
       ))
       run(`DELETE FROM script_conversations WHERE project_id=? AND id NOT IN (
         SELECT id FROM script_conversations WHERE project_id=? ORDER BY updated_at DESC LIMIT 30
@@ -1969,7 +1975,7 @@ export function buildApp(): FastifyInstance {
     })()
     return {
       ...required<ScriptConversation>('script_conversations', conversationId),
-      messages: all<ScriptMessage>('SELECT id, conversation_id, position, role, text, reference_documents, created_at FROM script_messages WHERE conversation_id=? ORDER BY position', conversationId).map(message => ({ ...message, reference_documents: decodeReferenceDocuments(message.reference_documents) })),
+      messages: all<ScriptMessage>('SELECT id, conversation_id, position, role, text, reference_documents, processing_duration_ms, created_at FROM script_messages WHERE conversation_id=? ORDER BY position', conversationId).map(message => ({ ...message, reference_documents: decodeReferenceDocuments(message.reference_documents) })),
     }
   })
   app.post('/api/projects/:id/script/scenes', async request => {

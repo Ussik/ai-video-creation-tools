@@ -1068,7 +1068,7 @@ function App() {
         </div>
       </header>}
 
-      {notice && <Notification className="app-notice" role="status" style={{ pointerEvents: 'none' }} closeButtonProps={{ 'aria-label': '关闭提示', className: 'app-notice-close' }} onClose={() => setNotice(null)} color={notice.includes('失败') || notice.includes('错误') ? 'red' : 'teal'}>{notice}</Notification>}
+      {notice && <Notification className="app-notice" classNames={{ closeButton: 'app-notice-close' }} role="status" style={{ pointerEvents: 'none' }} closeButtonProps={{ 'aria-label': '关闭提示' }} onClose={() => setNotice(null)} color={notice.includes('失败') || notice.includes('错误') ? 'var(--fc-danger)' : 'var(--workspace-muted)'}>{notice}</Notification>}
 
       {tab === 'projects' && <section className="project-page" aria-label="项目">
         <div className="project-page-head">

@@ -92,35 +92,94 @@ test('incompatible workflow scope and a zero target episode are rejected before 
   }
 })
 
-test('skip tells the discussion model what remains undecided in both chat transports without drafting or saving', async t => {
+test('skip delegates a concrete decision in both chat transports without drafting or saving', async t => {
   const { model, project } = await fixture()
   const question = '主人公与搭档的关系是什么？'
   const prompts: string[] = []
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (_url, init) => {
     prompts.push(JSON.parse(String(init?.body)).messages[0].content)
-    return new Response(JSON.stringify({ choices: [{ message: { content: '关系先保留待定。我们可以先确定开场发生的地点。' } }] }), { headers: { 'Content-Type': 'application/json' } })
+    return new Response(JSON.stringify({ choices: [{ message: { content: '我决定让他们成为曾经决裂的师兄弟，这能让合作与旧怨形成冲突。接下来确定开场地点。' } }] }), { headers: { 'Content-Type': 'application/json' } })
   }
   t.after(() => { globalThis.fetch = originalFetch })
   const before = (await call<{ script: unknown }>('GET', `/api/projects/${project.id}`)).script
   const payload = { model_id: model.id, mode: 'script', question_response: { status: 'skipped', question },
     intent_context: { pending_draft: { stage: 'episode', episode_number: 1 } },
-    messages: [{ role: 'assistant', text: question }, { role: 'user', text: `跳过“${question}”，请继续推进。` }] }
+    messages: [{ role: 'assistant', text: question }, { role: 'user', text: `关于“${question}”，我交给你决定，选定具体方案并继续推进。` }] }
   for (const suffix of ['', '/stream']) {
     const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat${suffix}`, payload })
     assert.equal(response.statusCode, 200, response.body)
     const result = suffix ? response.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5))).find(event => event.type === 'done') : response.json()
-    assert.match(result.reply, /先确定开场/)
+    assert.match(result.reply, /我决定让他们成为曾经决裂的师兄弟/)
     assert.equal(result.draft, undefined)
   }
   assert.equal(prompts.length, 2, 'one discussion call per skip, no intent classifier or drafting call')
   for (const prompt of prompts) {
     assert.match(prompt, /本轮创作者点击了“跳过”/)
     assert.ok(prompt.includes(question))
-    assert.match(prompt, /跳过不等于确认任何选项/)
-    assert.match(prompt, /不要立即重复这个问题/)
+    assert.match(prompt, /有备选方案时选定最合适的一项，需要具体信息时自行补齐完整设定/)
+    assert.match(prompt, /不要把这项保留待定/)
+    assert.match(prompt, /不要重复询问这个问题或要求创作者再次确认/)
+    assert.match(prompt, /不要把未提交的选择或填写内容当成创作者的确认/)
+    assert.match(prompt, /这次操作只继续讨论，不自动生成或保存文档/)
+    assert.doesNotMatch(prompt, /这项保留待定，跳过不等于/)
   }
   assert.deepEqual((await call<{ script: unknown }>('GET', `/api/projects/${project.id}`)).script, before)
+})
+
+test('delegated decisions reach later outline and episode drafts through the intent brief over both transports', async t => {
+  const { model, project } = await fixture()
+  const question = '故事开场发生在哪里？'
+  const decision = '我决定开场设在雨夜车站，因为封闭空间适合悬疑。'
+  const before = (await call<{ script: unknown }>('GET', `/api/projects/${project.id}`)).script
+  const originalFetch = globalThis.fetch
+  t.after(() => { globalThis.fetch = originalFetch })
+  let stage = 'outline'
+  let intentCalls = 0
+  let draftCalls = 0
+  globalThis.fetch = async (_url, init) => {
+    const prompt = JSON.parse(String(init?.body)).messages[0].content as string
+    let content: unknown
+    if (prompt.includes('本次独立调用只理解创作者意图')) {
+      intentCalls++
+      assert.match(prompt, /模型在创作者明确授权下已经作出的具体决定/)
+      assert.match(prompt, /沿用这些决定，不重新追问、不标为待定/)
+      assert.ok(prompt.includes(decision))
+      content = { action: 'draft', operation: 'create', workflow: { stage, episode_number: stage === 'episode' ? 1 : 0 },
+        creative_brief: '沿用授权模型决定的雨夜车站开场。' }
+    } else if (prompt.includes('本轮为“')) {
+      draftCalls++
+      assert.match(prompt, /沿用授权模型决定的雨夜车站开场/)
+      assert.match(prompt, /创作者明确授权模型决定后已经作出的具体设定应沿用，不标为待定/)
+      assert.match(prompt, /其他未知且未授权模型决定的设定标为待定/)
+      assert.doesNotMatch(prompt, /未选方案：古代山寨/)
+      content = stage === 'episode' ? episode : { artifacts: [{ artifact_type: 'outline', title: '故事大纲', content: '雨夜车站开场。' }], scenes: [] }
+    } else {
+      assert.match(prompt, /明确授权你决定该项/)
+      content = decision
+    }
+    return new Response(JSON.stringify({ choices: [{ message: { content: typeof content === 'string' ? content : JSON.stringify(content) } }] }), { headers: { 'Content-Type': 'application/json' } })
+  }
+  for (const suffix of ['', '/stream']) {
+    const request = async (payload: unknown) => {
+      const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat${suffix}`, payload })
+      assert.equal(response.statusCode, 200, response.body)
+      return suffix ? response.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5))).find(event => event.type === 'done') : response.json()
+    }
+    const messages = [{ role: 'assistant', text: `未选方案：古代山寨。${question}` },
+      { role: 'user', text: `关于“${question}”，我交给你决定。后续沿用你的具体决定。` }]
+    const delegated = await request({ model_id: model.id, mode: 'script', question_response: { status: 'skipped', question }, messages })
+    assert.equal(delegated.reply, decision)
+    assert.equal(delegated.draft, undefined)
+    for (stage of ['outline', 'episode']) {
+      const generated = await request({ model_id: model.id, mode: 'script', workflow: { stage, episode_number: stage === 'episode' ? 1 : 0 },
+        messages: [...messages, { role: 'assistant', text: delegated.reply }, { role: 'user', text: stage === 'episode' ? '开始写第一集' : '生成全剧大纲' }] })
+      assert.equal(generated.draft.stage, stage)
+      assert.deepEqual((await call<{ script: unknown }>('GET', `/api/projects/${project.id}`)).script, before)
+    }
+  }
+  assert.equal(intentCalls, 4)
+  assert.equal(draftCalls, 4)
 })
 
 test('skip cannot be combined with document operations or visual-asset routing', async () => {

@@ -1,5 +1,5 @@
 import { parseMessageChoices, type ParsedMessageChoices, type InputField } from './director-choices'
-export const replyClassificationVersion = 5
+export const replyClassificationVersion = 6
 export type ReplyClassification = { type: 'other' } | { type: 'episode_script'; episode_number?: number } | {
   type: 'episode_preparation'; episode_number: number
 } | { type: 'input_request'; status: 'pending' | 'answered' | 'superseded'; question: string; fields: InputField[] } | {

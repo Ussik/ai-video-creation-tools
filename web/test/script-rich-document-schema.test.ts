@@ -42,6 +42,20 @@ test('compact Chinese outline headings render as real Tiptap headings and surviv
   })
 })
 
+test('compact book titles and numbered headings render with heading styles and survive saving', () => {
+  const parsed = parseScriptDocument('#《旧祠堂门》全剧故事大纲\n##编剧视角总述\n正文\n##1.林晚与奶奶\n关系正文')
+  withEditor(parsed, editor => {
+    assert.equal(editor.view.dom.querySelector('h1')?.textContent, '《旧祠堂门》全剧故事大纲')
+    assert.deepEqual(Array.from(editor.view.dom.querySelectorAll('h2'), node => node.textContent), ['编剧视角总述', '1.林晚与奶奶'])
+    assert.equal(editor.view.dom.textContent?.includes('#'), false)
+    const stored = serializeScriptDocument(normalizeTextDocument(editor.getJSON()))
+    withEditor(parseScriptDocument(stored), reloaded => {
+      assert.deepEqual(normalizeTextDocument(reloaded.getJSON()), normalizeTextDocument(editor.getJSON()))
+      assert.equal(reloaded.view.dom.querySelector('h1')?.textContent, '《旧祠堂门》全剧故事大纲')
+    })
+  })
+})
+
 test('serialized rich script content is accepted by the real Tiptap schema', () => {
   const original: JSONContent = {
     type: 'doc',

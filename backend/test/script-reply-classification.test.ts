@@ -260,6 +260,39 @@ test('open creator questions migrate old negative cache to input fields and stat
   }
 })
 
+test('delegating a question invalidates old undecided status and closes the original form without treating other suggestions as answers', async t => {
+  const { model, project } = await fixture()
+  const source = { id: 'delegated', text: '主角与搭档是什么关系？', following_messages: [
+    { role: 'user', text: '这项交给你决定，后续沿用你的具体决定。' },
+    { role: 'assistant', text: '我决定他们是曾经决裂的师兄弟。' },
+  ] }
+  const fields = [{ id: 'relationship', label: '人物关系' }]
+  const oldHash = createHash('sha256').update(JSON.stringify([5, source.text, source.following_messages])).digest('hex')
+  db.prepare('INSERT INTO script_reply_classifications (project_id,message_id,text_hash,classification,model_id,created_at) VALUES (?,?,?,?,?,?)')
+    .run(project.id, source.id, oldHash, JSON.stringify({ type: 'input_request', status: 'superseded', question: source.text, fields }), model.id, new Date().toISOString())
+  let calls = 0
+  const originalFetch = globalThis.fetch
+  t.after(() => { globalThis.fetch = originalFetch })
+  globalThis.fetch = async (_url, init) => {
+    calls++
+    const prompt = JSON.parse(String(init?.body)).messages[0].content as string
+    assert.match(prompt, /answered 创作者已选择、提供所需信息或明确交给模型决定该项/)
+    assert.match(prompt, /未获授权的模型建议也不自动算回答/)
+    assert.match(prompt, /仅说暂不确定而未授权模型决定时，不能当成已确认设定/)
+    assert.doesNotMatch(prompt, /跳过只是暂不确定/)
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ messages: [{ id: source.id,
+      classification: { type: 'input_request', status: 'answered', question: source.text, fields },
+    }] }) } }] }), { headers: { 'Content-Type': 'application/json' } })
+  }
+  const url = `/api/projects/${project.id}/script/replies/classify`
+  const payload = { model_id: model.id, messages: [source] }
+  const result = await call<{ classification_version: number; messages: Array<{ classification: { status: string } }> }>('POST', url, payload)
+  assert.equal(result.classification_version, replyClassificationVersion)
+  assert.equal(result.messages[0].classification.status, 'answered')
+  await call('POST', url, payload)
+  assert.equal(calls, 1, 'the old v5 status must be replaced and the new result cached')
+})
+
 test('writer structured input requests preserve fields and surrounding prose through normalization', async t => {
   const { model, project } = await fixture()
   const originalFetch = globalThis.fetch

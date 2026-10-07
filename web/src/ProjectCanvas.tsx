@@ -28,6 +28,7 @@ import type { JSONContent } from '@tiptap/core'
 import { generationCost, imageParameterOptions, imageParameterValue, imagePreferencePrompt, imageRatios, imageRequestResolution, modelDefaultResolution, usesModelParameter } from './canvas-model-parameters'
 import { parseScriptDocument } from './script-rich-document'
 import { textDocumentText } from './text-document'
+import { fitImageNode, imageNodeMinimum } from './canvas-image-layout'
 import './project-canvas.css'
 
 type CanvasMode = 'text' | 'first_frame' | 'first_last_frame' | 'reference' | 'edit' | 'extend'
@@ -116,6 +117,7 @@ type FlowData = Record<string, unknown> & {
   onOpenSettings: (id: string) => void
   onRun: (id: string) => void
   onTryAction: (id: string, action: NodeQuickAction) => void
+  onImageSize: (id: string, assetId: string, width: number, height: number) => void
   scriptSceneCount?: number
   scriptDuration?: number
   scriptOutline?: string
@@ -309,15 +311,16 @@ function normalizeGraph(input: CanvasGraph): CanvasGraph {
   }
 }
 
-function nodeMinSize(node: CanvasNode): { width: number; height: number } {
+function nodeMinSize(node: CanvasNode, asset?: Asset): { width: number; height: number } {
   if (node.type === 'project_script_ref') return { width: 560, height: 320 }
+  if (node.type === 'generation' && asset?.kind === 'image') return imageNodeMinimum
   return node.type === 'generation' ? { width: 440, height: 420 }
     : node.type === 'text' ? { width: 420, height: 340 }
       : { width: 400, height: 272 }
 }
 
-function nodeSize(node: CanvasNode) {
-  const minimum = nodeMinSize(node)
+function nodeSize(node: CanvasNode, asset?: Asset) {
+  const minimum = nodeMinSize(node, asset)
   const width = Math.max(Number.isFinite(node.width) ? node.width : 0, minimum.width)
   const height = Math.max(Number.isFinite(node.height) ? node.height : 0, minimum.height)
   return { width, height }
@@ -473,9 +476,9 @@ function isCanvasEditingTarget(target: EventTarget | null): boolean {
   return element.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(element.tagName)
 }
 
-function NodeMedia({ asset, controls = false }: { asset?: Asset; controls?: boolean }) {
+function NodeMedia({ asset, controls = false, onImageSize }: { asset?: Asset; controls?: boolean; onImageSize?: (width: number, height: number) => void }) {
   if (!asset) return <div className="pc-node-empty"><CircleAlert size={16} />素材不可用</div>
-  if (asset.kind === 'image') return <img src={asset.url} alt={asset.filename} />
+  if (asset.kind === 'image') return <img src={asset.url} alt={asset.filename} onLoad={onImageSize ? event => onImageSize(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight) : undefined} />
   if (asset.kind === 'video') return <video src={asset.url} controls={controls} muted={!controls} playsInline preload="metadata" />
   return <div className="pc-node-text">{asset.text || asset.filename}</div>
 }
@@ -554,6 +557,7 @@ function StudioNode({ data, selected }: NodeProps<FlowNode>) {
   const imageEditingAvailable = data.model?.modality === 'image' ? data.imageEditingModels.includes(data.model.id) : data.modelOptions.some(option => data.imageEditingModels.includes(option.value))
   const videoQuickModes = data.model?.modality === 'video' ? supportedModes(data.model) : data.videoQuickModes
   const isProjectScriptRef = node.type === 'project_script_ref'
+  const isImageResult = node.type === 'generation' && asset?.kind === 'image'
   const icon = isProjectScriptRef ? <ScrollText size={15} /> : node.type === 'generation' ? <WandSparkles size={15} />
     : node.type === 'image' ? <ImageIcon size={15} />
       : node.type === 'video' ? <Film size={15} /> : <TextChoiceIcon />
@@ -578,8 +582,8 @@ function StudioNode({ data, selected }: NodeProps<FlowNode>) {
     </> : null)}
   </div>
   return <>
-  <div className={`pc-node pc-node-${node.type} ${selected ? 'is-selected' : ''}`}>
-    {!isProjectScriptRef && <NodeResizer isVisible={selected} minWidth={nodeMinSize(node).width} minHeight={nodeMinSize(node).height} />}
+  <div className={`pc-node pc-node-${node.type}${isImageResult ? ' pc-node-image-result' : ''} ${selected ? 'is-selected' : ''}`}>
+    {!isProjectScriptRef && <NodeResizer isVisible={selected} minWidth={nodeMinSize(node, asset).width} minHeight={nodeMinSize(node, asset).height} keepAspectRatio={isImageResult} />}
     <div className="pc-node-label"><span className="pc-node-label-icon">{icon}</span><strong title={nodeTitle}>{nodeTitle}</strong>{nodeDimensionLabel(node, data.model) && <span className="pc-node-dimension">{nodeDimensionLabel(node, data.model)}</span>}</div>
     {!isProjectScriptRef && <Handle className="pc-node-handle" type="target" position={Position.Left} title="连接到此节点" />}
     {isProjectScriptRef ? <div className="pc-project-script-card">
@@ -620,7 +624,8 @@ function StudioNode({ data, selected }: NodeProps<FlowNode>) {
       </div>
     </div> : node.type === 'generation' ? <>
       <div className="pc-node-content pc-node-preview-content pc-node-idle-content">
-        {asset ? <div className="pc-node-output"><NodeMedia asset={asset} controls={selected} /></div> : idlePlaceholder}
+        {asset ? <div className="pc-node-output"><NodeMedia asset={asset} controls={selected}
+          onImageSize={isImageResult ? (width, height) => data.onImageSize(node.id, asset.id, width, height) : undefined} /></div> : idlePlaceholder}
         {!selected && !asset && ((node.settings.modality === 'video' && videoQuickModes.some(mode => ['first_frame', 'first_last_frame', 'extend'].includes(mode))) || imageEditingAvailable) && generationTryActions}
       </div>
       {selected && <div className={`pc-node-foot ${job ? `pc-job-${job.status}` : ''}`}>
@@ -1069,6 +1074,21 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         const job = detail.jobs.find((item) => item.id === live?.job_id)
         const asset = detail.assets.find((item) => item.id === job?.result_asset_id)
         if (!live || !asset) continue
+        // Remove result nodes created by the previous completion behavior. A
+        // generated node already previews its own asset; keep only explicitly
+        // added asset nodes or existing provenance links.
+        const legacyResultTitle = `${live.title || '生成节点'} · ${asset.kind === 'video' ? '视频' : asset.kind === 'image' ? '图片' : '文本'}`
+        const legacyResultIds = new Set(nodes.filter((item) => item.id !== live.id && item.asset_id === asset.id &&
+          item.type === asset.kind && item.title === legacyResultTitle).map((item) => item.id))
+        if (legacyResultIds.size) {
+          for (let index = nodes.length - 1; index >= 0; index -= 1) {
+            if (legacyResultIds.has(nodes[index].id)) nodes.splice(index, 1)
+          }
+          for (let index = edges.length - 1; index >= 0; index -= 1) {
+            if (legacyResultIds.has(edges[index].source) || legacyResultIds.has(edges[index].target)) edges.splice(index, 1)
+          }
+          changed = true
+        }
         if (live.asset_id === asset.id) continue
         if (live.type === 'text') {
           if (asset.kind !== 'text') continue
@@ -1079,14 +1099,10 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         }
         nodes[nodes.indexOf(live)] = { ...live, asset_id: asset.id }
         changed = true
-        let resultNode = nodes.find((item) => item.asset_id === asset.id && item.type === asset.kind)
-        if (!resultNode && nodes.length < 500 && (asset.kind === 'image' || asset.kind === 'video' || asset.kind === 'text')) {
-          resultNode = { ...blankNode(asset.kind, live.x + live.width + 170, live.y),
-            title: `${live.title || '生成节点'} · ${asset.kind === 'video' ? '视频' : asset.kind === 'image' ? '图片' : '文本'}`, text: asset.kind === 'text' ? asset.text || '' : '',
-            asset_id: asset.id, shot_id: live.shot_id }
-          nodes.push(resultNode)
-          changed = true
-        }
+        // The generation node already renders its completed result. Do not
+        // create a second image/video/text node automatically; users can add
+        // an asset node explicitly when they need a separate reusable copy.
+        const resultNode = nodes.find((item) => item.asset_id === asset.id && item.type === asset.kind)
         if (resultNode && edges.length < 1000 && !edges.some((edge) => edge.source === live.id && edge.target === resultNode.id)) {
           edges.push({ id: crypto.randomUUID(), source: live.id, target: resultNode.id })
           changed = true
@@ -1231,8 +1247,16 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     
     
   }, [])
+  const fitNodeToImage = useCallback((id: string, assetId: string, width: number, height: number) => {
+    changeGraph(current => {
+      const node = current.nodes.find(item => item.id === id)
+      if (!node || node.type !== 'generation' || node.asset_id !== assetId) return current
+      const size = fitImageNode(node, { width, height })
+      return size === node ? current : { ...current, nodes: current.nodes.map(item => item.id === id ? { ...item, ...size } : item) }
+    })
+  }, [changeGraph])
   const flowNodes = useMemo<FlowNode[]>(() => (graph?.nodes || []).map((node) => {
-    const { width, height } = nodeSize(node)
+    const { width, height } = nodeSize(node, assetMap.get(node.asset_id || ''))
     return {
       id: node.id, type: 'studio', position: { x: node.x, y: node.y },
       // These cards have explicit persisted sizes. React Flow does not read CSS
@@ -1262,6 +1286,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       onOpenSettings: selectNodeForView,
       onRun: (id: string) => { setSelectedNodeId(id); setSelectedNodeIds([id]); setSelectedEdgeId(null); setPendingRunNodeId(id) },
       onTryAction: tryNodeAction,
+      onImageSize: fitNodeToImage,
       scriptSceneCount: detail.script?.scenes?.length || 0,
       scriptDuration: detail.script?.scenes?.reduce((sum, scene) => sum + (scene.duration || 0), 0) || 0,
       scriptOutline: detail.script?.outline || '',
@@ -1272,7 +1297,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       onOpenScriptDirector: openScriptDirector,
       onOpenScriptCreator, onOpenScriptDocument },
     }
-  }), [graph, selectedNodeId, selectedNodeIds, assetMap, shotMap, jobMap, modelMap, models, providers, busy, changeGraph, editNodePrompt, updateNodeById, updateNodeSettingsById, selectNodeModel, selectNodeForView, tryNodeAction, detail.shots, detail.script, detail.name, detail.brief, detail.updated_at, onNavigate, openScriptDirector, onOpenScriptCreator, onOpenScriptDocument])
+  }), [graph, selectedNodeId, selectedNodeIds, assetMap, shotMap, jobMap, modelMap, models, providers, busy, changeGraph, editNodePrompt, updateNodeById, updateNodeSettingsById, selectNodeModel, selectNodeForView, tryNodeAction, fitNodeToImage, detail.shots, detail.script, detail.name, detail.brief, detail.updated_at, onNavigate, openScriptDirector, onOpenScriptCreator, onOpenScriptDocument])
   const flowEdges = useMemo<Edge[]>(() => (graph?.edges || []).map((edge) => {
     const selected = edge.id === selectedEdgeId
     const relatedNodeIds = new Set(selectedNodeIds)
@@ -1634,7 +1659,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
             }
           }
         }
-        y = Math.max(y, generation.y + nodeSize(generation).height + 60, rightY + 60, leftY + 60)
+        y = Math.max(y, generation.y + nodeSize(generation, assetMap.get(generation.asset_id || '')).height + 60, rightY + 60, leftY + 60)
       }
       return addedShots || addedJobs || addedAssets ? { ...current, nodes, edges } : current
     })
@@ -1694,15 +1719,15 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           const lane = node.type === 'generation' ? 'generation' : hasIncomingGeneration ? 'result' : hasOutgoingGeneration ? 'source' : 'source'
           lanes[lane].push(node)
         }
-        const sourceWidth = Math.max(360, ...lanes.source.map(node => nodeSize(node).width))
-        const generationWidth = Math.max(440, ...lanes.generation.map(node => nodeSize(node).width))
+        const sourceWidth = Math.max(360, ...lanes.source.map(node => nodeSize(node, assetMap.get(node.asset_id || '')).width))
+        const generationWidth = Math.max(440, ...lanes.generation.map(node => nodeSize(node, assetMap.get(node.asset_id || '')).width))
         const laneX = { source: 80, generation: 80 + sourceWidth + 120, result: 80 + sourceWidth + generationWidth + 240 }
         let groupHeight = 0
         for (const lane of (['source', 'generation', 'result'] as const)) {
           let laneY = groupY
           for (const node of lanes[lane]) {
             positions.set(node.id, { x: laneX[lane], y: laneY })
-            laneY += nodeSize(node).height + 80
+            laneY += nodeSize(node, assetMap.get(node.asset_id || '')).height + 80
           }
           groupHeight = Math.max(groupHeight, laneY - groupY)
         }

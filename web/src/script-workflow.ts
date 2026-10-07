@@ -20,7 +20,7 @@ export function workflowRequestForStage(stage: WorkflowStage, episodeNumber: num
 
 export function workflowInstruction(request: WorkflowRequest, label?: string): string {
   const action = label || (request.stage === 'episode' ? `开始写第 ${request.episode_number} 集完整正文` : `生成${workflowLabels[request.stage]}`)
-  return `${action}。${request.stage === 'episode' ? `仅处理第 ${request.episode_number} 集正文，承接全剧设定和前集，不改动其他集。` : '范围是整个故事的全剧资料，不是当前集或下一集；保留已确认各集内容，不生成或改写分集正文。'}基于当前对话已确认的信息整理，尚未确定的设定标为待定，生成草稿供我确认。`
+  return `${action}。${request.stage === 'episode' ? `仅处理第 ${request.episode_number} 集正文，承接全剧设定和前集，不改动其他集。` : '范围是整个故事的全剧资料，不是当前集或下一集；保留已确认各集内容，不生成或改写分集正文。'}基于当前对话已确认的信息整理，沿用我明确交给模型决定后已经作出的具体设定，不再将这些设定标为待定；其他尚未确定且未授权模型决定的设定标为待定，生成草稿供我确认。`
 }
 
 export function artifactKey(artifact: { artifact_type: string; episode_number?: number }): string {

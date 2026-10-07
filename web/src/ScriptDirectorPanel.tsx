@@ -41,6 +41,7 @@ import './script-director.css'
 import './script-director-chat.css'
 import './director-documents.css'
 import DirectorQuestionPanel from './DirectorQuestionPanel'
+import DirectorMessageTiming, { finishMessageTiming, type MessageTiming } from './DirectorMessageTiming'
 import DirectorReferences from './DirectorReferences'
 import { addReference, readReferences, referenceMessages, type DirectorReference } from './director-references'
 import DirectorDraftReview, { DirectorDocumentBody, DirectorSceneList } from './DirectorDocuments'
@@ -88,7 +89,7 @@ type GeneratedScript = {
   artifacts: GeneratedArtifact[]
 }
 
-type Message = {
+type Message = MessageTiming & {
   id: string
   role: 'assistant' | 'user'
   text: string
@@ -138,7 +139,7 @@ type ConversationSnapshot = {
 type PersistedConversation = {
   id: string
   label: string
-  messages: Array<Pick<Message, 'id' | 'role' | 'text' | 'reference_documents' | 'classification' | 'classification_version' | 'classification_context'>>
+  messages: Array<Pick<Message, 'id' | 'role' | 'text' | 'reference_documents' | 'processing_duration_ms' | 'classification' | 'classification_version' | 'classification_context'>>
   updated_at?: string
 }
 
@@ -1184,7 +1185,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
           await api<PersistedConversation>(`/projects/${detail.id}/script/conversations`, json('PUT', {
             id: conversation.id,
             label: conversation.label,
-            messages: conversation.messages.filter((message) => !message.pending).slice(-80).map(({ id, role, text, reference_documents }) => ({ id, role, text, ...(reference_documents?.length ? { reference_documents } : {}) })),
+            messages: conversation.messages.filter((message) => !message.pending).slice(-80).map(({ id, role, text, reference_documents, processing_duration_ms }) => ({ id, role, text, ...(reference_documents?.length ? { reference_documents } : {}), ...(processing_duration_ms != null ? { processing_duration_ms } : {}) })),
           })).catch(() => null)
         }
       })()
@@ -1633,7 +1634,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
 
   async function skipQuestion(messageId: string, question: string) {
     setAnsweringChoiceId(messageId)
-    const reply = await sendChatMessage(`关于“${question}”，我选择跳过，暂不确定。请基于已确认的内容继续推进；这项保留待定，不要立即重复询问。`, false, undefined, true, undefined, undefined, { status: 'skipped', question })
+    const reply = await sendChatMessage(`关于“${question}”，我交给你决定。请结合已有故事和已确认的约束，选定最合适的方案或补齐具体设定，简短说明理由并继续推进。这项不要保留待定或再次询问确认，后续创作沿用你的决定，除非我提出修改。`, false, undefined, true, undefined, undefined, { status: 'skipped', question })
     if (reply !== null) {
       setChoiceAnswers(current => ({ ...current, [messageId]: { ...current[messageId], custom: current[messageId]?.custom || false, text: current[messageId]?.text || '', status: 'skipped' } }))
       setChoiceDismissed(current => ({ ...current, [messageId]: true }))
@@ -1680,7 +1681,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     setError(null)
     if (activeFocus !== 'all' && !skipAssetStatus) setAssetTaskStatus('analyzing')
     const pendingId = crypto.randomUUID()
-    const pendingMessage: Message = { id: pendingId, role: 'assistant', text: '正在整理你的想法…', pending: true }
+    const startedAt = performance.now()
+    const pendingMessage: Message = { id: pendingId, role: 'assistant', text: '正在整理你的想法…', pending: true, processing_started_at: startedAt }
     const originalMessages = messages
     const originalConversationId = conversationId || crypto.randomUUID()
     followMessagesRef.current = true
@@ -1718,8 +1720,9 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
           setMessages(current => current.map(message => message.id === pendingId ? { ...message, classification_version: replyClassificationVersion, classification: { type: 'other' } } : message))
         }
       }
+      const timing = finishMessageTiming(startedAt)
       setMessages((current) => current.map((item) => item.id === pendingId
-        ? { ...item, text: reply, pending: false } : item))
+        ? { ...item, ...timing, text: reply, pending: false } : item))
       if (retry) {
         setHistory(current => [{ id: originalConversationId, label: `原回复 · ${retry.question.text.slice(0, 80)}`, messages: originalMessages }, ...current.filter(item => item.id !== originalConversationId)].slice(0, 20))
         setConversationId(crypto.randomUUID())
@@ -1736,10 +1739,11 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       }
       if (usesComposer) setInput(current => current || composerInput)
       if (usesComposer) setReferences(attached)
+      const timing = finishMessageTiming(startedAt)
       if (controller.signal.aborted || isAbortError(issue)) {
         flushQueuedStreamMessage()
         setMessages((current) => current.map((item) => item.id === pendingId
-          ? { ...item, text: item.text && item.text !== '正在整理你的想法…' ? `${item.text}\n\n已停止生成` : '已停止生成', pending: false, failed: true }
+          ? { ...item, ...timing, text: item.text && item.text !== '正在整理你的想法…' ? `${item.text}\n\n已停止生成` : '已停止生成', pending: false, failed: true }
           : item.id === userMessage.id ? { ...item, failed: true } : item))
         return null
       }
@@ -1747,7 +1751,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       const messageText = `对话失败：${readableError(issue)}`
       setError(messageText)
       setMessages((current) => current.map((item) => item.id === pendingId
-        ? { ...item, text: messageText, pending: false, failed: true } : item.id === userMessage.id ? { ...item, failed: true } : item))
+        ? { ...item, ...timing, text: messageText, pending: false, failed: true } : item.id === userMessage.id ? { ...item, failed: true } : item))
     } finally {
       if (streamAbortController.current === controller) streamAbortController.current = null
       chatSubmitLock.current = false
@@ -1891,6 +1895,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     const message = currentDraftIdea()
     if (!message) { setError('先输入一个故事想法'); return }
     if (!modelId || !selectedModel) { setError('请选择文本模型'); return }
+    const startedAt = performance.now()
     setError(null)
     let promptToUse = prompt
     if (!promptCustomized || !promptToUse.trim()) {
@@ -1925,7 +1930,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       setInput('')
     }
     const pendingId = crypto.randomUUID()
-    const pendingMessage: Message = { id: pendingId, role: 'assistant', text: '正在整理故事结构、人物关系和场次节奏…', pending: true }
+    const pendingMessage: Message = { id: pendingId, role: 'assistant', text: '正在整理故事结构、人物关系和场次节奏…', pending: true, processing_started_at: startedAt }
     setMessages((current) => [...current, pendingMessage].slice(-80))
     setWorking('generate')
     try {
@@ -1948,14 +1953,16 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       setGenerated(next)
       setPreviewOpen(true)
       setArtifactsOpen(true)
+      const timing = finishMessageTiming(startedAt)
       setMessages((current) => current.map((item) => item.id === pendingId && item.pending
-        ? { ...item, text: `剧本草稿已经完成，共 ${next.scenes.length} 场、约 ${next.scenes.reduce((sum, scene) => sum + scene.duration, 0)} 秒。你可以先查看预览，确认后写入项目。`, pending: false, classification_version: replyClassificationVersion, classification: { type: 'other' } }
+        ? { ...item, ...timing, text: `剧本草稿已经完成，共 ${next.scenes.length} 场、约 ${next.scenes.reduce((sum, scene) => sum + scene.duration, 0)} 秒。你可以先查看预览，确认后写入项目。`, pending: false, classification_version: replyClassificationVersion, classification: { type: 'other' } }
         : item))
     } catch (issue) {
       setInput(current => current || composerInput)
       setError(`生成失败：${readableError(issue)}`)
+      const timing = finishMessageTiming(startedAt)
       setMessages((current) => current.map((item) => item.id === pendingId && item.pending
-        ? { ...item, text: `生成没有完成：${readableError(issue)}`, pending: false, failed: true, classification_version: replyClassificationVersion, classification: { type: 'other' } }
+        ? { ...item, ...timing, text: `生成没有完成：${readableError(issue)}`, pending: false, failed: true, classification_version: replyClassificationVersion, classification: { type: 'other' } }
         : item))
     } finally {
       setWorking(null)
@@ -2107,7 +2114,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       try {
         for (const conversation of snapshots) await api(`/projects/${detail.id}/script/conversations`, json('PUT', {
           id: conversation.id, label: conversation.label,
-          messages: conversation.messages.filter(message => !message.pending).slice(-80).map(({ id, role, text, reference_documents }) => ({ id, role, text, ...(reference_documents?.length ? { reference_documents } : {}) })),
+          messages: conversation.messages.filter(message => !message.pending).slice(-80).map(({ id, role, text, reference_documents, processing_duration_ms }) => ({ id, role, text, ...(reference_documents?.length ? { reference_documents } : {}), ...(processing_duration_ms != null ? { processing_duration_ms } : {}) })),
         }))
       } catch { onNotice('对话已缓存在本机，服务端保存失败，请稍后重试') }
     }
@@ -2203,7 +2210,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
             </>}
           </div>
           {activeChoice?.messageId === message.id ? <span className="sd-question-status">请在下方回答</span>
-            : <details className="sd-answered-question"><summary>{answer || (message.classification?.type === 'choice_request' || message.classification?.type === 'input_request') && message.classification.status === 'answered' ? '已回答' : dismissed ? '已跳过' : '历史问题'}</summary><p>{parsedChoices.question}</p>{answer && <p>{answer}</p>}</details>}
+            : <details className="sd-answered-question"><summary>{storedAnswer?.status === 'skipped' ? '已跳过' : answer || (message.classification?.type === 'choice_request' || message.classification?.type === 'input_request') && message.classification.status === 'answered' ? '已回答' : dismissed ? '已结束' : '历史问题'}</summary><p>{parsedChoices.question}</p>{answer && <p>{answer}</p>}</details>}
+          <DirectorMessageTiming {...message} />
           {message.activity?.length ? <details className="sd-message-activity"><summary>创作依据</summary>{message.activity.map(event => <p key={event.id}>{event.summary}</p>)}</details> : null}
           {replyRecognition(message)}
           {replyActions(message)}
@@ -2213,6 +2221,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
           <div className={`script-director-bubble${message.pending ? ' is-pending' : ''}`}>
             {message.pending ? <><LoaderCircle size={13} className="script-director-spinner" /><span>{message.text}</span></> : message.role === 'assistant' ? <DirectorMessageText text={message.text} /> : message.text}
           </div>
+          {message.role === 'assistant' && <DirectorMessageTiming {...message} />}
           {message.activity?.length && !message.pending ? <details className="sd-message-activity"><summary>创作依据</summary>{message.activity.map(event => <p key={event.id}>{event.summary}</p>)}</details> : null}
           {activeFocus === 'all' && canAdoptReply(message) && <div className="sd-message-adopt">
             {adoptingMessageId === message.id ? <>

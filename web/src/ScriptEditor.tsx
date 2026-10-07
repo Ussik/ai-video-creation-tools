@@ -14,6 +14,7 @@ import { useAppDialog } from './AppDialog'
 import { applyTextFormat, textEditorExtensions, type TextFormat } from './text-editor'
 import { parseScriptDocument, serializeScriptDocument } from './script-rich-document'
 import { normalizeTextDocument, textDocumentText } from './text-document'
+import { useScriptDocumentNavigation } from './useScriptDocumentNavigation'
 
 type SceneFields = {
   episode_number?: number
@@ -257,7 +258,9 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
   const historyActionRef = useRef(false)
   const [historyRevision, setHistoryRevision] = useState(0)
   const [activeSceneId, setActiveSceneId] = useState<string | null>(() => fromDetail(detail).scenes[0]?.clientId || null)
-  const [activeDocumentSection, setActiveDocumentSection] = useState<DocumentSection>(initialSection || 'outline')
+  const { activeSection: activeDocumentSection, editorRef: documentEditorRef, selectSection } = useScriptDocumentNavigation<DocumentSection>({
+    documentId: detail.id, initialSection, defaultSection: 'outline',
+  })
   const [editorZoom, setEditorZoom] = useState(100)
   const [formatMenu, setFormatMenu] = useState<'heading' | 'list' | null>(null)
   const [, setSelectionRevision] = useState(0)
@@ -398,22 +401,6 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
   useEffect(() => () => { onDirtyChangeRef.current?.(false) }, [])
 
   useEffect(() => {
-    const sections = Array.from(document.querySelectorAll<HTMLElement>('[data-script-section]'))
-    if (!sections.length) return
-    const scrollRoot = document.querySelector<HTMLElement>('.script-document-editor')
-    const observer = new IntersectionObserver((entries) => {
-      const visible = entries.filter((entry) => entry.isIntersecting)
-        .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0]
-      const section = visible?.target instanceof HTMLElement ? visible.target.dataset.scriptSection : undefined
-      if (section && (section === 'scenes' || /^episode-\d+$/.test(section) || artifactCatalog.some((item) => item.type === section))) {
-        setActiveDocumentSection(section as DocumentSection)
-      }
-    }, { root: scrollRoot, rootMargin: '-16px 0px -55% 0px', threshold: 0.01 })
-    sections.forEach((section) => observer.observe(section))
-    return () => observer.disconnect()
-    }, [detail.id, draft.artifacts.length, draft.scenes.length, activeDocumentSection])
-
-  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
         event.preventDefault()
@@ -494,33 +481,13 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
     return !!editor?.isActive(name, attrs)
   }
 
-  useEffect(() => {
-    if (initialSection) selectDocumentSection(initialSection)
-  }, [initialSection, detail.id])
-
   function selectDocumentSection(section: DocumentSection, resetDocument = false) {
-    setActiveDocumentSection(section)
+    selectSection(section, resetDocument)
     focusedEditorRef.current = null
     focusedArtifactRef.current = null
     if (section === 'scenes') {
       setActiveSceneId((current) => current || draft.scenes[0]?.clientId || null)
     }
-    window.requestAnimationFrame(() => {
-      const editor = document.querySelector<HTMLElement>('.script-document-editor')
-      const target = document.getElementById(`script-section-${section}`)
-      if (!editor) return
-      if (resetDocument || section.startsWith('episode-') || standaloneArtifactTypes.includes(section as ScriptArtifactType)) {
-        editor.scrollTo({ top: 0, behavior: 'smooth' })
-        return
-      }
-      if (!target) return
-      // Keep the fixed mature-project header and vertically centered directory in
-      // place. Element.scrollIntoView() would also scroll the outer full-screen
-      // page, hiding the toolbar; move only the document's scroll container.
-      const editorRect = editor.getBoundingClientRect()
-      const targetRect = target.getBoundingClientRect()
-      editor.scrollTo({ top: Math.max(0, editor.scrollTop + targetRect.top - editorRect.top - 16), behavior: 'smooth' })
-    })
   }
 
   function removeScene(clientId: string) {
@@ -900,6 +867,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
         {episodeDocuments.map(artifact => <button type="button" key={artifact.id} className={`script-document-nav-primary script-document-nav-standalone ${selectedEpisode?.id === artifact.id ? 'is-active' : ''}`} onClick={() => selectDocumentSection(`episode-${artifact.episode_number!}`)}>{artifact.title}</button>)}
       </aside>
       <article
+        ref={documentEditorRef}
         className="script-document-editor"
         style={{ '--script-editor-scale': editorZoom / 100 } as CSSProperties}
       >
