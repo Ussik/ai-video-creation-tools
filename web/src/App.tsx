@@ -8,13 +8,14 @@ import {
   ArrowDown, ArrowDownWideNarrow, ArrowRight, ArrowUp, ArrowUpWideNarrow, Check, Clapperboard,
   Clock3, Download, Eye, FileText, Film, Image as ImageIcon, Layers3, LayoutGrid, List, LoaderCircle, Menu,
   MoreHorizontal, Music2, PanelLeftClose, PanelLeftOpen, Play, Plus, RefreshCcw, Save, Scissors, ScrollText, Search, Settings2,
-  Sparkles, Trash2, Upload, FolderOpen, TriangleAlert, WandSparkles, X,
+  Sparkles, Trash2, Upload, FolderOpen, TriangleAlert, WandSparkles, X, Puzzle,
 } from 'lucide-react'
 import { api, json } from './api'
 import type { Asset, ContinuityReport, Model, Modality, ProductionRange, Project, ProjectDetail, Provider, Shot, TimelineClip, VisualReferenceMode } from './api'
 import VisualPreparation from './VisualPreparation'
 import { requestVisualCanvas } from './canvas-visual-profiles'
 import ModelSettings from './ModelSettings'
+import SkillsCenter from './SkillsCenter'
 import TimelinePreview from './TimelinePreview'
 import CutReviewPanel from './CutReviewPanel'
 import CandidateCompare from './CandidateCompare'
@@ -26,7 +27,7 @@ import { useAppDialog } from './AppDialog'
 import { filterLibraryAssets, libraryCollection, libraryEmptyText } from './asset-library'
 import type { AssetLibraryView } from './asset-library'
 
-type Tab = 'projects' | 'canvas' | 'studio' | 'assets' | 'jobs' | 'models'
+type Tab = 'projects' | 'canvas' | 'studio' | 'assets' | 'jobs' | 'models' | 'skills'
 type Generation = {
   visual_reference_mode?: VisualReferenceMode
   modality: Modality
@@ -125,6 +126,7 @@ const tabs: { id: Tab; label: string; icon: typeof Clapperboard }[] = [
   { id: 'assets', label: '资产', icon: Layers3 },
   { id: 'jobs', label: '任务记录', icon: Clock3 },
   { id: 'models', label: '模型设置', icon: Settings2 },
+  { id: 'skills', label: '技能中心', icon: Puzzle },
 ]
 
 const modes = [
@@ -1072,7 +1074,7 @@ function App() {
 
     <main className={`main-content ${canvasOpen ? 'is-canvas' : ''}`}>
       {tab !== 'projects' && !scriptEditorOpen && <header className="topbar">
-        <div className="topbar-start"><ActionIcon className="mobile-toggle" variant="subtle" aria-label="打开导航" onClick={() => setMobileMenu(!mobileMenu)}><Menu size={20} /></ActionIcon><button className="breadcrumb-link" onClick={() => selectedNav('projects')}>项目</button><span className="breadcrumb-sep">/</span><strong>{tab === 'models' ? '模型设置' : detail?.name || '未选择项目'}</strong></div>
+        <div className="topbar-start"><ActionIcon className="mobile-toggle" variant="subtle" aria-label="打开导航" onClick={() => setMobileMenu(!mobileMenu)}><Menu size={20} /></ActionIcon><button className="breadcrumb-link" onClick={() => selectedNav('projects')}>项目</button><span className="breadcrumb-sep">/</span><strong>{tab === 'skills' ? '技能中心' : tab === 'models' ? '模型设置' : detail?.name || '未选择项目'}</strong></div>
         <div className="topbar-actions">
           {tab === 'studio' && detail && <Button variant="default" onClick={() => setTab('canvas')} leftSection={<Layers3 size={16} />}>返回画布</Button>}
           {tab === 'studio' && detail && <span className="topbar-meta">{detail.shots.length} 个镜头 · {detail.ratio}</span>}
@@ -1101,7 +1103,7 @@ function App() {
         </div>
       </section>}
 
-      {!detail && tab !== 'models' && tab !== 'projects' ? <div className="empty-workspace">
+      {!detail && tab !== 'models' && tab !== 'projects' && tab !== 'skills' ? <div className="empty-workspace">
         <div className="empty-workspace-icon"><Clapperboard size={31} /></div>
         <h1>还没有项目</h1><p>先创建项目，再在画布中添加内容和生成节点。</p>
         <Button onClick={() => void createProject()} leftSection={<Plus size={17} />}>新建项目</Button>
@@ -1375,6 +1377,7 @@ function App() {
       </section>}
 
       {tab === 'models' && <ModelSettings providers={providers} models={models} refresh={refreshCatalog} action={action} busy={busy} />}
+      {tab === 'skills' && <SkillsCenter />}
     </main>
 
     <Modal opened={assetPreview !== null} onClose={() => setAssetPreview(null)} title={assetPreview?.filename || '素材预览'} size="lg" centered>

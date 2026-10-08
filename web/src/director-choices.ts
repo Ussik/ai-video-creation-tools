@@ -1,6 +1,14 @@
+import { readDirectorInteraction, type DirectorInteraction } from './script-workflow'
+
 export type MessageChoice = { label: string; title: string; text: string; kind?: 'direction' | 'custom'; requires_details?: boolean }
 export type InputField = { id: string; label: string; suggestions?: string[] }
-export type ParsedMessageChoices = { intro: string; question: string; options: MessageChoice[]; trailing: string; fields?: InputField[] }
+export type ParsedMessageChoices = { intro: string; question: string; options: MessageChoice[]; trailing: string; fields?: InputField[]; confirmation?: boolean;
+  questions?: Array<ParsedMessageChoices & { id: string }>; interaction?: DirectorInteraction }
+
+export function confirmationChoices(question: string): MessageChoice[] {
+  return [{ label: 'agree', title: '同意', text: `同意：${question}。按上述提议推进，沿用已确认的设定。` },
+    { label: 'adjust', title: '需要调整', text: `暂不按上述提议推进：${question}。请继续讨论需要调整的部分，不开始文档生成。` }]
+}
 
 export function choiceTitle(text: string): string {
   const plain = text.replace(/[*#`]/g, '').trim()
@@ -17,7 +25,25 @@ export function parseMessageChoices(text: string): ParsedMessageChoices | null {
   try { value = JSON.parse(source) } catch { return null }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const payload = value as Record<string, unknown>
+  const parsedInteraction = readDirectorInteraction(payload.interaction)
+  const metadata = parsedInteraction ? { interaction: parsedInteraction } : {}
   if (typeof payload.question !== 'string' || !payload.question.trim()) return null
+  if (payload.kind === 'confirmation') return { ...metadata, question: payload.question.trim(), confirmation: true, options: confirmationChoices(payload.question.trim()),
+    intro: typeof payload.intro === 'string' ? payload.intro.trim() : '', trailing: typeof payload.trailing === 'string' ? payload.trailing.trim() : '' }
+  if (payload.kind === 'question_set') {
+    if (!Array.isArray(payload.questions) || payload.questions.length < 2 || payload.questions.length > 4) return null
+    const questions: Array<ParsedMessageChoices & { id: string }> = []
+    for (const raw of payload.questions) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+      const item = raw as Record<string, unknown>
+      if (!['confirmation', 'choices', 'input_request'].includes(String(item.kind)) || typeof item.id !== 'string' || !item.id.trim() || item.id.length > 80) return null
+      const parsed = parseMessageChoices(JSON.stringify(item))
+      if (!parsed) return null
+      questions.push({ ...parsed, id: item.id.trim() })
+    }
+    if (new Set(questions.map(item => item.id)).size !== questions.length) return null
+    return { ...metadata, question: payload.question.trim(), questions, options: [], intro: typeof payload.intro === 'string' ? payload.intro.trim() : '', trailing: typeof payload.trailing === 'string' ? payload.trailing.trim() : '' }
+  }
   if (payload.kind === 'input_request') {
     if (!Array.isArray(payload.fields) || payload.fields.length < 1 || payload.fields.length > 4) return null
     const fields: InputField[] = []
@@ -29,7 +55,7 @@ export function parseMessageChoices(text: string): ParsedMessageChoices | null {
       fields.push({ id: field.id.trim(), label: field.label.trim(), ...(Array.isArray(field.suggestions) ? { suggestions: field.suggestions.map(s => (s as string).trim()) } : {}) })
     }
     if (new Set(fields.map(field => field.id)).size !== fields.length) return null
-    return { question: payload.question.trim(), fields, options: [], intro: typeof payload.intro === 'string' ? payload.intro.trim() : '', trailing: typeof payload.trailing === 'string' ? payload.trailing.trim() : '' }
+    return { ...metadata, question: payload.question.trim(), fields, options: [], intro: typeof payload.intro === 'string' ? payload.intro.trim() : '', trailing: typeof payload.trailing === 'string' ? payload.trailing.trim() : '' }
   }
   if (payload.kind !== 'choices' || !Array.isArray(payload.options)) return null
   const options = payload.options.flatMap((entry, index): MessageChoice[] => {
@@ -43,6 +69,7 @@ export function parseMessageChoices(text: string): ParsedMessageChoices | null {
   })
   if (options.length < 2 || options.length > 8 || new Set(options.map(option => option.label)).size !== options.length) return null
   return {
+    ...metadata,
     question: payload.question.trim(), options,
     intro: typeof payload.intro === 'string' ? payload.intro.trim() : '',
     trailing: typeof payload.trailing === 'string' ? payload.trailing.trim() : '',

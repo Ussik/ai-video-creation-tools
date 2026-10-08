@@ -59,6 +59,7 @@ export interface ScriptMessage {
   id: string; conversation_id: string; position: number;
   role: 'assistant' | 'user'; text: string; reference_documents?: string; created_at: string
   processing_duration_ms?: number | null
+  stage_context?: string | null
 }
 export type ScriptArtifactType =
   | 'outline' | 'synopsis' | 'world' | 'characters' | 'relationships' | 'locations'
@@ -415,6 +416,29 @@ export function initDb(): void {
     CREATE INDEX IF NOT EXISTS idx_canvas_edges_project ON canvas_edges(project_id, position);
   `)
 
+  const bindingForeignKeys = db.pragma('foreign_key_list(shot_visual_bindings)') as Array<{ from: string; on_delete: string }>
+  if (bindingForeignKeys.find(key => key.from === 'profile_id')?.on_delete !== 'CASCADE') {
+    // Older RESTRICT bindings can block the project cascade before its shots are removed.
+    // This child table has no dependents, so rebuild it with foreign keys still enforced.
+    db.transaction(() => db.exec(`
+      CREATE TABLE shot_visual_bindings_cascade (
+        shot_id TEXT NOT NULL REFERENCES shots(id) ON DELETE CASCADE,
+        profile_id TEXT NOT NULL REFERENCES visual_profiles(id) ON DELETE CASCADE,
+        required INTEGER NOT NULL DEFAULT 1,
+        revision INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, variant TEXT NOT NULL,
+        definition TEXT NOT NULL, view_requirements TEXT NOT NULL,
+        board_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+        PRIMARY KEY (shot_id, profile_id)
+      );
+      INSERT INTO shot_visual_bindings_cascade
+        (shot_id, profile_id, required, revision, kind, name, variant, definition, view_requirements, board_asset_id)
+      SELECT shot_id, profile_id, required, revision, kind, name, variant, definition, view_requirements, board_asset_id
+      FROM shot_visual_bindings;
+      DROP TABLE shot_visual_bindings;
+      ALTER TABLE shot_visual_bindings_cascade RENAME TO shot_visual_bindings;
+    `))()
+  }
+
   const scriptColumns = db.pragma('table_info(scripts)') as Array<{ name: string }>
   if (!scriptColumns.some(column => column.name === 'generation_options')) {
     db.exec("ALTER TABLE scripts ADD COLUMN generation_options TEXT NOT NULL DEFAULT '{}'")
@@ -426,6 +450,10 @@ export function initDb(): void {
   }
   if (!messageColumns.some(column => column.name === 'processing_duration_ms')) {
     db.exec('ALTER TABLE script_messages ADD COLUMN processing_duration_ms INTEGER')
+  }
+
+  if (!messageColumns.some(column => column.name === 'stage_context')) {
+    db.exec('ALTER TABLE script_messages ADD COLUMN stage_context TEXT')
   }
 
   const sceneColumns = db.pragma('table_info(script_scenes)') as Array<{ name: string }>

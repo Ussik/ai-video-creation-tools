@@ -2,7 +2,7 @@ import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { JSDOM } from 'jsdom'
 import React, { act, useState } from 'react'
-import DirectorQuestionPanel, { choiceAnswerText, type ChoiceAnswer } from '../src/DirectorQuestionPanel'
+import DirectorQuestionPanel, { restoreChoiceAnswer, choiceAnswerText, type ChoiceAnswer } from '../src/DirectorQuestionPanel'
 import { parseMessageChoices, type ParsedMessageChoices } from '../src/director-choices'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/' })
@@ -154,5 +154,65 @@ test('open form requires each requested field, supports multiple references and 
     await act(async () => finish())
     assert.equal(button(view.container, '继续').disabled, false)
     assert.equal(choiceAnswerText(form, { custom: false, text: '', fields: { family: ' ', inlaw: '女婿' } }), '')
+  } finally { await view.destroy() }
+})
+
+
+const grouped = parseMessageChoices(JSON.stringify({ kind: 'question_set', question: '确认框架与人物', questions: [
+  { id: 'framework', kind: 'confirmation', question: '是否按三幕框架推进？' },
+  { id: 'identity', kind: 'input_request', question: '主角职业？', fields: [{ id: 'role', label: '职业', suggestions: ['医生'] }] },
+] }))!
+
+test('mixed questions retain earlier selections, allow review and send one complete reply after the final question', async () => {
+  const sent: string[] = []
+  const view = await mount(async answer => { sent.push(answer) }, undefined, false, grouped)
+  try {
+    await act(() => button(view.container, '同意').click())
+    await act(() => { button(view.container, '下一项').click(); button(view.container, '下一项').click() })
+    assert.equal(sent.length, 0)
+    assert.match(view.container.textContent!, /第 2 \/ 2 项/)
+    assert.equal(button(view.container, '继续').disabled, true)
+    await act(() => button(view.container, '医生').click())
+    await act(() => button(view.container, '上一项').click())
+    assert.equal(button(view.container, '同意').getAttribute('aria-checked'), 'true')
+    await act(() => button(view.container, '下一项').click())
+    await act(async () => button(view.container, '继续').click())
+    assert.equal(sent.length, 1)
+    assert.match(sent[0], /同意：是否按三幕框架推进/)
+    assert.match(sent[0], /职业：医生/)
+  } finally { await view.destroy() }
+})
+
+test('skipping an item delegates only that item and final skipped answers can retry after an unsuccessful request', async () => {
+  const sent: string[] = []
+  const view = await mount(async answer => { sent.push(answer) }, undefined, false, grouped, async () => assert.fail('single-question skip handler must not delegate the whole group'))
+  try {
+    await act(() => button(view.container, '同意').click())
+    await act(() => button(view.container, '下一项').click())
+    await act(() => button(view.container, '医生').click())
+    await act(async () => button(view.container, '跳过').click())
+    assert.equal(sent.length, 1)
+    assert.match(sent[0], /同意：是否按三幕框架推进/)
+    assert.match(sent[0], /主角职业？\n这项交给模型决定/)
+    assert.doesNotMatch(sent[0], /医生/)
+    assert.equal(button(view.container, '继续').disabled, false)
+    await act(async () => button(view.container, '继续').click())
+    assert.deepEqual(sent, [sent[0], sent[0]])
+  } finally { await view.destroy() }
+})
+
+test('partial question sets survive storage/reload without treating unsubmitted selections as confirmed', async () => {
+  const answer: ChoiceAnswer = { custom: false, text: '', responses: {
+    framework: { custom: false, text: '', status: 'skipped' },
+    identity: { custom: false, text: '', fields: { role: '医生' } },
+  } }
+  const restored = restoreChoiceAnswer(JSON.parse(JSON.stringify(answer)))!
+  assert.deepEqual(restored, answer)
+  const view = await mount(async () => {}, restored, false, grouped)
+  try {
+    assert.match(view.container.textContent!, /第 2 \/ 2 项/)
+    assert.equal(view.container.querySelector('textarea')!.value, '医生')
+    assert.equal(choiceAnswerText(grouped, { ...answer, responses: { framework: answer.responses!.framework } }), '')
+    assert.doesNotMatch(JSON.stringify(restoreChoiceAnswer({ ...answer, responses: { bad: { ...answer, responses: { nested: answer } } } })), /nested/)
   } finally { await view.destroy() }
 })

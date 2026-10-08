@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { canAdoptReply, classificationBatch, classificationKey, activeReplyChoice, episodePreparationAction, followingMessages, replyChoices, replyRecognitionState, replyClassificationVersion, type ClassifiableMessage } from '../src/script-reply'
+import { canAdoptReply, classificationBatch, classificationKey, activeReplyChoice, episodePreparationAction, followingMessages, latestReplyNeedsRecognition, replyChoices, replyRecognitionState, replyClassificationVersion, type ClassifiableMessage } from '../src/script-reply'
 
 test('adoption requires positive model metadata, never words about episodes or scripts', () => {
   const base: ClassifiableMessage = { id: 'reply', role: 'assistant', text: '第一集剧本，第1集完。' }
@@ -159,4 +159,39 @@ test('model-identified open requests create forms and follow-up context invalida
   const structured = { id: 'direct-form', role: 'assistant' as const, text: JSON.stringify({ kind: 'input_request', question: '亲属是谁？', fields: [{ id: 'family', label: '直系亲属' }] }) }
   assert.equal(classificationBatch([structured], new Set()).length, 0)
   assert.equal(activeReplyChoice([structured], {}, null)?.messageId, structured.id)
+})
+
+
+test('plain confirmations and grouped questions use semantic metadata, refresh with context and invalidate old recognition', () => {
+  const message: ClassifiableMessage = { id: 'confirm', role: 'assistant', text: '是否按这个三幕框架推进？', classification_version: replyClassificationVersion, classification_context: '[]',
+    classification: { type: 'confirmation_request', status: 'pending', question: '是否按这个三幕框架推进？' } }
+  assert.deepEqual(activeReplyChoice([message], {}, null)!.choice.options.map(option => option.title), ['同意', '需要调整'])
+  assert.equal(classificationBatch([{ ...message, classification_version: 6 }], new Set()).length, 1)
+  const answered = { ...message, classification: { ...message.classification!, status: 'answered' } } as ClassifiableMessage
+  assert.equal(activeReplyChoice([answered], {}, null), null)
+  const grouped: ClassifiableMessage = { ...message, id: 'mixed', classification: { type: 'question_set', status: 'pending', question: '框架与人物', questions: [
+    { id: 'framework', kind: 'confirmation', question: '接受框架？' },
+    { id: 'role', kind: 'input_request', question: '职业？', fields: [{ id: 'role', label: '职业' }] },
+  ] } }
+  assert.equal(activeReplyChoice([grouped], {}, null)!.choice.questions!.length, 2)
+})
+
+test('long replies are recognized intact and multi-item answers keep the final answer in follow-up context', () => {
+  const reply: ClassifiableMessage = { id: 'long', role: 'assistant', text: '方案说明。'.repeat(2000) + '接受这个框架吗？' }
+  const batch = classificationBatch([reply], new Set())
+  assert.equal(batch.length, 1)
+  assert.equal(batch[0].text, reply.text)
+  const answer: ClassifiableMessage = { id: 'answer', role: 'user', text: '首项回答。'.repeat(6800) + '最后一项：医生' }
+  assert.equal(followingMessages([reply, answer], 0)[0].text, answer.text)
+})
+
+
+test('stage suggestions wait for the current reply recognition while historical work leaves a resolved current reply available', () => {
+  const unknown: ClassifiableMessage = { id: 'unknown', role: 'assistant', text: '是否接受当前方案？' }
+  assert.equal(latestReplyNeedsRecognition([unknown]), true)
+  assert.equal(latestReplyNeedsRecognition([{ ...unknown, classification_version: 6, classification: { type: 'other' } }]), true)
+  const resolved = { ...unknown, classification_version: replyClassificationVersion, classification: { type: 'other' as const } }
+  assert.equal(latestReplyNeedsRecognition([unknown, resolved]), false)
+  assert.equal(latestReplyNeedsRecognition([{ ...unknown, failed: true }]), false)
+  assert.equal(latestReplyNeedsRecognition([{ ...unknown, text: JSON.stringify({ kind: 'confirmation', question: '接受方案？' }) }]), false)
 })

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { artifactKey, workflowInstruction, workflowRequestForStage, workflowStages } from '../src/script-workflow.ts'
+import { artifactKey, workflowInstruction, workflowRequestForStage, workflowStages, workflowProgress } from '../src/script-workflow.ts'
 
 test('episode document keys keep separate episodes and project-level outlines distinct', () => {
   const keys = [1, 2, 20].map(episode_number => artifactKey({ artifact_type: 'episode_script', episode_number }))
@@ -27,4 +27,36 @@ test('all workflow buttons preserve concrete decisions delegated to the model an
     assert.match(instruction, /不再将这些设定标为待定/)
     assert.match(instruction, /其他尚未确定且未授权模型决定的设定标为待定/)
   }
+})
+
+
+test('saving an outline after characters reuses saved characters; drafts and per-episode settings are not global progress', () => {
+  const saved = { outline: '修订后的故事', characters: '已确认的人物', artifacts: [
+    { artifact_type: 'characters', episode_number: 0, content: '已确认的人物', status: 'ready' },
+  ] }
+  assert.equal(workflowProgress(saved).next_stage, 'locations')
+  assert.equal(workflowProgress({ ...saved, outline: '' }).next_stage, 'outline')
+  assert.equal(workflowProgress({ outline: '大纲', characters: '尚未确认', artifacts: [
+    { artifact_type: 'characters', content: '未保存草稿', status: 'draft' },
+  ] }).next_stage, 'characters')
+  assert.equal(workflowProgress({ outline: '大纲', artifacts: [
+    { artifact_type: 'characters', episode_number: 2, content: '本集客串', status: 'ready' },
+    { artifact_type: 'relationships', content: '关系', status: 'ready' },
+  ] }).next_stage, 'characters')
+})
+
+test('generic scenes and structure never count as location design; episode recommendations fill gaps and stop at confirmed count', () => {
+  const script = { outline: '大纲', characters: '人物', generation_options: { episode_count: 3 }, scenes: [{ episode_number: 1 }, { episode_number: 3 }], artifacts: [
+    { artifact_type: 'structure', content: '分段', status: 'ready' },
+  ] }
+  assert.equal(workflowProgress(script).next_stage, 'locations')
+  const prepared = { ...script, artifacts: [...script.artifacts,
+    { artifact_type: 'locations', content: '场景', status: 'ready' },
+    { artifact_type: 'props', content: '无需关键道具', status: 'edited' },
+  ] }
+  assert.equal(workflowProgress(prepared).next_stage, 'episode')
+  assert.equal(workflowProgress(prepared).next_episode, 2)
+  const complete = workflowProgress({ ...prepared, scenes: [...prepared.scenes, { episode_number: 2 }] })
+  assert.equal(complete.next_stage, null)
+  assert.equal(complete.next_episode, null)
 })

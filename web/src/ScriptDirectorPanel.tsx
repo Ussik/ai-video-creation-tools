@@ -47,16 +47,16 @@ import DirectorMessageTiming, { finishMessageTiming, type MessageTiming } from '
 import DirectorReferences from './DirectorReferences'
 import { addReference, readReferences, referenceMessages, type DirectorReference } from './director-references'
 import DirectorDraftReview, { DirectorDocumentBody, DirectorSceneList } from './DirectorDocuments'
-import { choiceAnswerText, type ChoiceAnswer } from './DirectorQuestionPanel'
+import { restoreChoiceAnswer, choiceAnswerText, type ChoiceAnswer } from './DirectorQuestionPanel'
 import { parseMessageChoices } from './director-choices'
 import { CanvasTextPreview } from './CanvasTextEditor'
 import { parseScriptDocument } from './script-rich-document'
 import { textDocumentText } from './text-document'
 import { clampDirectorWindow, defaultDirectorWindow, shouldSendDirectorMessage, type DirectorWindowRect } from './director-window'
 import { ScriptThemeWaterCanvas as WebGLScriptThemeWaterCanvas } from './ScriptThemeWaterCanvas'
-import { artifactKey, workflowLabels, workflowStages } from './script-workflow'
+import { artifactKey, workflowLabels, workflowStages, workflowProgress, directorStageContext, type DirectorStageContext } from './script-workflow'
 import { workflowInstruction, workflowRequestForStage, type WorkflowDraft, type WorkflowRequest, type WorkflowStage } from './script-workflow'
-import { canAdoptReply, classificationBatch, classificationKey, followingMessages, replyRecognitionState, activeReplyChoice, episodePreparationAction, replyChoices, replyClassificationVersion, type ReplyClassification } from './script-reply'
+import { canAdoptReply, classificationBatch, classificationKey, followingMessages, latestReplyNeedsRecognition, replyRecognitionState, activeReplyChoice, episodePreparationAction, replyChoices, replyWorkflowAction, replyDisplayText, replyClassificationVersion, contextualReplyTypes, type ReplyClassification } from './script-reply'
 import { regenerationSource } from './director-regeneration'
 import { directorChatContext } from './director-chat-context'
 import { useThemeVisuals } from './useThemeVisuals'
@@ -99,7 +99,8 @@ type Message = MessageTiming & {
   failed?: boolean
   activity?: ProcessEvent[]
   reference_documents?: DirectorReference[]
-  question_response?: { status: 'skipped'; question: string }
+  question_response?: { status: 'skipped' | 'answered'; question: string }
+  stage_context?: DirectorStageContext
   classification?: ReplyClassification
   classification_version?: number
   classification_context?: string
@@ -107,7 +108,7 @@ type Message = MessageTiming & {
 
 function isStructuredChoiceStream(text: string): boolean {
   const prefix = text.trimStart()
-  return prefix.startsWith('{') || prefix.startsWith('```') || /"kind"\s*:\s*"(?:choices|input_request)"/.test(prefix)
+  return prefix.startsWith('{') || prefix.startsWith('```') || /"kind"\s*:\s*"(?:choices|input_request|confirmation|question_set)"/.test(prefix)
 }
 
 type ProcessEvent = {
@@ -117,6 +118,7 @@ type ProcessEvent = {
 }
 
 type StreamEvent = {
+  stage_context?: DirectorStageContext
   workflow?: WorkflowRequest
   generation_options?: ScriptGenerationOptions
   draft?: WorkflowDraft
@@ -141,7 +143,7 @@ type ConversationSnapshot = {
 type PersistedConversation = {
   id: string
   label: string
-  messages: Array<Pick<Message, 'id' | 'role' | 'text' | 'reference_documents' | 'processing_duration_ms' | 'classification' | 'classification_version' | 'classification_context'>>
+  messages: Array<Pick<Message, 'id' | 'role' | 'text' | 'reference_documents' | 'processing_duration_ms' | 'stage_context' | 'classification' | 'classification_version' | 'classification_context'>>
   updated_at?: string
 }
 
@@ -288,21 +290,6 @@ function promptForMode(prompt: string, mode: DirectorMode): string {
       ? '以导演视角组织场次，突出视觉调度、动作节拍、情绪变化和可执行的画面。'
       : '优先打磨人物动机、戏剧冲突、对白和故事结构，再落实为分场剧本。'
   return `${prompt.trim()}\n\n创作模式要求：${direction}`
-}
-
-function stageIndex(detail: ProjectDetail, _generated: GeneratedScript | null, _scriptSaved: boolean): number {
-  const artifacts = detail.script?.artifacts || []
-  const hasArtifact = (type: ScriptArtifactType) => artifacts.some((artifact) => artifact.artifact_type === type && artifact.content.trim())
-  const complete = [
-    Boolean(detail.brief?.trim()),
-    Boolean(detail.script?.outline?.trim() || hasArtifact('outline')),
-    Boolean(detail.script?.characters?.trim() || hasArtifact('characters') || hasArtifact('relationships')),
-    Boolean(detail.script?.scenes?.length || hasArtifact('locations') || hasArtifact('structure')),
-    Boolean(hasArtifact('props')),
-    Boolean(detail.script?.scenes?.length || hasArtifact('episode_script')),
-  ]
-  const firstOpen = complete.findIndex((value) => !value)
-  return firstOpen === -1 ? complete.length - 1 : firstOpen
 }
 
 const directorStoryStructures = [
@@ -750,11 +737,8 @@ function readQuestionState(projectId: string): { answers: Record<string, ChoiceA
     const saved = JSON.parse(window.localStorage.getItem(`script-director-questions:${projectId}`) || '{}')
     const answers: Record<string, ChoiceAnswer> = {}
     for (const [id, value] of Object.entries(saved.answers || {}).slice(-160)) {
-      if (!value || typeof value !== 'object') continue
-      const answer = value as ChoiceAnswer
-      if (typeof answer.custom !== 'boolean' || typeof answer.text !== 'string') continue
-      answers[id] = { custom: answer.custom, text: answer.text.slice(0, 4000), ...(answer.status === 'answered' || answer.status === 'skipped' ? { status: answer.status } : {}), ...(typeof answer.selectedId === 'string' ? { selectedId: answer.selectedId } : {}),
-        ...(answer.fields && typeof answer.fields === 'object' && !Array.isArray(answer.fields) ? { fields: Object.fromEntries(Object.entries(answer.fields).filter(([, value]) => typeof value === 'string').slice(0, 4).map(([key, value]) => [key.slice(0, 80), value.slice(0, 1600)])) } : {}) }
+      const answer = restoreChoiceAnswer(value)
+      if (answer) answers[id] = answer
     }
     const dismissed = Object.fromEntries(Object.entries(saved.dismissed || {}).filter(([, value]) => value === true).slice(-160)) as Record<string, boolean>
     return { answers, dismissed, retryId: typeof saved.retryId === 'string' ? saved.retryId : null }
@@ -822,8 +806,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const [previewOpen, setPreviewOpen] = useState(() => Boolean(restoreWorkflowDraft(detail.id)))
   const [artifactsOpen, setArtifactsOpen] = useState(false)
   const [scriptSaved, setScriptSaved] = useState(false)
-  const [workflowStage, setWorkflowStage] = useState<WorkflowStage>(() => generated?.workflow?.stage || workflowStages[Math.max(0, stageIndex(detail, null, false) - 1)]!)
-  const [episodeNumber, setEpisodeNumber] = useState(() => (generated?.workflow?.stage === 'episode' ? generated.workflow.episode_number : undefined) || Math.min(options.episode_count || 200, Math.max(0, ...(detail.script.artifacts || []).map(item => item.artifact_type === 'episode_script' ? item.episode_number || 0 : 0)) + 1))
+  const [workflowStage, setWorkflowStage] = useState<WorkflowStage>(() => generated?.workflow?.stage || workflowProgress(detail.script).next_stage || 'episode')
+  const [episodeNumber, setEpisodeNumber] = useState(() => (generated?.workflow?.stage === 'episode' ? generated.workflow.episode_number : undefined) || workflowProgress(detail.script).next_episode || 1)
   const [episodeDuration, setEpisodeDuration] = useState<number | undefined>(() => (generated?.workflow?.stage === 'episode' ? generated.workflow.target_duration : undefined) || options.episode_duration)
   const [assetTaskStatus, setAssetTaskStatus] = useState<AssetTaskStatus>(focusArtifact === 'all' ? 'idle' : 'analyzing')
   const [assetPrompt, setAssetPrompt] = useState('')
@@ -904,17 +888,21 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     }
     return [...cards.values()]
   }, [detail.script.artifacts, generated, generatedStructure, scriptSaved])
-  const quickReplies = useMemo<Array<{ label: string; action: 'save' | 'workflow' | 'chat' }>>(() => {
+  const progress = workflowProgress(detail.script)
+  const quickReplies = useMemo<Array<{ label: string; action: 'save' | 'workflow' | 'chat'; stage?: WorkflowStage; episode?: number }>>(() => {
     if (busy || activeFocus !== 'all') return []
     if (generated && !scriptSaved) return [{ label: '确认写入项目剧本', action: 'save' }]
-    if (workflowStage === 'outline') return []
-    return [{ label: workflowStage === 'episode' ? `开始写第 ${episodeNumber} 集` : `生成${workflowLabels[workflowStage]}`, action: 'workflow' },
-      ...(workflowStage === 'episode' ? [{ label: '补充全剧人物关系', action: 'chat' as const }] : [])]
-  }, [busy, generated, scriptSaved, workflowStage, episodeNumber, activeFocus])
+    const next = workflowProgress(detail.script)
+    if (!next.next_stage || next.next_stage === 'outline') return []
+    return [{ label: next.next_stage === 'episode' ? `开始写第 ${next.next_episode} 集` : `生成${workflowLabels[next.next_stage]}`, action: 'workflow', stage: next.next_stage, episode: next.next_episode || undefined }]
+  }, [busy, generated, scriptSaved, detail.script, activeFocus])
   const hasSavedOutline = Boolean(detail.script.outline.trim() || detail.script.artifacts?.some(artifact => artifact.artifact_type === 'outline' && artifact.content.trim() && artifact.status !== 'draft'))
-  const activeChoice = useMemo(() => activeReplyChoice(messages, choiceDismissed, answeringChoiceId), [answeringChoiceId, choiceDismissed, messages])
-  const preparationAction = episodePreparationAction(messages)
-  const canStartPreparedEpisode = activeFocus === 'all' && !activeChoice && !busy && !(generated && !scriptSaved) && preparationAction
+  const stageContext = directorStageContext(detail.script, { pending: generated && !scriptSaved ? generated.workflow : undefined,
+    previous: [...messages].reverse().find(message => message.role === 'assistant')?.stage_context })
+  const activeChoice = activeReplyChoice(messages, choiceDismissed, answeringChoiceId, activeFocus === 'all' ? stageContext : undefined)
+  const workflowAction = activeFocus === 'all' ? replyWorkflowAction(messages, stageContext) : null
+  const preparationAction = episodePreparationAction(messages, stageContext)
+  const canStartPreparedEpisode = activeFocus === 'all' && !activeChoice && !busy && !(generated && !scriptSaved) && preparationAction && stageContext.mode !== 'review' && stageContext.stage === 'episode' && preparationAction.episode_number === stageContext.episode_number
   const primaryArtifact = artifactCards.find(artifact => artifact.artifact_type === 'episode_script' && artifact.episode_number === handoffEpisode)
     || [...artifactCards].reverse().find(artifact => artifact.artifact_type === 'episode_script') || artifactCards.at(-1)
   const primaryArtifactScenes = detail.script.scenes.filter(scene => scene.episode_number === primaryArtifact?.episode_number)
@@ -1131,12 +1119,12 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     if (running) {
       const unchanged = running.scope === scope && running.batch.every(source => {
         const index = messages.findIndex(message => message.id === source.id && message.text === source.text)
-        return index >= 0 && JSON.stringify(followingMessages(messages, index)) === JSON.stringify(source.following_messages)
+        return index >= 0 && JSON.stringify(followingMessages(messages, index)) === JSON.stringify(source.following_messages) && JSON.stringify(messages[index].stage_context) === JSON.stringify(source.stage_context)
       })
       if (unchanged && !forceClassificationId) return
       cancelClassification()
     }
-    const batch = classificationBatch(messages, classificationAttempts.current, forceClassificationId)
+    const batch = classificationBatch(messages, classificationAttempts.current, forceClassificationId, true)
     if (!batch.length) return
     const force = batch.length === 1 && batch[0].id === forceClassificationId
     if (force) setForceClassificationId(null)
@@ -1145,13 +1133,13 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     classificationRequest.current = request
     setClassificationPending(Object.fromEntries(batch.map(source => [source.id, classificationKey(source)])))
     setClassificationErrors(current => Object.fromEntries(Object.entries(current).filter(([id]) => !batch.some(source => source.id === id))))
-    void api<{ classification_version: number; messages: Array<{ id: string; classification: ReplyClassification }> }>(`/projects/${detail.id}/script/replies/classify`, { ...json('POST', { model_id: modelId, messages: batch, ...(force ? { force: true } : {}) }), signal: request.controller.signal })
+    void api<{ classification_version: number; messages: Array<{ id: string; classification: ReplyClassification }> }>(`/projects/${detail.id}/script/replies/classify`, { ...json('POST', { model_id: modelId, stage_controlled: true, messages: batch, ...(force ? { force: true } : {}) }), signal: request.controller.signal })
       .then(result => {
         if (classificationRequest.current !== request) return
         setMessages(current => current.map((message, index) => {
           const source = batch.find(item => item.id === message.id)
           const resultItem = result.messages.find(item => item.id === message.id)
-          return source && message.text === source.text && JSON.stringify(followingMessages(current, index)) === JSON.stringify(source.following_messages) && resultItem ? { ...message, classification: resultItem.classification, classification_version: result.classification_version, classification_context: JSON.stringify(source.following_messages) } : message
+          return source && message.text === source.text && JSON.stringify(followingMessages(current, index)) === JSON.stringify(source.following_messages) && JSON.stringify(message.stage_context) === JSON.stringify(source.stage_context) && resultItem ? { ...message, classification: resultItem.classification, classification_version: result.classification_version, classification_context: JSON.stringify(source.following_messages) } : message
         }))
       })
       .catch(() => {
@@ -1188,7 +1176,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
           await api<PersistedConversation>(`/projects/${detail.id}/script/conversations`, json('PUT', {
             id: conversation.id,
             label: conversation.label,
-            messages: conversation.messages.filter((message) => !message.pending).slice(-80).map(({ id, role, text, reference_documents, processing_duration_ms }) => ({ id, role, text, ...(reference_documents?.length ? { reference_documents } : {}), ...(processing_duration_ms != null ? { processing_duration_ms } : {}) })),
+            messages: conversation.messages.filter((message) => !message.pending).slice(-80).map(({ id, role, text, reference_documents, processing_duration_ms, stage_context }) => ({ id, role, text, ...(stage_context ? { stage_context } : {}), ...(reference_documents?.length ? { reference_documents } : {}), ...(processing_duration_ms != null ? { processing_duration_ms } : {}) })),
           })).catch(() => null)
         }
       })()
@@ -1398,6 +1386,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
 
     const applyEvent = (event: StreamEvent) => {
       const kind = String(event.type || '').toLowerCase()
+      if (event.stage_context) setMessages(current => current.map(message => message.id === pendingId ? { ...message, stage_context: event.stage_context } : message))
       if (kind === 'intent') {
         documentWorkflow = Boolean(event.workflow)
         if (event.generation_options) setOptions(event.generation_options)
@@ -1609,10 +1598,11 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     setArtifactsOpen(false)
   }
 
-  function generateWorkflow(stage: WorkflowStage = workflowStage, label?: string) {
+  function generateWorkflow(stage: WorkflowStage = workflowStage, label?: string, targetEpisode = episodeNumber) {
     if (busy || generated && !scriptSaved) return
     setWorkflowStage(stage)
-    const request = workflowRequestForStage(stage, episodeNumber, episodeDuration)
+    if (stage === 'episode') setEpisodeNumber(targetEpisode)
+    const request = workflowRequestForStage(stage, targetEpisode, episodeDuration)
     const instruction = workflowInstruction(request, label)
     const message = input.trim() ? `${input.trim()}\n\n${instruction}` : instruction
     void sendChatMessage(message, false, request)
@@ -1627,7 +1617,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
 
   async function answerQuestion(messageId: string, question: string, answer: string) {
     setAnsweringChoiceId(messageId)
-    const reply = await sendChatMessage(`关于“${question}”，我的回答是：${answer}`, false, undefined, true)
+    const reply = await sendChatMessage(`关于“${question}”，我的回答是：${answer}`, false, undefined, true, undefined, undefined,
+      { status: 'answered', question })
     if (reply !== null) {
       setChoiceAnswers(current => ({ ...current, [messageId]: { ...current[messageId], custom: current[messageId]?.custom || false, text: current[messageId]?.text || '', status: 'answered' } }))
       setChoiceDismissed(current => ({ ...current, [messageId]: true }))
@@ -1706,7 +1697,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         ...(workflow ? { workflow } : {}),
         ...(adoptSource ? { adopt_source: adoptSource } : {}),
         ...(userMessage.question_response ? { question_response: userMessage.question_response } : {}),
-        intent_context: { ...(workflow && workflow.stage !== 'episode' ? {} : { selected_episode: workflow?.episode_number || episodeNumber }), ...(generated && !scriptSaved ? { pending_draft: generated.workflow || workflowRequestForStage('episode', episodeNumber) } : {}) },
+        intent_context: { ...(stageContext.mode === 'explicit' ? { discussion: stageContext } : {}), ...(workflow && workflow.stage !== 'episode' ? {} : { selected_episode: workflow?.episode_number || episodeNumber }), ...(generated && !scriptSaved ? { pending_draft: generated.workflow || workflowRequestForStage('episode', episodeNumber) } : {}) },
         messages: conversation,
       }
       let reply: string
@@ -1714,8 +1705,9 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         reply = await streamDirectorChat(pendingId, requestBody, controller.signal)
       } catch (issue) {
         if (!(issue instanceof StreamUnavailableError)) throw issue
-        const result = await api<{ reply: string; draft?: WorkflowDraft; generation_options?: ScriptGenerationOptions }>(`/projects/${detail.id}/script/director/chat`, { ...json('POST', requestBody), signal: controller.signal })
+        const result = await api<{ reply: string; draft?: WorkflowDraft; generation_options?: ScriptGenerationOptions; stage_context?: DirectorStageContext }>(`/projects/${detail.id}/script/director/chat`, { ...json('POST', requestBody), signal: controller.signal })
         reply = result.reply
+        if (result.stage_context) setMessages(current => current.map(message => message.id === pendingId ? { ...message, stage_context: result.stage_context } : message))
         if (result.generation_options) setOptions(result.generation_options)
         if (result.generation_options?.episode_duration) setEpisodeDuration(result.generation_options.episode_duration)
         if (result.draft) {
@@ -1773,7 +1765,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     return <div className="sd-reply-actions" aria-label="回复操作">
       <button type="button" disabled={busy || Boolean(classificationPending[message.id]) || closing || !selectedModel || Boolean(generated && !scriptSaved)} onClick={() => void regenerateReply(message)}
         title={generated && !scriptSaved ? '请先保存或放弃当前草稿' : '沿用原问题和引用资料重新回答；原版本保留在历史对话'}><RotateCcw size={13} />{message.failed ? '重试生成' : '重新生成'}</button>
-      {activeFocus === 'all' && !message.failed && !parseMessageChoices(message.text) && <button type="button" disabled={busy || Boolean(classificationPending[message.id]) || closing || !selectedModel} onClick={() => reclassifyReply(message)} title="保留回复内容，仅让模型重新判断选择、填写问题和分集入口">重新识别选项</button>}
+      {activeFocus === 'all' && !message.failed && <button type="button" disabled={busy || Boolean(classificationPending[message.id]) || closing || !selectedModel} onClick={() => reclassifyReply(message)} title="保留回复内容，仅让模型重新判断选择、填写问题和分集入口">重新识别选项</button>}
     </div>
   }
 
@@ -1788,7 +1780,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
 
   function replyRecognition(message: Message) {
     if (activeFocus !== 'all' || busy) return null
-    const state = replyRecognitionState(messages, message.id, classificationPending, classificationErrors)
+    const state = replyRecognitionState(messages, message.id, classificationPending, classificationErrors, true)
     if (!state) return null
     return <div className="sd-reply-classification-status" role="status">
       {state === 'processing' ? <><LoaderCircle size={12} className="script-director-spinner" aria-hidden="true" />正在整理可操作项…</>
@@ -1886,9 +1878,9 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     streamAbortController.current?.abort()
   }
 
-  function handleQuickReply(reply: { label: string; action: 'save' | 'workflow' | 'chat' }) {
+  function handleQuickReply(reply: { label: string; action: 'save' | 'workflow' | 'chat'; stage?: WorkflowStage; episode?: number }) {
     if (reply.action === 'save') { void saveGenerated(); return }
-    if (reply.action === 'workflow') { generateWorkflow(); return }
+    if (reply.action === 'workflow') { generateWorkflow(reply.stage, undefined, reply.episode); return }
     void sendChatMessage(reply.label)
   }
 
@@ -1980,7 +1972,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     setError(null)
     try {
       if (generated.workflow) {
-        await api<ProjectDetail['script']>(`/projects/${detail.id}/script/director/draft`, json('PUT', {
+        const saved = await api<ProjectDetail['script']>(`/projects/${detail.id}/script/director/draft`, json('PUT', {
           ...generated.workflow,
           ...(!detail.brief.trim() && brief ? { brief } : {}),
           generation_options: options,
@@ -1990,13 +1982,14 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         const completed = generated.workflow.stage
         setPreviewOpen(false)
         setScriptSaved(true)
-        const nextStage = workflowStages[Math.min(workflowStages.indexOf(completed) + 1, workflowStages.length - 1)]!
-        setWorkflowStage(nextStage)
+        const next = workflowProgress(saved)
+        setWorkflowStage(next.next_stage || 'episode')
+        if (next.next_episode) setEpisodeNumber(next.next_episode)
         if (completed === 'episode') {
           setHandoffEpisode(generated.workflow.episode_number)
-          setEpisodeNumber(Math.min(options.episode_count || 200, generated.workflow.episode_number + 1))
         }
-        appendMessage('assistant', `${completed === 'episode' ? `第 ${generated.workflow.episode_number} 集` : workflowLabels[completed]}已保存。${completed === 'episode' ? '可以继续下一集，或将场次加入故事板。' : `接下来可生成${workflowLabels[nextStage]}。`}`)
+        const suggestion = next.next_stage ? `按已保存成果，建议接下来${next.next_stage === 'episode' ? `写第 ${next.next_episode} 集正文` : `补充${workflowLabels[next.next_stage]}`}。` : '全剧资料与已设定集数的正文已齐备，可以核对连续性或制作分镜。'
+        appendMessage('assistant', `${completed === 'episode' ? `第 ${generated.workflow.episode_number} 集` : workflowLabels[completed]}已保存。${suggestion}${completed === 'outline' && next.completed.characters ? '已有全剧人物设定会继续复用；如主线变化影响人物，只需针对相关部分更新。' : ''}`)
         await onRefresh().catch(() => onNotice('草稿已保存，项目刷新失败，请稍后重试'))
         onNotice('当前阶段已保存')
         return
@@ -2118,7 +2111,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       try {
         for (const conversation of snapshots) await api(`/projects/${detail.id}/script/conversations`, json('PUT', {
           id: conversation.id, label: conversation.label,
-          messages: conversation.messages.filter(message => !message.pending).slice(-80).map(({ id, role, text, reference_documents, processing_duration_ms }) => ({ id, role, text, ...(reference_documents?.length ? { reference_documents } : {}), ...(processing_duration_ms != null ? { processing_duration_ms } : {}) })),
+          messages: conversation.messages.filter(message => !message.pending).slice(-80).map(({ id, role, text, reference_documents, processing_duration_ms, stage_context }) => ({ id, role, text, ...(stage_context ? { stage_context } : {}), ...(reference_documents?.length ? { reference_documents } : {}), ...(processing_duration_ms != null ? { processing_duration_ms } : {}) })),
         }))
       } catch { onNotice('对话已缓存在本机，服务端保存失败，请稍后重试') }
     }
@@ -2196,7 +2189,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     />}
       {messages.map((message) => {
         const parsedChoices = replyChoices(message)
-        const semanticChoices = ['choice_request', 'input_request'].includes(message.classification?.type || '') && !parseMessageChoices(message.text)
+        const semanticChoices = contextualReplyTypes.includes(message.classification?.type || '') && !parseMessageChoices(message.text)
         const dismissed = Boolean(choiceDismissed[message.id])
         const storedAnswer = choiceAnswers[message.id]
         const answer = storedAnswer?.status === 'skipped' ? undefined : storedAnswer?.status === 'answered'
@@ -2204,17 +2197,20 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
           : undefined
         if (parsedChoices) return <div className="script-director-message assistant" key={message.id}>
           <div className="sd-choice-explanation">
-            {semanticChoices ? <DirectorMessageText text={message.text} /> : <>
+            {semanticChoices ? <DirectorMessageText text={replyDisplayText(message)} /> : <>
             {parsedChoices.intro && <DirectorMessageText text={parsedChoices.intro} />}
-            {parsedChoices.options.filter(option => option.kind !== 'custom').map(option => <div className="sd-choice-direction" key={option.label}>
+            {parsedChoices.confirmation && <DirectorMessageText text={parsedChoices.question} />}
+            {(parsedChoices.questions || [parsedChoices]).map((item, index) => <div key={index}>
+            {parsedChoices.questions && <DirectorMessageText text={item.question} />}
+            {!item.confirmation && item.options.filter(option => option.kind !== 'custom').map(option => <div className="sd-choice-direction" key={option.label}>
               {!option.text.replace(/[*#`]/g, '').startsWith(option.title.split(/[｜|]/)[0].trim()) && <strong>{option.title}</strong>}
               <DirectorMessageText text={option.text} />
-            </div>)}
+            </div>)}</div>)}
             {parsedChoices.trailing && <DirectorMessageText text={parsedChoices.trailing} />}
             </>}
           </div>
           {activeChoice?.messageId === message.id ? <span className="sd-question-status">请在下方回答</span>
-            : <details className="sd-answered-question"><summary>{storedAnswer?.status === 'skipped' ? '已跳过' : answer || (message.classification?.type === 'choice_request' || message.classification?.type === 'input_request') && message.classification.status === 'answered' ? '已回答' : dismissed ? '已结束' : '历史问题'}</summary><p>{parsedChoices.question}</p>{answer && <p>{answer}</p>}</details>}
+            : <details className="sd-answered-question"><summary>{storedAnswer?.status === 'skipped' ? '已跳过' : answer || message.classification && 'status' in message.classification && message.classification.status === 'answered' ? '已回答' : dismissed ? '已结束' : '历史问题'}</summary><p>{parsedChoices.question}</p>{answer && <p>{answer}</p>}</details>}
           <DirectorMessageTiming {...message} />
           {message.activity?.length ? <details className="sd-message-activity"><summary>创作依据</summary>{message.activity.map(event => <p key={event.id}>{event.summary}</p>)}</details> : null}
           {replyRecognition(message)}
@@ -2223,11 +2219,11 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         return <div className={`script-director-message ${message.role}`} key={message.id}>
           <DirectorReferences documents={readReferences(message.reference_documents)} onOpen={setReaderReference} />
           <div className={`script-director-bubble${message.pending ? ' is-pending' : ''}`}>
-            {message.pending ? <><LoaderCircle size={13} className="script-director-spinner" /><span>{message.text}</span></> : message.role === 'assistant' ? <DirectorMessageText text={message.text} /> : message.text}
+            {message.pending ? <><LoaderCircle size={13} className="script-director-spinner" /><span>{message.text}</span></> : message.role === 'assistant' ? <DirectorMessageText text={replyDisplayText(message)} /> : message.text}
           </div>
           {message.role === 'assistant' && <DirectorMessageTiming {...message} />}
           {message.activity?.length && !message.pending ? <details className="sd-message-activity"><summary>创作依据</summary>{message.activity.map(event => <p key={event.id}>{event.summary}</p>)}</details> : null}
-          {activeFocus === 'all' && canAdoptReply(message) && <div className="sd-message-adopt">
+          {activeFocus === 'all' && stageContext.stage === 'episode' && stageContext.mode !== 'review' && canAdoptReply(message) && <div className="sd-message-adopt">
             {adoptingMessageId === message.id ? <>
               <label>采用为第 <input type="number" min={1} max={200} value={episodeNumber} aria-label="采用为第几集" onChange={event => setEpisodeNumber(Math.max(1, Math.min(200, Number(event.currentTarget.value) || 1)))} /> 集</label>
               <button type="button" disabled={busy} onClick={() => void adoptMessage(message)}>整理为分集草稿</button>
@@ -2264,7 +2260,13 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       </section>}
     </section>}
 
-    {!activeChoice && !canStartPreparedEpisode && !!quickReplies.length && <div className="script-director-quick-replies" aria-label="快捷回复">
+    {!activeChoice && workflowAction && !busy && !(generated && !scriptSaved) && <div className="script-director-quick-replies" aria-label="当前阶段创作操作">
+      <button type="button" disabled={!selectedModel} onClick={() => generateWorkflow(workflowAction.stage,
+        `${workflowAction.purpose === 'revise' ? '更新' : '生成'}${workflowLabels[workflowAction.stage]}`, workflowAction.episode_number || episodeNumber)}>
+        <ChevronRight size={13} />{workflowAction.stage === 'episode' ? `开始写第 ${workflowAction.episode_number} 集` : `${workflowAction.purpose === 'revise' ? '更新' : '生成'}${workflowLabels[workflowAction.stage]}`}
+      </button>
+    </div>}
+    {!activeChoice && !canStartPreparedEpisode && !latestReplyNeedsRecognition(messages, true) && !workflowAction && !!quickReplies.length && <div className="script-director-quick-replies" aria-label="快捷回复">
       {quickReplies.map((reply) => <button type="button" key={reply.action} onClick={() => handleQuickReply(reply)} disabled={busy || (!selectedModel && reply.action !== 'save')}><ChevronRight size={13} />{reply.label}</button>)}
     </div>}
 
@@ -2281,9 +2283,10 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       <header><strong>分阶段生成</strong><button type="button" aria-label="关闭分阶段生成" onClick={() => setWorkflowOpen(false)}><X size={16} /></button></header>
       <div className="sd-utility-body">
         <p>{workflowStage === 'episode' ? `本次仅创作第 ${episodeNumber} 集正文，承接全剧资料，不修改其他集。` : '本次整理全剧资料，覆盖整个故事；不会生成下一集正文。'}生成后可编辑、确认保存。</p>
+        <p>推荐顺序：大纲 → 人物与关系 → 场景 → 道具 → 分集正文。{progress.next_stage ? `当前建议：${progress.next_stage === 'episode' ? `第 ${progress.next_episode} 集正文` : workflowLabels[progress.next_stage]}。` : '当前资料与正文已齐备。'}已有文档会复用，你也可以自行选择其他阶段。</p>
         {availableModels.length ? modelSelector : <button type="button" className="script-director-model-link" onClick={onOpenModels}>配置可用文本模型</button>}
         <Select label="创作阶段" aria-label="创作阶段" value={workflowStage} allowDeselect={false}
-          data={workflowStages.map(stage => ({ value: stage, label: workflowLabels[stage] }))}
+          data={workflowStages.map(stage => ({ value: stage, label: `${workflowLabels[stage]}${stage !== 'episode' && progress.completed[stage] ? ' · 已有' : ''}` }))}
           disabled={busy || Boolean(generated && !scriptSaved)} onChange={value => value && setWorkflowStage(value as WorkflowStage)} />
         {workflowStage === 'episode' && <div className="script-director-episode-fields">
           <label>第 <input type="number" min={1} max={200} value={episodeNumber} aria-label="生成第几集" disabled={busy} onChange={event => setEpisodeNumber(Math.max(1, Math.min(200, Number(event.currentTarget.value) || 1)))} /> 集</label>

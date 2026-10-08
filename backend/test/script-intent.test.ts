@@ -185,7 +185,7 @@ test('delegated decisions reach later outline and episode drafts through the int
 test('skip cannot be combined with document operations or visual-asset routing', async () => {
   const { model, project } = await fixture()
   const payload = { model_id: model.id, mode: 'script', question_response: { status: 'skipped', question: '选哪个方向？' }, messages: [{ role: 'user', text: '跳过' }] }
-  for (const extra of [{ workflow: { stage: 'episode', episode_number: 1 } }, { adopt_source: { text: '正文', episode_number: 1 } }, { focus_artifact: 'character' }, { question_response: { status: 'answered', question: '选哪个方向？' } }]) {
+  for (const extra of [{ workflow: { stage: 'episode', episode_number: 1 } }, { adopt_source: { text: '正文', episode_number: 1 } }, { focus_artifact: 'character' }, { question_response: { status: 'invalid', question: '选哪个方向？' } }]) {
     const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload: { ...payload, ...extra } })
     assert.equal(response.statusCode, 422, response.body)
   }
@@ -265,7 +265,7 @@ test('model intent routes colloquial requests, confirmed settings and selected e
     prompts.push(prompt)
     const content = prompt.includes('本次独立调用只理解创作者意图') ? {
       action: 'draft', operation: 'create', workflow: { stage: 'episode', episode_number: 1 },
-      creative_brief: '按已选封闭旅馆悬疑写第一集；保留完整故事。', settings_patch: { episode_count: 20, episode_duration: 300 },
+      authorization: 'explicit', creative_brief: '按已选封闭旅馆悬疑写第一集；保留完整故事。', settings_patch: { episode_count: 20, episode_duration: 300 },
     } : episode
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }), { headers: { 'Content-Type': 'application/json' } })
   }
@@ -354,6 +354,10 @@ test('adopting existing text preserves it verbatim and saves an editable episode
 
 test('stream routing announces document mode before chunks and returns a structured draft', async t => {
   const { model, project } = await fixture()
+  for (const stage of ['outline', 'characters', 'locations', 'props']) {
+    await call('PUT', `/api/projects/${project.id}/script/director/draft`, { stage, artifacts: [{ artifact_type: stage, title: stage, content: '已确认全剧资料' }] })
+  }
+  await call('PUT', `/api/projects/${project.id}/script/director/draft`, { stage: 'episode', episode_number: 1, ...episode })
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (_url, init) => {
     const prompt = JSON.parse(String(init?.body)).messages[0].content as string
@@ -380,7 +384,7 @@ test('natural-language adoption uses the model-selected assistant message and re
     const prompt = JSON.parse(String(init?.body)).messages[0].content as string
     const content = prompt.includes('本次独立调用只理解创作者意图') ? {
       action: 'draft', operation: 'adopt', workflow: { stage: 'episode', episode_number: 1 },
-      source_message_index: sourceIndex, creative_brief: '采用已写正文，保留原文。',
+      authorization: 'explicit', source_message_index: sourceIndex, creative_brief: '采用已写正文，保留原文。',
     } : episode
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }), { headers: { 'Content-Type': 'application/json' } })
   }
@@ -418,4 +422,56 @@ test('explicit workflow selections retain confirmed conversational context witho
   assert.equal(result.draft.episode_number, 1)
   assert.match(draftingPrompt, /只写雨夜车站/)
   assert.doesNotMatch(draftingPrompt, /未选方案是古代山寨/)
+})
+
+test('out-of-order saved characters survive outline creation and revision, and both models recommend the next missing stage', async t => {
+  const { project, model } = await fixture()
+  await call('PUT', `/api/projects/${project.id}/script/director/draft`, { stage: 'characters', artifacts: [{ artifact_type: 'characters', title: '已确认人物', content: '林：医生，寻找失踪的姐姐。' }] })
+  const before = (await call<{ script: { artifacts: Array<{ id: string; artifact_type: string; content: string }> } }>('GET', `/api/projects/${project.id}`)).script.artifacts[0]
+  for (const content of ['寻找姐姐的三幕故事', '修订故事大纲']) {
+    const saved = await call<{ characters: string; artifacts: Array<{ id: string; artifact_type: string; content: string }> }>('PUT', `/api/projects/${project.id}/script/director/draft`, { stage: 'outline', artifacts: [{ artifact_type: 'outline', title: '大纲', content }] })
+    assert.deepEqual(saved.artifacts.find(item => item.artifact_type === 'characters'), before)
+    assert.equal(saved.characters, before.content)
+  }
+  const originalFetch = globalThis.fetch
+  t.after(() => { globalThis.fetch = originalFetch })
+  let calls = 0
+  globalThis.fetch = async (_url, init) => {
+    calls++
+    const prompt = JSON.parse(String(init?.body)).messages[0].content as string
+    assert.match(prompt, /推荐下一步：全剧场景设计/)
+    assert.match(prompt, /已保存全剧资料：全剧故事大纲、全剧人物设定/)
+    assert.match(prompt, /大纲更新不自动使人物\/场景\/道具失效/)
+    const content = prompt.includes('本次独立调用只理解创作者意图') ? JSON.stringify({ action: 'discuss' }) : '建议补充场景设计，继续复用人物设定。'
+    return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { headers: { 'Content-Type': 'application/json' } })
+  }
+  await call('POST', `/api/projects/${project.id}/script/director/chat`, { model_id: model.id, mode: 'script', messages: [{ role: 'user', text: '下一步应该做什么？' }] })
+  assert.equal(calls, 2)
+})
+
+test('grouped answers honour explicit values and scoped delegation in both transports without generating documents', async t => {
+  const { project, model } = await fixture()
+  const originalFetch = globalThis.fetch
+  t.after(() => { globalThis.fetch = originalFetch })
+  let calls = 0
+  globalThis.fetch = async (_url, init) => {
+    calls++
+    const prompt = JSON.parse(String(init?.body)).messages[0].content as string
+    assert.doesNotMatch(prompt, /本次独立调用只理解创作者意图/)
+    assert.match(prompt, /逐项遵守明确选择与填写/)
+    assert.match(prompt, /不能委托其他事项/)
+    assert.match(prompt, /职业：医生/)
+    const content = '保留医生身份，顾问由我决定为律师。接下来讨论场景。'
+    return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { headers: { 'Content-Type': 'application/json' } })
+  }
+  const before = (await call<{ script: unknown }>('GET', `/api/projects/${project.id}`)).script
+  const payload = { model_id: model.id, mode: 'script', question_response: { status: 'answered', question: '人物与顾问' }, messages: [{ role: 'user', text: '职业：医生\n顾问交给模型决定，仅讨论不生成文档。' }] }
+  for (const suffix of ['', '/stream']) {
+    const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat${suffix}`, payload })
+    assert.equal(response.statusCode, 200, response.body)
+    assert.match(response.body, /保留医生身份/)
+    assert.deepEqual((await call<{ script: unknown }>('GET', `/api/projects/${project.id}`)).script, before)
+  }
+  assert.equal(calls, 2)
+  assert.equal((await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload: { ...payload, workflow: { stage: 'characters' } } })).statusCode, 422)
 })

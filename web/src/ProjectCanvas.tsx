@@ -33,6 +33,7 @@ import CanvasTextEditor, { CanvasTextPreview } from './CanvasTextEditor'
 import CanvasSelect from './CanvasSelect'
 import StoryboardWorkspace from './StoryboardWorkspace'
 import CanvasComposerToolbar from './CanvasComposerToolbar'
+import PromptSkillAction from './PromptSkillAction'
 import { useAppDialog } from './AppDialog'
 import { CanvasGenerationParameters, CanvasVideoModeMenu } from './CanvasGenerationControls'
 import type { JSONContent } from '@tiptap/core'
@@ -68,6 +69,7 @@ export type CanvasNode = {
   settings: {
     visual_profile_id?: string
     visual_profile_revision?: number
+    profile_prompt_override?: string
     visual_completed_job_id?: string
     visual_reference_mode?: VisualReferenceMode
     role?: 'script'
@@ -174,7 +176,7 @@ type GenerationRequest = {
 }
 type GenerationReview = {
   candidateCount: number
-  board?: { profile: VisualProfile; preview: VisualBoardPreview; input: ReturnType<typeof visualBoardReferences> & { prompt_append: string } }
+  board?: { profile: VisualProfile; preview: VisualBoardPreview; input: ReturnType<typeof visualBoardReferences> & { prompt_append: string; prompt_override?: string } }
   nodeId: string
   request: GenerationRequest
   shot: Pick<Shot, 'title'>
@@ -1520,7 +1522,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   }, promptImageMode) : composerModel?.modality === 'video' ? videoPreferencePrompt(compiledPrompt, selectedMode, composerDuration) : compiledPrompt
   const automaticPrompt = composerModel && composerModel.modality !== 'text'
     ? visualGenerationPrompt(preferencePrompt, promptBindings, preparedReferenceIds, visualReferenceMode) : preferencePrompt
-  const composerPrompt = selectedProfile ? selectedNode?.text || '' : selectedNode?.type === 'text' ? selectedNode.text
+  const composerPrompt = selectedProfile ? selectedNode?.settings.profile_prompt_override || selectedNode?.text || '' : selectedNode?.type === 'text' ? selectedNode.text
     : selectedNode?.settings.prompt_is_final ? rebasePromptDraft(selectedNode.settings.prompt_template || '', selectedNode.text, automaticPrompt) : automaticPrompt
   const missingShotCount = detail.shots.filter((shot) => !graph?.nodes.some((node) =>
     node.type === 'generation' && node.shot_id === shot.id)).length
@@ -2316,7 +2318,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       previewingRef.current = true; setBusy(true)
       try {
         const references = visualBoardReferences(queueRef.current!.graph, selectedNode.id, detail)
-        const input = { ...references, prompt_append: [...inputTexts, selectedNode.text.trim()].filter(Boolean).join('\n\n') }
+        const input = { ...references, prompt_append: [...inputTexts, selectedNode.text.trim()].filter(Boolean).join('\n\n'), prompt_override: selectedNode.settings.profile_prompt_override }
         const preview = await api<VisualBoardPreview>(`/visual-profiles/${selectedProfile.id}/board-preview`, json('POST', {
           ...input, model_id: model.id, expected_revision: selectedProfile.revision,
         }))
@@ -2929,6 +2931,16 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                     focusSidebarNode(referenceReturnNode.id); setReferenceReturnNodeId(null)
                   }}><ArrowLeft size={14} /><span>返回 {referenceReturnNode.title || '原节点'}</span></button>}
                   <button type="button" className="pc-composer-chip" onClick={() => showSidebarAssets(selectedProfile ? 'image' : 'all', selectedNode.id)}><Plus size={15} />参考</button>
+                  {(composerModality === 'image' || composerModality === 'video') && <PromptSkillAction key={selectedNode.id} projectId={detail.id} nodeId={selectedNode.id}
+                    modality={composerModality} prompt={selectedProfile ? selectedNode.settings.profile_prompt_override || [selectedProfile.board_prompt, ...inputTexts, selectedNode.text].filter(Boolean).join('\n\n') : composerPrompt}
+                    models={models.filter(model => model.modality === 'text' && model.enabled && providers.some(provider => provider.id === model.provider_id && provider.enabled && provider.adapter !== 'demo'))}
+                    disabled={busy || selectedNodeGenerating} targetModelId={composerModelId} shotId={selectedNode.shot_id} profileId={selectedProfile?.id}
+                    ratio={composerRatio} duration={composerDuration} mode={selectedMode} referenceAssetIds={preparedReferenceIds}
+                    onApply={value => {
+                      if (selectedProfile) updateNodeSettingsById(selectedNode.id, { profile_prompt_override: value })
+                      else editNodePrompt(selectedNode.id, value, { base: ownBasePrompt, template: automaticPrompt })
+                      setNotice('已应用整理后的提示词')
+                    }} />}
                   {!selectedProfile && selectedBoardAsset?.kind === 'image' && <button type="button" className="pc-composer-chip" aria-label="制作分镜视频" disabled={busy || selectedNodeGenerating}
                     onClick={() => void tryNodeAction(selectedNode.id, 'video-first-frame')}><Film size={15} /><span>制作分镜视频</span></button>}
                   {selectedProfile && <><button type="button" className="pc-composer-chip" onClick={() => { setComposerExpanded(false); setSidebarOpen(true); setSidebarTab('profiles'); setReferenceTargetNodeId(selectedNode.id) }}><ImageIcon size={15} />设定参考</button><Tooltip label="编辑设定"><button type="button" className="pc-composer-chip" aria-label="编辑设定" onClick={() => { setComposerExpanded(false); openProfileInspector(selectedProfile) }}><PenLine size={15} /></button></Tooltip></>}
@@ -2986,14 +2998,15 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                 {profileReferenceChanged && <p role="status">参考图已变化，可重新生成候选图</p>}
               </div>}
               {!selectedProfile && <div className="pc-prompt-kind-label">{composerModality === 'video' ? '视频提示词' : '图片提示词'}</div>}
-              <Textarea className="pc-prompt-composer-input" aria-label={selectedProfile ? '信息图补充要求' : '创作提示词'} autosize={!composerExpanded} minRows={selectedProfile ? 2 : 6} maxRows={10} maxLength={selectedProfile ? 10000 : 80000}
+              <Textarea className="pc-prompt-composer-input" aria-label={selectedProfile ? selectedNode.settings.profile_prompt_override ? '信息图提示词' : '信息图补充要求' : '创作提示词'} autosize={!composerExpanded} minRows={selectedProfile ? 2 : 6} maxRows={10} maxLength={selectedProfile ? selectedNode.settings.profile_prompt_override ? 16000 : 10000 : 80000}
                 disabled={busy}
                 data-autofocus={composerExpanded || undefined}
                 styles={{ input: { background: 'transparent', border: 0, boxShadow: 'none', minHeight: composerExpanded ? 240 : selectedProfile ? 64 : 160 } }}
                 placeholder={selectedProfile ? '本次补充要求（可选）' : composerModality === 'video' ? '描述画面、动作和运镜，可通过「参考」添加素材' : supportsImageReferences ? '描述画面，可通过「参考」添加图片进行编辑' : '描述主体、场景、光线与构图'}
                 value={composerPrompt} onChange={(event) => {
                   const value = event.currentTarget.value
-                  if (selectedNode?.type === 'generation') editNodePrompt(selectedNode.id, value, selectedProfile ? undefined : { base: ownBasePrompt, template: automaticPrompt })
+                  if (selectedProfile && selectedNode.settings.profile_prompt_override) updateNodeSettingsById(selectedNode.id, { profile_prompt_override: value.trim() ? value : undefined })
+                  else if (selectedNode?.type === 'generation') editNodePrompt(selectedNode.id, value, selectedProfile ? undefined : { base: ownBasePrompt, template: automaticPrompt })
                   else if (selectedNode?.type === 'text') updateNodeById(selectedNode.id, { text: value })
                   else if (selectedNode) editNodePrompt(selectedNode.id, value, { base: ownBasePrompt, template: automaticPrompt })
                 }} />

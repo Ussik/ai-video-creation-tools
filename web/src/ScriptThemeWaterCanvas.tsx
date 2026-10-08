@@ -45,15 +45,11 @@ float droplet(vec3 p, vec3 center, float r) {
   // Keep the motion phase independent of the animated lobe center. During a
   // split/merge the center moves rapidly; using it as a phase would make the
   // ellipse direction jump and create the violent shake seen in transition.
-  // Run the oval sway a little faster so the lobe feels alive without
-  // increasing the silhouette distortion or introducing noisy edge ripples.
-  float phase = u_time * 0.92;
+  float phase = u_time * 1.42;
   // Rotate the long axis in short, seeded direction segments. Each segment
   // chooses CCW or CW independently, while the angle returns through neutral
   // at the boundary so the water never snaps to a new pose.
-  // Direction changes remain eased through neutral; shortening the segment
-  // makes the requested motion quicker while avoiding a snap during fusion.
-  float turnLength = 2.8;
+  float turnLength = 1.9;
   float turnIndex = floor(u_time / turnLength);
   float turnT = (u_time - turnIndex * turnLength) / turnLength;
   float turnSeed = fract(sin(turnIndex * 127.1 + 19.7) * 43758.5453);
@@ -65,9 +61,7 @@ float droplet(vec3 p, vec3 center, float r) {
     local.x * axisC + local.y * axisS,
     -local.x * axisS + local.y * axisC
   );
-  // A slightly stronger oval pulse keeps the silhouette visibly elliptical
-  // while remaining smooth enough to read as a gentle liquid sway.
-  // The live range is approximately 4.5% to 5.7% (previously 3.5% to 4.5%).
+  // Keep the original gentle deformation at the faster motion frequency.
   float stretch = 0.045 + 0.012 * (0.5 + 0.5 * sin(phase * 1.55 + 0.65));
   ellipseSpace /= vec2(1.0 + stretch, 1.0 - stretch * 0.78);
   float body = length(vec3(ellipseSpace, local.z)) - r;
@@ -94,11 +88,11 @@ float surface(vec3 p) {
   float radial = min(radialA, radialB);
   float rippleMask = 1.0 - smoothstep(0.30, 0.84, radial);
   // Keep the ripples broad and low frequency so the edge reads as liquid
-  // movement instead of noisy blur.  The larger amplitude is deliberately
-  // applied to the signed distance field, which also moves the highlight.
+  // movement instead of noisy blur. The signed distance field also moves
+  // the highlight, at the original small ripple amplitude.
   float ripple = 0.0012 * rippleMask * (
-    sin(p.x * 7.0 + u_time * 0.36) * cos(p.y * 5.8 - u_time * 0.30)
-    + 0.28 * sin((p.x + p.y) * 11.0 - u_time * 0.22)
+    sin(p.x * 7.0 + u_time * 0.62) * cos(p.y * 5.8 - u_time * 0.52)
+    + 0.28 * sin((p.x + p.y) * 11.0 - u_time * 0.38)
   );
   return merged + ripple;
 }
@@ -184,8 +178,8 @@ void main() {
   float outline = surface(vec3(screen, 0.0));
   float aa = 0.8 / (u_sceneScale * u_dpr);
   float alpha = 1.0 - smoothstep(-aa, aa, outline);
-  vec3 tintA = coverEnvironment(u_primary);
-  vec3 tintB = fusion > 0.5 ? coverEnvironment(u_fusion) : tintA;
+  vec3 tintA = mix(vec3(0.32, 0.37, 0.40), coverEnvironment(u_primary), u_primaryHasPhoto);
+  vec3 tintB = fusion > 0.5 ? mix(vec3(0.32, 0.37, 0.40), coverEnvironment(u_fusion), u_fusionHasPhoto) : tintA;
   // Draw the ambient light outside the union, never through the join. Its
   // colour follows each cover rather than using a universal white glow.
   vec2 flatFields = fields(vec3(screen, 0.0));
@@ -193,7 +187,8 @@ void main() {
   float haloB = exp(-max(flatFields.y, 0.0) * 8.5) * split;
   float haloWeight = haloA + haloB;
   vec3 haloColor = (tintA * haloA + tintB * haloB) / max(haloWeight, 0.001);
-  float haloAlpha = min(0.15, haloWeight * 0.12) * (1.0 - alpha);
+  float photoHalo = (u_primaryHasPhoto * haloA + u_fusionHasPhoto * haloB) / max(haloWeight, 0.001);
+  float haloAlpha = min(0.15, haloWeight * 0.12) * (1.0 - alpha) * mix(0.38, 1.0, photoHalo);
   if (alpha < 0.001) {
     gl_FragColor = vec4(haloColor, haloAlpha);
     return;
@@ -211,9 +206,11 @@ void main() {
   float blend = fusion > 0.5 ? smoothstep(-cohesion, cohesion, d.y - d.x) : 0.0;
   vec3 primary = photograph(u_primary, hit, centerA, radius.x, normal);
   vec3 secondary = fusion > 0.5 ? photograph(u_fusion, hit, centerB, radius.y, normal) : primary;
-  vec3 photo = mix(secondary, primary, blend);
   float hasPhoto = mix(u_fusionHasPhoto, u_primaryHasPhoto, blend);
   if (fusion < 0.5) hasPhoto = u_primaryHasPhoto;
+  // Missing covers use a plain neutral base, with exactly the same liquid
+  // lighting and refraction below. Transparency is applied only at output.
+  vec3 photo = mix(vec3(0.12549, 0.13333, 0.14510), mix(secondary, primary, blend), hasPhoto);
   vec3 coverTint = mix(tintB, tintA, blend);
   vec3 tone = glassTone(coverTint);
   float facing = clamp(normal.z, 0.0, 1.0);
@@ -224,24 +221,25 @@ void main() {
   // Preserve the photograph's contrast. The shell gets darker at oblique
   // angles, with reflected softboxes replacing that light selectively.
   vec3 color = photo * (1.0 - 0.38 * pow(grazing, 0.65));
-  color = mix(color, max(reflected, color * 0.48), (0.045 + fresnel * 0.40) * mix(0.28, 1.0, hasPhoto));
-  color += reflected * (0.13 + fresnel * 0.20) * mix(0.20, 1.0, hasPhoto);
+  color = mix(color, max(reflected, color * 0.48), 0.045 + fresnel * 0.40);
+  color += reflected * (0.13 + fresnel * 0.20);
 
   float keySpot = pow(max(dot(normal, normalize(vec3(-0.50, -0.62, 0.70))), 0.0), 32.0);
-  color += vec3(0.95, 0.98, 1.0) * keySpot * 0.12 * mix(0.25, 1.0, hasPhoto);
+  color += vec3(0.95, 0.98, 1.0) * keySpot * 0.12;
   float caustic = pow(max(dot(normal, normalize(vec3(0.52, 0.72, 0.23))), 0.0), 11.5);
-  color += mix(vec3(0.80, 0.92, 1.0), tone, 0.55) * caustic * 0.34 * mix(0.18, 1.0, hasPhoto);
+  color += mix(vec3(0.80, 0.92, 1.0), tone, 0.55) * caustic * 0.34;
 
   // Use the union's contour, so the two inward rims cannot form a bright
   // circular seam at the fusion neck.
   float rim = exp(-abs(outline) * 118.0);
   float directionalRim = 0.18 + 0.82 * pow(max(dot(normal.xy, normalize(vec2(-0.70, -0.72))), 0.0), 2.0);
-  color += mix(vec3(0.83, 0.92, 1.0), tone, 0.26) * rim * directionalRim * mix(0.18, 0.50, hasPhoto);
+  color += mix(vec3(0.83, 0.92, 1.0), tone, 0.26) * rim * directionalRim * 0.50;
   float contact = fusion * (1.0 - smoothstep(0.0, 0.085, abs(d.x - d.y)));
   color += mix(vec3(0.82, 0.94, 1.0), tone, 0.35) * contact * 0.04;
   color = clamp(color, 0.0, 1.0);
-  float outputAlpha = alpha + haloAlpha;
-  gl_FragColor = vec4((color * alpha + haloColor * haloAlpha) / max(outputAlpha, 0.001), outputAlpha);
+  float materialAlpha = alpha * mix(0.38, 1.0, hasPhoto);
+  float outputAlpha = materialAlpha + haloAlpha;
+  gl_FragColor = vec4((color * materialAlpha + haloColor * haloAlpha) / max(outputAlpha, 0.001), outputAlpha);
 
 }
 `
@@ -258,15 +256,14 @@ function compileShader(gl: WebGLRenderingContext, kind: number, source: string):
   return shader
 }
 
-// Synchronous mist while the neutral SVG/cover loads, and on cover failure.
-// Never retain another genre's photo or show a flat blue metallic surface.
+// A neutral texture is present synchronously while covers load or fail.
+// Missing covers share the photo material's effects at lower opacity.
 function neutralTexture(gl: WebGLRenderingContext) {
   const size = 64
   const pixels = new Uint8Array(size * size * 4)
   for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
     const light = Math.exp(-((x - 21) ** 2 + (y - 18) ** 2) / 1100)
-    const mist = Math.sin(x * .12 + Math.sin(y * .09) * 2) * Math.cos(y * .11 + x * .025)
-    const value = 32 + light * 42 + mist * 12
+    const value = 30 + light * 36
     const offset = (y * size + x) * 4
     pixels.set([value, value + 6, value + 4, 255], offset)
   }
@@ -403,9 +400,14 @@ export function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, fusion
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
     const resize = () => {
       const rect = canvas.getBoundingClientRect()
-      sceneUnit = parseFloat(window.getComputedStyle(canvas).getPropertyValue('--water-unit')) || 100
+      const requestedUnit = parseFloat(window.getComputedStyle(canvas).getPropertyValue('--water-unit')) || 100
       cssWidth = Math.max(1, rect.width)
       cssHeight = Math.max(1, rect.height)
+      // Fit both lobes, including their strongest sway and soft halo. Keep
+      // this scale stable when adding/removing fusion, and share it with the
+      // DOM controls so their positions follow the actual rendered water.
+      sceneUnit = Math.max(0.1, Math.min(requestedUnit, (cssWidth - 16) / 4.4, (cssHeight - 16) / 2.9))
+      canvas.parentElement?.style.setProperty('--water-render-unit', `${sceneUnit}px`)
       devicePixelRatio = Math.min(2, window.devicePixelRatio || 1)
       const width = Math.max(1, Math.round(cssWidth * devicePixelRatio))
       const height = Math.max(1, Math.round(cssHeight * devicePixelRatio))

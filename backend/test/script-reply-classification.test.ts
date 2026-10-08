@@ -163,7 +163,8 @@ test('mixed open and bounded questions are sent to the model again after an old 
     assert.match(prompt, /不能继承上轮问题的 answered/)
     assert.match(prompt, /不排列原文没有给出的组合/)
     const sources = JSON.parse(prompt.split('待识别消息：\n')[1]!)
-    assert.deepEqual(sources, [source])
+    assert.deepEqual(sources.map(({ stage_context: _stage, ...item }: Record<string, unknown>) => item), [source])
+    assert.equal(sources[0].stage_context.stage, 'outline')
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ messages: [{ id: source.id, classification }] }) } }] }), { headers: { 'Content-Type': 'application/json' } })
   }
   const url = `/api/projects/${project.id}/script/replies/classify`
@@ -306,4 +307,76 @@ test('writer structured input requests preserve fields and surrounding prose thr
   }
   const result = await call<{ reply: string }>('POST', `/api/projects/${project.id}/script/director/chat`, { model_id: model.id, mode: 'script', messages: [{ role: 'user', text: '先讨论具体亲属身份' }] })
   assert.deepEqual(JSON.parse(result.reply), { ...form, intro: '说明\n\n请确定家族关系。', trailing: '确定后推进大纲。\n\n补充' })
+})
+
+test('implicit confirmation migrates v6 cache; long replies and full multi-item answers survive save, reload and next chat', async t => {
+  const { project, model } = await fixture()
+  const source = { id: 'long-confirm', text: '完整方案说明。\n'.repeat(1500) + '是否按这个三幕框架推进？', following_messages: [] }
+  const oldHash = createHash('sha256').update(JSON.stringify([6, source.text, null])).digest('hex')
+  db.prepare('INSERT INTO script_reply_classifications (project_id,message_id,text_hash,classification,model_id,created_at) VALUES (?,?,?,?,?,?)')
+    .run(project.id, source.id, oldHash, JSON.stringify({ type: 'other' }), model.id, new Date().toISOString())
+  let classifierCalls = 0
+  const originalFetch = globalThis.fetch
+  t.after(() => { globalThis.fetch = originalFetch })
+  globalThis.fetch = async (_url, init) => {
+    const prompt = JSON.parse(String(init?.body)).messages[0].content as string
+    let content: unknown
+    if (prompt.includes('待识别消息：\n')) {
+      classifierCalls++
+      const sources = JSON.parse(prompt.split('待识别消息：\n')[1])
+      assert.equal(sources[0].text, source.text)
+      const answered = !!sources[0].following_messages?.length
+      if (answered) assert.match(sources[0].following_messages[0].text, /最后一项：医生$/)
+      content = { messages: [{ id: source.id, classification: { type: 'confirmation_request', status: answered ? 'answered' : 'pending', question: '是否按三幕框架推进？' } }] }
+    } else if (prompt.includes('本次独立调用只理解创作者意图')) content = { action: 'discuss', settings_patch: {} }
+    else { assert.ok(prompt.includes(source.text)); content = '按已确认的框架继续讨论。' }
+    return new Response(JSON.stringify({ choices: [{ message: { content: typeof content === 'string' ? content : JSON.stringify(content) } }] }), { headers: { 'Content-Type': 'application/json' } })
+  }
+  const url = `/api/projects/${project.id}/script/replies/classify`
+  const payload = { model_id: model.id, messages: [source] }
+  await call('POST', url, payload)
+  await call('POST', url, payload)
+  assert.equal(classifierCalls, 1)
+  await call('PUT', `/api/projects/${project.id}/script/conversations`, { id: 'long-chat', messages: [{ id: source.id, role: 'assistant', text: source.text }] })
+  const loaded = await call<{ conversations: Array<{ messages: Array<{ text: string; classification: { type: string; status: string } }> }> }>('GET', `/api/projects/${project.id}/script/conversations`)
+  assert.equal(loaded.conversations[0].messages[0].classification.type, 'confirmation_request')
+  assert.equal(loaded.conversations[0].messages[0].text, source.text)
+  const answer = '同意三幕框架。\n'.repeat(4500) + '最后一项：医生'
+  assert.ok(answer.length > 32_000 && answer.length < 40_000)
+  await call('POST', url, { model_id: model.id, messages: [{ ...source, following_messages: [{ role: 'user', text: answer }] }] })
+  const messages = [{ id: source.id, role: 'assistant', text: source.text }, { id: 'answer', role: 'user', text: answer }]
+  await call('PUT', `/api/projects/${project.id}/script/conversations`, { id: 'long-chat', messages })
+  const updated = await call<typeof loaded>('GET', `/api/projects/${project.id}/script/conversations`)
+  assert.equal(updated.conversations[0].messages[0].classification.status, 'answered')
+  await call('POST', `/api/projects/${project.id}/script/director/chat`, { model_id: model.id, mode: 'script', messages: messages.map(({ role, text }) => ({ role, text })) })
+})
+
+test('mixed schemas retain each pending question and wrapped writer replies preserve proposal explanations', async t => {
+  const { project, model } = await fixture()
+  const questions = [
+    { id: 'framework', kind: 'confirmation', question: '接受三幕框架？' },
+    { id: 'identity', kind: 'input_request', question: '主角职业？', fields: [{ id: 'role', label: '职业' }] },
+    { id: 'advisors', kind: 'choices', question: '顾问如何保留？', options: [{ id: 'all', title: '全部', text: '全部保留' }, { id: 'few', title: '部分', text: '保留一到两人', requires_details: true }] },
+  ]
+  const classification = { type: 'question_set', status: 'pending', question: '框架、人物与顾问', questions }
+  assert.deepEqual(parseReplyClassifications(JSON.stringify({ messages: [{ id: 'mixed', classification }] }), ['mixed'])[0].classification, classification)
+  assert.throws(() => parseReplyClassifications(JSON.stringify({ messages: [{ id: 'mixed', classification: { ...classification, questions: [questions[0], questions[0]] } }] }), ['mixed']))
+  const originalFetch = globalThis.fetch
+  t.after(() => { globalThis.fetch = originalFetch })
+  let kind = 'question_set'
+  globalThis.fetch = async (_url, init) => {
+    const prompt = JSON.parse(String(init?.body)).messages[0].content as string
+    const intent = prompt.includes('本次独立调用只理解创作者意图')
+    const structured = { kind, question: '请确认创作方向', intro: '完整三幕说明', trailing: '下一步讨论人物', ...(kind === 'question_set' ? { questions } : {}) }
+    return new Response(JSON.stringify({ choices: [{ message: { content: intent ? JSON.stringify({ action: 'discuss' }) : `开头说明\n${JSON.stringify(structured)}\n结尾说明` } }] }), { headers: { 'Content-Type': 'application/json' } })
+  }
+  for (const current of ['question_set', 'confirmation']) {
+    kind = current
+    const result = await call<{ reply: string }>('POST', `/api/projects/${project.id}/script/director/chat`, { model_id: model.id, mode: 'script', messages: [{ role: 'user', text: '先讨论方案' }] })
+    const reply = JSON.parse(result.reply)
+    assert.equal(reply.kind, kind)
+    assert.equal(reply.intro, '开头说明\n\n完整三幕说明')
+    assert.equal(reply.trailing, '下一步讨论人物\n\n结尾说明')
+    if (kind === 'question_set') assert.deepEqual(reply.questions, questions)
+  }
 })

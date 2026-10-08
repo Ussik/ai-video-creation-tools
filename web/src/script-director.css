@@ -3846,10 +3846,10 @@
 .script-director-settings-modal .script-director-theme-water-canvas {
   position: absolute !important;
   z-index: 3 !important;
-  inset: -72px !important;
+  inset: 0 !important;
   display: block !important;
-  width: calc(100% + 144px) !important;
-  height: calc(100% + 144px) !important;
+  width: 100% !important;
+  height: 100% !important;
   max-width: none !important;
   pointer-events: none !important;
   background: transparent !important;
@@ -3915,18 +3915,18 @@
 .script-director-settings-modal .script-director-theme-orbit { --water-unit: 100px; }
 .script-director-settings-modal .script-director-theme-water-canvas { margin-left: 0 !important; }
 .script-director-settings-modal .script-director-theme-orbit > .script-director-theme-orb-wrap.is-primary {
-  width: calc(var(--water-unit) * 1.96666) !important;
-  height: calc(var(--water-unit) * 1.96666) !important;
+  width: calc(var(--water-render-unit, var(--water-unit)) * 1.96666) !important;
+  height: calc(var(--water-render-unit, var(--water-unit)) * 1.96666) !important;
   transform: translate(-50%, -50%) !important;
 }
 .script-director-settings-modal .script-director-theme-orbit.has-fusion > .script-director-theme-orb-wrap.is-primary {
-  transform: translate(calc(-50% - var(--water-unit) * .94), calc(-50% + var(--water-unit) * .19)) !important;
+  transform: translate(calc(-50% - var(--water-render-unit, var(--water-unit)) * .94), calc(-50% + var(--water-render-unit, var(--water-unit)) * .19)) !important;
 }
 .script-director-settings-modal .script-director-theme-orbit > .script-director-theme-fusion-wrap,
 .script-director-settings-modal .script-director-theme-orbit.has-fusion > .script-director-theme-fusion-wrap {
-  width: calc(var(--water-unit) * 1.96666) !important;
-  height: calc(var(--water-unit) * 1.96666) !important;
-  transform: translate(calc(-50% + var(--water-unit) * .94), calc(-50% - var(--water-unit) * .23)) !important;
+  width: calc(var(--water-render-unit, var(--water-unit)) * 1.96666) !important;
+  height: calc(var(--water-render-unit, var(--water-unit)) * 1.96666) !important;
+  transform: translate(calc(-50% + var(--water-render-unit, var(--water-unit)) * .94), calc(-50% - var(--water-render-unit, var(--water-unit)) * .23)) !important;
 }
 
 /* A dashed glass disk overlaps the lower-right portion of the single ball. */
@@ -3939,11 +3939,11 @@
   align-items: center;
   justify-content: center;
   gap: 5px !important;
-  width: calc(var(--water-unit) * 1.2) !important;
-  height: calc(var(--water-unit) * 1.2) !important;
+  width: calc(var(--water-render-unit, var(--water-unit)) * 1.2) !important;
+  height: calc(var(--water-render-unit, var(--water-unit)) * 1.2) !important;
   margin: 0 !important;
   padding: 0 !important;
-  transform: translate(calc(-50% + var(--water-unit) * 1.10), calc(-50% + var(--water-unit) * .47)) !important;
+  transform: translate(calc(-50% + var(--water-render-unit, var(--water-unit)) * 1.10), calc(-50% + var(--water-render-unit, var(--water-unit)) * .47)) !important;
   border: 1px dashed rgba(218, 227, 232, .52) !important;
   border-radius: 50% !important;
   background: rgba(61, 61, 63, .52) !important;
@@ -3972,7 +3972,7 @@
   box-shadow: inset 0 1px #ffffff16, 0 2px 10px #00000024 !important;
 }
 .script-director-settings-modal .script-director-theme-orbit > .script-director-theme-fusion-wrap > button {
-  top: calc(var(--water-unit) * .16) !important;
+  top: calc(var(--water-render-unit, var(--water-unit)) * .16) !important;
   right: 2px !important;
   left: auto !important;
   width: 24px !important;
@@ -4027,11 +4027,8 @@
   .script-director-settings-modal .script-director-theme-orbit > .script-director-theme-fusion-wrap > button { animation: none; }
 }
 
-/* The WebGL SDF is the single source of truth for the fusion neck.  Keep only
-   a very faint connector sheen; the old bridge glow sat over the SDF overlap
-   and read as a separate circular light ring in the middle of the pair. */
+/* The shader owns the fusion neck. A separate connector is visible through
+   the transparent water material and looks like a rectangular patch. */
 .script-director-settings-modal .script-director-theme-orbit.has-fusion > .script-director-theme-fusion-bridge {
-  opacity: .16 !important;
-  filter: blur(1px) !important;
-  box-shadow: none !important;
+  display: none !important;
 }

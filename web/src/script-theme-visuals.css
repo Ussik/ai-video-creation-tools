@@ -41,21 +41,30 @@
 }
 .script-director-theme-selection .script-director-theme-match-retry:hover { color: #ecf0ed; background: #ffffff08; }
 .script-director-theme-selection .script-director-theme-match-retry:focus-visible { outline: 1px solid #b3c1b9; outline-offset: 2px; }
-@media (max-width: 620px) {
-  .script-director-settings-modal .script-director-settings-theme-layout,
-  .script-director-settings-modal .script-director-theme-stage,
-  .script-director-settings-modal .script-director-theme-rail.is-infinite,
-  .script-director-settings-modal .script-director-theme-orbit { min-height: 230px !important; height: 230px !important; }
-}
-/* Reserve room for the current-topic caption without pushing the six
-   setting controls below the footer on a laptop-height viewport. */
+/* The complete water silhouette and its sway stay inside the scroll area.
+   The renderer fits smaller stages rather than drawing above the header. */
 .script-director-settings-modal .script-director-settings-theme-layout,
 .script-director-settings-modal .script-director-theme-stage,
 .script-director-settings-modal .script-director-theme-rail.is-infinite {
-  min-height: 236px !important;
-  height: 236px !important;
+  min-height: 280px !important;
+  height: 280px !important;
 }
 .script-director-settings-modal .script-director-theme-orbit {
-  min-height: 236px !important;
-  height: 236px !important;
+  min-height: 280px !important;
+  height: 280px !important;
+}
+@media (min-width: 901px) and (min-height: 761px) {
+  .script-director-settings-modal {
+    height: min(604px, calc(100dvh - 48px));
+    max-height: min(604px, calc(100dvh - 48px));
+  }
+}
+@media (max-height: 760px), (max-width: 900px) {
+  .script-director-settings-modal .script-director-settings-theme-layout,
+  .script-director-settings-modal .script-director-theme-stage,
+  .script-director-settings-modal .script-director-theme-rail.is-infinite,
+  .script-director-settings-modal .script-director-theme-orbit {
+    min-height: 240px !important;
+    height: 240px !important;
+  }
 }

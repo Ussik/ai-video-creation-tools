@@ -139,6 +139,7 @@
 .sd-question-panel { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; max-height: 60%; margin: 0 8px 8px; padding: 16px; border: 1px solid #3c3c3c; border-radius: 20px; background: #171717; color: #dedede; }
 .sd-question-panel > header { flex: none; padding-bottom: 12px; font-size: 14px; line-height: 1.6; }
 .sd-question-panel > header strong { font-weight: 600; }
+.sd-question-panel > header .sd-question-hint { display: block; margin-bottom: 4px; }
 .sd-question-options { display: grid; gap: 5px; min-height: 48px; overflow-y: auto; scrollbar-color: #484848 transparent; }
 .sd-question-options > button { display: flex; align-items: center; gap: 10px; flex: none; width: 100%; padding: 10px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: #cecece; text-align: left; font: inherit; font-size: 13px; line-height: 1.6; cursor: pointer; }
 .sd-question-options > button > span:nth-child(2) { flex: 1; min-width: 0; overflow-wrap: anywhere; }

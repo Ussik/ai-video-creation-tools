@@ -39,3 +39,21 @@ test('structured open questions retain original suggestions without fabricating 
     assert.equal(parseMessageChoices(JSON.stringify({ kind: 'input_request', question: '确定人物', fields: invalid })), null)
   }
 })
+
+
+test('confirmation retains complete proposal with fixed accept/adjust actions and mixed questions retain all items', () => {
+  const confirmation = { kind: 'confirmation', question: '是否按这个三幕框架推进？', intro: '第一幕失踪，第二幕追查，第三幕反转。', trailing: '接受后再讨论人物。' }
+  const parsed = parseMessageChoices(JSON.stringify(confirmation))!
+  assert.equal(parsed.confirmation, true)
+  assert.deepEqual(parsed.options.map(option => option.title), ['同意', '需要调整'])
+  assert.equal(parsed.intro, confirmation.intro)
+  assert.match(parsed.options[1].text, /不开始文档生成/)
+  const questions = [
+    { ...confirmation, id: 'framework' },
+    { id: 'identity', kind: 'input_request', question: '主角身份？', fields: [{ id: 'role', label: '职业' }] },
+  ]
+  assert.equal(parseMessageChoices(JSON.stringify({ kind: 'question_set', question: '确定框架与人物', questions }))!.questions!.length, 2)
+  for (const invalid of [[questions[0]], [questions[0], questions[0]], [...questions, { id: 'nested', kind: 'question_set', question: '嵌套', questions }]]) {
+    assert.equal(parseMessageChoices(JSON.stringify({ kind: 'question_set', question: '待确定事项', questions: invalid })), null)
+  }
+})

@@ -38,6 +38,7 @@ const boardInput = z.object({
   reference_signature: z.string().optional(),
   model_id: z.string().min(1).optional(),
   prompt_append: z.string().trim().max(10000).optional(),
+  prompt_override: z.string().trim().min(1).max(16000).optional(),
 }).strict()
 const labels: Record<VisualKind, string> = { character: '人物', location: '场景', prop: '道具' }
 
@@ -76,7 +77,7 @@ function prepareBoard(profile: VisualProfile, input: z.infer<typeof boardInput>)
     const reference = referenceProfiles[index]
     return reference ? `${reference.name} · ${reference.variant} · v${reference.revision}` : asset.filename
   })
-  const signature = createHash('sha256').update(JSON.stringify({ profile: [profile.id, profile.revision], references: referenceProfiles, ids, prompt_append: input.prompt_append || '' })).digest('hex')
+  const signature = createHash('sha256').update(JSON.stringify({ profile: [profile.id, profile.revision], references: referenceProfiles, ids, prompt_append: input.prompt_append || '', prompt_override: input.prompt_override || '' })).digest('hex')
   if (input.reference_signature && input.reference_signature !== signature) {
     throw Object.assign(new Error('参考设定或信息图已更新，请重新确认生成参数'), { statusCode: 409 })
   }
@@ -90,7 +91,7 @@ function prepareBoard(profile: VisualProfile, input: z.infer<typeof boardInput>)
     const reference = referenceProfiles[index]
     return `参考图 ${index + 1}：${names[index]}${reference ? `\n固定设定：${reference.definition}` : ''}`
   }).join('\n\n')
-  const prompt = boardPrompt(profile) + (input.prompt_append ? `\n\n本次补充要求：\n${input.prompt_append}` : '') + (context ? `\n\n【生成参考图】\n${context}\n` +
+  const prompt = (input.prompt_override || boardPrompt(profile)) + (!input.prompt_override && input.prompt_append ? `\n\n本次补充要求：\n${input.prompt_append}` : '') + (context ? `\n\n【生成参考图】\n${context}\n` +
     `参考图编号与提交图片顺序一致。严格保持各参考对象的外貌、比例、服装、材质与配色，不能互换或混合身份。` +
     `同一主体的参考图用于保持主体一致；其他对象仅用于上述设定要求的同框、互动或尺度对比细节，不增加独立主体视图，不复制参考信息图的版式、文字或色板。` : '')
   return { prompt, reference_asset_ids: ids, reference_names: names, reference_signature: signature, mode: ids.length ? 'reference' as const : 'text' as const }

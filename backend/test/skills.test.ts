@@ -1,0 +1,180 @@
+import assert from 'node:assert/strict'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { after, test } from 'node:test'
+import Fastify from 'fastify'
+
+const testData = await mkdtemp(join(tmpdir(), 'studio-skills-'))
+process.env.VIDEO_STUDIO_DATA_DIR = testData
+const { buildApp } = await import('../src/server.js')
+const { db, all, run } = await import('../src/db.js')
+const { registerSkillRoutes } = await import('../src/skill-routes.js')
+const { installedSkills, installedSkillDetail, installSkillBundle, configureSkill, normalizeSkillRepo, parseSkillDocument, loadSkillBundle, searchSkillCatalog, skillContext, withSkillRules } = await import('../src/skills.js')
+const app = buildApp(), remoteApp = Fastify()
+const revisionA = 'a'.repeat(40), revisionB = 'b'.repeat(40)
+let currentRevision = revisionA, capturedPrompt = '', generated = 0
+const repo = 'studio-fixture/creative-skills'
+const fixture: Record<string, string> = {
+  'skills/short-drama-image-prompts/SKILL.md': '---\nname: short-drama-image-prompts\ndescription: >-\n  图片与信息图提示词\n  保持人物一致\nlicense: MIT\n---\n# 图像规则\n固定人物身份，不改变比例。\n[人物](references/character-and-look.md) [场景](references/location-plate.md)\n[契约](references/stage-contract.md)',
+  'skills/short-drama-image-prompts/references/character-and-look.md': '# 人物\n每个视图保持同一张脸和服装。',
+  'skills/short-drama-image-prompts/references/location-plate.md': '# 场景\n门窗位置不能改变。',
+  'skills/short-drama-image-prompts/references/stage-contract.md': '# 阶段契约\n图片只展示一个时间点。',
+  'skills/short-drama-image-prompts/scripts/check.py': 'raise RuntimeError("must never execute")',
+  'skills/short-drama-write/SKILL.md': '---\nname: short-drama-write\ndescription: 编剧规则\n---\n# 编剧\n每段对白明确人物动机。',
+  'skills/short-drama-storyboard/SKILL.md': '---\nname: short-drama-storyboard\ndescription: 分镜规则\n---\n# 分镜\n每镜记录起点和终点。',
+  'odd/folder/SKILL.md': '---\nname: metadata-only-id\ndescription: 技能名称与目录不同\n---\n按主体细节写作。',
+}
+const requests: string[] = []
+const fetcher: typeof fetch = async input => {
+  const url = new URL(String(input)); requests.push(url.toString())
+  let result: unknown
+  if (url.host === 'skills.sh') result = { count: 3, skills: [
+    { name: 'short-drama-image-prompts', skillId: 'short-drama-image-prompts', source: repo, installs: 42 },
+    { name: 'invalid', skillId: '../escape', source: repo, installs: 1 },
+    { name: 'external', skillId: 'skill', source: 'skills.example.com/repo', installs: 1 },
+  ] }
+  else if (url.pathname === `/repos/${repo}`) result = { default_branch: 'creative', license: { spdx_id: 'MIT' } }
+  else if (url.pathname === `/repos/${repo}/commits/creative`) result = { sha: currentRevision }
+  else if (url.pathname === `/repos/${repo}/git/trees/${currentRevision}`) result = { tree: Object.entries(fixture).map(([path, body]) => ({ path, type: 'blob', size: Buffer.byteLength(body) })) }
+  else if (url.host === 'raw.githubusercontent.com') {
+    const prefix = `/${repo}/${currentRevision}/`
+    assert.ok(url.pathname.startsWith(prefix), `immutable revision: ${url}`)
+    const path = decodeURIComponent(url.pathname.slice(prefix.length))
+    assert.ok(fixture[path], `fixture path ${path}`)
+    return new Response(fixture[path], { status: 200 })
+  } else throw new Error(`Unexpected remote: ${url}`)
+  return new Response(JSON.stringify(result), { headers: { 'content-type': 'application/json' } })
+}
+remoteApp.setErrorHandler((issue, _request, reply) => reply.code((issue as { statusCode?: number }).statusCode || 422).send({ detail: issue instanceof Error ? issue.message : String(issue) }))
+registerSkillRoutes(remoteApp, { fetcher, generateText: async (_projectId, _modelId, prompt) => { capturedPrompt = prompt; generated++; return JSON.stringify({ prompt: '9:16 人物从开镜位置转身，镜头缓慢推近。' }) } })
+after(async () => { await remoteApp.close(); await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
+async function call<T>(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, payload?: unknown, target = remoteApp): Promise<T> {
+  const response = await target.inject({ method, url, ...(payload !== undefined ? { payload } : {}) })
+  assert.equal(response.statusCode, 200, response.body)
+  return response.json() as T
+}
+
+test('YAML metadata supports folded descriptions and rejects invalid documents and unsafe sources', () => {
+  assert.equal(normalizeSkillRepo('https://github.com/Studio-Fixture/Creative-Skills.git'), repo)
+  assert.match(parseSkillDocument(fixture['skills/short-drama-image-prompts/SKILL.md']!).description, /图片与信息图提示词 保持人物一致/)
+  for (const value of ['../repo', 'https://evil.example/repo', 'owner/repo/extra', 'owner/..']) assert.throws(() => normalizeSkillRepo(value))
+  for (const value of ['plain text', '---\nname: skill\n---\nBody', '---\nname: [x]\ndescription: desc\n---\nBody']) assert.throws(() => parseSkillDocument(value))
+})
+
+test('directory search filters invalid coordinates and retains install counts and source links', async () => {
+  const result = await searchSkillCatalog('fixture-images', 0, fetcher)
+  assert.equal(result.skills.length, 1)
+  assert.equal(result.skills[0]?.installs, 42)
+  assert.equal(result.skills[0]?.repo, repo)
+  assert.match(requests.at(-1)!, /q=fixture-images/)
+})
+
+test('installation resolves nested directories, pins source version, bundles references and never executes scripts', async () => {
+  const bundle = await loadSkillBundle(repo, 'short-drama-image-prompts', fetcher)
+  assert.equal(bundle.path, 'skills/short-drama-image-prompts')
+  assert.equal(bundle.revision, revisionA)
+  assert.equal(bundle.files.length, 4)
+  assert.match(bundle.tool_requirements.join(' '), /check.py/)
+  assert.ok(!bundle.files.some(file => file.path.endsWith('.py')))
+  const installed = await call<{ id: string; enabled: boolean; suggested_stages: string[] }>('POST', '/api/skills/install', { repo, path: 'short-drama-image-prompts' })
+  assert.equal(installed.enabled, false)
+  assert.deepEqual(installed.suggested_stages, ['image_prompt'])
+  const repeated = await call<{ id: string }>('POST', '/api/skills/install', { repo, path: 'skills/short-drama-image-prompts' })
+  assert.equal(repeated.id, installed.id)
+  assert.equal(installedSkills().length, 1)
+  const metadataPath = await loadSkillBundle(repo, 'metadata-only-id', fetcher)
+  assert.equal(metadataPath.path, 'odd/folder')
+  const rejected = await remoteApp.inject({ method: 'POST', url: '/api/skills/install', payload: { repo, path: '../escape' } })
+  assert.equal(rejected.statusCode, 422)
+})
+
+test('enabling is explicit, references depend on current subject, and disabling removes runtime rules', async () => {
+  const skill = installedSkills()[0]!
+  assert.equal(skillContext('image_prompt', '人物').text, '')
+  const empty = await remoteApp.inject({ method: 'PATCH', url: `/api/skills/${skill.id}`, payload: { enabled: true, stages: [] } })
+  assert.equal(empty.statusCode, 422)
+  await call('PATCH', `/api/skills/${skill.id}`, { enabled: true, stages: ['image_prompt'] })
+  const context = skillContext('image_prompt', '制作人物信息图')
+  assert.match(context.text, /同一张脸/)
+  assert.ok(!context.text.includes('门窗位置'))
+  assert.match(context.text, /本次要求的 JSON/)
+  assert.equal(skillContext('video_prompt', '人物').text, '')
+  await call('PATCH', `/api/skills/${skill.id}`, { enabled: false, stages: ['image_prompt'] })
+  assert.equal(withSkillRules('image_prompt', '本次任务'), '本次任务')
+  configureSkill(skill.id, true, ['image_prompt'])
+})
+
+test('enabled script and storyboard skills reach actual preview builders without replacing their schemas', async () => {
+  const scriptSkill = installSkillBundle(await loadSkillBundle(repo, 'short-drama-write', fetcher))
+  configureSkill(scriptSkill.id, true, ['script'])
+  const storyboard = installSkillBundle(await loadSkillBundle(repo, 'short-drama-storyboard', fetcher))
+  configureSkill(storyboard.id, true, ['storyboard'])
+  const project = await call<{ id: string }>('POST', '/api/projects', { name: '技能规则测试' }, app)
+  const script = await call<{ prompt: string }>('POST', `/api/projects/${project.id}/script/generate/prompt`, { idea: '雨夜车站' }, app)
+  assert.match(script.prompt, /每段对白明确人物动机/)
+  assert.match(script.prompt, /合法 JSON 对象/)
+  assert.ok(!script.prompt.includes('每镜记录起点和终点'))
+  const scene = await call<{ id: string }>('POST', `/api/projects/${project.id}/script/scenes`, { heading: '车站', action: '人物转身' }, app)
+  const planned = await call<{ prompt: string }>('POST', `/api/projects/${project.id}/script/plan-shots/prompt`, { scene_ids: [scene.id], shots_per_scene: 2 }, app)
+  assert.match(planned.prompt, /每镜记录起点和终点/)
+  assert.match(planned.prompt, /image_prompt/); assert.match(planned.prompt, /video_prompt/)
+  assert.ok(!planned.prompt.includes('每段对白明确人物动机'))
+})
+
+test('prompt refinement uses bound rules and frozen settings, returns draft without writing shots or nodes, and rejects foreign references', async () => {
+  const project = await call<{ id: string }>('POST', '/api/projects', { name: '人物板' }, app)
+  const input = { model_id: 'text-fixture', stage: 'image_prompt', prompt: '人物三视图，保持服装', ratio: '9:16', duration: 5, mode: 'text' }
+  const before = all('SELECT * FROM shots').length
+  const response = await call<{ prompt: string; skills: unknown[] }>('POST', `/api/projects/${project.id}/skills/refine-prompt`, input)
+  assert.match(capturedPrompt, /同一张脸/); assert.match(capturedPrompt, /9:16/)
+  assert.match(capturedPrompt, /不改变比例|不要改变比例/)
+  assert.equal(response.skills.length, 1)
+  assert.equal(all('SELECT * FROM shots').length, before)
+  assert.equal(all('SELECT * FROM jobs').length, 0)
+  assert.equal(all('SELECT * FROM canvas_nodes').length, 0)
+  const other = await call<{ id: string }>('POST', '/api/projects', { name: '其他项目' }, app)
+  run("INSERT INTO assets (id, project_id, kind, filename, path, source, created_at) VALUES ('foreign', ?, 'image', 'ref.png', '/tmp/ref.png', 'upload', '2026-10-08')", other.id)
+  const calls = generated
+  const foreign = await remoteApp.inject({ method: 'POST', url: `/api/projects/${project.id}/skills/refine-prompt`, payload: { ...input, reference_asset_ids: ['foreign'] } })
+  assert.equal(foreign.statusCode, 422); assert.equal(generated, calls)
+  const noBinding = await remoteApp.inject({ method: 'POST', url: `/api/projects/${project.id}/skills/refine-prompt`, payload: { ...input, stage: 'video_prompt' } })
+  assert.equal(noBinding.statusCode, 422); assert.equal(generated, calls)
+})
+
+test('a refined board override is identical in preview and task, and changing it invalidates the reference signature', async () => {
+  const project = await call<{ id: string }>('POST', '/api/projects', { name: '信息图提示词' }, app)
+  const scene = await call<{ id: string }>('POST', `/api/projects/${project.id}/script/scenes`, { heading: '车站' }, app)
+  const visuals = await call<{ visual_profiles: Array<{ id: string; revision: number }> }>('POST', `/api/projects/${project.id}/visual-profiles`, {
+    profiles: [{ kind: 'character', name: '阿宁', variant: '雨衣', definition: '深绿雨衣、短发', view_requirements: '正侧背与面部细节', scene_ids: [scene.id] }],
+  }, app)
+  const profile = visuals.visual_profiles[0]!
+  const provider = await call<{ id: string }>('POST', '/api/providers', { name: '图片测试', base_url: 'https://example.invalid', adapter: 'http' }, app)
+  const model = await call<{ id: string }>('POST', '/api/models', { provider_id: provider.id, name: '图片模型', remote_id: 'test-image', modality: 'image', protocol: 'image_generations',
+    settings: { request_path: '/images', request_template: { prompt: '{{prompt}}' }, image_base64_path: 'data.0.b64_json' } }, app)
+  const input = { model_id: model.id, expected_revision: profile.revision, prompt_override: '整理后的完整人物信息图：深绿雨衣，同一身份的正侧背视图。' }
+  const preview = await call<{ prompt: string; reference_signature: string }>('POST', `/api/visual-profiles/${profile.id}/board-preview`, input, app)
+  assert.equal(preview.prompt, input.prompt_override)
+  const task = await call<{ prompt: string }>('POST', `/api/visual-profiles/${profile.id}/board-task`, { ...input, reference_signature: preview.reference_signature }, app)
+  assert.equal(task.prompt, preview.prompt)
+  const changed = await app.inject({ method: 'POST', url: `/api/visual-profiles/${profile.id}/board-preview`, payload: { ...input, prompt_override: '已修改提示词', reference_signature: preview.reference_signature } })
+  assert.equal(changed.statusCode, 409)
+})
+
+test('updating pins the new revision while preserving enabled stage bindings; removing a repository retains installed skills', async () => {
+  const skill = installedSkills().find(item => item.name === 'short-drama-image-prompts')!
+  currentRevision = revisionB
+  fixture['skills/short-drama-image-prompts/references/character-and-look.md'] = '# 人物\n更新后的身份锁：眼睛与服装一致。'
+  const status = await call<{ available: boolean }>('GET', `/api/skills/${skill.id}/update`)
+  assert.equal(status.available, true)
+  await call('POST', `/api/skills/${skill.id}/update`, {})
+  const updated = installedSkillDetail(skill.id)
+  assert.equal(updated.revision, revisionB); assert.equal(updated.enabled, true); assert.deepEqual(updated.stages, ['image_prompt'])
+  assert.match(skillContext('image_prompt', '人物').text, /更新后的身份锁/)
+  await call('POST', '/api/skills/repositories', { repo })
+  await call('DELETE', `/api/skills/repositories?repo=${encodeURIComponent(repo)}`)
+  assert.equal(installedSkills().length, 3)
+  await call('DELETE', `/api/skills/${skill.id}`)
+  assert.equal(skillContext('image_prompt', '人物').text, '')
+  assert.equal(installedSkills().length, 2)
+})
