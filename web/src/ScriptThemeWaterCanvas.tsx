@@ -136,14 +136,31 @@ vec3 coverEnvironment(sampler2D photo) {
     + texture2D(photo, vec2(0.72, 0.72)).rgb * 0.15;
 }
 
+// Empty droplets use small highlights and thin refraction arcs on a clear body.
+vec4 waterSurface(vec3 normal, float outline) {
+  float grazing = 1.0 - clamp(normal.z, 0.0, 1.0);
+  float fresnel = 0.020 + 0.980 * pow(grazing, 5.0);
+  float glint = pow(max(dot(normal, normalize(vec3(-0.44, -0.55, 0.80))), 0.0), 160.0);
+  float crown = pow(max(dot(normal, normalize(vec3(0.15, -0.87, 0.48))), 0.0), 110.0) * 0.45;
+  float edgeLight = pow(max(dot(normal.xy, normalize(vec2(-0.70, -0.72))), 0.0), 3.0);
+  float rim = exp(-abs(outline) * 105.0) * (0.15 + edgeLight * 0.85);
+  float meniscus = exp(-pow((outline + 0.025) * 100.0, 2.0));
+  float caustic = pow(max(dot(normal, normalize(vec3(0.48, 0.78, 0.28))), 0.0), 32.0);
+  float lowerArc = exp(-pow((outline + 0.065) * 42.0, 2.0))
+    * pow(max(dot(normal.xy, normalize(vec2(0.55, 0.83))), 0.0), 5.0);
+  float reflection = clamp(glint + crown + rim * 0.75 + meniscus * caustic * 0.28 + lowerArc * 0.48, 0.0, 1.0);
+  vec3 color = mix(vec3(0.36, 0.48, 0.53), vec3(0.94, 0.98, 1.0), reflection);
+  float opacity = clamp(0.085 + fresnel * 0.30 + reflection * 0.70 + caustic * 0.12, 0.0, 0.90);
+  return vec4(color, opacity);
+}
+
 vec3 glassTone(vec3 tint) {
   float luma = max(dot(tint, vec3(0.30, 0.59, 0.11)), 0.08);
   return clamp(tint / luma, vec3(0.45), vec3(1.65));
 }
 
 vec3 studioReflection(vec3 direction, vec3 tint) {
-  // Three softboxes reflected in the curved surface, with a dark interval
-  // between the crown light and the diagonal lower-right fill.
+  // Restore the broader curved reflections for droplets with topic artwork.
   float c = cos(-0.15);
   float s = sin(-0.15);
   vec2 ray = vec2(direction.x * c - direction.y * s, -direction.x * s - direction.y * c);
@@ -157,6 +174,28 @@ vec3 studioReflection(vec3 direction, vec3 tint) {
   return mix(vec3(0.94, 0.97, 1.0), tone, 0.32) * strip * 1.48
     + mix(vec3(0.91, 0.95, 1.0), tone, 0.22) * top * 1.10
     + mix(vec3(0.72, 0.86, 0.96), tone, 0.42) * side * 1.24;
+}
+
+vec3 illustratedSurface(vec3 photo, vec3 normal, float outline, vec3 coverTint, float contact) {
+  vec3 tone = glassTone(coverTint);
+  float grazing = 1.0 - clamp(normal.z, 0.0, 1.0);
+  float fresnel = 0.025 + 0.975 * pow(grazing, 1.4);
+  vec3 reflected = studioReflection(reflect(vec3(0.0, 0.0, -1.0), normal), coverTint);
+  vec3 color = photo * (1.0 - 0.38 * pow(grazing, 0.65));
+  color = mix(color, max(reflected, color * 0.48), 0.045 + fresnel * 0.40);
+  color += reflected * (0.13 + fresnel * 0.20);
+
+  float keySpot = pow(max(dot(normal, normalize(vec3(-0.50, -0.62, 0.70))), 0.0), 32.0);
+  color += vec3(0.95, 0.98, 1.0) * keySpot * 0.12;
+  float caustic = pow(max(dot(normal, normalize(vec3(0.52, 0.72, 0.23))), 0.0), 11.5);
+  color += mix(vec3(0.80, 0.92, 1.0), tone, 0.55) * caustic * 0.34;
+
+  // Follow the union contour to avoid a bright circular seam at the join.
+  float rim = exp(-abs(outline) * 118.0);
+  float directionalRim = 0.18 + 0.82 * pow(max(dot(normal.xy, normalize(vec2(-0.70, -0.72))), 0.0), 2.0);
+  color += mix(vec3(0.83, 0.92, 1.0), tone, 0.26) * rim * directionalRim * 0.50;
+  color += mix(vec3(0.82, 0.94, 1.0), tone, 0.35) * contact * 0.04;
+  return clamp(color, 0.0, 1.0);
 }
 
 void main() {
@@ -188,7 +227,7 @@ void main() {
   float haloWeight = haloA + haloB;
   vec3 haloColor = (tintA * haloA + tintB * haloB) / max(haloWeight, 0.001);
   float photoHalo = (u_primaryHasPhoto * haloA + u_fusionHasPhoto * haloB) / max(haloWeight, 0.001);
-  float haloAlpha = min(0.15, haloWeight * 0.12) * (1.0 - alpha) * mix(0.38, 1.0, photoHalo);
+  float haloAlpha = mix(min(0.05, haloWeight * 0.025), min(0.15, haloWeight * 0.12), photoHalo) * (1.0 - alpha);
   if (alpha < 0.001) {
     gl_FragColor = vec4(haloColor, haloAlpha);
     return;
@@ -206,38 +245,24 @@ void main() {
   float blend = fusion > 0.5 ? smoothstep(-cohesion, cohesion, d.y - d.x) : 0.0;
   vec3 primary = photograph(u_primary, hit, centerA, radius.x, normal);
   vec3 secondary = fusion > 0.5 ? photograph(u_fusion, hit, centerB, radius.y, normal) : primary;
-  float hasPhoto = mix(u_fusionHasPhoto, u_primaryHasPhoto, blend);
-  if (fusion < 0.5) hasPhoto = u_primaryHasPhoto;
-  // Missing covers use a plain neutral base, with exactly the same liquid
-  // lighting and refraction below. Transparency is applied only at output.
-  vec3 photo = mix(vec3(0.12549, 0.13333, 0.14510), mix(secondary, primary, blend), hasPhoto);
-  vec3 coverTint = mix(tintB, tintA, blend);
-  vec3 tone = glassTone(coverTint);
-  float facing = clamp(normal.z, 0.0, 1.0);
-  float grazing = 1.0 - facing;
-  float fresnel = 0.025 + 0.975 * pow(grazing, 1.4);
-  vec3 reflected = studioReflection(reflect(vec3(0.0, 0.0, -1.0), normal), coverTint);
-
-  // Preserve the photograph's contrast. The shell gets darker at oblique
-  // angles, with reflected softboxes replacing that light selectively.
-  vec3 color = photo * (1.0 - 0.38 * pow(grazing, 0.65));
-  color = mix(color, max(reflected, color * 0.48), 0.045 + fresnel * 0.40);
-  color += reflected * (0.13 + fresnel * 0.20);
-
-  float keySpot = pow(max(dot(normal, normalize(vec3(-0.50, -0.62, 0.70))), 0.0), 32.0);
-  color += vec3(0.95, 0.98, 1.0) * keySpot * 0.12;
-  float caustic = pow(max(dot(normal, normalize(vec3(0.52, 0.72, 0.23))), 0.0), 11.5);
-  color += mix(vec3(0.80, 0.92, 1.0), tone, 0.55) * caustic * 0.34;
-
-  // Use the union's contour, so the two inward rims cannot form a bright
-  // circular seam at the fusion neck.
-  float rim = exp(-abs(outline) * 118.0);
-  float directionalRim = 0.18 + 0.82 * pow(max(dot(normal.xy, normalize(vec2(-0.70, -0.72))), 0.0), 2.0);
-  color += mix(vec3(0.83, 0.92, 1.0), tone, 0.26) * rim * directionalRim * 0.50;
-  float contact = fusion * (1.0 - smoothstep(0.0, 0.085, abs(d.x - d.y)));
-  color += mix(vec3(0.82, 0.94, 1.0), tone, 0.35) * contact * 0.04;
-  color = clamp(color, 0.0, 1.0);
-  float materialAlpha = alpha * mix(0.38, 1.0, hasPhoto);
+  float weightA = (fusion > 0.5 ? blend : 1.0) * u_primaryHasPhoto;
+  float weightB = (fusion > 0.5 ? 1.0 - blend : 0.0) * u_fusionHasPhoto;
+  float hasPhoto = weightA + weightB;
+  // Missing/failed covers contribute no illustration, including when only
+  // one of the two fused topics has a cover.
+  vec3 photo = (primary * weightA + secondary * weightB) / max(hasPhoto, 0.001);
+  vec4 water = waterSurface(normal, outline);
+  vec3 illustrated = vec3(0.0);
+  if (hasPhoto > 0.001) {
+    vec3 coverTint = mix(tintB, tintA, blend);
+    float contact = fusion * (1.0 - smoothstep(0.0, 0.085, abs(d.x - d.y)));
+    illustrated = illustratedSurface(photo, normal, outline, coverTint, contact);
+  }
+  // Blend the two materials with their opacity at the fusion neck. Each lobe
+  // keeps its own style when only one topic has an image.
+  float bodyOpacity = mix(water.a, 1.0, hasPhoto);
+  vec3 color = (water.rgb * water.a * (1.0 - hasPhoto) + illustrated * hasPhoto) / max(bodyOpacity, 0.001);
+  float materialAlpha = alpha * bodyOpacity;
   float outputAlpha = materialAlpha + haloAlpha;
   gl_FragColor = vec4((color * materialAlpha + haloColor * haloAlpha) / max(outputAlpha, 0.001), outputAlpha);
 
@@ -257,7 +282,7 @@ function compileShader(gl: WebGLRenderingContext, kind: number, source: string):
 }
 
 // A neutral texture is present synchronously while covers load or fail.
-// Missing covers share the photo material's effects at lower opacity.
+// Missing covers render as transparent droplets until artwork is ready.
 function neutralTexture(gl: WebGLRenderingContext) {
   const size = 64
   const pixels = new Uint8Array(size * size * 4)
