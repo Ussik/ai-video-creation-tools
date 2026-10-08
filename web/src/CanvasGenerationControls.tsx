@@ -1,5 +1,6 @@
 import { useEffect, useState, type CSSProperties, type SyntheticEvent } from 'react'
 import { Menu, NumberInput, Popover, Slider, Switch } from '@mantine/core'
+import { useClickOutside } from '@mantine/hooks'
 import { ArrowLeftRight, Check, ChevronDown, Film, Image, Images, Scan, SlidersHorizontal, SquarePen, Type, Volume2, VolumeX } from 'lucide-react'
 import { imageSizeChoices, selectImageSize } from './canvas-model-parameters'
 
@@ -126,6 +127,11 @@ export function CanvasGenerationParameters({ modality, ratios, ratio, resolution
   minDuration, maxDuration, durationOptions, showDuration, audioSupported, generateAudio, count,
   qualities = [], quality = '', backgrounds = [], background = '', onChange, onCountChange }: CanvasGenerationParametersProps) {
   const [opened, setOpened] = useState(false)
+  const [triggerNode, setTriggerNode] = useState<HTMLButtonElement | null>(null)
+  const [dropdownNode, setDropdownNode] = useState<HTMLDivElement | null>(null)
+  // Canvas controls stop event bubbling. Capture outside presses before those
+  // handlers, while treating the portal dropdown and trigger as one surface.
+  useClickOutside(() => setOpened(false), ['pointerdown'], [triggerNode, dropdownNode], opened, true)
   const min = Number.isFinite(minDuration) ? Math.max(1, Math.ceil(minDuration)) : 1
   const max = Number.isFinite(maxDuration) ? Math.max(min, Math.floor(maxDuration)) : min
   const options = [...new Set((durationOptions || []).filter(value => Number.isInteger(value) && value >= min && value <= max))].sort((a, b) => a - b)
@@ -159,14 +165,14 @@ export function CanvasGenerationParameters({ modality, ratios, ratio, resolution
     middlewares={floatingMiddlewares} zIndex={220} trapFocus returnFocus preventPositionChangeWhenVisible={false}
     classNames={{ dropdown: `pc-generation-parameters-popover${modality === 'image' ? ' pc-generation-image-parameters' : ''}` }}>
     <Popover.Target>
-      <button type="button" className="pc-generation-control pc-generation-parameters-trigger nodrag nowheel" data-canvas-overlay
+      <button ref={setTriggerNode} type="button" className="pc-generation-control pc-generation-parameters-trigger nodrag nowheel" data-canvas-overlay
         aria-label={`生成参数：${summary}${audioEnabled ? generateAudio ? '，声音开启' : '，声音关闭' : ''}`}
         aria-expanded={opened} aria-haspopup="dialog" {...overlayEvents} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') setOpened(false) }} onClick={event => { event.stopPropagation(); setOpened(value => !value) }}>
         <SlidersHorizontal size={15} /><span>{summary}</span>
         {audioEnabled && (generateAudio ? <Volume2 size={15} /> : <VolumeX size={15} />)}<ChevronDown size={13} />
       </button>
     </Popover.Target>
-    <Popover.Dropdown className="nodrag nowheel" data-canvas-overlay role="dialog" aria-label="生成参数" {...overlayEvents}
+    <Popover.Dropdown ref={setDropdownNode} className="nodrag nowheel" data-canvas-overlay role="dialog" aria-label="生成参数" {...overlayEvents}
       onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') setOpened(false) }}>
       {modality === 'video' && <div className="pc-generation-parameters-heading">生成参数</div>}
       {modality === 'image' && qualities.length > 0 && <section className="pc-generation-parameter-section">

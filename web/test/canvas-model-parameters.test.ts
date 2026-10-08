@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Model } from '../src/api'
-import { generationCost, imageParameterOptions, imageParameterValue, imagePreferencePrompt, imageRatioError, imageRatios, imageRequestResolution, imageSizeChoices, modelDefaultResolution, resolutionRatio, selectImageSize, usesModelParameter } from '../src/canvas-model-parameters'
+import { generationCost, imageGenerationDefaults, imageParameterOptions, imageParameterValue, imagePreferencePrompt, imageRatioError, imageRatios, imageRequestResolution, imageSizeChoices, modelDefaultResolution, resolutionRatio, selectImageSize, usesModelParameter } from '../src/canvas-model-parameters'
 
 const model = (settings: Model['settings'], modality: Model['modality'] = 'image') => ({ settings, modality } as Model)
 
@@ -11,13 +11,26 @@ test('size-only image templates expose creative preferences with usable defaults
   assert.deepEqual(imageParameterOptions(image, 'clarity'), ['1K', '2K', '4K'])
   assert.deepEqual(imageParameterOptions(image, 'background'), ['auto', 'preserve', 'transparent'])
   assert.equal(imageParameterValue(image, 'quality'), 'high')
-  assert.equal(imageParameterValue(image, 'clarity'), '1K')
+  assert.equal(imageParameterValue(image, 'clarity'), '2K')
   assert.equal(imageParameterValue(image, 'background'), 'auto')
   assert.deepEqual(imageParameterOptions(model({}, 'video'), 'quality'), [])
   assert.equal(usesModelParameter(image, 'ratio'), false)
   assert.equal(resolutionRatio('1536x1024'), '3:2')
   assert.equal(resolutionRatio('1024x1536'), '2:3')
   assert.equal(resolutionRatio('720p'), null)
+})
+
+test('canvas image defaults use standard quality, 2K, auto, 9:16 and one candidate with real provider values', () => {
+  assert.deepEqual(imageGenerationDefaults(model({})), { quality: 'standard', clarity: '2K', background: 'auto', ratio: '9:16', candidate_count: 1 })
+  const native = model({ image_qualities: ['low', 'medium', 'high'], default_quality: 'high', default_clarity: '1K', default_background: 'transparent', request_template: { size: '{{ratio}}', resolution: '{{resolution}}' }, resolutions: ['1K', '2K', '4K'] })
+  const defaults = imageGenerationDefaults(native)
+  assert.equal(defaults.quality, 'medium')
+  assert.equal(defaults.clarity, '2K')
+  assert.equal(defaults.background, 'auto')
+  assert.equal(imageRequestResolution(native, '1K', defaults), '2K')
+  assert.equal(imageParameterValue(native, 'quality', 'high'), 'high', 'saved choices stay authoritative')
+  assert.equal(imageParameterValue(native, 'clarity', '4K'), '4K')
+  assert.equal(imageParameterValue(native, 'background', 'transparent'), 'transparent')
 })
 
 test('explicit model choices and configured defaults remain usable', () => {
@@ -81,23 +94,39 @@ test('unmapped clarity, quality and background preferences remain in the prompt'
     const resolution = imageRequestResolution(image, '1536x864', {ratio: '16:9', clarity})
     const prompt = imagePreferencePrompt(image, '一个旧相框', {ratio: '16:9', clarity, resolution, quality: 'extreme', background: 'transparent'})
     assert.equal(resolution, '1536x864')
-    assert.ok(!prompt.includes('画面比例：'))
+    assert.ok(prompt.includes('画面比例：16:9（宽:高，横版）'))
     if (clarity !== '1K') assert.ok(prompt.includes(`清晰度要求：${clarity}`))
     assert.ok(prompt.includes('极致画质'))
     assert.ok(prompt.includes('透明背景'))
   }
 })
 
-test('native parameters do not duplicate prompt requirements and follow the active template', () => {
+test('native parameters keep whole-image ratio instructions while other requirements follow the active template', () => {
   const image = model({request_templates: {
     text: {prompt: '{{prompt}}', ratio: '{{ratio}}', quality: '{{quality}}', clarity: '{{clarity}}', background: '{{background}}'},
   }, resolutions: ['1K', '2K', '4K']})
   assert.equal(imageRequestResolution(image, '1K', {ratio: '16:9', clarity: '4K'}), '')
-  assert.equal(imagePreferencePrompt(image, '原始提示词', {ratio:'16:9', resolution:'4K', clarity:'4K', quality:'high', background:'preserve'}), '原始提示词')
+  const prompt = imagePreferencePrompt(image, '原始提示词', {ratio:'16:9', resolution:'4K', clarity:'4K', quality:'high', background:'preserve'})
+  assert.ok(prompt.startsWith('原始提示词\n\n图片生成要求：\n画面比例：16:9'))
+  assert.ok(prompt.includes('整张输出图片使用此比例'))
+  assert.ok(!prompt.includes('清晰度要求：') && !prompt.includes('画质要求：') && !prompt.includes('背景要求：'))
   const otherMode = model({request_template:{prompt:'{{prompt}}', size:'{{size}}'}, request_templates: { reference: {quality:'{{quality}}'} }})
   assert.ok(imagePreferencePrompt(otherMode, '相框', {ratio:'1:1', resolution:'1024x1024', clarity:'1K', quality:'ultra', background:'auto'}).includes('超高画质'))
   assert.equal(imageRequestResolution(model({}), '1K', {ratio:'16:9', clarity:'2K'}), '')
   assert.equal(imageRequestResolution(model({request_template:{size:'{{size}}'},resolutions:['1K','2K','4K']}), '1K', {ratio:'16:9',clarity:'4K'}), '')
+})
+
+test('ratio-only templates keep every selected aspect ratio explicit in text and reference prompts', () => {
+  const image = model({ request_template: { model: '{{model}}', prompt: '{{prompt}}', ratio: '{{ratio}}' } })
+  for (const ratio of imageRatios) for (const mode of ['text', 'reference']) {
+    const prompt = imagePreferencePrompt(image, '人物视觉设定信息图', { ratio, resolution: null, clarity: '2K', quality: 'standard', background: 'auto' }, mode)
+    assert.ok(prompt.includes(`画面比例：${ratio}（宽:高`))
+    assert.ok(prompt.includes('整张输出图片使用此比例'))
+    assert.ok(prompt.includes('清晰度要求：2K'))
+  }
+  assert.ok(imagePreferencePrompt(image, '人物视觉设定信息图', { ratio: '9:16', resolution: null, clarity: null, quality: null, background: null }).includes('宽:高，竖版'))
+  assert.ok(imagePreferencePrompt(image, '人物视觉设定信息图', { ratio: '1:1', resolution: null, clarity: null, quality: null, background: null }).includes('宽:高，方形'))
+  assert.equal(imagePreferencePrompt(model({}, 'video'), '视频提示词', { ratio: '9:16', resolution: null, clarity: null, quality: null, background: null }), '视频提示词')
 })
 
 test('fixed image sizes map to clarity and aspect ratios without inventing supported dimensions', () => {

@@ -37,7 +37,7 @@ export function storyboardItems(detail: ProjectDetail, graph: CanvasGraph, model
     return aShot ? -1 : bShot ? 1 : a.index - b.index
   })
   for (const { node } of orderedNodes) {
-    if (node.type === 'project_script_ref') continue
+    if (node.type === 'project_script_ref' || node.settings.visual_profile_id) continue
     // A generated result node is also available through its generator card.
     // Keep older candidates and independently reused media, but avoid showing
     // the current result twice in the board and its preview gallery.

@@ -21,6 +21,8 @@ export interface Shot {
   position: number
   title: string
   prompt: string
+  image_prompt?: string
+  video_prompt?: string
   duration: number
   selected_asset_id: string | null
   source_scene_id: string | null
@@ -134,6 +136,8 @@ export interface ScriptConversionResult {
 export interface PlannedShot {
   title: string
   prompt: string
+  image_prompt?: string
+  video_prompt?: string
   duration: number
   start_state?: string
   end_state?: string
@@ -212,6 +216,7 @@ export interface Job {
   external_id: string | null
   result_asset_id: string | null
   recovery_available: boolean
+  task_resume_available?: boolean
   error: string | null
   created_at: string
 }
@@ -273,6 +278,8 @@ export interface VisualProfile extends Omit<VisualProfileDraft, 'scene_ids'> {
   board_asset_id: string | null
   asset_task_id: string | null
   board_prompt: string
+  candidate_asset_ids?: string[]
+  archived_candidate_asset_ids?: string[]
 }
 export interface SceneVisualBinding { scene_id: string; profile_id: string; required: boolean }
 export interface ShotVisualBinding extends Omit<VisualProfile, 'id' | 'project_id' | 'asset_task_id' | 'board_prompt'> {

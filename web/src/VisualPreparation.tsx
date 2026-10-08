@@ -22,9 +22,10 @@ const dropdownProps = { withinPortal: true, zIndex: 450 }
 type Props = {
   detail: ProjectDetail; models: Model[]; sceneIds?: string[]; shotId?: string;
   onRefresh: () => Promise<unknown>; onClose: () => void; onContinue?: () => Promise<void>;
+  onOpenCanvas?: (profileIds: string[]) => void;
 }
 
-export default function VisualPreparation({ detail, models, sceneIds, shotId, onRefresh, onClose, onContinue }: Props) {
+export default function VisualPreparation({ detail, models, sceneIds, shotId, onRefresh, onClose, onContinue, onOpenCanvas }: Props) {
   const [catalogModels, setCatalogModels] = useState(models)
   const [catalogLoading, setCatalogLoading] = useState(true)
   const [data, setData] = useState<VisualProjectData>({ visual_profiles: detail.visual_profiles || [], scene_visual_bindings: detail.scene_visual_bindings || [], shot_visual_bindings: detail.shot_visual_bindings || [] })
@@ -295,7 +296,8 @@ export default function VisualPreparation({ detail, models, sceneIds, shotId, on
           })}><Trash2 size={15} /></ActionIcon></Tooltip>}</header>
           <fieldset disabled={busy || task?.status === 'generating'}>{editor(form, patch => setForm(current => ({ ...current, ...patch })), !profile)}</fieldset>
           <div className="vp-actions"><Button variant="default" leftSection={<Save size={14} />} disabled={busy || task?.status === 'generating' || !form.name.trim() || !form.variant.trim() || !form.definition.trim() || !form.view_requirements.trim()} onClick={() => void saveProfile()}>保存设定</Button></div>
-          {profile && <section className="vp-board">
+          {profile && onOpenCanvas && <div className="vp-actions"><Button variant="default" leftSection={<ImageIcon size={14} />} disabled={busy || profileDirty} onClick={() => onOpenCanvas([profile.id])}>在画布制作设定图</Button></div>}
+          {profile && !onOpenCanvas && <section className="vp-board">
             <header><strong>设定信息图</strong><span>{profile.board_asset_id ? '已确认' : task?.status === 'generating' ? generatingLabel : '待确认'}</span></header>
             {profile.board_asset_id && assets.find(asset => asset.id === profile.board_asset_id) && <a href={assets.find(asset => asset.id === profile.board_asset_id)!.url} target="_blank" rel="noreferrer"><img className="vp-approved-board" src={assets.find(asset => asset.id === profile.board_asset_id)!.url} alt={`${profile.name} 已确认信息图`} /></a>}
             {candidate && candidate.id !== profile.board_asset_id && <div className="vp-candidate"><a href={candidate.url} target="_blank" rel="noreferrer"><img src={candidate.url} alt={`${profile.name} 待审核信息图`} /></a><Button variant="default" leftSection={<Check size={14} />} disabled={busy || profileDirty || task?.status === 'generating'} onClick={() => void confirmBoard(candidate.id)}>确认使用此信息图</Button></div>}
@@ -340,7 +342,7 @@ export default function VisualPreparation({ detail, models, sceneIds, shotId, on
           </section>
         </main>
       </div>}
-      <footer className="vp-footer"><Button variant="default" disabled={busy} onClick={onClose}>关闭</Button>{onContinue && <Button variant="filled" disabled={busy || !!drafts} onClick={() => void action(onContinue)}>继续加入画布</Button>}</footer>
+      <footer className="vp-footer"><Button variant="default" disabled={busy} onClick={onClose}>关闭</Button>{onOpenCanvas && <Button variant="default" disabled={busy || !!drafts} onClick={() => onOpenCanvas([])}>进入设定画布</Button>}{onContinue && <Button variant="filled" disabled={busy || !!drafts} onClick={() => void action(onContinue)}>继续加入画布</Button>}</footer>
     </Modal>
     <Modal opened={boardReview} onClose={() => setBoardReview(false)} title="确认生成信息图" centered size={640} radius={16} zIndex={430} classNames={{ content: 'vp-modal', body: 'vp-review-body' }}>
       <div className="vp-board-review">

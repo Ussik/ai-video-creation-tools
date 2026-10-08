@@ -28,9 +28,22 @@ export function imageParameterOptions(model: Model | undefined, field: ImagePara
 export function imageParameterValue(model: Model | undefined, field: ImageParameter, selected?: string | null): string {
   const options = imageParameterOptions(model, field)
   const configured = model?.settings[`default_${field}`]
-  const preferred = field === 'quality' ? 'standard' : field === 'clarity' ? '1K' : 'auto'
+  const preferred = field === 'quality' ? options.includes('standard') ? 'standard' : 'medium' : field === 'clarity' ? '2K' : 'auto'
   return options.includes(selected || '') ? selected! : typeof configured === 'string' && options.includes(configured)
     ? configured : options.includes(preferred) ? preferred : options[0] || ''
+}
+
+/** Canvas defaults; provider values are resolved from its configured choices. */
+export function imageGenerationDefaults(model?: Model) {
+  const ratios = Array.isArray(model?.settings.ratios) ? model.settings.ratios : imageRatios
+  const quality = imageParameterOptions(model, 'quality').includes('standard') ? 'standard' : 'medium'
+  return {
+    ratio: ratios.includes('9:16') ? '9:16' : ratios.find((value): value is string => typeof value === 'string') || '9:16',
+    clarity: imageParameterValue(model, 'clarity', '2K'),
+    quality: imageParameterValue(model, 'quality', quality),
+    background: imageParameterValue(model, 'background', 'auto'),
+    candidate_count: 1,
+  }
 }
 
 export function resolutionRatio(resolution: string): string | null {
@@ -111,7 +124,13 @@ export function imagePreferencePrompt(model: Model, prompt: string, request: {
   const requirements: string[] = []
   const nativeSize = imageSizeChoices([request.resolution || ''])[0]
   const usesSize = usesModelParameter(model, 'size', mode) || usesModelParameter(model, 'resolution', mode)
-  if (!usesModelParameter(model, 'ratio', mode) && (!usesSize || nativeSize?.ratio !== request.ratio)) requirements.push(`画面比例：${request.ratio}`)
+  // A mapped field does not establish that a provider honors it. Keep the
+  // whole-image layout requirement in the prompt as well as the API parameters.
+  if (request.ratio) {
+    const [width, height] = request.ratio.split(':').map(Number)
+    const orientation = width > 0 && height > 0 ? width < height ? '，竖版' : width > height ? '，横版' : '，方形' : ''
+    requirements.push(`画面比例：${request.ratio}（宽:高${orientation}）。整张输出图片使用此比例，按此画幅安排全部内容，不要改成其他比例。`)
+  }
   if (request.clarity && !usesModelParameter(model, 'clarity', mode) && (!usesSize || nativeSize?.clarity !== request.clarity)
     && !(usesSize && request.resolution === request.clarity)) requirements.push(`清晰度要求：${request.clarity}`)
   if (request.quality && !usesModelParameter(model, 'quality', mode)) requirements.push(`画质要求：${qualityRequirements[request.quality] || request.quality}`)

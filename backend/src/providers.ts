@@ -316,7 +316,7 @@ export async function streamText(
     : renderedBody
   let response: Response
   try {
-    response = await fetch(apiUrl(provider.base_url, settingString(settings, 'request_path')), {
+    response = await fetch(apiUrl(settingString(settings, 'api_base_url', provider.base_url), settingString(settings, 'request_path')), {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -627,6 +627,50 @@ function pollConfiguredVideo(
     Number(settings.poll_seconds ?? 10), projectId)
 }
 
+async function pollConfiguredImage(
+  externalId: string,
+  settings: Settings,
+  provider: GenerationProvider,
+  headers: Record<string, string>,
+  projectId: string,
+  onImageUrl: (url: string) => void | Promise<void>,
+): Promise<GenerationResult> {
+  const success = Array.isArray(settings.success_statuses) ? settings.success_statuses.map(String) : ['succeeded', 'completed']
+  const failure = Array.isArray(settings.failure_statuses) ? settings.failure_statuses.map(String) : ['failed', 'expired', 'cancelled', 'canceled']
+  const getPath = settingString(settings, 'get_path').replaceAll('{id}', encodeURIComponent(externalId))
+  const interval = Math.max(1, Math.min(Number(settings.poll_seconds) || 5, 60)) * 1000
+  const deadline = Date.now() + 30 * 60_000
+  let transientErrors = 0
+  while (Date.now() < deadline) {
+    let result: Record<string, unknown>
+    try {
+      result = await requestJson('GET', apiUrl(provider.base_url, getPath), headers)
+      transientErrors = 0
+    } catch (error) {
+      if (++transientErrors >= 3) throw new Error(`查询图片任务 ${externalId} 失败，可继续查询原任务：${error instanceof Error ? error.message : String(error)}`)
+      await new Promise(resolve => setTimeout(resolve, interval))
+      continue
+    }
+    const status = optionalNested(result, settingString(settings, 'status_path', 'status'))
+    if (failure.includes(String(status))) {
+      const message = optionalNested(result, settingString(settings, 'error_path', 'error.message')) ?? result.error ?? status
+      throw new Error(`图片任务 ${externalId} 失败：${String(typeof message === 'string' ? message : JSON.stringify(message)).slice(0, 800)}`)
+    }
+    // RightAPI's completed Images response can omit status and return only
+    // the usual data array. Pending responses must never consume old results.
+    const hasImage = [settings.image_base64_path, settings.image_url_path].some(path => {
+      const value = typeof path === 'string' ? optionalNested(result, path) : undefined
+      return typeof value === 'string' && !!value
+    })
+    if (success.includes(String(status)) || status === undefined && hasImage) {
+      return consumeImage(projectId, result, settings, onImageUrl)
+    }
+    if (typeof status !== 'string' || !status) throw new Error(`查询图片任务 ${externalId} 未返回任务状态或图片结果`)
+    await new Promise(resolve => setTimeout(resolve, interval))
+  }
+  throw new Error(`图片任务 ${externalId} 超过 30 分钟仍未完成，可继续查询原任务或凭任务编号到厂商查看`)
+}
+
 async function configuredNetwork(
   model: GenerationModel,
   provider: GenerationProvider,
@@ -638,11 +682,15 @@ async function configuredNetwork(
   onImageUrl: (url: string) => void | Promise<void>,
 ): Promise<GenerationResult> {
   const settings = asSettings(model)
+  provider = { ...provider, base_url: settingString(settings, 'api_base_url', provider.base_url) }
   const authHeader = provider.auth_header || 'Authorization'
   const authPrefix = provider.auth_prefix ?? 'Bearer '
   const headers = key ? { [authHeader]: `${authPrefix}${key}` } : {}
   if (model.modality === 'video' && request._external_id) {
     return pollConfiguredVideo(request._external_id, settings, provider, headers, projectId)
+  }
+  if (model.modality === 'image' && settings.async_image === true && request._external_id) {
+    return pollConfiguredImage(request._external_id, settings, provider, headers, projectId, onImageUrl)
   }
   const images = await Promise.all(references.map(referenceImage))
   const variables: Variables = modeVariables(settings, request)
@@ -673,6 +721,13 @@ async function configuredNetwork(
       model.modality)
     if (model.modality === 'text') {
       return { path: await saveBytes(projectId, '.txt', Buffer.from(responseText(payload, settings, model.protocol))), remoteUrl: null }
+    }
+    if (settings.async_image === true) {
+      const externalId = nested(payload, settingString(settings, 'id_path', 'id'))
+      if (typeof externalId !== 'string' || !externalId.trim()) throw new Error('图片模型没有返回有效任务编号')
+      try { await onExternalId(externalId) }
+      catch { throw new Error(`图片任务 ${externalId} 已提交，但保存任务编号失败，请凭此编号查询厂商结果`) }
+      return pollConfiguredImage(externalId, settings, provider, headers, projectId, onImageUrl)
     }
     return consumeImage(projectId, payload, settings, onImageUrl)
   }

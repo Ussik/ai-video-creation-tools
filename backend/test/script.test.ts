@@ -63,7 +63,7 @@ interface Scene {
   dialogue: string; narration: string
 }
 interface Shot {
-  id: string; title: string; prompt: string; source_scene_id: string | null; position: number
+  id: string; title: string; prompt: string; image_prompt: string; video_prompt: string; source_scene_id: string | null; position: number
 }
 interface Script {
   outline: string; characters: string; generation_options: Record<string, string>; scenes: Scene[]
@@ -73,6 +73,8 @@ test('script editing is atomic and existing shots survive scene revisions', asyn
   const legacy = await call<{ script: Script; shots: Shot[] }>('GET', '/api/projects/legacy-project')
   assert.deepEqual(legacy.script, { outline: '', characters: '', generation_options: {}, scenes: [] })
   assert.equal(legacy.shots[0]?.source_scene_id, null)
+  assert.equal(legacy.shots[0]?.image_prompt, '')
+  assert.equal(legacy.shots[0]?.video_prompt, '')
 
   const first = await call<Scene>('POST', '/api/projects/legacy-project/script/scenes', {
     heading: '站台', location: '雨夜车站', action: '列车驶入站台', duration: 6,
@@ -527,7 +529,7 @@ test('planned shots are reviewed before insertion and preserve existing work', a
   })
   modelOutput = JSON.stringify({ scenes: [
     { scene_id: second.id, shots: [
-      { title: '云开', prompt: '广角镜头中云层缓慢散开', duration: 3 },
+      { title: '云开', prompt: '广角镜头中云层缓慢散开', image_prompt: '云层遮挡天空的静态广角首帧', video_prompt: '云层缓慢散开，镜头平稳上仰', duration: 3 },
       { title: '日光', prompt: '暖光照亮街角小店湿路面', duration: 3 },
     ] },
     { scene_id: first.id, shots: [
@@ -540,7 +542,7 @@ test('planned shots are reviewed before insertion and preserve existing work', a
     scene_ids: [second.id, first.id], shots_per_scene: 3,
   })
   assert.match(planPreview.prompt, /雨渐停/)
-  const planned = await call<{ scenes: Array<{ scene_id: string; scene_duration: number; shots: Array<{ title: string; prompt: string; duration: number }> }> }>(
+  const planned = await call<{ scenes: Array<{ scene_id: string; scene_duration: number; shots: Array<{ title: string; prompt: string; image_prompt: string; video_prompt: string; duration: number }> }> }>(
     'POST', `/api/projects/${project.id}/script/plan-shots`, {
       model_id: model.id, scene_ids: [second.id, first.id], shots_per_scene: 3,
       prompt_override: `${planPreview.prompt}\n额外要求：保持雨夜冷暖对比。`,
@@ -549,6 +551,10 @@ test('planned shots are reviewed before insertion and preserve existing work', a
   assert.deepEqual(planned.scenes.map(scene => scene.scene_id), [first.id, second.id])
   assert.deepEqual(planned.scenes.map(scene => scene.shots.reduce((sum, shot) => sum + shot.duration, 0)), [6, 5])
   assert.equal(planned.scenes[0]?.shots[0]?.title, '街角')
+  assert.match(planned.scenes[0]!.shots[0]!.image_prompt, /单幅首帧/)
+  assert.match(planned.scenes[0]!.shots[0]!.video_prompt, /连续视频/)
+  assert.equal(planned.scenes[1]!.shots[0]!.image_prompt, '云层遮挡天空的静态广角首帧')
+  assert.equal(planned.scenes[1]!.shots[0]!.video_prompt, '云层缓慢散开，镜头平稳上仰')
   assert.equal((await call<{ shots: Shot[] }>('GET', `/api/projects/${project.id}`)).shots.length, 2)
 
   const invalid = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/create-planned-shots`, payload: {
@@ -565,6 +571,8 @@ test('planned shots are reviewed before insertion and preserve existing work', a
   }
   const result = await call<{ shots: Shot[] }>('POST', `/api/projects/${project.id}/script/create-planned-shots`, createPayload)
   assert.equal(result.shots.length, 5)
+  assert.equal(result.shots[3]!.image_prompt, planned.scenes[1]!.shots[0]!.image_prompt)
+  assert.equal(result.shots[3]!.video_prompt, planned.scenes[1]!.shots[0]!.video_prompt)
   const repeated = await call<{ shots: Shot[]; replayed: boolean; payload_changed: boolean }>('POST',
     `/api/projects/${project.id}/script/create-planned-shots`, createPayload)
   assert.deepEqual(repeated.shots.map(shot => shot.id), result.shots.map(shot => shot.id))

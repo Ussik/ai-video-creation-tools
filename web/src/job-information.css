@@ -1,0 +1,95 @@
+.job-info-trigger.mantine-ActionIcon-root {
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: #a8a8a8;
+  transition: color 140ms ease, background-color 140ms ease, border-color 140ms ease;
+}
+.job-info-trigger.mantine-ActionIcon-root:hover,
+.job-info-trigger.mantine-ActionIcon-root[aria-expanded="true"] {
+  border-color: #3b3b3b;
+  background: #292929;
+  color: #ededed;
+}
+.job-info-trigger.mantine-ActionIcon-root:focus-visible {
+  outline: 2px solid #858585;
+  outline-offset: 2px;
+}
+.job-info-popover.mantine-Popover-dropdown {
+  display: flex;
+  flex-direction: column;
+  max-width: calc(100vw - 24px);
+  max-height: min(640px, calc(100dvh - 24px));
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--select-border, #414141);
+  border-radius: 18px;
+  background: var(--select-surface, #242424);
+  box-shadow: 0 18px 44px #0008, inset 0 1px #ffffff06;
+  color: var(--select-text, #e5e5e5);
+  color-scheme: dark;
+  font-family: inherit;
+}
+.job-info-heading {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #ffffff0b;
+}
+.job-info-heading strong { font-size: 13px; font-weight: 600; }
+.job-info-content {
+  display: grid;
+  gap: 16px;
+  min-height: 0;
+  padding: 14px 16px 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #515151 transparent;
+  font-size: 12px;
+  line-height: 1.65;
+  user-select: text;
+}
+.job-info-content:focus-visible { outline: 1px solid #666; outline-offset: -4px; }
+.job-info-content dl { display: grid; gap: 7px; margin: 0; }
+.job-info-content dl > div { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 12px; }
+.job-info-content dt { color: #969696; }
+.job-info-content dd { margin: 0; color: #d4d4d4; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.job-info-content h2 { margin: 0; color: #a8a8a8; font-size: 11px; font-weight: 500; }
+.job-info-text { display: grid; gap: 8px; }
+.job-info-text p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.75; }
+.job-info-error { padding: 12px; border: 1px solid #52403f; border-radius: 12px; background: #2e2626; color: #e6b0aa; }
+.job-info-error h2 { color: #e6b0aa; }
+.job-info-references { display: grid; gap: 8px; }
+.job-info-references ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.job-info-references li { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.job-info-references img { display: block; max-width: 70px; max-height: 70px; width: auto; height: auto; border-radius: 8px; }
+.job-info-references li > div { display: grid; min-width: 0; gap: 2px; overflow-wrap: anywhere; }
+.job-info-references small, .job-info-empty { margin: 0; color: #969696; font-size: 11px; }
+
+/* Reserve room for actions so long task names and errors cannot squeeze them. */
+.job-table .job-row { grid-template-columns: minmax(0, 2fr) 90px 130px minmax(210px, 1fr); }
+.job-table .job-result { min-width: 0; }
+.job-table .job-result > .mantine-Button-root { flex-shrink: 0; }
+.job-table .job-error { min-width: 0; flex: 1 1 auto; }
+.job-table .job-row-needs-review .job-result { flex-wrap: wrap; padding-block: 10px; }
+.job-table .job-recovery-guidance { flex: 1 1 160px; }
+
+@media (max-width: 900px) {
+  .job-table .job-row { grid-template-columns: minmax(0, 1fr) 80px minmax(145px, .75fr); gap: 10px; }
+  .job-table .job-date, .job-table .job-header > span:nth-child(3) { display: none; }
+  .job-table .job-error { display: none; }
+}
+@media (max-width: 600px) {
+  .job-table .job-row { grid-template-columns: minmax(0, 1fr) 76px; gap: 8px; padding-block: 12px; }
+  .job-table .job-header { padding-block: 0; }
+  .job-table .job-header > span:last-child { display: none; }
+  .job-table .job-row .job-result { grid-column: 1 / -1; padding: 0; }
+  .job-table .job-row .job-result > .job-info-trigger { margin-left: auto; }
+}

@@ -706,6 +706,8 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
           shots: matches[0].shots.map((shot) => ({
             title: typeof shot.title === 'string' ? shot.title : '',
             prompt: typeof shot.prompt === 'string' ? shot.prompt : '',
+            image_prompt: typeof shot.image_prompt === 'string' ? shot.image_prompt : '',
+            video_prompt: typeof shot.video_prompt === 'string' ? shot.video_prompt : '',
             duration: typeof shot.duration === 'number' && Number.isFinite(shot.duration) ? shot.duration : 0,
             start_state: typeof shot.start_state === 'string' ? shot.start_state : '',
             end_state: typeof shot.end_state === 'string' ? shot.end_state : '',
@@ -766,6 +768,8 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
           shots: scene.shots.map((shot) => ({
             title: shot.title.trim(),
             prompt: shot.prompt.trim(),
+            image_prompt: shot.image_prompt?.trim() || '',
+            video_prompt: shot.video_prompt?.trim() || '',
             duration: shot.duration,
             start_state: shot.start_state || '',
             end_state: shot.end_state || '',
@@ -1014,7 +1018,9 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
                 <div className="script-plan-shot-fields">
                   <TextInput label="镜头标题" aria-label={`${scene.scene_heading}镜头 ${shotIndex + 1} 标题`} maxLength={120} value={shot.title} disabled={disabled} onChange={(event) => updatePlannedShot(scene.scene_id, shotIndex, { title: event.currentTarget.value })} />
                   <NumberInput label="时长" aria-label={`${scene.scene_heading}镜头 ${shotIndex + 1} 时长`} min={1} max={30} suffix=" 秒" value={shot.duration} disabled={disabled} onChange={(value) => updatePlannedShot(scene.scene_id, shotIndex, { duration: typeof value === 'number' ? value : 0 })} />
-                  <Textarea label="画面提示词" aria-label={`${scene.scene_heading}镜头 ${shotIndex + 1} 画面提示词`} maxLength={10000} minRows={2} autosize value={shot.prompt} disabled={disabled} onChange={(event) => updatePlannedShot(scene.scene_id, shotIndex, { prompt: event.currentTarget.value })} />
+                  <Textarea label="镜头描述" aria-label={`${scene.scene_heading}镜头 ${shotIndex + 1} 画面提示词`} maxLength={10000} minRows={2} autosize value={shot.prompt} disabled={disabled} onChange={(event) => updatePlannedShot(scene.scene_id, shotIndex, { prompt: event.currentTarget.value })} />
+                  <Textarea label="首帧图片提示词" maxLength={20000} minRows={2} autosize value={shot.image_prompt || ''} placeholder="留空时根据镜头描述整理单幅首帧要求" disabled={disabled} onChange={event => updatePlannedShot(scene.scene_id, shotIndex, { image_prompt: event.currentTarget.value })} />
+                  <Textarea label="动作与运镜视频提示词" maxLength={20000} minRows={2} autosize value={shot.video_prompt || ''} placeholder="留空时根据镜头描述与开镜、收镜状态整理视频要求" disabled={disabled} onChange={event => updatePlannedShot(scene.scene_id, shotIndex, { video_prompt: event.currentTarget.value })} />
                   <Textarea label="开始状态" aria-label={`${scene.scene_heading}镜头 ${shotIndex + 1} 开始状态`} maxLength={2000} minRows={2} autosize value={shot.start_state || ''} disabled={disabled} onChange={(event) => updatePlannedShot(scene.scene_id, shotIndex, { start_state: event.currentTarget.value })} />
                   <Textarea label="结束状态" aria-label={`${scene.scene_heading}镜头 ${shotIndex + 1} 结束状态`} maxLength={2000} minRows={2} autosize value={shot.end_state || ''} disabled={disabled} onChange={(event) => updatePlannedShot(scene.scene_id, shotIndex, { end_state: event.currentTarget.value })} />
                   <TextInput label="接镜备注" aria-label={`${scene.scene_heading}镜头 ${shotIndex + 1} 接镜备注`} maxLength={2000} value={shot.cut_note || ''} disabled={disabled} onChange={(event) => updatePlannedShot(scene.scene_id, shotIndex, { cut_note: event.currentTarget.value })} />

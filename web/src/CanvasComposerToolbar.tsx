@@ -1,14 +1,14 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { NodeToolbar, Position, useReactFlow } from '@xyflow/react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Modal } from '@mantine/core'
+import { NodeToolbar, Position } from '@xyflow/react'
 
 type ScreenRect = { left: number; top: number; right: number; bottom: number }
-type CanvasViewport = { x: number; y: number; zoom: number }
-type ComposerNodeBounds = { x: number; y: number; width: number; height: number }
 export interface CanvasComposerToolbarProps {
   nodeId: string
   children: ReactNode
   expanded?: boolean
   revealKey?: number
+  onCollapse: () => void
 }
 
 /** Translate a screen-sized composer into its available canvas area. */
@@ -29,49 +29,34 @@ export function composerViewportShift(composer: ScreenRect, canvas: ScreenRect, 
   return { x: shift(composer.left, composer.right, left, right), y: shift(composer.top, composer.bottom, top, bottom) }
 }
 
-/** Fit both the node and its fixed-size composer, without ever zooming in. */
-export function composerViewportFit(viewport: CanvasViewport, node: ComposerNodeBounds,
-  composer: { width: number; height: number }, canvas: ScreenRect, sidebar?: ScreenRect): CanvasViewport {
-  if (![...Object.values(viewport), ...Object.values(node), ...Object.values(composer), ...Object.values(canvas)].every(Number.isFinite)
-    || node.width <= 0 || node.height <= 0 || composer.width <= 0 || composer.height <= 0 || viewport.zoom <= 0) return viewport
-  const titleHeight = 36
-  const toolbarGap = 24
-  const availableHeight = Math.max(0, canvas.bottom - canvas.top - 72 - 90)
-  const nodeSpace = Math.max(0, availableHeight - titleHeight - toolbarGap - composer.height)
-  const zoom = Math.min(viewport.zoom, Math.max(0.1, nodeSpace / node.height))
-  const centerX = node.x + node.width / 2
-  const centerY = node.y + node.height / 2
-  const next = {
-    zoom,
-    x: viewport.x + centerX * (viewport.zoom - zoom),
-    y: viewport.y + centerY * (viewport.zoom - zoom),
-  }
-  const screenCenterX = canvas.left + centerX * zoom + next.x
-  const screenNodeTop = canvas.top + node.y * zoom + next.y
-  // The horizontal bounds belong to the unscaled composer. The vertical
-  // bounds include the node and its title, preventing a fix for the composer
-  // from hiding the image/video above the viewport.
-  const shift = composerViewportShift({
-    left: screenCenterX - composer.width / 2,
-    right: screenCenterX + composer.width / 2,
-    top: screenNodeTop - titleHeight,
-    bottom: screenNodeTop + node.height * zoom + toolbarGap + composer.height,
-  }, canvas, sidebar)
-  return { ...next, x: next.x + shift.x, y: next.y + shift.y }
-}
-
-export default function CanvasComposerToolbar({ nodeId, children, expanded = false, revealKey = 0 }: CanvasComposerToolbarProps) {
-  const { getNode, getViewport, setViewport } = useReactFlow()
+export default function CanvasComposerToolbar({ nodeId, children, expanded = false, revealKey = 0, onCollapse }: CanvasComposerToolbarProps) {
   const [anchor, setAnchor] = useState<HTMLDivElement | null>(null)
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null)
   const frameRef = useRef<number | null>(null)
+  const returnFocusRef = useRef(false)
+  const captureAnchor = useCallback((element: HTMLDivElement | null) => {
+    setAnchor(element)
+    // Keep the app's theme ancestry without mounting under the transformed
+    // React Flow viewport. Retain the target when the normal editor unmounts.
+    if (element) setPortalTarget(element.closest<HTMLElement>('.project-canvas'))
+  }, [])
 
   useEffect(() => {
-    if (!anchor) return
+    if (expanded) returnFocusRef.current = true
+    else if (anchor && returnFocusRef.current) {
+      anchor.querySelector('textarea')?.focus({ preventScroll: true })
+      returnFocusRef.current = false
+    }
+  }, [expanded, anchor])
+
+  useEffect(() => {
+    if (expanded || !anchor) return
     const flow = anchor.closest<HTMLElement>('.pc-flow')
     if (!flow) return
     let active = true
     let observedWidth = -1
     let observedHeight = -1
+    let offset = { x: 0, y: 0 }
 
     const alignComposer = () => {
       frameRef.current = null
@@ -84,22 +69,17 @@ export default function CanvasComposerToolbar({ nodeId, children, expanded = fal
       if (!bounds.width || !bounds.height) return
       const sidebar = flow.closest('.project-canvas')?.querySelector<HTMLElement>('.pc-canvas-sidebar')
       const sidebarRect = sidebar?.getBoundingClientRect()
-      const viewport = getViewport()
       const visibleSidebar = sidebarRect?.width && sidebarRect.height ? sidebarRect : undefined
-      const node = getNode(nodeId)
-      let next: CanvasViewport
-      if (node && (node.height || node.measured?.height) && (node.width || node.measured?.width)) {
-        next = composerViewportFit(viewport, { ...node.position,
-          width: node.width || node.measured!.width!, height: node.height || node.measured!.height!,
-        }, rect, bounds, visibleSidebar)
-      } else {
-        const shift = composerViewportShift(rect, bounds, visibleSidebar)
-        next = { ...viewport, x: viewport.x + shift.x, y: viewport.y + shift.y }
-      }
-      if (Math.abs(next.x - viewport.x) < 1 && Math.abs(next.y - viewport.y) < 1 && Math.abs(next.zoom - viewport.zoom) < 0.001) return
-      // NodeToolbar cancels viewport zoom for the composer itself. Zooming out
-      // only reduces the node while preserving the editor's readable size.
-      void setViewport(next, { duration: 0 })
+      // Measure the original toolbar anchor so resizing/reopening cannot
+      // accumulate offsets. NodeToolbar keeps these distances in screen pixels.
+      const next = composerViewportShift({
+        left: rect.left - offset.x, right: rect.right - offset.x,
+        top: rect.top - offset.y, bottom: rect.bottom - offset.y,
+      }, bounds, visibleSidebar)
+      if (Math.abs(next.x - offset.x) < 0.5 && Math.abs(next.y - offset.y) < 0.5) return
+      offset = next
+      // Reveal only the editor; opening it must never move or zoom the canvas.
+      anchor.style.transform = `translate(${offset.x}px, ${offset.y}px)`
     }
     const scheduleAlignment = () => {
       if (!active) return
@@ -107,6 +87,10 @@ export default function CanvasComposerToolbar({ nodeId, children, expanded = fal
       frameRef.current = requestAnimationFrame(alignComposer)
     }
     const observer = new ResizeObserver(entries => {
+      if (entries.some(item => item.target === flow)) {
+        scheduleAlignment()
+        return
+      }
       const entry = entries.find(item => item.target === anchor)
       if (!entry) return
       const { width, height } = anchor.getBoundingClientRect()
@@ -116,20 +100,42 @@ export default function CanvasComposerToolbar({ nodeId, children, expanded = fal
       scheduleAlignment()
     })
     observer.observe(anchor)
+    observer.observe(flow)
     scheduleAlignment()
     return () => {
       active = false
       observer.disconnect()
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current)
       frameRef.current = null
+      anchor.style.removeProperty('transform')
     }
     // Pan/zoom and textarea scroll are intentionally not dependencies: after
     // the initial reveal the user is free to move around the canvas.
-  }, [anchor, nodeId, expanded, revealKey, getNode, getViewport, setViewport])
+  }, [anchor, nodeId, expanded, revealKey])
+
+  if (expanded) return <Modal opened onClose={onCollapse} centered withCloseButton={false}
+    attributes={{ content: { 'aria-label': '创作区' } }} size="min(1120px, calc(100vw - 48px))" padding={0} radius={24} xOffset={24} yOffset={24}
+    zIndex={210} portalProps={{ target: portalTarget || undefined }}
+    closeOnEscape={false} returnFocus={false} transitionProps={{ duration: 0 }}
+    overlayProps={{ backgroundOpacity: 0.64, blur: 3 }}
+    styles={{ content: { border: 0, boxShadow: 'none' } }}
+    classNames={{ root: 'pc-composer-modal-root', content: 'pc-composer-modal-content', body: 'pc-composer-modal-body' }}
+    data-canvas-overlay onPointerDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}
+    onKeyDown={event => event.stopPropagation()}
+    onKeyDownCapture={event => {
+      // Let an open nested menu consume Escape first. Capture the closed-menu
+      // case too, since select/parameter triggers stop keyboard propagation.
+      if (event.key !== 'Escape' || event.nativeEvent.isComposing
+        || event.currentTarget.querySelector('[aria-expanded="true"]:not(.pc-composer-expand)')) return
+      event.stopPropagation()
+      onCollapse()
+    }}>
+    {children}
+  </Modal>
 
   return <NodeToolbar nodeId={nodeId} isVisible position={Position.Bottom} offset={24} align="center"
     className="pc-node-toolbar" data-canvas-overlay>
-    <div key={nodeId} ref={setAnchor} className="pc-composer-anchor nodrag nowheel" data-canvas-overlay style={{ pointerEvents: 'auto' }}>
+    <div key={nodeId} ref={captureAnchor} className="pc-composer-anchor nodrag nowheel" data-canvas-overlay style={{ pointerEvents: 'auto' }}>
       {children}
     </div>
   </NodeToolbar>

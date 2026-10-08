@@ -34,16 +34,20 @@ async function mount(overrides: Partial<CanvasGenerationParametersProps> = {}) {
   const changes: unknown[] = []
   function Harness() {
     const [props, setProps] = useState({ ...defaults, ...overrides })
-    return <MantineProvider env="test"><CanvasGenerationParameters {...props}
+    return <MantineProvider env="test"><div onPointerDown={event => event.stopPropagation()} onMouseDown={event => event.stopPropagation()}>
+      <textarea aria-label="外部提示词" />
+      <CanvasGenerationParameters {...props}
       onChange={patch => { changes.push(patch); setProps(current => ({ ...current, ...patch })) }}
       onCountChange={count => { changes.push({ count }); setProps(current => ({ ...current, count })) }} />
+      </div>
     </MantineProvider>
   }
   await act(() => root.render(<Harness />))
   await act(() => container.querySelector<HTMLButtonElement>('.pc-generation-parameters-trigger')!.click())
   const panel = document.querySelector<HTMLElement>('[role="dialog"]')!
   assert.ok(panel)
-  return { panel, changes, destroy: async () => { await act(() => root.unmount()); container.remove() } }
+  return { panel, changes, container, trigger: container.querySelector<HTMLButtonElement>('.pc-generation-parameters-trigger')!,
+    destroy: async () => { await act(() => root.unmount()); container.remove() } }
 }
 
 function button(panel: HTMLElement, group: string, label: string) {
@@ -121,6 +125,21 @@ test('image models using resolution levels retain their clarity selector', async
   } finally { await view.destroy() }
 })
 
+test('image quantity defaults to one and lets users switch between one, two and four candidates', async () => {
+  const view = await mount({ ratios: imageRatios, ratio: '9:16', clarities: ['1K', '2K', '4K'], clarity: '2K', qualities: ['low', 'standard', 'high'], quality: 'standard', backgrounds: ['auto', 'preserve', 'transparent'], background: 'auto' })
+  try {
+    for (const [group, label] of [['画质', '标准画质'], ['清晰度', '2K'], ['背景', '自动'], ['比例', '9:16'], ['生成候选数量', '1张']]) {
+      assert.equal(button(view.panel, group, label).getAttribute('aria-pressed'), 'true')
+    }
+    assert.deepEqual([...view.panel.querySelectorAll('[aria-label="生成候选数量"] button')].map(node => node.textContent), ['1张', '2张', '4张'])
+    for (const count of [2, 4, 1]) {
+      await act(() => button(view.panel, '生成候选数量', `${count}张`).click())
+      assert.equal(button(view.panel, '生成候选数量', `${count}张`).getAttribute('aria-pressed'), 'true')
+    }
+    assert.deepEqual(view.changes, [{ count: 2 }, { count: 4 }, { count: 1 }])
+  } finally { await view.destroy() }
+})
+
 test('video controls retain supported resolution, ratio and candidate selectors', async () => {
   const view = await mount({ modality: 'video', ratios: ['16:9', '9:16'], ratio: '16:9', resolutions: ['480p', '720p'], resolution: '480p' })
   try {
@@ -131,3 +150,31 @@ test('video controls retain supported resolution, ratio and candidate selectors'
     assert.equal(view.panel.querySelector('[aria-label="背景"]'), null)
   } finally { await view.destroy() }
 })
+
+for (const modality of ['image', 'video'] as const) {
+  test(`${modality} parameters close outside event-stopping canvas controls and preserve selections`, async () => {
+    const view = await mount({ modality, ratios: ['16:9', '9:16'], ratio: '16:9' })
+    try {
+      const ratio = button(view.panel, '比例', '9:16')
+      await act(() => {
+        ratio.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+        ratio.click()
+      })
+      assert.equal(view.trigger.getAttribute('aria-expanded'), 'true', 'choosing a parameter keeps the panel open')
+      const outside = view.container.querySelector('textarea')!
+      await act(() => {
+        outside.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+        outside.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+        outside.click()
+      })
+      assert.equal(view.trigger.getAttribute('aria-expanded'), 'false', 'outside click closes despite stopped bubbling')
+      await act(() => {
+        view.trigger.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+        view.trigger.click()
+      })
+      assert.equal(view.trigger.getAttribute('aria-expanded'), 'true')
+      const reopened = document.querySelector<HTMLElement>('[role="dialog"]')!
+      assert.equal(button(reopened, '比例', '9:16').getAttribute('aria-pressed'), 'true')
+    } finally { await view.destroy() }
+  })
+}

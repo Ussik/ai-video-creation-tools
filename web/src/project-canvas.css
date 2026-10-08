@@ -69,7 +69,7 @@
 .pc-save-status svg { color: #79c5a8; }
 .pc-save-status button { border: 0; background: transparent; color: #f0ad8d; padding: 5px; display: inline-flex; align-items: center; gap: 5px; }
 .pc-save-status button svg { color: currentColor; }
-.pc-body { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.pc-body { --pc-sidebar-width: min(360px, calc(100% - 36px)); --pc-tools-inset: 0px; position: relative; flex: 1; min-height: 0; overflow: hidden; }
 .pc-flow { width: 100%; height: 100%; min-width: 0; min-height: 0; position: relative; background: radial-gradient(circle at 54% 32%, #233b302b 0, transparent 42%), radial-gradient(circle at 12% 80%, #3a5b3b14 0, transparent 34%), var(--pc-bg); }
 .pc-flow .react-flow__pane { cursor: grab; }
 .pc-flow .react-flow__pane:active { cursor: grabbing; }
@@ -956,13 +956,33 @@
   .pc-sidebar-tabs { flex-basis: 44px; }
 }
 
-/* Keep the utility group beside React Flow's built-in controls. When the
-   reference-inspired-style navigator is open, move it past the rail so it stays reachable. */
-.pc-canvas-sidebar + .pc-flow .pc-flow-utility { left: min(352px, calc(100% - 54px)); }
+/* Reserve the sidebar's actual width for every bottom control group. */
+.pc-body-sidebar-open { --pc-tools-inset: calc(18px + var(--pc-sidebar-width)); }
+.pc-body-sidebar-open .pc-node-list-toggle.mantine-ActionIcon-root { left: calc(var(--pc-tools-inset) + 12px); }
+.pc-body-sidebar-open .pc-flow-utility { left: calc(var(--pc-tools-inset) + 64px); max-width: calc(100% - var(--pc-tools-inset) - 76px); }
+.pc-body-sidebar-open > .pc-create-dock,
+.pc-body-sidebar-open > .pc-add-menu-dock { left: calc((100% + var(--pc-tools-inset)) / 2); max-width: calc(100% - var(--pc-tools-inset) - 32px); }
+@media (max-width: 1320px) {
+  .pc-body-sidebar-open .pc-flow-utility,
+  .pc-body-sidebar-open .pc-node-list-toggle.mantine-ActionIcon-root { bottom: calc(86px + env(safe-area-inset-bottom)); }
+}
+@media (max-width: 950px) {
+  .pc-body .pc-flow-utility,
+  .pc-body .pc-node-list-toggle.mantine-ActionIcon-root { bottom: calc(86px + env(safe-area-inset-bottom)); }
+}
+@media (min-width: 701px) and (max-width: 815px) {
+  .pc-body-sidebar-open > .pc-create-dock { flex-wrap: wrap; justify-content: center; }
+  .pc-body-sidebar-open > .pc-add-menu-dock { bottom: calc(125px + env(safe-area-inset-bottom)); }
+  .pc-body-sidebar-open .pc-flow-utility,
+  .pc-body-sidebar-open .pc-node-list-toggle.mantine-ActionIcon-root { bottom: calc(130px + env(safe-area-inset-bottom)); }
+}
 @media (max-width: 700px) {
-  .pc-flow-utility { left: 56px; bottom: 78px; max-width: calc(100% - 66px); overflow-x: auto; }
-  .pc-canvas-sidebar + .pc-flow .pc-flow-utility { left: 56px; }
-  .pc-node-list-toggle.mantine-ActionIcon-root { left: 10px; bottom: 78px; }
+  .pc-body { --pc-sidebar-width: min(310px, calc(100% - 20px)); }
+  .pc-body-sidebar-open { --pc-tools-inset: 0px; }
+  .pc-body .pc-canvas-sidebar { bottom: calc(172px + env(safe-area-inset-bottom)); }
+  .pc-body .pc-flow-utility { left: 56px; bottom: calc(122px + env(safe-area-inset-bottom)); max-width: calc(100% - 66px); overflow-x: auto; }
+  .pc-body .pc-node-list-toggle.mantine-ActionIcon-root { left: 10px; bottom: calc(122px + env(safe-area-inset-bottom)); }
+  .pc-body > .pc-add-menu-dock { bottom: calc(125px + env(safe-area-inset-bottom)); max-height: min(440px, calc(100% - 141px - env(safe-area-inset-bottom))); }
 }
 
 /* reference-inspired-style node cards: media first, lightweight actions until selection. */
@@ -1066,7 +1086,7 @@
 .pc-view-actions .mantine-ActionIcon-root.is-active { background: #343434; color: #c7eeff; }
 
 .pc-canvas-sidebar {
-  width: min(360px, calc(100% - 36px));
+  width: var(--pc-sidebar-width);
   border-color: #2b2b2b;
   border-radius: 0 12px 12px 0;
   background: #171717f2;
@@ -1221,7 +1241,7 @@
 
 @media (max-width: 700px) {
   .pc-canvas-sidebar {
-    width: min(310px, calc(100% - 20px));
+    width: var(--pc-sidebar-width);
     border-radius: 12px;
   }
 }
@@ -1402,6 +1422,7 @@
 .pc-prompt-composer-head,
 .pc-prompt-composer-foot { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .pc-prompt-composer-head { justify-content: space-between; }
+.pc-prompt-composer-body { display: grid; gap: 12px; min-width: 0; }
 .pc-prompt-composer-chips { display: flex; align-items: center; gap: 7px; }
 .pc-composer-chip {
   display: inline-flex;
@@ -1418,6 +1439,48 @@
 }
 .pc-composer-chip:hover,
 .pc-composer-chip.is-active { background: #414141; color: #efefef; }
+.pc-visual-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 2px 0;
+}
+.pc-visual-context-button {
+  flex: none;
+  gap: 6px;
+  min-height: 32px;
+  border: 1px solid #414141;
+  border-radius: 10px;
+  background: #303030;
+  color: #d4d4d4;
+  font-family: inherit;
+  font-weight: 500;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.pc-visual-context-button:hover { border-color: #646464; }
+.pc-visual-context-button:active { background: #383838; }
+.pc-visual-context-button:focus-visible {
+  outline: 2px solid #858585;
+  outline-offset: 2px;
+}
+.pc-visual-context-status { color: #a0a0a0; font-size: 11px; line-height: 1.5; }
+.pc-visual-reference-select { flex: 0 1 184px; width: 184px; max-width: 100%; }
+.pc-visual-reference-select .mantine-Select-input {
+  height: 32px;
+  min-height: 32px;
+  padding-left: 10px;
+  border-radius: 10px;
+  background: #303030;
+  color: #d4d4d4;
+  font-size: 12px;
+  cursor: pointer;
+}
+.pc-visual-reference-select .mantine-Select-input:hover { background: #363636; }
+@media (prefers-reduced-motion: reduce) {
+  .pc-visual-context-button { transition: none; }
+}
 .pc-composer-context { overflow: hidden; color: #777; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .pc-prompt-composer-input { min-width: 0; }
 .pc-prompt-composer-input .mantine-Textarea-input,
@@ -1462,6 +1525,56 @@
 .pc-composer-mode-label { flex: none; color: #b4b4b4; font-size: 11px; white-space: nowrap; }
 .pc-prompt-composer-actions .mantine-ActionIcon-root { color: #a8a8a8; }
 .pc-prompt-composer-actions .mantine-ActionIcon-root:hover { background: #363636; color: #fff; }
+.pc-composer-info.mantine-ActionIcon-root { flex: none; width: 30px; height: 30px; border-radius: 8px; }
+.pc-composer-info.mantine-ActionIcon-root[aria-expanded="true"] { background: #363636; color: #eee; }
+/* Portal surfaces need their own theme scope: generic dropdown rules also
+   apply outside .project-canvas, so make the local style more specific. */
+.pc-generation-info-popover.mantine-Popover-dropdown {
+  display: flex;
+  flex-direction: column;
+  max-width: calc(100vw - 24px);
+  max-height: min(580px, calc(100dvh - 40px));
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--select-border, #414141);
+  border-radius: 18px;
+  background: var(--select-surface, #242424);
+  box-shadow: 0 18px 44px #0008, inset 0 1px #ffffff06;
+  color: var(--select-text, #e5e5e5);
+  color-scheme: dark;
+  font-family: inherit;
+}
+.pc-generation-info-heading {
+  display: flex; flex-shrink: 0; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 12px 16px; border-bottom: 1px solid #ffffff0b;
+}
+.pc-generation-info-heading strong { font-size: 13px; font-weight: 600; color: #ededed; }
+.pc-generation-info-content {
+  display: grid; gap: 16px; min-height: 0; padding: 14px 16px 16px;
+  overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
+  scrollbar-color: #515151 transparent; font-size: 12px; line-height: 1.65;
+}
+.pc-generation-info-content dl { display: grid; gap: 7px; margin: 0; }
+.pc-generation-info-content dl > div { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 12px; }
+.pc-generation-info-content dt { color: #969696; }
+.pc-generation-info-content dd { margin: 0; color: #d4d4d4; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.pc-generation-info-content > p { margin: 0; color: #a0a0a0; font-size: 11px; }
+.pc-generation-info-content .pc-visual-thumbnails { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; margin: 0; }
+.pc-generation-info-content .pc-visual-thumbnails a {
+  display: block; flex: 0 1 auto; width: max-content; max-width: min(180px, 100%);
+  overflow: hidden; border: 1px solid #414141; border-radius: 10px; background: #202020;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+.pc-generation-info-content .pc-visual-thumbnails a:hover { border-color: #6a6a6a; background: #303030; }
+.pc-generation-info-content .pc-visual-thumbnails a:focus-visible { outline: 2px solid #858585; outline-offset: 2px; }
+.pc-generation-info-content .pc-visual-thumbnails img {
+  display: block; width: auto; height: auto; max-width: 100%; max-height: 104px;
+  object-fit: contain; border-radius: 0; background: transparent;
+}
+.pc-generation-info-prompt { display: grid; gap: 8px; padding: 12px; border: 1px solid #383838; border-radius: 12px; background: #202020; }
+.pc-generation-info-prompt > span { color: #969696; font-size: 11px; font-weight: 500; }
+.pc-generation-info-prompt > p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.75; }
+.pc-generation-info-loading { display: flex; align-items: center; gap: 8px; padding: 20px 16px; color: #a0a0a0; font-size: 12px; }
 .pc-composer-submit {
   display: grid;
   place-items: center;
@@ -3053,3 +3166,8 @@
 .pc-script-episodes button:hover { background: #303030; }
 .pc-script-episodes button span { flex: 1; display: flex; flex-direction: column; gap: 4px; }
 .pc-script-episodes small { color: #929292; }
+.pc-prompt-kind-label {
+  margin: 8px 0 4px;
+  color: #999;
+  font-size: 12px;
+}

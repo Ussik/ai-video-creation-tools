@@ -13,10 +13,12 @@ import {
 import { api, json } from './api'
 import type { Asset, ContinuityReport, Model, Modality, ProductionRange, Project, ProjectDetail, Provider, Shot, TimelineClip, VisualReferenceMode } from './api'
 import VisualPreparation from './VisualPreparation'
+import { requestVisualCanvas } from './canvas-visual-profiles'
 import ModelSettings from './ModelSettings'
 import TimelinePreview from './TimelinePreview'
 import CutReviewPanel from './CutReviewPanel'
 import CandidateCompare from './CandidateCompare'
+import JobInformationPopover from './JobInformationPopover'
 import ProjectCanvas, { type CanvasLocation, type ScriptAction } from './ProjectCanvas'
 import ScriptDirectorPanel from './ScriptDirectorPanel'
 import ScriptEditor, { type DocumentSection } from './ScriptEditor'
@@ -1358,9 +1360,11 @@ function App() {
               <span className={`job-status status-${job.status}`}>{job.status === 'running' && <LoaderCircle className="spin" size={13} />}{statusText[job.status]}</span>
               <span className="job-date">{dateLabel(job.created_at)}</span>
               <div className="job-result">
+                <JobInformationPopover job={job} model={model} provider={providers.find(item => item.id === model?.provider_id)}
+                  shot={detail.shots.find(item => item.id === job.shot_id)} projectName={detail.name} assets={detail.assets} />
                 {result ? <Button component="a" variant="default" size="xs" href={result.url} download={job.job_type === 'export'} leftSection={<Download size={14} />}>{job.job_type === 'export' ? '下载成片' : '查看结果'}</Button>
                   : needsBillingCheck ? <div className="job-recovery-guidance"><span>{isImageTask ? '没有可恢复的图片链接。请先核对提供商账单，再回到画布重新生成。' : '原模型不可用，请先核对提供商记录；需要重新生成时回到画布。'}</span>{job.shot_id && <Button variant="default" size="xs" onClick={() => { setShotId(job.shot_id); setTab('canvas') }} leftSection={<Clapperboard size={14} />}>回到画布</Button>}</div>
-                    : job.status === 'failed' ? <Button variant="default" size="xs" disabled={busy} onClick={() => action(async () => { await api(`/jobs/${job.id}/retry`, { method: 'POST' }); await refreshDetail() }, job.recovery_available ? '图片下载恢复任务已入队' : '任务已重新入队')} leftSection={job.recovery_available ? <Download size={14} /> : <RefreshCcw size={14} />}>{job.recovery_available ? '恢复下载' : '重试'}</Button>
+                    : job.status === 'failed' ? <Button variant="default" size="xs" disabled={busy} onClick={() => action(async () => { await api(`/jobs/${job.id}/retry`, { method: 'POST' }); await refreshDetail() }, job.recovery_available ? '图片下载恢复任务已入队' : job.task_resume_available ? '图片任务继续查询已入队' : '任务已重新入队')} leftSection={job.recovery_available ? <Download size={14} /> : <RefreshCcw size={14} />}>{job.recovery_available ? '恢复下载' : job.task_resume_available ? '继续查询' : '重试'}</Button>
                       : <span>—</span>}
                 {job.error && <small className="job-error" title={job.error}>{job.error}</small>}
               </div>
@@ -1415,7 +1419,7 @@ function App() {
         <div className="generation-review-actions"><Button variant="default" onClick={() => setGenerationReview(null)} disabled={busy}>返回修改</Button><Button onClick={generateCandidate} loading={busy} leftSection={<Sparkles size={16} />}>确认提交 1 个候选</Button></div>
       </div>}
     </Modal>
-    {visualPreparationOpen && detail && <VisualPreparation detail={detail} models={models} shotId={currentShot?.id} onRefresh={() => refreshDetail()} onClose={() => setVisualPreparationOpen(false)} />}
+    {visualPreparationOpen && detail && <VisualPreparation detail={detail} models={models} shotId={currentShot?.id} onRefresh={() => refreshDetail()} onClose={() => setVisualPreparationOpen(false)} onOpenCanvas={ids => { requestVisualCanvas(detail.id, ids); setVisualPreparationOpen(false); setTab('canvas') }} />}
     <Modal className="candidate-review-modal" opened={!!candidateReview} onClose={() => { if (!busy) setCandidateReview(null) }} closeOnEscape={!busy} closeOnClickOutside={!busy} title="候选审核" size="xl" centered>
       {candidateReview && reviewAsset && <div className="candidate-review-detail">
         <div className="candidate-review-heading"><div><strong>{detail?.shots.find((shot) => shot.id === candidateReview.shotId)?.title}</strong><span>{reviewAsset.source === 'upload' ? '本地导入' : models.find((model) => model.id === reviewAsset.model_id)?.name || '生成素材'} · {dateLabel(reviewAsset.created_at)}</span></div><Badge variant="light" color={reviewRecord?.status === 'approved' ? 'teal' : reviewRecord?.status === 'rejected' ? 'red' : 'gray'}>{reviewStatusText[reviewRecord?.status || 'pending']}</Badge></div>

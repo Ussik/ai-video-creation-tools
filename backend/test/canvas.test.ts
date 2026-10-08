@@ -96,6 +96,40 @@ test('canvas survives reinitialization, preserves order, and repeated PUT is ide
   assert.equal((await getCanvas(other.id)).nodes[0]?.text, '另一个项目')
 })
 
+test('fixed frame edges and complete prompt drafts persist, reject foreign images and retain a deleted snapshot identity', async () => {
+  const project = await call<{ id: string }>('POST', '/api/projects', { name: '首帧衔接' })
+  const other = await call<{ id: string }>('POST', '/api/projects', { name: '外部图片' })
+  for (const [id, projectId] of [['fixed-frame', project.id], ['foreign-frame', other.id]]) {
+    run(`INSERT INTO assets (id, project_id, kind, filename, path, source, created_at) VALUES (?, ?, 'image', 'frame.png', '/tmp/frame.png', 'upload', ?)`, id, projectId, now())
+  }
+  const prompt = '完整提示词\n' + '人物、场景与动作设定。'.repeat(2000)
+  const graph = { nodes: [
+    { id: 'source', type: 'image', x: 0, y: 0, width: 320, height: 240 },
+    { id: 'target', type: 'generation', x: 500, y: 0, width: 320, height: 240, text: prompt,
+      settings: { modality: 'video', mode: 'first_frame', prompt_is_final: true, prompt_override: true, prompt_base: '动作描述', prompt_template: prompt } },
+  ], edges: [{ id: 'frame', source: 'source', target: 'target', reference_asset_id: 'fixed-frame' }] }
+  const saved = await putCanvas(project.id, graph, (await getCanvas(project.id)).revision)
+  assert.deepEqual(saved.edges, graph.edges)
+  assert.equal(saved.nodes[1].text, prompt)
+  assert.deepEqual(saved.nodes[1].settings, graph.nodes[1].settings)
+  initDb()
+  assert.deepEqual(await getCanvas(project.id), saved)
+  const foreign = await app.inject({ method: 'PUT', url: `/api/projects/${project.id}/canvas`, payload: {
+    ...graph, revision: saved.revision, edges: [{ ...graph.edges[0], reference_asset_id: 'foreign-frame' }],
+  } })
+  assert.equal(foreign.statusCode, 422)
+  assert.deepEqual(await getCanvas(project.id), saved)
+  run('DELETE FROM assets WHERE id=?', 'fixed-frame')
+  const missing = await getCanvas(project.id)
+  assert.deepEqual(missing.edges, graph.edges)
+  assert.deepEqual((await putCanvas(project.id, { ...graph, nodes: graph.nodes.map(node => ({ ...node, x: node.x + 10 })) }, missing.revision)).edges, graph.edges)
+  const latest = await getCanvas(project.id)
+  const replacement = await app.inject({ method: 'PUT', url: `/api/projects/${project.id}/canvas`, payload: {
+    ...latest, edges: [{ ...graph.edges[0], reference_asset_id: 'unknown-frame' }],
+  } })
+  assert.equal(replacement.statusCode, 422)
+})
+
 test('canvas rejects invalid references and connections without changing the saved graph', async () => {
   const project = await call<{ id: string }>('POST', '/api/projects', { name: '校验项目' })
   const other = await call<{ id: string }>('POST', '/api/projects', { name: '外部项目' })

@@ -1060,6 +1060,49 @@ body,
   overscroll-behavior: contain;
 }
 .project-canvas .pc-prompt-composer.is-expanded { width: min(960px, calc(100vw - 48px)); }
+.project-canvas .pc-composer-modal-content {
+  background: transparent;
+  box-shadow: none;
+  overflow: hidden;
+}
+.project-canvas .pc-composer-modal-body { padding: 0; }
+.project-canvas .pc-composer-modal-content .pc-prompt-composer.is-expanded {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  height: min(760px, calc(100dvh - 80px));
+  max-height: none;
+  padding: 22px 24px 18px;
+  border-radius: 24px;
+  background: #242424;
+  overflow: hidden;
+}
+.pc-composer-modal-content .pc-prompt-composer-head,
+.pc-composer-modal-content .pc-prompt-composer-foot { flex-shrink: 0; }
+.pc-composer-modal-content .pc-prompt-composer-actions,
+.pc-composer-modal-content .pc-composer-submit { flex-shrink: 0; }
+.pc-composer-modal-content .pc-prompt-composer-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.pc-composer-modal-content .pc-prompt-composer-body > :not(.pc-prompt-composer-input) { flex-shrink: 0; }
+.pc-composer-modal-content .pc-prompt-composer-input { display: flex; flex-direction: column; flex: 1; }
+.pc-composer-modal-content .pc-prompt-composer-input .mantine-Input-wrapper { display: flex; flex: 1; }
+.pc-composer-modal-content .pc-prompt-composer-input textarea { flex: 1; }
+@media (max-width: 700px) {
+  .project-canvas .pc-composer-modal-content .pc-prompt-composer.is-expanded {
+    height: calc(100dvh - 48px);
+    padding: 16px 14px 12px;
+    border-radius: 20px;
+  }
+  .pc-composer-modal-content .pc-prompt-composer-input textarea { min-height: 140px !important; }
+}
 .project-canvas .pc-text-prompt-composer { width: min(580px, calc(100vw - 48px)); }
 .project-canvas .pc-prompt-composer-head { min-height: 30px; }
 .pc-composer-references { display: flex; flex-wrap: wrap; gap: 10px; }

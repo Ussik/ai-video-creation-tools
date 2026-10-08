@@ -26,6 +26,15 @@ test('saved documents and episode scripts stay discoverable without canvas refer
   assert.doesNotMatch(storyboardContext(items[2], detail), /第一集独立正文/)
 })
 
+test('visual profile boards remain production references rather than storyboard shots', () => {
+  const detail = project({ assets: [{ id: 'board', kind: 'image' }] as Asset[] })
+  const items = storyboardItems(detail, graph(
+    node('profile', { asset_id: 'board', settings: { visual_profile_id: 'linwan', modality: 'image' } }),
+    node('frame', { asset_id: 'board', shot_id: 'shot' }),
+  ), [])
+  assert.deepEqual(items.map(item => item.id), ['frame'])
+})
+
 test('image/video generators use completed job output, pinned assets and model modality correctly', () => {
   const image = { id: 'image', kind: 'image', filename: 'image.png' } as Asset
   const video = { id: 'video', kind: 'video', filename: 'video.mp4' } as Asset

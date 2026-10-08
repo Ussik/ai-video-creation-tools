@@ -9,6 +9,7 @@ import { pipeline } from 'node:stream/promises'
 import { ZodError, z } from 'zod'
 import { all, dataDir, db, initDb, mediaDir, newId, now, one, required, run } from './db.js'
 import type { Asset, AssetReview, AssetTask, AssetTaskEvent, CanvasEdge, CanvasNode, CutReview, Job, Model, Project, Provider, ScriptArtifact, ScriptConversation, ScriptMessage, ScriptScene, Shot, TimelineClip } from './db.js'
+import { shotImagePrompt, shotVideoPrompt } from './shot-prompts.js'
 import { decryptKey, encryptKey } from './secrets.js'
 import { generate, recoverImage, streamText } from './providers.js'
 import { parseStructuredOutput } from './structured-output.js'
@@ -35,6 +36,7 @@ const productionRangeInput = z.object({
 }).strict()
 const shotInput = z.object({
   title: z.string().trim().min(1).max(120), prompt: z.string().default(''),
+  image_prompt: z.string().max(20000).default(''), video_prompt: z.string().max(20000).default(''),
   duration: z.number().int().min(1).max(30).default(5),
   source_scene_id: z.string().min(1).nullable().optional(),
   start_state: z.string().max(2000).default(''), end_state: z.string().max(2000).default(''),
@@ -42,6 +44,7 @@ const shotInput = z.object({
 })
 const shotPatch = z.object({
   title: z.string().trim().min(1).max(120).optional(), prompt: z.string().optional(),
+  image_prompt: z.string().max(20000).optional(), video_prompt: z.string().max(20000).optional(),
   duration: z.number().int().min(1).max(30).optional(), position: z.number().int().min(0).optional(),
   start_state: z.string().max(2000).optional(), end_state: z.string().max(2000).optional(),
   cut_note: z.string().max(2000).optional(),
@@ -168,6 +171,7 @@ const shotPlanningPromptInput = shotPlanningInput.omit({ model_id: true, prompt_
 const plannedShot = z.object({
   title: z.string().trim().min(1).max(120),
   prompt: z.string().trim().min(1).max(10000),
+  image_prompt: z.string().max(20000).default(''), video_prompt: z.string().max(20000).default(''),
   duration: z.number().int().min(1).max(30),
   start_state: z.string().max(2000).default(''),
   end_state: z.string().max(2000).default(''),
@@ -240,6 +244,8 @@ const generationInput = z.object({
   visual_reference_mode: z.enum(['profiles', 'keyframe', 'text_only']).optional(),
   visual_source_prompt: z.string().trim().min(1).optional(),
   visual_signature: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  prompt_is_final: z.boolean().optional(),
+  prompt_template: z.string().max(80000).optional(),
 })
 const canvasId = z.string().min(1).max(100)
 type CanvasTextMark = { type: 'bold' | 'italic' }
@@ -306,6 +312,9 @@ const canvasTextDocument = z.unknown().superRefine((value, context) => {
   }
 })
 const canvasSettings = z.object({
+  visual_profile_id: z.string().min(1).max(100).optional(),
+  visual_profile_revision: z.number().int().min(1).optional(),
+  visual_completed_job_id: canvasId.optional(),
   visual_reference_mode: z.enum(['profiles', 'keyframe', 'text_only']).optional(),
   role: z.enum(['script']).optional(),
   text_mode: z.enum(['choose', 'write', 'video']).optional(),
@@ -314,6 +323,9 @@ const canvasSettings = z.object({
   group_title: z.string().max(160).nullable().optional(),
   modality: z.enum(['text', 'image', 'video']).optional(),
   prompt_override: z.boolean().optional(),
+  prompt_is_final: z.boolean().optional(),
+  prompt_base: z.string().max(80000).optional(),
+  prompt_template: z.string().max(80000).optional(),
   mode: z.enum(['text', 'first_frame', 'first_last_frame', 'reference', 'edit', 'extend']).optional(),
   resolution: z.string().max(100).nullable().optional(),
   // Image generation controls are persisted on the canvas node so reopening
@@ -335,12 +347,14 @@ const canvasNodeInput = z.object({
   y: z.number().finite().min(-1_000_000).max(1_000_000),
   width: z.number().finite().min(1).max(5_000),
   height: z.number().finite().min(1).max(5_000),
-  title: z.string().max(160).default(''), text: z.string().max(20_000).default(''),
+  title: z.string().max(160).default(''), text: z.string().max(80_000).default(''),
   asset_id: canvasId.nullable().default(null), shot_id: canvasId.nullable().default(null),
   model_id: canvasId.nullable().default(null), job_id: canvasId.nullable().default(null),
-  prompt: z.string().max(20_000).default(''), settings: canvasSettings.default({}),
-}).strict()
-const canvasEdgeInput = z.object({ id: canvasId, source: canvasId, target: canvasId }).strict()
+  prompt: z.string().max(80_000).default(''), settings: canvasSettings.default({}),
+}).strict().superRefine((node, context) => {
+  if (!node.settings.prompt_is_final && node.text.length > 20_000) context.addIssue({ code: 'custom', path: ['text'], message: '文本不能超过 20,000 字符' })
+})
+const canvasEdgeInput = z.object({ id: canvasId, source: canvasId, target: canvasId, reference_asset_id: z.string().min(1).optional() }).strict()
 const canvasInput = z.object({
   revision: z.string().regex(/^[a-f0-9]{64}$/),
   nodes: z.array(canvasNodeInput).max(500), edges: z.array(canvasEdgeInput).max(1_000),
@@ -431,8 +445,14 @@ function assetPublic(asset: Asset) {
   }
 }
 
+function imageTaskResumable(job: Job, model?: Model): boolean {
+  return !!job.external_id && model?.modality === 'image' && (JSON.parse(model.settings) as Record<string, unknown>).async_image === true
+}
+
 function jobPublic(job: Job) {
-  return { ...job, recovery_available: Boolean(one('SELECT 1 FROM job_image_recovery WHERE job_id=?', job.id)) }
+  const model = job.model_id ? one<Model>('SELECT * FROM models WHERE id=?', job.model_id) : undefined
+  return { ...job, recovery_available: Boolean(one('SELECT 1 FROM job_image_recovery WHERE job_id=?', job.id)),
+    task_resume_available: imageTaskResumable(job, model) }
 }
 
 function jsonIds(value: string): string[] {
@@ -466,6 +486,34 @@ function setAssetTaskStatus(taskId: string, status: AssetTask['status'], error: 
   run('UPDATE asset_tasks SET status=?, error=?, updated_at=? WHERE id=?', status, error, now(), taskId)
 }
 
+function completeAssetTaskJob(job: Job, assetId: string | null, error: string | null): void {
+  const taskId = assetTaskIdFromJob(job)
+  if (!taskId) return
+  const task = one<AssetTask>('SELECT * FROM asset_tasks WHERE id=?', taskId)
+  if (!task) return
+  const batchId = (JSON.parse(job.request) as Record<string, unknown>).asset_task_batch_id
+  if (typeof batchId === 'string') {
+    const currentJob = task.generation_job_id ? one<Job>('SELECT * FROM jobs WHERE id=?', task.generation_job_id) : undefined
+    // A late retry from an older batch must not replace the current batch.
+    if (!currentJob || JSON.parse(currentJob.request).asset_task_batch_id !== batchId) return
+    const jobs = all<Job>(`SELECT * FROM jobs WHERE project_id=? AND json_extract(request, '$.asset_task_batch_id')=? ORDER BY created_at, id`, job.project_id, batchId)
+    const active = jobs.some(item => item.status === 'queued' || item.status === 'running')
+    const successful = jobs.filter(item => item.status === 'succeeded' && item.result_asset_id)
+    const result = successful.find(item => item.id === currentJob.id) || successful.at(-1)
+    const status = active ? 'generating' : result ? 'ready' : 'failed'
+    run('UPDATE asset_tasks SET status=?, result_asset_id=?, generation_job_id=?, error=?, updated_at=? WHERE id=?',
+      status, result?.result_asset_id || null, active ? currentJob.id : result?.id || currentJob.id,
+      status === 'failed' ? error || jobs.find(item => item.error)?.error || '图片生成失败' : null, now(), taskId)
+  } else {
+    if (task.generation_job_id !== job.id) return
+    run('UPDATE asset_tasks SET status=?, result_asset_id=?, error=?, updated_at=? WHERE id=?',
+      assetId ? 'ready' : 'failed', assetId, error, now(), taskId)
+  }
+  addAssetTaskEvent(taskId, assetId ? 'asset_ready' : 'failed', assetId
+    ? typeof batchId === 'string' ? '生成结果已加入候选；确认后可作为设定参考图使用' : '生成结果已回写；确认后可手动保存到资产库，再连接到画布'
+    : `生成失败：${error}`)
+}
+
 function assetTaskIdFromJob(job: Job): string | null {
   try {
     const request = JSON.parse(job.request) as Record<string, unknown>
@@ -481,7 +529,7 @@ function projectCanvas(projectId: string) {
   const nodes = all<CanvasNode>('SELECT * FROM canvas_nodes WHERE project_id=? ORDER BY position', projectId)
     .map(({ project_id, position, settings, ...node }) => ({ ...node, settings: JSON.parse(settings) as z.infer<typeof canvasSettings> }))
   const edges = all<CanvasEdge>('SELECT * FROM canvas_edges WHERE project_id=? ORDER BY position', projectId)
-    .map(({ project_id, position, ...edge }) => edge)
+    .map(({ project_id, position, reference_asset_id, ...edge }) => ({ ...edge, ...(reference_asset_id ? { reference_asset_id } : {}) }))
   return { nodes, edges, revision: createHash('sha256').update(JSON.stringify({ nodes, edges })).digest('hex') }
 }
 
@@ -1007,11 +1055,12 @@ function buildShotPlanningPrompt(project: Project, scenes: ScriptScene[], shotsP
     `同一场所有镜头的 duration 总和必须等于场次 duration。` +
     `先分析对白长度、动作节拍、情绪停顿和转场，再为每个镜头分配不同的入片秒数；快速动作应短，建立空间或情绪停顿可长，不要机械均分。` +
     `若场次已有镜头，请规划新的补充画面，避免重复已有镜头；新镜头会追加，原镜头和素材保留。` +
-    `每个 prompt 要独立完整地描述主体、场景、景别、动作、运镜、光线与风格，保持人物、服装、道具和场景连贯。` +
+    `prompt 是镜头的叙事描述。image_prompt 独立描述单幅开镜首帧：主体、场景、景别、静态姿态、构图、光线与风格，不写动作链、运镜或对白字幕。` +
+    `video_prompt 独立描述从首帧开始的动作先后、表情变化、运镜、节奏与收镜状态，保持人物、服装、道具和场景连贯，不重复图片信息图的拼版要求。` +
     `每镜补充 start_state（开镜时人物位置、姿势、道具状态）、end_state（收镜时状态）、cut_note（本镜如何从前一镜接入及建议切点，整段第一镜可留空）；相邻镜头的状态应连续，禁止动作无因重置。` +
     `不要在画面中加入文字、字幕或水印。\n` +
     `只输出合法 JSON 对象，不要 Markdown 或说明。格式：` +
-    `{"scenes":[{"scene_id":"原始场次 ID","shots":[{"title":"镜头标题","prompt":"完整画面提示词","duration":镜头秒数,"start_state":"开镜状态","end_state":"收镜状态","cut_note":"接镜方式"}]}]}。\n` +
+    `{"scenes":[{"scene_id":"原始场次 ID","shots":[{"title":"镜头标题","prompt":"镜头叙事描述","image_prompt":"单幅首帧图片提示词","video_prompt":"连续动作与运镜视频提示词","duration":镜头秒数,"start_state":"开镜状态","end_state":"收镜状态","cut_note":"接镜方式"}]}]}。\n` +
     `待拆场次：${JSON.stringify(scenes.map(scene => ({
       id: scene.id, heading: scene.heading, location: scene.location, time_of_day: scene.time_of_day,
       characters: scene.characters, action: scene.action, dialogue: scene.dialogue,
@@ -1095,6 +1144,14 @@ function validateSettings(mod: Model['modality'], settings: Record<string, unkno
   if (mod === 'video' && !String(settings.get_path).includes('{id}')) invalid('get_path 必须包含 {id}')
   if (mod === 'text' && !settings.text_path && !Array.isArray(settings.text_paths)) invalid('文本模型需配置 text_path 或 text_paths')
   if (mod === 'image' && !settings.image_base64_path && !settings.image_url_path) invalid('图片模型需配置 image_base64_path 或 image_url_path')
+  if (settings.api_base_url !== undefined) {
+    if (typeof settings.api_base_url !== 'string') invalid('api_base_url 必须是 HTTP 或 HTTPS 地址')
+    checkBaseUrl(settings.api_base_url)
+  }
+  if (mod === 'image' && settings.async_image === true) {
+    if (typeof settings.get_path !== 'string' || !settings.get_path.includes('{id}')) invalid('异步图片模型的 get_path 必须包含 {id}')
+    if (typeof settings.id_path !== 'string' || !settings.id_path) invalid('异步图片模型需配置 id_path')
+  }
 }
 
 function validateGeneration(data: z.infer<typeof generationInput>, model: Model, projectId: string): Asset[] {
@@ -1105,6 +1162,10 @@ function validateGeneration(data: z.infer<typeof generationInput>, model: Model,
   if (model.modality === 'text' && data.mode !== 'text') invalid('文本模型只支持文本模式')
   if (model.modality === 'image' && !['text', 'reference'].includes(data.mode)) invalid('图片模型只支持文生图或图生图模式')
   if (model.modality === 'image' && data.mode === 'reference' && !references.length) invalid('图生图模式需要至少一张参考图片')
+  if (model.modality === 'image') {
+    const referenceIssue = imageReferenceConfigError(settings, references.length, data.mode)
+    if (referenceIssue) invalid(referenceIssue)
+  }
   if (model.modality === 'video') {
     const supportedModes = Array.isArray(settings.supported_modes) ? settings.supported_modes : ['text']
     if (!supportedModes.includes(data.mode)) invalid('该模型没有配置所选视频模式')
@@ -1149,7 +1210,6 @@ function byteRange(header: string, size: number): { start: number; end: number }
 
 async function processJob(job: Job): Promise<void> {
   const request = JSON.parse(job.request) as Record<string, unknown>
-  const assetTaskId = assetTaskIdFromJob(job)
   let path: string
   let kind: Asset['kind']
   let source: Asset['source']
@@ -1191,10 +1251,7 @@ async function processJob(job: Job): Promise<void> {
       run('INSERT OR IGNORE INTO saved_assets (asset_id, project_id, created_at) VALUES (?, ?, ?)', assetId, job.project_id, now())
     }
     run("UPDATE jobs SET status='succeeded', result_asset_id=?, error=NULL, updated_at=? WHERE id=?", assetId, now(), job.id)
-    if (assetTaskId) {
-      run('UPDATE asset_tasks SET status=?, result_asset_id=?, error=NULL, updated_at=? WHERE id=?', 'ready', assetId, now(), assetTaskId)
-      addAssetTaskEvent(assetTaskId, 'asset_ready', '生成结果已回写；确认后可手动保存到资产库，再连接到画布')
-    }
+    completeAssetTaskJob(job, assetId, null)
     run('DELETE FROM job_image_recovery WHERE job_id=?', job.id)
     touchProject(job.project_id)
   })()
@@ -1212,12 +1269,7 @@ export function startWorker(): () => void {
         try { await processJob(job) }
         catch (error) {
           run("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?", String(error instanceof Error ? error.message : error).slice(0, 2000), now(), job.id)
-          const assetTaskId = assetTaskIdFromJob(job)
-          if (assetTaskId) {
-            const message = String(error instanceof Error ? error.message : error).slice(0, 2000)
-            setAssetTaskStatus(assetTaskId, 'failed', message)
-            addAssetTaskEvent(assetTaskId, 'failed', `生成失败：${message}`)
-          }
+          completeAssetTaskJob(job, null, String(error instanceof Error ? error.message : error).slice(0, 2000))
         }
       }
     } catch (error) { console.error('任务处理失败', error) }
@@ -1240,6 +1292,7 @@ export function buildApp(): FastifyInstance {
 
   registerVisualProfileRoutes(app, {
     script: projectScript,
+    generateBoard: (taskId, input, profile, candidateCount) => enqueueAssetTask(taskId, input, { visual_profile_id: profile.id, visual_profile_revision: profile.revision }, candidateCount),
     generateText: async (projectId, modelId, prompt) => {
       const model = required<Model>('models', modelId)
       if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
@@ -1293,9 +1346,18 @@ export function buildApp(): FastifyInstance {
         throw Object.assign(new Error('画布已在其他位置修改，请刷新后重试'), { statusCode: 409 })
       }
       const nodeIds = new Set<string>()
+      const profileIds = new Set<string>()
       for (const node of data.nodes) {
         if (nodeIds.has(node.id)) invalid('画布节点 ID 不能重复')
         nodeIds.add(node.id)
+        if (node.settings.visual_profile_id) {
+          const profile = one<{ project_id: string }>('SELECT project_id FROM visual_profiles WHERE id=?', node.settings.visual_profile_id)
+          if (!profile || profile.project_id !== id) invalid('画布设定不属于当前项目')
+          if (node.type !== 'generation' || node.settings.modality !== 'image' || node.shot_id) invalid('设定图节点必须是未关联镜头的图片生成节点')
+          if (profileIds.has(node.settings.visual_profile_id)) invalid('同一份设定只能有一个画布节点')
+          profileIds.add(node.settings.visual_profile_id)
+          if (node.model_id && one<Model>('SELECT * FROM models WHERE id=?', node.model_id)?.modality !== 'image') invalid('设定图节点只能使用图片模型')
+        }
         if (node.asset_id) {
           const asset = one<Asset>('SELECT * FROM assets WHERE id=?', node.asset_id)
           if (!asset || asset.project_id !== id) invalid('画布素材不属于当前项目')
@@ -1324,6 +1386,14 @@ export function buildApp(): FastifyInstance {
         const pair = JSON.stringify([edge.source, edge.target])
         if (pairs.has(pair)) invalid('画布节点之间不能重复连接')
         pairs.add(pair)
+        if (edge.reference_asset_id) {
+          const asset = one<Asset>('SELECT * FROM assets WHERE id=?', edge.reference_asset_id)
+          const previous = one<CanvasEdge>('SELECT * FROM canvas_edges WHERE project_id=? AND id=?', id, edge.id)
+          if (asset ? asset.project_id !== id || asset.kind !== 'image'
+            : !previous || previous.reference_asset_id !== edge.reference_asset_id || previous.source !== edge.source || previous.target !== edge.target) {
+            invalid('固定参考图必须是当前项目的图片')
+          }
+        }
       }
       run('DELETE FROM canvas_edges WHERE project_id=?', id)
       run('DELETE FROM canvas_nodes WHERE project_id=?', id)
@@ -1334,8 +1404,8 @@ export function buildApp(): FastifyInstance {
         node.title, node.text, node.asset_id, node.shot_id, node.model_id, node.job_id,
         node.prompt, JSON.stringify(node.settings)))
       data.edges.forEach((edge, position) => run(`INSERT INTO canvas_edges
-        (id, project_id, position, source, target) VALUES (?, ?, ?, ?, ?)`,
-        edge.id, id, position, edge.source, edge.target))
+        (id, project_id, position, source, target, reference_asset_id) VALUES (?, ?, ?, ?, ?, ?)`,
+        edge.id, id, position, edge.source, edge.target, edge.reference_asset_id || null))
       touchProject(id)
       return projectCanvas(id)
     }).immediate()
@@ -1860,11 +1930,10 @@ export function buildApp(): FastifyInstance {
     touchProject(task.project_id)
     return assetTaskPublic(required<AssetTask>('asset_tasks', id))
   })
-  app.post('/api/asset-tasks/:id/generate', async request => {
-    const { id } = parse(idParams, request.params)
+  function enqueueAssetTask(id: string, input: unknown, metadata: Record<string, unknown> = {}, candidateCount = 1) {
     const task = required<AssetTask>('asset_tasks', id)
     if (!['awaiting_confirmation', 'ready', 'failed'].includes(task.status)) invalid('当前任务尚未准备好重新生成')
-    const data = parse(assetTaskGenerateInput, request.body)
+    const data = parse(assetTaskGenerateInput, input)
     const model = required<Model>('models', data.model_id)
     if (model.modality !== 'image' || !model.enabled || model.archived) invalid('请选择已启用的图片模型')
     checkProtocol(model.modality, model.protocol)
@@ -1880,22 +1949,30 @@ export function buildApp(): FastifyInstance {
     if (referenceError) invalid(referenceError)
     const prompt = data.prompt || task.prompt
     if (!prompt.trim()) invalid('请先填写图片生成提示词')
-    const jobId = newId(), timestamp = now()
+    const jobIds = Array.from({ length: candidateCount }, () => newId()), timestamp = now()
+    const batchId = candidateCount > 1 ? newId() : undefined
     const requestPayload = {
+      ...metadata,
+      ...(batchId ? { asset_task_batch_id: batchId } : {}),
       asset_task_id: task.id, prompt, mode: data.mode, reference_asset_ids: data.reference_asset_ids,
       reference_video_url: null, resolution: data.resolution ?? null, quality: data.quality ?? null,
       clarity: data.clarity ?? null, background: data.background ?? null, duration: 5, ratio: data.ratio,
       generate_audio: false, draft: false,
     }
     db.transaction(() => {
-      run("INSERT INTO jobs VALUES (?, ?, NULL, ?, 'generation', ?, 'queued', NULL, NULL, NULL, ?, ?)",
+      for (const jobId of jobIds) run("INSERT INTO jobs VALUES (?, ?, NULL, ?, 'generation', ?, 'queued', NULL, NULL, NULL, ?, ?)",
         jobId, task.project_id, model.id, JSON.stringify(requestPayload), timestamp, timestamp)
       run('UPDATE asset_tasks SET status=?, prompt=?, generation_job_id=?, result_asset_id=NULL, error=NULL, updated_at=? WHERE id=?',
-        'generating', prompt, jobId, timestamp, task.id)
-      addAssetTaskEvent(task.id, 'generating', '正在生成图片资产，结果完成后会自动回写到本任务')
+        'generating', prompt, jobIds.at(-1)!, timestamp, task.id)
+      addAssetTaskEvent(task.id, 'generating', candidateCount > 1 ? `正在生成 ${candidateCount} 张候选图片，结果完成后会自动回写到本任务` : '正在生成图片资产，结果完成后会自动回写到本任务')
       touchProject(task.project_id)
     })()
-    return { task: assetTaskPublic(required<AssetTask>('asset_tasks', task.id)), job: jobPublic(required<Job>('jobs', jobId)) }
+    const jobs = jobIds.map(jobId => jobPublic(required<Job>('jobs', jobId)))
+    return { task: assetTaskPublic(required<AssetTask>('asset_tasks', task.id)), job: jobs.at(-1)!, jobs }
+  }
+  app.post('/api/asset-tasks/:id/generate', async request => {
+    const { id } = parse(idParams, request.params)
+    return enqueueAssetTask(id, request.body)
   })
   app.get('/api/projects/:id/script/conversations', async request => {
     const { id } = parse(idParams, request.params)
@@ -2053,9 +2130,10 @@ export function buildApp(): FastifyInstance {
       for (const scene of scenes) {
         if (existing.has(scene.id)) { skipped_scene_ids.push(scene.id); continue }
         const shotId = newId()
-        run(`INSERT INTO shots (id, project_id, position, title, prompt, duration, selected_asset_id, created_at, source_scene_id)
-          VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
-          shotId, id, position++, scene.heading, scenePrompt(scene), scene.duration, now(), scene.id)
+        const prompt = scenePrompt(scene)
+        run(`INSERT INTO shots (id, project_id, position, title, prompt, duration, selected_asset_id, created_at, source_scene_id, image_prompt, video_prompt)
+          VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
+          shotId, id, position++, scene.heading, prompt, scene.duration, now(), scene.id, shotImagePrompt({ prompt }), shotVideoPrompt({ prompt }))
         inheritSceneVisualBindings(shotId, scene.id)
         shots.push(required<Shot>('shots', shotId))
       }
@@ -2098,7 +2176,7 @@ export function buildApp(): FastifyInstance {
       const durations = distributeShotDurations(shots, scene.duration)
       return {
         scene_id: scene.id, scene_heading: scene.heading, scene_duration: scene.duration,
-        shots: shots.map((shot, index) => ({ ...shot, duration: durations[index] })),
+        shots: shots.map((shot, index) => ({ ...shot, duration: durations[index], image_prompt: shotImagePrompt(shot), video_prompt: shotVideoPrompt(shot) })),
       }
     }) }
   })
@@ -2146,10 +2224,10 @@ export function buildApp(): FastifyInstance {
         for (const shot of plans.get(scene.id)!) {
           const shotId = newId()
           run(`INSERT INTO shots (id, project_id, position, title, prompt, duration, selected_asset_id, created_at, source_scene_id,
-            start_state, end_state, cut_note)
-            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+            start_state, end_state, cut_note, image_prompt, video_prompt)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
             shotId, id, provisionalPosition++, shot.title, shot.prompt, shot.duration, now(), scene.id,
-            shot.start_state, shot.end_state, shot.cut_note)
+            shot.start_state, shot.end_state, shot.cut_note, shotImagePrompt(shot), shotVideoPrompt(shot))
           inheritSceneVisualBindings(shotId, scene.id)
           createdIds.push(shotId)
           additions.push({ id: shotId, source_scene_id: scene.id })
@@ -2281,9 +2359,9 @@ export function buildApp(): FastifyInstance {
     const position = one<{ next: number }>('SELECT COALESCE(MAX(position), -1)+1 AS next FROM shots WHERE project_id=?', id)!.next
     const shotId = newId()
     run(`INSERT INTO shots (id, project_id, position, title, prompt, duration, selected_asset_id, created_at, source_scene_id,
-      start_state, end_state, cut_note)
-      VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`, shotId, id, position, data.title, data.prompt,
-      data.duration, now(), data.source_scene_id ?? null, data.start_state, data.end_state, data.cut_note)
+      start_state, end_state, cut_note, image_prompt, video_prompt)
+      VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`, shotId, id, position, data.title, data.prompt,
+      data.duration, now(), data.source_scene_id ?? null, data.start_state, data.end_state, data.cut_note, data.image_prompt, data.video_prompt)
     inheritSceneVisualBindings(shotId, data.source_scene_id ?? null)
     touchProject(id)
     return required<Shot>('shots', shotId)
@@ -2708,11 +2786,14 @@ export function buildApp(): FastifyInstance {
     if (job.job_type === 'generation') {
       const model = job.model_id ? one<Model>('SELECT * FROM models WHERE id=?', job.model_id) : undefined
       const recovery = one('SELECT 1 FROM job_image_recovery WHERE job_id=?', id)
-      if (model?.modality === 'image' && !recovery) invalid('图片生成结果未保存；厂商可能已计费。请先核对厂商记录，再手动创建新的生成任务。')
+      if (model?.modality === 'image' && !recovery && !imageTaskResumable(job, model)) invalid('图片生成结果未保存；厂商可能已计费。请先核对厂商记录，再手动创建新的生成任务。')
       const provider = model ? one<Provider>('SELECT * FROM providers WHERE id=?', model.provider_id) : undefined
       if (!recovery && (!model?.enabled || model.archived || !provider?.enabled || provider.archived || provider.adapter === 'demo')) invalid('模型或提供商已停用，无法重试')
     }
     const data = parse(retryJobInput, request.body || {})
+    if (data.prompt && job.model_id && imageTaskResumable(job, one<Model>('SELECT * FROM models WHERE id=?', job.model_id))) {
+      invalid('继续查询现有图片任务不能修改提示词；如需改动，请新建生成任务')
+    }
     let jobRequest = job.request
     if (data.prompt && job.job_type === 'generation') {
       try {
@@ -2722,6 +2803,13 @@ export function buildApp(): FastifyInstance {
       } catch { invalid('任务请求记录损坏，无法修改提示词') }
     }
     run("UPDATE jobs SET request=?, status='queued', error=NULL, updated_at=? WHERE id=?", jobRequest, now(), id)
+    const taskId = assetTaskIdFromJob(job)
+    const task = taskId ? one<AssetTask>('SELECT * FROM asset_tasks WHERE id=?', taskId) : undefined
+    const current = task?.generation_job_id ? one<Job>('SELECT * FROM jobs WHERE id=?', task.generation_job_id) : undefined
+    const batchId = (JSON.parse(jobRequest) as Record<string, unknown>).asset_task_batch_id
+    if (task && (current?.id === id || typeof batchId === 'string' && current && JSON.parse(current.request).asset_task_batch_id === batchId)) {
+      setAssetTaskStatus(task.id, 'generating')
+    }
     return jobPublic(required<Job>('jobs', id))
   })
 

@@ -24,6 +24,7 @@ export interface Shot {
   id: string; project_id: string; position: number; title: string; prompt: string;
   duration: number; selected_asset_id: string | null; created_at: string;
   source_scene_id: string | null; start_state: string; end_state: string; cut_note: string
+  image_prompt: string; video_prompt: string
 }
 export interface TimelineClip {
   id: string; project_id: string; shot_id: string; asset_id: string;
@@ -129,7 +130,7 @@ export interface CanvasNode {
 }
 export interface CanvasEdge {
   id: string; project_id: string; position: number;
-  source: string; target: string
+  source: string; target: string; reference_asset_id?: string | null
 }
 
 export function one<T>(sql: string, ...params: unknown[]): T | undefined {
@@ -356,6 +357,13 @@ export function initDb(): void {
       required INTEGER NOT NULL DEFAULT 1,
       PRIMARY KEY (scene_id, profile_id)
     );
+    CREATE TABLE IF NOT EXISTS visual_profile_candidates (
+      profile_id TEXT NOT NULL REFERENCES visual_profiles(id) ON DELETE CASCADE,
+      asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+      archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (profile_id, asset_id)
+    );
     CREATE TABLE IF NOT EXISTS shot_visual_bindings (
       shot_id TEXT NOT NULL REFERENCES shots(id) ON DELETE CASCADE,
       profile_id TEXT NOT NULL REFERENCES visual_profiles(id) ON DELETE CASCADE,
@@ -449,7 +457,7 @@ export function initDb(): void {
   if (!shotColumns.some(column => column.name === 'source_scene_id')) {
     db.exec('ALTER TABLE shots ADD COLUMN source_scene_id TEXT REFERENCES script_scenes(id) ON DELETE SET NULL')
   }
-  for (const field of ['start_state', 'end_state', 'cut_note']) {
+  for (const field of ['start_state', 'end_state', 'cut_note', 'image_prompt', 'video_prompt']) {
     if (!shotColumns.some(column => column.name === field)) {
       db.exec(`ALTER TABLE shots ADD COLUMN ${field} TEXT NOT NULL DEFAULT ''`)
     }
@@ -512,6 +520,11 @@ export function initDb(): void {
     }
   }
 
+  const edgeColumns = db.pragma('table_info(canvas_edges)') as Array<{ name: string }>
+  if (!edgeColumns.some(column => column.name === 'reference_asset_id')) {
+    // Keep a deleted snapshot ID so it never falls back to a newer result.
+    db.exec('ALTER TABLE canvas_edges ADD COLUMN reference_asset_id TEXT')
+  }
   const clipColumns = db.pragma('table_info(timeline_clips)') as Array<{ name: string }>
   if (!clipColumns.some(column => column.name === 'source_audio_gain')) {
     db.exec('ALTER TABLE timeline_clips ADD COLUMN source_audio_gain REAL NOT NULL DEFAULT 1')
@@ -601,7 +614,10 @@ export function initDb(): void {
     run(`UPDATE jobs SET status='failed', error=?, updated_at=?
       WHERE status='running' AND job_type='generation'
         AND model_id IN (SELECT id FROM models WHERE modality='image')
-        AND NOT EXISTS (SELECT 1 FROM job_image_recovery WHERE job_id=jobs.id)`,
+        AND NOT EXISTS (SELECT 1 FROM job_image_recovery WHERE job_id=jobs.id)
+        AND NOT (external_id IS NOT NULL AND external_id<>'' AND model_id IN (
+          SELECT id FROM models WHERE json_extract(CASE WHEN json_valid(settings) THEN settings ELSE '{}' END, '$.async_image')=1
+        ))`,
       '图片任务中断，未找到可恢复图片链接。厂商可能已计费，请先核对厂商记录，再手动创建新的生成任务。', timestamp)
     run("UPDATE jobs SET status='queued', updated_at=? WHERE status='running'", timestamp)
   })()

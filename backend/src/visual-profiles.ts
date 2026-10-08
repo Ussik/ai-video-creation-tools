@@ -5,6 +5,7 @@ import { all, db, newId, now, one, required, run } from './db.js'
 import type { Asset, AssetTask, Model, Project, ScriptArtifact, ScriptScene, Shot } from './db.js'
 import { parseStructuredOutput } from './structured-output.js'
 import { imageReferenceConfigError } from './image-reference-config.js'
+import { visualGenerationPrompt } from './visual-prompt.js'
 
 export type VisualKind = 'character' | 'location' | 'prop'
 export interface VisualProfile {
@@ -36,13 +37,16 @@ const boardInput = z.object({
   reference_asset_ids: z.array(z.string().min(1)).max(10).default([]),
   reference_signature: z.string().optional(),
   model_id: z.string().min(1).optional(),
+  prompt_append: z.string().trim().max(10000).optional(),
 }).strict()
 const labels: Record<VisualKind, string> = { character: '人物', location: '场景', prop: '道具' }
 
 function invalid(message: string): never { throw Object.assign(new Error(message), { statusCode: 422 }) }
 function touch(projectId: string) { run('UPDATE projects SET updated_at=? WHERE id=?', now(), projectId) }
 function publicProfile(profile: VisualProfile) {
-  return { ...profile, board_prompt: boardPrompt(profile) }
+  const candidates = all<{ asset_id: string; archived: number }>('SELECT asset_id, archived FROM visual_profile_candidates WHERE profile_id=?', profile.id)
+  return { ...profile, board_prompt: boardPrompt(profile), candidate_asset_ids: candidates.map(item => item.asset_id),
+    archived_candidate_asset_ids: candidates.filter(item => item.archived).map(item => item.asset_id) }
 }
 export function boardPrompt(profile: Pick<VisualProfile, 'kind' | 'name' | 'variant' | 'definition' | 'view_requirements'>): string {
   return `制作一张专业影视${labels[profile.kind]}视觉设定信息图。对象：${profile.name}；版本：${profile.variant}。\n` +
@@ -72,7 +76,7 @@ function prepareBoard(profile: VisualProfile, input: z.infer<typeof boardInput>)
     const reference = referenceProfiles[index]
     return reference ? `${reference.name} · ${reference.variant} · v${reference.revision}` : asset.filename
   })
-  const signature = createHash('sha256').update(JSON.stringify({ profile: [profile.id, profile.revision], references: referenceProfiles, ids })).digest('hex')
+  const signature = createHash('sha256').update(JSON.stringify({ profile: [profile.id, profile.revision], references: referenceProfiles, ids, prompt_append: input.prompt_append || '' })).digest('hex')
   if (input.reference_signature && input.reference_signature !== signature) {
     throw Object.assign(new Error('参考设定或信息图已更新，请重新确认生成参数'), { statusCode: 409 })
   }
@@ -86,10 +90,23 @@ function prepareBoard(profile: VisualProfile, input: z.infer<typeof boardInput>)
     const reference = referenceProfiles[index]
     return `参考图 ${index + 1}：${names[index]}${reference ? `\n固定设定：${reference.definition}` : ''}`
   }).join('\n\n')
-  const prompt = boardPrompt(profile) + (context ? `\n\n【生成参考图】\n${context}\n` +
+  const prompt = boardPrompt(profile) + (input.prompt_append ? `\n\n本次补充要求：\n${input.prompt_append}` : '') + (context ? `\n\n【生成参考图】\n${context}\n` +
     `参考图编号与提交图片顺序一致。严格保持各参考对象的外貌、比例、服装、材质与配色，不能互换或混合身份。` +
     `同一主体的参考图用于保持主体一致；其他对象仅用于上述设定要求的同框、互动或尺度对比细节，不增加独立主体视图，不复制参考信息图的版式、文字或色板。` : '')
   return { prompt, reference_asset_ids: ids, reference_names: names, reference_signature: signature, mode: ids.length ? 'reference' as const : 'text' as const }
+}
+
+function boardTask(profile: VisualProfile, prompt: string) {
+  if (profile.asset_task_id && one<AssetTask>('SELECT * FROM asset_tasks WHERE id=?', profile.asset_task_id)) {
+    return { task_id: profile.asset_task_id, prompt }
+  }
+  const taskId = newId(), timestamp = now()
+  const scenes = all<{ scene_id: string }>('SELECT scene_id FROM scene_visual_bindings WHERE profile_id=?', profile.id).map(item => item.scene_id)
+  run(`INSERT INTO asset_tasks (id, project_id, focus_artifact, status, source_artifact_ids, source_scene_ids, prompt, created_at, updated_at)
+    VALUES (?, ?, ?, 'awaiting_confirmation', '[]', ?, ?, ?, ?)`, taskId, profile.project_id, profile.kind, JSON.stringify(scenes), prompt, timestamp, timestamp)
+  run('UPDATE visual_profiles SET asset_task_id=?, updated_at=? WHERE id=?', taskId, timestamp, profile.id)
+  touch(profile.project_id)
+  return { task_id: taskId, prompt }
 }
 
 export function visualProjectData(projectId: string) {
@@ -125,7 +142,7 @@ export function inheritSceneVisualBindings(shotId: string, sceneId: string | nul
 export type VisualReferenceMode = 'profiles' | 'keyframe' | 'text_only'
 export function prepareVisualGeneration<T extends {
   shot_id?: string | null; prompt: string; reference_asset_ids: string[]; mode: string;
-  visual_reference_mode?: VisualReferenceMode; visual_source_prompt?: string; visual_signature?: string;
+  visual_reference_mode?: VisualReferenceMode; visual_source_prompt?: string; visual_signature?: string; prompt_is_final?: boolean;
 }>(data: T, model: Model, preview = false): T {
   if (!data.shot_id || model.modality === 'text') return data
   const bindings = all<VisualBinding>('SELECT * FROM shot_visual_bindings WHERE shot_id=? ORDER BY kind, name, profile_id', data.shot_id)
@@ -135,9 +152,9 @@ export function prepareVisualGeneration<T extends {
   if (!preview && data.visual_signature && data.visual_signature !== signature) {
     throw Object.assign(new Error('镜头视觉设定已更新，请重新检查生成参数'), { statusCode: 409 })
   }
-  if (!bindings.length) return { ...data, prompt: data.visual_source_prompt ?? data.prompt, visual_signature: signature }
+  if (!bindings.length) return { ...data, prompt: data.prompt_is_final ? data.prompt : data.visual_source_prompt ?? data.prompt, visual_signature: signature }
   const missing = bindings.filter(binding => binding.required && !binding.board_asset_id)
-  if (referenceMode !== 'text_only' && missing.length) invalid(`缺少已确认的设定信息图：${missing.map(binding => binding.name).join('、')}`)
+  if (referenceMode === 'profiles' && missing.length) invalid(`缺少已确认的设定信息图：${missing.map(binding => binding.name).join('、')}`)
   if (referenceMode === 'keyframe' && (model.modality !== 'video' || !['first_frame', 'first_last_frame', 'edit', 'extend'].includes(data.mode))) {
     invalid('关键帧承接需使用首帧、首尾帧、编辑或延长视频模式')
   }
@@ -145,35 +162,21 @@ export function prepareVisualGeneration<T extends {
   if (referenceMode === 'profiles') {
     const settings = JSON.parse(model.settings) as Record<string, unknown>
     const effectiveMode = model.modality === 'image' ? 'reference' : data.mode
-    const templates = settings.request_templates as Record<string, unknown> | undefined
-    const template = JSON.stringify(templates?.[effectiveMode] ?? settings.request_template ?? {})
-    const supported = ['{{image}}', '{{images}}', '{{image_references}}'].some(marker => template.includes(marker)) ||
-      template.includes('{{content}}') && JSON.stringify(settings.content_template || {}).includes('{{image_references}}')
-    if (!supported || model.modality === 'video' && data.mode !== 'reference') invalid('当前模型或模式不能接收设定信息图，请选择支持参考图的模型，或改用关键帧承接/仅文字设定')
+    if (model.modality === 'video' && data.mode !== 'reference') invalid('直接引用设定信息图需切换到视频的参考生成模式；首帧、首尾帧、编辑或延长视频请选择「关键帧承接 + 文字」')
     for (const binding of bindings) if (binding.board_asset_id && !references.includes(binding.board_asset_id)) references.push(binding.board_asset_id)
-    if (references.length > 10) invalid('参考图片超过 10 张，请减少本镜头的设定绑定')
-    if (template.includes('{{image_references}}') || template.includes('{{content}}')) {
-      if (!settings.image_reference_template) invalid('当前模型未配置参考图片模板')
-      const roleMap = settings.reference_roles as Record<string, unknown> | undefined
-      const roles = roleMap?.[effectiveMode]
-      if (!Array.isArray(roles) || !roles.length || roles.length !== 1 && roles.length < references.length) invalid('当前模式的参考图角色配置不足')
-    }
-    if (template.includes('{{image}}') && !template.includes('{{images}}') && !template.includes('{{image_references}}') && !template.includes('{{content}}') && references.length > 1) invalid('当前模型只能接收一张参考图，请选择支持多参考图的模型')
+    const referenceIssue = imageReferenceConfigError(settings, references.length, effectiveMode)
+    if (referenceIssue) invalid(referenceIssue)
   }
-  const context = bindings.map(binding => {
-    const index = referenceMode === 'profiles' && binding.board_asset_id ? references.indexOf(binding.board_asset_id) + 1 : 0
-    return `${labels[binding.kind]}：${binding.name}（${binding.variant}，版本 ${binding.revision}）${index ? `；参考图 ${index}` : ''}\n${binding.definition}\n视图说明：${binding.view_requirements}`
-  }).join('\n\n')
   return { ...data, mode: model.modality === 'image' && references.length ? 'reference' : data.mode,
     reference_asset_ids: references, visual_reference_mode: referenceMode, visual_signature: signature,
     visual_source_prompt: data.visual_source_prompt ?? data.prompt,
-    prompt: `${data.visual_source_prompt ?? data.prompt}\n\n【镜头视觉设定】\n${context}\n` +
-      `保持上述对象的外观、比例、服装、材质与空间关系。只生成当前镜头的一幅完整画面或连续视频；不要复制设定板的多视角拼版、文字、标签或色板。` }
+    prompt: data.prompt_is_final ? data.prompt : visualGenerationPrompt(data.visual_source_prompt ?? data.prompt, bindings, references, referenceMode) }
 }
 
 export function registerVisualProfileRoutes(app: FastifyInstance, context: {
   script: (projectId: string) => { outline: string; characters: string; artifacts?: ScriptArtifact[]; scenes: ScriptScene[] };
   generateText: (projectId: string, modelId: string, prompt: string) => Promise<string>;
+  generateBoard?: (taskId: string, input: Record<string, unknown>, profile: VisualProfile, candidateCount: number) => unknown;
 }) {
   app.get('/api/projects/:id/visual-profiles', async request => {
     const { id } = idParams.parse(request.params)
@@ -241,8 +244,11 @@ export function registerVisualProfileRoutes(app: FastifyInstance, context: {
     if (changed && patch.board_asset_id) invalid('修改设定后请先保存，再确认对应信息图')
     const newRevision = changed || profile.board_asset_id && patch.board_asset_id !== undefined && patch.board_asset_id !== profile.board_asset_id
     db.transaction(() => {
+      if (profile.board_asset_id) run('INSERT OR IGNORE INTO visual_profile_candidates (profile_id, asset_id, archived, updated_at) VALUES (?, ?, 0, ?)', id, profile.board_asset_id, now())
       run(`UPDATE visual_profiles SET kind=?, name=?, variant=?, definition=?, view_requirements=?, revision=?, board_asset_id=?, asset_task_id=?, updated_at=? WHERE id=?`,
         next.kind, next.name, next.variant, next.definition, next.view_requirements, profile.revision + Number(!!newRevision), changed ? null : next.board_asset_id, changed ? null : profile.asset_task_id, now(), id)
+      if (patch.board_asset_id) run(`INSERT INTO visual_profile_candidates (profile_id, asset_id, archived, updated_at) VALUES (?, ?, 0, ?)
+        ON CONFLICT(profile_id, asset_id) DO UPDATE SET archived=0, updated_at=excluded.updated_at`, id, patch.board_asset_id, now())
       // Fill only unresolved bindings to this exact definition version. Completed shots keep their selected board.
       if (!newRevision && patch.board_asset_id) run('UPDATE shot_visual_bindings SET board_asset_id=? WHERE profile_id=? AND revision=? AND board_asset_id IS NULL', patch.board_asset_id, id, profile.revision)
       touch(profile.project_id)
@@ -258,6 +264,30 @@ export function registerVisualProfileRoutes(app: FastifyInstance, context: {
     touch(profile.project_id)
     return { ok: true }
   })
+  app.put('/api/visual-profiles/:id/candidates/:assetId', async request => {
+    const { id, assetId } = z.object({ id: z.string().min(1), assetId: z.string().min(1) }).parse(request.params)
+    const { archived } = z.object({ archived: z.boolean() }).strict().parse(request.body)
+    return db.transaction(() => {
+      const profile = required<VisualProfile>('visual_profiles', id)
+      const asset = required<Asset>('assets', assetId)
+      if (asset.project_id !== profile.project_id || asset.kind !== 'image') invalid('候选图必须来自当前项目')
+      if (archived && profile.board_asset_id === assetId) invalid('当前已确认的设定图不能归档，请先确认其他候选')
+      const registered = one('SELECT 1 FROM visual_profile_candidates WHERE profile_id=? AND asset_id=?', id, assetId)
+      const generated = all<{ request: string }>("SELECT request FROM jobs WHERE project_id=? AND status='succeeded' AND result_asset_id=?", profile.project_id, assetId).some(job => {
+        try {
+          const input = JSON.parse(job.request)
+          return input.visual_profile_id === id || !!profile.asset_task_id && input.asset_task_id === profile.asset_task_id
+        } catch { return false }
+      })
+      const displayed = all<{ settings: string }>('SELECT settings FROM canvas_nodes WHERE project_id=? AND asset_id=?', profile.project_id, assetId)
+        .some(node => { try { return JSON.parse(node.settings).visual_profile_id === id } catch { return false } })
+      if (!registered && !generated && !displayed && profile.board_asset_id !== assetId) invalid('图片不属于此设定的候选')
+      run(`INSERT INTO visual_profile_candidates (profile_id, asset_id, archived, updated_at) VALUES (?, ?, ?, ?)
+        ON CONFLICT(profile_id, asset_id) DO UPDATE SET archived=excluded.archived, updated_at=excluded.updated_at`, id, assetId, Number(archived), now())
+      touch(profile.project_id)
+      return publicProfile(profile)
+    })()
+  })
   app.post('/api/visual-profiles/:id/board-preview', async request => {
     const { id } = idParams.parse(request.params)
     return prepareBoard(required<VisualProfile>('visual_profiles', id), boardInput.extend({ model_id: z.string().min(1) }).parse(request.body))
@@ -267,19 +297,28 @@ export function registerVisualProfileRoutes(app: FastifyInstance, context: {
     const profile = required<VisualProfile>('visual_profiles', id)
     const preview = prepareBoard(profile, boardInput.parse(request.body || {}))
     const prompt = preview.prompt
-    if (profile.asset_task_id) {
-      const task = one<AssetTask>('SELECT * FROM asset_tasks WHERE id=?', profile.asset_task_id)
-      if (task) return { task_id: task.id, prompt }
-    }
-    const taskId = newId(), timestamp = now()
-    const scenes = all<{ scene_id: string }>('SELECT scene_id FROM scene_visual_bindings WHERE profile_id=?', id).map(item => item.scene_id)
-    db.transaction(() => {
-      run(`INSERT INTO asset_tasks (id, project_id, focus_artifact, status, source_artifact_ids, source_scene_ids, prompt, created_at, updated_at)
-        VALUES (?, ?, ?, 'awaiting_confirmation', '[]', ?, ?, ?, ?)`, taskId, profile.project_id, profile.kind, JSON.stringify(scenes), prompt, timestamp, timestamp)
-      run('UPDATE visual_profiles SET asset_task_id=?, updated_at=? WHERE id=?', taskId, timestamp, id)
-      touch(profile.project_id)
+    return db.transaction(() => boardTask(profile, prompt))()
+  })
+  app.post('/api/visual-profiles/:id/generate', async request => {
+    const { id } = idParams.parse(request.params)
+    const data = boardInput.extend({
+      expected_revision: z.number().int().min(1), model_id: z.string().min(1), reference_signature: z.string().min(1),
+      prompt: z.string().trim().min(1).max(20000), ratio: z.string().trim().min(1).max(20),
+      resolution: z.string().max(80).nullable(), quality: z.string().max(80).nullable(),
+      clarity: z.string().max(80).nullable(), background: z.string().max(80).nullable(),
+      candidate_count: z.union([z.literal(1), z.literal(2), z.literal(4)]).default(1),
+    }).parse(request.body)
+    if (!context.generateBoard) invalid('设定图生成服务不可用')
+    return db.transaction(() => {
+      const profile = required<VisualProfile>('visual_profiles', id)
+      const preview = prepareBoard(profile, data)
+      if (!data.prompt.startsWith(preview.prompt)) invalid('设定图提示词已变化，请重新检查生成参数')
+      const task = boardTask(profile, preview.prompt)
+      return context.generateBoard!(task.task_id, {
+        model_id: data.model_id, prompt: data.prompt, mode: preview.mode, reference_asset_ids: preview.reference_asset_ids,
+        ratio: data.ratio, resolution: data.resolution, quality: data.quality, clarity: data.clarity, background: data.background,
+      }, profile, data.candidate_count)
     })()
-    return { task_id: taskId, prompt }
   })
   app.put('/api/script-scenes/:id/visual-bindings', async request => {
     const { id } = idParams.parse(request.params)

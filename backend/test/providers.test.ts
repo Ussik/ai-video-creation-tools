@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 
 import sharp from 'sharp'
+import { imagePreferencePrompt } from '../../web/src/canvas-model-parameters.js'
+import { rightApiImageSettings } from '../src/rightapi-image-settings.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'video-studio-providers-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
@@ -17,6 +19,123 @@ after(async () => { await rm(testData, { recursive: true, force: true }) })
 const imageBytes = await sharp({
   create: { width: 16, height: 16, channels: 3, background: '#dc6250' },
 }).png().toBuffer()
+
+test('RightAPI sends ordered data URL references and the chosen ratio, persists task ID, then consumes a status-less completed image', async t => {
+  const images = await Promise.all(['png', 'jpeg', 'webp'].map(async extension => {
+    const path = join(testData, `rightapi-reference.${extension}`)
+    const bytes = extension === 'png' ? imageBytes : await sharp(imageBytes).toFormat(extension as 'jpeg' | 'webp').toBuffer()
+    await writeFile(path, bytes)
+    return { path, data: `data:image/${extension};base64,${bytes.toString('base64')}` }
+  }))
+  const pricing = { per_image: 0.06 }
+  const settings = rightApiImageSettings({ ratios: ['1:1', '9:16', '21:9'], default_ratio: '9:16', pricing })
+  assert.deepEqual(settings.ratios, ['1:1', '9:16', '21:9'])
+  assert.equal(settings.pricing, pricing)
+  const model = { id: 'rightapi-image', name: '图片模型', provider_id: 'rightapi', enabled: true,
+    protocol: 'image_generations' as const, remote_id: 'gpt-image-2.5', modality: 'image' as const, settings: { ...settings, poll_seconds: 1 } }
+  let submitted: Record<string, unknown> | undefined
+  let taskId = ''
+  let queries = 0
+  const methods: string[] = []
+  t.mock.method(globalThis, 'fetch', async (url: unknown, init: RequestInit) => {
+    methods.push(init.method || 'GET')
+    assert.equal((init.headers as Record<string, string>).Authorization, 'Bearer test-key')
+    if (init.method === 'POST') {
+      assert.equal(String(url), 'https://www.rightapi.ai/draw/v1/images/generations')
+      submitted = JSON.parse(String(init.body))
+      return Response.json({ task_id: 'task_image_1', status: 'processing', progress: 0 })
+    }
+    assert.equal(taskId, 'task_image_1', 'persist task ID before the first query')
+    assert.equal(String(url), 'https://www.rightapi.ai/v1/tasks/task_image_1')
+    return Response.json(++queries === 1 ? { status: 'in_progress', progress: 45 } : { created: 1782800000, data: [{ b64_json: imageBytes.toString('base64') }] })
+  })
+  const prompt = imagePreferencePrompt(model, '使用人物、场景和道具设定制作分镜', { ratio: '9:16', resolution: null, clarity: '1K', quality: null, background: null }, 'reference')
+  const result = await generate(model, { adapter: 'http', base_url: 'https://www.right.codes/v1' },
+    { prompt, mode: 'reference', ratio: '9:16' }, images.map(image => ({ kind: 'image', path: image.path })), 'rightapi-test', id => { taskId = id }, () => 'test-key')
+  assert.deepEqual(submitted?.image, images.map(image => image.data))
+  assert.equal(submitted?.size, '9:16')
+  assert.equal(submitted?.async, true)
+  assert.equal(submitted?.n, 1)
+  assert.equal(submitted?.model, 'gpt-image-2.5')
+  assert.match(String(submitted?.prompt), /整张输出图片使用此比例/)
+  assert.equal(Object.hasOwn(submitted || {}, 'ratio'), false)
+  assert.deepEqual(methods, ['POST', 'GET', 'GET'])
+  assert.ok((await stat(result.path)).size > 0)
+})
+
+test('RightAPI resumes the persisted image task without resubmitting or loading reference files and saves the download URL first', async t => {
+  let savedUrl = ''
+  const urls: string[] = []
+  t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
+    urls.push(String(url))
+    assert.notEqual(init?.method, 'POST')
+    if (String(url) === 'https://www.rightapi.ai/v1/tasks/task_resume') return Response.json({ data: [{ url: 'https://cdn.invalid/rightapi-result.png' }] })
+    assert.equal(savedUrl, 'https://cdn.invalid/rightapi-result.png')
+    assert.equal(String(url), savedUrl)
+    return new Response(imageBytes, { headers: { 'Content-Type': 'image/png' } })
+  })
+  const result = await generate({ id: 'rightapi-image', remote_id: 'gpt-image-2.5', modality: 'image', settings: rightApiImageSettings() },
+    { adapter: 'http', base_url: 'https://www.right.codes/v1' }, { prompt: '已提交的任务', _external_id: 'task_resume' },
+    [{ kind: 'image', path: join(testData, 'removed-reference.png') }], 'rightapi-resume', () => { assert.fail('must not create another task') }, undefined, url => { savedUrl = url })
+  assert.equal(result.remoteUrl, savedUrl)
+  assert.deepEqual(urls, ['https://www.rightapi.ai/v1/tasks/task_resume', savedUrl])
+  assert.ok((await stat(result.path)).size > 0)
+})
+
+test('RightAPI task failure exposes error.message and querying never starts a new generation', async t => {
+  let calls = 0
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    assert.equal(init.method, 'GET'); calls++
+    return Response.json({ task_id: 'task_failed', status: 'failed', error: { message: '模型暂不可用' } })
+  })
+  await assert.rejects(generate({ id: 'async', remote_id: 'gpt-image-2.5-flare', modality: 'image', settings: rightApiImageSettings() },
+    { adapter: 'http', base_url: 'https://www.right.codes/v1' }, { prompt: '分镜', _external_id: 'task_failed' }, [], 'rightapi-failure', () => {}), /图片任务 task_failed 失败：模型暂不可用/)
+  assert.equal(calls, 1)
+})
+
+test('RightAPI query connection failures retry only GET and keep the original task recoverable', async t => {
+  let queries = 0
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    assert.equal(init.method, 'GET'); queries++
+    throw new TypeError('connection closed')
+  })
+  await assert.rejects(generate({ id: 'async', remote_id: 'gpt-image-2.5', modality: 'image', settings: { ...rightApiImageSettings(), poll_seconds: 1 } },
+    { adapter: 'http', base_url: 'https://www.right.codes/v1' }, { prompt: '分镜', _external_id: 'task_network' }, [], 'rightapi-network', () => {}), /查询图片任务 task_network 失败，可继续查询原任务/)
+  assert.equal(queries, 3)
+})
+
+test('RightAPI cannot query before its task ID is persisted', async t => {
+  let calls = 0
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    assert.equal(init.method, 'POST'); calls++
+    return Response.json({ task_id: 'task_unpersisted', status: 'processing' })
+  })
+  await assert.rejects(generate({ id: 'async', remote_id: 'gpt-image-2.5', modality: 'image', settings: rightApiImageSettings() },
+    { adapter: 'http', base_url: 'https://www.right.codes/v1' }, { prompt: '分镜', mode: 'text', ratio: '16:9' }, [], 'rightapi-persist', () => { throw new Error('database unavailable') }), /task_unpersisted 已提交，但保存任务编号失败/)
+  assert.equal(calls, 1)
+})
+
+test('ratio-only image requests send both the selected ratio and the whole-image prompt instruction', async t => {
+  const model = { id: 'ratio-image', name: '图片模型', provider_id: 'ratio-provider', remote_id: 'ratio-image', modality: 'image' as const,
+    protocol: 'image_generations' as const, enabled: true, settings: {
+      request_path: 'images/generations', request_template: { model: '{{model}}', prompt: '{{prompt}}', ratio: '{{ratio}}' },
+      image_base64_path: 'data.0.b64_json',
+    } }
+  let submitted: Record<string, unknown> | undefined
+  t.mock.method(globalThis, 'fetch', async (url: unknown, init: RequestInit) => {
+    assert.equal(String(url), 'https://image-provider.invalid/v1/images/generations')
+    submitted = JSON.parse(String(init.body)) as Record<string, unknown>
+    return new Response(JSON.stringify({ data: [{ b64_json: imageBytes.toString('base64') }] }), { headers: { 'Content-Type': 'application/json' } })
+  })
+  const prompt = imagePreferencePrompt(model, '制作人物视觉设定信息图', { ratio: '9:16', resolution: null, clarity: '2K', quality: 'standard', background: 'auto' })
+  await generate(model, { adapter: 'http', base_url: 'https://image-provider.invalid/v1' },
+    { prompt, mode: 'text', ratio: '9:16', resolution: null, clarity: '2K' }, [], 'ratio-testproject', () => {})
+  assert.equal(submitted?.ratio, '9:16')
+  assert.equal(submitted?.prompt, prompt)
+  assert.ok(String(submitted?.prompt).includes('画面比例：9:16（宽:高，竖版）'))
+  assert.ok(String(submitted?.prompt).includes('整张输出图片使用此比例'))
+  assert.ok(!Object.hasOwn(submitted || {}, 'size'), 'do not invent a size field for a ratio-only template')
+})
 
 test('configured text and image APIs use templates, response paths and provider auth', async () => {
   const calls: Array<{ path: string; body: Record<string, unknown>; auth: string | undefined }> = []

@@ -108,7 +108,9 @@ test('visual preparation refreshes stale model settings on open and before revie
     assert.equal(submission.model_id, currentModel.id)
     assert.equal(submission.ratio, '9:16')
     assert.equal(submission.resolution, null)
-    assert.equal(submission.prompt, profile.board_prompt)
+    assert.ok(String(submission.prompt).startsWith(profile.board_prompt))
+    assert.ok(String(submission.prompt).includes('画面比例：9:16（宽:高，竖版）'))
+    assert.ok(String(submission.prompt).includes('整张输出图片使用此比例'))
   } finally { await view.destroy() }
 })
 
@@ -150,7 +152,9 @@ test('confirmed character reference boards are reviewed and submitted in referen
     const submission = requests.find(item => item.url.endsWith('/generate'))!.body!
     assert.equal(submission.mode, 'reference')
     assert.deepEqual(submission.reference_asset_ids, ['linwan-board'])
-    assert.equal(submission.prompt, preview.prompt)
+    assert.ok(String(submission.prompt).startsWith(preview.prompt))
+    assert.ok(String(submission.prompt).includes('画面比例：9:16（宽:高，竖版）'))
+    assert.ok(String(submission.prompt).includes('整张输出图片使用此比例'))
     assert.equal(submission.ratio, '9:16')
     assert.equal(submission.resolution, null)
   } finally { await view.destroy() }
@@ -163,14 +167,14 @@ test('unconfigured reference fields show a configuration warning and cannot enqu
   const fixture = { ...detail, visual_profiles: [profile, reference], assets: [{ id: 'board', kind: 'image', filename: 'board.png', url: '/board.png' } as Asset] }
   globalThis.fetch = async url => {
     requests.push(String(url))
-    return url === '/api/models' ? response([currentModel]) : response({ message: '当前模型请求模板尚未配置参考图传递' }, 422)
+    return url === '/api/models' ? response([currentModel]) : response({ message: '当前模型的本地请求模板未配置参考图字段' }, 422)
   }
   t.after(() => { globalThis.fetch = originalFetch })
   const view = await mount(fixture)
   try {
     await act(() => document.querySelector<HTMLInputElement>('input[aria-label="生成参考图"]')!.click())
     await act(() => document.querySelector<HTMLElement>('[role="option"][value="profile:reference-profile"]')!.click())
-    assert.ok(document.querySelector('.vp-reference-note')?.textContent?.includes('尚未配置参考图传递'))
+    assert.ok(document.querySelector('.vp-reference-note')?.textContent?.includes('本地请求模板未配置参考图字段'))
     await act(() => button('生成信息图').click())
     assert.equal(document.querySelector('.vp-board-review'), null)
     assert.ok(document.querySelector('[role="alert"]'))

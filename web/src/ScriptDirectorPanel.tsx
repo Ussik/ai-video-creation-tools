@@ -38,6 +38,7 @@ import { api, json } from './api'
 import type { Asset, Job, Model, ProjectDetail, Provider, ScriptArtifact, ScriptArtifactType, ScriptGenerationOptions } from './api'
 import type { ScriptAction } from './ProjectCanvas'
 import VisualPreparation from './VisualPreparation'
+import { requestVisualCanvas } from './canvas-visual-profiles'
 import './script-director.css'
 import './script-director-chat.css'
 import './director-documents.css'
@@ -2299,7 +2300,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
 
     {error && <div className="script-director-error" role="alert">{error}<button type="button" onClick={() => setError(null)} aria-label="关闭错误"><X size={14} /></button></div>}
 
-    {visualPreparationOpen && <VisualPreparation detail={detail} models={models} sceneIds={handoffScenes.map(scene => scene.id)} onRefresh={onRefresh} onClose={() => setVisualPreparationOpen(false)} onContinue={pendingSceneCount ? createSceneShots : undefined} />}
+    {visualPreparationOpen && <VisualPreparation detail={detail} models={models} sceneIds={handoffScenes.map(scene => scene.id)} onRefresh={onRefresh} onClose={() => setVisualPreparationOpen(false)} onContinue={pendingSceneCount ? createSceneShots : undefined} onOpenCanvas={ids => { requestVisualCanvas(detail.id, ids); setVisualPreparationOpen(false); onClose() }} />}
     {previewOpen && generated && <DirectorDraftReview draft={generated} busy={busy} saving={working === 'save'} saved={scriptSaved} onChange={setGenerated} onClose={() => setPreviewOpen(false)} onSave={() => void saveGenerated()} />}
 
     {activeFocus === 'all' && !previewOpen && !artifactsOpen && !workflowOpen && <nav className="sd-creation-actions" aria-label="创作操作">
