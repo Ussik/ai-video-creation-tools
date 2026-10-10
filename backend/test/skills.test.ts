@@ -139,7 +139,7 @@ test('prompt refinement uses bound rules and frozen settings, returns draft with
   const foreign = await remoteApp.inject({ method: 'POST', url: `/api/projects/${project.id}/skills/refine-prompt`, payload: { ...input, reference_asset_ids: ['foreign'] } })
   assert.equal(foreign.statusCode, 422); assert.equal(generated, calls)
   const noBinding = await remoteApp.inject({ method: 'POST', url: `/api/projects/${project.id}/skills/refine-prompt`, payload: { ...input, stage: 'video_prompt' } })
-  assert.equal(noBinding.statusCode, 422); assert.equal(generated, calls)
+  assert.equal(noBinding.statusCode, 200); assert.deepEqual(noBinding.json().skills, []); assert.equal(generated, calls + 1)
 })
 
 test('a refined board override is identical in preview and task, and changing it invalidates the reference signature', async () => {
@@ -177,4 +177,44 @@ test('updating pins the new revision while preserving enabled stage bindings; re
   await call('DELETE', `/api/skills/${skill.id}`)
   assert.equal(skillContext('image_prompt', '人物').text, '')
   assert.equal(installedSkills().length, 2)
+})
+
+test('Skill prompt metadata identifies only actually loaded rules and references for each matching stage', async () => {
+  const skill = installSkillBundle(await loadSkillBundle(repo, 'short-drama-image-prompts', fetcher))
+  configureSkill(skill.id, true, ['image_prompt'])
+  let observed: ReturnType<typeof skillContext> | undefined
+  const prompt = withSkillRules('image_prompt', '制作人物信息图', context => { observed = context })
+  assert.match(prompt, /同一张脸|更新后的身份锁/)
+  const metadata = observed!.skills.find(item => item.id === skill.id)!
+  assert.equal(metadata.revision, skill.revision)
+  assert.ok(metadata.files.some(file => /SKILL\.md$/.test(file)))
+  assert.ok(metadata.files.some(file => /character/.test(file)))
+  assert.ok(!metadata.files.some(file => /location/.test(file)))
+  assert.ok(metadata.files.every(file => observed!.files.includes(file)))
+  configureSkill(skill.id, false, ['image_prompt'])
+  withSkillRules('image_prompt', '制作人物信息图', context => { observed = context })
+  assert.ok(!observed!.skills.some(item => item.id === skill.id))
+})
+
+test('video prompt skill receives actual numbered storyboard and object roles, synchronizes mapping, and rejects unrelated pins', async () => {
+  const project = await call<{ id: string }>('POST', '/api/projects', { name: '参考分镜视频' }, app)
+  const scene = await call<{ id: string }>('POST', `/api/projects/${project.id}/script/scenes`, { heading: '站台' }, app)
+  const visuals = await call<{ visual_profiles: Array<{ id: string; revision: number }> }>('POST', `/api/projects/${project.id}/visual-profiles`, {
+    profiles: [{ kind: 'character', name: '林晚', variant: '校服', definition: '短发、蓝色校服', view_requirements: '正侧背与面部细节', scene_ids: [scene.id] }],
+  }, app)
+  for (const id of ['video-composition', 'video-person-board']) run("INSERT INTO assets (id, project_id, kind, filename, path, source, created_at) VALUES (?, ?, 'image', ?, '/tmp/ref.png', 'upload', '2026-10-10')", id, project.id, `${id}.png`)
+  await call('PATCH', `/api/visual-profiles/${visuals.visual_profiles[0].id}`, { board_asset_id: 'video-person-board', expected_revision: visuals.visual_profiles[0].revision }, app)
+  const shot = await call<{ id: string }>('POST', `/api/projects/${project.id}/shots`, { title: '林晚转身', source_scene_id: scene.id }, app)
+  const input = { model_id: 'text-fixture', stage: 'video_prompt', shot_id: shot.id, prompt: '林晚缓慢转身，镜头平稳推近', mode: 'reference',
+    visual_reference_mode: 'profiles', storyboard_reference_asset_id: 'video-composition', reference_asset_ids: ['video-composition', 'video-person-board'] }
+  const response = await call<{ prompt: string }>('POST', `/api/projects/${project.id}/skills/refine-prompt`, input)
+  assert.match(capturedPrompt, /"image_number":1,"purpose":"storyboard"/)
+  assert.match(capturedPrompt, /"image_number":2,"purpose":"character","objects":"林晚"/)
+  assert.match(response.prompt, /图片1：分镜构图/)
+  assert.match(response.prompt, /图片2：林晚（校服）/)
+  assert.equal((response.prompt.match(/【视频参考图用途】/g) || []).length, 1)
+  const calls = generated
+  const invalid = await remoteApp.inject({ method: 'POST', url: `/api/projects/${project.id}/skills/refine-prompt`, payload: { ...input, storyboard_reference_asset_id: 'unrelated' } })
+  assert.equal(invalid.statusCode, 422)
+  assert.equal(generated, calls)
 })

@@ -5,16 +5,22 @@ import type { Editor, JSONContent } from '@tiptap/core'
 import {
   ArrowLeft, ArrowRight, Bold, Clapperboard, FileText, Heading1, Italic,
   List, ListOrdered, LoaderCircle, Minimize2, Plus, Redo2, Save, Sparkles,
-  ChevronDown, Strikethrough, Trash2, Undo2, ZoomIn, ZoomOut,
+  ChevronDown, Search, Strikethrough, Trash2, Undo2, ZoomIn, ZoomOut,
 } from 'lucide-react'
 import { api, json } from './api'
 import type { Model, PlannedScene, PlannedShot, PlannedShotCreationResult, ProjectDetail, Provider, ScriptGenerationOptions, ShotPlanResult } from './api'
 import './script-editor.css'
+import CreativeSkillSelector from './CreativeSkillSelector'
+import { useCreativeSkills } from './useCreativeSkills'
+import StoryboardPlanner from './StoryboardPlanner'
 import { useAppDialog } from './AppDialog'
 import { applyTextFormat, textEditorExtensions, type TextFormat } from './text-editor'
-import { parseScriptDocument, serializeScriptDocument } from './script-rich-document'
+import { serializeScriptDocument } from './script-rich-document'
 import { normalizeTextDocument, textDocumentText } from './text-document'
 import { useScriptDocumentNavigation } from './useScriptDocumentNavigation'
+import { highlightScriptSearch, resolveScriptArtifactDocument, ScriptSearchHighlight, type ScriptSearchRange } from './script-document-search'
+import { useScriptDocumentSearch } from './useScriptDocumentSearch'
+import { ScriptDocumentSearch } from './ScriptDocumentSearch'
 
 type SceneFields = {
   episode_number?: number
@@ -65,20 +71,17 @@ type RichArtifactEditorProps = {
   placeholder: string
   disabled: boolean
   document?: JSONContent
+  searchQuery: string
+  activeSearchRange: ScriptSearchRange | null
   onFocus: (editor: Editor) => void
   onSelectionChange: (editor: Editor) => void
   onChange: (value: string, document: JSONContent) => void
 }
 
-function resolveScriptArtifactDocument(value: string, document?: JSONContent): JSONContent {
-  return document && (textDocumentText(document) === value || serializeScriptDocument(document) === value)
-    ? document : parseScriptDocument(value)
-}
-
-function RichArtifactEditor({ value, label, placeholder, disabled, document, onFocus, onSelectionChange, onChange }: RichArtifactEditorProps) {
+function RichArtifactEditor({ value, label, placeholder, disabled, document, searchQuery, activeSearchRange, onFocus, onSelectionChange, onChange }: RichArtifactEditorProps) {
   const readyRef = useRef(false)
   const editor = useEditor({
-    extensions: textEditorExtensions(),
+    extensions: [...textEditorExtensions(), ScriptSearchHighlight],
     content: resolveScriptArtifactDocument(value, document),
     editable: !disabled,
     editorProps: {
@@ -118,6 +121,9 @@ function RichArtifactEditor({ value, label, placeholder, disabled, document, onF
       editor.commands.setContent(next, { emitUpdate: false })
     }
   }, [value, document, editor])
+  useEffect(() => {
+    if (editor) highlightScriptSearch(editor, searchQuery, activeSearchRange)
+  }, [editor, value, document, searchQuery, activeSearchRange?.from, activeSearchRange?.to])
 
   return <EditorContent editor={editor} className="script-rich-editor" />
 }
@@ -261,6 +267,32 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
   const { activeSection: activeDocumentSection, editorRef: documentEditorRef, selectSection } = useScriptDocumentNavigation<DocumentSection>({
     documentId: detail.id, initialSection, defaultSection: 'outline',
   })
+  const searchableDocuments = useMemo(() => {
+    const story = storyArtifactCatalog.flatMap(item => {
+      const artifact = draft.artifacts.find(entry => entry.artifact_type === item.type)
+      return artifact ? [{ artifact, section: item.type, title: `故事大纲 · ${item.title}` }] : []
+    })
+    const standalone = standaloneArtifactTypes.flatMap(type => {
+      const artifact = draft.artifacts.find(entry => entry.artifact_type === type && !entry.episode_number)
+      return artifact && (type !== 'episode_script' || artifact.content.trim())
+        ? [{ artifact, section: type, title: artifactCatalog.find(item => item.type === type)!.title }] : []
+    })
+    const episodes = draft.artifacts.filter(item => item.artifact_type === 'episode_script' && (item.episode_number || 0) > 0)
+      .sort((a, b) => a.episode_number! - b.episode_number!)
+      .map(artifact => ({ artifact, section: `episode-${artifact.episode_number}`, title: artifact.title }))
+    return [...story, ...standalone, ...episodes].map(({ artifact, section, title }) => ({
+      id: artifact.id, section, title, document: resolveScriptArtifactDocument(artifact.content, artifact.document),
+    }))
+  }, [draft.artifacts])
+  const search = useScriptDocumentSearch(searchableDocuments, match => {
+    selectSection(match.section as DocumentSection, false, '[data-script-search-active]')
+  })
+  function artifactSearchProps(artifact: ScriptArtifact) {
+    return {
+      searchQuery: search.opened ? search.query : '',
+      activeSearchRange: search.opened && search.activeMatch?.documentId === artifact.id ? search.activeMatch : null,
+    }
+  }
   const [editorZoom, setEditorZoom] = useState(100)
   const [formatMenu, setFormatMenu] = useState<'heading' | 'list' | null>(null)
   const [, setSelectionRevision] = useState(0)
@@ -269,6 +301,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
   const [selectedSceneIds, setSelectedSceneIds] = useState<string[]>([])
   const [modelId, setModelId] = useState('')
   const [showGenerate, setShowGenerate] = useState(false)
+  const skillControl = useCreativeSkills(detail.id, showGenerate)
   const [scriptPrompt, setScriptPrompt] = useState('')
   const [scriptPromptCustomized, setScriptPromptCustomized] = useState(false)
   const [scriptPromptLoading, setScriptPromptLoading] = useState(false)
@@ -281,6 +314,8 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
   const [rawOutput, setRawOutput] = useState<string | null>(null)
   const [showConvert, setShowConvert] = useState(false)
   const [showPlan, setShowPlan] = useState(false)
+  const [storyboardOpen, setStoryboardOpen] = useState(false)
+  const [planningSceneIds, setPlanningSceneIds] = useState<string[]>([])
   const [planPrompt, setPlanPrompt] = useState('')
   const [planPromptCustomized, setPlanPromptCustomized] = useState(false)
   const [planPromptLoading, setPlanPromptLoading] = useState(false)
@@ -369,6 +404,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
     setScriptPromptLoading(true)
     setScriptPromptError(null)
     void api<{ prompt: string }>(`/projects/${detail.id}/script/generate/prompt`, json('POST', {
+        skill_selections: skillControl.selections,
       idea: draft.brief, generation_options: draft.generation_options,
     })).then((result) => {
       if (requestId === scriptPromptRequestId.current && !scriptPromptEditedRef.current) setScriptPrompt(result.prompt)
@@ -378,7 +414,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
       if (requestId === scriptPromptRequestId.current) setScriptPromptLoading(false)
     })
     return () => { if (requestId === scriptPromptRequestId.current) scriptPromptRequestId.current += 1 }
-  }, [showGenerate, detail.id, draft.brief, JSON.stringify(draft.generation_options), scriptPromptRefresh])
+  }, [showGenerate, detail.id, draft.brief, JSON.stringify(draft.generation_options), scriptPromptRefresh, JSON.stringify(skillControl.selections)])
 
   useEffect(() => {
     if (!showPlan || !validShotsPerScene || selectedSceneIds.length === 0) return
@@ -553,13 +589,14 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
   }
 
   async function generateScript() {
-    if (disabled || !draft.brief.trim() || !selectedModelAvailable || !scriptPrompt.trim() || (!scriptPromptCustomized && (scriptPromptLoading || scriptPromptError))) return
+    if (disabled || skillControl.loading || skillControl.error || !draft.brief.trim() || !selectedModelAvailable || !scriptPrompt.trim() || (!scriptPromptCustomized && (scriptPromptLoading || scriptPromptError))) return
     if (generated && !await confirm({ title: '重新生成剧本草稿', message: '当前待处理的生成结果会被替换。', confirmLabel: '继续生成', danger: true })) return
     setWorking('generate')
     setError(null)
     setRawOutput(null)
     try {
       const result = await api<GeneratedScript>(`/projects/${detail.id}/script/generate`, json('POST', {
+        skill_selections: skillControl.selections,
         model_id: modelId,
         idea: draft.brief,
         generation_options: draft.generation_options,
@@ -849,12 +886,14 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
         <button type="button" aria-label="删除线" title="删除线" aria-pressed={focusedEditorIsActive('strike')} className={focusedEditorIsActive('strike') ? 'is-active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('strike')}><Strikethrough size={16} /></button>
       </div>
       <div className="script-page-actions">
+        <button type="button" className={`script-editor-search-toggle ${search.opened ? 'is-active' : ''}`} aria-label="全文搜索" title="全文搜索（Ctrl/Cmd + F）" aria-expanded={search.opened} aria-controls="script-full-text-search" onClick={search.open}><Search size={16} /></button>
         {generated && <Button variant="subtle" leftSection={<FileText size={15} />} onClick={() => setShowGenerated(true)} disabled={disabled}>查看生成结果</Button>}
-        <Button variant="subtle" leftSection={<Clapperboard size={15} />} disabled={disabled || dirty || !productionSceneCandidates.some(scene => scene.id && !linkedSceneIds.has(scene.id))} onClick={() => { setSelectedSceneIds([]); setShowConvert(true) }}>制作分镜</Button>
+        <Button className="script-canvas-action" variant="subtle" title="规划并确认分镜后加入画布" leftSection={<Plus size={15} />} disabled={disabled || dirty || !productionSceneCandidates.length} onClick={() => { setPlanningSceneIds(productionSceneCandidates.flatMap(scene => scene.id ? [scene.id] : [])); setStoryboardOpen(true) }}>加入画布</Button>
         <Button variant="subtle" leftSection={<Sparkles size={15} />} onClick={openGenerate} disabled={disabled}>生成剧本</Button>
         <Button leftSection={working === 'save' ? <LoaderCircle size={15} className="spin" /> : <Save size={15} />} onClick={saveScript} disabled={!dirty || disabled}>保存</Button>
         <button type="button" className="script-editor-exit" onClick={onOpenCanvas} aria-label="退出编辑器" title="退出编辑器"><Minimize2 size={16} /></button>
       </div>
+      <ScriptDocumentSearch search={search} />
     </header>
 
     {error && <div className="script-error" role="alert">{error}<button onClick={() => setError(null)} aria-label="关闭提示">关闭</button></div>}
@@ -881,6 +920,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
             <section id={`script-section-episode-${selectedEpisode.episode_number}`} data-script-section={`episode-${selectedEpisode.episode_number}`} className="script-long-section script-standalone-section">
               <RichArtifactEditor
                 key={selectedEpisode.id}
+                {...artifactSearchProps(selectedEpisode)}
                 label={selectedEpisode.title}
                 placeholder="填写本集分场正文"
                 value={selectedEpisode.content}
@@ -903,6 +943,8 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
               return <section id={`script-section-${standaloneDocument.type}`} data-script-section={standaloneDocument.type} className={`script-long-section script-standalone-section ${artifact.content.trim() ? '' : 'is-empty'} ${activeDocumentSection === standaloneDocument.type ? 'is-active' : ''}`}>
                 <header className="script-long-section-heading"><div><span className="script-section-index">01</span><div><span className="script-kicker">{standaloneDocument.group}</span><h2>{standaloneDocument.title}</h2></div></div></header>
                 <RichArtifactEditor
+                  key={artifact.id}
+                  {...artifactSearchProps(artifact)}
                   label={standaloneDocument.title}
                   placeholder={`填写${standaloneDocument.title}，支持分段描述和手动修改`}
                   value={artifact.content}
@@ -928,6 +970,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
                 <div><span className="script-section-index">{String(index + 1).padStart(2, '0')}</span><div><span className="script-kicker">{item.group}</span><h2>{item.title}</h2></div></div>
               </header>
               <RichArtifactEditor
+                {...artifactSearchProps(artifact)}
                 label={item.title}
                 placeholder={`填写${item.title}，支持分段描述和手动修改`}
                 value={artifact.content}
@@ -947,6 +990,8 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
     <Modal opened={showGenerate} onClose={() => setShowGenerate(false)} title="生成剧本草稿" classNames={{ content: 'script-modal-content', body: 'script-modal-body' }}>
       <div className="script-modal-stack">
         <Select label="文本模型" placeholder="选择已添加的模型" searchable allowDeselect={false} value={modelId || null} data={availableModels.map((model) => ({ value: model.id, label: model.name }))} onChange={(value) => setModelId(value || '')} />
+        <CreativeSkillSelector stage="script" projectId={detail.id} policies={skillControl.policies} ids={skillControl.ids('script')} onChange={ids => skillControl.change('script', ids)}
+          disabled={disabled} loading={skillControl.loading} error={skillControl.error} onDefaultsChanged={() => skillControl.reload('script')} />
         {!availableModels.length && <button className="script-model-link" onClick={() => { setShowGenerate(false); onOpenModels() }}>前往模型设置添加文本模型 <ArrowRight size={15} /></button>}
         <div className="script-idea-preview"><span>创意概述</span><p>{draft.brief.trim() || '请先填写创意概述'}</p></div>
         <div className="script-prompt-editor">
@@ -957,7 +1002,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
         </div>
         {error?.startsWith('生成失败') && <div className="script-error" role="alert">{error}</div>}
         {rawOutput && <div className="script-raw-output"><strong>模型原始输出</strong><pre>{rawOutput}</pre></div>}
-        <div className="script-modal-actions"><Button variant="default" onClick={() => setShowGenerate(false)}>取消</Button><Button leftSection={working === 'generate' ? <LoaderCircle size={16} className="spin" /> : <Sparkles size={16} />} disabled={!selectedModelAvailable || !draft.brief.trim() || !scriptPrompt.trim() || (!scriptPromptCustomized && (scriptPromptLoading || !!scriptPromptError)) || disabled} onClick={generateScript}>生成草稿</Button></div>
+        <div className="script-modal-actions"><Button variant="default" onClick={() => setShowGenerate(false)}>取消</Button><Button leftSection={working === 'generate' ? <LoaderCircle size={16} className="spin" /> : <Sparkles size={16} />} disabled={skillControl.loading || !!skillControl.error || !selectedModelAvailable || !draft.brief.trim() || !scriptPrompt.trim() || (!scriptPromptCustomized && (scriptPromptLoading || !!scriptPromptError)) || disabled} onClick={generateScript}>生成草稿</Button></div>
       </div>
     </Modal>
 
@@ -1044,6 +1089,8 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
     <Modal opened={!!sceneForDeletion} onClose={() => setDeleteSceneId(null)} title="删除场次" classNames={{ content: 'script-modal-content', body: 'script-modal-body' }}>
       {sceneForDeletion && <div className="script-modal-stack"><p className="script-confirm-copy">删除「{sceneForDeletion.heading || '未命名场次'}」？保存剧本后才会移除该场次。已制作的镜头和素材会保留，但镜头会失去与该场次的关联。</p><div className="script-modal-actions"><Button variant="default" onClick={() => setDeleteSceneId(null)}>取消</Button><Button className="script-danger-button" color="red" onClick={() => removeScene(sceneForDeletion.clientId)} leftSection={<Trash2 size={16} />}>删除场次</Button></div></div>}
     </Modal>
+    <StoryboardPlanner opened={storyboardOpen} onClose={() => setStoryboardOpen(false)} detail={detail} models={availableModels} initialSceneIds={planningSceneIds}
+      onRefresh={onRefresh} onOpenCanvas={onOpenCanvas} onNotice={onNotice} />
     {dialog}
   </section>
 }

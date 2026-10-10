@@ -21,6 +21,15 @@
   --workspace-subtle: #696f76;
   --workspace-accent: #38afc2;
   --workspace-accent-soft: #163139;
+  /* Shared by the floating canvas tools and node sidebar. */
+  --canvas-chrome-surface: #17191bf2;
+  --canvas-chrome-border: #2b2e33;
+  --canvas-chrome-raised: #1b1d20;
+  --canvas-chrome-hover: #25282c;
+  --canvas-chrome-selected: #2c3034;
+  --canvas-chrome-icon: #b5bac1;
+  --canvas-chrome-focus: #69727b;
+  --canvas-chrome-shadow: 0 16px 38px #00000099, inset 0 1px #ffffff08;
 }
 
 html {
@@ -1349,8 +1358,8 @@ body,
 .project-canvas .pc-create-dock,
 .project-canvas .pc-flow-utility,
 .project-canvas .pc-panel {
-  border-color: #2b2e33;
-  background: #17191bf2;
+  border-color: var(--canvas-chrome-border);
+  background: var(--canvas-chrome-surface);
 }
 .project-canvas .pc-mode-switch button { color: #969ba1; }
 .project-canvas .pc-mode-switch button svg { color: #7d858c; }
@@ -1429,8 +1438,7 @@ body,
   color: #9ea5ab;
   box-shadow: 0 16px 38px #00000099, inset 0 1px #ffffff08;
 }
-.project-canvas .pc-node-list-toggle.mantine-ActionIcon-root:hover,
-.project-canvas .pc-node-list-toggle.mantine-ActionIcon-root.is-active {
+.project-canvas .pc-node-list-toggle.mantine-ActionIcon-root:hover {
   border-color: #454b51;
   background: #303338;
   color: #edf0f2;

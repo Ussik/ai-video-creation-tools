@@ -59,7 +59,7 @@ export const workflowDraftInput = workflowRequestFields.extend({
 export const workflowDraftSchema = workflowDraftInput.transform(normalizeWorkflowRequest)
 export type WorkflowDraft = z.infer<typeof workflowDraftSchema>
 
-export function workflowInstructions(request: z.infer<typeof workflowRequest>): string {
+export function workflowInstructions(request: z.infer<typeof workflowRequest>, protocol: 'json' | 'tools' = 'json'): string {
   const stages = {
     outline: '整理故事主线、人物目标、世界规则、起承转合与结局；输出 outline，并补充 synopsis、world、episode_outline。分集大纲必须覆盖用户明确要求的集数，每集写出事件、冲突、推进和结尾悬念。不要写分场正文。',
     characters: '输出 characters 和 relationships：人物身份、目标、阻力、弧光、关系变化以及可复用的外观和服装设定。不要新增无关人物或改写已确认主线。',
@@ -72,21 +72,22 @@ export function workflowInstructions(request: z.infer<typeof workflowRequest>): 
     : '任务范围：整个项目的全剧资料，不属于任何单集。聊天中最近写过的集数、下一集计划以及创作要求中的单集措辞仅作背景，不能把本轮改为该集或下一集的文档。人物、地点和道具覆盖全剧已确认的内容；大纲覆盖全剧主线与结局。保持已保存各集事实。只更新所选资料，不生成、改写或推进分集正文。'
   return `\n本轮为“${workflowLabels[request.stage]}”文档生成。只完成本轮阶段，不提问、不声称已保存或已完成其他阶段。\n${boundary}\n${stages[request.stage]}\n` +
     '创作者明确授权模型决定后已经作出的具体设定应沿用，不标为待定；创作者后续修改优先。其他未知且未授权模型决定的设定标为待定，不把未获授权的建议当成已确认事实。\n' +
-    '只输出一个合法 JSON 对象，不要解释或代码围栏。格式：' +
+    (protocol === 'tools' ? '将完整成果作为 create_document_draft 的参数提交，stage、scope、episode_number 使用本轮任务范围；artifacts 和 scenes 遵循以下内容结构。不要在正文模拟工具调用或直接返回 JSON 代替函数。内容结构：' : '只输出一个合法 JSON 对象，不要解释或代码围栏。格式：') +
     '{"artifacts":[{"artifact_type":"文档类型","title":"文档标题","content":"完整可编辑正文"}],"scenes":[' +
     '{"heading":"场次标题","location":"地点","time_of_day":"日/夜","characters":"出场人物","action":"画面动作","dialogue":"对白","narration":"旁白","duration":秒数}]}。' +
     `本阶段文档类型只允许 ${stageTypes[request.stage].join('、')}；非分集阶段 scenes 必须为空数组。\n`
 }
 
 export function parseWorkflowDraft(raw: string, request: z.infer<typeof workflowRequest>): WorkflowDraft | null {
-  const envelope = z.object({ artifacts: z.array(workflowArtifact), scenes: z.array(workflowScene).default([]) })
-  const result = parseStructuredOutput(raw, envelope)
+  const result = parseStructuredOutput(raw, workflowEnvelope)
   if (!result) return null
   const parsed = workflowDraftSchema.safeParse({ ...request, ...result })
   if (!parsed.success) return null
   if (parsed.data.stage === 'episode') parsed.data.artifacts[0]!.title = `第 ${request.episode_number} 集剧本`
   return parsed.data
 }
+
+export const workflowEnvelope = z.object({ artifacts: z.array(workflowArtifact).min(1).max(4), scenes: z.array(workflowScene).max(100).default([]) }).strict()
 
 export function workflowReply(draft: WorkflowDraft): string {
   const scope = draft.stage === 'episode' ? `第 ${draft.episode_number} 集` : workflowLabels[draft.stage]

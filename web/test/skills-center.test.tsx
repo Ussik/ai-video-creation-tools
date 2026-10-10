@@ -78,7 +78,7 @@ test('installing a recommended skill opens readable details and does not enable 
 test('prompt refinement stays a draft, blocks stale application and applies only after the creator clicks apply', async t => {
   const original = globalThis.fetch, applied: string[] = [], requests: unknown[] = []
   globalThis.fetch = async (url, init) => {
-    if (url === '/api/skills') return reply({ skills: [{ ...skill, enabled: true, stages: ['image_prompt'] }] })
+    if (url === '/api/projects/project/skills/defaults') return reply({ policies: [{ stage: 'image_prompt', label: '图片提示词', primary_id: skill.id, auxiliary_ids: [], source: 'global', warning: '', skills: [skill] }] })
     if (String(url).endsWith('/refine-prompt')) {
       requests.push(JSON.parse(String(init!.body)))
       return reply({ prompt: '9:16 人物三视图，保持身份和服装一致', skills: [{ name: skill.name }] })
@@ -94,7 +94,7 @@ test('prompt refinement stays a draft, blocks stale application and applies only
     await act(() => document.querySelector<HTMLButtonElement>('[aria-label="使用技能整理提示词"]')!.click())
     await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
     assert.equal(applied.length, 0)
-    assert.deepEqual(requests[0], { stage: 'image_prompt', model_id: 'text', prompt: '人物信息图', target_model_id: 'image', shot_id: 'shot', ratio: '9:16', duration: 5, mode: 'reference', reference_asset_ids: ['frame'] })
+    assert.deepEqual(requests[0], { stage: 'image_prompt', skill_ids: ['skill'], model_id: 'text', prompt: '人物信息图', target_model_id: 'image', shot_id: 'shot', ratio: '9:16', duration: 5, mode: 'reference', reference_asset_ids: ['frame'] })
     await view.render(component('人物信息图', 'other-shot'))
     assert.equal(button('应用提示词').disabled, true)
     assert.equal(applied.length, 0)

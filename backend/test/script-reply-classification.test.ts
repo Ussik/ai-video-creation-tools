@@ -82,7 +82,7 @@ test('invalid, missing or invented classification IDs fail closed without cachin
       { id: 'a', title: '祖母', text: '亲缘' }, { id: 'a', title: '养母', text: '孤立' },
     ] } }] }]) {
     output = invalid
-    assert.equal((await app.inject({ method: 'POST', url, payload })).statusCode, 502)
+    assert.equal((await app.inject({ method: 'POST', url, payload })).statusCode, 422)
   }
   output = { messages: [{ id: 'actual', classification: { type: 'other' } }] }
   assert.equal((await call<Result>('POST', url, payload)).messages[0]!.classification.type, 'other')

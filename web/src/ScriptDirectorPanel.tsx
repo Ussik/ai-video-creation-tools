@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Select } from '@mantine/core'
 import {
   ArrowDown,
   ArrowUp,
   PanelRight,
+  PanelBottomClose,
+  PanelBottomOpen,
   Maximize2,
   Plus,
   Square,
@@ -37,31 +39,42 @@ import {
 import { api, json } from './api'
 import type { Asset, Job, Model, ProjectDetail, Provider, ScriptArtifact, ScriptArtifactType, ScriptGenerationOptions } from './api'
 import type { ScriptAction } from './ProjectCanvas'
-import VisualPreparation from './VisualPreparation'
-import { requestVisualCanvas } from './canvas-visual-profiles'
+import CreativeSkillSelector from './CreativeSkillSelector'
+import { useCreativeSkills } from './useCreativeSkills'
+import StoryboardPlanner from './StoryboardPlanner'
 import './script-director.css'
 import './script-director-chat.css'
 import './director-documents.css'
 import DirectorQuestionPanel from './DirectorQuestionPanel'
 import DirectorMessageTiming, { finishMessageTiming, type MessageTiming } from './DirectorMessageTiming'
+import DirectorActivity from './DirectorActivity'
+import { activityDraftId, canRetryExecution, conversationMessage, readActivity, updateActivity, settleActivity, type ScriptActivity, type ScriptExecution } from './director-activity'
+import type { ScriptActivityTarget } from '../../backend/src/script-activity-types'
+import { createStreamScope, directorStreamIdleTimeoutMs } from '../../backend/src/script-stream-policy'
+import { directorModes, directorModeProfiles, directorModeInstructions, type DirectorMode } from '../../backend/src/script-creation-mode'
+import type { CreationNextStep, ScriptCreationState } from '../../backend/src/script-creation-state-types'
+import type { ResourceChange } from '../../backend/src/script-resource-types'
+import type { DocumentReview } from '../../backend/src/script-review-types'
+import DirectorReviewReport from './DirectorReviewReport'
 import DirectorReferences from './DirectorReferences'
 import { addReference, readReferences, referenceMessages, type DirectorReference } from './director-references'
-import DirectorDraftReview, { DirectorDocumentBody, DirectorSceneList } from './DirectorDocuments'
+import DirectorDraftReview, { DirectorDocumentBody, DirectorSceneList, RevisionProgress } from './DirectorDocuments'
 import { restoreChoiceAnswer, choiceAnswerText, type ChoiceAnswer } from './DirectorQuestionPanel'
 import { parseMessageChoices } from './director-choices'
-import { CanvasTextPreview } from './CanvasTextEditor'
-import { parseScriptDocument } from './script-rich-document'
-import { textDocumentText } from './text-document'
+import ScriptMessageContent from './ScriptMessageContent'
 import { clampDirectorWindow, defaultDirectorWindow, shouldSendDirectorMessage, type DirectorWindowRect } from './director-window'
 import { ScriptThemeWaterCanvas as WebGLScriptThemeWaterCanvas } from './ScriptThemeWaterCanvas'
 import { artifactKey, workflowLabels, workflowStages, workflowProgress, directorStageContext, type DirectorStageContext } from './script-workflow'
 import { workflowInstruction, workflowRequestForStage, type WorkflowDraft, type WorkflowRequest, type WorkflowStage } from './script-workflow'
-import { canAdoptReply, classificationBatch, classificationKey, followingMessages, latestReplyNeedsRecognition, replyRecognitionState, activeReplyChoice, episodePreparationAction, replyChoices, replyWorkflowAction, replyDisplayText, replyClassificationVersion, contextualReplyTypes, type ReplyClassification } from './script-reply'
+import { canAdoptReply, classificationBatch, classificationKey, followingMessages, replyRecognitionState, activeReplyChoice, replyChoices, replyDisplayText, replyClassificationVersion, contextualReplyTypes, type ReplyClassification } from './script-reply'
 import { regenerationSource } from './director-regeneration'
 import { directorChatContext } from './director-chat-context'
+import { documentTaskPrompt, toolDraftArtifacts, toolDraftScenes, toolDraftStage, toolDraftOutcome, editedToolDraft, type DocumentAction, type ScriptToolDraft, type StoryDecision } from './script-tools'
+import type { RevisionTask } from '../../backend/src/script-revision-types'
 import { useThemeVisuals } from './useThemeVisuals'
 import { isScriptThemeCategory, neutralThemeArtwork, scriptThemeArtwork, scriptThemeCategories } from '../../backend/src/script-theme-catalog'
 import './script-theme-visuals.css'
+import './script-director-settings.css'
 
 type GeneratedScene = {
   episode_number?: number
@@ -83,7 +96,10 @@ type GeneratedArtifact = {
 }
 
 type GeneratedScript = {
+  source_message_id?: string
   workflow?: WorkflowRequest
+  tool_draft?: ScriptToolDraft
+  resource_changes?: ResourceChange[]
   generation_options?: ScriptGenerationOptions
   outline: string
   characters: string
@@ -97,13 +113,17 @@ type Message = MessageTiming & {
   text: string
   pending?: boolean
   failed?: boolean
-  activity?: ProcessEvent[]
+  activity?: ScriptActivity[]
+  execution?: ScriptExecution
+  has_reply_text?: boolean
   reference_documents?: DirectorReference[]
   question_response?: { status: 'skipped' | 'answered'; question: string }
   stage_context?: DirectorStageContext
   classification?: ReplyClassification
   classification_version?: number
   classification_context?: string
+  classification_source?: 'function_call' | 'model_extraction' | 'application'
+  review?: DocumentReview
 }
 
 function isStructuredChoiceStream(text: string): boolean {
@@ -111,17 +131,23 @@ function isStructuredChoiceStream(text: string): boolean {
   return prefix.startsWith('{') || prefix.startsWith('```') || /"kind"\s*:\s*"(?:choices|input_request|confirmation|question_set)"/.test(prefix)
 }
 
-type ProcessEvent = {
-  id: string
-  label: string
-  summary: string
-}
-
 type StreamEvent = {
+  execution_outcome?: ScriptExecution['outcome']
+  task?: RevisionTask
+  draft_id?: string
+  completion_kind?: 'creator_interaction' | 'draft_review' | 'next_step' | 'explanation'
+  creation?: ScriptCreationState
+  activity?: ScriptActivity | ScriptActivity[]
   stage_context?: DirectorStageContext
   workflow?: WorkflowRequest
   generation_options?: ScriptGenerationOptions
   draft?: WorkflowDraft
+  tool_draft?: ScriptToolDraft | null
+  classification?: ReplyClassification
+  classification_version?: number
+  classification_source?: 'function_call' | 'model_extraction' | 'application'
+  review?: DocumentReview
+  project_changed?: boolean
   type?: string
   text?: string
   delta?: string
@@ -143,11 +169,10 @@ type ConversationSnapshot = {
 type PersistedConversation = {
   id: string
   label: string
-  messages: Array<Pick<Message, 'id' | 'role' | 'text' | 'reference_documents' | 'processing_duration_ms' | 'stage_context' | 'classification' | 'classification_version' | 'classification_context'>>
+  messages: Array<Pick<Message, 'id' | 'role' | 'text' | 'reference_documents' | 'processing_duration_ms' | 'stage_context' | 'classification' | 'classification_version' | 'classification_context' | 'classification_source' | 'review' | 'activity' | 'execution'>>
   updated_at?: string
 }
 
-type DirectorMode = 'all' | 'script' | 'director'
 
 const welcomeMessage: Message = {
   id: 'welcome', role: 'assistant',
@@ -244,10 +269,13 @@ function restoreWorkflowDraft(projectId: string): GeneratedScript | null {
     const source = window.localStorage.getItem(`script-director-draft:${projectId}`)
     if (!source || source.length > 500000) return null
     const value = JSON.parse(source) as GeneratedScript
-    if (!value.workflow || !workflowStages.includes(value.workflow.stage) || !Array.isArray(value.artifacts) || !Array.isArray(value.scenes)) return null
-    if (value.workflow.stage === 'episode' && (!Number.isInteger(value.workflow.episode_number) || value.workflow.episode_number < 1 || value.workflow.episode_number > 200)) return null
+    if (((!value.workflow || !workflowStages.includes(value.workflow.stage)) && !value.tool_draft?.id) || !Array.isArray(value.artifacts) || !Array.isArray(value.scenes)) return null
+    if (value.workflow?.stage === 'episode' && (!Number.isInteger(value.workflow.episode_number) || value.workflow.episode_number < 1 || value.workflow.episode_number > 200)) return null
     return {
-      workflow: workflowRequestForStage(value.workflow.stage, value.workflow.episode_number, value.workflow.target_duration),
+      ...(value.workflow ? { workflow: workflowRequestForStage(value.workflow.stage, value.workflow.episode_number, value.workflow.target_duration) } : {}),
+      ...(value.tool_draft ? { tool_draft: value.tool_draft } : {}),
+      ...(Array.isArray(value.resource_changes) ? { resource_changes: value.resource_changes } : {}),
+      ...(typeof value.source_message_id === 'string' ? { source_message_id: value.source_message_id } : {}),
       ...(value.generation_options && typeof value.generation_options === 'object' ? { generation_options: value.generation_options } : {}),
       outline: typeof value.outline === 'string' ? value.outline : '',
       characters: typeof value.characters === 'string' ? value.characters : '',
@@ -284,12 +312,7 @@ function parseStreamEvent(raw: string): StreamEvent | null {
 }
 
 function promptForMode(prompt: string, mode: DirectorMode): string {
-  const direction = mode === 'all'
-    ? '兼顾故事构思、角色塑造和可制作的分场剧本。'
-    : mode === 'director'
-      ? '以导演视角组织场次，突出视觉调度、动作节拍、情绪变化和可执行的画面。'
-      : '优先打磨人物动机、戏剧冲突、对白和故事结构，再落实为分场剧本。'
-  return `${prompt.trim()}\n\n创作模式要求：${direction}`
+  return `${prompt.trim()}\n\n${directorModeInstructions(mode)}`
 }
 
 const directorStoryStructures = [
@@ -321,10 +344,15 @@ function DirectorStructurePicker({
   const count = Number.isFinite(episodeCount) ? Math.max(1, Math.min(200, Math.round(episodeCount as number))) : 20
   return <div className={`script-director-structure-picker${open ? ' is-open' : ''}`}>
     <button type="button" className="script-director-structure-card" onClick={onToggle} aria-expanded={open} aria-haspopup="dialog">
-      <span className="script-director-structure-label">剧本结构</span>
-      <span className="script-director-structure-value">{value || '自动判断'}</span>
-      <span className="script-director-structure-meta">{episodeCount ? `${count} 集` : '集数自动判断'}</span>
-      <ChevronDown size={14} className="script-director-structure-chevron" />
+      <span className="script-director-setting-heading">
+        <Clapperboard size={14} aria-hidden="true" />
+        <span className="script-director-structure-label">剧本结构</span>
+        <ChevronDown size={13} className="script-director-structure-chevron" aria-hidden="true" />
+      </span>
+      <span className="script-director-structure-summary">
+        <span className={`script-director-structure-value${value ? '' : ' is-auto'}`}>{value || '自动判断'}</span>
+        <span className="script-director-structure-meta">{episodeCount ? `${count} 集` : '集数自动判断'}</span>
+      </span>
     </button>
     {open && <div className="script-director-structure-popover" role="dialog" aria-label="剧本结构与集数">
       <div className="script-director-structure-popover-head"><strong>剧本结构</strong><span>选择叙事节奏</span></div>
@@ -368,9 +396,12 @@ type DirectorAutoFieldProps = {
 function DirectorAutoField({ label, value, placeholder, options, icon: Icon, open, onToggle, onChange }: DirectorAutoFieldProps) {
   return <div className={`script-director-auto-field${open ? ' is-open' : ''}`}>
     <button type="button" className="script-director-auto-card" onClick={onToggle} aria-expanded={open} aria-haspopup="dialog">
-      <span className="script-director-auto-icon"><Icon size={15} /></span>
-      <span className="script-director-auto-copy"><small>{label}</small><strong>{value || '自动'}</strong></span>
-      <ChevronDown size={13} className="script-director-auto-chevron" />
+      <span className="script-director-setting-heading">
+        <Icon size={14} aria-hidden="true" />
+        <small>{label}</small>
+        <ChevronDown size={13} className="script-director-auto-chevron" aria-hidden="true" />
+      </span>
+      <strong className={`script-director-setting-value${value ? '' : ' is-auto'}`}>{value || '自动'}</strong>
     </button>
     {open && <div className="script-director-auto-popover" role="dialog" aria-label={`${label}选项`}>
       <div className="script-director-auto-popover-head"><strong>{label}</strong><span>可选，也可以交给模型判断</span></div>
@@ -716,8 +747,7 @@ function AssetTaskCard({
 }
 
 function DirectorMessageText({ text }: { text: string }) {
-  const document = useMemo(() => parseScriptDocument(text), [text])
-  return <CanvasTextPreview text={textDocumentText(document)} document={document} />
+  return <ScriptMessageContent text={text} />
 }
 
 function readWindowLayout() {
@@ -755,12 +785,18 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const [minimized, setMinimized] = useState(false)
   const [workflowOpen, setWorkflowOpen] = useState(false)
   const [composerMenuOpen, setComposerMenuOpen] = useState(false)
+  const [composerCollapsed, setComposerCollapsed] = useState(false)
+  const composerBodyId = useId()
   const [readerReference, setReaderReference] = useState<DirectorReference | null>(null)
   const [references, setReferences] = useState<DirectorReference[]>(() => {
     try { return readReferences(JSON.parse(window.localStorage.getItem(`script-director-references:${detail.id}`) || '[]')) } catch { return [] }
   })
   const [readerKey, setReaderKey] = useState<string | null>(null)
   const [readerView, setReaderView] = useState<'body' | 'scenes'>('body')
+  const [documentTask, setDocumentTask] = useState<DocumentAction & { title: string } | null>(null)
+  const [recoveringMessageId, setRecoveringMessageId] = useState<string | null>(null)
+  const executionDraftIds = useRef(new Map<string, string>())
+  const [decisions, setDecisions] = useState<StoryDecision[]>([])
   const [showLatest, setShowLatest] = useState(false)
   const [closing, setClosing] = useState(false)
   const composerRef = useRef<HTMLTextAreaElement>(null)
@@ -777,6 +813,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const [idea, setIdea] = useState(detail.brief || '')
   const [modelId, setModelId] = useState(() => { try { return window.localStorage.getItem(`script-director-model:${detail.id}`) || '' } catch { return '' } })
   const [activeFocus, setActiveFocus] = useState<ScriptAction>(focusArtifact)
+  const [creation, setCreation] = useState<ScriptCreationState | null>(null)
+  const creationRefreshId = useRef(0)
   const [mode, setMode] = useState<DirectorMode>('script')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [showSettingPresets, setShowSettingPresets] = useState(true)
@@ -799,10 +837,16 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const [input, setInput] = useState(initialContext || readComposerDraft(detail.id))
   const [adoptingMessageId, setAdoptingMessageId] = useState<string | null>(null)
   const [handoffEpisode, setHandoffEpisode] = useState(() => Math.max(0, ...(detail.script.artifacts || []).filter(item => item.artifact_type === 'episode_script').map(item => item.episode_number || 0)))
-  const [visualPreparationOpen, setVisualPreparationOpen] = useState(false)
   const [working, setWorking] = useState<'chat' | 'prompt' | 'generate' | 'save' | 'shots' | null>(null)
+  const skillControl = useCreativeSkills(detail.id)
+  const currentSkillStage = activeFocus === 'all' ? 'script' : 'visual_assets'
+  const skillSelector = <CreativeSkillSelector stage={currentSkillStage} policies={skillControl.policies} ids={skillControl.ids(currentSkillStage)} onChange={values => skillControl.change(currentSkillStage, values)}
+    projectId={detail.id} appearance="chat" disabled={!!working || closing} loading={skillControl.loading} error={skillControl.error} onDefaultsChanged={() => skillControl.reload(currentSkillStage)} />
+  const [storyboardOpen, setStoryboardOpen] = useState(false)
+  const [planningSceneIds, setPlanningSceneIds] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [generated, setGenerated] = useState<GeneratedScript | null>(() => restoreWorkflowDraft(detail.id))
+  const [liveRevision, setLiveRevision] = useState<RevisionTask | null>(null)
   const [previewOpen, setPreviewOpen] = useState(() => Boolean(restoreWorkflowDraft(detail.id)))
   const [artifactsOpen, setArtifactsOpen] = useState(false)
   const [scriptSaved, setScriptSaved] = useState(false)
@@ -841,9 +885,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const streamMessageFrameRef = useRef<number | null>(null)
   const streamMessageUpdateRef = useRef<{ pendingId: string; text: string } | null>(null)
   const hasSavedScript = scriptExists(detail)
-  const linkedSceneIds = useMemo(() => new Set(detail.shots.map((shot) => shot.source_scene_id).filter((id): id is string => !!id)), [detail.shots])
   const handoffScenes = (detail.script?.scenes || []).filter(scene => !handoffEpisode || scene.episode_number === handoffEpisode)
-  const pendingSceneCount = handoffScenes.filter(scene => !linkedSceneIds.has(scene.id)).length
   const savedEpisodes = (detail.script.artifacts || []).filter(artifact => artifact.artifact_type === 'episode_script' && (artifact.episode_number || 0) > 0).sort((a, b) => (a.episode_number || 0) - (b.episode_number || 0))
   const promptRequestId = useRef(0)
   const selectedModel = availableModels.find((model) => model.id === modelId)
@@ -877,9 +919,12 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const artifactCards = useMemo(() => {
     const cards = new Map<string, GeneratedArtifact & { status: ScriptArtifact['status']; isUnsaved: boolean }>()
     detail.script.artifacts?.forEach(artifact => cards.set(artifactKey(artifact), { ...artifact, isUnsaved: false }))
+    for (const type of ['outline', 'characters'] as const) if (detail.script[type].trim() && !cards.has(`${type}:0`)) cards.set(`${type}:0`, {
+      artifact_type: type, title: type === 'outline' ? '故事大纲' : '人物设定', content: detail.script[type], status: 'ready', isUnsaved: false,
+    })
     if (generated && !scriptSaved) {
       const draftArtifacts = [...generated.artifacts]
-      if (!generated.workflow) {
+      if (!generated.workflow && !generated.tool_draft) {
         if (!draftArtifacts.some(item => item.artifact_type === 'outline')) draftArtifacts.push({ artifact_type: 'outline', title: '故事大纲', content: generated.outline })
         if (!draftArtifacts.some(item => item.artifact_type === 'characters')) draftArtifacts.push({ artifact_type: 'characters', title: '人物小传', content: generated.characters })
         if (!draftArtifacts.some(item => item.artifact_type === 'structure')) draftArtifacts.push({ artifact_type: 'structure', title: '全剧分段', content: generatedStructure })
@@ -887,22 +932,14 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       draftArtifacts.filter(artifact => artifact.content.trim()).forEach(artifact => cards.set(artifactKey(artifact), { ...artifact, status: scriptSaved ? 'ready' : 'draft', isUnsaved: !scriptSaved }))
     }
     return [...cards.values()]
-  }, [detail.script.artifacts, generated, generatedStructure, scriptSaved])
+  }, [detail.script.artifacts, detail.script.outline, detail.script.characters, generated, generatedStructure, scriptSaved])
   const progress = workflowProgress(detail.script)
-  const quickReplies = useMemo<Array<{ label: string; action: 'save' | 'workflow' | 'chat'; stage?: WorkflowStage; episode?: number }>>(() => {
-    if (busy || activeFocus !== 'all') return []
-    if (generated && !scriptSaved) return [{ label: '确认写入项目剧本', action: 'save' }]
-    const next = workflowProgress(detail.script)
-    if (!next.next_stage || next.next_stage === 'outline') return []
-    return [{ label: next.next_stage === 'episode' ? `开始写第 ${next.next_episode} 集` : `生成${workflowLabels[next.next_stage]}`, action: 'workflow', stage: next.next_stage, episode: next.next_episode || undefined }]
-  }, [busy, generated, scriptSaved, detail.script, activeFocus])
-  const hasSavedOutline = Boolean(detail.script.outline.trim() || detail.script.artifacts?.some(artifact => artifact.artifact_type === 'outline' && artifact.content.trim() && artifact.status !== 'draft'))
-  const stageContext = directorStageContext(detail.script, { pending: generated && !scriptSaved ? generated.workflow : undefined,
+  const stageContext = directorStageContext(detail.script, { pending: generated && !scriptSaved ? toolDraftStage(generated.tool_draft) || generated.workflow : undefined,
     previous: [...messages].reverse().find(message => message.role === 'assistant')?.stage_context })
   const activeChoice = activeReplyChoice(messages, choiceDismissed, answeringChoiceId, activeFocus === 'all' ? stageContext : undefined)
-  const workflowAction = activeFocus === 'all' ? replyWorkflowAction(messages, stageContext) : null
-  const preparationAction = episodePreparationAction(messages, stageContext)
-  const canStartPreparedEpisode = activeFocus === 'all' && !activeChoice && !busy && !(generated && !scriptSaved) && preparationAction && stageContext.mode !== 'review' && stageContext.stage === 'episode' && preparationAction.episode_number === stageContext.episode_number
+  useEffect(() => { if (activeChoice) setComposerCollapsed(false) }, [activeChoice?.messageId])
+  const nextStep = creation?.next_step
+  const directionStart = !messages.some(message => message.role === 'user') && creation?.status === 'direction'
   const primaryArtifact = artifactCards.find(artifact => artifact.artifact_type === 'episode_script' && artifact.episode_number === handoffEpisode)
     || [...artifactCards].reverse().find(artifact => artifact.artifact_type === 'episode_script') || artifactCards.at(-1)
   const primaryArtifactScenes = detail.script.scenes.filter(scene => scene.episode_number === primaryArtifact?.episode_number)
@@ -926,15 +963,13 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   useEffect(() => {
     try { window.localStorage.setItem(`script-director-input:${detail.id}`, input) } catch { /* Keep the unsent input in memory. */ }
     const textarea = composerRef.current
-    if (textarea) { textarea.style.height = 'auto'; textarea.style.height = `${Math.min(160, Math.max(72, textarea.scrollHeight))}px` }
-  }, [input, minimized, readerKey, readerReference, hidden])
+    if (textarea && !composerCollapsed) { textarea.style.height = 'auto'; textarea.style.height = `${Math.min(160, Math.max(72, textarea.scrollHeight))}px` }
+  }, [input, minimized, readerKey, readerReference, hidden, composerCollapsed, previewOpen, artifactsOpen, workflowOpen, activeChoice?.messageId, references.length])
   useEffect(() => {
-    const composer = directorPanelRef.current?.querySelector('.sd-question-panel, .script-director-composer')
+    const composer = directorPanelRef.current?.querySelector('.sd-composer-area')
     if (!composer) return
-    const actions = directorPanelRef.current?.querySelector('.sd-creation-actions')
-    const observer = new ResizeObserver(() => directorPanelRef.current?.style.setProperty('--composer-height', `${composer.getBoundingClientRect().height + (actions?.getBoundingClientRect().height || 0)}px`))
+    const observer = new ResizeObserver(() => directorPanelRef.current?.style.setProperty('--composer-height', `${composer.getBoundingClientRect().height}px`))
     observer.observe(composer)
-    if (actions) observer.observe(actions)
     return () => observer.disconnect()
   }, [minimized, readerKey, readerReference, previewOpen, activeChoice?.messageId, references.length, artifactsOpen, workflowOpen, activeFocus])
   useEffect(() => {
@@ -958,7 +993,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   }, [detail.id, choiceAnswers, choiceDismissed, answeringChoiceId])
 
   useEffect(() => {
-    if (initialContext) setInput(initialContext)
+    if (initialContext) { setInput(initialContext); setComposerCollapsed(false) }
   }, [initialContext])
 
   useEffect(() => {
@@ -981,7 +1016,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   useEffect(() => {
     try {
       const key = `script-director-draft:${detail.id}`
-      if (generated?.workflow && !scriptSaved) window.localStorage.setItem(key, JSON.stringify({ ...generated, generation_options: options }))
+      if ((generated?.workflow || generated?.tool_draft) && !scriptSaved) window.localStorage.setItem(key, JSON.stringify({ ...generated, generation_options: options }))
       else window.localStorage.removeItem(key)
     } catch { /* Draft preview remains available when local storage is full. */ }
   }, [detail.id, generated, scriptSaved, options])
@@ -1045,9 +1080,9 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       messageScrollFrameRef.current = null
       const viewport = messagesViewportRef.current
       if (!viewport || !followMessagesRef.current) return
-      viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'auto' })
+      viewport.scrollTo({ top: messageScrollEnd(viewport), behavior: 'auto' })
     })
-  }, [messages, assetTaskStatus, artifactsOpen, previewOpen, workflowOpen, minimized, readerKey, hidden])
+  }, [messages, assetTaskStatus, artifactsOpen, previewOpen, workflowOpen, minimized, readerKey, hidden, nextStep?.id, composerCollapsed])
 
   useEffect(() => () => {
     if (messageScrollFrameRef.current !== null) {
@@ -1139,7 +1174,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         setMessages(current => current.map((message, index) => {
           const source = batch.find(item => item.id === message.id)
           const resultItem = result.messages.find(item => item.id === message.id)
-          return source && message.text === source.text && JSON.stringify(followingMessages(current, index)) === JSON.stringify(source.following_messages) && JSON.stringify(message.stage_context) === JSON.stringify(source.stage_context) && resultItem ? { ...message, classification: resultItem.classification, classification_version: result.classification_version, classification_context: JSON.stringify(source.following_messages) } : message
+          return source && message.text === source.text && JSON.stringify(followingMessages(current, index)) === JSON.stringify(source.following_messages) && JSON.stringify(message.stage_context) === JSON.stringify(source.stage_context) && resultItem ? { ...message, classification: resultItem.classification, classification_version: result.classification_version, classification_context: JSON.stringify(source.following_messages), classification_source: 'model_extraction' } : message
         }))
       })
       .catch(() => {
@@ -1176,7 +1211,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
           await api<PersistedConversation>(`/projects/${detail.id}/script/conversations`, json('PUT', {
             id: conversation.id,
             label: conversation.label,
-            messages: conversation.messages.filter((message) => !message.pending).slice(-80).map(({ id, role, text, reference_documents, processing_duration_ms, stage_context }) => ({ id, role, text, ...(stage_context ? { stage_context } : {}), ...(reference_documents?.length ? { reference_documents } : {}), ...(processing_duration_ms != null ? { processing_duration_ms } : {}) })),
+            messages: conversation.messages.filter((message) => !message.pending).slice(-80).map(conversationMessage),
           })).catch(() => null)
         }
       })()
@@ -1263,7 +1298,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   }
 
   function updateSettingsDraft(key: keyof ScriptGenerationOptions, value: string | number | undefined) {
-    setSettingsDraft((current) => ({ ...current, [key]: value }))
+    setSettingsDraft((current) => ({ ...current, [key]: value,
+      ...(key === 'visual_style' && value !== current.visual_style ? { visual_style_details: undefined } : {}) }))
   }
 
   function applySettings() {
@@ -1308,8 +1344,16 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     setMessages((current) => [...current, { id: crypto.randomUUID(), role, text, pending, classification_version: replyClassificationVersion, classification: { type: 'other' } as ReplyClassification }].slice(-80))
   }
 
+  function messageScrollEnd(element: HTMLElement) {
+    const latest = [...element.querySelectorAll<HTMLElement>('[data-message-id]')].at(-1)
+    // Keep the latest task/reply visible; the project deliverables below it
+    // should not push the current execution card above the viewport.
+    if (latest?.querySelector('.sd-activity')) return Math.max(0, element.scrollTop + latest.getBoundingClientRect().bottom - element.getBoundingClientRect().top - element.clientHeight + 8)
+    return Math.max(0, element.scrollHeight - element.clientHeight)
+  }
+
   function updateMessageFollow() {
-    const isAtBottom = (element: HTMLElement | null) => !element || element.scrollHeight - element.scrollTop - element.clientHeight < 72
+    const isAtBottom = (element: HTMLElement | null) => !element || messageScrollEnd(element) - element.scrollTop < 72
     // The panel is a fixed flex shell with overflow hidden. Its scrollHeight
     // includes the composer and other fixed sections, so checking it here
     // incorrectly disables follow mode after the first message grows.
@@ -1343,15 +1387,26 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   }
 
   function appendProcessEvent(pendingId: string, event: StreamEvent) {
+    if (event.activity) {
+      const incoming = readActivity(Array.isArray(event.activity) ? event.activity : [event.activity])
+      const draftId = activityDraftId(incoming)
+      if (draftId) {
+        executionDraftIds.current.set(pendingId, draftId)
+        if (executionDraftIds.current.size > 80) executionDraftIds.current.delete(executionDraftIds.current.keys().next().value!)
+      }
+      setMessages(current => current.map(message => message.id === pendingId ? { ...message,
+        activity: incoming.reduce((entries, entry) => updateActivity(entries, entry), readActivity(message.activity)) } : message))
+      return
+    }
     const summary = (event.summary || event.text || '').trim()
     if (!summary) return
     const label = event.label || '创作依据'
     setMessages(current => current.map(message => {
       if (message.id !== pendingId) return message
-      const events = message.activity || []
-      const existing = events.find(item => item.label === label)
-      const next = { id: existing?.id || crypto.randomUUID(), label, summary }
-      return { ...message, activity: existing ? events.map(item => item.id === existing.id ? next : item) : [...events, next].slice(-8) }
+      const events = readActivity(message.activity)
+      // Native calls emit rich activity and a compatibility process summary.
+      if (events.some(item => item.kind === 'tool' && item.label === label)) return message
+      return { ...message, activity: [...events, { id: crypto.randomUUID(), label, summary: summary.slice(0, 3000), kind: 'context' as const, status: 'succeeded' as const, started_at: Date.now() }] }
     }))
   }
 
@@ -1360,116 +1415,138 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     body: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<string> {
-    const response = await fetch(`/api/projects/${detail.id}/script/director/chat/stream`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream, application/x-ndjson' },
-      body: JSON.stringify(body),
-      signal,
-    })
-    if (response.status === 404 || response.status === 405) {
-      throw new StreamUnavailableError('流式接口暂不可用')
-    }
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({})) as { detail?: unknown; message?: unknown }
-      const detail = payload.detail ?? payload.message
-      throw new Error(typeof detail === 'string' ? detail : `请求失败 (${response.status})`)
-    }
-    if (!response.body) throw new StreamUnavailableError('浏览器不支持流式响应')
-
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let reply = ''
-    let documentWorkflow = Boolean(body.workflow || body.adopt_source)
-    let completed = false
-    let sseLines: string[] = []
-
-    const applyEvent = (event: StreamEvent) => {
-      const kind = String(event.type || '').toLowerCase()
-      if (event.stage_context) setMessages(current => current.map(message => message.id === pendingId ? { ...message, stage_context: event.stage_context } : message))
-      if (kind === 'intent') {
-        documentWorkflow = Boolean(event.workflow)
-        if (event.generation_options) setOptions(event.generation_options)
-        if (event.generation_options?.episode_duration) setEpisodeDuration(event.generation_options.episode_duration)
-        return
-      }
-      if (kind === 'progress' || kind === 'stage') {
-        if (!reply && event.text) queueStreamMessage(pendingId, event.text)
-        return
-      }
-      if (kind === 'process' || kind === 'summary' || kind === 'reasoning_summary') {
-        appendProcessEvent(pendingId, event)
-        return
-      }
-      if (kind === 'error') {
-        throw new Error(event.message || event.text || '流式生成失败')
-      }
-      if (kind === 'done' || kind === 'complete') {
-        completed = true
-        if (typeof event.reply === 'string') reply = event.reply
-        if (event.draft) {
-          receiveWorkflowDraft(event.draft)
-          setMessages(current => current.map(message => message.id === pendingId ? { ...message, classification_version: replyClassificationVersion, classification: { type: 'other' } } : message))
-        }
-        return
-      }
-      const chunk = typeof event.delta === 'string' ? event.delta : typeof event.text === 'string' ? event.text : ''
-      if (chunk) {
-        reply += chunk
-        queueStreamMessage(pendingId, documentWorkflow ? '正在编写阶段草稿，完成后可预览和确认…' : isStructuredChoiceStream(reply) ? '正在整理可选方向…' : reply)
-      }
-    }
-
-    const flushSse = () => {
-      if (!sseLines.length) return
-      const event = parseStreamEvent(sseLines.join('\n'))
-      sseLines = []
-      if (event) applyEvent(event)
-    }
-
+    const scope = createStreamScope(signal, { idleMs: directorStreamIdleTimeoutMs })
     try {
-      while (true) {
-        const { value, done } = await reader.read()
-        buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
-        const lines = buffer.split(/\r?\n/)
-        buffer = lines.pop() || ''
-        for (const line of lines) {
-          if (!line.trim()) {
-            flushSse()
-            continue
-          }
-          if (line.startsWith('event:')) continue
-          if (line.startsWith('data:')) {
-            sseLines.push(line)
-            continue
-          }
-          // NDJSON responses have one JSON object per line.
-          const event = parseStreamEvent(line)
-          if (event) applyEvent(event)
+      const response = await scope.wait(fetch(`/api/projects/${detail.id}/script/director/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream, application/x-ndjson' },
+        body: JSON.stringify(body),
+        signal: scope.signal,
+      }))
+      if (response.status === 404 || response.status === 405) {
+        throw new StreamUnavailableError('流式接口暂不可用')
+      }
+      if (!response.ok) {
+        const payload = await scope.wait(response.json()).catch(() => {
+          if (scope.signal.aborted) throw scope.signal.reason
+          return {}
+        }) as { detail?: unknown; message?: unknown }
+        const detail = payload.detail ?? payload.message
+        throw new Error(typeof detail === 'string' ? detail : `请求失败 (${response.status})`)
+      }
+      if (!response.body) throw new StreamUnavailableError('浏览器不支持流式响应')
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let reply = ''
+      let documentWorkflow = Boolean(body.workflow || body.adopt_source)
+      let completed = false
+      let sseLines: string[] = []
+
+      const applyEvent = (event: StreamEvent) => {
+        const kind = String(event.type || '').toLowerCase()
+        if (kind === 'heartbeat') return
+        if (kind === 'revision_progress' && event.task) {
+          setLiveRevision(event.task)
+          if (event.draft_id) executionDraftIds.current.set(pendingId, event.draft_id)
+          return
         }
-        if (done) {
-          if (buffer.trim()) {
-            if (buffer.startsWith('data:')) sseLines.push(buffer)
-            else {
-              const event = parseStreamEvent(buffer)
-              if (event) applyEvent(event)
-            }
+        if (kind === 'close' && !completed) throw new Error('服务连接已结束，但未返回完整创作结果；请检查草稿后重试')
+        if (event.activity) appendProcessEvent(pendingId, event)
+        if (kind === 'activity') return
+        if (event.stage_context) setMessages(current => current.map(message => message.id === pendingId ? { ...message, stage_context: event.stage_context } : message))
+        if (kind === 'intent') {
+          documentWorkflow = Boolean(event.workflow)
+          if (event.generation_options) setOptions(event.generation_options)
+          if (event.generation_options?.episode_duration) setEpisodeDuration(event.generation_options.episode_duration)
+          return
+        }
+        if (kind === 'progress' || kind === 'stage') {
+          if (!reply && event.text) queueStreamMessage(pendingId, event.text)
+          return
+        }
+        if (kind === 'process' || kind === 'summary' || kind === 'reasoning_summary') {
+          appendProcessEvent(pendingId, event)
+          return
+        }
+        if (kind === 'error') {
+          throw new Error(event.message || event.text || '流式生成失败')
+        }
+        if (kind === 'done' || kind === 'complete') {
+          flushQueuedStreamMessage()
+          completed = true
+          receiveToolResult(event, pendingId)
+          if (typeof event.reply === 'string') reply = event.reply
+          if (event.draft) {
+            receiveWorkflowDraft(event.draft, pendingId)
+            setMessages(current => current.map(message => message.id === pendingId ? { ...message, classification_version: replyClassificationVersion, classification: { type: 'other' } } : message))
           }
-          flushSse()
-          break
+          return
+        }
+        const chunk = typeof event.delta === 'string' ? event.delta : typeof event.text === 'string' ? event.text : ''
+        if (chunk) {
+          reply += chunk
+          if (!documentWorkflow && !isStructuredChoiceStream(reply)) setMessages(current => current.map(message => message.id === pendingId ? { ...message, has_reply_text: true } : message))
+          queueStreamMessage(pendingId, documentWorkflow ? '正在编写阶段草稿，完成后可预览和确认…' : isStructuredChoiceStream(reply) ? '正在整理可选方向…' : reply)
         }
       }
-    } finally {
-      flushQueuedStreamMessage()
-      reader.releaseLock()
-    }
-    if (!completed) throw new Error('连接中断，创作结果尚未完整返回；请重试，项目内容未修改')
-    if (!reply.trim()) {
-      const current = messages.find((item) => item.id === pendingId)?.text || ''
-      reply = current.trim()
-    }
-    if (!reply.trim()) throw new Error('文本模型未返回对话内容')
-    return reply
+
+      const flushSse = () => {
+        if (!sseLines.length) return
+        const event = parseStreamEvent(sseLines.join('\n'))
+        sseLines = []
+        if (event) applyEvent(event)
+      }
+
+      try {
+        while (!completed) {
+          const { value, done } = await scope.wait(reader.read())
+          if (value?.length) scope.touch()
+          buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+          const lines = buffer.split(/\r?\n/)
+          buffer = lines.pop() || ''
+          for (const line of lines) {
+            if (!line.trim()) {
+              flushSse()
+              if (completed) break
+              continue
+            }
+            if (line.startsWith('event:')) continue
+            if (line.startsWith('data:')) {
+              sseLines.push(line)
+              continue
+            }
+            // NDJSON responses have one JSON object per line.
+            const event = parseStreamEvent(line)
+            if (event) applyEvent(event)
+            if (completed) break
+          }
+          if (done && !completed) {
+            if (buffer.trim()) {
+              if (buffer.startsWith('data:')) sseLines.push(buffer)
+              else {
+                const event = parseStreamEvent(buffer)
+                if (event) applyEvent(event)
+              }
+            }
+            flushSse()
+            break
+          }
+        }
+      } finally {
+        flushQueuedStreamMessage()
+        void reader.cancel().catch(() => {})
+        reader.releaseLock()
+      }
+      if (!completed) throw new Error('连接中断，创作结果尚未完整返回；请检查草稿和已保存文档后重试')
+      if (!reply.trim()) {
+        const current = messages.find((item) => item.id === pendingId)?.text || ''
+        reply = current.trim()
+      }
+      if (!reply.trim()) throw new Error('文本模型未返回对话内容')
+      return reply
+    } finally { scope.close() }
   }
 
   function currentDraftIdea() {
@@ -1488,6 +1565,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   }
 
   function startNewConversation() {
+    setComposerCollapsed(false)
     setInput('')
     setReferences([])
     setReaderReference(null)
@@ -1520,6 +1598,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     setPrompt('')
     setBasePrompt('')
     setPromptCustomized(false)
+    setDocumentTask(null)
+    void refreshToolState(true).catch(() => {})
   }
 
   function switchConversation(conversation: ConversationSnapshot) {
@@ -1552,9 +1632,12 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     setWorkflowOpen(false)
     setScriptSaved(false)
     setError(null)
+    setDocumentTask(null)
+    void refreshToolState(true).catch(() => {})
   }
 
   async function refreshPrompt() {
+    setComposerCollapsed(false)
     const currentIdea = currentDraftIdea()
     if (!currentIdea) {
       setPromptError('先输入故事想法，再生成提示词')
@@ -1568,6 +1651,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     const requestId = ++promptRequestId.current
     try {
       const result = await api<{ prompt: string }>(`/projects/${detail.id}/script/generate/prompt`, json('POST', {
+        skill_selections: skillControl.selections,
         idea: currentIdea,
         generation_options: options,
       }))
@@ -1582,8 +1666,9 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     }
   }
 
-  function receiveWorkflowDraft(draft: WorkflowDraft) {
+  function receiveWorkflowDraft(draft: WorkflowDraft, sourceMessageId?: string) {
     setGenerated({
+      ...(sourceMessageId ? { source_message_id: sourceMessageId } : {}),
       workflow: workflowRequestForStage(draft.stage, draft.episode_number, draft.target_duration),
       outline: draft.artifacts.find(item => item.artifact_type === 'outline')?.content || detail.script.outline,
       characters: draft.artifacts.find(item => item.artifact_type === 'characters')?.content || detail.script.characters,
@@ -1598,21 +1683,154 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     setArtifactsOpen(false)
   }
 
-  function generateWorkflow(stage: WorkflowStage = workflowStage, label?: string, targetEpisode = episodeNumber) {
+  function receiveToolDraft(draft: ScriptToolDraft | null, showPreview = true) {
+    if (draft) setMessages(current => current.map(message => message.execution?.outcome?.draft_id === draft.id ? { ...message,
+      execution: { ...message.execution, outcome: toolDraftOutcome(draft) } } : message))
+    if (!draft || draft.status === 'discarded') { setGenerated(current => current?.tool_draft ? null : current); setPreviewOpen(false); return }
+    const artifacts = toolDraftArtifacts(draft)
+    setGenerated({ tool_draft: draft, ...(draft.workflow ? { workflow: draft.workflow } : {}), resource_changes: draft.resource_changes,
+      outline: artifacts.find(item => item.artifact_type === 'outline')?.content || detail.script.outline,
+      characters: artifacts.find(item => item.artifact_type === 'characters')?.content || detail.script.characters,
+      artifacts, scenes: toolDraftScenes(draft) })
+    setScriptSaved(draft.status === 'saved')
+    if (showPreview) setPreviewOpen(draft.status === 'pending')
+    setArtifactsOpen(false); setWorkflowOpen(false); setReaderKey(null); setReaderReference(null)
+  }
+
+  function continueRevisionTask() {
+    const task = generated?.tool_draft?.revision_task
+    if (!task) return
+    setPreviewOpen(false)
+    void sendChatMessage(`继续统一修订任务 ${task.id}，沿用原范围和拟定决定，处理未完成项，核对当前有效草稿、全部分场和关联内容，完成后给我统一预览。不重建任务，不重复确认授权，不自动保存。`, false, undefined, true)
+  }
+
+  async function refreshToolState(restoreDraft = false, sourceMessageId?: string) {
+    const requestId = ++creationRefreshId.current
+    const result = await api<{ draft: ScriptToolDraft | null; decisions: StoryDecision[]; creation?: ScriptCreationState }>(`/projects/${detail.id}/script/director/tools-state`)
+    if (requestId !== creationRefreshId.current) return result
+    setDecisions(result.decisions)
+    setCreation(result.creation || null)
+    const knownDraftId = sourceMessageId && executionDraftIds.current.get(sourceMessageId)
+    if (restoreDraft && knownDraftId && result.draft?.id !== knownDraftId) {
+      const draft = await api<ScriptToolDraft>(`/projects/${detail.id}/script/director/tool-drafts/${knownDraftId}`)
+      if (requestId !== creationRefreshId.current) return result
+      receiveExecutionResult({ tool_draft: draft }, sourceMessageId!)
+      if (!result.draft) receiveToolDraft(draft)
+      if (draft.status === 'saved') await onRefresh()
+      return result
+    }
+    if (restoreDraft && result.draft) {
+      receiveToolDraft(result.draft, !sourceMessageId || Boolean(knownDraftId))
+      if (sourceMessageId && knownDraftId === result.draft.id) receiveExecutionResult({ tool_draft: result.draft }, sourceMessageId)
+    }
+    else if (restoreDraft && generated?.tool_draft && !scriptSaved) {
+      const draft = await api<ScriptToolDraft>(`/projects/${detail.id}/script/director/tool-drafts/${generated.tool_draft.id}`)
+      if (requestId !== creationRefreshId.current) return result
+      receiveToolDraft(draft, !sourceMessageId || Boolean(knownDraftId))
+      if (sourceMessageId && knownDraftId === draft.id) receiveExecutionResult({ tool_draft: draft }, sourceMessageId)
+      if (draft.status === 'saved') await onRefresh()
+    }
+    return result
+  }
+
+  const savedCreationKey = JSON.stringify([detail.id, detail.brief, detail.script])
+  useEffect(() => {
+    let active = true
+    const requestId = ++creationRefreshId.current
+    void api<{ draft: ScriptToolDraft | null; decisions: StoryDecision[]; creation?: ScriptCreationState }>(`/projects/${detail.id}/script/director/tools-state`).then(result => {
+      if (!active || requestId !== creationRefreshId.current) return
+      setDecisions(result.decisions)
+      setCreation(result.creation || null)
+      if (result.draft) {
+        if (result.draft.version !== generated?.tool_draft?.version) receiveToolDraft(result.draft)
+      } else setGenerated(current => current?.tool_draft ? null : current)
+    }).catch(() => { /* Local draft remains visible if the server is unavailable. */ })
+    return () => { active = false }
+  }, [savedCreationKey])
+
+  function receiveToolResult(event: StreamEvent, pendingId: string) {
+    if (event.creation) {
+      ++creationRefreshId.current
+      setCreation(event.creation)
+    }
+    if (event.generation_options) setOptions(event.generation_options)
+    if (event.generation_options?.episode_duration) setEpisodeDuration(event.generation_options.episode_duration)
+    if (event.tool_draft !== undefined) receiveToolDraft(event.tool_draft)
+    if (event.review) setMessages(current => current.map(message => message.id === pendingId ? { ...message, review: event.review } : message))
+    if (event.classification_version && event.classification) setMessages(current => current.map(message => message.id === pendingId
+      ? { ...message, classification_version: event.classification_version, classification: event.classification, classification_context: '[]', classification_source: event.classification_source } : message))
+    if (event.project_changed) void onRefresh().catch(() => onNotice('文档已保存，刷新失败，请稍后重试'))
+    receiveExecutionResult(event, pendingId)
+  }
+
+  function receiveExecutionResult(event: StreamEvent, pendingId: string) {
+    setMessages(current => current.map(message => {
+      if (message.id !== pendingId || !message.execution) return message
+      let outcome: ScriptExecution['outcome'] = { kind: 'reply', summary: '本轮回复已完成，可在下方阅读或继续讨论。' }
+      const draft = event.tool_draft
+      let targets = message.execution.targets, title = message.execution.title
+      if (draft) {
+        targets = [...draft.documents.map(doc => doc.title), ...(draft.resource_changes || []).map(change => change.title)].slice(0, 50).map(title => title.slice(0, 200))
+        if (!message.execution.document_action && !message.execution.workflow) title = draft.kind === 'resource' ? '视觉设定与分镜处理' : draft.kind === 'patch' ? '修订项目文档' : '整理创作草稿'
+        outcome = toolDraftOutcome(draft)
+      } else if (event.draft) {
+        targets = event.draft.artifacts.map(doc => doc.title).slice(0, 50).map(title => title.slice(0, 200))
+        title = `生成${event.draft.stage === 'episode' ? `第 ${event.draft.episode_number} 集正文` : workflowLabels[event.draft.stage]}`
+        outcome = { kind: 'draft', summary: '创作草稿已准备，尚未写入项目。请预览、编辑后确认保存。', draft_id: `workflow:${pendingId}` }
+      } else if (event.review) outcome = { kind: 'review', summary: `评审已完成，整理了 ${event.review.findings.length} 项发现与建议。报告见下方，文档正文未修改。` }
+      else if (event.classification && 'status' in event.classification && event.classification.status === 'pending') outcome = { kind: 'question', summary: '需要你确认当前设定，请在下方回答。回答后继续讨论。' }
+      else if (event.completion_kind === 'next_step') outcome = { kind: 'next_step', summary: '下一步建议已准备，请查看对话下方的当前创作操作。' }
+      if (event.execution_outcome) outcome = { ...outcome, ...event.execution_outcome }
+      return { ...message, execution: { ...message.execution, title, targets, outcome,
+        ...(event.draft ? { workflow: workflowRequestForStage(event.draft.stage, event.draft.episode_number, event.draft.target_duration) } : {}) } }
+    }))
+  }
+
+  async function syncEditedToolDraft() {
+    if (!generated?.tool_draft || scriptSaved) return generated?.tool_draft
+    const edited = editedToolDraft(generated.tool_draft, generated.artifacts, generated.scenes, generated.resource_changes)
+    if (!edited.changed) return generated.tool_draft
+    const draft = await api<ScriptToolDraft>(`/projects/${detail.id}/script/director/tool-drafts/${generated.tool_draft.id}`, json('PUT', edited.input))
+    receiveToolDraft(draft, false)
+    return draft
+  }
+
+  async function discardGenerated() {
+    if (busy) return
+    if (generated?.tool_draft) {
+      setWorking('save')
+      try { await api(`/projects/${detail.id}/script/director/tool-drafts/${generated.tool_draft.id}/discard`, json('POST', { version: generated.tool_draft.version })) }
+      catch (issue) { setError(readableError(issue)); return }
+      finally { setWorking(null) }
+    }
+    if (generated?.source_message_id) setMessages(current => current.map(message => message.id === generated.source_message_id && message.execution ? { ...message,
+      execution: { ...message.execution, outcome: { kind: 'discarded', summary: '草稿已放弃，正式资料保持原状。' } } } : message))
+    if (generated?.tool_draft) setMessages(current => current.map(message => message.execution?.outcome?.draft_id === generated.tool_draft!.id ? { ...message,
+      execution: { ...message.execution, outcome: { ...message.execution.outcome!, kind: 'discarded', summary: '草稿已放弃，正式资料保持原状。' } } } : message))
+    setGenerated(null); setPreviewOpen(false); setError(null)
+    setCreation(null)
+    void refreshToolState().catch(() => {})
+  }
+
+  function reviewDocument(operation: DocumentAction['operation']) {
+    if (!readerArtifact || readerReference || readerArtifact.isUnsaved || busy || !selectedModel) return
+    const saved = detail.script.artifacts?.find(item => artifactKey(item) === artifactKey(readerArtifact))
+    const id = saved?.id || `legacy:${readerArtifact.artifact_type}`
+    const task = { operation, document_ids: [id], title: readerArtifact.title }
+    setDocumentTask(operation === 'revise' ? task : null)
+    setReaderKey(null); setReaderReference(null); setArtifactsOpen(false)
+    if (operation === 'review') void sendChatMessage(documentTaskPrompt(readerArtifact.title, 'review'), false, undefined, true, undefined, undefined, undefined, task)
+    else { setComposerCollapsed(false); setInput(documentTaskPrompt(readerArtifact.title, 'revise')); window.requestAnimationFrame(() => composerRef.current?.focus()) }
+  }
+
+  function generateWorkflow(stage: WorkflowStage = workflowStage, label?: string, targetEpisode = episodeNumber, step?: CreationNextStep) {
     if (busy || generated && !scriptSaved) return
     setWorkflowStage(stage)
     if (stage === 'episode') setEpisodeNumber(targetEpisode)
     const request = workflowRequestForStage(stage, targetEpisode, episodeDuration)
     const instruction = workflowInstruction(request, label)
     const message = input.trim() ? `${input.trim()}\n\n${instruction}` : instruction
-    void sendChatMessage(message, false, request)
-  }
-
-  function startPreparedEpisode(episode: number) {
-    if (busy || generated && !scriptSaved) return
-    setWorkflowStage('episode')
-    setEpisodeNumber(episode)
-    void sendChatMessage(`按刚才给出的设定和试写，展开第 ${episode} 集完整分场正文。`, false, workflowRequestForStage('episode', episode, episodeDuration), true)
+    void sendChatMessage(message, false, request, false, undefined, undefined, undefined, undefined, step?.id)
   }
 
   async function answerQuestion(messageId: string, question: string, answer: string) {
@@ -1648,22 +1866,27 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
 
   async function regenerateReply(message: Message) {
     if (busy || classificationPending[message.id] || closing) return
+    if (!canRetryExecution(message.activity) || ['draft', 'saved', 'discarded'].includes(message.execution?.outcome?.kind || '')) { await recoverExecution(message); return }
     if (generated && !scriptSaved) { setPreviewOpen(true); setError('请先保存或放弃当前草稿，再重新生成回复'); return }
     setAnsweringChoiceId(null)
     setAdoptingMessageId(null)
     setForceClassificationId(null)
-    await sendChatMessage(undefined, false, undefined, true, undefined, message.id)
+    await sendChatMessage(undefined, false, message.execution?.workflow, true, undefined, message.id, undefined, message.execution?.document_action)
   }
 
-  async function sendChatMessage(overrideInput?: string, skipAssetStatus = false, workflowOverride?: WorkflowRequest, preserveComposer = false, adoptSource?: { text: string; episode_number: number }, regenerateId?: string, questionResponse?: Message['question_response']): Promise<string | null> {
+  async function sendChatMessage(overrideInput?: string, skipAssetStatus = false, workflowOverride?: WorkflowRequest, preserveComposer = false, adoptSource?: { text: string; episode_number: number }, regenerateId?: string, questionResponse?: Message['question_response'], actionOverride?: DocumentAction, nextStepId?: string): Promise<string | null> {
     const retry = regenerateId ? regenerationSource(messages, regenerateId) : null
     if (regenerateId && !retry) return null
     const usesComposer = !preserveComposer && !adoptSource
     const attached = usesComposer ? references : []
     const message = (retry?.question.text ?? overrideInput ?? (input.trim() || (attached.length ? '请参考引用文档，帮我分析并建议下一步。' : ''))).trim()
     if (!message) return null
-    if (busy || chatSubmitLock.current) return null
-    const workflow = activeFocus === 'all' ? workflowOverride : undefined
+    if (busy || chatSubmitLock.current || skillControl.loading) return null
+    if (skillControl.error) { setError(`技能配置读取失败：${skillControl.error}`); return null }
+    const previousExecution = regenerateId ? messages.find(item => item.id === regenerateId)?.execution : undefined
+    const requestFocus = previousExecution?.focus_artifact || activeFocus
+    const requestMode = previousExecution?.mode || mode
+    const workflow = requestFocus === 'all' ? workflowOverride : undefined
     if ((workflow || adoptSource) && generated && !scriptSaved) { setPreviewOpen(true); setError('请先确认保存或放弃当前草稿'); return null }
     if (!modelId || !selectedModel) { setError('请选择文本模型'); return null }
     const userMessage: Message = retry ? { ...retry.question, failed: false } : { id: crypto.randomUUID(), role: 'user', text: message, ...(questionResponse ? { question_response: questionResponse } : {}), ...(attached.length ? { reference_documents: attached } : {}) }
@@ -1673,10 +1896,17 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     chatSubmitLock.current = true
     const generationOptions = options
     setError(null)
+    setLiveRevision(null)
+    setCreation(null)
+    ++creationRefreshId.current
     if (activeFocus !== 'all' && !skipAssetStatus) setAssetTaskStatus('analyzing')
     const pendingId = crypto.randomUUID()
     const startedAt = performance.now()
-    const pendingMessage: Message = { id: pendingId, role: 'assistant', text: '正在整理你的想法…', pending: true, processing_started_at: startedAt }
+    const selectedAction = (actionOverride || usesComposer && documentTask) && !workflow && !adoptSource && !questionResponse ? actionOverride || documentTask! : undefined
+    const targets = selectedAction?.document_ids.map(id => detail.script.artifacts?.find(doc => doc.id === id)?.title || artifactCards.find(doc => id === `legacy:${doc.artifact_type}`)?.title || '指定文档')
+    const execution: ScriptExecution = { title: workflow ? `生成${workflow.stage === 'episode' ? `第 ${workflow.episode_number} 集正文` : workflowLabels[workflow.stage]}` : selectedAction ? `${selectedAction.operation === 'review' ? '评审' : '修订'}项目文档` : requestFocus === 'all' ? '剧本创作对话' : `${assetTaskMeta[requestFocus].label}创作讨论`,
+      request: message.slice(0, 8000), started_at: Date.now(), focus_artifact: requestFocus, mode: requestMode, ...(targets ? { targets: targets.map(title => title.slice(0, 200)) } : {}), ...(selectedAction ? { document_action: { operation: selectedAction.operation, document_ids: selectedAction.document_ids } } : {}), ...(workflow ? { workflow } : {}) }
+    const pendingMessage: Message = { id: pendingId, role: 'assistant', text: '正在整理你的想法…', pending: true, processing_started_at: startedAt, execution }
     const originalMessages = messages
     const originalConversationId = conversationId || crypto.randomUUID()
     followMessagesRef.current = true
@@ -1687,35 +1917,47 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     if (!idea.trim()) setIdea(message)
     setWorking('chat')
     const controller = new AbortController()
+    const scope = createStreamScope(controller.signal)
     streamAbortController.current = controller
+    let toolRequestStarted = false
     try {
+      if (requestFocus === 'all' && !adoptSource) await scope.wait(syncEditedToolDraft())
       const requestBody = {
         model_id: modelId,
-        mode,
-        focus_artifact: activeFocus,
+        mode: requestMode,
+        focus_artifact: requestFocus,
+        skill_selections: skillControl.selections,
         generation_options: generationOptions,
+        use_tools: requestFocus === 'all' && !adoptSource,
+        ...(nextStepId ? { next_step_id: nextStepId } : {}),
+        ...(selectedAction ? { document_action: { operation: selectedAction.operation, document_ids: selectedAction.document_ids } } : {}),
         ...(workflow ? { workflow } : {}),
         ...(adoptSource ? { adopt_source: adoptSource } : {}),
         ...(userMessage.question_response ? { question_response: userMessage.question_response } : {}),
-        intent_context: { ...(stageContext.mode === 'explicit' ? { discussion: stageContext } : {}), ...(workflow && workflow.stage !== 'episode' ? {} : { selected_episode: workflow?.episode_number || episodeNumber }), ...(generated && !scriptSaved ? { pending_draft: generated.workflow || workflowRequestForStage('episode', episodeNumber) } : {}) },
+        intent_context: { ...(stageContext.mode === 'explicit' ? { discussion: stageContext } : {}), ...(workflow && workflow.stage !== 'episode' ? {} : { selected_episode: workflow?.episode_number || episodeNumber }), ...(generated && !scriptSaved && !generated.tool_draft ? { pending_draft: generated.workflow || workflowRequestForStage('episode', episodeNumber) } : {}) },
         messages: conversation,
       }
       let reply: string
+      toolRequestStarted = requestBody.use_tools
       try {
-        reply = await streamDirectorChat(pendingId, requestBody, controller.signal)
+        reply = await streamDirectorChat(pendingId, requestBody, scope.signal)
       } catch (issue) {
         if (!(issue instanceof StreamUnavailableError)) throw issue
-        const result = await api<{ reply: string; draft?: WorkflowDraft; generation_options?: ScriptGenerationOptions; stage_context?: DirectorStageContext }>(`/projects/${detail.id}/script/director/chat`, { ...json('POST', requestBody), signal: controller.signal })
+        const result = await scope.wait(api<StreamEvent & { reply: string }>(`/projects/${detail.id}/script/director/chat`, { ...json('POST', requestBody), signal: scope.signal }))
         reply = result.reply
+        receiveToolResult(result, pendingId)
+        if (result.activity) appendProcessEvent(pendingId, result)
         if (result.stage_context) setMessages(current => current.map(message => message.id === pendingId ? { ...message, stage_context: result.stage_context } : message))
         if (result.generation_options) setOptions(result.generation_options)
         if (result.generation_options?.episode_duration) setEpisodeDuration(result.generation_options.episode_duration)
         if (result.draft) {
-          receiveWorkflowDraft(result.draft)
+          receiveWorkflowDraft(result.draft, pendingId)
           setMessages(current => current.map(message => message.id === pendingId ? { ...message, classification_version: replyClassificationVersion, classification: { type: 'other' } } : message))
         }
       }
       const timing = finishMessageTiming(startedAt)
+      if (requestBody.use_tools) void refreshToolState().catch(() => {})
+      if (usesComposer) setDocumentTask(null)
       setMessages((current) => current.map((item) => item.id === pendingId
         ? { ...item, ...timing, text: reply, pending: false } : item))
       if (retry) {
@@ -1726,11 +1968,11 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       if (activeFocus !== 'all' && !skipAssetStatus) setAssetTaskStatus('awaiting-confirmation')
       return reply
     } catch (issue) {
+      if (toolRequestStarted) void refreshToolState(true, pendingId).catch(() => {})
       if (retry) {
         flushQueuedStreamMessage()
-        setMessages(originalMessages)
-        setError(controller.signal.aborted || isAbortError(issue) ? '已停止重新生成，原回复已保留' : `重新生成失败，原回复已保留：${readableError(issue)}`)
-        return null
+        setHistory(current => [{ id: originalConversationId, label: `原回复 · ${retry.question.text.slice(0, 80)}`, messages: originalMessages }, ...current.filter(item => item.id !== originalConversationId)].slice(0, 20))
+        setConversationId(crypto.randomUUID())
       }
       if (usesComposer) setInput(current => current || composerInput)
       if (usesComposer) setReferences(attached)
@@ -1738,7 +1980,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       if (controller.signal.aborted || isAbortError(issue)) {
         flushQueuedStreamMessage()
         setMessages((current) => current.map((item) => item.id === pendingId
-          ? { ...item, ...timing, text: item.text && item.text !== '正在整理你的想法…' ? `${item.text}\n\n已停止生成` : '已停止生成', pending: false, failed: true }
+          ? { ...item, ...timing, execution: item.execution ? { ...item.execution, outcome: { ...item.execution.outcome, kind: 'cancelled', summary: '已停止等待本轮结果。已完成的读取和操作记录会保留。' } } : undefined, activity: settleActivity(item.activity, 'cancelled'), text: item.text && item.text !== '正在整理你的想法…' ? `${item.text}\n\n已停止生成` : '已停止生成', pending: false, failed: true }
           : item.id === userMessage.id ? { ...item, failed: true } : item))
         return null
       }
@@ -1746,11 +1988,13 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       const messageText = `对话失败：${readableError(issue)}`
       setError(messageText)
       setMessages((current) => current.map((item) => item.id === pendingId
-        ? { ...item, ...timing, text: messageText, pending: false, failed: true } : item.id === userMessage.id ? { ...item, failed: true } : item))
+        ? { ...item, ...timing, execution: item.execution ? { ...item.execution, outcome: { ...item.execution.outcome, kind: 'failed', summary: readableError(issue).slice(0, 3000) } } : undefined, activity: settleActivity(item.activity, 'failed'), text: item.text && !/^正在/.test(item.text) ? `${item.text}\n\n${messageText}` : messageText, pending: false, failed: true } : item.id === userMessage.id ? { ...item, failed: true } : item))
     } finally {
+      scope.close()
       if (streamAbortController.current === controller) streamAbortController.current = null
       chatSubmitLock.current = false
       setWorking(null)
+      setLiveRevision(null)
     }
     return null
   }
@@ -1760,11 +2004,72 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     await sendChatMessage(`将选中的正文采用为第 ${episodeNumber} 集，保留原文并整理分场。`, false, undefined, false, { text: message.text, episode_number: episodeNumber })
   }
 
+  function openExecutionDocuments() {
+    setReaderKey(null); setReaderReference(null); setPreviewOpen(false); setWorkflowOpen(false); setArtifactsOpen(true)
+  }
+
+  function openExecutionSource(source: ScriptActivityTarget) {
+    const saved = detail.script.artifacts?.find(item => item.id === source.id)
+    const artifact = artifactCards.find(item => saved ? artifactKey(item) === artifactKey(saved) : source.id === `legacy:${item.artifact_type}`)
+    if (!artifact) { openExecutionDocuments(); onNotice('这份来源文档已不存在，请在文档库查看当前资料'); return }
+    setReaderKey(artifactKey(artifact))
+    setReaderReference(saved && artifact.isUnsaved ? { key: artifactKey(saved), title: saved.title, artifact_type: saved.artifact_type, episode_number: saved.episode_number || 0, content: saved.content } : null)
+    setArtifactsOpen(false); setPreviewOpen(false); setWorkflowOpen(false)
+  }
+
+  async function recoverExecution(message: Message) {
+    if (busy || recoveringMessageId || closing) return
+    setRecoveringMessageId(message.id)
+    setError(null)
+    try {
+      const draftId = message.execution?.outcome?.draft_id || activityDraftId(message.activity)
+      if (draftId && !draftId.startsWith('workflow:')) {
+        const draft = await api<ScriptToolDraft>(`/projects/${detail.id}/script/director/tool-drafts/${draftId}`)
+        receiveExecutionResult({ tool_draft: draft }, message.id)
+        // A historical draft must not replace the current pending preview.
+        if (draft.status === 'pending' && (!generated || scriptSaved || generated.tool_draft?.id === draft.id)) { receiveToolDraft(draft); return }
+        if (draft.status === 'saved') await onRefresh()
+        openExecutionDocuments()
+        if (draft.status === 'pending') onNotice('当前还有另一份待确认草稿，请先处理它，再打开这份历史草稿')
+        if (draft.status === 'discarded') onNotice('这份草稿已放弃，可以继续讨论或查看项目文档')
+        return
+      }
+      const result = await refreshToolState(message.id === messages.at(-1)?.id, message.id === messages.at(-1)?.id ? message.id : undefined)
+      await onRefresh()
+      if (result?.draft && message.id === messages.at(-1)?.id) { setPreviewOpen(true); return }
+      openExecutionDocuments()
+      onNotice('已检查当前项目状态，未发现本轮可恢复的待确认草稿，请查看已保存文档')
+    } catch (issue) { setError(`检查执行结果失败：${readableError(issue)}`) }
+    finally { setRecoveringMessageId(null) }
+  }
+
+  function renderActivity(message: Message) {
+    let execution = message.execution
+    if (execution?.outcome?.kind === 'reply' && activeChoice?.messageId === message.id) {
+      execution = { ...execution, outcome: { kind: 'question', summary: '需要你确认当前设定，请在下方回答。回答后继续讨论。' } }
+    } else if (execution?.outcome?.kind === 'question' && activeChoice?.messageId !== message.id) {
+      const status = choiceAnswers[message.id]?.status
+      execution = { ...execution, outcome: { ...execution.outcome, kind: 'reply', summary: status === 'skipped' ? '此问题已跳过，交由模型决定。' : status === 'answered' || message.classification && 'status' in message.classification && message.classification.status === 'answered' ? '此问题已回答，后续讨论沿用已确认的设定。' : '此问题已归入历史记录，当前可操作的问题见对话下方。' } }
+    } else if (execution?.outcome?.kind === 'next_step' && message.id !== messages.at(-1)?.id) {
+      execution = { ...execution, outcome: { ...execution.outcome, kind: 'reply', summary: '本轮下一步建议已记录，当前创作进度和操作见对话下方。' } }
+    }
+    const currentDraft = generated && (generated.source_message_id === message.id || execution?.outcome?.draft_id && generated.tool_draft?.id === execution.outcome.draft_id)
+    const openDraft = currentDraft ? () => { setReaderKey(null); setReaderReference(null); setArtifactsOpen(false); setWorkflowOpen(false); setPreviewOpen(true) }
+      : ['draft', 'partial'].includes(execution?.outcome?.kind || '') && execution?.outcome?.draft_id && !execution.outcome.draft_id.startsWith('workflow:') ? () => void recoverExecution(message) : undefined
+    const interrupted = message.failed || execution?.outcome?.kind === 'failed' || execution?.outcome?.kind === 'cancelled'
+    return <DirectorActivity activity={message.activity} execution={execution} pending={message.pending} failed={message.failed}
+      disabled={busy || closing || Boolean(recoveringMessageId)} onOpenDraft={openDraft} onOpenDocuments={openExecutionDocuments} onOpenSource={openExecutionSource}
+      onRetry={interrupted && regenerationSource(messages, message.id) && selectedModel ? () => void regenerateReply(message) : undefined}
+      onRecover={() => void recoverExecution(message)} onStop={message.pending ? stopChatGeneration : undefined} />
+  }
+
   function replyActions(message: Message) {
     if (!regenerationSource(messages, message.id)) return null
+    const retryable = canRetryExecution(message.activity) && !['draft', 'saved', 'discarded'].includes(message.execution?.outcome?.kind || '')
+    const interrupted = message.failed || ['failed', 'cancelled'].includes(message.execution?.outcome?.kind || '')
     return <div className="sd-reply-actions" aria-label="回复操作">
-      <button type="button" disabled={busy || Boolean(classificationPending[message.id]) || closing || !selectedModel || Boolean(generated && !scriptSaved)} onClick={() => void regenerateReply(message)}
-        title={generated && !scriptSaved ? '请先保存或放弃当前草稿' : '沿用原问题和引用资料重新回答；原版本保留在历史对话'}><RotateCcw size={13} />{message.failed ? '重试生成' : '重新生成'}</button>
+      {retryable && !interrupted && <button type="button" disabled={busy || Boolean(classificationPending[message.id]) || closing || !selectedModel || Boolean(generated && !scriptSaved)} onClick={() => void regenerateReply(message)}
+        title={generated && !scriptSaved ? '请先保存或放弃当前草稿' : '沿用原问题和引用资料重新回答；原版本保留在历史对话'}><RotateCcw size={13} />重新生成</button>}
       {activeFocus === 'all' && !message.failed && <button type="button" disabled={busy || Boolean(classificationPending[message.id]) || closing || !selectedModel} onClick={() => reclassifyReply(message)} title="保留回复内容，仅让模型重新判断选择、填写问题和分集入口">重新识别选项</button>}
     </div>
   }
@@ -1789,24 +2094,29 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   }
 
   async function handleAssetConfirm() {
-    if (activeFocus === 'all') return
+    if (activeFocus === 'all' || busy || !selectedModel || skillControl.loading || skillControl.error) return
     const meta = assetTaskMeta[activeFocus]
     setAssetTaskStatus('generating')
-    const reply = await sendChatMessage(`我确认${meta.label}资料。请基于剧本和已确认资料，整理一份可直接用于生成${meta.noun}的提示词。要求：包含主体、外观/空间、材质、光线、镜头、风格和负面约束；先给中文提示词，再给英文提示词；不要解释内部思考。`, true)
-    if (!reply) { setAssetTaskStatus('awaiting-confirmation'); return }
-    setAssetPrompt(reply)
+    setWorking('prompt')
+    setError(null)
     try {
+      const result = await api<{ prompt_zh: string; prompt_en: string; notes: string }>(`/projects/${detail.id}/script/director/asset-prompt`, json('POST', {
+        model_id: modelId, focus_artifact: activeFocus, generation_options: options, skill_selections: skillControl.selections,
+        messages: messages.filter(message => !message.pending && !message.failed).slice(-32).map(({ role, text }) => ({ role, text })),
+      }))
+      setAssetPrompt(result.prompt_zh)
       const task = await api<{ id: string; status: string }>(`/projects/${detail.id}/asset-tasks`, json('POST', {
         focus_artifact: activeFocus,
-        prompt: reply,
+        prompt: result.prompt_zh,
       }))
       setAssetTaskId(task.id)
       setAssetTaskStatus('ready')
+      appendMessage('assistant', `已整理${meta.label}生图提示词，当前编辑区使用中文版本。\n\n### 中文提示词\n${result.prompt_zh}\n\n### 英文提示词\n${result.prompt_en}${result.notes ? `\n\n### 需要核实\n${result.notes}` : ''}`)
       onNotice(`${meta.label}资料已确认，可选择图片模型生成`)
     } catch (issue) {
       setAssetTaskStatus('failed')
       setError(`保存${meta.label}任务失败：${readableError(issue)}`)
-    }
+    } finally { setWorking(null) }
   }
 
   function retryAssetAnalysis() {
@@ -1878,13 +2188,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     streamAbortController.current?.abort()
   }
 
-  function handleQuickReply(reply: { label: string; action: 'save' | 'workflow' | 'chat'; stage?: WorkflowStage; episode?: number }) {
-    if (reply.action === 'save') { void saveGenerated(); return }
-    if (reply.action === 'workflow') { generateWorkflow(reply.stage, undefined, reply.episode); return }
-    void sendChatMessage(reply.label)
-  }
-
   async function generateScript() {
+    if (skillControl.loading || skillControl.error) { setError(skillControl.error || '正在读取技能配置'); return }
     const attached = references
     const composerInput = input
     const message = currentDraftIdea()
@@ -1900,6 +2205,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       setPromptError(null)
       try {
         const result = await api<{ prompt: string }>(`/projects/${detail.id}/script/generate/prompt`, json('POST', {
+        skill_selections: skillControl.selections,
           idea: message,
           generation_options: options,
         }))
@@ -1930,6 +2236,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     setWorking('generate')
     try {
       const result = await api<GeneratedScript>(`/projects/${detail.id}/script/generate`, json('POST', {
+        skill_selections: skillControl.selections,
         model_id: modelId,
         idea: message,
         generation_options: options,
@@ -1967,10 +2274,21 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   async function saveGenerated() {
     const brief = messages.find((message) => message.role === 'user')?.text.trim() || idea.trim()
     if (!generated) return
-    if (!generated.workflow && !brief) { setError('请先补充故事想法，再保存完整剧本。'); return }
+    if (!generated.workflow && !generated.tool_draft && !brief) { setError('请先补充故事想法，再保存完整剧本。'); return }
     setWorking('save')
     setError(null)
     try {
+      if (generated.tool_draft) {
+        const draft = (await syncEditedToolDraft())!
+        const saved = await api<ScriptToolDraft>(`/projects/${detail.id}/script/director/tool-drafts/${draft.id}/commit`, json('POST', { version: draft.version, approved: true }))
+        receiveToolDraft(saved)
+        if (saved.workflow?.stage === 'episode') setHandoffEpisode(saved.workflow.episode_number)
+        appendMessage('assistant', saved.kind === 'resource' ? '视觉设定或分镜修改已保存。可以在视觉设定列表或分镜中查看。' : '文档已保存，未涉及的资料继续保留。')
+        await onRefresh().catch(() => onNotice('文档已保存，项目刷新失败，请稍后重试'))
+        await refreshToolState().catch(() => { setCreation(null) })
+        onNotice(saved.kind === 'resource' ? '视觉设定或分镜已保存' : '文档已保存')
+        return
+      }
       if (generated.workflow) {
         const saved = await api<ProjectDetail['script']>(`/projects/${detail.id}/script/director/draft`, json('PUT', {
           ...generated.workflow,
@@ -1982,6 +2300,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         const completed = generated.workflow.stage
         setPreviewOpen(false)
         setScriptSaved(true)
+        if (generated.source_message_id) setMessages(current => current.map(message => message.id === generated.source_message_id && message.execution ? { ...message,
+          execution: { ...message.execution, outcome: { ...message.execution.outcome, kind: 'saved', summary: '当前阶段草稿已写入项目，可以查看保存结果。' } } } : message))
         const next = workflowProgress(saved)
         setWorkflowStage(next.next_stage || 'episode')
         if (next.next_episode) setEpisodeNumber(next.next_episode)
@@ -1991,6 +2311,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         const suggestion = next.next_stage ? `按已保存成果，建议接下来${next.next_stage === 'episode' ? `写第 ${next.next_episode} 集正文` : `补充${workflowLabels[next.next_stage]}`}。` : '全剧资料与已设定集数的正文已齐备，可以核对连续性或制作分镜。'
         appendMessage('assistant', `${completed === 'episode' ? `第 ${generated.workflow.episode_number} 集` : workflowLabels[completed]}已保存。${suggestion}${completed === 'outline' && next.completed.characters ? '已有全剧人物设定会继续复用；如主线变化影响人物，只需针对相关部分更新。' : ''}`)
         await onRefresh().catch(() => onNotice('草稿已保存，项目刷新失败，请稍后重试'))
+        await refreshToolState().catch(() => { setCreation(null) })
         onNotice('当前阶段已保存')
         return
       }
@@ -2025,6 +2346,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       }))
       setPreviewOpen(false)
       setScriptSaved(true)
+      if (generated.source_message_id) setMessages(current => current.map(message => message.id === generated.source_message_id && message.execution ? { ...message,
+        execution: { ...message.execution, outcome: { ...message.execution.outcome, kind: 'saved', summary: '创作文本已写入项目，可以查看保存结果。' } } } : message))
       setMessages((current) => [...current, {
         id: crypto.randomUUID(),
         role: 'assistant' as const,
@@ -2039,28 +2362,6 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       }
     } catch (issue) {
       setError(`保存失败：${readableError(issue)}`)
-    } finally {
-      setWorking(null)
-    }
-  }
-
-  async function createSceneShots() {
-    if (working || pendingSceneCount === 0) return
-    const sceneIds = handoffScenes.filter((scene) => !linkedSceneIds.has(scene.id)).map((scene) => scene.id)
-    if (!sceneIds.length) {
-      onNotice('所有场次都已有分镜')
-      return
-    }
-    setWorking('shots')
-    setError(null)
-    try {
-      const result = await api<{ shots: { id: string }[]; skipped_scene_ids: string[] }>(`/projects/${detail.id}/script/convert-to-shots`, json('POST', { scene_ids: sceneIds }))
-      await onRefresh()
-      onNotice(`已将 ${result.shots.length} 个场次加入画布，可继续配置和生成镜头`)
-      onClose()
-    } catch (issue) {
-      setError(`加入画布失败：${readableError(issue)}`)
-      throw issue
     } finally {
       setWorking(null)
     }
@@ -2111,7 +2412,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       try {
         for (const conversation of snapshots) await api(`/projects/${detail.id}/script/conversations`, json('PUT', {
           id: conversation.id, label: conversation.label,
-          messages: conversation.messages.filter(message => !message.pending).slice(-80).map(({ id, role, text, reference_documents, processing_duration_ms, stage_context }) => ({ id, role, text, ...(stage_context ? { stage_context } : {}), ...(reference_documents?.length ? { reference_documents } : {}), ...(processing_duration_ms != null ? { processing_duration_ms } : {}) })),
+          messages: conversation.messages.filter(message => !message.pending).slice(-80).map(conversationMessage),
         }))
       } catch { onNotice('对话已缓存在本机，服务端保存失败，请稍后重试') }
     }
@@ -2195,7 +2496,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         const answer = storedAnswer?.status === 'skipped' ? undefined : storedAnswer?.status === 'answered'
           ? parsedChoices ? choiceAnswerText(parsedChoices, storedAnswer) : storedAnswer.text
           : undefined
-        if (parsedChoices) return <div className="script-director-message assistant" key={message.id}>
+        if (parsedChoices) return <div className="script-director-message assistant" data-message-id={message.id} key={message.id}>
+          {renderActivity(message)}
           <div className="sd-choice-explanation">
             {semanticChoices ? <DirectorMessageText text={replyDisplayText(message)} /> : <>
             {parsedChoices.intro && <DirectorMessageText text={parsedChoices.intro} />}
@@ -2212,29 +2514,23 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
           {activeChoice?.messageId === message.id ? <span className="sd-question-status">请在下方回答</span>
             : <details className="sd-answered-question"><summary>{storedAnswer?.status === 'skipped' ? '已跳过' : answer || message.classification && 'status' in message.classification && message.classification.status === 'answered' ? '已回答' : dismissed ? '已结束' : '历史问题'}</summary><p>{parsedChoices.question}</p>{answer && <p>{answer}</p>}</details>}
           <DirectorMessageTiming {...message} />
-          {message.activity?.length ? <details className="sd-message-activity"><summary>创作依据</summary>{message.activity.map(event => <p key={event.id}>{event.summary}</p>)}</details> : null}
           {replyRecognition(message)}
           {replyActions(message)}
         </div>
-        return <div className={`script-director-message ${message.role}`} key={message.id}>
+        return <div className={`script-director-message ${message.role}`} data-message-id={message.id} key={message.id}>
           <DirectorReferences documents={readReferences(message.reference_documents)} onOpen={setReaderReference} />
-          <div className={`script-director-bubble${message.pending ? ' is-pending' : ''}`}>
-            {message.pending ? <><LoaderCircle size={13} className="script-director-spinner" /><span>{message.text}</span></> : message.role === 'assistant' ? <DirectorMessageText text={replyDisplayText(message)} /> : message.text}
-          </div>
+          {message.role === 'assistant' && renderActivity(message)}
+          {(!message.pending || message.has_reply_text || !message.execution && !message.activity?.length) && <div className={`script-director-bubble${message.pending && !message.has_reply_text ? ' is-pending' : ''}`}>
+            {message.pending && !message.has_reply_text ? <><LoaderCircle size={13} className="script-director-spinner" /><span>{message.text}</span></> : message.role === 'assistant' ? <DirectorMessageText text={replyDisplayText(message)} /> : message.text}
+          </div>}
+          {message.review && !message.pending && <DirectorReviewReport review={message.review} />}
           {message.role === 'assistant' && <DirectorMessageTiming {...message} />}
-          {message.activity?.length && !message.pending ? <details className="sd-message-activity"><summary>创作依据</summary>{message.activity.map(event => <p key={event.id}>{event.summary}</p>)}</details> : null}
           {activeFocus === 'all' && stageContext.stage === 'episode' && stageContext.mode !== 'review' && canAdoptReply(message) && <div className="sd-message-adopt">
             {adoptingMessageId === message.id ? <>
               <label>采用为第 <input type="number" min={1} max={200} value={episodeNumber} aria-label="采用为第几集" onChange={event => setEpisodeNumber(Math.max(1, Math.min(200, Number(event.currentTarget.value) || 1)))} /> 集</label>
               <button type="button" disabled={busy} onClick={() => void adoptMessage(message)}>整理为分集草稿</button>
               <button type="button" onClick={() => setAdoptingMessageId(null)}>取消</button>
             </> : <button type="button" disabled={busy || Boolean(generated && !scriptSaved)} onClick={() => { if (message.classification?.type === 'episode_script' && message.classification.episode_number) setEpisodeNumber(message.classification.episode_number); setAdoptingMessageId(message.id) }}>采用为分集剧本</button>}
-          </div>}
-          {canStartPreparedEpisode && preparationAction.messageId === message.id && <div className="sd-message-next-action">
-            <button type="button" disabled={!selectedModel} onClick={() => startPreparedEpisode(preparationAction.episode_number)}>
-              <ChevronRight size={14} />开始创作第 {preparationAction.episode_number} 集
-            </button>
-            <small>展开完整分场正文，生成后可预览并确认保存</small>
           </div>}
           {replyRecognition(message)}
           {replyActions(message)}
@@ -2243,7 +2539,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     {(!!artifactCards.length || hasSavedScript && detail.script.scenes.length > 0) && <section className="sd-deliverables" aria-label="创作成果">
       <header><span>创作成果</span><button type="button" onClick={() => { setArtifactsOpen(true); setWorkflowOpen(false); setReaderKey(null) }}>文档库 <span>{artifactCards.length}</span><ChevronRight size={13} /></button></header>
       {generated && !scriptSaved ? <button type="button" className="sd-deliverable-document" aria-label={generated.workflow?.stage === 'episode' ? `查看第 ${generated.workflow.episode_number} 集草稿` : '查看草稿'} onClick={() => { setReaderKey(null); setArtifactsOpen(false); setWorkflowOpen(false); setPreviewOpen(true) }}>
-        <span className="sd-document-icon"><FileText size={18} /></span><span><strong>{generated.workflow?.stage === 'episode' ? `第 ${generated.workflow.episode_number} 集草稿` : '待确认的创作草稿'}</strong><small>{generated.artifacts.length} 份文档 · 预览后确认保存</small></span><span className="sd-document-status">待确认</span><ChevronRight size={15} />
+        <span className="sd-document-icon"><FileText size={18} /></span><span><strong>{generated.tool_draft?.kind === 'resource' ? '视觉设定与分镜草稿' : generated.workflow?.stage === 'episode' ? `第 ${generated.workflow.episode_number} 集草稿` : '待确认的创作草稿'}</strong><small>{generated.tool_draft?.kind === 'resource' ? `${generated.resource_changes?.length || 0} 项修改` : `${generated.artifacts.length} 份文档`} · 预览后确认保存</small></span><span className="sd-document-status">待确认</span><ChevronRight size={15} />
       </button> : primaryArtifact && <button type="button" className="sd-deliverable-document" onClick={() => { setReaderKey(artifactKey(primaryArtifact)); setArtifactsOpen(false); setWorkflowOpen(false) }}>
         <span className="sd-document-icon"><FileText size={18} /></span><span><strong>{primaryArtifact.artifact_type === 'episode_script' ? `第 ${primaryArtifact.episode_number} 集剧本` : primaryArtifact.title}</strong><small>{primaryArtifact.title}{primaryArtifact.artifact_type === 'episode_script' && primaryArtifactScenes.length ? ` · ${primaryArtifactScenes.length} 场 · ${primaryArtifactScenes.reduce((sum, scene) => sum + scene.duration, 0)} 秒` : ''}</small></span><span className="sd-document-status">已保存</span><ChevronRight size={15} />
       </button>}
@@ -2254,26 +2550,34 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
             data={[{ value: '0', label: '全部场次' }, ...savedEpisodes.map(artifact => ({ value: String(artifact.episode_number), label: `第 ${artifact.episode_number} 集` }))]}
             onChange={value => value !== null && setHandoffEpisode(Number(value))} />}
         </div>
-        <div className="sd-production-action"><button type="button" className="sd-document-secondary" title="人物、场景、道具信息图" disabled={busy} onClick={() => setVisualPreparationOpen(true)}><Palette size={14} />视觉设定</button><small>{pendingSceneCount ? `${pendingSceneCount} 场待加入画布` : '所有场次都已加入画布'}</small><button type="button" className="sd-document-primary" onClick={() => setVisualPreparationOpen(true)} disabled={busy || pendingSceneCount === 0}>
-          {working === 'shots' ? <LoaderCircle size={13} className="script-director-spinner" /> : pendingSceneCount ? <Plus size={14} /> : <CheckCircle2 size={14} />}{pendingSceneCount ? '加入画布' : '已加入画布'}
-        </button></div>
+        <div className="sd-production-action"><small>{handoffScenes.length} 场 · 规划后加入</small>
+          <button type="button" className="sd-document-primary" title="规划并确认分镜后加入画布" onClick={() => { setPlanningSceneIds(handoffScenes.map(scene => scene.id)); setStoryboardOpen(true) }} disabled={busy || !handoffScenes.length}><Plus size={14} />加入画布</button>
+        </div>
       </section>}
     </section>}
 
-    {!activeChoice && workflowAction && !busy && !(generated && !scriptSaved) && <div className="script-director-quick-replies" aria-label="当前阶段创作操作">
-      <button type="button" disabled={!selectedModel} onClick={() => generateWorkflow(workflowAction.stage,
-        `${workflowAction.purpose === 'revise' ? '更新' : '生成'}${workflowLabels[workflowAction.stage]}`, workflowAction.episode_number || episodeNumber)}>
-        <ChevronRight size={13} />{workflowAction.stage === 'episode' ? `开始写第 ${workflowAction.episode_number} 集` : `${workflowAction.purpose === 'revise' ? '更新' : '生成'}${workflowLabels[workflowAction.stage]}`}
-      </button>
-    </div>}
-    {!activeChoice && !canStartPreparedEpisode && !latestReplyNeedsRecognition(messages, true) && !workflowAction && !!quickReplies.length && <div className="script-director-quick-replies" aria-label="快捷回复">
-      {quickReplies.map((reply) => <button type="button" key={reply.action} onClick={() => handleQuickReply(reply)} disabled={busy || (!selectedModel && reply.action !== 'save')}><ChevronRight size={13} />{reply.label}</button>)}
-    </div>}
-
+    {activeFocus === 'all' && !previewOpen && !artifactsOpen && !workflowOpen && <nav className="sd-creation-actions" aria-label="创作操作">
+      {(creation?.status !== 'direction' || busy || generated && !scriptSaved) && <span className="sd-creation-progress" role="status">{generated && !scriptSaved ? generated.tool_draft?.revision_task && generated.tool_draft.revision_task.status !== 'ready' ? '统一修订未完成' : '草稿待确认' : busy ? '正在处理当前创作'
+        : creation?.status === 'complete' ? '可核对连续性或制作分镜' : nextStep ? '下一步：' : '继续讨论当前创作'}</span>}
+      {generated?.tool_draft?.revision_task && generated.tool_draft.revision_task.status !== 'ready' && !scriptSaved && <button type="button" disabled={busy || closing || !selectedModel} onClick={continueRevisionTask}>继续统一修订<ChevronRight size={14} /></button>}
+      {!busy && !closing && !activeChoice && !(generated && !scriptSaved) && nextStep && <button type="button" disabled={!selectedModel}
+        title={nextStep.basis || nextStep.summary}
+        onClick={() => generateWorkflow(nextStep.stage, `${nextStep.purpose === 'revise' ? '修订' : '生成'}${nextStep.stage === 'episode' ? `第 ${nextStep.episode_number} 集正文` : workflowLabels[nextStep.stage]}`, nextStep.episode_number, nextStep)}>
+        <FileText size={14} aria-hidden="true" />{nextStep.purpose === 'revise' ? '修订' : '生成'}{nextStep.stage === 'episode' ? `第 ${nextStep.episode_number} 集正文` : workflowLabels[nextStep.stage]}
+      </button>}
+      {directionStart && !busy && !activeChoice && !(generated && !scriptSaved) && <button type="button" disabled={closing || !selectedModel}
+        title="提供几个故事方向供你选择"
+        onClick={() => void sendChatMessage('基于当前对话，给我几个故事方向供选择。保留已经确认的设定，说明各方向的区别。')}>
+        <Lightbulb size={14} aria-hidden="true" />探索故事方向
+      </button>}
+    </nav>}
     </div>
+    <StoryboardPlanner opened={storyboardOpen} onClose={() => setStoryboardOpen(false)} detail={detail} models={availableModels} initialSceneIds={planningSceneIds}
+      onRefresh={onRefresh} onOpenCanvas={onClose} onNotice={onNotice} />
     {artifactsOpen && <section className="sd-utility-panel" aria-label="项目文档列表">
       <header><strong>项目文档 · {artifactCards.length}</strong><button type="button" aria-label="关闭项目文档" onClick={() => setArtifactsOpen(false)}><X size={16} /></button></header>
       <div className="sd-utility-body">
+        {!!decisions.length && <details className="sd-story-decisions"><summary>已确认设定 · {decisions.length}</summary>{decisions.map(decision => <div key={decision.id}><strong>{decision.topic}</strong><p>{decision.content}</p><small>{decision.basis === 'delegated_model' ? '跳过后由模型确定' : '创作者确认'}</small><details><summary>查看确认来源</summary><p>{decision.source_text}</p></details></div>)}<small>需要调整时，在对话中说明要修改的设定。</small></details>}
         {artifactCards.length ? artifactCards.map(artifact => <button type="button" className="sd-artifact-card" key={artifactKey(artifact)} aria-label={`阅读文档：${artifact.title}`} onClick={() => { setReaderKey(artifactKey(artifact)); setArtifactsOpen(false) }}>
           <FileText size={18} /><span><strong>{artifact.title}</strong><small>{artifact.isUnsaved ? '草稿待确认' : '已保存文档'}{artifact.episode_number ? ` · 第 ${artifact.episode_number} 集` : ''}</small></span><ChevronRight size={14} />
         </button>) : <p className="sd-utility-empty">还没有项目文档。可以先讨论故事方向，再生成并确认保存大纲、人物和分集正文。</p>}
@@ -2284,7 +2588,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       <div className="sd-utility-body">
         <p>{workflowStage === 'episode' ? `本次仅创作第 ${episodeNumber} 集正文，承接全剧资料，不修改其他集。` : '本次整理全剧资料，覆盖整个故事；不会生成下一集正文。'}生成后可编辑、确认保存。</p>
         <p>推荐顺序：大纲 → 人物与关系 → 场景 → 道具 → 分集正文。{progress.next_stage ? `当前建议：${progress.next_stage === 'episode' ? `第 ${progress.next_episode} 集正文` : workflowLabels[progress.next_stage]}。` : '当前资料与正文已齐备。'}已有文档会复用，你也可以自行选择其他阶段。</p>
-        {availableModels.length ? modelSelector : <button type="button" className="script-director-model-link" onClick={onOpenModels}>配置可用文本模型</button>}
+        {availableModels.length ? <>{modelSelector}{skillSelector}</> : <button type="button" className="script-director-model-link" onClick={onOpenModels}>配置可用文本模型</button>}
         <Select label="创作阶段" aria-label="创作阶段" value={workflowStage} allowDeselect={false}
           data={workflowStages.map(stage => ({ value: stage, label: `${workflowLabels[stage]}${stage !== 'episode' && progress.completed[stage] ? ' · 已有' : ''}` }))}
           disabled={busy || Boolean(generated && !scriptSaved)} onChange={value => value && setWorkflowStage(value as WorkflowStage)} />
@@ -2294,7 +2598,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         </div>}
         {generated && !scriptSaved ? <div className="script-director-workflow-actions">
           <button type="button" onClick={() => { setWorkflowOpen(false); setPreviewOpen(true) }}>查看待确认草稿</button>
-          <button type="button" disabled={busy} onClick={() => { setGenerated(null); setPreviewOpen(false); setError(null) }}>放弃草稿</button>
+          <button type="button" disabled={busy} onClick={() => void discardGenerated()}>放弃草稿</button>
         </div> : <button type="button" className="script-director-workflow-generate" disabled={busy || !selectedModel || !references.length && !input.trim() && !idea.trim() && !messages.some(message => message.role === 'user')} onClick={() => { setWorkflowOpen(false); generateWorkflow() }}><FileText size={13} />{`生成${workflowStage === 'episode' ? `第 ${episodeNumber} 集正文` : workflowLabels[workflowStage]}`}</button>}
         {promptCustomized && <button type="button" className="script-director-workflow-generate" disabled={busy || !selectedModel || Boolean(generated && !scriptSaved)} onClick={() => { setWorkflowOpen(false); void generateScript() }}>按自定义提示词生成完整草稿</button>}
       </div>
@@ -2303,22 +2607,23 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
 
     {error && <div className="script-director-error" role="alert">{error}<button type="button" onClick={() => setError(null)} aria-label="关闭错误"><X size={14} /></button></div>}
 
-    {visualPreparationOpen && <VisualPreparation detail={detail} models={models} sceneIds={handoffScenes.map(scene => scene.id)} onRefresh={onRefresh} onClose={() => setVisualPreparationOpen(false)} onContinue={pendingSceneCount ? createSceneShots : undefined} onOpenCanvas={ids => { requestVisualCanvas(detail.id, ids); setVisualPreparationOpen(false); onClose() }} />}
-    {previewOpen && generated && <DirectorDraftReview draft={generated} busy={busy} saving={working === 'save'} saved={scriptSaved} onChange={setGenerated} onClose={() => setPreviewOpen(false)} onSave={() => void saveGenerated()} />}
-
-    {activeFocus === 'all' && !previewOpen && !artifactsOpen && !workflowOpen && <nav className="sd-creation-actions" aria-label="创作操作">
-      <button type="button" disabled={busy || closing || !selectedModel || Boolean(generated && !scriptSaved)}
-        title={generated && !scriptSaved ? '请先确认保存或放弃当前草稿' : '整理整个故事的大纲，不受当前集数影响；生成后确认保存'}
-        onClick={() => generateWorkflow('outline', hasSavedOutline ? '更新全剧大纲' : '生成全剧大纲')}>
-        <FileText size={14} aria-hidden="true" />{hasSavedOutline ? '更新全剧大纲' : '生成全剧大纲'}
-      </button>
-      <button type="button" disabled={busy || closing || !selectedModel || Boolean(generated && !scriptSaved)}
-        title={generated && !scriptSaved ? '请先确认保存或放弃当前草稿' : '结合已确认的设定，提供新的故事方向供你选择'}
-        onClick={() => void sendChatMessage('基于当前对话，给我几个故事方向供选择。保留已经确认的设定，说明各方向的区别。')}>
-        <Lightbulb size={14} aria-hidden="true" />探索故事方向
-      </button>
-    </nav>}
-
+    {liveRevision && <RevisionProgress task={liveRevision} working={working === 'chat'} />}
+    {previewOpen && generated && <DirectorDraftReview draft={generated} busy={busy} saving={working === 'save'} saved={scriptSaved} onChange={setGenerated} onClose={() => setPreviewOpen(false)} onSave={() => void saveGenerated()} onDiscard={() => void discardGenerated()}
+      onContinue={generated.tool_draft?.revision_task ? continueRevisionTask : undefined}
+      profileNames={Object.fromEntries((detail.visual_profiles || []).map(profile => [profile.id, `${profile.name} · ${profile.variant}`]))} sceneNames={Object.fromEntries(detail.script.scenes.map(scene => [scene.id, scene.heading]))} />}
+    {!previewOpen && !artifactsOpen && !workflowOpen && <section className={`sd-composer-area${composerCollapsed ? ' is-collapsed' : ''}`} aria-label="对话输入区">
+      <div className="sd-composer-area-head">
+        {composerCollapsed ? <button type="button" className="sd-composer-expand" aria-expanded={false} aria-controls={composerBodyId} onClick={() => setComposerCollapsed(false)}>
+          <PanelBottomOpen size={15} /><span>展开输入区</span><small>{activeChoice ? '有选项待回答' : [input.length ? `草稿 ${input.length} 字` : '', references.length ? `已引用 ${references.length} 份文档` : ''].filter(Boolean).join(' · ')}</small>
+        </button> : <>
+          {!previewOpen && !artifactsOpen && !workflowOpen ? <div className="sd-skill-context" aria-label="当前创作技能">
+            <span>{currentSkillStage === 'script' ? '创作技能' : '视觉设定技能'}</span>{skillSelector}
+          </div> : <span className="sd-composer-area-label">输入区</span>}
+          <button type="button" className="sd-composer-collapse" aria-label="收起输入区" title="收起输入区" aria-expanded={true} aria-controls={composerBodyId} onClick={() => { setComposerCollapsed(true); setComposerMenuOpen(false) }}><PanelBottomClose size={14} /><span>收起</span></button>
+        </>}
+        {composerCollapsed && working === 'chat' && <button type="button" className="sd-composer-stop" aria-label="停止生成" title="停止生成" onClick={stopChatGeneration}><Square size={12} fill="currentColor" /><span>停止生成</span></button>}
+      </div>
+      <div id={composerBodyId} className="sd-composer-area-content" hidden={composerCollapsed}>
     {activeChoice && !previewOpen && !references.length ? <DirectorQuestionPanel key={activeChoice.messageId}
       choice={activeChoice.choice} answer={choiceAnswers[activeChoice.messageId] || { custom: false, text: '' }} busy={busy} unavailable={!selectedModel} controls={availableModels.length ? modelSelector : undefined} onConfigure={onOpenModels} onStop={working === 'chat' ? stopChatGeneration : undefined}
       onChange={answer => setChoiceAnswers(current => ({ ...current, [activeChoice.messageId]: answer }))}
@@ -2326,6 +2631,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       onContinue={answer => answerQuestion(activeChoice.messageId, activeChoice.choice.question, answer)} />
       : <div className={`script-director-composer ${promptOpen ? 'is-prompt-open' : ''}`}>
       <DirectorReferences documents={references} disabled={busy} onOpen={setReaderReference} onRemove={key => setReferences(current => current.filter(document => document.key !== key))} />
+      {documentTask && <div className="sd-document-task"><span>修订：{documentTask.title}</span><button type="button" aria-label="取消定向修订" disabled={busy} onClick={() => setDocumentTask(null)}><X size={13} /></button></div>}
       <textarea ref={composerRef} value={input} maxLength={8000} onChange={(event) => setInput(event.currentTarget.value)} onKeyDown={handleInputKeyDown} placeholder={activeFocus === 'all' ? '聊聊你的故事想法…' : `描述你希望如何处理${focusArtifactLabels[activeFocus]}…`} aria-label="剧本创作对话" disabled={busy} />
       {promptOpen && <div className="script-director-prompt-editor">
         <div className="script-director-prompt-head"><span>实际发送提示词</span><button type="button" onClick={() => void refreshPrompt()} disabled={promptLoading || busy}>恢复自动提示词</button></div>
@@ -2344,7 +2650,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
           className="script-director-mode-select"
           aria-label="创作模式"
           value={mode}
-          data={[{ value: 'all', label: '全能创作' }, { value: 'script', label: '剧本创编' }, { value: 'director', label: '导演执导' }]}
+          data={directorModes.map(value => ({ value, label: directorModeProfiles[value].label }))}
           allowDeselect={false}
           rightSection={<ChevronDown size={13} />}
           size="xs"
@@ -2357,11 +2663,13 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
           }}
         />
         {modelSelector}
-        <button type="button" className="script-director-send" onClick={() => working === 'chat' ? stopChatGeneration() : void sendChatMessage()} disabled={working === 'chat' ? false : busy || (!input.trim() && !references.length) || !selectedModel} aria-label={working === 'chat' ? '停止生成' : '发送消息'} title={working === 'chat' ? '停止生成' : '发送消息'}>{working === 'chat' ? <Square size={15} fill="currentColor" /> : <ArrowUp size={20} />}</button>
+        <button type="button" className="script-director-send" onClick={() => working === 'chat' ? stopChatGeneration() : void sendChatMessage()} disabled={working === 'chat' ? false : busy || skillControl.loading || !!skillControl.error || (!input.trim() && !references.length) || !selectedModel} aria-label={working === 'chat' ? '停止生成' : '发送消息'} title={working === 'chat' ? '停止生成' : '发送消息'}>{working === 'chat' ? <Square size={15} fill="currentColor" /> : <ArrowUp size={20} />}</button>
       </div>
       {!availableModels.length && <button type="button" className="script-director-model-link" onClick={onOpenModels}>还没有可用文本模型，前往模型设置添加</button>}
       <div className="sd-composer-hint"><span>Enter 发送 · Shift+Enter 换行</span><span>{input.length ? `${input.length}/8000` : ''}</span></div>
     </div>}
+      </div>
+    </section>}
     </div>
 
     {readerArtifact && !minimized && <section className="sd-document-reader" aria-label="导演文档阅读器">
@@ -2375,11 +2683,13 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         try {
           const reference = { key: artifactKey(readerArtifact), title: readerArtifact.title, artifact_type: readerArtifact.artifact_type, episode_number: readerArtifact.episode_number || 0, content: readerArtifact.content }
           setReferences(addReference(references, reference))
+          setComposerCollapsed(false)
           setArtifactsOpen(false)
           setReaderKey(null); setReaderReference(null); setError(null)
           window.requestAnimationFrame(() => composerRef.current?.focus())
         } catch (issue) { setError(readableError(issue)); setReaderKey(null); setReaderReference(null) }
       }}><Plus size={14} />引用到对话</button>
+        {!readerReference && !readerArtifact.isUnsaved && activeFocus === 'all' && <><button type="button" disabled={busy || !selectedModel} onClick={() => reviewDocument('review')}><FileText size={14} />模型评审</button><button type="button" disabled={busy || !selectedModel} onClick={() => reviewDocument('revise')}><PenLine size={14} />对话修订</button></>}
         {!readerReference && (readerArtifact.isUnsaved ? <button type="button" className="sd-document-primary" onClick={() => { setReaderKey(null); setPreviewOpen(true) }}>查看待确认草稿<ChevronRight size={14} /></button> : onOpenDocument && <button type="button" className="sd-document-primary" onClick={() => { const saved = detail.script.artifacts?.find(artifact => artifactKey(artifact) === readerKey); if (saved) onOpenDocument(saved) }}><PenLine size={14} />编辑文档</button>)}
       </footer>
     </section>}
@@ -2395,7 +2705,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         {showSettingPresets && <aside className="script-director-settings-presets">
           <header><div><strong>爆款预设 Top 8</strong></div></header>
           <div className="script-director-settings-preset-list">
-            {directorSettingPresets.map((preset, index) => <button type="button" key={preset.label} className={settingsDraft.genre === preset.values.genre && (!preset.artwork || settingsPresetArtwork === preset.artwork) ? 'is-active' : ''} style={preset.artwork ? { backgroundImage: `linear-gradient(100deg, #111720e8 0%, #11172072 62%, #11172025 100%), url("${preset.artwork}")` } : undefined} onClick={() => { setAutoFieldOpen(null); setStructurePickerOpen(false); setFusionRailOpen(Boolean(preset.values.genre_fusion)); setSettingsPresetArtwork(preset.artwork); setSettingsDraft((current) => ({ ...current, ...preset.values })) }}>
+            {directorSettingPresets.map((preset, index) => <button type="button" key={preset.label} className={settingsDraft.genre === preset.values.genre && (!preset.artwork || settingsPresetArtwork === preset.artwork) ? 'is-active' : ''} style={preset.artwork ? { backgroundImage: `linear-gradient(100deg, #111720e8 0%, #11172072 62%, #11172025 100%), url("${preset.artwork}")` } : undefined} onClick={() => { setAutoFieldOpen(null); setStructurePickerOpen(false); setFusionRailOpen(Boolean(preset.values.genre_fusion)); setSettingsPresetArtwork(preset.artwork); setSettingsDraft((current) => ({ ...current, ...preset.values, ...(preset.values.visual_style ? { visual_style_details: undefined } : {}) })) }}>
               <span className="script-director-preset-copy"><b>{index + 1}</b><span>{preset.label}</span></span>
             </button>)}
           </div>

@@ -1,8 +1,8 @@
 import type { Asset, Job, Model, ProjectDetail, VisualProfile } from './api'
 import type { CanvasGraph, CanvasNode } from './ProjectCanvas'
 
-export function requestVisualCanvas(projectId: string, profileIds: string[]) {
-  window.sessionStorage.setItem(`visual-canvas-open:${projectId}`, JSON.stringify(profileIds))
+export function requestVisualCanvas(projectId: string, profileIds: string[], context?: { shotId?: string }) {
+  window.sessionStorage.setItem(`visual-canvas-open:${projectId}`, JSON.stringify(context ? { profileIds, ...context } : profileIds))
   window.dispatchEvent(new Event('visual-canvas-open'))
 }
 
@@ -51,7 +51,14 @@ export function automaticVisualReferenceEdges(graph: CanvasGraph, detail: Projec
     const usedAssets = new Set(graph.edges.filter(edge => edge.target === target.id)
       .map(edge => sources.find(source => source.node.id === edge.source)?.assetId).filter(Boolean))
     for (const binding of detail.shot_visual_bindings || []) {
+      if (!binding.required && target.settings.excluded_visual_profile_ids?.includes(binding.profile_id)) continue
       const assetId = binding.board_asset_id
+      if (binding.shot_id === target.shot_id && !assetId && binding.required && target.settings.visual_dependencies) {
+        const source = graph.nodes.find(node => node.id !== target.id && node.settings.visual_profile_id === binding.profile_id
+          && node.settings.visual_profile_revision === binding.revision && !graph.edges.some(edge => edge.source === node.id && edge.target === target.id))
+        if (source) edges.push({ id: `auto-visual-dependency:${JSON.stringify([target.id, binding.profile_id])}`, source: source.id, target: target.id })
+        continue
+      }
       if (binding.shot_id !== target.shot_id || !assetId || usedAssets.has(assetId)) continue
       const candidates = sources.filter(source => source.node.id !== target.id && source.assetId === assetId)
       // Prefer the bound profile, then a fixed image, then another image generator.
@@ -76,6 +83,7 @@ export type MissingVisualReference = {
 export function missingVisualReferences(graph: CanvasGraph, nodeId: string, detail: ProjectDetail, models: Pick<Model, 'id' | 'modality'>[] = []): MissingVisualReference[] {
   const target = graph.nodes.find(node => node.id === nodeId)
   if (!target || target.type !== 'generation') return []
+  const modality = models.find(model => model.id === target.model_id)?.modality || target.settings.modality
   const missing = new Map<string, MissingVisualReference>()
   const add = (profileId: string, name: string, variant: string, staleBinding = false) => {
     const profile = detail.visual_profiles?.find(item => item.id === profileId)
@@ -88,17 +96,21 @@ export function missingVisualReferences(graph: CanvasGraph, nodeId: string, deta
   // Manual profile inputs remain required even when automatic shot boards are disabled.
   for (const edge of graph.edges.filter(edge => edge.target === target.id)) {
     const source = graph.nodes.find(node => node.id === edge.source)
-    if (!source?.settings.visual_profile_id || visualNodeAsset(source, detail, true)?.kind === 'image') continue
+    if (!source?.settings.visual_profile_id) continue
+    if (modality === 'video' && target.settings.mode === 'first_frame' && target.settings.storyboard_reference_asset_id &&
+      (edge.reference_asset_id || visualNodeAsset(source, detail, true)?.id) !== target.settings.storyboard_reference_asset_id) continue
     const profile = detail.visual_profiles?.find(item => item.id === source.settings.visual_profile_id)
+    if (visualNodeAsset(source, detail, true)?.kind === 'image' && profile?.board_style_status !== 'needs_review') continue
     add(source.settings.visual_profile_id, profile?.name || source.title, profile?.variant || '')
   }
-  const modality = models.find(model => model.id === target.model_id)?.modality || target.settings.modality
   if (!target.settings.visual_profile_id && target.shot_id && modality !== 'text' && (!target.settings.visual_reference_mode || target.settings.visual_reference_mode === 'profiles')) {
     for (const binding of detail.shot_visual_bindings || []) {
-      if (binding.shot_id !== target.shot_id || !binding.required ||
-        detail.assets.some(asset => asset.id === binding.board_asset_id && asset.kind === 'image')) continue
       const profile = detail.visual_profiles?.find(item => item.id === binding.profile_id)
-      add(binding.profile_id, binding.name, binding.variant, !!profile && (binding.revision !== profile.revision || !!profile.board_asset_id))
+      const staleStyle = !!binding.board_style_version && !!detail.project_visual_style && binding.board_style_version !== detail.project_visual_style.version
+      if (!binding.required && target.settings.excluded_visual_profile_ids?.includes(binding.profile_id)) continue
+      if (binding.shot_id !== target.shot_id || !binding.required && (!binding.board_asset_id || !staleStyle) ||
+        !staleStyle && detail.assets.some(asset => asset.id === binding.board_asset_id && asset.kind === 'image')) continue
+      add(binding.profile_id, binding.name, binding.variant, profile?.board_style_status !== 'needs_review' && !!profile && (staleStyle || binding.revision !== profile.revision || !!profile.board_asset_id))
     }
   }
   return [...missing.values()]

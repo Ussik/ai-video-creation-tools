@@ -12,7 +12,6 @@ import {
 } from 'lucide-react'
 import { api, json } from './api'
 import type { Asset, ContinuityReport, Model, Modality, ProductionRange, Project, ProjectDetail, Provider, Shot, TimelineClip, VisualReferenceMode } from './api'
-import VisualPreparation from './VisualPreparation'
 import { requestVisualCanvas } from './canvas-visual-profiles'
 import ModelSettings from './ModelSettings'
 import SkillsCenter from './SkillsCenter'
@@ -22,10 +21,12 @@ import CandidateCompare from './CandidateCompare'
 import JobInformationPopover from './JobInformationPopover'
 import ProjectCanvas, { type CanvasLocation, type ScriptAction } from './ProjectCanvas'
 import ScriptDirectorPanel from './ScriptDirectorPanel'
+import StoryboardPlanner from './StoryboardPlanner'
 import ScriptEditor, { type DocumentSection } from './ScriptEditor'
 import { useAppDialog } from './AppDialog'
 import { filterLibraryAssets, libraryCollection, libraryEmptyText } from './asset-library'
 import type { AssetLibraryView } from './asset-library'
+import { useProjectDetailRefresh } from './useProjectDetailRefresh'
 
 type Tab = 'projects' | 'canvas' | 'studio' | 'assets' | 'jobs' | 'models' | 'skills'
 type Generation = {
@@ -253,10 +254,12 @@ function AssetPreview({ asset, compact = false }: { asset?: Asset | null; compac
 function App() {
   const { confirm, prompt, dialog } = useAppDialog()
   const [projects, setProjects] = useState<Project[]>([])
-  const [detail, setDetail] = useState<ProjectDetail | null>(null)
   const [providers, setProviders] = useState<Provider[]>([])
   const [models, setModels] = useState<Model[]>([])
   const [projectId, setProjectId] = useState<string | null>(null)
+  const { detail, setDetail, refreshDetail: refreshProjectDetail } = useProjectDetailRefresh(projectId)
+  const activeProjectId = useRef(projectId)
+  activeProjectId.current = projectId
   const [shotId, setShotId] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('projects')
   const [scriptDirectorOpen, setScriptDirectorOpen] = useState(false)
@@ -266,6 +269,7 @@ function App() {
   const [scriptEditorSection, setScriptEditorSection] = useState<DocumentSection>('outline')
   const canvasLocations = useRef(new Map<string, CanvasLocation>())
   const [scriptEditorOpen, setScriptEditorOpen] = useState(false)
+  const [storyboardOpen, setStoryboardOpen] = useState(false)
   const [projectCovers, setProjectCovers] = useState<Record<string, Asset | null>>({})
   const [projectQuery, setProjectQuery] = useState('')
   const [projectSort, setProjectSort] = useState<'updated' | 'name' | 'created'>('updated')
@@ -280,7 +284,6 @@ function App() {
   const [shotForm, setShotForm] = useState<ShotForm>({ title: '', prompt: '', duration: 5, start_state: '', end_state: '', cut_note: '' })
   const [generation, setGeneration] = useState<Generation>(initialGeneration)
   const [generationReview, setGenerationReview] = useState<GenerationReview | null>(null)
-  const [visualPreparationOpen, setVisualPreparationOpen] = useState(false)
   const [candidateReview, setCandidateReview] = useState<CandidateReview | null>(null)
   const [trimIn, setTrimIn] = useState<number | string>(0)
   const [trimOut, setTrimOut] = useState<number | string>(0)
@@ -302,9 +305,6 @@ function App() {
   const fileInput = useRef<HTMLInputElement>(null)
   const generationSubmitting = useRef(false)
   const continuityRequest = useRef(0)
-  // Detail requests can overlap while switching projects. Ignore a response
-  // for an older project so its script and canvas cannot flash in the new one.
-  const detailRequest = useRef(0)
 
   // 画布默认把空间留给节点工作区，仍可通过导航底部的按钮展开。
   useEffect(() => {
@@ -438,26 +438,27 @@ function App() {
     return next
   }
 
-  async function refreshDetail(id = projectId) {
-    if (!id) return
-    const requestId = ++detailRequest.current
-    const next = await api<ProjectDetail>(`/projects/${id}`)
-    if (requestId !== detailRequest.current || id !== projectId) return next
-    setDetail(next)
-    void refreshContinuity(id).catch(report)
+  async function refreshDetail(id = activeProjectId.current) {
+    const next = await refreshProjectDetail(id)
+    if (!next) return
+    void refreshContinuity(id, true).catch(report)
     return next
   }
 
-  async function refreshContinuity(id = projectId) {
-    if (!id) return
+  async function refreshContinuity(id = activeProjectId.current, background = false) {
+    if (!id || id !== activeProjectId.current) return
     const requestId = ++continuityRequest.current
-    setContinuityLoading(true)
+    if (!background) setContinuityLoading(true)
     try {
       const next = await api<ContinuityReport>(`/projects/${id}/continuity`)
-      if (requestId === continuityRequest.current) setContinuity(next)
+      if (requestId === continuityRequest.current && id === activeProjectId.current) {
+        setContinuity(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next)
+      }
       return next
+    } catch (error) {
+      if (requestId === continuityRequest.current && id === activeProjectId.current) throw error
     } finally {
-      if (requestId === continuityRequest.current) setContinuityLoading(false)
+      if (requestId === continuityRequest.current && id === activeProjectId.current) setContinuityLoading(false)
     }
   }
 
@@ -530,6 +531,7 @@ function App() {
 
   useEffect(() => {
     if (!projectId) return
+    let active = true
     setSelectedAssetIds([])
     setDetail(null)
     setSelectedAssetIds([])
@@ -541,11 +543,20 @@ function App() {
     setShowTimelinePreview(false)
     continuityRequest.current += 1
     setContinuity(null)
-    refreshDetail(projectId).then((next) => {
-      if (next?.shots.length) setShotId(next.shots[0].id)
-    }).catch(report)
-    const timer = window.setInterval(() => refreshDetail(projectId).catch(report), 4000)
-    return () => window.clearInterval(timer)
+    setContinuityLoading(false)
+    // Wait for each background request before scheduling another. Slow local
+    // or remote responses must not pile up and supersede every prior result.
+    let timer: number | undefined
+    const poll = async () => {
+      try { await refreshDetail(projectId) } catch (error) { if (active) report(error) }
+      finally { if (active) timer = window.setTimeout(poll, 4000) }
+    }
+    void refreshDetail(projectId).then((next) => {
+      if (active && next?.shots.length) setShotId(next.shots[0].id)
+    }).catch(error => { if (active) report(error) }).finally(() => {
+      if (active) timer = window.setTimeout(poll, 4000)
+    })
+    return () => { active = false; window.clearTimeout(timer); continuityRequest.current += 1 }
   }, [projectId])
 
   useEffect(() => {
@@ -1123,7 +1134,7 @@ function App() {
         />
       </div>}
 
-      {detail && canvasOpen && <ProjectCanvas key={detail.id} detail={detail} models={models} providers={providers}
+      {detail && canvasOpen && <ProjectCanvas key={`project-canvas-${detail.id}`} detail={detail} models={models} providers={providers}
         initialLocation={canvasLocations.current.get(detail.id)}
         onLocationChange={location => { canvasLocations.current.set(detail.id, location) }}
         onRefresh={async () => { await refreshDetail(detail.id) }}
@@ -1167,6 +1178,7 @@ function App() {
             })}
             {!detail.shots.length && <div className="rail-empty">还没有镜头</div>}
           </div>
+          {!!detail.script.scenes.length && <Button variant="default" title="规划并确认分镜后加入画布" onClick={() => setStoryboardOpen(true)} leftSection={<Plus size={16} />}>加入画布</Button>}
           {currentScene && <Button className="add-scene-shot-button" variant="default" onClick={() => addShot(currentScene.id)} leftSection={<Plus size={16} />}>本场新增镜头</Button>}
           <Button className="add-shot-button" variant="subtle" onClick={() => addShot()} leftSection={<Plus size={16} />}>添加镜头</Button>
         </section>
@@ -1242,7 +1254,7 @@ function App() {
               <div className="generation-title"><WandSparkles size={17} /><strong>生成候选</strong></div>
               <SegmentedControl className="generation-segment" aria-label="生成类型" fullWidth value={generation.modality} data={[{ value: 'text', label: '文本' }, { value: 'image', label: '图片' }, { value: 'video', label: '视频' }]} onChange={(value) => { const modality = value as Modality; setGeneration({ ...generation, modality, mode: 'text', reference_asset_ids: [], resolution: modality === 'image' ? '1.5K' : '720p' }) }} />
               <Select label="生成模型" searchable allowDeselect={false} value={generation.model_id || null} data={availableModels.map((model) => ({ value: model.id, label: model.name }))} onChange={(value) => { if (!value) return; const model = models.find((item) => item.id === value); setGeneration({ ...generation, model_id: value, mode: 'text', resolution: defaultResolution(model, generation.modality), duration: Math.min(durationBounds(model).max, Math.max(durationBounds(model).min, generation.duration)), ratio: modelRatios(model).includes(generation.ratio) ? generation.ratio : modelRatios(model)[0], reference_asset_ids: [], draft: false }) }} />
-              <Button variant="default" leftSection={<ImageIcon size={15} />} onClick={() => setVisualPreparationOpen(true)}>视觉设定 · {visualBindings.length}</Button>
+              <Button variant="default" leftSection={<ImageIcon size={15} />} onClick={() => { requestVisualCanvas(detail.id, [], { shotId: currentShot?.id }); setTab('canvas') }}>镜头引用 · {visualBindings.length}</Button>
               {!!visualBindings.length && <Select label="视觉设定引用方式" value={generation.visual_reference_mode || 'profiles'} allowDeselect={false} data={[{ value: 'profiles', label: '设定信息图 + 文字' }, ...(generation.modality === 'video' ? [{ value: 'keyframe', label: '关键帧承接 + 文字' }] : []), { value: 'text_only', label: '仅文字设定' }]} onChange={value => value && setGeneration({ ...generation, visual_reference_mode: value as VisualReferenceMode })} />}
               {!availableModels.length && <button className="model-empty-link" onClick={() => setTab('models')}>暂无可用模型，前往模型设置添加 <ArrowRight size={14} /></button>}
               {activeProvider && <div className="model-hint">{activeProvider.has_key ? '已配置 API Key' : '请到模型设置中配置 API Key'}</div>}
@@ -1377,7 +1389,10 @@ function App() {
       </section>}
 
       {tab === 'models' && <ModelSettings providers={providers} models={models} refresh={refreshCatalog} action={action} busy={busy} />}
-      {tab === 'skills' && <SkillsCenter />}
+      {tab === 'skills' && <SkillsCenter projectId={detail?.id} projectName={detail?.name} />}
+      {detail && <StoryboardPlanner key={`storyboard-planner-${detail.id}`} opened={storyboardOpen} onClose={() => setStoryboardOpen(false)} detail={detail} models={models.filter(model => providers.some(provider => provider.id === model.provider_id && provider.enabled))}
+        initialSceneIds={currentScene ? [currentScene.id] : detail.script.scenes.map(scene => scene.id)} onRefresh={() => refreshDetail(detail.id)}
+        onOpenCanvas={() => setTab('canvas')} onNotice={setNotice} />}
     </main>
 
     <Modal opened={assetPreview !== null} onClose={() => setAssetPreview(null)} title={assetPreview?.filename || '素材预览'} size="lg" centered>
@@ -1422,7 +1437,6 @@ function App() {
         <div className="generation-review-actions"><Button variant="default" onClick={() => setGenerationReview(null)} disabled={busy}>返回修改</Button><Button onClick={generateCandidate} loading={busy} leftSection={<Sparkles size={16} />}>确认提交 1 个候选</Button></div>
       </div>}
     </Modal>
-    {visualPreparationOpen && detail && <VisualPreparation detail={detail} models={models} shotId={currentShot?.id} onRefresh={() => refreshDetail()} onClose={() => setVisualPreparationOpen(false)} onOpenCanvas={ids => { requestVisualCanvas(detail.id, ids); setVisualPreparationOpen(false); setTab('canvas') }} />}
     <Modal className="candidate-review-modal" opened={!!candidateReview} onClose={() => { if (!busy) setCandidateReview(null) }} closeOnEscape={!busy} closeOnClickOutside={!busy} title="候选审核" size="xl" centered>
       {candidateReview && reviewAsset && <div className="candidate-review-detail">
         <div className="candidate-review-heading"><div><strong>{detail?.shots.find((shot) => shot.id === candidateReview.shotId)?.title}</strong><span>{reviewAsset.source === 'upload' ? '本地导入' : models.find((model) => model.id === reviewAsset.model_id)?.name || '生成素材'} · {dateLabel(reviewAsset.created_at)}</span></div><Badge variant="light" color={reviewRecord?.status === 'approved' ? 'teal' : reviewRecord?.status === 'rejected' ? 'red' : 'gray'}>{reviewStatusText[reviewRecord?.status || 'pending']}</Badge></div>

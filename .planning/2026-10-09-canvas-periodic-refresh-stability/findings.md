@@ -1,0 +1,12 @@
+# Findings
+- App refreshes project detail every 4 seconds and unconditionally replaces all data objects. Continuity loading adds further parent renders.
+- Same-project polling does not rerun canvas initialization: detail.id, flush, scheduleSave are stable.
+- Controlled flow nodes/edges rebuild on every detail or inline callback change.
+- Composer can reframe viewport when geometry has insufficient space. Its nodeLookup comparison is unreliable because XYFlow mutates its Map in place; investigate observer/geometry feedback instead.
+- Confirmed stale project callbacks can overwrite the active project's detail because old refresh closures compare against old projectId. Added an ID/scope/request guarded refresh hook with regression coverage.
+- Identical JSON responses now retain unchanged root/nested references; memoized canvas inner uses stable latest committed action handlers so unrelated parent status updates do not rebuild the node tree.
+- Background polls now schedule only after prior detail response, avoiding overlapping repeated requests; continuity background updates no longer flash loading UI and unchanged continuity retains identity.
+- Confirmed composer width/height CSS variables were overridden by later workspace theme declarations. Strengthened normal editor constraint specificity.
+- Composer subscription now tracks copied position/dimension/transform values, works with XYFlow's mutable nodeLookup Map, and ignores data-only changes. Subpixel viewport writes are suppressed.
+- Simple repeated detail refresh did not reproduce a viewport move in the initial fixture; actual App regression verification includes selected profile image, completed job, edges, local prompt and slow requests.
+- Actual full App reproduction found the direct root cause: ProjectCanvas and permanently mounted hidden StoryboardPlanner were sibling children with identical key=detail.id. React logged duplicate-key errors and retained two canvas DOM roots (one stuck loading). Prefixed component-specific keys fix reconciliation. Adding whole-App regression and negative control.

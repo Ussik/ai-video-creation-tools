@@ -245,7 +245,8 @@ test('model extraction returns editable unsaved drafts and rejects out-of-scope 
     const payload = { model_id: 'mock', scene_ids: [scene.id] }
     const before = all('SELECT * FROM visual_profiles WHERE project_id=?', project.id).length
     const response = await isolated.inject({ method: 'POST', url: `/api/projects/${project.id}/visual-profiles/analyze`, payload })
-    assert.equal(response.statusCode, 200); assert.deepEqual(response.json(), { profiles: [draft] })
+    assert.equal(response.statusCode, 200); assert.deepEqual(response.json().profiles, [draft])
+    assert.deepEqual(response.json().skills, []); assert.deepEqual(response.json().loaded_files, [])
     assert.equal(all('SELECT * FROM visual_profiles WHERE project_id=?', project.id).length, before)
     output = JSON.stringify({ profiles: [{ ...draft, scene_ids: ['foreign-scene'] }] })
     assert.equal((await isolated.inject({ method: 'POST', url: `/api/projects/${project.id}/visual-profiles/analyze`, payload })).statusCode, 422)

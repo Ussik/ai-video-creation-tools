@@ -4,9 +4,10 @@ import { JSDOM } from 'jsdom'
 import React, { act, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { MantineProvider } from '@mantine/core'
-import { CanvasGenerationParameters, type CanvasGenerationParametersProps } from '../src/CanvasGenerationControls'
+import { CanvasGenerationParameters, CanvasVideoModeMenu, videoModeLabel, type CanvasGenerationParametersProps, type CanvasVideoMode } from '../src/CanvasGenerationControls'
 import { imageParameterOptions, imageParameterValue, imagePreferencePrompt, imageRatioError, imageRatios, imageRequestResolution } from '../src/canvas-model-parameters'
 import type { Model } from '../src/api'
+import { videoRatioOptions, videoResolutionOptions } from '../../backend/src/video-parameters'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
 for (const key of ['window', 'document', 'navigator', 'Node', 'HTMLElement', 'Element', 'Event', 'MouseEvent']) {
@@ -151,6 +152,32 @@ test('video controls retain supported resolution, ratio and candidate selectors'
   } finally { await view.destroy() }
 })
 
+test('video parameters expose every requested ratio and clarity and preserve their selected request values', async () => {
+  const resolutions = videoResolutionOptions({ resolutions: ['480p', '720p'], default_resolution: '720p' })
+  const ratios = videoRatioOptions({ ratios: ['adaptive'] })
+  const view = await mount({ modality: 'video', ratios, ratio: 'adaptive', resolutions, resolution: '480p' })
+  try {
+    assert.deepEqual([...view.panel.querySelectorAll('[aria-label="比例"] button')].map(node => node.textContent), ['Auto', '16:9', '4:3', '1:1', '3:4', '9:16', '21:9'])
+    assert.deepEqual([...view.panel.querySelectorAll('[aria-label="清晰度"] button')].map(node => node.textContent), ['480p', '720p', '1080p', '4K'])
+    assert.equal(button(view.panel, '比例', 'Auto').getAttribute('aria-pressed'), 'true')
+    assert.equal(button(view.panel, '清晰度', '480p').getAttribute('aria-pressed'), 'true')
+    assert.equal(view.panel.querySelector('button:disabled'), null)
+    for (const ratio of ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9']) {
+      await act(() => button(view.panel, '比例', ratio).click())
+      assert.equal(button(view.panel, '比例', ratio).getAttribute('aria-pressed'), 'true')
+    }
+    await act(() => button(view.panel, '清晰度', '1080p').click())
+    await act(() => button(view.panel, '清晰度', '4K').click())
+    assert.equal(button(view.panel, '清晰度', '4K').getAttribute('aria-pressed'), 'true')
+    assert.match(view.trigger.textContent!, /21:9 · 4K/)
+    await act(() => button(view.panel, '比例', 'Auto').click())
+    assert.deepEqual(view.changes, [
+      ...['16:9', '4:3', '1:1', '3:4', '9:16', '21:9'].map(ratio => ({ ratio })),
+      { resolution: '1080p' }, { resolution: '4k' }, { ratio: 'adaptive' },
+    ])
+  } finally { await view.destroy() }
+})
+
 for (const modality of ['image', 'video'] as const) {
   test(`${modality} parameters close outside event-stopping canvas controls and preserve selections`, async () => {
     const view = await mount({ modality, ratios: ['16:9', '9:16'], ratio: '16:9' })
@@ -178,3 +205,48 @@ for (const modality of ['image', 'video'] as const) {
     } finally { await view.destroy() }
   })
 }
+
+test('one video mode menu explains mutually exclusive references, selects only one mode, and locks during generation', async () => {
+  const container = document.createElement('div'); document.body.appendChild(container)
+  const root = createRoot(container), changes: CanvasVideoMode[] = []
+  let setLocked: (locked: boolean) => void = () => {}
+  function Harness() {
+    const [value, setValue] = useState<CanvasVideoMode>('reference'), [locked, updateLocked] = useState(false)
+    setLocked = updateLocked
+    return <MantineProvider env="test"><CanvasVideoModeMenu value={value} supportedModes={['text', 'first_frame', 'first_last_frame', 'reference']}
+      disabled={locked} onChange={mode => { changes.push(mode); setValue(mode) }} /></MantineProvider>
+  }
+  const trigger = () => container.querySelector<HTMLButtonElement>('.pc-generation-mode-trigger')!
+  const item = (label: string) => {
+    const found = document.querySelector<HTMLButtonElement>(`.pc-generation-mode-menu [role="menuitem"][aria-label="${label}"]`)
+    assert.ok(found, label); return found
+  }
+  try {
+    await act(() => root.render(<Harness />))
+    assert.equal(trigger().getAttribute('aria-label'), '视频生成模式：多图参考')
+    await act(() => trigger().click())
+    assert.match(item('首帧承接').textContent!, /仅 1 张图/)
+    assert.match(item('首尾帧').textContent!, /2 张图/)
+    assert.match(item('多图参考').textContent!, /人物、场景与道具，构图引导/)
+    assert.equal(item('编辑视频，当前模型不支持').disabled, true)
+    for (const [label, mode] of [['首帧承接', 'first_frame'], ['首尾帧', 'first_last_frame'], ['多图参考', 'reference']] as const) {
+      if (trigger().getAttribute('aria-expanded') !== 'true') await act(() => trigger().click())
+      await act(() => item(label).click())
+      assert.equal(trigger().getAttribute('aria-label'), `视频生成模式：${label}`)
+      await act(() => trigger().click())
+      const selected = document.querySelectorAll('.pc-generation-mode-menu [role="menuitem"][data-selected]')
+      assert.equal(selected.length, 1, 'keyframes and reference mode cannot be selected together')
+      assert.equal(selected[0].getAttribute('aria-label'), label)
+      assert.equal(videoModeLabel(mode), label)
+    }
+    await act(() => setLocked(true))
+    assert.equal(trigger().disabled, true)
+    assert.equal(trigger().getAttribute('aria-expanded'), 'false', 'starting generation closes an already open mode menu')
+    await act(() => trigger().click())
+    assert.equal(trigger().getAttribute('aria-expanded'), 'false')
+    assert.deepEqual(changes, ['first_frame', 'first_last_frame', 'reference'])
+    await act(() => setLocked(false))
+    await act(() => trigger().click())
+    assert.equal(trigger().getAttribute('aria-expanded'), 'true')
+  } finally { await act(() => root.unmount()); container.remove() }
+})

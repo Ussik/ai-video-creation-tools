@@ -1,0 +1,116 @@
+/* Size the setting controls to the space left by the optional preset rail. */
+.script-director-settings-main {
+  container-name: script-settings;
+  container-type: inline-size;
+}
+.script-director-settings-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr)) minmax(180px, 1.3fr);
+  gap: 10px;
+  align-items: stretch;
+}
+.script-director-settings-grid .script-director-auto-card,
+.script-director-settings-grid .script-director-structure-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 10px;
+  height: 100%;
+  min-height: 78px;
+  padding: 13px 14px;
+  border: 1px solid #383a3d;
+  border-radius: 12px;
+  background: #252629;
+  color: #e1e2e4;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+.script-director-settings-grid .script-director-auto-card:hover,
+.script-director-settings-grid .script-director-structure-card:hover {
+  border-color: #52555a;
+  background: #2b2d30;
+}
+.script-director-settings-grid .is-open > .script-director-auto-card,
+.script-director-settings-grid .is-open > .script-director-structure-card {
+  border-color: #71757b;
+  background: #2b2d30;
+}
+.script-director-settings-grid .script-director-auto-card:focus-visible,
+.script-director-settings-grid .script-director-structure-card:focus-visible {
+  outline: 2px solid #a5a8ad;
+  outline-offset: 3px;
+}
+.script-director-setting-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: #999ca2;
+}
+.script-director-setting-heading > svg { flex: none; }
+.script-director-setting-heading small,
+.script-director-setting-heading .script-director-structure-label {
+  color: inherit;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.script-director-setting-heading .script-director-auto-chevron,
+.script-director-setting-heading .script-director-structure-chevron {
+  position: static;
+  margin-left: auto;
+  color: #81858c;
+  transition: transform 150ms ease;
+}
+.script-director-auto-field.is-open .script-director-auto-chevron,
+.script-director-structure-picker.is-open .script-director-structure-chevron { transform: rotate(180deg); }
+.script-director-settings-grid .script-director-structure-card::before { content: none; }
+.script-director-setting-value,
+.script-director-settings-grid .script-director-structure-value {
+  min-width: 0;
+  overflow: visible;
+  color: #e1e2e4;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.script-director-setting-value.is-auto,
+.script-director-settings-grid .script-director-structure-value.is-auto { color: #b7bac0; font-weight: 400; }
+.script-director-structure-summary {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 10px;
+}
+.script-director-settings-grid .script-director-structure-meta {
+  flex: none;
+  align-self: auto;
+  color: #999ca2;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.script-director-settings-grid .script-director-auto-popover,
+.script-director-settings-grid .script-director-structure-popover { max-width: calc(100cqw - 64px); }
+@container script-settings (max-width: 859px) {
+  .script-director-settings-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .script-director-settings-grid .script-director-auto-field:nth-child(3n + 1) .script-director-auto-popover { left: 0; right: auto; transform: none; }
+  .script-director-settings-grid .script-director-auto-field:nth-child(3n + 2) .script-director-auto-popover { left: 50%; right: auto; transform: translateX(-50%); }
+  .script-director-settings-grid .script-director-auto-field:nth-child(3n) .script-director-auto-popover { left: auto; right: 0; transform: none; }
+}
+@container script-settings (max-width: 440px) {
+  .script-director-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .script-director-settings-grid .script-director-auto-card,
+  .script-director-settings-grid .script-director-structure-card { padding: 12px; }
+  .script-director-settings-grid .script-director-auto-field:nth-child(odd) .script-director-auto-popover { left: 0; right: auto; transform: none; }
+  .script-director-settings-grid .script-director-auto-field:nth-child(even) .script-director-auto-popover { left: auto; right: 0; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .script-director-settings-grid .script-director-auto-card,
+  .script-director-settings-grid .script-director-structure-card,
+  .script-director-setting-heading svg { transition: none; }
+}

@@ -1,6 +1,8 @@
 import type { Asset, Model, ProjectDetail } from './api'
 import type { CanvasGraph, CanvasNode } from './ProjectCanvas'
 import { shotVideoPrompt } from '../../backend/src/shot-prompts'
+import { videoResolutionOptions } from '../../backend/src/video-parameters'
+import { supportsVideoMultiReference } from '../../backend/src/video-reference-config'
 import { modelDefaultResolution } from './canvas-model-parameters'
 
 function imageAsset(source: CanvasNode, detail: ProjectDetail) {
@@ -13,6 +15,22 @@ function videoModel(models: Model[], mode: string, selectedId?: string | null) {
   const compatible = models.filter(model => model.modality === 'video'
     && Array.isArray(model.settings.supported_modes) && model.settings.supported_modes.includes(mode))
   return compatible.find(model => model.id === selectedId) || compatible[0]
+}
+
+function multiReferenceModel(models: Model[], selectedId?: string | null) {
+  const compatible = models.filter(model => model.modality === 'video' && supportsVideoMultiReference(model.settings))
+  return compatible.find(model => model.id === selectedId) || compatible[0]
+}
+
+function sourceShotId(source: CanvasNode, asset: Asset) {
+  if (source.shot_id && asset.shot_id && source.shot_id !== asset.shot_id) {
+    throw new Error('分镜节点与所选图片属于不同镜头，请重新选择对应的分镜图')
+  }
+  return source.shot_id || asset.shot_id || null
+}
+
+function hasShotVisualBindings(detail: ProjectDetail, shotId: string | null) {
+  return !!shotId && !!detail.shot_visual_bindings?.some(binding => binding.shot_id === shotId)
 }
 
 function videoDuration(model: Model | undefined, requested: number) {
@@ -37,23 +55,39 @@ export function imageVideoConnection(first: CanvasNode, second: CanvasNode, deta
 /** Attach to an existing generator without losing its draft, geometry or history. */
 export function connectImageVideoHandoff(graph: CanvasGraph, connection: NonNullable<ReturnType<typeof imageVideoConnection>>,
   detail: ProjectDetail, models: Model[], edgeId: string) {
-  const { source, target, asset } = connection
+  const { source, asset } = connection
+  const target = graph.nodes.find(node => node.id === connection.target.id) || connection.target
+  const sourceId = sourceShotId(source, asset)
+  if (target.shot_id && sourceId && target.shot_id !== sourceId) {
+    throw new Error('视频节点与分镜图属于不同镜头，请连接对应镜头的视频节点')
+  }
+  const shotId = target.shot_id || sourceId
   const existing = graph.edges.find(edge => edge.source === source.id && edge.target === target.id)
-  if (existing?.reference_asset_id === asset.id) return graph
-  const mode = target.settings.mode && !['text', 'first_frame'].includes(target.settings.mode) ? target.settings.mode : 'first_frame'
-  const model = videoModel(models, mode, target.model_id)
-  const shotId = target.shot_id || source.shot_id || asset.shot_id || null
+  if (existing?.reference_asset_id === asset.id && target.shot_id === shotId && target.settings.mode
+    && target.settings.mode !== 'text' && (target.settings.mode !== 'reference' || target.settings.storyboard_reference_asset_id)
+    && (target.settings.mode !== 'first_frame' || !target.settings.storyboard_reference_asset_id || target.settings.storyboard_reference_asset_id === asset.id)) return graph
+  const automaticModel = !target.settings.mode || target.settings.mode === 'text'
+    ? hasShotVisualBindings(detail, shotId) && multiReferenceModel(models, target.model_id) : undefined
+  const mode = target.settings.mode && target.settings.mode !== 'text' ? target.settings.mode : automaticModel ? 'reference' : 'first_frame'
+  const model = automaticModel || videoModel(models, mode, target.model_id)
   const shot = detail.shots.find(shot => shot.id === shotId)
   const hasDraft = target.settings.prompt_override || target.settings.prompt_is_final || target.text.trim() || target.prompt.trim()
-  const resolutions = Array.isArray(model?.settings.resolutions) ? model.settings.resolutions as string[] : ['480p', '720p', '1080p']
+  const resolutions = videoResolutionOptions(model?.settings)
   const node: CanvasNode = { ...target, shot_id: shotId, model_id: model?.id || null,
     prompt: hasDraft ? target.prompt : shotVideoPrompt(shot || { prompt: source.prompt || asset.prompt || source.title }),
     settings: { ...target.settings, modality: 'video', mode,
       ...(['first_frame', 'first_last_frame'].includes(mode) ? { visual_reference_mode: 'keyframe' as const } : {}),
-      duration: videoDuration(model, target.settings.duration || shot?.duration || source.settings.duration || 5),
-      ratio: mode === 'first_frame' ? source.settings.ratio || detail.ratio : target.settings.ratio || detail.ratio,
-      resolution: model && target.model_id === model.id && resolutions.includes(target.settings.resolution || '')
-        ? target.settings.resolution : modelDefaultResolution(model, resolutions) || null,
+      ...(mode === 'first_frame' && target.settings.storyboard_reference_asset_id
+        ? { storyboard_reference_asset_id: asset.id } : {}),
+      ...(mode === 'reference' ? {
+        visual_reference_mode: automaticModel ? 'profiles' as const : target.settings.visual_reference_mode || 'profiles' as const,
+        storyboard_reference_asset_id: target.settings.storyboard_reference_asset_id || asset.id,
+      } : {}),
+      duration: target.settings.duration ?? videoDuration(model, shot?.duration || source.settings.duration || 5),
+      ratio: target.settings.ratio || 'adaptive',
+      resolution: target.settings.resolution
+        ? resolutions.find(value => value.toLowerCase() === target.settings.resolution?.toLowerCase()) || target.settings.resolution
+        : modelDefaultResolution(model, resolutions) || null,
     } }
   // A single-frame mode replaces the previous image input. Text inputs and
   // outgoing edges remain; multi-frame/reference modes retain image order.
@@ -79,21 +113,25 @@ export function createImageVideoHandoff(graph: CanvasGraph, source: CanvasNode, 
   if (source.settings.visual_profile_id) throw new Error('设定信息图不能直接作为分镜首帧，请先生成分镜图')
   const asset = imageAsset(source, detail)
   if (!asset) throw new Error('请先生成或选择一张分镜图片')
-  const shotId = source.shot_id || asset.shot_id || null
-  const existing = graph.edges.find(edge => edge.source === source.id && edge.reference_asset_id === asset.id
-    && graph.nodes.some(node => node.id === edge.target && node.type === 'generation' && node.settings.modality === 'video'
-      && node.settings.mode === 'first_frame' && node.shot_id === shotId))
-  if (existing) return { graph, nodeId: existing.target, created: false }
+  const shotId = sourceShotId(source, asset)
+  const existing = graph.nodes.find(node => node.type === 'generation' && node.settings.modality === 'video'
+    && ['first_frame', 'reference'].includes(node.settings.mode || '') && node.shot_id === shotId
+    && (node.settings.storyboard_reference_asset_id === asset.id || graph.edges.some(edge => edge.target === node.id
+      && edge.reference_asset_id === asset.id && (node.settings.mode === 'first_frame' || edge.source === source.id))))
+  if (existing) return { graph, nodeId: existing.id, created: false }
   if (graph.nodes.length >= 500 || graph.edges.length >= 1000) throw new Error('画布节点或连线已达到上限')
   const shot = detail.shots.find(shot => shot.id === shotId)
-  const model = videoModel(models, 'first_frame')
+  const referenceModel = hasShotVisualBindings(detail, shotId) ? multiReferenceModel(models, freshNode.model_id) : undefined
+  const model = referenceModel || videoModel(models, 'first_frame', freshNode.model_id)
+  const mode = referenceModel ? 'reference' : 'first_frame'
   const duration = videoDuration(model, shot?.duration || source.settings.duration || 5)
   const prompt = shotVideoPrompt(shot || { prompt: source.prompt || asset.prompt || source.title })
   const node: CanvasNode = { ...freshNode, type: 'generation', shot_id: shotId, model_id: model?.id || null,
     title: `${shot?.title || source.title || asset.filename} · 视频`, prompt, text: '', asset_id: null, job_id: null,
-    settings: { modality: 'video', mode: 'first_frame', visual_reference_mode: 'keyframe', candidate_count: 1,
+    settings: { modality: 'video', mode, visual_reference_mode: referenceModel ? 'profiles' : 'keyframe', candidate_count: 1,
+      ...(referenceModel ? { storyboard_reference_asset_id: asset.id } : {}),
       duration,
-      ratio: source.settings.ratio || detail.ratio, resolution: modelDefaultResolution(model, Array.isArray(model?.settings.resolutions) ? model.settings.resolutions as string[] : []) || null } }
+      ratio: 'adaptive', resolution: modelDefaultResolution(model, videoResolutionOptions(model?.settings)) || null } }
   return { graph: { ...graph, nodes: [...graph.nodes, node], edges: [...graph.edges,
     { id: edgeId, source: source.id, target: node.id, reference_asset_id: asset.id }] }, nodeId: node.id, created: true }
 }

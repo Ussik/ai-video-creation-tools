@@ -1,0 +1,8 @@
+# Progress
+- Audited screenshot, sidebar layout/style cascade and chat entry wiring. Applying redesign-existing-projects skill with existing stack and project tokens.
+- Removed chat visual-settings modal entry and empty-state preparation CTA. Kept one compact Manage button beside profile filters. New scoped canvas-sidebar.css provides neutral surfaces, segmented tabs, restrained filters, readable rows and non-action profile empty/search states.
+- A combined patch included a nonmatching README line and was rejected atomically; reapplied matching patches separately.
+- Frontend build passed; 29 existing chat/preparation tests passed. Added single-production-action assertion; focused rerun 3/3 passed. Browser space 131 confirms one sidebar Manage entry, no empty-state button, chat only Add to canvas; neutral computed background rgb(21,22,24).
+- Browser exact text selector did not include the tab count spacing; switched to observed snapshot ref. Subtree root accepts refs only, so used a full snapshot.
+- Browser validated desktop empty/populated lists, no-match feedback, character filter and Manage opening the full modal. 390px viewport: no horizontal overflow; filters and Manage fit independently of chat. Screenshots inspected for dark graphite consistency.
+- Candidate manager opens normally from refined sidebar. Removed temporary browser fixture and closed space 131. Final checks: frontend production build, 29 relevant regression tests, focused 3-test rerun with new entry assertion and browser desktop/narrow-screen verification passed; git diff --check clean. No user data/model requests.

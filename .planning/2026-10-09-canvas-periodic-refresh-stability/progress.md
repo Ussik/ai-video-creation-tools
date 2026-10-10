@@ -1,0 +1,11 @@
+# Progress
+- Started focused investigation; preserved existing uncommitted changes.
+- Delegated independent polling/effects audit and rendering/dimension audit.
+- Preparing actual-canvas mock browser reproduction.
+- Implemented guarded structurally shared project refresh, sequential polling, memoized canvas callbacks, composer geometry tracking and corrected editor CSS limits.
+- 61 focused regression tests and frontend production build passed; mounted component regression and actual App browser checks in progress.
+- Full App reproduction confirmed duplicate sibling keys caused duplicate canvas/loading DOM. Both workspaces now have distinct keys. Negative-control regression restores the bug and fails as expected.
+- All 64 relevant tests and frontend production build passed; git diff --check passed.
+- Actual App browser: 17 unchanged polls preserved selection, node dimensions/positions, edges, local prompt/focus and viewport; one canvas load. Genuine task failure update appeared without moving the view.
+- Slow 6-second detail requests were serial (max concurrency 1); narrow 700px layout had no editor/node overlap and no React errors.
+- Removed temporary mock fixture and finished browser task. No real project data modified; no commit/push requested.

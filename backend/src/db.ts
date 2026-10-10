@@ -45,6 +45,7 @@ export interface ScriptGenerationOptions {
   era?: string
   core_hook?: string
   visual_style?: string
+  visual_style_details?: import('./visual-style.js').VisualStyleDetails
   story_structure?: string
   character_notes?: string
   /** Target number of episodes for a generated series. */
@@ -60,6 +61,8 @@ export interface ScriptMessage {
   role: 'assistant' | 'user'; text: string; reference_documents?: string; created_at: string
   processing_duration_ms?: number | null
   stage_context?: string | null
+  activity?: string
+  reply_metadata?: string
 }
 export type ScriptArtifactType =
   | 'outline' | 'synopsis' | 'world' | 'characters' | 'relationships' | 'locations'
@@ -221,6 +224,27 @@ export function initDb(): void {
       model_id TEXT NOT NULL, created_at TEXT NOT NULL,
       PRIMARY KEY (project_id, message_id, text_hash)
     );
+    CREATE TABLE IF NOT EXISTS script_story_decisions (
+      id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      topic TEXT NOT NULL, content TEXT NOT NULL, basis TEXT NOT NULL,
+      source_text TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      UNIQUE(project_id, topic)
+    );
+    CREATE TABLE IF NOT EXISTS script_tool_drafts (
+      id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      version TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', payload TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_script_pending_tool_draft ON script_tool_drafts(project_id) WHERE status='pending';
+    CREATE TABLE IF NOT EXISTS script_document_reviews (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      document_id TEXT NOT NULL, document_version TEXT NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (project_id, document_id)
+    );
+    CREATE TABLE IF NOT EXISTS script_workflow_proposals (
+      project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+      state_version TEXT NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS script_artifacts (
       id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       artifact_type TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL DEFAULT '',
@@ -358,6 +382,11 @@ export function initDb(): void {
       required INTEGER NOT NULL DEFAULT 1,
       PRIMARY KEY (scene_id, profile_id)
     );
+    CREATE TABLE IF NOT EXISTS script_canvas_preparations (
+      scene_id TEXT PRIMARY KEY REFERENCES script_scenes(id) ON DELETE CASCADE,
+      signature TEXT NOT NULL,
+      profile_ids TEXT NOT NULL DEFAULT '[]'
+    );
     CREATE TABLE IF NOT EXISTS visual_profile_candidates (
       profile_id TEXT NOT NULL REFERENCES visual_profiles(id) ON DELETE CASCADE,
       asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
@@ -440,6 +469,13 @@ export function initDb(): void {
   }
 
   const scriptColumns = db.pragma('table_info(scripts)') as Array<{ name: string }>
+  for (const table of ['visual_profiles', 'shot_visual_bindings']) {
+    const columns = db.pragma(`table_info(${table})`) as Array<{ name: string }>
+    if (!columns.some(column => column.name === 'board_style_version')) db.exec(`ALTER TABLE ${table} ADD COLUMN board_style_version TEXT`)
+  }
+  if (!all<{ name: string }>('PRAGMA table_info(visual_profiles)').some(column => column.name === 'definition_status')) {
+    db.exec("ALTER TABLE visual_profiles ADD COLUMN definition_status TEXT NOT NULL DEFAULT 'ready' CHECK (definition_status IN ('draft', 'ready'))")
+  }
   if (!scriptColumns.some(column => column.name === 'generation_options')) {
     db.exec("ALTER TABLE scripts ADD COLUMN generation_options TEXT NOT NULL DEFAULT '{}'")
   }
@@ -454,6 +490,12 @@ export function initDb(): void {
 
   if (!messageColumns.some(column => column.name === 'stage_context')) {
     db.exec('ALTER TABLE script_messages ADD COLUMN stage_context TEXT')
+  }
+  if (!messageColumns.some(column => column.name === 'activity')) {
+    db.exec("ALTER TABLE script_messages ADD COLUMN activity TEXT NOT NULL DEFAULT '[]'")
+  }
+  if (!messageColumns.some(column => column.name === 'reply_metadata')) {
+    db.exec("ALTER TABLE script_messages ADD COLUMN reply_metadata TEXT NOT NULL DEFAULT '{}'")
   }
 
   const sceneColumns = db.pragma('table_info(script_scenes)') as Array<{ name: string }>

@@ -8,6 +8,20 @@ const profile = { id: 'linwan', name: '林晚', variant: '常服', revision: 2, 
 const node = { id: 'node', type: 'generation', asset_id: 'candidate', shot_id: 'shot', settings: { modality: 'image', visual_profile_id: 'linwan' } } as CanvasNode
 const detail = { visual_profiles: [profile], assets: [{ id: 'approved', kind: 'image' }, { id: 'candidate', kind: 'image' }, { id: 'upload', kind: 'image' }] } as ProjectDetail
 
+test('old-style references offer board review first and binding refresh after approval, even when the image exists', () => {
+  const target = { ...node, id: 'target', shot_id: 'shot', settings: { modality: 'image', visual_reference_mode: 'profiles' } } as CanvasNode
+  const graph = { nodes: [node, target], edges: [{ id: 'ref', source: node.id, target: target.id }] } as CanvasGraph
+  const stale = { ...detail, assets: detail.assets.map(asset => ({ ...asset, created_at: '2026-10-09T00:00:00Z' })), jobs: [], asset_tasks: [], project_visual_style: { version: 'new', label: '水彩', source: 'settings', details: {} },
+    visual_profiles: [{ ...profile, board_style_status: 'needs_review', board_style_version: 'old' }],
+    shot_visual_bindings: [{ ...profile, profile_id: profile.id, shot_id: 'shot', required: true, board_style_version: 'old' }],
+  } as ProjectDetail
+  assert.equal(missingVisualReferences(graph, target.id, stale)[0]?.action, 'confirm')
+  const reviewed = { ...stale, visual_profiles: [{ ...profile, board_style_status: 'current' as const, board_style_version: 'new' }] }
+  assert.equal(missingVisualReferences(graph, target.id, reviewed)[0]?.action, 'bindings')
+  const refreshed = { ...reviewed, shot_visual_bindings: [{ ...reviewed.shot_visual_bindings![0], board_style_version: 'new' }] }
+  assert.equal(missingVisualReferences(graph, target.id, refreshed).length, 0)
+})
+
 test('adding a visual profile reuses its original node and never associates a shot', () => {
   const graph = { nodes: [], edges: [], revision: 'revision' } as CanvasGraph
   const added = addVisualProfileNode(graph, profile, node)
@@ -190,6 +204,40 @@ test('manual unconfirmed profile inputs remain actionable in text-only mode and 
   assert.deepEqual(missingVisualReferences(fixture.graph, fixture.target.id, fixture.detail).map(item => [item.nodeId, item.action]), [['linwan', 'generate']])
   fixture.target.settings.visual_profile_id = 'bedroom'
   assert.equal(missingVisualReferences(fixture.graph, fixture.target.id, fixture.detail).length, 1)
+})
+
+test('strict first-frame only checks its pinned image while dormant unconfirmed and old-style profile edges remain available for multi-reference', () => {
+  const fixture = referenceFixture()
+  const frame = { ...node, id: 'storyboard', type: 'image' as const, asset_id: 'storyboard-image',
+    settings: {}, shot_id: 'shot' }
+  fixture.graph.nodes.push(frame)
+  fixture.detail.assets.push({ ...fixture.detail.assets[0], id: 'storyboard-image', kind: 'image' })
+  fixture.detail.project_visual_style = { version: 'new-style', label: '日漫', source: 'settings', details: {} } as ProjectDetail['project_visual_style']
+  fixture.detail.visual_profiles![0].board_asset_id = null
+  fixture.detail.shot_visual_bindings![0].board_asset_id = null
+  fixture.detail.visual_profiles![1].board_style_status = 'needs_review'
+  fixture.detail.visual_profiles![1].board_style_version = 'old-style'
+  fixture.detail.shot_visual_bindings![1].board_style_version = 'old-style'
+  fixture.target.settings = { modality: 'video', mode: 'first_frame', visual_reference_mode: 'keyframe', storyboard_reference_asset_id: frame.asset_id }
+  fixture.graph.edges = [
+    { id: 'frame', source: frame.id, target: fixture.target.id, reference_asset_id: frame.asset_id! },
+    { id: 'dormant-unconfirmed', source: 'linwan', target: fixture.target.id },
+    { id: 'dormant-style-review', source: 'bedroom', target: fixture.target.id },
+  ]
+  const before = structuredClone(fixture)
+  assert.deepEqual(missingVisualReferences(fixture.graph, fixture.target.id, fixture.detail), [])
+  assert.deepEqual(fixture, before, 'unused references remain connected for a later strategy switch')
+  fixture.target.settings.mode = 'reference'
+  fixture.target.settings.visual_reference_mode = 'profiles'
+  assert.deepEqual(missingVisualReferences(fixture.graph, fixture.target.id, fixture.detail).map(item => item.profileId), ['linwan', 'bedroom'])
+})
+
+test('strict first-frame still checks a manually pinned profile board that actually participates in the request', () => {
+  const fixture = referenceFixture()
+  fixture.detail.visual_profiles![0].board_style_status = 'needs_review'
+  fixture.target.settings = { modality: 'video', mode: 'first_frame', visual_reference_mode: 'keyframe', storyboard_reference_asset_id: 'approved' }
+  fixture.graph.edges = [{ id: 'first-frame-profile', source: 'linwan', target: fixture.target.id, reference_asset_id: 'approved' }]
+  assert.deepEqual(missingVisualReferences(fixture.graph, fixture.target.id, fixture.detail).map(item => item.profileId), ['linwan'])
 })
 
 test('unconfirmed candidates lead to approval, archived candidates to generation and older snapshots to binding management', () => {

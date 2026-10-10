@@ -1,0 +1,10 @@
+# Progress
+2026-10-09: Continued inspection summary; created dedicated plan, previous plans preserved. No implementation yet.
+
+Backend implemented versioned paragraph anchors, structured errors, repeated-entry merge, groups of eight with atomic persistence, persistent revision metadata and accumulated draft, final draft/scene/reference review and private protocol continuation. First type check corrected noUncheckedIndexedAccess. Existing relevant suites 56/57 passed; the one failure exposed successful reread not clearing an earlier diagnostic, corrected via per-operation unresolved errors.
+
+Implemented frontend live progress, persistent scope/status, proposed decisions/reasons, actual current before/after, resume and dirty-draft save guard. All 73 backend targeted tests pass; 3 new frontend task tests pass and previous 29 relevant frontend tests passed. Both native protocols tested for early-final repair with real output IDs and no duplicated output items. Remaining: full suites/builds and final code audit.
+
+Full frontend suite: 216/216. Full backend: 250/250 after allowing temporary localhost listeners (initial sandbox run had 13 EPERM listener errors, not assertions). Builds passed. Final audit added confirmed project context snapshot invalidation and legacy draft repair routing; 66 targeted document-tool tests passed afterward. New context test initially updated a nonexistent scripts row; corrected to upsert fixture settings. Final backend suite/build rerun pending.
+
+Completed. Confirmed constraints invalidate task reviews; task answers/skips update proposed choices while still prohibiting document writes and saves. Manual edits immediately show review as pending. All requested implementation phases complete. Full backend 250/250 and frontend 216/216 passed; final relevant suites 67 backend and 32 frontend passed after last small changes. Both builds and diff whitespace check passed. No commit/push. Semantic review remains model-dependent; scope-external media resources are reviewed and reported rather than silently modified.

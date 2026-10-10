@@ -8,6 +8,7 @@ import { after, test } from 'node:test'
 import sharp from 'sharp'
 import { imagePreferencePrompt } from '../../web/src/canvas-model-parameters.js'
 import { rightApiImageSettings } from '../src/rightapi-image-settings.js'
+import { textRequestTimeoutMs } from '../src/script-stream-policy.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'video-studio-providers-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
@@ -226,10 +227,10 @@ test('text timeouts cover both waiting for a response and reading its body witho
     })
     let started!: () => void
     const waiting = new Promise<void>(resolve => { started = resolve })
-    let calls = 0
+    let calls = 0, requestSignal!: AbortSignal
     t.mock.method(globalThis, 'fetch', async (_input: unknown, init: RequestInit) => {
       calls++
-      const signal = init.signal!
+      const signal = requestSignal = init.signal!
       if (stage === 'response') return new Promise<Response>((_resolve, reject) => {
         signal.addEventListener('abort', () => reject(signal.reason), { once: true })
         started()
@@ -242,9 +243,11 @@ test('text timeouts cover both waiting for a response and reading its body witho
     const failure = assert.rejects(generate({ id: 'timeout-text', remote_id: 'timeout-text', modality: 'text', settings: {
       request_path: '/text', text_path: 'output_text',
     } }, { adapter: 'http', base_url: 'https://example.invalid' }, { prompt: '整理视觉设定' }, [], 'timeout-text', () => {}),
-    /文本模型请求超时（最长等待 10 分钟）/)
+    /文本模型请求超时（最长等待 20 分钟）/)
     await waiting
     t.mock.timers.tick(10 * 60_000)
+    assert.equal(requestSignal.aborted, false)
+    t.mock.timers.tick(textRequestTimeoutMs - 10 * 60_000)
     await failure
     assert.equal(calls, 1)
   })
@@ -347,6 +350,7 @@ test('async video config saves external task ID and resumes without creating a d
     const provider = { adapter: 'http' as const, base_url: `http://127.0.0.1:${address.port}/v1` }
     const model = { id: 'video', remote_id: 'video-v1', modality: 'video' as const, settings: {
       create_path: 'tasks', get_path: 'tasks/{id}', id_path: 'id', status_path: 'status',
+      supported_modes: ['text', 'first_frame'],
       result_path: 'content.video_url', poll_seconds: 0.001,
       request_template: { model: '{{model}}', content: '{{content}}', ratio: '{{ratio}}', duration: '{{duration}}', unused: '{{reference_video_url}}' },
       image_reference_template: { type: 'image_url', image_url: { url: '{{image}}' }, role: '{{role}}' },
@@ -361,7 +365,7 @@ test('async video config saves external task ID and resumes without creating a d
       [{ kind: 'image', path: reference }], 'testproject', (id) => { savedId = id })
     assert.equal(savedId, 'job-123')
     assert.equal(created, 1)
-    assert.equal(requests[0]?.ratio, 'adaptive')
+    assert.equal(requests[0]?.ratio, '16:9')
     assert.equal('unused' in (requests[0] ?? {}), false)
     assert.equal((requests[0]?.content as unknown[]).length, 2)
     assert.equal(await readFile(result.path, 'utf8'), 'mock video result')
@@ -375,6 +379,38 @@ test('async video config saves external task ID and resumes without creating a d
     server.closeAllConnections()
     await new Promise<void>((resolve) => server.close(() => resolve()))
   }
+})
+
+test('video mode dimension defaults preserve explicit ratio and resolution while other mode constraints remain', async t => {
+  const submissions: Record<string, unknown>[] = []
+  t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
+    if (init?.method === 'POST') {
+      submissions.push(JSON.parse(String(init.body)) as Record<string, unknown>)
+      return Response.json({ id: `video-${submissions.length}` })
+    }
+    if (String(url).includes('/tasks/')) return Response.json({ status: 'succeeded', output: { url: 'https://video.invalid/result.mp4' } })
+    return new Response('mock video result', { headers: { 'Content-Type': 'video/mp4' } })
+  })
+  const provider = { adapter: 'http' as const, base_url: 'https://provider.invalid/v1' }
+  const model = { id: 'mode-dimensions', remote_id: 'configured-video', modality: 'video' as const, settings: {
+    create_path: 'tasks', get_path: 'tasks/{id}', poll_seconds: 0.001,
+    supported_modes: ['first_frame'],
+    default_resolution: '480p',
+    request_template: { ratio: '{{ratio}}', resolution: '{{resolution}}', duration: '{{duration}}', generate_audio: '{{generate_audio}}', image: '{{image}}' },
+    mode_variables: { first_frame: { ratio: 'adaptive', resolution: '720p', duration: 4, generate_audio: false } },
+  } }
+  const referencePath = join(testData, 'mode-reference.png')
+  await writeFile(referencePath, imageBytes)
+  const references = [{ kind: 'image' as const, path: referencePath }]
+  await generate(model, provider, { prompt: '首帧转视频', mode: 'first_frame' }, references, 'video-mode-defaults', () => {})
+  const { image: defaultImage, ...defaults } = submissions[0]!
+  assert.match(String(defaultImage), /^data:image\/png;base64,/)
+  assert.deepEqual(defaults, { ratio: 'adaptive', resolution: '720p', duration: 4, generate_audio: false })
+  await generate(model, provider, { prompt: '首帧转视频', mode: 'first_frame', ratio: '9:16', resolution: '4K', duration: 8, generate_audio: true },
+    references, 'video-mode-explicit', () => {})
+  const { image: explicitImage, ...explicit } = submissions[1]!
+  assert.equal(explicitImage, defaultImage)
+  assert.deepEqual(explicit, { ratio: '9:16', resolution: '4K', duration: 4, generate_audio: false })
 })
 
 test('local image assets export to a playable MP4', async () => {

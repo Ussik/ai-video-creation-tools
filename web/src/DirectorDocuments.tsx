@@ -1,15 +1,22 @@
-import { useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import { Select } from '@mantine/core'
-import { CheckCircle2, ChevronDown, ChevronRight, FileText, LoaderCircle, PenLine, X } from 'lucide-react'
+import { CheckCircle2, ChevronDown, ChevronRight, CircleAlert, FileText, LoaderCircle, PenLine, X } from 'lucide-react'
 import type { ScriptGenerationOptions } from './api'
 import { CanvasTextPreview } from './CanvasTextEditor'
 import { parseScriptDocument } from './script-rich-document'
 import { textDocumentText } from './text-document'
 import { artifactKey, workflowLabels } from './script-workflow'
 import type { WorkflowArtifact, WorkflowRequest, WorkflowScene } from './script-workflow'
+import type { ScriptToolDraft } from './script-tools'
+import { documentChangePreview, editedToolDraft } from './script-tools'
+import type { RevisionTask } from '../../backend/src/script-revision-types'
+import type { ResourceChange } from '../../backend/src/script-resource-types'
+import DirectorResourceDraft from './DirectorResourceDraft'
 
 type DirectorDraft = {
   workflow?: WorkflowRequest; generation_options?: ScriptGenerationOptions
+  tool_draft?: ScriptToolDraft
+  resource_changes?: ResourceChange[]
   outline: string; characters: string; scenes: WorkflowScene[]; artifacts: WorkflowArtifact[]
 }
 
@@ -31,32 +38,76 @@ export function DirectorSceneList({ scenes, onChange, disabled = false }: {
   </details>)}</div>
 }
 
-export default function DirectorDraftReview({ draft, busy, saving, saved, onChange, onClose, onSave }: {
+export function RevisionProgress({ task, working = false }: { task: RevisionTask; working?: boolean }) {
+  const [expanded, setExpanded] = useState(false)
+  const detailsId = useId()
+  const complete = task.documents.filter(doc => ['verified', 'unchanged'].includes(doc.status)).length
+  const blocked = [...task.documents, ...task.references].filter(item => item.status === 'blocked').length
+  const needsAttention = task.status === 'needs_attention' || blocked > 0
+  const status = needsAttention ? '需要处理' : working ? '进行中' : task.status === 'ready' ? '已核对' : '未完成'
+  const labels = { pending: '待处理', revised: '已修订，待核对', verified: '核对通过', unchanged: '无需修改', blocked: '需要处理' }
+  return <div className={`sd-revision-progress${needsAttention ? ' needs-attention' : ''}`} aria-label="统一修订进度">
+    <div className="sd-revision-summary">
+      <button type="button" className="sd-revision-toggle" aria-expanded={expanded} aria-controls={detailsId} onClick={() => setExpanded(value => !value)}>
+        {expanded ? '收起修订进度' : '查看修订进度'}{expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+      </button>
+      <span className="sd-revision-meta" role="status"><span>文档 {complete}/{task.documents.length}</span><span className="sd-revision-state">{needsAttention && <CircleAlert size={12} aria-hidden="true" />}{status}</span></span>
+    </div>
+    {needsAttention && <p className="sd-revision-attention">{blocked ? `${blocked} 项内容需要处理` : '统一修订需要进一步处理'}，展开可查看原因。</p>}
+    {expanded && <div id={detailsId} className="sd-revision-details">
+      <div className="sd-revision-detail-head"><strong>{needsAttention ? '统一修订需要处理' : working ? '正在统一修订' : task.status === 'ready' ? '统一核对完成' : '统一修订未完成'}</strong><span>已提交 {task.batches} 批</span></div>
+      <progress value={complete} max={Math.max(1, task.documents.length)} aria-label="已核对文档" />
+      <details><summary>处理范围与待办 · {task.documents.length} 份文档{task.references.length ? ` · ${task.references.length} 项关联内容` : ''}</summary><ul>{task.documents.map(doc => <li key={doc.id}><span>{doc.title}</span><em>{labels[doc.status]}</em>{doc.note && <p>{doc.note}</p>}</li>)}{task.references.map(ref => <li key={`${ref.kind}:${ref.id}`}><span>{ref.title} · 关联核对</span><em>{labels[ref.status]}</em>{ref.note && <p>{ref.note}</p>}</li>)}</ul></details>
+      {!!task.decisions.length && <details><summary>拟定的统一设定 · {task.decisions.length} 项</summary><p>这些决定随草稿保存后才正式采用。</p><ul>{task.decisions.map(choice => <li key={choice.topic}><strong>{choice.topic}</strong><p>{choice.choice}</p><small>{choice.reason}</small></li>)}</ul></details>}
+    </div>}
+  </div>
+}
+
+export default function DirectorDraftReview({ draft, busy, saving, saved, onChange, onClose, onSave, onDiscard, onContinue, profileNames = {}, sceneNames = {} }: {
   draft: DirectorDraft; busy: boolean; saving: boolean; saved: boolean
   onChange: (draft: DirectorDraft) => void; onClose: () => void; onSave: () => void
+  onDiscard?: () => void
+  onContinue?: () => void
+  profileNames?: Record<string, string>; sceneNames?: Record<string, string>
 }) {
   const [selection, setSelection] = useState('')
   const [editing, setEditing] = useState(false)
-  const documents = draft.workflow ? draft.artifacts.map(artifact => ({ key: artifactKey(artifact), title: artifact.title, content: artifact.content })) : [
+  const documents = draft.workflow || draft.tool_draft ? draft.artifacts.map(artifact => ({ key: artifactKey(artifact), title: artifact.title, content: artifact.content })) : [
     { key: 'legacy-outline', title: '故事大纲', content: draft.outline },
     { key: 'legacy-characters', title: '人物设定', content: draft.characters },
     ...draft.artifacts.filter(artifact => !['outline', 'characters', 'structure'].includes(artifact.artifact_type)).map(artifact => ({ key: artifactKey(artifact), title: artifact.title, content: artifact.content })),
   ]
-  const entries = [...documents.map(document => ({ value: document.key, label: document.title })), ...(draft.scenes.length ? [{ value: 'scene-list', label: `分场信息 · ${draft.scenes.length} 场` }] : [])]
+  const resources = draft.resource_changes || draft.tool_draft?.resource_changes || []
+  const entries = [...documents.map(document => ({ value: document.key, label: document.title })), ...resources.map((change, index) => ({ value: `resource:${index}`, label: change.title })), ...(draft.scenes.length ? [{ value: 'scene-list', label: `分场信息 · ${draft.scenes.length} 场` }] : [])]
   const activeKey = entries.some(entry => entry.value === selection) ? selection : entries[0]?.value || ''
   const activeDocument = documents.find(document => document.key === activeKey)
-  const title = draft.workflow ? draft.workflow.stage === 'episode' ? `第 ${draft.workflow.episode_number} 集草稿` : workflowLabels[draft.workflow.stage] : '创作草稿'
+  const title = draft.tool_draft?.kind === 'resource' ? '视觉设定与分镜草稿' : draft.tool_draft?.kind === 'patch' ? '文档修订草稿' : draft.workflow ? draft.workflow.stage === 'episode' ? `第 ${draft.workflow.episode_number} 集草稿` : workflowLabels[draft.workflow.stage] : '创作草稿'
+  const resourceIndex = activeKey.startsWith('resource:') ? Number(activeKey.slice(9)) : -1
+  const activeResource = resources[resourceIndex]
+  const original = draft.tool_draft?.documents.find(document => artifactKey(document) === activeKey)
+  const task = draft.tool_draft?.revision_task
+  const dirty = !!task && editedToolDraft(draft.tool_draft!, draft.artifacts, draft.scenes).changed
+  const incomplete = !!task && (task.status !== 'ready' || dirty)
+  const progressTask: RevisionTask | undefined = dirty && task ? { ...task, status: 'in_progress',
+    documents: task.documents.map(doc => ({ ...doc, status: draft.tool_draft!.documents.some(proposed => proposed.id === doc.id) ? 'revised' : 'pending', note: '手动调整后，需重新核对整组一致性' })),
+    references: task.references.map(ref => ({ ...ref, status: 'pending', note: '手动调整后，需重新核对关联内容' })) } : task
+  const diff = original && activeDocument ? documentChangePreview(original.original_content, activeDocument.content) : undefined
   const updateContent = (content: string) => onChange(activeKey === 'legacy-outline' ? { ...draft, outline: content } : activeKey === 'legacy-characters' ? { ...draft, characters: content } : { ...draft, artifacts: draft.artifacts.map(artifact => artifactKey(artifact) === activeKey ? { ...artifact, content } : artifact) })
   return <section className="script-director-preview sd-draft-review" aria-label="剧本草稿预览">
-    <div className="script-director-preview-head"><div><FileText size={17} /><strong>{title}</strong><span className="sd-document-status">{saved ? '已保存' : '待确认'}</span></div><button type="button" onClick={onClose} aria-label="收起预览" title="收起后可从创作成果重新打开"><X size={17} /></button></div>
+    <div className="script-director-preview-head"><div><FileText size={17} /><strong>{task ? '统一修订草稿' : title}</strong><span className="sd-document-status">{saved ? '已保存' : incomplete ? '尚未完成' : '待确认'}</span></div><button type="button" onClick={onClose} aria-label="收起预览" title="收起后可从创作成果重新打开"><X size={17} /></button></div>
     <div className="sd-document-toolbar"><Select className="sd-document-select" aria-label="选择草稿文档" value={activeKey || null} data={entries} allowDeselect={false} rightSection={<ChevronDown size={14} />} comboboxProps={{ withinPortal: true, zIndex: 400 }} onChange={value => value && setSelection(value)} />
       <div className="sd-view-switch" role="group" aria-label="草稿展示方式"><button type="button" aria-pressed={!editing} onClick={() => setEditing(false)}>阅读</button><button type="button" aria-pressed={editing} disabled={busy || saved} onClick={() => setEditing(true)}><PenLine size={12} />编辑</button></div>
     </div>
-    <div className="sd-document-meta"><span>{documents.length} 份文档{draft.scenes.length ? ` · ${draft.scenes.length} 场 · ${draft.scenes.reduce((sum, scene) => sum + scene.duration, 0)} 秒` : ''}</span><span>{editing ? '修改将随确认一起保存' : '确认后写入项目'}</span></div>
+    <div className="sd-document-meta"><span>{resources.length ? `${resources.length} 项视觉设定或分镜修改` : `${documents.length} 份文档`}{draft.scenes.length ? ` · ${draft.scenes.length} 场 · ${draft.scenes.reduce((sum, scene) => sum + scene.duration, 0)} 秒` : ''}</span><span>{editing ? '修改将随确认一起保存' : '确认后写入项目'}</span></div>
+    {draft.tool_draft && <p className="sd-draft-summary">{draft.tool_draft.summary}</p>}
+    {progressTask && <RevisionProgress task={progressTask} working={busy && !saving} />}
+    {dirty && <p className="sd-revision-note">正文或分场已手动调整，请继续任务核对当前版本后再保存。</p>}
+    {!!draft.tool_draft?.impacts?.length && <details className="sd-draft-impacts"><summary>关联内容需核对 · {draft.tool_draft.impacts.length} 项</summary><p>以下是依赖关系或文本匹配线索。本次只保存草稿中的修改，其他内容需进一步核对。</p>{draft.tool_draft.impacts.map(item => <div key={`${item.kind}:${item.id}`}><strong>{item.title}</strong><span>{item.explanation}</span></div>)}</details>}
     <div className="script-director-preview-scroll" key={`${activeKey}:${editing}`}>
-      {activeKey === 'scene-list' ? <DirectorSceneList scenes={draft.scenes} disabled={busy || saved} onChange={editing ? (index, scene) => onChange({ ...draft, scenes: draft.scenes.map((item, itemIndex) => itemIndex === index ? scene : item) }) : undefined} />
-        : activeDocument && <div className="sd-document-page"><h2>{activeDocument.title}</h2>{editing ? <label className="sd-document-edit-label"><span>文档正文</span><textarea className="sd-document-editor" maxLength={20000} aria-label={`编辑草稿：${activeDocument.title}`} value={activeDocument.content} disabled={busy || saved} onChange={event => updateContent(event.currentTarget.value)} /></label> : <DirectorDocumentBody text={activeDocument.content} />}</div>}
+      {activeResource ? <DirectorResourceDraft change={activeResource} editing={editing} disabled={busy || saved} profileNames={profileNames} sceneNames={sceneNames}
+        onChange={change => onChange({ ...draft, resource_changes: resources.map((item, index) => index === resourceIndex ? change : item) })} /> : activeKey === 'scene-list' ? <DirectorSceneList scenes={draft.scenes} disabled={busy || saved} onChange={editing ? (index, scene) => onChange({ ...draft, scenes: draft.scenes.map((item, itemIndex) => itemIndex === index ? scene : item) }) : undefined} />
+        : activeDocument && <div className="sd-document-page"><h2>{activeDocument.title}</h2>{diff?.changed && <details className="sd-change-preview"><summary>查看当前修改前后对比</summary><div><section><strong>修改前</strong><pre>{diff.before || '（新增内容）'}</pre></section><section><strong>修改后</strong><pre>{diff.after || '（删除内容）'}</pre></section></div></details>}{original?.original_content && <details className="sd-original-document"><summary>查看修改前原文</summary><DirectorDocumentBody text={original.original_content} /></details>}{editing ? <label className="sd-document-edit-label"><span>文档正文</span><textarea className="sd-document-editor" maxLength={draft.tool_draft?.kind === 'patch' ? 100000 : 20000} aria-label={`编辑草稿：${activeDocument.title}`} value={activeDocument.content} disabled={busy || saved} onChange={event => updateContent(event.currentTarget.value)} /></label> : <DirectorDocumentBody text={activeDocument.content} />}{!!original?.replacements.length && <details className="sd-patch-reasons"><summary>模型修改依据 · {original.replacements.length} 项</summary>{original.replacements.map((edit, index) => <p key={index}>{edit.reason}</p>)}<small>依据对应模型最初提出的修改；上方正文为当前将保存的完整版本。</small></details>}</div>}
     </div>
-    <div className="script-director-preview-actions"><button type="button" className="sd-document-secondary" onClick={onClose}>稍后处理</button><button type="button" className="sd-document-primary" onClick={onSave} disabled={busy || saved}>{saving ? <LoaderCircle size={14} className="script-director-spinner" /> : <CheckCircle2 size={14} />}{saved ? '已保存' : '确认保存'}{!saving && !saved && <ChevronRight size={14} />}</button></div>
+    <div className="script-director-preview-actions">{onDiscard && !saved && <button type="button" className="sd-document-secondary" disabled={busy} onClick={onDiscard}>放弃草稿</button>}<button type="button" className="sd-document-secondary" onClick={onClose}>稍后处理</button>{onContinue && incomplete && !saved && <button type="button" className="sd-document-primary" disabled={busy} onClick={onContinue}>继续统一修订<ChevronRight size={14} /></button>}<button type="button" className="sd-document-primary" onClick={onSave} disabled={busy || saved || incomplete}>{saving ? <LoaderCircle size={14} className="script-director-spinner" /> : <CheckCircle2 size={14} />}{saved ? '已保存' : '确认保存'}{!saving && !saved && <ChevronRight size={14} />}</button></div>
   </section>
 }

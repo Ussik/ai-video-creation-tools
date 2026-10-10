@@ -9,7 +9,7 @@
 .sb-content { display:flex; flex:1; gap:12px; min-height:0; min-width:0; }
 .sb-library { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; flex:1; min-width:0; min-height:0; }
 .sb-column { display:flex; flex-direction:column; min-height:0; min-width:0; border:1px solid #303034; border-radius:12px; background:#222224; overflow:hidden; }
-.sb-column > header { display:flex; align-items:center; gap:8px; min-height:48px; padding:0 16px; border-bottom:1px solid #303034; }
+.sb-column > header { display:flex; flex:none; align-items:center; gap:8px; min-height:48px; padding:0 16px; border-bottom:1px solid #303034; }
 .sb-column h2 { margin:0; color:#ededf0; font-size:14px; font-weight:600; }
 .sb-column > header span { color:#88888f; font-size:11px; font-variant-numeric:tabular-nums; }
 .sb-column > header button { display:grid; place-items:center; width:28px; height:28px; margin-left:auto; border:0; border-radius:6px; background:transparent; color:#b7b7be; }
@@ -33,11 +33,12 @@
 .sb-empty p { margin:0 0 8px; font-size:13px; }
 .sb-empty small { display:block; color:#76767e; font-size:11px; line-height:1.7; }
 .sb-media-placeholder { display:grid; place-items:center; width:100%; height:100%; padding:20px; color:#83838b; font-size:12px; text-align:center; }
-.sb-workspace.is-reading .sb-library { display:flex; flex-direction:column; width:280px; flex:0 0 280px; overflow:auto; }
-.sb-workspace.is-reading .sb-column { flex:none; min-height:110px; overflow:visible; }
-.sb-workspace.is-reading .sb-column-text { max-height:60%; min-height:160px; overflow:hidden; }
-.sb-workspace.is-reading .sb-column-scroll { flex:none; }
-.sb-workspace.is-reading .sb-column-text .sb-column-scroll { flex:1; }
+/* Reading mode uses one scroll area for all three groups. A nested text
+   scroller would trap wheel/touch input before the images and videos below. */
+.sb-workspace.is-reading .sb-library { display:flex; flex-direction:column; width:280px; flex:0 0 280px; overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-gutter:stable; scrollbar-color:#49494f transparent; padding-right:4px; }
+.sb-workspace.is-reading .sb-column { flex:none; min-height:110px; overflow:hidden; }
+.sb-workspace.is-reading .sb-column-text { min-height:160px; }
+.sb-workspace.is-reading .sb-column-scroll { flex:none; overflow:visible; }
 .sb-workspace.is-reading .sb-media-list { grid-template-columns:1fr; }
 .sb-reader { display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; border:1px solid #303034; border-radius:12px; background:#202022; overflow:hidden; }
 .sb-reader > header { display:flex; align-items:center; gap:10px; min-height:54px; padding:8px 16px; border-bottom:1px solid #303034; }

@@ -8,7 +8,7 @@ export const themeVisualInput = z.object({
   genre_fusion: z.string().trim().max(500).default(''),
 }).strict()
 const selection = z.object({ category: z.enum(scriptThemeCategories).nullable(), confidence: z.number().min(0).max(1) }).strict()
-const modelVisuals = z.object({ primary: selection, fusion: selection }).strict()
+export const modelVisuals = z.object({ primary: selection, fusion: selection }).strict()
 type ThemeNames = { genre: string; genre_fusion: string }
 
 export function themeVisualPrompt(names: ThemeNames): string {

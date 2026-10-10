@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Model } from '../src/api'
 import { generationCost, imageGenerationDefaults, imageParameterOptions, imageParameterValue, imagePreferencePrompt, imageRatioError, imageRatios, imageRequestResolution, imageSizeChoices, modelDefaultResolution, resolutionRatio, selectImageSize, usesModelParameter } from '../src/canvas-model-parameters'
+import { videoResolutionOptions } from '../../backend/src/video-parameters'
 
 const model = (settings: Model['settings'], modality: Model['modality'] = 'image') => ({ settings, modality } as Model)
 
@@ -41,6 +42,13 @@ test('explicit model choices and configured defaults remain usable', () => {
   assert.equal(imageParameterValue(image, 'quality', 'low'), 'low')
   assert.equal(imageParameterValue(model({default_quality: 'high'}), 'quality'), 'high')
   assert.equal(imageParameterValue(model({}), 'quality'), 'standard')
+})
+
+test('video node defaults prefer 480p while preserving image model defaults', () => {
+  const video = model({ resolutions: ['480p', '720p'], default_resolution: '720p' }, 'video')
+  assert.equal(modelDefaultResolution(video, videoResolutionOptions(video.settings)), '480p')
+  assert.equal(modelDefaultResolution(model({ resolutions: ['1080p'], default_resolution: '1080p' }, 'video'), videoResolutionOptions()), '480p')
+  assert.equal(modelDefaultResolution(model({ resolutions: ['480P'], default_resolution: '720p' }, 'video'), ['480P', '720p']), '480P')
 })
 
 test('fixed-size providers never replace a requested ratio with a nearby ratio', () => {

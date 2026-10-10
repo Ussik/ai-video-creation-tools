@@ -1,40 +1,94 @@
 import { useEffect, useState } from 'react'
-import { ActionIcon, Button, Textarea, TextInput, Tooltip } from '@mantine/core'
-import { Save, X } from 'lucide-react'
+import { ActionIcon, Button, Tooltip } from '@mantine/core'
+import { ArrowUpRight, Save, Trash2, X } from 'lucide-react'
 import { api, json } from './api'
-import type { ProjectDetail, VisualProfile } from './api'
+import type { ProjectDetail, VisualProfile, VisualProfileDraft, VisualProjectData } from './api'
+import VisualProfileFields, { emptyVisualProfile, validVisualProfile } from './VisualProfileFields'
+import { useAppDialog } from './AppDialog'
 
-type Props = { profile: VisualProfile; detail: ProjectDetail; generating: boolean; onRefresh: () => Promise<void>; onClose: () => void; onBindings: () => void; onDirtyChange: (dirty: boolean) => void }
+type Props = {
+  profile?: VisualProfile; inCanvas: boolean; detail: ProjectDetail; generating: boolean; onRefresh: () => Promise<void>;
+  onClose: () => void; onBindings: () => void; onDirtyChange: (dirty: boolean) => void;
+  onBusyChange: (busy: boolean) => void; onSaved: (profile: VisualProfile) => void;
+  onDeleted: (profile: VisualProfile) => void; onOpenCanvas: (profile: VisualProfile) => void;
+}
 
-export default function VisualProfileInspector({ profile, detail, generating, onRefresh, onClose, onBindings, onDirtyChange }: Props) {
-  const [draft, setDraft] = useState(profile)
+export default function VisualProfileInspector({ profile, inCanvas, detail, generating, onRefresh, onClose, onBindings, onDirtyChange, onBusyChange, onSaved, onDeleted, onOpenCanvas }: Props) {
+  const initial = (): VisualProfileDraft => profile ? { ...profile, scene_ids: [] } : emptyVisualProfile()
+  const [draft, setDraft] = useState<VisualProfileDraft>(initial)
+  const [baseline, setBaseline] = useState(profile)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  useEffect(() => { setDraft(profile); setError('') }, [profile.id, profile.revision, profile.board_asset_id])
-  const dirty = (['name', 'variant', 'definition', 'view_requirements'] as const).some(key => draft[key] !== profile[key])
+  const dialog = useAppDialog()
+  // Do not replace unsaved edits on a polling refresh. A concurrent revision
+  // remains the expected revision below, so the server can reject stale edits.
+  const [expectedRevision, setExpectedRevision] = useState(profile?.revision)
+  const dirty = baseline
+    ? (['kind', 'name', 'variant', 'definition', 'view_requirements'] as const).some(key => draft[key] !== baseline[key])
+    : draft.name !== '' || draft.definition !== '' || draft.variant !== '默认' || draft.kind !== 'character' || draft.view_requirements !== emptyVisualProfile().view_requirements || !!draft.scene_ids.length
   useEffect(() => { onDirtyChange(dirty); return () => onDirtyChange(false) }, [dirty, onDirtyChange])
+  useEffect(() => { onBusyChange(saving); return () => onBusyChange(false) }, [saving, onBusyChange])
+  useEffect(() => {
+    if (!profile || !baseline || profile.revision <= baseline.revision || dirty || saving) return
+    setDraft({ ...profile, scene_ids: [] }); setBaseline(profile); setExpectedRevision(profile.revision)
+  }, [profile, baseline, dirty, saving])
+  const scenes = (detail.scene_visual_bindings || []).filter(binding => binding.profile_id === profile?.id)
+  const shots = (detail.shot_visual_bindings || []).filter(binding => binding.profile_id === profile?.id)
   async function save() {
+    if (saving || generating) return
     setSaving(true); setError('')
     try {
-      await api(`/visual-profiles/${profile.id}`, json('PATCH', { name: draft.name, variant: draft.variant,
-        definition: draft.definition, view_requirements: draft.view_requirements, expected_revision: profile.revision }))
+      let saved: VisualProfile
+      if (profile) {
+        saved = await api<VisualProfile>(`/visual-profiles/${profile.id}`, json('PATCH', { kind: draft.kind, name: draft.name, variant: draft.variant,
+          definition: draft.definition, view_requirements: draft.view_requirements, expected_revision: expectedRevision, definition_status: 'ready' }))
+      } else {
+        if (detail.visual_profiles?.some(item => item.kind === draft.kind && item.name === draft.name.trim() && item.variant === draft.variant.trim())) throw new Error('同名同版本的设定已存在，请从左侧列表选择后编辑。')
+        const result = await api<VisualProjectData>(`/projects/${detail.id}/visual-profiles`, json('POST', { profiles: [draft] }))
+        const created = result.visual_profiles.find(item => item.kind === draft.kind && item.name === draft.name.trim() && item.variant === draft.variant.trim())
+        if (!created) throw new Error('保存结果中没有找到新增设定，请刷新列表后查看。')
+        saved = created
+      }
+      setDraft({ ...saved, scene_ids: [] }); setBaseline(saved); setExpectedRevision(saved.revision)
+      onSaved(saved)
       await onRefresh()
     } catch (issue) { setError(issue instanceof Error ? issue.message : String(issue)) }
     finally { setSaving(false) }
   }
-  const scenes = (detail.scene_visual_bindings || []).filter(binding => binding.profile_id === profile.id)
-  return <aside className="pc-profile-inspector" aria-label="设定档案编辑" data-canvas-overlay>
-    <header><strong>{profile.name} · v{profile.revision}</strong><Tooltip label="关闭设定编辑"><ActionIcon variant="subtle" aria-label="关闭设定编辑" onClick={onClose}><X size={16} /></ActionIcon></Tooltip></header>
-    <div className="pc-profile-inspector-fields">
-      <fieldset disabled={saving || generating}>
-        <TextInput label="名称" aria-label="设定名称" maxLength={100} value={draft.name} onChange={event => setDraft({ ...draft, name: event.currentTarget.value })} />
-        <TextInput label="服装 / 状态版本" aria-label="服装或状态版本" maxLength={100} value={draft.variant} onChange={event => setDraft({ ...draft, variant: event.currentTarget.value })} />
-        <Textarea label="固定视觉设定" aria-label="固定视觉设定" autosize minRows={6} maxRows={12} maxLength={12000} value={draft.definition} onChange={event => setDraft({ ...draft, definition: event.currentTarget.value })} />
-        <Textarea label="信息图视图与细节" aria-label="信息图视图与细节" autosize minRows={4} maxRows={8} maxLength={3000} value={draft.view_requirements} onChange={event => setDraft({ ...draft, view_requirements: event.currentTarget.value })} />
-      </fieldset>
-      {error && <p role="alert">{error}</p>}
-      <div className="pc-profile-usage"><strong>使用场次 · {scenes.length}</strong>{scenes.map(binding => <span key={binding.scene_id}>{detail.script.scenes.find(scene => scene.id === binding.scene_id)?.heading}</span>)}<Button variant="default" size="xs" onClick={onBindings}>管理场次 / 镜头引用</Button></div>
-    </div>
-    <footer><Button variant="default" leftSection={<Save size={14} />} disabled={!dirty || saving || generating || !draft.name.trim() || !draft.variant.trim() || !draft.definition.trim() || !draft.view_requirements.trim()} onClick={() => void save()}>保存设定</Button></footer>
-  </aside>
+  async function remove() {
+    if (!profile || saving || generating || shots.length) return
+    if (!await dialog.confirm({ title: '删除视觉设定', message: `删除「${profile.name}」及其场次引用和画布设定节点？已生成的图片仍保留在素材库。`, danger: true })) return
+    setSaving(true); setError('')
+    try {
+      await api(`/visual-profiles/${profile.id}`, json('DELETE', {}))
+      onDeleted(profile); await onRefresh()
+    } catch (issue) { setError(issue instanceof Error ? issue.message : String(issue)) }
+    finally { setSaving(false) }
+  }
+  return <>
+    <aside className="pc-visual-panel pc-profile-inspector" aria-label={profile ? '设定档案编辑' : '新增视觉设定'} data-canvas-overlay>
+      <header><div><small>{profile ? '编辑视觉设定' : '新增视觉设定'}</small><strong>{profile ? `${profile.name} · v${profile.revision}` : '创建可复用的设定'}</strong></div><Tooltip label="关闭设定编辑"><ActionIcon variant="subtle" aria-label="关闭设定编辑" disabled={saving} onClick={onClose}><X size={16} /></ActionIcon></Tooltip></header>
+      <div className="pc-profile-inspector-fields">
+        {profile?.definition_status === 'draft' && <p className="pc-visual-note">模型整理的草稿，可修改后确认。</p>}
+        {detail.project_visual_style && detail.project_visual_style.source !== 'unspecified' && <p className="pc-visual-note">项目画风：{detail.project_visual_style.label}</p>}
+        {profile && expectedRevision !== profile.revision && <div className="pc-visual-progress" role="status"><span>设定版本已更新，当前编辑内容保留。</span><Button variant="default" size="xs" disabled={saving} onClick={() => {
+          void (async () => {
+            if (dirty && !await dialog.confirm({ title: '加载最新设定', message: '这会替换当前未保存的修改。', confirmLabel: '加载最新', cancelLabel: '保留修改' })) return
+            setDraft({ ...profile, scene_ids: [] }); setBaseline(profile); setExpectedRevision(profile.revision); setError('')
+          })()
+        }}>加载最新设定</Button></div>}
+        <fieldset disabled={saving || generating}><VisualProfileFields value={draft} onChange={patch => setDraft(current => ({ ...current, ...patch }))} scenes={profile ? undefined : detail.script.scenes} /></fieldset>
+        {error && <p className="pc-visual-error" role="alert">{error}</p>}
+        {profile && <div className="pc-profile-usage"><strong>使用范围 · {scenes.length} 场 / {shots.length} 镜头</strong>
+          {scenes.slice(0, 3).map(binding => <span key={binding.scene_id}>{detail.script.scenes.find(scene => scene.id === binding.scene_id)?.heading}</span>)}
+          <Button variant="default" size="xs" onClick={onBindings} disabled={saving}>管理使用范围</Button>
+          {shots.length > 0 && <p className="pc-visual-note">删除设定前，请先在使用范围中移除镜头引用。</p>}
+        </div>}
+      </div>
+      <footer>{profile && <Tooltip label={shots.length ? '先移除镜头引用后可删除' : '删除设定'}><ActionIcon variant="subtle" aria-label="删除设定" disabled={saving || generating || !!shots.length} onClick={() => void remove()}><Trash2 size={15} /></ActionIcon></Tooltip>}
+        {profile && <Button variant="default" leftSection={<ArrowUpRight size={14} />} disabled={dirty || saving} onClick={() => onOpenCanvas(profile)}>{inCanvas ? '定位节点' : '加入画布'}</Button>}
+        <Button variant="default" leftSection={<Save size={14} />} disabled={(!dirty && profile?.definition_status !== 'draft') || saving || generating || !validVisualProfile(draft)} onClick={() => void save()}>{!profile ? '创建设定' : profile.definition_status === 'draft' ? '确认设定' : '保存设定'}</Button></footer>
+    </aside>
+    {dialog.dialog}
+  </>
 }

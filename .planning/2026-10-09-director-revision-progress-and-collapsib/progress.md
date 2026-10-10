@@ -1,0 +1,15 @@
+# Progress
+- Read relevant component/layout. Delegated RevisionProgress component and stylesheet to agent; root owns composer/ScriptDirectorPanel.
+- Applied previously read redesign, browser and planning workflows.
+- Search of optional .agents/.codex directories found none in repo; subsequent searches limited to existing paths.
+- Implemented composer wrapper with neutral collapse icon beside skill selector and compact reveal row. Hidden subtree keeps drafts/references; stop generation remains visible. Textarea autoresize now reruns on reveal and size observer tracks the whole wrapper.
+- Kept question panel flex/height constraints under the new wrapper and hid composer during draft review as before.
+- Agent completed compact RevisionProgress with visible exception state and independently scrollable expanded details; existing test fixture updated for required skill-defaults initialization.
+- Existing script-tools + director-activity checks: 32/32 passed. Initial production build passed; final build after stylesheet/layout polish pending.
+- Browser QA TaskSpace 145: default revision row measured 24px; expanded details constrained to286px and scrollable; updates preserve disclosure state. Composer collapsed338px→45px, adding293px to message viewport. Draft56 characters and1 reference preserved.
+- Stop control worked while collapsed; aborted request restored10-character draft and reference and showed historical“已停止生成”. Revision live status is cleaned up on completion by existing flow.
+- Browser check scripts initially accessed a status already cleared on stop (null) and one round overlapped Vite HMR; recovered by reload and optional DOM access. Latest narrow QA encountered an Immersive Translate extension popup intercepting pointer events; inspect/dismiss before continuing.
+- Browser overlay inspected and excluded from temporary fixture pointer handling. Simulated choice initially lacked required stage/episode information, so application correctly marked it historical; fixture now supplies explicit valid stage context.
+- New valid choice automatically expanded composer at390x667; option list scrollHeight427px/clientHeight166px; message viewport retained205px. Manual question collapse/reveal passed; short390x420 preserved scrollable question/operation area.
+- Final production code includes remount-sensitive textarea autoresize dependencies and keeps composer out of draft review/utility panels. Existing32 checks rerun and all passed after main implementation.
+- Finished TaskSpace145 exactly once, removed both QA fixture files and stopped own Vite process. Final frontend production build and git diff --check passed.

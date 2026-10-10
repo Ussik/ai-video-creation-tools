@@ -100,6 +100,7 @@ export interface ScriptGenerationOptions {
   era?: string
   core_hook?: string
   visual_style?: string
+  visual_style_details?: import('../../backend/src/visual-style').VisualStyleDetails
   story_structure?: string
   character_notes?: string
   /** Target number of episodes for a generated series. */
@@ -248,6 +249,7 @@ export interface Model {
   enabled: boolean
 }
 export interface ProjectDetail extends Project {
+  project_visual_style?: import('../../backend/src/visual-style').ProjectVisualStyle
   production_range: ProductionRange
   script: Script
   shots: Shot[]
@@ -275,9 +277,12 @@ export interface VisualProfile extends Omit<VisualProfileDraft, 'scene_ids'> {
   id: string
   project_id: string
   revision: number
+  definition_status?: 'draft' | 'ready'
   board_asset_id: string | null
   asset_task_id: string | null
   board_prompt: string
+  board_style_version?: string | null
+  board_style_status?: 'missing' | 'unrecorded' | 'current' | 'needs_review'
   candidate_asset_ids?: string[]
   archived_candidate_asset_ids?: string[]
 }
@@ -288,11 +293,30 @@ export interface ShotVisualBinding extends Omit<VisualProfile, 'id' | 'project_i
   required: boolean
 }
 export interface VisualProjectData {
+  project_visual_style?: import('../../backend/src/visual-style').ProjectVisualStyle
   visual_profiles: VisualProfile[]
   scene_visual_bindings: SceneVisualBinding[]
   shot_visual_bindings: ShotVisualBinding[]
 }
+export interface ScriptCanvasCheck { signature: string; scene_ids: string[]; needs_analysis: string[] }
+export interface ScriptCanvasPlan {
+  signature: string; scene_ids: string[]; profiles: VisualProfileDraft[]
+  used_skills?: Array<{ id: string; name: string; revision: string; files: string[]; role?: 'primary' | 'auxiliary' }>
+  loaded_files?: string[]
+}
+export interface ScriptCanvasResult {
+  scene_ids: string[]
+  shots: Shot[]
+  visual_profiles: VisualProfile[]
+  shot_visual_bindings: ShotVisualBinding[]
+  created_profiles: number
+  created_shots: number
+  updated_shot_ids?: string[]
+}
 export interface VisualBoardPreview {
+  project_style_version?: string
+  project_visual_style?: import('../../backend/src/visual-style').ProjectVisualStyle
+  style_warnings?: string[]
   prompt: string
   mode: 'text' | 'reference'
   reference_asset_ids: string[]

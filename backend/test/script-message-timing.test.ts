@@ -68,3 +68,22 @@ test('invalid durations and timings on user messages are rejected before replaci
   assert.equal(response.statusCode, 422)
   assert.deepEqual(await call('GET', url), before)
 })
+
+test('execution traces migrate old history, persist detailed repeated invocations and validate before replacement', async () => {
+  assert.equal((db.prepare('SELECT activity FROM script_messages WHERE id=?').get('legacy-message') as any).activity, '[]')
+  const project = await call('POST', '/api/projects', { name: '执行记录持久化' }), url = `/api/projects/${project.id}/script/conversations`
+  const entry = { id: 'call-1', kind: 'tool', name: 'read_documents', label: '阅读项目文档', summary: '已读人物资料', status: 'succeeded', started_at: 1000, ended_at: 1456, duration_ms: 456, round: 2,
+    input: '{"document_ids":["doc"]}', output: '{"documents":[]}', output_truncated: false }
+  const activity = [entry, { ...entry, id: 'call-2', status: 'failed', summary: '读取失败' }, { ...entry, id: 'call-3', status: 'cancelled', summary: '已停止等待' }]
+  const payload = { id: 'traced-conversation', messages: [{ id: 'trace-reply', role: 'assistant', text: '已完成阅读', activity }] }
+  const saved = await call('PUT', url, payload)
+  assert.deepEqual(saved.messages[0].activity, activity)
+  assert.deepEqual((await call('GET', url)).conversations[0].messages[0].activity, activity)
+  for (const bad of [ [{ ...entry, status: 'invented' }], [entry, entry], [{ ...entry, output: 'x'.repeat(4001) }], [{ ...entry, reasoning_content: 'private' }] ]) {
+    const response = await app.inject({ method: 'PUT', url, payload: { ...payload, messages: [{ ...payload.messages[0], activity: bad }] } })
+    assert.equal(response.statusCode, 422)
+  }
+  const user = await app.inject({ method: 'PUT', url, payload: { ...payload, messages: [{ ...payload.messages[0], role: 'user' }] } })
+  assert.equal(user.statusCode, 422)
+  assert.deepEqual((await call('GET', url)).conversations[0].messages[0].activity, activity)
+})

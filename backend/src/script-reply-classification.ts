@@ -55,7 +55,7 @@ export const replyClassification = z.discriminatedUnion('type', [
       .refine(options => new Set(options.map(option => option.id)).size === options.length, '选项 ID 不可重复'),
   }).strict(),
 ])
-const classificationResult = z.object({
+export const classificationResult = z.object({
   messages: z.array(z.object({ id: z.string().min(1), classification: replyClassification }).strict()).min(1).max(10),
 }).strict()
 

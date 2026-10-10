@@ -1,0 +1,30 @@
+.pc-video-references { min-width: 0; padding: 8px 0; border-top: 1px solid #ffffff0d; color: #bbb; }
+.pc-video-references-heading { display: flex; align-items: center; gap: 6px; width: 100%; padding: 0; border: 0; background: transparent; color: #c5c5c5; font: inherit; font-size: 11px; cursor: pointer; text-align: left; }
+.pc-video-references-count { color: #888; margin-left: auto; }
+.pc-video-references-content { min-width: 0; }
+.pc-video-references-list { display: flex; gap: 8px; margin: 8px 0 0; padding: 0 0 3px; list-style: none; overflow-x: auto; scrollbar-width: thin; scrollbar-color: #515151 transparent; }
+.pc-video-reference { position: relative; flex: 0 0 104px; min-width: 0; }
+.pc-video-reference-preview { position: relative; display: block; width: 100%; height: 72px; padding: 0; border: 1px solid #404040; border-radius: 7px; background: #252525; color: #aaa; overflow: hidden; cursor: pointer; }
+.pc-video-reference-preview img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.pc-video-reference-preview:hover { border-color: #737373; }
+.pc-video-reference-preview:disabled { cursor: default; }
+.pc-video-reference-number { position: absolute; left: 4px; bottom: 4px; padding: 2px 4px; border-radius: 3px; color: #eee; background: #1c1c1cdb; font-size: 9px; line-height: 1.2; }
+.pc-video-reference-unavailable { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; color: #999; font-size: 10px; }
+.pc-video-reference-meta { display: grid; gap: 2px; padding-top: 4px; }
+.pc-video-reference-purpose { display: inline-flex; align-items: center; gap: 4px; font-size: 9px; color: #929292; }
+.pc-video-reference-meta strong { display: block; padding-right: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; font-weight: 400; color: #c9c9c9; }
+.pc-video-reference-actions { position: absolute; top: 4px; right: 4px; display: flex; gap: 3px; }
+.pc-video-reference-actions button { display: grid; place-items: center; width: 21px; height: 21px; padding: 0; border: 1px solid #5558; border-radius: 4px; color: #ddd; background: #262626ed; cursor: pointer; }
+.pc-video-reference-actions button:hover { border-color: #999; background: #3b3b3b; }
+.pc-video-reference-actions button:disabled { color: #747474; cursor: default; border-color: #444; }
+.pc-video-references-excluded { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 7px; color: #888; font-size: 10px; }
+.pc-video-references-excluded > span { margin-right: 2px; }
+.pc-video-references-excluded button { display: inline-flex; align-items: center; gap: 4px; max-width: 160px; padding: 3px 5px; border: 1px solid #414141; border-radius: 5px; background: #292929; color: #b4b4b4; font: inherit; cursor: pointer; }
+.pc-video-references-excluded button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-video-references-excluded button:hover { border-color: #666; background: #353535; }
+.pc-video-references-excluded button:disabled { color: #747474; cursor: default; }
+.pc-video-references button:focus-visible { outline: 2px solid #a4a4a4; outline-offset: 2px; }
+
+.pc-reference-preview, .pc-reference-preview-header { background: #252525; color: #eee; }
+.pc-reference-preview { border: 1px solid #444; }
+.pc-reference-preview-image { display: block; width: 100%; max-height: 76vh; object-fit: contain; border-radius: 10px; }

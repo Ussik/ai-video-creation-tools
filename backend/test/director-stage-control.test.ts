@@ -209,7 +209,7 @@ test('controlled recognition repairs old missing tags and fails visibly instead 
   const body = { model_id: model.id, messages: [source] }
   await call('POST', url, body)
   const unvalidated = await app.inject({ method: 'POST', url, payload: { ...body, stage_controlled: true } })
-  assert.equal(unvalidated.statusCode, 502)
+  assert.equal(unvalidated.statusCode, 422)
   assert.match(unvalidated.body, /交互入口保持隐藏/)
   classification = { ...classification, interaction: { stage: 'outline', purpose: 'setting' } }
   const corrected = await call<{ messages: Array<{ classification: typeof classification }> }>('POST', url, { ...body, stage_controlled: true })

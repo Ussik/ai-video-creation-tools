@@ -301,3 +301,4 @@
   .ms-catalog-row-actions .mantine-ActionIcon-root { width: 27px; }
   .ms-catalog-footer > span { max-width: 230px; line-height: 1.4; }
 }
+.ms-text-capabilities { display: grid; gap: 14px; padding: 16px 0; }

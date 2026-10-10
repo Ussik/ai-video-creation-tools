@@ -1,0 +1,13 @@
+# Progress
+
+- Started authorized implementation after user accepted the dialogue-driven workflow design.
+- Repository contains earlier uncommitted features; preserving them. No AGENTS.md found in the tracked workspace search.
+- Added a persistent project-scoped next-step proposal, shared creation-state types and stage/version validation. Added propose_next_step with real creator-message references and separated proposing from drafting/saving.
+- One multi-file patch failed to match an old prompt sentence; reapplied the server changes with current context. Backend build check is running.
+- Stage buttons now set use_tools=true; contextual next-step UI replaces fixed and parsed historical action buttons. Creation state refreshes after save/discard and project-data changes, with stale response guards.
+- Added creation-authorization verification for natural-language generation (explicit stage buttons already carry authorization), preserving user-requested stage jumps without allowing direction discussion to draft automatically.
+- Backend targeted checks passed 34/34 after correcting a regression fixture route to convert-to-shots. Frontend old checks passed; new workflow test incorrectly expected the preview to remain open after save, corrected to match automatic close.
+- Added regressions for accepted scoped revision proposals, authorized natural-language stage jumps, preserved Skill rules on stage generation, and delayed tools-state responses that must not overwrite newer native results. Recovery fetches now recheck the refresh epoch before restoring a draft.
+- Full backend suite passed 186/186; frontend suite passed 199/199. Both production builds passed; frontend retains its pre-existing Vite bundle-size warning. Logs: /tmp/workflow-backend-full.log, /tmp/workflow-web-full.log, /tmp/workflow-backend-build.log, /tmp/workflow-web-build.log.
+- Browser QA used one ego-browser TaskSpace (126) and an isolated temporary mock harness. Verified direction discussion, pending question suppression, skip-to-readiness, one outline action, draft preview/explicit save, one character action after saving, and first-episode storyboard handoff while episode two is next. No real model request or user-project mutation. Inspected the ready-state screenshot; no viewport overflow. Screenshots saved in /tmp/workflow-qa-{ready,saved,episode}.png. TaskSpace finished once and temporary harness removed.
+- README updated with the 11 functions, dialogue readiness, contextual actions, native stage generation, saved-stage advancement and per-episode handoff. No commit or push requested/performed.

@@ -327,8 +327,9 @@ test('pending drafts block new writing before the writing call and malformed rou
   assert.equal(calls, 1)
   raw = '随便生成第一集吧'
   const invalid = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload: body })
-  assert.equal(invalid.statusCode, 502)
-  assert.equal(calls, 2)
+  assert.equal(invalid.statusCode, 422)
+  assert.match(invalid.json().detail, /已修正一次/)
+  assert.equal(calls, 3)
 })
 
 test('adopting existing text preserves it verbatim and saves an editable episode with scenes only on confirmation', async t => {

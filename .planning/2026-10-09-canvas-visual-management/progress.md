@@ -1,0 +1,18 @@
+# Progress
+- Read planning, redesign and browser skills. Audited current modal responsibilities and all callers; initialized and pinned plan. Existing unrelated dirty work preserved.
+- Implemented reusable profile fields, canvas-native creation/edit/delete inspector, focused bindings panel with usage navigation and snapshot updates, secondary draft organizer with timing/source guards. Rewired canvas and legacy shot-editor callers; removed obsolete large modal/styles/tests. Pending verification.
+- CSS creation command used a root-relative path in web cwd and failed; fixed with absolute apply_patch. First build TypeScript passed, Vite missed that CSS; re-running after adding it.
+- Frontend production build passed after CSS path correction. Test creation also used root-relative path in web cwd; standardized subsequent writes to root cwd/absolute paths. Suppressed composer while native panels are open and guarded storyboard switching and add-node actions against unsaved draft loss.
+- First new regression invocation from repository root missed web tsconfig and used classic JSX, failing with React is not defined. Added explicit TSX_TSCONFIG_PATH=web/tsconfig.json to runner; production build already succeeds with react-jsx.
+- New component regression tests passed 7/7 after adding JSDOM document.fonts (Mantine field components require it). Tests cover creation without image/node writes, preserved edits/revision conflict, same-revision board refresh, usage removal/apply, failed binding persistence, timed batch review and source-stale rejection.
+- Started isolated Vite fixture on 5178 with mocked ProjectCanvas APIs. Ego browser QA in progress.
+- Ego space 132 confirmed list selection opens one canvas panel, no dialog and no new node (1 existing node unchanged). Inspected graphite editor screenshot.
+- Subsequent field interaction found zero elements because Vite HMR reset ProjectCanvas state after source refinements; read current snapshot before reopening, no blind retries.
+- Final inspector refresh/duplicate draft safeguards tested: focused 9/9 pass. Browser confirmed unsaved-editor switch shows discard/continue confirmation and leaves the edited text intact.
+- Snapshot refresh succeeded (update button disappeared). Reference @77 became stale after save; take a new snapshot and use semantic locators after mutations.
+- Browser updated shot snapshot to current v3 and verified refresh_profile_ids in PUT; scene apply uses POST. Tools menu verified after waiting for transition visibility.
+- Browser batch analysis returned one editable prop draft with processing time; saving persisted the edited definition and source scene, with 3 definitions but still only 1 canvas node. Explicit list plus created the second node. Delete confirmation showed correct asset-preservation scope.
+- Browser validated delete with a live profile node: node removed, profile removed, Undo keeps 1 unrelated shot node and does not restore deleted profile. Manual creation added one definition but no node. Narrow viewport check in progress.
+- Ego QA finished and closed space 132. Narrow-screen 390px check: document scrollWidth=390; editor panel spans x=12..378, automatically hides left list, all footer controls fit. Inspected desktop editor/bindings and narrow editor screenshots. Removed temporary fixture files.
+- Final production build passed. Final related regression suite passed 47/47. git diff --check clean. No paid model calls, real project writes, new dependencies, Git commit or push. Existing unrelated dirty changes retained.
+- Delivered migration: large VisualPreparation modal and obsolete styles/tests removed; secondary tools and canvas editing/binding panels preserve management workflows, candidate generation stays in canvas.

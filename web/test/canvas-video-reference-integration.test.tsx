@@ -1,0 +1,328 @@
+import assert from 'node:assert/strict'
+import { register } from 'node:module'
+import { after, test, type TestContext } from 'node:test'
+import { JSDOM } from 'jsdom'
+import React, { act } from 'react'
+import { MantineProvider } from '@mantine/core'
+import type { Model, ProjectDetail, ShotVisualBinding, VisualProfile } from '../src/api'
+import type { CanvasGraph, CanvasNode, ProjectCanvasProps } from '../src/ProjectCanvas'
+
+// Render the actual canvas and composer; only CSS and HTTP transport are mocked.
+register(`data:text/javascript,${encodeURIComponent(`
+  export async function load(url, context, nextLoad) {
+    if (url.endsWith('.css')) return { format: 'module', source: '', shortCircuit: true };
+    return nextLoad(url, context);
+  }
+`)}`, import.meta.url)
+
+const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
+for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLElement', 'HTMLAnchorElement', 'Element', 'ShadowRoot', 'Event', 'MouseEvent', 'MutationObserver']) {
+  Object.defineProperty(globalThis, key, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[key] })
+}
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, getComputedStyle: dom.window.getComputedStyle.bind(dom.window) })
+Object.defineProperty(dom.window, 'matchMedia', { value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) })
+Object.defineProperty(dom.window.document, 'fonts', { value: { addEventListener() {}, removeEventListener() {} } })
+dom.window.HTMLElement.prototype.scrollIntoView = () => {}
+dom.window.HTMLElement.prototype.scrollTo = () => {}
+let frameId = 0
+const frames = new Map<number, FrameRequestCallback>()
+const requestFrame = (callback: FrameRequestCallback) => { frames.set(++frameId, callback); return frameId }
+const cancelFrame = (id: number) => frames.delete(id)
+Object.assign(globalThis, { requestAnimationFrame: requestFrame, cancelAnimationFrame: cancelFrame })
+Object.assign(dom.window, { requestAnimationFrame: requestFrame, cancelAnimationFrame: cancelFrame })
+function dimensions(element: Element) {
+  const node = element instanceof dom.window.HTMLElement ? element : null
+  const sizedNode = node?.closest<HTMLElement>('.react-flow__node')
+  return { width: Number.parseFloat(node?.style.width || sizedNode?.style.width || '') || 1200,
+    height: Number.parseFloat(node?.style.height || sizedNode?.style.height || '') || 800 }
+}
+for (const [name, axis] of [['offsetWidth', 'width'], ['clientWidth', 'width'], ['offsetHeight', 'height'], ['clientHeight', 'height']] as const) {
+  Object.defineProperty(dom.window.HTMLElement.prototype, name, { configurable: true, get() { return dimensions(this)[axis] } })
+}
+dom.window.Element.prototype.getBoundingClientRect = function () {
+  const size = dimensions(this)
+  const position = /translate\(([-\d.]+)px,\s*([-\d.]+)px\)/.exec(this.getAttribute('style') || '')
+  const x = Number(position?.[1] || 0), y = Number(position?.[2] || 0)
+  return { ...size, x, y, left: x, top: y, right: x + size.width, bottom: y + size.height, toJSON() { return this } }
+}
+class TestResizeObserver {
+  private targets = new Set<Element>()
+  constructor(private callback: ResizeObserverCallback) {}
+  observe(target: Element) {
+    this.targets.add(target)
+    queueMicrotask(() => {
+      if (target.isConnected && this.targets.has(target)) this.callback([{ target, contentRect: target.getBoundingClientRect() } as ResizeObserverEntry], this as unknown as ResizeObserver)
+    })
+  }
+  unobserve(target: Element) { this.targets.delete(target) }
+  disconnect() { this.targets.clear() }
+}
+Object.assign(globalThis, { ResizeObserver: TestResizeObserver })
+Object.assign(dom.window, { ResizeObserver: TestResizeObserver, DOMMatrixReadOnly: class {
+  m22: number
+  constructor(transform: string) { this.m22 = Number(/scale\(([-\d.]+)\)/.exec(transform)?.[1] || 1) }
+} })
+const { createRoot } = await import('react-dom/client')
+const { default: ProjectCanvas } = await import('../src/ProjectCanvas')
+after(() => dom.window.close())
+
+const timestamp = '2026-10-10T00:00:00Z'
+const videoModel: Model = { id: 'video-model', provider_id: 'provider', name: '多参考视频模型', remote_id: 'video-v2',
+  modality: 'video', protocol: 'async_video', enabled: true,
+  settings: { supported_modes: ['text', 'first_frame', 'first_last_frame', 'reference'], max_reference_images: 9,
+    resolutions: ['480p', '720p'], ratios: ['adaptive', '9:16'], request_template: { prompt: '{{prompt}}', images: '{{images}}' } } }
+const hero = { id: 'hero', project_id: 'video-reference-test', kind: 'character', name: '林晚', variant: '校服', revision: 2,
+  definition: '短发，蓝色校服', view_requirements: '正面与侧面', board_asset_id: 'hero-board', board_prompt: '', asset_task_id: null,
+  definition_status: 'ready' } as VisualProfile
+const station = { ...hero, id: 'station', kind: 'location', name: '站台', variant: '夜间', definition: '空旷地下站台', board_asset_id: 'station-board' } as VisualProfile
+const bind = (profile: VisualProfile, required: boolean): ShotVisualBinding => ({ ...profile, profile_id: profile.id, shot_id: 'shot', required })
+const detail = { id: 'video-reference-test', name: '夜班列车', brief: '车站故事', ratio: '9:16', updated_at: timestamp,
+  script: { outline: '林晚等车。', characters: '林晚', scenes: [], artifacts: [], generation_options: {} },
+  shots: [{ id: 'shot', project_id: 'video-reference-test', position: 0, title: '站台回望', prompt: '林晚在站台回头。', video_prompt: '林晚缓缓回头，镜头平移。',
+    duration: 5, selected_asset_id: 'storyboard', source_scene_id: null, start_state: '', end_state: '', cut_note: '' }],
+  assets: ['storyboard', 'hero-board', 'station-board', 'manual'].map(id => ({ id, project_id: 'video-reference-test', kind: 'image', filename: `${id}.png`,
+    shot_id: id === 'storyboard' ? 'shot' : null, url: `/api/assets/${id}/file`, created_at: timestamp })),
+  jobs: [], asset_tasks: [], timeline_clips: [], asset_reviews: [], visual_profiles: [hero, station], scene_visual_bindings: [],
+  shot_visual_bindings: [bind(hero, true), bind(station, false)],
+} as unknown as ProjectDetail
+function node(id: string, type: CanvasNode['type'], x: number, asset_id: string | null = null): CanvasNode {
+  return { id, type, x, y: 100, width: 330, height: 260, title: id, text: '', prompt: '', asset_id, shot_id: null, model_id: null, job_id: null, settings: {} }
+}
+function initialGraph(mode: 'reference' | 'first_frame', extraManual = false): CanvasGraph {
+  return { revision: 'initial', nodes: [
+    { ...node('storyboard-node', 'image', 50, 'storyboard'), shot_id: 'shot' },
+    { ...node('video-node', 'generation', 500), title: '分镜视频', shot_id: 'shot', model_id: videoModel.id, prompt: '林晚缓缓回头，镜头平移。',
+      settings: { modality: 'video', mode, visual_reference_mode: mode === 'reference' ? 'profiles' : 'keyframe', storyboard_reference_asset_id: 'storyboard', resolution: '480p', ratio: '9:16' } },
+    ...(extraManual ? [node('manual-node', 'image', 900, 'manual')] : []),
+  ], edges: [{ id: 'storyboard-edge', source: 'storyboard-node', target: 'video-node', reference_asset_id: 'storyboard' },
+    ...(extraManual ? [{ id: 'manual-edge', source: 'manual-node', target: 'video-node', reference_asset_id: 'manual' }] : [])] }
+}
+type PreviewInput = { mode: string; reference_asset_ids: string[]; prompt: string; visual_reference_mode: string; excluded_visual_profile_ids?: string[]; storyboard_reference_asset_id?: string | null }
+function mockApi(t: TestContext, graph: CanvasGraph) {
+  const previews: PreviewInput[] = [], saved: CanvasGraph[] = []
+  t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
+    const path = String(url), method = init?.method || 'GET'
+    if (path === '/api/projects/video-reference-test/canvas') {
+      if (method === 'GET') return Response.json(graph)
+      assert.equal(method, 'PUT')
+      const value = JSON.parse(String(init?.body)); saved.push(value)
+      return Response.json({ ...value, revision: `saved-${saved.length}` })
+    }
+    assert.equal(path, '/api/projects/video-reference-test/generate/preview', 'test must never create a paid generation job')
+    assert.equal(method, 'POST')
+    const request = JSON.parse(String(init?.body)) as PreviewInput
+    previews.push(request)
+    // The server resolves bound boards; it never needs the UI to turn them into manual connections.
+    const profileIds = request.mode === 'reference' && request.visual_reference_mode === 'profiles'
+      ? ['hero-board', ...(request.excluded_visual_profile_ids?.includes('station') ? [] : ['station-board'])] : []
+    return Response.json({ ...request, reference_asset_ids: [...new Set([...request.reference_asset_ids, ...profileIds])], visual_signature: 'mock-reviewed-bindings' })
+  })
+  return { previews, saved }
+}
+async function settle() {
+  await act(async () => {
+    for (let pass = 0; pass < 8; pass++) {
+      await Promise.resolve()
+      const pending = [...frames.values()]; frames.clear()
+      pending.forEach(callback => callback(pass * 16))
+    }
+  })
+}
+async function mount(projectDetail = detail) {
+  dom.window.localStorage.clear(); dom.window.sessionStorage.clear(); frames.clear()
+  dom.window.localStorage.setItem('project-canvas-viewport:video-reference-test', JSON.stringify({ x: 0, y: 0, zoom: 0.8 }))
+  const container = document.createElement('div'); document.body.append(container)
+  const root = createRoot(container)
+  const props: ProjectCanvasProps = { detail: projectDetail, models: [videoModel], providers: [{ id: 'provider', name: '本地测试', adapter: 'http', enabled: true } as ProjectCanvasProps['providers'][number]],
+    initialLocation: { view: 'canvas', storyboardId: null }, onRefresh: async () => {}, onOpenModels: () => {}, onNavigate: () => {}, onOpenScriptCreator: () => {} }
+  try {
+    await act(() => root.render(<MantineProvider env="test"><ProjectCanvas {...props} /></MantineProvider>)); await settle()
+    const video = container.querySelector<HTMLElement>('[data-id="video-node"]')!
+    assert.ok(video)
+    await act(() => video.click()); await settle()
+  } catch (issue) { await act(() => root.unmount()); container.remove(); throw issue instanceof AggregateError ? issue.errors[0] : issue }
+  const button = (label: string) => {
+    const found = document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)
+    assert.ok(found, label); return found
+  }
+  const selectMode = async (label: string) => {
+    const trigger = container.querySelector<HTMLButtonElement>('.pc-generation-mode-trigger')!
+    await act(() => trigger.click()); await settle()
+    const found = document.querySelector<HTMLElement>(`[role="menuitem"][aria-label="${label}"]`)
+    assert.ok(found, label)
+    await act(() => found.click()); await settle()
+  }
+  const prompt = () => {
+    const found = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="创作提示词"]')
+    assert.ok(found, 'actual canvas composer'); return found
+  }
+  const images = () => [...container.querySelectorAll('.pc-video-reference-number')].map(node => node.textContent)
+  const editPrompt = async (value: string) => {
+    await act(() => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value')!.set!.call(prompt(), value)
+      prompt().dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+    })
+    await settle()
+  }
+  const preview = async () => { await act(() => button('查看生成信息').click()); await settle() }
+  return { container, button, selectMode, prompt, images, editPrompt, preview,
+    destroy: async () => { await act(() => root.unmount()); await settle(); container.remove(); frames.clear() } }
+}
+
+test('actual video composer numbers bound boards and synchronizes optional exclusions with editable prompt and preview request', async t => {
+  const api = mockApi(t, initialGraph('reference'))
+  const view = await mount()
+  try {
+    assert.equal(view.container.querySelector('[aria-label="分镜视频生成策略"]'), null, 'the bottom menu is the sole mode control')
+    assert.ok(view.button('视频生成模式：多图参考'))
+    assert.deepEqual(view.images(), ['图片1', '图片2', '图片3'])
+    assert.match(view.prompt().value, /图片1：分镜构图/)
+    assert.match(view.prompt().value, /图片2：林晚（校服）/)
+    assert.match(view.prompt().value, /图片3：站台（夜间）/)
+    await view.editPrompt(`${view.prompt().value}\n手动动作：林晚停顿一秒再回头，摄像机保持克制。`)
+    await act(() => view.button('排除可选参考：站台 · 夜间').click()); await settle()
+    assert.deepEqual(view.images(), ['图片1', '图片2'])
+    assert.doesNotMatch(view.prompt().value, /图片3：站台/)
+    assert.match(view.prompt().value, /手动动作：林晚停顿一秒再回头/)
+    await view.preview()
+    assert.equal(api.previews.length, 1)
+    assert.deepEqual(api.previews[0].reference_asset_ids, ['storyboard'], 'automatic bindings remain server-resolved inputs')
+    assert.deepEqual(api.previews[0].excluded_visual_profile_ids, ['station'])
+    assert.match(api.previews[0].prompt, /图片2：林晚（校服）/)
+    assert.doesNotMatch(api.previews[0].prompt, /图片3：站台/)
+    assert.deepEqual([...document.querySelectorAll('.pc-generation-info-content .pc-visual-thumbnails img')].map(image => image.getAttribute('src')),
+      ['/api/assets/storyboard/file', '/api/assets/hero-board/file'])
+    await act(() => view.button('恢复可选参考：站台').click()); await settle()
+    assert.deepEqual(view.images(), ['图片1', '图片2', '图片3'])
+    assert.match(view.prompt().value, /图片3：站台（夜间）/)
+    assert.match(view.prompt().value, /手动动作：林晚停顿一秒再回头/)
+    await view.preview()
+    assert.deepEqual(api.previews[1].excluded_visual_profile_ids, [])
+    assert.deepEqual([...document.querySelectorAll('.pc-generation-info-content .pc-visual-thumbnails img')].map(image => image.getAttribute('src')),
+      ['/api/assets/storyboard/file', '/api/assets/hero-board/file', '/api/assets/station-board/file'])
+  } finally { await view.destroy() }
+})
+
+test('explicit first-frame strategy remains selected and switching preserves other references and manually edited action prose', async t => {
+  const api = mockApi(t, initialGraph('first_frame', true))
+  const view = await mount()
+  try {
+    assert.ok(view.button('视频生成模式：首帧承接'), 'existing explicit strategy is authoritative')
+    assert.deepEqual(view.images(), ['图片1'])
+    assert.doesNotMatch(view.prompt().value, /【视频参考图用途】/)
+    await view.editPrompt(`${view.prompt().value}\n用户运镜：镜头缓缓后退，保留人物的沉默。`)
+    await view.preview()
+    assert.equal(api.previews[0].mode, 'first_frame')
+    assert.equal(api.previews[0].visual_reference_mode, 'keyframe')
+    assert.deepEqual(api.previews[0].reference_asset_ids, ['storyboard'])
+    assert.match(api.previews[0].prompt, /用户运镜：镜头缓缓后退/)
+    await view.selectMode('多图参考')
+    assert.deepEqual(view.images(), ['图片1', '图片2', '图片3', '图片4'])
+    assert.match(view.prompt().value, /图片1：分镜构图/)
+    assert.match(view.prompt().value, /图片2：手动参考/)
+    assert.match(view.prompt().value, /图片3：林晚（校服）/)
+    assert.match(view.prompt().value, /用户运镜：镜头缓缓后退/)
+    await view.preview()
+    assert.equal(api.previews[1].mode, 'reference')
+    assert.deepEqual(api.previews[1].reference_asset_ids, ['storyboard', 'manual'])
+    assert.equal(document.querySelectorAll('.pc-generation-info-content .pc-visual-thumbnails img').length, 4)
+    await view.selectMode('首尾帧')
+    assert.ok(view.button('视频生成模式：首尾帧'))
+    assert.deepEqual(view.images(), ['图片1', '图片2'])
+    assert.doesNotMatch(view.prompt().value, /【视频参考图用途】/)
+    await view.preview()
+    assert.equal(api.previews[2].mode, 'first_last_frame')
+    assert.equal(api.previews[2].visual_reference_mode, 'keyframe')
+    assert.deepEqual(api.previews[2].reference_asset_ids, ['storyboard', 'manual'])
+    assert.match(api.previews[2].prompt, /用户运镜：镜头缓缓后退/)
+    await view.selectMode('首帧承接')
+    assert.deepEqual(view.images(), ['图片1'])
+    assert.doesNotMatch(view.prompt().value, /【视频参考图用途】/)
+    assert.match(view.prompt().value, /用户运镜：镜头缓缓后退/)
+    await view.selectMode('多图参考')
+    assert.deepEqual(view.images(), ['图片1', '图片2', '图片3', '图片4'], 'strict first-frame does not destroy extra reference connections')
+  } finally { await view.destroy() }
+})
+
+test('video quick actions and composer menu select the same reference strategy and request', async t => {
+  const graph = initialGraph('reference', true)
+  delete graph.nodes.find(node => node.id === 'video-node')!.settings.storyboard_reference_asset_id
+  // The opening storyboard must win over an unrelated reference connected first.
+  graph.edges.reverse()
+  const api = mockApi(t, graph), view = await mount()
+  try {
+    await view.editPrompt(`${view.prompt().value}\n用户运镜：镜头缓缓后退。`)
+    for (const [label, mode, imageCount] of [['首帧承接', 'first_frame', 1], ['首尾帧', 'first_last_frame', 2]] as const) {
+      if (mode === 'first_last_frame') await view.selectMode('多图参考')
+      await act(() => view.container.querySelector<HTMLElement>('[data-id="storyboard-node"]')!.click()); await settle()
+      const video = view.container.querySelector<HTMLElement>('[data-id="video-node"]')!
+      const quick = [...video.querySelectorAll<HTMLButtonElement>('.pc-node-try-action')].find(button => button.textContent === label)
+      assert.ok(quick, label)
+      assert.equal(quick.disabled, false)
+      await act(() => quick.click()); await settle()
+      assert.ok(view.button(`视频生成模式：${label}`))
+      assert.equal(view.images().length, imageCount)
+      assert.match(view.prompt().value, /用户运镜：镜头缓缓后退/)
+      await view.preview()
+      const quickRequest = api.previews.at(-1)!
+      assert.equal(quickRequest.mode, mode)
+      assert.equal(quickRequest.visual_reference_mode, 'keyframe')
+      assert.deepEqual(quickRequest.reference_asset_ids, imageCount === 1 ? ['storyboard'] : ['manual', 'storyboard'])
+      await view.selectMode('多图参考')
+      await view.selectMode(label)
+      await view.preview()
+      assert.deepEqual(api.previews.at(-1), quickRequest, 'both entry points produce identical generation previews')
+    }
+  } finally { await view.destroy() }
+})
+
+test('running video nodes lock quick mode actions just like the composer menu', async t => {
+  const graph = initialGraph('reference')
+  graph.nodes.find(node => node.id === 'video-node')!.job_id = 'running-video'
+  const projectDetail = { ...detail, jobs: [{ id: 'running-video', status: 'running' } as ProjectDetail['jobs'][number]] }
+  const api = mockApi(t, graph), view = await mount(projectDetail)
+  try {
+    assert.equal(view.button('视频生成模式：多图参考').disabled, true)
+    await act(() => view.container.querySelector<HTMLElement>('[data-id="storyboard-node"]')!.click()); await settle()
+    const video = view.container.querySelector<HTMLElement>('[data-id="video-node"]')!
+    const quick = [...video.querySelectorAll<HTMLButtonElement>('.pc-node-try-action')]
+    assert.deepEqual(quick.map(button => button.textContent), ['首帧承接', '首尾帧'])
+    assert.ok(quick.every(button => button.disabled))
+    await act(() => quick[0].click()); await settle()
+    await act(() => video.click()); await settle()
+    assert.ok(view.button('视频生成模式：多图参考'))
+    assert.equal(api.previews.length, 0)
+  } finally { await view.destroy() }
+})
+
+test('switching the actual composer to strict first-frame ignores dormant unconfirmed and old-style profile inputs without deleting them', async t => {
+  const graph = initialGraph('reference')
+  graph.nodes.push(
+    { ...node('hero-node', 'generation', 900, 'hero-board'), title: '林晚设定', settings: { modality: 'image', visual_profile_id: hero.id } },
+    { ...node('station-node', 'generation', 1300, 'station-board'), title: '站台设定', settings: { modality: 'image', visual_profile_id: station.id } },
+  )
+  graph.edges.push({ id: 'hero-edge', source: 'hero-node', target: 'video-node' }, { id: 'station-edge', source: 'station-node', target: 'video-node' })
+  const unconfirmedHero = { ...hero, board_asset_id: null }
+  const oldStation = { ...station, board_style_status: 'needs_review' as const, board_style_version: 'old-style' }
+  const projectDetail: ProjectDetail = { ...detail, visual_profiles: [unconfirmedHero, oldStation],
+    shot_visual_bindings: [bind(unconfirmedHero, true), bind(oldStation, false)],
+    project_visual_style: { version: 'new-style', label: '日漫', source: 'settings', details: {} } as ProjectDetail['project_visual_style'],
+  }
+  const api = mockApi(t, graph), view = await mount(projectDetail)
+  try {
+    assert.match(view.container.querySelector('[aria-label="待补齐参考图"]')?.textContent || '', /待补齐参考图 · 2/)
+    await view.editPrompt(`${view.prompt().value}\n手工要求：林晚先停顿，再缓慢回头。`)
+    await view.selectMode('首帧承接')
+    assert.equal(view.container.querySelector('[aria-label="待补齐参考图"]'), null)
+    assert.deepEqual(view.images(), ['图片1'])
+    await view.preview()
+    assert.equal(api.previews.length, 1, 'unused profile connections must not block preview')
+    assert.equal(api.previews[0].mode, 'first_frame')
+    assert.equal(api.previews[0].visual_reference_mode, 'keyframe')
+    assert.deepEqual(api.previews[0].reference_asset_ids, ['storyboard'])
+    assert.match(api.previews[0].prompt, /手工要求：林晚先停顿，再缓慢回头/)
+    await view.selectMode('多图参考')
+    assert.match(view.container.querySelector('[aria-label="待补齐参考图"]')?.textContent || '', /待补齐参考图 · 2/,
+      'restoring multi-reference restores required preparation for the retained profile inputs')
+  } finally { await view.destroy() }
+})

@@ -528,6 +528,9 @@
 .pc-empty-actions .mantine-Button-root { min-height: 44px; padding: 0 17px; }
 .pc-empty-actions .mantine-Button-root:focus-visible { outline: 2px solid var(--pc-teal); outline-offset: 2px; }
 .pc-import-prompt { position: absolute; z-index: 5; top: 76px; left: 18px; display: flex; align-items: center; gap: 10px; padding: 6px 7px 6px 11px; background: #2b302c; border: 1px solid #546054; border-radius: 5px; color: #d5e1d5; font-size: 11px; box-shadow: 0 8px 20px #090c0a66; }
+.pc-import-prompt.pc-script-canvas-error { position: fixed; z-index: 25; top: auto; bottom: calc(142px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); width: max-content; max-width: min(540px, calc(100vw - 32px)); background: var(--fc-surface); border-color: var(--fc-border); border-radius: 10px; color: var(--fc-text); font-size: 12px; }
+.pc-script-canvas-error span { min-width: 0; overflow-wrap: anywhere; }
+.pc-script-canvas-error .mantine-Button-root { flex: none; }
 .pc-notice { position: fixed; z-index: 40; bottom: 86px; left: 50%; transform: translateX(-50%); max-width: min(540px, calc(100vw - 32px)); padding: 10px 10px 10px 14px; border: 1px solid #678d85; border-radius: 5px; background: #243732; box-shadow: 0 12px 30px #0008; display: flex; gap: 12px; align-items: center; color: #edf7f2; font-size: 11px; line-height: 1.45; }
 .pc-notice button { flex: none; display: grid; place-items: center; border: 0; padding: 2px; color: #c2d3cc; background: transparent; }
 .pc-confirm { display: grid; gap: 17px; }
@@ -730,8 +733,7 @@
   color: #bdbdbd;
   backdrop-filter: blur(14px);
 }
-.pc-node-list-toggle.mantine-ActionIcon-root:hover,
-.pc-node-list-toggle.mantine-ActionIcon-root.is-active { background: #343434; color: #fff; }
+.pc-node-list-toggle.mantine-ActionIcon-root:hover { background: #343434; color: #fff; }
 .pc-flow-utility .mantine-ActionIcon-root {
   width: 32px;
   height: 32px;
@@ -1421,6 +1423,22 @@
 }
 .pc-prompt-composer-head,
 .pc-prompt-composer-foot { display: flex; align-items: center; gap: 10px; min-width: 0; }
+/* A normal editor fits the free rectangle beside its selected node. Keep its
+   actions visible while long prompts and reference details scroll inside. */
+.pc-composer-anchor { visibility: hidden; }
+.project-canvas .pc-composer-anchor > .pc-prompt-composer {
+  display: flex; flex-direction: column;
+  width: min(720px, calc(100vw - 48px), var(--pc-composer-max-width, 720px));
+  min-width: min(440px, calc(100vw - 48px), var(--pc-composer-max-width, 440px));
+  max-height: var(--pc-composer-max-height, calc(100dvh - 162px));
+}
+.pc-composer-anchor .pc-prompt-composer-head,
+.pc-composer-anchor .pc-prompt-composer-foot { flex: none; }
+.pc-composer-anchor .pc-prompt-composer-chips { flex-wrap: wrap; min-width: 0; }
+.pc-composer-anchor .pc-prompt-composer-body { min-height: 0; overflow-y: auto; scrollbar-width: thin; }
+.pc-composer-anchor .pc-prompt-composer-foot { flex-wrap: wrap; }
+.pc-composer-anchor .pc-prompt-composer-settings { flex: 1; }
+.pc-composer-anchor .pc-prompt-composer-actions { margin-left: auto; }
 .pc-prompt-composer-head { justify-content: space-between; }
 .pc-prompt-composer-body { display: grid; gap: 12px; min-width: 0; }
 .pc-prompt-composer-chips { display: flex; align-items: center; gap: 7px; }
@@ -1482,6 +1500,13 @@
   .pc-visual-context-button { transition: none; }
 }
 .pc-composer-context { overflow: hidden; color: #777; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.pc-project-style { margin: 0; color: #a8a8a8; font-size: 11px; line-height: 1.6; }
+.pc-reference-video-input .mantine-TextInput-input,
+.pc-reference-video-input .mantine-TextInput-input:is(:hover, :focus, :focus-visible) {
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+}
 .pc-prompt-composer-input { min-width: 0; }
 .pc-prompt-composer-input .mantine-Textarea-input,
 .pc-prompt-composer-input textarea {
@@ -2123,8 +2148,7 @@
 .project-canvas .pc-flow-zoom-label:hover { background: #2a4964; color: #f3faff; }
 .project-canvas .pc-flow-zoom-label { color: #c6d8e9; }
 .project-canvas .pc-node-list-toggle.mantine-ActionIcon-root { border-color: #3e5a74; background: #17283aed; color: #bfd4e8; }
-.project-canvas .pc-node-list-toggle.mantine-ActionIcon-root:hover,
-.project-canvas .pc-node-list-toggle.mantine-ActionIcon-root.is-active { background: #2a4964; color: #f3faff; }
+.project-canvas .pc-node-list-toggle.mantine-ActionIcon-root:hover { background: #2a4964; color: #f3faff; }
 
 .project-canvas .pc-canvas-sidebar {
   border-color: #3b5771;
@@ -3147,17 +3171,17 @@
 .project-canvas .pc-node-idle-content:has(.pc-node-output) { padding: 0; }
 .project-canvas .pc-node-idle-content .pc-node-output,
 .project-canvas .pc-node:not(.is-selected) .pc-node-idle-content .pc-node-output { flex: 1; height: 100%; min-height: 0; border-radius: 14px; }
-.project-canvas .pc-node.pc-node-image-result .pc-node-content {
+.project-canvas .pc-node.pc-node-media-result .pc-node-content {
   padding: 0;
   gap: 0;
   border-radius: inherit;
 }
-.project-canvas .pc-node.pc-node-image-result .pc-node-output {
+.project-canvas .pc-node.pc-node-media-result .pc-node-output {
   border: 0;
   border-radius: inherit;
 }
-.project-canvas .pc-node.pc-node-image-result .pc-node-output img { object-fit: cover; }
-.project-canvas .pc-node.pc-node-image-result .pc-node-foot { display: none; }
+.project-canvas .pc-node.pc-node-media-result .pc-node-output :is(img, video) { object-fit: contain; }
+.project-canvas .pc-node.pc-node-media-result .pc-node-foot { display: none; }
 .project-canvas .pc-project-script-empty { white-space: normal; }
 .project-canvas .pc-project-script-empty .pc-text-preview { height: auto; overflow: visible; }
 

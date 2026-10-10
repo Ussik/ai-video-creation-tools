@@ -4,6 +4,10 @@ import { dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import sharp from 'sharp'
+import type { TextTool, ToolCall, ToolOutput, ToolTurn } from './text-tools.js'
+import { createStreamScope, textRequestTimeoutMs } from './script-stream-policy.js'
+import { applyOutputContract, strictJsonSchema, type OutputContract } from './model-output.js'
+import { videoReferenceConfigError, videoReferenceMediaError } from './video-reference-config.js'
 
 export type Modality = 'text' | 'image' | 'video'
 export type Adapter = 'http' | 'demo'
@@ -26,6 +30,7 @@ export interface GenerationProvider {
 
 export interface GenerationRequest {
   prompt: string
+  structured_output?: OutputContract
   mode?: 'text' | 'first_frame' | 'first_last_frame' | 'reference' | 'edit' | 'extend'
   duration?: number
   ratio?: string
@@ -58,6 +63,7 @@ export type TextStreamEvent =
 
 export interface TextStreamRequest {
   prompt: string
+  structured_output?: OutputContract
   /** Optional request fields used by configured templates. */
   mode?: 'text'
 }
@@ -70,7 +76,6 @@ const dataDir = process.env.VIDEO_STUDIO_DATA_DIR ?? join(root, 'data')
 export const mediaDir = join(dataDir, 'media')
 const maxImageBytes = 30 * 1024 * 1024
 const maxVideoBytes = 600 * 1024 * 1024
-const textRequestTimeoutMs = 10 * 60_000
 
 function asSettings(model: GenerationModel): Settings {
   if (typeof model.settings !== 'string') return model.settings ?? {}
@@ -139,7 +144,7 @@ async function requestJson(method: 'GET' | 'POST', url: string, headers: Record<
   } catch (error) {
     if (modality === 'image' && isNetworkFailure(error)) throw imageNetworkError('厂商请求', startedAt, error)
     if (modality === 'text' && networkCode(error) === 'TIMEOUT') {
-      throw new Error('文本模型请求超时（最长等待 10 分钟），请稍后重试或切换文本模型。')
+      throw new Error(`文本模型请求超时（最长等待 ${Math.round(textRequestTimeoutMs / 60_000)} 分钟），请稍后重试或切换文本模型。`)
     }
     throw error
   }
@@ -278,6 +283,128 @@ function parseStreamPayload(raw: string): Record<string, unknown> | null {
   }
 }
 
+/** Native function calls use the configured endpoint, auth and model options,
+ * while reserving the protocol fields needed to relay actual tool results. */
+function publicToolText(raw: string): string {
+  let output = raw.replace(/<(think|thinking|analysis|reasoning)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
+    .replace(/<(?:think|thinking|analysis|reasoning)\b[^>]*>[\s\S]*$/gi, '')
+  const start = output.lastIndexOf('<'), tail = output.slice(start).toLowerCase()
+  if (start >= 0 && !tail.includes('>') && (['<think', '<thinking', '<analysis', '<reasoning'].some(tag => tag.startsWith(tail)) || /^<\/?(?:think(?:ing)?|analysis|reasoning)\b/.test(tail))) output = output.slice(0, start)
+  return output
+}
+
+export async function createTextToolTransport(model: GenerationModel, provider: GenerationProvider, prompt: string,
+  tools: TextTool[], previous: unknown[] | undefined, outputs: ToolOutput[],
+  resolveKey: (provider: GenerationProvider) => string, signal?: AbortSignal, onText?: (text: string) => void, continuation?: string): Promise<ToolTurn> {
+  if (provider.adapter === 'demo' || model.modality !== 'text') throw new Error('工具调用需要可用的文本模型')
+  const protocol = model.protocol
+  if (protocol !== 'responses' && protocol !== 'chat_completions') throw new Error('当前文本协议不支持工具调用')
+  const settings = asSettings(model)
+  const variables = streamBodyVariables(settings, { prompt }, model)
+  const template = streamRequestTemplate(settings)
+  const rendered = compactTemplate(renderTemplate(template, variables))
+  if (!rendered || typeof rendered !== 'object' || Array.isArray(rendered)) throw new Error('工具调用需要对象形式的请求模板')
+  const base = rendered as Record<string, unknown>
+  const initial = protocol === 'responses' ? Array.isArray(base.input) ? base.input : typeof base.input === 'string' ? [{ role: 'user', content: base.input }] : []
+    : Array.isArray(base.messages) ? base.messages : []
+  if (!initial.length) throw new Error(`工具调用需要请求模板中的 ${protocol === 'responses' ? 'input' : 'messages'} 字段`)
+  const history = [...(previous || initial), ...outputs.map(item => protocol === 'responses'
+    ? { type: 'function_call_output', call_id: item.id, output: item.output }
+    : { role: 'tool', tool_call_id: item.id, content: item.output }), ...(continuation ? [{ role: 'user', content: continuation }] : [])]
+  // A task-specific text response format must not compete with tool arguments.
+  delete base.response_format
+  if (base.text && typeof base.text === 'object') { base.text = { ...base.text as Record<string, unknown> }; delete (base.text as Record<string, unknown>).format }
+  const strict = settings.strict_tool_arguments === true
+  const body = { ...base, stream: settings.stream !== false && base.stream !== false, tool_choice: 'auto', parallel_tool_calls: false,
+    tools: tools.map(tool => { const selected = { ...tool, parameters: strict ? strictJsonSchema(tool.parameters) : tool.parameters, strict }; return protocol === 'responses' ? { type: 'function', ...selected } : { type: 'function', function: selected } }),
+    ...(protocol === 'responses' ? { input: history } : { messages: history, n: 1 }) }
+  const key = resolveKey(provider)
+  const scope = createStreamScope(signal, { totalMs: textRequestTimeoutMs,
+    totalMessage: `文本模型请求超时（最长等待 ${Math.round(textRequestTimeoutMs / 60_000)} 分钟）。请检查草稿后重试或切换文本模型。` })
+  try {
+    const response = await scope.wait(fetch(apiUrl(settingString(settings, 'api_base_url', provider.base_url), settingString(settings, 'request_path')), {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream, application/json',
+        ...(key ? { [provider.auth_header || 'Authorization']: `${provider.auth_prefix ?? 'Bearer '}${key}` } : {}) },
+      body: JSON.stringify(body),
+      signal: scope.signal,
+    }))
+    if (!response.ok) {
+      const detail = (await scope.wait(response.text())).slice(0, 800)
+      throw Object.assign(new Error(`模型工具调用返回 ${response.status}: ${detail}`), { statusCode: 502 })
+    }
+    const chatMessage: Record<string, unknown> = { role: 'assistant', content: '' }
+    const chatCalls = new Map<number, { id: string; type: 'function'; function: { name: string; arguments: string } }>()
+    let finalOutput: Array<Record<string, unknown>> = []
+    const responseItems = new Map<number, Record<string, unknown>>()
+    let text = ''
+    let completed = false
+    let finishReason: unknown
+    const publish = (value: string) => { const visible = publicToolText(value); if (visible.trim()) onText?.(visible) }
+    const consume = (payload: Record<string, unknown>) => {
+      const responseStatus = (payload.response as Record<string, unknown> | undefined)?.status || payload.status
+      if (payload.error || payload.type === 'response.failed' || payload.type === 'response.incomplete' || ['failed', 'incomplete', 'cancelled'].includes(String(responseStatus))) throw new Error('模型工具调用未完整结束，请重试')
+      if (protocol === 'responses') {
+        if (payload.type === 'response.output_item.done') responseItems.set(Number(payload.output_index), payload.item as Record<string, unknown>)
+        if (payload.type === 'response.completed') { finalOutput = (payload.response as { output?: typeof finalOutput })?.output || []; completed = true }
+        if (Array.isArray(payload.output)) { finalOutput = payload.output as typeof finalOutput; completed = true }
+        if (payload.type === 'response.output_text.delta' && typeof payload.delta === 'string') { text += payload.delta; publish(text) }
+        if (typeof payload.output_text === 'string') text = payload.output_text
+        return
+      }
+      const choice = (payload.choices as Array<Record<string, unknown>> | undefined)?.[0]
+      if (!choice) return
+      if (choice.finish_reason) { finishReason = choice.finish_reason; completed = true }
+      const message = choice.message as Record<string, unknown> | undefined
+      if (message) { Object.assign(chatMessage, message, { role: 'assistant' }); completed = true; return }
+      const delta = choice.delta as Record<string, unknown> | undefined
+      if (!delta) return
+      if (typeof delta.content === 'string') { chatMessage.content = String(chatMessage.content || '') + delta.content; publish(String(chatMessage.content)) }
+      if (typeof delta.reasoning_content === 'string') chatMessage.reasoning_content = String(chatMessage.reasoning_content || '') + delta.reasoning_content
+      for (const item of Array.isArray(delta.tool_calls) ? delta.tool_calls as Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }> : []) {
+        const call = chatCalls.get(item.index) || { id: '', type: 'function' as const, function: { name: '', arguments: '' } }
+        if (item.id) call.id = item.id
+        if (item.function?.name) call.function.name += item.function.name
+        if (item.function?.arguments) call.function.arguments += item.function.arguments
+        chatCalls.set(item.index, call)
+      }
+    }
+    if (response.headers.get('content-type')?.includes('text/event-stream') && response.body) {
+      const reader = response.body.getReader(), decoder = new TextDecoder()
+      let buffer = ''
+      try {
+        while (!completed) {
+          const { done, value } = await scope.wait(reader.read())
+          buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+          const lines = buffer.split(/\r?\n/); buffer = lines.pop() || ''
+          for (const line of lines) {
+            if (line.startsWith('data:')) { const payload = parseStreamPayload(line.slice(5)); if (payload) consume(payload) }
+            if (completed) break
+          }
+          if (done) break
+        }
+        if (!completed && buffer.startsWith('data:')) { const payload = parseStreamPayload(buffer.slice(5)); if (payload) consume(payload) }
+      } finally { void reader.cancel().catch(() => {}); reader.releaseLock() }
+      if (!completed) throw new Error('模型工具调用连接提前结束，未执行未完成的调用')
+    } else consume(await scope.wait(response.json()) as Record<string, unknown>)
+    if (!completed) throw new Error('模型未返回完整的工具调用结果')
+    if (finishReason && !['stop', 'tool_calls'].includes(String(finishReason))) throw new Error('模型输出被截断或异常结束，未执行工具调用')
+    let calls: ToolCall[]
+    if (protocol === 'responses') {
+      if (!finalOutput.length) finalOutput = [...responseItems.entries()].sort(([a], [b]) => a - b).map(([, item]) => item)
+      text = textValue(finalOutput) || text
+      calls = finalOutput.filter(item => item.type === 'function_call').map(item => ({ id: String(item.call_id || ''), name: String(item.name || ''), arguments: String(item.arguments || '') }))
+      history.push(...finalOutput)
+    } else {
+      if (chatCalls.size) chatMessage.tool_calls = [...chatCalls.entries()].sort(([a], [b]) => a - b).map(([, call]) => call)
+      text = textValue(chatMessage.content) || ''
+      calls = (Array.isArray(chatMessage.tool_calls) ? chatMessage.tool_calls as Array<{ id: string; function: { name: string; arguments: string } }> : []).map(item => ({ id: item.id, name: item.function?.name, arguments: item.function?.arguments }))
+      history.push(chatMessage)
+    }
+    if (calls.length > 10 || calls.some(call => !call.id || !call.name || typeof call.arguments !== 'string' || call.arguments.length > 650_000) || new Set(calls.map(call => call.id)).size !== calls.length) throw new Error('模型返回了无效的工具调用')
+    return { text: publicToolText(text), calls, history }
+  } finally { scope.close() }
+}
+
 /**
  * Stream a configured text provider response. The provider configuration remains
  * the source of truth for URL, payload and extraction paths. Providers that do
@@ -309,70 +436,87 @@ export async function streamText(
   // Most OpenAI-compatible providers opt into streaming with a top-level
   // `stream` flag. Add it when the configured template did not specify one;
   // an explicit template value (including false) always wins.
-  const body = renderedBody && typeof renderedBody === 'object' && !Array.isArray(renderedBody)
+  const body = applyOutputContract(renderedBody && typeof renderedBody === 'object' && !Array.isArray(renderedBody)
     ? { ...(renderedBody as Record<string, unknown>),
       ...(('stream' in (renderedBody as Record<string, unknown>) || settings.stream === false)
         ? {} : { stream: true }) }
-    : renderedBody
+    : renderedBody, model.protocol, settings, request.structured_output)
   let response: Response
+  const scope = createStreamScope(signal, { totalMs: textRequestTimeoutMs,
+    totalMessage: `文本模型请求超时（最长等待 ${Math.round(textRequestTimeoutMs / 60_000)} 分钟）。请检查草稿后重试或切换文本模型。` })
   try {
-    response = await fetch(apiUrl(settingString(settings, 'api_base_url', provider.base_url), settingString(settings, 'request_path')), {
-      method: 'POST',
-      headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(textRequestTimeoutMs)]) : AbortSignal.timeout(textRequestTimeoutMs),
-    })
-  } catch (error) {
-    throw new Error(`文本模型流式请求失败：${error instanceof Error ? error.message : String(error)}`)
-  }
-  if (!response.ok) {
-    const raw = await response.text()
-    throw new Error(`模型接口返回 ${response.status}: ${raw.slice(0, 800)}`)
-  }
-
-  let fullText = ''
-  const emitPayload = async (payload: Record<string, unknown>) => {
-    const reasoning = reasoningSummaryValue(payload)
-    if (reasoning) await onEvent({ type: 'reasoning_summary', text: reasoning })
-    const text = streamTextValue(payload, settings)
-    if (text) {
-      fullText += text
-      await onEvent({ type: 'delta', text })
+    try {
+      response = await scope.wait(fetch(apiUrl(settingString(settings, 'api_base_url', provider.base_url), settingString(settings, 'request_path')), {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: scope.signal,
+      }))
+    } catch (error) {
+      throw new Error(`文本模型流式请求失败：${error instanceof Error ? error.message : String(error)}`)
     }
-  }
-
-  const contentType = response.headers.get('content-type')?.toLowerCase() || ''
-  if (!response.body || (contentType && !contentType.includes('text/event-stream') && !contentType.includes('application/x-ndjson') && !contentType.includes('application/ndjson'))) {
-    const raw = await response.text()
-    const payload = parseStreamPayload(raw)
-    if (payload) await emitPayload(payload)
-    else if (raw.trim()) {
-      fullText = raw.trim()
-      await onEvent({ type: 'delta', text: fullText })
+    if (!response.ok) {
+      const raw = await scope.wait(response.text())
+      throw new Error(`模型接口返回 ${response.status}: ${raw.slice(0, 800)}`)
     }
+
+    let fullText = ''
+    let completed = false
+    const emitPayload = async (payload: Record<string, unknown>) => {
+      const status = String((payload.response as Record<string, unknown> | undefined)?.status || payload.status || '')
+      if (payload.error || payload.type === 'response.failed' || payload.type === 'response.incomplete' || ['failed', 'incomplete', 'cancelled'].includes(status)) {
+        throw new Error('文本模型生成失败或输出不完整，请检查已收到内容后重试')
+      }
+      const finish = (payload.choices as Array<{ finish_reason?: string }> | undefined)?.[0]?.finish_reason
+      if (finish && finish !== 'stop') throw new Error('文本模型输出被截断或异常结束，请缩小生成范围后重试')
+      const reasoning = reasoningSummaryValue(payload)
+      if (reasoning) await onEvent({ type: 'reasoning_summary', text: reasoning })
+      const text = streamTextValue(payload, settings) || (!fullText && payload.type === 'response.completed'
+        ? textValue((payload.response as Record<string, unknown> | undefined)?.output) : null)
+      if (text) {
+        fullText += text
+        await onEvent({ type: 'delta', text })
+      }
+      if (finish === 'stop' || payload.type === 'response.completed' || status === 'completed') completed = true
+    }
+
+    const contentType = response.headers.get('content-type')?.toLowerCase() || ''
+    if (!response.body || (contentType && !contentType.includes('text/event-stream') && !contentType.includes('application/x-ndjson') && !contentType.includes('application/ndjson'))) {
+      const raw = await scope.wait(response.text())
+      const payload = parseStreamPayload(raw)
+      if (payload) await emitPayload(payload)
+      else if (raw.trim()) {
+        fullText = raw.trim()
+        await onEvent({ type: 'delta', text: fullText })
+      }
+      return fullText
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    const consumeLine = async (line: string) => {
+      const trimmed = line.trim()
+      if (!trimmed) return
+      const value = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed
+      if (value === '[DONE]') { completed = true; return }
+      const payload = parseStreamPayload(value)
+      if (payload) await emitPayload(payload)
+    }
+    try {
+      while (!completed) {
+        const { done, value } = await scope.wait(reader.read())
+        buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+        const lines = buffer.split(/\r?\n/)
+        buffer = lines.pop() || ''
+        for (const line of lines) { await consumeLine(line); if (completed) break }
+        if (done) break
+      }
+      if (!completed && buffer.trim()) await consumeLine(buffer)
+      if (!completed && contentType.includes('text/event-stream')) throw new Error('文本模型连接提前结束，未收到完成事件；请检查已收到内容后重试')
+    } finally { void reader.cancel().catch(() => {}); reader.releaseLock() }
     return fullText
-  }
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  const consumeLine = async (line: string) => {
-    const trimmed = line.trim()
-    if (!trimmed) return
-    const value = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed
-    const payload = parseStreamPayload(value)
-    if (payload) await emitPayload(payload)
-  }
-  while (true) {
-    const { done, value } = await reader.read()
-    buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
-    const lines = buffer.split(/\r?\n/)
-    buffer = lines.pop() || ''
-    for (const line of lines) await consumeLine(line)
-    if (done) break
-  }
-  if (buffer.trim()) await consumeLine(buffer)
-  return fullText
+  } finally { scope.close() }
 }
 
 function base64Bytes(value: string): Buffer {
@@ -445,13 +589,45 @@ async function download(projectId: string, url: string, suffix: '.mp4' | '.png')
   }
 }
 
-async function referenceImage(asset: MediaAsset): Promise<string> {
+async function referenceImage(asset: MediaAsset, settings?: Settings): Promise<string> {
   if (asset.kind !== 'image') throw new Error('参考素材必须是图片')
   const image = await stat(asset.path)
-  if (image.size > 20 * 1024 * 1024) throw new Error('参考图超过 20 MB，请使用较小的图片')
+  const seedance = settings?.video_reference_profile === 'seedance_2_0'
+  if (seedance ? image.size >= 30 * 1024 * 1024 : image.size > 20 * 1024 * 1024) throw new Error(`参考图${seedance ? '必须小于 30 MB' : '超过 20 MB，请使用较小的图片'}`)
+  if (seedance) {
+    // Use the decoded format, not a filename extension that can be incorrect.
+    const metadata = await sharp(asset.path).metadata()
+    const mimes: Record<string, string> = { jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif',
+      tiff: 'image/tiff', heif: metadata.compression === 'av1' ? 'image/avif' : 'image/heic' }
+    const mime = metadata.format ? mimes[metadata.format] : undefined
+    if (!mime || mime === 'image/avif') throw new Error('Seedance 2.0 参考图片格式不支持，请使用 JPEG、PNG、WebP、GIF、TIFF 或 HEIC 图片')
+    return `data:${mime};base64,${(await readFile(asset.path)).toString('base64')}`
+  }
   const extension = extname(asset.path).toLowerCase()
   const mime = extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg' : extension === '.webp' ? 'image/webp' : 'image/png'
   return `data:${mime};base64,${(await readFile(asset.path)).toString('base64')}`
+}
+
+/** Called before queueing as well as before submission; no generation request is made here. */
+export async function validateVideoReferenceAssets(settings: Settings, references: MediaAsset[]): Promise<void> {
+  if (settings.video_reference_profile !== 'seedance_2_0') return
+  const info = await Promise.all(references.map(async (asset, index) => {
+    if (asset.kind !== 'image') throw new Error('视频参考素材必须是图片')
+    try {
+      const file = await stat(asset.path)
+      if (file.size >= 30 * 1024 * 1024) throw new Error(`参考图 ${index + 1} 必须小于 30 MB`)
+      const metadata = await sharp(asset.path).metadata()
+      if (!['jpeg', 'png', 'webp', 'gif', 'tiff', 'heif'].includes(metadata.format ?? '') || metadata.format === 'heif' && metadata.compression === 'av1') {
+        throw new Error('图片格式不在 Seedance 2.0 支持范围，请改用 JPEG、PNG、WebP、GIF、TIFF 或 HEIC')
+      }
+      const rotated = metadata.orientation !== undefined && metadata.orientation >= 5
+      return { bytes: file.size, width: (rotated ? metadata.height : metadata.width) ?? 0, height: (rotated ? metadata.width : metadata.height) ?? 0 }
+    } catch (error) {
+      throw new Error(`无法使用参考图 ${index + 1}：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }))
+  const issue = videoReferenceMediaError(settings, info)
+  if (issue) throw new Error(issue)
 }
 
 function imageResult(payload: Record<string, unknown>, settings: Settings): { base64?: string; url?: string } {
@@ -592,6 +768,9 @@ function modeVariables(settings: Settings, request: GenerationRequest): Variable
     const override = (perMode as Settings)[mode]
     if (override !== undefined) Object.assign(result, configObject(override, `mode_variables.${mode}`))
   }
+  // Mode defaults must not replace explicitly selected output dimensions.
+  if (request.ratio != null) result.ratio = request.ratio
+  if (request.resolution != null) result.resolution = request.resolution
   if (request.draft && settings.draft_variables !== undefined) {
     Object.assign(result, configObject(settings.draft_variables, 'draft_variables'))
   }
@@ -605,6 +784,59 @@ function requestTemplate(settings: Settings, request: GenerationRequest, fallbac
     if (override !== undefined) return override
   }
   return settings.request_template ?? fallback
+}
+
+function mediaVariables(settings: Settings, request: GenerationRequest, images: string[], remoteId: string): Variables {
+  const variables = modeVariables(settings, request)
+  variables.model = remoteId
+  variables.image = images[0] ?? null
+  variables.images = images.length ? images : null
+  variables.size = request.resolution || settings.default_resolution || settings.size || null
+  const roleMap = settings.reference_roles && typeof settings.reference_roles === 'object' && !Array.isArray(settings.reference_roles)
+    ? settings.reference_roles as Settings : {}
+  const configuredRoles = roleMap[request.mode ?? 'text']
+  const roles = Array.isArray(configuredRoles) ? configuredRoles.map(String) : []
+  const needsRoles = JSON.stringify(settings.image_reference_template ?? '').includes('{{role}}')
+  if (needsRoles && images.length && roles.length === 0) throw new Error('当前模式未配置参考图角色')
+  if (needsRoles && images.length > roles.length && roles.length !== 1) throw new Error('当前模式的参考图角色数量不足')
+  variables.image_references = settings.image_reference_template
+    ? images.map((image, index) => compactTemplate(renderTemplate(settings.image_reference_template,
+      { ...variables, image, role: roles[Math.min(index, roles.length - 1)] }))) : []
+  variables.video_references = variables.reference_video_url && settings.video_reference_template
+    ? [compactTemplate(renderTemplate(settings.video_reference_template, variables))] : []
+  variables.content = settings.content_template ? renderContentTemplate(settings.content_template, variables) : null
+  return variables
+}
+
+function videoPayload(settings: Settings, request: GenerationRequest, images: string[], remoteId: string): unknown {
+  const body = compactTemplate(renderTemplate(requestTemplate(settings, request, { model: '{{model}}', prompt: '{{prompt}}' }), mediaVariables(settings, request, images, remoteId)))
+  // Check the rendered payload too: indirection must not lose a selected image.
+  const sentImages = new Set<string>()
+  function collect(value: unknown): void {
+    if (typeof value === 'string' && images.includes(value)) sentImages.add(value)
+    else if (Array.isArray(value)) value.forEach(collect)
+    else if (value && typeof value === 'object') Object.values(value).forEach(collect)
+  }
+  collect(body)
+  if (images.some(image => !sentImages.has(image))) throw new Error('视频请求模板未传递全部参考图片，请检查当前模式的图片字段')
+  const issue = videoReferenceMediaError(settings, [], Buffer.byteLength(JSON.stringify(body), 'utf8'))
+  if (issue) throw new Error(issue)
+  return body
+}
+
+/** Dry-run the exact Seedance payload before queueing, including Base64 and template duplication. */
+export async function validateVideoReferenceRequest(settings: Settings, references: MediaAsset[], request: GenerationRequest, remoteId: string): Promise<void> {
+  checkVideoReferenceRequestMode(settings, request)
+  await validateVideoReferenceAssets(settings, references)
+  if (settings.video_reference_profile !== 'seedance_2_0') return
+  const images = await Promise.all(references.map(asset => referenceImage(asset, settings)))
+  videoPayload(settings, request, images, remoteId)
+}
+
+function checkVideoReferenceRequestMode(settings: Settings, request: GenerationRequest): void {
+  if (settings.video_reference_profile === 'seedance_2_0' && request.reference_video_url && ['first_frame', 'first_last_frame'].includes(request.mode ?? 'text')) {
+    throw new Error('Seedance 2.0 首帧、首尾帧与全模态参考互斥，不能同时传入参考视频')
+  }
 }
 
 function pollConfiguredVideo(
@@ -692,32 +924,19 @@ async function configuredNetwork(
   if (model.modality === 'image' && settings.async_image === true && request._external_id) {
     return pollConfiguredImage(request._external_id, settings, provider, headers, projectId, onImageUrl)
   }
-  const images = await Promise.all(references.map(referenceImage))
-  const variables: Variables = modeVariables(settings, request)
-  variables.model = model.remote_id
-  variables.image = images[0] ?? null
-  variables.images = images.length ? images : null
-  variables.size = request.resolution || settings.default_resolution || settings.size || null
-
-  const roleMap = settings.reference_roles && typeof settings.reference_roles === 'object' && !Array.isArray(settings.reference_roles)
-    ? settings.reference_roles as Settings : {}
-  const configuredRoles = roleMap[request.mode ?? 'text']
-  const roles = Array.isArray(configuredRoles) ? configuredRoles.map(String) : []
-  if (settings.image_reference_template && images.length && roles.length === 0) throw new Error('当前模式未配置参考图角色')
-  if (settings.image_reference_template && images.length > roles.length && roles.length !== 1) throw new Error('当前模式的参考图角色数量不足')
-  variables.image_references = settings.image_reference_template
-    ? images.map((image, index) => compactTemplate(renderTemplate(
-      settings.image_reference_template,
-      { ...variables, image, role: roles[Math.min(index, roles.length - 1)] },
-    ))) : []
-  variables.video_references = variables.reference_video_url && settings.video_reference_template
-    ? [compactTemplate(renderTemplate(settings.video_reference_template, variables))] : []
-  variables.content = settings.content_template
-    ? renderContentTemplate(settings.content_template, variables) : null
+  if (model.modality === 'video') {
+    checkVideoReferenceRequestMode(settings, request)
+    const issue = videoReferenceConfigError(settings, references.length, request.mode ?? 'text')
+    if (issue) throw new Error(issue)
+    await validateVideoReferenceAssets(settings, references)
+  }
+  const images = await Promise.all(references.map(asset => referenceImage(asset, model.modality === 'video' ? settings : undefined)))
+  const variables = mediaVariables(settings, request, images, model.remote_id)
 
   if (model.modality !== 'video') {
     const payload = await requestJson('POST', apiUrl(provider.base_url, settingString(settings, 'request_path')), headers,
-      compactTemplate(renderTemplate(requestTemplate(settings, request, { model: '{{model}}', prompt: '{{prompt}}' }), variables)),
+      model.modality === 'text' ? applyOutputContract(compactTemplate(renderTemplate(requestTemplate(settings, request, { model: '{{model}}', prompt: '{{prompt}}' }), variables)), model.protocol, settings, request.structured_output)
+        : compactTemplate(renderTemplate(requestTemplate(settings, request, { model: '{{model}}', prompt: '{{prompt}}' }), variables)),
       model.modality)
     if (model.modality === 'text') {
       return { path: await saveBytes(projectId, '.txt', Buffer.from(responseText(payload, settings, model.protocol))), remoteUrl: null }
@@ -734,7 +953,7 @@ async function configuredNetwork(
 
   let externalId = request._external_id
   if (!externalId) {
-    const body = compactTemplate(renderTemplate(requestTemplate(settings, request, { model: '{{model}}', prompt: '{{prompt}}' }), variables))
+    const body = videoPayload(settings, request, images, model.remote_id)
     const created = await requestJson('POST', apiUrl(provider.base_url, settingString(settings, 'create_path')), headers, body)
     externalId = String(nested(created, settingString(settings, 'id_path', 'id')))
     if (!externalId || externalId === 'undefined' || externalId === 'null') throw new Error('视频模型没有返回任务 ID')

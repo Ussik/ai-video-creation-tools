@@ -1366,6 +1366,93 @@
 .script-editor-topbar .script-page-actions .mantine-Button-root[data-variant='filled'] { background: #48c9df; color: #082228; }
 .script-editor-document-title + .script-save-state { white-space: nowrap; }
 
+.script-editor-search-toggle {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #919191;
+  cursor: pointer;
+}
+.script-editor-search-toggle:hover,
+.script-editor-search-toggle.is-active { background: #ffffff1a; color: #5ddcff; }
+.script-search-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 24px;
+  width: min(450px, calc(100vw - 24px));
+  padding: 13px;
+  border: 1px solid #ffffff1a;
+  border-radius: 14px;
+  background: #19191b;
+  box-shadow: 0 12px 34px #0007;
+  color: #d9d9dd;
+}
+.script-search-heading,
+.script-search-controls,
+.script-search-field,
+.script-search-caption { display: flex; align-items: center; gap: 8px; }
+.script-search-heading { justify-content: space-between; margin-bottom: 10px; }
+.script-search-heading strong { font-size: 12px; font-weight: 550; }
+.script-search-heading > span { color: #85858b; font-size: 11px; }
+.script-search-controls { gap: 3px; }
+.script-search-field {
+  flex: 1;
+  min-width: 0;
+  height: 34px;
+  padding: 0 9px;
+  border: 1px solid #ffffff1a;
+  border-radius: 8px;
+  background: #0e0e10;
+  color: #8b8b91;
+}
+.script-search-field:focus-within { border-color: #48c9df99; }
+.script-search-field svg { flex: none; }
+.script-search-field input {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  outline: none;
+  border: 0;
+  background: transparent;
+  color: #f0f0f3;
+  font: inherit;
+  font-size: 12px;
+}
+.script-search-field input::placeholder { color: #6e6e75; }
+.script-search-field input:focus-visible { outline: none; }
+.script-search-count { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.script-search-controls > button {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 30px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #aaaab0;
+  cursor: pointer;
+}
+.script-search-controls > button:hover:not(:disabled) { background: #ffffff14; color: #f7f7f7; }
+.script-search-controls > button:disabled { opacity: .3; cursor: not-allowed; }
+.script-search-controls > button:focus-visible,
+.script-editor-search-toggle:focus-visible { outline: 1px solid #5ddcff; outline-offset: 2px; }
+.script-search-caption { justify-content: space-between; margin-top: 10px; }
+.script-search-caption > span { overflow: hidden; font-size: 11px; color: #a5a5ad; text-overflow: ellipsis; white-space: nowrap; }
+.script-search-caption small { flex: none; color: #717179; font-size: 10px; }
+.script-rich-editor-content .script-search-match { border-radius: 2px; background: #48c9df30; color: #e7faff; }
+.script-rich-editor-content .script-search-match.is-current { background: #48c9df; color: #07242a; box-shadow: 0 0 0 1px #48c9df; }
+
+@media (max-width: 700px) {
+  .script-search-panel { right: 12px; }
+  .script-search-caption small { display: none; }
+}
+
 .script-editor-fullscreen .script-document {
   grid-template-columns: minmax(216px, 1fr) minmax(0, 680px) minmax(24px, 1fr);
   grid-template-rows: minmax(0, 1fr);
@@ -1507,18 +1594,21 @@
   .script-editor-fullscreen .script-convert-bar { width: min(680px, calc(100vw - 240px)); }
 }
 @media (max-width: 700px) {
-  .script-editor-fullscreen .script-editor-topbar { display: flex; height: 56px; min-height: 56px; padding: 0 10px; gap: 5px; }
+  .script-editor-fullscreen .script-page { padding-top: 56px; }
+  .script-editor-fullscreen .script-editor-topbar { position: fixed; left: 0; right: 0; display: flex; align-items: center; flex-wrap: nowrap; height: 56px; min-height: 56px; padding: 0 10px; gap: 5px; }
   .script-editor-fullscreen .script-editor-titlebar { min-width: 0; flex: 1; }
   .script-editor-fullscreen .script-editor-titlebar .script-save-state { display: none; }
   .script-editor-fullscreen .script-editor-toolbar { margin: 0; }
   .script-editor-fullscreen .script-editor-toolbar i,
   .script-editor-fullscreen .script-editor-toolbar button:nth-of-type(n+7) { display: none; }
-  .script-editor-fullscreen .script-editor-topbar .script-page-actions { min-width: auto; }
-  .script-editor-fullscreen .script-editor-topbar .script-page-actions .mantine-Button-root { padding: 0 6px; }
-  .script-editor-fullscreen .script-editor-topbar .script-page-actions .mantine-Button-root:first-child { display: none; }
+  .script-editor-fullscreen .script-editor-toolbar .script-format-menu,
+  .script-editor-fullscreen .script-editor-toolbar > button[aria-label='粗体'] { display: none; }
+  .script-editor-fullscreen .script-editor-topbar .script-page-actions { width: auto; min-width: auto; flex-wrap: nowrap; }
+  .script-editor-fullscreen .script-editor-topbar .script-page-actions .mantine-Button-root { flex: none; padding: 0 6px; }
+  .script-editor-fullscreen .script-editor-topbar .script-page-actions .script-storyboard-action { display: none; }
   .script-editor-fullscreen .script-editor-document-title strong { max-width: 150px; }
   .script-editor-fullscreen .script-document { display: block; width: auto; height: auto; min-height: calc(100vh - 56px); }
-  .script-editor-fullscreen .script-document-nav { position: static; width: calc(100% - 24px); max-height: 190px; margin: 12px; }
+  .script-editor-fullscreen .script-document-nav { position: static; display: block; width: calc(100% - 24px); max-height: 190px; margin: 12px; }
   .script-editor-fullscreen .script-document-editor { height: auto; overflow: visible; }
   .script-editor-fullscreen .script-document.is-nav-collapsed .script-document-nav { display: none; }
   .script-editor-fullscreen .script-long-document,
@@ -1533,6 +1623,11 @@
   .script-editor-fullscreen .script-long-section-tools > span { display: none; }
   .script-editor-fullscreen .script-long-section > .mantine-Textarea-root .mantine-Textarea-input,
   .script-editor-fullscreen .script-rich-editor { font-size: 15px; }
+}
+
+@media (max-width: 520px) {
+  .script-editor-fullscreen .script-editor-toolbar,
+  .script-editor-fullscreen .script-editor-topbar .script-page-actions .mantine-Button-root[data-variant='subtle'] { display: none; }
 }
 
 /* The direction panel is a compact bridge between the idea and the scene

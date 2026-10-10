@@ -8,7 +8,7 @@ export function useScriptDocumentNavigation<Section extends string>({
   const navigationFrameRef = useRef<number | null>(null)
   const pendingScrollRef = useRef<{ top: number | null } | null>(null)
 
-  function selectSection(section: Section, resetDocument = false) {
+  function selectSection(section: Section, resetDocument = false, targetSelector?: string) {
     if (navigationFrameRef.current !== null) window.cancelAnimationFrame(navigationFrameRef.current)
     pendingScrollRef.current = { top: null }
     setActiveSection(section)
@@ -21,7 +21,15 @@ export function useScriptDocumentNavigation<Section extends string>({
         pendingScrollRef.current = null
         return
       }
-      const requestedTop = resetDocument || sections.length === 1 ? 0
+      const match = targetSelector ? target.querySelector<HTMLElement>(targetSelector) : null
+      if (match && window.getComputedStyle(editor).overflowY === 'visible') {
+        pendingScrollRef.current = null
+        match.scrollIntoView({ block: 'center', behavior: 'smooth' })
+        return
+      }
+      const requestedTop = match
+        ? editor.scrollTop + match.getBoundingClientRect().top - editor.getBoundingClientRect().top - editor.clientHeight / 2
+        : resetDocument || sections.length === 1 ? 0
         : editor.scrollTop + target.getBoundingClientRect().top - editor.getBoundingClientRect().top - 16
       const top = Math.min(Math.max(0, requestedTop), Math.max(0, editor.scrollHeight - editor.clientHeight))
       pendingScrollRef.current = Math.abs(editor.scrollTop - top) <= 1 ? null : { top }

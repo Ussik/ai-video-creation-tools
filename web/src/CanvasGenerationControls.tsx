@@ -26,6 +26,7 @@ export interface CanvasVideoModeMenuProps {
   value: CanvasVideoMode
   supportedModes: CanvasVideoMode[]
   onChange: (mode: CanvasVideoMode) => void
+  disabled?: boolean
 }
 
 export interface CanvasGenerationParametersProps {
@@ -56,27 +57,31 @@ export interface CanvasGenerationParametersProps {
 }
 
 const videoModes = [
-  { value: 'text' as const, label: '文生视频', icon: Type },
-  { value: 'first_frame' as const, label: '图生视频', icon: Image },
-  { value: 'first_last_frame' as const, label: '首尾帧生视频', icon: ArrowLeftRight },
-  { value: 'reference' as const, label: '参考生成', icon: Images },
-  { value: 'edit' as const, label: '编辑视频', icon: SquarePen },
-  { value: 'extend' as const, label: '延长视频', icon: Film },
+  { value: 'text' as const, label: '文生视频', description: '用文字描述画面、动作与运镜', icon: Type },
+  { value: 'first_frame' as const, label: '首帧承接', description: '仅 1 张图，承接分镜开镜画面', icon: Image },
+  { value: 'first_last_frame' as const, label: '首尾帧', description: '2 张图，分别约束首帧与尾帧', icon: ArrowLeftRight },
+  { value: 'reference' as const, label: '多图参考', description: '多图约束人物、场景与道具，构图引导', icon: Images },
+  { value: 'edit' as const, label: '编辑视频', description: '参考已有视频，修改画面与内容', icon: SquarePen },
+  { value: 'extend' as const, label: '延长视频', description: '参考已有视频，延续动作与镜头', icon: Film },
 ]
+export function videoModeLabel(value: CanvasVideoMode | string): string {
+  return videoModes.find(mode => mode.value === value)?.label || value
+}
 const stopPropagation = (event: SyntheticEvent) => event.stopPropagation()
 const overlayEvents = { onPointerDown: stopPropagation, onClick: stopPropagation, onWheel: stopPropagation, onKeyUp: stopPropagation }
 const floatingMiddlewares = { flip: { padding: 12 }, shift: { padding: 12 } }
 
-export function CanvasVideoModeMenu({ value, supportedModes, onChange }: CanvasVideoModeMenuProps) {
+export function CanvasVideoModeMenu({ value, supportedModes, onChange, disabled = false }: CanvasVideoModeMenuProps) {
   const [opened, setOpened] = useState(false)
+  useEffect(() => { if (disabled) setOpened(false) }, [disabled])
   const current = videoModes.find(mode => mode.value === value) || videoModes[0]
   const Icon = current.icon
-  return <Menu opened={opened} onChange={setOpened} position="top-start" offset={10} width={236} withinPortal
+  return <Menu opened={opened && !disabled} onChange={next => setOpened(next && !disabled)} position="top-start" offset={10} width={280} withinPortal
     zIndex={220} middlewares={floatingMiddlewares} returnFocus preventPositionChangeWhenVisible={false}
     classNames={{ dropdown: 'pc-generation-mode-menu', item: 'pc-generation-mode-item', label: 'pc-generation-menu-heading' }}>
     <Menu.Target>
       <button type="button" className="pc-generation-control pc-generation-mode-trigger nodrag nowheel" data-canvas-overlay
-        aria-label={`视频生成模式：${current.label}`} aria-expanded={opened} {...overlayEvents} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') setOpened(false) }}>
+        disabled={disabled} aria-label={`视频生成模式：${current.label}`} aria-expanded={opened && !disabled} {...overlayEvents} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') setOpened(false) }}>
         <Icon size={15} /><span>{current.label}</span><ChevronDown size={13} />
       </button>
     </Menu.Target>
@@ -88,10 +93,10 @@ export function CanvasVideoModeMenu({ value, supportedModes, onChange }: CanvasV
       {videoModes.map(mode => {
         const ModeIcon = mode.icon
         const supported = supportedModes.includes(mode.value)
-        return <Menu.Item key={mode.value} disabled={!supported} data-selected={mode.value === value || undefined}
+        return <Menu.Item key={mode.value} disabled={disabled || !supported} data-selected={mode.value === value || undefined}
           leftSection={<ModeIcon size={17} />} rightSection={mode.value === value ? <Check size={16} /> : undefined}
-          aria-label={`${mode.label}${supported ? '' : '，当前模型不支持'}`} onClick={() => onChange(mode.value)}>
-          {mode.label}
+          aria-label={`${mode.label}${supported ? '' : '，当前模型不支持'}`} onClick={() => { if (!disabled && supported) onChange(mode.value) }}>
+          <span className="pc-generation-mode-copy"><span>{mode.label}</span><small>{mode.description}</small></span>
         </Menu.Item>
       })}
     </Menu.Dropdown>
@@ -122,6 +127,7 @@ const imageBackgroundLabels: Record<string, string> = {
 }
 const imageQualityLabel = (value: string) => imageQualityLabels[value.toLowerCase()] || value
 const imageBackgroundLabel = (value: string) => imageBackgroundLabels[value.toLowerCase()] || value
+const videoResolutionLabel = (value: string) => /^4k$/i.test(value) ? '4K' : value
 
 export function CanvasGenerationParameters({ modality, ratios, ratio, resolutions, resolution, clarities = [], clarity = '', duration,
   minDuration, maxDuration, durationOptions, showDuration, audioSupported, generateAudio, count,
@@ -159,11 +165,23 @@ export function CanvasGenerationParameters({ modality, ratios, ratio, resolution
     const next = selectImageSize(resolutions, resolution, selection)
     if (next) onChange({ resolution: next.resolution, ratio: next.ratio })
   }
-  const summary = [ratio === 'adaptive' ? '自适应' : ratio, modality === 'image' ? imageClarity : resolution,
+  const ratioControls = displayRatios.length > 0 && <section className="pc-generation-parameter-section">
+    <div className="pc-generation-parameter-heading"><span>比例</span>{modality === 'video' && <small>{ratio === 'adaptive' ? '自适应' : ratio}</small>}</div>
+    <div className={`pc-generation-ratios ${modality === 'image' ? 'pc-generation-image-ratios' : 'pc-generation-video-ratios'}`} role="group" aria-label="比例"
+      style={modality === 'image' ? { gridTemplateColumns: `repeat(${Math.min(5, displayRatios.length)}, minmax(0, 1fr))` } : undefined}>
+      {displayRatios.map(option => <button type="button" key={option} className="pc-generation-ratio" aria-pressed={ratio === option}
+        title={option === 'adaptive' ? '自适应' : option}
+        onClick={() => fixedSizes.length ? changeImageSize({ ratio: option }) : onChange({ ratio: option })}>
+        <span className="pc-generation-ratio-preview">{option === 'adaptive' ? <Scan size={26} /> : <i style={ratioShape(option, modality === 'image' ? 22 : 29)} />}</span>
+        <span>{option === 'adaptive' ? modality === 'video' ? 'Auto' : '自适应' : option}</span>
+      </button>)}
+    </div>
+  </section>
+  const summary = [ratio === 'adaptive' ? '自适应' : ratio, modality === 'image' ? imageClarity : videoResolutionLabel(resolution),
     durationEnabled ? `${duration}s` : '', `${count}${modality === 'image' ? '张' : '个'}`].filter(Boolean).join(' · ')
   return <Popover opened={opened} onChange={setOpened} position="top-start" offset={8} width={modality === 'image' ? 'min(320px, calc(100vw - 24px))' : 360} withinPortal
     middlewares={floatingMiddlewares} zIndex={220} trapFocus returnFocus preventPositionChangeWhenVisible={false}
-    classNames={{ dropdown: `pc-generation-parameters-popover${modality === 'image' ? ' pc-generation-image-parameters' : ''}` }}>
+    classNames={{ dropdown: `pc-generation-parameters-popover${modality === 'image' ? ' pc-generation-image-parameters' : ' pc-generation-video-parameters'}` }}>
     <Popover.Target>
       <button ref={setTriggerNode} type="button" className="pc-generation-control pc-generation-parameters-trigger nodrag nowheel" data-canvas-overlay
         aria-label={`生成参数：${summary}${audioEnabled ? generateAudio ? '，声音开启' : '，声音关闭' : ''}`}
@@ -190,11 +208,12 @@ export function CanvasGenerationParameters({ modality, ratios, ratio, resolution
             onClick={() => clarities.length ? onChange({ clarity: option }) : fixedSizes.length ? changeImageSize({ clarity: option }) : onChange({ resolution: option })}>{option}</button>)}
         </div>
       </section>}
+      {modality === 'video' && ratioControls}
       {modality === 'video' && resolutions.length > 0 && <section className="pc-generation-parameter-section">
-        <div className="pc-generation-parameter-heading"><span>清晰度</span><small>{resolution}</small></div>
-        <div className="pc-generation-options" role="group" aria-label="清晰度">
+        <div className="pc-generation-parameter-heading"><span>清晰度</span><small>{videoResolutionLabel(resolution)}</small></div>
+        <div className="pc-generation-options pc-generation-video-resolution-options" role="group" aria-label="清晰度">
           {[...new Set(resolutions)].map(option => <button type="button" key={option} aria-pressed={resolution === option}
-            onClick={() => onChange({ resolution: option })}>{option}</button>)}
+            onClick={() => onChange({ resolution: option })}>{videoResolutionLabel(option)}</button>)}
         </div>
       </section>}
       {modality === 'image' && backgrounds.length > 0 && <section className="pc-generation-parameter-section">
@@ -204,18 +223,7 @@ export function CanvasGenerationParameters({ modality, ratios, ratio, resolution
             onClick={() => onChange({ background: option })}>{imageBackgroundLabel(option)}</button>)}
         </div>
       </section>}
-      {displayRatios.length > 0 && <section className="pc-generation-parameter-section">
-        <div className="pc-generation-parameter-heading"><span>比例</span>{modality === 'video' && <small>{ratio === 'adaptive' ? '自适应' : ratio}</small>}</div>
-        <div className={`pc-generation-ratios ${modality === 'image' ? 'pc-generation-image-ratios' : ''}`} role="group" aria-label="比例"
-          style={modality === 'image' ? { gridTemplateColumns: `repeat(${Math.min(5, displayRatios.length)}, minmax(0, 1fr))` } : undefined}>
-          {displayRatios.map(option => <button type="button" key={option} className="pc-generation-ratio" aria-pressed={ratio === option}
-            title={option}
-            onClick={() => fixedSizes.length ? changeImageSize({ ratio: option }) : onChange({ ratio: option })}>
-            <span className="pc-generation-ratio-preview">{option === 'adaptive' ? <Scan size={26} /> : <i style={ratioShape(option, modality === 'image' ? 22 : 29)} />}</span>
-            <span>{option === 'adaptive' ? '自适应' : option}</span>
-          </button>)}
-        </div>
-      </section>}
+      {modality === 'image' && ratioControls}
       {durationEnabled && <section className="pc-generation-parameter-section">
         <div className="pc-generation-parameter-heading"><span>视频时长</span><small>秒</small></div>
         <div className="pc-generation-duration">

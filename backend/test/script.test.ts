@@ -251,7 +251,9 @@ test('configured text model returns an unsaved script draft and removes temporar
   assert.equal(draft.scenes[0]?.heading, '抵达站台')
   assert.equal(draft.scenes[0]?.time_of_day, '')
   assert.match(JSON.stringify(bodies[0]), /临时创意/)
-  assert.equal((bodies[0] as { messages: Array<{ content: string }> }).messages[0]?.content, preview.prompt)
+  const submitted = (bodies[0] as { messages: Array<{ content: string }> }).messages[0]!.content
+  assert.match(submitted, /本次结构化返回契约/)
+  assert.equal(submitted.split('【原始任务与资料】\n')[1], preview.prompt)
   assert.deepEqual((await call<{ script: Script; shots: Shot[] }>('GET', `/api/projects/${project.id}`)).script,
     { outline: '', characters: '', generation_options: {}, scenes: [] })
   assert.deepEqual(await readdir(join(testData, 'media', project.id)), [])
@@ -260,7 +262,8 @@ test('configured text model returns an unsaved script draft and removes temporar
     model_id: model.id, prompt_override: '请写一部阴雨车站悬疑剧。',
   } })
   assert.equal(malformed.statusCode, 422)
-  assert.equal((bodies[1] as { messages: Array<{ content: string }> }).messages[0]?.content, '请写一部阴雨车站悬疑剧。')
+  assert.equal((bodies[1] as { messages: Array<{ content: string }> }).messages[0]?.content.split('【原始任务与资料】\n')[1], '请写一部阴雨车站悬疑剧。')
+  assert.equal(bodies.length, 3, 'malformed model output receives one format correction')
   assert.match(malformed.json<{ raw_output: string }>().raw_output, /没有 JSON/)
   assert.deepEqual(await readdir(join(testData, 'media', project.id)), [])
   assert.equal(one<{ outline: string }>('SELECT outline FROM scripts WHERE project_id=?', project.id), undefined)
@@ -547,7 +550,8 @@ test('planned shots are reviewed before insertion and preserve existing work', a
       model_id: model.id, scene_ids: [second.id, first.id], shots_per_scene: 3,
       prompt_override: `${planPreview.prompt}\n额外要求：保持雨夜冷暖对比。`,
     })
-  assert.equal(submittedPrompt, `${planPreview.prompt}\n额外要求：保持雨夜冷暖对比。`)
+  assert.match(submittedPrompt, /本次结构化返回契约/)
+  assert.equal(submittedPrompt.split('【原始任务与资料】\n')[1], `${planPreview.prompt}\n额外要求：保持雨夜冷暖对比。`)
   assert.deepEqual(planned.scenes.map(scene => scene.scene_id), [first.id, second.id])
   assert.deepEqual(planned.scenes.map(scene => scene.shots.reduce((sum, shot) => sum + shot.duration, 0)), [6, 5])
   assert.equal(planned.scenes[0]?.shots[0]?.title, '街角')

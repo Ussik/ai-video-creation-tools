@@ -12,6 +12,8 @@ import { api, json } from './api'
 import type { Model, Modality, Protocol, Provider } from './api'
 import { normalizeProviderBaseUrl } from './provider-url'
 import { imageRatios } from './canvas-model-parameters'
+import { videoRatios, videoResolutions } from '../../backend/src/video-parameters'
+import { applySeedance2VideoSettings } from '../../backend/src/seedance-video-settings'
 import './model-settings.css'
 
 type Props = {
@@ -114,7 +116,7 @@ const starterSettings: Record<Protocol, Record<string, unknown>> = {
     request_template: { model: '{{model}}', content: '{{content}}', duration: '{{duration}}', ratio: '{{ratio}}', resolution: '{{resolution}}' },
     content_template: [{ type: 'text', text: '{{prompt}}' }],
     id_path: 'id', status_path: 'status', result_path: 'content.video_url',
-    resolutions: ['480p', '720p', '1080p'], default_resolution: '720p',
+    ratios: videoRatios, resolutions: videoResolutions, default_resolution: '480p',
   },
 }
 
@@ -553,6 +555,19 @@ export default function ModelSettings({ providers, models, refresh, action, busy
     }
   }
 
+  function textCapability(key: 'structured_output_mode' | 'strict_tool_arguments') {
+    try { return (JSON.parse(modelDraft.settings) as Record<string, unknown>)[key] }
+    catch { return undefined }
+  }
+  function changeTextCapability(key: 'structured_output_mode' | 'strict_tool_arguments', value: string | boolean) {
+    try {
+      const settings = JSON.parse(modelDraft.settings)
+      if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('请求配置必须为 JSON 对象')
+      setModelDraft(current => ({ ...current, settings: JSON.stringify({ ...settings, [key]: value }, null, 2) }))
+      setFormError('')
+    } catch { setFormError('请先修正请求配置 JSON，再调整输出能力') }
+  }
+
   async function deleteSelected() {
     if (!deleteTarget) return
     await action(async () => {
@@ -840,7 +855,22 @@ export default function ModelSettings({ providers, models, refresh, action, busy
             {pricingFormError && <p className="ms-pricing-error" role="alert">{pricingFormError}</p>}
           </div>}
         </section>
-        <div className="ms-json-head"><span>请求配置 JSON</span><Button variant="subtle" size="compact-sm" leftSection={<Braces size={14} />} onClick={formatModelSettings}>格式化</Button></div>
+        {modelDraft.modality === 'text' && <section className="ms-text-capabilities">
+          <Select label="结构化输出" description="按厂商实际支持选择；未知时使用兼容模式" value={String(textCapability('structured_output_mode') || 'prompt')} allowDeselect={false}
+            data={[{ value: 'prompt', label: '兼容模式 · 提示词与本地校验' }, { value: 'json_object', label: 'JSON 模式' }, { value: 'json_schema', label: 'JSON Schema · 严格结构' }]}
+            onChange={value => value && changeTextCapability('structured_output_mode', value)} />
+          <Switch label="严格函数参数" description="仅在接口支持严格工具 Schema 时开启；执行前仍会校验参数" checked={textCapability('strict_tool_arguments') === true} onChange={event => changeTextCapability('strict_tool_arguments', event.currentTarget.checked)} />
+        </section>}
+        <div className="ms-json-head"><span>请求配置 JSON</span><div>
+          {modelDraft.modality === 'video' && <Button variant="subtle" size="compact-sm" onClick={() => {
+            try {
+              const previous = parsedSettings(modelDraft.settings)
+              setModelDraft({ ...modelDraft, settings: formattedSettings(applySeedance2VideoSettings(previous)) })
+              setFormError('')
+            } catch (issue) { setFormError(issue instanceof Error ? issue.message : String(issue)) }
+          }}>应用 Seedance 2.0 配置</Button>}
+          <Button variant="subtle" size="compact-sm" leftSection={<Braces size={14} />} onClick={formatModelSettings}>格式化</Button>
+        </div></div>
         <Textarea aria-label="请求配置 JSON" classNames={{ input: 'ms-json-editor' }} spellCheck={false} rows={13} value={modelDraft.settings} onChange={(event) => { setModelDraft({ ...modelDraft, settings: event.currentTarget.value }); setFormError('') }} error={formError || undefined} />
         <div className="ms-modal-actions"><Button variant="default" onClick={() => setModelOpen(false)}>取消</Button><Button className="ms-primary-action" leftSection={<Save size={15} />} disabled={busy || !modelDraft.provider_id || !modelDraft.name.trim() || !modelDraft.remote_id.trim()} onClick={saveModel}>保存模型</Button></div>
       </div>

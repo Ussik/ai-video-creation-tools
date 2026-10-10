@@ -139,6 +139,10 @@ export function imagePreferencePrompt(model: Model, prompt: string, request: {
 }
 
 export function modelDefaultResolution(model: Model | undefined, resolutions: string[]): string {
+  if (model?.modality === 'video') {
+    const defaultVideoResolution = resolutions.find(value => value.toLowerCase() === '480p')
+    if (defaultVideoResolution) return defaultVideoResolution
+  }
   const configured = model?.settings.default_resolution
   return typeof configured === 'string' && resolutions.includes(configured) ? configured : resolutions[0] || ''
 }

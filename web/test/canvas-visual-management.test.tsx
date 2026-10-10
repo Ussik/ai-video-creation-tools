@@ -1,0 +1,206 @@
+import assert from 'node:assert/strict'
+import { after, test } from 'node:test'
+import { register } from 'node:module'
+register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
+import { JSDOM } from 'jsdom'
+import React, { act } from 'react'
+import { MantineProvider } from '@mantine/core'
+import type { Model, ProjectDetail, VisualProfile, VisualProjectData } from '../src/api'
+const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
+for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLElement', 'Element', 'ShadowRoot', 'Event', 'MouseEvent']) Object.defineProperty(globalThis, key, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[key] })
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, getComputedStyle: dom.window.getComputedStyle.bind(dom.window), requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window), cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window) })
+Object.defineProperty(dom.window, 'matchMedia', { value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) })
+Object.defineProperty(dom.window.document, 'fonts', { value: { addEventListener() {}, removeEventListener() {} } })
+Object.defineProperty(globalThis, 'ResizeObserver', { value: class { observe() {} unobserve() {} disconnect() {} } })
+dom.window.HTMLElement.prototype.scrollIntoView = () => {}
+const { createRoot } = await import('react-dom/client')
+const { default: Inspector } = await import('../src/VisualProfileInspector')
+const { default: Bindings } = await import('../src/VisualBindingEditor')
+const { default: Organizer } = await import('../src/VisualProfileOrganizer')
+after(() => dom.window.close())
+const profile = { id: 'lin', project_id: 'project', kind: 'character', name: '林晚', variant: '默认', definition: '日漫风格，短发', view_requirements: '正侧背三视图', revision: 2, definition_status: 'ready', board_asset_id: 'new-board', asset_task_id: null, board_prompt: '人物信息图' } as VisualProfile
+const other = { ...profile, id: 'station', kind: 'location', name: '车站', board_asset_id: null } as VisualProfile
+const model = { id: 'text', provider_id: 'provider', name: '文本模型', remote_id: 'text', modality: 'text', protocol: 'chat_completions', settings: {}, enabled: true } as Model
+const detail = {
+  id: 'project', name: '夜班列车', script: { outline: '日漫故事', characters: '林晚', generation_options: {}, artifacts: [], scenes: [{ id: 'scene', episode_number: 1, heading: '车站 · 夜', characters: '林晚' }] },
+  shots: [{ id: 'shot', title: '入站', position: 0, source_scene_id: 'scene' }], assets: [{ id: 'new-board', kind: 'image' }], jobs: [], asset_tasks: [],
+  visual_profiles: [profile, other], scene_visual_bindings: [{ scene_id: 'scene', profile_id: 'lin', required: true }],
+  shot_visual_bindings: [{ ...profile, profile_id: 'lin', shot_id: 'shot', board_asset_id: 'old-board', required: true }],
+} as unknown as ProjectDetail
+const data = (base = detail): VisualProjectData => ({ visual_profiles: base.visual_profiles!, scene_visual_bindings: base.scene_visual_bindings!, shot_visual_bindings: base.shot_visual_bindings! })
+const noop = () => {}
+const inspectorProps = { profile, inCanvas: false, detail, generating: false, onRefresh: async () => {}, onClose: noop, onBindings: noop, onDirtyChange: noop, onBusyChange: noop, onSaved: noop, onDeleted: noop, onOpenCanvas: noop }
+async function mount(element: React.ReactNode) {
+  const container = document.createElement('div'); document.body.append(container)
+  const root = createRoot(container)
+  const render = (node: React.ReactNode) => act(() => root.render(<MantineProvider env="test">{node}</MantineProvider>))
+  try { await render(element) } catch (issue) { await act(() => root.unmount()); container.remove(); throw issue instanceof AggregateError ? issue.errors[0] : issue }
+  return { container, render, destroy: async () => { await act(() => root.unmount()); container.remove() } }
+}
+function button(label: string) {
+  const found = [...document.querySelectorAll<HTMLButtonElement>('button')].find(node => node.textContent?.trim() === label || node.getAttribute('aria-label') === label)
+  assert.ok(found, label); return found
+}
+async function fill(label: string, value: string) {
+  const node = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[aria-label="${label}"]`)!
+  assert.ok(node, label)
+  const setter = Object.getOwnPropertyDescriptor(node.tagName === 'TEXTAREA' ? dom.window.HTMLTextAreaElement.prototype : dom.window.HTMLInputElement.prototype, 'value')!.set!
+  await act(() => { setter.call(node, value); node.dispatchEvent(new dom.window.Event('input', { bubbles: true })) })
+}
+async function choose(label: string, value: string) {
+  await act(() => document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!.click())
+  const option = document.querySelector<HTMLElement>(`[role="option"][value="${value}"]`)
+  assert.ok(option, value); await act(() => option.click())
+}
+async function check(label: string) {
+  const element = [...document.querySelectorAll<HTMLLabelElement>('label')].find(node => node.textContent === label)
+  assert.ok(element, label); await act(() => element.click())
+}
+
+test('manual creation saves a definition without adding a node or generating images', async t => {
+  let saved: VisualProfile | undefined, opened = 0
+  const requests: Array<{ path: string; body: any }> = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    requests.push({ path: String(url), body: JSON.parse(String(init?.body)) })
+    return Response.json({ ...data(), visual_profiles: [...detail.visual_profiles!, { ...profile, id: 'prop', kind: 'prop', name: '车票', definition: '旧纸质车票', board_asset_id: null }] })
+  })
+  const view = await mount(<Inspector {...inspectorProps} profile={undefined} onSaved={value => { saved = value }} onOpenCanvas={() => opened++} />)
+  try {
+    assert.equal(document.querySelector('[role="dialog"]'), null)
+    assert.equal(button('创建设定').disabled, true)
+    await choose('设定类型', 'prop'); await fill('设定名称', '车票'); await fill('固定视觉设定', '旧纸质车票')
+    assert.equal(button('创建设定').disabled, false)
+    await act(() => button('创建设定').click())
+    assert.equal(saved?.id, 'prop'); assert.equal(opened, 0)
+    assert.equal(requests.length, 1); assert.equal(requests[0].path, '/api/projects/project/visual-profiles')
+    assert.equal(requests[0].body.profiles[0].kind, 'prop')
+  } finally { await view.destroy() }
+})
+
+test('editing retains unsaved text and sends the original revision after a concurrent profile refresh', async t => {
+  let requestBody: any
+  t.mock.method(globalThis, 'fetch', async (_url, init) => { requestBody = JSON.parse(String(init?.body)); return Response.json({ error: '版本已变化' }, { status: 409 }) })
+  const view = await mount(<Inspector {...inspectorProps} />)
+  try {
+    await fill('固定视觉设定', '新增蓝色外套')
+    await view.render(<Inspector {...inspectorProps} profile={{ ...profile, revision: 3, definition: '其他编辑' }} />)
+    assert.equal(document.querySelector<HTMLTextAreaElement>('[aria-label="固定视觉设定"]')!.value, '新增蓝色外套')
+    await act(() => button('保存设定').click())
+    assert.equal(requestBody.expected_revision, 2); assert.equal(requestBody.definition, '新增蓝色外套')
+    assert.ok(document.querySelector('[role="alert"]'))
+    assert.equal(button('加入画布').disabled, true)
+    assert.equal(button('删除设定').disabled, true, 'used shots must be unbound before deleting')
+  } finally { await view.destroy() }
+})
+
+test('same-revision board changes can refresh a shot snapshot without dropping other required references', async t => {
+  const extra = { ...detail.shot_visual_bindings![0], profile_id: other.id, kind: other.kind, name: other.name, required: 0 as unknown as boolean }
+  const base = { ...detail, shot_visual_bindings: [...detail.shot_visual_bindings!, extra] }
+  let requestBody: any
+  t.mock.method(globalThis, 'fetch', async (_url, init) => { requestBody = JSON.parse(String(init?.body)); return Response.json(data(base)) })
+  const view = await mount(<Bindings detail={base} context={{ target: 'shot:shot' }} onRefresh={async () => {}} onClose={noop} onBusyChange={noop} onLocate={noop} />)
+  try {
+    assert.equal(document.querySelector('[role="dialog"]'), null)
+    assert.match(view.container.textContent!, /图片缺失/)
+    await act(() => button('更新引用').click())
+    assert.deepEqual(requestBody.refresh_profile_ids, ['lin'])
+    assert.deepEqual(requestBody.bindings, [{ profile_id: 'lin', required: true }, { profile_id: 'station', required: false }])
+  } finally { await view.destroy() }
+})
+
+test('profile usage can remove a shot binding and apply scene references to shots', async t => {
+  const requests: Array<{ path: string; body: any }> = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    requests.push({ path: String(url), body: JSON.parse(String(init?.body)) })
+    return Response.json({ ...data(), shot_visual_bindings: [] })
+  })
+  const view = await mount(<Bindings detail={detail} context={{ profileId: 'lin' }} onRefresh={async () => {}} onClose={noop} onBusyChange={noop} onLocate={noop} />)
+  try {
+    assert.match(view.container.textContent!, /已引用 · 2/)
+    await check('林晚 · 默认')
+    assert.equal(requests[0].path, '/api/shots/shot/visual-bindings'); assert.deepEqual(requests[0].body.bindings, [])
+    await choose('选择绑定场次或镜头', 'scene:scene')
+    await act(() => button('应用到本场镜头').click())
+    assert.equal(requests[1].path, '/api/script-scenes/scene/visual-bindings/apply-to-shots')
+  } finally { await view.destroy() }
+})
+
+test('a failed binding save keeps prior checks visible with an error', async t => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ error: '无法保存' }, { status: 500 }))
+  const view = await mount(<Bindings detail={detail} context={{ target: 'shot:shot' }} onRefresh={async () => {}} onClose={noop} onBusyChange={noop} onLocate={noop} />)
+  try {
+    await check('林晚 · 默认')
+    assert.equal(view.container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked, true)
+    assert.match(view.container.querySelector('[role="alert"]')!.textContent!, /无法保存/)
+  } finally { await view.destroy() }
+})
+
+test('batch organization shows timed progress, reviews editable missing profiles, then saves without node or image writes', async t => {
+  let release!: (value: Response) => void
+  const requests: Array<{ path: string; body?: any }> = []
+  const draft = { kind: 'prop', name: '车票', variant: '默认', definition: '旧纸质车票', view_requirements: '正面与背面', scene_ids: ['scene'] }
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    const path = String(url); if (path.endsWith('/skills/defaults')) return Response.json({ policies: [{ stage: 'visual_assets', label: '视觉设定', primary_id: null, auxiliary_ids: [], source: 'global', warning: '', skills: [] }] }); requests.push({ path, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+    if (path === '/api/models') return Response.json([model])
+    if (path.endsWith('/analyze')) return new Promise<Response>(resolve => { release = resolve })
+    return Response.json(data())
+  })
+  const view = await mount(<Organizer detail={detail} models={[model]} onRefresh={async () => {}} onClose={noop} onDirtyChange={noop} onBusyChange={noop} />)
+  try {
+    await act(() => button('整理设定草稿').click())
+    assert.equal(button('整理设定草稿').disabled, true)
+    assert.match(view.container.querySelector('[role="status"]')!.textContent!, /正在整理设定.*处理中/)
+    await act(() => release(Response.json({ profiles: [draft, { ...draft, kind: profile.kind, name: profile.name, variant: profile.variant }] })))
+    assert.equal(button('确认保存 1 份设定').disabled, false)
+    await fill('固定视觉设定', '有金色字样的旧车票')
+    await act(() => button('确认保存 1 份设定').click())
+    assert.deepEqual(requests.map(item => item.path), ['/api/models', '/api/projects/project/visual-profiles/analyze', '/api/projects/project/visual-profiles'])
+    assert.equal(requests.at(-1)!.body.profiles[0].definition, '有金色字样的旧车票')
+    assert.deepEqual(requests[1].body.scene_ids, ['scene'])
+  } finally { await view.destroy() }
+})
+
+test('batch draft cannot be saved after its source script changed', async t => {
+  const writes: string[] = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (String(url).endsWith('/skills/defaults')) return Response.json({ policies: [{ stage: 'visual_assets', label: '视觉设定', primary_id: null, auxiliary_ids: [], source: 'global', warning: '', skills: [] }] })
+    if (init?.method === 'POST') writes.push(String(url))
+    return Response.json(String(url).endsWith('/models') ? [model] : { profiles: [{ kind: 'prop', name: '票', variant: '默认', definition: '纸票', view_requirements: '正背面', scene_ids: [] }] })
+  })
+  const props = { detail, models: [model], onRefresh: async () => {}, onClose: noop, onDirtyChange: noop, onBusyChange: noop }
+  const view = await mount(<Organizer {...props} />)
+  try {
+    await act(() => button('整理设定草稿').click())
+    await view.render(<Organizer {...props} detail={{ ...detail, script: { ...detail.script, outline: '更新的大纲' } }} />)
+    assert.equal(button('确认保存 1 份设定').disabled, true)
+    assert.match(view.container.textContent!, /剧本资料已变化/)
+    assert.equal(writes.length, 1)
+  } finally { await view.destroy() }
+})
+
+test('read-only profile editor adopts a newer definition rather than showing stale text', async () => {
+  const view = await mount(<Inspector {...inspectorProps} />)
+  try {
+    await view.render(<Inspector {...inspectorProps} profile={{ ...profile, revision: 3, definition: '更新后的设定' }} />)
+    assert.equal(document.querySelector<HTMLTextAreaElement>('[aria-label="固定视觉设定"]')!.value, '更新后的设定')
+    assert.equal(button('保存设定').disabled, true)
+    assert.equal(document.querySelector('[role="status"]'), null)
+  } finally { await view.destroy() }
+})
+
+test('renaming a batch draft to an existing profile is rejected before a save request', async t => {
+  const writes: string[] = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (String(url).endsWith('/skills/defaults')) return Response.json({ policies: [{ stage: 'visual_assets', label: '视觉设定', primary_id: null, auxiliary_ids: [], source: 'global', warning: '', skills: [] }] })
+    if (init?.method === 'POST') writes.push(String(url))
+    return Response.json(String(url).endsWith('/models') ? [model] : { profiles: [{ kind: 'character', name: '新角色', variant: '默认', definition: '日漫角色', view_requirements: '正背面', scene_ids: [] }] })
+  })
+  const view = await mount(<Organizer detail={detail} models={[model]} onRefresh={async () => {}} onClose={noop} onDirtyChange={noop} onBusyChange={noop} />)
+  try {
+    await act(() => button('整理设定草稿').click())
+    await fill('设定名称', '林晚')
+    await act(() => button('确认保存 1 份设定').click())
+    assert.match(view.container.querySelector('[role="alert"]')!.textContent!, /已存在或在草稿中重复/)
+    assert.equal(writes.length, 1)
+  } finally { await view.destroy() }
+})

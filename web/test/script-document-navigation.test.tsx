@@ -33,9 +33,12 @@ async function mount(initialSection?: Section, scrollHeight = 3000) {
     return <>
       <nav>{(Object.keys(offsets) as Section[]).map(section => <button key={section} aria-current={activeSection === section ? 'true' : undefined} onClick={() => selectSection(section)}>{section}</button>)}</nav>
       <button onClick={() => selectSection('outline', true)}>story</button>
-      <article ref={editorRef}>{sections.map(section => <section key={section} data-script-section={section} ref={element => {
+      <button onClick={() => selectSection('characters', false, '[data-search-match]')}>find-character</button>
+      <article ref={editorRef} style={{ overflowY: 'auto' }}>{sections.map(section => <section key={section} data-script-section={section} ref={element => {
         if (element) element.getBoundingClientRect = () => ({ top: 52 + offsets[section] - element.parentElement!.scrollTop } as DOMRect)
-      }} />)}</article>
+      }}><span data-search-match ref={element => {
+        if (element) element.getBoundingClientRect = () => ({ top: 52 + offsets[section] + 900 - editorRef.current!.scrollTop } as DOMRect)
+      }} /></section>)}</article>
     </>
   }
   await act(() => root.render(<Harness initial={initialSection} />))
@@ -53,7 +56,7 @@ async function mount(initialSection?: Section, scrollHeight = 3000) {
   return {
     editor, scrollCalls, frames, flushFrames,
     active: () => container.querySelector('button[aria-current="true"]')?.textContent,
-    click: async (section: Section | 'story') => {
+    click: async (section: Section | 'story' | 'find-character') => {
       const button = Array.from(container.querySelectorAll('button')).find(element => element.textContent === section)!
       await act(() => button.click())
     },
@@ -190,4 +193,30 @@ test('initial section changes locate the requested document and unmount cancels 
   assert.equal(view.frames.size, 1)
   await view.destroy()
   assert.equal(view.frames.size, 0)
+})
+
+test('a search result in a standalone document scrolls to the match and keeps its directory selected', async () => {
+  const view = await mount()
+  try {
+    await view.scroll(1000)
+    await view.click('find-character')
+    await view.flushFrames()
+    assert.deepEqual(view.scrollCalls.at(-1), { top: 800, behavior: 'smooth' })
+    await view.scroll(400)
+    await view.scroll(800)
+    assert.equal(view.active(), 'characters')
+  } finally { await view.destroy() }
+})
+
+test('a search result scrolls the page when the mobile document has no independent scroll container', async () => {
+  const view = await mount()
+  try {
+    view.editor.style.overflowY = 'visible'
+    let scrolled = false
+    dom.window.HTMLElement.prototype.scrollIntoView = options => { scrolled = (options as ScrollIntoViewOptions).block === 'center' }
+    await view.click('find-character')
+    await view.flushFrames()
+    assert.equal(scrolled, true)
+    assert.equal(view.active(), 'characters')
+  } finally { await view.destroy() }
 })

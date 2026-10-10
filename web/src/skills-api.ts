@@ -1,4 +1,7 @@
 export type SkillStage = 'script' | 'visual_assets' | 'image_prompt' | 'storyboard' | 'video_prompt'
+export type SkillSelections = Partial<Record<SkillStage, string[]>>
+export type SkillPolicy = { stage: SkillStage; label: string; primary_id: string | null; auxiliary_ids: string[]; source: 'global' | 'project'; warning: string;
+  skills: Array<{ id: string; name: string; description: string; revision: string }> }
 export const skillStageOptions: Array<{ value: SkillStage; label: string }> = [
   { value: 'script', label: '剧本创作' }, { value: 'visual_assets', label: '视觉设定' },
   { value: 'image_prompt', label: '图片提示词' }, { value: 'storyboard', label: '分镜规划' }, { value: 'video_prompt', label: '视频提示词' },
