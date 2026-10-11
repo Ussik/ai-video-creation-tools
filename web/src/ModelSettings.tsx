@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import {
+import { UnstyledButton,
   ActionIcon, Badge, Button, Modal, PasswordInput, Popover, SegmentedControl,
   Select, Switch, Tabs, Textarea, TextInput, Tooltip,
 } from '@mantine/core'
@@ -215,6 +215,8 @@ export default function ModelSettings({ providers, models, refresh, action, busy
   const syncRequestId = useRef(0)
   const [providerDraft, setProviderDraft] = useState<ProviderDraft>(emptyProvider)
   const [providerOpen, setProviderOpen] = useState(false)
+  const [providerNameTarget, setProviderNameTarget] = useState<{ id: string; name: string } | null>(null)
+  const [providerNameDraft, setProviderNameDraft] = useState('')
   const [catalogOpen, setCatalogOpen] = useState(false)
   const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([])
   const [catalogChoices, setCatalogChoices] = useState<Record<string, CatalogChoice>>({})
@@ -308,6 +310,17 @@ export default function ModelSettings({ providers, models, refresh, action, busy
       setProviderDraft(emptyProvider())
       setProviderOpen(false)
     }, '厂商已添加')
+  }
+
+  async function renameProvider() {
+    const name = providerNameDraft.trim()
+    if (!providerNameTarget || busy || !name || name.length > 120 || name === providerNameTarget.name) return
+    const id = providerNameTarget.id
+    await action(async () => {
+      await api(`/providers/${id}`, json('PATCH', { name }))
+      await refresh()
+      setProviderNameTarget(null)
+    }, '提供商名称已更新')
   }
 
   function setConnectionFieldError(providerId: string, field: ConnectionField, message: string | null) {
@@ -635,11 +648,11 @@ export default function ModelSettings({ providers, models, refresh, action, busy
         <nav className="ms-provider-list" aria-label="选择提供商">
           {filteredProviders.map((item, index) => {
             const count = models.filter((model) => model.provider_id === item.id).length
-            return <button key={item.id} type="button" className={`ms-provider ${providerId === item.id ? 'is-active' : ''}`} aria-current={providerId === item.id ? 'true' : undefined} onClick={() => { syncRequestId.current += 1; activeProviderId.current = item.id; catalogRequestId.current += 1; setCatalogOpen(false); setProviderId(item.id); setModelSearch(''); setModalityFilter('all') }}>
+            return <UnstyledButton key={item.id} type="button" className={`ms-provider ${providerId === item.id ? 'is-active' : ''}`} aria-current={providerId === item.id ? 'true' : undefined} onClick={() => { syncRequestId.current += 1; activeProviderId.current = item.id; catalogRequestId.current += 1; setCatalogOpen(false); setProviderId(item.id); setModelSearch(''); setModalityFilter('all') }}>
               <span className={`ms-provider-symbol ms-symbol-${index % 5}`}>{item.name.trim().slice(0, 1).toUpperCase()}</span>
               <span className="ms-provider-copy"><strong>{item.name}</strong><small>{count} 个模型</small></span>
               <span className={`ms-status-light ${item.enabled && item.has_key ? 'is-ready' : ''}`} title={!item.enabled ? '已停用' : item.has_key ? '已配置密钥' : '待配置密钥'} />
-            </button>
+            </UnstyledButton>
           })}
           {configurableProviders.length > 0 && filteredProviders.length === 0 && <p className="ms-search-empty">没有匹配的提供商</p>}
         </nav>
@@ -650,7 +663,7 @@ export default function ModelSettings({ providers, models, refresh, action, busy
         {provider ? <>
           <header className="ms-provider-heading">
             <span className="ms-provider-emblem">{provider.name.trim().slice(0, 1).toUpperCase()}</span>
-            <div className="ms-provider-title"><h1>{provider.name}</h1><span>{provider.enabled ? '已启用' : '已停用'} · {providerModels.length} 个模型</span></div>
+            <div className="ms-provider-title"><div className="ms-provider-name"><h1>{provider.name}</h1><Tooltip label="修改提供商名称"><ActionIcon aria-label="修改提供商名称" variant="subtle" disabled={busy} onClick={() => { setProviderNameDraft(provider.name); setProviderNameTarget({ id: provider.id, name: provider.name }) }}><Pencil size={15} /></ActionIcon></Tooltip></div><span>{provider.enabled ? '已启用' : '已停用'} · {providerModels.length} 个模型</span></div>
             <div className="ms-head-actions">
               <Switch label="启用提供商" checked={provider.enabled} disabled={busy} onChange={(event) => void setProviderEnabled(event.currentTarget.checked)} />
               <Tooltip label="删除提供商"><ActionIcon aria-label={`删除提供商 ${provider.name}`} color="gray" variant="subtle" disabled={busy} onClick={() => setDeleteTarget({ kind: 'provider', id: provider.id, name: provider.name })}><Trash2 size={16} /></ActionIcon></Tooltip>
@@ -729,6 +742,13 @@ export default function ModelSettings({ providers, models, refresh, action, busy
       </div>
     </Modal>
 
+    <Modal opened={!!providerNameTarget} onClose={() => { if (!busy) setProviderNameTarget(null) }} title="修改提供商名称" size="sm" centered closeOnClickOutside={!busy} closeOnEscape={!busy} withCloseButton={!busy} classNames={{ content: 'ms-modal', header: 'ms-modal-header' }}>
+      <div className="ms-modal-body">
+        <TextInput label="提供商名称" aria-label="提供商名称" withAsterisk data-autofocus maxLength={120} value={providerNameDraft} disabled={busy} onChange={event => setProviderNameDraft(event.currentTarget.value)} />
+        <div className="ms-modal-actions"><Button variant="default" disabled={busy} onClick={() => setProviderNameTarget(null)}>取消</Button><Button leftSection={<Save size={15} />} loading={busy} disabled={!providerNameDraft.trim() || providerNameDraft.trim() === providerNameTarget?.name} onClick={() => void renameProvider()}>保存名称</Button></div>
+      </div>
+    </Modal>
+
     <Modal
       opened={catalogOpen}
       onClose={closeCatalog}
@@ -766,9 +786,9 @@ export default function ModelSettings({ providers, models, refresh, action, busy
             const readyGroup = groupItems.filter((item) => !item.existing && catalogChoices[item.remote_id]?.modality)
             return <section className="ms-catalog-group" key={family} aria-label={`${family} 模型`}>
               <div className="ms-catalog-group-head">
-                <button type="button" aria-expanded={!collapsed} onClick={() => setCatalogCollapsed((current) => collapsed ? current.filter((name) => name !== family) : [...current, family])}>
+                <UnstyledButton type="button" aria-expanded={!collapsed} onClick={() => setCatalogCollapsed((current) => collapsed ? current.filter((name) => name !== family) : [...current, family])}>
                   <ChevronDown size={17} className={collapsed ? 'is-collapsed' : ''} /><strong>{family}</strong><span>{groupItems.length}</span>
-                </button>
+                </UnstyledButton>
                 <Tooltip label={readyGroup.length ? `添加此组 ${readyGroup.length} 个模型` : '本组没有可直接添加的模型'}>
                   <ActionIcon variant="subtle" aria-label={`添加 ${family} 分组模型`} loading={catalogImporting && catalogActiveAction === `group:${family}`} disabled={busy || catalogImporting || readyGroup.length === 0} onClick={() => void importCatalog(readyGroup, `group:${family}`)}><Plus size={18} /></ActionIcon>
                 </Tooltip>

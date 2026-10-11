@@ -1,0 +1,8 @@
+# Progress
+User requested redesign of shot references. Read redesign skill and relevant memory; inspected current implementation and regression scaffold. Backed up current user-modified files under /private/tmp/shot-ref-* for isolated diff review. Planning and browser skills already applied earlier in conversation.
+
+Implemented independent Mantine Drawer (760px max/full viewport on mobile), enlarged previews/type/filter controls and modal previews. Prompt stays mounted. Root npm command used wrong cwd; corrected to web cwd. Updated existing integration expectation from inline region to drawer. Removed unused split-pane CSS.
+
+Completed browser QA in the existing TaskSpace 34 using a temporary, browser-only fixture with every fetch intercepted. Desktop 1440x1000 drawer measured 760x1000; at canvas zoom 25% it remained 760px wide with 14px labels. Mobile 390x844 drawer filled the viewport without horizontal overflow. Checked expanded composer stacking, independent image preview, Escape menu/preview/drawer order, overlay close preserving selected node and prompt/focus, usage PUT and selection PUT, search/category filters, empty states and fixed search/footer during list scroll. No real project writes or generation. Added regression assertions for image-preview Escape and overlay selection retention. Fixed overlay pointer guard and short-list grid row stretching.
+
+Focused tests passed 23/23. Final web UI guard/TypeScript/Vite build passed, with the existing large-chunk warning only. git diff --check passed. Temporary fixture files removed; TaskSpace 34 finished once with no kept pages. No commit or push.

@@ -1,0 +1,71 @@
+[
+  {
+    "id": "39JWT9923z",
+    "name": "视频节点 2",
+    "action": "video_generate",
+    "isStale": false,
+    "mode": "mixed2video",
+    "model": "star-video2",
+    "settings": {
+      "ratio": "16:9",
+      "resolution": "720p",
+      "duration": 8,
+      "enableSound": "on"
+    },
+    "prompt": "{{Portrait 2}} 女主三视图参考， {{Portrait 3}} 男主三视图参考， {{Portrait 4}} 黑衣面具人三视图参考，女主本来侧趴在地上，身后站着三个黑衣面具人，场景参考此图与人物动作站位参考此图 ，不参考此图的女主样子 ，男主冲进画面撞开一名面具人，然后一脚踢开另外一名面具人，踢开的那名面具人连带着最后一名一起飞出画面，然后主角转身蹲下抱起女主，此时场景参考 {{Portrait 1}} 女主样子参考此图，视频不要背景音乐",
+    "references": [
+      {
+        "nodeId": "284b1e26-a9ce-4e1d-be4f-e28d60ba2b1b",
+        "label": null,
+        "mediaType": "image"
+      },
+      {
+        "nodeId": "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+        "label": null,
+        "mediaType": "image"
+      },
+      {
+        "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "label": null,
+        "mediaType": "image"
+      },
+      {
+        "nodeId": "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+        "label": null,
+        "mediaType": "image"
+      }
+    ]
+  },
+  {
+    "id": "be859445-8a94-46c0-bb71-af12b9972c98",
+    "name": "视频节点 2",
+    "action": "video_generate",
+    "isStale": false,
+    "mode": "mixed2video",
+    "model": "star-video2",
+    "settings": {
+      "ratio": "16:9",
+      "resolution": "720p",
+      "duration": 7,
+      "enableSound": "on"
+    },
+    "prompt": "{{Portrait 1}} 主角三视图参考， {{Portrait 2}} 场景参考， {{Portrait 3}} 结尾参考[Video] Fast-paced cinematic montage sequence, rapidly cutting between multiple camera angles. The protagonist is violently pushing the gate. Angle 1: Tight close-up of his strained hands pressing against the charred wood, with the red barrier energy violently rippling underneath. Angle 2: Low side-profile shot showing his entire body leaning forward, feet digging into the ground, pushing with desperate strength. Angle 3:\n Extreme close-up of his face, gritting his teeth in extreme effort, skin illuminated by the blinding red glow. As the camera cuts back and forth, the red mystical VFX becomes increasingly explosive, shooting out chaotic sparks. Blinding red light rays begin cracking and bursting through the seams of the door. 3D CG, Chinese anime style, high-octane action, 4K.\n[Audio] Continuous heavy, strained groaning from the protagonist exerting maximum physical effort. A deep, earthquake-like bass rumble of the barrier resisting. The mystical energy sound becomes increasingly chaotic and violent, building up to a deafening, high-pitched tearing sound as the VFX reaches its peak.，不要背景音乐，不要字幕，需要音效",
+    "references": [
+      {
+        "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "label": null,
+        "mediaType": "image"
+      },
+      {
+        "nodeId": "380d6c82-7239-431c-9308-e009e6e22d52",
+        "label": null,
+        "mediaType": "image"
+      },
+      {
+        "nodeId": "e3b8e2ec-1217-4d8f-a0ba-e401001d96cc",
+        "label": null,
+        "mediaType": "image"
+      }
+    ]
+  }
+]

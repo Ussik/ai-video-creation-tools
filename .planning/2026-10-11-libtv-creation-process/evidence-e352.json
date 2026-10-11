@@ -1,0 +1,153 @@
+[
+  {
+    "id": "v-3QwGRZjnVq",
+    "name": "1 - 副本",
+    "action": "video_generate",
+    "isStale": false,
+    "mode": "mixed2video",
+    "model": "star-video2-fast",
+    "settings": {
+      "ratio": "16:9",
+      "resolution": "720p",
+      "duration": 14,
+      "enableSound": "on"
+    },
+    "prompt": "这场戏始终是手持呼吸感，镜头模拟手持感。生成人物全身三视图，杰作，最高画质，80年代日本复古动画插画，吉卜力画风，赛璐璐手绘动画，清晰柔和轮廓线，块面平涂光影，带有手绘笔触肌理，不要字幕，不要音乐，只要环境音效，画风始终保持一致。（猫始终保持病怏怏的状态）场景1 {{Mixed 2}} ，人物始终位于阴影处，夏天的季节氛围，始终是两杯咖啡两人中间，人物座位参考 {{Mixed 3}} ，文艺片的节奏，正常切镜头，禁止叠化，禁止叠化，两人始终不同框，单人近景。这场戏始终是手持呼吸感，镜头模拟手持感。（女人有些不理解的表演方式，男人是比较木的）\n\t44 3s\t正面\t中景\t林晓 {{Mixed 1}} {{Mixed 5}} 默默放下咖啡（星巴克纸杯）。林晓：你还记得那个锦囊吗？\t\t\n\t45 3s\t从表情摇到手部动作\t近景陈屿 {{Mixed 4}} 沉默了几秒。他低头看了一眼自己的手，手指在膝盖上收了一下，没有接这句话。\t\n\t46\t4s\t正面\t近景 {{Mixed 1}} {{Mixed 5}} 林晓：我亲手织的，上面绣了你的名字。你弄丢了。你知道我当时怎么想吗——我就知道，你根本不在乎。\"\t\t\n\t47   4s\t从手摇到面部\t特写 林晓 {{Mixed 4}} 笑了一下，是那种很苦的笑。 {{Mixed 1}} {{Mixed 5}} 林晓：所以我提分手。你不挽留，我就走了。",
+    "references": [
+      {
+        "nodeId": "i-fHPK2vJlEh",
+        "label": "图片节点 4",
+        "mediaType": "image"
+      },
+      {
+        "nodeId": "i-IdnyL99zLs",
+        "label": "图片节点 7",
+        "mediaType": "image"
+      },
+      {
+        "nodeId": "i-M6KMmMyMt6",
+        "label": "导演台 2 机位2-shot-01",
+        "mediaType": "image"
+      },
+      {
+        "nodeId": "i-jImD2fj1r3",
+        "label": "图片节点 5",
+        "mediaType": "image"
+      },
+      {
+        "nodeId": "a-Hw0LEfqfTz",
+        "label": "女生声音",
+        "mediaType": "audio"
+      },
+      {
+        "nodeId": "i-uKzW8x1M1o",
+        "label": "截图",
+        "mediaType": "image"
+      },
+      {
+        "nodeId": "a-oRNxea5Ymw",
+        "label": "视频节点 10 - 副本_人声_截取",
+        "mediaType": "audio"
+      }
+    ]
+  },
+  {
+    "id": "v-74P0QuekPa",
+    "name": "1 - 副本",
+    "action": "video_generate",
+    "isStale": false,
+    "mode": "mixed2video",
+    "model": "star-video2-fast",
+    "settings": {
+      "ratio": "16:9",
+      "resolution": "720p",
+      "duration": 15,
+      "enableSound": "on"
+    },
+    "prompt": "这场戏始终是手持呼吸感，镜头模拟手持感。生成人物全身三视图，杰作，最高画质，80年代日本复古动画插画，吉卜力画风，赛璐璐手绘动画，清晰柔和轮廓线，块面平涂光影，带有手绘笔触肌理，不要字幕，不要音乐，只要环境音效，画风始终保持一致。（猫始终保持病怏怏的状态）场景1 {{Mixed 2}} ，人物始终位于阴影处，夏天的季节氛围，始终是两杯咖啡两人中间，人物座位参考 {{Mixed 3}} ，文艺片的节奏，正常切镜头，紧叠化，两人始终不同框，单人近景。这场戏始终是手持呼吸感，镜头模拟手持感。（两人的情绪逐渐升级，由平静到互相有些情绪）\n\t37\t3s正面\t近景 {{Mixed 1}} {{Mixed 5}} 林晓：我不喜欢厦门，一眼望到头的城市\t\t手持呼吸感，镜头模拟手持感。\n\t38\t2s 斜侧\t特写 {{Mixed 4}} {{Mixed 7}} 陈屿：我也没有完全不想走的\t\t手持呼吸感，镜头模拟手持感。\n\t39\t2s\t正面\t近景 林晓没有回答。看向另一边\t\t手持呼吸感，镜头模拟手持感。\n\t40\t3s\t正面\t近景 {{Mixed 4}} {{Mixed 7}} 陈屿：我只是觉得你对我们的未来没有清晰规划\t\t手持呼吸感，镜头模拟手持感。\n\t41\t3s\t正面\t特写 {{Mixed 1}} {{Mixed 5}} 林晓：那个时候我还年轻，我就想去别的城市试试\t\t手持呼吸感，镜头模拟手持感。\n\t42\t3s\t正面\t特写 {{Mixed 4}} {{Mixed 7}} 陈屿：但我真的不理解，上海有什么好的，一杯咖啡要卖99.\t\t手持呼吸感，镜头模拟手持感。",
+    "references": [
+      {
+        "nodeId": "i-fHPK2vJlEh",
+        "label": "图片节点 4",
+        "mediaType": "image"
+      },
+      {
+        "nodeId": "i-IdnyL99zLs",
+        "label": "图片节点 7",
+        "mediaType": "image"
+      },
+      {
+        "nodeId": "i-M6KMmMyMt6",
+        "label": "导演台 2 机位2-shot-01",
+        "mediaType": "image"
+      },
+      {
+        "nodeId": "i-jImD2fj1r3",
+        "label": "图片节点 5",
+        "mediaType": "image"
+      },
+      {
+        "nodeId": "a-Hw0LEfqfTz",
+        "label": "女生声音",
+        "mediaType": "audio"
+      },
+      {
+        "nodeId": "i-uKzW8x1M1o",
+        "label": "截图",
+        "mediaType": "image"
+      },
+      {
+        "nodeId": "a-oRNxea5Ymw",
+        "label": "视频节点 10 - 副本_人声_截取",
+        "mediaType": "audio"
+      }
+    ]
+  },
+  {
+    "id": "v-yPTH0rRrIy",
+    "name": "视频节点 10 - 副本",
+    "action": "video_generate",
+    "isStale": false,
+    "mode": "mixed2video",
+    "model": "star-video2-fast",
+    "settings": {
+      "ratio": "16:9",
+      "resolution": "720p",
+      "duration": 12,
+      "enableSound": "on"
+    },
+    "prompt": "生成人物全身三视图，杰作，最高画质，80年代日本复古动画插画，吉卜力画风，赛璐璐手绘动画，清晰柔和轮廓线，块面平涂光影，带有手绘笔触肌理，不要字幕，不要音乐，只要环境音效，画风始终保持一致，场景1 {{Mixed 4}} ，猫的特征 参考 {{Mixed 2}} 人物始终位于阴影处。（人物表演从焦虑到看着手机犹豫打出电话的时候变镇定）全程一镜到底\n正面\t全景-近景 全程一镜到底 主要集中人物表演上 \t居中构图\t\t林晓 {{Mixed 1}} 坐在那里看着袜子，从包里拿出手机。屏幕亮着，通讯录停在一个名字上。她盯着那个名字看了一会儿。犹豫了一下还是摁下了拨出键。电话接通。（她打出电话的时候，背后的车不走了）\n林晓：袜子要手术。\n沉默了两秒。\n陈屿（电话里）：我过来。\n电话挂断。林晓把手机放在腿上，看了一眼窗外",
+    "references": [
+      {
+        "nodeId": "i-fHPK2vJlEh",
+        "label": "图片节点 4",
+        "mediaType": "image"
+      },
+      {
+        "nodeId": "i-8di0j1JWKS",
+        "label": "图片节点 12",
+        "mediaType": "image"
+      },
+      {
+        "nodeId": "i-kG3vi8wz0Y",
+        "label": "图片节点 14",
+        "mediaType": "image"
+      },
+      {
+        "nodeId": "i-IdnyL99zLs",
+        "label": "图片节点 7",
+        "mediaType": "image"
+      },
+      {
+        "nodeId": "i-MGQSGJi38Q",
+        "label": "图片节点 2",
+        "mediaType": "image"
+      },
+      {
+        "nodeId": "i-hXVxjRpqj6",
+        "label": "截图",
+        "mediaType": "image"
+      }
+    ]
+  }
+]

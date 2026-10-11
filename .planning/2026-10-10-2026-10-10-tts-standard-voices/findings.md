@@ -1,0 +1,14 @@
+# Findings
+- Default project TTS 2.0 is enabled with 20,000 remaining characters and 99 stock voices.
+- video-studio-speech key enabled; no key read or leaked.
+- Official POST https://openspeech.bytedance.com/api/v3/tts/unidirectional; headers X-Api-Key, X-Api-Resource-Id seed-tts-2.0, X-Api-Request-Id UUID.
+- req_params.text/speaker/audio_params; additions is JSON-encoded string, context_texts support to verify expanded docs.
+- Official sample stock voice: zh_female_vv_uranus_bigtts (Vivi 2.0).
+- Backend already supports audio Asset; jobs reuse generation with model_id null and explicit request.tts=true; worker must branch before model lookup.
+- Existing scene dialogue/narration are strings, so import must be conservative and editable, not pretend structured certainty.
+- Previous multi-angle changes remain uncommitted; preserve all.
+- Verified expanded context_texts docs and official Python: additions JSON string; voice instructions not billed/朗读正文 separate; terminal code 20000000; camelCase startTime/endTime in seconds.
+- Verified six stock voice IDs in official list (Vivi、小何、云舟、小天、刘飞、少年梓辛) and exposed searchable options.
+- Audio duration must be measured from MP3; subtitle last word is not full duration. FFmpeg validates audio before job success.
+- Existing startup requeued all running jobs. Added speech-specific failure before generic requeue, preventing unintended repeated paid synthesis.
+- Real TTS endpoint succeeded with user-created speech key and standard resource. Browser metadata loaded duration2.664s; actual decode duration shown2.6s.

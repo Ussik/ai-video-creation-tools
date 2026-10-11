@@ -72,7 +72,7 @@
   min-width: 0;
   display: grid;
   gap: 12px;
-  border-top: 1px solid #edf1ed;
+  border-top: 1px solid var(--fc-border-strong);
   margin-top: 4px;
   padding-top: 12px;
 }

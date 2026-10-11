@@ -1,3 +1,5 @@
+import { WorkspaceDisclosure } from './WorkspaceDisclosure'
+import { Button, UnstyledButton } from '@mantine/core'
 import { useEffect, useState } from 'react'
 import { Check, ChevronDown, ChevronRight, CircleAlert, FileText, Layers3, LoaderCircle, RotateCcw, Square } from 'lucide-react'
 import { formatProcessingDuration } from './DirectorMessageTiming'
@@ -40,11 +42,11 @@ export default function DirectorActivity({ activity, execution, pending, failed,
     {pending ? <div className="sd-activity-current" role="status"><span className="sd-activity-current-dot" /><div><strong>{currentLabel}</strong><p>{summary}</p></div>
       {active && <time>{formatProcessingDuration(activeMs)}</time>}
     </div> : <p className="sd-activity-result">{summary}</p>}
-    {waiting && <div className="sd-activity-wait"><span>本步尚未返回结果，已等待 {formatProcessingDuration(activeMs)}。</span>{onStop && <button type="button" onClick={onStop}>停止等待</button>}</div>}
+    {waiting && <div className="sd-activity-wait"><span>本步尚未返回结果，已等待 {formatProcessingDuration(activeMs)}。</span>{onStop && <Button type="button" onClick={onStop} data-workspace-control="" variant="subtle">停止等待</Button>}</div>}
     {!!view.stats.length && <p className="sd-activity-stats">{view.stats.join(' · ')}</p>}
-    {!!view.events.length && <button type="button" className="sd-activity-toggle" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
+    {!!view.events.length && <UnstyledButton type="button" className="sd-activity-toggle" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
       <span>{expanded ? '收起执行步骤' : '查看执行步骤'}</span>{expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-    </button>}
+    </UnstyledButton>}
     {expanded && <div className="sd-activity-steps">{view.groups.map(group => <section className={`sd-activity-group is-${group.key}`} key={group.key} aria-label={groupLabels[group.key]}>
       <h4>{groupLabels[group.key]}<span>{group.events.length}</span></h4>
       <ol>{group.events.map(event => {
@@ -58,15 +60,15 @@ export default function DirectorActivity({ activity, execution, pending, failed,
           </div>
           <p className="sd-activity-summary">{event.summary}</p>
           {!!targets.length && <div className="sd-activity-targets">{targets.map(target => target.kind === 'document' && onOpenSource
-            ? <button type="button" key={`${target.kind}:${target.id}`} onClick={() => onOpenSource(target)}><FileText size={11} />{target.title}<ChevronRight size={11} /></button>
+            ? <Button type="button" key={`${target.kind}:${target.id}`} onClick={() => onOpenSource(target)} data-workspace-control="" variant="subtle"><FileText size={11} />{target.title}<ChevronRight size={11} /></Button>
             : <span key={`${target.kind}:${target.id}`}>{target.title}</span>)}</div>}
         </li>
       })}</ol>
     </section>)}</div>}
-    {!!view.events.length && <details className="sd-activity-technical"><summary>技术详情<span>函数参数、返回结果与用时</span><ChevronDown size={12} /></summary>
+    {!!view.events.length && <WorkspaceDisclosure className="sd-activity-technical" label={<>技术详情<span>函数参数、返回结果与用时</span><ChevronDown size={12} /></>}>
       <p className="sd-activity-note">以下是实际调用记录和公开返回，不包含模型内部推理。</p>
-      <div className="sd-activity-technical-list">{view.events.map(event => <details className="sd-activity-detail" key={event.id}>
-        <summary><span className={`sd-activity-icon is-${event.status}`}><StatusIcon status={event.status} /></span><span className="sd-activity-title">{event.name || event.label}</span><span className="sd-activity-status">{statusLabels[event.status]}</span><ChevronDown size={12} /></summary>
+      <div className="sd-activity-technical-list">{view.events.map(event => <WorkspaceDisclosure className="sd-activity-detail" key={event.id} label={<><span className={`sd-activity-icon is-${event.status}`}><StatusIcon status={event.status} /></span><span className="sd-activity-title">{event.name || event.label}</span><span className="sd-activity-status">{statusLabels[event.status]}</span><ChevronDown size={12} /></>}>
+
         <div className="sd-activity-detail-body"><p>{event.summary}</p>
           <p><span>{event.kind === 'tool' ? 'Function' : event.kind === 'skill' ? 'Skill' : event.kind === 'model' ? '模型' : '系统'}</span><code>{event.name || event.label}</code>{event.round && <small>第 {event.round} 轮</small>}</p>
           {event.started_at > 0 && <p><span>开始时间</span><time dateTime={new Date(event.started_at).toISOString()}>{new Date(event.started_at).toLocaleTimeString('zh-CN', { hour12: false })}</time>{typeof event.duration_ms === 'number' && <small>用时 {formatProcessingDuration(event.duration_ms)}</small>}</p>}
@@ -75,14 +77,14 @@ export default function DirectorActivity({ activity, execution, pending, failed,
           {event.input !== undefined && <div className="sd-activity-payload"><label>调用参数{event.input_truncated ? '（前 4000 字）' : ''}</label><pre>{event.input}</pre></div>}
           {event.output !== undefined && <div className="sd-activity-payload"><label>{event.kind === 'model' ? '模型公开回复' : '返回结果'}{event.output_truncated ? '（前 4000 字）' : ''}</label><pre>{event.output}</pre></div>}
         </div>
-      </details>)}</div>
-    </details>}
+      </WorkspaceDisclosure>)}</div>
+    </WorkspaceDisclosure>}
     {!pending && <div className="sd-activity-actions">
-      {onOpenDraft && <button type="button" className="sd-activity-action-primary" disabled={disabled} onClick={onOpenDraft}><FileText size={13} />{view.state === 'saved' ? '查看保存结果' : '查看并编辑草稿'}<ChevronRight size={13} /></button>}
-      {view.state === 'saved' && !onOpenDraft && onOpenDocuments && <button type="button" disabled={disabled} onClick={onOpenDocuments}>查看项目文档<ChevronRight size={13} /></button>}
-      {['draft', 'partial'].includes(view.state) && !onOpenDraft && onRecover && <button type="button" disabled={disabled} onClick={onRecover}>检查草稿与保存结果<ChevronRight size={13} /></button>}
-      {interrupted && (view.canRetry && onRetry ? <button type="button" disabled={disabled} onClick={onRetry}><RotateCcw size={12} />重试本轮</button>
-        : onRecover && <button type="button" disabled={disabled} onClick={onRecover}>检查草稿与保存结果<ChevronRight size={13} /></button>)}
+      {onOpenDraft && <Button type="button" className="sd-activity-action-primary" disabled={disabled} onClick={onOpenDraft} data-workspace-control="" variant="subtle"><FileText size={13} />{view.state === 'saved' ? '查看保存结果' : '查看并编辑草稿'}<ChevronRight size={13} /></Button>}
+      {view.state === 'saved' && !onOpenDraft && onOpenDocuments && <Button type="button" disabled={disabled} onClick={onOpenDocuments} data-workspace-control="" variant="subtle">查看项目文档<ChevronRight size={13} /></Button>}
+      {['draft', 'partial'].includes(view.state) && !onOpenDraft && onRecover && <Button type="button" disabled={disabled} onClick={onRecover} data-workspace-control="" variant="subtle">检查草稿与保存结果<ChevronRight size={13} /></Button>}
+      {interrupted && (view.canRetry && onRetry ? <Button type="button" disabled={disabled} onClick={onRetry} data-workspace-control="" variant="subtle"><RotateCcw size={12} />重试本轮</Button>
+        : onRecover && <Button type="button" disabled={disabled} onClick={onRecover} data-workspace-control="" variant="subtle">检查草稿与保存结果<ChevronRight size={13} /></Button>)}
     </div>}
   </section>
 }

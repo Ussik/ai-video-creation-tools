@@ -1,0 +1,125 @@
+{
+  "models": [
+    {
+      "remote_id": "codex-auto-review",
+      "name": "codex-auto-review",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "gpt-5.5",
+      "name": "gpt-5.5",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "gpt-5.6",
+      "name": "gpt-5.6",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "gpt-5.6-luna",
+      "name": "gpt-5.6-luna",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "gpt-5.6-sol",
+      "name": "gpt-5.6-sol",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "gpt-5.6-terra",
+      "name": "gpt-5.6-terra",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "gpt-6",
+      "name": "gpt-6",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "gpt-6-astra",
+      "name": "gpt-6-astra",
+      "modality_hint": null,
+      "existing": true
+    },
+    {
+      "remote_id": "gpt-6-luna",
+      "name": "gpt-6-luna",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "gpt-6-sol",
+      "name": "gpt-6-sol",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "gpt-6.1-sol",
+      "name": "gpt-6.1-sol",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "gpt-image-1",
+      "name": "gpt-image-1",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "gpt-image-1.5",
+      "name": "gpt-image-1.5",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "gpt-image-2",
+      "name": "gpt-image-2",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "gpt-image-2-firefly",
+      "name": "gpt-image-2-firefly",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "gpt-image-2.5-flare",
+      "name": "gpt-image-2.5-flare",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "gpt-image-2.5-flare-firefly",
+      "name": "gpt-image-2.5-flare-firefly",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "gpt-image-2.5-sunburst",
+      "name": "gpt-image-2.5-sunburst",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "gpt-image-2.5-sunburst-firefly",
+      "name": "gpt-image-2.5-sunburst-firefly",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "gpt-reserve",
+      "name": "gpt-reserve",
+      "modality_hint": null,
+      "existing": false
+    }
+  ],
+  "total": 20
+}

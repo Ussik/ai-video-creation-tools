@@ -57,6 +57,36 @@ async function check(label: string) {
   assert.ok(element, label); await act(() => element.click())
 }
 
+test('inline references stay scoped to the shot; filtering and disclosure are read-only and usage saves retain other objects', async t => {
+  const extra = { ...detail.shot_visual_bindings![0], profile_id: other.id, kind: other.kind, name: other.name, required: false }
+  const base = { ...detail, assets: [{ id: 'new-board', kind: 'image', url: '/board.png' }],
+    shot_visual_bindings: [{ ...detail.shot_visual_bindings![0], board_asset_id: 'new-board', usage: 'both' as const }, extra] } as ProjectDetail
+  const requests: Array<{ path: string; body: any }> = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    const body = JSON.parse(String(init?.body)); requests.push({ path: String(url), body })
+    return Response.json({ ...data(base), shot_visual_bindings: [{ ...base.shot_visual_bindings![0], usage: body.bindings[0].usage }, extra] })
+  })
+  const view = await mount(<Bindings presentation="inline" detail={base} context={{ target: 'shot:shot' }} onRefresh={async () => {}} onClose={noop} onBusyChange={noop} onLocate={noop} />)
+  try {
+    assert.match(view.container.textContent!, /1\. 入站/)
+    assert.equal(view.container.querySelector('[aria-label="选择绑定场次或镜头"]'), null)
+    assert.equal(view.container.querySelectorAll('.pc-binding-profile-preview img').length, 1)
+    const category = (label: string) => [...view.container.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(tab => tab.textContent?.startsWith(label))!
+    await act(() => category('场景').click())
+    assert.equal(view.container.querySelectorAll('.pc-visual-binding').length, 1)
+    assert.match(view.container.querySelector('.pc-visual-binding')!.textContent!, /车站/)
+    await act(() => category('全部').click())
+    await fill('搜索引用设定', '林晚')
+    assert.equal(view.container.querySelectorAll('.pc-visual-binding').length, 1)
+    await act(() => button('参考与用途：林晚').click())
+    assert.equal(requests.length, 0, 'opening and filtering must not write bindings')
+    await choose('林晚 使用范围', 'video')
+    assert.deepEqual(requests, [{ path: '/api/shots/shot/visual-bindings', body: {
+      bindings: [{ profile_id: 'lin', required: true, usage: 'video' }, { profile_id: 'station', required: false }], refresh_profile_ids: [],
+    } }])
+  } finally { await view.destroy() }
+})
+
 test('manual creation saves a definition without adding a node or generating images', async t => {
   let saved: VisualProfile | undefined, opened = 0
   const requests: Array<{ path: string; body: any }> = []

@@ -1,3 +1,4 @@
+import { MantineProvider } from '@mantine/core'
 import assert from 'node:assert/strict'
 import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
@@ -12,6 +13,8 @@ for (const key of ['window', 'document', 'navigator', 'Node', 'HTMLElement', 'El
   Object.defineProperty(globalThis, key, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[key] })
 }
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+Object.defineProperty(dom.window, 'matchMedia', { value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) })
+Object.assign(globalThis, { getComputedStyle: dom.window.getComputedStyle.bind(dom.window), requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(0), 0), cancelAnimationFrame: clearTimeout, ResizeObserver: class { observe() {} unobserve() {} disconnect() {} } })
 after(() => dom.window.close())
 
 const entry = (asset_id: string, index: number, overrides: Partial<VideoReferenceEntry> = {}): VideoReferenceEntry => ({
@@ -24,9 +27,9 @@ async function mount(overrides: Partial<VideoReferencePanelProps> = {}) {
   document.body.appendChild(container)
   const root = createRoot(container)
   const previews: string[] = [], located: string[] = [], excluded: string[] = [], restored: string[] = [], removed: string[] = []
-  await act(() => root.render(<VideoReferencePanel entries={[entry('shot', 1, { name: '分镜构图', purpose: 'storyboard' }), entry('hero', 2, { name: '林晚', variant: '校服', purpose: 'character', profile_ids: ['wan'], required: true })]}
+  await act(() => root.render(<MantineProvider env="test" withGlobalClasses={false} withCssVariables={false}><VideoReferencePanel entries={[entry('shot', 1, { name: '分镜构图', purpose: 'storyboard' }), entry('hero', 2, { name: '林晚', variant: '校服', purpose: 'character', profile_ids: ['wan'], required: true })]}
     assets={[asset('shot'), asset('hero')]} onPreview={value => previews.push(value.id)} onLocate={value => located.push(value.asset_id)}
-    onExclude={value => excluded.push(value)} onRestore={value => restored.push(value)} onRemoveManual={value => removed.push(value)} {...overrides} />))
+    onExclude={value => excluded.push(value)} onRestore={value => restored.push(value)} onRemoveManual={value => removed.push(value)} {...overrides} /></MantineProvider>))
   const button = (label: string) => {
     const found = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)
     assert.ok(found, label)

@@ -1,0 +1,1641 @@
+[
+  {
+    "id": "0635285d-4913-4551-83e2-3ea18e9ea5f3",
+    "name": "视频节点 3",
+    "position": {
+      "x": 858.1169039343331,
+      "y": 222.1169039343331
+    },
+    "parent": "5lR8ircXgY",
+    "stale": false,
+    "params": {
+      "prompt": "{{Portrait 3}} 主角参考三视图， {{Portrait 1}} 场景参考此图， {{Portrait 2}} 角色推门动作参考， ,角色失落表请参考，Cinematic continuous long take. The camera starts with a low-angle extreme close-up of a young man's feet in traditional white cloth boots walking heavily on scorched, ember-lit earth. The camera then seamlessly tilts up and pulls back to show his full back as he, wearing a moon-white traditional robe, walks towards a towering, charred ancient sect gate under a cold full moon. As he reaches the gate, he raises a trembling hand to push the heavy wooden door. Suddenly, his hand hesitates and completely freezes in mid-air just inches from the wood. After a brief pause, he slowly lowers his arm and bows his head in deep sorrow and dejection, his shoulders slumping. 3D CG, Chinese anime style, wuxia dark fantasy, highly detailed, dramatic lighting, smooth continuous motion, 4k. --motion 5，不要背景音乐，不要字母，需要音效",
+      "model": "star-video2",
+      "modeType": "mixed2video",
+      "count": 1,
+      "imageList": [
+        {
+          "nodeId": "bf9eeb11-0e9c-4a25-a495-9b015733318c",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/7a6fe59f1679bf8a4e036574be6b6bd316b70f5f121391c52f0afba7ef766a8e.png",
+          "assetId": "asset-20260511105654-jhcdj"
+        },
+        {
+          "nodeId": "f3619e30-a629-44a2-a46e-20d49d38520f",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/cc09e336c7275f5a8fc7e449375fa9f83a8ead46b4b845fc6bbcabb7c81b269b.png",
+          "assetId": "asset-20260511105653-7k9n7"
+        },
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn"
+        }
+      ],
+      "videoList": [],
+      "audioList": [],
+      "settings": {
+        "ratio": "16:9",
+        "resolution": "720p",
+        "duration": 15,
+        "enableSound": "on"
+      },
+      "advancedSettings": {
+        "search_enabled": 1,
+        "autoCompliance": 1
+      },
+      "imageListOrder": [
+        "bf9eeb11-0e9c-4a25-a495-9b015733318c",
+        "f3619e30-a629-44a2-a46e-20d49d38520f",
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560"
+      ],
+      "mixedListOrder": [
+        "bf9eeb11-0e9c-4a25-a495-9b015733318c",
+        "f3619e30-a629-44a2-a46e-20d49d38520f",
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560"
+      ],
+      "textList": [],
+      "mixedList": [
+        {
+          "nodeId": "bf9eeb11-0e9c-4a25-a495-9b015733318c",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/7a6fe59f1679bf8a4e036574be6b6bd316b70f5f121391c52f0afba7ef766a8e.png",
+          "assetId": "asset-20260511105654-jhcdj",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "f3619e30-a629-44a2-a46e-20d49d38520f",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/cc09e336c7275f5a8fc7e449375fa9f83a8ead46b4b845fc6bbcabb7c81b269b.png",
+          "assetId": "asset-20260511105653-7k9n7",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn",
+          "mediaType": "image"
+        }
+      ]
+    },
+    "url": [
+      "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/8242c467ff2bc4e1e941d3ae38249b8fce11f4d877342886a528854717b3c528.mp4"
+    ]
+  },
+  {
+    "id": "1e3266c6-3e28-463c-8efd-652e346936e8",
+    "name": "视频节点 6",
+    "position": {
+      "x": 873.8644094952342,
+      "y": 465.86440949523603
+    },
+    "parent": "9Xc9UBr6aZ",
+    "stale": false,
+    "params": {
+      "prompt": "{{Portrait 1}} 女主三视图参考， {{Portrait 2}} 男主三视图参考， {{Portrait 3}} 黑衣人三视图参考， {{Mixed 4}} 男主音频参考， {{Portrait 4}} 场景参考，【画面部分】 电影级杰作，绝佳的视觉叙事。林渊被沉重的皮靴粗暴地脸朝下钉在泥土中。突然，站在他面前的刺客恶毒地将一把闪亮、抛光的金属长剑深深插在焦黑的泥土里，距离林渊的眼睛只有几英寸。关键镜头： 摄像机推进到冰冷金属剑身的极限微距特写。在铁剑剑刃的倒影中，我们看到了发生在林渊身后的恐怖场景：另一名面具刺客正缓慢地将剑高高举起，准备处决昏迷的凌儿。倒影被闪烁的火光照亮。林渊布满血丝、绝望且充满泪水的一只眼睛在模糊的前景/背景中若隐若现，无力地死死盯着剑刃里的倒影。3D CG，国漫风格，暗黑史诗美学，超写实金属反射，景深效果，4K分辨率。\n\n【音频部分】 靴子踩压在他背上的沉重挤压声。一声尖锐暴力的“唰”声，紧接着是一声沉重、带着颤音的“砰”声——长剑深深插在他面前的泥土中。林渊慌乱、沉闷且哽咽的呼吸声。远处刽子手举剑时发出的恐怖金属摩擦声，与倒影中的画面完美契合。\n\n🎬 导演执行备忘录（AI 跑图技巧）：\n倒影词汇的精准打击： extreme macro close-up of the cold metal blade（剑身的极限微距特写）和 ray-traced reflection of the polished steel（抛光钢铁的光线追踪反射）是引导 AI 生成镜面反射的关键指令。\n\n景深控制（Depth of Field）： 画面此时有三个层次：1. 离镜头最近的林渊的眼睛（虚焦）；2. 处于焦点中心的剑刃（实焦）；3. 剑刃里倒映的背景（实焦）。这种画面构成在视觉上极其惊艳，能瞬间拉高整部片子的质感。\n\n情绪压迫： 剑插在地上的颤音（音频提示中的 vibrating THUD）配合视觉上的微距倒影，会让观众和主角一起体验到那种时间被无限拉长、眼睁睁看着死神降临的窒息感。\n不要背景音乐，不要字幕，需要音效",
+      "model": "star-video2",
+      "modeType": "mixed2video",
+      "count": 1,
+      "imageList": [
+        {
+          "nodeId": "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/6f5053fef375d79d7d398fa05f57fafa6cd3661aad39cc919a7b2be74a58c76c.png",
+          "assetId": "asset-20260511174927-m8fkp"
+        },
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn"
+        },
+        {
+          "nodeId": "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/16690031ce70e1c51eff511023233b7453434fae0d0e1eba9caa248252fc5d99.png",
+          "assetId": "asset-20260513154707-xttfm"
+        },
+        {
+          "nodeId": "6d0da49f-39f3-4924-b9f3-fae5ba61ce78",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/b10ff21d03ec325ce9ae8fafed0e611a1a818c2b.png",
+          "assetId": "asset-20260513220711-czm5g"
+        }
+      ],
+      "videoList": [],
+      "audioList": [
+        {
+          "nodeId": "5a92cd22-5a93-4be8-a216-eea88b8347fd",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/7f1e992b8a538a1ee8d5b4ff063f1fb0b83416ef.wav",
+          "label": "素材音频",
+          "durationSec": 8.080544,
+          "assetId": "asset-20260511231252-cx2vx"
+        }
+      ],
+      "settings": {
+        "ratio": "16:9",
+        "resolution": "720p",
+        "duration": 8,
+        "enableSound": "on"
+      },
+      "advancedSettings": {
+        "search_enabled": 1,
+        "autoCompliance": 1
+      },
+      "imageListOrder": [
+        "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+        "6d0da49f-39f3-4924-b9f3-fae5ba61ce78"
+      ],
+      "audioListOrder": [
+        "5a92cd22-5a93-4be8-a216-eea88b8347fd"
+      ],
+      "mixedListOrder": [
+        "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+        "5a92cd22-5a93-4be8-a216-eea88b8347fd",
+        "6d0da49f-39f3-4924-b9f3-fae5ba61ce78"
+      ],
+      "textList": [],
+      "mixedList": [
+        {
+          "nodeId": "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/6f5053fef375d79d7d398fa05f57fafa6cd3661aad39cc919a7b2be74a58c76c.png",
+          "assetId": "asset-20260511174927-m8fkp",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/16690031ce70e1c51eff511023233b7453434fae0d0e1eba9caa248252fc5d99.png",
+          "assetId": "asset-20260513154707-xttfm",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "5a92cd22-5a93-4be8-a216-eea88b8347fd",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/7f1e992b8a538a1ee8d5b4ff063f1fb0b83416ef.wav",
+          "label": "素材音频",
+          "durationSec": 8.080544,
+          "assetId": "asset-20260511231252-cx2vx",
+          "mediaType": "audio"
+        },
+        {
+          "nodeId": "6d0da49f-39f3-4924-b9f3-fae5ba61ce78",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/b10ff21d03ec325ce9ae8fafed0e611a1a818c2b.png",
+          "assetId": "asset-20260513220711-czm5g",
+          "mediaType": "image"
+        }
+      ]
+    },
+    "url": [
+      "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/1eb0b4802958aae9777ce8f4d18ad8409edfb7fc8f2bf6f65228b032da2a7f9e.mp4"
+    ]
+  },
+  {
+    "id": "27bdc0b7-7dc8-40d0-b3f0-0bfdf5a68f14",
+    "name": "视频节点 5",
+    "position": {
+      "x": 908.8596082309559,
+      "y": 468.7427042966224
+    },
+    "parent": "K2fqQvD2xW",
+    "stale": false,
+    "params": {
+      "prompt": "电影级暗黑奇幻3D国漫风格。主角被踩倒在地，一名黑袍敌人的脚重重踩在他的背上。主角绝望地嘶吼。突然，狂暴的猩红与暗紫交织的魔气从他体内喷发。交织的能量形成巨大的冲击波，将敌人震飞。慢动作下，磅礴的红紫两色魔法烟雾将男子缓缓托起到半空中，并在他周围快速旋转缠绕，最终形成一个巨大的、跳动发光的且密不透风的魔神之茧。高对比度，强烈的粒子特效，史诗级光影，虚幻引擎5渲染。",
+      "model": "star-video2",
+      "modeType": "frames2video",
+      "count": 1,
+      "imageList": [
+        {
+          "nodeId": "39135ce6-f9e4-4734-8d17-509f1a0277d3",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/a6f48d2d53676264e420ef176d4a5999f7a62d80.png",
+          "assetId": "asset-20260513230648-vcw9d"
+        }
+      ],
+      "videoList": [],
+      "audioList": [],
+      "settings": {
+        "ratio": "16:9",
+        "resolution": "720p",
+        "duration": 8,
+        "enableSound": "on"
+      },
+      "advancedSettings": {
+        "search_enabled": 1,
+        "autoCompliance": 1
+      },
+      "imageListOrder": [
+        "39135ce6-f9e4-4734-8d17-509f1a0277d3"
+      ],
+      "mixedListOrder": [
+        "39135ce6-f9e4-4734-8d17-509f1a0277d3"
+      ],
+      "textList": [],
+      "mixedList": [
+        {
+          "nodeId": "39135ce6-f9e4-4734-8d17-509f1a0277d3",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/a6f48d2d53676264e420ef176d4a5999f7a62d80.png",
+          "assetId": "asset-20260513230648-vcw9d",
+          "mediaType": "image"
+        }
+      ]
+    },
+    "url": [
+      "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/de46a60f7ec0d0301d322d2d8ddbaa2e2660de273fbcf59c55aeaf7ff0c95f59.mp4"
+    ]
+  },
+  {
+    "id": "2d8e69d0-c611-4859-9712-b36683209555",
+    "name": "视频节点 6",
+    "position": {
+      "x": 3234.116903934333,
+      "y": 678.1169039343331
+    },
+    "parent": "5lR8ircXgY",
+    "stale": false,
+    "params": {
+      "prompt": "{{Portrait 1}} 场景参考此图，[Video] Tight close-up of the protagonist's face in the cold, dark night. Initially, his head is lowered with a deeply dejected expression, eyes completely dry [absolutely no tears]. His lips are tightly closed and do not move at all [mouth closed, internal thought]. As he slowly raises his head to look forward, the heavy sorrow and depressed expression on his face gradually lessens and fades away, softening into a calm but weary look. The lighting features faint orange ember glows from the scorched environment reflecting on his skin. 3D CG, Chinese anime style, high detail facial animation, 4K.\n[Audio] Echoing internal monologue (deep, sighing male voice with spatial reverb): \"游历数月，修为依旧停滞，怕是要让父亲和灵儿失望了吧。\" Background environment sounds: cold howling wind and the faint crackling of distant embers.不要字幕，不要背景音乐，需要音效",
+      "model": "star-video2",
+      "modeType": "mixed2video",
+      "count": 1,
+      "imageList": [
+        {
+          "nodeId": "8031c09e-166c-4d90-8a80-dd1f2d4eb55c",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/9523efe129cf47992d8dc433c62bf0d98bf23c89ba0ed30566337a0b30c591c6.png",
+          "assetId": "asset-20260511214306-hzztq"
+        }
+      ],
+      "videoList": [],
+      "audioList": [],
+      "settings": {
+        "ratio": "16:9",
+        "resolution": "720p",
+        "duration": 8,
+        "enableSound": "on"
+      },
+      "advancedSettings": {
+        "search_enabled": 1,
+        "autoCompliance": 1
+      },
+      "imageListOrder": [
+        "8031c09e-166c-4d90-8a80-dd1f2d4eb55c"
+      ],
+      "mixedListOrder": [
+        "8031c09e-166c-4d90-8a80-dd1f2d4eb55c"
+      ],
+      "textList": [],
+      "mixedList": [
+        {
+          "nodeId": "8031c09e-166c-4d90-8a80-dd1f2d4eb55c",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/9523efe129cf47992d8dc433c62bf0d98bf23c89ba0ed30566337a0b30c591c6.png",
+          "assetId": "asset-20260511214306-hzztq",
+          "mediaType": "image"
+        }
+      ]
+    },
+    "url": [
+      "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/f54a9540ffb8639a8e1c35964a0c42a187869b2292b6f3ef20157bdcb9b2dc0f.mp4"
+    ]
+  },
+  {
+    "id": "34624fa9-6587-4407-808a-9471fb34d50f",
+    "name": "视频节点 22",
+    "position": {
+      "x": 1588.5644242986054,
+      "y": 360.3071285952283
+    },
+    "parent": "f6axojB1zu",
+    "stale": false,
+    "params": {
+      "prompt": "{{Portrait 1}} 主角参考三视图， {{Portrait 2}} 凌儿参考三视图， {{Portrait 3}} 场景参考此图，【画面部分】 电影级序列。中景镜头，主角与凌儿（美丽清纯的年轻女子）在阳光明媚的温暖花园中面对面站立。凌儿抬头看着他，眼神坚定而充满爱意。她做了一个小动作：说话时用手轻轻地为他整理衣襟。镜头微妙地切换到她翕动的嘴唇和温柔微笑的特写，接着切换到主角动容、充满情感的脸部特写。他轻声呼唤她的名字，然后将她拉入一个温暖且具有保护欲的拥抱中。最后画面慢慢拉近到凌儿闭眼依偎在男主怀中空气中飘浮着樱花瓣和金色的光粒子。在最后 1 秒，强烈的白光从边缘渗入，将屏幕吞噬为一片纯白。\n• 【音频部分】 柔和且感性的古筝与小提琴音乐。凌儿甜美而坚定的声音：“林渊哥哥，你在凌儿心中永远是最棒的，这次外出游历，平安回来就好。”主角动容的低语：“凌儿”。结尾伴随柔和的铃声和白噪音爆发。\n• 风格标签： 3D CG，国漫风格，4K分辨率。不要背景音乐，不要字幕，需要音效\n",
+      "model": "star-video2",
+      "modeType": "mixed2video",
+      "count": 1,
+      "imageList": [
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn"
+        },
+        {
+          "nodeId": "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/6f5053fef375d79d7d398fa05f57fafa6cd3661aad39cc919a7b2be74a58c76c.png",
+          "assetId": "asset-20260511174927-m8fkp"
+        },
+        {
+          "nodeId": "28afab31-607b-44b7-b1c0-dab161d09b9a",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/3db48ed399018563d4d02f5a1eb5e7e23e54110dee934c59847901967f13b79e.png",
+          "assetId": "asset-20260511174929-pjlsk"
+        }
+      ],
+      "videoList": [],
+      "audioList": [],
+      "settings": {
+        "ratio": "16:9",
+        "resolution": "720p",
+        "duration": 12,
+        "enableSound": "on"
+      },
+      "advancedSettings": {
+        "search_enabled": 1,
+        "autoCompliance": 1
+      },
+      "imageListOrder": [
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+        "28afab31-607b-44b7-b1c0-dab161d09b9a"
+      ],
+      "mixedListOrder": [
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+        "28afab31-607b-44b7-b1c0-dab161d09b9a"
+      ],
+      "textList": [],
+      "mixedList": [
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/6f5053fef375d79d7d398fa05f57fafa6cd3661aad39cc919a7b2be74a58c76c.png",
+          "assetId": "asset-20260511174927-m8fkp",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "28afab31-607b-44b7-b1c0-dab161d09b9a",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/3db48ed399018563d4d02f5a1eb5e7e23e54110dee934c59847901967f13b79e.png",
+          "assetId": "asset-20260511174929-pjlsk",
+          "mediaType": "image"
+        }
+      ]
+    },
+    "url": [
+      "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/954ead28f119c42e19931c0e61378439c4845be7d0aea6dbadb67837b519f4af.mp4"
+    ]
+  },
+  {
+    "id": "39JWT9923z",
+    "name": "视频节点 2",
+    "position": {
+      "x": 919.2455532033673,
+      "y": 585.2455532033673
+    },
+    "parent": "BeRejvbVFv",
+    "stale": false,
+    "params": {
+      "prompt": "{{Portrait 2}} 女主三视图参考， {{Portrait 3}} 男主三视图参考， {{Portrait 4}} 黑衣面具人三视图参考，女主本来侧趴在地上，身后站着三个黑衣面具人，场景参考此图与人物动作站位参考此图 ，不参考此图的女主样子 ，男主冲进画面撞开一名面具人，然后一脚踢开另外一名面具人，踢开的那名面具人连带着最后一名一起飞出画面，然后主角转身蹲下抱起女主，此时场景参考 {{Portrait 1}} 女主样子参考此图，视频不要背景音乐",
+      "model": "star-video2",
+      "modeType": "mixed2video",
+      "count": 1,
+      "imageList": [
+        {
+          "nodeId": "284b1e26-a9ce-4e1d-be4f-e28d60ba2b1b",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/a6ac87ebab91c75041949a6cdda0770368d467db.png",
+          "assetId": "asset-20260513212958-mt8kg"
+        },
+        {
+          "nodeId": "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/6f5053fef375d79d7d398fa05f57fafa6cd3661aad39cc919a7b2be74a58c76c.png",
+          "assetId": "asset-20260511174927-m8fkp"
+        },
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn"
+        },
+        {
+          "nodeId": "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/16690031ce70e1c51eff511023233b7453434fae0d0e1eba9caa248252fc5d99.png",
+          "assetId": "asset-20260513154707-xttfm"
+        }
+      ],
+      "videoList": [],
+      "audioList": [],
+      "settings": {
+        "ratio": "16:9",
+        "resolution": "720p",
+        "duration": 8,
+        "enableSound": "on"
+      },
+      "advancedSettings": {
+        "search_enabled": 1,
+        "autoCompliance": 1
+      },
+      "imageListOrder": [
+        "284b1e26-a9ce-4e1d-be4f-e28d60ba2b1b",
+        "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "f4fe3515-5713-46d5-bbb8-76b84cecad07"
+      ],
+      "mixedListOrder": [
+        "284b1e26-a9ce-4e1d-be4f-e28d60ba2b1b",
+        "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "f4fe3515-5713-46d5-bbb8-76b84cecad07"
+      ],
+      "textList": [],
+      "mixedList": [
+        {
+          "nodeId": "284b1e26-a9ce-4e1d-be4f-e28d60ba2b1b",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/a6ac87ebab91c75041949a6cdda0770368d467db.png",
+          "assetId": "asset-20260513212958-mt8kg",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/6f5053fef375d79d7d398fa05f57fafa6cd3661aad39cc919a7b2be74a58c76c.png",
+          "assetId": "asset-20260511174927-m8fkp",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/16690031ce70e1c51eff511023233b7453434fae0d0e1eba9caa248252fc5d99.png",
+          "assetId": "asset-20260513154707-xttfm",
+          "mediaType": "image"
+        }
+      ],
+      "videoListOrder": [
+        "82857a43-e0a9-4c62-9fc6-fce8ec79e567"
+      ]
+    },
+    "url": [
+      "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/773e76c27985db252c6c913e46fc72284eb8d0ad9cbe11d1b69d19362a517f09.mp4"
+    ]
+  },
+  {
+    "id": "82857a43-e0a9-4c62-9fc6-fce8ec79e567",
+    "name": "视频节点 5",
+    "position": {
+      "x": 2260.6500629255856,
+      "y": 832.6500629255861
+    },
+    "parent": "bD6WN6lzgy",
+    "stale": false,
+    "params": {
+      "prompt": "{{Portrait 1}} 黑衣面具人三视图参考， {{Portrait 2}} 凌儿三视图参考， {{Portrait 3}} 主角三视图参考， {{Mixed 4}} 场景参考， {{Mixed 5}} 女主音频参考， {{Mixed 6}} 男主音频参考，[Video] Cinematic action-to-emotion sequence. Shot 1: Wide shot of burning ruins where three masked men in black robes stand over the fallen Ling'er. Suddenly, the protagonist (Lin Yuan) bursts into the frame like a cannonball. He slams his shoulder with massive force into one of the masked men, violently knocking him away. Shot 2: Immediately after the impact, Lin Yuan uses his momentum to pivot his body, dropping to his knees and sliding on the charred ground. He frantically scoops Ling'er's limp body into his arms, pulling her close to his chest. His face is a mask of agony as he shouts her name \"凌儿！\" (Ling'er!) at the top of his lungs. Shot 3: Tight close-up cut to Ling'er's pale, blood-stained face in his arms. Her eyes struggle to focus. Her lips tremble as she whispers the verbatim words: \"别管我，你快走\n\" (Bie guan wo, ni kuai zou). After speaking, her head slumps and her eyes close. 3D CG, Chinese anime style, Dark Epic aesthetic, intense flickering firelight, 4K resolution.\n[Audio] A heavy, bone-crushing \"THUD\" as the man is hit. The sound of friction as Lin Yuan's knees slide on debris. A raw, heart-wrenching shout: \"凌儿——！\". Then, the background roar of fire fades into a low hum, leaving only Ling'er's weak, trembling, and breathy voice: \"别管我...你快走...\".b不要背景音乐，不要字幕，需要音效",
+      "model": "star-video2",
+      "modeType": "mixed2video",
+      "count": 1,
+      "imageList": [
+        {
+          "nodeId": "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/16690031ce70e1c51eff511023233b7453434fae0d0e1eba9caa248252fc5d99.png",
+          "assetId": "asset-20260513154707-xttfm"
+        },
+        {
+          "nodeId": "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/6f5053fef375d79d7d398fa05f57fafa6cd3661aad39cc919a7b2be74a58c76c.png",
+          "assetId": "asset-20260511174927-m8fkp"
+        },
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn"
+        },
+        {
+          "nodeId": "16e2fb67-2ca1-4aca-ad08-c62a556d2b30",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/3c66f8949fba367a8b27d5a0270058dc3e0af438fd9c6ff1ada5c2859b444fee.png",
+          "compliantExempt": true
+        }
+      ],
+      "videoList": [],
+      "audioList": [
+        {
+          "nodeId": "0c3af495-2b93-4076-8875-20262b2e0902",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/f69cd51c5500336fe6a63ba2b9307b529f64994e.wav",
+          "label": "5月13日",
+          "durationSec": 5.34059,
+          "assetId": "asset-20260513120422-jlj94"
+        },
+        {
+          "nodeId": "5a92cd22-5a93-4be8-a216-eea88b8347fd",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/7f1e992b8a538a1ee8d5b4ff063f1fb0b83416ef.wav",
+          "label": "素材音频",
+          "durationSec": 8.080544,
+          "assetId": "asset-20260511231252-cx2vx"
+        }
+      ],
+      "settings": {
+        "ratio": "16:9",
+        "resolution": "720p",
+        "duration": 10,
+        "enableSound": "on"
+      },
+      "advancedSettings": {
+        "search_enabled": 1,
+        "autoCompliance": 1
+      },
+      "imageListOrder": [
+        "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+        "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "16e2fb67-2ca1-4aca-ad08-c62a556d2b30"
+      ],
+      "mixedListOrder": [
+        "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+        "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "16e2fb67-2ca1-4aca-ad08-c62a556d2b30",
+        "0c3af495-2b93-4076-8875-20262b2e0902",
+        "5a92cd22-5a93-4be8-a216-eea88b8347fd"
+      ],
+      "textList": [],
+      "mixedList": [
+        {
+          "nodeId": "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/16690031ce70e1c51eff511023233b7453434fae0d0e1eba9caa248252fc5d99.png",
+          "assetId": "asset-20260513154707-xttfm",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/6f5053fef375d79d7d398fa05f57fafa6cd3661aad39cc919a7b2be74a58c76c.png",
+          "assetId": "asset-20260511174927-m8fkp",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "16e2fb67-2ca1-4aca-ad08-c62a556d2b30",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/3c66f8949fba367a8b27d5a0270058dc3e0af438fd9c6ff1ada5c2859b444fee.png",
+          "compliantExempt": true,
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "0c3af495-2b93-4076-8875-20262b2e0902",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/f69cd51c5500336fe6a63ba2b9307b529f64994e.wav",
+          "label": "5月13日",
+          "durationSec": 5.34059,
+          "assetId": "asset-20260513120422-jlj94",
+          "mediaType": "audio"
+        },
+        {
+          "nodeId": "5a92cd22-5a93-4be8-a216-eea88b8347fd",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/7f1e992b8a538a1ee8d5b4ff063f1fb0b83416ef.wav",
+          "label": "素材音频",
+          "durationSec": 8.080544,
+          "assetId": "asset-20260511231252-cx2vx",
+          "mediaType": "audio"
+        }
+      ],
+      "audioListOrder": [
+        "0c3af495-2b93-4076-8875-20262b2e0902",
+        "5a92cd22-5a93-4be8-a216-eea88b8347fd"
+      ]
+    },
+    "url": [
+      "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/3962aa5a3cdc7dc7786d790e34c3a39f405de3e11de14c7f99399cd60962a236.mp4"
+    ]
+  },
+  {
+    "id": "a276602e-5b27-422e-aa90-09551bf44a4b",
+    "name": "视频节点 3",
+    "position": {
+      "x": 919.2455532033673,
+      "y": 79.24555320336731
+    },
+    "parent": "BeRejvbVFv",
+    "stale": false,
+    "params": {
+      "prompt": "{{Portrait 1}} 主角三视图参考， {{Portrait 2}} 凌儿三视图参考， {{Portrait 3}} 黑衣人三视图参考， {{Portrait 4}} 场景参考，[Video] Cinematic brutal action sequence with strong emotional contrast and realistic spatial physics. Shot 1 (Emotional Opening): The protagonist (Lin Yuan) is on his knees in the middle of the burning ruins, cradling the unconscious body of Ling'er tightly in his arms. He looks down at her pale, soot-smudged face with profound anguish. Ling'er is completely motionless, her eyes closed, passed out from shock and injury. The surrounding fire casts flickering, sorrowful light on them. Shot 2: The heavy, sinister shadows of three masked assassins in black robes suddenly fall upon them, completing the circle of surrounding them. Lin Yuan snaps back to reality, gently laying Ling'er down, and quickly stands up, frantically looking around in a desperate defensive stance to shield her body on the ground. Shot 3: The assassin directly in front swings a gleaming longsword down ruthlessly. Lin Yuan desperately catches the sharp blade with his bare hands. Tight close-up: thick blood continuously streams and drips from his gripped palms as he struggles to deadlock the blade. Shot 4: While Lin Yuan is completely deadlocked with the front sword, the assassin standing directly behind him suddenly delivers a devastating, heavy kick squarely into Lin Yuan's back. Shot 5: The massive forward impact launches Lin Yuan flying forward through the air. He crashes violently, tumbling and landing heavy face-down into the soot and debris. Shot 6: Instantly, a heavy black boot slams down on his back, brutally pinning him face-down to the ground. 3D CG, Chinese anime style, Dark Epic aesthetic, high contrast firelight, highly detailed blood, realistic physics, 4K resolution.\n[Audio] Roar of the firestorm fades slightly for Shot 1. Shot 1: Lin Yuan's choked, trembling sobs and the crackling of wood. Shot 2: Ominous, heavy footsteps closing in. Shot 3: The sharp \"SHING\" of the sword, followed by a sickening, wet slice as bare hands catch the blade. The steady sound of blood dripping. Shot 4: A massive, bone-cracking \"THUD\" from the blindside kick to his back. Shot 5: The violent sound of a body crashing face-first into wooden debris. Shot 6: The heavy crunch of a boot stepping on his back. Lin Yuan's muffled, agonizing groans as he is pinned.不要字幕，不要背景音乐，需要音效",
+      "model": "star-video2",
+      "modeType": "mixed2video",
+      "count": 1,
+      "imageList": [
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn"
+        },
+        {
+          "nodeId": "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/6f5053fef375d79d7d398fa05f57fafa6cd3661aad39cc919a7b2be74a58c76c.png",
+          "assetId": "asset-20260511174927-m8fkp"
+        },
+        {
+          "nodeId": "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/16690031ce70e1c51eff511023233b7453434fae0d0e1eba9caa248252fc5d99.png",
+          "assetId": "asset-20260513154707-xttfm"
+        },
+        {
+          "nodeId": "284b1e26-a9ce-4e1d-be4f-e28d60ba2b1b",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/a6ac87ebab91c75041949a6cdda0770368d467db.png",
+          "assetId": "asset-20260513212958-mt8kg"
+        }
+      ],
+      "videoList": [],
+      "audioList": [],
+      "settings": {
+        "ratio": "16:9",
+        "resolution": "720p",
+        "duration": 10,
+        "enableSound": "on"
+      },
+      "advancedSettings": {
+        "search_enabled": 1,
+        "autoCompliance": 1
+      },
+      "imageListOrder": [
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+        "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+        "284b1e26-a9ce-4e1d-be4f-e28d60ba2b1b"
+      ],
+      "mixedListOrder": [
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+        "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+        "284b1e26-a9ce-4e1d-be4f-e28d60ba2b1b"
+      ],
+      "textList": [],
+      "mixedList": [
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/6f5053fef375d79d7d398fa05f57fafa6cd3661aad39cc919a7b2be74a58c76c.png",
+          "assetId": "asset-20260511174927-m8fkp",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/16690031ce70e1c51eff511023233b7453434fae0d0e1eba9caa248252fc5d99.png",
+          "assetId": "asset-20260513154707-xttfm",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "284b1e26-a9ce-4e1d-be4f-e28d60ba2b1b",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/a6ac87ebab91c75041949a6cdda0770368d467db.png",
+          "assetId": "asset-20260513212958-mt8kg",
+          "mediaType": "image"
+        }
+      ]
+    },
+    "url": [
+      "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/5bd0b2ee4f34df570f7d80533ee667e66c3aeb9d4df7597f8bd97b920b94160e.mp4"
+    ]
+  },
+  {
+    "id": "a31b6b5e-2d45-4a42-8eca-888005f3f143",
+    "name": "视频节点 20",
+    "position": {
+      "x": 1719.8623327484593,
+      "y": 507.86233274845836
+    },
+    "parent": "fyidUxNVPo",
+    "stale": false,
+    "params": {
+      "prompt": "{{Portrait 1}} 中景参考此图， {{Portrait 2}} 近景参考此图画面部分】 电影级镜头从中景缓慢拉近，而后直接切到近景。他站在超现实的黑暗虚空中颤抖。无数幽灵般的弟子虚影环绕着他，脸部因愤怒而扭曲，指手画脚地大声呵斥。氛围沉重且压抑。在最后 1 秒，强烈的白光从边缘渗入，将屏幕吞噬为一片纯白。\n• 【音频部分】 重叠且混乱的喊叫与私语。清晰男声：“族长之子又有何用，还不是天资愚笨，修为难以存进的废物！” 另一个阴沉的声音：“传说是被魔神诅咒了。” 一个刺耳的声音：“煞星一个！” 最后，一个响亮的怒吼声：“赶紧滚出宗门吧！” 结尾伴随突然的高频鸣响和白噪音爆发。\n• 风格标签： 3D CG，国漫风格，4K，高对比度。，不要字幕，不要背景音乐，需要音效",
+      "model": "star-video2",
+      "modeType": "mixed2video",
+      "count": 1,
+      "imageList": [
+        {
+          "nodeId": "64053fdd-1b13-483a-a8b4-47fad4e95c9b",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/fce6509c3edd63aeec9b32bde7bbddc8da089b899d6160db004a5165956deea5.png",
+          "assetId": "asset-20260511160908-zvhlt"
+        },
+        {
+          "nodeId": "907d4bc1-e0df-4a7b-8d3a-92d61e2deb85",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/433f5a174c0a8610bc3722dca92814d3d79307810554c65b2918b256f88b1d6a.png",
+          "assetId": "asset-20260511160908-dfdhn"
+        }
+      ],
+      "videoList": [],
+      "audioList": [],
+      "settings": {
+        "ratio": "16:9",
+        "resolution": "720p",
+        "duration": 10,
+        "enableSound": "on"
+      },
+      "advancedSettings": {
+        "search_enabled": 1,
+        "autoCompliance": 1
+      },
+      "imageListOrder": [
+        "64053fdd-1b13-483a-a8b4-47fad4e95c9b",
+        "907d4bc1-e0df-4a7b-8d3a-92d61e2deb85"
+      ],
+      "mixedListOrder": [
+        "64053fdd-1b13-483a-a8b4-47fad4e95c9b",
+        "907d4bc1-e0df-4a7b-8d3a-92d61e2deb85"
+      ],
+      "textList": [],
+      "mixedList": [
+        {
+          "nodeId": "64053fdd-1b13-483a-a8b4-47fad4e95c9b",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/fce6509c3edd63aeec9b32bde7bbddc8da089b899d6160db004a5165956deea5.png",
+          "assetId": "asset-20260511160908-zvhlt",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "907d4bc1-e0df-4a7b-8d3a-92d61e2deb85",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/433f5a174c0a8610bc3722dca92814d3d79307810554c65b2918b256f88b1d6a.png",
+          "assetId": "asset-20260511160908-dfdhn",
+          "mediaType": "image"
+        }
+      ]
+    },
+    "url": [
+      "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/3347b37d0d5d7eecadcc66fa37b2f61556bd2701004e7eb46d4ba2c9c946d338.mp4"
+    ]
+  },
+  {
+    "id": "acd440ce-5823-4815-b154-3b839e7a15cd",
+    "name": "视频节点 5",
+    "position": {
+      "x": 3234.116903934333,
+      "y": 126.1169039343331
+    },
+    "parent": "5lR8ircXgY",
+    "stale": false,
+    "params": {
+      "prompt": "{{Portrait 1}} 场景参考此图，[Video] Strictly ordered sequence. Tight facial close-up of the protagonist (young man). The camera remains completely fixed on his face. Action 1: He slowly and heavily tilts his head downwards. Action 2: His facial expression shows deep depression, melancholy, and heartbreak. Crucially, his eyes are completely dry [absolutely no tears, no crying]. It is a silent, tearless grief. Action 3: At the very end of the video, a bright pure white light gradually bleeds in from the four corners and edges of the frame, expanding inward like a vignette until it completely consumes the screen in a white-out transition. 3D CG, Chinese anime style, high detail.\n[Audio] A heavy, silent exhale, followed by dead silence. As the white light appears at the edges, a subtle high-pitched tinnitus (ringing) sound quickly builds up.不要字幕，不要背景音乐，需要音效",
+      "model": "star-video2",
+      "modeType": "mixed2video",
+      "count": 1,
+      "imageList": [
+        {
+          "nodeId": "8031c09e-166c-4d90-8a80-dd1f2d4eb55c",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/9523efe129cf47992d8dc433c62bf0d98bf23c89ba0ed30566337a0b30c591c6.png",
+          "assetId": "asset-20260511214306-hzztq"
+        }
+      ],
+      "videoList": [],
+      "audioList": [],
+      "settings": {
+        "ratio": "16:9",
+        "resolution": "720p",
+        "duration": 5,
+        "enableSound": "on"
+      },
+      "advancedSettings": {
+        "search_enabled": 1,
+        "autoCompliance": 1
+      },
+      "imageListOrder": [
+        "8031c09e-166c-4d90-8a80-dd1f2d4eb55c"
+      ],
+      "mixedListOrder": [
+        "8031c09e-166c-4d90-8a80-dd1f2d4eb55c"
+      ],
+      "textList": [],
+      "mixedList": [
+        {
+          "nodeId": "8031c09e-166c-4d90-8a80-dd1f2d4eb55c",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/9523efe129cf47992d8dc433c62bf0d98bf23c89ba0ed30566337a0b30c591c6.png",
+          "assetId": "asset-20260511214306-hzztq",
+          "mediaType": "image"
+        }
+      ]
+    },
+    "url": [
+      "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/9817627e41ebc7433aedcdb4f06d54ca5f1adb8e52b772e9b57615867a609b63.mp4"
+    ]
+  },
+  {
+    "id": "be859445-8a94-46c0-bb71-af12b9972c98",
+    "name": "视频节点 2",
+    "position": {
+      "x": 3169.905918790922,
+      "y": 1102.4911064067346
+    },
+    "parent": "mQAD4nil09",
+    "stale": false,
+    "params": {
+      "prompt": "{{Portrait 1}} 主角三视图参考， {{Portrait 2}} 场景参考， {{Portrait 3}} 结尾参考[Video] Fast-paced cinematic montage sequence, rapidly cutting between multiple camera angles. The protagonist is violently pushing the gate. Angle 1: Tight close-up of his strained hands pressing against the charred wood, with the red barrier energy violently rippling underneath. Angle 2: Low side-profile shot showing his entire body leaning forward, feet digging into the ground, pushing with desperate strength. Angle 3:\n Extreme close-up of his face, gritting his teeth in extreme effort, skin illuminated by the blinding red glow. As the camera cuts back and forth, the red mystical VFX becomes increasingly explosive, shooting out chaotic sparks. Blinding red light rays begin cracking and bursting through the seams of the door. 3D CG, Chinese anime style, high-octane action, 4K.\n[Audio] Continuous heavy, strained groaning from the protagonist exerting maximum physical effort. A deep, earthquake-like bass rumble of the barrier resisting. The mystical energy sound becomes increasingly chaotic and violent, building up to a deafening, high-pitched tearing sound as the VFX reaches its peak.，不要背景音乐，不要字幕，需要音效",
+      "model": "star-video2",
+      "modeType": "mixed2video",
+      "count": 1,
+      "imageList": [
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn"
+        },
+        {
+          "nodeId": "380d6c82-7239-431c-9308-e009e6e22d52",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/36705be1490a013e98e81ad9a04c179816226db2.png",
+          "assetId": "asset-20260511230615-99mxh"
+        },
+        {
+          "nodeId": "e3b8e2ec-1217-4d8f-a0ba-e401001d96cc",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/624b0a858e631731d0a0a683d34dc58b53c42f96.png",
+          "assetId": "asset-20260511230616-v8wgb"
+        }
+      ],
+      "videoList": [],
+      "audioList": [],
+      "settings": {
+        "ratio": "16:9",
+        "resolution": "720p",
+        "duration": 7,
+        "enableSound": "on"
+      },
+      "advancedSettings": {
+        "search_enabled": 1,
+        "autoCompliance": 1
+      },
+      "imageListOrder": [
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "380d6c82-7239-431c-9308-e009e6e22d52",
+        "e3b8e2ec-1217-4d8f-a0ba-e401001d96cc"
+      ],
+      "mixedListOrder": [
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "380d6c82-7239-431c-9308-e009e6e22d52",
+        "e3b8e2ec-1217-4d8f-a0ba-e401001d96cc"
+      ],
+      "textList": [],
+      "mixedList": [
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "380d6c82-7239-431c-9308-e009e6e22d52",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/36705be1490a013e98e81ad9a04c179816226db2.png",
+          "assetId": "asset-20260511230615-99mxh",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "e3b8e2ec-1217-4d8f-a0ba-e401001d96cc",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/624b0a858e631731d0a0a683d34dc58b53c42f96.png",
+          "assetId": "asset-20260511230616-v8wgb",
+          "mediaType": "image"
+        }
+      ]
+    },
+    "url": [
+      "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/d54d8ebefdd26ea68cfe36adff5c73e111d4fde6f22da77bae8490d89546c54f.mp4"
+    ]
+  },
+  {
+    "id": "c7974626-6948-4366-a52d-f3530f2d83e0",
+    "name": "视频节点 5",
+    "position": {
+      "x": 873.8644094952342,
+      "y": 93.86440949523603
+    },
+    "parent": "9Xc9UBr6aZ",
+    "stale": false,
+    "params": {
+      "prompt": "{{Portrait 1}} 男主三视图参考， {{Portrait 2}} 女主三视图参考， {{Portrait 3}} 黑衣面具人三视图参考， {{Portrait 4}} 场景参考， {{Mixed 5}} 男主音频参考，[Video] Cinematic masterpiece, brilliant visual storytelling. Lin Yuan is brutally pinned face-down in the dirt by a heavy boot, facing away from Ling'er. Suddenly, the assassin standing in front of him viciously stabs a gleaming, polished metal longsword into the charred earth, mere inches from Lin Yuan's eyes. CRUCIAL SHOT: The camera pushes into an extreme macro close-up of the cold metal blade. In the clear, ray-traced reflection of the polished steel, we see the horrifying scene occurring behind Lin Yuan: another masked assassin is slowly raising his sword high, preparing to execute the unconscious Ling'er. The reflection is illuminated by the flickering firelight. Lin Yuan's bloodshot, desperate eye is partially visible in the blurred foreground, staring powerlessly into the blade's reflection. Final Action: Suddenly, his face contorts in ultimate despair. Pressing his face against the dirt, he opens his mouth wide and unleashes a raw, throat-tearing, and devastated scream: \"不要！\" (Bu yao!). 3D CG, Chinese anime style, Dark Epic aesthetic, hyper-realistic metal reflection, depth of field, 4K resolution.\n[Audio] The heavy crunch of the boot pressing on his back. A sharp \"SHING\" followed by a heavy, vibrating \"THUD\" as the longsword is stabbed into the dirt. Lin Yuan's frantic, choking breaths. The distant metallic scrape of the executioner's sword being raised. Then, shattering the tension, Lin Yuan lets out a deafening, raw, and utterly heartbroken scream from the bottom of his lungs: \"不要——！\" (No!).不要背景音乐，不要字幕，需要音效",
+      "model": "star-video2",
+      "modeType": "mixed2video",
+      "count": 1,
+      "imageList": [
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn"
+        },
+        {
+          "nodeId": "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/6f5053fef375d79d7d398fa05f57fafa6cd3661aad39cc919a7b2be74a58c76c.png",
+          "assetId": "asset-20260511174927-m8fkp"
+        },
+        {
+          "nodeId": "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/16690031ce70e1c51eff511023233b7453434fae0d0e1eba9caa248252fc5d99.png",
+          "assetId": "asset-20260513154707-xttfm"
+        },
+        {
+          "nodeId": "6d0da49f-39f3-4924-b9f3-fae5ba61ce78",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/b10ff21d03ec325ce9ae8fafed0e611a1a818c2b.png",
+          "assetId": "asset-20260513220711-czm5g"
+        }
+      ],
+      "videoList": [],
+      "audioList": [
+        {
+          "nodeId": "5a92cd22-5a93-4be8-a216-eea88b8347fd",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/7f1e992b8a538a1ee8d5b4ff063f1fb0b83416ef.wav",
+          "label": "素材音频",
+          "durationSec": 8.080544,
+          "assetId": "asset-20260511231252-cx2vx"
+        }
+      ],
+      "settings": {
+        "ratio": "16:9",
+        "resolution": "720p",
+        "duration": 8,
+        "enableSound": "on"
+      },
+      "advancedSettings": {
+        "search_enabled": 1,
+        "autoCompliance": 1
+      },
+      "imageListOrder": [
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+        "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+        "6d0da49f-39f3-4924-b9f3-fae5ba61ce78"
+      ],
+      "audioListOrder": [
+        "5a92cd22-5a93-4be8-a216-eea88b8347fd"
+      ],
+      "mixedListOrder": [
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+        "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+        "6d0da49f-39f3-4924-b9f3-fae5ba61ce78",
+        "5a92cd22-5a93-4be8-a216-eea88b8347fd"
+      ],
+      "textList": [],
+      "mixedList": [
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/6f5053fef375d79d7d398fa05f57fafa6cd3661aad39cc919a7b2be74a58c76c.png",
+          "assetId": "asset-20260511174927-m8fkp",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/16690031ce70e1c51eff511023233b7453434fae0d0e1eba9caa248252fc5d99.png",
+          "assetId": "asset-20260513154707-xttfm",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "6d0da49f-39f3-4924-b9f3-fae5ba61ce78",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/b10ff21d03ec325ce9ae8fafed0e611a1a818c2b.png",
+          "assetId": "asset-20260513220711-czm5g",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "5a92cd22-5a93-4be8-a216-eea88b8347fd",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/7f1e992b8a538a1ee8d5b4ff063f1fb0b83416ef.wav",
+          "label": "素材音频",
+          "durationSec": 8.080544,
+          "assetId": "asset-20260511231252-cx2vx",
+          "mediaType": "audio"
+        }
+      ]
+    },
+    "url": [
+      "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/fae078e49f39764b6d39d738024cb10d9e679e99d705d987fb97a1833ede4d3b.mp4"
+    ]
+  },
+  {
+    "id": "d4d3fb6e-ab03-4307-819a-0bace0fbcf9a",
+    "name": "视频节点 21",
+    "position": {
+      "x": 910.7427042966219,
+      "y": 108
+    },
+    "parent": "pB8xzu0ZhJ",
+    "stale": false,
+    "params": {
+      "prompt": "{{Portrait 1}} 场景参考此图，[Video] Over-the-shoulder shot, camera positioned behind the father (kind middle-aged man), focusing on the protagonist's face. The protagonist (young man in moon-white robes) is facing the camera, his eyes softening and glistening with emotion as he feels the support. In the foreground, the father's steady hand is visible, gently patting the protagonist's shoulder. The scene is bathed in warm, nostalgic golden sunlight with floating dust motes. At the very end of the clip, intense white light bleeds from the four corners and edges of the frame, rapidly expanding inward until the entire screen is consumed by a blinding white-out. [Audio] Gentle, melodious traditional Chinese flute. A deep, steady, and extremely warm male voice says: \"渊儿，累了就回家，爹一直在。\" The tone is filled with paternal love. 3D CG, Chinese anime style, 4K, warm cinematic lighting.不要背景音乐，不要字幕，需要音效",
+      "model": "star-video2",
+      "modeType": "mixed2video",
+      "count": 1,
+      "imageList": [
+        {
+          "nodeId": "bb42522a-dd38-47ac-b09d-207edb249e6d",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/541afe8ea57a3561a8aefc0b7c326f0bedebf2af326677f5687c5da8580ecbe5.png",
+          "assetId": "asset-20260511170304-v4zsb"
+        }
+      ],
+      "videoList": [],
+      "audioList": [],
+      "settings": {
+        "ratio": "16:9",
+        "resolution": "720p",
+        "duration": 5,
+        "enableSound": "on"
+      },
+      "advancedSettings": {
+        "search_enabled": 1,
+        "autoCompliance": 1
+      },
+      "imageListOrder": [
+        "bb42522a-dd38-47ac-b09d-207edb249e6d"
+      ],
+      "mixedListOrder": [
+        "bb42522a-dd38-47ac-b09d-207edb249e6d"
+      ],
+      "textList": [],
+      "mixedList": [
+        {
+          "nodeId": "bb42522a-dd38-47ac-b09d-207edb249e6d",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/541afe8ea57a3561a8aefc0b7c326f0bedebf2af326677f5687c5da8580ecbe5.png",
+          "assetId": "asset-20260511170304-v4zsb",
+          "mediaType": "image"
+        }
+      ]
+    },
+    "url": [
+      "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/5616469cc59d4fc057d980af18b54a5d4b58a54058c3c676fa5abe1b7294a6e0.mp4"
+    ]
+  },
+  {
+    "id": "d7ea0742-0200-4b29-bbab-5254234be666",
+    "name": "视频节点 4",
+    "position": {
+      "x": 2272.6500629255856,
+      "y": 352.6500629255861
+    },
+    "parent": "bD6WN6lzgy",
+    "stale": false,
+    "params": {
+      "prompt": "{{Portrait 3}} 凌儿三视图参考， {{Portrait 2}} 黑衣人三视图参考， {{Mixed 4}} 凌儿音频参考， {{Portrait 5}} 场景参考此图 {{Portrait 1}}凌儿跪坐地上参考 ，【画面部分】 电影级急推镜头，从广角远景开始，极速穿过燃烧的废墟拉近。镜头 1： 极速推进戛然而止于凌儿跪坐在地上，疲惫、沾满烟灰的面部紧凑特写。镜头 2： 快速切至全景。三名身穿漆黑长袍、戴着金属面具的高大刺客包围着她。一名刺客无情地重重一脚踢在她的侧面；她被猛烈地向侧面击飞，重重地倒在焦黑的地上。镜头 3： 切至凌儿侧躺在尘土中的亲密特写。她微弱地挣扎着，绝望地直视摄像机镜头（看向主角）。她的嘴唇剧烈颤抖，低语出原话：“林渊哥哥，快跑”。话音刚落，她的双眼闭合，失去所有意识。3D CG，国漫风格，暗黑史诗美学，高对比度火光照明，4K 分辨率。\n• 【音频部分】 火海的轰鸣声。镜头 1： 镜头拉近时伴随戏剧性的“呼”的风声，结束于凌儿虚弱、断断续续的呼吸声。镜头 2： 长袍阴森的摩擦声，以及她被踢中时发出的残酷、震颤骨骼的“砰”声。镜头 3： 她的声音极其虚弱、纤细，带着泪水颤抖低语：“林渊哥哥，快跑”。没有背景音乐，只有原始、毁灭性的音效。",
+      "model": "star-video2",
+      "modeType": "mixed2video",
+      "count": 1,
+      "imageList": [
+        {
+          "nodeId": "a194394c-a649-4f65-8208-eb7291c1fd03",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/6108bd9bee0f9d7bc831cc86b31dd13329c8dfd32b2cec731f6261684e881b43.png",
+          "assetId": "asset-20260513154709-tb8hs"
+        },
+        {
+          "nodeId": "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/16690031ce70e1c51eff511023233b7453434fae0d0e1eba9caa248252fc5d99.png",
+          "assetId": "asset-20260513154707-xttfm"
+        },
+        {
+          "nodeId": "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/6f5053fef375d79d7d398fa05f57fafa6cd3661aad39cc919a7b2be74a58c76c.png",
+          "assetId": "asset-20260511174927-m8fkp"
+        },
+        {
+          "nodeId": "07f3f769-e703-410f-8612-2864dcf4a79d",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/ad78a0de284f19d61539f4ae1ae40fed54d19699525f55041895d7d52f964a4a.png",
+          "assetId": "asset-20260513154710-lx78p"
+        },
+        {
+          "nodeId": "42e92c74-ab58-42c4-b25a-6d4d9e3a17dd",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/e3ccfec106f694d20399d9eb6acf071335c7ea51.png",
+          "assetId": "asset-20260513163647-gmhwc"
+        }
+      ],
+      "videoList": [],
+      "audioList": [
+        {
+          "nodeId": "0c3af495-2b93-4076-8875-20262b2e0902",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/f69cd51c5500336fe6a63ba2b9307b529f64994e.wav",
+          "label": "5月13日",
+          "durationSec": 5.34059,
+          "assetId": "asset-20260513120422-jlj94"
+        }
+      ],
+      "settings": {
+        "ratio": "16:9",
+        "resolution": "720p",
+        "duration": 10,
+        "enableSound": "on"
+      },
+      "advancedSettings": {
+        "search_enabled": 1,
+        "autoCompliance": 1
+      },
+      "imageListOrder": [
+        "a194394c-a649-4f65-8208-eb7291c1fd03",
+        "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+        "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+        "07f3f769-e703-410f-8612-2864dcf4a79d",
+        "42e92c74-ab58-42c4-b25a-6d4d9e3a17dd"
+      ],
+      "mixedListOrder": [
+        "a194394c-a649-4f65-8208-eb7291c1fd03",
+        "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+        "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+        "0c3af495-2b93-4076-8875-20262b2e0902",
+        "07f3f769-e703-410f-8612-2864dcf4a79d",
+        "42e92c74-ab58-42c4-b25a-6d4d9e3a17dd"
+      ],
+      "textList": [],
+      "mixedList": [
+        {
+          "nodeId": "a194394c-a649-4f65-8208-eb7291c1fd03",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/6108bd9bee0f9d7bc831cc86b31dd13329c8dfd32b2cec731f6261684e881b43.png",
+          "assetId": "asset-20260513154709-tb8hs",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/16690031ce70e1c51eff511023233b7453434fae0d0e1eba9caa248252fc5d99.png",
+          "assetId": "asset-20260513154707-xttfm",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "230293cf-df9a-4e83-bf56-2ad4a0d16eb6",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/6f5053fef375d79d7d398fa05f57fafa6cd3661aad39cc919a7b2be74a58c76c.png",
+          "assetId": "asset-20260511174927-m8fkp",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "0c3af495-2b93-4076-8875-20262b2e0902",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/f69cd51c5500336fe6a63ba2b9307b529f64994e.wav",
+          "label": "5月13日",
+          "durationSec": 5.34059,
+          "assetId": "asset-20260513120422-jlj94",
+          "mediaType": "audio"
+        },
+        {
+          "nodeId": "07f3f769-e703-410f-8612-2864dcf4a79d",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/ad78a0de284f19d61539f4ae1ae40fed54d19699525f55041895d7d52f964a4a.png",
+          "assetId": "asset-20260513154710-lx78p",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "42e92c74-ab58-42c4-b25a-6d4d9e3a17dd",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/e3ccfec106f694d20399d9eb6acf071335c7ea51.png",
+          "assetId": "asset-20260513163647-gmhwc",
+          "mediaType": "image"
+        }
+      ],
+      "audioListOrder": [
+        "0c3af495-2b93-4076-8875-20262b2e0902"
+      ]
+    },
+    "url": [
+      "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/a2db56d564b1cf0317b00159d6dcb327432056e5dcb5e724a57635ecc3cbde1b.mp4"
+    ]
+  },
+  {
+    "id": "dUOr49aylA",
+    "name": "视频节点 2",
+    "position": {
+      "x": 910.7427042966219,
+      "y": 562.7427042966228
+    },
+    "parent": "pB8xzu0ZhJ",
+    "stale": false,
+    "params": {
+      "prompt": "{{Portrait 1}} 场景参考此图，电影级 3D 国漫风格（Donghua）。从一位父亲视角的过肩镜头（OTS）。在略微模糊的前景中，父亲饱经风霜、布满皱纹的手，轻轻拍了拍年轻男主角的肩膀。摄像机的焦点锁定在中景处的主角身上。主角微微低头，面部表情展现出微微失落与沮丧的情绪。温暖、柔和且带有怀旧感的电影级光影。缓慢、细微且自然的角色动作，充满情感与触动人心的氛围，高质量 3D CG 渲染，景深效果，4K 分辨率。",
+      "model": "star-video2",
+      "modeType": "mixed2video",
+      "count": 1,
+      "imageList": [
+        {
+          "nodeId": "bb42522a-dd38-47ac-b09d-207edb249e6d",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/541afe8ea57a3561a8aefc0b7c326f0bedebf2af326677f5687c5da8580ecbe5.png",
+          "assetId": "asset-20260511170304-v4zsb"
+        }
+      ],
+      "videoList": [],
+      "audioList": [],
+      "settings": {
+        "ratio": "16:9",
+        "resolution": "720p",
+        "duration": 5,
+        "enableSound": "on"
+      },
+      "advancedSettings": {
+        "search_enabled": 1,
+        "autoCompliance": 1
+      },
+      "imageListOrder": [
+        "bb42522a-dd38-47ac-b09d-207edb249e6d"
+      ],
+      "mixedListOrder": [
+        "bb42522a-dd38-47ac-b09d-207edb249e6d"
+      ],
+      "textList": [],
+      "mixedList": [
+        {
+          "nodeId": "bb42522a-dd38-47ac-b09d-207edb249e6d",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/541afe8ea57a3561a8aefc0b7c326f0bedebf2af326677f5687c5da8580ecbe5.png",
+          "assetId": "asset-20260511170304-v4zsb",
+          "mediaType": "image"
+        }
+      ]
+    },
+    "url": [
+      "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/b023045e7bb8f0b9c75d2eefe310ae028ef52b0877c2522e7b764331cd95c430.mp4"
+    ]
+  },
+  {
+    "id": "eb911c9e-868f-474c-bd23-1cd119359db7",
+    "name": "视频节点 5",
+    "position": {
+      "x": 1719.8623327484593,
+      "y": 111.86233274845927
+    },
+    "parent": "ioa9Ux7utT",
+    "stale": false,
+    "params": {
+      "prompt": "{{Portrait 2}} 主角林渊三视图参考， {{Portrait 1}} 场景参考，[Video] Cinematic tight close-up on the protagonist's face. The flickering, intense orange and red light from the inferno harshly illuminates his features. Action 1: The camera focuses on his wide eyes, with the roaring flames clearly reflected in his trembling pupils. Action 2: His expression snaps from paralyzed shock to extreme, frantic anxiety and panic. Action 3: His eyes dart rapidly left and right as he frantically scans the burning ruins off-screen, looking for any survivors. Sweat and soot smudge his pale face. His chest heaves with rapid, shallow, panicked breathing, lips trembling slightly. The background is completely out of focus (heavy bokeh) with chaotic flying fire sparks. 3D CG, Chinese anime style, Dark Epic, ultra-detailed facial animation, emotional acting, 4K resolution.\n[Audio] The roaring fire is slightly muffled in the background. Foreground audio is the protagonist's rapid, trembling, and heavy breathing, escalating into a breathless, desperate, and frantic gasp. A subtle sound of a cracking burning timber nearby.b不要背景音乐，不要字幕，需要音效",
+      "model": "star-video2",
+      "modeType": "mixed2video",
+      "count": 1,
+      "imageList": [
+        {
+          "nodeId": "d686aaaa-40eb-4a53-9e23-ec14a632c8fc",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/e4f2882492f8fd44517ed379e38e56e25a3922d8cc731f1a155cdaf9ec1c877d.png",
+          "assetId": "asset-20260513102109-fsnmn"
+        },
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn"
+        }
+      ],
+      "videoList": [],
+      "audioList": [],
+      "settings": {
+        "ratio": "16:9",
+        "resolution": "720p",
+        "duration": 5,
+        "enableSound": "on"
+      },
+      "advancedSettings": {
+        "search_enabled": 1,
+        "autoCompliance": 1
+      },
+      "imageListOrder": [
+        "d686aaaa-40eb-4a53-9e23-ec14a632c8fc",
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560"
+      ],
+      "mixedListOrder": [
+        "d686aaaa-40eb-4a53-9e23-ec14a632c8fc",
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560"
+      ],
+      "textList": [],
+      "mixedList": [
+        {
+          "nodeId": "d686aaaa-40eb-4a53-9e23-ec14a632c8fc",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/e4f2882492f8fd44517ed379e38e56e25a3922d8cc731f1a155cdaf9ec1c877d.png",
+          "assetId": "asset-20260513102109-fsnmn",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn",
+          "mediaType": "image"
+        }
+      ]
+    },
+    "url": [
+      "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/37ebf07a63f32e28c9b9a09830e17db0fd2e36639b61f8c833b6f32f40572b63.mp4"
+    ]
+  },
+  {
+    "id": "ebKIJVB6DU",
+    "name": "视频一键去字幕-视频节点 3",
+    "position": {
+      "x": 4029.979236682792,
+      "y": 225.97923668279327
+    },
+    "parent": "5lR8ircXgY",
+    "stale": false,
+    "params": {
+      "model": "volcano-subtitle-eraser",
+      "mode": "Subtitle",
+      "videoList": [],
+      "videoListV2": [
+        {
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/4c5bd00178cc88f089d2de3601ea98435e362d65c6b7c5827bb35c0adcaa09d1.mp4",
+          "width": 1280,
+          "height": 720,
+          "duration": 8.057007
+        }
+      ],
+      "prompt": "",
+      "textList": [],
+      "imageList": [],
+      "audioList": []
+    },
+    "url": [
+      "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/4c5bd00178cc88f089d2de3601ea98435e362d65c6b7c5827bb35c0adcaa09d1_1779093907_lib_upscaled.mp4"
+    ]
+  },
+  {
+    "id": "f40440d4-78ca-4163-b422-5ac55e5e9a67",
+    "name": "视频节点 6",
+    "position": {
+      "x": 1726.742704296622,
+      "y": 910.7427042966228
+    },
+    "parent": "OchM0fSlkq",
+    "stale": false,
+    "params": {
+      "prompt": "{{Portrait 1}} 主角三视图参考， {{Mixed 2}} 视角一参考， {{Portrait 3}} 视角二参考， {{Portrait 4}} 视角三参考， {{Mixed 5}} 主角音频参考，[Video] Fast-paced cinematic montage sequence in a blazing inferno. Angle 1: Dynamic tracking shot. The protagonist (young man in moon-white robes, soot on face) sprints desperately through the sea of fire, shouting frantically. Angle 2: Rapid cut to a shaking close-up of his panicked face running through thick smoke. Angle 3: Wide shot. He stumbles over burning rubble. CRUCIAL ACTION: He suddenly skids to an abrupt halt, feet sliding on the ashes. The chaotic camera movement instantly stabilizes. He stands completely frozen. His frantic expression drops into absolute, paralyzing horror and despair as his eyes lock onto a horrifying sight just off-screen. Final Action: Still frozen in place, his trembling lips part, and his face contorts in ultimate grief as he unleashes one final, heartbroken shout at the off-screen tragedy. 3D CG, Chinese anime style, Dark Epic aesthetic, 4K resolution.\n[Audio] Deafening roar of the firestorm and crashing timber. His hoarse, desperate shouts echoing: \"爹！\" (Father!) and \"凌儿！\" (Ling'er!) while running. Frantic footsteps. Crucial Audio Shift: The moment he halts, all background noise abruptly drops into a low, eerie ringing silence, emphasizing his shock. Then, piercing through the dead silence, his voice cracks as he lets out one final, trembling, and utterly heartbroken cry: \"凌儿——！\" (Ling'er!).，，不要字幕，不要背景音乐，需要音效",
+      "model": "star-video2",
+      "modeType": "mixed2video",
+      "count": 1,
+      "imageList": [
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn"
+        },
+        {
+          "nodeId": "4b3b2d61-6af8-4b92-99e6-66b9a178b765",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/127c903166a27fd3b91fdbba6f2fb67176807dec455bbf85675523ade008c393.png",
+          "compliantExempt": true
+        },
+        {
+          "nodeId": "2a51c6a2-8fac-4718-875e-ec50b4374358",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/8267aab09a11454574cdfd519465fabcf3b22b0ca7373a377275c916ec51d384.png",
+          "assetId": "asset-20260513104829-znsn4"
+        },
+        {
+          "nodeId": "343bc2c6-7f85-4123-b4ff-2084ace73727",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/88ec6b9afc97d1b61f2f3a375f847a1098dbcaa511525c29265838816845393d.png",
+          "assetId": "asset-20260513104829-6v9bm"
+        }
+      ],
+      "videoList": [],
+      "audioList": [
+        {
+          "nodeId": "5a92cd22-5a93-4be8-a216-eea88b8347fd",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/7f1e992b8a538a1ee8d5b4ff063f1fb0b83416ef.wav",
+          "label": "素材音频",
+          "durationSec": 8.080544,
+          "assetId": "asset-20260511231252-cx2vx"
+        }
+      ],
+      "settings": {
+        "ratio": "16:9",
+        "resolution": "720p",
+        "duration": 10,
+        "enableSound": "on"
+      },
+      "advancedSettings": {
+        "search_enabled": 1,
+        "autoCompliance": 1
+      },
+      "imageListOrder": [
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "4b3b2d61-6af8-4b92-99e6-66b9a178b765",
+        "2a51c6a2-8fac-4718-875e-ec50b4374358",
+        "343bc2c6-7f85-4123-b4ff-2084ace73727"
+      ],
+      "mixedListOrder": [
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "4b3b2d61-6af8-4b92-99e6-66b9a178b765",
+        "2a51c6a2-8fac-4718-875e-ec50b4374358",
+        "343bc2c6-7f85-4123-b4ff-2084ace73727",
+        "5a92cd22-5a93-4be8-a216-eea88b8347fd"
+      ],
+      "textList": [],
+      "mixedList": [
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "4b3b2d61-6af8-4b92-99e6-66b9a178b765",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/127c903166a27fd3b91fdbba6f2fb67176807dec455bbf85675523ade008c393.png",
+          "compliantExempt": true,
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "2a51c6a2-8fac-4718-875e-ec50b4374358",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/8267aab09a11454574cdfd519465fabcf3b22b0ca7373a377275c916ec51d384.png",
+          "assetId": "asset-20260513104829-znsn4",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "343bc2c6-7f85-4123-b4ff-2084ace73727",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/88ec6b9afc97d1b61f2f3a375f847a1098dbcaa511525c29265838816845393d.png",
+          "assetId": "asset-20260513104829-6v9bm",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "5a92cd22-5a93-4be8-a216-eea88b8347fd",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/7f1e992b8a538a1ee8d5b4ff063f1fb0b83416ef.wav",
+          "label": "素材音频",
+          "durationSec": 8.080544,
+          "assetId": "asset-20260511231252-cx2vx",
+          "mediaType": "audio"
+        }
+      ],
+      "audioListOrder": [
+        "5a92cd22-5a93-4be8-a216-eea88b8347fd"
+      ]
+    },
+    "url": [
+      "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/c64d24f466d4848372d5d31095eea9b8d840aa59f7059262ac78da6de337e078.mp4"
+    ]
+  },
+  {
+    "id": "fdef8d1f-1138-4ab4-9e94-7541b01e1028",
+    "name": "视频节点 2",
+    "position": {
+      "x": 3231.92668210813,
+      "y": 250.49110640673462
+    },
+    "parent": "mQAD4nil09",
+    "stale": false,
+    "params": {
+      "prompt": "{{Portrait 1}} 角色三视图参考， {{Portrait 2}} 场景参考，[Video] Cinematic medium shot from behind the protagonist. The young man in moon-white robes is leaning forward with explosive intensity, his hands slamming and pushing into the massive charred gate. Action 1: Instantly, the gate violently shatters and crumbles into hundreds of flying wooden fragments. Action 2: A colossal wave of blinding red mystical energy and scarlet light erupts from the breach, surging forward to completely swallow the protagonist's silhouette and the entire environment. The video ends in a total red-out where the screen is 100% filled with intense, roaring red light and particles. 3D CG, Chinese anime style, explosive VFX, Dark Epic aesthetic, 4K resolution.\n[Audio] A single, final, deafening and desperate shout of the protagonist at maximum volume. This is simultaneously layered with the thunderous sound of wood shattering and a massive, roaring mystical energy blast that peaks and consumes all sound in the red-out.不要背景音乐，不要字幕，需要音效",
+      "model": "star-video2",
+      "modeType": "mixed2video",
+      "count": 1,
+      "imageList": [
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn"
+        },
+        {
+          "nodeId": "e3b8e2ec-1217-4d8f-a0ba-e401001d96cc",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/624b0a858e631731d0a0a683d34dc58b53c42f96.png",
+          "assetId": "asset-20260511230616-v8wgb"
+        }
+      ],
+      "videoList": [],
+      "audioList": [],
+      "settings": {
+        "ratio": "16:9",
+        "resolution": "720p",
+        "duration": 5,
+        "enableSound": "on"
+      },
+      "advancedSettings": {
+        "search_enabled": 1,
+        "autoCompliance": 1
+      },
+      "imageListOrder": [
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "e3b8e2ec-1217-4d8f-a0ba-e401001d96cc"
+      ],
+      "mixedListOrder": [
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "e3b8e2ec-1217-4d8f-a0ba-e401001d96cc"
+      ],
+      "textList": [],
+      "mixedList": [
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "e3b8e2ec-1217-4d8f-a0ba-e401001d96cc",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/624b0a858e631731d0a0a683d34dc58b53c42f96.png",
+          "assetId": "asset-20260511230616-v8wgb",
+          "mediaType": "image"
+        }
+      ]
+    },
+    "url": [
+      "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/c1f6d2ba9f694cd682645efa687cd06dc9989677efb67f36de2bc779ab204222.mp4"
+    ]
+  },
+  {
+    "id": "gFjKX7hIzP",
+    "name": "视频节点 10",
+    "position": {
+      "x": 1882.7427042966228,
+      "y": 504.7427042966224
+    },
+    "parent": "K2fqQvD2xW",
+    "stale": false,
+    "params": {
+      "prompt": "{{Portrait 1}} 男主魔化前三视图参考， {{Portrait 3}} 男主魔化后三视图参考， {{Portrait 2}} 黑衣面具人三视图参考， 开头场景参考，主角趴在地上，被黑衣面具人踩着，主角绝望大喊：不要！尾音拖得很长，尾音拖了三秒之后，主角眼中突然迸发出红色与紫色两种魔气，紧接着主角身上也开始迸发同样的红色与紫色二种魔气，直接将黑衣面具人震飞，红色与紫色魔气缠绕交织缓缓将主角拖向空中并最终凝聚成一团魔气，过了一会儿魔气猛然炸开，魔化后的主角缓慢从中走出，脚踏虚空，并从身上散发出无与伦比的气息，红色与紫色魔气缓缓地流动在周身，眼神冰冷，充满杀意，并死死的盯着镜头，电影级3D国漫风格，史诗级粒子特效，虚幻5引擎渲染，视频不要背景音乐，不要字幕，需要音效",
+      "model": "star-video2",
+      "modeType": "mixed2video",
+      "count": 1,
+      "imageList": [
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn"
+        },
+        {
+          "nodeId": "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/16690031ce70e1c51eff511023233b7453434fae0d0e1eba9caa248252fc5d99.png",
+          "assetId": "asset-20260513154707-xttfm"
+        },
+        {
+          "nodeId": "49ab6d98-d408-4778-91f0-612c9e168b78",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/0c6f8ebd2da4faed47100bb9801d50153473e21139011241274f5675e772b87a.png",
+          "assetId": "asset-20260513092014-f4bkl"
+        }
+      ],
+      "videoList": [],
+      "audioList": [],
+      "settings": {
+        "ratio": "16:9",
+        "resolution": "720p",
+        "duration": 15,
+        "enableSound": "on"
+      },
+      "advancedSettings": {
+        "search_enabled": 1,
+        "autoCompliance": 1
+      },
+      "imageListOrder": [
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+        "49ab6d98-d408-4778-91f0-612c9e168b78"
+      ],
+      "mixedListOrder": [
+        "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+        "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+        "49ab6d98-d408-4778-91f0-612c9e168b78"
+      ],
+      "textList": [],
+      "mixedList": [
+        {
+          "nodeId": "b1d06245-e79b-4ce7-9ca2-1d17cf4a6560",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/33e15e4d9200ed29eed6fb40aa77688ae5ff7068b02b2ecc1419ca13b3134746.png",
+          "assetId": "asset-20260511105650-pwjcn",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "f4fe3515-5713-46d5-bbb8-76b84cecad07",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/16690031ce70e1c51eff511023233b7453434fae0d0e1eba9caa248252fc5d99.png",
+          "assetId": "asset-20260513154707-xttfm",
+          "mediaType": "image"
+        },
+        {
+          "nodeId": "49ab6d98-d408-4778-91f0-612c9e168b78",
+          "url": "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/image/9841ad593ac44a189bd3885ec9f3ae68/0c6f8ebd2da4faed47100bb9801d50153473e21139011241274f5675e772b87a.png",
+          "assetId": "asset-20260513092014-f4bkl",
+          "mediaType": "image"
+        }
+      ]
+    },
+    "url": [
+      "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/f5bf44faf6d1a505824e88f027e1e1e8996c2155d0097ad730709eb8fa59e08c.mp4"
+    ]
+  },
+  {
+    "id": "rv5noZOJMK",
+    "name": "视频节点 2",
+    "position": {
+      "x": 2670.859608230956,
+      "y": 118.74270429662238
+    },
+    "parent": "K2fqQvD2xW",
+    "stale": false,
+    "params": {
+      "prompt": "{{Image 1}} 画面参考，镜头定格不动，男主目光冰冷，蕴含杀意，死死盯着镜头，眼中流光泛出，不要背景音乐，需要音效，电影级3d国漫画风，史诗级粒子特效",
+      "model": "star-video2",
+      "modeType": "frames2video",
+      "count": 1,
+      "imageList": [
+        {
+          "nodeId": "5Opb8QogjI",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/1ee3d0eaf0fc4de689478fd18dfa1646b64faf56.png",
+          "assetId": "asset-20260517192630-cfbj4"
+        }
+      ],
+      "videoList": [],
+      "audioList": [],
+      "settings": {
+        "ratio": "16:9",
+        "resolution": "720p",
+        "duration": 4,
+        "enableSound": "on"
+      },
+      "advancedSettings": {
+        "search_enabled": 1,
+        "autoCompliance": 1
+      },
+      "imageListOrder": [
+        "5Opb8QogjI"
+      ],
+      "mixedListOrder": [
+        "5Opb8QogjI"
+      ],
+      "textList": [],
+      "mixedList": [
+        {
+          "nodeId": "5Opb8QogjI",
+          "url": "https://libtv-res.liblib.art/upload-images/9841ad593ac44a189bd3885ec9f3ae68/1ee3d0eaf0fc4de689478fd18dfa1646b64faf56.png",
+          "assetId": "asset-20260517192630-cfbj4",
+          "mediaType": "image"
+        }
+      ]
+    },
+    "url": [
+      "https://libtv-res.liblib.art/sd-gen-save-img/genius_playground/video/9841ad593ac44a189bd3885ec9f3ae68/81e6baa8f1869009ead700f8b88fd0fb61d17fcac790dc3db9de5a3e9fe6edd5.mp4"
+    ]
+  }
+]

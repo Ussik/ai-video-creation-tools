@@ -1,0 +1,41 @@
+{
+  "models": [
+    {
+      "remote_id": "gpt-image-2",
+      "name": "gpt-image-2",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "gpt-image-2-vip",
+      "name": "gpt-image-2-vip",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "nano-banana-2",
+      "name": "nano-banana-2",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "nano-banana-2-lite",
+      "name": "nano-banana-2-lite",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "nano-banana-pro",
+      "name": "nano-banana-pro",
+      "modality_hint": null,
+      "existing": false
+    },
+    {
+      "remote_id": "gpt-image-2.5",
+      "name": "gpt-image-2.5",
+      "modality_hint": null,
+      "existing": true
+    }
+  ],
+  "total": 6
+}

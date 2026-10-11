@@ -1,3 +1,4 @@
+import { MantineProvider } from '@mantine/core'
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { JSDOM } from 'jsdom'
@@ -10,6 +11,8 @@ for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'HTMLTextAr
   Object.defineProperty(globalThis, key, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[key] })
 }
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+Object.defineProperty(dom.window, 'matchMedia', { value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) })
+Object.assign(globalThis, { getComputedStyle: dom.window.getComputedStyle.bind(dom.window), requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(0), 0), cancelAnimationFrame: clearTimeout, ResizeObserver: class { observe() {} unobserve() {} disconnect() {} } })
 dom.window.requestAnimationFrame = callback => { callback(0); return 1 }
 const { createRoot } = await import('react-dom/client')
 after(() => dom.window.close())
@@ -22,7 +25,7 @@ async function mount(onContinue: (answer: string) => Promise<void>, initial: Cho
     const [answer, setAnswer] = useState(initial)
     return <DirectorQuestionPanel choice={question} answer={answer} busy={false} unavailable={unavailable} onChange={setAnswer} onSkip={onSkip} onContinue={onContinue} />
   }
-  await act(() => root.render(<Harness />))
+  await act(() => root.render(<MantineProvider env="test"><Harness /></MantineProvider>))
   return { container, destroy: async () => { await act(() => root.unmount()); container.remove() } }
 }
 function button(container: HTMLElement, text: string) {

@@ -1,4 +1,5 @@
-import { useRef, useState } from 'react'
+import { Textarea, UnstyledButton, Button, Radio } from '@mantine/core'
+import { useId, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Check } from 'lucide-react'
 import type { ParsedMessageChoices } from './director-choices'
@@ -60,6 +61,7 @@ export default function DirectorQuestionPanel({ choice: group, answer: groupAnsw
   onSkip: () => Promise<void>
   onContinue: (text: string) => Promise<void>
 }) {
+  const radioName = useId()
   const submitLock = useRef(false)
   const [submitting, setSubmitting] = useState<'answer' | 'skip' | null>(null)
   const [questionIndex, setQuestionIndex] = useState(() => {
@@ -112,7 +114,7 @@ export default function DirectorQuestionPanel({ choice: group, answer: groupAnsw
     {choice.fields?.length ? <div className="sd-question-fields">
       <p className="sd-question-hint">填写你的设定；下方参考可多选，也可以自由补充。</p>
       {choice.fields.map(field => <div className="sd-question-field" key={field.id}>
-        <label><span>{field.label}</span><textarea value={answer.fields?.[field.id] || ''} rows={2} maxLength={1600}
+        <label><span>{field.label}</span><Textarea value={answer.fields?.[field.id] || ''} rows={2} maxLength={1600}
           aria-label={field.label} placeholder="填写你的设定…" disabled={disabled}
           onChange={event => onChange({ ...answer, fields: { ...answer.fields, [field.id]: event.currentTarget.value } })}
           onKeyDown={event => { if (shouldSendDirectorMessage({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing, keyCode: event.nativeEvent.keyCode })) { event.preventDefault(); void submit() } }} /></label>
@@ -120,15 +122,15 @@ export default function DirectorQuestionPanel({ choice: group, answer: groupAnsw
           {field.suggestions.map(suggestion => {
             const values = (answer.fields?.[field.id] || '').split('、').map(value => value.trim()).filter(Boolean)
             const selected = values.includes(suggestion)
-            return <button key={suggestion} type="button" aria-pressed={selected} disabled={disabled} onClick={() => onChange({ ...answer,
+            return <UnstyledButton key={suggestion} type="button" aria-pressed={selected} disabled={disabled} onClick={() => onChange({ ...answer,
               fields: { ...answer.fields, [field.id]: (selected ? values.filter(value => value !== suggestion) : [...values, suggestion]).join('、') },
-            })}>{selected && <Check size={12} aria-hidden="true" />}{suggestion}</button>
+            })}>{selected && <Check size={12} aria-hidden="true" />}{suggestion}</UnstyledButton>
           })}
         </div>}
       </div>)}
     </div> : <div className="sd-question-options" role="radiogroup" aria-label={choice.question}>
-      {options.map((option, index) => <button key={option.label} type="button" role="radio"
-        aria-checked={!answer.custom && answer.selectedId === option.label}
+      {options.map((option, index) => <Radio.Card name={radioName} key={option.label} type="button" role="radio"
+        checked={!answer.custom && answer.selectedId === option.label}
         className={!answer.custom && answer.selectedId === option.label ? 'is-selected' : ''}
         disabled={disabled} onClick={() => {
           onChange({ ...answer, custom: false, selectedId: option.label, text: answer.selectedId === option.label && !answer.custom ? answer.text : '' })
@@ -136,24 +138,24 @@ export default function DirectorQuestionPanel({ choice: group, answer: groupAnsw
         }}>
         <span className="sd-question-number">{index + 1}</span><span>{option.title}</span>
         {!answer.custom && answer.selectedId === option.label && <Check size={15} aria-hidden="true" />}
-      </button>)}
-      <button type="button" role="radio" aria-checked={answer.custom} className={answer.custom ? 'is-selected' : 'is-custom'}
+      </Radio.Card>)}
+      <Radio.Card name={radioName} type="button" role="radio" checked={answer.custom} className={answer.custom ? 'is-selected' : 'is-custom'}
         disabled={disabled} onClick={() => { onChange({ ...answer, custom: true }); window.requestAnimationFrame(() => textarea.current?.focus()) }}>
         <span className="sd-question-number">{options.length + 1}</span><span>我有别的想法</span>
         {answer.custom && <Check size={15} aria-hidden="true" />}
-      </button>
+      </Radio.Card>
     </div>}
-    {!choice.fields?.length && (answer.custom || needsDetails) && <textarea ref={textarea} value={answer.text} maxLength={4000} rows={3}
+    {!choice.fields?.length && (answer.custom || needsDetails) && <Textarea ref={textarea} value={answer.text} maxLength={4000} rows={3}
       aria-label={needsDetails ? '补充所选方案' : '填写其他想法'} placeholder={needsDetails ? '请补充具体人选或范围…' : '写下你的方向，或补充对这些选项的修改…'} disabled={disabled}
       onChange={event => onChange({ ...answer, text: event.currentTarget.value })}
       onKeyDown={event => { if (shouldSendDirectorMessage({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing, keyCode: event.nativeEvent.keyCode })) { event.preventDefault(); void submit() } }} />}
-    {!controls && unavailable && <button type="button" className="sd-question-model" onClick={onConfigure}>请先配置可用文本模型</button>}
+    {!controls && unavailable && <Button type="button" className="sd-question-model" onClick={onConfigure} data-workspace-control="" variant="subtle">请先配置可用文本模型</Button>}
     <footer>{controls && <div className="sd-question-controls">{controls}</div>}
       <div className="sd-question-actions">
-      {!!group.questions && questionIndex > 0 && <button type="button" disabled={disabled} onClick={() => setQuestionIndex(index => index - 1)}>上一项</button>}
-      {onStop && disabled ? <button type="button" onClick={onStop}>停止生成</button> : <button type="button" disabled={disabled || unavailable} onClick={() => void skip()}>{submitting === 'skip' ? '正在跳过…' : '跳过'}</button>}
-      <button type="button" className="sd-question-submit" disabled={disabled || unavailable || !reply || !!group.questions && !hasNext && !choiceAnswerText(group, groupAnswer)} onClick={() => void submit()}>
+      {!!group.questions && questionIndex > 0 && <Button type="button" disabled={disabled} onClick={() => setQuestionIndex(index => index - 1)} data-workspace-control="" variant="subtle">上一项</Button>}
+      {onStop && disabled ? <Button type="button" onClick={onStop} data-workspace-control="" variant="subtle">停止生成</Button> : <Button type="button" disabled={disabled || unavailable} onClick={() => void skip()} data-workspace-control="" variant="subtle">{submitting === 'skip' ? '正在跳过…' : '跳过'}</Button>}
+      <Button type="button" className="sd-question-submit" disabled={disabled || unavailable || !reply || !!group.questions && !hasNext && !choiceAnswerText(group, groupAnswer)} onClick={() => void submit()} data-workspace-control="" variant="subtle">
         {submitting === 'skip' ? '继续' : disabled ? '正在提交…' : hasNext ? '下一项' : '继续'}
-      </button></div></footer>
+      </Button></div></footer>
   </section>
 }

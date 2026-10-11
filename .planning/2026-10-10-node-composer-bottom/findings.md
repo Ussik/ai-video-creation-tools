@@ -1,0 +1,17 @@
+# Findings
+
+- `CanvasComposerToolbar` already wraps a Bottom `NodeToolbar`, but an imperative effect translates its anchor into bottom/right/left/top safe rectangles.
+- That effect also calls `setViewport` when cramped and repeats during every pan/zoom/node movement, causing the reported jumping.
+- Existing placement tests encode the old automatic side/reframe behavior and need replacement with below-only invariants.
+- LibTV reference: selected image editor is centered below the node, fixed width 660px, height 191px, gap about 11.3px. Panning by 150px/120px moves the node and panel by exactly the same amount.
+- Long composer content currently scrolls inside the body while header/footer remain fixed. Expanded Mantine Modal should remain intact.
+- Implementation now relies solely on Bottom/center NodeToolbar with existing 24px gap. Removed adaptive placement helper, geometry observers/store subscription/RAF and automatic viewport reframing. Only canvas resize changes maximum panel dimensions.
+- Profile footers use a 20px row 6px below the card (`canvas-visual-profiles.css`). Reserve those 26 canvas pixels before the 24px screen gap; zoom subscription changes only this footer clearance.
+- Browser confirmed ordinary image gap exactly 24px and horizontal center delta 0, including expand/collapse. Profile status stays about 25px from the editor at 1x and about 26.14px at 2.14x (card border included). Pan/zoom/edge samples keep bottom placement and 720px readable panel width.
+- Follow-up source trace: ProjectCanvas's document pointerdown capture dismisses the selected node outside known canvas overlays. CreativeSkillSelector's Popover.Dropdown is portaled and has no `data-canvas-overlay`, so clicking its header/input/details clears selection and unmounts PromptSkillAction plus the modal. Existing selector unit tests click without pointerdown and do not mount the actual canvas.
+- Proposed normal height cap: 420px, with existing short-viewport constraints and internal body scrolling. Current actual panels are about 473px (image) and 506px (profile).
+- Follow-up browser verification after fix: video node editor is exactly 420px high; body 297px vs scrollHeight 563px with overflow auto. Skill description/config expand and primary/auxiliary choices retain both modal and selected node. Explicit modal close returns to the 420px editor with 24px below-node gap.
+- PromptSkillAction calls useCreativeSkills(projectId, opened). Hook clears overrides when inactive and on scope mount; PromptSkillAction is keyed by node id and unmounts on selection change. Both modal close and next-node navigation lose chosen auxiliaries.
+- Remembering should be opt-in for prompt refinement, scoped by project and stage in localStorage; other callers keep current temporary behavior. Explicit default save/reset should clear the remembered override for that stage; a retry of failed config loading should preserve it.
+- Implemented opt-in selections keyed by `creative-prompt-skills:${projectId}`, with validated stage arrays, including explicit empty selections. Writes merge current storage so one stage cannot erase another; retries preserve overrides while explicit default actions clear the active stage.
+- Real browser confirmed `short-drama-video-prompts` with `short-drama-review` persists through modal close/reopen, another existing video node, and browser refresh plus project reentry. App refresh returns to project list, so refresh validation reopened the same project rather than expecting canvas nodes immediately.

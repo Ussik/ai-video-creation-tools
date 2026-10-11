@@ -6,6 +6,7 @@ import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
 import type { ProjectDetail } from '../src/api'
 import type { CanvasGraph, CanvasNode } from '../src/ProjectCanvas'
+import { chooseCombobox } from './component-controls'
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
@@ -158,5 +159,111 @@ test('real App polling retains one canvas beside the hidden storyboard planner',
     assert.deepEqual(errors, [], 'App polling does not emit React rendering errors')
   } finally {
     await act(() => root.unmount()); container.remove(); frames.clear()
+  }
+})
+
+test('header project switching retains asset workspace and clears prior selections and search without writes', async t => {
+  const a = { ...structuredClone(detail), id: 'a', name: '项目甲', assets: [{ id: 'asset-a', project_id: 'a', shot_id: null, kind: 'image', filename: '甲.png', source: 'generated', saved: true, model_id: null, prompt: null, remote_url: null, created_at: timestamp, url: '/a.png' }] } as ProjectDetail
+  const b = { ...structuredClone(detail), id: 'b', name: '项目乙', assets: [{ ...a.assets[0], id: 'asset-b', project_id: 'b', filename: '乙.png', url: '/b.png' }] } as ProjectDetail
+  const requests: Array<{ path: string; method: string }> = []
+  t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
+    const path = String(url), method = init?.method || 'GET'; requests.push({ path, method })
+    assert.equal(method, 'GET', 'switching projects must not mutate either project')
+    if (path === '/api/projects') return Response.json([a, b])
+    if (path === '/api/providers' || path === '/api/models') return Response.json([])
+    if (path.endsWith('/canvases')) return Response.json([])
+    if (path.endsWith('/continuity')) return Response.json({ shots: [], summary: { status: 'ready', error_count: 0, warning_count: 0 }, signature: path })
+    if (path === '/api/projects/a') return Response.json(a)
+    if (path === '/api/projects/b') return Response.json(b)
+    throw new Error(`Unexpected request: ${path}`)
+  })
+  const container = document.createElement('div'); document.body.append(container)
+  const root = createRoot(container)
+  try {
+    await act(() => root.render(<MantineProvider env="test"><App /></MantineProvider>)); await settle()
+    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="资产"]')!.click()); await settle()
+    const checkbox = container.querySelector<HTMLInputElement>('input[aria-label="选择 甲.png"]')!
+    assert.ok(checkbox)
+    await act(() => checkbox.click()); await settle()
+    assert.ok(container.querySelector('.asset-bulk-bar'))
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="搜索素材"]')!
+    await act(() => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(input, '甲')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await chooseCombobox(container.querySelector<HTMLInputElement>('input[aria-label="切换项目"]')!, '项目乙'); await settle()
+    assert.ok(container.querySelector('[aria-label="生成历史"]'), 'active workspace remains generation history')
+    assert.equal(container.querySelector('.project-canvas'), null)
+    assert.equal(container.querySelector('.asset-bulk-bar'), null)
+    assert.equal(container.querySelector<HTMLInputElement>('input[aria-label="搜索素材"]')?.value, '')
+    assert.equal(container.querySelector('.library-copy strong')?.textContent, '乙.png')
+    await act(() => [...container.querySelectorAll<HTMLButtonElement>('.asset-library-rail button')].find(el => el.textContent?.includes('个人资产库'))!.click()); await settle()
+    await chooseCombobox(container.querySelector<HTMLInputElement>('input[aria-label="切换项目"]')!, '项目甲'); await settle()
+    assert.ok(container.querySelector('[aria-label="个人资产库"]'), 'asset subview survives project switching')
+    assert.equal(container.querySelector('.library-copy strong')?.textContent, '甲.png')
+    assert.ok(requests.every(request => request.method === 'GET'))
+  } finally { await act(() => root.unmount()); container.remove(); frames.clear() }
+})
+
+test('task history pauses idle and hidden polling, refreshes on visibility, and resets filters when switching projects', async t => {
+  const a = { ...structuredClone(detail), id: 'tasks-a', name: '任务项目甲' }
+  const b = { ...structuredClone(detail), id: 'tasks-b', name: '任务项目乙' }
+  let status: 'running' | 'succeeded' = 'running', visibility = 'visible', reads = 0
+  t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
+    const path = String(url)
+    assert.equal(init?.method || 'GET', 'GET', 'viewing/filtering task history must never create generation requests')
+    if (path === '/api/projects') return Response.json([a, b])
+    if (path === '/api/providers' || path === '/api/models') return Response.json([])
+    if (path.endsWith('/canvases')) return Response.json([])
+    if (path.endsWith('/continuity')) return Response.json({ shots: [], summary: { status: 'ready', error_count: 0, warning_count: 0 }, signature: path })
+    if (path === '/api/projects/tasks-a') {
+      reads++
+      return Response.json({ ...a, jobs: [{ id: 'task', project_id: a.id, shot_id: null, model_id: null, job_type: 'generation',
+        request: '{}', status, external_id: null, result_asset_id: null, recovery_available: false, error: null, created_at: timestamp }] })
+    }
+    if (path === '/api/projects/tasks-b') return Response.json(b)
+    throw new Error(`Unexpected request: ${path}`)
+  })
+  const polls = new Map<number, () => Promise<void>>()
+  let pollId = 200_000
+  const nativeSetTimeout = dom.window.setTimeout.bind(dom.window), nativeClearTimeout = dom.window.clearTimeout.bind(dom.window)
+  t.mock.method(dom.window, 'setTimeout', (handler: TimerHandler, delay?: number, ...args: unknown[]) => {
+    if (delay !== 4000) return nativeSetTimeout(handler, delay, ...args)
+    const id = ++pollId; polls.set(id, () => (handler as (...args: unknown[]) => Promise<void>)(...args)); return id
+  })
+  t.mock.method(dom.window, 'clearTimeout', (id?: number) => { if (!polls.delete(id!)) nativeClearTimeout(id) })
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility })
+  const container = document.createElement('div'); document.body.append(container)
+  const root = createRoot(container)
+  async function tick() {
+    assert.equal(polls.size, 1, 'one shared project poll remains scheduled')
+    const [id, poll] = [...polls.entries()][0]; polls.delete(id)
+    await act(async () => poll()); await settle()
+  }
+  try {
+    await act(() => root.render(<MantineProvider env="test"><App /></MantineProvider>)); await settle()
+    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="任务记录"]')!.click()); await settle()
+    assert.equal([...container.querySelectorAll('.topbar-actions button')].some(el => el.textContent === '配音'), false)
+    assert.ok(container.querySelector('[aria-label="任务列表"]'))
+    let before = reads
+    await tick(); assert.equal(reads, before + 1, 'active tasks continue updating')
+    visibility = 'hidden'; before = reads
+    await tick(); assert.equal(reads, before, 'hidden history performs no project request')
+    visibility = 'visible'
+    await act(() => document.dispatchEvent(new Event('visibilitychange'))); await settle()
+    assert.equal(reads, before + 1, 'returning to history refreshes immediately')
+    status = 'succeeded'; await tick(); before = reads
+    await tick(); assert.equal(reads, before, 'completed history stops automatic requests')
+    const failedTab = [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(el => el.textContent?.startsWith('失败'))!
+    await act(() => failedTab.click())
+    assert.match(container.querySelector('.task-records')!.textContent!, /没有符合条件的任务/)
+    await chooseCombobox(container.querySelector<HTMLInputElement>('input[aria-label="切换项目"]')!, '任务项目乙'); await settle()
+    assert.match(container.querySelector('.task-records')!.textContent!, /还没有任务记录/)
+    await chooseCombobox(container.querySelector<HTMLInputElement>('input[aria-label="切换项目"]')!, '任务项目甲'); await settle()
+    assert.equal(container.querySelectorAll('.task-records tbody tr').length, 1, 'new project scope resets old filters')
+    assert.equal(container.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]')?.textContent, '全部1')
+  } finally {
+    await act(() => root.unmount()); container.remove(); frames.clear()
+    Reflect.deleteProperty(document, 'visibilityState')
   }
 })

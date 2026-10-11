@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { ActionIcon, Button, Checkbox, Modal, NumberInput, Select, Textarea, TextInput, Tooltip } from '@mantine/core'
+import { Menu, UnstyledButton, ActionIcon, Button, Checkbox, Modal, NumberInput, Select, Textarea, TextInput, Tooltip } from '@mantine/core'
 import { EditorContent, useEditor } from '@tiptap/react'
 import type { Editor, JSONContent } from '@tiptap/core'
 import {
   ArrowLeft, ArrowRight, Bold, Clapperboard, FileText, Heading1, Italic,
-  List, ListOrdered, LoaderCircle, Minimize2, Plus, Redo2, Save, Sparkles,
+  List, ListOrdered, LoaderCircle, Minimize2, Plus, Redo2, RotateCcw, Save, Sparkles,
   ChevronDown, Search, Strikethrough, Trash2, Undo2, ZoomIn, ZoomOut,
 } from 'lucide-react'
 import { api, json } from './api'
@@ -14,6 +14,7 @@ import CreativeSkillSelector from './CreativeSkillSelector'
 import { useCreativeSkills } from './useCreativeSkills'
 import StoryboardPlanner from './StoryboardPlanner'
 import { useAppDialog } from './AppDialog'
+import ThemeToggle from './ThemeToggle'
 import { applyTextFormat, type TextFormat } from './text-editor'
 import { scriptEditorExtensions } from './script-editor-extensions'
 import './script-document-tables.css'
@@ -23,6 +24,7 @@ import { useScriptDocumentNavigation } from './useScriptDocumentNavigation'
 import { highlightScriptSearch, resolveScriptArtifactDocument, ScriptSearchHighlight, type ScriptSearchRange } from './script-document-search'
 import { useScriptDocumentSearch } from './useScriptDocumentSearch'
 import { ScriptDocumentSearch } from './ScriptDocumentSearch'
+import { WorkspaceDisclosure } from './WorkspaceDisclosure'
 
 type SceneFields = {
   episode_number?: number
@@ -591,7 +593,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
   }
 
   async function generateScript() {
-    if (disabled || skillControl.loading || skillControl.error || !draft.brief.trim() || !selectedModelAvailable || !scriptPrompt.trim() || (!scriptPromptCustomized && (scriptPromptLoading || scriptPromptError))) return
+    if (disabled || skillControl.loading || skillControl.error || !selectedModelAvailable || !scriptPrompt.trim() || (!scriptPromptCustomized && (scriptPromptLoading || scriptPromptError))) return
     if (generated && !await confirm({ title: '重新生成剧本草稿', message: '当前待处理的生成结果会被替换。', confirmLabel: '继续生成', danger: true })) return
     setWorking('generate')
     setError(null)
@@ -854,62 +856,63 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
   return <section className="script-page" aria-label="剧本创作">
     <header className="script-page-header script-editor-topbar">
       <div className="script-editor-titlebar">
-        <button type="button" className="script-editor-back" onClick={onOpenCanvas} aria-label="返回画布" title="返回画布"><ArrowLeft size={17} /></button>
+        <ActionIcon type="button" className="script-editor-back" onClick={onOpenCanvas} aria-label="返回画布" title="返回画布" data-workspace-control=""><ArrowLeft size={17} /></ActionIcon>
         <div className="script-editor-document-title"><strong>编辑器 - {detail.name || '未命名项目'}</strong><span>{draft.scenes.length} 场 · {totalDuration} 秒</span></div>
         <span className={`script-save-state ${hasUnsavedWork ? 'is-dirty' : ''}`}><span />{dirty ? '未保存' : generated ? '待处理' : showPlan && plannedScenes ? '待创建' : '已保存'}</span>
       </div>
       <div className="script-editor-toolbar" aria-label="编辑工具">
-        <button type="button" aria-label="撤销" title="撤销" disabled={!canUndo || disabled} onClick={undoDraft}><Undo2 size={16} /></button>
-        <button type="button" aria-label="重做" title="重做" disabled={!canRedo || disabled} onClick={redoDraft}><Redo2 size={16} /></button>
+        <ActionIcon type="button" aria-label="撤销" title="撤销" disabled={!canUndo || disabled} onClick={undoDraft} data-workspace-control=""><Undo2 size={16} /></ActionIcon>
+        <ActionIcon type="button" aria-label="重做" title="重做" disabled={!canRedo || disabled} onClick={redoDraft} data-workspace-control=""><Redo2 size={16} /></ActionIcon>
         <i />
-        <button type="button" aria-label="缩小" title="缩小" onClick={() => setEditorZoom((value) => Math.max(80, value - 10))} disabled={editorZoom <= 80}><ZoomOut size={16} /></button>
+        <ActionIcon type="button" aria-label="缩小" title="缩小" onClick={() => setEditorZoom((value) => Math.max(80, value - 10))} disabled={editorZoom <= 80} data-workspace-control=""><ZoomOut size={16} /></ActionIcon>
         <span className="script-editor-zoom">{editorZoom}%</span>
-        <button type="button" aria-label="放大" title="放大" onClick={() => setEditorZoom((value) => Math.min(140, value + 10))} disabled={editorZoom >= 140}><ZoomIn size={16} /></button>
+        <ActionIcon type="button" aria-label="放大" title="放大" onClick={() => setEditorZoom((value) => Math.min(140, value + 10))} disabled={editorZoom >= 140} data-workspace-control=""><ZoomIn size={16} /></ActionIcon>
         <i />
-        <div className="script-format-menu">
-          <button type="button" aria-label="标题格式" title="标题格式" aria-haspopup="menu" aria-expanded={formatMenu === 'heading'} aria-pressed={formatMenu === 'heading' || focusedEditorIsActive('heading')} className={formatMenu === 'heading' || focusedEditorIsActive('heading') ? 'is-active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => setFormatMenu((value) => value === 'heading' ? null : 'heading')}><Heading1 size={16} /><ChevronDown size={11} /></button>
-          {formatMenu === 'heading' && <div className="script-format-popover" role="menu" aria-label="标题格式">
-            <button type="button" role="menuitem" onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('h1')}><Heading1 size={15} /><strong>标题 1</strong></button>
-            <button type="button" role="menuitem" onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('h2')}><Heading1 size={15} /><strong>标题 2</strong></button>
-            <button type="button" role="menuitem" onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('h3')}><Heading1 size={15} /><strong>标题 3</strong></button>
-            <button type="button" role="menuitem" onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('paragraph')}><FileText size={15} /><strong>正文</strong></button>
-          </div>}
-        </div>
-        <div className="script-format-menu">
-          <button type="button" aria-label="列表格式" title="列表格式" aria-haspopup="menu" aria-expanded={formatMenu === 'list'} aria-pressed={formatMenu === 'list' || focusedEditorIsActive('bulletList') || focusedEditorIsActive('orderedList')} className={formatMenu === 'list' || focusedEditorIsActive('bulletList') || focusedEditorIsActive('orderedList') ? 'is-active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => setFormatMenu((value) => value === 'list' ? null : 'list')}><List size={16} /><ChevronDown size={11} /></button>
-          {formatMenu === 'list' && <div className="script-format-popover" role="menu" aria-label="列表格式">
-            <button type="button" role="menuitem" onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('bulletList')}><List size={15} /><strong>无序列表</strong></button>
-            <button type="button" role="menuitem" onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('orderedList')}><ListOrdered size={15} /><strong>有序列表</strong></button>
-          </div>}
-        </div>
+        <div className="script-format-menu"><Menu opened={formatMenu === 'heading'} onChange={opened => setFormatMenu(opened ? 'heading' : null)} withinPortal={false} returnFocus={false} position="bottom-start">
+          <Menu.Target><UnstyledButton type="button" aria-label="标题格式" title="标题格式" aria-haspopup="menu" aria-expanded={formatMenu === 'heading'} aria-pressed={formatMenu === 'heading' || focusedEditorIsActive('heading')} className={formatMenu === 'heading' || focusedEditorIsActive('heading') ? 'is-active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => setFormatMenu((value) => value === 'heading' ? null : 'heading')}><Heading1 size={16} /><ChevronDown size={11} /></UnstyledButton></Menu.Target>
+          {formatMenu === 'heading' && <Menu.Dropdown className="script-format-popover" role="menu" aria-label="标题格式">
+            <Menu.Item type="button" role="menuitem" onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('h1')} data-workspace-control=""><Heading1 size={15} /><strong>标题 1</strong></Menu.Item>
+            <Menu.Item type="button" role="menuitem" onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('h2')} data-workspace-control=""><Heading1 size={15} /><strong>标题 2</strong></Menu.Item>
+            <Menu.Item type="button" role="menuitem" onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('h3')} data-workspace-control=""><Heading1 size={15} /><strong>标题 3</strong></Menu.Item>
+            <Menu.Item type="button" role="menuitem" onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('paragraph')} data-workspace-control=""><FileText size={15} /><strong>正文</strong></Menu.Item>
+          </Menu.Dropdown>}
+        </Menu></div>
+        <div className="script-format-menu"><Menu opened={formatMenu === 'list'} onChange={opened => setFormatMenu(opened ? 'list' : null)} withinPortal={false} returnFocus={false} position="bottom-start">
+          <Menu.Target><UnstyledButton type="button" aria-label="列表格式" title="列表格式" aria-haspopup="menu" aria-expanded={formatMenu === 'list'} aria-pressed={formatMenu === 'list' || focusedEditorIsActive('bulletList') || focusedEditorIsActive('orderedList')} className={formatMenu === 'list' || focusedEditorIsActive('bulletList') || focusedEditorIsActive('orderedList') ? 'is-active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => setFormatMenu((value) => value === 'list' ? null : 'list')}><List size={16} /><ChevronDown size={11} /></UnstyledButton></Menu.Target>
+          {formatMenu === 'list' && <Menu.Dropdown className="script-format-popover" role="menu" aria-label="列表格式">
+            <Menu.Item type="button" role="menuitem" onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('bulletList')} data-workspace-control=""><List size={15} /><strong>无序列表</strong></Menu.Item>
+            <Menu.Item type="button" role="menuitem" onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('orderedList')} data-workspace-control=""><ListOrdered size={15} /><strong>有序列表</strong></Menu.Item>
+          </Menu.Dropdown>}
+        </Menu></div>
         <i />
-        <button type="button" aria-label="粗体" title="粗体" aria-pressed={focusedEditorIsActive('bold')} className={focusedEditorIsActive('bold') ? 'is-active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('bold')}><Bold size={16} /></button>
-        <button type="button" aria-label="斜体" title="斜体" aria-pressed={focusedEditorIsActive('italic')} className={focusedEditorIsActive('italic') ? 'is-active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('italic')}><Italic size={16} /></button>
-        <button type="button" aria-label="删除线" title="删除线" aria-pressed={focusedEditorIsActive('strike')} className={focusedEditorIsActive('strike') ? 'is-active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('strike')}><Strikethrough size={16} /></button>
+        <ActionIcon type="button" aria-label="粗体" title="粗体" aria-pressed={focusedEditorIsActive('bold')} className={focusedEditorIsActive('bold') ? 'is-active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('bold')} data-workspace-control=""><Bold size={16} /></ActionIcon>
+        <ActionIcon type="button" aria-label="斜体" title="斜体" aria-pressed={focusedEditorIsActive('italic')} className={focusedEditorIsActive('italic') ? 'is-active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('italic')} data-workspace-control=""><Italic size={16} /></ActionIcon>
+        <ActionIcon type="button" aria-label="删除线" title="删除线" aria-pressed={focusedEditorIsActive('strike')} className={focusedEditorIsActive('strike') ? 'is-active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('strike')} data-workspace-control=""><Strikethrough size={16} /></ActionIcon>
       </div>
       <div className="script-page-actions">
-        <button type="button" className={`script-editor-search-toggle ${search.opened ? 'is-active' : ''}`} aria-label="全文搜索" title="全文搜索（Ctrl/Cmd + F）" aria-expanded={search.opened} aria-controls="script-full-text-search" onClick={search.open}><Search size={16} /></button>
+        <ActionIcon type="button" className={`script-editor-search-toggle ${search.opened ? 'is-active' : ''}`} aria-label="全文搜索" title="全文搜索（Ctrl/Cmd + F）" aria-expanded={search.opened} aria-controls="script-full-text-search" onClick={search.open} data-workspace-control=""><Search size={16} /></ActionIcon>
         {generated && <Button variant="subtle" leftSection={<FileText size={15} />} onClick={() => setShowGenerated(true)} disabled={disabled}>查看生成结果</Button>}
         <Button className="script-canvas-action" variant="subtle" title="规划并确认分镜后加入画布" leftSection={<Plus size={15} />} disabled={disabled || dirty || !productionSceneCandidates.length} onClick={() => { setPlanningSceneIds(productionSceneCandidates.flatMap(scene => scene.id ? [scene.id] : [])); setStoryboardOpen(true) }}>加入画布</Button>
         <Button variant="subtle" leftSection={<Sparkles size={15} />} onClick={openGenerate} disabled={disabled}>生成剧本</Button>
         <Button leftSection={working === 'save' ? <LoaderCircle size={15} className="spin" /> : <Save size={15} />} onClick={saveScript} disabled={!dirty || disabled}>保存</Button>
-        <button type="button" className="script-editor-exit" onClick={onOpenCanvas} aria-label="退出编辑器" title="退出编辑器"><Minimize2 size={16} /></button>
+        <ActionIcon type="button" className="script-editor-exit" onClick={onOpenCanvas} aria-label="退出编辑器" title="退出编辑器" data-workspace-control=""><Minimize2 size={16} /></ActionIcon>
+        <ThemeToggle />
       </div>
       <ScriptDocumentSearch search={search} />
     </header>
 
-    {error && <div className="script-error" role="alert">{error}<button onClick={() => setError(null)} aria-label="关闭提示">关闭</button></div>}
+    {error && <div className="script-error" role="alert">{error}<Button onClick={() => setError(null)} aria-label="关闭提示" data-workspace-control="" variant="subtle">关闭</Button></div>}
 
     <section className="script-document" aria-label="剧本文档">
       <aside className="script-document-nav" aria-label="剧本目录">
         <div className="script-document-nav-feature">
-          <button type="button" className={`script-document-nav-primary ${storyOutlineItems.some((item) => activeDocumentSection === item.type) ? 'is-active' : ''}`} onClick={() => selectDocumentSection('outline', true)}>故事大纲</button>
+          <Button type="button" className={`script-document-nav-primary ${storyOutlineItems.some((item) => activeDocumentSection === item.type) ? 'is-active' : ''}`} onClick={() => selectDocumentSection('outline', true)} data-workspace-control="" variant="subtle">故事大纲</Button>
           <div className="script-document-nav-nested">
-            {storyOutlineItems.map((item) => <button type="button" key={item.type} className={`script-document-nav-item ${activeDocumentSection === item.type ? 'is-active' : ''}`} onClick={() => selectDocumentSection(item.type)}><span>{item.title}</span></button>)}
+            {storyOutlineItems.map((item) => <UnstyledButton type="button" key={item.type} className={`script-document-nav-item ${activeDocumentSection === item.type ? 'is-active' : ''}`} onClick={() => selectDocumentSection(item.type)}><span>{item.title}</span></UnstyledButton>)}
           </div>
         </div>
-        {standaloneDocumentItems.map((item) => <button type="button" key={item.type} className={`script-document-nav-primary script-document-nav-standalone ${activeDocumentSection === item.type ? 'is-active' : ''}`} onClick={() => selectDocumentSection(item.type)}>{item.title}</button>)}
-        {episodeDocuments.map(artifact => <button type="button" key={artifact.id} className={`script-document-nav-primary script-document-nav-standalone ${selectedEpisode?.id === artifact.id ? 'is-active' : ''}`} onClick={() => selectDocumentSection(`episode-${artifact.episode_number!}`)}>{artifact.title}</button>)}
+        {standaloneDocumentItems.map((item) => <Button type="button" key={item.type} className={`script-document-nav-primary script-document-nav-standalone ${activeDocumentSection === item.type ? 'is-active' : ''}`} onClick={() => selectDocumentSection(item.type)} data-workspace-control="" variant="subtle">{item.title}</Button>)}
+        {episodeDocuments.map(artifact => <Button type="button" key={artifact.id} className={`script-document-nav-primary script-document-nav-standalone ${selectedEpisode?.id === artifact.id ? 'is-active' : ''}`} onClick={() => selectDocumentSection(`episode-${artifact.episode_number!}`)} data-workspace-control="" variant="subtle">{artifact.title}</Button>)}
       </aside>
       <article
         ref={documentEditorRef}
@@ -989,22 +992,26 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
       </article>
     </section>
 
-    <Modal opened={showGenerate} onClose={() => setShowGenerate(false)} title="生成剧本草稿" classNames={{ content: 'script-modal-content', body: 'script-modal-body' }}>
+    <Modal opened={showGenerate} onClose={() => setShowGenerate(false)} title="生成剧本草稿" size="xl" classNames={{ content: 'script-modal-content', body: 'script-modal-body' }}>
       <div className="script-modal-stack">
         <Select label="文本模型" placeholder="选择已添加的模型" searchable allowDeselect={false} value={modelId || null} data={availableModels.map((model) => ({ value: model.id, label: model.name }))} onChange={(value) => setModelId(value || '')} />
         <CreativeSkillSelector stage="script" projectId={detail.id} policies={skillControl.policies} ids={skillControl.ids('script')} onChange={ids => skillControl.change('script', ids)}
           disabled={disabled} loading={skillControl.loading} error={skillControl.error} onDefaultsChanged={() => skillControl.reload('script')} />
-        {!availableModels.length && <button className="script-model-link" onClick={() => { setShowGenerate(false); onOpenModels() }}>前往模型设置添加文本模型 <ArrowRight size={15} /></button>}
-        <div className="script-idea-preview"><span>创意概述</span><p>{draft.brief.trim() || '请先填写创意概述'}</p></div>
+        {!availableModels.length && <Button className="script-model-link" onClick={() => { setShowGenerate(false); onOpenModels() }} data-workspace-control="" variant="subtle">前往模型设置添加文本模型 <ArrowRight size={15} /></Button>}
+        <Textarea label="创意概述（可选）" aria-label="创意概述" placeholder="补充本次创作的方向、冲突或扩写要求" minRows={3} maxRows={8} autosize maxLength={20000} value={draft.brief} disabled={disabled} onChange={event => { const brief = event.currentTarget.value; setDraft(current => ({ ...current, brief })) }} />
         <div className="script-prompt-editor">
-          <div className="script-prompt-heading"><strong>实际发送提示词</strong><Button variant="subtle" size="compact-xs" disabled={scriptPromptLoading || disabled} onClick={() => { scriptPromptEditedRef.current = false; setScriptPromptCustomized(false); setScriptPrompt(''); setScriptPromptRefresh((value) => value + 1) }}>恢复自动提示词</Button></div>
-          <Textarea aria-label="剧本生成提示词" minRows={8} maxRows={16} autosize maxLength={500000} value={scriptPrompt} disabled={disabled} onChange={(event) => { scriptPromptEditedRef.current = true; setScriptPromptCustomized(true); setScriptPrompt(event.currentTarget.value) }} />
+          <WorkspaceDisclosure className="script-prompt-disclosure" label="提示词设置">
+            <div className="script-prompt-details">
+              <div className="script-prompt-heading"><Button variant="default" size="xs" leftSection={<RotateCcw size={14} />} loading={scriptPromptLoading} disabled={scriptPromptLoading || disabled} onClick={() => { scriptPromptEditedRef.current = false; setScriptPromptCustomized(false); setScriptPrompt(''); setScriptPromptRefresh((value) => value + 1) }}>恢复自动提示词</Button></div>
+              <Textarea aria-label="剧本生成提示词" minRows={8} maxRows={16} autosize maxLength={500000} value={scriptPrompt} disabled={disabled} onChange={(event) => { scriptPromptEditedRef.current = true; setScriptPromptCustomized(true); setScriptPrompt(event.currentTarget.value) }} />
+            </div>
+          </WorkspaceDisclosure>
           {scriptPromptLoading && !scriptPromptCustomized && <small role="status">正在整理提示词...</small>}
           {scriptPromptError && !scriptPromptCustomized && <small className="script-prompt-error" role="alert">{scriptPromptError}</small>}
         </div>
         {error?.startsWith('生成失败') && <div className="script-error" role="alert">{error}</div>}
         {rawOutput && <div className="script-raw-output"><strong>模型原始输出</strong><pre>{rawOutput}</pre></div>}
-        <div className="script-modal-actions"><Button variant="default" onClick={() => setShowGenerate(false)}>取消</Button><Button leftSection={working === 'generate' ? <LoaderCircle size={16} className="spin" /> : <Sparkles size={16} />} disabled={skillControl.loading || !!skillControl.error || !selectedModelAvailable || !draft.brief.trim() || !scriptPrompt.trim() || (!scriptPromptCustomized && (scriptPromptLoading || !!scriptPromptError)) || disabled} onClick={generateScript}>生成草稿</Button></div>
+        <div className="script-modal-actions"><Button variant="default" onClick={() => setShowGenerate(false)}>取消</Button><Button leftSection={working === 'generate' ? <LoaderCircle size={16} className="spin" /> : <Sparkles size={16} />} disabled={skillControl.loading || !!skillControl.error || !selectedModelAvailable || !scriptPrompt.trim() || (!scriptPromptCustomized && (scriptPromptLoading || !!scriptPromptError)) || disabled} onClick={generateScript}>生成草稿</Button></div>
       </div>
     </Modal>
 
@@ -1042,12 +1049,12 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
           <NumberInput label="每场目标镜头数" min={2} max={5} value={shotsPerScene} disabled={disabled} onChange={(value) => { if (value !== shotsPerScene) void (async () => { if (await discardPlanPreview()) setShotsPerScene(value) })() }} />
         </div>
         <div className="script-prompt-editor">
-          <div className="script-prompt-heading"><strong>实际发送提示词</strong><Button variant="subtle" size="compact-xs" disabled={planPromptLoading || disabled} onClick={() => { planPromptEditedRef.current = false; setPlanPromptCustomized(false); setPlanPrompt(''); setPlanPromptRefresh((value) => value + 1) }}>恢复自动提示词</Button></div>
+          <div className="script-prompt-heading"><strong>提示词设置</strong><Button variant="default" size="xs" leftSection={<RotateCcw size={14} />} loading={planPromptLoading} disabled={planPromptLoading || disabled} onClick={() => { planPromptEditedRef.current = false; setPlanPromptCustomized(false); setPlanPrompt(''); setPlanPromptRefresh((value) => value + 1) }}>恢复自动提示词</Button></div>
           <Textarea aria-label="分镜规划提示词" minRows={8} maxRows={16} autosize maxLength={500000} value={planPrompt} disabled={disabled} onChange={(event) => { planPromptEditedRef.current = true; setPlanPromptCustomized(true); setPlanPrompt(event.currentTarget.value) }} />
           {planPromptLoading && !planPromptCustomized && <small role="status">正在整理提示词...</small>}
           {planPromptError && !planPromptCustomized && <small className="script-prompt-error" role="alert">{planPromptError}</small>}
         </div>
-        {!availableModels.length && <button className="script-model-link" onClick={() => void (async () => { if (await closePlan()) onOpenModels() })()}>前往模型设置添加文本模型 <ArrowRight size={15} /></button>}
+        {!availableModels.length && <Button className="script-model-link" onClick={() => void (async () => { if (await closePlan()) onOpenModels() })()} data-workspace-control="" variant="subtle">前往模型设置添加文本模型 <ArrowRight size={15} /></Button>}
         {shortScenes.length > 0 && validShotsPerScene && <div className="script-plan-hint">{shortScenes.length === 1 ? `「${shortScenes[0].heading}」` : `${shortScenes.length} 个短场次`}少于目标镜头数。规划时会减少镜头，确保每个镜头至少 1 秒。</div>}
         {planError && <div className="script-error" role="alert">{planError}</div>}
         {planRawOutput && <div className="script-raw-output"><strong>模型原始输出</strong><pre>{planRawOutput}</pre></div>}

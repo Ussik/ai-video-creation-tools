@@ -1,0 +1,365 @@
+{
+  "backup": "/Users/caoyanzu/workspace/ai-video-creation-tools/data/backups/20261010-175438-shot-reference-usage-before.json",
+  "changes": [
+    {
+      "shot_id": "d4d8b60b19754f8ca2f928384183659d",
+      "profile_id": "892b3bea833344d4a51735ecc17c9e28",
+      "title": "废楼房间定场：尸体与墙上符字",
+      "name": "冷蓝磁吸警示灯",
+      "previous_usage": "both",
+      "usage": "both"
+    },
+    {
+      "shot_id": "d4d8b60b19754f8ca2f928384183659d",
+      "profile_id": "a41093d2865e4817bb9d41815bde82b9",
+      "title": "废楼房间定场：尸体与墙上符字",
+      "name": "对策局制式平板终端",
+      "previous_usage": "both",
+      "usage": "video"
+    },
+    {
+      "shot_id": "d4d8b60b19754f8ca2f928384183659d",
+      "profile_id": "23b14696cb114e89bba3ce03b99801ea",
+      "title": "废楼房间定场：尸体与墙上符字",
+      "name": "对策局封锁带",
+      "previous_usage": "both",
+      "usage": "none"
+    },
+    {
+      "shot_id": "d4d8b60b19754f8ca2f928384183659d",
+      "profile_id": "5281b42a122d45dbb2cfd58bba6ff633",
+      "title": "废楼房间定场：尸体与墙上符字",
+      "name": "对策局技术部人员",
+      "previous_usage": "both",
+      "usage": "video"
+    },
+    {
+      "shot_id": "d4d8b60b19754f8ca2f928384183659d",
+      "profile_id": "7bc8547702ed427c93600030693f2e3e",
+      "title": "废楼房间定场：尸体与墙上符字",
+      "name": "封锚死者·第一具",
+      "previous_usage": "both",
+      "usage": "both"
+    },
+    {
+      "shot_id": "d4d8b60b19754f8ca2f928384183659d",
+      "profile_id": "d9597e12cad74df7bd9e1a44884e1337",
+      "title": "废楼房间定场：尸体与墙上符字",
+      "name": "旧城区废楼房间",
+      "previous_usage": "both",
+      "usage": "both"
+    },
+    {
+      "shot_id": "d4d8b60b19754f8ca2f928384183659d",
+      "profile_id": "076248ef4d3a468f97a8a9c0fa992da2",
+      "title": "废楼房间定场：尸体与墙上符字",
+      "name": "沈砚",
+      "previous_usage": "both",
+      "usage": "none"
+    },
+    {
+      "shot_id": "d4d8b60b19754f8ca2f928384183659d",
+      "profile_id": "137d4184fa044d019a7ae0e84416ccc7",
+      "title": "废楼房间定场：尸体与墙上符字",
+      "name": "沈砚调查记录本",
+      "previous_usage": "both",
+      "usage": "none"
+    },
+    {
+      "shot_id": "d4d8b60b19754f8ca2f928384183659d",
+      "profile_id": "c3a6e8878c7242f1abdf3a12c33c455a",
+      "title": "废楼房间定场：尸体与墙上符字",
+      "name": "言灵封锚符字",
+      "previous_usage": "both",
+      "usage": "both"
+    },
+    {
+      "shot_id": "d3470093271d4d4ebc8c8f1a6104d222",
+      "profile_id": "892b3bea833344d4a51735ecc17c9e28",
+      "title": "技术部人员比对声纹",
+      "name": "冷蓝磁吸警示灯",
+      "previous_usage": "both",
+      "usage": "both"
+    },
+    {
+      "shot_id": "d3470093271d4d4ebc8c8f1a6104d222",
+      "profile_id": "a41093d2865e4817bb9d41815bde82b9",
+      "title": "技术部人员比对声纹",
+      "name": "对策局制式平板终端",
+      "previous_usage": "both",
+      "usage": "both"
+    },
+    {
+      "shot_id": "d3470093271d4d4ebc8c8f1a6104d222",
+      "profile_id": "23b14696cb114e89bba3ce03b99801ea",
+      "title": "技术部人员比对声纹",
+      "name": "对策局封锁带",
+      "previous_usage": "both",
+      "usage": "none"
+    },
+    {
+      "shot_id": "d3470093271d4d4ebc8c8f1a6104d222",
+      "profile_id": "5281b42a122d45dbb2cfd58bba6ff633",
+      "title": "技术部人员比对声纹",
+      "name": "对策局技术部人员",
+      "previous_usage": "both",
+      "usage": "both"
+    },
+    {
+      "shot_id": "d3470093271d4d4ebc8c8f1a6104d222",
+      "profile_id": "7bc8547702ed427c93600030693f2e3e",
+      "title": "技术部人员比对声纹",
+      "name": "封锚死者·第一具",
+      "previous_usage": "both",
+      "usage": "both"
+    },
+    {
+      "shot_id": "d3470093271d4d4ebc8c8f1a6104d222",
+      "profile_id": "d9597e12cad74df7bd9e1a44884e1337",
+      "title": "技术部人员比对声纹",
+      "name": "旧城区废楼房间",
+      "previous_usage": "both",
+      "usage": "both"
+    },
+    {
+      "shot_id": "d3470093271d4d4ebc8c8f1a6104d222",
+      "profile_id": "076248ef4d3a468f97a8a9c0fa992da2",
+      "title": "技术部人员比对声纹",
+      "name": "沈砚",
+      "previous_usage": "both",
+      "usage": "none"
+    },
+    {
+      "shot_id": "d3470093271d4d4ebc8c8f1a6104d222",
+      "profile_id": "137d4184fa044d019a7ae0e84416ccc7",
+      "title": "技术部人员比对声纹",
+      "name": "沈砚调查记录本",
+      "previous_usage": "both",
+      "usage": "none"
+    },
+    {
+      "shot_id": "d3470093271d4d4ebc8c8f1a6104d222",
+      "profile_id": "c3a6e8878c7242f1abdf3a12c33c455a",
+      "title": "技术部人员比对声纹",
+      "name": "言灵封锚符字",
+      "previous_usage": "both",
+      "usage": "both"
+    },
+    {
+      "shot_id": "b30ad25ddbae42b7982ab4235ebcdade",
+      "profile_id": "892b3bea833344d4a51735ecc17c9e28",
+      "title": "沈砚接终端确认第三起",
+      "name": "冷蓝磁吸警示灯",
+      "previous_usage": "both",
+      "usage": "both"
+    },
+    {
+      "shot_id": "b30ad25ddbae42b7982ab4235ebcdade",
+      "profile_id": "a41093d2865e4817bb9d41815bde82b9",
+      "title": "沈砚接终端确认第三起",
+      "name": "对策局制式平板终端",
+      "previous_usage": "both",
+      "usage": "both"
+    },
+    {
+      "shot_id": "b30ad25ddbae42b7982ab4235ebcdade",
+      "profile_id": "23b14696cb114e89bba3ce03b99801ea",
+      "title": "沈砚接终端确认第三起",
+      "name": "对策局封锁带",
+      "previous_usage": "both",
+      "usage": "none"
+    },
+    {
+      "shot_id": "b30ad25ddbae42b7982ab4235ebcdade",
+      "profile_id": "5281b42a122d45dbb2cfd58bba6ff633",
+      "title": "沈砚接终端确认第三起",
+      "name": "对策局技术部人员",
+      "previous_usage": "both",
+      "usage": "video"
+    },
+    {
+      "shot_id": "b30ad25ddbae42b7982ab4235ebcdade",
+      "profile_id": "7bc8547702ed427c93600030693f2e3e",
+      "title": "沈砚接终端确认第三起",
+      "name": "封锚死者·第一具",
+      "previous_usage": "both",
+      "usage": "none"
+    },
+    {
+      "shot_id": "b30ad25ddbae42b7982ab4235ebcdade",
+      "profile_id": "d9597e12cad74df7bd9e1a44884e1337",
+      "title": "沈砚接终端确认第三起",
+      "name": "旧城区废楼房间",
+      "previous_usage": "both",
+      "usage": "both"
+    },
+    {
+      "shot_id": "b30ad25ddbae42b7982ab4235ebcdade",
+      "profile_id": "076248ef4d3a468f97a8a9c0fa992da2",
+      "title": "沈砚接终端确认第三起",
+      "name": "沈砚",
+      "previous_usage": "both",
+      "usage": "both"
+    },
+    {
+      "shot_id": "b30ad25ddbae42b7982ab4235ebcdade",
+      "profile_id": "137d4184fa044d019a7ae0e84416ccc7",
+      "title": "沈砚接终端确认第三起",
+      "name": "沈砚调查记录本",
+      "previous_usage": "both",
+      "usage": "none"
+    },
+    {
+      "shot_id": "b30ad25ddbae42b7982ab4235ebcdade",
+      "profile_id": "c3a6e8878c7242f1abdf3a12c33c455a",
+      "title": "沈砚接终端确认第三起",
+      "name": "言灵封锚符字",
+      "previous_usage": "both",
+      "usage": "none"
+    },
+    {
+      "shot_id": "34b25d3acd7947e1998770a1aabdd986",
+      "profile_id": "892b3bea833344d4a51735ecc17c9e28",
+      "title": "终端波形重合插入",
+      "name": "冷蓝磁吸警示灯",
+      "previous_usage": "both",
+      "usage": "none"
+    },
+    {
+      "shot_id": "34b25d3acd7947e1998770a1aabdd986",
+      "profile_id": "a41093d2865e4817bb9d41815bde82b9",
+      "title": "终端波形重合插入",
+      "name": "对策局制式平板终端",
+      "previous_usage": "both",
+      "usage": "both"
+    },
+    {
+      "shot_id": "34b25d3acd7947e1998770a1aabdd986",
+      "profile_id": "23b14696cb114e89bba3ce03b99801ea",
+      "title": "终端波形重合插入",
+      "name": "对策局封锁带",
+      "previous_usage": "both",
+      "usage": "none"
+    },
+    {
+      "shot_id": "34b25d3acd7947e1998770a1aabdd986",
+      "profile_id": "5281b42a122d45dbb2cfd58bba6ff633",
+      "title": "终端波形重合插入",
+      "name": "对策局技术部人员",
+      "previous_usage": "both",
+      "usage": "none"
+    },
+    {
+      "shot_id": "34b25d3acd7947e1998770a1aabdd986",
+      "profile_id": "7bc8547702ed427c93600030693f2e3e",
+      "title": "终端波形重合插入",
+      "name": "封锚死者·第一具",
+      "previous_usage": "both",
+      "usage": "none"
+    },
+    {
+      "shot_id": "34b25d3acd7947e1998770a1aabdd986",
+      "profile_id": "d9597e12cad74df7bd9e1a44884e1337",
+      "title": "终端波形重合插入",
+      "name": "旧城区废楼房间",
+      "previous_usage": "both",
+      "usage": "none"
+    },
+    {
+      "shot_id": "34b25d3acd7947e1998770a1aabdd986",
+      "profile_id": "076248ef4d3a468f97a8a9c0fa992da2",
+      "title": "终端波形重合插入",
+      "name": "沈砚",
+      "previous_usage": "both",
+      "usage": "video"
+    },
+    {
+      "shot_id": "34b25d3acd7947e1998770a1aabdd986",
+      "profile_id": "137d4184fa044d019a7ae0e84416ccc7",
+      "title": "终端波形重合插入",
+      "name": "沈砚调查记录本",
+      "previous_usage": "both",
+      "usage": "none"
+    },
+    {
+      "shot_id": "34b25d3acd7947e1998770a1aabdd986",
+      "profile_id": "c3a6e8878c7242f1abdf3a12c33c455a",
+      "title": "终端波形重合插入",
+      "name": "言灵封锚符字",
+      "previous_usage": "both",
+      "usage": "none"
+    },
+    {
+      "shot_id": "7b2891a88dc447bfb88bd3d02c390aae",
+      "profile_id": "892b3bea833344d4a51735ecc17c9e28",
+      "title": "沈砚低声说出言默",
+      "name": "冷蓝磁吸警示灯",
+      "previous_usage": "both",
+      "usage": "none"
+    },
+    {
+      "shot_id": "7b2891a88dc447bfb88bd3d02c390aae",
+      "profile_id": "a41093d2865e4817bb9d41815bde82b9",
+      "title": "沈砚低声说出言默",
+      "name": "对策局制式平板终端",
+      "previous_usage": "both",
+      "usage": "video"
+    },
+    {
+      "shot_id": "7b2891a88dc447bfb88bd3d02c390aae",
+      "profile_id": "23b14696cb114e89bba3ce03b99801ea",
+      "title": "沈砚低声说出言默",
+      "name": "对策局封锁带",
+      "previous_usage": "both",
+      "usage": "none"
+    },
+    {
+      "shot_id": "7b2891a88dc447bfb88bd3d02c390aae",
+      "profile_id": "5281b42a122d45dbb2cfd58bba6ff633",
+      "title": "沈砚低声说出言默",
+      "name": "对策局技术部人员",
+      "previous_usage": "both",
+      "usage": "none"
+    },
+    {
+      "shot_id": "7b2891a88dc447bfb88bd3d02c390aae",
+      "profile_id": "7bc8547702ed427c93600030693f2e3e",
+      "title": "沈砚低声说出言默",
+      "name": "封锚死者·第一具",
+      "previous_usage": "both",
+      "usage": "both"
+    },
+    {
+      "shot_id": "7b2891a88dc447bfb88bd3d02c390aae",
+      "profile_id": "d9597e12cad74df7bd9e1a44884e1337",
+      "title": "沈砚低声说出言默",
+      "name": "旧城区废楼房间",
+      "previous_usage": "both",
+      "usage": "both"
+    },
+    {
+      "shot_id": "7b2891a88dc447bfb88bd3d02c390aae",
+      "profile_id": "076248ef4d3a468f97a8a9c0fa992da2",
+      "title": "沈砚低声说出言默",
+      "name": "沈砚",
+      "previous_usage": "both",
+      "usage": "both"
+    },
+    {
+      "shot_id": "7b2891a88dc447bfb88bd3d02c390aae",
+      "profile_id": "137d4184fa044d019a7ae0e84416ccc7",
+      "title": "沈砚低声说出言默",
+      "name": "沈砚调查记录本",
+      "previous_usage": "both",
+      "usage": "none"
+    },
+    {
+      "shot_id": "7b2891a88dc447bfb88bd3d02c390aae",
+      "profile_id": "c3a6e8878c7242f1abdf3a12c33c455a",
+      "title": "沈砚低声说出言默",
+      "name": "言灵封锚符字",
+      "previous_usage": "both",
+      "usage": "both"
+    }
+  ]
+}

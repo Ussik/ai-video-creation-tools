@@ -1,0 +1,14 @@
+.job-queue-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.job-queue-counts { color: var(--fc-text-muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.job-queue-settings { max-width: calc(100vw - 24px); }
+.job-queue-settings > strong { display: block; margin-bottom: 16px; color: var(--fc-text); font-size: 14px; font-weight: 600; }
+.job-queue-settings > p { margin: 12px 0 16px; color: var(--fc-text-muted); font-size: 12px; line-height: 1.7; }
+.job-queue-settings > .mantine-Alert-root { margin-bottom: 12px; }
+.job-queue-load-error { color: var(--fc-danger); font-size: 12px; }
+.task-records .task-records-refresh { flex-wrap: wrap; justify-content: flex-end; gap: 12px; }
+@media (max-width: 700px) {
+  .task-records .task-records-header { flex-direction: column; }
+  .task-records .task-records-refresh { width: 100%; flex-direction: row; align-items: center; justify-content: flex-start; }
+  .job-queue-controls { flex: 1; }
+  .job-queue-counts { flex-basis: 100%; }
+}

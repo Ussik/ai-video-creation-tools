@@ -1,5 +1,6 @@
+import { WorkspaceDisclosure } from './WorkspaceDisclosure'
 import { useState } from 'react'
-import { Button, MultiSelect, Popover, Select, type PopoverProps } from '@mantine/core'
+import { UnstyledButton, Button, MultiSelect, Popover, Select, type PopoverProps } from '@mantine/core'
 import { ChevronDown, Puzzle, SlidersHorizontal } from 'lucide-react'
 import { api, json } from './api'
 import type { SkillPolicy, SkillStage } from './skills-api'
@@ -35,8 +36,8 @@ export default function CreativeSkillSelector({ stage, policies, ids, onChange, 
     middlewares={compact ? { shift: { padding: 12 }, size: { padding: 12, apply: ({ availableHeight, elements }) => {
       elements.floating.style.maxHeight = `${Math.max(0, Math.min(460, availableHeight))}px`
     } } } : undefined}>
-    <Popover.Target><button type="button" className={`creative-skill-trigger${variant}${triggerLabel ? ' is-label' : ''}`} aria-label={`${stageLabel}技能选择`} aria-expanded={opened} disabled={disabled || loading || pending}
-      onClick={() => { setOpened(value => !value); setNotice(''); setError('') }}>{triggerLabel ? <><SlidersHorizontal size={14} /><span>{triggerLabel}</span></> : <><Puzzle size={14} /><span><span>{loading ? '正在读取技能' : loadError ? '技能配置未读取' : missing ? '技能需重新选择' : primary?.name || '基础创作规则'}</span>{ids.length > 1 && <small>辅助 {ids.length - 1}</small>}</span><ChevronDown size={12} /></>}</button></Popover.Target>
+    <Popover.Target><UnstyledButton type="button" className={`creative-skill-trigger${variant}${triggerLabel ? ' is-label' : ''}`} aria-label={`${stageLabel}技能选择`} aria-expanded={opened} disabled={disabled || loading || pending}
+      onClick={() => { setOpened(value => !value); setNotice(''); setError('') }}>{triggerLabel ? <><SlidersHorizontal size={14} /><span>{triggerLabel}</span></> : <><Puzzle size={14} /><span><span>{loading ? '正在读取技能' : loadError ? '技能配置未读取' : missing ? '技能需重新选择' : primary?.name || '基础创作规则'}</span>{ids.length > 1 && <small>辅助 {ids.length - 1}</small>}</span><ChevronDown size={12} /></>}</UnstyledButton></Popover.Target>
     {/* The portaled panel is still part of the node's editing session. */}
     <Popover.Dropdown className={`creative-skill-popover${variant}`} aria-label={contextual ? menuLabel : undefined} data-canvas-overlay>
       <header><strong>{menuLabel}</strong><span>{contextual ? selectionSource : projectId ? policy?.source === 'project' ? '项目默认' : '沿用全局默认' : '全局默认'}</span></header>
@@ -45,20 +46,20 @@ export default function CreativeSkillSelector({ stage, policies, ids, onChange, 
       <Select label="主技能" aria-label={`${stage}主技能`} value={ids[0] || '__base__'} allowDeselect={false} disabled={pending || disabled || !!loadError || !policy} searchable
         data={[{ value: '__base__', label: '基础创作规则（不使用外部 Skill）' }, ...skills.map(skill => ({ value: skill.id, label: skill.name }))]} comboboxProps={{ withinPortal: false }}
         onChange={value => { onChange(value && value !== '__base__' ? [value, ...ids.slice(1).filter(id => id !== value)] : []); setNotice('') }} />
-      {primary && (compact ? <details className="creative-skill-about" key={primary.id}><summary>查看技能说明</summary><p>{primary.description}</p></details> : <p className="creative-skill-description">{primary.description}</p>)}
+      {primary && (compact ? <WorkspaceDisclosure className="creative-skill-about" key={primary.id} label={<>查看技能说明</>}><p>{primary.description}</p></WorkspaceDisclosure> : <p className="creative-skill-description">{primary.description}</p>)}
       <MultiSelect label={`辅助技能 · 可选，最多 ${MAX_AUXILIARY_SKILLS} 个`} aria-label={`${stage}辅助技能`} value={ids.slice(1)} maxValues={MAX_AUXILIARY_SKILLS} disabled={pending || disabled || !ids.length || !!loadError} searchable
         data={skills.filter(skill => skill.id !== ids[0]).map(skill => ({ value: skill.id, label: skill.name }))} comboboxProps={{ withinPortal: false }}
         onChange={values => { onChange([ids[0], ...values]); setNotice('') }} />
       {!contextual && <><p className="creative-skill-description">{compact ? '切换用于本次创作；保存默认后，本项目后续创作会沿用。' : '切换用于当前操作。保存默认后，后续操作会沿用；辅助技能补充主技能，项目设定和你的明确要求优先。'}</p>
         {compact && <p className="creative-skill-note">辅助技能补充主技能，已确认设定和你的要求优先。</p>}</>}
       {notice && <p role="status" className="creative-skill-description">{notice}</p>}
-      {contextual ? <details className="creative-skill-more-config"><summary>更多配置</summary>
+      {contextual ? <WorkspaceDisclosure className="creative-skill-more-config" label={<>更多配置</>}>
         <p className="creative-skill-description">{appearance === 'prompt'
           ? '本项目会在此浏览器记住主技能和辅助技能，后续同类提示词整理会沿用。保存默认后，项目默认也会更新。'
           : `切换仅用于本次${operationLabel}；保存默认后，后续${operationLabel}会沿用。`}</p>
         <p className="creative-skill-note">辅助技能补充主技能，已确认设定和你的要求优先。</p>
         {defaultsActions}
-      </details> : defaultsActions}
+      </WorkspaceDisclosure> : defaultsActions}
     </Popover.Dropdown>
   </Popover>
 }

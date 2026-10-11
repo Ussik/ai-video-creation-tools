@@ -48,6 +48,7 @@ import { synthesizeSpeech, type SpeechSynthesisResult } from './speech-provider.
 import { probeSpeechDurationMs } from './speech-audio.js'
 import { registerAssetDownloadRoutes } from './asset-downloads.js'
 import { getAssetPreview } from './asset-previews.js'
+import { registerJobQueueRoutes, startJobQueue } from './job-queue.js'
 
 const idParams = z.object({ id: z.string().min(1) })
 const projectInput = z.object({ name: z.string().trim().min(1).max(120), brief: z.string().default(''), ratio: z.enum(['16:9', '9:16']).default('16:9') })
@@ -1326,7 +1327,8 @@ async function generateTextOutput(model: Model, provider: Provider, projectId: s
       item => decryptKey(item.key_ciphertext || null))
     resultPath = result.path
   } catch (error) {
-    throw Object.assign(new Error(`文本模型生成失败：${error instanceof Error ? error.message : String(error)}`), { statusCode: 502 })
+    const diagnostics = error && typeof error === 'object' && 'diagnostics' in error && typeof error.diagnostics === 'string' ? error.diagnostics : undefined
+    throw Object.assign(new Error(`文本模型生成失败：${error instanceof Error ? error.message : String(error)}`), { statusCode: 502, ...(diagnostics ? { diagnostics } : {}) })
   }
   try {
     return await readFile(resultPath, 'utf8')
@@ -1510,38 +1512,30 @@ async function processJob(job: Job): Promise<void> {
   })()
 }
 
-export function startWorker(): () => void {
-  let stopped = false
-  let timer: NodeJS.Timeout | undefined
-  const next = async () => {
-    if (stopped) return
-    try {
-      const job = one<Job>("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at LIMIT 1")
-      if (job) {
-        run("UPDATE jobs SET status='running', updated_at=? WHERE id=?", now(), job.id)
-        try { await processJob(job) }
-        catch (error) {
-          run("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?", String(error instanceof Error ? error.message : error).slice(0, 2000), now(), job.id)
-          completeAssetTaskJob(job, null, String(error instanceof Error ? error.message : error).slice(0, 2000))
-        }
-      }
-    } catch (error) { console.error('任务处理失败', error) }
-    if (!stopped) timer = setTimeout(next, 1000)
-  }
-  void next()
-  return () => { stopped = true; if (timer) clearTimeout(timer) }
+export function startWorker(): () => Promise<void> {
+  return startJobQueue(processJob, (job, error) => {
+    const message = String(error instanceof Error ? error.message : error).slice(0, 2000)
+    db.transaction(() => {
+      run("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?", message, now(), job.id)
+      completeAssetTaskJob(job, null, message)
+    })()
+  })
 }
 
 export function buildApp(): FastifyInstance {
   initDb()
   const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 })
+  registerJobQueueRoutes(app)
   void app.register(multipart, { limits: { fileSize: 300 * 1024 * 1024, files: 1, fields: 2 } })
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler((error, request, reply) => {
     const issue = error as Error & { statusCode?: number; raw_output?: string; diagnostics?: string }
     const code = error instanceof ZodError ? 422 : Math.max(400, Math.min(Number(issue.statusCode) || 500, 599))
     reply.code(code).send({ detail: code === 500 ? '服务器处理失败' : issue.message,
       ...(code !== 500 && issue.raw_output ? { raw_output: issue.raw_output } : {}), ...(code !== 500 && issue.diagnostics ? { diagnostics: issue.diagnostics } : {}) })
     if (code === 500) console.error(error)
+    else if (code >= 500 && issue.diagnostics) console.error('模型请求失败', {
+      method: request.method, route: request.routeOptions.url, diagnostics: issue.diagnostics,
+    })
   })
 
   const creativeText = async (projectId: string, modelId: string, prompt: string, contract?: OutputContract) => {
@@ -3005,8 +2999,9 @@ export function buildApp(): FastifyInstance {
     const { id } = parse(idParams, request.params)
     const existing = required<Provider>('providers', id)
     if (existing.adapter === 'demo' || existing.archived) invalid('此提供商已归档')
-    if (one<Job>("SELECT jobs.* FROM jobs JOIN models ON jobs.model_id=models.id WHERE models.provider_id=? AND jobs.status IN ('queued','running') LIMIT 1", id)) invalid('此厂商还有进行中的任务，完成后才能修改连接')
     const data = parse(providerPatch, request.body)
+    const nameOnly = 'name' in data && Object.keys(data).every(key => key === 'name')
+    if (!nameOnly && one<Job>("SELECT jobs.* FROM jobs JOIN models ON jobs.model_id=models.id WHERE models.provider_id=? AND jobs.status IN ('queued','running') LIMIT 1", id)) invalid('此厂商还有进行中的任务，完成后才能修改连接')
     checkBaseUrl(data.base_url || existing.base_url)
     if ('api_key' in data) {
       run('UPDATE providers SET key_ciphertext=? WHERE id=?', encryptKey(data.api_key), id)
@@ -3231,5 +3226,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const stopWorker = startWorker()
   const port = Number(process.env.PORT || 8000)
   app.listen({ host: '127.0.0.1', port }).then(address => console.log(`视频创作服务: ${address}`)).catch(error => { stopWorker(); console.error(error); process.exitCode = 1 })
-  for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => { stopWorker(); void app.close().finally(() => process.exit()) })
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => {
+    void Promise.allSettled([stopWorker(), app.close()]).then(() => process.exit())
+  })
 }

@@ -1,7 +1,8 @@
+import { WorkspaceDisclosure } from './WorkspaceDisclosure'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import {
-  ActionIcon, Button, Menu, Modal, Popover, Textarea, TextInput, Tooltip,
-} from '@mantine/core'
+import { Tabs, FileButton, UnstyledButton,
+  ActionIcon, Badge, Button, Drawer, Menu, Modal, Popover, Textarea, TextInput, Tooltip,
+   } from '@mantine/core'
 import { useClickOutside } from '@mantine/hooks'
 import {
   ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, CircleAlert, Clock3, FileText, Film, FolderOpen,
@@ -18,6 +19,7 @@ import {
 import type { Connection, ConnectionLineComponentProps, Edge, EdgeChange, EdgeProps, Node, NodeChange, NodeProps } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { api, json } from './api'
+import { assetPresentations } from './asset-presentation'
 import type { Asset, AssetTask, Job, Model, ProjectDetail, Provider, ScriptArtifact, Shot, VisualBoardPreview, VisualProfile, VisualReferenceMode } from './api'
 import { videoRatioOptions, videoResolutionOptions } from '../../backend/src/video-parameters'
 import { videoReferenceConfigError, supportsVideoMultiReference } from '../../backend/src/video-reference-config'
@@ -45,6 +47,7 @@ import StoryboardWorkspace from './StoryboardWorkspace'
 import CanvasComposerToolbar from './CanvasComposerToolbar'
 import PromptSkillAction from './PromptSkillAction'
 import { useAppDialog } from './AppDialog'
+import ThemeToggle from './ThemeToggle'
 import { CanvasGenerationParameters, CanvasVideoModeMenu, videoModeLabel } from './CanvasGenerationControls'
 import type { JSONContent } from '@tiptap/core'
 import { generationCost, imageGenerationDefaults, imageParameterOptions, imageParameterValue, imagePreferencePrompt, imageRatioError, imageRatios, imageRequestResolution, modelDefaultResolution, usesModelParameter } from './canvas-model-parameters'
@@ -583,8 +586,8 @@ function StudioEdge({ id, selected, style, data, ...props }: EdgeProps<Edge>) {
     {automatic && <title>已绑定的设定参考图，点击调整镜头视觉设定</title>}
     <BaseEdge id={id} path={path} interactionWidth={28} style={{
       ...style,
-      stroke: selected ? '#a8d8e8' : related ? '#789bad' : '#5c6b7b',
-      strokeWidth: selected ? 2.5 : related ? 2.2 : 1.6,
+      stroke: selected ? 'var(--pc-edge-selected)' : related ? 'var(--pc-edge-active)' : 'var(--pc-edge-idle)',
+      strokeWidth: selected ? 2.8 : related ? 2.4 : 1.5,
       strokeLinecap: 'round',
     }} />
   </g>
@@ -617,9 +620,9 @@ function StudioNode({ data, selected }: NodeProps<FlowNode>) {
   const icon = isProjectScriptRef ? <ScrollText size={15} /> : profile ? <ImageIcon size={15} /> : node.type === 'generation' ? <WandSparkles size={15} />
     : node.type === 'image' ? <ImageIcon size={15} />
       : node.type === 'video' ? <Film size={15} /> : <TextChoiceIcon />
-  const tryButton = (action: NodeQuickAction, label: string, buttonIcon: React.ReactNode) => <button type="button" className="pc-node-try-action nodrag"
+  const tryButton = (action: NodeQuickAction, label: string, buttonIcon: React.ReactNode) => <UnstyledButton type="button" className="pc-node-try-action nodrag"
     disabled={data.busy || node.type === 'generation' && (job?.status === 'queued' || job?.status === 'running')}
-    onClick={(event) => { event.stopPropagation(); data.onTryAction(node.id, action) }}>{buttonIcon}<span>{label}</span></button>
+    onClick={(event) => { event.stopPropagation(); data.onTryAction(node.id, action) }}>{buttonIcon}<span>{label}</span></UnstyledButton>
   const [scriptSection, setScriptSection] = useState<'outline' | 'characters' | 'locations' | 'props' | 'episodes'>('outline')
   const nodeTitle = isProjectScriptRef
     ? (data.scriptTitle || node.title || '项目剧本')
@@ -648,31 +651,31 @@ function StudioNode({ data, selected }: NodeProps<FlowNode>) {
     {!isProjectScriptRef && <Handle className="pc-node-handle" type="target" position={Position.Left} title="连接到此节点" />}
     {isProjectScriptRef ? <div className="pc-project-script-card">
       <div className="pc-project-script-controls nodrag nopan">
-        <button type="button" className="pc-project-script-edit" aria-label="打开剧本对话" onClick={(event) => { event.stopPropagation(); data.onOpenScriptDirector('all') }}>
+        <Button type="button" className="pc-project-script-edit" aria-label="打开剧本对话" onClick={(event) => { event.stopPropagation(); data.onOpenScriptDirector('all') }} data-workspace-control="" variant="subtle">
           <MessageSquare size={14} />{data.scriptExists ? '剧本对话' : '开始创作'}
-        </button>
-        {data.scriptExists && <button type="button" className="pc-project-script-edit" aria-label="编辑剧本" onClick={(event) => { event.stopPropagation(); data.onOpenScriptCreator() }}>
+        </Button>
+        {data.scriptExists && <Button type="button" className="pc-project-script-edit" aria-label="编辑剧本" onClick={(event) => { event.stopPropagation(); data.onOpenScriptCreator() }} data-workspace-control="" variant="subtle">
           <PenLine size={14} />编辑
-        </button>}
+        </Button>}
       </div>
       <div className="pc-project-script-heading">
         <strong>{data.scriptTitle || node.title || '项目剧本'}</strong>
         {data.scriptUpdatedAt && <time>{data.scriptUpdatedAt}</time>}
       </div>
-      <div className="pc-project-script-tabs" role="tablist" aria-label="剧本内容分类">
+      <Tabs value={scriptSection} onChange={value => { if (value) setScriptSection(value as typeof scriptSection) }} activateTabWithKeyboard={true} className="pc-project-script-tabs-root"><Tabs.List className="pc-project-script-tabs" aria-label="剧本内容分类">
         {([
           ['outline', '故事大纲'], ['characters', '人物小传'], ['locations', '场景设计'], ['props', '道具设计'], ['episodes', '分集剧本'],
-        ] as const).map(([value, label]) => <button key={value} type="button" role="tab" aria-selected={scriptSection === value}
-          className={scriptSection === value ? 'is-active' : ''} onClick={(event) => { event.stopPropagation(); setScriptSection(value) }}>{label}</button>)}
-      </div>
+        ] as const).map(([value, label]) => <Tabs.Tab key={value} type="button"
+          className={scriptSection === value ? 'is-active' : ''} onClick={(event) => { event.stopPropagation(); setScriptSection(value) }} value={value}>{label}</Tabs.Tab>)}
+      </Tabs.List></Tabs>
       <div className="pc-project-script-empty nowheel nodrag nopan">
         {(() => {
           if (scriptSection === 'episodes') {
             const episodes = (data.scriptArtifacts || []).filter(item => item.artifact_type === 'episode_script' && (item.episode_number || 0) > 0).sort((a, b) => (a.episode_number || 0) - (b.episode_number || 0))
-            return episodes.length ? <div className="pc-script-episodes">{episodes.map(artifact => <button key={artifact.id} type="button" onClick={event => { event.stopPropagation(); data.onOpenScriptDocument?.(artifact) }}><FileText size={16} /><span><strong>{artifact.title}</strong><small>已保存 · 点击编辑本集</small></span><ChevronDown size={14} /></button>)}</div> : <div className="pc-script-empty-state">
+            return episodes.length ? <div className="pc-script-episodes">{episodes.map(artifact => <UnstyledButton key={artifact.id} type="button" onClick={event => { event.stopPropagation(); data.onOpenScriptDocument?.(artifact) }}><FileText size={16} /><span><strong>{artifact.title}</strong><small>已保存 · 点击编辑本集</small></span><ChevronDown size={14} /></UnstyledButton>)}</div> : <div className="pc-script-empty-state">
               <strong>还没有分集剧本</strong>
               <p>在对话中创作本集，确认保存后即可制作分镜。</p>
-              <button type="button" className="pc-project-script-edit" aria-label="打开分集创作对话" onClick={event => { event.stopPropagation(); data.onOpenScriptDirector('all') }}><MessageSquare size={14} />打开剧本对话</button>
+              <Button type="button" className="pc-project-script-edit" aria-label="打开分集创作对话" onClick={event => { event.stopPropagation(); data.onOpenScriptDirector('all') }} data-workspace-control="" variant="subtle"><MessageSquare size={14} />打开剧本对话</Button>
             </div>
           }
           const artifact = data.scriptArtifacts?.find((item) => item.artifact_type === scriptSection)
@@ -723,7 +726,7 @@ const MemoStudioNode = memo(StudioNode, (previous, next) => {
 })
 const nodeTypes = { studio: MemoStudioNode }
 
-function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProject, onOpenModels, onNavigate, onOpenScriptCreator, onOpenScriptDocument, onOpenSpeech, onOpenScriptDirector: onOpenDirectorPanel, initialLocation, onLocationChange, canvas, canvasSession, canvasMenu, registerCanvasActions, onCanvasViewport }: CanvasInstanceProps) {
+function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProject, onNavigate, onOpenScriptCreator, onOpenScriptDocument, onOpenSpeech, onOpenScriptDirector: onOpenDirectorPanel, initialLocation, onLocationChange, canvas, canvasSession, canvasMenu, registerCanvasActions, onCanvasViewport }: CanvasInstanceProps) {
   const { confirm, dialog } = useAppDialog()
   const canvasId = canvas.is_default ? undefined : canvas.id
   const storageId = canvas.id === detail.id ? detail.id : `${detail.id}:${canvas.id}`
@@ -795,7 +798,15 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   }, [selectedNodeId, composerNodeId, detail.id, composerExpanded])
   const [visualTool, setVisualTool] = useState<'create' | 'organize' | 'bindings' | null>(null)
   const [visualBindingContext, setVisualBindingContext] = useState<VisualBindingContext>({})
+  const [composerBindingsOpen, setComposerBindingsOpen] = useState(false)
+  const composerBindingsTriggerRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => { setComposerBindingsOpen(false) }, [selectedNodeId, composerNodeId, detail.id, viewMode])
   const [visualPanelBusy, setVisualPanelBusy] = useState(false)
+  function closeComposerBindings() {
+    if (visualPanelBusy) return
+    setComposerBindingsOpen(false)
+    composerBindingsTriggerRef.current?.focus({ preventScroll: true })
+  }
   const [scriptCanvasError, setScriptCanvasError] = useState('')
   const [scriptCanvasRetry, setScriptCanvasRetry] = useState(0)
   const scriptCanvasAttempt = useRef<string | null>(null)
@@ -1299,6 +1310,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   }, [graph, detail.name, changeGraph])
 
   const assetMap = useMemo(() => new Map(detail.assets.map((asset) => [asset.id, asset])), [detail.assets])
+  const assetLabels = useMemo(() => assetPresentations(detail, graph?.nodes), [detail, graph?.nodes])
   const shotMap = useMemo(() => new Map(detail.shots.map((shot) => [shot.id, shot])), [detail.shots])
   const jobMap = useMemo(() => new Map(detail.jobs.map((job) => [job.id, job])), [detail.jobs])
   const modelMap = useMemo(() => new Map(models.map((model) => [model.id, model])), [models])
@@ -1462,8 +1474,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     setSelectedNodeId(node.id)
     setSelectedNodeIds([node.id])
     setSelectedEdgeId(null)
-    
-    
+
+
     setNotice(`已创建${node.title}节点，请选择模型并确认参数`)
     setComposerNodeId(node.id)
   }, [busy, changeGraph, detail, models, providers, onRefresh, showError, selectNodeVideoMode])
@@ -1472,8 +1484,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     setSelectedNodeId(id)
     setSelectedNodeIds([id])
     setSelectedEdgeId(null)
-    
-    
+
+
   }, [])
   const fitNodeToMedia = useCallback((id: string, assetId: string, width: number, height: number) => {
     changeGraph(current => {
@@ -1574,12 +1586,12 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         deletable: !automatic,
         ariaLabel: automatic ? '设定参考图连接，点击调整镜头视觉设定' : undefined,
         selected,
+        // Focused links paint above idle links, while node cards stay above both.
+        zIndex: selected ? 0 : related ? -1 : -2,
         animated: false,
         hidden: !showEdges,
         className: `pc-flow-edge${selected ? ' is-selected' : ''}${related ? ' is-related' : ''}`,
         style: {
-          stroke: selected ? '#a8d8e8' : related ? '#789bad' : '#526372',
-          strokeWidth: selected ? 2.7 : related ? 2.2 : 1.6,
           opacity: showEdges ? 1 : 0,
           pointerEvents: showEdges ? 'auto' : 'none',
         },
@@ -1790,8 +1802,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     setSelectedNodeId(node.id)
     setSelectedNodeIds([node.id])
     setSelectedEdgeId(null)
-    
-    
+
+
     if (viewMode === 'storyboard') setStoryboardSelectedId(node.id)
     setComposerNodeId(node.id)
     setAddMenu(null)
@@ -1878,7 +1890,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     setSelectedNodeId(node.id)
     setSelectedNodeIds([node.id])
     setSelectedEdgeId(null)
-    
+
     setPendingRunNodeId(node.id)
     setComposerNodeId(node.id)
   }
@@ -1918,7 +1930,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         return
       }
       const existingReference = currentGraph.nodes.find(node => node.type === asset.kind && node.asset_id === asset.id)
-      const reference = existingReference || { ...blankNode(asset.kind, target.x - 540, target.y), title: asset.filename,
+      const reference = existingReference || { ...blankNode(asset.kind, target.x - 540, target.y), title: assetLabels.get(asset.id)?.title || asset.filename,
         text: asset.kind === 'text' ? asset.text || '' : '', asset_id: asset.id, shot_id: asset.shot_id }
       const nearbyCount = currentGraph.edges.filter(edge => edge.target === target.id).length
       if (!existingReference) reference.y += nearbyCount * 100
@@ -1934,14 +1946,14 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       return
     }
     const position = at || centerPosition()
-    const node = { ...blankNode(asset.kind, position.x, position.y), title: asset.filename,
+    const node = { ...blankNode(asset.kind, position.x, position.y), title: assetLabels.get(asset.id)?.title || asset.filename,
       text: asset.kind === 'text' ? asset.text || '' : '', asset_id: asset.id, shot_id: asset.shot_id }
     changeGraph((current) => ({ ...current, nodes: [...current.nodes, node] }))
     setSelectedNodeId(node.id)
     setSelectedNodeIds([node.id])
     setSelectedEdgeId(null)
-    
-    
+
+
   }
 
   function openProfileSidebar() {
@@ -2605,8 +2617,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     setSelectedNodeId(duplicateId)
     setSelectedNodeIds([duplicateId])
     setSelectedEdgeId(null)
-    
-    
+
+
     setContextMenu(null)
   }
 
@@ -2620,12 +2632,12 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       if (!selectedCanvasNodeIds.includes(target.nodeId)) setSelectedNodeIds([target.nodeId])
       if (selectedCanvasNodeIds.length > 1 && selectedCanvasNodeIds.includes(target.nodeId)) setComposerNodeId(null)
       setSelectedEdgeId(null)
-      
+
     } else if (target.edgeId) {
       setSelectedEdgeId(target.edgeId)
       setSelectedNodeId(null)
       setSelectedNodeIds([])
-      
+
     } else {
       setSelectedNodeId(null)
       setSelectedNodeIds([])
@@ -3021,27 +3033,19 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       .filter((asset) => {
         if (!query) return true
         const shotTitle = detail.shots.find((shot) => shot.id === asset.shot_id)?.title || ''
-        return `${asset.filename} ${shotTitle}`.toLocaleLowerCase().includes(query)
+        return `${assetLabels.get(asset.id)?.title || ''} ${asset.filename} ${shotTitle}`.toLocaleLowerCase().includes(query)
       })
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
-  }, [detail.assets, detail.shots, sidebarAssetFilter, sidebarAssetSearch, referenceTargetNodeId])
+  }, [detail.assets, detail.shots, assetLabels, sidebarAssetFilter, sidebarAssetSearch, referenceTargetNodeId])
   const contextNode = contextMenu?.nodeId ? graph?.nodes.find((node) => node.id === contextMenu.nodeId) : undefined
   const contextEdge = contextMenu?.edgeId ? graph?.edges.find((edge) => edge.id === contextMenu.edgeId) : undefined
   const contextSelectionCount = contextNode && selectedCanvasNodeIds.includes(contextNode.id) ? selectedCanvasNodeIds.length : 0
-
-  async function openModelsSafely() {
-    const queue = queueRef.current
-    try {
-      if (queue) await flush(queue)
-      onOpenModels()
-    } catch (error) { showError(error) }
-  }
 
   useEffect(() => {
     if (!selectedNodeId) return
     const onDocumentPointerDown = (event: PointerEvent) => {
       const target = event.target instanceof Element ? event.target : null
-      if (target?.closest('.react-flow__node-toolbar, .react-flow__node, .react-flow__nodesselection, .react-flow__selection, .pc-text-editor-modal-root, .pc-context-menu, .pc-add-menu, [data-canvas-overlay], .mantine-Select-dropdown, .mantine-Combobox-dropdown, [role="listbox"], .mantine-Modal-root, [role="menu"]')) return
+      if (target?.closest('.react-flow__node-toolbar, .react-flow__node, .react-flow__nodesselection, .react-flow__selection, .pc-text-editor-modal-root, .pc-context-menu, .pc-add-menu, [data-canvas-overlay], .mantine-Select-dropdown, .mantine-Combobox-dropdown, [role="listbox"], .mantine-Modal-root, .mantine-Drawer-root, [role="menu"]')) return
       setSelectedNodeId(null)
       setSelectedNodeIds([])
       setSelectedEdgeId(null)
@@ -3060,7 +3064,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     onKeyDown={(event) => {
       // A dialog owns its shortcuts. Closing a nested candidate/setting modal
       // must not also clear the canvas selection and its composer underneath.
-      if (event.target instanceof Element && event.target.closest('.mantine-Modal-root')) {
+      if (event.target instanceof Element && event.target.closest('.mantine-Modal-root, .mantine-Drawer-root')) {
         event.stopPropagation()
         return
       }
@@ -3069,6 +3073,10 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       if (event.key === 'Escape') {
         if (contextMenu) { setContextMenu(null); event.stopPropagation(); return }
         if (addMenu) { setAddMenu(null); event.stopPropagation(); return }
+        if (composerBindingsOpen) {
+          closeComposerBindings()
+          event.stopPropagation(); return
+        }
         if (visualTool || inspectedProfile) { void closeVisualPanel(); event.stopPropagation(); return }
         setSelectedNodeId(null)
         setSelectedNodeIds([])
@@ -3104,55 +3112,54 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     }}
     onDragOver={(event) => { if (event.dataTransfer.types.includes('Files') || event.dataTransfer.types.includes('application/x-canvas-asset')) event.preventDefault() }}
     onDrop={dropOnCanvas}>
-    <input ref={uploadInputRef} type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,audio/mpeg,audio/wav,audio/mp4" multiple hidden onChange={(event) => { if (event.currentTarget.files) void uploadCanvasFiles(event.currentTarget.files) }} />
-    <input ref={referenceUploadInputRef} type="file" accept="image/png,image/jpeg,image/webp" multiple hidden
-      onChange={(event) => { if (event.currentTarget.files && referenceUploadTargetId) void uploadCanvasFiles(event.currentTarget.files) }} />
+    <FileButton ref={uploadInputRef} accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,audio/mpeg,audio/wav,audio/mp4" multiple onChange={files => { if (files.length) void uploadCanvasFiles(files) }}>{() => null}</FileButton>
+    <FileButton ref={referenceUploadInputRef} accept="image/png,image/jpeg,image/webp" multiple onChange={files => { if (files.length && referenceUploadTargetId) void uploadCanvasFiles(files) }}>{() => null}</FileButton>
     <div className="pc-toolbar">
       <div className="pc-canvas-nav">
         <Tooltip label="项目"><ActionIcon variant="subtle" aria-label="返回项目" onClick={() => onNavigate('projects')}><FolderOpen size={18} /></ActionIcon></Tooltip>
         {projectNameEditing
-          ? <input ref={projectNameInputRef} className="pc-project-name-input" aria-label="编辑项目名称" value={projectNameDraft}
+          ? <TextInput ref={projectNameInputRef} className="pc-project-name-input" aria-label="编辑项目名称" value={projectNameDraft}
             onChange={(event) => setProjectNameDraft(event.currentTarget.value)}
             onBlur={() => void saveProjectName()}
             onKeyDown={(event) => {
               if (event.key === 'Enter') { event.preventDefault(); void saveProjectName() }
               if (event.key === 'Escape') { event.preventDefault(); cancelProjectNameEdit() }
             }} />
-          : <button type="button" className="pc-project-name" title="编辑项目名称" onClick={() => setProjectNameEditing(true)}>{detail.name}</button>}
+          : <UnstyledButton type="button" className="pc-project-name" title="编辑项目名称" onClick={() => setProjectNameEditing(true)}>{detail.name}</UnstyledButton>}
         <Menu shadow="md" width={172} position="bottom-start"><Menu.Target><ActionIcon variant="subtle" aria-label="切换创作页面"><ChevronDown size={16} /></ActionIcon></Menu.Target><Menu.Dropdown>
-          <Menu.Item leftSection={<FolderOpen size={15} />} onClick={() => onNavigate('projects')}>项目</Menu.Item>
           <Menu.Item leftSection={<ScrollText size={15} />} onClick={() => openScriptDirector('all')}>剧本创作</Menu.Item>
           <Menu.Item leftSection={<ImageIcon size={15} />} onClick={openProfileSidebar}>视觉设定</Menu.Item>
           {onOpenSpeech && <Menu.Item leftSection={<Mic2 size={15} />} onClick={onOpenSpeech}>配音</Menu.Item>}
           <Menu.Item leftSection={<Film size={15} />} onClick={() => onNavigate('studio')}>成片工作台</Menu.Item>
-          <Menu.Item leftSection={<Layers3 size={15} />} onClick={() => onNavigate('assets')}>资产</Menu.Item>
-          <Menu.Item leftSection={<Clock3 size={15} />} onClick={() => onNavigate('jobs')}>任务记录</Menu.Item>
-          <Menu.Item leftSection={<Settings2 size={15} />} onClick={() => void openModelsSafely()}>模型设置</Menu.Item>
         </Menu.Dropdown></Menu>
         {canvasMenu}
       </div>
-      <div className="pc-mode-switch" role="tablist" aria-label="创作视图">
-        <button type="button" role="tab" aria-selected={viewMode === 'canvas'} className={viewMode === 'canvas' ? 'is-active' : ''}
-          onClick={() => { setContextMenu(null); setAddMenu(null); setViewMode('canvas') }}><MousePointer2 size={15} />工作流</button>
-        <button type="button" role="tab" aria-selected={viewMode === 'storyboard'} className={viewMode === 'storyboard' ? 'is-active' : ''}
-          disabled={visualPanelBusy} onClick={() => { void (async () => { if (!await leaveVisualPanel()) return; setProfileInspectorId(null); setVisualTool(null); setProfileDraftDirty(false); setContextMenu(null); setAddMenu(null); setViewMode('storyboard') })() }}><LayoutGrid size={15} />故事板</button>
-      </div>
+      <Tabs value={viewMode} activateTabWithKeyboard={false} className="pc-mode-switch-root"><Tabs.List className="pc-mode-switch" aria-label="创作视图">
+        <Tabs.Tab type="button"   className={viewMode === 'canvas' ? 'is-active' : ''}
+          onClick={() => { setContextMenu(null); setAddMenu(null); setViewMode('canvas') }} value={'canvas'}><MousePointer2 size={15} />工作流</Tabs.Tab>
+        <Tabs.Tab type="button"   className={viewMode === 'storyboard' ? 'is-active' : ''}
+          disabled={visualPanelBusy} onClick={() => { void (async () => { if (!await leaveVisualPanel()) return; setProfileInspectorId(null); setVisualTool(null); setProfileDraftDirty(false); setContextMenu(null); setAddMenu(null); setViewMode('storyboard') })() }} value={'storyboard'}><LayoutGrid size={15} />故事板</Tabs.Tab>
+      </Tabs.List></Tabs>
       <div className="pc-save-status" role="status">
         {saveState === 'saved' ? <><Check size={14} />已保存</>
           : saveState === 'saving' || saveState === 'pending' ? <><LoaderCircle size={14} className="pc-spin" />{saveState === 'saving' ? '保存中' : '待保存'}</>
-            : <button onClick={() => saveState === 'conflict' ? void inspectConflict() : queueRef.current && void flush(queueRef.current).catch(showError)}><CircleAlert size={14} />{saveState === 'conflict' ? '版本冲突 · 合并' : '保存失败 · 重试'}</button>}
+            : <Button onClick={() => saveState === 'conflict' ? void inspectConflict() : queueRef.current && void flush(queueRef.current).catch(showError)} data-workspace-control="" variant="subtle"><CircleAlert size={14} />{saveState === 'conflict' ? '版本冲突 · 合并' : '保存失败 · 重试'}</Button>}
       </div>
+      <div className="pc-theme-control"><ThemeToggle /></div>
     </div>
     <div className={`pc-body ${viewMode === 'storyboard' ? 'pc-body-storyboard' : sidebarOpen ? 'pc-body-sidebar-open' : ''}`}>
       {viewMode === 'canvas' && sidebarOpen && <aside className="pc-canvas-sidebar" aria-label="画布节点与素材" data-canvas-overlay>
-        <div className="pc-sidebar-tabs" role="tablist" aria-label="画布侧栏">
-          <button type="button" role="tab" aria-selected={sidebarTab === 'canvas'} className={sidebarTab === 'canvas' ? 'active' : ''}
-            onClick={() => setSidebarTab('canvas')}><Layers3 size={15} />画布 <span>{graph?.nodes.length || 0}</span></button>
-          <button type="button" role="tab" aria-selected={sidebarTab === 'assets'} className={sidebarTab === 'assets' ? 'active' : ''}
-            onClick={() => setSidebarTab('assets')}><ImageIcon size={15} />资产 <span>{detail.assets.filter((asset) => (asset.saved || !!referenceTargetNodeId) && asset.source !== 'export').length}</span></button>
-          <button type="button" role="tab" aria-selected={sidebarTab === 'profiles'} className={sidebarTab === 'profiles' ? 'active' : ''}
-            onClick={() => setSidebarTab('profiles')}><ImageIcon size={15} />设定 <span>{detail.visual_profiles?.length || 0}</span></button>
-        </div>
+        <Tabs value={sidebarTab} variant="pills" activateTabWithKeyboard={false} className="pc-sidebar-tabs-root"><Tabs.List className="pc-sidebar-tabs" aria-label="画布侧栏">
+          <Tabs.Tab type="button" className={sidebarTab === 'canvas' ? 'active' : ''}
+            onClick={() => setSidebarTab('canvas')} value="canvas" leftSection={<Layers3 size={15} />}
+            rightSection={<Badge className="pc-sidebar-tab-count" color="gray" size="xs">{graph?.nodes.length || 0}</Badge>}>画布</Tabs.Tab>
+          <Tabs.Tab type="button" className={sidebarTab === 'assets' ? 'active' : ''}
+            onClick={() => setSidebarTab('assets')} value="assets" leftSection={<ImageIcon size={15} />}
+            rightSection={<Badge className="pc-sidebar-tab-count" color="gray" size="xs">{detail.assets.filter((asset) => (asset.saved || !!referenceTargetNodeId) && asset.source !== 'export').length}</Badge>}>资产</Tabs.Tab>
+          <Tabs.Tab type="button" className={sidebarTab === 'profiles' ? 'active' : ''}
+            onClick={() => setSidebarTab('profiles')} value="profiles" leftSection={<LayoutDashboard size={15} />}
+            rightSection={<Badge className="pc-sidebar-tab-count" color="gray" size="xs">{detail.visual_profiles?.length || 0}</Badge>}>设定</Tabs.Tab>
+        </Tabs.List></Tabs>
         {sidebarTab === 'canvas' ? <>
           <div className="pc-sidebar-tools">
             <TextInput size="xs" aria-label="搜索画布节点" placeholder="搜索节点、镜头或内容" value={sidebarSearch}
@@ -3168,9 +3175,9 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
               const icon = node.type === 'project_script_ref' ? <ScrollText size={15} /> : node.type === 'generation' ? <WandSparkles size={15} /> : node.type === 'image' ? <ImageIcon size={15} />
                 : node.type === 'video' ? <Film size={15} /> : <FileText size={15} />
               return <div className={`pc-sidebar-node ${selectedNodeId === node.id ? 'is-selected' : ''}`} key={node.id}
-                onClick={() => focusSidebarNode(node.id)} onDoubleClick={() => focusSidebarNode(node.id)}>
-                <span className="pc-sidebar-node-icon">{icon}</span><span className="pc-sidebar-node-copy"><strong title={node.title || nodeAsset?.filename || '未命名节点'}>{node.title || nodeAsset?.filename || '未命名节点'}</strong>
-                  <small>{node.type === 'project_script_ref' ? '项目级剧本' : node.type === 'generation' ? (nodeShot ? `镜头 ${String(nodeShot.position + 1).padStart(2, '0')} · ${nodeShot.title}` : '待配置生成') : node.type === 'text' ? '文本 / 提示词' : nodeAsset?.filename || '素材节点'}</small></span>
+                >
+                <UnstyledButton className="pc-sidebar-node-main" onClick={() => focusSidebarNode(node.id)} onDoubleClick={() => focusSidebarNode(node.id)}><span className="pc-sidebar-node-icon">{icon}</span><span className="pc-sidebar-node-copy"><strong title={node.title || nodeAsset?.filename || '未命名节点'}>{node.title || nodeAsset?.filename || '未命名节点'}</strong>
+                  <small>{node.type === 'project_script_ref' ? '项目级剧本' : node.type === 'generation' ? (nodeShot ? `镜头 ${String(nodeShot.position + 1).padStart(2, '0')} · ${nodeShot.title}` : '待配置生成') : node.type === 'text' ? '文本 / 提示词' : nodeAsset?.filename || '素材节点'}</small></span></UnstyledButton>
                 <Menu shadow="md" width={150} position="right-start" classNames={{ dropdown: 'pc-sidebar-dropdown' }}><Menu.Target><ActionIcon variant="subtle" className="pc-sidebar-more" aria-label={`更多操作：${node.title || '节点'}`} onClick={(event) => event.stopPropagation()}><MoreHorizontal size={16} /></ActionIcon></Menu.Target><Menu.Dropdown>
                   <Menu.Item leftSection={<LocateFixed size={14} />} onClick={() => focusSidebarNode(node.id)}>定位节点</Menu.Item>
                   <Menu.Item leftSection={<Settings2 size={14} />} onClick={() => selectNodeForView(node.id)}>选择节点</Menu.Item>
@@ -3179,13 +3186,13 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                 </Menu.Dropdown></Menu>
               </div>
             })}
-            {!sidebarNodes.length && <div className="pc-sidebar-empty"><span className="pc-sidebar-empty-icon"><Layers3 size={22} /></span><strong>{sidebarSearch || sidebarFilter !== 'all' ? '没有匹配的节点' : '画布还没有节点'}</strong><p>{sidebarSearch || sidebarFilter !== 'all' ? '试试其他关键词或切换类型。' : '从剧本创作开始，或用底部工具添加节点。'}</p>{!graph?.nodes.length && <button type="button" onClick={() => openScriptDirector('all')}>剧本创作</button>}</div>}
+            {!sidebarNodes.length && <div className="pc-sidebar-empty"><span className="pc-sidebar-empty-icon"><Layers3 size={22} /></span><strong>{sidebarSearch || sidebarFilter !== 'all' ? '没有匹配的节点' : '画布还没有节点'}</strong><p>{sidebarSearch || sidebarFilter !== 'all' ? '试试其他关键词或切换类型。' : '从剧本创作开始，或用底部工具添加节点。'}</p>{!graph?.nodes.length && <Button type="button" onClick={() => openScriptDirector('all')} data-workspace-control="" variant="subtle">剧本创作</Button>}</div>}
           </div>
         </> : sidebarTab === 'profiles' ? <>
           <div className="pc-sidebar-tools">
             <TextInput size="xs" aria-label="搜索视觉设定" placeholder="搜索名称或版本" value={profileSearch} leftSection={<Search size={14} />} onChange={event => setProfileSearch(event.currentTarget.value)} />
             <div className="pc-sidebar-filter-row">
-              <div className="pc-sidebar-filter-pills" role="group" aria-label="设定类型筛选">{(['all', 'character', 'location', 'prop'] as const).map(kind => <button type="button" key={kind} aria-pressed={profileFilter === kind} className={profileFilter === kind ? 'active' : ''} onClick={() => setProfileFilter(kind)}>{kind === 'all' ? '全部' : kind === 'character' ? '人物' : kind === 'location' ? '场景' : '道具'}</button>)}</div>
+              <div className="pc-sidebar-filter-pills" role="group" aria-label="设定类型筛选">{(['all', 'character', 'location', 'prop'] as const).map(kind => <UnstyledButton type="button" key={kind} aria-pressed={profileFilter === kind} className={profileFilter === kind ? 'active' : ''} onClick={() => setProfileFilter(kind)}>{kind === 'all' ? '全部' : kind === 'character' ? '人物' : kind === 'location' ? '场景' : '道具'}</UnstyledButton>)}</div>
               <div className="pc-sidebar-profile-tools">
                 <Tooltip label="新增设定"><ActionIcon variant="subtle" aria-label="新增视觉设定" disabled={visualPanelBusy} onClick={() => void openVisualTool('create')}><Plus size={15} /></ActionIcon></Tooltip>
                 <Menu position="bottom-end" width={180} classNames={{ dropdown: 'pc-sidebar-dropdown' }}><Menu.Target><ActionIcon variant="subtle" aria-label="设定工具" title="批量整理与引用管理" disabled={visualPanelBusy}><MoreHorizontal size={16} /></ActionIcon></Menu.Target><Menu.Dropdown>
@@ -3201,10 +3208,10 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
               const board = assetMap.get(profile.board_asset_id || '')
               const inCanvas = graph?.nodes.some(node => node.settings.visual_profile_id === profile.id)
               return <div className={`pc-sidebar-node pc-sidebar-profile ${(profileInspectorId || selectedProfile?.id) === profile.id ? 'is-selected' : ''}`} key={profile.id}>
-                <button type="button" className="pc-profile-list-open" aria-label={`查看设定：${profile.name} · ${profile.variant}`} onClick={() => openProfileInspector(profile)}>
+                <UnstyledButton type="button" className="pc-profile-list-open" aria-label={`查看设定：${profile.name} · ${profile.variant}`} onClick={() => openProfileInspector(profile)}>
                   <span className="pc-profile-list-thumb">{board ? <img src={board.url} alt={`${profile.name} 设定图`} /> : <ImageIcon size={18} />}</span>
                   <span className="pc-sidebar-node-copy"><strong>{profile.name}</strong><small>{profile.variant} · v{profile.revision}</small><small className="pc-profile-list-status">{profile.definition_status === 'draft' ? '设定草稿' : profile.board_style_status === 'needs_review' ? '画风待核对' : profile.board_asset_id ? '信息图已确认' : '待制作信息图'}{inCanvas ? ' · 已在画布' : ''}</small></span>
-                </button>
+                </UnstyledButton>
                 <Tooltip label={referenceTargetNodeId ? '添加为参考' : inCanvas ? '定位节点' : '加入画布'}><ActionIcon variant="subtle" aria-label={`${referenceTargetNodeId ? '添加设定参考' : inCanvas ? '定位设定节点' : '加入设定画布'}：${profile.name} · ${profile.variant}`} disabled={visualPanelBusy} onClick={() => void (async () => { if (await leaveVisualPanel()) { setVisualTool(null); addProfileToCanvas(profile) } })()}>{inCanvas && !referenceTargetNodeId ? <LocateFixed size={15} /> : <Plus size={15} />}</ActionIcon></Tooltip>
                 <Tooltip label="管理候选"><ActionIcon variant="subtle" aria-label={`管理候选：${profile.name} · ${profile.variant}`} onClick={() => setCandidateProfileId(profile.id)}><Layers3 size={15} /></ActionIcon></Tooltip>
               </div>
@@ -3216,8 +3223,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
             <TextInput size="xs" aria-label="搜索资产" placeholder="搜索素材、镜头或文件名" value={sidebarAssetSearch}
               leftSection={<Search size={14} />} onChange={(event) => setSidebarAssetSearch(event.currentTarget.value)} />
             <div className="pc-sidebar-filter-pills" role="group" aria-label="资产类型筛选">
-              {(['all', 'image', 'video', 'audio', 'text'] as const).map((kind) => <button type="button" key={kind} aria-pressed={sidebarAssetFilter === kind} className={sidebarAssetFilter === kind ? 'active' : ''}
-                onClick={() => setSidebarAssetFilter(kind)}>{kind === 'all' ? '全部' : kind === 'image' ? '图片' : kind === 'video' ? '视频' : kind === 'audio' ? '音频' : '文本'}</button>)}
+              {(['all', 'image', 'video', 'audio', 'text'] as const).map((kind) => <UnstyledButton type="button" key={kind} aria-pressed={sidebarAssetFilter === kind} className={sidebarAssetFilter === kind ? 'active' : ''}
+                onClick={() => setSidebarAssetFilter(kind)}>{kind === 'all' ? '全部' : kind === 'image' ? '图片' : kind === 'video' ? '视频' : kind === 'audio' ? '音频' : '文本'}</UnstyledButton>)}
             </div>
           </div>
           <div className="pc-sidebar-list pc-sidebar-assets">
@@ -3225,10 +3232,10 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
               event.dataTransfer.effectAllowed = 'copy'; event.dataTransfer.setData('application/x-canvas-asset', asset.id)
             }}>
               <div className="pc-sidebar-asset-thumb">{asset.kind === 'audio' ? <Music2 size={18} /> : <NodeMedia asset={asset} />}</div>
-              <div className="pc-sidebar-asset-copy"><strong title={asset.filename}>{asset.filename}</strong><small>{asset.kind === 'image' ? '图片' : asset.kind === 'video' ? '视频' : asset.kind === 'audio' ? '音频' : '文本'} · {asset.source === 'generated' ? '生成' : '导入'}</small></div>
-              {asset.kind === 'audio' ? <Tooltip label="音频素材可在时间线中使用"><span className="pc-sidebar-audio-mark"><Music2 size={14} /></span></Tooltip> : <Tooltip label={referenceTargetNodeId ? '添加为当前节点的参考' : '添加到画布'}><ActionIcon variant="subtle" aria-label={`将 ${asset.filename} ${referenceTargetNodeId ? '添加为参考' : '添加到画布'}`} onClick={() => addAssetNode(asset)}><Plus size={16} /></ActionIcon></Tooltip>}
+              <div className="pc-sidebar-asset-copy"><strong title={assetLabels.get(asset.id)?.title || asset.filename}>{assetLabels.get(asset.id)?.title || asset.filename}</strong><small>{asset.kind === 'image' ? '图片' : asset.kind === 'video' ? '视频' : asset.kind === 'audio' ? '音频' : '文本'} · {asset.source === 'generated' ? '生成' : '导入'}</small></div>
+              {asset.kind === 'audio' ? <Tooltip label="音频素材可在时间线中使用"><span className="pc-sidebar-audio-mark"><Music2 size={14} /></span></Tooltip> : <Tooltip label={referenceTargetNodeId ? '添加为当前节点的参考' : '添加到画布'}><ActionIcon variant="subtle" aria-label={`将 ${assetLabels.get(asset.id)?.title || asset.filename} ${referenceTargetNodeId ? '添加为参考' : '添加到画布'}`} onClick={() => addAssetNode(asset)}><Plus size={16} /></ActionIcon></Tooltip>}
             </div>)}
-            {!sidebarAssets.length && <div className="pc-sidebar-empty"><span className="pc-sidebar-empty-icon"><ImageIcon size={24} /></span><strong>还没有匹配的素材</strong><p>生成或上传的素材会出现在这里。</p><button type="button" onClick={openCanvasUpload}>上传素材</button></div>}
+            {!sidebarAssets.length && <div className="pc-sidebar-empty"><span className="pc-sidebar-empty-icon"><ImageIcon size={24} /></span><strong>还没有匹配的素材</strong><p>生成或上传的素材会出现在这里。</p><Button type="button" onClick={openCanvasUpload} data-workspace-control="" variant="subtle">上传素材</Button></div>}
           </div>
         </>}
       </aside>}
@@ -3325,9 +3332,9 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           connectionLineComponent={StudioConnectionLine}
           defaultEdgeOptions={{ type: 'studio', animated: false }}
         >
-          <Background color="#393d3e" gap={20} size={1} />
+          <Background color="var(--fc-grid)" gap={20} size={1} />
           {showMinimap && <div className="pc-minimap-dock" style={minimapPosition ? { left: `${minimapPosition.x}px`, top: `${minimapPosition.y}px`, right: 'auto', bottom: 'auto' } : undefined}>
-            <div className="pc-minimap-drag-handle" role="button" tabIndex={0} aria-label="拖动小地图" title="拖动小地图" />
+            <UnstyledButton className="pc-minimap-drag-handle" aria-label="拖动小地图" title="拖动小地图" />
             <MiniMap pannable zoomable nodeColor={node => node.selected ? '#929292' : '#535353'} />
           </div>}
           <Tooltip label={sidebarOpen ? '收起节点列表' : '打开节点列表'}>
@@ -3341,7 +3348,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
             <Tooltip label={showEdges ? '隐藏连线' : '显示连线'}><ActionIcon variant="subtle" className={showEdges ? '' : 'is-active'}
               aria-label={showEdges ? '隐藏连线' : '显示连线'} aria-pressed={!showEdges} onClick={() => setShowEdges((value) => !value)}>{showEdges ? <Eye size={16} /> : <EyeOff size={16} />}</ActionIcon></Tooltip>
             <Tooltip label="整理画布"><ActionIcon variant="subtle" aria-label="整理画布" onClick={organizeCanvas}><LayoutDashboard size={16} /></ActionIcon></Tooltip>
-            <Tooltip label="重置到 100%"><button type="button" className="pc-flow-zoom-label" aria-label="重置缩放到 100%" onClick={() => void zoomTo(1, { duration: 220 })}>{viewportZoom}%</button></Tooltip>
+            <Tooltip label="重置到 100%"><Button type="button" className="pc-flow-zoom-label" aria-label="重置缩放到 100%" onClick={() => void zoomTo(1, { duration: 220 })} data-workspace-control="" variant="subtle">{viewportZoom}%</Button></Tooltip>
             <Tooltip label="清除视口记忆"><ActionIcon variant="subtle" aria-label="清除视口记忆并重置" onClick={() => {
               try { window.localStorage.removeItem(viewportKey(storageId)) } catch { /* Storage may be disabled. */ }
               setSavedViewport(null)
@@ -3358,14 +3365,17 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
               </Menu.Dropdown>
             </Menu>
           </div>
-          {!visualTool && !inspectedProfile && selectedNode && composerNodeId === selectedNode.id && selectedNode.type !== 'text' && selectedNode.type !== 'project_script_ref' && selectedNodeIds.length === 1 && selectedNodeIds[0] === selectedNodeId && <CanvasComposerToolbar key={selectedNode.id} nodeId={selectedNode.id} expanded={composerExpanded} bottomInset={selectedProfile ? 26 : 0} onCollapse={() => setComposerExpanded(false)}>
+          {!visualTool && !inspectedProfile && selectedNode && composerNodeId === selectedNode.id && selectedNode.type !== 'text' && selectedNode.type !== 'project_script_ref' && selectedNodeIds.length === 1 && selectedNodeIds[0] === selectedNodeId && <CanvasComposerToolbar key={selectedNode.id} nodeId={selectedNode.id} expanded={composerExpanded} bottomInset={selectedProfile ? 26 : 0} onCollapse={() => {
+            if (composerBindingsOpen) closeComposerBindings()
+            else setComposerExpanded(false)
+          }}>
             <div className={`pc-prompt-composer nowheel ${selectedProfile ? 'pc-profile-composer' : ''} ${composerExpanded ? 'is-expanded' : ''}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
               <div className="pc-prompt-composer-head">
                 <div className="pc-prompt-composer-chips">
-                  {referenceReturnNode && referenceReturnNode.id !== selectedNode.id && <button type="button" className="pc-composer-chip pc-reference-return" aria-label={`返回生成节点：${referenceReturnNode.title}`} onClick={() => {
+                  {referenceReturnNode && referenceReturnNode.id !== selectedNode.id && <UnstyledButton type="button" className="pc-composer-chip pc-reference-return" aria-label={`返回生成节点：${referenceReturnNode.title}`} onClick={() => {
                     focusSidebarNode(referenceReturnNode.id); setReferenceReturnNodeId(null)
-                  }}><ArrowLeft size={14} /><span>返回 {referenceReturnNode.title || '原节点'}</span></button>}
-                  <button type="button" className="pc-composer-chip" onClick={() => showSidebarAssets(selectedProfile ? 'image' : 'all', selectedNode.id)}><Plus size={15} />参考</button>
+                  }}><ArrowLeft size={14} /><span>返回 {referenceReturnNode.title || '原节点'}</span></UnstyledButton>}
+                  <Button type="button" className="pc-composer-chip" onClick={() => showSidebarAssets(selectedProfile ? 'image' : 'all', selectedNode.id)} data-workspace-control="" variant="subtle"><Plus size={15} />参考</Button>
                   {(composerModality === 'image' || composerModality === 'video') && <PromptSkillAction key={selectedNode.id} projectId={detail.id} nodeId={selectedNode.id}
                     modality={composerModality} prompt={composerPrompt}
                     models={models.filter(model => model.modality === 'text' && model.enabled && providers.some(provider => provider.id === model.provider_id && provider.enabled && provider.adapter !== 'demo'))}
@@ -3380,19 +3390,20 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                       setNotice('已应用整理后的提示词')
                     }} />}
                   {!selectedProfile && selectedBoardAsset?.kind === 'image' && <>
-                    <button type="button" className="pc-composer-chip" aria-label="以此图作为首帧生成" disabled={busy || selectedNodeGenerating}
-                      onClick={() => void tryNodeAction(selectedNode.id, 'video-first-frame')}><Film size={15} /><span>首帧生成</span></button>
-                    {availableModels.some(model => model.modality === 'video' && supportsVideoMultiReference(model.settings)) && <button type="button" className="pc-composer-chip" aria-label="作为参考设计视频" disabled={busy || selectedNodeGenerating}
-                      onClick={() => void tryNodeAction(selectedNode.id, 'video-reference')}><ImageIcon size={15} /><span>多图参考</span></button>}
+                    <UnstyledButton type="button" className="pc-composer-chip" aria-label="以此图作为首帧生成" disabled={busy || selectedNodeGenerating}
+                      onClick={() => void tryNodeAction(selectedNode.id, 'video-first-frame')}><Film size={15} /><span>首帧生成</span></UnstyledButton>
+                    {availableModels.some(model => model.modality === 'video' && supportsVideoMultiReference(model.settings)) && <UnstyledButton type="button" className="pc-composer-chip" aria-label="作为参考设计视频" disabled={busy || selectedNodeGenerating}
+                      onClick={() => void tryNodeAction(selectedNode.id, 'video-reference')}><ImageIcon size={15} /><span>多图参考</span></UnstyledButton>}
                   </>}
-                  {selectedProfile && <><button type="button" className="pc-composer-chip" onClick={() => { setComposerExpanded(false); setSidebarOpen(true); setSidebarTab('profiles'); setReferenceTargetNodeId(selectedNode.id) }}><ImageIcon size={15} />设定参考</button><Tooltip label="编辑设定"><button type="button" className="pc-composer-chip" aria-label="编辑设定" onClick={() => { setComposerExpanded(false); openProfileInspector(selectedProfile) }}><PenLine size={15} /></button></Tooltip></>}
-                  {selectedProfile && <Tooltip label="上传设定图"><button type="button" className="pc-composer-chip" aria-label="上传设定图" disabled={busy || selectedNodeGenerating} onClick={() => profileUploadInputRef.current?.click()}><Upload size={15} /></button></Tooltip>}
+                  {selectedProfile && <><Button type="button" className="pc-composer-chip" onClick={() => { setComposerExpanded(false); setSidebarOpen(true); setSidebarTab('profiles'); setReferenceTargetNodeId(selectedNode.id) }} data-workspace-control="" variant="subtle"><ImageIcon size={15} />设定参考</Button><Tooltip label="编辑设定"><ActionIcon type="button" className="pc-composer-chip" aria-label="编辑设定" onClick={() => { setComposerExpanded(false); openProfileInspector(selectedProfile) }} data-workspace-control=""><PenLine size={15} /></ActionIcon></Tooltip></>}
+                  {selectedProfile && <Tooltip label="上传设定图"><ActionIcon type="button" className="pc-composer-chip" aria-label="上传设定图" disabled={busy || selectedNodeGenerating} onClick={() => profileUploadInputRef.current?.click()} data-workspace-control=""><Upload size={15} /></ActionIcon></Tooltip>}
                 </div>
-                <button type="button" className="pc-composer-expand" aria-label={composerExpanded ? '缩小创作区' : '放大创作区'} title={composerExpanded ? '缩小创作区' : '放大创作区'} aria-expanded={composerExpanded} onClick={() => setComposerExpanded((value) => !value)}>{composerExpanded ? <Minimize2 size={17} /> : <Maximize2 size={17} />}</button>
+                <Button type="button" className="pc-composer-expand" aria-label={composerExpanded ? '缩小创作区' : '放大创作区'} title={composerExpanded ? '缩小创作区' : '放大创作区'} aria-expanded={composerExpanded} onClick={() => setComposerExpanded((value) => !value)} data-workspace-control="" variant="subtle">{composerExpanded ? <Minimize2 size={17} /> : <Maximize2 size={17} />}</Button>
               </div>
               <div className="pc-prompt-composer-body">
               {selectedShot && <div className="pc-visual-context">
-                <button type="button" className="pc-composer-chip pc-visual-context-button" onClick={() => void openVisualTool('bindings', { target: `shot:${selectedShot.id}` })}><ImageIcon size={14} />镜头引用 · {visualBindings.length}</button>
+                <Button ref={composerBindingsTriggerRef} type="button" className="pc-composer-chip pc-visual-context-button" aria-expanded={composerBindingsOpen} aria-controls="pc-composer-bindings"
+                  disabled={visualPanelBusy} onClick={() => setComposerBindingsOpen(value => !value)} data-workspace-control="" variant="subtle"><ImageIcon size={14} />镜头引用 · {visualBindings.length}<ChevronDown size={13} className="pc-binding-toggle-chevron" /></Button>
                 {visualBindings.length > 0 && <><span className="pc-visual-context-status">{visualReferenceMode !== 'profiles' ? '文字设定已带入'
                   : visualBindings.filter(binding => binding.required && !visualBindingReferenceAssetIds(binding).length).length ? '必需参考图待确认' : '已绑定'}</span>
                   {composerModality !== 'video' && <CanvasSelect className="pc-visual-reference-select" size="xs" aria-label="视觉设定引用方式" value={visualReferenceMode}
@@ -3404,19 +3415,21 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                     ]} />}
                 </>}
               </div>}
+              <div className="pc-composer-workspace">
+              <div className="pc-composer-writing">
               {missingReferences.length > 0 && <div className="pc-missing-references" role="group" aria-label="待补齐参考图">
                 <div className="pc-missing-references-heading"><strong>待补齐参考图 · {missingReferences.length}</strong><span>生成后需确认使用</span></div>
-                <div className="pc-missing-references-list">{missingReferences.map(reference => <button key={reference.profileId} type="button"
+                <div className="pc-missing-references-list">{missingReferences.map(reference => <UnstyledButton key={reference.profileId} type="button"
                   aria-label={`${reference.action === 'bindings' ? '调整引用' : '定位参考设定'}：${reference.name} · ${reference.variant}`}
                   onClick={() => locateMissingReference(reference)}>
                   <LocateFixed size={14} /><span title={`${reference.name} · ${reference.variant}`}>{reference.name}{reference.variant && ` · ${reference.variant}`}</span>
                   <small>{reference.action === 'bindings' ? '调整引用' : reference.action === 'confirm' ? '去确认' : '去生成'}</small><ArrowRight size={13} />
-                </button>)}</div>
+                </UnstyledButton>)}</div>
               </div>}
               {composerModality !== 'text' && detail.project_visual_style && detail.project_visual_style.source !== 'unspecified' && <p className="pc-project-style" role="status">
                 项目画风：{detail.project_visual_style.label} · {detail.project_visual_style.source === 'confirmed_context' ? '继承已确认设定，可在剧本对话中规范化' : '统一用于设定图、分镜和视频'}
               </p>}
-              {styleWarnings.length > 0 && <details className="pc-project-style"><summary>参考图画风需核对 · {styleWarnings.length}</summary>{styleWarnings.map(warning => <p key={warning}>{warning}</p>)}</details>}
+              {styleWarnings.length > 0 && <WorkspaceDisclosure className="pc-project-style" label={<>参考图画风需核对 · {styleWarnings.length}</>}>{styleWarnings.map(warning => <p key={warning}>{warning}</p>)}</WorkspaceDisclosure>}
               {composerModality === 'video' && <VideoReferencePanel entries={videoReferences} assets={detail.assets}
                 disabled={busy || selectedNodeGenerating}
                 excludedBindings={selectedMode === 'reference' ? visualBindings.filter(binding => !binding.required && selectedNode.settings.excluded_visual_profile_ids?.includes(binding.profile_id)) : []}
@@ -3445,14 +3458,14 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                 }) }))} />}
               {composerReferences.some(node => composerModality !== 'video' || visualNodeAsset(node, detail, true)?.kind !== 'image') && <div className="pc-composer-references" aria-label="已连接的参考">
                 {composerReferences.filter(node => composerModality !== 'video' || visualNodeAsset(node, detail, true)?.kind !== 'image').map((node, index) => <div className="pc-composer-reference" key={node.id}>
-                  <button type="button" title={node.title || '参考节点'} aria-label={`定位参考：${node.title || index + 1}`} onClick={() => focusSidebarNode(node.id)}>
+                  <UnstyledButton type="button" title={node.title || '参考节点'} aria-label={`定位参考：${node.title || index + 1}`} onClick={() => focusSidebarNode(node.id)}>
                     {visualNodeAsset(node, detail, true)?.kind === 'image' ? <img src={visualNodeAsset(node, detail, true)!.url} alt={node.title} />
                       : node.type === 'project_script_ref' ? <ScrollText size={22} />
                         : node.type === 'text' ? <FileText size={22} /> : <Film size={22} />}
                     <span>{index + 1}</span>
-                  </button>
-                  <button type="button" className="pc-composer-reference-remove" aria-label={`移除参考：${node.title || index + 1}`}
-                    onClick={() => changeGraph(current => ({ ...current, edges: current.edges.filter(edge => !(edge.source === node.id && edge.target === selectedNode.id)) }))}><X size={12} /></button>
+                  </UnstyledButton>
+                  <ActionIcon type="button" className="pc-composer-reference-remove" aria-label={`移除参考：${node.title || index + 1}`}
+                    onClick={() => changeGraph(current => ({ ...current, edges: current.edges.filter(edge => !(edge.source === node.id && edge.target === selectedNode.id)) }))} data-workspace-control=""><X size={12} /></ActionIcon>
                 </div>)}
               </div>}
               {composerModality === 'video' && ['reference', 'edit', 'extend'].includes(selectedMode) && <TextInput disabled={busy} aria-label="参考视频地址" placeholder="https://…（或连接已生成视频）" value={selectedNode.settings.reference_video_url || inputVideo?.remote_url || ''} onChange={event => updateNodeSettingsById(selectedNode.id, { reference_video_url: event.currentTarget.value })} className="pc-reference-video-input" />}
@@ -3463,12 +3476,12 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                   <Button variant="default" size="xs" onClick={() => openProfileInspector(selectedProfile)}>独立参考图 · {selectedProfile.reference_assets?.filter(reference => reference.status === 'confirmed' && reference.revision === selectedProfile.revision).length || 0}</Button>
                   {selectedBoardAsset && selectedBoardAsset.id !== selectedProfile.board_asset_id && <Button variant="default" size="xs" leftSection={<Check size={13} />} disabled={busy || selectedNodeGenerating} onClick={() => void confirmProfileBoard(selectedBoardAsset.id)}>确认使用</Button>}
                 </div>
-                {!!profileCandidates.length && <div className="pc-profile-candidates" aria-label="设定图候选">{profileCandidates.map((asset, index) => <button key={asset.id} type="button" className={selectedBoardAsset?.id === asset.id ? 'active' : ''} aria-label={`查看设定图候选 ${profileCandidates.length - index}`} onClick={() => updateNodeById(selectedNode.id, { asset_id: asset.id })}><img src={asset.url} alt={`候选 ${profileCandidates.length - index}`} />{asset.id === selectedProfile.board_asset_id && <Check size={12} />}</button>)}
-                  {selectedProfile.board_asset_id && !profileCandidates.some(asset => asset.id === selectedProfile.board_asset_id) && assetMap.get(selectedProfile.board_asset_id) && <button type="button" aria-label="查看已确认设定图" onClick={() => updateNodeById(selectedNode.id, { asset_id: selectedProfile.board_asset_id })}><img src={assetMap.get(selectedProfile.board_asset_id)!.url} alt="已确认设定图" /><Check size={12} /></button>}
+                {!!profileCandidates.length && <div className="pc-profile-candidates" aria-label="设定图候选">{profileCandidates.map((asset, index) => <Button key={asset.id} type="button" className={selectedBoardAsset?.id === asset.id ? 'active' : ''} aria-label={`查看设定图候选 ${profileCandidates.length - index}`} onClick={() => updateNodeById(selectedNode.id, { asset_id: asset.id })} data-workspace-control="" variant="subtle"><img src={asset.url} alt={`候选 ${profileCandidates.length - index}`} />{asset.id === selectedProfile.board_asset_id && <Check size={12} />}</Button>)}
+                  {selectedProfile.board_asset_id && !profileCandidates.some(asset => asset.id === selectedProfile.board_asset_id) && assetMap.get(selectedProfile.board_asset_id) && <Button type="button" aria-label="查看已确认设定图" onClick={() => updateNodeById(selectedNode.id, { asset_id: selectedProfile.board_asset_id })} data-workspace-control="" variant="subtle"><img src={assetMap.get(selectedProfile.board_asset_id)!.url} alt="已确认设定图" /><Check size={12} /></Button>}
                 </div>}
                 {selectedJob?.error && <p role="alert">{selectedJob.error}</p>}
                 {profileReferenceChanged && <p role="status">参考图已变化，可重新生成候选图</p>}
-                {selectedProfile?.board_style_status === 'needs_review' && <p role="status">项目画风已更新，原信息图需核对。<button type="button" onClick={() => setCandidateProfileId(selectedProfile.id)}>查看并重新确认</button></p>}
+                {selectedProfile?.board_style_status === 'needs_review' && <p role="status">项目画风已更新，原信息图需核对。<Button type="button" onClick={() => setCandidateProfileId(selectedProfile.id)} data-workspace-control="" variant="subtle">查看并重新确认</Button></p>}
               </div>}
               {!selectedProfile && <div className="pc-prompt-kind-label">{composerModality === 'video' ? '视频提示词' : '图片提示词'}</div>}
               <Textarea className="pc-prompt-composer-input" aria-label={selectedProfile ? '信息图提示词' : '创作提示词'} autosize={!composerExpanded} minRows={6} maxRows={10} maxLength={80000}
@@ -3483,6 +3496,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                   else if (selectedNode?.type === 'text') updateNodeById(selectedNode.id, { text: value })
                   else if (selectedNode) editNodePrompt(selectedNode.id, value, { base: ownBasePrompt, template: automaticPrompt })
                 }} />
+              </div>
+              </div>
               </div>
               <div className="pc-prompt-composer-foot">
                 <div className="pc-prompt-composer-settings">
@@ -3548,41 +3563,41 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                       </div> : <div className="pc-generation-info-loading" role="status"><LoaderCircle size={16} className="pc-spin" />正在整理生成信息</div>}
                     </Popover.Dropdown>
                   </Popover>}
-                  <button type="button" className="pc-composer-submit" aria-label={selectedNodeGenerating ? '生成中，请等待' : '开始生成'} disabled={busy || selectedNodeGenerating || (!selectedProfile && (!composerPrompt.trim() || !compiledPrompt.trim() && !selectedNode.settings.prompt_is_final)) || !composerModelId} onClick={submitComposer}>{selectedNodeGenerating ? <LoaderCircle size={19} className="pc-spin" /> : <ArrowRight size={19} />}</button>
+                  <Button type="button" className="pc-composer-submit" aria-label={selectedNodeGenerating ? '生成中，请等待' : '开始生成'} disabled={busy || selectedNodeGenerating || (!selectedProfile && (!composerPrompt.trim() || !compiledPrompt.trim() && !selectedNode.settings.prompt_is_final)) || !composerModelId} onClick={submitComposer} data-workspace-control="" variant="subtle">{selectedNodeGenerating ? <LoaderCircle size={19} className="pc-spin" /> : <ArrowRight size={19} />}</Button>
                 </div>
               </div>
             </div>
           </CanvasComposerToolbar>}
         </ReactFlow></CanvasEdgeMotionProvider> : <div className="pc-loading">{loadError ? <><CircleAlert size={20} />{loadError}<Button variant="default" size="xs" onClick={() => window.location.reload()} leftSection={<RefreshCcw size={14} />}>重新载入</Button></> : <><LoaderCircle size={20} className="pc-spin" />正在载入画布</>}</div>}
-        {contextMenu && <div className="pc-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }} onContextMenu={(event) => event.preventDefault()}>
+        {contextMenu && <Menu opened closeOnItemClick={false} onChange={opened => { if (!opened) setContextMenu(null) }} withinPortal={false} position="bottom-start" offset={0} zIndex={80}><Menu.Target><span className="pc-menu-anchor" style={{ left: contextMenu.x, top: contextMenu.y }} /></Menu.Target><Menu.Dropdown className="pc-context-menu" data-canvas-overlay onContextMenu={event => event.preventDefault()}>
           {contextNode && contextSelectionCount > 1 ? <>
             <div className="pc-context-heading"><span>批量操作</span><strong>已选 {contextSelectionCount} 个节点</strong></div>
-            <button className="is-danger" role="menuitem" onClick={() => void deleteSelection()}><Trash2 size={16} />删除所选 {contextSelectionCount} 个节点</button>
-            <button role="menuitem" onClick={cancelCanvasSelection}><X size={16} />取消选择</button>
+            <Menu.Item className="is-danger" role="menuitem" onClick={() => void deleteSelection()} data-workspace-control=""><Trash2 size={16} />删除所选 {contextSelectionCount} 个节点</Menu.Item>
+            <Menu.Item role="menuitem" onClick={cancelCanvasSelection} data-workspace-control=""><X size={16} />取消选择</Menu.Item>
           </> : contextNode ? <>
             <div className="pc-context-heading"><span>{contextNode.type === 'project_script_ref' ? '项目剧本' : contextNode.type === 'generation' ? '生成节点' : contextNode.type === 'text' ? '文本节点' : '素材节点'}</span><strong>{contextNode.title || '未命名节点'}</strong></div>
             {contextNode.type === 'project_script_ref'
-              ? <button role="menuitem" onClick={() => { setContextMenu(null); (detail.brief?.trim() || detail.script?.outline?.trim() || detail.script?.characters?.trim() || detail.script?.scenes?.length) ? onOpenScriptCreator() : openScriptDirector() }}><ScrollText size={16} />{detail.brief?.trim() || detail.script?.outline?.trim() || detail.script?.characters?.trim() || detail.script?.scenes?.length ? '编辑剧本' : '开始剧本创作'}</button>
-              : <button role="menuitem" onClick={() => { selectNodeForView(contextNode.id); setContextMenu(null) }}><Settings2 size={16} />编辑节点</button>}
-            {contextNode.type === 'generation' && <button role="menuitem" onClick={() => { setPendingRunNodeId(contextNode.id); setContextMenu(null) }}><Sparkles size={16} />提交生成</button>}
-            {contextNode.type !== 'project_script_ref' && <button role="menuitem" onClick={() => duplicateSelection(contextNode.id)}><Plus size={16} />复制节点</button>}
+              ? <Menu.Item role="menuitem" onClick={() => { setContextMenu(null); (detail.brief?.trim() || detail.script?.outline?.trim() || detail.script?.characters?.trim() || detail.script?.scenes?.length) ? onOpenScriptCreator() : openScriptDirector() }} data-workspace-control=""><ScrollText size={16} />{detail.brief?.trim() || detail.script?.outline?.trim() || detail.script?.characters?.trim() || detail.script?.scenes?.length ? '编辑剧本' : '开始剧本创作'}</Menu.Item>
+              : <Menu.Item role="menuitem" onClick={() => { selectNodeForView(contextNode.id); setContextMenu(null) }} data-workspace-control=""><Settings2 size={16} />编辑节点</Menu.Item>}
+            {contextNode.type === 'generation' && <Menu.Item role="menuitem" onClick={() => { setPendingRunNodeId(contextNode.id); setContextMenu(null) }} data-workspace-control=""><Sparkles size={16} />提交生成</Menu.Item>}
+            {contextNode.type !== 'project_script_ref' && <Menu.Item role="menuitem" onClick={() => duplicateSelection(contextNode.id)} data-workspace-control=""><Plus size={16} />复制节点</Menu.Item>}
             <div className="pc-context-divider" />
-            <button className="is-danger" role="menuitem" onClick={() => deleteSelection(contextNode.id, null)}><Trash2 size={16} />删除节点</button>
+            <Menu.Item className="is-danger" role="menuitem" onClick={() => deleteSelection(contextNode.id, null)} data-workspace-control=""><Trash2 size={16} />删除节点</Menu.Item>
           </> : contextEdge ? <>
             <div className="pc-context-heading"><span>节点连接</span><strong>参考或结果关系</strong></div>
-            <button className="is-danger" role="menuitem" onClick={() => deleteSelection(null, contextEdge.id)}><Trash2 size={16} />删除连接</button>
+            <Menu.Item className="is-danger" role="menuitem" onClick={() => deleteSelection(null, contextEdge.id)} data-workspace-control=""><Trash2 size={16} />删除连接</Menu.Item>
           </> : <>
             <div className="pc-context-heading"><span>画布操作</span><strong>在当前位置创建</strong></div>
-            <button role="menuitem" onClick={() => { addNode('text', undefined, contextMenu.position); setContextMenu(null) }}><FileText size={16} />添加文本</button>
-            <button role="menuitem" onClick={() => { addNode('generation', 'image', contextMenu.position); setContextMenu(null) }}><ImageIcon size={16} />图片生成</button>
-            <button role="menuitem" onClick={() => { addNode('generation', 'video', contextMenu.position); setContextMenu(null) }}><Film size={16} />视频生成</button>
-            {detail.shots.length > 0 && <button role="menuitem" onClick={() => { importShots(); setContextMenu(null) }}><ScrollText size={16} />导入分镜</button>}
+            <Menu.Item role="menuitem" onClick={() => { addNode('text', undefined, contextMenu.position); setContextMenu(null) }} data-workspace-control=""><FileText size={16} />添加文本</Menu.Item>
+            <Menu.Item role="menuitem" onClick={() => { addNode('generation', 'image', contextMenu.position); setContextMenu(null) }} data-workspace-control=""><ImageIcon size={16} />图片生成</Menu.Item>
+            <Menu.Item role="menuitem" onClick={() => { addNode('generation', 'video', contextMenu.position); setContextMenu(null) }} data-workspace-control=""><Film size={16} />视频生成</Menu.Item>
+            {detail.shots.length > 0 && <Menu.Item role="menuitem" onClick={() => { importShots(); setContextMenu(null) }} data-workspace-control=""><ScrollText size={16} />导入分镜</Menu.Item>}
             <div className="pc-context-divider" />
-            <button role="menuitem" onClick={() => { void fitView({ padding: 0.15, duration: 300 }); setContextMenu(null) }}><MousePointer2 size={16} />适配全部节点</button>
-            <button role="menuitem" disabled={!graph?.nodes.length} onClick={selectAllCanvasNodes}><Check size={16} />全选节点</button>
-            <button className="is-danger" role="menuitem" disabled={!graph?.nodes.length && !graph?.edges.length} onClick={() => void clearCanvas()}><Trash2 size={16} />清空画布</button>
+            <Menu.Item role="menuitem" onClick={() => { void fitView({ padding: 0.15, duration: 300 }); setContextMenu(null) }} data-workspace-control=""><MousePointer2 size={16} />适配全部节点</Menu.Item>
+            <Menu.Item role="menuitem" disabled={!graph?.nodes.length} onClick={selectAllCanvasNodes} data-workspace-control=""><Check size={16} />全选节点</Menu.Item>
+            <Menu.Item className="is-danger" role="menuitem" disabled={!graph?.nodes.length && !graph?.edges.length} onClick={() => void clearCanvas()} data-workspace-control=""><Trash2 size={16} />清空画布</Menu.Item>
           </>}
-        </div>}
+        </Menu.Dropdown></Menu>}
         {selectedCanvasNodeIds.length > 1 && <div className="pc-selection-toolbar" role="toolbar" aria-label="多选节点操作" data-canvas-overlay
           onPointerDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}>
           <span role="status">已选 <strong>{selectedCanvasNodeIds.length}</strong> 个节点</span>
@@ -3630,32 +3645,41 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         <Tooltip label="浏览素材"><ActionIcon variant="subtle" aria-label="浏览画布素材" onClick={() => showSidebarAssets()}><Layers3 size={19} /></ActionIcon></Tooltip>
         {viewMode === 'canvas' && <Tooltip label="适配画布"><ActionIcon variant="subtle" aria-label="适配全部节点" onClick={() => void fitView({ padding: 0.15, duration: 300 })}><MousePointer2 size={18} /></ActionIcon></Tooltip>}
       </div>
-      {addMenu && <div
-        className={`pc-add-menu ${addMenu.screen ? 'pc-add-menu-canvas' : 'pc-add-menu-dock'}`}
-        role="menu"
-        style={addMenu.screen ? { left: addMenu.screen.x, top: addMenu.screen.y } : undefined}
-      >
-        <button role="menuitem" onClick={() => addNode('text', undefined, addMenu.position)}><FileText size={17} />文本</button>
-        <button role="menuitem" onClick={() => addNode('generation', 'image', addMenu.position)}><ImageIcon size={17} />图片生成</button>
-        <button role="menuitem" onClick={() => addNode('generation', 'video', addMenu.position)}><Film size={17} />视频生成</button>
-        <button role="menuitem" onClick={() => showSidebarAssets('audio')}><Music2 size={17} />音频素材</button>
-        <button role="menuitem" onClick={() => { setAddMenu(null); openCanvasUpload() }}><Upload size={17} />上传素材</button>
-        <button role="menuitem" onClick={() => showSidebarAssets()}><Layers3 size={17} />素材库</button>
-        <button role="menuitem" onClick={() => { onNavigate('jobs'); setAddMenu(null) }}><Clock3 size={17} />生成历史</button>
-        {detail.shots.length > 0 && <button role="menuitem" onClick={() => { importShots(); setAddMenu(null) }}><ScrollText size={17} />导入分镜</button>}
-        <button role="menuitem" onClick={() => { organizeShotGroups(); setAddMenu(null) }}><WandSparkles size={17} />按镜头整理生成器组</button>
-        {(selectedNodeId || selectedEdgeId) && <button role="menuitem" onClick={() => { deleteSelection(); setAddMenu(null) }}><Trash2 size={17} />移除所选</button>}
-      </div>}
+      {addMenu && <Menu opened onChange={opened => { if (!opened) setAddMenu(null) }} withinPortal={false} position={addMenu.screen ? "bottom-start" : "top"} offset={8} zIndex={80}><Menu.Target><span className={`pc-menu-anchor ${addMenu.screen ? "" : "pc-add-anchor-dock"}`} style={addMenu.screen ? { left: addMenu.screen.x, top: addMenu.screen.y } : undefined} /></Menu.Target><Menu.Dropdown className={`pc-add-menu ${addMenu.screen ? 'pc-add-menu-canvas' : 'pc-add-menu-dock'}`} data-canvas-overlay>
+        <Menu.Item role="menuitem" onClick={() => addNode('text', undefined, addMenu.position)} data-workspace-control=""><FileText size={17} />文本</Menu.Item>
+        <Menu.Item role="menuitem" onClick={() => addNode('generation', 'image', addMenu.position)} data-workspace-control=""><ImageIcon size={17} />图片生成</Menu.Item>
+        <Menu.Item role="menuitem" onClick={() => addNode('generation', 'video', addMenu.position)} data-workspace-control=""><Film size={17} />视频生成</Menu.Item>
+        <Menu.Item role="menuitem" onClick={() => showSidebarAssets('audio')} data-workspace-control=""><Music2 size={17} />音频素材</Menu.Item>
+        <Menu.Item role="menuitem" onClick={() => { setAddMenu(null); openCanvasUpload() }} data-workspace-control=""><Upload size={17} />上传素材</Menu.Item>
+        <Menu.Item role="menuitem" onClick={() => showSidebarAssets()} data-workspace-control=""><Layers3 size={17} />素材库</Menu.Item>
+        <Menu.Item role="menuitem" onClick={() => { onNavigate('jobs'); setAddMenu(null) }} data-workspace-control=""><Clock3 size={17} />生成历史</Menu.Item>
+        {detail.shots.length > 0 && <Menu.Item role="menuitem" onClick={() => { importShots(); setAddMenu(null) }} data-workspace-control=""><ScrollText size={17} />导入分镜</Menu.Item>}
+        <Menu.Item role="menuitem" onClick={() => { organizeShotGroups(); setAddMenu(null) }} data-workspace-control=""><WandSparkles size={17} />按镜头整理生成器组</Menu.Item>
+        {(selectedNodeId || selectedEdgeId) && <Menu.Item role="menuitem" onClick={() => { deleteSelection(); setAddMenu(null) }} data-workspace-control=""><Trash2 size={17} />移除所选</Menu.Item>}
+      </Menu.Dropdown></Menu>}
 
     </div>
-    {notice && <div className="pc-notice" role="status"><span>{notice.message}</span><button aria-label="关闭提示" onClick={() => setNotice(null)}><X size={14} /></button></div>}
-    <input type="file" hidden ref={profileUploadInputRef} accept="image/png,image/jpeg,image/webp" onChange={event => { const file = event.currentTarget.files?.[0]; if (file) void uploadProfileBoard(file); event.currentTarget.value = '' }} />
+    {notice && <div className="pc-notice" role="status"><span>{notice.message}</span><ActionIcon aria-label="关闭提示" onClick={() => setNotice(null)} data-workspace-control=""><X size={14} /></ActionIcon></div>}
+    <FileButton ref={profileUploadInputRef} accept="image/png,image/jpeg,image/webp"  onChange={file => { if (file) void uploadProfileBoard(file); if (profileUploadInputRef.current) profileUploadInputRef.current.value = '' }}>{() => null}</FileButton>
     {candidateProfile && <VisualCandidateManager key={candidateProfile.id} profile={candidateProfile} detail={detail} models={models} displayedAssetId={candidateNode?.asset_id} generating={candidateGenerating} onConfirm={assetId => useProfileBoard(candidateProfile, assetId)} onRefresh={onRefresh} onClose={() => setCandidateProfileId(null)} />}
     {viewMode === 'canvas' && (inspectedProfile || visualTool === 'create') && <VisualProfileInspector key={inspectedProfile?.id || 'new'} profile={inspectedProfile} detail={detail} models={models} generating={inspectedProfileGenerating}
       inCanvas={!!inspectedProfile && !!graph?.nodes.some(node => node.settings.visual_profile_id === inspectedProfile.id)} onRefresh={onRefresh} onClose={() => void closeVisualPanel()}
       onBindings={() => void openVisualTool('bindings', { profileId: inspectedProfile?.id })} onDirtyChange={setProfileDraftDirty} onBusyChange={setVisualPanelBusy}
       onSaved={profile => { setVisualTool(null); setProfileInspectorId(profile.id); setNotice('设定已保存') }} onDeleted={removeProfileNodes}
       onOpenCanvas={profile => { setVisualTool(null); addProfileToCanvas(profile, null) }} />}
+    <Drawer opened={!!selectedShot && composerBindingsOpen} onClose={closeComposerBindings} position="right"
+      size="min(760px, 100vw)" padding={0} withCloseButton={false} zIndex={230}
+      closeOnEscape={!visualPanelBusy && !referencePreview} closeOnClickOutside={!visualPanelBusy && !referencePreview}
+      transitionProps={{ duration: 0 }} overlayProps={{ backgroundOpacity: 0.3 }}
+      portalProps={{ target: viewportRef.current?.closest<HTMLElement>('.project-canvas') || undefined }}
+      attributes={{ content: { 'aria-label': '镜头引用' } }}
+      classNames={{ root: 'pc-shot-references-root', content: 'pc-shot-references-content', body: 'pc-shot-references-body' }}
+      onPointerDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
+      {selectedShot && composerBindingsOpen && <VisualBindingEditor key={selectedShot.id} id="pc-composer-bindings" presentation="drawer"
+        detail={detail} context={{ target: `shot:${selectedShot.id}` }} onRefresh={onRefresh} onClose={closeComposerBindings}
+        onBusyChange={setVisualPanelBusy} onPreview={setReferencePreview}
+        onLocate={profile => { setComposerBindingsOpen(false); addProfileToCanvas(profile, null) }} />}
+    </Drawer>
     {viewMode === 'canvas' && visualTool === 'bindings' && <VisualBindingEditor key={JSON.stringify(visualBindingContext)} detail={detail} context={visualBindingContext} onRefresh={onRefresh}
       onClose={() => void closeVisualPanel()} onBusyChange={setVisualPanelBusy} onLocate={profile => { setVisualTool(null); addProfileToCanvas(profile, null) }} />}
     {viewMode === 'canvas' && visualTool === 'organize' && <VisualProfileOrganizer detail={detail} models={models} onRefresh={onRefresh} onClose={() => void closeVisualPanel()} onBusyChange={setVisualPanelBusy} onDirtyChange={setProfileDraftDirty} />}

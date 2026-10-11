@@ -1,6 +1,7 @@
+import { WorkspaceDisclosure } from './WorkspaceDisclosure'
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
-import { ActionIcon, Button, Modal, Textarea, TextInput, Tooltip } from '@mantine/core'
+import { Select, UnstyledButton, NumberInput, ActionIcon, Button, Modal, Textarea, TextInput, Tooltip } from '@mantine/core'
 import { Archive, ArchiveRestore, Check, Crop, ImagePlus, Plus, Sparkles, Star } from 'lucide-react'
 import { visualReferenceAssetsApi } from './api'
 import type { Model, ProjectDetail, VisualProfile, VisualReferenceAsset, VisualReferenceCrop, VisualReferencePreview, VisualReferencePreviewInput, VisualReferencePurpose, VisualReferenceView } from './api'
@@ -164,11 +165,11 @@ export default function VisualReferenceAssets({ profile, detail, models, disable
   function assetPicker(multiple = false) {
     return <div className="pc-reference-source-grid" aria-label={multiple ? '选择生成依据' : '选择参考图片'}>{assets.map(asset => {
       const selected = multiple ? referenceIds.includes(asset.id) : sourceId === asset.id
-      return <button type="button" key={asset.id} aria-label={`选择图片：${asset.filename}`} aria-pressed={selected} disabled={busy || multiple && !selected && referenceIds.length >= 10}
+      return <UnstyledButton type="button" key={asset.id} aria-label={`选择图片：${asset.filename}`} aria-pressed={selected} disabled={busy || multiple && !selected && referenceIds.length >= 10}
         onClick={() => {
           if (!multiple) { setSourceId(asset.id); setCrop({ x: .1, y: .1, width: .8, height: .8 }) }
           else setReferenceIds(current => current.includes(asset.id) ? current.filter(id => id !== asset.id) : current.length < 10 ? [...current, asset.id] : current)
-        }}><img src={asset.url} alt={asset.filename} loading="lazy" /><span>{asset.id === profile.board_asset_id ? '已确认信息图' : asset.filename}</span>{selected && <Check size={13} />}</button>
+        }}><img src={asset.url} alt={asset.filename} loading="lazy" /><span>{asset.id === profile.board_asset_id ? '已确认信息图' : asset.filename}</span>{selected && <Check size={13} />}</UnstyledButton>
     })}{!assets.length && <p>暂无项目图片。先生成或上传一张设定图，再添加独立参考。</p>}</div>
   }
   function referenceRow(reference: VisualReferenceAsset) {
@@ -195,8 +196,8 @@ export default function VisualReferenceAssets({ profile, detail, models, disable
     <p className="pc-reference-assets-help">按镜头需要添加面部、全身或场景机位，确认后在镜头引用中选择。</p>
     {disabledReason && <p className="pc-reference-assets-help">{disabledReason}</p>}
     {!!activeJobs.length && <p className="pc-reference-assets-help" role="status">正在生成 {activeJobs.length} 张参考候选…</p>}
-    {!!failedJobs.length && <details className="pc-reference-job-failures">
-      <summary>独立参考图生成失败 · {failedJobs.length} 张 · 查看原因</summary>
+    {!!failedJobs.length && <WorkspaceDisclosure className="pc-reference-job-failures" label={<>独立参考图生成失败 · {failedJobs.length} 张 · 查看原因</>}>
+
       <ul aria-label="独立参考图生成失败原因">{failedJobs.map(({ job, request }) => {
         const failedView = request.visual_reference_view as VisualReferenceView
         const name = typeof request.visual_reference_label === 'string' && request.visual_reference_label ||
@@ -204,8 +205,8 @@ export default function VisualReferenceAssets({ profile, detail, models, disable
         return <li key={job.id}><strong>{name}</strong><span>{models.find(item => item.id === job.model_id)?.name || '图片生成'}{job.created_at ? ` · ${new Date(job.created_at).toLocaleString('zh-CN')}` : ''}</span>
           <p>{job.error?.trim() || '生成失败，服务未返回具体原因。可调整参数后重新提交。'}</p></li>
       })}</ul>
-    </details>}
-    {!!archived.length && <button type="button" className="pc-reference-archive-toggle" aria-pressed={showArchived} disabled={busy} onClick={() => setShowArchived(value => !value)}>{showArchived ? '返回候选与已确认' : `已归档 · ${archived.length}`}</button>}
+    </WorkspaceDisclosure>}
+    {!!archived.length && <UnstyledButton type="button" className="pc-reference-archive-toggle" aria-pressed={showArchived} disabled={busy} onClick={() => setShowArchived(value => !value)}>{showArchived ? '返回候选与已确认' : `已归档 · ${archived.length}`}</UnstyledButton>}
     {!!visible.length && <ul className="pc-reference-asset-list">{visible.map(referenceRow)}</ul>}
     {visible.some(reference => referenceAssetNeedsReview(reference, profile, styleVersion)) && <p className="pc-reference-assets-help">旧设定或旧画风的参考图需依据当前设定重新制作，确认后才可用于当前版本。</p>}
     {!visible.length && <p className="pc-reference-assets-empty">{showArchived ? '暂无归档参考图' : '尚未添加独立参考图'}</p>}
@@ -217,9 +218,9 @@ export default function VisualReferenceAssets({ profile, detail, models, disable
       <div className="pc-reference-add">
         <div className="pc-reference-methods" role="group" aria-label="添加参考图方式">{([
           ['existing', '选择现有图', ImagePlus], ['crop', '裁切单张参考', Crop], ['generate', '按角度生成', Sparkles],
-        ] as const).map(([value, caption, Icon]) => <button type="button" key={value} aria-pressed={mode === value} disabled={busy} onClick={() => { setMode(value); setError('') }}><Icon size={14} />{caption}</button>)}</div>
-        <div className="pc-reference-fields"><label>视角<select aria-label="独立参考视角" value={view} disabled={busy} onChange={event => { const next = event.currentTarget.value as VisualReferenceView; setView(next); setPurpose(purposeFor(next, profile.kind)); setRatio('') }}>{viewsFor(profile.kind).map(item => <option key={item} value={item}>{viewLabel(item, profile.kind)}</option>)}</select></label>
-          <label>用途<select aria-label="独立参考用途" value={purpose} disabled={busy} onChange={event => setPurpose(event.currentTarget.value as VisualReferencePurpose)}>{Object.entries(visualReferencePurposeLabels).map(([value, caption]) => <option key={value} value={value}>{caption}</option>)}</select></label>
+        ] as const).map(([value, caption, Icon]) => <UnstyledButton type="button" key={value} aria-pressed={mode === value} disabled={busy} onClick={() => { setMode(value); setError('') }}><Icon size={14} />{caption}</UnstyledButton>)}</div>
+        <div className="pc-reference-fields"><label>视角<Select aria-label="独立参考视角" value={view} disabled={busy} onChange={value => { const next = (value || '') as VisualReferenceView; setView(next); setPurpose(purposeFor(next, profile.kind)); setRatio('') }} data={viewsFor(profile.kind).map(item => ({ value: item, label: viewLabel(item, profile.kind) }))} allowDeselect={false} searchable={false} /></label>
+          <label>用途<Select aria-label="独立参考用途" value={purpose} disabled={busy} onChange={value => setPurpose((value || '') as VisualReferencePurpose)} data={Object.entries(visualReferencePurposeLabels).map(([value, label]) => ({ value, label }))} allowDeselect={false} searchable={false} /></label>
           <TextInput label="名称（可选）" aria-label="独立参考名称" placeholder={`${profile.name} · ${viewLabel(view, profile.kind)}`} value={label} maxLength={120} disabled={busy} onChange={event => setLabel(event.currentTarget.value)} /></div>
         {mode === 'existing' && <><p className="pc-reference-assets-help">选择本项目的一张独立图片。图片会登记为候选，原文件保留。</p>{assetPicker()}
           {source?.id === profile.board_asset_id && <p className="pc-reference-assets-help">当前选中信息图母版，建议切换到「裁切单张参考」提取单个视角。</p>}
@@ -237,14 +238,14 @@ export default function VisualReferenceAssets({ profile, detail, models, disable
             <div className="pc-reference-crop-rectangle" style={{ left: `${crop.x * 100}%`, top: `${crop.y * 100}%`, width: `${crop.width * 100}%`, height: `${crop.height * 100}%` }} />
           </div></div><div><strong>裁切预览</strong><div className="pc-reference-crop-preview" style={{ aspectRatio: cropRatio, maxWidth: 320 * cropRatio }} aria-label="独立参考裁切预览">
             <img src={source.url} alt="选定区域预览" draggable={false} style={{ width: `${100 / crop.width}%`, height: `${100 / crop.height}%`, left: `${-100 * crop.x / crop.width}%`, top: `${-100 * crop.y / crop.height}%` }} /></div>
-            <div className="pc-reference-crop-values">{(['x', 'y', 'width', 'height'] as const).map((key, index) => <label key={key}>{['左', '上', '宽', '高'][index]} %<input type="number" min={0} max={100} step={.1} aria-label={`裁切${['左侧位置', '顶部位置', '宽度', '高度'][index]}百分比`} value={Number((crop[key] * 100).toFixed(1))} disabled={busy} onChange={event => { const value = Number(event.currentTarget.value) / 100; setCrop(current => normalizedReferenceCrop({ ...current, [key]: value })) }} /></label>)}</div>
-            <button type="button" className="pc-reference-text-action" disabled={busy} onClick={() => setCrop({ x: 0, y: 0, width: 1, height: 1 })}>重置为整张图</button>
+            <div className="pc-reference-crop-values">{(['x', 'y', 'width', 'height'] as const).map((key, index) => <label key={key}>{['左', '上', '宽', '高'][index]} %<NumberInput  min={0} max={100} step={.1} aria-label={`裁切${['左侧位置', '顶部位置', '宽度', '高度'][index]}百分比`} value={Number((crop[key] * 100).toFixed(1))} disabled={busy} onChange={next => { const value = Number(next) / 100; setCrop(current => normalizedReferenceCrop({ ...current, [key]: value })) }} clampBehavior="none" /></label>)}</div>
+            <Button type="button" className="pc-reference-text-action" disabled={busy} onClick={() => setCrop({ x: 0, y: 0, width: 1, height: 1 })} data-workspace-control="" variant="subtle">重置为整张图</Button>
           </div></div>}{imageFailed && <p className="pc-visual-error" role="alert">原图加载失败，请重新选择图片。</p>}</>}
         {mode === 'generate' && <><p className="pc-reference-assets-help">以确认的信息图或所选图片为依据，只生成单个对象的单一视角。先预览并编辑提示词，再提交生成。</p>
-          <div className="pc-reference-generation-settings"><label>图片模型<select aria-label="独立参考生成模型" value={model?.id || ''} disabled={busy || !imageModels.length} onChange={event => { setModelId(event.currentTarget.value); setRatio(''); setResolution('') }}>{!imageModels.length && <option value="">暂无启用的图片模型</option>}{imageModels.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-            <label>画幅<select aria-label="独立参考生成画幅" value={selectedRatio} disabled={busy || !ratioOptions.length} onChange={event => setRatio(event.currentTarget.value)}>{!ratioOptions.length && <option value="">模型未配置可用画幅</option>}{ratioOptions.map(value => <option key={value} value={value}>{value}</option>)}</select></label>
-            {!!resolutions.length && <label>分辨率<select aria-label="独立参考生成分辨率" value={selectedResolution} disabled={busy} onChange={event => setResolution(event.currentTarget.value)}>{resolutions.map(value => <option key={value} value={value}>{value}</option>)}</select></label>}
-            <label>候选数量<select aria-label="独立参考候选数量" value={candidateCount} disabled={busy} onChange={event => setCandidateCount(Number(event.currentTarget.value) as 1 | 2 | 4)}>{[1, 2, 4].map(value => <option key={value} value={value}>{value} 张</option>)}</select></label>
+          <div className="pc-reference-generation-settings"><label>图片模型<Select aria-label="独立参考生成模型" value={model?.id || ''} disabled={busy || !imageModels.length} onChange={value => { setModelId((value || '')); setRatio(''); setResolution('') }} data={imageModels.map(item => ({ value: item.id, label: item.name }))} allowDeselect={false} searchable={true} /></label>
+            <label>画幅<Select aria-label="独立参考生成画幅" value={selectedRatio} disabled={busy || !ratioOptions.length} onChange={value => setRatio((value || ''))} data={ratioOptions} allowDeselect={false} searchable={false} /></label>
+            {!!resolutions.length && <label>分辨率<Select aria-label="独立参考生成分辨率" value={selectedResolution} disabled={busy} onChange={value => setResolution((value || ''))} data={resolutions} allowDeselect={false} searchable={false} /></label>}
+            <label>候选数量<Select aria-label="独立参考候选数量" value={String(candidateCount)} disabled={busy} onChange={value => setCandidateCount(Number((value || '')) as 1 | 2 | 4)} data={[1, 2, 4].map(value => ({ value: String(value), label: value + ' 张' }))} allowDeselect={false} searchable={false} /></label>
           </div>
           <div className="pc-reference-generation-source-label"><strong>参考依据 · {referenceIds.length} 张</strong><span>点击图片选择或取消 · 最多 10 张</span></div>{assetPicker(true)}
           {!referenceIds.length && <p className="pc-reference-assets-help">未选择图片，将按固定文字设定生成。加入母版或现有参考图有助于保持一致。</p>}

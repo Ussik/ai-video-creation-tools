@@ -1,0 +1,11 @@
+# Progress
+- Implemented official TTS 2.0 stream adapter with correct standard-voice header, JSON-string additions/context_texts, terminal completion, usage and subtitle timestamps.
+- Added encrypted global config, project role voices, editable dialogue/narration, conservative/idempotent scene import, immutable generation snapshots, duplicate busy guard, selectable candidates and saved audio assets.
+- Integrated serial Job worker, MP3 decode validation/actual duration, meaningful speech task information and failure handling; interrupted running speech fails on restart without automatic resynthesis.
+- Added project speech entry in canvas creation menu and non-canvas project header; style matched existing muted dark controls.
+- Fixed PATCH default data loss, unresolved-role generation, stage directions mistakenly treated as role/spoken words and oversized narration imports.
+- Full backend suite: 358 passing. Full frontend suite: 351 passing. Both production builds and git diff --check passed; existing Vite bundle-size advisory remains.
+- Securely transferred user-created video-studio-speech key from cloud UI into intended local password field; backend stores ciphertext. Key never printed or stored in source/planning. Cloud UI reloaded to masked state.
+- One real standard-Vivi synthesis verified in browser: 你好，配音功能已经准备好了。 Audio loads/decodes, ~2.7 seconds, selection saved to audio asset library. No retry, no custom slot purchase.
+- Test sample copied to /tmp/video-studio-tts-sample.mp3 for delivery. Temporary TTS test project cleaned up; original project ready at speech entry.
+- Documentation: docs/tts-standard-voice-workflow.md with boundaries (independent audio assets, no dialogue timeline/lip sync yet). Preserved previous uncommitted multi-angle work. No commit/push requested or performed.

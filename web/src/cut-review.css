@@ -1,13 +1,13 @@
 .cut-review-modal .mantine-Modal-content {
   max-height: min(88vh, 900px);
-  border: 1px solid #3f3f3f;
-  background: #1c1c1c;
-  color: #f0f0f0;
+  border: 1px solid var(--fc-border);
+  background: var(--fc-panel);
+  color: var(--fc-text);
 }
 
 .cut-review-modal .mantine-Modal-header {
-  border-bottom: 1px solid #333;
-  background: #1c1c1c;
+  border-bottom: 1px solid var(--fc-border);
+  background: var(--fc-panel);
 }
 
 .cut-review-modal .mantine-Modal-title {
@@ -26,7 +26,7 @@
 }
 
 .cut-review-overview p {
-  color: #aaa;
+  color: var(--fc-text-secondary);
   font-size: 12px;
   line-height: 1.55;
 }
@@ -67,7 +67,7 @@
 .cut-review-stale svg,
 .cut-review-success svg { flex: none; margin-top: 1px; }
 .cut-review-success { background: #18372d; color: #83ddb4; }
-.cut-review-empty { padding: 40px 15px; text-align: center; color: #aaa; font-size: 12px; }
+.cut-review-empty { padding: 40px 15px; text-align: center; color: var(--fc-text-secondary); font-size: 12px; }
 
 .cut-review-layout {
   display: grid;
@@ -92,19 +92,19 @@
   width: 100%;
   min-width: 0;
   padding: 10px;
-  border: 1px solid #383838;
+  border: 1px solid var(--fc-border);
   border-radius: 5px;
-  background: #242424;
-  color: #e8e8e8;
+  background: var(--fc-surface-muted);
+  color: var(--fc-text);
   text-align: left;
 }
 
-.cut-review-item:hover { border-color: #6e8286; background: #2a3031; }
-.cut-review-item.is-selected { border-color: #4eabb9; background: #213338; }
-.cut-review-item-index { color: #9bc9d0; font-size: 10px; font-weight: 700; }
+.cut-review-item:hover { border-color: var(--fc-border-strong); background: var(--fc-surface-hover); }
+.cut-review-item.is-selected { border-color: var(--fc-border-strong); background: var(--fc-surface-hover); }
+.cut-review-item-index { color: var(--fc-text-secondary); font-size: 10px; font-weight: 700; }
 .cut-review-item-titles { display: flex; align-items: center; gap: 4px; min-width: 0; width: 100%; }
 .cut-review-item-titles strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 630; }
-.cut-review-item-titles svg { flex: none; color: #8ea3a6; }
+.cut-review-item-titles svg { flex: none; color: var(--fc-text-muted); }
 .cut-review-detail { display: grid; gap: 12px; min-width: 0; }
 
 .cut-review-detail-head {
@@ -115,25 +115,25 @@
 }
 
 .cut-review-detail-head > div { min-width: 0; }
-.cut-review-detail-head span { display: block; margin-bottom: 4px; color: #93a9ad; font-size: 10px; font-weight: 700; }
-.cut-review-detail-head h3 { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: #eee; font-size: 14px; line-height: 1.4; }
-.cut-review-detail-head h3 svg { flex: none; color: #8cc3cb; }
+.cut-review-detail-head span { display: block; margin-bottom: 4px; color: var(--fc-text-muted); font-size: 10px; font-weight: 700; }
+.cut-review-detail-head h3 { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--fc-text); font-size: 14px; line-height: 1.4; }
+.cut-review-detail-head h3 svg { flex: none; color: var(--fc-text-secondary); }
 .cut-review-frames { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
 .cut-review-frame { display: grid; gap: 7px; min-width: 0; }
 .cut-review-frame-heading { display: flex; justify-content: space-between; gap: 7px; min-width: 0; }
-.cut-review-frame-heading span { color: #96b9be; font-size: 11px; font-weight: 700; }
-.cut-review-frame-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #c9c9c9; font-size: 11px; font-weight: 580; }
-.cut-review-frame-image { display: grid; place-items: center; overflow: hidden; aspect-ratio: 16 / 9; border: 1px solid #3c3c3c; border-radius: 4px; background: #111; }
+.cut-review-frame-heading span { color: var(--fc-text-secondary); font-size: 11px; font-weight: 700; }
+.cut-review-frame-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fc-text-secondary); font-size: 11px; font-weight: 580; }
+.cut-review-frame-image { display: grid; place-items: center; overflow: hidden; aspect-ratio: 16 / 9; border: 1px solid var(--fc-border); border-radius: 4px; background: var(--fc-surface); }
 .cut-review-frame-image img { width: 100%; height: 100%; object-fit: contain; }
-.cut-review-frame-empty { padding: 12px; color: #888; font-size: 11px; text-align: center; }
-.cut-review-frame-time { color: #8c8c8c; font-size: 10px; font-variant-numeric: tabular-nums; }
+.cut-review-frame-empty { padding: 12px; color: var(--fc-text-muted); font-size: 11px; text-align: center; }
+.cut-review-frame-time { color: var(--fc-text-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 .cut-review-script-context { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.cut-review-script-context > div { min-width: 0; padding: 8px 9px; border: 1px solid #383838; border-radius: 4px; background: #252525; }
-.cut-review-script-context span { display: block; margin-bottom: 4px; color: #9db5b8; font-size: 10px; font-weight: 700; }
-.cut-review-script-context p { color: #bbb; font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; }
+.cut-review-script-context > div { min-width: 0; padding: 8px 9px; border: 1px solid var(--fc-border); border-radius: 4px; background: var(--fc-surface-muted); }
+.cut-review-script-context span { display: block; margin-bottom: 4px; color: var(--fc-text-secondary); font-size: 10px; font-weight: 700; }
+.cut-review-script-context p { color: var(--fc-text-secondary); font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; }
 .cut-review-script-context .cut-review-cut-note { grid-column: 1 / -1; }
-.cut-review-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 7px; padding-top: 8px; border-top: 1px solid #373737; }
-.cut-review-actions > span { flex: 1 1 190px; color: #888; font-size: 10px; line-height: 1.45; }
+.cut-review-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 7px; padding-top: 8px; border-top: 1px solid var(--fc-border); }
+.cut-review-actions > span { flex: 1 1 190px; color: var(--fc-text-muted); font-size: 10px; line-height: 1.45; }
 
 @media (max-width: 740px) {
   .cut-review-layout { grid-template-columns: 1fr; }

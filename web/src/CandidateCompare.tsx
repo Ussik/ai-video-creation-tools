@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Badge, Button, Modal, Select } from '@mantine/core'
+import { Slider, Badge, Button, Modal, Select } from '@mantine/core'
 import { Columns2, Pause, Play, RefreshCcw, RotateCcw, TriangleAlert } from 'lucide-react'
 import { api } from './api'
 import type { Asset, AssetReview, Shot } from './api'
@@ -246,7 +246,7 @@ export default function CandidateCompare({ shot, assets, reviews, selectedAssetI
     return <section className="candidate-compare-side" aria-label={side === 'left' ? '左侧候选' : '右侧候选'}>
       <div className="candidate-compare-side-top">
         <span className="candidate-compare-side-index">{side === 'left' ? '候选 A' : '候选 B'}</span>
-        {asset?.id === selectedAssetId && <Badge size="xs" variant="light" color="cyan">当前入片</Badge>}
+        {asset?.id === selectedAssetId && <Badge size="xs" variant="light" color="studio">当前入片</Badge>}
       </div>
       <Select
         aria-label={side === 'left' ? '选择左侧候选' : '选择右侧候选'}
@@ -312,14 +312,14 @@ export default function CandidateCompare({ shot, assets, reviews, selectedAssetI
           {renderSide('right', right, leftId)}
         </div>
         <div className="candidate-compare-transport">
-          <Button variant="light" color="cyan" size="xs" onClick={() => void togglePlayback()}
+          <Button variant="light" color="studio" size="xs" onClick={() => void togglePlayback()}
             disabled={!allVideoDurationsReady || !!hasMediaError}
             leftSection={playing ? <Pause size={15} /> : <Play size={15} />}>
             {playing ? '暂停' : '同步播放'}
           </Button>
-          <input type="range" min="0" max="1000" step="1" value={Math.round(progress * 1000)}
-            aria-label="共同进度" disabled={!allVideoDurationsReady || !!hasMediaError}
-            onChange={(event) => scrub(Number(event.currentTarget.value) / 1000)} />
+          <Slider  min={0} max={1000} step={1} value={Math.round(progress * 1000)}
+            aria-label="共同进度" thumbLabel="共同进度" disabled={!allVideoDurationsReady || !!hasMediaError}
+            onChange={value => scrub(Number(value) / 1000)} />
           <span className="candidate-compare-progress">{Math.round(progress * 100)}%</span>
           <Button variant="subtle" size="xs" onClick={() => scrub(0)} disabled={!allVideoDurationsReady}
             leftSection={<RotateCcw size={14} />}>归零</Button>

@@ -67,7 +67,7 @@
 .pc-reference-crop-workspace strong, .pc-reference-generation-source-label strong { color: var(--reference-secondary); font-size: 11px; }
 .pc-reference-crop-original { position: relative; width: 100%; border: 1px solid var(--reference-border); border-radius: 5px; background: var(--reference-ink); overflow: hidden; cursor: crosshair; touch-action: none; user-select: none; }
 .pc-reference-crop-original > img { display: block; width: 100%; height: 100%; pointer-events: none; }
-.pc-reference-crop-rectangle { position: absolute; border: 2px solid var(--reference-text); background: #ffffff0a; box-shadow: 0 0 0 1000px #0007; pointer-events: none; }
+.pc-reference-crop-rectangle { position: absolute; border: 2px solid var(--reference-text); background: #ffffff0a; box-shadow: 0 0 0 1000px #00000077; pointer-events: none; }
 .pc-reference-crop-preview { position: relative; width: 100%; overflow: hidden; border: 1px solid var(--reference-border); border-radius: 5px; background: var(--reference-ink); }
 .pc-reference-crop-preview > img { position: absolute; max-width: none; object-fit: fill; }
 .pc-reference-crop-values { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; width: 100%; }
@@ -84,8 +84,8 @@
 .pc-reference-add-footer > span { margin-right: auto; color: var(--reference-muted); font-size: 11px; }
 .pc-reference-add .pc-visual-error { margin: 0; color: #d8a99f; font-size: 12px; }
 .pc-reference-job-failures { margin: 8px 0; color: #d8a99f; font-size: 11px; }
-.pc-reference-job-failures summary { cursor: pointer; line-height: 1.65; }
-.pc-reference-job-failures summary:focus-visible { outline: 2px solid var(--reference-focus); outline-offset: 2px; }
+.pc-reference-job-failures .workspace-disclosure-control { cursor: pointer; line-height: 1.65; }
+.pc-reference-job-failures .workspace-disclosure-control:focus-visible { outline: 2px solid var(--reference-focus); outline-offset: 2px; }
 .pc-reference-job-failures ul { display: grid; gap: 12px; padding: 10px 12px; margin: 8px 0 0; list-style: none; border: 1px solid var(--reference-border); border-radius: 7px; background: var(--reference-raised); }
 .pc-reference-job-failures li { display: grid; gap: 4px; min-width: 0; }
 .pc-reference-job-failures strong { color: var(--reference-secondary); font-size: 11px; }

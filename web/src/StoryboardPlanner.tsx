@@ -1,5 +1,6 @@
+import { WorkspaceDisclosure } from './WorkspaceDisclosure'
 import { useEffect, useRef, useState } from 'react'
-import { Button, Checkbox, Modal, NumberInput, Select, Textarea, TextInput } from '@mantine/core'
+import { UnstyledButton, Button, Checkbox, Modal, NumberInput, Select, Textarea, TextInput } from '@mantine/core'
 import { Check, ChevronRight, Clapperboard, LoaderCircle, Plus, Puzzle, Trash2 } from 'lucide-react'
 import { api, json } from './api'
 import type { Model, ProjectDetail, ScriptCanvasCheck, ScriptCanvasPlan, ScriptCanvasResult } from './api'
@@ -228,9 +229,9 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
         <header><strong>场次</strong><span>已选 {sceneIds.length} / {rangeIds.length}</span></header>
         <p className="storyboard-planner-note">每批最多 {batchLimit} 场，可分批加入</p>
         <div className="storyboard-planner-selection-tools" aria-label="场次批次选择">
-          <button type="button" disabled={locked || !savedScenes.length} title="复用已规划分镜，优先补齐缺少的画布节点" onClick={() => chooseBatch([...savedScenes.filter(needsCanvasNodes), ...savedScenes.filter(scene => !needsCanvasNodes(scene))])}>已规划</button>
-          <button type="button" disabled={locked || !unplannedScenes.length} onClick={() => chooseBatch(unplannedScenes)}>待规划</button>
-          <button type="button" disabled={locked || !sceneIds.length} onClick={() => chooseBatch([])}>清空选择</button>
+          <Button type="button" disabled={locked || !savedScenes.length} title="复用已规划分镜，优先补齐缺少的画布节点" onClick={() => chooseBatch([...savedScenes.filter(needsCanvasNodes), ...savedScenes.filter(scene => !needsCanvasNodes(scene))])} data-workspace-control="" variant="subtle">已规划</Button>
+          <Button type="button" disabled={locked || !unplannedScenes.length} onClick={() => chooseBatch(unplannedScenes)} data-workspace-control="" variant="subtle">待规划</Button>
+          <Button type="button" disabled={locked || !sceneIds.length} onClick={() => chooseBatch([])} data-workspace-control="" variant="subtle">清空选择</Button>
         </div>
         <div className="storyboard-planner-scene-list">
           {rangeIds.map((id, index) => {
@@ -238,22 +239,22 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
             const count = draftScene?.shots.length || meta?.shot_count || 0
             return <div key={id} className={`storyboard-planner-scene-item${checked ? ' is-selected' : ''}${view === 'preview' && focusedScene?.scene_id === id ? ' is-focused' : ''}`}>
               <Checkbox aria-label={`选择场次：${sceneLabel(id)}`} checked={checked} disabled={locked || !checked && sceneIds.length >= batchLimit} onChange={event => chooseScene(id, event.currentTarget.checked)} />
-              <button type="button" className="storyboard-planner-scene-button" disabled={locked || !checked && sceneIds.length >= batchLimit} title={!checked && sceneIds.length >= batchLimit ? '本批已选满，可清空选择或切换已规划场次' : undefined} onClick={() => { if (checked && hasPreview) { setFocusedSceneId(id); setView('preview') } else chooseScene(id, !checked) }}>
+              <UnstyledButton type="button" className="storyboard-planner-scene-button" disabled={locked || !checked && sceneIds.length >= batchLimit} title={!checked && sceneIds.length >= batchLimit ? '本批已选满，可清空选择或切换已规划场次' : undefined} onClick={() => { if (checked && hasPreview) { setFocusedSceneId(id); setView('preview') } else chooseScene(id, !checked) }}>
                 <span className="storyboard-planner-scene-number">{String(index + 1).padStart(2, '0')}</span>
                 <strong>{sceneLabel(id)}</strong><small>{meta?.duration || detail.script.scenes.find(scene => scene.id === id)?.duration || 0} 秒<span>{draftScene ? `草稿 · ${count} 镜` : meta && planned(meta) ? `${typeof meta.canvas_shot_count !== 'number' ? '已规划' : needsCanvasNodes(meta) ? meta.canvas_shot_count ? '待补齐' : '待加入' : '已加入'} · ${count} 镜` : '待规划'}</span></small>
-              </button>
+              </UnstyledButton>
             </div>
           })}
         </div>
       </aside>
       <main className="storyboard-planner-main">
         <nav className="storyboard-planner-tabs" aria-label="分镜工作步骤">
-          <button type="button" aria-label="规划设置" aria-current={view === 'setup' ? 'step' : undefined} onClick={() => setView('setup')}><span>1</span>规划设置</button><ChevronRight size={13} />
-          <button type="button" aria-label="分镜预览" aria-current={view === 'preview' ? 'step' : undefined} disabled={!hasPreview} onClick={() => setView('preview')}><span>{hasPreview ? <Check size={11} /> : '2'}</span>分镜预览</button>
+          <UnstyledButton type="button" aria-label="规划设置" aria-current={view === 'setup' ? 'step' : undefined} onClick={() => setView('setup')}><span>1</span>规划设置</UnstyledButton><ChevronRight size={13} />
+          <UnstyledButton type="button" aria-label="分镜预览" aria-current={view === 'preview' ? 'step' : undefined} disabled={!hasPreview} onClick={() => setView('preview')}><span>{hasPreview ? <Check size={11} /> : '2'}</span>分镜预览</UnstyledButton>
           <small>确认后准备参考设定并加入画布</small>
         </nav>
         <div className="storyboard-planner-scroll">
-          {error && <div className="storyboard-planner-error" role="alert">{error}{!applied.current && <Button variant="subtle" size="compact-xs" disabled={!!pending} onClick={() => setRefreshKey(key => key + 1)}>刷新资料</Button>}</div>}
+          {error && <div className="storyboard-planner-error" role="alert"><span>{error}</span>{!applied.current && <Button variant="subtle" size="compact-xs" disabled={!!pending} onClick={() => setRefreshKey(key => key + 1)}>刷新资料</Button>}</div>}
           {!context ? <div className="storyboard-planner-empty">{pending === 'context' ? <><LoaderCircle size={22} /><strong>正在读取剧本与分镜</strong></> : <><Clapperboard size={24} /><strong>没有可用场次</strong></>}</div>
           : !sceneIds.length ? <div className="storyboard-planner-empty"><Clapperboard size={24} /><strong>选择要加入画布的场次</strong><p>从左侧勾选场次，再规划镜头。</p></div>
           : view === 'setup' ? <>
@@ -273,25 +274,25 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
                 <NumberInput label="每场建议镜头数" placeholder="自动分析" description="留空时，按各场剧情与时长自动确定" inputWrapperOrder={['label', 'input', 'description', 'error']} min={2} max={8} allowDecimal={false} value={shotsPerScene} disabled={locked} onChange={value => { setShotsPerScene(value); resetDraft() }} /></div>
               {!eligibleModels.length && <p className="storyboard-planner-error">请先配置并启用文本模型，再开始规划。</p>}
               <Textarea label="导演要求" placeholder="例如：保留全部对白，强调人物反应和动作衔接" maxLength={4000} rows={2} value={instructions} disabled={locked} onChange={event => { setInstructions(event.currentTarget.value); resetDraft() }} />
-              <details className="storyboard-planner-disclosure"><summary><span>参考资料</span><small>{documentIds.length ? `已选 ${documentIds.length} 份` : '可选'}</small></summary>
+              <WorkspaceDisclosure className="storyboard-planner-disclosure" label={<><span>参考资料</span><small>{documentIds.length ? `已选 ${documentIds.length} 份` : '可选'}</small></>}>
                 <div className="storyboard-planner-disclosure-body"><p className="storyboard-planner-note">所选场次正文、项目画幅与画风会用于规划。勾选其他文档可补充人物、世界观等设定。</p>
                   <div className="storyboard-planner-source-list">{context.documents.map(document => <Checkbox key={document.id} label={`${document.title} · ${document.characters.toLocaleString()} 字`} checked={documentIds.includes(document.id)} disabled={locked}
                     onChange={event => { const checked = event.currentTarget.checked; setDocumentIds(current => toggle(current, document.id, checked)); resetDraft() }} />)}</div>
-                  {!!context.project.style && <details className="storyboard-planner-details"><summary>查看项目画风</summary><p>{context.project.style}</p></details>}
+                  {!!context.project.style && <WorkspaceDisclosure className="storyboard-planner-details" label={<>查看项目画风</>}><p>{context.project.style}</p></WorkspaceDisclosure>}
                 </div>
-              </details>
+              </WorkspaceDisclosure>
             </>}
-            <details className="storyboard-planner-disclosure"><summary><span>时长与重新规划</span><small>{useTarget ? `${target} 秒` : '保留原时长'}</small></summary><div className="storyboard-planner-disclosure-body">
+            <WorkspaceDisclosure className="storyboard-planner-disclosure" label={<><span>时长与重新规划</span><small>{useTarget ? `${target} 秒` : '保留原时长'}</small></>}><div className="storyboard-planner-disclosure-body">
               {selected.some(scene => planned(scene)) && <Checkbox label="重新规划已有分镜" checked={replanExisting} disabled={locked} onChange={event => { setReplanExisting(event.currentTarget.checked); setUseTarget(false); resetDraft() }} />}
               {!!planningScenes.length && <><Checkbox label={`指定本次总时长（源场次合计 ${total} 秒）`} checked={useTarget} disabled={locked} onChange={event => { setUseTarget(event.currentTarget.checked); resetDraft() }} />
                 {useTarget && <NumberInput label="本次目标时长" suffix=" 秒" min={minimum} max={planningScenes.length * 30} value={target} disabled={locked} onChange={value => { setTarget(value); resetDraft() }} />}
                 {invalidTarget && <p className="storyboard-planner-error">本次总时长应在 {minimum} 至 {planningScenes.length * 30} 秒之间。</p>}
                 <p className="storyboard-planner-note">默认保留剧本场次时长；调整后会在确认时同步场次时长。</p></>}
               {selected.some(scene => scene.shot_count) && <p className="storyboard-planner-note">重新规划会保留已有镜头及素材关联，调整内容后请核对素材是否仍适用。</p>}
-            </div></details>
+            </div></WorkspaceDisclosure>
           </> : focusedScene && <>
-            <details className="storyboard-planner-disclosure storyboard-planner-reference-preparation">
-              <summary><span>参考图准备</span><small>{result ? '确认时检查与整理' : referenceNeedsAnalysis.length ? `待整理 ${referenceNeedsAnalysis.length} 场` : '复用已整理设定'}</small></summary>
+            <WorkspaceDisclosure className="storyboard-planner-disclosure storyboard-planner-reference-preparation" label={<><span>参考图准备</span><small>{result ? '确认时检查与整理' : referenceNeedsAnalysis.length ? `待整理 ${referenceNeedsAnalysis.length} 场` : '复用已整理设定'}</small></>}>
+
               <div className="storyboard-planner-disclosure-body">
                 <p className="storyboard-planner-note">确认时会整理所需人物、场景与关键道具设定，并和分镜一起加入画布。先生成并确认必需信息图，再生成依赖它们的分镜；已有设定与确认图会复用。</p>
                 <section className="storyboard-planner-skill-card" aria-label="本次参考设定技能">
@@ -305,23 +306,23 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
                 <Select label="整理设定的文本模型" aria-label="整理参考设定文本模型" data={eligibleModels.map(model => ({ value: model.id, label: model.name }))} value={modelId || null} allowDeselect={false} disabled={!!pending || !!imported.current} onChange={value => setModelId(value || '')} comboboxProps={{ zIndex: 350 }} />
                 {!eligibleModels.length && referenceNeedsAnalysis.length > 0 && <p className="storyboard-planner-error">这些场次还需要整理参考设定，请先启用一个文本模型。</p>}
               </div>
-            </details>
+            </WorkspaceDisclosure>
             <header className="storyboard-planner-section-title"><h3>{focusedScene.scene_heading}</h3><p>{focusedScene.shots.length} 个镜头 · {focusedScene.scene_duration} 秒 · {focusedIsDraft ? '未保存草稿，可修改后确认' : '复用已保存分镜'}</p></header>
-            {result && <details className="storyboard-planner-used-sources">
-              <summary><Puzzle size={13} /><span>已使用：{result.used_skills[0]?.name || '基础分镜规则'}<small>辅助技能 {Math.max(0, result.used_skills.length - 1)} 个<span>·</span>参考资料 {result.source_documents.length} 份</small></span><ChevronRight size={13} /></summary>
+            {result && <WorkspaceDisclosure className="storyboard-planner-used-sources" label={<><Puzzle size={13} /><span>已使用：{result.used_skills[0]?.name || '基础分镜规则'}<small>辅助技能 {Math.max(0, result.used_skills.length - 1)} 个<span>·</span>参考资料 {result.source_documents.length} 份</small></span><ChevronRight size={13} /></>}>
+
               <div className="storyboard-planner-used-details"><p>参考文档：{result.source_documents.map(document => document.title).join(' · ') || '未选择额外文档'}</p>{result.used_skills.map((skill, index) => <p key={skill.id}><strong>{index === 0 ? '主技能' : '辅助技能'} · {skill.name}</strong><small>版本 {skill.revision.slice(0, 8)} · {skill.files.join(' · ')}</small></p>)}</div>
-            </details>}
+            </WorkspaceDisclosure>}
             {issue && <p className="storyboard-planner-error" role="status">{issue}</p>}
             <fieldset key={focusedScene.scene_id} disabled={locked} className="storyboard-planner-preview">
               {focusedIsDraft && <NumberInput label="本场规划时长" suffix=" 秒" min={1} max={30} value={focusedScene.scene_duration} onChange={value => setResult(current => current && { ...current, scenes: current.scenes.map(item => item.scene_id === focusedScene.scene_id ? { ...item, scene_duration: Number(value) } : item) })} />}
-              {focusedScene.shots.map((shot, index) => <details key={`${focusedScene.scene_id}-${index}`} className="storyboard-planner-shot" open={index === 0}>
-                <summary><span className="storyboard-planner-shot-number">{String(index + 1).padStart(2, '0')}</span><strong>{shot.title}</strong><span>{shot.duration} 秒</span></summary>
+              {focusedScene.shots.map((shot, index) => <WorkspaceDisclosure key={`${focusedScene.scene_id}-${index}`} className="storyboard-planner-shot" initiallyOpen={index === 0} label={<><span className="storyboard-planner-shot-number">{String(index + 1).padStart(2, '0')}</span><strong>{shot.title}</strong><span>{shot.duration} 秒</span></>}>
+
                 <div className="storyboard-planner-shot-fields"><div className="storyboard-planner-settings"><TextInput label="镜头标题" readOnly={!focusedIsDraft} maxLength={120} value={shot.title} onChange={event => updateShot(focusedScene.scene_id, index, { title: event.currentTarget.value })} /><NumberInput label="镜头时长" readOnly={!focusedIsDraft} hideControls={!focusedIsDraft} suffix=" 秒" min={1} max={30} value={shot.duration} onChange={value => updateShot(focusedScene.scene_id, index, { duration: Number(value) })} /></div>
                   {(['prompt', 'image_prompt', 'video_prompt'] as const).map((key, field) => <Textarea key={key} label={['镜头描述', '首帧图片提示词', '动作与运镜视频提示词'][field]} readOnly={!focusedIsDraft} value={shot[key]} autosize minRows={key === 'prompt' ? 2 : 3} maxRows={8} maxLength={key === 'prompt' ? 10000 : 20000} onChange={event => updateShot(focusedScene.scene_id, index, { [key]: event.currentTarget.value })} />)}
-                  <details className="storyboard-planner-details"><summary>起止状态与接镜</summary><div className="storyboard-planner-continuity">{(['start_state', 'end_state', 'cut_note'] as const).map((key, field) => <Textarea key={key} label={['开始状态', '结束状态', '接镜要求'][field]} readOnly={!focusedIsDraft} value={shot[key]} rows={2} maxLength={2000} onChange={event => updateShot(focusedScene.scene_id, index, { [key]: event.currentTarget.value })} />)}</div></details>
+                  <WorkspaceDisclosure className="storyboard-planner-details" label={<>起止状态与接镜</>}><div className="storyboard-planner-continuity">{(['start_state', 'end_state', 'cut_note'] as const).map((key, field) => <Textarea key={key} label={['开始状态', '结束状态', '接镜要求'][field]} readOnly={!focusedIsDraft} value={shot[key]} rows={2} maxLength={2000} onChange={event => updateShot(focusedScene.scene_id, index, { [key]: event.currentTarget.value })} />)}</div></WorkspaceDisclosure>
                   {focusedIsDraft && !shot.shot_id && <Button variant="subtle" size="xs" leftSection={<Trash2 size={13} />} onClick={() => setResult(current => current && { ...current, scenes: current.scenes.map(item => item.scene_id === focusedScene.scene_id ? { ...item, shots: item.shots.filter((_, i) => i !== index) } : item) })}>移除新增镜头</Button>}
                 </div>
-              </details>)}
+              </WorkspaceDisclosure>)}
               {focusedIsDraft && <Button variant="default" size="xs" leftSection={<Plus size={13} />} disabled={focusedScene.shots.length >= Math.min(30, focusedScene.scene_duration)} onClick={() => setResult(current => current && { ...current, scenes: current.scenes.map(item => item.scene_id === focusedScene.scene_id ? { ...item, shots: [...item.shots, { shot_id: null, title: '新增镜头', prompt: '', image_prompt: '', video_prompt: '', duration: 1, start_state: '', end_state: '', cut_note: '' }] } : item) })}>添加镜头</Button>}
             </fieldset>
           </>}

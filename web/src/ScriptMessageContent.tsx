@@ -1,3 +1,4 @@
+import { Table } from '@mantine/core'
 import { useMemo } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -43,7 +44,7 @@ export default function ScriptMessageContent({ text }: { text: string }) {
   const content = useMemo(() => normalizeMessageHeadings(text), [text])
   return <div className="script-message-content pc-rich-text-preview pc-rich-text-content">
     <Markdown remarkPlugins={[remarkGfm, remarkCellBreaks]} skipHtml components={{
-      table: ({ children }) => <div className="script-message-table-scroll" role="region" aria-label="回复表格" tabIndex={0}><table>{children}</table></div>,
+      table: ({ children }) => <div className="script-message-table-scroll" role="region" aria-label="回复表格" tabIndex={0}><Table>{children}</Table></div>,
       th: ({ children, style }) => <th scope="col" style={style}>{children}</th>,
       a: ({ children, href }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>,
       img: ({ alt }) => <span>{alt || ''}</span>,

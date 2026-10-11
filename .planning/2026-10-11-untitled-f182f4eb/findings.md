@@ -1,0 +1,2 @@
+# Findings
+Current inline reference manager shares the node composer grid with the prompt, inherits available body height and canvas scale. It uses 40px previews/11–12px text, separate list scroll plus accordion, and mobile list capped at140px. User screenshot shows tiny visible list. Move shot-scoped UI into Mantine Drawer outside composer; preserve current general scene/profile manager. Enlarged reference list/cards and viewport height address readability without widening graph nodes or expensive animated effects.

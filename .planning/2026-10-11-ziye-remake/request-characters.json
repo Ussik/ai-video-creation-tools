@@ -1,0 +1,34 @@
+{
+  "model_id": "2e33d35083df4778be1235d96f7ac5ef",
+  "mode": "all",
+  "focus_artifact": "all",
+  "use_tools": false,
+  "generation_options": {
+    "genre": "古风玄幻·宗门灭门与觉醒",
+    "visual_style": "电影感3D国漫CG，细腻人物表演、电影光影与景深",
+    "visual_style_details": {
+      "medium": "3D动画CG",
+      "rendering": "统一的高质量国漫CG，细腻脸部与服装表现，情绪镜头克制，动作具有清晰因果",
+      "palette": "夜景冷蓝，回忆暖金，火海橙红，觉醒紫红",
+      "exclusions": [
+        "真人照片媒介",
+        "二维插画",
+        "原作者图片和视频直接复用",
+        "画面拼版、水印、自动字幕"
+      ]
+    },
+    "episode_count": 1,
+    "episode_duration": 130
+  },
+  "workflow": {
+    "stage": "characters",
+    "scope": "project",
+    "episode_number": 0
+  },
+  "messages": [
+    {
+      "role": "user",
+      "text": "请在刚保存的大纲基础上推进“全剧人物设定”阶段。只创作characters和relationships，不改写主线、不提前写正文或生成图片。把林渊白衣状态和觉醒黑金状态定义为同一身份的两个版本：五官骨相、黑长发长度和身体比例完全一致；衣服与饰物可在能量遮挡中切换，终章画面左眼红、右眼紫。定义成年灵儿、温厚中年父亲、固定三名黑衣金属面具刺客。每人明确面部、发型、身形、服装色块、饰品、常用动作和情绪，给出足以独立重新生成人物图片的完整新设计。道具归属独立，身体不能与剑或行囊融合。每个外观版本归为明确一节，不加无剧情用途的服装版本。沿用130秒短片范围，不扩写配角生平和旁支剧情。"
+    }
+  ]
+}

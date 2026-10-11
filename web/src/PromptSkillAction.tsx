@@ -1,5 +1,6 @@
+import { WorkspaceDisclosure } from './WorkspaceDisclosure'
 import { useEffect, useRef, useState } from 'react'
-import { Button, Modal, Select, Textarea } from '@mantine/core'
+import { UnstyledButton, Button, Modal, Select, Textarea } from '@mantine/core'
 import { ChevronDown, LoaderCircle, Puzzle } from 'lucide-react'
 import { api, json } from './api'
 import type { Model } from './api'
@@ -64,7 +65,7 @@ export default function PromptSkillAction(props: Props) {
   }
   const stale = !!result && sourceKey !== currentKey
   return <>
-    <button type="button" className="pc-composer-chip" aria-label="使用技能整理提示词" disabled={props.disabled || !props.prompt.trim()} onClick={() => void open()}><Puzzle size={14} /><span>整理提示词</span></button>
+    <UnstyledButton type="button" className="pc-composer-chip" aria-label="使用技能整理提示词" disabled={props.disabled || !props.prompt.trim()} onClick={() => void open()}><Puzzle size={14} /><span>整理提示词</span></UnstyledButton>
     <Modal opened={opened} onClose={close} centered size="min(620px, calc(100vw - 32px))" radius={18}
       title={<div className="prompt-skill-heading"><span>整理提示词</span><small>{modalityLabel}提示词 · 编辑后应用到节点</small></div>} zIndex={230}
       classNames={{ content: 'prompt-skill-modal', header: 'prompt-skill-header', title: 'prompt-skill-title', body: 'prompt-skill-body', close: 'prompt-skill-close' }}
@@ -86,9 +87,9 @@ export default function PromptSkillAction(props: Props) {
             disabled={pending} allowDeselect={false} searchable rightSection={<ChevronDown size={14} />} rightSectionPointerEvents="none"
             classNames={{ input: 'prompt-skill-model-input', dropdown: 'prompt-skill-dropdown' }} comboboxProps={{ zIndex: 320 }} />
         </div>
-        <details className="prompt-skill-source"><summary><span>原始提示词</span><small>{props.prompt.length.toLocaleString()} 字</small><ChevronDown size={14} /></summary>
+        <WorkspaceDisclosure className="prompt-skill-source" label={<><span>原始提示词</span><small>{props.prompt.length.toLocaleString()} 字</small><ChevronDown size={14} /></>}>
           <p>{props.prompt}</p>
-        </details>
+        </WorkspaceDisclosure>
         {!props.models.length && <p className="prompt-skill-error">请先在模型设置中启用一个文本模型。</p>}
         {skillControl.error && <p className="prompt-skill-error" role="alert">{skillControl.error}</p>}
         {error && <p className="prompt-skill-error" role="alert">{error}</p>}

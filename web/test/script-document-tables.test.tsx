@@ -1,3 +1,4 @@
+import { MantineProvider } from '@mantine/core'
 import assert from 'node:assert/strict'
 import { register } from 'node:module'
 import test from 'node:test'
@@ -10,7 +11,7 @@ const { DirectorDocumentBody } = await import('../src/DirectorDocuments')
 
 test('director document reader renders accessible scene tables with header, rows and formatting', () => {
   const text = '##全剧场景设计\n| 地点（暂名） | 类别 | 主要剧情功能 | 出现阶段 |\n| :--- | :---: | --- | ---: |\n| **旧祠堂** | 核心场景 | 家族记忆与真相浮出水面<br>承载家庭和解 | 1—20集 |\n| 桥头 | 外景 | ~~旧设定~~，_追逐与冲突_ | 中段 |'
-  const dom = new JSDOM(renderToStaticMarkup(<DirectorDocumentBody text={text} />))
+  const dom = new JSDOM(renderToStaticMarkup(<MantineProvider env="test"><DirectorDocumentBody text={text} /></MantineProvider>))
   try {
     const doc = dom.window.document
     assert.equal(doc.querySelector('h2')?.textContent, '全剧场景设计')
@@ -31,7 +32,7 @@ test('director document reader renders accessible scene tables with header, rows
 })
 
 test('unsafe HTML remains literal table text and ordinary document paragraphs stay readable', () => {
-  const dom = new JSDOM(renderToStaticMarkup(<DirectorDocumentBody text={'说明正文。\n| 人物 | 说明 |\n| --- | --- |\n| 林晚\\|奶奶 | <img src=x onerror=alert(1)> |\n\n结尾正文。'} />))
+  const dom = new JSDOM(renderToStaticMarkup(<MantineProvider env="test"><DirectorDocumentBody text={'说明正文。\n| 人物 | 说明 |\n| --- | --- |\n| 林晚\\|奶奶 | <img src=x onerror=alert(1)> |\n\n结尾正文。'} /></MantineProvider>))
   try {
     const doc = dom.window.document
     assert.equal(doc.querySelectorAll('img,script').length, 0)

@@ -1,0 +1,101 @@
+[
+  {
+    "id": "e35289583a64486e85e52ae5d45cefa2",
+    "name": "新海诚风格动画《迟来的告白》",
+    "author": "AI导演沈旭",
+    "nodeCount": 55,
+    "edgeCount": 138,
+    "types": {
+      "audio": 6,
+      "image": 28,
+      "director-console-3d": 1,
+      "video": 20
+    },
+    "videoModeCounts": {
+      "mixed2video": 15,
+      "None": 3,
+      "text2video": 2
+    }
+  },
+  {
+    "id": "56e67d39faee4e979040eb02da7f8df1",
+    "name": "《紫夜》",
+    "author": "花城",
+    "nodeCount": 79,
+    "edgeCount": 89,
+    "types": {
+      "group": 12,
+      "image": 44,
+      "video": 21,
+      "audio": 2
+    },
+    "videoModeCounts": {
+      "mixed2video": 18,
+      "frames2video": 2,
+      "None": 1
+    }
+  },
+  {
+    "id": "c6e94bfacd5a4f738813bc9e89afdcd6",
+    "name": "抵达之前 From Begin To Begin",
+    "author": "野野也",
+    "nodeCount": 762,
+    "edgeCount": 1926,
+    "types": {
+      "group": 27,
+      "audio": 11,
+      "image": 220,
+      "text": 5,
+      "video": 466,
+      "video-clip": 33
+    },
+    "videoModeCounts": {
+      "mixed2video": 365,
+      "None": 34,
+      "videoEdit2video": 2,
+      "text2video": 16,
+      "image2video": 17,
+      "longVideo2video": 32
+    }
+  },
+  {
+    "id": "e0098a0a61f347a59aca05670f70318e",
+    "name": "大象｜L’ELEFANTE",
+    "author": "不加班艺术中心",
+    "nodeCount": 134,
+    "edgeCount": 184,
+    "types": {
+      "audio": 1,
+      "shot-breakdown": 1,
+      "image": 94,
+      "video": 37,
+      "video-clip": 1
+    },
+    "videoModeCounts": {
+      "None": 5,
+      "text2video": 4,
+      "mixed2video": 24,
+      "videoEdit2video": 3,
+      "image2video": 1
+    }
+  },
+  {
+    "id": "6bc8b8d159d04627a881c39bfa58a5fb",
+    "name": "《长安异闻录》第一卷 | 算命",
+    "author": "Rick",
+    "nodeCount": 167,
+    "edgeCount": 88,
+    "types": {
+      "group": 12,
+      "image": 80,
+      "text": 2,
+      "video": 66,
+      "audio": 7
+    },
+    "videoModeCounts": {
+      "None": 49,
+      "mixed2video": 13,
+      "text2video": 4
+    }
+  }
+]

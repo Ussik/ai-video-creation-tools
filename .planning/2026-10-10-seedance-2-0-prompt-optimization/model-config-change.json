@@ -1,0 +1,19 @@
+{
+  "model_id": "3124833df238401b9f20b02420c1d365",
+  "remote_id": "doubao-seedance-2-0-mini-260615",
+  "changed_keys": [
+    "max_reference_images"
+  ],
+  "previous_max_reference_images": null,
+  "max_reference_images": 9,
+  "verified_modes": [
+    "text",
+    "first_frame",
+    "first_last_frame",
+    "reference",
+    "edit",
+    "extend"
+  ],
+  "video_reference_template_preserved": true,
+  "applied_at": "2026-10-10T20:59:21.381255"
+}

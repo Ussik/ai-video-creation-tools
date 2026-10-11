@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Button, Menu, Modal, TextInput } from '@mantine/core'
+import { UnstyledButton, ActionIcon, Button, Menu, Modal, TextInput } from '@mantine/core'
 import { Check, ChevronDown, LoaderCircle, PenLine, Plus, Trash2, ArrowRight } from 'lucide-react'
 import { api, json } from './api'
 import { useAppDialog } from './AppDialog'
@@ -92,9 +92,9 @@ function ProjectCanvasSwitcher({ projectId, children }: {
   if (!session) { session = { history: { past: [], future: [] } }; sessions.current.set(active.id, session) }
   const menu = <div className="pc-canvas-switcher" data-canvas-overlay>
     <Menu position="bottom-start" width={280} shadow="md" withinPortal>
-      <Menu.Target><button type="button" className="pc-canvas-switch-button" aria-label="切换画布" disabled={busy}><span>{active.name}</span><ChevronDown size={15} /></button></Menu.Target>
+      <Menu.Target><UnstyledButton type="button" className="pc-canvas-switch-button" aria-label="切换画布" disabled={busy}><span>{active.name}</span><ChevronDown size={15} /></UnstyledButton></Menu.Target>
       <Menu.Dropdown data-canvas-overlay>
-        <div className="pc-canvas-menu-heading"><span>画布</span><button type="button" aria-label="新增画布" disabled={busy} onClick={create}><Plus size={19} /></button></div>
+        <div className="pc-canvas-menu-heading"><span>画布</span><ActionIcon type="button" aria-label="新增画布" disabled={busy} onClick={create} data-workspace-control=""><Plus size={19} /></ActionIcon></div>
         {canvases.map(canvas => <Menu.Item key={canvas.id} onClick={() => switchTo(canvas)} disabled={busy} rightSection={canvas.id === active.id ? <Check size={17} /> : undefined}><span className="pc-canvas-menu-name">{canvas.name}</span></Menu.Item>)}
         <Menu.Divider />
         <Menu.Item leftSection={<PenLine size={15} />} onClick={() => { setEditing(active); setName(active.name) }} disabled={busy}>重命名当前画布</Menu.Item>

@@ -1,6 +1,7 @@
+import { WorkspaceDisclosure } from './WorkspaceDisclosure'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { Select } from '@mantine/core'
+import { Menu, UnstyledButton, Slider, Button, TextInput, Textarea, ActionIcon, NumberInput, Popover, Modal, Switch, Select } from '@mantine/core'
 import {
   ArrowDown,
   ArrowUp,
@@ -342,8 +343,8 @@ function DirectorStructurePicker({
   onEpisodeCountChange: (value: number) => void
 }) {
   const count = Number.isFinite(episodeCount) ? Math.max(1, Math.min(200, Math.round(episodeCount as number))) : 20
-  return <div className={`script-director-structure-picker${open ? ' is-open' : ''}`}>
-    <button type="button" className="script-director-structure-card" onClick={onToggle} aria-expanded={open} aria-haspopup="dialog">
+  return <div className={`script-director-structure-picker${open ? ' is-open' : ''}`}><Popover opened={open} onClose={() => { if (open) onToggle() }} withinPortal={false} position="top-start" trapFocus returnFocus offset={8}><Popover.Target>
+    <UnstyledButton type="button" className="script-director-structure-card" onClick={onToggle} aria-expanded={open} aria-haspopup="dialog">
       <span className="script-director-setting-heading">
         <Clapperboard size={14} aria-hidden="true" />
         <span className="script-director-structure-label">剧本结构</span>
@@ -353,33 +354,33 @@ function DirectorStructurePicker({
         <span className={`script-director-structure-value${value ? '' : ' is-auto'}`}>{value || '自动判断'}</span>
         <span className="script-director-structure-meta">{episodeCount ? `${count} 集` : '集数自动判断'}</span>
       </span>
-    </button>
-    {open && <div className="script-director-structure-popover" role="dialog" aria-label="剧本结构与集数">
+    </UnstyledButton></Popover.Target>
+    {open && <Popover.Dropdown className="script-director-structure-popover" role="dialog" aria-label="剧本结构与集数">
       <div className="script-director-structure-popover-head"><strong>剧本结构</strong><span>选择叙事节奏</span></div>
       <div className="script-director-structure-options" role="group" aria-label="结构选项">
-        {directorStoryStructures.map((structure) => <button
+        {directorStoryStructures.map((structure) => <UnstyledButton
           type="button"
           key={structure}
           className={value === structure ? 'is-selected' : ''}
           aria-pressed={value === structure}
           onClick={() => onChange(structure)}
-        >{structure}</button>)}
+        >{structure}</UnstyledButton>)}
       </div>
       <div className="script-director-episode-control">
         <div className="script-director-episode-head"><span>预计集数</span><strong>{count} 集</strong></div>
-        <input
-          type="range"
-          min="1"
-          max="200"
-          step="1"
+        <Slider
+
+          min={1}
+          max={200}
+          step={1}
           value={count}
-          aria-label="预计集数"
-          onChange={(event) => onEpisodeCountChange(Number(event.currentTarget.value))}
+          aria-label="预计集数" thumbLabel="预计集数"
+          onChange={value => onEpisodeCountChange(Number(value))}
         />
         <div className="script-director-episode-scale"><span>1</span><span>200</span></div>
       </div>
-    </div>}
-  </div>
+    </Popover.Dropdown>}
+  </Popover></div>
 }
 
 type DirectorAutoFieldProps = {
@@ -394,24 +395,24 @@ type DirectorAutoFieldProps = {
 }
 
 function DirectorAutoField({ label, value, placeholder, options, icon: Icon, open, onToggle, onChange }: DirectorAutoFieldProps) {
-  return <div className={`script-director-auto-field${open ? ' is-open' : ''}`}>
-    <button type="button" className="script-director-auto-card" onClick={onToggle} aria-expanded={open} aria-haspopup="dialog">
+  return <div className={`script-director-auto-field${open ? ' is-open' : ''}`}><Popover opened={open} onClose={() => { if (open) onToggle() }} withinPortal={false} position="top-start" trapFocus returnFocus offset={8}>
+    <Popover.Target><UnstyledButton type="button" className="script-director-auto-card" onClick={onToggle} aria-expanded={open} aria-haspopup="dialog">
       <span className="script-director-setting-heading">
         <Icon size={14} aria-hidden="true" />
         <small>{label}</small>
         <ChevronDown size={13} className="script-director-auto-chevron" aria-hidden="true" />
       </span>
       <strong className={`script-director-setting-value${value ? '' : ' is-auto'}`}>{value || '自动'}</strong>
-    </button>
-    {open && <div className="script-director-auto-popover" role="dialog" aria-label={`${label}选项`}>
+    </UnstyledButton></Popover.Target>
+    {open && <Popover.Dropdown className="script-director-auto-popover" role="dialog" aria-label={`${label}选项`}>
       <div className="script-director-auto-popover-head"><strong>{label}</strong><span>可选，也可以交给模型判断</span></div>
       <div className="script-director-auto-options">
-        <button type="button" className={!value ? 'is-selected' : ''} onClick={() => onChange('')}>自动</button>
-        {options.map((option) => <button type="button" key={option} className={value === option ? 'is-selected' : ''} onClick={() => onChange(option)}>{option}</button>)}
+        <Button type="button" className={!value ? 'is-selected' : ''} onClick={() => onChange('')} data-workspace-control="" variant="subtle">自动</Button>
+        {options.map((option) => <Button type="button" key={option} className={value === option ? 'is-selected' : ''} onClick={() => onChange(option)} data-workspace-control="" variant="subtle">{option}</Button>)}
       </div>
-      <input value={value || ''} placeholder={placeholder} onChange={(event) => onChange(event.currentTarget.value)} aria-label={`自定义${label}`} />
-    </div>}
-  </div>
+      <TextInput value={value || ''} placeholder={placeholder} onChange={(event) => onChange(event.currentTarget.value)} aria-label={`自定义${label}`} />
+    </Popover.Dropdown>}
+  </Popover></div>
 }
 
 type InfiniteThemeRailProps = {
@@ -546,12 +547,12 @@ function InfiniteThemeRail({ items, selected, side, onSelect, activeArtwork }: I
     }}
     tabIndex={0}
   >
-    <button type="button" className="script-director-theme-rail-nudge is-prev" onClick={() => move(-1)} aria-label="上一个题材"><ChevronUp size={13} /></button>
+    <UnstyledButton type="button" className="script-director-theme-rail-nudge is-prev" onClick={() => move(-1)} aria-label="上一个题材"><ChevronUp size={13} /></UnstyledButton>
     <div className="script-director-theme-rail-viewport">
       {visible.map(({ theme, offset }) => {
         const active = offset === 0 && theme === activeSelection && Boolean(selected)
         const committed = active
-        return <button
+        return <UnstyledButton
           type="button"
           key={theme}
           className={`script-director-theme-rail-item${active ? ` is-${side}` : ''}`}
@@ -571,11 +572,11 @@ function InfiniteThemeRail({ items, selected, side, onSelect, activeArtwork }: I
           })()}
           <span>{theme}</span>
           {committed && <small>{side === 'primary' ? '主' : '融'}</small>}
-        </button>
+        </UnstyledButton>
       })}
     </div>
-    <button type="button" className="script-director-theme-rail-nudge is-next" onClick={() => move(1)} aria-label="下一个题材"><ChevronDown size={13} /></button>
-    {side === 'primary' && <button type="button" className="script-director-theme-other" onClick={() => onSelect('')}><PenLine size={12} />其他</button>}
+    <UnstyledButton type="button" className="script-director-theme-rail-nudge is-next" onClick={() => move(1)} aria-label="下一个题材"><ChevronDown size={13} /></UnstyledButton>
+    {side === 'primary' && <Button type="button" className="script-director-theme-other" onClick={() => onSelect('')} data-workspace-control="" variant="subtle"><PenLine size={12} />其他</Button>}
   </nav>
 }
 
@@ -735,12 +736,12 @@ function AssetTaskCard({
     </header>
     <div className="script-director-asset-task-fields">{meta.fields.map((field) => <span key={field}>{field}</span>)}</div>
     <div className="script-director-asset-task-source"><div><FileText size={12} /><span>剧本资料</span></div><p>{source}</p></div>
-    {(status === 'awaiting-confirmation' || status === 'idle') && <div className="script-director-asset-task-actions"><button type="button" className="script-director-task-secondary" onClick={onRetry}><WandSparkles size={13} />重新分析</button><button type="button" className="script-director-task-primary" onClick={onConfirm}><CheckCircle2 size={14} />确认资料并生成提示词</button></div>}
+    {(status === 'awaiting-confirmation' || status === 'idle') && <div className="script-director-asset-task-actions"><Button type="button" className="script-director-task-secondary" onClick={onRetry} data-workspace-control="" variant="subtle"><WandSparkles size={13} />重新分析</Button><Button type="button" className="script-director-task-primary" onClick={onConfirm} data-workspace-control="" variant="subtle"><CheckCircle2 size={14} />确认资料并生成提示词</Button></div>}
     {status === 'analyzing' && <div className="script-director-asset-task-progress"><LoaderCircle size={13} className="script-director-spinner" />正在从剧本中提取{meta.noun}所需信息…</div>}
     {status === 'generating' && <div className="script-director-asset-task-progress"><LoaderCircle size={13} className="script-director-spinner" />正在生成可直接使用的{meta.noun}提示词…</div>}
-    {(status === 'ready' || status === 'succeeded' || status === 'failed') && <div className="script-director-asset-task-prompt"><div className="script-director-asset-task-prompt-head"><span>生成提示词（可编辑）</span><button type="button" onClick={onCopy}><Copy size={12} />复制</button></div><textarea value={prompt} onChange={(event) => onPromptChange(event.currentTarget.value)} placeholder={`等待模型生成${meta.noun}提示词…`} />
-      {(status === 'ready' || status === 'failed' || status === 'succeeded') && (imageModels.length ? <div className="script-director-asset-task-generate-row"><Select size="xs" allowDeselect={false} value={imageModelId || null} placeholder="选择图片模型" data={imageModels.map((model) => ({ value: model.id, label: model.name }))} onChange={(value) => onImageModelChange(value || '')} /><button type="button" className="script-director-task-primary" onClick={onGenerate} disabled={!imageModelId || !prompt.trim()}><WandSparkles size={13} />重新生成{meta.noun}</button></div> : <button type="button" className="script-director-model-link" onClick={onOpenModels}>还没有可用的图片模型，前往模型设置添加</button>)}
-      {status === 'succeeded' && resultAsset && <div className="script-director-asset-result"><img src={resultAsset.url} alt={`${meta.label}结果`} /><div><strong>{resultAsset.filename}</strong><span>{resultAsset.saved ? '已保存到资产' : '生成结果未保存'}</span></div><button type="button" className="script-director-task-secondary" onClick={onSave} disabled={resultAsset.saved}>{resultAsset.saved ? '已保存' : '保存资产'}</button></div>}
+    {(status === 'ready' || status === 'succeeded' || status === 'failed') && <div className="script-director-asset-task-prompt"><div className="script-director-asset-task-prompt-head"><span>生成提示词（可编辑）</span><Button type="button" onClick={onCopy} data-workspace-control="" variant="subtle"><Copy size={12} />复制</Button></div><Textarea value={prompt} onChange={(event) => onPromptChange(event.currentTarget.value)} placeholder={`等待模型生成${meta.noun}提示词…`} />
+      {(status === 'ready' || status === 'failed' || status === 'succeeded') && (imageModels.length ? <div className="script-director-asset-task-generate-row"><Select size="xs" allowDeselect={false} value={imageModelId || null} placeholder="选择图片模型" data={imageModels.map((model) => ({ value: model.id, label: model.name }))} onChange={(value) => onImageModelChange(value || '')} /><Button type="button" className="script-director-task-primary" onClick={onGenerate} disabled={!imageModelId || !prompt.trim()} data-workspace-control="" variant="subtle"><WandSparkles size={13} />重新生成{meta.noun}</Button></div> : <Button type="button" className="script-director-model-link" onClick={onOpenModels} data-workspace-control="" variant="subtle">还没有可用的图片模型，前往模型设置添加</Button>)}
+      {status === 'succeeded' && resultAsset && <div className="script-director-asset-result"><img src={resultAsset.url} alt={`${meta.label}结果`} /><div><strong>{resultAsset.filename}</strong><span>{resultAsset.saved ? '已保存到资产' : '生成结果未保存'}</span></div><Button type="button" className="script-director-task-secondary" onClick={onSave} disabled={resultAsset.saved} data-workspace-control="" variant="subtle">{resultAsset.saved ? '已保存' : '保存资产'}</Button></div>}
       {status === 'succeeded' && !resultAsset && <div className="script-director-asset-task-ready"><CheckCircle2 size={13} />任务已完成，正在刷新生成结果…</div>}
       {status === 'failed' && <div className="script-director-asset-task-ready is-error">生成失败，可修改提示词后重新提交</div>}
     </div>}
@@ -2069,9 +2070,9 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     const retryable = canRetryExecution(message.activity) && !['draft', 'saved', 'discarded'].includes(message.execution?.outcome?.kind || '')
     const interrupted = message.failed || ['failed', 'cancelled'].includes(message.execution?.outcome?.kind || '')
     return <div className="sd-reply-actions" aria-label="回复操作">
-      {retryable && !interrupted && <button type="button" disabled={busy || Boolean(classificationPending[message.id]) || closing || !selectedModel || Boolean(generated && !scriptSaved)} onClick={() => void regenerateReply(message)}
-        title={generated && !scriptSaved ? '请先保存或放弃当前草稿' : '沿用原问题和引用资料重新回答；原版本保留在历史对话'}><RotateCcw size={13} />重新生成</button>}
-      {activeFocus === 'all' && !message.failed && <button type="button" disabled={busy || Boolean(classificationPending[message.id]) || closing || !selectedModel} onClick={() => reclassifyReply(message)} title="保留回复内容，仅让模型重新判断选择、填写问题和分集入口">重新识别选项</button>}
+      {retryable && !interrupted && <Button type="button" disabled={busy || Boolean(classificationPending[message.id]) || closing || !selectedModel || Boolean(generated && !scriptSaved)} onClick={() => void regenerateReply(message)}
+        title={generated && !scriptSaved ? '请先保存或放弃当前草稿' : '沿用原问题和引用资料重新回答；原版本保留在历史对话'} data-workspace-control="" variant="subtle"><RotateCcw size={13} />重新生成</Button>}
+      {activeFocus === 'all' && !message.failed && <Button type="button" disabled={busy || Boolean(classificationPending[message.id]) || closing || !selectedModel} onClick={() => reclassifyReply(message)} title="保留回复内容，仅让模型重新判断选择、填写问题和分集入口" data-workspace-control="" variant="subtle">重新识别选项</Button>}
     </div>
   }
 
@@ -2090,7 +2091,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     if (!state) return null
     return <div className="sd-reply-classification-status" role="status">
       {state === 'processing' ? <><LoaderCircle size={12} className="script-director-spinner" aria-hidden="true" />正在整理可操作项…</>
-        : <>操作项整理失败，正文仍可阅读和继续讨论。<button type="button" disabled={closing || !selectedModel} onClick={() => reclassifyReply(message)}>重试识别</button></>}
+        : <>操作项整理失败，正文仍可阅读和继续讨论。<Button type="button" disabled={closing || !selectedModel} onClick={() => reclassifyReply(message)} data-workspace-control="" variant="subtle">重试识别</Button></>}
     </div>
   }
 
@@ -2427,7 +2428,11 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     data-canvas-overlay
     onKeyDown={event => {
       if (event.key !== 'Escape') return
-      if (settingsOpen) setSettingsOpen(false)
+      if (settingsOpen) {
+        if (autoFieldOpen) setAutoFieldOpen(null)
+        else if (structurePickerOpen) setStructurePickerOpen(false)
+        else setSettingsOpen(false)
+      }
       else if (composerMenuOpen) setComposerMenuOpen(false)
       else if (historyOpen) setHistoryOpen(false)
       else if (workflowOpen) setWorkflowOpen(false)
@@ -2446,20 +2451,20 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         </div>
       </div>
       <div className="script-director-header-actions">
-        <button type="button" title="新建对话" aria-label="新建对话" onClick={startNewConversation} disabled={busy}><MessageCirclePlus size={17} /></button>
-        <button type="button" title="历史对话" aria-label="历史对话" className={historyOpen ? 'is-active' : 'is-muted'} onClick={() => setHistoryOpen((value) => !value)}><History size={16} /></button>
-        <button type="button" title="剧本设定" aria-label="剧本设定" onClick={openSettings}><Settings2 size={16} /></button>
-        <button type="button" title={`项目文档 · ${artifactCards.length}`} aria-label="项目文档" aria-expanded={artifactsOpen} onClick={() => { setArtifactsOpen(value => !value); setWorkflowOpen(false); setReaderKey(null); setMinimized(false) }}><FileText size={16} /></button>
-        <button type="button" title={windowLayout.docked ? '切换为浮窗' : '停靠到右侧'} aria-label={windowLayout.docked ? '切换为浮窗' : '停靠到右侧'} onClick={() => setWindowLayout(current => ({ ...current, docked: !current.docked }))}><PanelRight size={16} /></button>
-        <button type="button" title={minimized ? '展开对话' : '收起对话'} aria-label={minimized ? '展开对话' : '收起对话'} onClick={() => setMinimized(value => !value)}>{minimized ? <Maximize2 size={16} /> : <Minus size={16} />}</button>
-        <button type="button" title={busy ? '收起运行中的对话' : '关闭'} aria-label="关闭剧本导演" disabled={closing} onClick={() => void closeDirector()}>{closing ? <LoaderCircle size={16} className="script-director-spinner" /> : <X size={18} />}</button>
+        <ActionIcon type="button" title="新建对话" aria-label="新建对话" onClick={startNewConversation} disabled={busy} data-workspace-control=""><MessageCirclePlus size={17} /></ActionIcon>
+        <ActionIcon type="button" title="历史对话" aria-label="历史对话" className={historyOpen ? 'is-active' : 'is-muted'} onClick={() => setHistoryOpen((value) => !value)} data-workspace-control=""><History size={16} /></ActionIcon>
+        <ActionIcon type="button" title="剧本设定" aria-label="剧本设定" onClick={openSettings} data-workspace-control=""><Settings2 size={16} /></ActionIcon>
+        <ActionIcon type="button" title={`项目文档 · ${artifactCards.length}`} aria-label="项目文档" aria-expanded={artifactsOpen} onClick={() => { setArtifactsOpen(value => !value); setWorkflowOpen(false); setReaderKey(null); setMinimized(false) }} data-workspace-control=""><FileText size={16} /></ActionIcon>
+        <ActionIcon type="button" title={windowLayout.docked ? '切换为浮窗' : '停靠到右侧'} aria-label={windowLayout.docked ? '切换为浮窗' : '停靠到右侧'} onClick={() => setWindowLayout(current => ({ ...current, docked: !current.docked }))} data-workspace-control=""><PanelRight size={16} /></ActionIcon>
+        <Button type="button" title={minimized ? '展开对话' : '收起对话'} aria-label={minimized ? '展开对话' : '收起对话'} onClick={() => setMinimized(value => !value)} data-workspace-control="" variant="subtle">{minimized ? <Maximize2 size={16} /> : <Minus size={16} />}</Button>
+        <Button type="button" title={busy ? '收起运行中的对话' : '关闭'} aria-label="关闭剧本导演" disabled={closing} onClick={() => void closeDirector()} data-workspace-control="" variant="subtle">{closing ? <LoaderCircle size={16} className="script-director-spinner" /> : <X size={18} />}</Button>
       </div>
     </header>
     {historyOpen && <div className="script-director-history" role="listbox" aria-label="历史对话">
       <strong>历史对话</strong>
-      {history.length ? history.map((conversation) => <button type="button" key={conversation.id} disabled={busy} onClick={() => switchConversation(conversation)}>
+      {history.length ? history.map((conversation) => <UnstyledButton type="button" key={conversation.id} disabled={busy} onClick={() => switchConversation(conversation)}>
         <History size={13} /><span>{conversation.label}</span>
-      </button>) : <p>当前还没有历史对话</p>}
+      </UnstyledButton>) : <p>当前还没有历史对话</p>}
     </div>}
 
     <div className="sd-chat-main" hidden={minimized || Boolean(readerArtifact)}>
@@ -2513,7 +2518,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
             </>}
           </div>
           {activeChoice?.messageId === message.id ? <span className="sd-question-status">请在下方回答</span>
-            : <details className="sd-answered-question"><summary>{storedAnswer?.status === 'skipped' ? '已跳过' : answer || message.classification && 'status' in message.classification && message.classification.status === 'answered' ? '已回答' : dismissed ? '已结束' : '历史问题'}</summary><p>{parsedChoices.question}</p>{answer && <p>{answer}</p>}</details>}
+            : <WorkspaceDisclosure className="sd-answered-question" label={<>{storedAnswer?.status === 'skipped' ? '已跳过' : answer || message.classification && 'status' in message.classification && message.classification.status === 'answered' ? '已回答' : dismissed ? '已结束' : '历史问题'}</>}><p>{parsedChoices.question}</p>{answer && <p>{answer}</p>}</WorkspaceDisclosure>}
           <DirectorMessageTiming {...message} />
           {replyRecognition(message)}
           {replyActions(message)}
@@ -2528,22 +2533,22 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
           {message.role === 'assistant' && <DirectorMessageTiming {...message} />}
           {activeFocus === 'all' && stageContext.stage === 'episode' && stageContext.mode !== 'review' && canAdoptReply(message) && <div className="sd-message-adopt">
             {adoptingMessageId === message.id ? <>
-              <label>采用为第 <input type="number" min={1} max={200} value={episodeNumber} aria-label="采用为第几集" onChange={event => setEpisodeNumber(Math.max(1, Math.min(200, Number(event.currentTarget.value) || 1)))} /> 集</label>
-              <button type="button" disabled={busy} onClick={() => void adoptMessage(message)}>整理为分集草稿</button>
-              <button type="button" onClick={() => setAdoptingMessageId(null)}>取消</button>
-            </> : <button type="button" disabled={busy || Boolean(generated && !scriptSaved)} onClick={() => { if (message.classification?.type === 'episode_script' && message.classification.episode_number) setEpisodeNumber(message.classification.episode_number); setAdoptingMessageId(message.id) }}>采用为分集剧本</button>}
+              <label>采用为第 <NumberInput  min={1} max={200} value={episodeNumber} aria-label="采用为第几集" onChange={value => setEpisodeNumber(Math.max(1, Math.min(200, Number(value) || 1)))} clampBehavior="none" /> 集</label>
+              <Button type="button" disabled={busy} onClick={() => void adoptMessage(message)} data-workspace-control="" variant="subtle">整理为分集草稿</Button>
+              <Button type="button" onClick={() => setAdoptingMessageId(null)} data-workspace-control="" variant="subtle">取消</Button>
+            </> : <Button type="button" disabled={busy || Boolean(generated && !scriptSaved)} onClick={() => { if (message.classification?.type === 'episode_script' && message.classification.episode_number) setEpisodeNumber(message.classification.episode_number); setAdoptingMessageId(message.id) }} data-workspace-control="" variant="subtle">采用为分集剧本</Button>}
           </div>}
           {replyRecognition(message)}
           {replyActions(message)}
         </div>
       })}
     {(!!artifactCards.length || hasSavedScript && detail.script.scenes.length > 0) && <section className="sd-deliverables" aria-label="创作成果">
-      <header><span>创作成果</span><button type="button" onClick={() => { setArtifactsOpen(true); setWorkflowOpen(false); setReaderKey(null) }}>文档库 <span>{artifactCards.length}</span><ChevronRight size={13} /></button></header>
-      {generated && !scriptSaved ? <button type="button" className="sd-deliverable-document" aria-label={generated.workflow?.stage === 'episode' ? `查看第 ${generated.workflow.episode_number} 集草稿` : '查看草稿'} onClick={() => { setReaderKey(null); setArtifactsOpen(false); setWorkflowOpen(false); setPreviewOpen(true) }}>
+      <header><span>创作成果</span><UnstyledButton type="button" onClick={() => { setArtifactsOpen(true); setWorkflowOpen(false); setReaderKey(null) }}>文档库 <span>{artifactCards.length}</span><ChevronRight size={13} /></UnstyledButton></header>
+      {generated && !scriptSaved ? <UnstyledButton type="button" className="sd-deliverable-document" aria-label={generated.workflow?.stage === 'episode' ? `查看第 ${generated.workflow.episode_number} 集草稿` : '查看草稿'} onClick={() => { setReaderKey(null); setArtifactsOpen(false); setWorkflowOpen(false); setPreviewOpen(true) }}>
         <span className="sd-document-icon"><FileText size={18} /></span><span><strong>{generated.tool_draft?.kind === 'resource' ? '视觉设定与分镜草稿' : generated.workflow?.stage === 'episode' ? `第 ${generated.workflow.episode_number} 集草稿` : '待确认的创作草稿'}</strong><small>{generated.tool_draft?.kind === 'resource' ? `${generated.resource_changes?.length || 0} 项修改` : `${generated.artifacts.length} 份文档`} · 预览后确认保存</small></span><span className="sd-document-status">待确认</span><ChevronRight size={15} />
-      </button> : primaryArtifact && <button type="button" className="sd-deliverable-document" onClick={() => { setReaderKey(artifactKey(primaryArtifact)); setArtifactsOpen(false); setWorkflowOpen(false) }}>
+      </UnstyledButton> : primaryArtifact && <UnstyledButton type="button" className="sd-deliverable-document" onClick={() => { setReaderKey(artifactKey(primaryArtifact)); setArtifactsOpen(false); setWorkflowOpen(false) }}>
         <span className="sd-document-icon"><FileText size={18} /></span><span><strong>{primaryArtifact.artifact_type === 'episode_script' ? `第 ${primaryArtifact.episode_number} 集剧本` : primaryArtifact.title}</strong><small>{primaryArtifact.title}{primaryArtifact.artifact_type === 'episode_script' && primaryArtifactScenes.length ? ` · ${primaryArtifactScenes.length} 场 · ${primaryArtifactScenes.reduce((sum, scene) => sum + scene.duration, 0)} 秒` : ''}</small></span><span className="sd-document-status">已保存</span><ChevronRight size={15} />
-      </button>}
+      </UnstyledButton>}
       {hasSavedScript && detail.script.scenes.length > 0 && <section className="sd-production-row" aria-label="故事板制作">
         <div className="sd-production-target"><span><Clapperboard size={14} />制作分镜</span>
           {!!savedEpisodes.length && <Select className="sd-episode-select" aria-label="选择制作分镜的集数" value={String(handoffEpisode)} allowDeselect={false}
@@ -2552,7 +2557,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
             onChange={value => value !== null && setHandoffEpisode(Number(value))} />}
         </div>
         <div className="sd-production-action"><small>{handoffScenes.length} 场 · 规划后加入</small>
-          <button type="button" className="sd-document-primary" title="规划并确认分镜后加入画布" onClick={() => { setPlanningSceneIds(handoffScenes.map(scene => scene.id)); setStoryboardOpen(true) }} disabled={busy || !handoffScenes.length}><Plus size={14} />加入画布</button>
+          <Button type="button" className="sd-document-primary" title="规划并确认分镜后加入画布" onClick={() => { setPlanningSceneIds(handoffScenes.map(scene => scene.id)); setStoryboardOpen(true) }} disabled={busy || !handoffScenes.length} data-workspace-control="" variant="subtle"><Plus size={14} />加入画布</Button>
         </div>
       </section>}
     </section>}
@@ -2560,53 +2565,53 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     {activeFocus === 'all' && !previewOpen && !artifactsOpen && !workflowOpen && <nav className="sd-creation-actions" aria-label="创作操作">
       {(creation?.status !== 'direction' || busy || generated && !scriptSaved) && <span className="sd-creation-progress" role="status">{generated && !scriptSaved ? generated.tool_draft?.revision_task && generated.tool_draft.revision_task.status !== 'ready' ? '统一修订未完成' : '草稿待确认' : busy ? '正在处理当前创作'
         : creation?.status === 'complete' ? '可核对连续性或制作分镜' : nextStep ? '下一步：' : '继续讨论当前创作'}</span>}
-      {generated?.tool_draft?.revision_task && generated.tool_draft.revision_task.status !== 'ready' && !scriptSaved && <button type="button" disabled={busy || closing || !selectedModel} onClick={continueRevisionTask}>继续统一修订<ChevronRight size={14} /></button>}
-      {!busy && !closing && !activeChoice && !(generated && !scriptSaved) && nextStep && <button type="button" disabled={!selectedModel}
+      {generated?.tool_draft?.revision_task && generated.tool_draft.revision_task.status !== 'ready' && !scriptSaved && <Button type="button" disabled={busy || closing || !selectedModel} onClick={continueRevisionTask} data-workspace-control="" variant="subtle">继续统一修订<ChevronRight size={14} /></Button>}
+      {!busy && !closing && !activeChoice && !(generated && !scriptSaved) && nextStep && <Button type="button" disabled={!selectedModel}
         title={nextStep.basis || nextStep.summary}
-        onClick={() => generateWorkflow(nextStep.stage, `${nextStep.purpose === 'revise' ? '修订' : '生成'}${nextStep.stage === 'episode' ? `第 ${nextStep.episode_number} 集正文` : workflowLabels[nextStep.stage]}`, nextStep.episode_number, nextStep)}>
+        onClick={() => generateWorkflow(nextStep.stage, `${nextStep.purpose === 'revise' ? '修订' : '生成'}${nextStep.stage === 'episode' ? `第 ${nextStep.episode_number} 集正文` : workflowLabels[nextStep.stage]}`, nextStep.episode_number, nextStep)} data-workspace-control="" variant="subtle">
         <FileText size={14} aria-hidden="true" />{nextStep.purpose === 'revise' ? '修订' : '生成'}{nextStep.stage === 'episode' ? `第 ${nextStep.episode_number} 集正文` : workflowLabels[nextStep.stage]}
-      </button>}
-      {directionStart && !busy && !activeChoice && !(generated && !scriptSaved) && <button type="button" disabled={closing || !selectedModel}
+      </Button>}
+      {directionStart && !busy && !activeChoice && !(generated && !scriptSaved) && <Button type="button" disabled={closing || !selectedModel}
         title="提供几个故事方向供你选择"
-        onClick={() => void sendChatMessage('基于当前对话，给我几个故事方向供选择。保留已经确认的设定，说明各方向的区别。')}>
+        onClick={() => void sendChatMessage('基于当前对话，给我几个故事方向供选择。保留已经确认的设定，说明各方向的区别。')} data-workspace-control="" variant="subtle">
         <Lightbulb size={14} aria-hidden="true" />探索故事方向
-      </button>}
+      </Button>}
     </nav>}
     </div>
     <StoryboardPlanner opened={storyboardOpen} onClose={() => setStoryboardOpen(false)} detail={detail} models={availableModels} initialSceneIds={planningSceneIds}
       onRefresh={onRefresh} onOpenCanvas={onClose} onNotice={onNotice} />
     {artifactsOpen && <section className="sd-utility-panel" aria-label="项目文档列表">
-      <header><strong>项目文档 · {artifactCards.length}</strong><button type="button" aria-label="关闭项目文档" onClick={() => setArtifactsOpen(false)}><X size={16} /></button></header>
+      <header><strong>项目文档 · {artifactCards.length}</strong><ActionIcon type="button" aria-label="关闭项目文档" onClick={() => setArtifactsOpen(false)} data-workspace-control=""><X size={16} /></ActionIcon></header>
       <div className="sd-utility-body">
-        {!!decisions.length && <details className="sd-story-decisions"><summary>已确认设定 · {decisions.length}</summary>{decisions.map(decision => <div key={decision.id}><strong>{decision.topic}</strong><p>{decision.content}</p><small>{decision.basis === 'delegated_model' ? '跳过后由模型确定' : '创作者确认'}</small><details><summary>查看确认来源</summary><p>{decision.source_text}</p></details></div>)}<small>需要调整时，在对话中说明要修改的设定。</small></details>}
-        {artifactCards.length ? artifactCards.map(artifact => <button type="button" className="sd-artifact-card" key={artifactKey(artifact)} aria-label={`阅读文档：${artifact.title}`} onClick={() => { setReaderKey(artifactKey(artifact)); setArtifactsOpen(false) }}>
+        {!!decisions.length && <WorkspaceDisclosure className="sd-story-decisions" label={<>已确认设定 · {decisions.length}</>}>{decisions.map(decision => <div key={decision.id}><strong>{decision.topic}</strong><p>{decision.content}</p><small>{decision.basis === 'delegated_model' ? '跳过后由模型确定' : '创作者确认'}</small><WorkspaceDisclosure label={<>查看确认来源</>}><p>{decision.source_text}</p></WorkspaceDisclosure></div>)}<small>需要调整时，在对话中说明要修改的设定。</small></WorkspaceDisclosure>}
+        {artifactCards.length ? artifactCards.map(artifact => <UnstyledButton type="button" className="sd-artifact-card" key={artifactKey(artifact)} aria-label={`阅读文档：${artifact.title}`} onClick={() => { setReaderKey(artifactKey(artifact)); setArtifactsOpen(false) }}>
           <FileText size={18} /><span><strong>{artifact.title}</strong><small>{artifact.isUnsaved ? '草稿待确认' : '已保存文档'}{artifact.episode_number ? ` · 第 ${artifact.episode_number} 集` : ''}</small></span><ChevronRight size={14} />
-        </button>) : <p className="sd-utility-empty">还没有项目文档。可以先讨论故事方向，再生成并确认保存大纲、人物和分集正文。</p>}
+        </UnstyledButton>) : <p className="sd-utility-empty">还没有项目文档。可以先讨论故事方向，再生成并确认保存大纲、人物和分集正文。</p>}
       </div>
     </section>}
     {workflowOpen && <section className="sd-utility-panel" aria-label="分阶段生成面板">
-      <header><strong>分阶段生成</strong><button type="button" aria-label="关闭分阶段生成" onClick={() => setWorkflowOpen(false)}><X size={16} /></button></header>
+      <header><strong>分阶段生成</strong><ActionIcon type="button" aria-label="关闭分阶段生成" onClick={() => setWorkflowOpen(false)} data-workspace-control=""><X size={16} /></ActionIcon></header>
       <div className="sd-utility-body">
         <p>{workflowStage === 'episode' ? `本次仅创作第 ${episodeNumber} 集正文，承接全剧资料，不修改其他集。` : '本次整理全剧资料，覆盖整个故事；不会生成下一集正文。'}生成后可编辑、确认保存。</p>
         <p>推荐顺序：大纲 → 人物与关系 → 场景 → 道具 → 分集正文。{progress.next_stage ? `当前建议：${progress.next_stage === 'episode' ? `第 ${progress.next_episode} 集正文` : workflowLabels[progress.next_stage]}。` : '当前资料与正文已齐备。'}已有文档会复用，你也可以自行选择其他阶段。</p>
-        {availableModels.length ? <>{modelSelector}{skillSelector}</> : <button type="button" className="script-director-model-link" onClick={onOpenModels}>配置可用文本模型</button>}
+        {availableModels.length ? <>{modelSelector}{skillSelector}</> : <Button type="button" className="script-director-model-link" onClick={onOpenModels} data-workspace-control="" variant="subtle">配置可用文本模型</Button>}
         <Select label="创作阶段" aria-label="创作阶段" value={workflowStage} allowDeselect={false}
           data={workflowStages.map(stage => ({ value: stage, label: `${workflowLabels[stage]}${stage !== 'episode' && progress.completed[stage] ? ' · 已有' : ''}` }))}
           disabled={busy || Boolean(generated && !scriptSaved)} onChange={value => value && setWorkflowStage(value as WorkflowStage)} />
         {workflowStage === 'episode' && <div className="script-director-episode-fields">
-          <label>第 <input type="number" min={1} max={200} value={episodeNumber} aria-label="生成第几集" disabled={busy} onChange={event => setEpisodeNumber(Math.max(1, Math.min(200, Number(event.currentTarget.value) || 1)))} /> 集</label>
-          <label>单集 <input type="number" min={5} max={600} value={episodeDuration ?? ''} placeholder="自动" aria-label="单集目标秒数" disabled={busy} onChange={event => { const duration = event.currentTarget.value ? Math.max(5, Math.min(600, Number(event.currentTarget.value) || 5)) : undefined; setEpisodeDuration(duration); setOptions(current => ({ ...current, episode_duration: duration })) }} /> 秒</label>
+          <label>第 <NumberInput  min={1} max={200} value={episodeNumber} aria-label="生成第几集" disabled={busy} onChange={value => setEpisodeNumber(Math.max(1, Math.min(200, Number(value) || 1)))} clampBehavior="none" /> 集</label>
+          <label>单集 <NumberInput  min={5} max={600} value={episodeDuration ?? ''} placeholder="自动" aria-label="单集目标秒数" disabled={busy} onChange={value => { const duration = value ? Math.max(5, Math.min(600, Number(value) || 5)) : undefined; setEpisodeDuration(duration); setOptions(current => ({ ...current, episode_duration: duration })) }} clampBehavior="none" /> 秒</label>
         </div>}
         {generated && !scriptSaved ? <div className="script-director-workflow-actions">
-          <button type="button" onClick={() => { setWorkflowOpen(false); setPreviewOpen(true) }}>查看待确认草稿</button>
-          <button type="button" disabled={busy} onClick={() => void discardGenerated()}>放弃草稿</button>
-        </div> : <button type="button" className="script-director-workflow-generate" disabled={busy || !selectedModel || !references.length && !input.trim() && !idea.trim() && !messages.some(message => message.role === 'user')} onClick={() => { setWorkflowOpen(false); generateWorkflow() }}><FileText size={13} />{`生成${workflowStage === 'episode' ? `第 ${episodeNumber} 集正文` : workflowLabels[workflowStage]}`}</button>}
-        {promptCustomized && <button type="button" className="script-director-workflow-generate" disabled={busy || !selectedModel || Boolean(generated && !scriptSaved)} onClick={() => { setWorkflowOpen(false); void generateScript() }}>按自定义提示词生成完整草稿</button>}
+          <Button type="button" onClick={() => { setWorkflowOpen(false); setPreviewOpen(true) }} data-workspace-control="" variant="subtle">查看待确认草稿</Button>
+          <Button type="button" disabled={busy} onClick={() => void discardGenerated()} data-workspace-control="" variant="subtle">放弃草稿</Button>
+        </div> : <Button type="button" className="script-director-workflow-generate" disabled={busy || !selectedModel || !references.length && !input.trim() && !idea.trim() && !messages.some(message => message.role === 'user')} onClick={() => { setWorkflowOpen(false); generateWorkflow() }} data-workspace-control="" variant="subtle"><FileText size={13} />{`生成${workflowStage === 'episode' ? `第 ${episodeNumber} 集正文` : workflowLabels[workflowStage]}`}</Button>}
+        {promptCustomized && <Button type="button" className="script-director-workflow-generate" disabled={busy || !selectedModel || Boolean(generated && !scriptSaved)} onClick={() => { setWorkflowOpen(false); void generateScript() }} data-workspace-control="" variant="subtle">按自定义提示词生成完整草稿</Button>}
       </div>
     </section>}
-    {showLatest && <button type="button" className="sd-latest" onClick={latestMessages}><ArrowDown size={14} />回到最新消息</button>}
+    {showLatest && <Button type="button" className="sd-latest" onClick={latestMessages} data-workspace-control="" variant="subtle"><ArrowDown size={14} />回到最新消息</Button>}
 
-    {error && <div className="script-director-error" role="alert">{error}<button type="button" onClick={() => setError(null)} aria-label="关闭错误"><X size={14} /></button></div>}
+    {error && <div className="script-director-error" role="alert">{error}<ActionIcon type="button" onClick={() => setError(null)} aria-label="关闭错误" data-workspace-control=""><X size={14} /></ActionIcon></div>}
 
     {liveRevision && <RevisionProgress task={liveRevision} working={working === 'chat'} />}
     {previewOpen && generated && <DirectorDraftReview draft={generated} busy={busy} saving={working === 'save'} saved={scriptSaved} onChange={setGenerated} onClose={() => setPreviewOpen(false)} onSave={() => void saveGenerated()} onDiscard={() => void discardGenerated()}
@@ -2614,15 +2619,15 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       profileNames={Object.fromEntries((detail.visual_profiles || []).map(profile => [profile.id, `${profile.name} · ${profile.variant}`]))} sceneNames={Object.fromEntries(detail.script.scenes.map(scene => [scene.id, scene.heading]))} />}
     {!previewOpen && !artifactsOpen && !workflowOpen && <section className={`sd-composer-area${composerCollapsed ? ' is-collapsed' : ''}`} aria-label="对话输入区">
       <div className="sd-composer-area-head">
-        {composerCollapsed ? <button type="button" className="sd-composer-expand" aria-expanded={false} aria-controls={composerBodyId} onClick={() => setComposerCollapsed(false)}>
+        {composerCollapsed ? <UnstyledButton type="button" className="sd-composer-expand" aria-expanded={false} aria-controls={composerBodyId} onClick={() => setComposerCollapsed(false)}>
           <PanelBottomOpen size={15} /><span>展开输入区</span><small>{activeChoice ? '有选项待回答' : [input.length ? `草稿 ${input.length} 字` : '', references.length ? `已引用 ${references.length} 份文档` : ''].filter(Boolean).join(' · ')}</small>
-        </button> : <>
+        </UnstyledButton> : <>
           {!previewOpen && !artifactsOpen && !workflowOpen ? <div className="sd-skill-context" aria-label="当前创作技能">
             <span>{currentSkillStage === 'script' ? '创作技能' : '视觉设定技能'}</span>{skillSelector}
           </div> : <span className="sd-composer-area-label">输入区</span>}
-          <button type="button" className="sd-composer-collapse" aria-label="收起输入区" title="收起输入区" aria-expanded={true} aria-controls={composerBodyId} onClick={() => { setComposerCollapsed(true); setComposerMenuOpen(false) }}><PanelBottomClose size={14} /><span>收起</span></button>
+          <UnstyledButton type="button" className="sd-composer-collapse" aria-label="收起输入区" title="收起输入区" aria-expanded={true} aria-controls={composerBodyId} onClick={() => { setComposerCollapsed(true); setComposerMenuOpen(false) }}><PanelBottomClose size={14} /><span>收起</span></UnstyledButton>
         </>}
-        {composerCollapsed && working === 'chat' && <button type="button" className="sd-composer-stop" aria-label="停止生成" title="停止生成" onClick={stopChatGeneration}><Square size={12} fill="currentColor" /><span>停止生成</span></button>}
+        {composerCollapsed && working === 'chat' && <UnstyledButton type="button" className="sd-composer-stop" aria-label="停止生成" title="停止生成" onClick={stopChatGeneration}><Square size={12} fill="currentColor" /><span>停止生成</span></UnstyledButton>}
       </div>
       <div id={composerBodyId} className="sd-composer-area-content" hidden={composerCollapsed}>
     {activeChoice && !previewOpen && !references.length ? <DirectorQuestionPanel key={activeChoice.messageId}
@@ -2632,21 +2637,22 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       onContinue={answer => answerQuestion(activeChoice.messageId, activeChoice.choice.question, answer)} />
       : <div className={`script-director-composer ${promptOpen ? 'is-prompt-open' : ''}`}>
       <DirectorReferences documents={references} disabled={busy} onOpen={setReaderReference} onRemove={key => setReferences(current => current.filter(document => document.key !== key))} />
-      {documentTask && <div className="sd-document-task"><span>修订：{documentTask.title}</span><button type="button" aria-label="取消定向修订" disabled={busy} onClick={() => setDocumentTask(null)}><X size={13} /></button></div>}
-      <textarea ref={composerRef} value={input} maxLength={8000} onChange={(event) => setInput(event.currentTarget.value)} onKeyDown={handleInputKeyDown} placeholder={activeFocus === 'all' ? '聊聊你的故事想法…' : `描述你希望如何处理${focusArtifactLabels[activeFocus]}…`} aria-label="剧本创作对话" disabled={busy} />
+      {documentTask && <div className="sd-document-task"><span>修订：{documentTask.title}</span><ActionIcon type="button" aria-label="取消定向修订" disabled={busy} onClick={() => setDocumentTask(null)} data-workspace-control=""><X size={13} /></ActionIcon></div>}
+      <Textarea ref={composerRef} value={input} maxLength={8000} onChange={(event) => setInput(event.currentTarget.value)} onKeyDown={handleInputKeyDown} placeholder={activeFocus === 'all' ? '聊聊你的故事想法…' : `描述你希望如何处理${focusArtifactLabels[activeFocus]}…`} aria-label="剧本创作对话" disabled={busy} />
       {promptOpen && <div className="script-director-prompt-editor">
-        <div className="script-director-prompt-head"><span>实际发送提示词</span><button type="button" onClick={() => void refreshPrompt()} disabled={promptLoading || busy}>恢复自动提示词</button></div>
-        <textarea value={prompt} onChange={(event) => { setPromptCustomized(true); setPrompt(event.currentTarget.value) }} placeholder="正在生成提示词…" disabled={promptLoading || busy} />
+        <div className="script-director-prompt-head"><span>提示词设置</span><Button type="button" onClick={() => void refreshPrompt()} disabled={promptLoading || busy} data-workspace-control="" variant="subtle">恢复自动提示词</Button></div>
+        <Textarea value={prompt} onChange={(event) => { setPromptCustomized(true); setPrompt(event.currentTarget.value) }} placeholder="正在生成提示词…" disabled={promptLoading || busy} />
         {promptError && <small>{promptError}</small>}
       </div>}
       <div className="script-director-composer-toolbar">
-        <button type="button" className="sd-composer-add" aria-label="对话工具" aria-expanded={composerMenuOpen} onClick={() => setComposerMenuOpen(value => !value)}><Plus size={19} /></button>
-        {composerMenuOpen && <div className="sd-composer-menu" role="menu" aria-label="对话工具菜单">
-          <button type="button" role="menuitem" disabled={busy} onClick={() => { setComposerMenuOpen(false); openSettings() }}><Settings2 size={15} />剧本设定</button>
-          <button type="button" role="menuitem" onClick={() => { setComposerMenuOpen(false); setWorkflowOpen(true); setArtifactsOpen(false) }}><FileText size={15} />分阶段生成</button>
-          <button type="button" role="menuitem" onClick={() => { setComposerMenuOpen(false); setArtifactsOpen(true); setWorkflowOpen(false) }}><FileText size={15} />项目文档 · {artifactCards.length}</button>
-          <button type="button" role="menuitem" onClick={() => { setComposerMenuOpen(false); void refreshPrompt() }} disabled={busy}><PenLine size={15} />编辑发送提示词</button>
-        </div>}
+        <Menu opened={composerMenuOpen} onChange={setComposerMenuOpen} withinPortal={false} position="top-start"><Menu.Target><ActionIcon type="button" className="sd-composer-add" aria-label="对话工具" aria-expanded={composerMenuOpen} onClick={() => setComposerMenuOpen(value => !value)} data-workspace-control=""><Plus size={19} /></ActionIcon></Menu.Target>
+        {composerMenuOpen && <Menu.Dropdown className="sd-composer-menu" role="menu" aria-label="对话工具菜单">
+          <Menu.Item type="button" role="menuitem" disabled={busy} onClick={() => { setComposerMenuOpen(false); openSettings() }} data-workspace-control=""><Settings2 size={15} />剧本设定</Menu.Item>
+          <Menu.Item type="button" role="menuitem" onClick={() => { setComposerMenuOpen(false); setWorkflowOpen(true); setArtifactsOpen(false) }} data-workspace-control=""><FileText size={15} />分阶段生成</Menu.Item>
+          <Menu.Item type="button" role="menuitem" onClick={() => { setComposerMenuOpen(false); setArtifactsOpen(true); setWorkflowOpen(false) }} data-workspace-control=""><FileText size={15} />项目文档 · {artifactCards.length}</Menu.Item>
+          <Menu.Item type="button" role="menuitem" onClick={() => { setComposerMenuOpen(false); void refreshPrompt() }} disabled={busy} data-workspace-control=""><PenLine size={15} />编辑发送提示词</Menu.Item>
+        </Menu.Dropdown>}
+</Menu>
         <Select
           className="script-director-mode-select"
           aria-label="创作模式"
@@ -2664,9 +2670,9 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
           }}
         />
         {modelSelector}
-        <button type="button" className="script-director-send" onClick={() => working === 'chat' ? stopChatGeneration() : void sendChatMessage()} disabled={working === 'chat' ? false : busy || skillControl.loading || !!skillControl.error || (!input.trim() && !references.length) || !selectedModel} aria-label={working === 'chat' ? '停止生成' : '发送消息'} title={working === 'chat' ? '停止生成' : '发送消息'}>{working === 'chat' ? <Square size={15} fill="currentColor" /> : <ArrowUp size={20} />}</button>
+        <Button type="button" className="script-director-send" onClick={() => working === 'chat' ? stopChatGeneration() : void sendChatMessage()} disabled={working === 'chat' ? false : busy || skillControl.loading || !!skillControl.error || (!input.trim() && !references.length) || !selectedModel} aria-label={working === 'chat' ? '停止生成' : '发送消息'} title={working === 'chat' ? '停止生成' : '发送消息'} data-workspace-control="" variant="subtle">{working === 'chat' ? <Square size={13} fill="currentColor" /> : <ArrowUp size={16} />}</Button>
       </div>
-      {!availableModels.length && <button type="button" className="script-director-model-link" onClick={onOpenModels}>还没有可用文本模型，前往模型设置添加</button>}
+      {!availableModels.length && <Button type="button" className="script-director-model-link" onClick={onOpenModels} data-workspace-control="" variant="subtle">还没有可用文本模型，前往模型设置添加</Button>}
       <div className="sd-composer-hint"><span>Enter 发送 · Shift+Enter 换行</span><span>{input.length ? `${input.length}/8000` : ''}</span></div>
     </div>}
       </div>
@@ -2674,13 +2680,13 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     </div>
 
     {readerArtifact && !minimized && <section className="sd-document-reader" aria-label="导演文档阅读器">
-      <header><button type="button" aria-label="返回导演对话" onClick={() => { setReaderKey(null); setReaderReference(null) }}><ChevronLeft size={18} /></button><strong>{readerReference ? '引用文档' : '项目文档'}</strong><button type="button" aria-label="关闭文档阅读器" onClick={() => { setReaderKey(null); setReaderReference(null) }}><X size={17} /></button></header>
+      <header><ActionIcon type="button" aria-label="返回导演对话" onClick={() => { setReaderKey(null); setReaderReference(null) }} data-workspace-control=""><ChevronLeft size={18} /></ActionIcon><strong>{readerReference ? '引用文档' : '项目文档'}</strong><ActionIcon type="button" aria-label="关闭文档阅读器" onClick={() => { setReaderKey(null); setReaderReference(null) }} data-workspace-control=""><X size={17} /></ActionIcon></header>
       <div className="sd-document-toolbar">{!readerReference && <Select className="sd-document-select" aria-label="选择阅读文档" value={readerKey} data={artifactCards.map(artifact => ({ value: artifactKey(artifact), label: artifact.title }))} allowDeselect={false} rightSection={<ChevronDown size={14} />} comboboxProps={{ withinPortal: true, zIndex: 400 }} onChange={setReaderKey} />}
-        {!!readerScenes.length && <div className="sd-view-switch" role="group" aria-label="剧本展示方式"><button type="button" aria-pressed={readerView === 'body'} onClick={() => setReaderView('body')}>正文</button><button type="button" aria-pressed={readerView === 'scenes'} onClick={() => setReaderView('scenes')}>分场</button></div>}
+        {!!readerScenes.length && <div className="sd-view-switch" role="group" aria-label="剧本展示方式"><UnstyledButton type="button" aria-pressed={readerView === 'body'} onClick={() => setReaderView('body')}>正文</UnstyledButton><UnstyledButton type="button" aria-pressed={readerView === 'scenes'} onClick={() => setReaderView('scenes')}>分场</UnstyledButton></div>}
       </div>
       <div className="sd-document-meta"><span className="sd-document-status">{readerReference ? '引用快照' : readerArtifact.isUnsaved ? '草稿待确认' : readerArtifact.status === 'draft' ? '已保存草稿' : '已保存'}</span><span>{readerScenes.length ? `${readerScenes.length} 场 · ${readerScenes.reduce((sum, scene) => sum + scene.duration, 0)} 秒` : '创作资料'}</span></div>
       <article key={`${readerKey}:${readerView}`}>{readerView === 'scenes' && readerScenes.length ? <DirectorSceneList scenes={readerScenes} /> : <div className="sd-document-page"><h2>{readerArtifact.title}</h2><DirectorDocumentBody text={readerArtifact.content} /></div>}</article>
-      <footer><button type="button" className="sd-document-secondary" disabled={busy} onClick={() => {
+      <footer><Button type="button" className="sd-document-secondary" disabled={busy} onClick={() => {
         try {
           const reference = { key: artifactKey(readerArtifact), title: readerArtifact.title, artifact_type: readerArtifact.artifact_type, episode_number: readerArtifact.episode_number || 0, content: readerArtifact.content }
           setReferences(addReference(references, reference))
@@ -2689,31 +2695,31 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
           setReaderKey(null); setReaderReference(null); setError(null)
           window.requestAnimationFrame(() => composerRef.current?.focus())
         } catch (issue) { setError(readableError(issue)); setReaderKey(null); setReaderReference(null) }
-      }}><Plus size={14} />引用到对话</button>
-        {!readerReference && !readerArtifact.isUnsaved && activeFocus === 'all' && <><button type="button" disabled={busy || !selectedModel} onClick={() => reviewDocument('review')}><FileText size={14} />模型评审</button><button type="button" disabled={busy || !selectedModel} onClick={() => reviewDocument('revise')}><PenLine size={14} />对话修订</button></>}
-        {!readerReference && (readerArtifact.isUnsaved ? <button type="button" className="sd-document-primary" onClick={() => { setReaderKey(null); setPreviewOpen(true) }}>查看待确认草稿<ChevronRight size={14} /></button> : onOpenDocument && <button type="button" className="sd-document-primary" onClick={() => { const saved = detail.script.artifacts?.find(artifact => artifactKey(artifact) === readerKey); if (saved) onOpenDocument(saved) }}><PenLine size={14} />编辑文档</button>)}
+      }} data-workspace-control="" variant="subtle"><Plus size={14} />引用到对话</Button>
+        {!readerReference && !readerArtifact.isUnsaved && activeFocus === 'all' && <><Button type="button" disabled={busy || !selectedModel} onClick={() => reviewDocument('review')} data-workspace-control="" variant="subtle"><FileText size={14} />模型评审</Button><Button type="button" disabled={busy || !selectedModel} onClick={() => reviewDocument('revise')} data-workspace-control="" variant="subtle"><PenLine size={14} />对话修订</Button></>}
+        {!readerReference && (readerArtifact.isUnsaved ? <Button type="button" className="sd-document-primary" onClick={() => { setReaderKey(null); setPreviewOpen(true) }} data-workspace-control="" variant="subtle">查看待确认草稿<ChevronRight size={14} /></Button> : onOpenDocument && <Button type="button" className="sd-document-primary" onClick={() => { const saved = detail.script.artifacts?.find(artifact => artifactKey(artifact) === readerKey); if (saved) onOpenDocument(saved) }} data-workspace-control="" variant="subtle"><PenLine size={14} />编辑文档</Button>)}
       </footer>
     </section>}
-    {!windowLayout.docked && !minimized && <button type="button" className="sd-window-resize" aria-label="调整对话窗口大小" title="拖动或用方向键调整窗口大小" onPointerDown={event => startWindowGesture(event, true)} onPointerMove={moveWindowGesture} onPointerUp={() => { gestureRef.current = null }} onPointerCancel={() => { gestureRef.current = null }} onKeyDown={event => {
+    {!windowLayout.docked && !minimized && <Button type="button" className="sd-window-resize" aria-label="调整对话窗口大小" title="拖动或用方向键调整窗口大小" onPointerDown={event => startWindowGesture(event, true)} onPointerMove={moveWindowGesture} onPointerUp={() => { gestureRef.current = null }} onPointerCancel={() => { gestureRef.current = null }} onKeyDown={event => {
       if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return
       event.preventDefault()
       const step = event.shiftKey ? 40 : 10
       setWindowLayout(current => ({ ...current, rect: clampDirectorWindow({ ...current.rect, width: current.rect.width + (event.key === 'ArrowRight' ? step : event.key === 'ArrowLeft' ? -step : 0), height: current.rect.height + (event.key === 'ArrowDown' ? step : event.key === 'ArrowUp' ? -step : 0) }, { width: window.innerWidth, height: window.innerHeight }) }))
-    }} />}
+    }} data-workspace-control="" variant="subtle" />}
 
-    {settingsOpen && <div className="script-director-settings-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSettingsOpen(false) }}>
-      <section className={`script-director-settings-modal${showSettingPresets ? '' : ' is-presets-hidden'}`} role="dialog" aria-modal="true" aria-label="剧本设定器" onMouseDown={(event) => event.stopPropagation()}>
+    {settingsOpen && <Modal opened={settingsOpen} onClose={() => setSettingsOpen(false)} title="剧本设定器" closeOnEscape={!autoFieldOpen && !structurePickerOpen} withCloseButton={false} size="min(1180px, calc(100vw - 32px))" zIndex={300} classNames={{ content: `script-director-settings-modal${showSettingPresets ? '' : ' is-presets-hidden'}`, body: 'script-director-settings-modal-body', header: 'workspace-sr-only' }}>
+
         {showSettingPresets && <aside className="script-director-settings-presets">
           <header><div><strong>爆款预设 Top 8</strong></div></header>
           <div className="script-director-settings-preset-list">
-            {directorSettingPresets.map((preset, index) => <button type="button" key={preset.label} className={settingsDraft.genre === preset.values.genre && (!preset.artwork || settingsPresetArtwork === preset.artwork) ? 'is-active' : ''} style={preset.artwork ? { backgroundImage: `linear-gradient(100deg, #111720e8 0%, #11172072 62%, #11172025 100%), url("${preset.artwork}")` } : undefined} onClick={() => { setAutoFieldOpen(null); setStructurePickerOpen(false); setFusionRailOpen(Boolean(preset.values.genre_fusion)); setSettingsPresetArtwork(preset.artwork); setSettingsDraft((current) => ({ ...current, ...preset.values, ...(preset.values.visual_style ? { visual_style_details: undefined } : {}) })) }}>
+            {directorSettingPresets.map((preset, index) => <UnstyledButton type="button" key={preset.label} className={settingsDraft.genre === preset.values.genre && (!preset.artwork || settingsPresetArtwork === preset.artwork) ? 'is-active' : ''} style={preset.artwork ? { backgroundImage: `linear-gradient(100deg, #111720e8 0%, #11172072 62%, #11172025 100%), url("${preset.artwork}")` } : undefined} onClick={() => { setAutoFieldOpen(null); setStructurePickerOpen(false); setFusionRailOpen(Boolean(preset.values.genre_fusion)); setSettingsPresetArtwork(preset.artwork); setSettingsDraft((current) => ({ ...current, ...preset.values, ...(preset.values.visual_style ? { visual_style_details: undefined } : {}) })) }}>
               <span className="script-director-preset-copy"><b>{index + 1}</b><span>{preset.label}</span></span>
-            </button>)}
+            </UnstyledButton>)}
           </div>
-          <button type="button" className="script-director-settings-custom" onClick={() => { setAutoFieldOpen(null); setStructurePickerOpen(false); setSettingsPresetArtwork(undefined); setFusionExitActive(Boolean(settingsDraft.genre_fusion)); setFusionRailOpen(false); setSettingsDraft(emptyOptions) }}><PenLine size={13} />自定义设定</button>
+          <Button type="button" className="script-director-settings-custom" onClick={() => { setAutoFieldOpen(null); setStructurePickerOpen(false); setSettingsPresetArtwork(undefined); setFusionExitActive(Boolean(settingsDraft.genre_fusion)); setFusionRailOpen(false); setSettingsDraft(emptyOptions) }} data-workspace-control="" variant="subtle"><PenLine size={13} />自定义设定</Button>
         </aside>}
         <div className="script-director-settings-main">
-          <header className="script-director-settings-modal-head"><div><span>剧本设定器</span></div><button type="button" onClick={() => setSettingsOpen(false)} aria-label="关闭剧本设定器"><X size={19} /></button></header>
+          <header className="script-director-settings-modal-head"><div><span>剧本设定器</span></div><ActionIcon type="button" onClick={() => setSettingsOpen(false)} aria-label="关闭剧本设定器" data-workspace-control=""><X size={19} /></ActionIcon></header>
           <div className="script-director-settings-scroll" onMouseDown={(event) => {
             const target = event.target as HTMLElement
             if (!target.closest('.script-director-structure-picker')) setStructurePickerOpen(false)
@@ -2742,9 +2748,9 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
                         {directorArtworkForTheme(settingsDraft.genre_fusion) && <span className="script-director-theme-cover" aria-hidden="true" />}
                         <span>{settingsDraft.genre_fusion}</span>
                       </span>
-                      <button type="button" aria-label="移除融合题材" onClick={clearFusionTheme}><Minus size={14} strokeWidth={1.8} /></button>
+                      <ActionIcon type="button" aria-label="移除融合题材" onClick={clearFusionTheme} data-workspace-control=""><Minus size={14} strokeWidth={1.8} /></ActionIcon>
                     </div>
-                    : !fusionExitActive && <button type="button" className="script-director-theme-fusion-trigger" aria-expanded={fusionRailOpen} onClick={() => {
+                    : !fusionExitActive && <UnstyledButton type="button" className="script-director-theme-fusion-trigger" aria-expanded={fusionRailOpen} onClick={() => {
                       setAutoFieldOpen(null)
                       setStructurePickerOpen(false)
                       setSettingsDraft((current) => {
@@ -2755,7 +2761,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
                         return { ...current, genre: primary, genre_fusion: fusion }
                       })
                       setFusionRailOpen(true)
-                    }}><span>＋</span><small>融合题材</small></button>}
+                    }}><span>＋</span><small>融合题材</small></UnstyledButton>}
                     {settingsDraft.genre_fusion && <>
                       <span className="script-director-theme-liquid-gel" aria-hidden="true" />
                       <span className="script-director-theme-fusion-bridge" aria-hidden="true" />
@@ -2782,7 +2788,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
                     </span>}
                   </div>
                 </div>)}
-                {themeVisuals.status === 'error' && <button className="script-director-theme-match-retry" type="button" onClick={themeVisuals.retry}><RotateCcw size={12} />重试封面匹配</button>}
+                {themeVisuals.status === 'error' && <Button className="script-director-theme-match-retry" type="button" onClick={themeVisuals.retry} data-workspace-control="" variant="subtle"><RotateCcw size={12} />重试封面匹配</Button>}
               </div>
             </section>
             <div className="script-director-settings-divider" aria-hidden="true" />
@@ -2811,10 +2817,10 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
               />
             </div>
           </div>
-          <footer className="script-director-settings-modal-foot"><button type="button" className={`script-director-presets-switch${showSettingPresets ? ' is-on' : ''}`} aria-pressed={showSettingPresets} onClick={() => setShowSettingPresets((value) => !value)}><span aria-hidden="true" /><em>展示爆款预设</em></button><div><button type="button" className="script-director-settings-cancel" onClick={() => setSettingsOpen(false)}>取消</button><button type="button" className="script-director-settings-confirm" onClick={applySettings}>确认设定</button></div></footer>
+          <footer className="script-director-settings-modal-foot"><Switch className="script-director-presets-toggle" label="展示爆款预设" checked={showSettingPresets} onChange={event => setShowSettingPresets(event.currentTarget.checked)} /><div><Button type="button" className="script-director-settings-cancel" onClick={() => setSettingsOpen(false)} data-workspace-control="" variant="subtle">取消</Button><Button type="button" className="script-director-settings-confirm" onClick={applySettings} data-workspace-control="" variant="subtle">确认设定</Button></div></footer>
         </div>
-      </section>
-    </div>}
+
+    </Modal>}
   </aside>
 }
 

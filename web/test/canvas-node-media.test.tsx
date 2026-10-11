@@ -1,3 +1,4 @@
+import { MantineProvider } from '@mantine/core'
 import assert from 'node:assert/strict'
 import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
@@ -9,6 +10,8 @@ for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'Element', 
   Object.defineProperty(globalThis, key, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[key] })
 }
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+Object.defineProperty(dom.window, 'matchMedia', { value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) })
+Object.assign(globalThis, { getComputedStyle: dom.window.getComputedStyle.bind(dom.window), requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(0), 0), cancelAnimationFrame: clearTimeout, ResizeObserver: class { observe() {} unobserve() {} disconnect() {} } })
 let hidden = false
 Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden })
 const observers = new Set<TestIntersectionObserver>()
@@ -31,7 +34,7 @@ async function mount(asset: Asset) {
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container)
   const render = async (controls = false, onMediaSize?: (width: number, height: number) => void, previewSize: 320 | 640 = 640) => {
-    await act(() => root.render(<CanvasNodeMedia asset={asset} controls={controls} previewSize={previewSize} onMediaSize={onMediaSize} />))
+    await act(() => root.render(<MantineProvider env="test"><CanvasNodeMedia asset={asset} controls={controls} previewSize={previewSize} onMediaSize={onMediaSize} /></MantineProvider>))
   }
   await render()
   return { container, render, destroy: async () => { await act(() => root.unmount()); container.remove() } }
@@ -51,7 +54,7 @@ test('idle video uses a cached poster; single selection mounts original controls
     await view.render(true)
     const element = view.container.querySelector('video')!
     assert.equal(element.getAttribute('src'), video.url)
-    assert.equal(element.controls, true); assert.equal(element.autoplay, false)
+    assert.equal(element.controls, false); assert.ok(view.container.querySelector('[aria-label="播放素材"]')); assert.equal(element.autoplay, false)
     const playback = playing(element)
     await view.render()
     assert.equal(playback.pauses(), 1)

@@ -1,0 +1,15 @@
+# Progress
+
+User authorized conversion to final-cut workspace. Read current App and canvas implementation; existing working tree includes many parallel features and no AGENTS.md found. Initialized isolated plan; backend/API contracts remain unchanged.
+
+Removed duplicate App generation subsystem and moved trim/source-audio controls into a final-cut inspector. Added multi-canvas shot lookup and targeted import/focus. Corrected unused imports and importShots click handlers after initial compile errors. Root npm build was invoked in wrong cwd; reran web build successfully (existing chunk-size warning). Navigation now skips default animated centering and targeted import skips its own animation. Verification phase in progress.
+
+New 8-test regression passed: edit-only workbench; trim/audio PATCH payloads and invalid ranges; candidate selection; export initiation; existing multi-canvas node; conflicting draft; targeted empty-canvas import/reentry; empty state; pure lookup errors/preference. Initial test file writes used web-prefixed paths from web cwd and failed; corrected to root cwd before testing. README updated to canvas production / workbench editing workflow.
+
+Related regression run passed 63/63 across App polling, canvas refresh stability, video references, shot workflow, canvas performance and the new final-cut/navigation tests. git diff --check passed. Browser fixture files and test video are temporary and must be removed; TaskSpace 25 must be finished once at completion.
+
+Browser: exact trim (1000/4500 ms) and original audio (0.6 gain/200 ms fade) PATCH payloads verified. Actual local six-second video preview transitioned to shot two and ended at total 6.5 seconds. Return to canvas opened second canvas, selected video-node and centered at zoom 1, with no graph PUT/POST. Two snapshot ref lookups became stale after reactive UI changes; re-observed and switched to observed CSS selectors.
+
+Responsive QA rechecked: 390px populated workbench panels form contiguous non-overlapping vertical layout with scrollWidth=390; 900px inspector has summary/output left and trim/audio right. Empty-state workbench guides to canvas, with preview/export disabled. Inspected desktop/tablet/mobile/empty screenshots. Temporary browser fixture/video removed. Final build and focused post-cleanup checks pending.
+
+Completed: browser TaskSpace 25 finished exactly once, with empty-state return showing canvasOpened=true and no writes. Final production build passed with existing large-chunk warning. Focused final-cut/navigation tests passed 8/8 after the legacy-node lookup guard; prior related regression run passed 63/63. JSDOM emits act timing warnings from asynchronous App updates, with no assertion failures; browser interactions independently verified. git diff --check passed. Original App/ProjectCanvas backup comparisons isolate this task from pre-existing user work. Temporary fixture/video absent from source and final dist. No commits, pushes, paid generation or real project edits.
