@@ -1,3 +1,4 @@
+export { MAX_AUXILIARY_SKILLS } from '../../backend/src/skill-limits'
 export type SkillStage = 'script' | 'visual_assets' | 'image_prompt' | 'storyboard' | 'video_prompt'
 export type SkillSelections = Partial<Record<SkillStage, string[]>>
 export type SkillPolicy = { stage: SkillStage; label: string; primary_id: string | null; auxiliary_ids: string[]; source: 'global' | 'project'; warning: string;

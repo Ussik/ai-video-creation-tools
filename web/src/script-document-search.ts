@@ -2,7 +2,7 @@ import { Extension, getSchema, type Editor, type JSONContent } from '@tiptap/cor
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
-import { textEditorExtensions } from './text-editor'
+import { scriptEditorExtensions } from './script-editor-extensions'
 import { parseScriptDocument, serializeScriptDocument } from './script-rich-document'
 import { textDocumentText } from './text-document'
 
@@ -33,7 +33,7 @@ export function findScriptTextMatches(document: ProseMirrorNode, query: string):
   return matches
 }
 
-const searchSchema = getSchema(textEditorExtensions())
+const searchSchema = getSchema(scriptEditorExtensions())
 
 export function searchScriptDocuments(documents: ScriptSearchDocument[], query: string): ScriptSearchMatch[] {
   if (!query.trim()) return []

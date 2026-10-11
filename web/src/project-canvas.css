@@ -37,6 +37,37 @@
 }
 .pc-toolbar > * { pointer-events: auto; }
 
+.pc-selection-toolbar {
+  position: absolute;
+  z-index: 15;
+  top: 78px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 24px);
+  padding: 8px 10px;
+  border: 1px solid #3e4147;
+  border-radius: 10px;
+  background: #1b1c1ff5;
+  box-shadow: 0 12px 28px #00000060;
+  color: #d9dde2;
+  white-space: nowrap;
+}
+.pc-selection-toolbar > span { padding: 0 4px; font-size: 12px; }
+.pc-selection-toolbar strong { color: #fff; font-variant-numeric: tabular-nums; }
+.pc-selection-toolbar .mantine-Button-root { flex: none; }
+.pc-selection-toolbar button:focus-visible { outline: 2px solid var(--pc-teal); outline-offset: 2px; }
+.pc-flow:focus { outline: none; }
+.pc-context-menu button:disabled { opacity: .45; cursor: default; }
+
+@media (max-width: 700px) {
+  .pc-selection-toolbar { top: 116px; gap: 4px; padding: 6px; }
+  .pc-selection-toolbar > span { font-size: 11px; }
+  .pc-selection-toolbar .mantine-Button-root { padding-inline: 8px; }
+}
+
 .pc-canvas-nav,
 .pc-toolbar-title,
 .pc-toolbar-actions,
@@ -47,7 +78,6 @@
   border: 1px solid #4d5d53;
   border-radius: 10px;
   box-shadow: 0 16px 34px #07100b80, inset 0 1px #ffffff0b;
-  backdrop-filter: blur(14px);
 }
 .pc-canvas-nav { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 3px 8px; }
 .pc-canvas-nav button { min-width: 30px; min-height: 30px; border: 0; background: transparent; color: #d8e0da; cursor: pointer; }
@@ -271,7 +301,6 @@
   border-radius: 12px;
   background: linear-gradient(165deg, #27332dF7 0%, #1b251ff7 100%);
   box-shadow: 0 20px 44px #030705c7, inset 0 1px #ffffff12;
-  backdrop-filter: blur(18px);
 }
 .pc-node-floating-editor::before {
   content: '';
@@ -396,7 +425,6 @@
   border-radius: 7px;
   background: #2b302bF2;
   box-shadow: 0 15px 36px #090c0a91;
-  backdrop-filter: blur(18px);
 }
 .pc-create-dock .mantine-ActionIcon-root { width: 40px; height: 40px; color: #d8e5d9; }
 .pc-create-dock .mantine-Button-root { min-height: 40px; }
@@ -466,7 +494,6 @@
   border-radius: 12px;
   background: linear-gradient(180deg, #202923f5 0%, #151d18f2 100%);
   box-shadow: 16px 22px 42px #050a0785, inset 0 1px #ffffff0a;
-  backdrop-filter: blur(18px);
 }
 .pc-sidebar-tabs { flex: 0 0 48px; display: flex; align-items: stretch; gap: 4px; padding: 5px 8px; border-bottom: 1px solid #34443a; }
 .pc-sidebar-tabs button:not(.mantine-ActionIcon-root) { display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #8fa59a; font: inherit; font-size: 12px; cursor: pointer; }
@@ -716,7 +743,6 @@
   border-radius: 9px;
   background: #1f2924e8;
   box-shadow: 0 14px 32px #0508079c, inset 0 1px #ffffff0c;
-  backdrop-filter: blur(14px);
   pointer-events: auto;
 }
 .pc-node-list-toggle.mantine-ActionIcon-root {
@@ -731,7 +757,6 @@
   background: #1b1b1bef;
   box-shadow: 0 16px 38px #00000099, inset 0 1px #ffffff0a;
   color: #bdbdbd;
-  backdrop-filter: blur(14px);
 }
 .pc-node-list-toggle.mantine-ActionIcon-root:hover { background: #343434; color: #fff; }
 .pc-flow-utility .mantine-ActionIcon-root {
@@ -764,12 +789,13 @@
   position: absolute;
   z-index: 45;
   width: min(238px, calc(100% - 20px));
+  max-height: calc(100% - 20px);
+  overflow-y: auto;
   padding: 8px;
   border: 1px solid #5a7565;
   border-radius: 12px;
   background: #1b2620f5;
   box-shadow: 0 20px 48px #020403c7, inset 0 1px #ffffff12;
-  backdrop-filter: blur(18px);
 }
 .pc-context-heading {
   display: grid;
@@ -825,7 +851,6 @@
   border-radius: 10px;
   background: #1d2521e8;
   box-shadow: 0 16px 34px #07100b80, inset 0 1px #ffffff0b;
-  backdrop-filter: blur(14px);
 }
 .pc-mode-switch button {
   min-height: 34px;
@@ -1419,18 +1444,16 @@
   border-radius: 18px;
   background: #242424f5;
   box-shadow: 0 20px 54px #000000b8, inset 0 1px #ffffff0b;
-  backdrop-filter: blur(20px);
 }
 .pc-prompt-composer-head,
 .pc-prompt-composer-foot { display: flex; align-items: center; gap: 10px; min-width: 0; }
-/* A normal editor fits the free rectangle beside its selected node. Keep its
-   actions visible while long prompts and reference details scroll inside. */
-.pc-composer-anchor { visibility: hidden; }
+/* Keep a normal editor attached below its node at a readable size. Long
+   prompts and reference details scroll without moving the panel's anchor. */
 .project-canvas .pc-composer-anchor > .pc-prompt-composer {
   display: flex; flex-direction: column;
   width: min(720px, calc(100vw - 48px), var(--pc-composer-max-width, 720px));
   min-width: min(440px, calc(100vw - 48px), var(--pc-composer-max-width, 440px));
-  max-height: var(--pc-composer-max-height, calc(100dvh - 162px));
+  max-height: var(--pc-composer-max-height, min(420px, calc(100dvh - 162px)));
 }
 .pc-composer-anchor .pc-prompt-composer-head,
 .pc-composer-anchor .pc-prompt-composer-foot { flex: none; }
@@ -1635,7 +1658,6 @@
   border-radius: 16px;
   background: #292929f5;
   box-shadow: 0 16px 34px #000000a8, inset 0 1px #ffffff0a;
-  backdrop-filter: blur(18px);
 }
 .pc-text-format-bar button {
   display: grid;
@@ -2575,140 +2597,30 @@
   color: #d7f1ff;
 }
 
-/* Custom edge rendering adds a restrained travelling highlight. It remains
-   visible at any canvas zoom because the stroke is not tied to node scaling. */
-.project-canvas .pc-studio-edge-glow {
-  fill: none;
-  stroke: #7bc5f4;
-  stroke-width: 3;
-  stroke-linecap: round;
-  stroke-dasharray: 1 18;
-  stroke-dashoffset: 0;
-  opacity: 0;
-  pointer-events: none;
-  vector-effect: non-scaling-stroke;
-  filter: drop-shadow(0 0 3px #6ebcf088);
-  animation: none;
-}
-.project-canvas .pc-studio-edge.is-related .pc-studio-edge-glow {
-  opacity: .78;
-  stroke: #8ec9dc;
-  stroke-width: 3.5;
-  stroke-dasharray: 2 14;
-  animation: pc-edge-flow 1.35s linear infinite;
-}
-.project-canvas .pc-studio-edge.is-selected .pc-studio-edge-glow {
-  opacity: .95;
-  stroke: #b2e4ff;
-  stroke-width: 4;
-  stroke-dasharray: 2 14;
-  animation-duration: 1.25s;
-}
-.project-canvas .pc-studio-edge.is-hidden,
-.project-canvas .pc-studio-edge.is-hidden .pc-studio-edge-glow { opacity: 0; }
-@keyframes pc-edge-flow { to { stroke-dashoffset: -38; } }
-
-/* Connection affordance and edge motion. The hit radius is provided by
-   React Flow's connectionRadius; these states give the handle a quiet visual
-   pull when the pointer is close enough to connect. */
-.project-canvas .pc-node .pc-node-handle.connectionindicator {
-  pointer-events: all;
-  cursor: crosshair;
-  transition: transform .16s ease, border-color .16s ease, background .16s ease, box-shadow .16s ease;
-}
-.project-canvas .pc-node .pc-node-handle.connectingfrom,
-.project-canvas .pc-node .pc-node-handle.connectingto,
-.project-canvas .pc-node .pc-node-handle.valid,
-.project-canvas .pc-node .pc-node-handle:hover {
-  z-index: 8;
-  border-color: #8bd8f2;
-  background: #284a63;
-  box-shadow: 0 0 0 4px #70c8ed2b, 0 0 16px #5baedc66;
-  transform: translateY(-50%) scale(1.14);
-}
-.project-canvas .pc-node .pc-node-handle.connectingfrom::after,
-.project-canvas .pc-node .pc-node-handle.connectingto::after,
-.project-canvas .pc-node .pc-node-handle.valid::after,
-.project-canvas .pc-node .pc-node-handle:hover::after {
-  background: #c8f1ff;
-}
-.project-canvas .pc-node .pc-node-handle.react-flow__handle-left.connectionindicator:hover,
-.project-canvas .pc-node .pc-node-handle.react-flow__handle-left.connectingfrom,
-.project-canvas .pc-node .pc-node-handle.react-flow__handle-left.connectingto,
-.project-canvas .pc-node .pc-node-handle.react-flow__handle-left.valid {
-  transform: translate(-50%, -50%) scale(1.14);
-}
-.project-canvas .pc-node .pc-node-handle.react-flow__handle-right.connectionindicator:hover,
-.project-canvas .pc-node .pc-node-handle.react-flow__handle-right.connectingfrom,
-.project-canvas .pc-node .pc-node-handle.react-flow__handle-right.connectingto,
-.project-canvas .pc-node .pc-node-handle.react-flow__handle-right.valid {
-  transform: translate(50%, -50%) scale(1.14);
-}
-
-/* A selected or node-related edge gets the brighter moving dash while idle
-   links remain readable and gently animated. */
+/* Static links retain selection feedback without persistent SVG repainting. */
 .project-canvas .pc-flow .react-flow__edge.pc-flow-edge .react-flow__edge-path {
   stroke-linecap: round;
-  stroke-dasharray: 8 13;
-  animation: pc-edge-flow 1.8s linear infinite;
-  transition: stroke .18s ease, stroke-width .18s ease, opacity .18s ease, filter .18s ease;
+  stroke-dasharray: none;
+  animation: none;
+  filter: none;
 }
 .project-canvas .pc-flow .react-flow__edge.pc-flow-edge.is-related .react-flow__edge-path {
-  stroke-dasharray: 10 10;
-  animation-duration: 1.15s;
-  filter: drop-shadow(0 0 3px #5baedc55);
+  stroke: #789bad;
+  stroke-width: 2.2;
 }
 .project-canvas .pc-flow .react-flow__edge.pc-flow-edge.is-selected .react-flow__edge-path,
 .project-canvas .pc-flow .react-flow__edge.pc-flow-edge.selected .react-flow__edge-path {
-  stroke: #8bd8f2;
-  stroke-dasharray: 12 8;
-  animation-duration: .72s;
-  filter: drop-shadow(0 0 4px #5baedcaa) drop-shadow(0 0 10px #5baedc55);
+  stroke: #a8d8e8;
+  stroke-width: 2.5;
 }
-.project-canvas .pc-flow .react-flow__connection-path {
-  stroke-linecap: round;
-  animation: pc-connection-flow .8s linear infinite;
-}
-.project-canvas .pc-studio-connection-line {
-  pointer-events: none;
-}
-.project-canvas .pc-studio-connection-base,
-.project-canvas .pc-studio-connection-glow {
+.project-canvas .pc-studio-connection-line { pointer-events: none; }
+.project-canvas .pc-studio-connection-base {
   fill: none;
+  stroke: #a8d8e8;
+  stroke-width: 2.2;
   stroke-linecap: round;
   vector-effect: non-scaling-stroke;
   pointer-events: none;
-}
-.project-canvas .pc-studio-connection-base {
-  stroke: #6f8494;
-  stroke-width: 2.2;
-  opacity: .94;
-}
-.project-canvas .pc-studio-connection-glow {
-  stroke: #a8e7f7;
-  stroke-width: 4;
-  stroke-dasharray: 2 15;
-  stroke-dashoffset: 0;
-  opacity: .95;
-  filter: drop-shadow(0 0 4px #6fc7e899) drop-shadow(0 0 10px #6fc7e855);
-  animation: pc-studio-connection-flow 1s linear infinite;
-}
-@keyframes pc-edge-flow { to { stroke-dashoffset: -42px; } }
-@keyframes pc-connection-flow { to { stroke-dashoffset: -38px; } }
-@keyframes pc-studio-connection-flow { to { stroke-dashoffset: -46px; } }
-@media (prefers-reduced-motion: reduce) {
-  .project-canvas .pc-flow .react-flow__edge.pc-flow-edge .react-flow__edge-path,
-  .project-canvas .pc-flow .react-flow__connection-path,
-  .project-canvas .pc-studio-connection-glow { animation: none; }
-}
-
-/* Keep the structural edge solid; the separate glow path carries the motion
-   so links read as a clean cable with a moving light rather than a dotted line. */
-.project-canvas .pc-flow .react-flow__edge.pc-flow-edge .react-flow__edge-path,
-.project-canvas .pc-flow .react-flow__edge.pc-flow-edge.is-related .react-flow__edge-path,
-.project-canvas .pc-flow .react-flow__edge.pc-flow-edge.is-selected .react-flow__edge-path {
-  stroke-dasharray: none;
-  animation: none;
 }
 
 /* Quiet connection points with pointer magnetism. The DOM offsets are set by
@@ -3195,3 +3107,28 @@
   color: #999;
   font-size: 12px;
 }
+
+/* Overview retains real content, with smaller media and lighter controls. */
+.pc-node.is-compact { box-shadow: none; }
+.pc-edge-motion-layer { position: absolute; top: 0; left: 0; pointer-events: none; }
+.pc-edge-motion-dot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border-radius: 50%;
+  background: #d2effa;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Opaque chrome and small shadows keep panning and selection inexpensive. */
+.project-canvas { --canvas-chrome-surface: #17191b; }
+.project-canvas :is(.pc-canvas-nav, .pc-mode-switch, .pc-save-status, .pc-flow-utility, .pc-create-dock, .pc-canvas-sidebar, .pc-prompt-composer, .pc-text-format-bar) {
+  backdrop-filter: none;
+}
+.project-canvas .pc-node {
+  box-shadow: 0 2px 8px #00000030;
+  transition: border-color .12s ease;
+}
+.project-canvas .pc-node.is-selected { box-shadow: 0 0 0 1px #87949b; }
+.project-canvas .pc-node.is-compact { box-shadow: none; }

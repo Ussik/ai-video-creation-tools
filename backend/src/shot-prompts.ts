@@ -16,6 +16,6 @@ export function shotVideoPrompt(shot: ShotPromptSource): string {
     shot.prompt.trim(), shot.start_state?.trim() && `开镜状态：${shot.start_state.trim()}`,
     shot.end_state?.trim() && `收镜状态：${shot.end_state.trim()}`,
     shot.cut_note?.trim() && `接镜要求：${shot.cut_note.trim()}`,
-    '有首帧参考时，从参考图的构图、人物位置、姿态和物体状态开始延续动作；不添加画面文字、字幕或水印。',
+    '仅在首帧或首尾帧生成模式下，从指定首帧的构图、人物位置、姿态和物体状态开始延续动作；多图参考的开场状态按正文设计。不添加画面文字、字幕或水印。',
   ].filter(Boolean).join('\n\n')
 }

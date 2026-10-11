@@ -14,7 +14,6 @@
   background: var(--canvas-chrome-surface, #17191bf2);
   color: var(--sidebar-text);
   box-shadow: var(--canvas-chrome-shadow, 0 16px 38px #00000099);
-  backdrop-filter: blur(18px);
 }
 .project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs {
   flex-basis: 60px; align-items: center; gap: 4px; padding: 10px;
@@ -95,7 +94,7 @@
 .project-canvas aside.pc-canvas-sidebar .pc-sidebar-empty button:hover { background: var(--sidebar-hover); color: var(--sidebar-text); }
 .project-canvas aside.pc-canvas-sidebar :is(button, [role="tab"]):focus-visible { outline: 2px solid var(--sidebar-focus); outline-offset: 2px; }
 /* Menus render in a portal, so use a dedicated class to keep this palette. */
-.pc-sidebar-dropdown { border: 1px solid var(--canvas-chrome-border, #2b2e33); border-radius: 10px; background: var(--canvas-chrome-surface, #17191bf2); color: var(--canvas-chrome-icon, #b5bac1); box-shadow: var(--canvas-chrome-shadow, 0 16px 38px #00000099); backdrop-filter: blur(18px); }
+.pc-sidebar-dropdown { border: 1px solid var(--canvas-chrome-border, #2b2e33); border-radius: 10px; background: var(--canvas-chrome-surface, #17191bf2); color: var(--canvas-chrome-icon, #b5bac1); box-shadow: var(--canvas-chrome-shadow, 0 16px 38px #00000099); }
 .pc-sidebar-dropdown .mantine-Menu-item { border-radius: 7px; color: var(--menu-item-color, var(--canvas-chrome-icon, #b5bac1)); font-size: 12px; }
 .pc-sidebar-dropdown .mantine-Menu-item:hover { background: var(--canvas-chrome-hover, #25282c); color: var(--menu-item-color, var(--workspace-text, #e8eaec)); }
 @media (max-width: 700px) {

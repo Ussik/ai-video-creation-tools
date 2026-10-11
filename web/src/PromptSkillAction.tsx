@@ -5,6 +5,7 @@ import { api, json } from './api'
 import type { Model } from './api'
 import { useCreativeSkills } from './useCreativeSkills'
 import CreativeSkillSelector from './CreativeSkillSelector'
+import type { VideoReferenceUsageSelection } from '../../backend/src/video-reference-usage'
 import './prompt-skill-action.css'
 
 type Props = {
@@ -12,12 +13,13 @@ type Props = {
   targetModelId: string; shotId: string | null; profileId?: string; ratio: string; duration: number; mode: string;
   referenceAssetIds: string[]; onApply: (prompt: string) => void;
   storyboardReferenceAssetId?: string | null; visualReferenceMode?: string; excludedVisualProfileIds?: string[];
+  videoReferenceUsages?: VideoReferenceUsageSelection[];
 }
 export default function PromptSkillAction(props: Props) {
   const [opened, setOpened] = useState(false), [pending, setPending] = useState(false), [error, setError] = useState('')
   const [modelId, setModelId] = useState(''), [result, setResult] = useState('')
   const [elapsed, setElapsed] = useState(0), [requestLabel, setRequestLabel] = useState('整理提示词')
-  const skillControl = useCreativeSkills(props.projectId, opened)
+  const skillControl = useCreativeSkills(props.projectId, opened, { rememberSelections: true })
   const stage = props.modality === 'image' ? 'image_prompt' : 'video_prompt'
   const [sourceKey, setSourceKey] = useState(''), [usedSkills, setUsedSkills] = useState<string[]>([])
   const serial = useRef(0), abort = useRef<AbortController | null>(null)
@@ -31,12 +33,12 @@ export default function PromptSkillAction(props: Props) {
   const primary = policy?.skills.find(skill => skill.id === selectedIds[0])
   const defaults = policy?.primary_id ? [policy.primary_id, ...policy.auxiliary_ids] : []
   const matchesDefaults = selectedIds.length === defaults.length && selectedIds.every((id, index) => id === defaults[index])
-  const selectionSource = !policy ? '配置未读取' : matchesDefaults ? policy.source === 'project' ? '项目默认' : '全局默认' : '本次选择'
+  const selectionSource = !policy ? '配置未读取' : matchesDefaults ? policy.source === 'project' ? '项目默认' : '全局默认' : '已记住的选择'
   const skillName = skillControl.loading ? '正在读取技能' : skillControl.error ? '技能配置未读取' : selectedIds[0] && !primary ? '技能需重新选择' : primary?.name || '基础创作规则'
   const modalityLabel = props.modality === 'image' ? '图片' : '视频'
   const currentKey = JSON.stringify([props.projectId, props.nodeId, props.modality, props.shotId, props.profileId,
     props.prompt, props.ratio, props.duration, props.mode, props.referenceAssetIds, props.storyboardReferenceAssetId,
-    props.visualReferenceMode, props.excludedVisualProfileIds, props.targetModelId, modelId, skillControl.ids(stage)])
+    props.visualReferenceMode, props.excludedVisualProfileIds, props.videoReferenceUsages, props.targetModelId, modelId, skillControl.ids(stage)])
   const maxPromptLength = props.profileId ? 16_000 : 80_000
   function open() {
     setOpened(true); setError(''); setResult('')
@@ -52,6 +54,7 @@ export default function PromptSkillAction(props: Props) {
         ...json('POST', { stage, skill_ids: skillControl.ids(stage), model_id: modelId, prompt: props.prompt, target_model_id: props.targetModelId || null, shot_id: props.shotId,
           profile_id: props.profileId, ratio: props.ratio, duration: props.duration, mode: props.mode, reference_asset_ids: props.referenceAssetIds,
           ...(props.modality === 'video' ? { storyboard_reference_asset_id: props.storyboardReferenceAssetId || null,
+            video_reference_usages: props.mode === 'reference' ? props.videoReferenceUsages || [] : [],
             visual_reference_mode: props.visualReferenceMode, excluded_visual_profile_ids: props.excludedVisualProfileIds || [] } : {}) }), signal: abort.current.signal,
       })
       if (turn !== serial.current) return
@@ -72,7 +75,8 @@ export default function PromptSkillAction(props: Props) {
           <div className="prompt-skill-selection"><div className="prompt-skill-primary"><Puzzle size={16} /><strong>{skillName}</strong></div>
             <CreativeSkillSelector stage={stage} policies={skillControl.policies} ids={selectedIds}
               onChange={values => { skillControl.change(stage, values); setResult('') }} projectId={props.projectId} disabled={pending}
-              loading={skillControl.loading} error={skillControl.error} onDefaultsChanged={() => skillControl.reload(stage)} appearance="prompt" triggerLabel="更换" />
+              loading={skillControl.loading} error={skillControl.error} onDefaultsChanged={() => skillControl.reload(stage)}
+              onRetry={() => skillControl.reload(stage, { keepSelection: true })} appearance="prompt" triggerLabel="更换" />
           </div>
           <p>{selectedIds.length ? '主技能' : '使用内置规则'}<span>·</span>辅助技能 {Math.max(0, selectedIds.length - 1)} 个</p>
         </section>

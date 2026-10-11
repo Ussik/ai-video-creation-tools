@@ -11,6 +11,9 @@ export function normalizeTextDocument(doc: JSONContent): JSONContent {
     normalized.attrs = { [attribute]: attribute === 'start'
       ? Math.min(1_000_000, Math.max(1, Number(doc.attrs[attribute]) || 1)) : doc.attrs[attribute] }
   }
+  if ((doc.type === 'tableCell' || doc.type === 'tableHeader') && ['left', 'center', 'right'].includes(doc.attrs?.align)) {
+    normalized.attrs = { align: doc.attrs!.align }
+  }
 
   if (Array.isArray(doc.content)) normalized.content = doc.content.map(normalizeTextDocument)
   if (doc.type === 'text' && Array.isArray(doc.marks)) {
@@ -44,7 +47,12 @@ export function textDocumentText(doc: JSONContent): string {
     case 'bulletList':
     case 'orderedList':
     case 'listItem':
+    case 'table':
+    case 'tableCell':
+    case 'tableHeader':
       return content.join('\n')
+    case 'tableRow':
+      return content.join('\t')
     default:
       return content.join('')
   }

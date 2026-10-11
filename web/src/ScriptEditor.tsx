@@ -14,7 +14,9 @@ import CreativeSkillSelector from './CreativeSkillSelector'
 import { useCreativeSkills } from './useCreativeSkills'
 import StoryboardPlanner from './StoryboardPlanner'
 import { useAppDialog } from './AppDialog'
-import { applyTextFormat, textEditorExtensions, type TextFormat } from './text-editor'
+import { applyTextFormat, type TextFormat } from './text-editor'
+import { scriptEditorExtensions } from './script-editor-extensions'
+import './script-document-tables.css'
 import { serializeScriptDocument } from './script-rich-document'
 import { normalizeTextDocument, textDocumentText } from './text-document'
 import { useScriptDocumentNavigation } from './useScriptDocumentNavigation'
@@ -81,7 +83,7 @@ type RichArtifactEditorProps = {
 function RichArtifactEditor({ value, label, placeholder, disabled, document, searchQuery, activeSearchRange, onFocus, onSelectionChange, onChange }: RichArtifactEditorProps) {
   const readyRef = useRef(false)
   const editor = useEditor({
-    extensions: [...textEditorExtensions(), ScriptSearchHighlight],
+    extensions: [...scriptEditorExtensions(), ScriptSearchHighlight],
     content: resolveScriptArtifactDocument(value, document),
     editable: !disabled,
     editorProps: {

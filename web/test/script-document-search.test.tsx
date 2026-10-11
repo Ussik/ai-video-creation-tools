@@ -5,7 +5,7 @@ import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { Editor, getSchema } from '@tiptap/core'
 import { MantineProvider } from '@mantine/core'
-import { textEditorExtensions } from '../src/text-editor'
+import { scriptEditorExtensions } from '../src/script-editor-extensions'
 import { serializeScriptDocument } from '../src/script-rich-document'
 import { findScriptTextMatches, highlightScriptSearch, resolveScriptArtifactDocument, ScriptSearchHighlight, searchScriptDocuments } from '../src/script-document-search'
 import type { ProjectDetail } from '../src/api'
@@ -32,7 +32,7 @@ const { default: ScriptEditor } = await import('../src/ScriptEditor')
 const { createRoot } = await import('react-dom/client')
 after(() => dom.window.close())
 
-const schema = getSchema(textEditorExtensions())
+const schema = getSchema(scriptEditorExtensions())
 const parse = (text: string) => schema.nodeFromJSON(resolveScriptArtifactDocument(text))
 
 test('search spans formatting, uses literal case-insensitive text and preserves Unicode offsets', () => {
@@ -62,7 +62,7 @@ test('document index includes hidden documents and resolves current rich edits i
 
 test('search decorations preserve content, selection, update events and edit undo/redo', () => {
   const element = document.createElement('div'); document.body.append(element)
-  const editor = new Editor({ element, content: resolveScriptArtifactDocument('凛在**地下**交通枢纽。'), extensions: [...textEditorExtensions(), ScriptSearchHighlight] })
+  const editor = new Editor({ element, content: resolveScriptArtifactDocument('凛在**地下**交通枢纽。'), extensions: [...scriptEditorExtensions(), ScriptSearchHighlight] })
   let updates = 0
   editor.on('update', () => { updates++ })
   try {
@@ -92,6 +92,7 @@ const artifacts = [
   { id: 'locations', artifact_type: 'locations', title: '场景', content: '地下枢纽。', position: 3 },
   { id: 'props', artifact_type: 'props', title: '道具', content: '凛的封印。', position: 4 },
   { id: 'episode-2', artifact_type: 'episode_script', episode_number: 2, title: '第2集', content: '凛等待救援完成。', position: 5 },
+  { id: 'relationships', artifact_type: 'relationships', title: '人物关系', content: '| 关系 | 性质 | 变化方向 |\n| --- | --- | --- |\n| 林晚与奶奶 | 亲情 | 依赖转为理解 |', position: 6 },
 ].map(item => ({ ...item, status: 'ready' }))
 const detail = { id: 'search-project', name: '搜索测试', brief: '', ratio: '9:16', script: { outline: '', characters: '', scenes: [], artifacts, generation_options: {} }, shots: [], jobs: [], assets: [] } as unknown as ProjectDetail
 
@@ -184,4 +185,50 @@ test('search results track an unsaved edit and formatting undo/redo', async () =
     assert.equal(view.container.querySelector('[role="status"]')?.textContent, '1 / 1')
     assert.equal(view.container.querySelector('[data-script-search-active]')?.textContent, '新增检索词')
   } finally { await view.destroy() }
+})
+
+test('table searches stay inside cells and use the same positions as the script editor', () => {
+  const document = parse('| 关系 | 变化 |\n| --- | --- |\n| 林晚与奶奶 | 依赖转为**理解** |')
+  const matches = findScriptTextMatches(document, '转为理解')
+  assert.equal(matches.length, 1)
+  assert.equal(document.textBetween(matches[0].from, matches[0].to), '转为理解')
+  assert.deepEqual(findScriptTextMatches(document, '奶奶依赖'), [])
+  assert.equal(searchScriptDocuments([{ id: 'relationships', section: 'relationships', title: '人物关系', document: document.toJSON() }], '奶奶').length, 1)
+})
+
+test('script page mounts tables without dirtying content and saves edited cells as reloadable Markdown', async () => {
+  const originalFetch = globalThis.fetch
+  let payload: { artifacts: Array<{ artifact_type: string; content: string; document?: unknown }> } | undefined
+  globalThis.fetch = async (input, options) => {
+    if (String(input).endsWith('/script/commit')) {
+      payload = JSON.parse(String(options?.body))
+      return new Response(JSON.stringify({ ...detail.script, ...payload }), { headers: { 'content-type': 'application/json' } })
+    }
+    return new Response(JSON.stringify({ policies: [] }), { headers: { 'content-type': 'application/json' } })
+  }
+  const view = await mount()
+  try {
+    await act(() => button(view.container, '人物关系').click())
+    const element = view.container.querySelector<HTMLElement>('[role="textbox"][aria-label="人物关系"]')!
+    assert.ok(element.querySelector('table'))
+    assert.equal(view.dirtyStates.some(Boolean), false)
+    const editor = (element as HTMLElement & { editor: Editor }).editor
+    let position = 0
+    editor.state.doc.descendants((node, pos) => { if (node.isText && node.text === '依赖转为理解') position = pos })
+    await act(() => {
+      editor.commands.setTextSelection({ from: position, to: position + '依赖转为理解'.length })
+      editor.commands.insertContent('误解转为信任')
+    })
+    assert.equal(view.dirtyStates.at(-1), true)
+    await act(() => button(view.container, '保存').click())
+    const artifact = payload?.artifacts.find(item => item.artifact_type === 'relationships')
+    assert.ok(artifact)
+    assert.match(artifact.content, /\| 林晚与奶奶 \| 亲情 \| 误解转为信任 \|/)
+    assert.equal(artifact.document, undefined, 'existing API still receives Markdown only')
+    const saved = schema.nodeFromJSON(resolveScriptArtifactDocument(artifact.content))
+    saved.check()
+    assert.equal(findScriptTextMatches(saved, '误解转为信任').length, 1)
+    assert.equal(view.dirtyStates.at(-1), false)
+    assert.equal(view.container.querySelector('[aria-label="人物关系"] td:last-child')?.textContent, '误解转为信任')
+  } finally { await view.destroy(); globalThis.fetch = originalFetch }
 })

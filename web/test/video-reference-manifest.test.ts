@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { videoReferenceManifest, type VideoReferenceBinding } from '../../backend/src/video-reference-manifest'
+import { videoReferenceManifest, visualBindingReferenceAssetIds, type VideoReferenceBinding } from '../../backend/src/video-reference-manifest'
+import type { VisualReferenceSnapshot } from '../../backend/src/visual-reference-types'
 
 const options = { mode: 'reference', visual_reference_mode: 'profiles', storyboard_reference_asset_id: 'shot' }
 const binding = (profile_id: string, kind: VideoReferenceBinding['kind'], board_asset_id: string | null, overrides: Partial<VideoReferenceBinding> = {}): VideoReferenceBinding => ({
   profile_id, kind, board_asset_id, name: profile_id, variant: '默认', required: true, ...overrides,
+})
+const reference = (asset_id: string, view: VisualReferenceSnapshot['view'], purpose: VisualReferenceSnapshot['purpose']): VisualReferenceSnapshot => ({
+  id: `${asset_id}-${view}`, asset_id, view, purpose, label: `${view}说明`, revision: 2, style_version: 'anime',
 })
 
 test('manual image order precedes stable character, location and prop bindings and uses the actual request numbering', () => {
@@ -74,4 +78,61 @@ test('manifest construction leaves source arrays and binding objects unchanged',
   const expected = structuredClone({ ids, bindings })
   videoReferenceManifest(ids, bindings, options)
   assert.deepEqual({ ids, bindings }, expected)
+})
+
+test('each binding uses its frozen independent references instead of its board, preserving selected order and shared purposes', () => {
+  const bindings = [binding('station', 'location', 'station-board', { reference_assets: [reference('reverse', 'reverse', 'space')] }),
+    binding('hero', 'character', 'old-board', { reference_assets: [reference('face', 'face', 'identity'), reference('side', 'side', 'costume'), reference('face', 'detail', 'detail')] })]
+  const before = structuredClone(bindings)
+  const manifest = videoReferenceManifest(['shot', 'side'], bindings, options)
+  assert.deepEqual(manifest.map(entry => [entry.asset_id, entry.index, entry.view, entry.reference_purpose]), [
+    ['shot', 1, undefined, undefined], ['side', 2, 'side', 'costume'], ['face', 3, 'face', 'identity'], ['reverse', 4, 'reverse', 'space'],
+  ])
+  assert.deepEqual(manifest[2]!.reference_details!.map(detail => [detail.view, detail.purpose]), [['face', 'identity'], ['detail', 'detail']])
+  assert.deepEqual(visualBindingReferenceAssetIds(bindings[1]!), ['face', 'side'])
+  assert.deepEqual(manifest, videoReferenceManifest(['shot', 'side'], [...bindings].reverse(), options))
+  assert.deepEqual(bindings, before)
+})
+
+test('only absent or empty snapshot selections fall back to legacy boards', () => {
+  for (const reference_assets of [undefined, []]) {
+    assert.deepEqual(visualBindingReferenceAssetIds(binding('hero', 'character', 'board', { reference_assets })), ['board'])
+    assert.deepEqual(videoReferenceManifest([], [binding('hero', 'character', 'board', { reference_assets })], options).map(entry => entry.asset_id), ['board'])
+  }
+  assert.deepEqual(visualBindingReferenceAssetIds(binding('hero', 'character', null, { reference_assets: [reference('face', 'face', 'identity')] })), ['face'])
+})
+
+test('excluding a multi-image optional binding removes only its ownership and its unshared images', () => {
+  const manifest = videoReferenceManifest(['shot', 'manual-shared'], [
+    binding('required', 'character', null, { reference_assets: [reference('shared', 'face', 'identity')] }),
+    binding('optional', 'prop', null, { required: false, reference_assets: [reference('shared', 'detail', 'structure'), reference('optional-only', 'detail', 'detail'), reference('manual-shared', 'front', 'structure')] }),
+  ], { ...options, excluded_visual_profile_ids: ['optional', 'required'] })
+  assert.deepEqual(manifest.map(entry => entry.asset_id), ['shot', 'manual-shared', 'shared'])
+  assert.equal(manifest[1]!.purpose, 'manual')
+  assert.deepEqual(manifest[1]!.profile_ids, [])
+  assert.deepEqual(manifest[2]!.profile_ids, ['required'])
+  assert.deepEqual(manifest[2]!.reference_details!.map(detail => detail.purpose), ['identity'])
+  assert.equal(manifest[2]!.required, true)
+})
+
+test('annotating actual submitted images keeps their numbering and never appends unsubmitted snapshots or their legacy board', () => {
+  const manifest = videoReferenceManifest(['side', 'legacy', 'shot'], [binding('hero', 'character', 'legacy', {
+    reference_assets: [reference('face', 'face', 'identity'), reference('side', 'side', 'costume')],
+  })], { ...options, append_profile_assets: false })
+  assert.deepEqual(manifest.map(entry => [entry.asset_id, entry.index, entry.purpose]), [['side', 1, 'character'], ['legacy', 2, 'manual'], ['shot', 3, 'storyboard']])
+  assert.equal(manifest[0]!.view, 'side')
+  assert.equal(manifest[1]!.view, undefined)
+  assert.deepEqual(manifest[1]!.profile_ids, [])
+})
+
+test('strict keyframe modes never attach independently selected profile images or their metadata', () => {
+  const bindings = [binding('hero', 'character', 'old-board', { reference_assets: [reference('face', 'face', 'identity'), reference('side', 'side', 'costume')] })]
+  for (const mode of ['first_frame', 'first_last_frame']) {
+    const ids = mode === 'first_frame' ? ['face'] : ['face', 'ending']
+    const manifest = videoReferenceManifest(ids, bindings, { mode, visual_reference_mode: 'profiles' })
+    assert.deepEqual(manifest.map(entry => entry.asset_id), ids)
+    assert.equal(manifest[0]!.purpose, 'first_frame')
+    assert.equal(manifest[0]!.view, undefined)
+    assert.deepEqual(manifest[0]!.profile_ids, [])
+  }
 })

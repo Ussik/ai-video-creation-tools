@@ -55,6 +55,30 @@ test('candidate history survives board replacement but excludes a prior definiti
   assert.deepEqual(visualBoardJobs({ ...profile, revision: 3, asset_task_id: null }, jobs), [])
 })
 
+test('independent angle jobs stay out of information-board history and board candidates', () => {
+  const jobs = [{ id: 'angle', status: 'succeeded', result_asset_id: 'upload', created_at: '2026-10-10',
+    request: JSON.stringify({ visual_profile_id: profile.id, visual_profile_revision: profile.revision, visual_reference_view: 'side' }) }] as Job[]
+  assert.deepEqual(visualBoardJobs(profile, jobs), [])
+  const base = { ...detail, jobs, asset_tasks: [], assets: detail.assets.map(asset => ({ ...asset, created_at: '2026-10-10' })) }
+  assert.ok(!visualCandidateAssets(profile, base).some(asset => asset.id === 'upload'))
+})
+
+test('independent snapshot assets link the profile node and detect missing or outdated selected views', () => {
+  const target = { ...node, id: 'target', shot_id: 'shot', asset_id: null, settings: { modality: 'video', mode: 'reference', visual_reference_mode: 'profiles' } } as CanvasNode
+  const reference = { id: 'ref-side', asset_id: 'upload', view: 'side' as const, purpose: 'costume' as const, label: '侧面', revision: 2, style_version: 'anime' }
+  const source = { ...node, settings: { ...node.settings, visual_profile_revision: 2 } }
+  const base = { ...detail, assets: detail.assets.map(asset => ({ ...asset, created_at: '2026-10-10' })), jobs: [], asset_tasks: [], project_visual_style: { version: 'anime' },
+    shot_visual_bindings: [{ ...profile, profile_id: profile.id, shot_id: 'shot', required: true, reference_assets: [reference] }],
+  } as ProjectDetail
+  const graph = { nodes: [source, target], edges: [], revision: 'revision' } as CanvasGraph
+  const edges = automaticVisualReferenceEdges(graph, base)
+  assert.deepEqual(edges.map(edge => [edge.source, edge.target, edge.reference_asset_id]), [['node', 'target', 'upload']])
+  assert.deepEqual(missingVisualReferences(graph, target.id, base), [])
+  assert.equal(missingVisualReferences(graph, target.id, { ...base, assets: base.assets.filter(asset => asset.id !== 'upload') })[0]?.action, 'bindings')
+  assert.equal(missingVisualReferences(graph, target.id, { ...base, project_visual_style: { version: 'new-style' } as ProjectDetail['project_visual_style'] })[0]?.action, 'bindings')
+  assert.equal(missingVisualReferences(graph, target.id, { ...base, visual_profiles: [{ ...profile, revision: 3 }] }).length, 0, 'an existing shot retains its complete frozen reference version')
+})
+
 test('confirming an older board does not replay the latest completed candidate', () => {
   const completed = { ...node, job_id: 'latest-job', settings: { ...node.settings, visual_profile_revision: 1, visual_completed_job_id: 'latest-job' } }
   const updated = syncVisualProfileNode(completed, profile, { ...detail, asset_tasks: [{ id: 'task', generation_job_id: 'latest-job' }] } as ProjectDetail)
@@ -102,6 +126,21 @@ test('bound character, location and prop boards automatically connect existing n
   assert.deepEqual(automaticVisualReferenceEdges(fixture.graph, fixture.detail), edges)
   assert.deepEqual(fixture, before)
   assert.deepEqual(visualBoardReferences(fixture.graph, 'shot-node', fixture.detail), { reference_profile_ids: [], reference_asset_ids: [] })
+})
+
+test('image and video scopes filter automatic edges and required missing boards, including old manual profile edges', () => {
+  const f = referenceFixture()
+  f.detail.shot_visual_bindings![0].usage = 'image'
+  f.detail.shot_visual_bindings![1].usage = 'video'
+  f.detail.shot_visual_bindings![2].usage = 'none'
+  assert.deepEqual(automaticVisualReferenceEdges(f.graph, f.detail).map(edge => edge.source), ['linwan'])
+  for (const binding of f.detail.shot_visual_bindings!) binding.board_asset_id = null
+  for (const profile of f.detail.visual_profiles!) profile.board_asset_id = null
+  for (const source of f.graph.nodes) if (source.settings.visual_profile_id) source.asset_id = null
+  f.graph.edges = [{ id: 'manual-old', source: 'bedroom', target: f.target.id }]
+  assert.deepEqual(missingVisualReferences(f.graph, f.target.id, f.detail).map(item => item.profileId), ['linwan'])
+  f.target.settings = { modality: 'video', mode: 'reference' }
+  assert.deepEqual(missingVisualReferences(f.graph, f.target.id, f.detail).map(item => item.profileId), ['bedroom'])
 })
 
 test('a board added later gains its connection and removing a binding removes only its derived line', () => {

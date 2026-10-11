@@ -3,10 +3,12 @@ import { posix } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { z } from 'zod'
 import { all, db, now, one, run, required } from './db.js'
+import { mentionsSeedanceVersion } from './seedance-prompt.js'
+import { MAX_AUXILIARY_SKILLS, MAX_CREATIVE_SKILLS } from './skill-limits.js'
 
 export const skillStages = ['script', 'visual_assets', 'image_prompt', 'storyboard', 'video_prompt'] as const
 export type SkillStage = typeof skillStages[number]
-export const skillIdsInput = z.array(z.string().min(1).max(100)).max(3).refine(ids => new Set(ids).size === ids.length, '技能不可重复')
+export const skillIdsInput = z.array(z.string().min(1).max(100)).max(MAX_CREATIVE_SKILLS).refine(ids => new Set(ids).size === ids.length, '技能不可重复')
 export const skillSelectionsInput = z.partialRecord(z.enum(skillStages), skillIdsInput)
 export type SkillSelections = z.infer<typeof skillSelectionsInput>
 export type SkillSelection = { primary_id: string | null; auxiliary_ids: string[] }
@@ -265,7 +267,7 @@ export function skillPolicy(projectId?: string) {
     const validLocal = local && (local.primary_id === null || eligible.some(skill => skill.id === local.primary_id))
     const source = validLocal ? local : global
     const primary = source?.primary_id && eligible.some(skill => skill.id === source.primary_id) ? source.primary_id : null
-    const auxiliary = primary ? (JSON.parse(source?.auxiliary_ids || '[]') as string[]).filter(id => id !== primary && eligible.some(skill => skill.id === id)).slice(0, 2) : []
+    const auxiliary = primary ? (JSON.parse(source?.auxiliary_ids || '[]') as string[]).filter(id => id !== primary && eligible.some(skill => skill.id === id)).slice(0, MAX_AUXILIARY_SKILLS) : []
     return { stage, label: skillStageLabels[stage], primary_id: primary, auxiliary_ids: auxiliary,
       source: validLocal ? 'project' as const : 'global' as const,
       warning: local && !validLocal ? '项目主技能已停用或卸载，当前沿用全局默认，请重新选择。' : '',
@@ -316,11 +318,12 @@ export function skillContext(stage: SkillStage, task: string, selectedIds?: stri
 function relevantReference(path: string, task: string): boolean {
   const name = posix.basename(path).toLowerCase()
   if (/stage-contract|common-recipe|target-model-profile|review|continuity|performance-action/.test(name)) return true
+  if (/seedance-2\.0/.test(name)) return mentionsSeedanceVersion(task, '2.0')
   const mappings: Array<[RegExp, RegExp]> = [
     [/character|look-and-state|look-and-revision/, /人物|角色|服装|character/i],
     [/location|geography/, /场景|地点|空间|location/i], [/prop/, /道具|prop/i],
     [/production-sheet/, /信息图|多视图|三视图|production sheet/i],
-    [/seedance-2\.0/, /seedance[- ]?2\.0/i], [/seedance-2\.5/, /seedance[- ]?2\.5/i],
+    [/seedance-2\.5/, /seedance[- ]?2\.5/i],
     [/minimax-h3/, /minimax[- ]?h3/i], [/wan-3\.0/, /wan[- ]?3\.0/i],
   ]
   return mappings.some(([file, context]) => file.test(name) && context.test(task))

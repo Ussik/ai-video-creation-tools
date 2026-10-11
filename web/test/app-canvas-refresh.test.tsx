@@ -94,6 +94,7 @@ test('real App polling retains one canvas beside the hidden storyboard planner',
     assert.equal(method, 'GET', 'background refresh cannot write the canvas or project')
     if (path === '/api/projects') return Response.json([detail])
     if (path === '/api/providers' || path === '/api/models') return Response.json([])
+    if (path === '/api/projects/refresh/canvases') return Response.json([{ id: 'refresh', project_id: 'refresh', name: '画布 1', is_default: true, node_count: graph.nodes.length, viewport: null }])
     if (path === '/api/projects/refresh/canvas') return Response.json(graph)
     if (path === '/api/projects/refresh') {
       // Real changed fields force App reconciliation even with shared snapshots.

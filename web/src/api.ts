@@ -1,3 +1,6 @@
+import type { VisualReferenceAsset, VisualReferencePurpose, VisualReferenceSnapshot, VisualReferenceStatus, VisualReferenceView } from '../../backend/src/visual-reference-types'
+export type { VisualReferenceAsset, VisualReferencePurpose, VisualReferenceSnapshot, VisualReferenceStatus, VisualReferenceView } from '../../backend/src/visual-reference-types'
+
 export type Modality = 'text' | 'image' | 'video'
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed'
 export type Protocol = 'responses' | 'chat_completions' | 'image_generations' | 'async_video'
@@ -272,8 +275,9 @@ export interface VisualProfileDraft {
   definition: string
   view_requirements: string
   scene_ids: string[]
+  shot_usage?: Array<{ shot_id: string; usage: import('../../backend/src/visual-binding-usage').VisualBindingUsage }>
 }
-export interface VisualProfile extends Omit<VisualProfileDraft, 'scene_ids'> {
+export interface VisualProfile extends Omit<VisualProfileDraft, 'scene_ids' | 'shot_usage'> {
   id: string
   project_id: string
   revision: number
@@ -285,13 +289,64 @@ export interface VisualProfile extends Omit<VisualProfileDraft, 'scene_ids'> {
   board_style_status?: 'missing' | 'unrecorded' | 'current' | 'needs_review'
   candidate_asset_ids?: string[]
   archived_candidate_asset_ids?: string[]
+  reference_assets?: VisualReferenceAsset[]
 }
 export interface SceneVisualBinding { scene_id: string; profile_id: string; required: boolean }
-export interface ShotVisualBinding extends Omit<VisualProfile, 'id' | 'project_id' | 'asset_task_id' | 'board_prompt'> {
+export interface ShotVisualBinding extends Omit<VisualProfile, 'id' | 'project_id' | 'asset_task_id' | 'board_prompt' | 'reference_assets'> {
   shot_id: string
   profile_id: string
   required: boolean
+  reference_assets?: VisualReferenceSnapshot[]
+  usage?: import('../../backend/src/visual-binding-usage').VisualBindingUsage
 }
+export interface VisualReferenceContext {
+  expected_revision: number
+  expected_style_version: string
+}
+export interface VisualReferenceAssetInput extends VisualReferenceContext {
+  asset_id: string
+  view: VisualReferenceView
+  purpose: VisualReferencePurpose
+  label?: string
+  status?: 'candidate' | 'confirmed'
+  is_default?: boolean
+}
+export interface VisualReferenceAssetPatch extends VisualReferenceContext {
+  status?: VisualReferenceStatus
+  is_default?: boolean
+  label?: string
+}
+export interface VisualReferenceCrop { x: number; y: number; width: number; height: number }
+export interface VisualReferenceCropInput extends Omit<VisualReferenceAssetInput, 'status' | 'is_default'> {
+  crop: VisualReferenceCrop
+}
+export interface VisualReferencePreviewInput extends VisualReferenceContext {
+  view: VisualReferenceView
+  purpose: VisualReferencePurpose
+  label?: string
+  model_id: string
+  reference_asset_ids?: string[]
+  prompt_append?: string
+}
+export interface VisualReferencePreview {
+  prompt: string
+  reference_asset_ids: string[]
+  reference_signature: string
+  project_style_version: string
+  mode: 'text' | 'reference'
+  style_warnings?: string[]
+}
+export interface VisualReferenceGenerationInput extends VisualReferencePreviewInput {
+  reference_signature: string
+  prompt: string
+  ratio: string
+  resolution?: string | null
+  quality?: string | null
+  clarity?: string | null
+  background?: string | null
+  candidate_count?: 1 | 2 | 4
+}
+export interface VisualReferenceGenerationResult { job: Job; jobs: Job[] }
 export interface VisualProjectData {
   project_visual_style?: import('../../backend/src/visual-style').ProjectVisualStyle
   visual_profiles: VisualProfile[]
@@ -301,6 +356,7 @@ export interface VisualProjectData {
 export interface ScriptCanvasCheck { signature: string; scene_ids: string[]; needs_analysis: string[] }
 export interface ScriptCanvasPlan {
   signature: string; scene_ids: string[]; profiles: VisualProfileDraft[]
+  reference_usage_version?: 1
   used_skills?: Array<{ id: string; name: string; revision: string; files: string[]; role?: 'primary' | 'auxiliary' }>
   loaded_files?: string[]
 }
@@ -414,3 +470,12 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
 }
 
 export const json = (method: string, value: unknown): RequestInit => ({ method, body: JSON.stringify(value) })
+
+const referenceProfilePath = (profileId: string) => `/visual-profiles/${encodeURIComponent(profileId)}`
+export const visualReferenceAssetsApi = {
+  register: (profileId: string, input: VisualReferenceAssetInput) => api<VisualProfile>(`${referenceProfilePath(profileId)}/reference-assets`, json('POST', input)),
+  update: (profileId: string, referenceId: string, input: VisualReferenceAssetPatch) => api<VisualProfile>(`${referenceProfilePath(profileId)}/reference-assets/${encodeURIComponent(referenceId)}`, json('PATCH', input)),
+  crop: (profileId: string, input: VisualReferenceCropInput) => api<VisualProfile>(`${referenceProfilePath(profileId)}/reference-crop`, json('POST', input)),
+  preview: (profileId: string, input: VisualReferencePreviewInput) => api<VisualReferencePreview>(`${referenceProfilePath(profileId)}/reference-preview`, json('POST', input)),
+  generate: (profileId: string, input: VisualReferenceGenerationInput) => api<VisualReferenceGenerationResult>(`${referenceProfilePath(profileId)}/reference-generate`, json('POST', input)),
+}

@@ -1,0 +1,28 @@
+.final-cut-shot-summary { display: grid; gap: 7px; min-width: 0; }
+.final-cut-shot-summary strong { font-size: 15px; color: #eee; overflow-wrap: anywhere; }
+.final-cut-shot-summary span { font-size: 12px; color: #aaa; overflow-wrap: anywhere; }
+.final-cut-shot-summary small { color: #929292; }
+.final-cut-inspector .trim-editor { padding-top: 16px; }
+.final-cut-inspector .trim-editor-heading { flex-wrap: wrap; }
+.final-cut-inspector .trim-editor-heading span { width: 100%; margin-left: 0; white-space: normal; }
+.final-cut-inspector .trim-fields,
+.final-cut-inspector .source-audio-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.final-cut-inspector .trim-fields .mantine-Button-root { grid-column: 1 / -1; }
+.final-cut-inspector .inspector-actions .mantine-Button-root { width: 100%; }
+.final-cut-empty { padding: 22px 18px; color: #999; font-size: 12px; line-height: 1.6; }
+@media (min-width: 701px) and (max-width: 1050px) {
+  .final-cut-inspector .inspector-scroll { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: auto 1fr; gap: 18px; align-items: start; }
+  .final-cut-inspector .final-cut-shot-summary { grid-column: 1; grid-row: 1; }
+  .final-cut-inspector .final-cut-output { grid-column: 1; grid-row: 2; }
+  .final-cut-inspector .inspector-divider { display: none; }
+  .final-cut-inspector .trim-editor { grid-column: 2; grid-row: 1 / span 2; border-top: 0; padding-top: 0; }
+}
+@media (max-width: 700px) {
+  .studio-layout.final-cut-workspace { height: auto; }
+  .final-cut-workspace > .shot-rail,
+  .final-cut-workspace > .workspace-center,
+  .final-cut-workspace > .inspector,
+  .final-cut-workspace > .timeline { flex: none; }
+  .final-cut-workspace .workspace-center { overflow: visible; }
+  .final-cut-inspector .inspector-scroll { flex: none; }
+}

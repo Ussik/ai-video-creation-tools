@@ -1,0 +1,13 @@
+.pc-binding-references { display: grid; gap: 10px; margin-top: 12px; padding: 12px; border: 1px solid var(--visual-panel-border, #2b2e33); border-radius: 10px; background: var(--workspace-ink, #0f1012); }
+.pc-binding-reference-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--visual-panel-secondary, #b5bac1); font-size: 11px; }
+.pc-binding-reference-actions > span { margin-right: auto; }
+.pc-binding-reference-current { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 3px; scrollbar-width: thin; }
+.pc-binding-reference-current > div { flex: 0 0 72px; min-width: 0; display: grid; gap: 5px; }
+.pc-binding-reference-entry { position: relative; }
+.pc-binding-reference-current .pc-binding-reference-remove { position: absolute; top: 4px; right: 4px; display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 1px solid var(--visual-panel-border, #2b2e33); border-radius: 5px; background: var(--canvas-chrome-surface, #17191bf2); color: var(--visual-panel-secondary, #b5bac1); cursor: pointer; }
+.pc-binding-reference-current .pc-binding-reference-remove:hover:not(:disabled) { background: var(--visual-panel-hover, #25282c); color: var(--visual-panel-text, #e8eaec); }
+.pc-binding-reference-current .pc-binding-reference-remove:disabled { color: var(--workspace-subtle, #696f76); cursor: default; }
+.pc-binding-reference-current :is(a, div > span) { display: grid; place-items: center; width: 72px; height: 80px; overflow: hidden; border-radius: 7px; border: 1px solid var(--visual-panel-border, #2b2e33); background: var(--visual-panel-raised, #1b1d20); color: var(--visual-panel-muted, #94999f); font-size: 11px; }
+.pc-binding-reference-current img { width: 100%; height: 100%; object-fit: contain; }
+.pc-binding-reference-current small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--visual-panel-secondary, #b5bac1); font-size: 10px; }
+.pc-binding-reference-choices { display: grid; gap: 9px; }

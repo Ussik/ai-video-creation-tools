@@ -4,6 +4,7 @@ import { shotVideoPrompt } from '../../backend/src/shot-prompts'
 import { videoResolutionOptions } from '../../backend/src/video-parameters'
 import { supportsVideoMultiReference } from '../../backend/src/video-reference-config'
 import { modelDefaultResolution } from './canvas-model-parameters'
+import { visualBindingApplies } from '../../backend/src/visual-binding-usage'
 
 function imageAsset(source: CanvasNode, detail: ProjectDetail) {
   const job = detail.jobs.find(job => job.id === source.job_id && job.status === 'succeeded')
@@ -30,7 +31,7 @@ function sourceShotId(source: CanvasNode, asset: Asset) {
 }
 
 function hasShotVisualBindings(detail: ProjectDetail, shotId: string | null) {
-  return !!shotId && !!detail.shot_visual_bindings?.some(binding => binding.shot_id === shotId)
+  return !!shotId && !!detail.shot_visual_bindings?.some(binding => binding.shot_id === shotId && visualBindingApplies(binding, 'video'))
 }
 
 function videoDuration(model: Model | undefined, requested: number) {
@@ -109,27 +110,28 @@ export function pinnedCanvasReference(source: CanvasNode, assetId?: string): Can
   return assetId ? { ...source, asset_id: assetId, job_id: null, settings: { ...source.settings, visual_profile_id: undefined } } : source
 }
 
-export function createImageVideoHandoff(graph: CanvasGraph, source: CanvasNode, detail: ProjectDetail, models: Model[], freshNode: CanvasNode, edgeId: string) {
+export function createImageVideoHandoff(graph: CanvasGraph, source: CanvasNode, detail: ProjectDetail, models: Model[], freshNode: CanvasNode, edgeId: string,
+  mode: 'first_frame' | 'reference' = 'first_frame') {
   if (source.settings.visual_profile_id) throw new Error('设定信息图不能直接作为分镜首帧，请先生成分镜图')
   const asset = imageAsset(source, detail)
   if (!asset) throw new Error('请先生成或选择一张分镜图片')
   const shotId = sourceShotId(source, asset)
   const existing = graph.nodes.find(node => node.type === 'generation' && node.settings.modality === 'video'
-    && ['first_frame', 'reference'].includes(node.settings.mode || '') && node.shot_id === shotId
+    && node.settings.mode === mode && node.shot_id === shotId
     && (node.settings.storyboard_reference_asset_id === asset.id || graph.edges.some(edge => edge.target === node.id
       && edge.reference_asset_id === asset.id && (node.settings.mode === 'first_frame' || edge.source === source.id))))
   if (existing) return { graph, nodeId: existing.id, created: false }
   if (graph.nodes.length >= 500 || graph.edges.length >= 1000) throw new Error('画布节点或连线已达到上限')
   const shot = detail.shots.find(shot => shot.id === shotId)
-  const referenceModel = hasShotVisualBindings(detail, shotId) ? multiReferenceModel(models, freshNode.model_id) : undefined
+  const referenceModel = mode === 'reference' ? multiReferenceModel(models, freshNode.model_id) : undefined
+  if (mode === 'reference' && !referenceModel) throw new Error('没有支持多图参考的可用视频模型，请先配置模型')
   const model = referenceModel || videoModel(models, 'first_frame', freshNode.model_id)
-  const mode = referenceModel ? 'reference' : 'first_frame'
   const duration = videoDuration(model, shot?.duration || source.settings.duration || 5)
   const prompt = shotVideoPrompt(shot || { prompt: source.prompt || asset.prompt || source.title })
   const node: CanvasNode = { ...freshNode, type: 'generation', shot_id: shotId, model_id: model?.id || null,
     title: `${shot?.title || source.title || asset.filename} · 视频`, prompt, text: '', asset_id: null, job_id: null,
     settings: { modality: 'video', mode, visual_reference_mode: referenceModel ? 'profiles' : 'keyframe', candidate_count: 1,
-      ...(referenceModel ? { storyboard_reference_asset_id: asset.id } : {}),
+      storyboard_reference_asset_id: asset.id,
       duration,
       ratio: 'adaptive', resolution: modelDefaultResolution(model, videoResolutionOptions(model?.settings)) || null } }
   return { graph: { ...graph, nodes: [...graph.nodes, node], edges: [...graph.edges,

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 import type { Project, ScriptArtifact, ScriptScene } from '../src/db.js'
 import type { ScriptSnapshot } from '../src/script-document-tools.js'
+import type { VisualReferenceAsset, VisualReferenceSnapshot } from '../src/visual-reference-types.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'studio-resource-tools-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
@@ -28,6 +29,21 @@ async function fixture() {
 }
 const value = { kind: 'character', name: '林晚', variant: '雨衣', definition: '黑发，墨绿雨衣，记者', view_requirements: '正侧背、面部、服装细节', scene_ids: [] }
 const shot = { title: '林晚走进车站', prompt: '林晚进入雨夜车站', image_prompt: '单幅首帧：林晚在门口', video_prompt: '林晚向前走，镜头缓慢跟随', duration: 8 }
+function image(projectId: string, suffix: string) {
+  const assetId = `${projectId}-${suffix}`
+  run("INSERT INTO assets (id,project_id,kind,filename,path,source,created_at) VALUES (?,?,'image',?,?,'upload',?)",
+    assetId, projectId, `${suffix}.png`, join(testData, `${assetId}.png`), new Date().toISOString())
+  return assetId
+}
+async function reference(projectId: string, profileId: string, view: VisualReferenceAsset['view'], status: 'candidate' | 'confirmed' = 'confirmed') {
+  const detail = await call('GET', `/api/projects/${projectId}`), profile = detail.visual_profiles.find((profile: any) => profile.id === profileId)
+  const assetId = image(projectId, `${profileId}-${view}`)
+  const updated = await call('POST', `/api/visual-profiles/${profileId}/reference-assets`, {
+    expected_revision: profile.revision, expected_style_version: detail.project_visual_style.version, asset_id: assetId, view,
+    purpose: view === 'face' ? 'identity' : 'costume', label: `${view}参考`, status,
+  })
+  return updated.reference_assets.find((reference: VisualReferenceAsset) => reference.asset_id === assetId) as VisualReferenceAsset
+}
 
 test('visual profile proposals are reviewable and stale versions reject the entire save', async () => {
   const f = await fixture(), first = f.tools()
@@ -61,6 +77,127 @@ test('reference tools show actual missing images and binding drafts respect proj
   const draft = getToolDraft(f.project.id)!
   commitToolDraft(f.project.id, draft.id, draft.version, f.script)
   assert.equal(all('SELECT * FROM scene_visual_bindings WHERE scene_id=?', f.scene.id).length, 1)
+})
+
+test('director profile reads and the storyboard catalog identify current confirmed independent views without a board', async () => {
+  const f = await fixture(), profile = (await call('POST', `/api/projects/${f.project.id}/visual-profiles`, { profiles: [value] })).visual_profiles[0]
+  const face = await reference(f.project.id, profile.id, 'face'), candidate = await reference(f.project.id, profile.id, 'side', 'candidate')
+  const archived = await reference(f.project.id, profile.id, 'back')
+  await call('PATCH', `/api/visual-profiles/${profile.id}/reference-assets/${archived.id}`, {
+    expected_revision: 1, expected_style_version: archived.style_version, status: 'archived',
+  })
+  const read = await f.tools().execute('read_visual_profiles', { profile_ids: [profile.id] }) as any
+  const found = read.profiles[0]
+  assert.equal(found.board_asset_id, null)
+  assert.equal(found.reference_status, 'confirmed')
+  assert.equal(found.actual_image_inspected, false)
+  assert.deepEqual(found.reference_assets.map((reference: any) => reference.id), [face.id])
+  assert.deepEqual(found.reference_assets[0], {
+    id: face.id, asset_id: face.asset_id, view: 'face', purpose: 'identity', label: 'face参考', revision: 1, style_version: face.style_version,
+    status: 'confirmed', is_default: false, current: true, asset_exists: true, actual_image_inspected: false,
+  })
+  const context = await f.tools().execute('get_storyboard_context', { scene_ids: [f.scene.id] }) as any
+  assert.equal(context.visual_profile_catalog[0].reference_status, 'confirmed')
+  assert.deepEqual(context.visual_profile_catalog[0].reference_assets, found.reference_assets)
+  assert.doesNotMatch(JSON.stringify(context.visual_profile_catalog), new RegExp(`${candidate.id}|${archived.id}`))
+  await call('PATCH', `/api/visual-profiles/${profile.id}`, { expected_revision: 1, definition: '黑发蓝色雨衣，更新设定' })
+  const revised = await f.tools().execute('read_visual_profiles', { profile_ids: [profile.id] }) as any
+  assert.equal(revised.profiles[0].reference_status, 'needs_review')
+  assert.equal(revised.profiles[0].reference_assets[0].current, false)
+  assert.equal(revised.profiles[0].reference_assets[0].revision, 1)
+})
+
+test('director readiness checks image ownership and current style while retaining unrecorded legacy board support', async () => {
+  const f = await fixture(), profile = (await call('POST', `/api/projects/${f.project.id}/visual-profiles`, { profiles: [value] })).visual_profiles[0]
+  const face = await reference(f.project.id, profile.id, 'face')
+  const read = async () => (await f.tools().execute('read_visual_profiles', { profile_ids: [profile.id] }) as any).profiles[0]
+  run("UPDATE assets SET kind='video' WHERE id=?", face.asset_id)
+  assert.equal((await read()).reference_status, 'missing')
+  assert.equal((await read()).reference_assets[0].asset_exists, false)
+  const boardId = image(f.project.id, 'legacy-board')
+  run('UPDATE visual_profiles SET board_asset_id=?, board_style_version=NULL WHERE id=?', boardId, profile.id)
+  assert.equal((await read()).reference_status, 'confirmed')
+  assert.equal((await read()).board_style_status, 'unrecorded')
+  await call('PUT', `/api/projects/${f.project.id}/script`, { outline: '故事', characters: '', generation_options: { visual_style: '二维水彩' } })
+  run('UPDATE visual_profiles SET board_style_version=? WHERE id=?', face.style_version, profile.id)
+  assert.equal((await read()).reference_status, 'needs_review')
+  assert.equal((await read()).reference_assets[0].current, false)
+  run("UPDATE assets SET kind='video' WHERE id=?", boardId)
+  assert.equal((await read()).reference_status, 'missing')
+  assert.equal((await read()).board_asset_exists, false)
+  const foreign = await fixture(), foreignBoard = image(foreign.project.id, 'foreign-board')
+  run('UPDATE visual_profiles SET board_asset_id=?, board_style_version=NULL WHERE id=?', foreignBoard, profile.id)
+  assert.equal((await read()).board_asset_exists, false)
+  assert.equal((await read()).reference_status, 'missing')
+})
+
+test('storyboard reads decode frozen views, preserve archived older-definition selections and detect missing selected assets', async () => {
+  const f = await fixture(), profile = (await call('POST', `/api/projects/${f.project.id}/visual-profiles`, { profiles: [value] })).visual_profiles[0]
+  const face = await reference(f.project.id, profile.id, 'face'), side = await reference(f.project.id, profile.id, 'side')
+  const boardId = image(f.project.id, 'board')
+  await call('PATCH', `/api/visual-profiles/${profile.id}`, { expected_revision: 1, board_asset_id: boardId })
+  const currentShot = await call('POST', `/api/projects/${f.project.id}/shots`, { ...shot, source_scene_id: f.scene.id })
+  const data = await call('PUT', `/api/shots/${currentShot.id}/visual-bindings`, { bindings: [{ profile_id: profile.id, required: true, reference_asset_ids: [side.id, face.id] }] })
+  const frozen = data.shot_visual_bindings.find((binding: any) => binding.shot_id === currentShot.id).reference_assets as VisualReferenceSnapshot[]
+  await call('PATCH', `/api/visual-profiles/${profile.id}/reference-assets/${face.id}`, { expected_revision: 1, expected_style_version: face.style_version, status: 'archived' })
+  await call('PATCH', `/api/visual-profiles/${profile.id}`, { expected_revision: 1, definition: '新的文字版本，不替换已有镜头' })
+  const read = async () => {
+    const context = await f.tools().execute('get_storyboard_context', { shot_ids: [currentShot.id], limit: 10 }) as any
+    return context.objects.find((object: any) => object.type === 'shot')
+  }
+  const complete = await read(), binding = complete.bindings[0]
+  assert.deepEqual(binding.reference_assets, frozen)
+  assert.deepEqual(binding.selected_reference_asset_ids, [side.asset_id, face.asset_id])
+  assert.deepEqual(binding.missing_reference_asset_ids, [])
+  assert.equal(binding.reference_status, 'confirmed')
+  assert.equal(binding.revision, 1)
+  assert.equal(binding.actual_image_inspected, false)
+  await call('PUT', `/api/projects/${f.project.id}/script`, { outline: '故事', characters: '', generation_options: { visual_style: '二维水彩' } })
+  const styledComplete = await read()
+  assert.equal(styledComplete.bindings[0].reference_status, 'needs_review')
+  assert.deepEqual(styledComplete.bindings[0].reference_assets, frozen)
+  run('DELETE FROM assets WHERE id=?', side.asset_id)
+  const missing = await read()
+  assert.deepEqual(missing.bindings[0].reference_assets, frozen)
+  assert.deepEqual(missing.bindings[0].missing_reference_asset_ids, [side.asset_id])
+  assert.equal(missing.bindings[0].reference_status, 'missing')
+  assert.equal(missing.binding_version, complete.binding_version, 'derived asset availability must not change a binding draft hash')
+  const styled = await read()
+  assert.equal(styled.bindings[0].reference_status, 'missing', 'missing images remain visible when the style also changes')
+  assert.deepEqual(styled.bindings[0].reference_assets, frozen)
+})
+
+test('read decoding keeps persisted binding hashes and no-refresh director writes retain independent snapshots and legacy boards', async () => {
+  const f = await fixture(), data = await call('POST', `/api/projects/${f.project.id}/visual-profiles`, { profiles: [value, { ...value, name: '陈默' }] })
+  const [profile, legacy] = data.visual_profiles, face = await reference(f.project.id, profile.id, 'face')
+  const legacyBoard = image(f.project.id, 'legacy')
+  run('UPDATE visual_profiles SET board_asset_id=?, board_style_version=NULL WHERE id=?', legacyBoard, legacy.id)
+  const currentShot = await call('POST', `/api/projects/${f.project.id}/shots`, { ...shot, source_scene_id: f.scene.id })
+  await call('PUT', `/api/shots/${currentShot.id}/visual-bindings`, { bindings: [
+    { profile_id: profile.id, required: true, reference_asset_ids: [face.id] }, { profile_id: legacy.id, required: true, reference_asset_ids: [] },
+  ] })
+  const storedBefore = all<any>('SELECT * FROM shot_visual_bindings WHERE shot_id=? ORDER BY profile_id', currentShot.id)
+  const tools = f.tools()
+  await tools.execute('read_visual_profiles', { profile_ids: [profile.id, legacy.id] })
+  const context = await tools.execute('get_storyboard_context', { shot_ids: [currentShot.id], limit: 10 }) as any
+  const current = context.objects.find((object: any) => object.type === 'shot')
+  const { resourceVersion } = await import('../src/script-resource-tools.js')
+  assert.equal(current.binding_version, resourceVersion([
+    one('SELECT * FROM shots WHERE id=?', currentShot.id), storedBefore,
+    all('SELECT * FROM visual_profiles WHERE project_id=? ORDER BY kind, name, variant, id', f.project.id),
+  ]))
+  const legacyBinding = current.bindings.find((binding: any) => binding.profile_id === legacy.id)
+  assert.deepEqual(legacyBinding.reference_assets, [])
+  assert.deepEqual(legacyBinding.selected_reference_asset_ids, [legacyBoard])
+  assert.equal(legacyBinding.reference_status, 'confirmed')
+  await tools.execute('propose_visual_binding_patch', { summary: '改成可选参考，保留选图', targets: [{ target_type: 'shot', target_id: currentShot.id,
+    base_version: current.binding_version, bindings: [{ profile_id: profile.id, required: false }, { profile_id: legacy.id, required: false }], refresh_profile_ids: [],
+  }] })
+  const draft = getToolDraft(f.project.id)!
+  commitToolDraft(f.project.id, draft.id, draft.version, f.script)
+  const storedAfter = all<any>('SELECT * FROM shot_visual_bindings WHERE shot_id=? ORDER BY profile_id', currentShot.id)
+  assert.deepEqual(storedAfter.map(({ required: _required, ...binding }) => binding), storedBefore.map(({ required: _required, ...binding }) => binding))
+  assert.ok(storedAfter.every(binding => binding.required === 0))
 })
 
 test('shot plans preserve source IDs, support preview edits and cannot duplicate on repeated confirmation', async () => {

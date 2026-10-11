@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { all, db, newId, now, one, required, run } from './db.js'
 import type { Project, ScriptArtifact, ScriptScene, Shot } from './db.js'
-import { analyzeVisualProfiles, inheritSceneVisualBindings, profileDraft, visualProjectData, type VisualProfile } from './visual-profiles.js'
+import { analyzeVisualProfiles, applyProfileShotUsage, inheritSceneVisualBindings, profileDraft, validateProfileShotUsage, visualProjectData, type VisualProfile } from './visual-profiles.js'
 import type { OutputContract } from './model-output.js'
 import { projectVisualStyle } from './project-visual-style.js'
 import { shotImagePrompt, shotVideoPrompt } from './shot-prompts.js'
@@ -16,7 +16,8 @@ type Context = {
 }
 const scopeInput = z.object({ scene_ids: z.array(z.string().min(1)).min(1).max(100) }).strict()
 const planInput = scopeInput.extend({ signature: z.string().length(64), model_id: z.string().min(1).optional(), skill_ids: skillIdsInput.optional() })
-const commitInput = scopeInput.extend({ signature: z.string().length(64), profiles: profileDraft.shape.profiles })
+const commitInput = scopeInput.extend({ signature: z.string().length(64), profiles: profileDraft.shape.profiles,
+  reference_usage_version: z.literal(1).optional() })
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 function conflict(): never { throw Object.assign(new Error('剧本或视觉设定已更新，请重新加入画布'), { statusCode: 409 }) }
 function invalid(message: string): never { throw Object.assign(new Error(message), { statusCode: 422 }) }
@@ -48,8 +49,8 @@ export function scriptCanvasPreparationSnapshot(id: string, sceneIds: string[], 
   // Include definitions and bindings in the commit version, so a model response
   // cannot race a user editing the same settings during preparation.
   const signature = hash({ sources: scenes.map(signatureFor), profiles: visuals.visual_profiles,
-    bindings: visuals.scene_visual_bindings, shots })
-  return { scenes, visuals, signature, signatureFor, needsAnalysis }
+    bindings: visuals.scene_visual_bindings, shot_bindings: visuals.shot_visual_bindings.filter(binding => shots.some(shot => shot.id === binding.shot_id)), shots })
+  return { scenes, shots, visuals, signature, signatureFor, needsAnalysis }
 }
 
 export function checkScriptCanvasPreparation(id: string, sceneIds: string[], context: Pick<Context, 'script'>) {
@@ -75,6 +76,7 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
     }, context) : { profiles: [], skills: [], loaded_files: [] }
     if (scriptCanvasPreparationSnapshot(id, data.scene_ids, context).signature !== state.signature) conflict()
     return { signature: state.signature, scene_ids: data.scene_ids, profiles: drafts.profiles,
+      reference_usage_version: 1,
       used_skills: drafts.skills, loaded_files: drafts.loaded_files }
   })
   app.post('/api/projects/:id/script/canvas/commit', async request => {
@@ -85,12 +87,23 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
       if (state.signature !== data.signature) conflict()
       const allowed = new Set(state.needsAnalysis.map(scene => scene.id))
       if (data.profiles.some(profile => !profile.scene_ids.length || profile.scene_ids.some(sceneId => !allowed.has(sceneId)))) invalid('视觉草稿必须引用本次需要整理的场次')
+      for (const input of data.profiles) validateProfileShotUsage(id, input)
       const merged = new Map<string, z.infer<typeof profileDraft>['profiles'][number]>()
       for (const input of data.profiles) {
         const key = JSON.stringify([input.kind, input.name, input.variant])
         const previous = merged.get(key)
         if (previous && (previous.definition !== input.definition || previous.view_requirements !== input.view_requirements)) invalid(`「${input.name}」同一版本的视觉草稿存在冲突，请重新整理`)
-        merged.set(key, { ...input, scene_ids: [...new Set([...(previous?.scene_ids || []), ...input.scene_ids])] })
+        const usages = new Map((previous?.shot_usage || []).map(item => [item.shot_id, item]))
+        for (const item of input.shot_usage || []) {
+          if (usages.has(item.shot_id) && usages.get(item.shot_id)!.usage !== item.usage) invalid(`「${input.name}」同一镜头的参考用途存在冲突`)
+          usages.set(item.shot_id, item)
+        }
+        merged.set(key, { ...input, scene_ids: [...new Set([...(previous?.scene_ids || []), ...input.scene_ids])],
+          ...((previous?.shot_usage || input.shot_usage) ? { shot_usage: [...usages.values()] } : {}) })
+      }
+      if (data.reference_usage_version === 1) for (const input of merged.values()) {
+        const expected = state.shots.filter(shot => input.scene_ids.includes(shot.source_scene_id || ''))
+        if (expected.some(shot => !input.shot_usage?.some(item => item.shot_id === shot.id))) invalid('请明确每个已规划镜头的图片与视频参考用途')
       }
       let createdProfiles = 0
       for (const input of merged.values()) {
@@ -121,6 +134,16 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
           createdShots++
         }
         for (const shot of shots) inheritSceneVisualBindings(shot.id, scene.id)
+      }
+      // Scoped analysis replaces whole-scene inheritance. Scene candidates
+      // omitted from the new result stay available without becoming shot inputs.
+      if (data.reference_usage_version === 1 || [...merged.values()].some(input => input.shot_usage !== undefined)) {
+        for (const shot of state.shots.filter(shot => allowed.has(shot.source_scene_id || ''))) run(`UPDATE shot_visual_bindings SET usage='none'
+          WHERE shot_id=? AND profile_id IN (SELECT profile_id FROM scene_visual_bindings WHERE scene_id=?)`, shot.id, shot.source_scene_id)
+      }
+      for (const input of merged.values()) {
+        const profile = one<VisualProfile>('SELECT * FROM visual_profiles WHERE project_id=? AND kind=? AND name=? AND variant=?', id, input.kind, input.name, input.variant)!
+        applyProfileShotUsage(profile, input)
       }
       // The legacy preparation route can create a scene template. Record the
       // final shot contents so that creation itself does not invalidate the cache.

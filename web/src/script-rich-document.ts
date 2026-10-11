@@ -21,7 +21,7 @@ function appendInline(target: JSONContent[], node: JSONContent) {
   } else target.push(node)
 }
 
-function inlineNodes(source: string): JSONContent[] {
+function inlineNodes(source: string, tableCell = false): JSONContent[] {
   function parse(from: number, marks: Mark[], closing = '', depth = 0): { nodes: JSONContent[]; end: number; closed: boolean } {
     const nodes: JSONContent[] = []
     let index = from
@@ -44,6 +44,14 @@ function inlineNodes(source: string): JSONContent[] {
         if (previous?.type === 'text' && / {2,}$/.test(previous.text || '')) previous.text = previous.text!.replace(/ {2,}$/, '')
         appendInline(nodes, { type: 'hardBreak' })
         index += 1
+        continue
+      }
+      // GFM cells cannot contain physical newlines. Only interpret this small
+      // line-break syntax in cells; escaped HTML remains literal prose.
+      const cellBreak = tableCell && char === '<' ? /^<br\s*\/?\s*>/i.exec(source.slice(index)) : null
+      if (cellBreak) {
+        appendInline(nodes, { type: 'hardBreak' })
+        index += cellBreak[0].length
         continue
       }
       if (char === '&') {
@@ -103,7 +111,43 @@ function explicitBreak(line: string): boolean {
 }
 
 function blockStart(line: string): boolean {
-  return !!listLine(line) || headingPattern.test(line) || /^ {0,3}>\s?/.test(line) || /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)
+  return !!listLine(line) || headingPattern.test(line) || /^ {0,3}>\s?/.test(line) || /^ {0,3}(?:`{3,}|~{3,})/.test(line) || /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)
+}
+
+function tableCells(line: string): string[] | null {
+  const source = line.trim()
+  const cells: string[] = []
+  let cell = ''
+  let pipes = 0
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] === '\\' && index + 1 < source.length) {
+      cell += source[index] + source[++index]
+    } else if (source[index] === '|') {
+      cells.push(cell.trim())
+      cell = ''
+      pipes += 1
+    } else cell += source[index]
+  }
+  if (!pipes) return null
+  cells.push(cell.trim())
+  if (source.startsWith('|')) cells.shift()
+  if (cell === '' && source.endsWith('|')) cells.pop()
+  return cells.length ? cells : null
+}
+
+function tableStart(lines: string[], index: number): { headers: string[]; alignments: Array<string | null> } | null {
+  const headers = tableCells(lines[index] || '')
+  const separators = tableCells(lines[index + 1] || '')
+  if (!headers || !separators || headers.length !== separators.length || !separators.every(cell => /^:?-+:?$/.test(cell))) return null
+  return { headers, alignments: separators.map(cell => cell.startsWith(':') && cell.endsWith(':') ? 'center' : cell.endsWith(':') ? 'right' : cell.startsWith(':') ? 'left' : null) }
+}
+
+function tableRow(cells: string[], alignments: Array<string | null>, header = false): JSONContent {
+  return { type: 'tableRow', content: alignments.map((align, column) => {
+    const content = inlineNodes(cells[column] || '', true)
+    return { type: header ? 'tableHeader' : 'tableCell', ...(align ? { attrs: { align } } : {}),
+      content: [{ type: 'paragraph', ...(content.length ? { content } : {}) }] }
+  }) }
 }
 
 function parseBlocks(lines: string[], depth = 0): JSONContent[] {
@@ -130,6 +174,32 @@ function parseBlocks(lines: string[], depth = 0): JSONContent[] {
       continue
     }
     const line = lines[index]
+    const fence = /^ {0,3}(`{3,}|~{3,})/.exec(line)
+    if (fence) {
+      const parts = [lines[index++]]
+      while (index < lines.length) {
+        const next = lines[index++]
+        parts.push(next)
+        const closing = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(next)
+        if (closing && closing[1][0] === fence[1][0] && closing[1].length >= fence[1].length) break
+      }
+      result.push(paragraph(parts.join('\n')))
+      continue
+    }
+    const table = tableStart(lines, index)
+    if (table) {
+      const rows = [tableRow(table.headers, table.alignments, true)]
+      index += 2
+      while (index < lines.length && lines[index].trim() && !blockStart(lines[index])) {
+        if (tableStart(lines, index)) break
+        const cells = tableCells(lines[index])
+        if (!cells) break
+        rows.push(tableRow(cells, table.alignments))
+        index += 1
+      }
+      result.push({ type: 'table', content: rows })
+      continue
+    }
     const heading = headingPattern.exec(line)
     if (heading) {
       const parts = [heading[2] || '']
@@ -177,7 +247,7 @@ function parseBlocks(lines: string[], depth = 0): JSONContent[] {
           }
           const indentation = next.search(/\S/)
           if (indentation > first.indent) itemLines.push(next.slice(Math.min(indentation, current.contentIndent)))
-          else if (!blockStart(next)) itemLines.push(next)
+          else if (!blockStart(next) && !tableStart(lines, index)) itemLines.push(next)
           else break
           index += 1
         }
@@ -195,7 +265,7 @@ function parseBlocks(lines: string[], depth = 0): JSONContent[] {
         parts.push(lines[index++])
         continue
       }
-      if (!lines[index].trim() || blockStart(lines[index])) break
+      if (!lines[index].trim() || blockStart(lines[index]) || tableStart(lines, index)) break
       parts.push(lines[index++])
     }
     result.push(paragraph(parts.join('\n')))
@@ -286,6 +356,18 @@ function blockMarkdown(node: JSONContent, depth = 0): string {
   if (node.type === 'paragraph') return escapeBlockStart(inlineMarkdown(children))
   if (node.type === 'heading') return `${'#'.repeat(Math.max(1, Math.min(3, Number(node.attrs?.level) || 1)))} ${inlineMarkdown(children)}`
   if (node.type === 'horizontalRule') return '---'
+  if (node.type === 'table') {
+    const headers = children[0]?.content || []
+    const rowMarkdown = (row: JSONContent) => `| ${headers.map((_header, column) => {
+      const cell = row.content?.[column]
+      // Enter can create another paragraph within a cell. Store paragraph and
+      // hard-break boundaries as GFM line breaks, preserving text and marks.
+      return (cell?.content || []).map(block => inlineMarkdown(block.content || []))
+        .join('\\\n').replace(/\\\n/g, '<br>').replace(/\|/g, '\\|')
+    }).join(' | ')} |`
+    const separators = headers.map(cell => cell.attrs?.align === 'center' ? ':---:' : cell.attrs?.align === 'right' ? '---:' : cell.attrs?.align === 'left' ? ':---' : '---')
+    return [rowMarkdown(children[0]), `| ${separators.join(' | ')} |`, ...children.slice(1).map(rowMarkdown)].join('\n')
+  }
   if (node.type === 'blockquote') return children.map(child => blockMarkdown(child, depth + 1)).join('\n\n').split('\n').map(line => line ? `> ${line}` : '>').join('\n')
   if (node.type === 'bulletList' || node.type === 'orderedList') {
     const start = Math.max(1, Math.min(1_000_000, Number(node.attrs?.start) || 1))

@@ -1,3 +1,4 @@
+import { supportsVideoMultiReference } from '../../backend/src/video-reference-config'
 import { useEffect, useMemo, useState } from 'react'
 import { Modal } from '@mantine/core'
 import type { JSONContent } from '@tiptap/core'
@@ -20,7 +21,7 @@ type Props = {
   onOpenDirector: (context?: string) => void
   onOpenScript: (artifact?: ScriptArtifact) => void
   onOpenSettings: (id: string) => void
-  onCreateVideo?: (id: string) => void
+  onCreateVideo?: (id: string, mode: 'first_frame' | 'reference') => void
   onTextChange: (id: string, text: string, document: JSONContent) => void
 }
 
@@ -119,7 +120,10 @@ export default function StoryboardWorkspace({ detail, graph, models, selectedId,
             : selected.node?.type === 'text' ? <div className="sb-text-editor"><CanvasTextEditor text={selected.node.text} document={selected.node.settings.text_document} selected inline label={`故事板文本：${selected.title}`} onChange={(text, document) => onTextChange(selected.node!.id, text, document)} /></div>
               : selected.kind === 'text' ? <article className="sb-document"><DocumentPreview content={selected.content || '暂无生成的文本'} />{selected.node && <button type="button" onClick={() => onOpenSettings(selected.node!.id)}>配置文本生成</button>}</article>
                 : <article className="sb-media-detail"><div className="sb-media-preview"><Media key={selected.asset?.id} asset={selected.asset} controls /></div>
-                  <div className="sb-detail-actions">{selected.asset && <button type="button" onClick={() => openGallery(selected.kind as 'image' | 'video', selected)}><Maximize2 size={15} />放大预览</button>}{selected.node && <button type="button" onClick={() => onOpenSettings(selected.node!.id)}><Settings2 size={15} />{selected.node.type === 'generation' ? '配置生成参数' : '定位画布节点'}</button>}{selected.kind === 'image' && selected.asset && selected.node && onCreateVideo && <button type="button" onClick={() => onCreateVideo(selected.node!.id)}><Film size={15} />制作分镜视频</button>}</div>
+                  <div className="sb-detail-actions">{selected.asset && <button type="button" onClick={() => openGallery(selected.kind as 'image' | 'video', selected)}><Maximize2 size={15} />放大预览</button>}{selected.node && <button type="button" onClick={() => onOpenSettings(selected.node!.id)}><Settings2 size={15} />{selected.node.type === 'generation' ? '配置生成参数' : '定位画布节点'}</button>}{selected.kind === 'image' && selected.asset && selected.node && onCreateVideo && <>
+                    <button type="button" onClick={() => onCreateVideo(selected.node!.id, 'first_frame')}><Film size={15} />首帧生成</button>
+                    {models.some(model => model.modality === 'video' && model.enabled && supportsVideoMultiReference(model.settings)) && <button type="button" onClick={() => onCreateVideo(selected.node!.id, 'reference')}><Film size={15} />多图参考</button>}
+                  </>}</div>
                   {selected.job?.error && <p className="sb-error" role="alert">{selected.job.error}</p>}
                   <h2>提示词</h2><p>{storyboardPrompt(selected) || '暂无提示词'}</p>
                 </article>}

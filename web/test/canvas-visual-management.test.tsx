@@ -108,6 +108,94 @@ test('same-revision board changes can refresh a shot snapshot without dropping o
   } finally { await view.destroy() }
 })
 
+test('shot usage can change independently while retaining other objects and frozen references', async t => {
+  const original = { ...detail, shot_visual_bindings: [{ ...detail.shot_visual_bindings![0], usage: 'both' as const }] }
+  let saved: any
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    saved = JSON.parse(String(init?.body))
+    return Response.json({ ...data(original), shot_visual_bindings: [{ ...original.shot_visual_bindings[0], usage: saved.bindings[0].usage }] })
+  })
+  const view = await mount(<Bindings detail={original} context={{ target: 'shot:shot' }} onRefresh={async () => {}} onClose={noop} onBusyChange={noop} onLocate={noop} />)
+  try {
+    await choose('林晚 使用范围', 'video')
+    assert.deepEqual(saved.bindings, [{ profile_id: 'lin', required: true, usage: 'video' }])
+    assert.deepEqual(saved.refresh_profile_ids, [])
+  } finally { await view.destroy() }
+})
+
+test('shot reference choices recommend the camera angle, save explicit ordered IDs and retain other bindings', async t => {
+  const reference = (id: string, view: 'side' | 'face') => ({ id, asset_id: id, profile_id: profile.id, view,
+    purpose: view === 'face' ? 'identity' as const : 'costume' as const, label: view === 'face' ? '面部' : '校服侧面',
+    revision: 2, style_version: null, status: 'confirmed' as const, is_default: view === 'face', source_asset_id: null, source_job_id: null,
+    created_at: '', updated_at: '' })
+  const refs = [reference('face-ref', 'face'), reference('side-ref', 'side')]
+  const current = { ...profile, reference_assets: refs }
+  const extra = { ...detail.shot_visual_bindings![0], profile_id: other.id, kind: other.kind, name: other.name, required: false }
+  const base = { ...detail, shots: [{ ...detail.shots[0], prompt: '林晚侧面近景', image_prompt: '从侧面拍林晚' }],
+    visual_profiles: [current, other], shot_visual_bindings: [{ ...detail.shot_visual_bindings![0], board_asset_id: profile.board_asset_id, reference_assets: [] }, extra],
+    assets: [...detail.assets, ...refs.map(ref => ({ id: ref.asset_id, kind: 'image', url: `/${ref.asset_id}.png` }))],
+  } as ProjectDetail
+  const requests: Array<{ path: string; body: any }> = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    const body = JSON.parse(String(init?.body)); requests.push({ path: String(url), body })
+    const chosen = body.bindings.find((binding: any) => binding.profile_id === profile.id).reference_asset_ids
+    return Response.json({ ...data(base), shot_visual_bindings: [{ ...base.shot_visual_bindings![0], reference_assets: chosen.map((id: string) => refs.find(ref => ref.id === id)) }, extra] })
+  })
+  const view = await mount(<Bindings detail={base} context={{ target: 'shot:shot' }} onRefresh={async () => {}} onClose={noop} onBusyChange={noop} onLocate={noop} />)
+  try {
+    assert.equal(requests.length, 0, 'viewing recommendations does not generate or mutate assets')
+    await act(() => button('按镜头推荐').click())
+    assert.equal(requests[0].path, '/api/shots/shot/visual-bindings')
+    assert.deepEqual(requests[0].body.bindings, [{ profile_id: profile.id, required: true, reference_asset_ids: ['face-ref', 'side-ref'] }, { profile_id: other.id, required: false }])
+    assert.match(view.container.textContent!, /2 张独立参考图/)
+    await check('面部 · 身份与外貌')
+    assert.deepEqual(requests[1].body.bindings[0].reference_asset_ids, ['side-ref'])
+    assert.equal(document.querySelectorAll('.pc-binding-reference-current img').length, 1)
+    await act(() => button('使用信息图').click())
+    assert.deepEqual(requests[2].body.bindings[0].reference_asset_ids, [])
+  } finally { await view.destroy() }
+})
+
+test('frozen archived references can be individually removed while retaining other references, with busy and stale protection', async t => {
+  const reference = (id: string, label: string, archived = false) => ({ id, asset_id: id, profile_id: profile.id, view: 'side' as const,
+    purpose: 'costume' as const, label, revision: 2, style_version: null, status: archived ? 'archived' as const : 'confirmed' as const,
+    is_default: false, source_asset_id: null, source_job_id: null, created_at: '', updated_at: '' })
+  const refs = [reference('archived-front', '归档正面', true), reference('archived-side', '归档侧面', true), reference('current-face', '当前面部')]
+  const current = { ...profile, reference_assets: refs }
+  const extra = { ...detail.shot_visual_bindings![0], profile_id: other.id, kind: other.kind, name: other.name, required: false }
+  const base = { ...detail, visual_profiles: [current, other],
+    shot_visual_bindings: [{ ...detail.shot_visual_bindings![0], reference_assets: refs }, extra],
+    assets: [...detail.assets, ...refs.map(ref => ({ id: ref.asset_id, kind: 'image', url: `/${ref.asset_id}.png` }))],
+  } as ProjectDetail
+  const requests: Array<{ path: string; body: any }> = []
+  let release!: (response: Response) => void
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    requests.push({ path: String(url), body: JSON.parse(String(init?.body)) })
+    return new Promise<Response>(resolve => { release = resolve })
+  })
+  const props = { detail: base, context: { target: 'shot:shot' }, onRefresh: async () => {}, onClose: noop, onBusyChange: noop, onLocate: noop }
+  const view = await mount(<Bindings {...props} />)
+  try {
+    const available = view.container.querySelector('[aria-label="林晚 可选独立参考图"]')!
+    assert.doesNotMatch(available.textContent!, /归档正面|归档侧面/)
+    assert.equal(button('移除镜头参考：归档正面').disabled, false)
+    await act(() => button('移除镜头参考：归档正面').click())
+    assert.deepEqual(requests, [{ path: '/api/shots/shot/visual-bindings', body: {
+      bindings: [{ profile_id: profile.id, required: true, reference_asset_ids: ['archived-side', 'current-face'] }, { profile_id: other.id, required: false }], refresh_profile_ids: [],
+    } }])
+    assert.equal(button('移除镜头参考：归档侧面').disabled, true, 'a pending save blocks another removal')
+    const updated = { ...base, shot_visual_bindings: [{ ...base.shot_visual_bindings![0], reference_assets: refs.slice(1) }, extra] }
+    await act(() => release(Response.json(data(updated))))
+    assert.equal(view.container.querySelector('[aria-label="移除镜头参考：归档正面"]'), null)
+    assert.equal(button('移除镜头参考：归档侧面').disabled, false)
+    assert.equal(view.container.querySelectorAll('.pc-binding-reference-current img').length, 2)
+    await view.render(<Bindings {...props} detail={{ ...updated, visual_profiles: [{ ...current, revision: 3 }, other] }} />)
+    assert.equal(button('移除镜头参考：归档侧面').disabled, true, 'stale snapshots require refreshing before selection changes')
+    await act(() => button('移除镜头参考：归档侧面').click())
+    assert.equal(requests.length, 1)
+  } finally { await view.destroy() }
+})
+
 test('profile usage can remove a shot binding and apply scene references to shots', async t => {
   const requests: Array<{ path: string; body: any }> = []
   t.mock.method(globalThis, 'fetch', async (url, init) => {

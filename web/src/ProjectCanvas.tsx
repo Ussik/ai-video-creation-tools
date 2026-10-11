@@ -6,7 +6,7 @@ import { useClickOutside } from '@mantine/hooks'
 import {
   ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, CircleAlert, Clock3, FileText, Film, FolderOpen,
   Image as ImageIcon, Info, LayoutGrid, Layers3, LoaderCircle, LocateFixed, Map as MapIcon, Maximize2, Minimize2, MoreHorizontal, MousePointer2,
-  MessageSquare, Music2, PanelLeftClose, PanelLeftOpen, PenLine, Plus, RefreshCcw, Save, ScrollText,
+  MessageSquare, Mic2, Music2, PanelLeftClose, PanelLeftOpen, PenLine, Plus, RefreshCcw, Save, ScrollText,
   Search, Settings2, SlidersHorizontal, Sparkles,
   Eye, EyeOff, LayoutDashboard,
   Redo2, Trash2, Undo2, Upload, WandSparkles, X,
@@ -20,8 +20,9 @@ import '@xyflow/react/dist/style.css'
 import { api, json } from './api'
 import type { Asset, AssetTask, Job, Model, ProjectDetail, Provider, ScriptArtifact, Shot, VisualBoardPreview, VisualProfile, VisualReferenceMode } from './api'
 import { videoRatioOptions, videoResolutionOptions } from '../../backend/src/video-parameters'
-import { videoReferenceConfigError } from '../../backend/src/video-reference-config'
-import { videoReferenceManifest } from '../../backend/src/video-reference-manifest'
+import { videoReferenceConfigError, supportsVideoMultiReference } from '../../backend/src/video-reference-config'
+import { videoReferenceUsageLabels, type VideoReferenceUsageSelection } from '../../backend/src/video-reference-usage'
+import { videoReferenceManifest, visualBindingReferenceAssetIds } from '../../backend/src/video-reference-manifest'
 import VideoReferencePanel from './VideoReferencePanel'
 import VisualBindingEditor, { type VisualBindingContext } from './VisualBindingEditor'
 import VisualProfileOrganizer from './VisualProfileOrganizer'
@@ -32,10 +33,13 @@ import { connectImageVideoHandoff, createImageVideoHandoff, fixedReferenceAsset,
 import { rebasePromptDraft, videoPreferencePrompt } from './canvas-prompt-draft'
 import { shotImagePrompt, shotVideoPrompt } from '../../backend/src/shot-prompts'
 import { synchronizeVideoReferencePrompt, visualGenerationPrompt } from '../../backend/src/visual-prompt'
+import { visualBindingApplies, visualBindingsForModality } from '../../backend/src/visual-binding-usage'
 import { withProjectStyle, styleReferenceWarning } from '../../backend/src/visual-style'
 import type { MissingVisualReference } from './canvas-visual-profiles'
 import { imageReferenceConfigError } from '../../backend/src/image-reference-config'
 import CanvasTextEditor, { CanvasTextPreview } from './CanvasTextEditor'
+import NodeMedia from './CanvasNodeMedia'
+import CanvasEdgeMotionProvider, { useCanvasEdgeMotionPath } from './CanvasEdgeMotion'
 import CanvasSelect from './CanvasSelect'
 import StoryboardWorkspace from './StoryboardWorkspace'
 import CanvasComposerToolbar from './CanvasComposerToolbar'
@@ -48,7 +52,11 @@ import { parseScriptDocument } from './script-rich-document'
 import { textDocumentText } from './text-document'
 import { fitImageNode, imageNodeMinimum } from './canvas-image-layout'
 import { placeNewCanvasNodes } from './canvas-node-placement'
+import { canvasPromptIndex, canvasReferenceKey, compactCanvasZoom, indexedCanvasPrompt, reuseFlowEdge, reuseFlowNode, sameCanvasContent, shallowEqual, shouldVirtualizeCanvas, updateCanvasGeometry } from './canvas-performance'
 import { addScriptCanvasNodes, readScriptCanvasRequest, scriptCanvasInitialFocus, scriptCanvasRequestKey } from './script-canvas-handoff'
+import ProjectCanvasSwitcher, { type CanvasActions } from './ProjectCanvasSwitcher'
+import { canvasGraphPath, type ProjectCanvasInfo } from './project-canvases'
+import { clearShotCanvasRequest, readShotCanvasRequest, shotCanvasNode } from './canvas-shot-navigation'
 import './project-canvas.css'
 import './canvas-visual-profiles.css'
 import './canvas-visual-management.css'
@@ -61,7 +69,7 @@ export type CanvasLocation = { view: CanvasView; storyboardId: string | null }
 type CanvasModality = 'text' | 'image' | 'video'
 type TextNodeMode = 'write'
 export type ScriptAction = 'character' | 'location' | 'prop' | 'all'
-type NodeQuickAction = 'image-to-image' | 'video-first-frame' | 'video-first-last' | 'video-extend'
+type NodeQuickAction = 'image-to-image' | 'video-reference' | 'video-first-frame' | 'video-first-last' | 'video-extend'
 export type CanvasNode = {
   id: string
   type: 'text' | 'image' | 'video' | 'generation' | 'project_script_ref'
@@ -84,6 +92,7 @@ export type CanvasNode = {
     visual_completed_job_id?: string
     visual_reference_mode?: VisualReferenceMode
     storyboard_reference_asset_id?: string | null
+    video_reference_usages?: VideoReferenceUsageSelection[]
     excluded_visual_profile_ids?: string[]
     role?: 'script'
     text_mode?: TextNodeMode
@@ -124,6 +133,8 @@ type CanvasAddMenu = {
   screen?: { x: number; y: number }
 }
 type SaveQueue = {
+  canvasId?: string
+  storageId: string
   id: string
   graph: CanvasGraph
   base: CanvasGraph
@@ -134,6 +145,8 @@ type SaveQueue = {
   conflict: boolean
 }
 type FlowData = Record<string, unknown> & {
+  active: boolean
+  compact: boolean
   profile?: VisualProfile
   node: CanvasNode
   asset?: Asset
@@ -174,6 +187,7 @@ type GenerationRequest = {
   prompt_template?: string
   visual_reference_mode?: VisualReferenceMode
   storyboard_reference_asset_id?: string | null
+  video_reference_usages?: VideoReferenceUsageSelection[]
   excluded_visual_profile_ids?: string[]
   visual_source_prompt?: string
   visual_signature?: string
@@ -211,8 +225,8 @@ function sameStringList(left: string[], right: string[]): boolean {
 
 class CanvasConflictError extends Error {}
 
-async function saveCanvas(projectId: string, payload: CanvasGraph): Promise<CanvasGraph> {
-  const response = await fetch(`/api/projects/${projectId}/canvas`, {
+async function saveCanvas(projectId: string, payload: CanvasGraph, canvasId?: string): Promise<CanvasGraph> {
+  const response = await fetch(`/api${canvasGraphPath(projectId, canvasId)}`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ nodes: payload.nodes, edges: payload.edges, revision: payload.revision }),
   })
@@ -233,10 +247,22 @@ export interface ProjectCanvasProps {
   onOpenModels: () => void
   onNavigate: (destination: 'projects' | 'studio' | 'assets' | 'jobs' | 'models') => void
   onOpenScriptCreator: () => void
+  onOpenSpeech?: () => void
   onOpenScriptDocument?: (artifact: ScriptArtifact) => void
   onOpenScriptDirector?: (focusArtifact?: ScriptAction, context?: string) => void
   initialLocation?: CanvasLocation
   onLocationChange?: (location: CanvasLocation) => void
+}
+
+export type CanvasSession = {
+  revision?: string;
+  history: { past: CanvasGraph[]; future: CanvasGraph[] };
+  selection?: { nodeId: string | null; nodeIds: string[]; edgeId: string | null; composerNodeId: string | null };
+}
+type CanvasInstanceProps = ProjectCanvasProps & {
+  canvas: ProjectCanvasInfo; canvasSession: CanvasSession; canvasMenu: React.ReactNode;
+  registerCanvasActions: (actions: CanvasActions | null) => void;
+  onCanvasViewport: (viewport: ProjectCanvasInfo['viewport']) => void;
 }
 
 function draftKey(projectId: string) { return `project-canvas-draft:${projectId}` }
@@ -268,7 +294,7 @@ function keepMiniMapPosition(projectId: string, position: MiniMapPosition) {
   try { window.localStorage.setItem(minimapKey(projectId), JSON.stringify(position)) } catch { /* In-memory position remains available. */ }
 }
 function keepDraft(queue: SaveQueue) {
-  try { window.localStorage.setItem(draftKey(queue.id), JSON.stringify({ base: queue.base, graph: queue.graph })) }
+  try { window.localStorage.setItem(draftKey(queue.storageId), JSON.stringify({ base: queue.base, graph: queue.graph })) }
   catch { /* The in-memory draft remains available during this visit. */ }
 }
 
@@ -402,17 +428,6 @@ function scriptPrompt(script: ProjectDetail['script'] | undefined): string {
   ].filter(Boolean).join('\n\n').slice(0, 30000)
 }
 
-function promptForNode(node: CanvasNode, graph: CanvasGraph, shots: Shot[], script?: ProjectDetail['script']): string {
-  if (node.settings.prompt_override) return node.text
-  const connected = graph.edges.filter((edge) => edge.target === node.id)
-    .map((edge) => graph.nodes.find((source) => source.id === edge.source))
-    .filter((source): source is CanvasNode => !!source)
-    .map((source) => source.type === 'project_script_ref' ? scriptPrompt(script) : source.type === 'text' ? source.text.trim() : '')
-    .filter(Boolean)
-  const shotPrompt = shots.find((shot) => shot.id === node.shot_id)?.prompt.trim() || ''
-  return [...connected, node.prompt.trim() || shotPrompt].filter(Boolean).join('\n\n')
-}
-
 function sameValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
@@ -515,17 +530,9 @@ function supportedModes(model?: Model): CanvasMode[] {
 }
 
 function isCanvasEditingTarget(target: EventTarget | null): boolean {
-  const element = target instanceof HTMLElement ? target : null
+  const element = target instanceof Element ? target : null
   if (!element) return false
-  return element.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(element.tagName)
-}
-
-function NodeMedia({ asset, controls = false, onMediaSize }: { asset?: Asset; controls?: boolean; onMediaSize?: (width: number, height: number) => void }) {
-  if (!asset) return <div className="pc-node-empty"><CircleAlert size={16} />素材不可用</div>
-  if (asset.kind === 'image') return <img src={asset.url} alt={asset.filename} onLoad={onMediaSize ? event => onMediaSize(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight) : undefined} />
-  if (asset.kind === 'video') return <video src={asset.url} controls={controls} muted={!controls} playsInline preload="metadata"
-    onLoadedMetadata={onMediaSize ? event => onMediaSize(event.currentTarget.videoWidth, event.currentTarget.videoHeight) : undefined} />
-  return <div className="pc-node-text">{asset.text || asset.filename}</div>
+  return !!element.closest('input, textarea, select, button, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"]')
 }
 
 function nodeDimensionLabel(node: CanvasNode, model?: Model): string {
@@ -558,7 +565,7 @@ function TextChoiceIcon() {
   </svg>
 }
 
-/** A soft neutral edge with a moving highlight, matching the canvas visual language. */
+/** Static SVG strokes, with small compositor markers on the inspected links. */
 function StudioEdge({ id, selected, style, data, ...props }: EdgeProps<Edge>) {
   const [path] = getBezierPath({
     sourceX: props.sourceX,
@@ -571,15 +578,15 @@ function StudioEdge({ id, selected, style, data, ...props }: EdgeProps<Edge>) {
   })
   const related = !!(data as { related?: boolean } | undefined)?.related
   const automatic = !!data?.visualBinding
+  useCanvasEdgeMotionPath(id, path, !!data?.motion && style?.opacity !== 0)
   return <g className={`pc-studio-edge${selected ? ' is-selected' : ''}${related ? ' is-related' : ''}${style?.opacity === 0 ? ' is-hidden' : ''}`}>
     {automatic && <title>已绑定的设定参考图，点击调整镜头视觉设定</title>}
     <BaseEdge id={id} path={path} interactionWidth={28} style={{
       ...style,
-      stroke: selected ? '#82c8f4' : '#5c6b7b',
-      strokeWidth: selected ? 2.5 : 1.6,
+      stroke: selected ? '#a8d8e8' : related ? '#789bad' : '#5c6b7b',
+      strokeWidth: selected ? 2.5 : related ? 2.2 : 1.6,
       strokeLinecap: 'round',
     }} />
-    <path d={path} className="pc-studio-edge-glow" aria-hidden="true" />
   </g>
 }
 
@@ -595,7 +602,6 @@ function StudioConnectionLine({ fromX, fromY, toX, toY, fromPosition, toPosition
   })
   return <g className="pc-studio-connection-line" aria-hidden="true">
     <path d={path} className="pc-studio-connection-base" />
-    <path d={path} className="pc-studio-connection-glow" />
   </g>
 }
 
@@ -627,6 +633,7 @@ function StudioNode({ data, selected }: NodeProps<FlowNode>) {
   const generationTryActions = <div className="pc-node-try-list" aria-label="尝试操作">
     <span className="pc-node-try-label">尝试:</span>
     {(node.settings.modality === 'video' ? <>
+      {videoQuickModes.includes('reference') && tryButton('video-reference', '多图参考', <ImageIcon size={15} />)}
       {videoQuickModes.includes('first_frame') && tryButton('video-first-frame', videoModeLabel('first_frame'), <ImageIcon size={15} />)}
       {videoQuickModes.includes('first_last_frame') && tryButton('video-first-last', videoModeLabel('first_last_frame'), <ArrowLeftRight size={15} />)}
       {videoQuickModes.includes('extend') && tryButton('video-extend', videoModeLabel('extend'), <Film size={15} />)}
@@ -635,8 +642,8 @@ function StudioNode({ data, selected }: NodeProps<FlowNode>) {
     </> : null)}
   </div>
   return <>
-  <div className={`pc-node pc-node-${node.type}${isMediaResult ? ' pc-node-media-result' : ''}${profile ? ' pc-node-profile' : ''} ${selected ? 'is-selected' : ''}`}>
-    <NodeResizer isVisible={selected} minWidth={nodeMinSize(node, asset).width} minHeight={nodeMinSize(node, asset).height} keepAspectRatio={isMediaResult} />
+  <div className={`pc-node pc-node-${node.type}${isMediaResult ? ' pc-node-media-result' : ''}${profile ? ' pc-node-profile' : ''}${data.compact ? ' is-compact' : ''} ${selected ? 'is-selected' : ''}`}>
+    {selected && !data.compact && <NodeResizer isVisible minWidth={nodeMinSize(node, asset).width} minHeight={nodeMinSize(node, asset).height} keepAspectRatio={isMediaResult} />}
     <div className="pc-node-label"><span className="pc-node-label-icon">{icon}</span><strong title={nodeTitle}>{nodeTitle}</strong>{nodeDimensionLabel(node, data.model) && <span className="pc-node-dimension">{nodeDimensionLabel(node, data.model)}</span>}</div>
     {!isProjectScriptRef && <Handle className="pc-node-handle" type="target" position={Position.Left} title="连接到此节点" />}
     {isProjectScriptRef ? <div className="pc-project-script-card">
@@ -677,16 +684,16 @@ function StudioNode({ data, selected }: NodeProps<FlowNode>) {
       </div>
     </div> : node.type === 'generation' ? <>
       <div className="pc-node-content pc-node-preview-content pc-node-idle-content">
-        {asset ? <div className="pc-node-output"><NodeMedia asset={asset} controls={selected}
+        {asset ? <div className="pc-node-output"><NodeMedia asset={asset} controls={data.active} previewSize={data.compact ? 320 : 640}
           onMediaSize={isMediaResult ? (width, height) => data.onMediaSize(node.id, asset.id, width, height) : undefined} /></div> : idlePlaceholder}
-        {!profile && !selected && !asset && ((node.settings.modality === 'video' && videoQuickModes.some(mode => ['first_frame', 'first_last_frame', 'extend'].includes(mode))) || imageEditingAvailable) && generationTryActions}
+        {!profile && !selected && !data.compact && !asset && ((node.settings.modality === 'video' && videoQuickModes.some(mode => ['first_frame', 'first_last_frame', 'extend'].includes(mode))) || imageEditingAvailable) && generationTryActions}
       </div>
       {(selected || profile) && <div className={`pc-node-foot ${job ? `pc-job-${job.status}` : ''}`}>
         {profile ? <><span>v{profile.revision} · {job?.status === 'running' || job?.status === 'queued' ? <span className="pc-profile-generating">生成中<span aria-hidden="true" /></span> : job?.status === 'failed' ? '生成失败' : asset && asset.id !== profile.board_asset_id ? '候选待确认' : profile.board_asset_id ? '已确认' : '待生成'}</span><span>{profile.kind === 'character' ? '人物设定' : profile.kind === 'location' ? '场景设定' : '道具设定'}</span></>
           : job ? <><span className="pc-status-dot" />{jobLabels[job.status]}</> : asset ? '已有结果' : '等待配置'}
               </div>}
     </> : node.type === 'text' ? <>
-      {selected ? <div className="pc-node-content">
+      {data.active ? <div className="pc-node-content">
         <CanvasTextEditor text={node.text} document={node.settings.text_document} selected
           label="文本节点内容"
           onChange={(text, document) => data.onTextDocumentChange(node.id, text, document)} />
@@ -695,8 +702,8 @@ function StudioNode({ data, selected }: NodeProps<FlowNode>) {
       </div>}
       {selected && <div className="pc-node-foot">文本提示词</div>}
     </> : <>
-      <div className="pc-node-media"><NodeMedia asset={asset} controls={selected} /></div>
-      {!selected && <div className="pc-node-try-actions pc-node-try-actions-media" aria-label="尝试操作">
+      <div className="pc-node-media"><NodeMedia asset={asset} controls={data.active} previewSize={data.compact ? 320 : 640} /></div>
+      {!selected && !data.compact && <div className="pc-node-try-actions pc-node-try-actions-media" aria-label="尝试操作">
         {node.type === 'image' ? imageEditingAvailable && <>{tryButton('image-to-image', '图生图', <ImageIcon size={13} />)}</>
           : <>{videoQuickModes.includes('first_frame') && tryButton('video-first-frame', videoModeLabel('first_frame'), <ImageIcon size={13} />)}{videoQuickModes.includes('first_last_frame') && tryButton('video-first-last', videoModeLabel('first_last_frame'), <ArrowLeftRight size={13} />)}{videoQuickModes.includes('extend') && tryButton('video-extend', videoModeLabel('extend'), <Film size={13} />)}</>}
       </div>}
@@ -706,10 +713,20 @@ function StudioNode({ data, selected }: NodeProps<FlowNode>) {
   </>
 }
 
-const nodeTypes = { studio: StudioNode }
+const MemoStudioNode = memo(StudioNode, (previous, next) => {
+  if (previous.selected !== next.selected) return false
+  const { node: previousNode, ...previousData } = previous.data
+  const { node: nextNode, ...nextData } = next.data
+  // Coordinates belong to React Flow's wrapper; moving a card does not change
+  // its content. All display fields, callbacks and selection stay observable.
+  return shallowEqual(previousNode, nextNode, ['x', 'y']) && shallowEqual(previousData, nextData)
+})
+const nodeTypes = { studio: MemoStudioNode }
 
-function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProject, onOpenModels, onNavigate, onOpenScriptCreator, onOpenScriptDocument, onOpenScriptDirector: onOpenDirectorPanel, initialLocation, onLocationChange }: ProjectCanvasProps) {
+function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProject, onOpenModels, onNavigate, onOpenScriptCreator, onOpenScriptDocument, onOpenSpeech, onOpenScriptDirector: onOpenDirectorPanel, initialLocation, onLocationChange, canvas, canvasSession, canvasMenu, registerCanvasActions, onCanvasViewport }: CanvasInstanceProps) {
   const { confirm, dialog } = useAppDialog()
+  const canvasId = canvas.is_default ? undefined : canvas.id
+  const storageId = canvas.id === detail.id ? detail.id : `${detail.id}:${canvas.id}`
   const [graph, setGraph] = useState<CanvasGraph | null>(null)
   const startLocation = useRef(initialLocation)
   const [viewMode, setViewMode] = useState<CanvasView>(initialLocation?.view || 'canvas')
@@ -743,16 +760,15 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     const timer = window.setTimeout(() => setNoticeState(null), 3000)
     return () => window.clearTimeout(timer)
   }, [notice])
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
-  const [composerNodeId, setComposerNodeId] = useState<string | null>(null)
-  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([])
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(canvasSession.selection?.nodeId || null)
+  const [composerNodeId, setComposerNodeId] = useState<string | null>(canvasSession.selection?.composerNodeId || null)
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>(canvasSession.selection?.nodeIds || [])
   const [storyboardSelectedId, setStoryboardSelectedId] = useState<string | null>(initialLocation?.storyboardId || null)
   useEffect(() => {
     onLocationChange?.({ view: viewMode, storyboardId: storyboardSelectedId })
   }, [viewMode, storyboardSelectedId, onLocationChange])
   const pendingCanvasFocus = useRef<string | null>(null)
-  const [composerRevealKey, setComposerRevealKey] = useState(0)
-  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(canvasSession.selection?.edgeId || null)
   const [showEdges, setShowEdges] = useState(true)
   const [showMinimap, setShowMinimap] = useState(false)
   const [minimapPosition, setMinimapPosition] = useState<MiniMapPosition | null>(null)
@@ -789,12 +805,14 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const queueRef = useRef<SaveQueue | null>(null)
   const placementDetailRef = useRef(detail)
   placementDetailRef.current = detail
-  const historyRef = useRef<{ past: CanvasGraph[]; future: CanvasGraph[] }>({ past: [], future: [] })
+  const historyRef = useRef<{ past: CanvasGraph[]; future: CanvasGraph[] }>(canvasSession.history)
   // React Flow emits many position changes while a node is dragged. Keep one
   // undo checkpoint for the complete gesture so history and autosave remain
   // useful on a large canvas.
   const dragSnapshotRef = useRef<CanvasGraph | null>(null)
   const [, setHistoryTick] = useState(0)
+  canvasSession.history = historyRef.current
+  canvasSession.selection = { nodeId: selectedNodeId, nodeIds: selectedNodeIds, edgeId: selectedEdgeId, composerNodeId }
   const autoImportAttempted = useRef(false)
   const initialViewApplied = useRef(false)
   const minimapDragRef = useRef<{
@@ -818,6 +836,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const referenceUploadInputRef = useRef<HTMLInputElement>(null)
   const profileUploadInputRef = useRef<HTMLInputElement>(null)
   const submittingRef = useRef(false)
+  const removalPendingRef = useRef(false)
   const { fitView, screenToFlowPosition, setCenter, setViewport, zoomTo } = useReactFlow<FlowNode, Edge>()
 
   useEffect(() => {
@@ -857,7 +876,10 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   // Keep the visible connection affordance quiet until the pointer comes
   // close. The small magnetic pull is applied directly to the handle DOM
   // nodes so moving the pointer does not rerender the entire React Flow graph.
+  const magnetFrameRef = useRef<number | null>(null)
   const clearConnectionMagnet = useCallback(() => {
+    if (magnetFrameRef.current !== null) window.cancelAnimationFrame(magnetFrameRef.current)
+    magnetFrameRef.current = null
     const canvas = viewportRef.current
     if (!canvas) return
     canvas.querySelectorAll<HTMLElement>('.pc-node-handle[data-magnet="true"]').forEach((handle) => {
@@ -878,8 +900,10 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     }
     const handles = canvas.querySelectorAll<HTMLElement>('.pc-node-handle')
     const radius = 92
-    handles.forEach((handle) => {
-      const rect = handle.getBoundingClientRect()
+    // Read all bounds before changing styles, avoiding alternating layout
+    // reads and writes while the pointer passes several ports.
+    const measured = Array.from(handles, handle => ({ handle, rect: handle.getBoundingClientRect() }))
+    measured.forEach(({ handle, rect }) => {
       const centerX = rect.left + rect.width / 2
       const centerY = rect.top + rect.height / 2
       const deltaX = clientX - centerX
@@ -901,10 +925,26 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       handle.dataset.magnet = 'true'
       // Never pull a port into the card, where it would intercept a node click.
       const pullX = Math.max(-18, Math.min(18, deltaX * scale))
-      handle.style.setProperty('--pc-magnet-x', `${handle.classList.contains('react-flow__handle-left') ? Math.min(0, pullX) : Math.max(0, pullX)}px`)
-      handle.style.setProperty('--pc-magnet-y', `${Math.max(-18, Math.min(18, deltaY * scale))}px`)
+      const x = `${handle.classList.contains('react-flow__handle-left') ? Math.min(0, pullX) : Math.max(0, pullX)}px`
+      const y = `${Math.max(-18, Math.min(18, deltaY * scale))}px`
+      if (handle.style.getPropertyValue('--pc-magnet-x') !== x) handle.style.setProperty('--pc-magnet-x', x)
+      if (handle.style.getPropertyValue('--pc-magnet-y') !== y) handle.style.setProperty('--pc-magnet-y', y)
     })
   }, [clearConnectionMagnet])
+
+  const pendingMagnetRef = useRef<{ x: number; y: number; target: EventTarget | null } | null>(null)
+  const scheduleConnectionMagnet = useCallback((x: number, y: number, target: EventTarget | null) => {
+    pendingMagnetRef.current = { x, y, target }
+    if (magnetFrameRef.current !== null) return
+    magnetFrameRef.current = window.requestAnimationFrame(() => {
+      magnetFrameRef.current = null
+      const pending = pendingMagnetRef.current
+      if (pending) updateConnectionMagnet(pending.x, pending.y, pending.target)
+    })
+  }, [updateConnectionMagnet])
+  useEffect(() => () => {
+    if (magnetFrameRef.current !== null) window.cancelAnimationFrame(magnetFrameRef.current)
+  }, [])
 
   // The minimap is a fixed React Flow panel by default. Keep its viewport
   // navigation intact for clicks and wheel zoom, while allowing a drag gesture
@@ -986,7 +1026,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     }
     const drag = minimapDragRef.current
     if (!drag || drag.pointerId !== event.pointerId) {
-      updateConnectionMagnet(event.clientX, event.clientY, event.target)
+      if (event.buttons && !magnetConnection) clearConnectionMagnet()
+      else scheduleConnectionMagnet(event.clientX, event.clientY, event.target)
       return
     }
     const deltaX = event.clientX - drag.startX
@@ -1005,8 +1046,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       y: Math.min(maxTop, Math.max(8, drag.startTop + deltaY)),
     }
     setMinimapPosition(next)
-    keepMiniMapPosition(detail.id, next)
-  }, [detail.id, updateConnectionMagnet])
+    keepMiniMapPosition(storageId, next)
+  }, [detail.id, clearConnectionMagnet, scheduleConnectionMagnet])
 
   const onCanvasPointerUpCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const magnetConnection = magnetConnectionRef.current
@@ -1049,11 +1090,11 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         const snapshot = queue.graph
         if (queueRef.current === queue) setSaveState('saving')
         try {
-          const saved = normalizeGraph(await saveCanvas(queue.id, { ...snapshot, revision: queue.base.revision }))
+          const saved = normalizeGraph(await saveCanvas(queue.id, { ...snapshot, revision: queue.base.revision }, queue.canvasId))
           queue.base = saved
           queue.graph = { ...queue.graph, revision: saved.revision }
           queue.savedSerial = serial
-          if (queue.savedSerial === queue.serial) clearDraft(queue.id)
+          if (queue.savedSerial === queue.serial) clearDraft(queue.storageId)
           else keepDraft(queue)
           if (queueRef.current === queue) {
             setGraph(queue.graph)
@@ -1092,8 +1133,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     const next = scriptNodeIds.size
       ? { ...updated, edges: updated.edges.filter((edge) => !scriptNodeIds.has(edge.source) && !scriptNodeIds.has(edge.target)) }
       : updated
-    if (next === queue.graph || sameValue({ nodes: next.nodes, edges: next.edges },
-      { nodes: queue.graph.nodes, edges: queue.graph.edges })) return
+    if (next === queue.graph || sameCanvasContent(next, queue.graph)) return
     const history = historyRef.current
     history.past.push(cloneGraph(queue.graph))
     if (history.past.length > 100) history.past.shift()
@@ -1108,17 +1148,18 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
 
   useEffect(() => {
     let active = true
+    const rememberedSelection = canvasSession.selection
     setViewMode(startLocation.current?.view || 'canvas')
-    const rememberedViewport = readCanvasViewport(detail.id)
+    const rememberedViewport = readCanvasViewport(storageId) || canvas.viewport
     setSavedViewport(rememberedViewport)
     setViewportZoom(Math.round((rememberedViewport?.zoom || 1) * 100))
-    setMinimapPosition(readMiniMapPosition(detail.id))
+    setMinimapPosition(readMiniMapPosition(storageId))
     setShowMinimap(false)
     setShowEdges(true)
     dragSnapshotRef.current = null
     initialViewApplied.current = false
     autoImportAttempted.current = false
-    historyRef.current = { past: [], future: [] }
+    historyRef.current = canvasSession.history
     setHistoryTick((value) => value + 1)
     setGraph(null)
     setProfileInspectorId(null); setVisualTool(null); setVisualPanelBusy(false); setProfileDraftDirty(false)
@@ -1128,12 +1169,15 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     setReferenceReturnNodeId(null)
     setLoadError(null)
     setSaveState('saved')
-    void api<CanvasGraph>(`/projects/${detail.id}/canvas`).then((value) => {
+    void api<CanvasGraph>(canvasGraphPath(detail.id, canvasId)).then((value) => {
       if (!active) return
       const remote = normalizeGraph(value)
+      if (canvasSession.revision && canvasSession.revision !== remote.revision) {
+        historyRef.current = { past: [], future: [] }; canvasSession.history = historyRef.current
+      }
       const removedScriptEdges = remote.edges.length !== value.edges.length
-      const draft = readDraft(detail.id)
-      const queue: SaveQueue = { id: detail.id, graph: remote, base: remote, serial: 0, savedSerial: 0,
+      const draft = readDraft(storageId)
+      const queue: SaveQueue = { id: detail.id, canvasId, storageId, graph: remote, base: remote, serial: 0, savedSerial: 0,
         timer: null, inFlight: null, conflict: false }
       if (draft && !sameValue({ nodes: draft.graph.nodes, edges: draft.graph.edges },
         { nodes: remote.nodes, edges: remote.edges })) {
@@ -1145,9 +1189,17 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           setSaveState('conflict')
           setConflictReview(mergeGraphs(draft.base, draft.graph, remote))
         } else scheduleSave(queue)
-      } else if (draft) clearDraft(detail.id)
+      } else if (draft) clearDraft(storageId)
       queueRef.current = queue
       setGraph(queue.graph)
+      const selection = rememberedSelection
+      if (selection) {
+        const ids = new Set(queue.graph.nodes.map(node => node.id))
+        setSelectedNodeId(selection.nodeId && ids.has(selection.nodeId) ? selection.nodeId : null)
+        setSelectedNodeIds(selection.nodeIds.filter(id => ids.has(id)))
+        setSelectedEdgeId(selection.edgeId && queue.graph.edges.some(edge => edge.id === selection.edgeId) ? selection.edgeId : null)
+        setComposerNodeId(selection.composerNodeId && ids.has(selection.composerNodeId) ? selection.composerNodeId : null)
+      }
       // Persist the migration once so stale script edges disappear from the
       // server snapshot as well as the local canvas.
       if (removedScriptEdges && !queue.conflict) {
@@ -1250,8 +1302,16 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const shotMap = useMemo(() => new Map(detail.shots.map((shot) => [shot.id, shot])), [detail.shots])
   const jobMap = useMemo(() => new Map(detail.jobs.map((job) => [job.id, job])), [detail.jobs])
   const modelMap = useMemo(() => new Map(models.map((model) => [model.id, model])), [models])
-  const availableModels = models.filter((model) => model.modality !== 'text' && model.enabled &&
-    providers.some((provider) => provider.id === model.provider_id && provider.enabled && provider.adapter !== 'demo'))
+  const profileMap = useMemo(() => new Map((detail.visual_profiles || []).map(profile => [profile.id, profile])), [detail.visual_profiles])
+  const availableModels = useMemo(() => models.filter((model) => model.modality !== 'text' && model.enabled &&
+    providers.some((provider) => provider.id === model.provider_id && provider.enabled && provider.adapter !== 'demo')), [models, providers])
+  const nodeModelOptions = useMemo(() => {
+    const options = availableModels.map(model => ({ value: model.id, label: model.name }))
+    return { all: options, image: options.filter(option => modelMap.get(option.value)?.modality === 'image'),
+      video: options.filter(option => modelMap.get(option.value)?.modality === 'video'), text: [] }
+  }, [availableModels, modelMap])
+  const videoQuickModes = useMemo(() => [...new Set(availableModels.filter(model => model.modality === 'video').flatMap(model => supportedModes(model)))], [availableModels])
+  const imageEditingModels = useMemo(() => availableModels.filter(model => model.modality === 'image' && ['image', 'images', 'image_references'].some(field => usesModelParameter(model, field))).map(model => model.id), [availableModels])
   const updateNodeById = useCallback((id: string, patch: Partial<CanvasNode>) => {
     changeGraph((current) => ({ ...current, nodes: current.nodes.map((node) => node.id === id ? { ...node, ...patch } : node) }))
   }, [changeGraph])
@@ -1311,29 +1371,29 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     }
     const source = queueRef.current?.graph.nodes.find((node) => node.id === sourceId)
     if (!source) return
-    if (action === 'video-first-frame' && !source.settings.visual_profile_id && visualNodeAsset(source, detail)?.kind === 'image') {
+    if (['video-first-frame', 'video-reference'].includes(action) && !source.settings.visual_profile_id && visualNodeAsset(source, detail)?.kind === 'image') {
       try {
         const current = queueRef.current!.graph
         const handoff = createImageVideoHandoff(current, source, detail, availableModels,
-          blankNode('generation', source.x + source.width + 170, source.y), crypto.randomUUID())
+          blankNode('generation', source.x + source.width + 170, source.y), crypto.randomUUID(), action === 'video-reference' ? 'reference' : 'first_frame')
         changeGraph(() => handoff.graph)
         setViewMode('canvas')
         focusSidebarNode(handoff.nodeId)
         const target = handoff.graph.nodes.find(node => node.id === handoff.nodeId)
         setNotice(handoff.created ? target?.settings.mode === 'reference'
-          ? '已创建多图参考视频节点，已带入本镜头设定；检查动作与运镜后生成'
+          ? '已创建多图参考视频节点；分镜图仅作构图参考，请用提示词设计开场、动作和收镜'
           : '已创建首帧视频节点；检查动作与运镜后生成' : '已定位使用这张分镜图的视频节点')
       } catch (issue) { showError(issue) }
       return
     }
     if (source.type === 'generation' && action.startsWith('video-') && !source.asset_id) {
-      const mode = action === 'video-first-frame' ? 'first_frame' : action === 'video-first-last' ? 'first_last_frame' : 'extend'
+      const mode = action === 'video-reference' ? 'reference' : action === 'video-first-frame' ? 'first_frame' : action === 'video-first-last' ? 'first_last_frame' : 'extend'
       const job = detail.jobs.find(item => item.id === source.job_id)
       if (job?.status === 'queued' || job?.status === 'running') return
       selectNodeVideoMode(source.id, mode)
       setComposerNodeId(source.id)
       setSelectedNodeId(source.id); setSelectedNodeIds([source.id])
-      setNotice(mode === 'first_frame' ? '通过参考添加1张首帧图片' : mode === 'first_last_frame' ? '通过参考按顺序添加首帧和尾帧图片' : '请添加参考视频地址')
+      setNotice(mode === 'reference' ? '按镜头出镜范围添加参考图，再设计开场、动作与收镜' : mode === 'first_frame' ? '通过参考添加1张首帧图片' : mode === 'first_last_frame' ? '通过参考按顺序添加首帧和尾帧图片' : '请添加参考视频地址')
       return
     }
     if (action === 'image-to-image') {
@@ -1353,8 +1413,9 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     }
     const modality: CanvasModality = action.startsWith('video-') ? 'video' : 'image'
     const node = blankNode('generation', source.x + source.width + 170, source.y)
-    node.title = videoModeLabel(action === 'video-first-frame' ? 'first_frame' : action === 'video-first-last' ? 'first_last_frame' : 'extend')
-    node.settings = { modality, ratio: detail.ratio, visual_reference_mode: 'keyframe',
+    node.title = videoModeLabel(action === 'video-reference' ? 'reference' : action === 'video-first-frame' ? 'first_frame' : action === 'video-first-last' ? 'first_last_frame' : 'extend')
+    node.settings = { modality, ratio: detail.ratio, visual_reference_mode: action === 'video-reference' ? 'profiles' : 'keyframe',
+      ...(action === 'video-reference' ? { mode: 'reference' as CanvasMode } : {}),
       ...(action === 'video-first-frame' ? { mode: 'first_frame' as CanvasMode } : {}),
       ...(action === 'video-first-last' ? { mode: 'first_last_frame' as CanvasMode } : {}),
       ...(action === 'video-extend' ? { mode: 'extend' as CanvasMode } : {}) }
@@ -1422,77 +1483,117 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       return size === node ? current : { ...current, nodes: current.nodes.map(item => item.id === id ? { ...item, ...size } : item) }
     })
   }, [changeGraph, detail])
-  const flowNodes = useMemo<FlowNode[]>(() => (graph?.nodes || []).map((node) => {
-    const displayedAsset = visualNodeAsset(node, detail)
-    const { width, height } = nodeSize(node, displayedAsset)
-    return {
-      id: node.id, type: 'studio', position: { x: node.x, y: node.y },
-      // These cards have explicit persisted sizes. React Flow does not read CSS
-      // styles when checking dimensions, and rebuilding a controlled node without
-      // `measured` discards its handle bounds. Preserve both on every graph update
-      // so selecting, editing, autosaving or polling jobs cannot hide the cards.
-      width, height, measured: { width, height }, style: { width, height },
-      selected: node.id === selectedNodeId || selectedNodeIds.includes(node.id),
-      data: { node, asset: displayedAsset, profile: detail.visual_profiles?.find(item => item.id === node.settings.visual_profile_id), shot: shotMap.get(node.shot_id || ''),
-      job: jobMap.get(node.job_id || ''), model: modelMap.get(node.model_id || ''),
-      videoQuickModes: [...new Set(availableModels.filter(model => model.modality === 'video').flatMap(model => supportedModes(model)))],
-      imageEditingModels: availableModels.filter(model => model.modality === 'image' && ['image', 'images', 'image_references'].some(field => usesModelParameter(model, field))).map(model => model.id),
-      promptText: graph ? promptForNode(node, graph, detail.shots, detail.script) : '',
-      modelOptions: availableModels.filter((model) => {
-        const desiredModality = node.settings.modality || (node.type === 'image' ? 'image' : node.type === 'video' ? 'video' : undefined)
-        return !desiredModality || model.modality === desiredModality
+  const nodeActions = {
+    onPromptChange: editNodePrompt,
+    onTextChange: (id: string, value: string) => updateNodeById(id, { text: value }),
+    onTextDocumentChange: (id: string, text: string, document: JSONContent) => changeGraph(current => ({
+      ...current, nodes: current.nodes.map(item => item.id === id
+        ? { ...item, text, settings: { ...item.settings, text_document: document } } : item),
+    })),
+    onModelChange: selectNodeModel, onSettingsChange: updateNodeSettingsById, onOpenSettings: selectNodeForView,
+    onRun: (id: string) => { setComposerNodeId(id); setSelectedNodeId(id); setSelectedNodeIds([id]); setSelectedEdgeId(null); setPendingRunNodeId(id) },
+    onTryAction: tryNodeAction, onMediaSize: fitNodeToMedia,
+    onOpenScriptDirector: openScriptDirector, onOpenScriptCreator,
+    onOpenScriptDocument: (artifact: ScriptArtifact) => onOpenScriptDocument?.(artifact),
+  }
+  const latestNodeActions = useRef(nodeActions)
+  useLayoutEffect(() => { latestNodeActions.current = nodeActions })
+  const nodeCallbacks = useMemo(() => ({
+    onPromptChange: (...args: Parameters<typeof nodeActions.onPromptChange>) => latestNodeActions.current.onPromptChange(...args),
+    onTextChange: (...args: Parameters<typeof nodeActions.onTextChange>) => latestNodeActions.current.onTextChange(...args),
+    onTextDocumentChange: (...args: Parameters<typeof nodeActions.onTextDocumentChange>) => latestNodeActions.current.onTextDocumentChange(...args),
+    onModelChange: (...args: Parameters<typeof nodeActions.onModelChange>) => latestNodeActions.current.onModelChange(...args),
+    onSettingsChange: (...args: Parameters<typeof nodeActions.onSettingsChange>) => latestNodeActions.current.onSettingsChange(...args),
+    onOpenSettings: (...args: Parameters<typeof nodeActions.onOpenSettings>) => latestNodeActions.current.onOpenSettings(...args),
+    onRun: (...args: Parameters<typeof nodeActions.onRun>) => latestNodeActions.current.onRun(...args),
+    onTryAction: (...args: Parameters<typeof nodeActions.onTryAction>) => latestNodeActions.current.onTryAction(...args),
+    onMediaSize: (...args: Parameters<typeof nodeActions.onMediaSize>) => latestNodeActions.current.onMediaSize(...args),
+    onOpenScriptDirector: (...args: Parameters<typeof nodeActions.onOpenScriptDirector>) => latestNodeActions.current.onOpenScriptDirector(...args),
+    onOpenScriptCreator: () => latestNodeActions.current.onOpenScriptCreator(),
+    onOpenScriptDocument: (artifact: ScriptArtifact) => latestNodeActions.current.onOpenScriptDocument(artifact),
+  }), [])
+  const promptIndex = useMemo(() => graph ? canvasPromptIndex(graph, detail.shots) : null, [graph, detail.shots])
+  const scriptInputPrompt = useMemo(() => scriptPrompt(detail.script), [detail.script])
+  const referenceKey = useMemo(() => canvasReferenceKey(graph?.nodes || []), [graph?.nodes])
+  const automaticReferenceEdges = useMemo(() => graph ? automaticVisualReferenceEdges(graph, detail, models) : [], [referenceKey, graph?.edges, detail.assets, detail.visual_profiles, detail.shot_visual_bindings, models])
+  const virtualizeCanvas = useMemo(() => shouldVirtualizeCanvas(graph?.nodes || [], (graph?.edges.length || 0) + automaticReferenceEdges.length), [graph?.nodes, graph?.edges.length, automaticReferenceEdges.length])
+  const compactNodes = virtualizeCanvas && viewportZoom <= compactCanvasZoom
+  const selectedIds = useMemo(() => new Set([...selectedNodeIds, ...(selectedNodeId ? [selectedNodeId] : [])]), [selectedNodeId, selectedNodeIds])
+  const scriptNodeData = useMemo(() => ({
+    scriptSceneCount: detail.script?.scenes?.length || 0,
+    scriptDuration: detail.script?.scenes?.reduce((sum, scene) => sum + (scene.duration || 0), 0) || 0,
+    scriptOutline: detail.script?.outline || '', scriptArtifacts: detail.script?.artifacts || [],
+    scriptTitle: detail.name || '项目剧本', scriptUpdatedAt: scriptUpdatedLabel(detail),
+    scriptExists: !!(detail.brief?.trim() || detail.script?.outline?.trim() || detail.script?.characters?.trim() || detail.script?.scenes?.length),
+  }), [detail.script, detail.name, detail.brief, detail.updated_at])
+  const flowNodesRef = useRef<FlowNode[]>([])
+  const flowNodes = useMemo<FlowNode[]>(() => {
+    const previousNodes = flowNodesRef.current
+    const previousById = new Map(previousNodes.map(node => [node.id, node]))
+    const next = (graph?.nodes || []).map((node) => {
+      const profile = profileMap.get(node.settings.visual_profile_id || '')
+      const displayedAssetId = profile ? node.asset_id || profile.board_asset_id : node.settings.visual_profile_id ? null : node.asset_id
+      const displayedAsset = assetMap.get(displayedAssetId || '')
+      const { width, height } = nodeSize(node, displayedAsset)
+      const selected = selectedIds.has(node.id)
+      const active = selected && selectedIds.size === 1
+      const modality = node.settings.modality || (node.type === 'image' ? 'image' : node.type === 'video' ? 'video' : undefined)
+      return reuseFlowNode(previousById.get(node.id), {
+        id: node.id, type: 'studio', position: { x: node.x, y: node.y },
+        // React Flow uses these persisted dimensions to retain handle bounds
+        // and visibility when controlled nodes update.
+        width, height, measured: { width, height }, style: { width, height }, selected,
+        data: {
+          node, active, compact: compactNodes && !active, asset: displayedAsset, profile, shot: shotMap.get(node.shot_id || ''),
+          job: jobMap.get(node.job_id || ''), model: modelMap.get(node.model_id || ''), videoQuickModes, imageEditingModels,
+          promptText: promptIndex ? indexedCanvasPrompt(node, promptIndex, () => scriptInputPrompt) : '',
+          modelOptions: nodeModelOptions[modality || 'all'], busy, ...nodeCallbacks,
+          ...(node.type === 'project_script_ref' ? scriptNodeData : {}),
+        },
       })
-        .map((model) => ({ value: model.id, label: model.name })),
-      busy, onPromptChange: editNodePrompt,
-      onTextChange: (id: string, value: string) => updateNodeById(id, { text: value }),
-      onTextDocumentChange: (id: string, text: string, document: JSONContent) => changeGraph(current => ({
-        ...current, nodes: current.nodes.map(item => item.id === id
-          ? { ...item, text, settings: { ...item.settings, text_document: document } } : item),
-      })),
-      onModelChange: selectNodeModel,
-      onSettingsChange: updateNodeSettingsById,
-      onOpenSettings: selectNodeForView,
-      onRun: (id: string) => { setComposerNodeId(id); setSelectedNodeId(id); setSelectedNodeIds([id]); setSelectedEdgeId(null); setPendingRunNodeId(id) },
-      onTryAction: tryNodeAction,
-      onMediaSize: fitNodeToMedia,
-      scriptSceneCount: detail.script?.scenes?.length || 0,
-      scriptDuration: detail.script?.scenes?.reduce((sum, scene) => sum + (scene.duration || 0), 0) || 0,
-      scriptOutline: detail.script?.outline || '',
-      scriptArtifacts: detail.script?.artifacts || [],
-      scriptTitle: detail.name || '项目剧本',
-      scriptUpdatedAt: scriptUpdatedLabel(detail),
-      scriptExists: !!(detail.brief?.trim() || detail.script?.outline?.trim() || detail.script?.characters?.trim() || detail.script?.scenes?.length),
-      onOpenScriptDirector: openScriptDirector,
-      onOpenScriptCreator, onOpenScriptDocument },
-    }
-  }), [graph, selectedNodeId, selectedNodeIds, assetMap, shotMap, jobMap, modelMap, models, providers, busy, changeGraph, editNodePrompt, updateNodeById, updateNodeSettingsById, selectNodeModel, selectNodeForView, tryNodeAction, fitNodeToMedia, detail, onNavigate, openScriptDirector, onOpenScriptCreator, onOpenScriptDocument])
-  const automaticReferenceEdges = useMemo(() => graph ? automaticVisualReferenceEdges(graph, detail, models) : [], [graph, detail, models])
+    })
+    const result = previousNodes.length === next.length && next.every((node, index) => node === previousNodes[index]) ? previousNodes : next
+    return result
+  }, [graph, selectedIds, compactNodes, promptIndex, scriptInputPrompt, profileMap, assetMap, shotMap, jobMap, modelMap, busy, videoQuickModes, imageEditingModels, nodeModelOptions, nodeCallbacks, scriptNodeData])
+  useLayoutEffect(() => { flowNodesRef.current = flowNodes }, [flowNodes])
   const automaticReferenceEdgeIds = useMemo(() => new Set(automaticReferenceEdges.map(edge => edge.id)), [automaticReferenceEdges])
-  const flowEdges = useMemo<Edge[]>(() => [...(graph?.edges || []), ...automaticReferenceEdges].map((edge) => {
-    const automatic = automaticReferenceEdgeIds.has(edge.id)
-    const selected = edge.id === selectedEdgeId
-    const relatedNodeIds = new Set(selectedNodeIds)
-    if (selectedNodeId) relatedNodeIds.add(selectedNodeId)
-    const related = relatedNodeIds.has(edge.source) || relatedNodeIds.has(edge.target)
-    return {
-      ...edge,
-      type: 'studio',
-      data: { ...(edge as Edge & { data?: Record<string, unknown> }).data, related, visualBinding: automatic },
-      selectable: !automatic,
-      deletable: !automatic,
-      ariaLabel: automatic ? '设定参考图连接，点击调整镜头视觉设定' : undefined,
-      selected,
-      animated: false,
-      className: `pc-flow-edge${selected ? ' is-selected' : ''}${related ? ' is-related' : ''}`,
-      style: {
-        stroke: selected ? '#a8d8e8' : related ? '#789bad' : '#526372',
-        strokeWidth: selected ? 2.7 : related ? 2.2 : 1.6,
-        opacity: showEdges ? 1 : 0,
-        pointerEvents: showEdges ? 'auto' : 'none',
-      },
-    }
-  }), [graph?.edges, automaticReferenceEdges, automaticReferenceEdgeIds, selectedEdgeId, selectedNodeId, selectedNodeIds, showEdges])
+  const flowEdgesRef = useRef<Edge[]>([])
+  const flowEdges = useMemo<Edge[]>(() => {
+    const previousEdges = flowEdgesRef.current
+    const previousById = new Map(previousEdges.map(edge => [edge.id, edge]))
+    const next = [...(graph?.edges || []), ...automaticReferenceEdges].map((edge) => {
+      const automatic = automaticReferenceEdgeIds.has(edge.id)
+      const selected = edge.id === selectedEdgeId
+      const related = selectedIds.has(edge.source) || selectedIds.has(edge.target)
+      return reuseFlowEdge(previousById.get(edge.id), {
+        ...edge,
+        type: 'studio',
+        data: { ...(edge as Edge & { data?: Record<string, unknown> }).data, related, visualBinding: automatic,
+          motion: showEdges && (selected || related && selectedIds.size === 1) },
+        selectable: !automatic,
+        deletable: !automatic,
+        ariaLabel: automatic ? '设定参考图连接，点击调整镜头视觉设定' : undefined,
+        selected,
+        animated: false,
+        hidden: !showEdges,
+        className: `pc-flow-edge${selected ? ' is-selected' : ''}${related ? ' is-related' : ''}`,
+        style: {
+          stroke: selected ? '#a8d8e8' : related ? '#789bad' : '#526372',
+          strokeWidth: selected ? 2.7 : related ? 2.2 : 1.6,
+          opacity: showEdges ? 1 : 0,
+          pointerEvents: showEdges ? 'auto' : 'none',
+        },
+      })
+    })
+    return previousEdges.length === next.length && next.every((edge, index) => edge === previousEdges[index]) ? previousEdges : next
+  }, [graph?.edges, automaticReferenceEdges, automaticReferenceEdgeIds, selectedEdgeId, selectedIds, showEdges])
+  useLayoutEffect(() => { flowEdgesRef.current = flowEdges }, [flowEdges])
   const selectedNode = graph?.nodes.find((node) => node.id === selectedNodeId)
+  const selectedCanvasNodeIds = useMemo(() => {
+    const ids = new Set(selectedNodeIds)
+    if (selectedNodeId) ids.add(selectedNodeId)
+    return graph?.nodes.filter(node => ids.has(node.id)).map(node => node.id) || []
+  }, [graph?.nodes, selectedNodeId, selectedNodeIds])
   const selectedProfile = detail.visual_profiles?.find(item => item.id === selectedNode?.settings.visual_profile_id)
   const inspectedProfile = detail.visual_profiles?.find(profile => profile.id === profileInspectorId)
   const inspectedProfileGenerating = !!inspectedProfile && (detail.asset_tasks.some(task => task.id === inspectedProfile.asset_task_id && task.status === 'generating')
@@ -1507,7 +1608,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const selectedNodeGenerating = selectedNode?.type === 'generation' && (selectedJob?.status === 'queued' || selectedJob?.status === 'running'
     || profileJobs.some(job => job.status === 'queued' || job.status === 'running'))
   const selectedShot = shotMap.get(selectedNode?.shot_id || '')
-  const visualBindings = (detail.shot_visual_bindings || []).filter(binding => binding.shot_id === selectedShot?.id)
+  const allVisualBindings = (detail.shot_visual_bindings || []).filter(binding => binding.shot_id === selectedShot?.id)
   const missingReferences = useMemo(() => graph && selectedNode ? missingVisualReferences(graph, selectedNode.id, detail, models) : [], [graph, selectedNode, detail, models])
   const referenceReturnNode = graph?.nodes.find(node => node.id === referenceReturnNodeId)
   const visualReferenceMode = selectedNode?.settings.visual_reference_mode || 'profiles'
@@ -1517,6 +1618,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const composerModality: CanvasModality | undefined = selectedNode?.type === 'generation'
     ? selectedNode.settings.modality || composerModel?.modality
     : composerModel?.modality || (selectedNode?.type === 'image' ? 'image' : selectedNode?.type === 'video' ? 'video' : undefined)
+  const visualBindings = visualBindingsForModality(allVisualBindings, composerModality)
   const composerResolutions = modelResolutions(composerModel)
   const savedResolution = selectedNode?.settings.resolution
   const composerResolution = composerModality === 'video' && savedResolution
@@ -1539,12 +1641,20 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     }).filter((node): node is CanvasNode => !!node) || []
   // A generator-to-result edge records provenance, not an extra reference.
   // Its latest result can change when rerun, while this media node stays fixed.
-  const composerReferences = selectedNode?.type === 'generation'
-    ? incoming : incoming.filter(node => node.type !== 'generation')
+  const composerReferences = (selectedNode?.type === 'generation'
+    ? incoming : incoming.filter(node => node.type !== 'generation')).filter(node => {
+      const binding = allVisualBindings.find(binding => binding.profile_id === node.settings.visual_profile_id)
+      return !binding || visualBindingApplies(binding, composerModality)
+    })
   const inputTexts = composerReferences
     .map((node) => node.type === 'project_script_ref' ? scriptPrompt(detail.script) : node.type === 'text' ? node.text.trim() : '')
     .filter(Boolean)
-  const connectedImages = [...new Map(composerReferences.map((node) => visualNodeAsset(node, detail, true))
+  const connectedImages = [...new Map(composerReferences.flatMap(node => {
+    const binding = visualReferenceMode === 'profiles' && node.settings.visual_profile_id
+      ? visualBindings.find(binding => binding.profile_id === node.settings.visual_profile_id) : undefined
+    return binding?.reference_assets?.length ? visualBindingReferenceAssetIds(binding).map(id => assetMap.get(id))
+      : [visualNodeAsset(node, detail, true)]
+  })
     .filter((asset): asset is Asset => asset?.kind === 'image').map(asset => [asset.id, asset])).values()]
   // Switching to strict first-frame keeps other connections available for a
   // later multi-reference run, while only the pinned opening image is sent.
@@ -1568,20 +1678,25 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     const left = `${a.kind}\0${a.name}\0${a.profile_id}`, right = `${b.kind}\0${b.name}\0${b.profile_id}`
     return left < right ? -1 : left > right ? 1 : 0
   })
-  const storyboardReferenceAssetId = selectedNode?.settings.storyboard_reference_asset_id ||
-    (composerModality === 'video' && selectedShot ? inputImages.find(asset => asset.shot_id === selectedShot.id)?.id : undefined)
+  const storyboardCandidate = selectedNode?.settings.storyboard_reference_asset_id !== undefined ? selectedNode.settings.storyboard_reference_asset_id
+    : composerModality === 'video' && selectedShot ? inputImages.find(asset => asset.shot_id === selectedShot.id)?.id : undefined
+  const storyboardReferenceAssetId = inputImages.some(asset => asset.id === storyboardCandidate) ? storyboardCandidate : undefined
   const videoReferences = videoReferenceManifest(inputImages.map(asset => asset.id), promptBindings, {
     mode: selectedMode, visual_reference_mode: visualReferenceMode,
     storyboard_reference_asset_id: storyboardReferenceAssetId,
     excluded_visual_profile_ids: selectedNode?.settings.excluded_visual_profile_ids,
+    video_reference_usages: selectedNode?.settings.video_reference_usages,
   })
+  const activeVideoReferenceUsages: VideoReferenceUsageSelection[] = videoReferences.flatMap(entry => entry.usage ? [{ asset_id: entry.asset_id, usage: entry.usage }] : [])
   const preparedReferenceIds = composerModality === 'video' ? videoReferences.map(entry => entry.asset_id) : inputImages.map(asset => asset.id)
   if (composerModality !== 'video' && visualReferenceMode === 'profiles') for (const binding of promptBindings) {
-    if (binding.board_asset_id && !preparedReferenceIds.includes(binding.board_asset_id)) preparedReferenceIds.push(binding.board_asset_id)
+    for (const id of visualBindingReferenceAssetIds(binding)) if (!preparedReferenceIds.includes(id)) preparedReferenceIds.push(id)
   }
   const styleWarnings = preparedReferenceIds.flatMap((id, index) => {
     const asset = assetMap.get(id)
-    if (!asset || detail.visual_profiles?.some(profile => profile.board_asset_id === id && profile.board_style_version === detail.project_visual_style?.version)) return []
+    if (!asset || detail.visual_profiles?.some(profile => profile.board_asset_id === id && profile.board_style_version === detail.project_visual_style?.version
+      || profile.reference_assets?.some(reference => reference.asset_id === id && reference.style_version === detail.project_visual_style?.version))
+      || promptBindings.some(binding => binding.reference_assets?.some(reference => reference.asset_id === id && reference.style_version === detail.project_visual_style?.version))) return []
     const job = detail.jobs.find(job => job.result_asset_id === id)
     const warning = styleReferenceWarning(detail.project_visual_style, visualJobRequest(job).project_style_version, index)
     return warning ? [warning] : []
@@ -1594,12 +1709,12 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const automaticPrompt = composerModel && composerModel.modality !== 'text'
     ? withProjectStyle(visualGenerationPrompt(preferencePrompt, promptBindings, preparedReferenceIds, visualReferenceMode,
       composerModality === 'video' ? { mode: selectedMode, storyboard_reference_asset_id: storyboardReferenceAssetId,
-        excluded_visual_profile_ids: selectedNode?.settings.excluded_visual_profile_ids } : undefined), detail.project_visual_style) : preferencePrompt
+        excluded_visual_profile_ids: selectedNode?.settings.excluded_visual_profile_ids, video_reference_usages: activeVideoReferenceUsages } : undefined), detail.project_visual_style) : preferencePrompt
   const editablePrompt = selectedProfile ? selectedNode?.settings.profile_prompt_override || [selectedProfile.board_prompt, ...inputTexts, selectedNode?.text].filter(Boolean).join('\n\n') : selectedNode?.type === 'text' ? selectedNode.text
     : selectedNode?.settings.prompt_is_final ? rebasePromptDraft(selectedNode.settings.prompt_template || '', selectedNode.text, automaticPrompt) : automaticPrompt
   const synchronizedPrompt = composerModality === 'video' ? synchronizeVideoReferencePrompt(editablePrompt, promptBindings,
     preparedReferenceIds, visualReferenceMode, { mode: selectedMode, storyboard_reference_asset_id: storyboardReferenceAssetId,
-      excluded_visual_profile_ids: selectedNode?.settings.excluded_visual_profile_ids }) : editablePrompt
+      excluded_visual_profile_ids: selectedNode?.settings.excluded_visual_profile_ids, video_reference_usages: activeVideoReferenceUsages }) : editablePrompt
   const composerPrompt = composerModality && composerModality !== 'text' ? withProjectStyle(synchronizedPrompt, detail.project_visual_style) : synchronizedPrompt
   const missingShotCount = detail.shots.filter((shot) => !graph?.nodes.some((node) =>
     node.type === 'generation' && node.shot_id === shot.id)).length
@@ -1618,6 +1733,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
 
   useEffect(() => {
     if (viewMode !== 'canvas' || !graph?.nodes.length || initialViewApplied.current) return
+    if (readShotCanvasRequest(detail.id)?.canvasId === canvas.id) return
     if (savedViewport) {
       initialViewApplied.current = true
       return
@@ -1643,7 +1759,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       const nodes = queueRef.current?.graph.nodes || []
       const focus = nodes.find((node) => node.id === selectedNodeId) || nodes.find((node) => node.type === 'generation') || nodes[0]
       if (focus) void setCenter(focus.x + focus.width / 2 + (width > 900 ? 210 : 0),
-        focus.y + focus.height / 2, { zoom: 1, duration: 0 }).then(() => setComposerRevealKey(key => key + 1))
+        focus.y + focus.height / 2, { zoom: 1, duration: 0 })
     })
     observer.observe(viewport)
     return () => observer.disconnect()
@@ -1788,10 +1904,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     setSelectedEdgeId(null)
     if (pendingCanvasFocus.current) return
     const wide = (viewportRef.current?.clientWidth || 0) > 900
-    // Reveal after the explicit navigation finishes. A concurrent centering
-    // animation otherwise overwrites the composer's safe viewport.
+    // Explicit navigation centers the node; its editor follows below it.
     void setCenter(node.x + node.width / 2 + (wide ? 80 : 0), node.y + node.height / 2, { zoom: 1, duration: 0 })
-      .then(() => setComposerRevealKey(key => key + 1))
   }
 
   function addAssetNode(asset: Asset, at?: { x: number; y: number }) {
@@ -1877,7 +1991,9 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     if (!current) return
     const target = current.nodes.find(node => node.id === targetId)
     if (target?.settings.visual_profile_id === profile.id) { setNotice('设定不能引用自身'); return }
-    if (target && !profile.board_asset_id) { setNotice(`请先确认 ${profile.name} 的设定图`); return }
+    const targetBinding = target?.settings.visual_reference_mode !== 'keyframe' && target?.settings.visual_reference_mode !== 'text_only'
+      ? detail.shot_visual_bindings?.find(binding => binding.shot_id === target?.shot_id && binding.profile_id === profile.id) : undefined
+    if (target && !profile.board_asset_id && !targetBinding?.reference_assets?.length) { setNotice(`请先确认 ${profile.name} 的设定图，或为镜头选择独立参考图`); return }
     const position = target ? { x: target.x - 540, y: target.y } : centerPosition()
     const model = availableModels.find(item => item.modality === 'image')
     const added = addVisualProfileNode(current, profile, { ...blankNode('generation', position.x, position.y), model_id: model?.id || null,
@@ -1889,7 +2005,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     setProfileInspectorId(null)
     setViewMode('canvas')
     if ((viewportRef.current?.clientWidth || 0) <= 700) setSidebarOpen(false)
-    if (target) { setReferenceTargetNodeId(null); setComposerNodeId(target.id); setComposerRevealKey(key => key + 1); setNotice(alreadyConnected ? '该设定图已连接' : '已连接设定参考图'); return }
+    if (target) { setReferenceTargetNodeId(null); setComposerNodeId(target.id); setNotice(alreadyConnected ? '该设定图已连接' : '已连接设定参考图'); return }
     focusSidebarNode(added.nodeId)
   }
 
@@ -1919,14 +2035,17 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       if (!target) return current
       const excluded = new Set(target.settings.excluded_visual_profile_ids || [])
       if (restore) excluded.delete(profileId); else excluded.add(profileId)
-      const assetId = visualBindings.find(binding => binding.profile_id === profileId)?.board_asset_id
+      const excludedBinding = visualBindings.find(binding => binding.profile_id === profileId)
+      const assetIds = new Set(excludedBinding ? visualBindingReferenceAssetIds(excludedBinding) : [])
+      const retainedIds = new Set(visualBindings.filter(binding => binding.profile_id !== profileId && !excluded.has(binding.profile_id)).flatMap(visualBindingReferenceAssetIds))
       return { ...current, nodes: current.nodes.map(node => node.id === target.id
         ? { ...node, settings: { ...node.settings, excluded_visual_profile_ids: [...excluded] } } : node),
         edges: restore ? current.edges : current.edges.filter(edge => {
           if (edge.target !== target.id) return true
           const source = current.nodes.find(node => node.id === edge.source)
-          return !(source?.settings.visual_profile_id === profileId || assetId &&
-            (edge.reference_asset_id || source && visualNodeAsset(source, detail, true)?.id) === assetId && assetId !== storyboardReferenceAssetId)
+          const assetId = edge.reference_asset_id || source && visualNodeAsset(source, detail, true)?.id
+          return !(source?.settings.visual_profile_id === profileId || assetId && assetIds.has(assetId)
+            && !retainedIds.has(assetId) && assetId !== storyboardReferenceAssetId)
         }),
       }
     })
@@ -2024,7 +2143,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     return () => { window.removeEventListener('script-canvas-open', open) }
   }, [graph, detail.id, models, scriptCanvasRetry, changeGraph, flush, fitView])
 
-  function importShots() {
+  function importShots(shotIds?: string[], focus = true) {
     if (!detail.shots.length) { setNotice('项目还没有分镜，请先在剧本或时间线中创建'); return }
     autoImportAttempted.current = true
     try { window.localStorage.setItem(autoImportKey(detail.id), '1') } catch { /* Import still proceeds. */ }
@@ -2038,7 +2157,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       const nodes = [...current.nodes]
       const edges = [...current.edges]
       let y = nodes.length ? Math.max(...nodes.map((node) => node.y + node.height)) + 100 : 80
-      for (const shot of detail.shots) {
+      for (const shot of detail.shots.filter(shot => !shotIds || shotIds.includes(shot.id))) {
         const job = detail.jobs.find((item) => item.job_type === 'generation' && item.shot_id === shot.id)
         const imageModel = availableModels.find(model => model.modality === 'image')
         let settings: CanvasNode['settings'] = { ...(!job ? { modality: 'image' as const, ...imageGenerationDefaults(imageModel) } : {}), duration: shot.duration, ratio: detail.ratio,
@@ -2129,13 +2248,37 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     })
     const added = addedShots + addedJobs + addedAssets
     setNotice(added ? `已补入 ${addedShots} 个分镜、${addedJobs} 个新任务、${addedAssets} 个素材${missingReferences ? `；${missingReferences} 张旧参考图已不存在` : ''}${hitLimit ? '；已达到画布容量上限' : ''}` : '分镜、任务和素材已同步')
-    if (firstImported && viewMode === 'canvas' && initialViewApplied.current) {
+    if (focus && firstImported && viewMode === 'canvas' && initialViewApplied.current) {
       const node: CanvasNode = queueRef.current?.graph.nodes.find(item => item.id === firstImported!.id) || firstImported
       const wide = (viewportRef.current?.clientWidth || 0) > 900
       void setCenter(node.x + node.width / 2 + (wide ? 210 : 0), node.y + node.height / 2,
         { zoom: 1, duration: 350 })
     }
   }
+
+  useEffect(() => {
+    if (!graph) return
+    const request = readShotCanvasRequest(detail.id)
+    if (!request || request.canvasId !== canvas.id) return
+    const shot = detail.shots.find(shot => shot.id === request.shotId)
+    if (!shot) { clearShotCanvasRequest(detail.id, request.requestId); return }
+    setViewMode('canvas')
+    initialViewApplied.current = true
+    let node = graph.nodes.find(node => node.id === request.nodeId)
+      || shotCanvasNode(graph.nodes, shot.id, shot.selected_asset_id)
+    if (!node) {
+      importShots([shot.id], false)
+      node = shotCanvasNode(queueRef.current?.graph.nodes || [], shot.id, shot.selected_asset_id)
+    }
+    clearShotCanvasRequest(detail.id, request.requestId)
+    if (!node) { setNotice('当前画布已满，请腾出节点空间后导入此镜头'); return }
+    setSelectedNodeId(node.id); setSelectedNodeIds([node.id]); setSelectedEdgeId(null); setComposerNodeId(node.id)
+    const target = node
+    window.requestAnimationFrame(() => {
+      void setCenter(target.x + target.width / 2 + ((viewportRef.current?.clientWidth || 0) > 900 ? 80 : 0),
+        target.y + target.height / 2, { zoom: 1, duration: 0 })
+    })
+  }, [graph, detail.id, detail.shots, canvas.id, setCenter])
 
   function organizeShotGroups() {
     if (!detail.shots.length) { setNotice('项目还没有分镜，请先在剧本中创建'); return }
@@ -2211,7 +2354,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   }
 
   useEffect(() => {
-    if (!graph || graph.nodes.length || !detail.shots.length) return
+    if (canvas.id !== detail.id || !graph || graph.nodes.length || !detail.shots.length) return
     if (autoImportAttempted.current) return
     try { if (window.localStorage.getItem(autoImportKey(detail.id))) return } catch { /* Continue once in memory. */ }
     importShots()
@@ -2226,8 +2369,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       // selection race a click and can repeatedly rebuild the whole node tree.
       const selected = new Map(selectionChanges.map((change) => [change.id, change.selected]))
       const sourceNodes = queueRef.current?.graph.nodes || graph?.nodes || []
-      const ids = sourceNodes.filter((node) => selected.get(node.id) ??
-        (node.id === selectedNodeId || selectedNodeIds.includes(node.id))).map((node) => node.id)
+      const ids = sourceNodes.filter((node) => selected.get(node.id) ?? selectedIds.has(node.id)).map((node) => node.id)
       setSelectedNodeIds((current) => sameStringList(current, ids) ? current : ids)
       setSelectedNodeId((current) => {
         const next = current && ids.includes(current) ? current : ids[0] || null
@@ -2243,31 +2385,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     // may arrive after an add/edit but before its render, so filtering the live
     // graph through the older flowNodes snapshot can delete newly added nodes
     // or restore stale positions and sizes.
-    const nextNodes = (current: CanvasGraph): CanvasNode[] => {
-      const movedPositions = new Map(positionChanges.flatMap((change) => change.position ? [[change.id, change.position] as const] : []))
-      const groupedMoves = new Map<string, { dx: number; dy: number }>()
-      for (const change of positionChanges) {
-        if (dimensionChanges.length) continue
-        const node = current.nodes.find((item) => item.id === change.id)
-        if (!node?.settings.group_id || !change.position || (change.dragging !== true && !dragSnapshotRef.current)) continue
-        const sameGroupMoves = positionChanges.filter((item) => current.nodes.find((candidate) => candidate.id === item.id)?.settings.group_id === node.settings.group_id)
-        if (sameGroupMoves.length === 1) groupedMoves.set(node.settings.group_id, { dx: change.position.x - node.x, dy: change.position.y - node.y })
-      }
-      return current.nodes.filter((node) => !removedIds.has(node.id)).map((node) => {
-      let next = node
-      for (const change of changes) {
-        if (!('id' in change) || change.id !== node.id) continue
-        if (change.type === 'position' && change.position) {
-          next = { ...next, x: change.position.x, y: change.position.y }
-        } else if (change.type === 'dimensions' && change.dimensions) {
-          next = { ...next, width: change.dimensions.width || next.width, height: change.dimensions.height || next.height }
-        }
-      }
-      const groupMove = node.settings.group_id ? groupedMoves.get(node.settings.group_id) : undefined
-      if (groupMove && !movedPositions.has(node.id)) next = { ...next, x: next.x + groupMove.dx, y: next.y + groupMove.dy }
-      return next
-    }) }
-    const nextEdges = (current: CanvasGraph): CanvasEdge[] => current.edges.filter((edge) => !removedIds.has(edge.source) && !removedIds.has(edge.target))
+    const nextEdges = (current: CanvasGraph): CanvasEdge[] => removedIds.size ? current.edges.filter((edge) => !removedIds.has(edge.source) && !removedIds.has(edge.target)) : current.edges
     const isInteracting = positionChanges.some((change) => change.dragging) || dimensionChanges.some((change) => change.resizing)
     const queue = queueRef.current
     // During dragging/resizing, update the graph without adding history entries
@@ -2275,7 +2393,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     // one checkpoint and one save.
     if (queue && (positionChanges.length || dimensionChanges.length) && (isInteracting || dragSnapshotRef.current)) {
       if (!dragSnapshotRef.current) dragSnapshotRef.current = cloneGraph(queue.graph)
-      const next = { ...queue.graph, nodes: nextNodes(queue.graph), edges: nextEdges(queue.graph) }
+      const next = { ...queue.graph, nodes: updateCanvasGeometry(queue.graph.nodes, changes, !!dragSnapshotRef.current), edges: nextEdges(queue.graph) }
       queue.graph = next
       setGraph(next)
       if (isInteracting) return
@@ -2295,7 +2413,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     }
     changeGraph((current) => ({
       ...current,
-      nodes: nextNodes(current),
+      nodes: updateCanvasGeometry(current.nodes, changes, !!dragSnapshotRef.current),
       edges: nextEdges(current),
     }))
   }
@@ -2358,25 +2476,67 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     void openVisualTool('bindings', { target: target?.shot_id ? `shot:${target.shot_id}` : undefined })
   }
 
-  async function deleteSelection(nodeId: string | null = null, edgeId: string | null = selectedEdgeId) {
-    const nodeIds = nodeId ? [nodeId] : selectedNodeIds.length ? selectedNodeIds : selectedNodeId ? [selectedNodeId] : []
-    if (!nodeIds.length && !edgeId) return
-    const ok = await confirm({
-      title: nodeIds.length > 1 ? `移除 ${nodeIds.length} 个节点` : '移除画布内容',
-      message: nodeIds.length > 1 ? '原始分镜、素材和任务记录仍会保留。' : '原始分镜、素材和任务记录仍会保留。',
-      confirmLabel: '移除', danger: true,
-    })
-    if (!ok) return
-    const nodeIdSet = new Set(nodeIds)
-    changeGraph((current) => ({
-      ...current,
-      nodes: current.nodes.filter((node) => !nodeIdSet.has(node.id)),
-      edges: current.edges.filter((edge) => edge.id !== edgeId && !nodeIdSet.has(edge.source) && !nodeIdSet.has(edge.target)),
-    }))
-    if (!nodeId || nodeIdSet.has(selectedNodeId || '')) setSelectedNodeId(null)
-    setSelectedNodeIds([])
-    if (selectedEdgeId === edgeId) setSelectedEdgeId(null)
-    setContextMenu(null)
+  function cancelCanvasSelection() {
+    setSelectedNodeId(null); setSelectedNodeIds([]); setSelectedEdgeId(null)
+    setComposerNodeId(null); setContextMenu(null); setAddMenu(null)
+    viewportRef.current?.focus({ preventScroll: true })
+  }
+
+  function selectAllCanvasNodes() {
+    const nodes = queueRef.current?.graph.nodes || []
+    if (!nodes.length) return
+    const ids = nodes.map(node => node.id)
+    setSelectedNodeIds(ids)
+    setSelectedNodeId(ids.includes(selectedNodeId || '') ? selectedNodeId : ids[0])
+    setSelectedEdgeId(null); setComposerNodeId(null); setContextMenu(null); setAddMenu(null)
+    viewportRef.current?.focus({ preventScroll: true })
+  }
+
+  async function removeCanvasContent(nodeIds: string[], edgeIds: string[], clear = false) {
+    const queue = queueRef.current
+    if (!queue || queue.id !== detail.id || removalPendingRef.current) return
+    const requestedNodeIds = new Set(nodeIds)
+    const nodeIdSet = new Set(queue.graph.nodes.filter(node => requestedNodeIds.has(node.id)).map(node => node.id))
+    const requestedEdgeIds = new Set(edgeIds)
+    const edgeIdSet = new Set(queue.graph.edges.filter(edge => requestedEdgeIds.has(edge.id) ||
+      nodeIdSet.has(edge.source) || nodeIdSet.has(edge.target)).map(edge => edge.id))
+    if (!nodeIdSet.size && !edgeIdSet.size) return
+    removalPendingRef.current = true
+    try {
+      const ok = await confirm({
+        title: clear ? `清空画布（${nodeIdSet.size} 个节点）` : nodeIdSet.size > 1 ? `移除 ${nodeIdSet.size} 个节点` : '移除画布内容',
+        message: `将移除${nodeIdSet.size ? ` ${nodeIdSet.size} 个节点及相关连线` : '所选连接'}。原始分镜、素材和任务记录仍会保留，可通过撤销恢复。`,
+        confirmLabel: clear ? '清空画布' : '移除', danger: true,
+      })
+      // Confirmation belongs to the graph that opened it, even if the project
+      // changes while the dialog is open. New nodes are outside its scope.
+      if (!ok || queueRef.current !== queue) return
+      if (nodeIdSet.size) {
+        autoImportAttempted.current = true
+        try { window.localStorage.setItem(autoImportKey(queue.id), '1') } catch { /* Keep the choice for this session. */ }
+      }
+      changeGraph(current => ({
+        ...current,
+        nodes: current.nodes.filter(node => !nodeIdSet.has(node.id)),
+        edges: current.edges.filter(edge => !edgeIdSet.has(edge.id) && !nodeIdSet.has(edge.source) && !nodeIdSet.has(edge.target)),
+      }))
+      setSelectedNodeId(current => current && nodeIdSet.has(current) ? null : current)
+      setSelectedNodeIds(current => current.filter(id => !nodeIdSet.has(id)))
+      setComposerNodeId(current => current && nodeIdSet.has(current) ? null : current)
+      setSelectedEdgeId(current => current && edgeIdSet.has(current) ? null : current)
+      setContextMenu(null)
+      setNotice(nodeIdSet.size ? `已移除 ${nodeIdSet.size} 个节点，可撤销恢复` : '已移除连接，可撤销恢复')
+      viewportRef.current?.focus({ preventScroll: true })
+    } finally { removalPendingRef.current = false }
+  }
+
+  function deleteSelection(nodeId: string | null = null, edgeId: string | null = selectedEdgeId) {
+    return removeCanvasContent(nodeId ? [nodeId] : selectedCanvasNodeIds, edgeId ? [edgeId] : [])
+  }
+
+  function clearCanvas() {
+    const current = queueRef.current?.graph
+    if (current) return removeCanvasContent(current.nodes.map(node => node.id), current.edges.map(edge => edge.id), true)
   }
 
   function commitHistoryGraph(snapshot: CanvasGraph) {
@@ -2457,7 +2617,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     if (!bounds) return
     if (target.nodeId) {
       setSelectedNodeId(target.nodeId)
-      setSelectedNodeIds([target.nodeId])
+      if (!selectedCanvasNodeIds.includes(target.nodeId)) setSelectedNodeIds([target.nodeId])
+      if (selectedCanvasNodeIds.length > 1 && selectedCanvasNodeIds.includes(target.nodeId)) setComposerNodeId(null)
       setSelectedEdgeId(null)
       
     } else if (target.edgeId) {
@@ -2474,7 +2635,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     }
     setContextMenu({
       x: Math.max(10, Math.min(event.clientX - bounds.left, Math.max(10, bounds.width - 248))),
-      y: Math.max(10, Math.min(event.clientY - bounds.top, Math.max(10, bounds.height - 300))),
+      y: Math.max(10, Math.min(event.clientY - bounds.top, Math.max(10, bounds.height - (target.nodeId || target.edgeId ? 300 : 390)))),
       ...target,
     })
     setAddMenu(null)
@@ -2527,8 +2688,12 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       } catch (issue) { showError(issue) } finally { previewingRef.current = false; setBusy(false) }
       return
     }
-    const missingProfileReference = composerReferences.find(node => node.settings.visual_profile_id && !visualNodeAsset(node, detail, true)
-      && !(composerModality === 'video' && selectedMode === 'first_frame' && selectedNode.settings.storyboard_reference_asset_id))
+    const missingProfileReference = composerReferences.find(node => {
+      if (!node.settings.visual_profile_id || visualNodeAsset(node, detail, true)
+        || composerModality === 'video' && selectedMode === 'first_frame' && selectedNode.settings.storyboard_reference_asset_id) return false
+      const binding = visualReferenceMode === 'profiles' && visualBindings.find(binding => binding.profile_id === node.settings.visual_profile_id)
+      return !binding || !binding.reference_assets?.length || !binding.reference_assets.every(reference => assetMap.get(reference.asset_id)?.kind === 'image')
+    })
     if (missingProfileReference) { setNotice(`请先确认 ${missingProfileReference.title} 的设定图`); return }
     if (!composerPrompt.trim() || !compiledPrompt.trim() && !selectedNode.settings.prompt_is_final) { setNotice('请输入提示词或连接文本节点'); return }
     const mode = model.modality === 'video' ? selectedMode : 'text'
@@ -2601,7 +2766,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       shot_id: shot?.id || '', model_id: model.id,
       visual_reference_mode: visualReferenceMode,
       ...(model.modality === 'video' ? { storyboard_reference_asset_id: mode === 'reference' ? storyboardReferenceAssetId || null : null,
-        excluded_visual_profile_ids: selectedNode.settings.excluded_visual_profile_ids || [] } : {}),
+        excluded_visual_profile_ids: selectedNode.settings.excluded_visual_profile_ids || [], video_reference_usages: mode === 'reference' ? activeVideoReferenceUsages : [] } : {}),
       prompt: composerPrompt.trim(), prompt_is_final: true, prompt_template: automaticPrompt,
       ...(compiledPrompt.trim() ? { visual_source_prompt: compiledPrompt.trim() } : {}),
       mode: model.modality === 'image' ? imageMode : mode,
@@ -2619,7 +2784,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         provider: providers.find((provider) => provider.id === model.provider_id),
         referenceNames: prepared.reference_asset_ids.map((id, index) => {
           const reference = model.modality === 'video' ? videoReferences.find(entry => entry.asset_id === id) : undefined
-          return reference ? `图片${index + 1}：${reference.name}${reference.variant ? ` · ${reference.variant}` : ''}` : assetMap.get(id)?.filename || id
+          return reference ? `图片${index + 1}：${reference.name}${reference.variant ? ` · ${reference.variant}` : ''}（${reference.usage ? videoReferenceUsageLabels[reference.usage] : reference.purpose === 'storyboard' ? '整体构图' : '按素材设定'}）` : assetMap.get(id)?.filename || id
         }) }
     } catch (issue) { showError(issue) }
     finally { previewingRef.current = false; setBusy(false) }
@@ -2760,7 +2925,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     const queue = queueRef.current
     if (!queue) return
     try {
-      const remote = normalizeGraph(await api<CanvasGraph>(`/projects/${queue.id}/canvas`))
+      const remote = normalizeGraph(await api<CanvasGraph>(canvasGraphPath(queue.id, queue.canvasId)))
       setConflictReview(mergeGraphs(queue.base, queue.graph, remote))
     } catch (error) { showError(error) }
   }
@@ -2788,13 +2953,49 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     queue.serial = 0
     queue.savedSerial = 0
     queue.conflict = false
-    clearDraft(queue.id)
+    clearDraft(queue.storageId)
     setGraph(queue.graph)
     setSaveState('saved')
     setConflictReview(null)
     setSelectedNodeId(null)
     setSelectedNodeIds([])
   }
+
+  const canvasLeaveRef = useRef<CanvasActions | null>(null)
+  canvasLeaveRef.current = {
+    revision: () => queueRef.current?.base.revision,
+    leave: async () => {
+      if (busy || submittingRef.current || removalPendingRef.current || visualPanelBusy) { setNotice('请等待当前操作完成'); return false }
+      if (!await leaveVisualPanel()) return false
+      const queue = queueRef.current
+      if (!queue) { setNotice('画布尚未加载'); return false }
+      try { await flush(queue); canvasSession.revision = queue.base.revision; return true } catch (issue) { showError(issue); return false }
+    },
+    move: async targetId => {
+      const ids = selectedCanvasNodeIds
+      if (!ids.length) { setNotice('请先选择要移动的节点'); return false }
+      if (!await canvasLeaveRef.current!.leave()) return false
+      const queue = queueRef.current!
+      const selected = new Set(ids)
+      const crossing = queue.graph.edges.filter(edge => selected.has(edge.source) !== selected.has(edge.target)).length
+      if (crossing && !await confirm({ title: '移动所选节点', message: `所选节点之间的连线会保留，与留在当前画布的节点之间 ${crossing} 条连线将移除。`, confirmLabel: '移动节点' })) return false
+      try {
+        await flush(queue)
+        const target = await api<CanvasGraph>(canvasGraphPath(detail.id, targetId))
+        const result = await api<{ source: CanvasGraph }>(`/projects/${detail.id}/canvases/${canvas.id}/move-nodes`, json('POST', {
+          target_canvas_id: targetId, node_ids: ids, revision: queue.base.revision, target_revision: target.revision,
+        }))
+        queue.graph = normalizeGraph(result.source); queue.base = queue.graph; queue.serial = 0; queue.savedSerial = 0
+        clearDraft(storageId); setGraph(queue.graph); setSelectedNodeId(null); setSelectedNodeIds([]); setSelectedEdgeId(null)
+        historyRef.current = { past: [], future: [] }; canvasSession.history = historyRef.current
+        return true
+      } catch (issue) { showError(issue); return false }
+    },
+  }
+  useEffect(() => {
+    registerCanvasActions({ revision: () => canvasLeaveRef.current!.revision(), leave: () => canvasLeaveRef.current!.leave(), move: target => canvasLeaveRef.current!.move(target) })
+    return () => registerCanvasActions(null)
+  }, [registerCanvasActions])
 
   const sidebarNodes = useMemo(() => {
     const query = sidebarSearch.trim().toLocaleLowerCase()
@@ -2826,6 +3027,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   }, [detail.assets, detail.shots, sidebarAssetFilter, sidebarAssetSearch, referenceTargetNodeId])
   const contextNode = contextMenu?.nodeId ? graph?.nodes.find((node) => node.id === contextMenu.nodeId) : undefined
   const contextEdge = contextMenu?.edgeId ? graph?.edges.find((edge) => edge.id === contextMenu.edgeId) : undefined
+  const contextSelectionCount = contextNode && selectedCanvasNodeIds.includes(contextNode.id) ? selectedCanvasNodeIds.length : 0
 
   async function openModelsSafely() {
     const queue = queueRef.current
@@ -2839,7 +3041,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     if (!selectedNodeId) return
     const onDocumentPointerDown = (event: PointerEvent) => {
       const target = event.target instanceof Element ? event.target : null
-      if (target?.closest('.react-flow__node-toolbar, .react-flow__node, .pc-text-editor-modal-root, .pc-context-menu, .pc-add-menu, [data-canvas-overlay], .mantine-Select-dropdown, .mantine-Combobox-dropdown, [role="listbox"], .mantine-Modal-root, [role="menu"]')) return
+      if (target?.closest('.react-flow__node-toolbar, .react-flow__node, .react-flow__nodesselection, .react-flow__selection, .pc-text-editor-modal-root, .pc-context-menu, .pc-add-menu, [data-canvas-overlay], .mantine-Select-dropdown, .mantine-Combobox-dropdown, [role="listbox"], .mantine-Modal-root, [role="menu"]')) return
       setSelectedNodeId(null)
       setSelectedNodeIds([])
       setSelectedEdgeId(null)
@@ -2875,13 +3077,20 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         return
       }
       if (isCanvasEditingTarget(event.target)) return
+      if (viewMode === 'canvas' && event.target instanceof Element && event.target.closest('.pc-flow') &&
+        (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'a') {
+        event.preventDefault()
+        event.stopPropagation()
+        selectAllCanvasNodes()
+        return
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'd' && selectedNodeId) {
         event.preventDefault()
         event.stopPropagation()
         duplicateSelection()
         return
       }
-      if ((event.key === 'Delete' || event.key === 'Backspace') && (selectedNodeId || selectedEdgeId)) {
+      if ((event.key === 'Delete' || event.key === 'Backspace') && (selectedCanvasNodeIds.length || selectedEdgeId)) {
         event.preventDefault()
         event.stopPropagation()
         deleteSelection()
@@ -2914,11 +3123,13 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           <Menu.Item leftSection={<FolderOpen size={15} />} onClick={() => onNavigate('projects')}>项目</Menu.Item>
           <Menu.Item leftSection={<ScrollText size={15} />} onClick={() => openScriptDirector('all')}>剧本创作</Menu.Item>
           <Menu.Item leftSection={<ImageIcon size={15} />} onClick={openProfileSidebar}>视觉设定</Menu.Item>
-          <Menu.Item leftSection={<Film size={15} />} onClick={() => onNavigate('studio')} disabled={!detail.shots.length}>剪辑与导出</Menu.Item>
+          {onOpenSpeech && <Menu.Item leftSection={<Mic2 size={15} />} onClick={onOpenSpeech}>配音</Menu.Item>}
+          <Menu.Item leftSection={<Film size={15} />} onClick={() => onNavigate('studio')}>成片工作台</Menu.Item>
           <Menu.Item leftSection={<Layers3 size={15} />} onClick={() => onNavigate('assets')}>资产</Menu.Item>
           <Menu.Item leftSection={<Clock3 size={15} />} onClick={() => onNavigate('jobs')}>任务记录</Menu.Item>
           <Menu.Item leftSection={<Settings2 size={15} />} onClick={() => void openModelsSafely()}>模型设置</Menu.Item>
         </Menu.Dropdown></Menu>
+        {canvasMenu}
       </div>
       <div className="pc-mode-switch" role="tablist" aria-label="创作视图">
         <button type="button" role="tab" aria-selected={viewMode === 'canvas'} className={viewMode === 'canvas' ? 'is-active' : ''}
@@ -3021,14 +3232,15 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           </div>
         </>}
       </aside>}
-      {viewMode === 'canvas' && <div className="pc-flow" ref={viewportRef}
+      {viewMode === 'canvas' && <div className="pc-flow" ref={viewportRef} tabIndex={-1} aria-label="工作流画布"
         onPointerDownCapture={onCanvasPointerDownCapture}
         onPointerMoveCapture={onCanvasPointerMoveCapture}
         onPointerUpCapture={onCanvasPointerUpCapture}
         onPointerCancelCapture={onCanvasPointerUpCapture}
         onPointerLeave={onCanvasPointerLeaveCapture}>
-        {graph ? <ReactFlow<FlowNode, Edge>
+        {graph ? <CanvasEdgeMotionProvider><ReactFlow<FlowNode, Edge>
           nodes={flowNodes} edges={flowEdges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
+          onlyRenderVisibleElements={virtualizeCanvas}
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
           onConnect={onConnect} isValidConnection={isValidConnection}
           // Selection on pointer down also occurs for dragging. Only an
@@ -3053,6 +3265,9 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           }}
           onPaneContextMenu={(event) => openContextMenu(event, { position: screenToFlowPosition({ x: event.clientX, y: event.clientY }) })}
           onNodeContextMenu={(event, node) => openContextMenu(event, { nodeId: node.id })}
+          onSelectionContextMenu={(event, nodes) => {
+            if (nodes[0]) openContextMenu(event, { nodeId: nodes[0].id })
+          }}
           onEdgeContextMenu={(event, edge) => {
             if (edge.data?.visualBinding) { event.preventDefault(); openAutomaticReference(edge); return }
             openContextMenu(event, { edgeId: edge.id })
@@ -3085,22 +3300,22 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
             if (node) window.requestAnimationFrame(() => {
               const wide = (viewportRef.current?.clientWidth || 0) > 900
               void instance.setCenter(node.x + node.width / 2 + (wide ? 80 : 0), node.y + node.height / 2, { zoom: 1, duration: 0 })
-                .then(() => setComposerRevealKey(key => key + 1))
             })
           }}
           onMove={(_, viewport) => setViewportZoom(Math.round(viewport.zoom * 100))}
           onMoveEnd={(_, viewport) => {
             const next = { x: viewport.x, y: viewport.y, zoom: viewport.zoom }
             setViewportZoom(Math.round(next.zoom * 100))
-            keepCanvasViewport(detail.id, next)
+            keepCanvasViewport(storageId, next)
+            onCanvasViewport(next)
           }}
           panOnScroll panOnScrollMode={PanOnScrollMode.Free} panOnScrollSpeed={1}
-          zoomOnScroll={false} zoomOnPinch zoomOnDoubleClick={false} panOnDrag={[0, 1, 2]}
+          zoomOnScroll={false} zoomOnPinch zoomOnDoubleClick={false} panOnDrag={[0, 1]}
           selectionOnDrag selectionKeyCode="Shift" multiSelectionKeyCode={["Meta", "Control", "Shift"]} panActivationKeyCode="Space" autoPanOnNodeDrag preventScrolling nodesDraggable nodesConnectable
           snapToGrid snapGrid={[12, 12]} deleteKeyCode={null}
           // A larger connection radius makes the small reference-inspired-style plus
           // buttons easy to catch on a trackpad without making the cards feel
-          // cluttered. The preview line uses the same flowing treatment as
+          // cluttered. The preview line uses the same static treatment as
           // persisted edges while the pointer is choosing an endpoint.
           connectionRadius={42}
           // Start the preview as soon as a handle (including its magnetic
@@ -3128,13 +3343,22 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
             <Tooltip label="整理画布"><ActionIcon variant="subtle" aria-label="整理画布" onClick={organizeCanvas}><LayoutDashboard size={16} /></ActionIcon></Tooltip>
             <Tooltip label="重置到 100%"><button type="button" className="pc-flow-zoom-label" aria-label="重置缩放到 100%" onClick={() => void zoomTo(1, { duration: 220 })}>{viewportZoom}%</button></Tooltip>
             <Tooltip label="清除视口记忆"><ActionIcon variant="subtle" aria-label="清除视口记忆并重置" onClick={() => {
-              try { window.localStorage.removeItem(viewportKey(detail.id)) } catch { /* Storage may be disabled. */ }
+              try { window.localStorage.removeItem(viewportKey(storageId)) } catch { /* Storage may be disabled. */ }
               setSavedViewport(null)
               setViewportZoom(100)
               void setViewport({ x: 0, y: 0, zoom: 1 }, { duration: 240 })
             }}><RefreshCcw size={15} /></ActionIcon></Tooltip>
+            <Menu position="top-end" width={250} classNames={{ dropdown: 'pc-sidebar-dropdown' }}>
+              <Menu.Target><ActionIcon variant="subtle" aria-label="画布操作菜单" data-canvas-overlay><MoreHorizontal size={16} /></ActionIcon></Menu.Target>
+              <Menu.Dropdown data-canvas-overlay>
+                <Menu.Label>Shift 框选 · ⌘ / Ctrl 点击多选</Menu.Label>
+                <Menu.Item leftSection={<Check size={14} />} disabled={!graph.nodes.length} onClick={selectAllCanvasNodes}>全选节点（⌘ / Ctrl + A）</Menu.Item>
+                <Menu.Divider />
+                <Menu.Item color="red" leftSection={<Trash2 size={14} />} disabled={!graph.nodes.length && !graph.edges.length} onClick={() => void clearCanvas()}>清空画布</Menu.Item>
+              </Menu.Dropdown>
+            </Menu>
           </div>
-          {!visualTool && !inspectedProfile && selectedNode && composerNodeId === selectedNode.id && selectedNode.type !== 'text' && selectedNode.type !== 'project_script_ref' && selectedNodeIds.length === 1 && selectedNodeIds[0] === selectedNodeId && <CanvasComposerToolbar key={selectedNode.id} nodeId={selectedNode.id} expanded={composerExpanded} revealKey={composerRevealKey} onRequestSpace={() => setSidebarOpen(false)} onCollapse={() => setComposerExpanded(false)}>
+          {!visualTool && !inspectedProfile && selectedNode && composerNodeId === selectedNode.id && selectedNode.type !== 'text' && selectedNode.type !== 'project_script_ref' && selectedNodeIds.length === 1 && selectedNodeIds[0] === selectedNodeId && <CanvasComposerToolbar key={selectedNode.id} nodeId={selectedNode.id} expanded={composerExpanded} bottomInset={selectedProfile ? 26 : 0} onCollapse={() => setComposerExpanded(false)}>
             <div className={`pc-prompt-composer nowheel ${selectedProfile ? 'pc-profile-composer' : ''} ${composerExpanded ? 'is-expanded' : ''}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
               <div className="pc-prompt-composer-head">
                 <div className="pc-prompt-composer-chips">
@@ -3149,13 +3373,18 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                     ratio={composerRatio} duration={composerDuration} mode={selectedMode} referenceAssetIds={preparedReferenceIds}
                     storyboardReferenceAssetId={selectedMode === 'reference' ? storyboardReferenceAssetId : null}
                     visualReferenceMode={visualReferenceMode} excludedVisualProfileIds={selectedNode.settings.excluded_visual_profile_ids}
+                    videoReferenceUsages={activeVideoReferenceUsages}
                     onApply={value => {
                       if (selectedProfile) updateNodeSettingsById(selectedNode.id, { profile_prompt_override: value })
                       else editNodePrompt(selectedNode.id, value, { base: ownBasePrompt, template: automaticPrompt })
                       setNotice('已应用整理后的提示词')
                     }} />}
-                  {!selectedProfile && selectedBoardAsset?.kind === 'image' && <button type="button" className="pc-composer-chip" aria-label="制作分镜视频" disabled={busy || selectedNodeGenerating}
-                    onClick={() => void tryNodeAction(selectedNode.id, 'video-first-frame')}><Film size={15} /><span>制作分镜视频</span></button>}
+                  {!selectedProfile && selectedBoardAsset?.kind === 'image' && <>
+                    <button type="button" className="pc-composer-chip" aria-label="以此图作为首帧生成" disabled={busy || selectedNodeGenerating}
+                      onClick={() => void tryNodeAction(selectedNode.id, 'video-first-frame')}><Film size={15} /><span>首帧生成</span></button>
+                    {availableModels.some(model => model.modality === 'video' && supportsVideoMultiReference(model.settings)) && <button type="button" className="pc-composer-chip" aria-label="作为参考设计视频" disabled={busy || selectedNodeGenerating}
+                      onClick={() => void tryNodeAction(selectedNode.id, 'video-reference')}><ImageIcon size={15} /><span>多图参考</span></button>}
+                  </>}
                   {selectedProfile && <><button type="button" className="pc-composer-chip" onClick={() => { setComposerExpanded(false); setSidebarOpen(true); setSidebarTab('profiles'); setReferenceTargetNodeId(selectedNode.id) }}><ImageIcon size={15} />设定参考</button><Tooltip label="编辑设定"><button type="button" className="pc-composer-chip" aria-label="编辑设定" onClick={() => { setComposerExpanded(false); openProfileInspector(selectedProfile) }}><PenLine size={15} /></button></Tooltip></>}
                   {selectedProfile && <Tooltip label="上传设定图"><button type="button" className="pc-composer-chip" aria-label="上传设定图" disabled={busy || selectedNodeGenerating} onClick={() => profileUploadInputRef.current?.click()}><Upload size={15} /></button></Tooltip>}
                 </div>
@@ -3165,7 +3394,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
               {selectedShot && <div className="pc-visual-context">
                 <button type="button" className="pc-composer-chip pc-visual-context-button" onClick={() => void openVisualTool('bindings', { target: `shot:${selectedShot.id}` })}><ImageIcon size={14} />镜头引用 · {visualBindings.length}</button>
                 {visualBindings.length > 0 && <><span className="pc-visual-context-status">{visualReferenceMode !== 'profiles' ? '文字设定已带入'
-                  : visualBindings.filter(binding => binding.required && !binding.board_asset_id).length ? '必需信息图待确认' : '已绑定'}</span>
+                  : visualBindings.filter(binding => binding.required && !visualBindingReferenceAssetIds(binding).length).length ? '必需参考图待确认' : '已绑定'}</span>
                   {composerModality !== 'video' && <CanvasSelect className="pc-visual-reference-select" size="xs" aria-label="视觉设定引用方式" value={visualReferenceMode}
                     disabled={busy}
                     onChange={value => { if (value) updateNodeSettingsById(selectedNode.id, { visual_reference_mode: value as VisualReferenceMode }) }}
@@ -3202,7 +3431,14 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                   } else setNotice('该图片尚未加入画布，可先查看参考图')
                 }}
                 onExclude={id => excludeVideoReference(id)} onRestore={id => excludeVideoReference(id, true)}
-                onRemoveManual={id => changeGraph(current => ({ ...current, edges: current.edges.filter(edge => {
+                onChangeUsage={selectedMode === 'reference' ? (assetId, usage) => updateNodeSettingsById(selectedNode.id, {
+                  video_reference_usages: [...activeVideoReferenceUsages.filter(item => item.asset_id !== assetId), ...(usage ? [{ asset_id: assetId, usage }] : [])],
+                }) : undefined}
+                onRemoveManual={id => changeGraph(current => ({ ...current,
+                  nodes: current.nodes.map(node => node.id === selectedNode.id ? { ...node, settings: { ...node.settings,
+                    ...(storyboardReferenceAssetId === id ? { storyboard_reference_asset_id: null } : {}),
+                    video_reference_usages: node.settings.video_reference_usages?.filter(item => item.asset_id !== id),
+                  } } : node), edges: current.edges.filter(edge => {
                   if (edge.target !== selectedNode.id) return true
                   const source = current.nodes.find(node => node.id === edge.source)
                   return (edge.reference_asset_id || source && visualNodeAsset(source, detail, true)?.id) !== id
@@ -3224,6 +3460,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                 <div><strong>{selectedProfile.name} · v{selectedProfile.revision}</strong><span>{selectedBoardAsset?.id === selectedProfile.board_asset_id ? '已确认' : selectedBoardAsset ? '候选待确认' : '待生成'}</span>
                   {selectedBoardAsset && <a href={selectedBoardAsset.url} target="_blank" rel="noreferrer" title="查看信息图"><Maximize2 size={14} /></a>}
                   <Button className="pc-candidate-manager-entry" variant="default" size="xs" leftSection={<Layers3 size={13} />} onClick={() => setCandidateProfileId(selectedProfile.id)}>管理候选 · {visualCandidateAssets(selectedProfile, detail, selectedNode.asset_id).filter(asset => !selectedProfile.archived_candidate_asset_ids?.includes(asset.id)).length}</Button>
+                  <Button variant="default" size="xs" onClick={() => openProfileInspector(selectedProfile)}>独立参考图 · {selectedProfile.reference_assets?.filter(reference => reference.status === 'confirmed' && reference.revision === selectedProfile.revision).length || 0}</Button>
                   {selectedBoardAsset && selectedBoardAsset.id !== selectedProfile.board_asset_id && <Button variant="default" size="xs" leftSection={<Check size={13} />} disabled={busy || selectedNodeGenerating} onClick={() => void confirmProfileBoard(selectedBoardAsset.id)}>确认使用</Button>}
                 </div>
                 {!!profileCandidates.length && <div className="pc-profile-candidates" aria-label="设定图候选">{profileCandidates.map((asset, index) => <button key={asset.id} type="button" className={selectedBoardAsset?.id === asset.id ? 'active' : ''} aria-label={`查看设定图候选 ${profileCandidates.length - index}`} onClick={() => updateNodeById(selectedNode.id, { asset_id: asset.id })}><img src={asset.url} alt={`候选 ${profileCandidates.length - index}`} />{asset.id === selectedProfile.board_asset_id && <Check size={12} />}</button>)}
@@ -3304,7 +3541,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                           <div><dt>总费用预估</dt><dd>{generationCost(review.model, review.request, review.candidateCount) ? `约 ${generationCost(review.model, review.request, review.candidateCount)}` : '模型未配置费用，请核对厂商价格'}</dd></div>
                         </dl>
                         {!!review.request.reference_asset_ids.length && <div className="pc-visual-thumbnails">{review.request.reference_asset_ids.map(id => assetMap.get(id)).filter((asset): asset is Asset => !!asset).map(asset => <a key={asset.id} href={asset.url} target="_blank" rel="noreferrer"><img src={asset.url} alt={asset.filename} title={asset.filename} /></a>)}</div>}
-                        {review.request.visual_signature && <p>{review.request.visual_reference_mode === 'text_only' ? '仅使用文字设定' : review.request.visual_reference_mode === 'keyframe' ? '使用关键帧与文字设定' : '使用设定信息图与文字设定'}</p>}
+                        {review.request.visual_signature && <p>{review.request.visual_reference_mode === 'text_only' ? '仅使用文字设定' : review.request.visual_reference_mode === 'keyframe' ? '使用关键帧与文字设定' : '使用镜头选定参考图与文字设定'}</p>}
                         {review.request.project_visual_style && review.request.project_visual_style.source !== 'unspecified' && <p>项目画风：{review.request.project_visual_style.label}</p>}
                         {review.request.style_warnings?.map(warning => <p key={warning} role="status">{warning}</p>)}
                         <div className="pc-generation-info-prompt"><span>实际提交提示词</span><p>{review.request.prompt}</p></div>
@@ -3316,9 +3553,13 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
               </div>
             </div>
           </CanvasComposerToolbar>}
-        </ReactFlow> : <div className="pc-loading">{loadError ? <><CircleAlert size={20} />{loadError}<Button variant="default" size="xs" onClick={() => window.location.reload()} leftSection={<RefreshCcw size={14} />}>重新载入</Button></> : <><LoaderCircle size={20} className="pc-spin" />正在载入画布</>}</div>}
+        </ReactFlow></CanvasEdgeMotionProvider> : <div className="pc-loading">{loadError ? <><CircleAlert size={20} />{loadError}<Button variant="default" size="xs" onClick={() => window.location.reload()} leftSection={<RefreshCcw size={14} />}>重新载入</Button></> : <><LoaderCircle size={20} className="pc-spin" />正在载入画布</>}</div>}
         {contextMenu && <div className="pc-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }} onContextMenu={(event) => event.preventDefault()}>
-          {contextNode ? <>
+          {contextNode && contextSelectionCount > 1 ? <>
+            <div className="pc-context-heading"><span>批量操作</span><strong>已选 {contextSelectionCount} 个节点</strong></div>
+            <button className="is-danger" role="menuitem" onClick={() => void deleteSelection()}><Trash2 size={16} />删除所选 {contextSelectionCount} 个节点</button>
+            <button role="menuitem" onClick={cancelCanvasSelection}><X size={16} />取消选择</button>
+          </> : contextNode ? <>
             <div className="pc-context-heading"><span>{contextNode.type === 'project_script_ref' ? '项目剧本' : contextNode.type === 'generation' ? '生成节点' : contextNode.type === 'text' ? '文本节点' : '素材节点'}</span><strong>{contextNode.title || '未命名节点'}</strong></div>
             {contextNode.type === 'project_script_ref'
               ? <button role="menuitem" onClick={() => { setContextMenu(null); (detail.brief?.trim() || detail.script?.outline?.trim() || detail.script?.characters?.trim() || detail.script?.scenes?.length) ? onOpenScriptCreator() : openScriptDirector() }}><ScrollText size={16} />{detail.brief?.trim() || detail.script?.outline?.trim() || detail.script?.characters?.trim() || detail.script?.scenes?.length ? '编辑剧本' : '开始剧本创作'}</button>
@@ -3338,14 +3579,23 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
             {detail.shots.length > 0 && <button role="menuitem" onClick={() => { importShots(); setContextMenu(null) }}><ScrollText size={16} />导入分镜</button>}
             <div className="pc-context-divider" />
             <button role="menuitem" onClick={() => { void fitView({ padding: 0.15, duration: 300 }); setContextMenu(null) }}><MousePointer2 size={16} />适配全部节点</button>
+            <button role="menuitem" disabled={!graph?.nodes.length} onClick={selectAllCanvasNodes}><Check size={16} />全选节点</button>
+            <button className="is-danger" role="menuitem" disabled={!graph?.nodes.length && !graph?.edges.length} onClick={() => void clearCanvas()}><Trash2 size={16} />清空画布</button>
           </>}
+        </div>}
+        {selectedCanvasNodeIds.length > 1 && <div className="pc-selection-toolbar" role="toolbar" aria-label="多选节点操作" data-canvas-overlay
+          onPointerDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}>
+          <span role="status">已选 <strong>{selectedCanvasNodeIds.length}</strong> 个节点</span>
+          <Button size="xs" color="red" variant="light" leftSection={<Trash2 size={14} />}
+            aria-label={`删除所选 ${selectedCanvasNodeIds.length} 个节点`} onClick={() => void deleteSelection()}>删除所选</Button>
+          <Button size="xs" variant="subtle" color="gray" onClick={cancelCanvasSelection}>取消选择</Button>
         </div>}
         {graph && !graph.nodes.length && <div className="pc-empty">
           <div className="pc-empty-hint"><MousePointer2 size={16} />双击画布，自由生成节点</div>
-          <div className="pc-empty-actions"><Button variant="default" onClick={() => addNode('text')} leftSection={<FileText size={16} />}>文本</Button><Button variant="default" onClick={() => addNode('generation', 'image')} leftSection={<ImageIcon size={16} />}>图片生成</Button><Button variant="default" onClick={() => addNode('generation', 'video')} leftSection={<Film size={16} />}>视频生成</Button><Button variant="default" onClick={() => openScriptDirector('all')} leftSection={<ScrollText size={16} />}>剧本生成</Button>{detail.shots.length > 0 && <Button variant="default" onClick={importShots} leftSection={<Layers3 size={16} />}>导入分镜</Button>}</div>
+          <div className="pc-empty-actions"><Button variant="default" onClick={() => addNode('text')} leftSection={<FileText size={16} />}>文本</Button><Button variant="default" onClick={() => addNode('generation', 'image')} leftSection={<ImageIcon size={16} />}>图片生成</Button><Button variant="default" onClick={() => addNode('generation', 'video')} leftSection={<Film size={16} />}>视频生成</Button><Button variant="default" onClick={() => openScriptDirector('all')} leftSection={<ScrollText size={16} />}>剧本生成</Button>{detail.shots.length > 0 && <Button variant="default" onClick={() => importShots()} leftSection={<Layers3 size={16} />}>导入分镜</Button>}</div>
         </div>}
         {scriptCanvasError ? <div className="pc-import-prompt pc-script-canvas-error" role="alert" data-canvas-overlay><span>{scriptCanvasError}</span><Button variant="default" size="xs" onClick={() => { scriptCanvasAttempt.current = null; setScriptCanvasRetry(value => value + 1) }}>重试加入画布</Button></div>
-          : graph && graph.nodes.length > 0 && missingShotCount > 0 && <div className="pc-import-prompt"><span>{missingShotCount} 个分镜尚未加入画布</span><Button variant="default" size="xs" onClick={importShots} leftSection={<Layers3 size={14} />}>导入分镜</Button></div>}
+          : graph && graph.nodes.length > 0 && missingShotCount > 0 && <div className="pc-import-prompt"><span>{missingShotCount} 个分镜尚未加入画布</span><Button variant="default" size="xs" onClick={() => importShots()} leftSection={<Layers3 size={14} />}>导入分镜</Button></div>}
         </div>}
       {viewMode === 'storyboard' && (graph ? <StoryboardWorkspace
           detail={detail}
@@ -3363,7 +3613,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           onOpenDirector={context => openScriptDirector('all', context)}
           onOpenScript={artifact => artifact && onOpenScriptDocument ? onOpenScriptDocument(artifact) : onOpenScriptCreator()}
           onOpenSettings={focusSidebarNode}
-          onCreateVideo={id => void tryNodeAction(id, 'video-first-frame')}
+          onCreateVideo={(id, mode) => void tryNodeAction(id, mode === 'reference' ? 'video-reference' : 'video-first-frame')}
           onTextChange={(id, text, document) => changeGraph(current => ({
             ...current, nodes: current.nodes.map(node => node.id === id
               ? { ...node, text, settings: { ...node.settings, text_document: document } } : node),
@@ -3401,7 +3651,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     {notice && <div className="pc-notice" role="status"><span>{notice.message}</span><button aria-label="关闭提示" onClick={() => setNotice(null)}><X size={14} /></button></div>}
     <input type="file" hidden ref={profileUploadInputRef} accept="image/png,image/jpeg,image/webp" onChange={event => { const file = event.currentTarget.files?.[0]; if (file) void uploadProfileBoard(file); event.currentTarget.value = '' }} />
     {candidateProfile && <VisualCandidateManager key={candidateProfile.id} profile={candidateProfile} detail={detail} models={models} displayedAssetId={candidateNode?.asset_id} generating={candidateGenerating} onConfirm={assetId => useProfileBoard(candidateProfile, assetId)} onRefresh={onRefresh} onClose={() => setCandidateProfileId(null)} />}
-    {viewMode === 'canvas' && (inspectedProfile || visualTool === 'create') && <VisualProfileInspector key={inspectedProfile?.id || 'new'} profile={inspectedProfile} detail={detail} generating={inspectedProfileGenerating}
+    {viewMode === 'canvas' && (inspectedProfile || visualTool === 'create') && <VisualProfileInspector key={inspectedProfile?.id || 'new'} profile={inspectedProfile} detail={detail} models={models} generating={inspectedProfileGenerating}
       inCanvas={!!inspectedProfile && !!graph?.nodes.some(node => node.settings.visual_profile_id === inspectedProfile.id)} onRefresh={onRefresh} onClose={() => void closeVisualPanel()}
       onBindings={() => void openVisualTool('bindings', { profileId: inspectedProfile?.id })} onDirtyChange={setProfileDraftDirty} onBusyChange={setVisualPanelBusy}
       onSaved={profile => { setVisualTool(null); setProfileInspectorId(profile.id); setNotice('设定已保存') }} onDeleted={removeProfileNodes}
@@ -3427,20 +3677,26 @@ export default function ProjectCanvas(props: ProjectCanvasProps) {
   // from that noise while every action still uses the latest committed props.
   const latest = useRef(props)
   useLayoutEffect(() => { latest.current = props })
-  const initialLocation = useRef(props.initialLocation).current
+  const locationRef = useRef(props.initialLocation)
   const hasRename = !!props.onRenameProject
   const hasDocument = !!props.onOpenScriptDocument
   const hasDirector = !!props.onOpenScriptDirector
   const hasLocation = !!props.onLocationChange
+  const hasSpeech = !!props.onOpenSpeech
   const callbacks = useMemo(() => ({
     onRefresh: () => latest.current.onRefresh(),
     onOpenModels: () => latest.current.onOpenModels(),
     onNavigate: (destination: Parameters<ProjectCanvasProps['onNavigate']>[0]) => latest.current.onNavigate(destination),
     onOpenScriptCreator: () => latest.current.onOpenScriptCreator(),
+    onOpenSpeech: hasSpeech ? () => latest.current.onOpenSpeech!() : undefined,
     onRenameProject: hasRename ? (name: string) => latest.current.onRenameProject!(name) : undefined,
     onOpenScriptDocument: hasDocument ? (artifact: ScriptArtifact) => latest.current.onOpenScriptDocument!(artifact) : undefined,
     onOpenScriptDirector: hasDirector ? (focus?: ScriptAction, context?: string) => latest.current.onOpenScriptDirector!(focus, context) : undefined,
-    onLocationChange: hasLocation ? (location: CanvasLocation) => latest.current.onLocationChange!(location) : undefined,
-  }), [hasRename, hasDocument, hasDirector, hasLocation])
-  return <ReactFlowProvider><MemoProjectCanvasInner {...props} {...callbacks} initialLocation={initialLocation} /></ReactFlowProvider>
+    onLocationChange: (location: CanvasLocation) => { locationRef.current = location; if (hasLocation) latest.current.onLocationChange!(location) },
+  }), [hasRename, hasDocument, hasDirector, hasLocation, hasSpeech])
+  const renderCanvas = useCallback((canvas: ProjectCanvasInfo, session: CanvasSession, menu: React.ReactNode, register: (actions: CanvasActions | null) => void, viewportChanged: (viewport: ProjectCanvasInfo['viewport']) => void) =>
+    <ReactFlowProvider key={canvas.id}><MemoProjectCanvasInner detail={props.detail} models={props.models} providers={props.providers} {...callbacks} initialLocation={locationRef.current}
+      canvas={canvas} canvasSession={session} canvasMenu={menu} registerCanvasActions={register} onCanvasViewport={viewportChanged} /></ReactFlowProvider>,
+  [props.detail, props.models, props.providers, callbacks])
+  return <ProjectCanvasSwitcher projectId={props.detail.id}>{renderCanvas}</ProjectCanvasSwitcher>
 }

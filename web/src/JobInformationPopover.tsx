@@ -44,9 +44,12 @@ export default function JobInformationPopover({ job, model, provider, shot, proj
   const request = readRequest(job.request)
   const image = model?.modality === 'image'
   const exported = job.job_type === 'export'
+  const speech = request?.tts && typeof request.tts === 'object' ? request.tts as Record<string, unknown> : null
   const mode = displayValue(request?.mode)
   const prompt = typeof request?.prompt === 'string' ? request.prompt : null
-  const parameters: Array<[string, string | null]> = exported ? [] : [
+  const parameters: Array<[string, string | null]> = exported ? [] : speech ? [
+    ['角色', displayValue(request?.voice_name)], ['音色 ID', displayValue(speech.speaker)], ['语速', displayValue(speech.speech_rate)],
+  ] : [
     ['生成模式', mode === 'text' ? (image ? '文生图' : model?.modality === 'video' ? '文生视频' : '文本生成') : mode ? modeLabels[mode] || mode : null],
     ['比例', displayValue(request?.ratio)],
     ['分辨率', displayValue(request?.resolution)],
@@ -88,10 +91,10 @@ export default function JobInformationPopover({ job, model, provider, shot, proj
       <div className="job-info-content" tabIndex={0}>
         {job.error && <section className="job-info-text job-info-error"><h2>失败原因</h2><p>{job.error}</p></section>}
         <dl>
-          <div><dt>任务类型</dt><dd>{exported ? '成片导出' : image ? '图片生成' : model?.modality === 'video' ? '视频生成' : '生成任务'}</dd></div>
+          <div><dt>任务类型</dt><dd>{exported ? '成片导出' : speech ? '配音生成' : image ? '图片生成' : model?.modality === 'video' ? '视频生成' : '生成任务'}</dd></div>
           <div><dt>所属项目</dt><dd>{projectName}</dd></div>
           {job.shot_id && <div><dt>目标镜头</dt><dd>{shot?.title || `镜头不可用（${job.shot_id}）`}</dd></div>}
-          {!exported && <div><dt>模型</dt><dd>{model?.name || (job.model_id ? `模型不可用（${job.model_id}）` : '未记录')}</dd></div>}
+          {!exported && <div><dt>模型</dt><dd>{speech ? '豆包 TTS 2.0 · 标准音色' : model?.name || (job.model_id ? `模型不可用（${job.model_id}）` : '未记录')}</dd></div>}
           {provider && <div><dt>服务商</dt><dd>{provider.name}</dd></div>}
           <div><dt>提交时间</dt><dd>{Number.isNaN(submittedAt.getTime()) ? job.created_at : submittedAt.toLocaleString('zh-CN', { hour12: false })}</dd></div>
           <div><dt>任务 ID</dt><dd>{job.id}</dd></div>
@@ -110,7 +113,9 @@ export default function JobInformationPopover({ job, model, provider, shot, proj
           })}
         </ul></section>}
         {referenceVideo && <section className="job-info-text"><h2>参考视频</h2><p>{referenceVideo}</p></section>}
-        {prompt?.trim() && <section className="job-info-text"><h2>实际提交提示词</h2><p>{prompt}</p></section>}
+        {prompt?.trim() && <section className="job-info-text"><h2>{speech ? '朗读正文' : '实际提交提示词'}</h2><p>{prompt}</p></section>}
+        {speech && displayValue(speech.instructions) && <section className="job-info-text"><h2>表演指令</h2><p>{displayValue(speech.instructions)}</p></section>}
+        {speech && displayValue(speech.context_text) && <section className="job-info-text"><h2>情境参考</h2><p>{displayValue(speech.context_text)}</p></section>}
         {!exported && request && !prompt?.trim() && <p className="job-info-empty">此任务未记录提示词。</p>}
         {!request && job.request.trim() && <section className="job-info-text"><h2>原始请求记录</h2><p>{job.request}</p></section>}
       </div>

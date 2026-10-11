@@ -1,0 +1,61 @@
+.script-document-table-scroll,
+.script-rich-editor-content .tableWrapper {
+  max-width: 100%;
+  margin: 16px 0 22px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  border: 1px solid #3b3b3b;
+  border-radius: 9px;
+  background: #202020;
+  scrollbar-width: thin;
+  scrollbar-color: #505050 transparent;
+  white-space: normal;
+}
+.script-document-table-scroll:focus-visible {
+  outline: 1px solid #888;
+  outline-offset: 3px;
+}
+.script-document-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: auto;
+  color: inherit;
+  font-size: .93em;
+  line-height: 1.75;
+  text-align: left;
+}
+.script-document-table :is(th, td) {
+  position: relative;
+  min-width: 5em;
+  padding: 11px 14px;
+  border-bottom: 1px solid #363636;
+  vertical-align: top;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.script-document-table :is(th, td) + :is(th, td) { border-left: 1px solid #363636; }
+.script-document-table th {
+  background: #2b2b2b;
+  color: #ececec;
+  font-weight: 600;
+}
+.script-document-table td { color: #cecece; }
+.script-document-table tr:nth-child(odd):has(td) { background: #242424; }
+.script-document-table tr:last-child td { border-bottom: 0; }
+:is(.script-rich-editor-content, .pc-rich-text-content.pc-rich-text-preview) .script-document-table :is(th, td) > p {
+  margin: 0;
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: pre-wrap;
+}
+:is(.script-rich-editor-content, .pc-rich-text-content.pc-rich-text-preview) .script-document-table :is(th, td) > p + p { margin-top: .6em; }
+.script-document-table .selectedCell::after {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: #ffffff14;
+  content: '';
+  pointer-events: none;
+}

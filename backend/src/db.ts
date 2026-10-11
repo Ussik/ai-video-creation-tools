@@ -125,7 +125,7 @@ export interface Job {
   created_at: string; updated_at: string
 }
 export interface CanvasNode {
-  id: string; project_id: string; position: number;
+  id: string; project_id: string; canvas_id?: string | null; position: number;
   type: 'text' | 'image' | 'video' | 'generation' | 'project_script_ref';
   x: number; y: number; width: number; height: number;
   title: string; text: string; asset_id: string | null;
@@ -133,7 +133,7 @@ export interface CanvasNode {
   settings: string
 }
 export interface CanvasEdge {
-  id: string; project_id: string; position: number;
+  id: string; project_id: string; canvas_id?: string | null; position: number;
   source: string; target: string; reference_asset_id?: string | null
 }
 
@@ -394,6 +394,22 @@ export function initDb(): void {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (profile_id, asset_id)
     );
+    CREATE TABLE IF NOT EXISTS visual_profile_reference_assets (
+      id TEXT PRIMARY KEY,
+      profile_id TEXT NOT NULL REFERENCES visual_profiles(id) ON DELETE CASCADE,
+      asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+      revision INTEGER NOT NULL CHECK (revision >= 1), style_version TEXT,
+      view TEXT NOT NULL CHECK (view IN ('face', 'front', 'three_quarter', 'side', 'back', 'wide', 'reverse', 'layout', 'detail')),
+      purpose TEXT NOT NULL CHECK (purpose IN ('identity', 'costume', 'space', 'structure', 'detail')),
+      label TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'candidate' CHECK (status IN ('candidate', 'confirmed', 'archived')),
+      is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
+      source_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+      source_job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      UNIQUE(profile_id, revision, asset_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_visual_reference_profile ON visual_profile_reference_assets(profile_id, revision, status);
     CREATE TABLE IF NOT EXISTS shot_visual_bindings (
       shot_id TEXT NOT NULL REFERENCES shots(id) ON DELETE CASCADE,
       profile_id TEXT NOT NULL REFERENCES visual_profiles(id) ON DELETE CASCADE,
@@ -449,6 +465,10 @@ export function initDb(): void {
   if (bindingForeignKeys.find(key => key.from === 'profile_id')?.on_delete !== 'CASCADE') {
     // Older RESTRICT bindings can block the project cascade before its shots are removed.
     // This child table has no dependents, so rebuild it with foreign keys still enforced.
+    const bindingColumns = db.pragma('table_info(shot_visual_bindings)') as Array<{ name: string }>
+    const boardStyleColumn = bindingColumns.some(column => column.name === 'board_style_version') ? 'board_style_version' : 'NULL'
+    const referenceAssetsColumn = bindingColumns.some(column => column.name === 'reference_assets') ? 'reference_assets' : "'[]'"
+    const usageColumn = bindingColumns.some(column => column.name === 'usage') ? 'usage' : "'both'"
     db.transaction(() => db.exec(`
       CREATE TABLE shot_visual_bindings_cascade (
         shot_id TEXT NOT NULL REFERENCES shots(id) ON DELETE CASCADE,
@@ -457,11 +477,14 @@ export function initDb(): void {
         revision INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, variant TEXT NOT NULL,
         definition TEXT NOT NULL, view_requirements TEXT NOT NULL,
         board_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+        board_style_version TEXT,
+        reference_assets TEXT NOT NULL DEFAULT '[]',
+        usage TEXT NOT NULL DEFAULT 'both' CHECK (usage IN ('both', 'image', 'video', 'none')),
         PRIMARY KEY (shot_id, profile_id)
       );
       INSERT INTO shot_visual_bindings_cascade
-        (shot_id, profile_id, required, revision, kind, name, variant, definition, view_requirements, board_asset_id)
-      SELECT shot_id, profile_id, required, revision, kind, name, variant, definition, view_requirements, board_asset_id
+        (shot_id, profile_id, required, revision, kind, name, variant, definition, view_requirements, board_asset_id, board_style_version, reference_assets, usage)
+      SELECT shot_id, profile_id, required, revision, kind, name, variant, definition, view_requirements, board_asset_id, ${boardStyleColumn}, ${referenceAssetsColumn}, ${usageColumn}
       FROM shot_visual_bindings;
       DROP TABLE shot_visual_bindings;
       ALTER TABLE shot_visual_bindings_cascade RENAME TO shot_visual_bindings;
@@ -475,6 +498,12 @@ export function initDb(): void {
   }
   if (!all<{ name: string }>('PRAGMA table_info(visual_profiles)').some(column => column.name === 'definition_status')) {
     db.exec("ALTER TABLE visual_profiles ADD COLUMN definition_status TEXT NOT NULL DEFAULT 'ready' CHECK (definition_status IN ('draft', 'ready'))")
+  }
+  if (!all<{ name: string }>('PRAGMA table_info(shot_visual_bindings)').some(column => column.name === 'reference_assets')) {
+    db.exec("ALTER TABLE shot_visual_bindings ADD COLUMN reference_assets TEXT NOT NULL DEFAULT '[]'")
+  }
+  if (!all<{ name: string }>('PRAGMA table_info(shot_visual_bindings)').some(column => column.name === 'usage')) {
+    db.exec("ALTER TABLE shot_visual_bindings ADD COLUMN usage TEXT NOT NULL DEFAULT 'both' CHECK (usage IN ('both', 'image', 'video', 'none'))")
   }
   if (!scriptColumns.some(column => column.name === 'generation_options')) {
     db.exec("ALTER TABLE scripts ADD COLUMN generation_options TEXT NOT NULL DEFAULT '{}'")
@@ -595,6 +624,25 @@ export function initDb(): void {
     // Keep a deleted snapshot ID so it never falls back to a newer result.
     db.exec('ALTER TABLE canvas_edges ADD COLUMN reference_asset_id TEXT')
   }
+  db.transaction(() => {
+    db.exec(`CREATE TABLE IF NOT EXISTS project_canvases (
+      id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL, position INTEGER NOT NULL, is_default INTEGER NOT NULL DEFAULT 0,
+      viewport TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_project_canvases ON project_canvases(project_id, position);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_project_canvas_default ON project_canvases(project_id) WHERE is_default=1;
+    INSERT OR IGNORE INTO project_canvases (id, project_id, name, position, is_default, created_at, updated_at)
+      SELECT id, id, '画布 1', 0, 1, created_at, updated_at FROM projects
+      WHERE NOT EXISTS (SELECT 1 FROM project_canvases WHERE project_canvases.project_id=projects.id);`)
+    for (const table of ['canvas_nodes', 'canvas_edges']) {
+      const columns = db.pragma(`table_info(${table})`) as Array<{ name: string }>
+      if (!columns.some(column => column.name === 'canvas_id')) db.exec(`ALTER TABLE ${table} ADD COLUMN canvas_id TEXT REFERENCES project_canvases(id) ON DELETE CASCADE`)
+      // Null also remains compatible with older local importers writing the legacy schema.
+      db.exec(`UPDATE ${table} SET canvas_id=(SELECT id FROM project_canvases WHERE project_id=${table}.project_id AND is_default=1) WHERE canvas_id IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_${table}_canvas ON ${table}(canvas_id, position);`)
+    }
+  }).immediate()
   const clipColumns = db.pragma('table_info(timeline_clips)') as Array<{ name: string }>
   if (!clipColumns.some(column => column.name === 'source_audio_gain')) {
     db.exec('ALTER TABLE timeline_clips ADD COLUMN source_audio_gain REAL NOT NULL DEFAULT 1')
@@ -681,6 +729,10 @@ export function initDb(): void {
   }
   db.transaction(() => {
     const timestamp = now()
+    run(`UPDATE jobs SET status='failed', error=?, updated_at=?
+      WHERE status='running' AND job_type='generation'
+        AND json_type(CASE WHEN json_valid(request) THEN request ELSE '{}' END, '$.tts')='object'`,
+      '语音任务因服务重启中断，厂商可能已计费。请先核对调用记录，再在配音页手动生成新的候选。', timestamp)
     run(`UPDATE jobs SET status='failed', error=?, updated_at=?
       WHERE status='running' AND job_type='generation'
         AND model_id IN (SELECT id FROM models WHERE modality='image')

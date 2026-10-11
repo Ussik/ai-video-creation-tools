@@ -7,6 +7,7 @@ import { Bold, Check, Copy, Italic, List, ListOrdered, Maximize2, Minus, Pilcrow
 import { applyTextFormat, textEditorExtensions, type TextFormat } from './text-editor'
 import { normalizeTextDocument, resolveTextDocument, textDocumentText } from './text-document'
 import './canvas-text-editor.css'
+import './script-document-tables.css'
 
 type Props = {
   text: string
@@ -121,6 +122,7 @@ function renderDocumentNode(node: JSONContent, key: number): React.ReactNode {
     for (const mark of node.marks || []) {
       if (mark.type === 'bold') text = <strong>{text}</strong>
       if (mark.type === 'italic') text = <em>{text}</em>
+      if (mark.type === 'strike') text = <s>{text}</s>
     }
     return <span key={key}>{text}</span>
   }
@@ -134,6 +136,24 @@ function renderDocumentNode(node: JSONContent, key: number): React.ReactNode {
   if (node.type === 'orderedList') return <ol key={key} start={node.attrs?.start || 1}>{children}</ol>
   if (node.type === 'listItem') return <li key={key}>{children}</li>
   if (node.type === 'horizontalRule') return <hr key={key} />
+  if (node.type === 'blockquote') return <blockquote key={key}>{children}</blockquote>
+  if (node.type === 'table') {
+    const rows = node.content || []
+    const hasHeader = rows[0]?.content?.every(cell => cell.type === 'tableHeader')
+    return <div key={key} className="script-document-table-scroll" role="region" aria-label="文档表格" tabIndex={0}>
+      <table className="script-document-table" style={{ minWidth: (rows[0]?.content?.length || 1) * 120 }}>
+        {hasHeader && <thead>{renderDocumentNode(rows[0], 0)}</thead>}
+        <tbody>{rows.slice(hasHeader ? 1 : 0).map(renderDocumentNode)}</tbody>
+      </table>
+    </div>
+  }
+  if (node.type === 'tableRow') return <tr key={key}>{children}</tr>
+  if (node.type === 'tableCell' || node.type === 'tableHeader') {
+    const align = ['left', 'center', 'right'].includes(node.attrs?.align) ? node.attrs!.align as 'left' | 'center' | 'right' : undefined
+    return node.type === 'tableHeader'
+      ? <th key={key} scope="col" style={{ textAlign: align }}>{children}</th>
+      : <td key={key} style={{ textAlign: align }}>{children}</td>
+  }
   return <p key={key}>{children?.length ? children : <br />}</p>
 }
 

@@ -63,6 +63,22 @@ function skill(name: string, rule: string) {
   configureSkill(installed.id, true, ['storyboard']); return installed.id
 }
 
+test('planning accepts one primary and five auxiliaries and forwards every selected rule', async t => {
+  let captured = ''
+  const f = await setup(t, async prompt => {
+    captured = prompt
+    return JSON.stringify({ scenes: [{ scene_id: f.scene.id, scene_duration: 30, shots: [shot(null, 30)] }] })
+  })
+  const selected = Array.from({ length: 6 }, (_value, index) => skill(`five-aux-planner-${index}`, `RULE_planner_${index}`))
+  t.after(() => { for (const id of selected) removeInstalledSkill(id) })
+  const context = await f.context()
+  const result = await f.invoke('plan', { signature: context.signature, scene_ids: [f.scene.id], model_id: 'mock-text', skill_ids: selected })
+  assert.deepEqual(result.used_skills.map((item: { id: string }) => item.id), selected)
+  assert.deepEqual(result.used_skills.map((item: { role: string }) => item.role), ['primary', ...Array(5).fill('auxiliary')])
+  for (let index = 0; index < 6; index++) assert.match(captured, new RegExp(`RULE_planner_${index}`))
+  assert.equal(f.calls(), 1)
+})
+
 test('metadata is read-only and canvas import rejects both missing plans and direct scene conversion', async t => {
   const f = await setup(t), context = await f.context()
   assert.equal(context.scenes[0].duration, 30); assert.equal(context.documents.length, 2); assert.equal(f.calls(), 0)
@@ -354,7 +370,7 @@ test('planned shots require prepared visual references before canvas import; mis
       { kind: 'character', name: '林晚', variant: '默认', definition: '日漫，黑短发和蓝色夹克', view_requirements: '正侧背和服装细节', scene_ids: [sceneId] },
       { kind: 'location', name: '地下车站', variant: '夜间', definition: '日漫，双侧月台和中央通道', view_requirements: '布局、多角度和尺度', scene_ids: [sceneId] },
       { kind: 'prop', name: '铜钥匙', variant: '默认', definition: '日漫，磨损黄铜长柄钥匙', view_requirements: '多视角、尺寸和齿纹', scene_ids: [sceneId] },
-    ] })
+    ].map(profile => ({ ...profile, shot_usage: all<{ id: string }>('SELECT id FROM shots WHERE source_scene_id=?', sceneId).map(shot => ({ shot_id: shot.id, usage: 'both' })) })) })
   })
   sceneId = f.scene.id
   const stamp = now()
@@ -403,7 +419,8 @@ test('changing a saved shot plan invalidates reference preparation and retries p
   const character = () => ({ kind: 'character', name: '林晚', variant: '默认', definition: '日漫蓝色夹克', view_requirements: '正侧背', scene_ids: [sceneId] })
   const f = await setup(t, undefined, async prompt => {
     if (extraProp) assert.match(prompt, /新增红色雨伞/)
-    return JSON.stringify({ profiles: [character(), ...(extraProp ? [{ kind: 'prop', name: '红色雨伞', variant: '默认', definition: '日漫红色雨伞', view_requirements: '多角度和骨架细节', scene_ids: [sceneId] }] : [])] })
+    return JSON.stringify({ profiles: [character(), ...(extraProp ? [{ kind: 'prop', name: '红色雨伞', variant: '默认', definition: '日漫红色雨伞', view_requirements: '多角度和骨架细节', scene_ids: [sceneId] }] : [])]
+      .map(profile => ({ ...profile, shot_usage: all<{ id: string }>('SELECT id FROM shots WHERE source_scene_id=?', sceneId).map(shot => ({ shot_id: shot.id, usage: 'both' })) })) })
   })
   sceneId = f.scene.id
   const initial = await f.context()

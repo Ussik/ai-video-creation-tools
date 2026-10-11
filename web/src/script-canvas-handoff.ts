@@ -46,6 +46,8 @@ export function addScriptCanvasNodes(graph: CanvasGraph, result: ScriptCanvasRes
       settings: blankSettings(imageModel, ratio) }
   }
   for (const [index, profile] of result.visual_profiles.entries()) {
+    if (result.shot_visual_bindings.some(binding => binding.profile_id === profile.id)
+      && !result.shot_visual_bindings.some(binding => binding.profile_id === profile.id && binding.usage !== 'none')) continue
     let node = nodes.find(item => item.settings.visual_profile_id === profile.id)
     if (!node) {
       node = { ...blank(80, baseY + index * 490), title: `${profile.name} · ${profile.variant}`, asset_id: profile.board_asset_id,
@@ -57,6 +59,10 @@ export function addScriptCanvasNodes(graph: CanvasGraph, result: ScriptCanvasRes
   // A completed shot may use an older approved board than today's profile.
   // Keep its exact image snapshot visible instead of substituting a newer board.
   for (const binding of result.shot_visual_bindings) {
+    if (binding.usage === 'none') continue
+    // Independent views are managed by their profile and resolved from the
+    // shot snapshot; importing them must not add an unused old board node.
+    if (binding.reference_assets?.length) continue
     const assetId = binding.board_asset_id
     if (!assetId || result.visual_profiles.some(profile => profile.id === binding.profile_id && profile.board_asset_id === assetId)) continue
     let node = nodes.find(item => item.asset_id === assetId && !item.settings.visual_profile_id

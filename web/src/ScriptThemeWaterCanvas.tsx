@@ -6,6 +6,7 @@ type ScriptThemeWaterCanvasProps = {
   fusion: string
   primaryArtwork?: string
   fusionArtwork?: string
+  active?: boolean
   onFusionSettled?: (hasFusion: boolean) => void
 }
 
@@ -333,8 +334,11 @@ function loadTexture(gl: WebGLRenderingContext, texture: WebGLTexture, source: s
   return () => { cancelled = true; image.onload = null; image.onerror = null }
 }
 
-export function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, fusionArtwork, onFusionSettled }: ScriptThemeWaterCanvasProps) {
+export function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, fusionArtwork, active = true, onFusionSettled }: ScriptThemeWaterCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const activeRef = useRef(active)
+  const invalidateRef = useRef<(() => void) | null>(null)
+  useEffect(() => { activeRef.current = active; invalidateRef.current?.() }, [active])
   const settledRef = useRef(onFusionSettled)
   useEffect(() => { settledRef.current = onFusionSettled }, [onFusionSettled])
   // Retain the last fusion lobe while the shader plays its reverse merge.
@@ -371,12 +375,13 @@ export function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, fusion
     } else if (nextFusion && nextArtwork !== state.visualArtwork) {
       state.visualArtwork = nextArtwork
     }
+    invalidateRef.current?.()
   }, [fusion, fusionArtwork, primaryArtwork])
 
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
-    const gl = canvas.getContext('webgl', { alpha: true, antialias: true, premultipliedAlpha: false })
+    const gl = canvas.getContext('webgl', { alpha: true, antialias: false, premultipliedAlpha: false, powerPreference: 'low-power' })
     if (!gl) { settledRef.current?.(Boolean(fusion.trim())); return }
     const vertex = compileShader(gl, gl.VERTEX_SHADER, vertexSource)
     const fragment = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource)
@@ -394,8 +399,11 @@ export function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, fusion
     if (!buffer || !primaryTexture || !fusionTexture) return
     let primaryHasPhoto = false
     let fusionHasPhoto = false
-    let cancelPrimaryLoad = loadTexture(gl, primaryTexture, primaryArtwork, value => { primaryHasPhoto = value })
-    let cancelFusionLoad = loadTexture(gl, fusionTexture, fusionArtwork, value => { fusionHasPhoto = value })
+    let requestDraw = () => {}
+    const primaryReady = (value: boolean) => { primaryHasPhoto = value; requestDraw() }
+    const fusionReady = (value: boolean) => { fusionHasPhoto = value; requestDraw() }
+    let cancelPrimaryLoad = loadTexture(gl, primaryTexture, primaryArtwork, primaryReady)
+    let cancelFusionLoad = loadTexture(gl, fusionTexture, fusionArtwork, fusionReady)
 
     gl.useProgram(program)
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
@@ -414,13 +422,18 @@ export function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, fusion
     const primaryPhotoUniform = gl.getUniformLocation(program, 'u_primaryHasPhoto')
     const fusionPhotoUniform = gl.getUniformLocation(program, 'u_fusionHasPhoto')
     let frame = 0
+    let lastDraw = -Infinity
+    let dirty = true
+    let visible = true
+    let disposed = false
+    const canDraw = () => !disposed && activeRef.current && visible && !document.hidden
     const start = performance.now()
     let loadedPrimarySource = primaryArtwork
     let loadedFusionSource = fusionArtwork
     let cssWidth = 0
     let cssHeight = 0
     let sceneUnit = 100
-    let devicePixelRatio = Math.min(2, window.devicePixelRatio || 1)
+    let devicePixelRatio = Math.min(1.5, window.devicePixelRatio || 1)
     const fusionDuration = 620
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
     const resize = () => {
@@ -433,7 +446,7 @@ export function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, fusion
       // DOM controls so their positions follow the actual rendered water.
       sceneUnit = Math.max(0.1, Math.min(requestedUnit, (cssWidth - 16) / 4.4, (cssHeight - 16) / 2.9))
       canvas.parentElement?.style.setProperty('--water-render-unit', `${sceneUnit}px`)
-      devicePixelRatio = Math.min(2, window.devicePixelRatio || 1)
+      devicePixelRatio = Math.min(1.5, window.devicePixelRatio || 1)
       const width = Math.max(1, Math.round(cssWidth * devicePixelRatio))
       const height = Math.max(1, Math.round(cssHeight * devicePixelRatio))
       if (canvas.width !== width || canvas.height !== height) {
@@ -441,11 +454,21 @@ export function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, fusion
         canvas.height = height
         gl.viewport(0, 0, width, height)
       }
+      requestDraw()
     }
     resize()
     const observer = new ResizeObserver(resize)
     observer.observe(canvas)
     const render = (now: number) => {
+      frame = 0
+      if (!canDraw()) return
+      // Render changes immediately, but cap the ongoing liquid motion at 24fps.
+      if (!dirty && now - lastDraw < 1000 / 24) {
+        frame = window.requestAnimationFrame(render)
+        return
+      }
+      lastDraw = now
+      dirty = false
       gl.clearColor(0, 0, 0, 0)
       gl.clear(gl.COLOR_BUFFER_BIT)
       gl.useProgram(program)
@@ -480,12 +503,12 @@ export function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, fusion
       if (state.primaryArtwork !== loadedPrimarySource) {
         loadedPrimarySource = state.primaryArtwork
         cancelPrimaryLoad()
-        cancelPrimaryLoad = loadTexture(gl, primaryTexture, state.primaryArtwork, value => { primaryHasPhoto = value })
+        cancelPrimaryLoad = loadTexture(gl, primaryTexture, state.primaryArtwork, primaryReady)
       }
       if (state.visualFusion && state.visualArtwork !== loadedFusionSource) {
         loadedFusionSource = state.visualArtwork
         cancelFusionLoad()
-        cancelFusionLoad = loadTexture(gl, fusionTexture, state.visualArtwork, value => { fusionHasPhoto = value })
+        cancelFusionLoad = loadTexture(gl, fusionTexture, state.visualArtwork, fusionReady)
       }
       const hasFusionValue = state.visualFusion ? 1 : 0
       gl.uniform1f(hasFusion, hasFusionValue)
@@ -499,12 +522,30 @@ export function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, fusion
       gl.bindTexture(gl.TEXTURE_2D, fusionTexture)
       gl.uniform1i(fusionSampler, 1)
       gl.drawArrays(gl.TRIANGLES, 0, 6)
-      frame = window.requestAnimationFrame(render)
+      if (!reducedMotion.matches && !frame) frame = window.requestAnimationFrame(render)
     }
-    frame = window.requestAnimationFrame(render)
+    requestDraw = () => {
+      dirty = true
+      if (!canDraw()) { window.cancelAnimationFrame(frame); frame = 0; return }
+      if (!frame) frame = window.requestAnimationFrame(render)
+    }
+    invalidateRef.current = requestDraw
+    const visibility = typeof IntersectionObserver === 'undefined' ? undefined : new IntersectionObserver(entries => {
+      visible = !!entries[0]?.isIntersecting
+      requestDraw()
+    })
+    visibility?.observe(canvas)
+    document.addEventListener('visibilitychange', requestDraw)
+    reducedMotion.addEventListener('change', requestDraw)
+    requestDraw()
     return () => {
+      disposed = true
+      invalidateRef.current = null
       window.cancelAnimationFrame(frame)
       observer.disconnect()
+      visibility?.disconnect()
+      document.removeEventListener('visibilitychange', requestDraw)
+      reducedMotion.removeEventListener('change', requestDraw)
       cancelPrimaryLoad()
       cancelFusionLoad()
       gl.deleteTexture(primaryTexture)

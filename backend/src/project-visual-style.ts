@@ -41,6 +41,9 @@ export function referenceStyleWarnings(projectId: string, ids: string[], style: 
   for (const id of ids) {
     const approved = one<{ board_style_version: string | null }>('SELECT board_style_version FROM visual_profiles WHERE project_id=? AND board_asset_id=? AND board_style_version=? LIMIT 1', projectId, id, style.version)
     if (approved) continue
+    const confirmedReference = one(`SELECT 1 FROM visual_profile_reference_assets r JOIN visual_profiles p ON p.id=r.profile_id
+      WHERE p.project_id=? AND r.asset_id=? AND r.status='confirmed' AND r.style_version=? LIMIT 1`, projectId, id, style.version)
+    if (confirmedReference) continue
     const job = one<{ request: string }>("SELECT request FROM jobs WHERE project_id=? AND result_asset_id=? AND status='succeeded' ORDER BY created_at DESC LIMIT 1", projectId, id)
     let version: string | undefined
     try { version = job && JSON.parse(job.request).project_style_version } catch { /* Legacy requests have no snapshot. */ }

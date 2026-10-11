@@ -1,24 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActionIcon, Badge, Button, Checkbox, Modal, NumberInput,
-  Menu as MantineMenu, Notification, SegmentedControl, Select, Textarea, TextInput, Tooltip,
+  Menu as MantineMenu, Notification, Select, Textarea, TextInput, Tooltip,
 } from '@mantine/core'
 import { Dropzone } from '@mantine/dropzone'
 import {
   ArrowDown, ArrowDownWideNarrow, ArrowRight, ArrowUp, ArrowUpWideNarrow, Check, Clapperboard,
   Clock3, Download, Eye, FileText, Film, Image as ImageIcon, Layers3, LayoutGrid, List, LoaderCircle, Menu,
   MoreHorizontal, Music2, PanelLeftClose, PanelLeftOpen, Play, Plus, RefreshCcw, Save, Scissors, ScrollText, Search, Settings2,
-  Sparkles, Trash2, Upload, FolderOpen, TriangleAlert, WandSparkles, X, Puzzle,
+  Sparkles, Upload, FolderOpen, X, Puzzle, Mic2,
 } from 'lucide-react'
 import { api, json } from './api'
-import type { Asset, ContinuityReport, Model, Modality, ProductionRange, Project, ProjectDetail, Provider, Shot, TimelineClip, VisualReferenceMode } from './api'
-import { requestVisualCanvas } from './canvas-visual-profiles'
+import type { Asset, ContinuityReport, Model, ProductionRange, Project, ProjectDetail, Provider, Shot, TimelineClip } from './api'
 import ModelSettings from './ModelSettings'
 import SkillsCenter from './SkillsCenter'
+import SpeechStudio from './SpeechStudio'
 import TimelinePreview from './TimelinePreview'
 import CutReviewPanel from './CutReviewPanel'
 import CandidateCompare from './CandidateCompare'
 import JobInformationPopover from './JobInformationPopover'
+import { canvasGraphPath, preferredCanvas, rememberCanvas, rememberedCanvas, type ProjectCanvasInfo } from './project-canvases'
+import { findShotCanvasTarget, requestShotCanvas } from './canvas-shot-navigation'
 import ProjectCanvas, { type CanvasLocation, type ScriptAction } from './ProjectCanvas'
 import ScriptDirectorPanel from './ScriptDirectorPanel'
 import StoryboardPlanner from './StoryboardPlanner'
@@ -27,53 +29,10 @@ import { useAppDialog } from './AppDialog'
 import { filterLibraryAssets, libraryCollection, libraryEmptyText } from './asset-library'
 import type { AssetLibraryView } from './asset-library'
 import { useProjectDetailRefresh } from './useProjectDetailRefresh'
+import { useAssetDownload } from './useAssetDownload'
+import './final-cut-workspace.css'
 
 type Tab = 'projects' | 'canvas' | 'studio' | 'assets' | 'jobs' | 'models' | 'skills'
-type Generation = {
-  visual_reference_mode?: VisualReferenceMode
-  modality: Modality
-  model_id: string
-  mode: 'text' | 'first_frame' | 'first_last_frame' | 'reference' | 'edit' | 'extend'
-  reference_asset_ids: string[]
-  reference_video_url: string
-  resolution: string
-  duration: number
-  ratio: string
-  generate_audio: boolean
-  draft: boolean
-}
-type Handoff = { assetId: string; modelId: string; sourceClipId: string; sourceOutMs: number }
-type ShotForm = { title: string; prompt: string; duration: number; start_state: string; end_state: string; cut_note: string }
-type GenerationRequest = {
-  visual_reference_mode?: VisualReferenceMode
-  visual_source_prompt?: string
-  visual_signature?: string
-  shot_id: string
-  model_id: string
-  prompt: string
-  mode: Generation['mode']
-  reference_asset_ids: string[]
-  reference_video_url: string | null
-  resolution: string
-  duration: number
-  ratio: string
-  generate_audio: boolean
-  draft: boolean
-}
-type GenerationReview = {
-  projectId: string
-  shot: ShotForm
-  shotNumber: number
-  modality: Modality
-  providerName: string
-  modelName: string
-  remoteModelId: string
-  referenceNames: string[]
-  supportsAudio: boolean
-  supportsDraft: boolean
-  estimatedCost: string | null
-  request: GenerationRequest
-}
 type CandidateReview = {
   shotId: string
   assetId: string
@@ -105,23 +64,6 @@ type CanvasSnapshot = {
   edges: Array<{ id: string; source: string; target: string }>
 }
 
-type PricingConfig = {
-  currency?: string
-  per_generation?: number
-  per_image?: number
-  per_second?: number
-  per_second_by_resolution?: Record<string, number>
-  per_1k_input_tokens?: number
-  per_1k_output_tokens?: number
-}
-
-const initialGeneration: Generation = {
-  modality: 'video', model_id: '', mode: 'text', reference_asset_ids: [],
-  reference_video_url: '', resolution: '720p', duration: 5, ratio: '16:9', generate_audio: true, draft: false,
-}
-
-// 一级导航保持在四个核心工作区。项目打开后直接进入画布，
-// 画布是项目内部的创作空间，不再作为独立一级菜单展示。
 const tabs: { id: Tab; label: string; icon: typeof Clapperboard }[] = [
   { id: 'projects', label: '项目', icon: FolderOpen },
   { id: 'assets', label: '资产', icon: Layers3 },
@@ -130,76 +72,10 @@ const tabs: { id: Tab; label: string; icon: typeof Clapperboard }[] = [
   { id: 'skills', label: '技能中心', icon: Puzzle },
 ]
 
-const modes = [
-  { value: 'text', label: '文生视频' },
-  { value: 'first_frame', label: '首帧' },
-  { value: 'first_last_frame', label: '首尾帧' },
-  { value: 'reference', label: '参考生成' },
-  { value: 'edit', label: '编辑视频' },
-  { value: 'extend', label: '延长视频' },
-] as const
-
 const statusText: Record<string, string> = {
   queued: '排队中', running: '生成中', succeeded: '已完成', failed: '失败',
 }
 const reviewStatusText = { pending: '待审核', approved: '已通过', rejected: '已拒绝' } as const
-
-function modelResolutions(model: Model | undefined, modality: Modality): string[] {
-  const configured = model?.settings.resolutions
-  if (Array.isArray(configured)) {
-    const values = configured.filter((value): value is string => typeof value === 'string' && value.length > 0)
-    if (values.length) return values
-  }
-  return modality === 'image' ? ['1K', '1.5K', '2K'] : ['480p', '720p', '1080p']
-}
-
-function defaultResolution(model: Model | undefined, modality: Modality): string {
-  const choices = modelResolutions(model, modality)
-  const configured = model?.settings.default_resolution
-  return typeof configured === 'string' && choices.includes(configured) ? configured : choices[0]
-}
-
-function durationBounds(model: Model | undefined): { min: number; max: number } {
-  const min = typeof model?.settings.min_duration === 'number' ? model.settings.min_duration : 1
-  const max = typeof model?.settings.max_duration === 'number' ? model.settings.max_duration : 120
-  return { min, max }
-}
-
-function modelRatios(model: Model | undefined): string[] {
-  const configured = model?.settings.ratios
-  return Array.isArray(configured) && configured.every((value) => typeof value === 'string') && configured.length
-    ? configured as string[] : ['16:9', '9:16', '4:3', '3:4', '1:1', '21:9', 'adaptive']
-}
-
-function supportedVideoModes(model: Model | undefined): Generation['mode'][] {
-  const configured = model?.settings.supported_modes
-  const ids = Array.isArray(configured) ? configured : ['text']
-  const available = modes.filter((mode) => ids.includes(mode.value)).map((mode) => mode.value)
-  return available.length ? available : ['text']
-}
-
-function pricingConfig(model: Model | undefined): PricingConfig | null {
-  const value = model?.settings.pricing
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-  return value as PricingConfig
-}
-
-function estimatedGenerationCost(model: Model | undefined, modality: Modality, request: GenerationRequest): string | null {
-  const pricing = pricingConfig(model)
-  if (!pricing) return null
-  const resolutionRate = modality === 'video' && pricing.per_second_by_resolution
-    ? pricing.per_second_by_resolution[request.resolution]
-    : undefined
-  const rate = typeof resolutionRate === 'number' ? resolutionRate : pricing.per_second
-  let amount: number | undefined
-  if (modality === 'video' && typeof rate === 'number') amount = rate * request.duration
-  else if (modality === 'image' && typeof pricing.per_image === 'number') amount = pricing.per_image
-  else if (typeof pricing.per_generation === 'number') amount = pricing.per_generation
-  if (typeof amount !== 'number' || !Number.isFinite(amount)) return null
-  const currency = pricing.currency || '¥'
-  const digits = amount >= 100 ? 2 : amount >= 1 ? 3 : 4
-  return `约 ${currency}${amount.toFixed(digits).replace(/\.?0+$/, '')}`
-}
 
 function dateLabel(value: string) {
   return new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
@@ -270,6 +146,7 @@ function App() {
   const canvasLocations = useRef(new Map<string, CanvasLocation>())
   const [scriptEditorOpen, setScriptEditorOpen] = useState(false)
   const [storyboardOpen, setStoryboardOpen] = useState(false)
+  const [speechProjectId, setSpeechProjectId] = useState<string | null>(null)
   const [projectCovers, setProjectCovers] = useState<Record<string, Asset | null>>({})
   const [projectQuery, setProjectQuery] = useState('')
   const [projectSort, setProjectSort] = useState<'updated' | 'name' | 'created'>('updated')
@@ -281,15 +158,11 @@ function App() {
   const [assetLibraryView, setAssetLibraryView] = useState<AssetLibraryView>('history')
   const [assetPreview, setAssetPreview] = useState<Asset | null>(null)
   const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([])
-  const [shotForm, setShotForm] = useState<ShotForm>({ title: '', prompt: '', duration: 5, start_state: '', end_state: '', cut_note: '' })
-  const [generation, setGeneration] = useState<Generation>(initialGeneration)
-  const [generationReview, setGenerationReview] = useState<GenerationReview | null>(null)
   const [candidateReview, setCandidateReview] = useState<CandidateReview | null>(null)
   const [trimIn, setTrimIn] = useState<number | string>(0)
   const [trimOut, setTrimOut] = useState<number | string>(0)
   const [sourceAudioPercent, setSourceAudioPercent] = useState<number | string>(100)
   const [sourceAudioFadeMs, setSourceAudioFadeMs] = useState<number | string>(0)
-  const [handoffByShot, setHandoffByShot] = useState<Record<string, Handoff>>({})
   const [showTimelinePreview, setShowTimelinePreview] = useState(false)
   const [showProductionRange, setShowProductionRange] = useState(false)
   const [rangeDraft, setRangeDraft] = useState<ProductionRange>({ start_shot_id: null, end_shot_id: null })
@@ -300,10 +173,10 @@ function App() {
   const [continuityLoading, setContinuityLoading] = useState(false)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const assetDownload = useAssetDownload(setNotice)
   const [mobileMenu, setMobileMenu] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
-  const generationSubmitting = useRef(false)
   const continuityRequest = useRef(0)
 
   // 画布默认把空间留给节点工作区，仍可通过导航底部的按钮展开。
@@ -351,21 +224,8 @@ function App() {
   const currentClip = clipMap.get(shotId || '')
   const previousClip = clipMap.get(previousShot?.id || '')
   const previousAsset = assetMap.get(previousClip?.asset_id || '')
-  const currentHandoff = currentShot ? handoffByShot[currentShot.id] : undefined
-  const validHandoff = !!currentHandoff && currentHandoff.sourceClipId === previousClip?.id && currentHandoff.sourceOutMs === previousClip.out_ms
-  const shotAssets = detail?.assets.filter((asset) => ((asset.shot_id === shotId && asset.source !== 'export') || asset.id === currentShot?.selected_asset_id) && asset.kind !== 'audio') || []
-  const imageAssets = detail?.assets.filter((asset) => asset.kind === 'image') || []
+  const shotAssets = detail?.assets.filter((asset) => ((asset.shot_id === shotId && asset.source !== 'export') || asset.id === currentShot?.selected_asset_id) && (asset.kind === 'image' || asset.kind === 'video')) || []
   const continuityModels = models.filter(model => model.modality === 'text' && model.enabled && providers.some(provider => provider.id === model.provider_id && provider.enabled))
-  const availableModels = models.filter((model) => model.modality === generation.modality && model.enabled && providers.find((provider) => provider.id === model.provider_id)?.enabled)
-  const activeModel = availableModels.find((model) => model.id === generation.model_id)
-  const activeProvider = providers.find((provider) => provider.id === activeModel?.provider_id)
-  const activeTemplate = JSON.stringify(activeModel?.settings.request_template ?? {})
-  const supportsImageReference = generation.modality === 'image' && (activeTemplate.includes('{{image}}') || activeTemplate.includes('{{images}}'))
-  const supportsAudio = generation.modality === 'video' && activeTemplate.includes('{{generate_audio}}')
-  const bounds = durationBounds(activeModel)
-  const availableModes = supportedVideoModes(activeModel)
-  const draftVariables = activeModel?.settings.draft_variables
-  const draftResolution = draftVariables && typeof draftVariables === 'object' && 'resolution' in draftVariables && typeof draftVariables.resolution === 'string' ? draftVariables.resolution : '480p'
   const totalDurationMs = productionShots.reduce((sum, shot) => sum + clipDuration(clipMap.get(shot.id)), 0)
   const plannedDuration = productionShots.reduce((sum, shot) => sum + shot.duration, 0)
   const readyCount = productionShots.filter((shot) => {
@@ -414,16 +274,6 @@ function App() {
     return filterLibraryAssets(assetCollection, detail.shots, { kind: assetKindFilter, source: assetSourceFilter, query: assetQuery, sort: assetSort })
   }, [assetCollection, assetKindFilter, assetQuery, assetSort, assetSourceFilter, detail])
   const selectedVisibleAssetCount = visibleLibraryAssets.filter((asset) => selectedAssetIds.includes(asset.id)).length
-  const referenceCount = generation.reference_asset_ids.length
-  const visualBindings = (detail?.shot_visual_bindings || []).filter(binding => binding.shot_id === currentShot?.id)
-  const generationIssue = generation.modality === 'video'
-    ? generation.mode === 'first_frame' && referenceCount !== 1 ? '首帧模式需要选 1 张图片'
-      : generation.mode === 'first_last_frame' && referenceCount !== 2 ? '首尾帧模式需要选 2 张图片'
-        : ['edit', 'extend'].includes(generation.mode) && !generation.reference_video_url.trim() ? '编辑或延长需要填写参考视频地址'
-          : generation.mode === 'reference' && referenceCount === 0 && !generation.reference_video_url.trim() && !(visualBindings.length && (generation.visual_reference_mode || 'profiles') === 'profiles') ? '参考生成需要图片或视频地址'
-            : null
-    : null
-
   async function refreshCatalog() {
     const [nextProviders, nextModels] = await Promise.all([
       api<Provider[]>('/providers'), api<Model[]>('/models'),
@@ -537,9 +387,7 @@ function App() {
     setSelectedAssetIds([])
     setAssetPreview(null)
     setShotId(null)
-    setGenerationReview(null)
     setCandidateReview(null)
-    setHandoffByShot({})
     setShowTimelinePreview(false)
     continuityRequest.current += 1
     setContinuity(null)
@@ -560,53 +408,11 @@ function App() {
   }, [projectId])
 
   useEffect(() => {
-    const shot = detail?.shots.find((item) => item.id === shotId)
-    if (!shot) return
-    const priorShot = detail?.shots.find((item) => item.position === shot.position - 1)
-    const sourceClip = detail?.timeline_clips.find((clip) => clip.shot_id === priorShot?.id)
-    const handoff = handoffByShot[shot.id]
-    const restored = handoff && sourceClip && handoff.sourceClipId === sourceClip.id && handoff.sourceOutMs === sourceClip.out_ms
-      ? handoff : undefined
-    setShotForm({ title: shot.title, prompt: shot.prompt, duration: shot.duration, start_state: shot.start_state || '', end_state: shot.end_state || '', cut_note: shot.cut_note || '' })
-    setGeneration((current) => ({
-      ...current, modality: restored ? 'video' : current.modality,
-      model_id: restored?.modelId || current.model_id,
-      duration: Math.min(bounds.max, Math.max(bounds.min, shot.duration)), ratio: detail?.ratio || '16:9',
-      mode: restored ? 'first_frame' : current.mode,
-      reference_asset_ids: restored ? [restored.assetId] : [], reference_video_url: '',
-    }))
-  }, [shotId])
-
-  useEffect(() => {
     setTrimIn((currentClip?.in_ms ?? 0) / 1000)
     setTrimOut((currentClip?.out_ms ?? 0) / 1000)
     setSourceAudioPercent(Math.round((currentClip?.source_audio_gain ?? 1) * 100))
     setSourceAudioFadeMs(currentClip?.source_audio_fade_ms ?? 0)
   }, [shotId, currentClip?.id, currentClip?.asset_id])
-
-  useEffect(() => {
-    if (!availableModels.some((model) => model.id === generation.model_id)) {
-      setGeneration((current) => ({ ...current, model_id: availableModels[0]?.id || '', resolution: defaultResolution(availableModels[0], current.modality) }))
-    }
-  }, [generation.modality, generation.model_id, models, providers])
-
-  useEffect(() => {
-    if (!activeModel) return
-    const { min, max } = durationBounds(activeModel)
-    if ((generation.modality !== 'text' && !modelResolutions(activeModel, generation.modality).includes(generation.resolution)) || generation.duration < min || generation.duration > max) {
-      setGeneration((current) => ({
-        ...current,
-        resolution: current.modality === 'text' ? current.resolution : modelResolutions(activeModel, current.modality).includes(current.resolution) ? current.resolution : defaultResolution(activeModel, current.modality),
-        duration: Math.min(max, Math.max(min, current.duration)),
-      }))
-    }
-  }, [activeModel, generation.modality, generation.resolution])
-
-  useEffect(() => {
-    if (generation.modality === 'video' && !availableModes.includes(generation.mode)) {
-      setGeneration((current) => ({ ...current, mode: availableModes[0], reference_asset_ids: [], reference_video_url: '' }))
-    }
-  }, [generation.modality, generation.mode, activeModel])
 
   async function createProject() {
     if (busy) return
@@ -713,7 +519,11 @@ function App() {
       return
     }
     await action(async () => {
-      const canvas = await api<CanvasSnapshot>(`/projects/${projectId}/canvas`)
+      const canvases = await api<ProjectCanvasInfo[]>(`/projects/${projectId}/canvases`)
+      const selected = preferredCanvas(canvases, rememberedCanvas(projectId))
+      if (!selected) throw new Error('项目没有可用画布')
+      const path = canvasGraphPath(projectId, selected.is_default ? undefined : selected.id)
+      const canvas = await api<CanvasSnapshot>(path)
       const existing = new Set(canvas.nodes.map((node) => node.asset_id).filter((id): id is string => !!id))
       const missing = canvasAssets.filter((asset) => !existing.has(asset.id))
       if (!missing.length) {
@@ -737,7 +547,7 @@ function App() {
         title: asset.filename, text: asset.kind === 'text' ? asset.text || '' : '', asset_id: asset.id,
         shot_id: asset.shot_id, model_id: null, job_id: null, prompt: '', settings: {},
       }))
-      await api(`/projects/${projectId}/canvas`, json('PUT', { ...canvas, nodes: [...canvas.nodes, ...nodes] }))
+      await api(path, json('PUT', { ...canvas, nodes: [...canvas.nodes, ...nodes] }))
       setSelectedAssetIds([])
       setTab('canvas')
       setNotice(skipped ? `已加入 ${addable.length} 个素材，${skipped} 个素材因画布容量上限未加入` : `${addable.length} 个素材已加入画布`)
@@ -745,25 +555,7 @@ function App() {
   }
 
   function downloadAssets(assetIds: string[]) {
-    const assets = (detail?.assets || []).filter((asset) => assetIds.includes(asset.id))
-    assets.forEach((asset, index) => {
-      window.setTimeout(() => {
-        const anchor = document.createElement('a')
-        anchor.href = asset.url
-        anchor.download = asset.filename
-        anchor.target = '_blank'
-        document.body.appendChild(anchor)
-        anchor.click()
-        anchor.remove()
-      }, index * 120)
-    })
-    setNotice(assets.length > 1 ? `已开始下载 ${assets.length} 个素材` : '已开始下载素材')
-  }
-
-  async function saveShot() {
-    if (!shotId) return
-    await api<Shot>(`/shots/${shotId}`, json('PATCH', shotForm))
-    await refreshDetail()
+    if (detail) void assetDownload.download(detail.id, assetIds)
   }
 
   async function saveTrim() {
@@ -772,6 +564,28 @@ function App() {
       await api(`/timeline-clips/${currentClip.id}`, json('PATCH', { in_ms: inMs, out_ms: outMs }))
       await refreshDetail()
     }, '入片区间已保存')
+  }
+
+  async function openShotInCanvas(targetShotId: string) {
+    if (!detail || busy || !detail.shots.some(shot => shot.id === targetShotId)) return
+    const project = detail
+    await action(async () => {
+      const canvases = await api<ProjectCanvasInfo[]>(`/projects/${project.id}/canvases`)
+      const target = await findShotCanvasTarget(canvases, rememberedCanvas(project.id), targetShotId,
+        project.shots.find(shot => shot.id === targetShotId)?.selected_asset_id || null, async canvas => {
+          const storageId = canvas.id === project.id ? project.id : `${project.id}:${canvas.id}`
+          try {
+            const draft = JSON.parse(window.localStorage.getItem(`project-canvas-draft:${storageId}`) || '')
+            if (Array.isArray(draft.base?.nodes) && Array.isArray(draft.graph?.nodes) && Array.isArray(draft.graph.edges)) return draft.graph
+          } catch { /* Read the persisted graph if a draft is unavailable. */ }
+          return api<import('./ProjectCanvas').CanvasGraph>(canvasGraphPath(project.id, canvas.is_default ? undefined : canvas.id))
+        })
+      if (activeProjectId.current !== project.id) return
+      rememberCanvas(project.id, target.canvasId)
+      requestShotCanvas(project.id, { ...target, requestId: crypto.randomUUID() })
+      canvasLocations.current.set(project.id, { view: 'canvas', storyboardId: null })
+      setShotId(targetShotId); setTab('canvas')
+    })
   }
 
   async function saveSourceAudio() {
@@ -784,65 +598,10 @@ function App() {
     }, '片段原声设置已保存')
   }
 
-  async function usePreviousTail() {
-    if (!currentShot || !previousClip || !previousAsset) return
-    const videoModel = activeModel?.modality === 'video' && availableModes.includes('first_frame') ? activeModel
-      : models.find((model) => model.modality === 'video' && model.enabled && providers.find((provider) => provider.id === model.provider_id)?.enabled && supportedVideoModes(model).includes('first_frame'))
-    if (!videoModel) {
-      setNotice('请先启用支持首帧生成的视频模型')
-      return
-    }
-    await action(async () => {
-      const priorHandoff = handoffByShot[currentShot.id]
-      const reusable = priorHandoff?.sourceClipId === previousClip.id && priorHandoff?.sourceOutMs === previousClip.out_ms
-        ? assetMap.get(priorHandoff.assetId) : undefined
-      const image = reusable || (previousAsset.kind === 'image' ? previousAsset
-        : await api<Asset>(`/timeline-clips/${previousClip.id}/tail-frame`, { method: 'POST' }))
-      setHandoffByShot((current) => ({ ...current, [currentShot.id]: { assetId: image.id, modelId: videoModel.id, sourceClipId: previousClip.id, sourceOutMs: previousClip.out_ms } }))
-      setGeneration((current) => ({
-        ...current, modality: 'video', model_id: videoModel.id, mode: 'first_frame',
-        reference_asset_ids: [image.id], reference_video_url: '',
-        resolution: defaultResolution(videoModel, 'video'),
-        duration: Math.min(durationBounds(videoModel).max, Math.max(durationBounds(videoModel).min, currentShot.duration)),
-      }))
-      await refreshDetail()
-    }, '已将上一镜尾帧设为当前镜头首帧')
-  }
-
-  async function addShot(sourceSceneId?: string) {
-    if (!projectId) return
-    await action(async () => {
-      const count = detail?.shots.length || 0
-      const sourceScene = detail?.script.scenes.find((scene) => scene.id === sourceSceneId)
-      const sourceCount = detail?.shots.filter((shot) => shot.source_scene_id === sourceSceneId).length || 0
-      const created = await api<Shot>(`/projects/${projectId}/shots`, json('POST', {
-        title: sourceScene ? `${sourceScene.heading} · 镜头 ${sourceCount + 1}`.slice(0, 120) : `镜头 ${String(count + 1).padStart(2, '0')}`,
-        prompt: sourceScene ? [sourceScene.heading, sourceScene.action].filter(Boolean).join('\n') : '',
-        duration: 5,
-        ...(sourceScene ? { source_scene_id: sourceScene.id } : {}),
-      }))
-      if (sourceScene && currentShot?.source_scene_id === sourceScene.id) {
-        await api(`/shots/${created.id}`, json('PATCH', { position: currentShot.position + 1 }))
-      }
-      await refreshDetail()
-      setShotId(created.id)
-      setTab('canvas')
-    })
-  }
-
   async function moveShot(shot: Shot, direction: number) {
     await action(async () => {
       await api(`/shots/${shot.id}`, json('PATCH', { position: Math.max(0, shot.position + direction) }))
       await refreshDetail()
-    })
-  }
-
-  async function deleteShot(shot: Shot) {
-    if (!await confirm({ title: `删除「${shot.title}」`, message: '已生成的素材仍保留在素材库。', confirmLabel: '删除镜头', danger: true })) return
-    await action(async () => {
-      await api(`/shots/${shot.id}`, { method: 'DELETE' })
-      const next = await refreshDetail()
-      setShotId(next?.shots[0]?.id || null)
     })
   }
 
@@ -858,66 +617,6 @@ function App() {
       await refreshDetail()
       if (fileInput.current) fileInput.current.value = ''
     }, '素材已导入')
-  }
-
-  function reviewGeneration() {
-    if (busy || !projectId || !currentShot || !activeModel || !shotForm.prompt.trim() || generationIssue) return
-    const input: GenerationRequest = {
-      visual_reference_mode: generation.visual_reference_mode || 'profiles',
-      shot_id: currentShot.id,
-      model_id: activeModel.id,
-      prompt: shotForm.prompt.trim(),
-      mode: generation.modality === 'video' ? generation.mode : 'text',
-      reference_asset_ids: [...generation.reference_asset_ids],
-      reference_video_url: generation.reference_video_url || null,
-      resolution: generation.resolution,
-      duration: generation.duration,
-      ratio: generation.modality === 'video' && ['first_frame', 'first_last_frame', 'edit', 'extend'].includes(generation.mode) ? 'adaptive' : generation.ratio,
-      generate_audio: generation.generate_audio,
-      draft: generation.draft,
-    }
-    void action(async () => {
-      const request = await api<GenerationRequest>(`/projects/${projectId}/generate/preview`, json('POST', input))
-      setGenerationReview({
-        projectId,
-        shot: { ...shotForm },
-        shotNumber: shotIndex + 1,
-        modality: generation.modality,
-        providerName: activeProvider?.name || '未命名提供商',
-        modelName: activeModel.name,
-        remoteModelId: activeModel.remote_id,
-        referenceNames: request.reference_asset_ids.map((id) => assetMap.get(id)?.filename || id),
-        supportsAudio,
-        supportsDraft: generation.modality === 'video' && activeModel.settings.supports_draft === true,
-        estimatedCost: estimatedGenerationCost(activeModel, generation.modality, request),
-        request,
-      })
-    })
-  }
-
-  async function generateCandidate() {
-    const review = generationReview
-    if (!review || generationSubmitting.current) return
-    generationSubmitting.current = true
-    setBusy(true)
-    setNotice(null)
-    try {
-      await api<Shot>(`/shots/${review.request.shot_id}`, json('PATCH', review.shot))
-      await api(`/projects/${review.projectId}/generate`, json('POST', review.request))
-      setGenerationReview(null)
-      setNotice('任务已加入队列')
-      try {
-        await refreshDetail(review.projectId)
-      } catch {
-        setNotice('任务已入队，任务记录刷新失败，请稍后手动刷新')
-      }
-    } catch (error) {
-      setGenerationReview(null)
-      setNotice(`提交未完成或状态未确认，请先查看任务记录。${error instanceof Error ? error.message : String(error)}`)
-    } finally {
-      generationSubmitting.current = false
-      setBusy(false)
-    }
   }
 
   async function selectCandidate(assetId: string) {
@@ -956,15 +655,6 @@ function App() {
       setCandidateReview(null)
     }, status === 'approved' ? '候选已通过审核' : status === 'rejected'
       ? wasSelected ? '候选已拒绝并从时间线移除' : '候选已拒绝' : '审核记录已保存')
-  }
-
-  async function useLibraryAsset(assetId: string) {
-    if (!shotId || currentShot?.selected_asset_id === assetId) return
-    await action(async () => {
-      await api(`/shots/${shotId}/selection`, json('PUT', { asset_id: assetId }))
-      await refreshDetail()
-      setTab('canvas')
-    }, '素材已选入当前镜头')
   }
 
   async function saveAssetToLibrary(asset: Asset) {
@@ -1006,15 +696,6 @@ function App() {
       end = index
     }
     setRangeDraft({ start_shot_id: detail.shots[start]!.id, end_shot_id: detail.shots[end]!.id })
-  }
-
-  function toggleReference(id: string) {
-    setGeneration((current) => ({
-      ...current,
-      reference_asset_ids: current.reference_asset_ids.includes(id)
-        ? current.reference_asset_ids.filter((item) => item !== id)
-        : [...current.reference_asset_ids, id].slice(0, current.modality === 'video' && current.mode === 'first_frame' ? 1 : current.mode === 'first_last_frame' ? 2 : 10),
-    }))
   }
 
   function openScriptDirector(focusArtifact: ScriptAction = 'all') {
@@ -1085,8 +766,9 @@ function App() {
 
     <main className={`main-content ${canvasOpen ? 'is-canvas' : ''}`}>
       {tab !== 'projects' && !scriptEditorOpen && <header className="topbar">
-        <div className="topbar-start"><ActionIcon className="mobile-toggle" variant="subtle" aria-label="打开导航" onClick={() => setMobileMenu(!mobileMenu)}><Menu size={20} /></ActionIcon><button className="breadcrumb-link" onClick={() => selectedNav('projects')}>项目</button><span className="breadcrumb-sep">/</span><strong>{tab === 'skills' ? '技能中心' : tab === 'models' ? '模型设置' : detail?.name || '未选择项目'}</strong></div>
+        <div className="topbar-start"><ActionIcon className="mobile-toggle" variant="subtle" aria-label="打开导航" onClick={() => setMobileMenu(!mobileMenu)}><Menu size={20} /></ActionIcon><button className="breadcrumb-link" onClick={() => selectedNav('projects')}>项目</button><span className="breadcrumb-sep">/</span><strong>{tab === 'skills' ? '技能中心' : tab === 'models' ? '模型设置' : detail?.name || '未选择项目'}</strong>{tab === 'studio' && <span className="topbar-meta">成片工作台</span>}</div>
         <div className="topbar-actions">
+          {detail && tab !== 'canvas' && tab !== 'models' && tab !== 'skills' && <Button variant="default" onClick={() => setSpeechProjectId(detail.id)} leftSection={<Mic2 size={16} />}>配音</Button>}
           {tab === 'studio' && detail && <Button variant="default" onClick={() => setTab('canvas')} leftSection={<Layers3 size={16} />}>返回画布</Button>}
           {tab === 'studio' && detail && <span className="topbar-meta">{detail.shots.length} 个镜头 · {detail.ratio}</span>}
           {tab === 'studio' && latestExportAsset && <Button component="a" variant="default" href={latestExportAsset.url} download title="下载最近成片" leftSection={<Download size={16} />}>最近成片</Button>}
@@ -1141,12 +823,16 @@ function App() {
         onRenameProject={renameCurrentProject}
         onOpenModels={() => setTab('models')}
         onOpenScriptCreator={() => openScriptEditor()}
+        onOpenSpeech={() => setSpeechProjectId(detail.id)}
         onOpenScriptDocument={artifact => openScriptEditor(artifact.episode_number ? `episode-${artifact.episode_number}` : artifact.artifact_type)}
         onOpenScriptDirector={(focusArtifact = 'all', context) => {
           setScriptDirectorContext(context || '')
           openScriptDirector(focusArtifact)
         }}
         onNavigate={(destination) => { setScriptDirectorOpen(false); setTab(destination) }} />}
+
+      {detail && speechProjectId === detail.id && <SpeechStudio key={`speech-${detail.id}`} projectId={detail.id} projectName={detail.name}
+        scenes={detail.script.scenes} onClose={() => setSpeechProjectId(null)} onAssetsChanged={() => refreshDetail(detail.id)} />}
 
       {detail && scriptDirectorOpen && <ScriptDirectorPanel
         key={`script-director-${detail.id}`}
@@ -1164,9 +850,9 @@ function App() {
         onNotice={setNotice}
       />}
 
-      {detail && tab === 'studio' && <div className="studio-layout">
+      {detail && tab === 'studio' && <div className="studio-layout final-cut-workspace" aria-label="成片工作台">
         <section className="shot-rail" aria-label="分镜列表">
-          <div className="panel-heading"><div><span className="eyebrow">镜头顺序</span><h2>分镜 <span className="panel-count">{detail.shots.length}</span></h2></div><Tooltip label="添加镜头"><ActionIcon variant="subtle" aria-label="添加镜头" onClick={() => addShot()}><Plus size={18} /></ActionIcon></Tooltip></div>
+          <div className="panel-heading"><div><span className="eyebrow">入片顺序</span><h2>镜头 <span className="panel-count">{detail.shots.length}</span></h2></div></div>
           <div className="shot-list">
             {detail.shots.map((shot, index) => {
               const asset = assetMap.get(shot.selected_asset_id || '')
@@ -1178,30 +864,29 @@ function App() {
             })}
             {!detail.shots.length && <div className="rail-empty">还没有镜头</div>}
           </div>
-          {!!detail.script.scenes.length && <Button variant="default" title="规划并确认分镜后加入画布" onClick={() => setStoryboardOpen(true)} leftSection={<Plus size={16} />}>加入画布</Button>}
-          {currentScene && <Button className="add-scene-shot-button" variant="default" onClick={() => addShot(currentScene.id)} leftSection={<Plus size={16} />}>本场新增镜头</Button>}
-          <Button className="add-shot-button" variant="subtle" onClick={() => addShot()} leftSection={<Plus size={16} />}>添加镜头</Button>
+          <Button variant="default" onClick={() => setTab('canvas')} leftSection={<Layers3 size={16} />}>在画布制作镜头</Button>
         </section>
 
         <section className="workspace-center">
           {currentShot ? <>
-            <div className="workspace-header"><div><span className="eyebrow">镜头 {String(currentShot.position + 1).padStart(2, '0')} / {String(detail.shots.length).padStart(2, '0')}{currentScene && ` · ${currentScene.heading}`}</span><h1>{currentShot.title}</h1></div><div className="workspace-header-actions"><Tooltip label="前移镜头"><ActionIcon variant="subtle" aria-label="前移镜头" disabled={currentShot.position === 0} onClick={() => moveShot(currentShot, -1)}><ArrowUp size={17} /></ActionIcon></Tooltip><Tooltip label="后移镜头"><ActionIcon variant="subtle" aria-label="后移镜头" disabled={currentShot.position === detail.shots.length - 1} onClick={() => moveShot(currentShot, 1)}><ArrowDown size={17} /></ActionIcon></Tooltip><Tooltip label="删除镜头"><ActionIcon variant="subtle" color="red" aria-label="删除镜头" onClick={() => deleteShot(currentShot)}><Trash2 size={17} /></ActionIcon></Tooltip></div></div>
-            <div className={`viewer ${detail.ratio === '9:16' ? 'viewer-portrait' : ''}`}>{selectedAsset ? <AssetPreview asset={selectedAsset} /> : <div className="viewer-overlay"><span className="viewer-reticle"><Film size={29} strokeWidth={1.3} /></span><strong>预览画面</strong><span>选择候选素材后显示在这里</span></div>}</div>
-            <section className="cut-editor" aria-label="镜头取段与接镜">
-              <div className="cut-editor-head"><div><span className="eyebrow">镜头衔接</span><h2>取段与接镜</h2></div><span className={`cut-status ${currentClip ? 'ready' : ''}`}>{currentClip ? `实际入片 ${secondsLabel(clipDuration(currentClip))}` : '先选成片素材'}</span></div>
+            <div className="workspace-header"><div><span className="eyebrow">镜头 {String(currentShot.position + 1).padStart(2, '0')} / {String(detail.shots.length).padStart(2, '0')}{currentScene && ` · ${currentScene.heading}`}</span><h1>{currentShot.title}</h1></div><div className="workspace-header-actions"><Tooltip label="前移镜头"><ActionIcon variant="subtle" aria-label="前移镜头" disabled={currentShot.position === 0} onClick={() => moveShot(currentShot, -1)}><ArrowUp size={17} /></ActionIcon></Tooltip><Tooltip label="后移镜头"><ActionIcon variant="subtle" aria-label="后移镜头" disabled={currentShot.position === detail.shots.length - 1} onClick={() => moveShot(currentShot, 1)}><ArrowDown size={17} /></ActionIcon></Tooltip></div></div>
+            <div className={`viewer ${detail.ratio === '9:16' ? 'viewer-portrait' : ''}`}>{selectedAsset ? <AssetPreview asset={selectedAsset} /> : <div className="viewer-overlay"><span className="viewer-reticle"><Film size={29} strokeWidth={1.3} /></span><strong>预览画面</strong><span>从下方选定成片素材后显示在这里</span></div>}</div>
+            <section className="cut-editor" aria-label="镜头衔接">
+              <div className="cut-editor-head"><div><span className="eyebrow">镜头衔接</span><h2>{previousShot ? '与上一镜对照' : '开场状态'}</h2></div><span className={`cut-status ${currentClip ? 'ready' : ''}`}>{currentClip ? `实际入片 ${secondsLabel(clipDuration(currentClip))}` : '先选成片素材'}</span></div>
+              {!previousShot && <div className="cut-continuity"><div><span>当前镜开始状态</span><p>{currentShot.start_state || '尚未记录'}</p></div><div><span>当前镜结束状态</span><p>{currentShot.end_state || '尚未记录'}</p></div></div>}
               {previousShot && <>
                 <div className="cut-compare">
                   <CutFrame asset={previousAsset} timeMs={previousClip ? Math.max(previousClip.in_ms, previousClip.out_ms - 40) : 0} caption="上一镜 · 尾帧" />
                   <ArrowRight className="cut-compare-arrow" size={18} aria-hidden="true" />
                   <CutFrame asset={selectedAsset} timeMs={Number.isFinite(inMs) ? Math.max(0, inMs) : currentClip?.in_ms || 0} caption="当前镜 · 首帧" />
                 </div>
-                <div className="cut-continuity"><div><span>上一镜结束状态</span><p>{previousShot.end_state || '尚未记录'}</p></div><div><span>当前镜开始状态</span><p>{shotForm.start_state || '尚未记录'}</p></div></div>
-                {shotForm.cut_note && <p className="cut-note"><strong>接镜要求</strong>{shotForm.cut_note}</p>}
-                <Button className="tail-reference-button" variant="default" size="xs" onClick={usePreviousTail} loading={busy} disabled={!previousClip || !previousAsset} leftSection={<ImageIcon size={14} />}>{validHandoff && generation.reference_asset_ids.includes(currentHandoff.assetId) ? '已作为首帧参考' : '使用上一镜尾帧作为首帧'}</Button>
+                <div className="cut-continuity"><div><span>上一镜结束状态</span><p>{previousShot.end_state || '尚未记录'}</p></div><div><span>当前镜开始状态</span><p>{currentShot.start_state || '尚未记录'}</p></div></div>
+                {currentShot.cut_note && <p className="cut-note"><strong>接镜要求</strong>{currentShot.cut_note}</p>}
+                <Button variant="default" size="xs" onClick={() => void openShotInCanvas(currentShot.id)} loading={busy} leftSection={<Layers3 size={14} />}>回画布调整接镜</Button>
               </>}
-              {currentClip ? <div className="trim-editor"><div className="trim-editor-heading"><Scissors size={16} /><strong>成片取段</strong><span>规划 {currentShot.duration}s · 素材 {currentClip.source_duration_ms === null ? '静帧' : secondsLabel(currentClip.source_duration_ms)}</span></div><div className="trim-fields"><NumberInput label="素材入点" suffix=" 秒" min={0} max={currentClip.source_duration_ms === null ? 0 : currentClip.source_duration_ms / 1000} step={0.1} decimalScale={3} hideControls disabled={currentClip.source_duration_ms === null} value={trimIn} onChange={setTrimIn} /><NumberInput label={currentClip.source_duration_ms === null ? '画面停留至' : '素材出点'} suffix=" 秒" min={0.2} max={currentClip.source_duration_ms === null ? 30 : currentClip.source_duration_ms / 1000} step={0.1} decimalScale={3} hideControls value={trimOut} onChange={setTrimOut} /><Button variant="default" onClick={saveTrim} disabled={busy || !!trimIssue || !trimChanged} leftSection={<Save size={15} />}>保存取段</Button></div>{trimIssue && <span className="trim-error" role="status">{trimIssue}</span>}{selectedAsset?.kind === 'video' && <div className="source-audio-editor"><div className="trim-editor-heading"><Music2 size={16} /><strong>片段原声</strong><span>预览与导出使用同一设置</span></div><div className="source-audio-fields"><NumberInput label="原声音量" suffix=" %" min={0} max={200} step={10} decimalScale={0} hideControls value={sourceAudioPercent} onChange={setSourceAudioPercent} /><NumberInput label="首尾淡变" suffix=" 毫秒" min={0} max={500} step={50} decimalScale={0} hideControls value={sourceAudioFadeMs} onChange={setSourceAudioFadeMs} /><Button variant="default" onClick={() => setSourceAudioPercent(Number(sourceAudioPercent) === 0 ? 100 : 0)}>{Number(sourceAudioPercent) === 0 ? '恢复原声' : '静音'}</Button><Button variant="default" onClick={saveSourceAudio} disabled={busy || !!audioIssue || !audioChanged} leftSection={<Save size={15} />}>保存原声</Button></div>{audioIssue && <span className="trim-error" role="status">{audioIssue}</span>}</div>}</div> : <p className="cut-empty">选定候选素材后，可从素材中截取自然的动作片段，成片将按这里的入点和出点导出。</p>}
+
             </section>
-            <div className="candidates-head"><div><h2>候选版本 <Badge variant="light" color="gray">{shotAssets.length}</Badge></h2><span className="section-note">版本审核与选片</span></div><div className="candidate-head-actions"><CandidateCompare shot={currentShot} assets={detail.assets} reviews={detail.asset_reviews} selectedAssetId={currentShot.selected_asset_id} /><Button variant="default" onClick={() => fileInput.current?.click()} leftSection={<Upload size={16} />}>导入素材</Button></div></div>
+            <div className="candidates-head"><div><h2>可用素材 <Badge variant="light" color="gray">{shotAssets.length}</Badge></h2><span className="section-note">选择用于最终成片的版本</span></div><div className="candidate-head-actions"><CandidateCompare shot={currentShot} assets={detail.assets} reviews={detail.asset_reviews} selectedAssetId={currentShot.selected_asset_id} /><Button variant="default" onClick={() => fileInput.current?.click()} leftSection={<Upload size={16} />}>导入素材</Button></div></div>
             <div className="candidate-grid">
               {shotAssets.map((asset) => {
                 const review = reviewsByAsset.get(asset.id)
@@ -1211,11 +896,10 @@ function App() {
                 <div className="candidate-info"><span>{asset.source === 'upload' ? '本地导入' : models.find((model) => model.id === asset.model_id)?.name || '生成素材'}</span><small>{dateLabel(asset.created_at)}</small></div>
                 {asset.kind !== 'text' && <div className="candidate-review-summary"><Badge size="xs" variant="light" color={status === 'approved' ? 'teal' : status === 'rejected' ? 'red' : 'gray'}>{reviewStatusText[status]}</Badge>{currentShot.selected_asset_id === asset.id && <span>已入片</span>}</div>}
                 {review?.note && <p className="candidate-review-note" title={review.note}>{review.note}</p>}
-                {asset.kind === 'text' ? <><p className="candidate-text">{asset.text}</p><div className="candidate-actions"><Button className="candidate-action" variant="light" size="xs" onClick={() => { setShotForm((form) => ({ ...form, prompt: asset.text || '' })); setNotice('已填入镜头提示词，请保存分镜') }}>用作提示词</Button>{!asset.saved && <Button variant="subtle" size="xs" onClick={() => void saveAssetToLibrary(asset)} disabled={busy} leftSection={<Save size={13} />}>保存到资产</Button>}</div></>
-                  : <div className="candidate-actions"><Button variant="default" size="xs" onClick={() => openCandidateReview(asset)} disabled={busy} leftSection={<Eye size={14} />}>审核</Button><Button variant={currentShot.selected_asset_id === asset.id ? 'light' : 'default'} color={currentShot.selected_asset_id === asset.id ? 'teal' : 'cyan'} size="xs" onClick={() => selectCandidate(asset.id)} disabled={busy || status === 'rejected' || currentShot.selected_asset_id === asset.id} leftSection={currentShot.selected_asset_id === asset.id ? <Check size={14} /> : undefined}>{status === 'rejected' ? '已拒绝' : currentShot.selected_asset_id === asset.id ? '已选用' : '选为成片'}</Button>{!asset.saved && <Button variant="subtle" size="xs" onClick={() => void saveAssetToLibrary(asset)} disabled={busy} leftSection={<Save size={13} />}>保存到资产</Button>}</div>}
+                <div className="candidate-actions"><Button variant="default" size="xs" onClick={() => openCandidateReview(asset)} disabled={busy} leftSection={<Eye size={14} />}>审核</Button><Button variant={currentShot.selected_asset_id === asset.id ? 'light' : 'default'} color={currentShot.selected_asset_id === asset.id ? 'teal' : 'cyan'} size="xs" onClick={() => selectCandidate(asset.id)} disabled={busy || status === 'rejected' || currentShot.selected_asset_id === asset.id} leftSection={currentShot.selected_asset_id === asset.id ? <Check size={14} /> : undefined}>{status === 'rejected' ? '已拒绝' : currentShot.selected_asset_id === asset.id ? '已选用' : '选为成片'}</Button>{!asset.saved && <Button variant="subtle" size="xs" onClick={() => void saveAssetToLibrary(asset)} disabled={busy} leftSection={<Save size={13} />}>保存到资产</Button>}</div>
               </div>
               })}
-              {!shotAssets.length && <div className="candidate-empty"><ImageIcon size={22} /><span>候选结果会出现在这里</span></div>}
+              {!shotAssets.length && <div className="candidate-empty"><ImageIcon size={22} /><span>该镜头还没有可用素材，请回画布制作或导入素材</span></div>}
             </div>
             {continuity && <section className="continuity-panel" aria-label="连续性检查">
               <div className="continuity-head">
@@ -1239,38 +923,20 @@ function App() {
                 </div>)}
               </div> : <div className="continuity-empty"><Check size={15} />未发现素材与时长问题{continuity.semantic_review?.status === 'checked' ? '，文字状态检查无提醒' : '；文字状态尚未完成模型检查'}</div>}
             </section>}
-          </> : <div className="no-shot"><Clapperboard size={30} /><h2>建立第一个镜头</h2>{detail.script.scenes.length > 0 && <Button variant="default" onClick={() => openScriptEditor()} leftSection={<ScrollText size={16} />}>打开剧本创作</Button>}<Button onClick={() => addShot()} leftSection={<Plus size={16} />}>添加镜头</Button></div>}
+          </> : <div className="no-shot"><Clapperboard size={30} /><h2>还没有入片镜头</h2>{detail.script.scenes.length > 0 && <Button variant="default" onClick={() => openScriptEditor()} leftSection={<ScrollText size={16} />}>打开剧本创作</Button>}<Button onClick={() => setTab('canvas')} leftSection={<Layers3 size={16} />}>前往画布制作</Button></div>}
         </section>
 
-        <aside className="inspector" aria-label="镜头设置">
-          {currentShot && <>
-            <div className="inspector-head"><div><span className="eyebrow">当前镜头</span><h2>创作设置</h2></div><Tooltip label="保存分镜"><ActionIcon variant="subtle" aria-label="保存分镜" onClick={() => action(saveShot, '分镜已保存')} disabled={busy}><Save size={17} /></ActionIcon></Tooltip></div>
+        <aside className="inspector final-cut-inspector" aria-label="成片片段设置">
+          {currentShot ? <>
+            <div className="inspector-head"><div><span className="eyebrow">当前片段</span><h2>片段设置</h2></div></div>
             <div className="inspector-scroll">
-              <TextInput label="镜头名称" value={shotForm.title} onChange={(event) => setShotForm({ ...shotForm, title: event.target.value })} />
-              <Textarea label="画面与动作提示词" rows={7} placeholder="主体、动作、场景、风格、运镜与声音..." value={shotForm.prompt} onChange={(event) => setShotForm({ ...shotForm, prompt: event.target.value })} />
-              <div className="field-row"><NumberInput label="规划入片时长" min={1} max={30} step={1} decimalScale={0} suffix=" 秒" value={shotForm.duration} onChange={(value) => setShotForm({ ...shotForm, duration: Number(value) || 1 })} /><Select label="项目画幅" data={['16:9', '9:16']} allowDeselect={false} value={detail.ratio} onChange={(ratio) => { if (!ratio) return; void action(async () => { await api(`/projects/${detail.id}`, json('PATCH', { ratio })); await refreshDetail(); setGeneration((current) => ({ ...current, ratio: modelRatios(activeModel).includes(ratio) ? ratio : modelRatios(activeModel)[0] })) }) }} /></div>
-              <div className="shot-state-fields"><Textarea label="镜头开始状态" rows={2} placeholder="角色位置、姿态、武器和运动方向" value={shotForm.start_state} onChange={(event) => setShotForm({ ...shotForm, start_state: event.target.value })} /><Textarea label="镜头结束状态" rows={2} placeholder="为下一镜留下明确的动作落点" value={shotForm.end_state} onChange={(event) => setShotForm({ ...shotForm, end_state: event.target.value })} /><Textarea label="接镜要求" rows={2} placeholder="说明与上一镜的衔接方式" value={shotForm.cut_note} onChange={(event) => setShotForm({ ...shotForm, cut_note: event.target.value })} /></div>
+              <div className="final-cut-shot-summary"><strong>{currentShot.title}</strong><span>{selectedAsset ? selectedAsset.filename : '尚未选定成片素材'}</span><small>规划 {currentShot.duration} 秒{currentClip ? ` · 实际入片 ${secondsLabel(clipDuration(currentClip))}` : ''}</small></div>
+              {currentClip ? <div className="trim-editor"><div className="trim-editor-heading"><Scissors size={16} /><strong>成片取段</strong><span>规划 {currentShot.duration}s · 素材 {currentClip.source_duration_ms === null ? '静帧' : secondsLabel(currentClip.source_duration_ms)}</span></div><div className="trim-fields"><NumberInput label="素材入点" suffix=" 秒" min={0} max={currentClip.source_duration_ms === null ? 0 : currentClip.source_duration_ms / 1000} step={0.1} decimalScale={3} hideControls disabled={currentClip.source_duration_ms === null} value={trimIn} onChange={setTrimIn} /><NumberInput label={currentClip.source_duration_ms === null ? '画面停留至' : '素材出点'} suffix=" 秒" min={0.2} max={currentClip.source_duration_ms === null ? 30 : currentClip.source_duration_ms / 1000} step={0.1} decimalScale={3} hideControls value={trimOut} onChange={setTrimOut} /><Button variant="default" onClick={saveTrim} disabled={busy || !!trimIssue || !trimChanged} leftSection={<Save size={15} />}>保存取段</Button></div>{trimIssue && <span className="trim-error" role="status">{trimIssue}</span>}{selectedAsset?.kind === 'video' && <div className="source-audio-editor"><div className="trim-editor-heading"><Music2 size={16} /><strong>片段原声</strong><span>预览与导出使用同一设置</span></div><div className="source-audio-fields"><NumberInput label="原声音量" suffix=" %" min={0} max={200} step={10} decimalScale={0} hideControls value={sourceAudioPercent} onChange={setSourceAudioPercent} /><NumberInput label="首尾淡变" suffix=" 毫秒" min={0} max={500} step={50} decimalScale={0} hideControls value={sourceAudioFadeMs} onChange={setSourceAudioFadeMs} /><Button variant="default" onClick={() => setSourceAudioPercent(Number(sourceAudioPercent) === 0 ? 100 : 0)}>{Number(sourceAudioPercent) === 0 ? '恢复原声' : '静音'}</Button><Button variant="default" onClick={saveSourceAudio} disabled={busy || !!audioIssue || !audioChanged} leftSection={<Save size={15} />}>保存原声</Button></div>{audioIssue && <span className="trim-error" role="status">{audioIssue}</span>}</div>}</div> : <p className="cut-empty">选定候选素材后，可从素材中截取自然的动作片段，成片将按这里的入点和出点导出。</p>}
               <div className="inspector-divider" />
-              <div className="generation-title"><WandSparkles size={17} /><strong>生成候选</strong></div>
-              <SegmentedControl className="generation-segment" aria-label="生成类型" fullWidth value={generation.modality} data={[{ value: 'text', label: '文本' }, { value: 'image', label: '图片' }, { value: 'video', label: '视频' }]} onChange={(value) => { const modality = value as Modality; setGeneration({ ...generation, modality, mode: 'text', reference_asset_ids: [], resolution: modality === 'image' ? '1.5K' : '720p' }) }} />
-              <Select label="生成模型" searchable allowDeselect={false} value={generation.model_id || null} data={availableModels.map((model) => ({ value: model.id, label: model.name }))} onChange={(value) => { if (!value) return; const model = models.find((item) => item.id === value); setGeneration({ ...generation, model_id: value, mode: 'text', resolution: defaultResolution(model, generation.modality), duration: Math.min(durationBounds(model).max, Math.max(durationBounds(model).min, generation.duration)), ratio: modelRatios(model).includes(generation.ratio) ? generation.ratio : modelRatios(model)[0], reference_asset_ids: [], draft: false }) }} />
-              <Button variant="default" leftSection={<ImageIcon size={15} />} onClick={() => { requestVisualCanvas(detail.id, [], { shotId: currentShot?.id }); setTab('canvas') }}>镜头引用 · {visualBindings.length}</Button>
-              {!!visualBindings.length && <Select label="视觉设定引用方式" value={generation.visual_reference_mode || 'profiles'} allowDeselect={false} data={[{ value: 'profiles', label: '设定信息图 + 文字' }, ...(generation.modality === 'video' ? [{ value: 'keyframe', label: '关键帧承接 + 文字' }] : []), { value: 'text_only', label: '仅文字设定' }]} onChange={value => value && setGeneration({ ...generation, visual_reference_mode: value as VisualReferenceMode })} />}
-              {!availableModels.length && <button className="model-empty-link" onClick={() => setTab('models')}>暂无可用模型，前往模型设置添加 <ArrowRight size={14} /></button>}
-              {activeProvider && <div className="model-hint">{activeProvider.has_key ? '已配置 API Key' : '请到模型设置中配置 API Key'}</div>}
-              {activeModel && generation.modality === 'video' && <>
-                <Select label="生成模式" allowDeselect={false} value={generation.mode} data={modes.filter((mode) => availableModes.includes(mode.value)).map((mode) => ({ value: mode.value, label: mode.label }))} onChange={(value) => { if (value) setGeneration({ ...generation, mode: value as Generation['mode'], reference_asset_ids: [] }) }} />
-              </>}
-              {activeModel && generation.modality !== 'text' && <>
-                {(supportsImageReference || generation.modality === 'video' && ['first_frame', 'first_last_frame', 'reference'].includes(generation.mode)) && <div className="field"><span>参考图片 {generation.reference_asset_ids.length > 0 && `· 已选 ${generation.reference_asset_ids.length}`}</span>{imageAssets.length > 0 ? <div className="reference-list">{imageAssets.map((asset) => <button className={`reference-item ${generation.reference_asset_ids.includes(asset.id) ? 'active' : ''}`} key={asset.id} onClick={() => toggleReference(asset.id)} title={asset.filename} aria-pressed={generation.reference_asset_ids.includes(asset.id)}><img src={asset.url} alt={asset.filename} />{generation.reference_asset_ids.includes(asset.id) && <Check size={15} />}</button>)}</div> : <button className="button button-subtle reference-upload" onClick={() => fileInput.current?.click()}><Upload size={15} />导入参考图片</button>}</div>}
-                {generation.modality === 'video' && ['reference', 'edit', 'extend'].includes(generation.mode) && <TextInput label="参考视频地址" description="公网 URL；部分模型支持预置素材 URI（按模型配置）。" value={generation.reference_video_url} placeholder="https://.../reference.mp4" onChange={(event) => setGeneration({ ...generation, reference_video_url: event.target.value })} />}
-                <div className="field-row"><Select label={generation.modality === 'image' ? '图片尺寸' : '视频分辨率'} allowDeselect={false} value={generation.resolution} data={modelResolutions(activeModel, generation.modality)} onChange={(value) => { if (value) setGeneration({ ...generation, resolution: value }) }} />{generation.modality === 'video' && generation.mode !== 'edit' && <NumberInput label="生成时长" min={bounds.min} max={bounds.max} suffix=" 秒" value={generation.duration} onChange={(value) => setGeneration({ ...generation, duration: Number(value) || bounds.min })} />}</div>
-                {generation.modality === 'video' && <Select label="生成画幅" allowDeselect={false} value={['first_frame', 'first_last_frame', 'edit', 'extend'].includes(generation.mode) ? 'adaptive' : generation.ratio} disabled={['first_frame', 'first_last_frame', 'edit', 'extend'].includes(generation.mode)} data={modelRatios(activeModel)} onChange={(value) => { if (value) setGeneration({ ...generation, ratio: value }) }} />}
-                {generation.modality === 'video' && (supportsAudio || activeModel?.settings.supports_draft === true) && <div className="toggle-list">{supportsAudio && <Checkbox label="生成声音" checked={generation.generate_audio} onChange={(event) => setGeneration({ ...generation, generate_audio: event.currentTarget.checked })} />}{activeModel?.settings.supports_draft === true && <Checkbox label={`${draftResolution} 样片`} checked={generation.draft} onChange={(event) => setGeneration({ ...generation, draft: event.currentTarget.checked, resolution: event.currentTarget.checked ? draftResolution : defaultResolution(activeModel, 'video') })} />}</div>}
-              </>}
+              <Select className="final-cut-output" label="输出画幅" description="应用到整个项目的成片输出" data={['16:9', '9:16']} allowDeselect={false} value={detail.ratio} disabled={busy} onChange={ratio => { if (ratio) void action(async () => { await api(`/projects/${detail.id}`, json('PATCH', { ratio })); await refreshDetail() }, '输出画幅已更新') }} />
             </div>
-            <div className="inspector-actions">{generationIssue && <span className="generation-issue" role="status">{generationIssue}</span>}<Button variant="default" onClick={() => action(saveShot, '分镜已保存')} disabled={busy} leftSection={<Save size={16} />}>保存</Button><Button onClick={reviewGeneration} loading={busy} disabled={!shotForm.prompt.trim() || !activeModel || !!generationIssue} leftSection={<Sparkles size={16} />}>开始生成</Button></div>
-          </>}
+            <div className="inspector-actions"><Button variant="default" onClick={() => void openShotInCanvas(currentShot.id)} loading={busy} leftSection={<Layers3 size={16} />}>在画布调整此镜头</Button></div>
+          </> : <div className="final-cut-empty">选择一个镜头后，可设置入片区间和原声。</div>}
         </aside>
         <section className="timeline">
           <div className="timeline-head">
@@ -1323,7 +989,7 @@ function App() {
               </div>
             </div>}
 
-            {selectedAssetIds.length > 0 && <div className="asset-bulk-bar"><span>已选 {selectedAssetIds.length} 个</span><div className="asset-bulk-actions"><Button size="xs" variant="default" onClick={() => void addAssetsToCanvas(selectedAssetIds)} leftSection={<Layers3 size={14} />}>加入画布</Button><Button size="xs" variant="default" onClick={() => downloadAssets(selectedAssetIds)} leftSection={<Download size={14} />}>下载</Button><Button size="xs" variant="subtle" onClick={() => setSelectedAssetIds([])}>清除选择</Button></div></div>}
+            {selectedAssetIds.length > 0 && <div className="asset-bulk-bar"><span>已选 {selectedAssetIds.length} 个</span><div className="asset-bulk-actions"><Button size="xs" variant="default" onClick={() => void addAssetsToCanvas(selectedAssetIds)} leftSection={<Layers3 size={14} />}>加入画布</Button><Button size="xs" variant="default" onClick={() => downloadAssets(selectedAssetIds)} loading={assetDownload.downloading} leftSection={<Download size={14} />}>{assetDownload.downloading ? '准备下载' : selectedAssetIds.length > 1 ? '下载 ZIP' : '下载'}</Button><Button size="xs" variant="subtle" onClick={() => setSelectedAssetIds([])}>清除选择</Button></div></div>}
             <Dropzone className="asset-content-dropzone" enablePointerEvents activateOnClick={false} activateOnKeyboard={false} activateOnDrag={assetLibraryView === 'personal'} disabled={busy} loading={busy && assetLibraryView === 'personal'}
               onDrop={files => { if (assetLibraryView === 'personal') void uploadFiles(files) }} onReject={() => assetLibraryView === 'personal' && setNotice('仅支持 PNG/JPG/WebP、MP4/MOV、MP3/WAV/M4A，单文件不超过 300 MB')} maxSize={300 * 1024 * 1024}
               accept={['image/png', 'image/jpeg', 'image/webp', 'video/mp4', 'video/quicktime', 'audio/mpeg', 'audio/wav', 'audio/mp4']}>
@@ -1336,13 +1002,9 @@ function App() {
           <div className="library-copy"><strong className="truncate" title={asset.filename}>{asset.filename}</strong><small>{assetKindLabel(asset.kind)} · {assetSourceLabel(asset.source)} · {dateLabel(asset.created_at)}</small>{asset.shot_id && <small className="library-shot">镜头：{detail.shots.find((shot) => shot.id === asset.shot_id)?.title || '未命名镜头'}</small>}{shotId && review && <Badge size="xs" variant="light" color={review.status === 'approved' ? 'teal' : review.status === 'rejected' ? 'red' : 'gray'}>{reviewStatusText[review.status]}</Badge>}</div>
           <div className="library-actions"><MantineMenu shadow="md" width={210} position="bottom-end"><MantineMenu.Target><ActionIcon variant="subtle" className="asset-card-more" aria-label={`素材操作：${asset.filename}`}><MoreHorizontal size={18} /></ActionIcon></MantineMenu.Target><MantineMenu.Dropdown>
             {!asset.saved && <MantineMenu.Item leftSection={<Save size={14} />} onClick={() => void saveAssetToLibrary(asset)} disabled={busy}>保存到资产库</MantineMenu.Item>}
-            {(asset.kind === 'image' || asset.kind === 'video') && shotId && <>
-              <MantineMenu.Item leftSection={<Eye size={14} />} onClick={() => openCandidateReview(asset)} disabled={busy}>审核素材</MantineMenu.Item>
-              <MantineMenu.Item leftSection={<Check size={14} />} disabled={busy || review?.status === 'rejected' || currentShot?.selected_asset_id === asset.id} onClick={() => useLibraryAsset(asset.id)}>{review?.status === 'rejected' ? '已拒绝' : currentShot?.selected_asset_id === asset.id ? '已用于当前镜头' : '选入当前镜头'}</MantineMenu.Item>
-            </>}
             {asset.kind === 'audio' && <MantineMenu.Item disabled={busy} leftSection={<Music2 size={14} />} onClick={() => action(async () => { await api(`/projects/${detail.id}`, json('PATCH', { music_asset_id: detail.music_asset_id === asset.id ? null : asset.id })); await refreshDetail() })}>{detail.music_asset_id === asset.id ? '取消用作配乐' : '用作配乐'}</MantineMenu.Item>}
             {asset.kind !== 'audio' && <MantineMenu.Item leftSection={<Layers3 size={14} />} onClick={() => void addAssetsToCanvas([asset.id])} disabled={busy}>加入画布</MantineMenu.Item>}
-            <MantineMenu.Item component="a" href={asset.url} download={asset.filename} leftSection={<Download size={14} />}>下载素材</MantineMenu.Item>
+            <MantineMenu.Item onClick={() => downloadAssets([asset.id])} disabled={assetDownload.downloading} leftSection={<Download size={14} />}>下载素材</MantineMenu.Item>
             </MantineMenu.Dropdown></MantineMenu>
           </div>
         </div>})}</div>
@@ -1367,16 +1029,18 @@ function App() {
             const result = detail.assets.find((asset) => asset.id === job.result_asset_id)
             const model = models.find((item) => item.id === job.model_id)
             const isImageTask = job.job_type === 'generation' && model?.modality === 'image'
-            const modelUnavailable = job.job_type === 'generation' && !model
+            const isSpeechTask = (() => { try { return Boolean(JSON.parse(job.request).tts) } catch { return false } })()
+            const modelUnavailable = job.job_type === 'generation' && !model && !isSpeechTask
             const needsBillingCheck = job.status === 'failed' && !job.recovery_available && (isImageTask || modelUnavailable)
             return <div className={`job-row ${needsBillingCheck ? 'job-row-needs-review' : ''}`} key={job.id}>
-              <div className="job-name"><div className="job-icon">{job.job_type === 'export' ? <Film size={18} /> : isImageTask || job.recovery_available ? <ImageIcon size={18} /> : <Sparkles size={18} />}</div><div><strong>{job.job_type === 'export' ? '成片导出' : model?.name || '生成任务'}</strong><small>{detail.shots.find((shot) => shot.id === job.shot_id)?.title || detail.name}{job.external_id && ` · ${job.external_id.slice(0, 16)}...`}</small></div></div>
+              <div className="job-name"><div className="job-icon">{job.job_type === 'export' ? <Film size={18} /> : isSpeechTask ? <Mic2 size={18} /> : isImageTask || job.recovery_available ? <ImageIcon size={18} /> : <Sparkles size={18} />}</div><div><strong>{job.job_type === 'export' ? '成片导出' : isSpeechTask ? '豆包 TTS 2.0 配音' : model?.name || '生成任务'}</strong><small>{detail.shots.find((shot) => shot.id === job.shot_id)?.title || detail.name}{job.external_id && ` · ${job.external_id.slice(0, 16)}...`}</small></div></div>
               <span className={`job-status status-${job.status}`}>{job.status === 'running' && <LoaderCircle className="spin" size={13} />}{statusText[job.status]}</span>
               <span className="job-date">{dateLabel(job.created_at)}</span>
               <div className="job-result">
                 <JobInformationPopover job={job} model={model} provider={providers.find(item => item.id === model?.provider_id)}
                   shot={detail.shots.find(item => item.id === job.shot_id)} projectName={detail.name} assets={detail.assets} />
                 {result ? <Button component="a" variant="default" size="xs" href={result.url} download={job.job_type === 'export'} leftSection={<Download size={14} />}>{job.job_type === 'export' ? '下载成片' : '查看结果'}</Button>
+                  : isSpeechTask && job.status === 'failed' ? <Button variant="default" size="xs" onClick={() => setSpeechProjectId(detail.id)} leftSection={<Mic2 size={14} />}>返回配音</Button>
                   : needsBillingCheck ? <div className="job-recovery-guidance"><span>{isImageTask ? '没有可恢复的图片链接。请先核对提供商账单，再回到画布重新生成。' : '原模型不可用，请先核对提供商记录；需要重新生成时回到画布。'}</span>{job.shot_id && <Button variant="default" size="xs" onClick={() => { setShotId(job.shot_id); setTab('canvas') }} leftSection={<Clapperboard size={14} />}>回到画布</Button>}</div>
                     : job.status === 'failed' ? <Button variant="default" size="xs" disabled={busy} onClick={() => action(async () => { await api(`/jobs/${job.id}/retry`, { method: 'POST' }); await refreshDetail() }, job.recovery_available ? '图片下载恢复任务已入队' : job.task_resume_available ? '图片任务继续查询已入队' : '任务已重新入队')} leftSection={job.recovery_available ? <Download size={14} /> : <RefreshCcw size={14} />}>{job.recovery_available ? '恢复下载' : job.task_resume_available ? '继续查询' : '重试'}</Button>
                       : <span>—</span>}
@@ -1407,34 +1071,10 @@ function App() {
         {assetPreview.prompt && <div className="asset-preview-prompt"><span>生成提示词</span><p>{assetPreview.prompt}</p></div>}
         {assetPreview.text && <div className="asset-preview-prompt"><span>文本内容</span><p>{assetPreview.text}</p></div>}
         <div className="asset-preview-actions">
-          <Button variant="default" component="a" href={assetPreview.url} download={assetPreview.filename} leftSection={<Download size={15} />}>下载素材</Button>
+          <Button variant="default" onClick={() => downloadAssets([assetPreview.id])} loading={assetDownload.downloading} leftSection={<Download size={15} />}>下载素材</Button>
           {assetPreview.kind !== 'audio' && <Button onClick={() => { void addAssetsToCanvas([assetPreview.id]); setAssetPreview(null) }} leftSection={<Layers3 size={15} />}>加入画布</Button>}
-          {assetPreview.shot_id && <Button variant="subtle" onClick={() => { setShotId(assetPreview.shot_id); setTab('canvas'); setAssetPreview(null) }} leftSection={<Clapperboard size={15} />}>打开关联画布</Button>}
+          {assetPreview.shot_id && <Button variant="subtle" onClick={() => { void openShotInCanvas(assetPreview.shot_id!); setAssetPreview(null) }} disabled={busy} leftSection={<Clapperboard size={15} />}>打开关联画布</Button>}
         </div>
-      </div>}
-    </Modal>
-    <Modal className="generation-review-modal" opened={!!generationReview} onClose={() => { if (!busy) setGenerationReview(null) }} closeOnEscape={!busy} closeOnClickOutside={!busy} title="确认生成任务" size="lg" centered>
-      {generationReview && <div className="generation-review">
-        <p className="generation-review-intro">当前填写的生成参数</p>
-        <dl className="generation-review-details">
-          <div><dt>当前镜头</dt><dd>{String(generationReview.shotNumber).padStart(2, '0')} · {generationReview.shot.title}</dd></div>
-          <div><dt>提供商</dt><dd>{generationReview.providerName}</dd></div>
-          <div><dt>模型</dt><dd>{generationReview.modelName}<small>{generationReview.remoteModelId}</small></dd></div>
-          <div><dt>生成类型</dt><dd>{generationReview.modality === 'video' ? '视频' : generationReview.modality === 'image' ? '图片' : '文本'}</dd></div>
-          <div><dt>生成模式</dt><dd>{generationReview.modality === 'video' ? modes.find((mode) => mode.value === generationReview.request.mode)?.label : generationReview.modality === 'image' ? generationReview.referenceNames.length ? '参考图片生成' : '文生图' : '文本生成'}</dd></div>
-          {generationReview.modality === 'video' && <div><dt>生成时长</dt><dd>{generationReview.request.duration} 秒</dd></div>}
-          {generationReview.modality !== 'text' && <div><dt>{generationReview.modality === 'image' ? '图片尺寸' : '视频分辨率'}</dt><dd>{generationReview.request.resolution}</dd></div>}
-          {generationReview.modality !== 'text' && <div><dt>画幅</dt><dd>{generationReview.request.ratio}</dd></div>}
-          <div><dt>候选数量</dt><dd>1 个</dd></div>
-          <div><dt>预计费用</dt><dd className={generationReview.estimatedCost ? 'generation-review-cost' : 'generation-review-cost is-unconfigured'}>{generationReview.estimatedCost || '未配置模型价格'}</dd></div>
-          {!!generationReview.referenceNames.length && <div><dt>参考图片</dt><dd>{generationReview.referenceNames.join('、')}</dd></div>}
-          {generationReview.request.reference_video_url && <div><dt>参考视频</dt><dd>{generationReview.request.reference_video_url}</dd></div>}
-          {generationReview.supportsAudio && <div><dt>生成声音</dt><dd>{generationReview.request.generate_audio ? '开启' : '关闭'}</dd></div>}
-          {generationReview.supportsDraft && <div><dt>样片模式</dt><dd>{generationReview.request.draft ? '开启' : '关闭'}</dd></div>}
-        </dl>
-        <div className="generation-review-prompt"><strong>当前提示词</strong><p>{generationReview.request.prompt}</p></div>
-        <div className="generation-review-warning" role="note"><TriangleAlert size={18} /><p><strong>确认后将提交生成任务，可能产生费用。</strong><span>模型自定义请求模板可能调整厂商收到的实际参数。再次生成或失败后重新提交也可能再次计费；实际费用以提供商账单为准。</span></p></div>
-        <div className="generation-review-actions"><Button variant="default" onClick={() => setGenerationReview(null)} disabled={busy}>返回修改</Button><Button onClick={generateCandidate} loading={busy} leftSection={<Sparkles size={16} />}>确认提交 1 个候选</Button></div>
       </div>}
     </Modal>
     <Modal className="candidate-review-modal" opened={!!candidateReview} onClose={() => { if (!busy) setCandidateReview(null) }} closeOnEscape={!busy} closeOnClickOutside={!busy} title="候选审核" size="xl" centered>

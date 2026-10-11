@@ -8,19 +8,23 @@ import { ScriptThemeWaterCanvas } from '../src/ScriptThemeWaterCanvas.tsx'
 // Exercise the component's actual lifecycle and RAF loop without relying on a
 // GPU or wall-clock timers. The WebGL mock records the values used to draw each
 // frame, while images stay pending until the test explicitly completes them.
-const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/' })
+const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
 for (const key of ['window', 'document', 'navigator', 'Node', 'HTMLElement', 'HTMLCanvasElement', 'Element']) {
   Object.defineProperty(globalThis, key, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[key] })
 }
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', { configurable: true, value: true })
 let now = 0
 let nextFrame = 0
+let reducedMotion = false
+let hidden = false
+let intersection: IntersectionObserverCallback | undefined
 const frames = new Map<number, FrameRequestCallback>()
+Object.defineProperty(dom.window.document, 'hidden', { configurable: true, get: () => hidden })
 Object.defineProperty(globalThis.performance, 'now', { configurable: true, value: () => now })
 dom.window.requestAnimationFrame = (callback) => { frames.set(++nextFrame, callback); return nextFrame }
 dom.window.cancelAnimationFrame = (id) => { frames.delete(id) }
 Object.defineProperty(dom.window, 'matchMedia', { configurable: true, value: (media: string) => ({
-  matches: false, media, onchange: null,
+  get matches() { return reducedMotion }, media, onchange: null,
   addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {},
 }) })
 
@@ -39,6 +43,11 @@ Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value:
   disconnect() {}
 } })
 const canvasRect = { left: 0, top: 0, right: 582, bottom: 428, width: 582, height: 428, x: 0, y: 0, toJSON: () => ({}) }
+Object.defineProperty(globalThis, 'IntersectionObserver', { configurable: true, value: class {
+  constructor(callback: IntersectionObserverCallback) { intersection = callback }
+  observe() {}
+  disconnect() {}
+} })
 Object.defineProperty(dom.window.HTMLCanvasElement.prototype, 'getBoundingClientRect', { configurable: true, value: () => canvasRect })
 after(() => dom.window.close())
 
@@ -51,10 +60,12 @@ function mockWebGL() {
   let textureId = 0
   let boundTexture: Texture | null = null
   let programCount = 0
+  let drawCount = 0
   const noop = () => {}
   return {
     uniforms, uploads, deletedTextures,
     get programCount() { return programCount },
+    get drawCount() { return drawCount },
     VERTEX_SHADER: 35633, FRAGMENT_SHADER: 35632, COMPILE_STATUS: 35713,
     LINK_STATUS: 35714, TEXTURE_2D: 3553, TEXTURE_WRAP_S: 10242,
     TEXTURE_WRAP_T: 10243, CLAMP_TO_EDGE: 33071, TEXTURE_MIN_FILTER: 10241,
@@ -80,13 +91,15 @@ function mockWebGL() {
     getUniformLocation: (_program: unknown, name: string) => name,
     uniform1f: (name: string, value: number) => { uniforms.set(name, value) },
     uniform1i: noop, uniform2f: noop, viewport: noop, clearColor: noop,
-    clear: noop, enable: noop, disable: noop, blendFunc: noop, activeTexture: noop, drawArrays: noop,
+    clear: noop, enable: noop, disable: noop, blendFunc: noop, activeTexture: noop, drawArrays: () => { drawCount++ },
   }
 }
 
 type Props = Parameters<typeof ScriptThemeWaterCanvas>[0]
 function mount(initial: Partial<Props> = {}) {
   now = 0
+  reducedMotion = false
+  hidden = false
   frames.clear()
   PendingImage.instances = []
   const gl = mockWebGL()
@@ -241,5 +254,47 @@ test('missing and failed covers use neutral mist and cannot retain another topic
     view.tick(80)
     assert.equal(view.gl.uniforms.get('u_primaryHasPhoto'), 0)
     assert.equal(view.gl.programCount, 1)
+  } finally { view.dispose() }
+})
+
+test('water motion caps draw frequency and resolution while hidden/closed surfaces stop completely', () => {
+  Object.defineProperty(dom.window, 'devicePixelRatio', { configurable: true, value: 2 })
+  const view = mount()
+  try {
+    view.finishImages()
+    for (let time = 0; time <= 1000; time += 10) view.tick(time)
+    assert.ok(view.gl.drawCount >= 18 && view.gl.drawCount <= 25, 'ongoing shader work stays at or below24fps')
+    assert.equal(document.querySelector('canvas')!.width, Math.round(canvasRect.width * 1.5))
+    const before = view.gl.drawCount
+    act(() => intersection!([{ isIntersecting: false } as IntersectionObserverEntry], {} as IntersectionObserver))
+    assert.equal(frames.size, 0)
+    view.tick(1300); assert.equal(view.gl.drawCount, before)
+    act(() => intersection!([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver))
+    view.tick(1400); assert.ok(view.gl.drawCount > before)
+    view.render({ active: false }); assert.equal(frames.size, 0)
+    const closed = view.gl.drawCount; view.tick(1500); assert.equal(view.gl.drawCount, closed)
+    view.render({ active: true }); view.tick(1600); assert.ok(view.gl.drawCount > closed)
+    hidden = true; act(() => document.dispatchEvent(new dom.window.Event('visibilitychange')))
+    assert.equal(frames.size, 0)
+    hidden = false; act(() => document.dispatchEvent(new dom.window.Event('visibilitychange')))
+    view.tick(1700); assert.ok(frames.size > 0)
+  } finally { view.dispose() }
+})
+
+test('reduced motion renders changes and loaded textures once instead of keeping a RAF loop', () => {
+  const view = mount({ fusion: '都市现实', fusionArtwork: '/fusion.jpg' })
+  try {
+    reducedMotion = true
+    view.tick(0)
+    assert.equal(frames.size, 0)
+    const before = view.gl.drawCount
+    view.finishImages(); view.tick(20)
+    assert.equal(view.gl.drawCount, before + 1); assert.equal(frames.size, 0)
+    view.tick(1000); assert.equal(view.gl.drawCount, before + 1)
+    view.render({ fusion: '' }); view.tick(1100)
+    assert.equal(view.hasFusion, 0); assert.equal(view.progress, 0); assert.equal(frames.size, 0)
+    view.render({ primaryArtwork: '/changed.jpg' }); view.tick(1200)
+    PendingImage.instances.find(image => image.src === '/changed.jpg')!.complete(); view.tick(1210)
+    assert.equal(view.gl.uniforms.get('u_primaryHasPhoto'), 1); assert.equal(frames.size, 0)
   } finally { view.dispose() }
 })

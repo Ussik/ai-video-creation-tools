@@ -25,6 +25,7 @@ async function seedProject(id: string) {
   await writeFile(file, id)
   db.transaction(() => {
     run('INSERT INTO projects (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)', id, id, stamp, stamp)
+    run('INSERT INTO project_canvases (id, project_id, name, position, is_default, created_at, updated_at) VALUES (?, ?, ?, 0, 1, ?, ?)', id, id, '画布 1', stamp, stamp)
     run('INSERT INTO scripts (project_id, outline, characters, updated_at) VALUES (?, ?, ?, ?)', id, '大纲', '人物', stamp)
     run(`INSERT INTO script_scenes (id, project_id, position, heading, created_at, updated_at)
       VALUES (?, ?, 0, '场次', ?, ?)`, key('scene'), id, stamp, stamp)
@@ -42,7 +43,7 @@ async function seedProject(id: string) {
     run(`INSERT INTO shot_plan_requests (request_id, project_id, payload_hash, shot_ids, created_at)
       VALUES (?, ?, 'hash', ?, ?)`, key('plan'), id, JSON.stringify([key('shot')]), stamp)
     run('INSERT INTO production_ranges (project_id, start_shot_id, end_shot_id) VALUES (?, ?, ?)', id, key('shot'), key('next-shot'))
-    for (const suffix of ['old-board', 'new-board', 'video']) {
+    for (const suffix of ['old-board', 'new-board', 'side-reference', 'face-reference', 'video']) {
       run(`INSERT INTO assets (id, project_id, shot_id, kind, filename, path, source, model_id, created_at)
         VALUES (?, ?, ?, ?, 'fixture.txt', ?, 'generated', 'shared-model', ?)`,
         key(suffix), id, key('shot'), suffix === 'video' ? 'video' : 'image', file, stamp)
@@ -70,15 +71,23 @@ async function seedProject(id: string) {
     for (const suffix of ['old-board', 'new-board']) {
       run('INSERT INTO visual_profile_candidates (profile_id, asset_id, archived, updated_at) VALUES (?, ?, ?, ?)', key('profile'), key(suffix), Number(suffix === 'old-board'), stamp)
     }
-    run(`INSERT INTO shot_visual_bindings (shot_id, profile_id, required, revision, kind, name, variant, definition, view_requirements, board_asset_id)
-      VALUES (?, ?, 0, 2, 'character', '人物', '雨衣', '镜头保存的旧版设定', '正侧背与细节', ?)`, key('shot'), key('profile'), key('old-board'))
+    const references = [
+      { id: key('reference-side'), asset_id: key('side-reference'), view: 'side', purpose: 'costume', label: '侧面雨衣', revision: 2, style_version: 'a'.repeat(64) },
+      { id: key('reference-face'), asset_id: key('face-reference'), view: 'face', purpose: 'identity', label: '面部特写', revision: 2, style_version: 'a'.repeat(64) },
+    ]
+    for (const reference of references) run(`INSERT INTO visual_profile_reference_assets
+      (id,profile_id,asset_id,revision,style_version,view,purpose,label,status,is_default,source_asset_id,source_job_id,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,'confirmed',1,?,?,?,?)`, reference.id, key('profile'), reference.asset_id, reference.revision,
+      reference.style_version, reference.view, reference.purpose, reference.label, key('old-board'), key('job'), stamp, stamp)
+    run(`INSERT INTO shot_visual_bindings (shot_id, profile_id, required, revision, kind, name, variant, definition, view_requirements, board_asset_id, board_style_version, reference_assets)
+      VALUES (?, ?, 0, 2, 'character', '人物', '雨衣', '镜头保存的旧版设定', '正侧背与细节', ?, ?, ?)`, key('shot'), key('profile'), key('old-board'), 'a'.repeat(64), JSON.stringify(references))
     for (const nodeId of ['reference', 'generator']) {
-      run(`INSERT INTO canvas_nodes (id, project_id, position, type, x, y, width, height, asset_id, shot_id, model_id, job_id)
-        VALUES (?, ?, ?, ?, 0, 0, 280, 200, ?, ?, 'shared-model', ?)`,
-        nodeId, id, Number(nodeId === 'generator'), nodeId === 'generator' ? 'generation' : 'image', key('old-board'), key('shot'), key('job'))
+      run(`INSERT INTO canvas_nodes (id, project_id, canvas_id, position, type, x, y, width, height, asset_id, shot_id, model_id, job_id)
+        VALUES (?, ?, ?, ?, ?, 0, 0, 280, 200, ?, ?, 'shared-model', ?)`,
+        nodeId, id, id, Number(nodeId === 'generator'), nodeId === 'generator' ? 'generation' : 'image', key('old-board'), key('shot'), key('job'))
     }
-    run(`INSERT INTO canvas_edges (id, project_id, position, source, target, reference_asset_id)
-      VALUES ('reference-edge', ?, 0, 'reference', 'generator', ?)`, id, key('old-board'))
+    run(`INSERT INTO canvas_edges (id, project_id, canvas_id, position, source, target, reference_asset_id)
+      VALUES ('reference-edge', ?, ?, 0, 'reference', 'generator', ?)`, id, id, key('old-board'))
   })()
   return { id, file, shotId: key('shot'), profileId: key('profile'), jobId: key('job') }
 }
@@ -120,6 +129,9 @@ test('legacy RESTRICT bindings migrate without changing snapshots and project de
   const project = await seedProject('legacy')
   restoreLegacyBindingConstraint()
   const beforeMigration = databaseRows()
+  const frozen = one<{ board_style_version: string; reference_assets: string }>('SELECT board_style_version, reference_assets FROM shot_visual_bindings WHERE shot_id=?', project.shotId)!
+  assert.equal(frozen.board_style_version, 'a'.repeat(64))
+  assert.deepEqual(JSON.parse(frozen.reference_assets).map((reference: { view: string }) => reference.view), ['side', 'face'])
   assert.throws(() => run('DELETE FROM projects WHERE id=?', project.id), { code: 'SQLITE_CONSTRAINT_TRIGGER' })
   assert.deepEqual(databaseRows(), beforeMigration, 'failed deletion is atomic')
   assert.deepEqual(db.pragma('foreign_key_check'), [])
@@ -128,6 +140,7 @@ test('legacy RESTRICT bindings migrate without changing snapshots and project de
   const restartedApp = buildApp()
   try {
     assert.deepEqual(databaseRows(), beforeMigration, 'all snapshots and candidate selections survive migration')
+    assert.deepEqual(one('SELECT board_style_version, reference_assets FROM shot_visual_bindings WHERE shot_id=?', project.shotId), frozen)
     const foreignKeys = db.pragma('foreign_key_list(shot_visual_bindings)') as Array<{ from: string; on_delete: string }>
     assert.equal(foreignKeys.find(key => key.from === 'profile_id')?.on_delete, 'CASCADE')
     assert.equal(db.pragma('foreign_keys', { simple: true }), 1)
@@ -182,4 +195,22 @@ test('a failed legacy migration rolls back its table rebuild and leaves foreign 
   run('DELETE FROM shot_visual_bindings WHERE shot_id=?', 'missing-shot')
   initDb()
   assert.deepEqual(db.pragma('foreign_key_check'), [])
+})
+
+test('older RESTRICT schemas without optional reference columns migrate with safe defaults', async () => {
+  const project = await seedProject('pre-reference-schema')
+  restoreLegacyBindingConstraint()
+  db.exec('ALTER TABLE shot_visual_bindings DROP COLUMN board_style_version')
+  db.exec('ALTER TABLE shot_visual_bindings DROP COLUMN reference_assets')
+  const legacyRows = databaseRows()
+  initDb()
+  const expectedBindings = (legacyRows.shot_visual_bindings as Array<Record<string, unknown>>)
+    .map(binding => ({ ...binding, board_style_version: null, reference_assets: '[]' }))
+  assert.deepEqual(databaseRows(), { ...legacyRows, shot_visual_bindings: expectedBindings })
+  assert.deepEqual(db.pragma('foreign_key_check'), [])
+  const response = await app.inject({ method: 'DELETE', url: `/api/projects/${project.id}` })
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(one('SELECT 1 FROM visual_profile_reference_assets WHERE profile_id=?', project.profileId), undefined)
+  assert.deepEqual(db.pragma('foreign_key_check'), [])
+  await assert.rejects(access(join(mediaDir, project.id)), { code: 'ENOENT' })
 })

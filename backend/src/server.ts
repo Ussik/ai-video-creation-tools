@@ -18,6 +18,7 @@ import { assetPromptResult, assetPromptInstructions } from './asset-prompt.js'
 import { imageReferenceConfigError } from './image-reference-config.js'
 import { videoRatioOptions, videoResolutionOptions } from './video-parameters.js'
 import { videoReferenceConfigError } from './video-reference-config.js'
+import { videoReferenceUsages, videoReferenceUsageIssue } from './video-reference-usage.js'
 import { compileProjectStyle, projectVisualStyle, referenceStyleWarnings } from './project-visual-style.js'
 import { projectStyleInstructions, withProjectStyle, projectStyleTemplateError } from './visual-style.js'
 import { registerSkillRoutes } from './skill-routes.js'
@@ -26,6 +27,8 @@ import { registerStoryboardPlanningRoutes } from './storyboard-planning.js'
 import { activityRecorder, scriptActivitiesSchema, scriptExecutionSchema } from './script-activity.js'
 import { createStreamScope, directorStreamHeartbeatMs } from './script-stream-policy.js'
 import { inheritSceneVisualBindings, prepareVisualGeneration, registerVisualProfileRoutes, visualProjectData } from './visual-profiles.js'
+import { registerGeneratedVisualReference } from './visual-reference-assets.js'
+import { canvasRecord, defaultCanvas, registerProjectCanvasRoutes } from './project-canvases.js'
 import { registerScriptCanvasRoutes } from './script-canvas-preparation.js'
 import { workflowRequest, workflowDraftInput, workflowEnvelope, normalizeWorkflowRequest, workflowInstructions, parseWorkflowDraft, workflowReply, workflowProgress, workflowGuidance, workflowLabels, directorStageContext, directorStageInstructions, type DirectorStageContext } from './script-workflow.js'
 import { scriptSettingsSchema, scriptIntentSchema, scriptIntentPrompt, parseScriptIntent, mergeConfirmedScriptSettings } from './script-intent.js'
@@ -40,6 +43,11 @@ import { documentHealth, documentReviewSchema } from './script-document-review.j
 import { projectDocuments } from './script-document-tools.js'
 import { fetchModelCatalog, type ModelCatalogConfig } from './model-catalog.js'
 import { extractVideoFrame, probeVideoDurationMs, render, type RenderClip } from './render.js'
+import { registerSpeechRoutes, speechCredentials, completeSpeechJob, type SpeechSnapshot } from './speech-routes.js'
+import { synthesizeSpeech, type SpeechSynthesisResult } from './speech-provider.js'
+import { probeSpeechDurationMs } from './speech-audio.js'
+import { registerAssetDownloadRoutes } from './asset-downloads.js'
+import { getAssetPreview } from './asset-previews.js'
 
 const idParams = z.object({ id: z.string().min(1) })
 const projectInput = z.object({ name: z.string().trim().min(1).max(120), brief: z.string().default(''), ratio: z.enum(['16:9', '9:16']).default('16:9') })
@@ -260,6 +268,7 @@ const modelCatalogImport = z.object({
     enabled: z.boolean().default(false),
   })).min(1).max(100),
 })
+const videoReferenceUsageInput = z.array(z.object({ asset_id: z.string().min(1).max(100), usage: z.enum(videoReferenceUsages) }).strict()).max(10)
 const generationInput = z.object({
   // Image assets created from the script director are project-level and do
   // not belong to a shot yet. Video generation still requires a shot in the
@@ -269,6 +278,7 @@ const generationInput = z.object({
   mode: z.enum(['text', 'first_frame', 'first_last_frame', 'reference', 'edit', 'extend']).default('text'),
   reference_asset_ids: z.array(z.string()).max(10).default([]),
   storyboard_reference_asset_id: z.string().min(1).nullable().optional(),
+  video_reference_usages: videoReferenceUsageInput.optional(),
   excluded_visual_profile_ids: z.array(z.string().min(1)).max(50).optional(),
   reference_video_url: z.string().nullable().optional(), resolution: z.string().nullable().optional(),
   // Optional image-generation controls are kept provider-neutral. Providers
@@ -359,6 +369,7 @@ const canvasSettings = z.object({
   visual_completed_job_id: canvasId.optional(),
   visual_reference_mode: z.enum(['profiles', 'keyframe', 'text_only']).optional(),
   storyboard_reference_asset_id: canvasId.nullable().optional(),
+  video_reference_usages: videoReferenceUsageInput.optional(),
   excluded_visual_profile_ids: z.array(canvasId).max(50).optional(),
   role: z.enum(['script']).optional(),
   text_mode: z.enum(['choose', 'write', 'video']).optional(),
@@ -411,6 +422,7 @@ const timelineClipPatch = z.object({
 }).strict().refine(data => Object.values(data).some(value => value !== undefined), '请提供片段设置')
 const retryJobInput = z.object({ prompt: z.string().trim().min(1).max(20_000).optional() }).strict()
 const frameQuery = z.object({ time_ms: z.coerce.number().int().min(0) })
+const previewQuery = z.object({ size: z.enum(['320', '640', '960']).default('640') })
 const frameExtractionInput = z.object({
   frames: z.array(z.enum(['first', 'last'])).min(1).max(2),
 }).strict().refine(data => new Set(data.frames).size === data.frames.length, {
@@ -570,11 +582,12 @@ function touchProject(id: string): void {
   run('UPDATE projects SET updated_at=? WHERE id=?', now(), id)
 }
 
-function projectCanvas(projectId: string) {
-  const nodes = all<CanvasNode>('SELECT * FROM canvas_nodes WHERE project_id=? ORDER BY position', projectId)
-    .map(({ project_id, position, settings, ...node }) => ({ ...node, settings: JSON.parse(settings) as z.infer<typeof canvasSettings> }))
-  const edges = all<CanvasEdge>('SELECT * FROM canvas_edges WHERE project_id=? ORDER BY position', projectId)
-    .map(({ project_id, position, reference_asset_id, ...edge }) => ({ ...edge, ...(reference_asset_id ? { reference_asset_id } : {}) }))
+function projectCanvas(projectId: string, canvasId = defaultCanvas(projectId).id) {
+  const canvas = canvasRecord(projectId, canvasId)
+  const nodes = all<CanvasNode>('SELECT * FROM canvas_nodes WHERE project_id=? AND (canvas_id=? OR (canvas_id IS NULL AND ?=1)) ORDER BY position', projectId, canvas.id, canvas.is_default)
+    .map(({ project_id, canvas_id, position, settings, ...node }) => ({ ...node, settings: JSON.parse(settings) as z.infer<typeof canvasSettings> }))
+  const edges = all<CanvasEdge>('SELECT * FROM canvas_edges WHERE project_id=? AND (canvas_id=? OR (canvas_id IS NULL AND ?=1)) ORDER BY position', projectId, canvas.id, canvas.is_default)
+    .map(({ project_id, canvas_id, position, reference_asset_id, ...edge }) => ({ ...edge, ...(reference_asset_id ? { reference_asset_id } : {}) }))
   return { nodes, edges, revision: createHash('sha256').update(JSON.stringify({ nodes, edges })).digest('hex') }
 }
 
@@ -1377,6 +1390,8 @@ function validateGeneration(data: z.infer<typeof generationInput>, model: Model,
   const references = data.reference_asset_ids.map(id => required<Asset>('assets', id))
   if (references.some(asset => asset.project_id !== projectId || asset.kind !== 'image')) invalid('参考图片必须来自当前项目')
   if (new Set(data.reference_asset_ids).size !== data.reference_asset_ids.length) invalid('参考图片不能重复')
+  const usageIssue = videoReferenceUsageIssue(data.video_reference_usages, data.reference_asset_ids, data.mode, model.modality)
+  if (usageIssue) invalid(usageIssue)
   if (model.modality === 'text' && data.mode !== 'text') invalid('文本模型只支持文本模式')
   if (model.modality === 'image' && !['text', 'reference'].includes(data.mode)) invalid('图片模型只支持文生图或图生图模式')
   if (model.modality === 'image' && data.mode === 'reference' && !references.length) invalid('图生图模式需要至少一张参考图片')
@@ -1436,6 +1451,7 @@ async function processJob(job: Job): Promise<void> {
   let kind: Asset['kind']
   let source: Asset['source']
   let remoteUrl: string | null = null
+  let speechResult: SpeechSynthesisResult | undefined
   if (job.job_type === 'export') {
     const project = request.project as Project
     const clips = request.clips as RenderClip[]
@@ -1443,6 +1459,17 @@ async function processJob(job: Job): Promise<void> {
     path = await render(project, clips, Object.fromEntries(assets.map(asset => [asset.id, asset])))
     kind = 'video'
     source = 'export'
+  } else if (request.tts) {
+    const snapshot = request.tts as SpeechSnapshot
+    speechResult = await synthesizeSpeech({ ...snapshot, api_key: speechCredentials() })
+    const outputDir = join(mediaDir, job.project_id)
+    await mkdir(outputDir, { recursive: true })
+    path = join(outputDir, `speech-${snapshot.take_id}.mp3`)
+    await writeFile(path, speechResult.audio)
+    try { speechResult.duration_ms = await probeSpeechDurationMs(path) }
+    catch (error) { await rm(path, { force: true }); throw error }
+    kind = 'audio'
+    source = 'generated'
   } else {
     const recovery = one<{ result_url_ciphertext: string }>('SELECT result_url_ciphertext FROM job_image_recovery WHERE job_id=?', job.id)
     let result
@@ -1473,6 +1500,10 @@ async function processJob(job: Job): Promise<void> {
       run('INSERT OR IGNORE INTO saved_assets (asset_id, project_id, created_at) VALUES (?, ?, ?)', assetId, job.project_id, now())
     }
     run("UPDATE jobs SET status='succeeded', result_asset_id=?, error=NULL, updated_at=? WHERE id=?", assetId, now(), job.id)
+    if (speechResult) completeSpeechJob(job, assetId, speechResult.duration_ms, {
+      subtitles: speechResult.subtitles, usage_characters: speechResult.usage_characters, request_id: speechResult.request_id,
+    })
+    registerGeneratedVisualReference(job, assetId)
     completeAssetTaskJob(job, assetId, null)
     run('DELETE FROM job_image_recovery WHERE job_id=?', job.id)
     touchProject(job.project_id)
@@ -1526,11 +1557,27 @@ export function buildApp(): FastifyInstance {
   registerVisualProfileRoutes(app, {
     script: projectScript,
     generateBoard: (taskId, input, profile, candidateCount) => enqueueAssetTask(taskId, input, { visual_profile_id: profile.id, visual_profile_revision: profile.revision }, candidateCount),
+    generateReference: async (profile, input, metadata, candidateCount) => {
+      const { data, model } = await generationRequest(profile.project_id, input, false)
+      if (required<{ revision: number }>('visual_profiles', profile.id).revision !== profile.revision) {
+        throw Object.assign(new Error('设定档案已更新，请重新检查独立参考生成参数'), { statusCode: 409 })
+      }
+      const timestamp = now(), jobIds = Array.from({ length: candidateCount }, () => newId())
+      db.transaction(() => {
+        for (const jobId of jobIds) run("INSERT INTO jobs VALUES (?, ?, NULL, ?, 'generation', ?, 'queued', NULL, NULL, NULL, ?, ?)",
+          jobId, profile.project_id, model.id, JSON.stringify({ ...data, ...metadata }), timestamp, timestamp)
+        touchProject(profile.project_id)
+      })()
+      const jobs = jobIds.map(id => jobPublic(required<Job>('jobs', id)))
+      return { job: jobs.at(-1)!, jobs }
+    },
     generateText: creativeText,
   })
   registerScriptCanvasRoutes(app, { script: projectScript, scenePrompt,
     generateText: creativeText })
   registerStoryboardPlanningRoutes(app, { script: projectScript, scenePrompt, generateText: creativeText })
+  registerSpeechRoutes(app, { touchProject, jobPublic })
+  registerAssetDownloadRoutes(app)
 
   app.get('/api/health', async () => ({ ok: true }))
   app.get('/api/projects', async () => all<Project>('SELECT * FROM projects ORDER BY updated_at DESC'))
@@ -1562,12 +1609,11 @@ export function buildApp(): FastifyInstance {
       return projectCanvas(id)
     })()
   })
-  app.put('/api/projects/:id/canvas', async request => {
-    const { id } = parse(idParams, request.params)
-    const data = parse(canvasInput, request.body)
+  const persistCanvas = (id: string, canvasId: string, payload: unknown) => {
+    const data = parse(canvasInput, payload)
     return db.transaction(() => {
-      required<Project>('projects', id)
-      const current = projectCanvas(id)
+      const canvas = canvasRecord(id, canvasId)
+      const current = projectCanvas(id, canvasId)
       if (JSON.stringify({ nodes: current.nodes, edges: current.edges }) ===
           JSON.stringify({ nodes: data.nodes, edges: data.edges })) return current
       if (current.revision !== data.revision) {
@@ -1578,6 +1624,8 @@ export function buildApp(): FastifyInstance {
       for (const node of data.nodes) {
         if (nodeIds.has(node.id)) invalid('画布节点 ID 不能重复')
         nodeIds.add(node.id)
+        const other = one<{ canvas_id: string | null }>('SELECT canvas_id FROM canvas_nodes WHERE project_id=? AND id=?', id, node.id)
+        if (other && (other.canvas_id ? other.canvas_id !== canvasId : !canvas.is_default)) invalid('节点或连接已属于其他画布，请使用移动节点')
         if (node.settings.visual_profile_id) {
           const profile = one<{ project_id: string }>('SELECT project_id FROM visual_profiles WHERE id=?', node.settings.visual_profile_id)
           if (!profile || profile.project_id !== id) invalid('画布设定不属于当前项目')
@@ -1609,6 +1657,8 @@ export function buildApp(): FastifyInstance {
       for (const edge of data.edges) {
         if (edgeIds.has(edge.id)) invalid('画布连接 ID 不能重复')
         edgeIds.add(edge.id)
+        const other = one<{ canvas_id: string | null }>('SELECT canvas_id FROM canvas_edges WHERE project_id=? AND id=?', id, edge.id)
+        if (other && (other.canvas_id ? other.canvas_id !== canvasId : !canvas.is_default)) invalid('节点或连接已属于其他画布，请使用移动节点')
         if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) invalid('画布连接必须指向当前画布的节点')
         if (edge.source === edge.target) invalid('画布节点不能连接自身')
         const pair = JSON.stringify([edge.source, edge.target])
@@ -1623,21 +1673,27 @@ export function buildApp(): FastifyInstance {
           }
         }
       }
-      run('DELETE FROM canvas_edges WHERE project_id=?', id)
-      run('DELETE FROM canvas_nodes WHERE project_id=?', id)
+      run('DELETE FROM canvas_edges WHERE project_id=? AND (canvas_id=? OR (canvas_id IS NULL AND ?=1))', id, canvasId, canvas.is_default)
+      run('DELETE FROM canvas_nodes WHERE project_id=? AND (canvas_id=? OR (canvas_id IS NULL AND ?=1))', id, canvasId, canvas.is_default)
       data.nodes.forEach((node, position) => run(`INSERT INTO canvas_nodes
-        (id, project_id, position, type, x, y, width, height, title, text, asset_id, shot_id, model_id, job_id, prompt, settings)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        node.id, id, position, node.type, node.x, node.y, node.width, node.height,
+        (id, project_id, canvas_id, position, type, x, y, width, height, title, text, asset_id, shot_id, model_id, job_id, prompt, settings)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        node.id, id, canvasId, position, node.type, node.x, node.y, node.width, node.height,
         node.title, node.text, node.asset_id, node.shot_id, node.model_id, node.job_id,
         node.prompt, JSON.stringify(node.settings)))
       data.edges.forEach((edge, position) => run(`INSERT INTO canvas_edges
-        (id, project_id, position, source, target, reference_asset_id) VALUES (?, ?, ?, ?, ?, ?)`,
-        edge.id, id, position, edge.source, edge.target, edge.reference_asset_id || null))
+        (id, project_id, canvas_id, position, source, target, reference_asset_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        edge.id, id, canvasId, position, edge.source, edge.target, edge.reference_asset_id || null))
+      run('UPDATE project_canvases SET updated_at=? WHERE id=?', now(), canvasId)
       touchProject(id)
-      return projectCanvas(id)
+      return projectCanvas(id, canvasId)
     }).immediate()
+  }
+  app.put('/api/projects/:id/canvas', async request => {
+    const { id } = parse(idParams, request.params)
+    return persistCanvas(id, defaultCanvas(id).id, request.body)
   })
+  registerProjectCanvasRoutes(app, { graph: projectCanvas, save: persistCanvas })
   app.get('/api/projects/:id/continuity', async request => {
     const { id } = parse(idParams, request.params)
     required<Project>('projects', id)
@@ -2859,6 +2915,17 @@ export function buildApp(): FastifyInstance {
     if (asset.source === 'export') reply.header('Content-Disposition', `attachment; filename="${asset.filename}"`)
     return reply.send(createReadStream(asset.path))
   })
+  app.get('/api/assets/:id/preview', async (request, reply) => {
+    const { id } = parse(idParams, request.params)
+    const { size } = parse(previewQuery, request.query)
+    const asset = required<Asset>('assets', id)
+    if (!['image', 'video'].includes(asset.kind)) invalid('仅图片或视频支持预览')
+    if (!existsSync(asset.path)) throw Object.assign(new Error('素材文件不存在'), { statusCode: 404 })
+    const preview = await getAssetPreview(asset, Number(size), join(mediaDir, asset.project_id, '.previews'))
+    reply.header('ETag', preview.etag).header('Cache-Control', 'private, max-age=0, must-revalidate')
+    if (request.headers['if-none-match'] === preview.etag) return reply.code(304).send()
+    return reply.type('image/webp').send(preview.bytes)
+  })
   app.get('/api/assets/:id/frame', async (request, reply) => {
     const { id } = parse(idParams, request.params)
     const { time_ms } = parse(frameQuery, request.query)
@@ -3110,6 +3177,7 @@ export function buildApp(): FastifyInstance {
     const { id } = parse(idParams, request.params)
     const job = required<Job>('jobs', id)
     if (job.status !== 'failed') invalid('只能重试失败任务')
+    if (JSON.parse(job.request).tts) invalid('语音合成可能已计费，请先核对调用记录，再在配音页手动生成新的候选。')
     if (job.job_type === 'generation') {
       const model = job.model_id ? one<Model>('SELECT * FROM models WHERE id=?', job.model_id) : undefined
       const recovery = one('SELECT 1 FROM job_image_recovery WHERE job_id=?', id)

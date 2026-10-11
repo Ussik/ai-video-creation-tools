@@ -7,7 +7,7 @@ import { generateStructuredOutput, type OutputContract } from './model-output.js
 import { projectDocuments } from './script-document-tools.js'
 import { projectVisualStyle } from './project-visual-style.js'
 import { projectStyleInstructions } from './visual-style.js'
-import { installedSkills, skillContext, skillPolicy, resolveSkillSelections } from './skills.js'
+import { installedSkills, skillContext, skillPolicy, resolveSkillSelections, skillIdsInput } from './skills.js'
 import { inheritSceneVisualBindings, visualProjectData } from './visual-profiles.js'
 import { shotImagePrompt, shotVideoPrompt } from './shot-prompts.js'
 import { checkScriptCanvasPreparation } from './script-canvas-preparation.js'
@@ -20,7 +20,7 @@ type Context = {
 const ids = z.array(z.string().min(1)).max(100).refine(value => new Set(value).size === value.length, '选择项不可重复')
 const scope = z.object({ scene_ids: ids.min(1) }).strict()
 const planning = scope.extend({ signature: z.string().length(64), model_id: z.string().min(1), document_ids: ids.default([]),
-  skill_ids: ids.max(3).optional(), shots_per_scene: z.number().int().min(2).max(8).nullish(),
+  skill_ids: skillIdsInput.optional(), shots_per_scene: z.number().int().min(2).max(8).nullish(),
   target_duration: z.number().int().min(1).max(600).optional(), instructions: z.string().max(4000).default('') })
 const shotDraft = z.object({ shot_id: z.string().min(1).nullable().optional(), title: z.string().trim().min(1).max(120),
   prompt: z.string().trim().min(1).max(10000), image_prompt: z.string().trim().min(1).max(20000), video_prompt: z.string().trim().min(1).max(20000),
@@ -140,6 +140,8 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       `已有镜头必须全部保留shot_id，并可调整其描述与时长；细分时新增镜头的shot_id为null。不得删除、重复或改用其他场次的ID。现有素材仅保留关联，不代表读取了图片像素。\n` +
       `prompt写镜头叙事。image_prompt只写单幅开镜首帧的景别、机位、主体、姿态、构图和光线；video_prompt写连续动作、表演、运镜、声音与收镜，不写信息图拼版。二者遵守项目画风，不绘制字幕、水印。` +
       `start_state/end_state/cut_note分别写开镜、收镜状态和接镜方式。相邻镜头空间与动作连续。输出所有选中场次的完整JSON方案。\n` +
+      `每镜image_prompt明确人物的正面、侧面、背面或四分之三机位与景别，以便选择对应参考图；按叙事需要选择，不强行统一机位。` +
+      `同场景固定门窗、主要地标、人物相对位置与镜头轴线；反打保留视线和屏幕方向。start_state与end_state写清持握道具的手、服装状态和动作阶段，cut_note说明相邻镜头如何承接。\n` +
       `创作者补充要求：${input.instructions}\n` +
       `选中参考文档：${JSON.stringify(sources.map(({ id, title, content }) => ({ id, title, content })))}\n` +
       `选中场次：${JSON.stringify(state.scenes.map(scene => ({ ...scene, existing_shots: state.shots.filter(shot => shot.source_scene_id === scene.id) })))}\n`

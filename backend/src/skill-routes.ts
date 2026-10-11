@@ -6,8 +6,14 @@ import { all, db, now, required, run } from './db.js'
 import type { Asset, Model, Project, Shot } from './db.js'
 import type { VisualProfile } from './visual-profiles.js'
 import { generateStructuredOutput, type OutputContract } from './model-output.js'
-import { videoReferenceManifest } from './video-reference-manifest.js'
+import { scopedVisualReferenceAssetIds, videoReferenceManifest } from './video-reference-manifest.js'
+import { videoReferenceUsages, videoReferenceUsageIssue, videoReferenceUsageInstructions, videoReferenceShotGuidance } from './video-reference-usage.js'
+import { visualBindingsForModality, type VisualBindingUsage } from './visual-binding-usage.js'
 import { synchronizeVideoReferencePrompt } from './visual-prompt.js'
+import { parseVisualReferenceSnapshots } from './visual-reference-assets.js'
+import { seedance2PromptGuidance } from './seedance-prompt.js'
+import { videoReferenceConfigError } from './video-reference-config.js'
+import { MAX_AUXILIARY_SKILLS } from './skill-limits.js'
 import { configureSkill, discoverRepository, initSkills, installedSkillDetail, installedSkills, installSkillBundle, loadSkillBundle,
   normalizeSkillRepo, removeInstalledSkill, searchSkillCatalog, skillContext, skillStages, skillStageLabels, skillUpdateStatus,
   skillPolicy, setSkillDefault, resetProjectSkillDefault, skillIdsInput } from './skills.js'
@@ -23,7 +29,7 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
   initSkills()
   const fetcher = context.fetcher || fetch
   app.get('/api/skills', async () => ({ skills: installedSkills(), stages: skillStages.map(value => ({ value, label: skillStageLabels[value] })) }))
-  const selection = z.object({ primary_id: z.string().min(1).nullable(), auxiliary_ids: z.array(z.string().min(1)).max(2).default([]) }).strict()
+  const selection = z.object({ primary_id: z.string().min(1).nullable(), auxiliary_ids: z.array(z.string().min(1)).max(MAX_AUXILIARY_SKILLS).default([]) }).strict()
   const stageParams = z.object({ stage: z.enum(skillStages), id: z.string().min(1).optional() })
   app.get('/api/skills/defaults', async () => ({ policies: skillPolicy() }))
   app.put('/api/skills/defaults/:stage', async request => ({ policies: setSkillDefault(stageParams.parse(request.params).stage, selection.parse(request.body)) }))
@@ -85,6 +91,7 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
       profile_id: z.string().min(1).optional(),
       reference_asset_ids: z.array(z.string().min(1)).max(20).default([]),
       storyboard_reference_asset_id: z.string().min(1).nullable().optional(),
+      video_reference_usages: z.array(z.object({ asset_id: z.string().min(1), usage: z.enum(videoReferenceUsages) }).strict()).max(10).optional(),
       visual_reference_mode: z.enum(['profiles', 'keyframe', 'text_only']).optional(),
       excluded_visual_profile_ids: z.array(z.string().min(1)).max(50).optional(),
       skill_ids: skillIdsInput.optional(),
@@ -96,35 +103,57 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
     if (profile && (profile.project_id !== id || input.stage !== 'image_prompt')) fail('视觉设定不属于当前项目或生成环节不匹配')
     const targetModel = input.target_model_id ? required<Model>('models', input.target_model_id) : null
     if (targetModel && (targetModel.modality !== (input.stage === 'image_prompt' ? 'image' : 'video') || !targetModel.enabled || targetModel.archived)) fail('目标生成模型不可用')
-    const references = [...new Set(input.reference_asset_ids)].map(assetId => {
+    const savedBindings = shot ? all<{ profile_id: string; definition: string; view_requirements: string; revision: number; variant: string; required: number; usage?: VisualBindingUsage;
+      name: string; kind: 'character' | 'location' | 'prop'; board_asset_id: string | null; reference_assets?: string }>('SELECT * FROM shot_visual_bindings WHERE shot_id=? ORDER BY kind, name, profile_id', shot.id)
+      .map(binding => ({ ...binding, reference_assets: parseVisualReferenceSnapshots(binding.reference_assets) })) : []
+    for (const id of input.excluded_visual_profile_ids || []) {
+      const binding = savedBindings.find(binding => binding.profile_id === id)
+      if (!binding || binding.required && visualBindingsForModality([binding], input.stage === 'video_prompt' ? 'video' : 'image').length) fail('只能排除当前镜头的可选参考图')
+    }
+    const bindings = visualBindingsForModality(savedBindings, input.stage === 'video_prompt' ? 'video' : 'image')
+      .filter(binding => !input.excluded_visual_profile_ids?.includes(binding.profile_id))
+    input.reference_asset_ids = scopedVisualReferenceAssetIds(input.reference_asset_ids,
+      savedBindings.map(binding => ({ ...binding, required: !!binding.required })), bindings.map(binding => ({ ...binding, required: !!binding.required })))
+    if (new Set(input.reference_asset_ids).size !== input.reference_asset_ids.length) fail('参考图片不能重复')
+    const usageIssue = videoReferenceUsageIssue(input.video_reference_usages, input.reference_asset_ids, input.mode || 'text', input.stage === 'video_prompt' ? 'video' : 'image')
+    if (usageIssue) fail(usageIssue)
+    const references = input.reference_asset_ids.map(assetId => {
       const asset = required<Asset>('assets', assetId)
       if (asset.project_id !== id || asset.kind !== 'image') fail('参考图必须是当前项目的图片')
       return { id: asset.id, name: asset.filename }
     })
-    const bindings = shot ? all<{ profile_id: string; definition: string; view_requirements: string; revision: number; variant: string; required: number;
-      name: string; kind: 'character' | 'location' | 'prop'; board_asset_id: string | null }>('SELECT * FROM shot_visual_bindings WHERE shot_id=? ORDER BY kind, name, profile_id', shot.id) : []
-    for (const id of input.excluded_visual_profile_ids || []) {
-      const binding = bindings.find(binding => binding.profile_id === id)
-      if (!binding || binding.required) fail('只能排除当前镜头的可选参考图')
-    }
     if (input.storyboard_reference_asset_id && !input.reference_asset_ids.includes(input.storyboard_reference_asset_id)) fail('分镜构图图必须属于实际参考图')
-    const manifest = videoReferenceManifest(input.reference_asset_ids, bindings.filter(binding => input.reference_asset_ids.includes(binding.board_asset_id || ''))
-      .map(binding => ({ ...binding, required: !!binding.required })), {
-      mode: input.mode || 'text', visual_reference_mode: input.visual_reference_mode || 'profiles',
+    const manifest = videoReferenceManifest(input.reference_asset_ids, bindings.map(binding => ({ ...binding, required: !!binding.required })), {
+      mode: input.stage === 'image_prompt' ? 'reference' : input.mode || 'text', visual_reference_mode: input.visual_reference_mode || 'profiles',
       storyboard_reference_asset_id: input.storyboard_reference_asset_id, excluded_visual_profile_ids: input.excluded_visual_profile_ids,
+      video_reference_usages: input.video_reference_usages,
+      append_profile_assets: false,
     })
+    const independentProfiles = new Set(all<{ profile_id: string; asset_id: string }>(`SELECT r.profile_id, r.asset_id FROM visual_profile_reference_assets r
+      JOIN visual_profiles p ON p.id=r.profile_id WHERE p.project_id=? AND r.status='confirmed' AND r.revision=p.revision`, id)
+      .filter(reference => input.reference_asset_ids.includes(reference.asset_id)).map(reference => reference.profile_id))
     const profiles = all<VisualProfile>('SELECT * FROM visual_profiles WHERE project_id=?', id)
-      .filter(profile => profile.board_asset_id && input.reference_asset_ids.includes(profile.board_asset_id))
+      .filter(profile => profile.board_asset_id && input.reference_asset_ids.includes(profile.board_asset_id) || independentProfiles.has(profile.id))
       .map(({ name, definition, view_requirements }) => ({ name, definition, view_requirements }))
     const target = targetModel ? { name: targetModel.name, remote_id: targetModel.remote_id, settings: JSON.parse(targetModel.settings) } : null
+    if (input.stage === 'video_prompt' && target) {
+      const issue = videoReferenceConfigError(target.settings, references.length, input.mode || 'text')
+      if (issue) fail(issue)
+    }
     const task = `为当前${input.stage === 'image_prompt' ? '图片' : '视频'}节点整理一份可直接提交的完整提示词。保留创作者原有意图，不增加其他镜头。` +
       `\n${projectStyleInstructions(projectVisualStyle(id))}\n` +
       '不要改变比例、时长、生成模式或参考图顺序。不得伪造已提供参考图的可见内容，只根据设定文字和明确的参考用途写要求。' +
       '不生成媒体，不添加工作流说明、文件路径、Markdown 文档结构或第二次确认。输出中文；原有逐字对白保持原文。\n' +
       `项目：${project.name}；创意：${project.brief}；配置：${JSON.stringify({ ratio: input.ratio || project.ratio, duration: input.duration, mode: input.mode })}\n` +
       `目标模型：${JSON.stringify(target)}\n当前镜头：${JSON.stringify(shot)}\n视觉设定：${JSON.stringify({ profile, bindings, profiles })}\n` +
-      `实际参考图（按输入顺序）：${JSON.stringify(references.map((reference, index) => ({ ...reference, image_number: index + 1, purpose: manifest[index]?.purpose, objects: manifest[index]?.name })))}\n` +
-      (input.stage === 'video_prompt' ? '使用“图片N”引用实际图片，N严格对应上述顺序；分镜图用于构图与动作起点，人物/场景/道具图用于对应对象的一致性。首帧与多图参考不能混用，不复制信息图拼版、标签或其他角色。\n' : '') +
+      `实际参考图（按输入顺序）：${JSON.stringify(references.map((reference, index) => {
+        const entry = manifest.find(item => item.asset_id === reference.id)
+        return { ...reference, image_number: index + 1, purpose: entry?.purpose, objects: entry?.name,
+          usage: entry?.usage, usage_instruction: entry?.usage ? videoReferenceUsageInstructions[entry.usage] : undefined,
+          view: entry?.view, reference_purpose: entry?.reference_purpose, reference_label: entry?.reference_label, reference_details: entry?.reference_details }
+      }))}\n` +
+      (input.stage === 'video_prompt' ? `使用“图片N”引用实际图片，N严格对应上述顺序；逐图usage_instruction优先于素材的默认用途。${videoReferenceShotGuidance}不复制信息图拼版、标签或其他角色。\n` : '') +
+      (input.stage === 'video_prompt' ? seedance2PromptGuidance(target) : '') +
       `原提示词：\n${input.prompt}\n` +
       '只输出合法 JSON 对象：{"prompt":"完整可编辑的提示词"}。'
     const rules = skillContext(input.stage, task, input.skill_ids, id)
@@ -132,7 +161,7 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
       (text, contract) => context.generateText(id, input.model_id, text, contract), rules.text + '\n【本次任务与输出格式】\n' + task)
     const refined = input.stage === 'video_prompt' ? synchronizeVideoReferencePrompt(result.prompt, bindings, input.reference_asset_ids,
       input.visual_reference_mode || 'profiles', { mode: input.mode, storyboard_reference_asset_id: input.storyboard_reference_asset_id,
-        excluded_visual_profile_ids: input.excluded_visual_profile_ids }) : result.prompt
+        excluded_visual_profile_ids: input.excluded_visual_profile_ids, video_reference_usages: input.video_reference_usages }) : result.prompt
     const prompt = withProjectStyle(refined, projectVisualStyle(id))
     if (prompt.length > 80_000) fail('整理后的提示词过长，请缩短补充要求后重试')
     return { prompt, skills: rules.skills, loaded_files: rules.files }

@@ -10,6 +10,54 @@ function roundTrip(value: string): [JSONContent, string, JSONContent] {
   return [parsed, markdown, parseScriptDocument(markdown)]
 }
 
+test('scene and relationship tables have real rows and cells across Markdown reloads', () => {
+  const source = '## 全剧场景设计\n说明正文。\n| 地点（暂名） | 类别 | 主要剧情功能 | 出现阶段 |\n| --- | :---: | --- | ---: |\n| **旧祠堂** | 核心场景 | 家族记忆与真相浮出水面 | 1—20集 |\n| 桥头 | 外景 | 追逐与冲突 | 中段 |\n## 人物关系\n关系 | 性质 | 变化方向\n--- | --- | ---\n林晚与奶奶 | 亲情 | 依赖转为理解'
+  const [parsed, markdown, reloaded] = roundTrip(source)
+  assert.deepEqual(parsed.content?.map(node => node.type), ['heading', 'paragraph', 'table', 'heading', 'table'])
+  const scenes = parsed.content![2]
+  assert.equal(scenes.content?.length, 3)
+  assert.equal(scenes.content?.[0].content?.every(cell => cell.type === 'tableHeader'), true)
+  assert.equal(scenes.content?.[1].content?.every(cell => cell.type === 'tableCell'), true)
+  assert.equal(scenes.content?.[1].content?.[1].attrs?.align, 'center')
+  assert.equal(scenes.content?.[1].content?.[3].attrs?.align, 'right')
+  assert.match(markdown, /\| --- \| :---: \| --- \| ---: \|/)
+  assert.deepEqual(reloaded, parsed)
+  assert.equal(textDocumentText(parsed.content![4]), '关系\t性质\t变化方向\n林晚与奶奶\t亲情\t依赖转为理解')
+})
+
+test('table cells preserve escaped pipes, backslashes, marks, empty cells and explicit breaks', () => {
+  const source = String.raw`| 名称 | 说明 |
+| :--- | --- |
+| 林晚\|奶奶 | **第一行**<br/>_第二行_<BR>第三行 |
+| 路径\\末尾 | \<br\> 与 <script>普通文本</script> |
+|  | 空白名称 |`
+  const [parsed, markdown, reloaded] = roundTrip(source)
+  const rows = parsed.content![0].content!
+  assert.equal(rows.length, 4)
+  assert.equal(textDocumentText(rows[1]), '林晚|奶奶\t第一行\n第二行\n第三行')
+  assert.equal(textDocumentText(rows[2]), '路径\\末尾\t<br> 与 <script>普通文本</script>')
+  assert.equal(rows[3].content?.[0].content?.[0].content, undefined)
+  assert.match(markdown, /林晚\\\|奶奶/)
+  assert.deepEqual(reloaded, parsed)
+})
+
+test('malformed pipe prose and fenced table examples remain text', () => {
+  for (const source of ['甲 | 乙\n仍是正文', '| 名称 | 状态 |\n| --- | 待定 |', '| 名称 | 状态 |\n| --- |', '```md\n| 名称 | 状态 |\n| --- | --- |\n| 林晚 | 已确认 |\n```']) {
+    const [parsed, , reloaded] = roundTrip(source)
+    assert.equal(parsed.content?.some(node => node.type === 'table'), false)
+    assert.deepEqual(reloaded, parsed)
+  }
+})
+
+test('tables preserve missing cells and quoted or list-indented structures', () => {
+  for (const source of ['> | 人物 | 说明 |\n> | --- | --- |\n> | 林晚 |', '- 设定\n\n  | 人物 | 说明 |\n  | --- | --- |\n  | 林晚 | 已确认 |']) {
+    const [parsed, , reloaded] = roundTrip(source)
+    assert.deepEqual(reloaded, parsed)
+    assert.match(JSON.stringify(parsed), /tableHeader/)
+    assert.match(textDocumentText(parsed), /林晚/)
+  }
+})
+
 test('recognizes compact Chinese headings from generated outlines without blank separators', () => {
   const source = '#全剧故事大纲\n##项目信息\n项目名称：未命名项目\n##故事主线\n正文\n###人物目标\n目标正文'
   const [parsed, markdown, reloaded] = roundTrip(source)

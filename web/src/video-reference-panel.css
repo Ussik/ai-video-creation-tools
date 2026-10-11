@@ -12,7 +12,11 @@
 .pc-video-reference-unavailable { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; color: #999; font-size: 10px; }
 .pc-video-reference-meta { display: grid; gap: 2px; padding-top: 4px; }
 .pc-video-reference-purpose { display: inline-flex; align-items: center; gap: 4px; font-size: 9px; color: #929292; }
+.pc-video-reference-usage { width: 100%; min-width: 0; height: 23px; padding: 0 2px; border: 1px solid #484848; border-radius: 4px; color: #ccc; background: #292929; font: inherit; font-size: 10px; cursor: pointer; }
+.pc-video-reference-usage:disabled { opacity: .55; cursor: default; }
+.pc-video-reference-usage:focus-visible { outline: 2px solid #a4a4a4; outline-offset: 1px; }
 .pc-video-reference-meta strong { display: block; padding-right: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; font-weight: 400; color: #c9c9c9; }
+.pc-video-reference-use { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; color: #999; font-size: 9px; line-height: 1.4; overflow-wrap: anywhere; }
 .pc-video-reference-actions { position: absolute; top: 4px; right: 4px; display: flex; gap: 3px; }
 .pc-video-reference-actions button { display: grid; place-items: center; width: 21px; height: 21px; padding: 0; border: 1px solid #5558; border-radius: 4px; color: #ddd; background: #262626ed; cursor: pointer; }
 .pc-video-reference-actions button:hover { border-color: #999; background: #3b3b3b; }

@@ -59,6 +59,22 @@ test('confirmed shot snapshots allow the first shot, even when the current profi
     [imported.graph.nodes.find(item => item.asset_id === 'old-board')!.id])
 })
 
+test('independent views import inside their profile without unused old-board or per-angle canvas nodes', () => {
+  const input = structuredClone(result)
+  input.visual_profiles[0].board_asset_id = 'new-board'
+  input.shot_visual_bindings[0].board_asset_id = 'old-board'
+  input.shot_visual_bindings[0].reference_assets = [
+    { id: 'side-ref', asset_id: 'side-image', revision: 1, style_version: null, view: 'side', purpose: 'costume', label: '侧面' },
+    { id: 'face-ref', asset_id: 'face-image', revision: 1, style_version: null, view: 'face', purpose: 'identity', label: '面部' },
+  ]
+  const imported = addScriptCanvasNodes(graph(), input, '9:16', imageModel, models)
+  assert.equal(imported.graph.nodes.length, 2)
+  assert.equal(imported.addedReferences, 0)
+  const ready = { ...detail(input), assets: [{ id: 'side-image', kind: 'image' }, { id: 'face-image', kind: 'image' }] } as ProjectDetail
+  assert.equal(scriptCanvasInitialFocus(imported, input, ready, models).missingReferenceCount, 0)
+  assert.deepEqual(automaticVisualReferenceEdges(imported.graph, ready, models).map(edge => edge.reference_asset_id), ['side-image', 'face-image'])
+})
+
 test('a current approved profile does not fill an empty or deleted historical shot reference', () => {
   const input = structuredClone(result)
   input.visual_profiles[0].board_asset_id = 'current-board'; input.visual_profiles[0].revision = 2

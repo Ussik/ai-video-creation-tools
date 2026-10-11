@@ -97,11 +97,17 @@ function initialGraph(mode: 'reference' | 'first_frame', extraManual = false): C
   ], edges: [{ id: 'storyboard-edge', source: 'storyboard-node', target: 'video-node', reference_asset_id: 'storyboard' },
     ...(extraManual ? [{ id: 'manual-edge', source: 'manual-node', target: 'video-node', reference_asset_id: 'manual' }] : [])] }
 }
-type PreviewInput = { mode: string; reference_asset_ids: string[]; prompt: string; visual_reference_mode: string; excluded_visual_profile_ids?: string[]; storyboard_reference_asset_id?: string | null }
-function mockApi(t: TestContext, graph: CanvasGraph) {
+type PreviewInput = { video_reference_usages?: import('../../backend/src/video-reference-usage').VideoReferenceUsageSelection[]; mode: string; reference_asset_ids: string[]; prompt: string; visual_reference_mode: string; excluded_visual_profile_ids?: string[]; storyboard_reference_asset_id?: string | null }
+function mockApi(t: TestContext, graph: CanvasGraph, projectDetail = detail) {
   const previews: PreviewInput[] = [], saved: CanvasGraph[] = []
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
     const path = String(url), method = init?.method || 'GET'
+    if (path === '/api/projects/video-reference-test/canvases') return Response.json([{ id: 'video-reference-test', project_id: 'video-reference-test', name: '画布 1', is_default: true, node_count: graph.nodes.length, viewport: null }])
+    if (path === '/api/projects/video-reference-test/skills/defaults') {
+      assert.equal(method, 'GET')
+      return Response.json({ policies: [{ stage: 'video_prompt', label: '视频提示词', primary_id: 'video-a', auxiliary_ids: [], source: 'global', warning: '',
+        skills: ['a', 'b', 'c'].map(id => ({ id: `video-${id}`, name: `视频技能${id}`, description: `技能${id}的说明`, revision: 'a'.repeat(40) })) }] })
+    }
     if (path === '/api/projects/video-reference-test/canvas') {
       if (method === 'GET') return Response.json(graph)
       assert.equal(method, 'PUT')
@@ -114,7 +120,8 @@ function mockApi(t: TestContext, graph: CanvasGraph) {
     previews.push(request)
     // The server resolves bound boards; it never needs the UI to turn them into manual connections.
     const profileIds = request.mode === 'reference' && request.visual_reference_mode === 'profiles'
-      ? ['hero-board', ...(request.excluded_visual_profile_ids?.includes('station') ? [] : ['station-board'])] : []
+      ? (projectDetail.shot_visual_bindings || []).filter(binding => binding.required || !request.excluded_visual_profile_ids?.includes(binding.profile_id))
+        .flatMap(binding => binding.reference_assets?.length ? binding.reference_assets.map(reference => reference.asset_id) : binding.board_asset_id ? [binding.board_asset_id] : []) : []
     return Response.json({ ...request, reference_asset_ids: [...new Set([...request.reference_asset_ids, ...profileIds])], visual_signature: 'mock-reviewed-bindings' })
   })
   return { previews, saved }
@@ -128,7 +135,7 @@ async function settle() {
     }
   })
 }
-async function mount(projectDetail = detail) {
+async function mount(projectDetail = detail, portals = false) {
   dom.window.localStorage.clear(); dom.window.sessionStorage.clear(); frames.clear()
   dom.window.localStorage.setItem('project-canvas-viewport:video-reference-test', JSON.stringify({ x: 0, y: 0, zoom: 0.8 }))
   const container = document.createElement('div'); document.body.append(container)
@@ -136,7 +143,10 @@ async function mount(projectDetail = detail) {
   const props: ProjectCanvasProps = { detail: projectDetail, models: [videoModel], providers: [{ id: 'provider', name: '本地测试', adapter: 'http', enabled: true } as ProjectCanvasProps['providers'][number]],
     initialLocation: { view: 'canvas', storyboardId: null }, onRefresh: async () => {}, onOpenModels: () => {}, onNavigate: () => {}, onOpenScriptCreator: () => {} }
   try {
-    await act(() => root.render(<MantineProvider env="test"><ProjectCanvas {...props} /></MantineProvider>)); await settle()
+    await act(() => root.render(<MantineProvider env={portals ? 'default' : 'test'} theme={portals ? { components: {
+      Modal: { defaultProps: { transitionProps: { duration: 0 } } },
+      Popover: { defaultProps: { transitionProps: { duration: 0 } } },
+    } } : undefined}><ProjectCanvas {...props} /></MantineProvider>)); await settle()
     const video = container.querySelector<HTMLElement>('[data-id="video-node"]')!
     assert.ok(video)
     await act(() => video.click()); await settle()
@@ -169,6 +179,100 @@ async function mount(projectDetail = detail) {
     destroy: async () => { await act(() => root.unmount()); await settle(); container.remove(); frames.clear() } }
 }
 
+test('pointer interactions with portaled prompt skills keep the selected node and refinement modal open', async t => {
+  const api = mockApi(t, initialGraph('reference'))
+  // Mantine's test environment disables portals and hides this regression.
+  const view = await mount(detail, true)
+  const pointerClick = async (element: HTMLElement) => {
+    await act(() => element.dispatchEvent(new dom.window.MouseEvent('pointerdown', { bubbles: true, cancelable: true }))); await settle()
+    assert.ok(element.isConnected, 'pointer-down must not unmount the active editor')
+    await act(() => element.click()); await settle()
+  }
+  const modal = () => {
+    const element = document.querySelector('.prompt-skill-modal')
+    assert.ok(element, 'prompt refinement modal stays open')
+    assert.ok(view.container.querySelector('[data-id="video-node"].selected'), 'active node remains selected')
+    assert.ok(view.container.querySelector('.pc-composer-anchor'), 'node editor remains mounted')
+    return element
+  }
+  const chooseSkill = async (label: string, id: string) => {
+    const input = document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!
+    assert.ok(input)
+    await pointerClick(input)
+    const listbox = document.getElementById(input.getAttribute('aria-controls') || '')
+    assert.ok(listbox)
+    const option = listbox.querySelector<HTMLElement>(`[role="option"][value="${id}"]`)!
+    assert.ok(option)
+    await pointerClick(option)
+    modal()
+  }
+  try {
+    await pointerClick(view.button('使用技能整理提示词'))
+    modal()
+    await pointerClick(view.button('视频提示词技能选择'))
+    const popover = document.querySelector<HTMLElement>('.creative-skill-popover')!
+    assert.ok(popover)
+    assert.equal(modal().contains(popover), false, 'regression exercises an actual portal outside the modal')
+    await pointerClick(popover.querySelector<HTMLElement>('header')!)
+    modal()
+    await chooseSkill('video_prompt主技能', 'video-b')
+    assert.match(modal().querySelector('.prompt-skill-primary')!.textContent!, /视频技能b/)
+    await chooseSkill('video_prompt辅助技能', 'video-a')
+    assert.match(modal().querySelector('.prompt-skill-card > p')!.textContent!, /辅助技能 1 个/)
+    const about = document.querySelector<HTMLDetailsElement>('.creative-skill-about')!
+    await pointerClick(about.querySelector('summary')!)
+    assert.equal(about.open, true)
+    const config = document.querySelector<HTMLDetailsElement>('.creative-skill-more-config')!
+    await pointerClick(config.querySelector('summary')!)
+    assert.equal(config.open, true)
+    modal()
+    assert.deepEqual(api.previews, [], 'choosing skills cannot trigger paid work or even a generation preview')
+    assert.deepEqual(api.saved, [], 'skill choices do not write the canvas or defaults')
+    await pointerClick(view.button('关闭整理提示词'))
+    assert.equal(document.querySelector('.prompt-skill-modal'), null, 'explicit close still works')
+    assert.ok(view.prompt())
+  } finally { await view.destroy() }
+})
+
+test('prompt primary and auxiliary choices carry into the next real canvas node and reopen', async t => {
+  const graph = initialGraph('reference')
+  graph.nodes.push({ ...graph.nodes[1], id: 'next-video-node', title: '下一镜视频', x: 900 })
+  const api = mockApi(t, graph)
+  const view = await mount()
+  const skillSummary = () => {
+    const modal = document.querySelector('.prompt-skill-modal')!
+    assert.ok(modal)
+    assert.match(modal.querySelector('.prompt-skill-primary')!.textContent!, /视频技能b/)
+    assert.match(modal.querySelector('.prompt-skill-card > p')!.textContent!, /辅助技能 1 个/)
+  }
+  const choose = async (label: string, id: string) => {
+    const input = document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!
+    await act(() => input.click()); await settle()
+    const option = document.getElementById(input.getAttribute('aria-controls')!)!.querySelector<HTMLElement>(`[role="option"][value="${id}"]`)!
+    assert.ok(option)
+    await act(() => option.click()); await settle()
+  }
+  try {
+    await act(() => view.button('使用技能整理提示词').click()); await settle()
+    await act(() => view.button('视频提示词技能选择').click()); await settle()
+    await choose('video_prompt主技能', 'video-b')
+    await choose('video_prompt辅助技能', 'video-a')
+    skillSummary()
+    await act(() => view.button('关闭整理提示词').click()); await settle()
+    await act(() => view.button('使用技能整理提示词').click()); await settle()
+    skillSummary()
+    await act(() => view.button('关闭整理提示词').click()); await settle()
+    await act(() => view.container.querySelector<HTMLElement>('[data-id="next-video-node"]')!.click()); await settle()
+    assert.ok(view.container.querySelector('[data-id="next-video-node"].selected'))
+    await act(() => view.button('使用技能整理提示词').click()); await settle()
+    skillSummary()
+    await act(() => view.button('视频提示词技能选择').click()); await settle()
+    assert.equal(document.querySelector<HTMLInputElement>('input[aria-label="video_prompt辅助技能"]')!.parentElement?.textContent?.includes('视频技能a'), true)
+    assert.deepEqual(api.saved, [])
+    assert.deepEqual(api.previews, [])
+  } finally { await view.destroy() }
+})
+
 test('actual video composer numbers bound boards and synchronizes optional exclusions with editable prompt and preview request', async t => {
   const api = mockApi(t, initialGraph('reference'))
   const view = await mount()
@@ -200,6 +304,36 @@ test('actual video composer numbers bound boards and synchronizes optional exclu
     assert.deepEqual(api.previews[1].excluded_visual_profile_ids, [])
     assert.deepEqual([...document.querySelectorAll('.pc-generation-info-content .pc-visual-thumbnails img')].map(image => image.getAttribute('src')),
       ['/api/assets/storyboard/file', '/api/assets/hero-board/file', '/api/assets/station-board/file'])
+  } finally { await view.destroy() }
+})
+
+test('actual video composer inherits independent shot angles without adding the connected profile board and preserves them when changing modes', async t => {
+  const snapshots = [
+    { id: 'side-ref', asset_id: 'hero-side', view: 'side' as const, purpose: 'costume' as const, label: '校服侧面', revision: 2, style_version: 'anime' },
+    { id: 'face-ref', asset_id: 'hero-face', view: 'face' as const, purpose: 'identity' as const, label: '林晚面部', revision: 2, style_version: 'anime' },
+  ]
+  const projectDetail: ProjectDetail = { ...detail, project_visual_style: { version: 'anime', label: '日漫', source: 'settings', details: {} } as ProjectDetail['project_visual_style'],
+    visual_profiles: [{ ...hero, board_style_status: 'needs_review', board_style_version: 'old' }, station],
+    shot_visual_bindings: [{ ...bind(hero, true), reference_assets: snapshots }, bind(station, false)],
+    assets: [...detail.assets, ...snapshots.map(reference => ({ ...detail.assets[0], id: reference.asset_id, shot_id: null, filename: `${reference.asset_id}.png`, url: `/api/assets/${reference.asset_id}/file` }))],
+  }
+  const graph = initialGraph('reference')
+  graph.nodes.push({ ...node('hero-node', 'generation', 900, 'hero-board'), title: '林晚设定', settings: { modality: 'image', visual_profile_id: hero.id, visual_profile_revision: 2 } })
+  graph.edges.push({ id: 'hero-edge', source: 'hero-node', target: 'video-node' })
+  const api = mockApi(t, graph, projectDetail), view = await mount(projectDetail)
+  try {
+    assert.equal(view.container.querySelector('[aria-label="待补齐参考图"]'), null, 'a legacy board must not invalidate the approved independent snapshot')
+    assert.deepEqual(view.images(), ['图片1', '图片2', '图片3', '图片4'])
+    assert.match(view.prompt().value, /侧面|校服侧面/)
+    assert.match(view.prompt().value, /面部|林晚面部/)
+    await view.preview()
+    assert.deepEqual(api.previews[0].reference_asset_ids, ['storyboard', 'hero-side', 'hero-face'])
+    assert.ok(!api.previews[0].reference_asset_ids.includes('hero-board'))
+    await view.selectMode('首帧承接')
+    assert.deepEqual(view.images(), ['图片1'])
+    await view.selectMode('多图参考')
+    assert.deepEqual(view.images(), ['图片1', '图片2', '图片3', '图片4'])
+    assert.match(view.prompt().value, /林晚面部/)
   } finally { await view.destroy() }
 })
 
@@ -286,7 +420,7 @@ test('running video nodes lock quick mode actions just like the composer menu', 
     await act(() => view.container.querySelector<HTMLElement>('[data-id="storyboard-node"]')!.click()); await settle()
     const video = view.container.querySelector<HTMLElement>('[data-id="video-node"]')!
     const quick = [...video.querySelectorAll<HTMLButtonElement>('.pc-node-try-action')]
-    assert.deepEqual(quick.map(button => button.textContent), ['首帧承接', '首尾帧'])
+    assert.deepEqual(quick.map(button => button.textContent), ['多图参考', '首帧承接', '首尾帧'])
     assert.ok(quick.every(button => button.disabled))
     await act(() => quick[0].click()); await settle()
     await act(() => video.click()); await settle()
@@ -324,5 +458,51 @@ test('switching the actual composer to strict first-frame ignores dormant unconf
     await view.selectMode('多图参考')
     assert.match(view.container.querySelector('[aria-label="待补齐参考图"]')?.textContent || '', /待补齐参考图 · 2/,
       'restoring multi-reference restores required preparation for the retained profile inputs')
+  } finally { await view.destroy() }
+})
+
+
+test('per-image uses persist through node changes, mode changes and reload and match preview', async t => {
+  const graph = initialGraph('reference', true), api = mockApi(t, graph)
+  let view = await mount()
+  const choose = async (index: number, usage: string) => {
+    const select = view.container.querySelector<HTMLSelectElement>(`select[aria-label="图片${index}的用途"]`)!
+    assert.ok(select)
+    await act(() => { select.value = usage; select.dispatchEvent(new dom.window.Event('change', { bubbles: true })) }); await settle()
+  }
+  try {
+    await view.editPrompt(`${view.prompt().value}\n开场无人抱起林晚，结尾才抱起。固定机位。`)
+    await choose(1, 'ending'); await choose(2, 'scale')
+    assert.match(view.prompt().value, /图片1：分镜构图.*结尾构图/)
+    assert.match(view.prompt().value, /图片2：手动参考.*只参考.*相对大小/)
+    assert.match(view.prompt().value, /开场无人抱起林晚，结尾才抱起/)
+    await view.preview()
+    const expected = [{ asset_id: 'storyboard', usage: 'ending' }, { asset_id: 'manual', usage: 'scale' }]
+    assert.deepEqual(api.previews.at(-1)!.video_reference_usages, expected)
+    assert.match(document.querySelector('.pc-generation-info-content')!.textContent!, /结尾构图/)
+    await view.selectMode('首帧承接')
+    assert.equal(view.container.querySelectorAll('.pc-video-reference-usage').length, 0)
+    await view.preview()
+    assert.deepEqual(api.previews.at(-1)!.video_reference_usages, [])
+    await view.selectMode('多图参考')
+    assert.equal(view.container.querySelector<HTMLSelectElement>('[aria-label="图片1的用途"]')!.value, 'ending')
+    // Switch away and back without unmounting the project.
+    await act(() => view.container.querySelector<HTMLElement>('[data-id="storyboard-node"]')!.click()); await settle()
+    await act(() => view.container.querySelector<HTMLElement>('[data-id="video-node"]')!.click()); await settle()
+    assert.equal(view.container.querySelector<HTMLSelectElement>('[aria-label="图片2的用途"]')!.value, 'scale')
+    await act(() => new Promise(resolve => setTimeout(resolve, 900))); await settle()
+    const last = api.saved.at(-1)!
+    assert.ok(last)
+    assert.deepEqual(last.nodes.find(node => node.id === 'video-node')!.settings.video_reference_usages, expected)
+    Object.assign(graph, last)
+    await view.destroy(); view = await mount()
+    assert.equal(view.container.querySelector<HTMLSelectElement>('[aria-label="图片1的用途"]')!.value, 'ending')
+    assert.match(view.prompt().value, /固定机位/)
+    await act(() => view.button('移除手动参考：分镜构图').click()); await settle()
+    assert.equal(view.container.querySelector<HTMLSelectElement>('[aria-label="图片1的用途"]')!.value, 'scale')
+    await view.preview()
+    assert.deepEqual(api.previews.at(-1)!.reference_asset_ids, ['manual'])
+    assert.equal(api.previews.at(-1)!.storyboard_reference_asset_id, null)
+    assert.deepEqual(api.previews.at(-1)!.video_reference_usages, [{ asset_id: 'manual', usage: 'scale' }])
   } finally { await view.destroy() }
 })

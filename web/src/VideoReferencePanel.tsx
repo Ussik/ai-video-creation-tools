@@ -1,7 +1,9 @@
 import { useId, useState } from 'react'
 import { ChevronDown, ChevronRight, Image as ImageIcon, LockKeyhole, MapPin, RotateCcw, X } from 'lucide-react'
 import type { VideoReferenceEntry, VideoReferencePurpose } from '../../backend/src/video-reference-manifest'
+import { visualReferencePurposeLabels, visualReferenceViewLabels } from '../../backend/src/visual-reference-types'
 import type { Asset } from './api'
+import { videoReferenceUsages, videoReferenceUsageLabels, videoReferenceUsageInstructions, type VideoReferenceUsage } from '../../backend/src/video-reference-usage'
 
 export interface VideoReferencePanelProps {
   entries: VideoReferenceEntry[]
@@ -12,6 +14,7 @@ export interface VideoReferencePanelProps {
   onExclude?: (profileId: string) => void
   onRestore?: (profileId: string) => void
   onRemoveManual?: (assetId: string) => void
+  onChangeUsage?: (assetId: string, usage: VideoReferenceUsage | null) => void
   disabled?: boolean
 }
 
@@ -22,7 +25,7 @@ const purposeLabels: Record<VideoReferencePurpose, string> = {
 
 /** Inline reference images, using exactly the same numbering as the generation request. */
 export default function VideoReferencePanel({
-  entries, assets, excludedBindings = [], onPreview, onLocate, onExclude, onRestore, onRemoveManual, disabled,
+  entries, assets, excludedBindings = [], onPreview, onLocate, onExclude, onRestore, onRemoveManual, onChangeUsage, disabled,
 }: VideoReferencePanelProps) {
   const [expanded, setExpanded] = useState(true)
   const contentId = useId()
@@ -39,15 +42,33 @@ export default function VideoReferencePanel({
         {entries.map(entry => {
           const asset = assetMap.get(entry.asset_id)
           const caption = `${entry.name}${entry.variant ? ` · ${entry.variant}` : ''}`
-          const removableManual = !entry.profile_ids.length && entry.purpose === 'manual' && onRemoveManual
+          const referenceDetails = entry.reference_details?.length ? entry.reference_details :
+            entry.view || entry.reference_purpose || entry.reference_label ? [{ view: entry.view, purpose: entry.reference_purpose, label: entry.reference_label }] : []
+          const sharedProfiles = new Set(entry.reference_details?.map(detail => detail.profile_id)).size > 1
+          const uses = entry.usage ? videoReferenceUsageInstructions[entry.usage] : [...new Set(referenceDetails.map(detail => [
+            sharedProfiles && 'name' in detail ? detail.name : undefined,
+            detail.view ? visualReferenceViewLabels[detail.view] : undefined,
+            detail.purpose ? visualReferencePurposeLabels[detail.purpose] : undefined, detail.label,
+          ].filter(Boolean).join(' · ')))].join('；')
+          const descriptionId = `${contentId}-reference-${entry.index}`
+          const removableManual = !entry.profile_ids.length && ['manual', 'storyboard'].includes(entry.purpose) && onRemoveManual
           return <li className="pc-video-reference" key={entry.asset_id}>
             <button type="button" className="pc-video-reference-preview" aria-label={`查看图片${entry.index}：${caption}`}
+              aria-describedby={uses ? descriptionId : undefined}
               disabled={!asset} onClick={() => { if (asset) onPreview(asset) }}>
-              {asset ? <img src={asset.url} alt={caption} loading="lazy" /> : <span className="pc-video-reference-unavailable"><ImageIcon size={17} /><span>图片缺失</span></span>}
+              {asset ? <img src={asset.url} alt={uses ? `${caption} · ${uses}` : caption} loading="lazy" /> : <span className="pc-video-reference-unavailable"><ImageIcon size={17} /><span>图片缺失</span></span>}
               <span className="pc-video-reference-number">图片{entry.index}</span>
             </button>
             <div className="pc-video-reference-meta"><span className="pc-video-reference-purpose">{purposeLabels[entry.purpose]}{entry.required && <LockKeyhole size={10} aria-label="必需参考" />}</span>
               <strong title={caption}>{caption}</strong>
+              {onChangeUsage && !['first_frame', 'last_frame'].includes(entry.purpose) && <select className="pc-video-reference-usage"
+                aria-label={`图片${entry.index}的用途`} value={entry.usage || ''} disabled={disabled}
+                title={entry.usage ? videoReferenceUsageInstructions[entry.usage] : entry.purpose === 'storyboard' ? videoReferenceUsageInstructions.composition : '使用素材设定中的默认用途'}
+                onChange={event => onChangeUsage(entry.asset_id, event.currentTarget.value as VideoReferenceUsage || null)}>
+                <option value="">{entry.purpose === 'storyboard' ? '默认：整体构图' : '按素材设定'}</option>
+                {videoReferenceUsages.map(usage => <option key={usage} value={usage}>{videoReferenceUsageLabels[usage]}</option>)}
+              </select>}
+              {uses && <span id={descriptionId} className="pc-video-reference-use" title={uses}>{uses}</span>}
             </div>
             {(onLocate || removableManual || !entry.required && entry.profile_ids.length > 0 && onExclude) && <div className="pc-video-reference-actions">
               {onLocate && <button type="button" aria-label={`定位参考节点：${caption}`} title="定位参考节点" disabled={disabled} onClick={() => onLocate(entry)}><MapPin size={12} /></button>}

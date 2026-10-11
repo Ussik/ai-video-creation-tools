@@ -49,11 +49,13 @@ test('video references show actual image numbers and preview or locate the reque
   } finally { await view.destroy() }
 })
 
-test('required profiles and storyboard images have no exclusion or manual removal action', async () => {
+test('required profiles cannot be excluded and an unbound storyboard can be removed', async () => {
   const view = await mount()
   try {
     assert.equal(view.container.querySelector('button[aria-label^="排除"]'), null)
-    assert.equal(view.container.querySelector('button[aria-label^="移除"]'), null)
+    assert.equal(view.container.querySelectorAll('button[aria-label^="移除"]').length, 1)
+    await act(() => view.button('移除手动参考：分镜构图').click())
+    assert.deepEqual(view.removed, ['shot'])
     assert.ok(view.container.querySelector('[aria-label="必需参考"]'))
   } finally { await view.destroy() }
 })
@@ -114,4 +116,42 @@ test('missing images remain numbered and identifiable and cannot invoke a wrong 
 test('empty reference state does not add an empty toolbar', async () => {
   const view = await mount({ entries: [], assets: [] })
   try { assert.equal(view.container.innerHTML, '') } finally { await view.destroy() }
+})
+
+test('independent face, side and reverse references show their angle, purpose and label with accessible preview descriptions', async () => {
+  const view = await mount({ entries: [
+    entry('face', 1, { name: '林晚', purpose: 'character', profile_ids: ['hero'], view: 'face', reference_purpose: 'identity', reference_label: '锁定面部' }),
+    entry('side', 2, { name: '林晚', purpose: 'character', profile_ids: ['hero'], view: 'side', reference_purpose: 'costume', reference_label: '侧面服装' }),
+    entry('reverse', 3, { name: '站台', purpose: 'location', profile_ids: ['station'], view: 'reverse', reference_purpose: 'space', reference_label: '窗边反打' }),
+  ], assets: [asset('face'), asset('side'), asset('reverse')] })
+  try {
+    const uses = [...view.container.querySelectorAll('.pc-video-reference-use')]
+    assert.equal(uses.length, 3)
+    assert.match(uses[0]!.textContent!, /面部特写 · 身份与外貌 · 锁定面部/)
+    assert.match(uses[1]!.textContent!, /侧面 · 服装与身体比例 · 侧面服装/)
+    assert.match(uses[2]!.textContent!, /空间关系 · 窗边反打/)
+    for (const preview of view.container.querySelectorAll<HTMLButtonElement>('.pc-video-reference-preview')) {
+      const id = preview.getAttribute('aria-describedby')
+      assert.ok(id)
+      assert.ok(document.getElementById(id))
+    }
+    await act(() => view.button('查看图片3：站台').click())
+    assert.deepEqual(view.previews, ['reverse'])
+  } finally { await view.destroy() }
+})
+
+test('one shared image shows each object angle and use without duplicating the submitted image', async () => {
+  const view = await mount({ entries: [entry('shared', 1, {
+    name: '林晚 / 铜钥匙', purpose: 'character', profile_ids: ['hero', 'key'], reference_details: [
+      { profile_id: 'hero', name: '林晚', variant: '雨衣', view: 'face', purpose: 'identity', label: '面部锁定' },
+      { profile_id: 'key', name: '铜钥匙', variant: '旧铜', view: 'detail', purpose: 'structure', label: '齿纹结构' },
+    ],
+  })], assets: [asset('shared')] })
+  try {
+    assert.equal(view.container.querySelectorAll('.pc-video-reference-number').length, 1)
+    const description = view.container.querySelector('.pc-video-reference-use')!
+    assert.match(description.textContent!, /林晚 · 面部特写 · 身份与外貌 · 面部锁定/)
+    assert.match(description.textContent!, /铜钥匙 · 局部细节 · 结构与材质 · 齿纹结构/)
+    assert.equal(description.getAttribute('title'), description.textContent)
+  } finally { await view.destroy() }
 })

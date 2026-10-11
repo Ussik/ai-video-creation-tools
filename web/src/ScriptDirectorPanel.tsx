@@ -607,12 +607,13 @@ function directorArtworkForTheme(theme: string): string {
   return isScriptThemeCategory(theme) ? scriptThemeArtwork[theme] : neutralThemeArtwork
 }
 
-function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, fusionArtwork, onFusionSettled }: { primary: string; fusion: string; primaryArtwork?: string; fusionArtwork?: string; onFusionSettled?: (hasFusion: boolean) => void }) {
+function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, fusionArtwork, active, onFusionSettled }: { primary: string; fusion: string; primaryArtwork?: string; fusionArtwork?: string; active: boolean; onFusionSettled?: (hasFusion: boolean) => void }) {
   return <WebGLScriptThemeWaterCanvas
     primary={primary}
     fusion={fusion}
     primaryArtwork={primaryArtwork || directorArtworkForTheme(primary)}
     fusionArtwork={fusionArtwork || directorArtworkForTheme(fusion)}
+    active={active}
     onFusionSettled={onFusionSettled}
   />
 }
@@ -2732,7 +2733,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
                 <div className="script-director-theme-stage">
                   <div className="script-director-theme-stage-label"><span>当前题材关系</span><small>先选主题材，点击融合题材后从右侧选择</small></div>
                   <div className={`script-director-theme-orbit${settingsDraft.genre_fusion || fusionExitActive ? ' has-fusion' : ''}`}>
-                    <ScriptThemeWaterCanvas primary={settingsDraft.genre || ''} fusion={settingsDraft.genre_fusion || ''} primaryArtwork={primaryThemeArtwork} fusionArtwork={fusionThemeArtwork} onFusionSettled={() => setFusionExitActive(false)} />
+                    <ScriptThemeWaterCanvas active={!hidden && !minimized} primary={settingsDraft.genre || ''} fusion={settingsDraft.genre_fusion || ''} primaryArtwork={primaryThemeArtwork} fusionArtwork={fusionThemeArtwork} onFusionSettled={() => setFusionExitActive(false)} />
                     {settingsDraft.genre_fusion ? <div className="script-director-theme-fusion-wrap">
                       <span
                         className={`script-director-theme-circle is-fusion tone-${directorThemeTone(settingsDraft.genre_fusion)}`}

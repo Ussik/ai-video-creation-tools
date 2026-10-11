@@ -195,7 +195,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
           if (!active()) return
           setPending('save'); setSaveLabel('正在保存参考设定')
           const references = await api<ScriptCanvasResult>(`/projects/${detail.id}/script/canvas/commit`, { ...json('POST', {
-            scene_ids: plan.scene_ids, signature: plan.signature, profiles: plan.profiles,
+            scene_ids: plan.scene_ids, signature: plan.signature, profiles: plan.profiles, reference_usage_version: plan.reference_usage_version,
           }), signal: abort.signal })
           if (!active()) return
           prepared.current = references
@@ -212,7 +212,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
         created_profiles: imported.current.created_profiles + (applied.current?.created_profiles || 0) + (prepared.current?.created_profiles || 0),
         updated_shot_ids: [...new Set([...(imported.current.updated_shot_ids || []), ...(applied.current?.updated_shot_ids || [])])],
       }
-      const missing = canvas.shot_visual_bindings.some(binding => binding.required && !binding.board_asset_id)
+      const missing = canvas.shot_visual_bindings.some(binding => binding.usage !== 'none' && binding.required && !binding.board_asset_id && !binding.reference_assets?.length)
       requestScriptCanvas(detail.id, detail.ratio, canvas); onOpenCanvas(); onNotice(missing ? '分镜与参考设定已加入画布，请先生成并确认必需信息图' : '分镜与参考设定已加入画布'); onClose()
     } catch (issue) { if (active()) setError(`${applied.current ? '分镜已保存，后续操作失败，可重试：' : ''}${errorText(issue)}`) }
     finally { if (active()) setPending(null) }

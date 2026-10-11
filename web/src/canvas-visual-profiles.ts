@@ -1,5 +1,7 @@
 import type { Asset, Job, Model, ProjectDetail, VisualProfile } from './api'
 import type { CanvasGraph, CanvasNode } from './ProjectCanvas'
+import { visualBindingReferenceAssetIds } from '../../backend/src/video-reference-manifest'
+import { visualBindingApplies } from '../../backend/src/visual-binding-usage'
 
 export function requestVisualCanvas(projectId: string, profileIds: string[], context?: { shotId?: string }) {
   window.sessionStorage.setItem(`visual-canvas-open:${projectId}`, JSON.stringify(context ? { profileIds, ...context } : profileIds))
@@ -13,6 +15,7 @@ export function visualJobRequest(job?: Job): Record<string, unknown> {
 export function visualBoardJobs(profile: VisualProfile, jobs: Job[]): Job[] {
   return jobs.filter(job => {
     const request = visualJobRequest(job)
+    if (request.visual_reference_view) return false
     return request.visual_profile_id === profile.id && request.visual_profile_revision === profile.revision ||
       !!profile.asset_task_id && request.asset_task_id === profile.asset_task_id
   }).sort((a, b) => b.created_at.localeCompare(a.created_at))
@@ -21,6 +24,7 @@ export function visualBoardJobs(profile: VisualProfile, jobs: Job[]): Job[] {
 export function visualCandidateAssets(profile: VisualProfile, detail: ProjectDetail, displayedAssetId?: string | null): Asset[] {
   const jobs = detail.jobs.filter(job => {
     const request = visualJobRequest(job)
+    if (request.visual_reference_view) return false
     return job.status === 'succeeded' && (request.visual_profile_id === profile.id || !!profile.asset_task_id && request.asset_task_id === profile.asset_task_id)
   })
   const ids = new Set([...jobs.map(job => job.result_asset_id), ...(profile.candidate_asset_ids || []), profile.board_asset_id, displayedAssetId])
@@ -49,24 +53,31 @@ export function automaticVisualReferenceEdges(graph: CanvasGraph, detail: Projec
     const targetModality = modality(target)
     if (targetModality !== 'image' && !(targetModality === 'video' && target.settings.mode === 'reference')) continue
     const usedAssets = new Set(graph.edges.filter(edge => edge.target === target.id)
-      .map(edge => sources.find(source => source.node.id === edge.source)?.assetId).filter(Boolean))
+      .map(edge => edge.reference_asset_id || sources.find(source => source.node.id === edge.source)?.assetId).filter(Boolean))
     for (const binding of detail.shot_visual_bindings || []) {
+      if (!visualBindingApplies(binding, targetModality)) continue
       if (!binding.required && target.settings.excluded_visual_profile_ids?.includes(binding.profile_id)) continue
-      const assetId = binding.board_asset_id
-      if (binding.shot_id === target.shot_id && !assetId && binding.required && target.settings.visual_dependencies) {
+      const assetIds = visualBindingReferenceAssetIds(binding)
+      if (binding.shot_id === target.shot_id && !assetIds.length && binding.required && target.settings.visual_dependencies) {
         const source = graph.nodes.find(node => node.id !== target.id && node.settings.visual_profile_id === binding.profile_id
           && node.settings.visual_profile_revision === binding.revision && !graph.edges.some(edge => edge.source === node.id && edge.target === target.id))
         if (source) edges.push({ id: `auto-visual-dependency:${JSON.stringify([target.id, binding.profile_id])}`, source: source.id, target: target.id })
         continue
       }
-      if (binding.shot_id !== target.shot_id || !assetId || usedAssets.has(assetId)) continue
-      const candidates = sources.filter(source => source.node.id !== target.id && source.assetId === assetId)
-      // Prefer the bound profile, then a fixed image, then another image generator.
-      const source = candidates.find(item => item.node.settings.visual_profile_id === binding.profile_id)
-        || candidates.find(item => item.node.type === 'image') || candidates[0]
-      if (!source) continue
-      edges.push({ id: `auto-visual:${JSON.stringify([target.id, assetId])}`, source: source.node.id, target: target.id })
-      usedAssets.add(assetId)
+      if (binding.shot_id !== target.shot_id) continue
+      for (const assetId of assetIds) {
+        if (usedAssets.has(assetId) || !detail.assets.some(asset => asset.id === assetId && asset.kind === 'image')) continue
+        const candidates = sources.filter(source => source.node.id !== target.id && source.assetId === assetId)
+        // Independent views stay under the bound profile; legacy boards need an exact asset match.
+        const profileSource = binding.reference_assets?.length ? graph.nodes.find(node => node.id !== target.id && node.settings.visual_profile_id === binding.profile_id
+          && node.settings.visual_profile_revision === binding.revision) : undefined
+        const source = profileSource ? { node: profileSource } : candidates.find(item => item.node.settings.visual_profile_id === binding.profile_id)
+          || candidates.find(item => item.node.type === 'image') || candidates[0]
+        if (!source) continue
+        edges.push({ id: `auto-visual:${JSON.stringify([target.id, assetId])}`, source: source.node.id, target: target.id,
+          ...(binding.reference_assets?.length ? { reference_asset_id: assetId } : {}) })
+        usedAssets.add(assetId)
+      }
     }
   }
   return edges
@@ -100,17 +111,31 @@ export function missingVisualReferences(graph: CanvasGraph, nodeId: string, deta
     if (modality === 'video' && target.settings.mode === 'first_frame' && target.settings.storyboard_reference_asset_id &&
       (edge.reference_asset_id || visualNodeAsset(source, detail, true)?.id) !== target.settings.storyboard_reference_asset_id) continue
     const profile = detail.visual_profiles?.find(item => item.id === source.settings.visual_profile_id)
+    const binding = detail.shot_visual_bindings?.find(binding => binding.shot_id === target.shot_id && binding.profile_id === source.settings.visual_profile_id)
+    if (binding && !visualBindingApplies(binding, modality)) continue
+    const frozenReference = edge.reference_asset_id && binding?.reference_assets?.find(reference => reference.asset_id === edge.reference_asset_id)
+    if (frozenReference || !edge.reference_asset_id && binding?.reference_assets?.length && target.settings.visual_reference_mode !== 'keyframe' && target.settings.visual_reference_mode !== 'text_only') {
+      const checked = frozenReference ? [frozenReference] : binding!.reference_assets!
+      const ready = checked.every(reference => detail.assets.some(asset => asset.id === reference.asset_id && asset.kind === 'image')
+        && (!detail.project_visual_style || !reference.style_version || reference.style_version === detail.project_visual_style.version))
+      if (!ready) add(binding!.profile_id, binding!.name, binding!.variant, true)
+      continue
+    }
     if (visualNodeAsset(source, detail, true)?.kind === 'image' && profile?.board_style_status !== 'needs_review') continue
     add(source.settings.visual_profile_id, profile?.name || source.title, profile?.variant || '')
   }
   if (!target.settings.visual_profile_id && target.shot_id && modality !== 'text' && (!target.settings.visual_reference_mode || target.settings.visual_reference_mode === 'profiles')) {
     for (const binding of detail.shot_visual_bindings || []) {
+      if (!visualBindingApplies(binding, modality)) continue
       const profile = detail.visual_profiles?.find(item => item.id === binding.profile_id)
-      const staleStyle = !!binding.board_style_version && !!detail.project_visual_style && binding.board_style_version !== detail.project_visual_style.version
+      const assetIds = visualBindingReferenceAssetIds(binding)
+      const staleStyle = !!detail.project_visual_style && (binding.reference_assets?.length
+        ? binding.reference_assets.some(reference => !!reference.style_version && reference.style_version !== detail.project_visual_style!.version)
+        : !!binding.board_style_version && binding.board_style_version !== detail.project_visual_style.version)
       if (!binding.required && target.settings.excluded_visual_profile_ids?.includes(binding.profile_id)) continue
-      if (binding.shot_id !== target.shot_id || !binding.required && (!binding.board_asset_id || !staleStyle) ||
-        !staleStyle && detail.assets.some(asset => asset.id === binding.board_asset_id && asset.kind === 'image')) continue
-      add(binding.profile_id, binding.name, binding.variant, profile?.board_style_status !== 'needs_review' && !!profile && (staleStyle || binding.revision !== profile.revision || !!profile.board_asset_id))
+      if (binding.shot_id !== target.shot_id || !binding.required && !assetIds.length ||
+        !staleStyle && assetIds.length > 0 && assetIds.every(id => detail.assets.some(asset => asset.id === id && asset.kind === 'image'))) continue
+      add(binding.profile_id, binding.name, binding.variant, !!binding.reference_assets?.length || profile?.board_style_status !== 'needs_review' && !!profile && (staleStyle || binding.revision !== profile.revision || !!profile.board_asset_id))
     }
   }
   return [...missing.values()]

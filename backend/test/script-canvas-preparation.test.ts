@@ -57,7 +57,7 @@ test('read-only preparation then atomic drafts, required bindings and shot promp
   const draft = await plan(f)
   assert.equal(all('SELECT * FROM visual_profiles WHERE project_id=?', f.project.id).length, 0)
   assert.equal(all('SELECT * FROM shots WHERE project_id=?', f.project.id).length, 0)
-  const result = await f.invoke('commit', draft)
+  const result = await f.invoke('commit', { ...draft, reference_usage_version: 1 })
   assert.equal(result.created_profiles, 1); assert.equal(result.created_shots, 1)
   assert.equal(result.visual_profiles[0].definition_status, 'draft')
   assert.equal(result.shot_visual_bindings[0].required, true)
@@ -70,7 +70,8 @@ test('read-only preparation then atomic drafts, required bindings and shot promp
 
 test('retries reuse all shots, confirmed profiles and optional bindings without calling the model again', async t => {
   let sceneId = ''
-  const f = await setup(t, async () => JSON.stringify({ profiles: [{ ...profile(sceneId), definition: '不能覆盖原文' }] }))
+  const f = await setup(t, async () => JSON.stringify({ profiles: [{ ...profile(sceneId), definition: '不能覆盖原文',
+    shot_usage: all<{ id: string }>('SELECT id FROM shots WHERE source_scene_id=?', sceneId).map(shot => ({ shot_id: shot.id, usage: 'both' })) }] }))
   sceneId = f.scene.id
   const saved = (await call('POST', `/api/projects/${f.project.id}/visual-profiles`, { profiles: [profile(sceneId)] })).visual_profiles[0]
   run("INSERT INTO assets (id,project_id,kind,filename,path,source,created_at) VALUES (?,?,'image','board.png','/tmp/board.png','upload',?)", 'confirmed-board', f.project.id, now())
@@ -210,4 +211,31 @@ test('reference fingerprints follow planned visual content and ignore media sele
   assert.deepEqual((await f.check()).needs_analysis, [])
   run('UPDATE shots SET video_prompt=? WHERE id=?', '拿起新的铜怀表后跑向出口', shotId)
   assert.deepEqual((await f.check()).needs_analysis, [f.scene.id])
+})
+
+test('scoped preparation keeps scene candidates separate from each images and video objects and detects concurrent usage edits', async t => {
+  let sceneId = '', shotId = ''
+  const f = await setup(t, async prompt => {
+    assert.match(prompt, /场次关联仅是候选资料池/)
+    return JSON.stringify({ profiles: [{ ...profile(sceneId, '技术人员'), shot_usage: [{ shot_id: shotId, usage: 'video' }] }] })
+  })
+  sceneId = f.scene.id
+  const unused = (await call('POST', `/api/projects/${f.project.id}/visual-profiles`, { profiles: [profile(sceneId, '记录本')] })).visual_profiles[0]
+  const shot = await call('POST', `/api/projects/${f.project.id}/shots`, { title: '空房间开镜', source_scene_id: sceneId, image_prompt: '空房间', video_prompt: '技术人员走入画面' })
+  shotId = shot.id
+  const checked = await f.check()
+  const draft = await f.invoke('prepare', { scene_ids: checked.scene_ids, signature: checked.signature, model_id: 'mock-text' })
+  await f.invoke('commit', { signature: draft.signature, scene_ids: draft.scene_ids, reference_usage_version: 1,
+    profiles: draft.profiles.map(({ shot_usage: _usage, ...profile }: any) => profile) }, 422)
+  const saved = await f.invoke('commit', { signature: draft.signature, scene_ids: draft.scene_ids, profiles: draft.profiles,
+    reference_usage_version: draft.reference_usage_version })
+  assert.equal(saved.shot_visual_bindings.find((binding: any) => binding.profile_id === unused.id).usage, 'none')
+  assert.equal(saved.shot_visual_bindings.find((binding: any) => binding.name === '技术人员').usage, 'video')
+  assert.equal(saved.scene_visual_bindings, undefined)
+  assert.equal(all('SELECT * FROM scene_visual_bindings WHERE scene_id=?', sceneId).length, 2)
+  run('UPDATE shots SET video_prompt=? WHERE id=?', '技术人员继续走近', shotId)
+  const next = await plan(f)
+  run("UPDATE shot_visual_bindings SET usage='image' WHERE shot_id=? AND profile_id=?", shotId, unused.id)
+  await f.invoke('commit', next, 409)
+  assert.equal(all('SELECT * FROM jobs WHERE project_id=?', f.project.id).length, 0)
 })

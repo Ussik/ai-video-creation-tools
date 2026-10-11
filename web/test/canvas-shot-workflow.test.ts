@@ -33,7 +33,7 @@ test('handoff adds one same-shot video generator, selects a compatible model and
   assert.equal(video.prompt, '角色睁眼，缓慢坐起，镜头推近')
   assert.equal(video.asset_id, null)
   assert.equal(video.job_id, null)
-  assert.deepEqual(video.settings, { modality: 'video', mode: 'first_frame', visual_reference_mode: 'keyframe', candidate_count: 1,
+  assert.deepEqual(video.settings, { modality: 'video', mode: 'first_frame', visual_reference_mode: 'keyframe', candidate_count: 1, storyboard_reference_asset_id: 'chosen',
     duration: 10, ratio: 'adaptive', resolution: '480p' })
   assert.deepEqual(result.graph.edges, [{ id: 'frame-edge', source: 'image', target: 'video', reference_asset_id: 'chosen' }])
   assert.deepEqual(storyboardItems(f.detail, result.graph, f.models).map(item => item.kind), ['image', 'video'])
@@ -236,9 +236,9 @@ function multiReferenceVideoModel(): Model {
   } } as Model
 }
 
-test('a storyboard with bound profiles prefers a supported multi-image video model and pins its composition asset', () => {
+test('explicit reference handoff selects a supported multi-image video model and pins its composition asset', () => {
   const f = fixture(), model = multiReferenceVideoModel(), detail = withVisualReferences(f.detail)
-  const result = createImageVideoHandoff(f.graph, f.source, detail, [...f.models, model], f.fresh, 'edge')
+  const result = createImageVideoHandoff(f.graph, f.source, detail, [...f.models, model], f.fresh, 'edge', 'reference')
   const video = result.graph.nodes[1]
   assert.equal(video.model_id, model.id)
   assert.equal(video.settings.mode, 'reference')
@@ -252,7 +252,7 @@ test('a storyboard with bound profiles prefers a supported multi-image video mod
   assert.equal(detail.shot_visual_bindings?.[0].board_asset_id, 'character-board')
 })
 
-test('automatic multi-reference requires this shot bindings and explicit multi-image template support', () => {
+test('default image handoff stays first-frame even when profiles and multi-reference models are available', () => {
   const f = fixture(), model = multiReferenceVideoModel()
   const referenceOnly = { ...model, settings: { ...model.settings, request_template: { prompt: '{{prompt}}', image: '{{image}}' } } }
   for (const [detail, models] of [
@@ -263,21 +263,21 @@ test('automatic multi-reference requires this shot bindings and explicit multi-i
     const video = createImageVideoHandoff(f.graph, f.source, detail, models, f.fresh, 'edge').graph.nodes[1]
     assert.equal(video.settings.mode, 'first_frame')
     assert.equal(video.settings.visual_reference_mode, 'keyframe')
-    assert.equal(video.settings.storyboard_reference_asset_id, undefined)
+    assert.equal(video.settings.storyboard_reference_asset_id, 'chosen')
   }
 })
 
 test('repeated multi-reference handoff reuses the pinned candidate even through another image node', () => {
   const f = fixture(), model = multiReferenceVideoModel(), detail = withVisualReferences(f.detail)
-  const first = createImageVideoHandoff(f.graph, f.source, detail, [model], f.fresh, 'edge')
+  const first = createImageVideoHandoff(f.graph, f.source, detail, [model], f.fresh, 'edge', 'reference')
   const alias = { ...f.source, id: 'same-image', asset_id: 'chosen' }
   const graph = { ...first.graph, nodes: [...first.graph.nodes, alias] }
-  const repeated = createImageVideoHandoff(graph, alias, detail, [model], { ...f.fresh, id: 'duplicate' }, 'duplicate-edge')
+  const repeated = createImageVideoHandoff(graph, alias, detail, [model], { ...f.fresh, id: 'duplicate' }, 'duplicate-edge', 'reference')
   assert.equal(repeated.created, false)
   assert.equal(repeated.nodeId, 'video')
   assert.equal(repeated.graph, graph)
   const regenerated = { ...f.source, asset_id: 'new' }
-  const next = createImageVideoHandoff(graph, regenerated, detail, [model], { ...f.fresh, id: 'new-video' }, 'new-edge')
+  const next = createImageVideoHandoff(graph, regenerated, detail, [model], { ...f.fresh, id: 'new-video' }, 'new-edge', 'reference')
   assert.equal(next.created, true)
   assert.equal(next.graph.nodes.at(-1)?.settings.storyboard_reference_asset_id, 'new')
   assert.equal(first.graph.nodes[1].settings.storyboard_reference_asset_id, 'chosen')
@@ -365,4 +365,30 @@ test('cross-shot assets and existing video targets are rejected before any mutat
   assert.throws(() => createImageVideoHandoff(f.graph, wrongAsset, f.detail, f.models, f.fresh, 'edge'), /不同镜头/)
   assert.throws(() => connectImageVideoHandoff(f.graph, imageVideoConnection(wrongAsset, f.target, f.detail, f.models)!, f.detail, f.models, 'edge'), /不同镜头/)
   assert.deepEqual(f.graph, before)
+})
+
+
+test('explicit first-frame and reference actions create separate strategies for the same source and retain drafts', () => {
+  const f = fixture(), model = multiReferenceVideoModel(), detail = withVisualReferences(f.detail)
+  const first = createImageVideoHandoff(f.graph, f.source, detail, [model], f.fresh, 'first-edge', 'first_frame')
+  first.graph.nodes[1].text = '我的动作设计'
+  first.graph.nodes[1].settings.prompt_is_final = true
+  const reference = createImageVideoHandoff(first.graph, f.source, detail, [model], { ...f.fresh, id: 'ref-video' }, 'ref-edge', 'reference')
+  assert.equal(reference.created, true)
+  assert.equal(reference.graph.nodes.length, 3)
+  assert.equal(reference.graph.nodes[1].settings.mode, 'first_frame')
+  assert.equal(reference.graph.nodes[1].text, '我的动作设计')
+  assert.equal(reference.graph.nodes[2].settings.mode, 'reference')
+  assert.equal(createImageVideoHandoff(reference.graph, f.source, detail, [model], f.fresh, 'unused', 'reference').nodeId, 'ref-video')
+  assert.throws(() => createImageVideoHandoff(f.graph, f.source, detail, f.models, f.fresh, 'edge', 'reference'), /没有支持多图参考/)
+})
+
+test('image-only and inactive bindings do not automatically switch dragged images to reference video', () => {
+  const f = connectionFixture(), model = multiReferenceVideoModel()
+  for (const usage of ['image', 'none'] as const) {
+    const detail = withVisualReferences(f.detail)
+    detail.shot_visual_bindings![0].usage = usage
+    const result = connectImageVideoHandoff(f.graph, imageVideoConnection(f.source, f.target, detail, [model])!, detail, [model], 'edge')
+    assert.equal(result.nodes[1].settings.mode, 'first_frame')
+  }
 })
