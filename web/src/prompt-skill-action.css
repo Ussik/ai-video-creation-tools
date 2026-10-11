@@ -10,7 +10,7 @@
   flex-direction: column;
   max-height: min(760px, calc(100dvh - 64px));
   overflow: hidden;
-  background: var(--canvas-chrome-surface, #17191bf2);
+  background: var(--canvas-chrome-surface, #191919f2);
   border: 1px solid var(--fc-border);
   color: var(--fc-text);
   backdrop-filter: blur(18px);
@@ -21,7 +21,7 @@
   min-height: 76px;
   padding: 17px 22px;
   border-bottom: 1px solid var(--fc-border);
-  background: #17191b;
+  background: var(--fc-panel);
 }
 .prompt-skill-modal .prompt-skill-title { font-size: 16px; font-weight: 600; }
 .prompt-skill-heading { display: grid; gap: 4px; }
@@ -31,7 +31,7 @@
   color: var(--fc-text-subtle);
   transition: background-color 150ms, color 150ms;
 }
-.prompt-skill-modal .prompt-skill-close:hover { background: var(--canvas-chrome-hover, #25282c); color: var(--fc-text); }
+.prompt-skill-modal .prompt-skill-close:hover { background: var(--canvas-chrome-hover, var(--fc-surface-muted)); color: var(--fc-text); }
 .prompt-skill-modal .prompt-skill-body { display: flex; flex-direction: column; min-height: 0; padding: 0; overflow: hidden; }
 .prompt-skill-content {
   display: flex;
@@ -44,7 +44,7 @@
   scrollbar-color: var(--workspace-line-strong, #34383d) transparent;
 }
 .prompt-skill-settings { display: grid; gap: 10px; }
-.prompt-skill-card { min-width: 0; padding: 11px 13px; border: 1px solid #303338; border-radius: 10px; background: #1b1d20; }
+.prompt-skill-card { min-width: 0; padding: 11px 13px; border: 1px solid var(--fc-border); border-radius: 10px; background: var(--fc-panel); }
 .prompt-skill-card > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--fc-text-subtle); font-size: 11px; line-height: 1.6; }
 .prompt-skill-card > header small { flex: none; font-size: 10px; }
 .prompt-skill-selection { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; margin-top: 5px; }
@@ -63,13 +63,12 @@
 }
 .prompt-skill-modal .mantine-Input-section { color: var(--fc-text-subtle); }
 .prompt-skill-source { min-width: 0; padding-top: 13px; border-top: 1px solid var(--fc-border); }
-.prompt-skill-source > summary { display: flex; align-items: center; gap: 8px; border-radius: 4px; color: var(--fc-text-muted); font-size: 11px; line-height: 1.7; list-style: none; cursor: pointer; }
-.prompt-skill-source > summary::-webkit-details-marker { display: none; }
-.prompt-skill-source > summary small { margin-left: auto; color: var(--fc-text-subtle); font-size: 10px; }
-.prompt-skill-source > summary svg { flex: none; color: var(--fc-text-subtle); transition: transform 150ms; }
-.prompt-skill-source[open] > summary svg { transform: rotate(180deg); }
-.prompt-skill-source > summary:hover { color: var(--fc-text); }
-.prompt-skill-source > summary:focus-visible { outline: 2px solid var(--fc-focus); outline-offset: 3px; }
+.prompt-skill-source .workspace-disclosure-control { display: flex; align-items: center; gap: 8px; border-radius: 4px; color: var(--fc-text-muted); font-size: 11px; line-height: 1.7; list-style: none; cursor: pointer; }
+.prompt-skill-source .workspace-disclosure-control small { margin-left: auto; color: var(--fc-text-subtle); font-size: 10px; }
+.prompt-skill-source .workspace-disclosure-control svg { flex: none; color: var(--fc-text-subtle); transition: transform 150ms; }
+.prompt-skill-source:has(.workspace-disclosure-control[data-active]) .workspace-disclosure-control svg { transform: rotate(180deg); }
+.prompt-skill-source .workspace-disclosure-control:hover { color: var(--fc-text); }
+.prompt-skill-source .workspace-disclosure-control:focus-visible { outline: 2px solid var(--fc-focus); outline-offset: 3px; }
 .prompt-skill-source > p { max-height: 130px; margin: 10px 0 0; padding: 10px 12px; overflow-y: auto; border-radius: 8px; background: var(--fc-surface); color: var(--fc-text-subtle); font-size: 12px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; scrollbar-width: thin; }
 .prompt-skill-result { display: grid; gap: 8px; min-width: 0; }
 .prompt-skill-modal .prompt-skill-editor {
@@ -87,7 +86,7 @@
   scrollbar-color: var(--workspace-line-strong, #34383d) transparent;
   transition: border-color 150ms, box-shadow 150ms;
 }
-.prompt-skill-modal :is(.prompt-skill-model-input, .prompt-skill-editor):hover:not(:disabled) { border-color: var(--workspace-line-strong, #34383d); }
+.prompt-skill-modal :is(.prompt-skill-model-input, .prompt-skill-editor):hover:not(:disabled) { border-color: var(--workspace-line-strong, var(--fc-border)); }
 .prompt-skill-modal :is(.prompt-skill-model-input, .prompt-skill-editor):is(:focus, :focus-visible, [data-expanded]) {
   border-color: var(--fc-focus) !important;
   outline: none;
@@ -97,23 +96,23 @@
 .prompt-skill-progress { display: flex; align-items: center; gap: 7px; min-width: 0; color: var(--fc-text-muted); font-size: 11px; line-height: 1.7; }
 .prompt-skill-progress svg { flex: none; animation: prompt-skill-spin 1.2s linear infinite; }
 .prompt-skill-error { margin: 0; padding: 10px 12px; border-radius: 8px; background: #a7675f14; color: #d8a99f; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
-.prompt-skill-footer { display: flex; align-items: center; justify-content: space-between; flex: none; gap: 14px; padding: 14px 22px; border-top: 1px solid var(--fc-border); background: #17191b; }
+.prompt-skill-footer { display: flex; align-items: center; justify-content: space-between; flex: none; gap: 14px; padding: 14px 22px; border-top: 1px solid var(--fc-border); background: var(--fc-panel); }
 .prompt-skill-status { min-width: 0; color: var(--fc-text-subtle); font-size: 10px; line-height: 1.7; }
 .prompt-skill-actions { display: flex; justify-content: flex-end; flex: none; gap: 8px; }
 .prompt-skill-modal .prompt-skill-actions .mantine-Button-root {
   height: 36px;
   border: 1px solid var(--fc-border);
   border-radius: 8px;
-  background: var(--canvas-chrome-raised, #1b1d20);
+  background: var(--canvas-chrome-raised, var(--fc-panel));
   color: var(--fc-text-muted);
   font-size: 12px;
   font-weight: 550;
 }
-.prompt-skill-modal .prompt-skill-actions .mantine-Button-root:hover:not(:disabled) { border-color: var(--workspace-line-strong, #34383d); background: var(--canvas-chrome-hover, #25282c); color: var(--fc-text); }
-.prompt-skill-modal .prompt-skill-actions .prompt-skill-apply { border-color: #d1d1d1; background: #d1d1d1; color: #252525; }
-.prompt-skill-modal .prompt-skill-actions .prompt-skill-apply:hover:not(:disabled) { border-color: #ededed; background: #ededed; color: #252525; }
+.prompt-skill-modal .prompt-skill-actions .mantine-Button-root:hover:not(:disabled) { border-color: var(--workspace-line-strong, var(--fc-border)); background: var(--canvas-chrome-hover, var(--fc-surface-muted)); color: var(--fc-text); }
+.prompt-skill-modal .prompt-skill-actions .prompt-skill-apply { border-color: var(--fc-border-strong); background: var(--fc-primary); color: var(--fc-on-primary); }
+.prompt-skill-modal .prompt-skill-actions .prompt-skill-apply:hover:not(:disabled) { border-color: var(--fc-border-strong); background: var(--fc-primary); color: var(--fc-on-primary); }
 .prompt-skill-modal .prompt-skill-actions .mantine-Button-root:is(:disabled, [data-disabled]),
-.prompt-skill-modal .prompt-skill-model-input:disabled { border-color: var(--fc-border); background: var(--canvas-chrome-raised, #1b1d20); color: var(--workspace-subtle, #696f76); -webkit-text-fill-color: var(--workspace-subtle, #696f76); }
+.prompt-skill-modal .prompt-skill-model-input:disabled { border-color: var(--fc-border); background: var(--canvas-chrome-raised, var(--fc-panel)); color: var(--workspace-subtle, var(--fc-text-subtle)); -webkit-text-fill-color: var(--workspace-subtle, #696f76); }
 .prompt-skill-modal button:focus-visible { outline: 2px solid var(--canvas-chrome-focus, #69727b); outline-offset: 3px; }
 
 /* The model menu is portaled outside the modal. */
@@ -133,7 +132,7 @@
 }
 .prompt-skill-dropdown [data-combobox-option] { font-size: 12px; border-radius: 6px; }
 .prompt-skill-dropdown [data-combobox-option][data-checked]:hover { background: var(--select-hover); }
-.prompt-skill-dropdown [data-combobox-option]:is([data-combobox-selected], :focus-visible) { border-color: var(--canvas-chrome-focus, #69727b); background: var(--select-hover); }
+.prompt-skill-dropdown [data-combobox-option]:is([data-combobox-selected], :focus-visible) { border-color: var(--canvas-chrome-focus, var(--fc-border-strong)); background: var(--select-hover); }
 
 @keyframes prompt-skill-spin { to { transform: rotate(360deg); } }
 @media (max-width: 520px) {

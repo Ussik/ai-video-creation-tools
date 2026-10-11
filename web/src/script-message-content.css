@@ -15,9 +15,9 @@
   max-width: 100%;
   margin: 14px 0 18px;
   overflow-x: auto;
-  border: 1px solid #3b3d40;
+  border: 1px solid var(--fc-border);
   border-radius: 10px;
-  background: #202123;
+  background: var(--fc-panel);
   scrollbar-width: thin;
   scrollbar-color: #505257 transparent;
 }
@@ -37,22 +37,22 @@
   vertical-align: top;
   white-space: normal;
   overflow-wrap: anywhere;
-  border-bottom: 1px solid #36383b;
+  border-bottom: 1px solid var(--fc-border);
 }
 .script-message-table-scroll th {
-  background: #2b2d30;
-  color: #e7e7e9;
+  background: var(--fc-surface-hover);
+  color: var(--fc-text);
   font-weight: 600;
 }
-.script-message-table-scroll td { color: #c9cace; }
-.script-message-table-scroll th + th, .script-message-table-scroll td + td { border-left: 1px solid #36383b; }
+.script-message-table-scroll td { color: var(--fc-text-secondary); }
+.script-message-table-scroll th + th, .script-message-table-scroll td + td { border-left: 1px solid var(--fc-border); }
 .script-message-table-scroll tbody tr:last-child td { border-bottom: 0; }
-.script-message-table-scroll tbody tr:nth-child(even) { background: #242527; }
-.script-message-content blockquote { margin: 14px 0; padding: 0 14px; border-left: 3px solid #4d4f53; color: #aeb0b4; }
+.script-message-table-scroll tbody tr:nth-child(even) { background: var(--fc-surface-muted); }
+.script-message-content blockquote { margin: 14px 0; padding: 0 14px; border-left: 3px solid var(--fc-border); color: var(--fc-text-secondary); }
 .script-message-content h4, .script-message-content h5, .script-message-content h6 { margin: 18px 0 10px; font-size: 14px; font-weight: 600; }
-.script-message-content pre { margin: 14px 0; padding: 12px 14px; overflow-x: auto; border: 1px solid #3b3d40; border-radius: 10px; background: #191a1c; white-space: pre; }
-.script-message-content code { padding: 1px 4px; border-radius: 4px; background: #303236; font-size: .9em; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.script-message-content pre { margin: 14px 0; padding: 12px 14px; overflow-x: auto; border: 1px solid var(--fc-border); border-radius: 10px; background: var(--fc-panel); white-space: pre; }
+.script-message-content code { padding: 1px 4px; border-radius: 4px; background: var(--fc-surface-hover); font-size: .9em; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .script-message-content pre code { padding: 0; background: transparent; }
-.script-message-content a { color: #c5d3e0; text-decoration: underline; text-underline-offset: 3px; }
+.script-message-content a { color: var(--fc-text-secondary); text-decoration: underline; text-underline-offset: 3px; }
 .script-message-content .task-list-item { list-style: none; }
 .script-message-content .task-list-item input { margin-right: 7px; accent-color: #aeb1b5; }

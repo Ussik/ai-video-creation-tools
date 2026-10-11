@@ -1,5 +1,7 @@
+import { StudioMediaPlayer } from './StudioMediaPlayer'
+import { WorkspaceDisclosure } from './WorkspaceDisclosure'
 import { useEffect, useRef, useState } from 'react'
-import { Button, Checkbox, Modal, NumberInput, PasswordInput, Select, Textarea, TextInput } from '@mantine/core'
+import { Tabs, UnstyledButton, ActionIcon, Button, Checkbox, Modal, NumberInput, PasswordInput, Select, Textarea, TextInput } from '@mantine/core'
 import { Check, ChevronDown, Mic2, Plus, Settings2, Trash2, Volume2 } from 'lucide-react'
 import { api, json } from './api'
 import type { ScriptScene } from './api'
@@ -171,11 +173,11 @@ export default function SpeechStudio({ projectId, projectName, scenes = [], onCl
   return <><Modal opened onClose={() => void requestClose()} closeOnClickOutside={!busy} closeOnEscape={!busy} closeButtonProps={{ disabled: !!busy }} centered size="min(1080px, 94vw)" radius={18} title={<span className="speech-title"><Mic2 size={18} />配音{projectName && <small>{projectName}</small>}</span>}
     classNames={{ content: 'speech-studio', header: 'speech-studio-header', body: 'speech-studio-body' }}>
     <div className="speech-toolbar">
-      <div className="speech-tabs" role="tablist" aria-label="配音工作区">
-        <button type="button" role="tab" aria-selected={tab === 'lines'} onClick={() => setTab('lines')}>台词与旁白<span>{data.lines.length}</span></button>
-        <button type="button" role="tab" aria-selected={tab === 'voices'} onClick={() => setTab('voices')}>角色声音<span>{voices.length}</span></button>
-      </div>
-      <button type="button" className="speech-config-toggle" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(value => !value)}><Settings2 size={14} />语音配置{config?.has_key && config.enabled && <span className="speech-connected">已配置</span>}<ChevronDown size={13} /></button>
+      <Tabs value={tab} onChange={value => { if (value) setTab(value as typeof tab) }} activateTabWithKeyboard={true} className="speech-tabs-root"><Tabs.List className="speech-tabs" aria-label="配音工作区">
+        <Tabs.Tab type="button"   onClick={() => setTab('lines')} value={'lines'}>台词与旁白<span>{data.lines.length}</span></Tabs.Tab>
+        <Tabs.Tab type="button"   onClick={() => setTab('voices')} value={'voices'}>角色声音<span>{voices.length}</span></Tabs.Tab>
+      </Tabs.List></Tabs>
+      <UnstyledButton type="button" className="speech-config-toggle" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(value => !value)}><Settings2 size={14} />语音配置{config?.has_key && config.enabled && <span className="speech-connected">已配置</span>}<ChevronDown size={13} /></UnstyledButton>
     </div>
     {settingsOpen && <section className="speech-config" aria-label="语音配置">
       <div><strong>豆包语音合成 2.0</strong><p>使用标准音色。API Key 保存在本机服务配置中。</p></div>
@@ -194,17 +196,17 @@ export default function SpeechStudio({ projectId, projectName, scenes = [], onCl
         <Select label="标准音色" aria-label={`标准音色 ${index + 1}`} searchable data={standardVoices} value={standardVoices.some(row => row.value === item.speaker) ? item.speaker : null} placeholder="选择音色" disabled={!!busy} onChange={value => { if (value) updateVoice(index, { speaker: value }) }} />
         <TextInput label="标准音色 Speaker ID" aria-label={`Speaker ID ${index + 1}`} value={item.speaker} placeholder="从语音控制台音色库复制" disabled={!!busy} onChange={event => updateVoice(index, { speaker: event.currentTarget.value })} />
         <NumberInput label="语速调整" aria-label={`角色语速 ${index + 1}`} min={-50} max={100} step={5} value={item.speech_rate} disabled={!!busy} onChange={value => updateVoice(index, { speech_rate: Number(value) || 0 })} />
-        <button type="button" className="speech-icon-button" aria-label={`移除角色声音 ${index + 1}`} disabled={!!busy} onClick={() => {
+        <ActionIcon type="button" className="speech-icon-button" aria-label={`移除角色声音 ${index + 1}`} disabled={!!busy} onClick={() => {
           if (!data.voices.some(row => row.id === item.id)) { setVoices(current => current.filter(row => row.id !== item.id)); return }
           void action('delete-voice', async () => { await api(`${path}/voices/${encodeURIComponent(item.id)}`, { method: 'DELETE' }); await reload(); if (alive.current) setVoices(current => current.filter(row => row.id !== item.id)) })
-        }}><Trash2 size={15} /></button>
+        }} data-workspace-control=""><Trash2 size={15} /></ActionIcon>
       </div><Textarea label="角色默认表演" aria-label={`角色默认表演 ${index + 1}`} placeholder="例如：低沉、克制；单句表演要求可补充。" value={item.instructions} autosize minRows={1} maxRows={3} disabled={!!busy} onChange={event => updateVoice(index, { instructions: event.currentTarget.value })} /></div>)}</div>
       {voiceIssue && <p className="speech-help">{voiceIssue}</p>}
       <footer><span>{voiceDirty ? '有未保存的声音配置' : '声音配置已保存'}</span><Button size="xs" variant="default" disabled={!!busy || !voiceDirty || !!voiceIssue} onClick={() => void action('voices', async () => { await saveVoiceBindings(); setNotice('角色声音已保存') })}>保存角色声音</Button></footer>
     </section> : <div className="speech-workspace">
       <aside className="speech-sidebar">
-        <header><strong>台词列表</strong><button type="button" className="speech-icon-button" aria-label="新增台词" disabled={!!busy} onClick={() => { setDrafts(current => ({ ...current, new: current.new || blank(voices[0]?.id || null) })); setSelectedId('new') }}><Plus size={16} /></button></header>
-        <details className="speech-import"><summary>从剧本导入<ChevronDown size={13} /></summary>
+        <header><strong>台词列表</strong><ActionIcon type="button" className="speech-icon-button" aria-label="新增台词" disabled={!!busy} onClick={() => { setDrafts(current => ({ ...current, new: current.new || blank(voices[0]?.id || null) })); setSelectedId('new') }} data-workspace-control=""><Plus size={16} /></ActionIcon></header>
+        <WorkspaceDisclosure className="speech-import" label={<>从剧本导入<ChevronDown size={13} /></>}>
           <p>按场次导入对白和旁白，不会自动生成音频。</p>
           {!scenes.length && <p>暂无场次，请先创作或导入剧本。</p>}
           <div className="speech-import-scenes">{scenes.map(scene => <Checkbox key={scene.id} label={scene.heading} checked={sceneIds.includes(scene.id)} disabled={!!busy} onChange={event => { const checked = event.currentTarget.checked; setSceneIds(current => checked ? [...current, scene.id] : current.filter(id => id !== scene.id)) }} />)}</div>
@@ -212,29 +214,29 @@ export default function SpeechStudio({ projectId, projectName, scenes = [], onCl
             const result = await api<{ added: number; skipped: number }>(`${path}/import`, json('POST', { scene_ids: sceneIds })); const next = await reload()
             if (alive.current) { setVoices(current => [...current, ...next.voices.filter(row => !current.some(item => item.id === row.id))]); setSelectedId(next.lines[0]?.id || 'new'); setNotice(`已导入 ${result.added} 条台词${result.skipped ? `，已有 ${result.skipped} 条未重复导入` : ''}`) }
           })}>导入所选场次</Button>
-        </details>
+        </WorkspaceDisclosure>
         <div className="speech-line-list">
-          {drafts.new && <button type="button" className={`speech-line-item${selectedId === 'new' ? ' is-selected' : ''}`} onClick={() => setSelectedId('new')}><span className="speech-line-meta"><strong>新台词</strong><small>未保存</small></span><span>{drafts.new.text || '填写对白或旁白'}</span></button>}
-          {data.lines.map((line, index) => <button type="button" key={line.id} className={`speech-line-item${selectedId === line.id ? ' is-selected' : ''}`} onClick={() => setSelectedId(line.id)}>
+          {drafts.new && <UnstyledButton type="button" className={`speech-line-item${selectedId === 'new' ? ' is-selected' : ''}`} onClick={() => setSelectedId('new')}><span className="speech-line-meta"><strong>新台词</strong><small>未保存</small></span><span>{drafts.new.text || '填写对白或旁白'}</span></UnstyledButton>}
+          {data.lines.map((line, index) => <UnstyledButton type="button" key={line.id} className={`speech-line-item${selectedId === line.id ? ' is-selected' : ''}`} onClick={() => setSelectedId(line.id)}>
             <span className="speech-line-meta"><small>{String(index + 1).padStart(2, '0')}</small><strong>{voices.find(item => item.id === (drafts[line.id]?.voice_id || line.voice_id))?.name || '待分配角色'}</strong><small>{line.takes.some(isActive) ? '生成中' : line.selected_asset_id ? '已选用' : line.takes.filter(take => take.asset_id).length ? `${line.takes.filter(take => take.asset_id).length} 个候选` : '待配音'}</small></span>
             <span>{drafts[line.id]?.text || line.text || '空白台词'}</span><small>{sourceLabel(line)}{drafts[line.id] && ' · 未保存'}</small>
-          </button>)}
+          </UnstyledButton>)}
         </div>
       </aside>
       {draft ? <main className="speech-editor">
         <div className="speech-editor-scroll">
-          <header className="speech-editor-heading"><div><h3>{selected ? `台词 ${data.lines.indexOf(selected) + 1}` : '新增台词'}</h3><p>{sourceLabel(draft)}</p></div>{selected && <button type="button" className="speech-icon-button" aria-label="删除当前台词" disabled={!!busy || !!activeTake} onClick={() => void action('delete', async () => {
+          <header className="speech-editor-heading"><div><h3>{selected ? `台词 ${data.lines.indexOf(selected) + 1}` : '新增台词'}</h3><p>{sourceLabel(draft)}</p></div>{selected && <ActionIcon type="button" className="speech-icon-button" aria-label="删除当前台词" disabled={!!busy || !!activeTake} onClick={() => void action('delete', async () => {
             await api(`${path}/lines/${encodeURIComponent(selected.id)}`, { method: 'DELETE' }); const next = await reload()
             if (alive.current) { setSelectedId(next.lines[0]?.id || 'new'); if (!next.lines.length) setDrafts(current => ({ ...current, new: blank(voices[0]?.id || null) })) }
-          })}><Trash2 size={15} /></button>}</header>
+          })} data-workspace-control=""><Trash2 size={15} /></ActionIcon>}</header>
           <Select label="角色声音" aria-label="台词角色" data={voiceOptions} value={draft.voice_id} searchable clearable placeholder="选择角色或旁白" disabled={!!busy || !!activeTake} onChange={value => edit({ voice_id: value })} />
-          <div className="speech-bound-voice"><Volume2 size={13} /><span>{voice?.speaker || '尚未指定角色声音'}</span><button type="button" onClick={() => voices.length ? setTab('voices') : addVoice()}>设置声音</button></div>
+          <div className="speech-bound-voice"><Volume2 size={13} /><span>{voice?.speaker || '尚未指定角色声音'}</span><Button type="button" onClick={() => voices.length ? setTab('voices') : addVoice()} data-workspace-control="" variant="subtle">设置声音</Button></div>
           {voice?.name.trim() === '待分配角色' && <p className="speech-help">请先确认这句台词的角色，再指定对应声音。</p>}
           <Textarea label="朗读文本" aria-label="朗读文本" description="只填写需要说出的内容，角色名和表演要求单独设置。" placeholder="输入对白或旁白…" value={draft.text} autosize minRows={4} maxRows={10} disabled={!!busy || !!activeTake} onChange={event => edit({ text: event.currentTarget.value })} />
           <Textarea label="表演要求" aria-label="表演要求" placeholder="例如：压低声音，语气克制，最后一句稍作停顿。" value={draft.instructions} autosize minRows={2} maxRows={5} disabled={!!busy || !!activeTake} onChange={event => edit({ instructions: event.currentTarget.value })} />
-          <details className="speech-performance"><summary>情境参考<ChevronDown size={13} /></summary><div>
+          <WorkspaceDisclosure className="speech-performance" label={<>情境参考<ChevronDown size={13} /></>}><div>
             <Textarea label="情境参考" aria-label="情境参考" description="描述场景和情绪，作为表演参考，不会朗读。" value={draft.context_text} autosize minRows={2} maxRows={5} disabled={!!busy || !!activeTake} onChange={event => edit({ context_text: event.currentTarget.value })} />
-          </div></details>
+          </div></WorkspaceDisclosure>
           {latestFailure && <p className="speech-error" role="alert">上次生成失败：{latestFailure.error || '请重试'}</p>}
           {selected && <section className="speech-candidates" aria-label="候选音频"><header><h4>候选音频</h4><span>{selected.takes.filter(take => take.asset_id).length}</span></header>
             {!selected.takes.some(take => take.asset_id) && <p className="speech-help">生成后可在这里试听，选择满意的版本。</p>}
@@ -245,8 +247,8 @@ export default function SpeechStudio({ projectId, projectName, scenes = [], onCl
                 <div className="speech-take-heading"><strong>候选 {index + 1}</strong>{typeof take.duration_ms === 'number' && <span>{(take.duration_ms / 1000).toFixed(1)} 秒</span>}{stale && <small>历史版本</small>}<Button variant="subtle" size="compact-xs" leftSection={selected.selected_asset_id === take.asset_id ? <Check size={12} /> : undefined} disabled={!!busy || !!activeTake || selected.selected_asset_id === take.asset_id} onClick={() => void action('select', async () => {
                   await api(`${path}/lines/${encodeURIComponent(selected.id)}/select`, json('POST', { asset_id: take.asset_id })); await reload(); await onAssetsChanged?.()
                 })}>{selected.selected_asset_id === take.asset_id ? '已选用' : '选用此版本'}</Button></div>
-                <audio controls preload="none" src={take.url || `/api/assets/${encodeURIComponent(take.asset_id!)}/file`} aria-label={`试听候选 ${index + 1}`} />
-                {stale && <details className="speech-take-version"><summary>查看此版本文本与表演</summary><p>{take.text}</p>{take.instructions && <small>{take.instructions}</small>}<small>音色：{take.speaker}</small></details>}
+                <StudioMediaPlayer controls preload="none" src={take.url || `/api/assets/${encodeURIComponent(take.asset_id!)}/file`} aria-label={`试听候选 ${index + 1}`} kind="audio" />
+                {stale && <WorkspaceDisclosure className="speech-take-version" label={<>查看此版本文本与表演</>}><p>{take.text}</p>{take.instructions && <small>{take.instructions}</small>}<small>音色：{take.speaker}</small></WorkspaceDisclosure>}
               </div>
             })}
           </section>}

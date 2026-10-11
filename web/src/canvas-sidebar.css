@@ -11,29 +11,35 @@
   --sidebar-focus: var(--canvas-chrome-focus, #69727b);
   border: 1px solid var(--sidebar-border);
   border-radius: 14px;
-  background: var(--canvas-chrome-surface, #17191bf2);
+  background: var(--canvas-chrome-surface, #191919f2);
   color: var(--sidebar-text);
   box-shadow: var(--canvas-chrome-shadow, 0 16px 38px #00000099);
 }
+.project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs-root { flex: none; }
 .project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs {
-  flex-basis: 60px; align-items: center; gap: 4px; padding: 10px;
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: center; gap: 4px; padding: 10px;
   border-bottom: 1px solid var(--sidebar-border);
 }
 .project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs button[role="tab"] {
-  flex: 1; justify-content: center; min-width: 0; height: 34px; gap: 5px; padding: 0 6px;
-  border: 0; border-radius: 7px; background: transparent; color: var(--sidebar-muted); font-size: 12px;
-  transition: background 160ms ease, color 160ms ease;
+  justify-content: center; min-width: 0; height: 36px; gap: 6px; padding: 0 8px;
+  border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--sidebar-muted); font-size: 12px;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
 }
 .project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs button[role="tab"] svg { flex: none; color: currentColor; }
-.project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs button[role="tab"] span {
-  padding: 0; background: transparent; color: var(--sidebar-muted); font-size: 10px; font-variant-numeric: tabular-nums;
+.project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs .mantine-Tabs-tabLabel {
+  flex: none; padding: 0; background: transparent; color: inherit; font-size: inherit; line-height: 1;
+}
+.project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs .mantine-Tabs-tabSection { flex: none; margin-inline: 0; }
+.project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs .pc-sidebar-tab-count {
+  min-width: 22px; height: 18px; padding: 0 4px; border: 0; border-radius: 5px;
+  background: var(--sidebar-hover); color: var(--sidebar-muted); font-size: 10px; font-variant-numeric: tabular-nums;
 }
 .project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs button[role="tab"]:hover { background: var(--sidebar-hover); color: var(--sidebar-text); }
 .project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs button[role="tab"].active {
-  border: 0; background: var(--sidebar-raised); color: var(--sidebar-text); box-shadow: none;
+  border-color: var(--sidebar-border-hover); background: var(--sidebar-raised); color: var(--sidebar-text); box-shadow: none;
 }
 .project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs button[role="tab"].active svg { color: var(--sidebar-secondary); }
-.project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs button[role="tab"].active span { color: var(--sidebar-secondary); }
+.project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs button[role="tab"].active .pc-sidebar-tab-count { background: var(--sidebar-card); color: var(--sidebar-secondary); }
 .project-canvas aside.pc-canvas-sidebar .mantine-ActionIcon-root {
   flex: none; width: 28px; height: 28px; min-width: 28px; border: 0; border-radius: 8px;
   background: transparent; color: var(--sidebar-muted); transition: background 160ms ease, color 160ms ease;
@@ -44,7 +50,7 @@
 }
 .project-canvas aside.pc-canvas-sidebar .pc-sidebar-tools .mantine-Input-input {
   height: 36px; min-height: 36px; border: 1px solid var(--sidebar-border); border-radius: 9px;
-  background: var(--workspace-ink, #0f1012); color: var(--sidebar-text); font-size: 12px;
+  background: var(--workspace-ink, var(--fc-surface)); color: var(--sidebar-text); font-size: 12px;
 }
 .project-canvas aside.pc-canvas-sidebar .pc-sidebar-tools .mantine-Input-input::placeholder { color: var(--sidebar-muted); }
 .project-canvas aside.pc-canvas-sidebar .pc-sidebar-tools .mantine-Input-section { color: var(--sidebar-muted); }
@@ -94,9 +100,9 @@
 .project-canvas aside.pc-canvas-sidebar .pc-sidebar-empty button:hover { background: var(--sidebar-hover); color: var(--sidebar-text); }
 .project-canvas aside.pc-canvas-sidebar :is(button, [role="tab"]):focus-visible { outline: 2px solid var(--sidebar-focus); outline-offset: 2px; }
 /* Menus render in a portal, so use a dedicated class to keep this palette. */
-.pc-sidebar-dropdown { border: 1px solid var(--canvas-chrome-border, #2b2e33); border-radius: 10px; background: var(--canvas-chrome-surface, #17191bf2); color: var(--canvas-chrome-icon, #b5bac1); box-shadow: var(--canvas-chrome-shadow, 0 16px 38px #00000099); }
-.pc-sidebar-dropdown .mantine-Menu-item { border-radius: 7px; color: var(--menu-item-color, var(--canvas-chrome-icon, #b5bac1)); font-size: 12px; }
-.pc-sidebar-dropdown .mantine-Menu-item:hover { background: var(--canvas-chrome-hover, #25282c); color: var(--menu-item-color, var(--workspace-text, #e8eaec)); }
+.pc-sidebar-dropdown { border: 1px solid var(--canvas-chrome-border, var(--fc-border-soft)); border-radius: 10px; background: var(--canvas-chrome-surface, #191919f2); color: var(--canvas-chrome-icon, var(--fc-text-secondary)); box-shadow: var(--canvas-chrome-shadow, 0 16px 38px #00000099); }
+.pc-sidebar-dropdown .mantine-Menu-item { border-radius: 7px; color: var(--menu-item-color, var(--canvas-chrome-icon, var(--fc-text-secondary))); font-size: 12px; }
+.pc-sidebar-dropdown .mantine-Menu-item:hover { background: var(--canvas-chrome-hover, var(--fc-surface-muted)); color: var(--menu-item-color, var(--workspace-text, var(--fc-text))); }
 @media (max-width: 700px) {
   .project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs { gap: 2px; padding-inline: 8px; }
   .project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs button[role="tab"] { gap: 4px; padding-inline: 4px; }

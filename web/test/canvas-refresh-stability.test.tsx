@@ -258,7 +258,7 @@ test('video metadata fits the result node and selection or repeated metadata can
     assert.ok(Math.abs((fitted.width - 2) / (fitted.height - 2) - 16 / 9) < 1e-10)
     assert.ok(frame().querySelector('.pc-node-media-result'))
     await act(() => frame().click()); await settle()
-    assert.equal(video.controls, true, 'selected video retains native playback controls')
+    assert.equal(video.controls, false); assert.ok(video.closest('.studio-media-player')!.querySelector('[aria-label="播放素材"]'), 'selected video exposes component playback controls')
     assert.deepEqual(size(), fitted, 'selecting does not shrink or expand a fitted result')
     await act(() => video.dispatchEvent(new dom.window.Event('loadedmetadata'))); await settle()
     await view.render(propsFor(structuredClone(videoDetail), 1, []))

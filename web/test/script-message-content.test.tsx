@@ -1,3 +1,4 @@
+import { MantineProvider } from '@mantine/core'
 import assert from 'node:assert/strict'
 import { register } from 'node:module'
 import { test } from 'node:test'
@@ -9,7 +10,7 @@ register(`data:text/javascript,${encodeURIComponent(`export async function load(
 const { default: ScriptMessageContent } = await import('../src/ScriptMessageContent')
 
 function render(text: string) {
-  return new JSDOM(renderToStaticMarkup(<ScriptMessageContent text={text} />)).window.document
+  return new JSDOM(renderToStaticMarkup(<MantineProvider env="test"><ScriptMessageContent text={text} /></MantineProvider>)).window.document
 }
 
 test('revision summaries render accessible GFM tables with inline formatting and aligned columns', () => {

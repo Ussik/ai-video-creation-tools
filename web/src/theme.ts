@@ -25,7 +25,6 @@ const inputStyles = {
     borderColor: 'var(--fc-border)',
     color: 'var(--fc-text)',
     fontSize: '13px',
-    minHeight: '36px',
   },
   label: {
     color: 'var(--fc-text-muted)',
@@ -76,36 +75,25 @@ export const theme = createTheme({
     fontWeight: '700',
   },
   fontSizes: {
-    xs: '11px',
-    sm: '12px',
+    xs: '12px',
+    sm: '13px',
     md: '14px',
     lg: '16px',
     xl: '20px',
   },
   radius: {
     xs: '3px',
-    sm: '5px',
-    md: '6px',
-    lg: '8px',
-    xl: '8px',
+    sm: '6px',
+    md: '8px',
+    lg: '12px',
+    xl: '16px',
   },
   defaultRadius: 'sm',
   autoContrast: true,
-  primaryColor: 'cyan',
-  primaryShade: { light: 6, dark: 5 },
+  primaryColor: 'studio',
+  primaryShade: { light: 9, dark: 6 },
   colors: {
-    cyan: [
-      '#e8fbff',
-      '#c5f5ff',
-      '#9deeff',
-      '#72e5ff',
-      '#43dcff',
-      '#13d5ff',
-      '#00bce6',
-      '#009bbd',
-      '#007894',
-      '#00586d',
-    ],
+    studio: ['#fafaf8', '#f3f3f0', '#ededeb', '#e8e9e6', '#e4e6e3', '#e1e3df', '#e8e9e6', '#cbd0c9', '#a8b0a5', '#303943'],
     teal: [
       '#ecf8f5',
       '#d4eee7',
@@ -141,13 +129,28 @@ export const theme = createTheme({
       styles: { root: { fontWeight: 650, textTransform: 'none' } },
     }),
     Button: Button.extend({
-      defaultProps: { radius: 'sm', size: 'sm' },
+      defaultProps: { radius: 'md', size: 'sm' },
+      vars: (_theme, props) => !props.color || props.color === 'studio' ? {
+        root: props.variant === 'filled' || !props.variant ? {
+          '--button-bg': 'var(--fc-primary)',
+          '--button-hover': 'var(--fc-primary-hover)',
+          '--button-color': 'var(--fc-on-primary)',
+        } : {},
+      } : { root: {} },
       styles: {
         root: { fontWeight: 650, transition: 'background-color 150ms, border-color 150ms, color 150ms' },
         label: { whiteSpace: 'nowrap' },
       },
     }),
-    Checkbox: Checkbox.extend({ defaultProps: { color: 'cyan', size: 'sm' } }),
+    Checkbox: Checkbox.extend({
+      defaultProps: { color: 'studio', size: 'sm', radius: 'sm' },
+      vars: (_theme, props) => !props.color || props.color === 'studio' ? {
+        root: {
+          '--checkbox-color': 'var(--fc-primary)',
+          ...(!props.iconColor && props.variant !== 'outline' ? { '--checkbox-icon-color': 'var(--fc-on-primary)' } : {}),
+        },
+      } : { root: {} },
+    }),
     Combobox: Combobox.extend({
       defaultProps: { radius: 12, dropdownPadding: 6, offset: 6 },
       classNames: dropdownClassNames,
@@ -156,7 +159,8 @@ export const theme = createTheme({
       defaultProps: {
         centered: true,
         radius: 'md',
-        overlayProps: { backgroundOpacity: 0.55, blur: 3 },
+        overlayProps: { backgroundOpacity: 0.65, blur: 3 },
+        transitionProps: { transition: 'fade', duration: 140 },
       },
       styles: {
         content: { border: '1px solid var(--fc-border)', boxShadow: '0 22px 70px rgba(0, 0, 0, 0.48)' },
@@ -167,7 +171,7 @@ export const theme = createTheme({
     NumberInput: NumberInput.extend({ defaultProps: { radius: 'sm', size: 'sm' }, styles: inputStyles }),
     PasswordInput: PasswordInput.extend({ defaultProps: { radius: 'sm', size: 'sm' }, styles: inputStyles }),
     SegmentedControl: SegmentedControl.extend({
-      defaultProps: { radius: 'sm', size: 'sm' },
+      defaultProps: { radius: 'md', size: 'sm' },
       styles: {
         root: { backgroundColor: 'var(--fc-surface-muted)', border: '1px solid var(--fc-border)' },
         indicator: { boxShadow: '0 1px 3px rgba(0, 0, 0, 0.22)' },
@@ -190,8 +194,8 @@ export const theme = createTheme({
       },
       styles: selectStyles,
     }),
-    Switch: Switch.extend({ defaultProps: { color: 'cyan', size: 'sm' } }),
-    Tabs: Tabs.extend({ defaultProps: { color: 'cyan' }, styles: { tabLabel: { fontWeight: 630 } } }),
+    Switch: Switch.extend({ defaultProps: { color: 'var(--fc-switch-on)', size: 'sm', withThumbIndicator: false } }),
+    Tabs: Tabs.extend({ defaultProps: { color: 'studio' }, styles: { tabLabel: { fontWeight: 630 } } }),
     Textarea: Textarea.extend({ defaultProps: { radius: 'sm', size: 'sm', autosize: false }, styles: inputStyles }),
     TextInput: TextInput.extend({ defaultProps: { radius: 'sm', size: 'sm' }, styles: inputStyles }),
   },

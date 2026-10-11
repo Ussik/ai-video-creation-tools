@@ -2,7 +2,7 @@
   display: grid;
   gap: 12px;
   min-width: 0;
-  color: var(--fc-text, #f7f7f7);
+  color: var(--fc-text, var(--fc-text));
 }
 
 .timeline-preview-stage {
@@ -12,8 +12,8 @@
   aspect-ratio: 16 / 9;
   margin: 0 auto;
   overflow: hidden;
-  background: #090c0d;
-  border: 1px solid #30393b;
+  background: var(--fc-canvas);
+  border: 1px solid var(--fc-border);
   border-radius: 6px;
 }
 
@@ -46,14 +46,14 @@
   justify-content: center;
   gap: 9px;
   padding: 20px;
-  background: #090c0de8;
-  color: #b8c2c2;
+  background: #0b0b0be8;
+  color: var(--fc-text-secondary);
   font-size: 13px;
   text-align: center;
 }
 
 .timeline-preview-message strong {
-  color: #f4f6f6;
+  color: var(--fc-text);
   font-size: 15px;
 }
 
@@ -78,7 +78,7 @@
 .timeline-preview-clock {
   flex: none;
   min-width: 106px;
-  color: #d2dada;
+  color: var(--fc-text-secondary);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
@@ -86,7 +86,7 @@
 .timeline-preview-shot {
   margin-left: auto;
   overflow: hidden;
-  color: #a8b4b4;
+  color: var(--fc-text-secondary);
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -95,14 +95,14 @@
 .timeline-preview-progress {
   height: 4px;
   overflow: hidden;
-  background: #3b4446;
+  background: var(--fc-surface-hover);
   border-radius: 2px;
 }
 
 .timeline-preview-progress span {
   display: block;
   height: 100%;
-  background: var(--fc-primary, #13d5ff);
+  background: var(--fc-primary, var(--fc-primary));
 }
 
 @media (max-width: 560px) {

@@ -18,6 +18,32 @@ after(async () => { await app.close(); db.close(); await rm(testData, { recursiv
 async function call(method: 'GET' | 'POST' | 'PATCH' | 'PUT', url: string, payload?: object) {
   const response = await app.inject({ method, url, ...(payload === undefined ? {} : { payload }) }); assert.equal(response.statusCode, 200, response.body); return response.json()
 }
+
+test('storyboard upstream failures reach the client and diagnostic log without changing project shots', async t => {
+  const project = await call('POST', '/api/projects', { name: '分镜网关失败测试' })
+  const scene = await call('POST', `/api/projects/${project.id}/script/scenes`, { heading: '车站', duration: 20 })
+  const provider = await call('POST', '/api/providers', { name: '网关测试', base_url: 'https://gateway.invalid/v1' })
+  const model = await call('POST', '/api/models', { provider_id: provider.id, name: '文本模型', remote_id: 'gpt-6-astra', modality: 'text', protocol: 'responses',
+    settings: { request_path: 'responses', request_template: { model: '{{model}}', input: '{{prompt}}' }, text_path: 'output_text' } })
+  const context = await call('POST', `/api/projects/${project.id}/script/storyboard/context`, { scene_ids: [scene.id] })
+  const logs: unknown[] = []
+  t.mock.method(console, 'error', (...values: unknown[]) => { logs.push(values) })
+  let calls = 0
+  t.mock.method(globalThis, 'fetch', async () => { calls++; return new Response(null, { status: 502, statusText: 'Bad Gateway', headers: { 'x-request-id': 'storyboard-upstream-502' } }) })
+  const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/storyboard/plan`, payload: {
+    signature: context.signature, scene_ids: [scene.id], model_id: model.id,
+  } })
+  assert.equal(response.statusCode, 502)
+  assert.match(response.json().detail, /文本模型生成失败.*模型接口返回 502/)
+  assert.match(response.json().detail, /空响应体/)
+  assert.match(response.json().detail, /storyboard-upstream-502/)
+  assert.match(response.json().diagnostics, /gpt-6-astra/)
+  assert.match(JSON.stringify(logs), /storyboard-upstream-502/)
+  assert.equal(calls, 1)
+  assert.equal(all('SELECT id FROM shots WHERE project_id=?', project.id).length, 0)
+  assert.equal((await call('POST', `/api/projects/${project.id}/script/storyboard/context`, { scene_ids: [scene.id] })).signature, context.signature)
+})
+
 async function setup(t: { after: (fn: () => Promise<unknown>) => void },
   generate: (prompt: string) => Promise<string> = async () => { throw new Error('Unexpected model call') },
   generateVisual: (prompt: string) => Promise<string> = async () => JSON.stringify({ profiles: [] })) {

@@ -11,8 +11,8 @@
   padding: 18px;
   overflow: auto;
   outline: none;
-  background: #171717;
-  color: #ddd;
+  background: var(--fc-surface);
+  color: var(--fc-text-secondary);
   font-size: 14px;
   line-height: 1.65;
   white-space: pre-wrap;
@@ -29,13 +29,13 @@
 .pc-rich-text-content ul { list-style: disc; }
 .pc-rich-text-content ol { list-style: decimal; }
 .pc-rich-text-content li p { margin: 0; }
-.pc-rich-text-content hr { margin: 1.1em 0; border: 0; border-top: 1px solid #666; }
+.pc-rich-text-content hr { margin: 1.1em 0; border: 0; border-top: 1px solid var(--fc-border); }
 .pc-rich-text-content > :last-child { margin-bottom: 0; }
 .pc-rich-text-content:has(> p:only-child > br.ProseMirror-trailingBreak:only-child)::before {
   content: attr(data-placeholder);
   float: left;
   height: 0;
-  color: #777;
+  color: var(--fc-text-muted);
   pointer-events: none;
 }
 .project-canvas .pc-node.pc-node-text .pc-rich-text-content p {
@@ -55,7 +55,7 @@
 }
 .project-canvas .pc-node.pc-node-text:not(.pc-text-mode-choose) .pc-node-content { border-radius: 15px; }
 .pc-text-node-toolbar .pc-text-format-bar button[aria-pressed="true"],
-.pc-expanded-text-editor .pc-text-format-bar button[aria-pressed="true"] { background: #444; color: #fff; }
+.pc-expanded-text-editor .pc-text-format-bar button[aria-pressed="true"] { background: var(--fc-surface-hover); color: var(--fc-text); }
 .pc-text-node-toolbar .pc-text-format-bar button:focus-visible,
 .pc-expanded-text-editor .pc-text-format-bar button:focus-visible { outline: 1px solid #b5b5b5; outline-offset: 2px; }
 .pc-text-editor-announcement {
@@ -67,8 +67,8 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
-.pc-text-editor-modal { background: #202020; color: #ddd; }
+.pc-text-editor-modal { background: var(--fc-panel); color: var(--fc-text-secondary); }
 .pc-text-editor-modal-body { padding: 0 20px 20px; }
 .pc-expanded-text-editor { display: flex; flex-direction: column; gap: 14px; height: min(70vh, 760px); }
 .pc-expanded-text-editor .pc-text-format-bar { flex: none; justify-content: center; flex-wrap: wrap; box-shadow: none; }
-.pc-expanded-text-editor .pc-rich-text-editor { border: 1px solid #444; border-radius: 12px; }
+.pc-expanded-text-editor .pc-rich-text-editor { border: 1px solid var(--fc-border); border-radius: 12px; }

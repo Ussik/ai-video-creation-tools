@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties, type SyntheticEvent } from 'react'
-import { Menu, NumberInput, Popover, Slider, Switch } from '@mantine/core'
+import { UnstyledButton, Menu, NumberInput, Popover, Slider, Switch } from '@mantine/core'
 import { useClickOutside } from '@mantine/hooks'
 import { ArrowLeftRight, Check, ChevronDown, Film, Image, Images, Scan, SlidersHorizontal, SquarePen, Type, Volume2, VolumeX } from 'lucide-react'
 import { imageSizeChoices, selectImageSize } from './canvas-model-parameters'
@@ -80,10 +80,10 @@ export function CanvasVideoModeMenu({ value, supportedModes, onChange, disabled 
     zIndex={220} middlewares={floatingMiddlewares} returnFocus preventPositionChangeWhenVisible={false}
     classNames={{ dropdown: 'pc-generation-mode-menu', item: 'pc-generation-mode-item', label: 'pc-generation-menu-heading' }}>
     <Menu.Target>
-      <button type="button" className="pc-generation-control pc-generation-mode-trigger nodrag nowheel" data-canvas-overlay
+      <UnstyledButton type="button" className="pc-generation-control pc-generation-mode-trigger nodrag nowheel" data-canvas-overlay
         disabled={disabled} aria-label={`视频生成模式：${current.label}`} aria-expanded={opened && !disabled} {...overlayEvents} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') setOpened(false) }}>
         <Icon size={15} /><span>{current.label}</span><ChevronDown size={13} />
-      </button>
+      </UnstyledButton>
     </Menu.Target>
     <Menu.Dropdown className="nodrag nowheel" data-canvas-overlay {...overlayEvents} onKeyDown={event => {
       event.stopPropagation()
@@ -169,12 +169,12 @@ export function CanvasGenerationParameters({ modality, ratios, ratio, resolution
     <div className="pc-generation-parameter-heading"><span>比例</span>{modality === 'video' && <small>{ratio === 'adaptive' ? '自适应' : ratio}</small>}</div>
     <div className={`pc-generation-ratios ${modality === 'image' ? 'pc-generation-image-ratios' : 'pc-generation-video-ratios'}`} role="group" aria-label="比例"
       style={modality === 'image' ? { gridTemplateColumns: `repeat(${Math.min(5, displayRatios.length)}, minmax(0, 1fr))` } : undefined}>
-      {displayRatios.map(option => <button type="button" key={option} className="pc-generation-ratio" aria-pressed={ratio === option}
+      {displayRatios.map(option => <UnstyledButton type="button" key={option} className="pc-generation-ratio" aria-pressed={ratio === option}
         title={option === 'adaptive' ? '自适应' : option}
         onClick={() => fixedSizes.length ? changeImageSize({ ratio: option }) : onChange({ ratio: option })}>
         <span className="pc-generation-ratio-preview">{option === 'adaptive' ? <Scan size={26} /> : <i style={ratioShape(option, modality === 'image' ? 22 : 29)} />}</span>
         <span>{option === 'adaptive' ? modality === 'video' ? 'Auto' : '自适应' : option}</span>
-      </button>)}
+      </UnstyledButton>)}
     </div>
   </section>
   const summary = [ratio === 'adaptive' ? '自适应' : ratio, modality === 'image' ? imageClarity : videoResolutionLabel(resolution),
@@ -183,12 +183,12 @@ export function CanvasGenerationParameters({ modality, ratios, ratio, resolution
     middlewares={floatingMiddlewares} zIndex={220} trapFocus returnFocus preventPositionChangeWhenVisible={false}
     classNames={{ dropdown: `pc-generation-parameters-popover${modality === 'image' ? ' pc-generation-image-parameters' : ' pc-generation-video-parameters'}` }}>
     <Popover.Target>
-      <button ref={setTriggerNode} type="button" className="pc-generation-control pc-generation-parameters-trigger nodrag nowheel" data-canvas-overlay
+      <UnstyledButton ref={setTriggerNode} type="button" className="pc-generation-control pc-generation-parameters-trigger nodrag nowheel" data-canvas-overlay
         aria-label={`生成参数：${summary}${audioEnabled ? generateAudio ? '，声音开启' : '，声音关闭' : ''}`}
         aria-expanded={opened} aria-haspopup="dialog" {...overlayEvents} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') setOpened(false) }} onClick={event => { event.stopPropagation(); setOpened(value => !value) }}>
         <SlidersHorizontal size={15} /><span>{summary}</span>
         {audioEnabled && (generateAudio ? <Volume2 size={15} /> : <VolumeX size={15} />)}<ChevronDown size={13} />
-      </button>
+      </UnstyledButton>
     </Popover.Target>
     <Popover.Dropdown ref={setDropdownNode} className="nodrag nowheel" data-canvas-overlay role="dialog" aria-label="生成参数" {...overlayEvents}
       onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') setOpened(false) }}>
@@ -196,31 +196,31 @@ export function CanvasGenerationParameters({ modality, ratios, ratio, resolution
       {modality === 'image' && qualities.length > 0 && <section className="pc-generation-parameter-section">
         <div className="pc-generation-parameter-heading"><span>画质</span></div>
         <div className="pc-generation-options pc-generation-image-quality-options" role="group" aria-label="画质">
-          {[...new Set(qualities)].map(option => <button type="button" key={option} aria-pressed={quality === option}
-            onClick={() => onChange({ quality: option })}>{imageQualityLabel(option)}</button>)}
+          {[...new Set(qualities)].map(option => <UnstyledButton type="button" key={option} aria-pressed={quality === option}
+            onClick={() => onChange({ quality: option })}>{imageQualityLabel(option)}</UnstyledButton>)}
         </div>
       </section>}
       {modality === 'image' && supportedClarities.length > 0 && <section className="pc-generation-parameter-section">
         <div className="pc-generation-parameter-heading"><span>清晰度</span></div>
         <div className="pc-generation-options pc-generation-image-clarity-options" role="group" aria-label="清晰度">
-          {supportedClarities.map(option => <button type="button" key={option} aria-pressed={imageClarity === option}
+          {supportedClarities.map(option => <UnstyledButton type="button" key={option} aria-pressed={imageClarity === option}
             title={!clarities.length ? fixedSizes.filter(size => size.clarity === option).map(size => size.resolution).join(' / ') || option : option}
-            onClick={() => clarities.length ? onChange({ clarity: option }) : fixedSizes.length ? changeImageSize({ clarity: option }) : onChange({ resolution: option })}>{option}</button>)}
+            onClick={() => clarities.length ? onChange({ clarity: option }) : fixedSizes.length ? changeImageSize({ clarity: option }) : onChange({ resolution: option })}>{option}</UnstyledButton>)}
         </div>
       </section>}
       {modality === 'video' && ratioControls}
       {modality === 'video' && resolutions.length > 0 && <section className="pc-generation-parameter-section">
         <div className="pc-generation-parameter-heading"><span>清晰度</span><small>{videoResolutionLabel(resolution)}</small></div>
         <div className="pc-generation-options pc-generation-video-resolution-options" role="group" aria-label="清晰度">
-          {[...new Set(resolutions)].map(option => <button type="button" key={option} aria-pressed={resolution === option}
-            onClick={() => onChange({ resolution: option })}>{videoResolutionLabel(option)}</button>)}
+          {[...new Set(resolutions)].map(option => <UnstyledButton type="button" key={option} aria-pressed={resolution === option}
+            onClick={() => onChange({ resolution: option })}>{videoResolutionLabel(option)}</UnstyledButton>)}
         </div>
       </section>}
       {modality === 'image' && backgrounds.length > 0 && <section className="pc-generation-parameter-section">
         <div className="pc-generation-parameter-heading"><span>背景</span></div>
         <div className="pc-generation-options pc-generation-image-background-options" role="group" aria-label="背景">
-          {[...new Set(backgrounds)].map(option => <button type="button" key={option} aria-pressed={background === option}
-            onClick={() => onChange({ background: option })}>{imageBackgroundLabel(option)}</button>)}
+          {[...new Set(backgrounds)].map(option => <UnstyledButton type="button" key={option} aria-pressed={background === option}
+            onClick={() => onChange({ background: option })}>{imageBackgroundLabel(option)}</UnstyledButton>)}
         </div>
       </section>}
       {modality === 'image' && ratioControls}
@@ -259,9 +259,9 @@ export function CanvasGenerationParameters({ modality, ratios, ratio, resolution
       <section className="pc-generation-parameter-section">
         <div className="pc-generation-parameter-heading"><span>生成数量</span>{modality === 'video' && <small>候选</small>}</div>
         <div className="pc-generation-options" role="group" aria-label="生成候选数量">
-          {[1, 2, 4].map(option => <button type="button" key={option} aria-pressed={count === option} onClick={() => onCountChange(option)}>
+          {[1, 2, 4].map(option => <UnstyledButton type="button" key={option} aria-pressed={count === option} onClick={() => onCountChange(option)}>
             {option}{modality === 'image' ? '张' : ' 个'}{modality === 'video' && option === count && <Check size={14} />}
-          </button>)}
+          </UnstyledButton>)}
         </div>
       </section>
     </Popover.Dropdown>

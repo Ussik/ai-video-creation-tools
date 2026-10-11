@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Badge, Button, Modal, Textarea } from '@mantine/core'
+import { UnstyledButton, Badge, Button, Modal, Textarea } from '@mantine/core'
 import { ArrowRight, Check, Eye, RefreshCcw, TriangleAlert, X } from 'lucide-react'
 import { api, json } from './api'
 import type { CutReview, CutReviewReport, CutReviewStatus, ProjectDetail } from './api'
@@ -144,14 +144,14 @@ export default function CutReviewPanel({ detail, onChanged }: { detail: ProjectD
         : !loading && cuts.length === 0 ? <div className="cut-review-empty">本次制作范围内还没有相邻镜头可审核。</div>
         : <div className="cut-review-layout">
           <div className="cut-review-list" aria-label="接镜列表">
-            {cuts.map((cut, index) => <button type="button" key={pairKey(cut)}
+            {cuts.map((cut, index) => <UnstyledButton type="button" key={pairKey(cut)}
               className={`cut-review-item ${pairKey(cut) === activeKey ? 'is-selected' : ''}`}
               onClick={() => { setSelectedKey(pairKey(cut)); setError(null); setSuccess(null) }}
               aria-current={pairKey(cut) === activeKey ? 'true' : undefined}>
               <span className="cut-review-item-index">接点 {String(index + 1).padStart(2, '0')}</span>
               <span className="cut-review-item-titles"><strong>{cut.from.title}</strong><ArrowRight size={13} /><strong>{cut.to.title}</strong></span>
               <Badge size="xs" variant="light" color={statusColor(cut)}>{statusLabel(cut)}</Badge>
-            </button>)}
+            </UnstyledButton>)}
           </div>
           {selected && <div className="cut-review-detail">
             <div className="cut-review-detail-head">

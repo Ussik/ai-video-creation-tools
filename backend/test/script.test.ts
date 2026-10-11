@@ -69,6 +69,19 @@ interface Script {
   outline: string; characters: string; generation_options: Record<string, string>; scenes: Scene[]
 }
 
+test('empty generation idea falls back to the project name and retains saved script context', async () => {
+  const project = await call<{ id: string }>('POST', '/api/projects', { name: '山海经', brief: '' })
+  await call('PUT', `/api/projects/${project.id}/script`, {
+    outline: '现代学生穿越上古，命名异兽', characters: '主角与引路人', scenes: [],
+  })
+  const result = await call<{ prompt: string }>('POST', `/api/projects/${project.id}/script/generate/prompt`, { idea: '' })
+  assert.match(result.prompt, /创意：山海经/)
+  assert.match(result.prompt, /现代学生穿越上古，命名异兽/)
+  assert.match(result.prompt, /主角与引路人/)
+  const saved = await call<{ script: Script }>('GET', `/api/projects/${project.id}`)
+  assert.equal(saved.script.outline, '现代学生穿越上古，命名异兽')
+})
+
 test('script editing is atomic and existing shots survive scene revisions', async () => {
   const legacy = await call<{ script: Script; shots: Shot[] }>('GET', '/api/projects/legacy-project')
   assert.deepEqual(legacy.script, { outline: '', characters: '', generation_options: {}, scenes: [] })

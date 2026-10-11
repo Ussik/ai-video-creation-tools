@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Modal } from '@mantine/core'
+import { UnstyledButton, Button, ActionIcon, Table, Modal } from '@mantine/core'
 import { EditorContent, useEditor, useEditorState } from '@tiptap/react'
 import type { JSONContent } from '@tiptap/core'
 import { NodeToolbar, Position, useViewport } from '@xyflow/react'
@@ -64,10 +64,10 @@ function TextEditingSurface({ text, document, selected, inline, label, onChange,
     return () => window.clearTimeout(timer)
   }, [copyState])
 
-  const button = (command: TextFormat, title: string, icon: React.ReactNode, active?: boolean) => <button
+  const button = (command: TextFormat, title: string, icon: React.ReactNode, active?: boolean) => <UnstyledButton
     type="button" title={title} aria-label={title} aria-pressed={active} disabled={!editor}
     onMouseDown={event => event.preventDefault()}
-    onClick={() => editor && applyTextFormat(editor, command)}>{icon}</button>
+    onClick={() => editor && applyTextFormat(editor, command)}>{icon}</UnstyledButton>
   const toolbar = <div className="pc-text-format-bar nodrag nowheel" role="toolbar" aria-label="文本格式"
     onPointerDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()} onDoubleClick={event => event.stopPropagation()}>
     {button('clear', '清除格式', <RemoveFormatting size={18} />)}
@@ -84,14 +84,14 @@ function TextEditingSurface({ text, document, selected, inline, label, onChange,
     {button('orderedList', '编号列表', <ListOrdered size={18} />, format?.orderedList)}
     <span className="pc-text-format-divider" />
     {button('rule', '分隔线', <Minus size={18} />)}
-    <button type="button" title={copyState === 'failed' ? '复制失败，请使用快捷键复制' : copyState === 'copied' ? '已复制' : '复制文本'}
+    <Button type="button" title={copyState === 'failed' ? '复制失败，请使用快捷键复制' : copyState === 'copied' ? '已复制' : '复制文本'}
       aria-label={copyState === 'copied' ? '已复制文本' : '复制文本'} onMouseDown={event => event.preventDefault()}
       onClick={async () => {
         if (!editor) return
         try { await navigator.clipboard.writeText(textDocumentText(editor.getJSON())); setCopyState('copied') }
         catch { setCopyState('failed') }
-      }}>{copyState === 'copied' ? <Check size={18} /> : <Copy size={18} />}</button>
-    {onExpand && <button type="button" aria-label="展开文本节点" title="展开文本节点" onMouseDown={event => event.preventDefault()} onClick={onExpand}><Maximize2 size={18} /></button>}
+      }} data-workspace-control="" variant="subtle">{copyState === 'copied' ? <Check size={18} /> : <Copy size={18} />}</Button>
+    {onExpand && <ActionIcon type="button" aria-label="展开文本节点" title="展开文本节点" onMouseDown={event => event.preventDefault()} onClick={onExpand} data-workspace-control=""><Maximize2 size={18} /></ActionIcon>}
     <span className="pc-text-editor-announcement" role="status">{copyState === 'copied' ? '已复制文本' : copyState === 'failed' ? '复制失败，请使用快捷键复制' : ''}</span>
   </div>
 
@@ -141,10 +141,10 @@ function renderDocumentNode(node: JSONContent, key: number): React.ReactNode {
     const rows = node.content || []
     const hasHeader = rows[0]?.content?.every(cell => cell.type === 'tableHeader')
     return <div key={key} className="script-document-table-scroll" role="region" aria-label="文档表格" tabIndex={0}>
-      <table className="script-document-table" style={{ minWidth: (rows[0]?.content?.length || 1) * 120 }}>
+      <Table className="script-document-table" style={{ minWidth: (rows[0]?.content?.length || 1) * 120 }}>
         {hasHeader && <thead>{renderDocumentNode(rows[0], 0)}</thead>}
         <tbody>{rows.slice(hasHeader ? 1 : 0).map(renderDocumentNode)}</tbody>
-      </table>
+      </Table>
     </div>
   }
   if (node.type === 'tableRow') return <tr key={key}>{children}</tr>

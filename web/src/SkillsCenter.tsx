@@ -151,7 +151,7 @@ function SkillsCenter({ projectId, projectName }: { projectId?: string; projectN
             let relative: string | null = null
             try { if (href && !/^[a-z]+:/i.test(href)) relative = decodeURIComponent(new URL(href, `https://skill.local/${file}`).pathname.slice(1)) } catch { /* Show malformed links as plain text. */ }
             const resource = relative && detail.files.find(item => item.path === relative)
-            return resource ? <button type="button" className="skills-document-link" onClick={() => setFile(resource.path)}>{children}</button>
+            return resource ? <Button type="button" className="skills-document-link" onClick={() => setFile(resource.path)} data-workspace-control="" variant="subtle">{children}</Button>
               : <a href={relative ? `https://github.com/${detail.repo}/blob/${detail.revision}/${relative.split('/').map(encodeURIComponent).join('/')}` : href} target="_blank" rel="noreferrer">{children}</a>
           },
         }}>{body}</Markdown>}</div>
@@ -164,7 +164,7 @@ function SkillsCenter({ projectId, projectName }: { projectId?: string; projectN
         const response = await api<{ repo: string; skills: DiscoverableSkill[] }>('/skills/repositories', json('POST', { repo: repoInput }));
         await reload(); setRepo(response.repo); setSource('repository'); setTab('discover'); setResults(response.skills); setHasSearched(true); setTotal(response.skills.length); setRepoInput(''); setNotice('仓库已添加')
       }) }}><TextInput aria-label="添加仓库" placeholder="owner/repo 或 GitHub 仓库地址" value={repoInput} onChange={event => setRepoInput(event.currentTarget.value)} /><Button type="submit" variant="default" leftSection={<Plus size={15} />} disabled={!!busy || !repoInput.trim()}>添加</Button></form>
-      <div className="skills-repo-list">{repositories.map(item => <div key={item.repo}><button type="button" onClick={() => { setRepo(item.repo); changeSource('repository'); setTab('discover'); setRepositoryOpen(false) }}><GitBranch size={15} />{item.repo}</button>
+      <div className="skills-repo-list">{repositories.map(item => <div key={item.repo}><Button type="button" onClick={() => { setRepo(item.repo); changeSource('repository'); setTab('discover'); setRepositoryOpen(false) }} data-workspace-control="" variant="subtle"><GitBranch size={15} />{item.repo}</Button>
         <ActionIcon variant="subtle" aria-label={`移除仓库 ${item.repo}`} disabled={!!busy} onClick={() => void action('remove-repository', async () => { await api(`/skills/repositories?repo=${encodeURIComponent(item.repo)}`, json('DELETE', {})); await reload() })}><Trash2 size={15} /></ActionIcon></div>)}</div>
       {busy === 'repository' && <div className="skills-progress" role="status"><LoaderCircle size={15} className="pc-spin" />正在扫描仓库技能</div>}{error && <p className="skills-modal-error" role="alert">{error}</p>}
     </Modal>

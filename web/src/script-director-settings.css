@@ -18,21 +18,21 @@
   height: 100%;
   min-height: 78px;
   padding: 13px 14px;
-  border: 1px solid #383a3d;
+  border: 1px solid var(--fc-border);
   border-radius: 12px;
-  background: #252629;
-  color: #e1e2e4;
+  background: var(--fc-surface-muted);
+  color: var(--fc-text);
   transition: background-color 150ms ease, border-color 150ms ease;
 }
 .script-director-settings-grid .script-director-auto-card:hover,
 .script-director-settings-grid .script-director-structure-card:hover {
-  border-color: #52555a;
-  background: #2b2d30;
+  border-color: var(--fc-border);
+  background: var(--fc-surface-hover);
 }
 .script-director-settings-grid .is-open > .script-director-auto-card,
 .script-director-settings-grid .is-open > .script-director-structure-card {
-  border-color: #71757b;
-  background: #2b2d30;
+  border-color: var(--fc-border-strong);
+  background: var(--fc-surface-hover);
 }
 .script-director-settings-grid .script-director-auto-card:focus-visible,
 .script-director-settings-grid .script-director-structure-card:focus-visible {
@@ -44,7 +44,7 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
-  color: #999ca2;
+  color: var(--fc-text-muted);
 }
 .script-director-setting-heading > svg { flex: none; }
 .script-director-setting-heading small,
@@ -59,7 +59,7 @@
 .script-director-setting-heading .script-director-structure-chevron {
   position: static;
   margin-left: auto;
-  color: #81858c;
+  color: var(--fc-text-muted);
   transition: transform 150ms ease;
 }
 .script-director-auto-field.is-open .script-director-auto-chevron,
@@ -69,7 +69,7 @@
 .script-director-settings-grid .script-director-structure-value {
   min-width: 0;
   overflow: visible;
-  color: #e1e2e4;
+  color: var(--fc-text);
   font-size: 13px;
   font-weight: 500;
   line-height: 1.5;
@@ -77,7 +77,7 @@
   overflow-wrap: anywhere;
 }
 .script-director-setting-value.is-auto,
-.script-director-settings-grid .script-director-structure-value.is-auto { color: #b7bac0; font-weight: 400; }
+.script-director-settings-grid .script-director-structure-value.is-auto { color: var(--fc-text-secondary); font-weight: 400; }
 .script-director-structure-summary {
   display: flex;
   align-items: baseline;
@@ -88,7 +88,7 @@
 .script-director-settings-grid .script-director-structure-meta {
   flex: none;
   align-self: auto;
-  color: #999ca2;
+  color: var(--fc-text-muted);
   font-size: 11px;
   line-height: 1.5;
   white-space: nowrap;
@@ -113,4 +113,38 @@
   .script-director-settings-grid .script-director-auto-card,
   .script-director-settings-grid .script-director-structure-card,
   .script-director-setting-heading svg { transition: none; }
+}
+/* Modal provides dismissal and focus management; the body owns the two-column layout. */
+.script-director-settings-modal.mantine-Modal-content { display: block; width: auto; height: auto; max-height: calc(100dvh - 48px); border-radius: 14px; }
+.script-director-settings-modal-body.mantine-Modal-body { display: grid; grid-template-columns: 210px minmax(0, 1fr); height: min(680px, calc(100dvh - 50px)); padding: 0; }
+.script-director-settings-modal.is-presets-hidden .script-director-settings-modal-body { grid-template-columns: minmax(0, 1fr); }
+.script-director-settings-main { min-width: 0; min-height: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.script-director-settings-presets { border: 0; border-right: 1px solid var(--fc-border-soft); border-radius: 0; background: transparent; box-shadow: none; }
+.script-director-settings-modal-head { padding: 22px 24px 14px; }
+.script-director-settings-modal-foot { flex: none; padding: 14px 24px; }
+.script-director-settings-grid .script-director-auto-card, .script-director-settings-grid .script-director-structure-card { border-radius: 8px; min-height: 76px; }
+.script-director-settings-grid .script-director-setting-value { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; font-size: 13px; line-height: 1.5; }
+@media (max-width: 760px) {
+  .script-director-settings-modal-body.mantine-Modal-body { grid-template-columns: minmax(0, 1fr); height: calc(100dvh - 50px); }
+  .script-director-settings-presets { display: none; }
+}
+@container script-settings (max-width: 620px) {
+  .script-director-settings-modal .script-director-settings-scroll { padding-inline: 18px; }
+  .script-director-settings-modal .script-director-settings-theme-layout,
+  .script-director-settings-modal .script-director-settings-theme-layout.has-fusion-rail,
+  .script-director-settings-modal .script-director-settings-theme-layout:not(.has-fusion-rail) {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+    grid-template-rows: 220px 210px;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+  }
+  .script-director-settings-modal .script-director-theme-stage { grid-column: 1 / -1; grid-row: 1; height: 220px !important; min-height: 0 !important; }
+  .script-director-settings-modal .script-director-theme-orbit { height: 220px !important; min-height: 0 !important; }
+  .script-director-settings-modal .script-director-theme-rail-column { grid-column: 1; grid-row: 2; min-height: 0 !important; height: 210px !important; }
+  .script-director-settings-modal .script-director-theme-rail.is-fusion { grid-column: 2; grid-row: 2; }
+  .script-director-settings-modal .script-director-settings-theme-layout:not(.has-fusion-rail) .script-director-theme-rail-column { grid-column: 1 / -1; max-width: 180px; justify-self: center; width: 100%; }
+  .script-director-settings-modal .script-director-theme-rail.is-infinite { min-height: 0 !important; height: 210px !important; max-height: 210px; }
+  .script-director-settings-modal .script-director-theme-rail-viewport { min-height: 0; height: 210px; max-height: 210px; }
+  .script-director-settings-modal-foot { padding-inline: 16px; gap: 8px; }
 }

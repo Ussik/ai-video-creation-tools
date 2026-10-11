@@ -1,3 +1,4 @@
+import { StudioMediaPlayer } from './StudioMediaPlayer'
 import { useEffect, useRef, useState } from 'react'
 import { CircleAlert, Film } from 'lucide-react'
 import type { Asset } from './api'
@@ -20,8 +21,8 @@ function ActiveVideo({ asset, onMediaSize }: { asset: Asset; onMediaSize?: (widt
     document.addEventListener('visibilitychange', onVisibility)
     return () => { pause(); observer?.disconnect(); document.removeEventListener('visibilitychange', onVisibility) }
   }, [])
-  return <video ref={ref} src={asset.url} poster={canvasPreviewUrl(asset)} controls playsInline preload="metadata"
-    onLoadedMetadata={onMediaSize ? event => onMediaSize(event.currentTarget.videoWidth, event.currentTarget.videoHeight) : undefined} />
+  return <StudioMediaPlayer ref={ref} src={asset.url} poster={canvasPreviewUrl(asset)} controls playsInline preload="metadata"
+    onLoadedMetadata={onMediaSize ? (event: React.SyntheticEvent<HTMLVideoElement>) => onMediaSize(event.currentTarget.videoWidth, event.currentTarget.videoHeight) : undefined} />
 }
 
 function MediaPreview({ asset, active, previewSize, onMediaSize }: { asset: Asset; active: boolean; previewSize: 320 | 640; onMediaSize?: (width: number, height: number) => void }) {

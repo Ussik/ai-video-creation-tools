@@ -449,11 +449,11 @@ test('execution UI updates live calls, preserves repeated invocations and persis
     await act(() => section.querySelector<HTMLButtonElement>('button')!.click())
     assert.equal(section.querySelectorAll('.is-tool').length, 9)
     const technical = section.querySelector<HTMLDetailsElement>('.sd-activity-technical')!
-    assert.equal(technical.open, false)
-    await act(() => technical.querySelector<HTMLElement>('summary')!.click())
+    assert.equal(technical.querySelector('.workspace-disclosure-control')!.getAttribute('aria-expanded'), 'false')
+    await act(() => technical.querySelector<HTMLElement>('.workspace-disclosure-control')!.click())
     const readDetail = technical.querySelectorAll<HTMLDetailsElement>('.sd-activity-detail')[1]
-    await act(() => readDetail.querySelector<HTMLElement>('summary')!.click())
-    assert.equal(readDetail.open, true)
+    await act(() => readDetail.querySelector<HTMLElement>('.workspace-disclosure-control')!.click())
+    assert.equal(readDetail.querySelector('.workspace-disclosure-control')!.getAttribute('aria-expanded'), 'true')
     assert.match(readDetail.textContent!, /read_documents/); assert.match(readDetail.textContent!, /document_ids/); assert.match(readDetail.textContent!, /林晚是记者/)
     assert.match(section.textContent!, /references\/character.md/)
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 410)) })
@@ -763,5 +763,39 @@ test('a delayed initial state cannot overwrite a newer native proposal', async t
     await act(async () => releaseInitial(Response.json({ draft: null, decisions: [], creation: stateFor(emptyProject) })))
     assert.ok(button('生成全剧故事大纲'))
     assert.equal(view.container.querySelectorAll('.sd-creation-actions button').length, 1)
+  } finally { await view.destroy() }
+})
+
+test('settings option Escape retains the dialog and draft; cancelling never saves project settings', async t => {
+  const writes: string[] = []
+  t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
+    const path = String(url)
+    if (init?.method && init.method !== 'GET') writes.push(path)
+    if (path.endsWith('/conversations')) return Response.json({ conversations: [] })
+    if (path.endsWith('/tools-state')) return Response.json({ draft: null, decisions: [] })
+    return Response.json({})
+  })
+  const view = await mount()
+  const escape = async (node: HTMLElement) => act(() => node.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+  try {
+    await act(() => button('剧本设定').click())
+    const dialog = document.querySelector('.script-director-settings-modal')!
+    assert.ok(dialog)
+    const audience = [...document.querySelectorAll<HTMLButtonElement>('.script-director-auto-card')].find(node => node.textContent?.includes('目标受众'))!
+    await act(() => audience.click())
+    await act(() => button('男频').click())
+    await escape(document.querySelector<HTMLElement>('.script-director-auto-popover input')!)
+    assert.equal(document.querySelector('.script-director-settings-modal'), dialog)
+    assert.equal(document.querySelector('.script-director-auto-popover'), null)
+    assert.match(audience.textContent!, /男频/)
+    await act(() => document.querySelector<HTMLButtonElement>('.script-director-structure-card')!.click())
+    await escape(document.querySelector<HTMLElement>('[role="slider"][aria-label="预计集数"]')!)
+    assert.equal(document.querySelector('.script-director-settings-modal'), dialog)
+    assert.equal(document.querySelector('.script-director-structure-popover'), null)
+    await act(() => button('取消').click())
+    assert.equal(document.querySelector('.script-director-settings-modal'), null)
+    assert.equal(writes.filter(path => path.endsWith('/script') || path.includes('/canvas')).length, 0)
+    await act(() => button('剧本设定').click())
+    assert.match(document.querySelector('.script-director-auto-card')!.textContent!, /自动/)
   } finally { await view.destroy() }
 })

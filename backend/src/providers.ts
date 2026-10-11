@@ -128,8 +128,41 @@ function imageNetworkError(stage: '厂商请求' | '结果图片下载', started
   return new Error(`图片任务网络失败（阶段：${stage}；错误码：${code}；耗时：${seconds} 秒）。${advice}`)
 }
 
+function textHttpError(response: Response, raw: string, url: string, startedAt: number, model: string,
+  authValues: string[] = []): Error & { diagnostics: string; statusCode: number } {
+  const secrets = authValues.flatMap(value => [value, value.replace(/^\S+\s+/, '')]).filter(value => value.length >= 6)
+  const clean = (value: string) => secrets.reduce((text, secret) => text.split(secret).join('[已隐藏]'), value)
+    .replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [已隐藏]')
+  let message = raw.trim()
+  try {
+    const payload = JSON.parse(message) as Record<string, unknown>
+    const error = payload?.error && typeof payload.error === 'object' ? payload.error as Record<string, unknown> : payload
+    const detail = error?.message ?? error?.detail ?? payload?.error
+    if (typeof detail === 'string' && detail.trim()) {
+      message = detail
+      if (typeof error?.code === 'string') message += `（错误码：${error.code}）`
+    }
+  } catch { /* Retain non-JSON upstream errors. */ }
+  if (/^\s*(?:<!doctype|<html)/i.test(message)) message = message
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '').replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!message) message = response.status === 502
+    ? '上游网关未能取得有效响应，返回了空响应体，未提供具体原因。'
+    : '上游返回了空响应体，未提供具体原因。'
+  const endpoint = new URL(url)
+  const requestId = response.headers.get('x-request-id') || response.headers.get('request-id') || response.headers.get('x-amzn-requestid') || response.headers.get('cf-ray')
+  const diagnostics = clean([
+    `上游状态：HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`,
+    `模型：${model}`,
+    `接口：${endpoint.origin}${endpoint.pathname}`,
+    `耗时：${((Date.now() - startedAt) / 1000).toFixed(1)} 秒`,
+    `上游请求编号：${requestId ? requestId.replace(/[\r\n\t]/g, ' ').slice(0, 160) : '未返回'}`,
+  ].join('\n'))
+  return Object.assign(new Error(`模型接口返回 ${response.status}: ${clean(message).slice(0, 800)}\n${diagnostics}`), { statusCode: 502, diagnostics })
+}
+
 async function requestJson(method: 'GET' | 'POST', url: string, headers: Record<string, string>, body?: unknown,
-  modality?: Modality): Promise<Record<string, unknown>> {
+  modality?: Modality, model = ''): Promise<Record<string, unknown>> {
   const startedAt = Date.now()
   let response: Response
   let raw: string
@@ -152,6 +185,7 @@ async function requestJson(method: 'GET' | 'POST', url: string, headers: Record<
   try { parsed = JSON.parse(raw) } catch { parsed = null }
   if (!response.ok) {
     if (modality === 'image') throw new Error(`图片生成请求失败（阶段：厂商请求；HTTP ${response.status}；耗时：${((Date.now() - startedAt) / 1000).toFixed(1)} 秒）。厂商可能已计费，请先核对厂商记录。`)
+    if (modality === 'text') throw textHttpError(response, raw, url, startedAt, model, Object.values(headers))
     const message = parsed && typeof parsed === 'object' ? JSON.stringify(parsed) : raw
     throw new Error(`模型接口返回 ${response.status}: ${message.slice(0, 800)}`)
   }
@@ -319,18 +353,20 @@ export async function createTextToolTransport(model: GenerationModel, provider: 
     tools: tools.map(tool => { const selected = { ...tool, parameters: strict ? strictJsonSchema(tool.parameters) : tool.parameters, strict }; return protocol === 'responses' ? { type: 'function', ...selected } : { type: 'function', function: selected } }),
     ...(protocol === 'responses' ? { input: history } : { messages: history, n: 1 }) }
   const key = resolveKey(provider)
+  const requestUrl = apiUrl(settingString(settings, 'api_base_url', provider.base_url), settingString(settings, 'request_path'))
+  const startedAt = Date.now()
   const scope = createStreamScope(signal, { totalMs: textRequestTimeoutMs,
     totalMessage: `文本模型请求超时（最长等待 ${Math.round(textRequestTimeoutMs / 60_000)} 分钟）。请检查草稿后重试或切换文本模型。` })
   try {
-    const response = await scope.wait(fetch(apiUrl(settingString(settings, 'api_base_url', provider.base_url), settingString(settings, 'request_path')), {
+    const response = await scope.wait(fetch(requestUrl, {
       method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream, application/json',
         ...(key ? { [provider.auth_header || 'Authorization']: `${provider.auth_prefix ?? 'Bearer '}${key}` } : {}) },
       body: JSON.stringify(body),
       signal: scope.signal,
     }))
     if (!response.ok) {
-      const detail = (await scope.wait(response.text())).slice(0, 800)
-      throw Object.assign(new Error(`模型工具调用返回 ${response.status}: ${detail}`), { statusCode: 502 })
+      throw textHttpError(response, await scope.wait(response.text()), requestUrl, startedAt, model.remote_id,
+        key ? [`${provider.auth_prefix ?? 'Bearer '}${key}`] : [])
     }
     const chatMessage: Record<string, unknown> = { role: 'assistant', content: '' }
     const chatCalls = new Map<number, { id: string; type: 'function'; function: { name: string; arguments: string } }>()
@@ -442,11 +478,13 @@ export async function streamText(
         ? {} : { stream: true }) }
     : renderedBody, model.protocol, settings, request.structured_output)
   let response: Response
+  const requestUrl = apiUrl(settingString(settings, 'api_base_url', provider.base_url), settingString(settings, 'request_path'))
+  const startedAt = Date.now()
   const scope = createStreamScope(signal, { totalMs: textRequestTimeoutMs,
     totalMessage: `文本模型请求超时（最长等待 ${Math.round(textRequestTimeoutMs / 60_000)} 分钟）。请检查草稿后重试或切换文本模型。` })
   try {
     try {
-      response = await scope.wait(fetch(apiUrl(settingString(settings, 'api_base_url', provider.base_url), settingString(settings, 'request_path')), {
+      response = await scope.wait(fetch(requestUrl, {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -457,7 +495,7 @@ export async function streamText(
     }
     if (!response.ok) {
       const raw = await scope.wait(response.text())
-      throw new Error(`模型接口返回 ${response.status}: ${raw.slice(0, 800)}`)
+      throw textHttpError(response, raw, requestUrl, startedAt, model.remote_id, key ? [headers[authHeader]!] : [])
     }
 
     let fullText = ''
@@ -937,7 +975,7 @@ async function configuredNetwork(
     const payload = await requestJson('POST', apiUrl(provider.base_url, settingString(settings, 'request_path')), headers,
       model.modality === 'text' ? applyOutputContract(compactTemplate(renderTemplate(requestTemplate(settings, request, { model: '{{model}}', prompt: '{{prompt}}' }), variables)), model.protocol, settings, request.structured_output)
         : compactTemplate(renderTemplate(requestTemplate(settings, request, { model: '{{model}}', prompt: '{{prompt}}' }), variables)),
-      model.modality)
+      model.modality, model.remote_id)
     if (model.modality === 'text') {
       return { path: await saveBytes(projectId, '.txt', Buffer.from(responseText(payload, settings, model.protocol))), remoteUrl: null }
     }

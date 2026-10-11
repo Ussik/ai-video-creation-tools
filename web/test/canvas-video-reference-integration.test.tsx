@@ -1,3 +1,5 @@
+import { chooseCombobox } from './component-controls'
+import { videoReferenceUsageLabels, type VideoReferenceUsage } from '../../backend/src/video-reference-usage'
 import assert from 'node:assert/strict'
 import { register } from 'node:module'
 import { after, test, type TestContext } from 'node:test'
@@ -179,6 +181,59 @@ async function mount(projectDetail = detail, portals = false) {
     destroy: async () => { await act(() => root.unmount()); await settle(); container.remove(); frames.clear() } }
 }
 
+test('shot reference drawer preserves the composer and selection without canvas writes; Escape closes it before the composer', async t => {
+  const api = mockApi(t, initialGraph('reference'))
+  const view = await mount(detail, true)
+  const chip = () => {
+    const element = document.querySelector<HTMLButtonElement>('.pc-visual-context-button')
+    assert.ok(element); return element
+  }
+  const open = async () => {
+    await act(() => chip().dispatchEvent(new dom.window.MouseEvent('pointerdown', { bubbles: true })))
+    await act(() => chip().click()); await settle()
+    assert.ok(document.querySelector('#pc-composer-bindings'))
+    assert.ok(document.querySelector('.pc-shot-references-content[role="dialog"]'), 'references use an independent viewport drawer')
+    assert.ok(!document.querySelector('.pc-prompt-composer #pc-composer-bindings'), 'references no longer share the prompt body')
+  }
+  try {
+    const textarea = view.prompt(), initialPrompt = textarea.value
+    const writes = api.saved.length, previews = api.previews.length
+    await open()
+    assert.ok(view.prompt() === textarea, 'drawer must not remount the prompt')
+    await act(() => view.button('查看引用图：林晚').click()); await settle()
+    const preview = document.querySelector<HTMLImageElement>('.pc-reference-preview-image')!
+    assert.ok(preview, 'reference thumbnail opens the in-app full-size preview')
+    await act(() => preview.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))); await settle()
+    assert.ok(!document.querySelector('.pc-reference-preview-image'), 'Escape closes the image preview first')
+    assert.ok(document.querySelector('#pc-composer-bindings'), 'image preview must retain the reference drawer')
+    assert.equal(textarea.value, initialPrompt)
+    const overlay = document.querySelector<HTMLElement>('.pc-shot-references-root .mantine-Overlay-root')!
+    assert.ok(overlay)
+    await act(() => overlay.dispatchEvent(new dom.window.MouseEvent('pointerdown', { bubbles: true })))
+    await act(() => overlay.click()); await settle()
+    assert.ok(!document.querySelector('#pc-composer-bindings'), 'outside click closes only the drawer')
+    assert.ok(view.container.querySelector('[data-id="video-node"].selected'), 'outside click preserves the selected node')
+    assert.ok(view.prompt() === textarea)
+    await open()
+    await act(() => view.button('关闭镜头引用').click()); await settle()
+    assert.ok(view.prompt() === textarea, 'closing references must preserve the prompt element')
+    assert.equal(textarea.value, initialPrompt)
+    await act(() => view.button('放大创作区').click()); await settle()
+    await open()
+    const expandedPrompt = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="创作提示词"]')!
+    await act(() => expandedPrompt.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))); await settle()
+    assert.ok(!document.querySelector('#pc-composer-bindings'), 'first Escape closes the reference section')
+    assert.ok(document.querySelector('.pc-composer-modal-content'))
+    assert.equal(expandedPrompt.value, initialPrompt)
+    assert.ok(view.container.querySelector('[data-id="video-node"].selected'))
+    await act(() => expandedPrompt.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))); await settle()
+    assert.ok(!document.querySelector('.pc-composer-modal-content'), 'second Escape closes the expanded composer')
+    assert.equal(view.prompt().value, initialPrompt)
+    assert.equal(api.saved.length, writes)
+    assert.equal(api.previews.length, previews)
+  } finally { await view.destroy() }
+})
+
 test('pointer interactions with portaled prompt skills keep the selected node and refinement modal open', async t => {
   const api = mockApi(t, initialGraph('reference'))
   // Mantine's test environment disables portals and hides this regression.
@@ -220,11 +275,11 @@ test('pointer interactions with portaled prompt skills keep the selected node an
     await chooseSkill('video_prompt辅助技能', 'video-a')
     assert.match(modal().querySelector('.prompt-skill-card > p')!.textContent!, /辅助技能 1 个/)
     const about = document.querySelector<HTMLDetailsElement>('.creative-skill-about')!
-    await pointerClick(about.querySelector('summary')!)
-    assert.equal(about.open, true)
+    await pointerClick(about.querySelector('.workspace-disclosure-control')!)
+    assert.equal(about.querySelector('.workspace-disclosure-control')!.getAttribute('aria-expanded'), 'true')
     const config = document.querySelector<HTMLDetailsElement>('.creative-skill-more-config')!
-    await pointerClick(config.querySelector('summary')!)
-    assert.equal(config.open, true)
+    await pointerClick(config.querySelector('.workspace-disclosure-control')!)
+    assert.equal(config.querySelector('.workspace-disclosure-control')!.getAttribute('aria-expanded'), 'true')
     modal()
     assert.deepEqual(api.previews, [], 'choosing skills cannot trigger paid work or even a generation preview')
     assert.deepEqual(api.saved, [], 'skill choices do not write the canvas or defaults')
@@ -466,9 +521,9 @@ test('per-image uses persist through node changes, mode changes and reload and m
   const graph = initialGraph('reference', true), api = mockApi(t, graph)
   let view = await mount()
   const choose = async (index: number, usage: string) => {
-    const select = view.container.querySelector<HTMLSelectElement>(`select[aria-label="图片${index}的用途"]`)!
+    const select = view.container.querySelector<HTMLInputElement>(`input[aria-label="图片${index}的用途"]`)!
     assert.ok(select)
-    await act(() => { select.value = usage; select.dispatchEvent(new dom.window.Event('change', { bubbles: true })) }); await settle()
+    await chooseCombobox(select, videoReferenceUsageLabels[usage as VideoReferenceUsage]); await settle()
   }
   try {
     await view.editPrompt(`${view.prompt().value}\n开场无人抱起林晚，结尾才抱起。固定机位。`)
@@ -485,21 +540,21 @@ test('per-image uses persist through node changes, mode changes and reload and m
     await view.preview()
     assert.deepEqual(api.previews.at(-1)!.video_reference_usages, [])
     await view.selectMode('多图参考')
-    assert.equal(view.container.querySelector<HTMLSelectElement>('[aria-label="图片1的用途"]')!.value, 'ending')
+    assert.equal(view.container.querySelector<HTMLSelectElement>('[aria-label="图片1的用途"]')!.value, '结尾构图')
     // Switch away and back without unmounting the project.
     await act(() => view.container.querySelector<HTMLElement>('[data-id="storyboard-node"]')!.click()); await settle()
     await act(() => view.container.querySelector<HTMLElement>('[data-id="video-node"]')!.click()); await settle()
-    assert.equal(view.container.querySelector<HTMLSelectElement>('[aria-label="图片2的用途"]')!.value, 'scale')
+    assert.equal(view.container.querySelector<HTMLSelectElement>('[aria-label="图片2的用途"]')!.value, '比例尺度')
     await act(() => new Promise(resolve => setTimeout(resolve, 900))); await settle()
     const last = api.saved.at(-1)!
     assert.ok(last)
     assert.deepEqual(last.nodes.find(node => node.id === 'video-node')!.settings.video_reference_usages, expected)
     Object.assign(graph, last)
     await view.destroy(); view = await mount()
-    assert.equal(view.container.querySelector<HTMLSelectElement>('[aria-label="图片1的用途"]')!.value, 'ending')
+    assert.equal(view.container.querySelector<HTMLSelectElement>('[aria-label="图片1的用途"]')!.value, '结尾构图')
     assert.match(view.prompt().value, /固定机位/)
     await act(() => view.button('移除手动参考：分镜构图').click()); await settle()
-    assert.equal(view.container.querySelector<HTMLSelectElement>('[aria-label="图片1的用途"]')!.value, 'scale')
+    assert.equal(view.container.querySelector<HTMLSelectElement>('[aria-label="图片1的用途"]')!.value, '比例尺度')
     await view.preview()
     assert.deepEqual(api.previews.at(-1)!.reference_asset_ids, ['manual'])
     assert.equal(api.previews.at(-1)!.storyboard_reference_asset_id, null)

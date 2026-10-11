@@ -1,3 +1,4 @@
+import { chooseCombobox } from './component-controls'
 import assert from 'node:assert/strict'
 import { register } from 'node:module'
 import { after, test } from 'node:test'
@@ -47,6 +48,9 @@ function button(label: string) {
 async function change(label: string, value: string) {
   const field = document.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(`[aria-label="${label}"]`)
   assert.ok(field, label)
+  if (field.getAttribute('aria-haspopup') === 'listbox' || field.getAttribute('role') === 'combobox') {
+    await chooseCombobox(field as HTMLInputElement, label === '独立参考视角' ? '侧面' : label === '独立参考候选数量' ? value + ' 张' : value); return
+  }
   const prototype = field.tagName === 'SELECT' ? dom.window.HTMLSelectElement.prototype : field.tagName === 'TEXTAREA' ? dom.window.HTMLTextAreaElement.prototype : dom.window.HTMLInputElement.prototype
   const setter = Object.getOwnPropertyDescriptor(prototype, 'value')!.set!
   await act(() => { setter.call(field, value); field.dispatchEvent(new dom.window.Event(field.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true })) })
@@ -103,7 +107,9 @@ test('angle generation uses enabled image models, previews without generating, i
   try {
     await act(() => button('添加参考图').click()); await act(() => button('按角度生成').click())
     const modelSelect = document.querySelector<HTMLSelectElement>('[aria-label="独立参考生成模型"]')!
-    assert.deepEqual([...modelSelect.options].map(item => item.value), ['image-model'])
+    await act(() => modelSelect.click())
+    assert.deepEqual([...document.getElementById(modelSelect.getAttribute('aria-controls')!)!.querySelectorAll('[role="option"]')].map(item => item.textContent), ['启用图片模型'])
+    await act(() => modelSelect.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
     assert.equal(requests.length, 0)
     assert.equal(button('生成 1 张候选').disabled, true)
     await act(() => button('预览提示词').click())
@@ -186,10 +192,10 @@ test('partial generation failures stay visible with their exact reason, separate
     assert.match(screen.container.textContent!, /正在生成 1 张参考候选/)
     const failures = screen.container.querySelector<HTMLDetailsElement>('.pc-reference-job-failures')!
     assert.ok(failures)
-    assert.match(failures.querySelector('summary')!.textContent!, /生成失败 · 1 张 · 查看原因/)
-    assert.equal(failures.open, false)
-    await act(() => failures.querySelector('summary')!.click())
-    assert.equal(failures.open, true)
+    assert.match(failures.querySelector('.workspace-disclosure-control')!.textContent!, /生成失败 · 1 张 · 查看原因/)
+    assert.equal(failures.querySelector('.workspace-disclosure-control')!.getAttribute('aria-expanded'), 'false')
+    await act(() => failures.querySelector('.workspace-disclosure-control')!.click())
+    assert.equal(failures.querySelector('.workspace-disclosure-control')!.getAttribute('aria-expanded'), 'true')
     assert.match(failures.textContent!, /侧脸候选/)
     assert.match(failures.textContent!, /图片服务超时，请稍后重新提交/)
     assert.doesNotMatch(screen.container.textContent!, /母版错误不应显示|旧版错误不应显示|其他设定错误不应显示/)

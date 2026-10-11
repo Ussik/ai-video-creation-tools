@@ -66,7 +66,7 @@ export default function CanvasComposerToolbar({ nodeId, children, expanded = fal
       // Let an open nested menu consume Escape first. Capture the closed-menu
       // case too, since select/parameter triggers stop keyboard propagation.
       if (event.key !== 'Escape' || event.nativeEvent.isComposing
-        || event.currentTarget.querySelector('[aria-expanded="true"]:not(.pc-composer-expand)')) return
+        || event.currentTarget.querySelector('[aria-expanded="true"][aria-haspopup], [role="combobox"][aria-expanded="true"]')) return
       event.stopPropagation()
       onCollapse()
     }}>

@@ -12,7 +12,7 @@ import { textRequestTimeoutMs } from '../src/script-stream-policy.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'video-studio-providers-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { generate } = await import('../src/providers.js')
+const { generate, streamText } = await import('../src/providers.js')
 const { render } = await import('../src/render.js')
 
 after(async () => { await rm(testData, { recursive: true, force: true }) })
@@ -20,6 +20,52 @@ after(async () => { await rm(testData, { recursive: true, force: true }) })
 const imageBytes = await sharp({
   create: { width: 16, height: 16, channels: 3, background: '#dc6250' },
 }).png().toBuffer()
+
+test('empty upstream text errors expose model, endpoint, duration and request ID without retrying', async t => {
+  for (const mode of ['generate', 'stream'] as const) await t.test(mode, async t => {
+    let calls = 0, clock = 1000
+    t.mock.method(Date, 'now', () => clock)
+    t.mock.method(globalThis, 'fetch', async () => {
+      calls++; clock = 26_500
+      return new Response(null, { status: 502, statusText: 'Bad Gateway', headers: { 'x-request-id': 'upstream-failure-123' } })
+    })
+    const model = { id: 'gateway-text', remote_id: 'gpt-6-astra', modality: 'text' as const, protocol: 'responses' as const,
+      settings: { request_path: 'responses', request_template: { model: '{{model}}', input: '{{prompt}}' }, text_path: 'output_text' } }
+    const provider = { adapter: 'http' as const, base_url: 'https://gateway.invalid/v1' }
+    const request = { prompt: 'Private project contents must not be included in diagnostics' }
+    const result = mode === 'generate' ? generate(model, provider, request, [], 'gateway-text', () => {}) : streamText(model, provider, request)
+    await assert.rejects(result, (error: unknown) => {
+      assert.ok(error instanceof Error)
+      assert.match(error.message, /模型接口返回 502/)
+      assert.match(error.message, /空响应体/)
+      assert.match(error.message, /HTTP 502 Bad Gateway/)
+      assert.match(error.message, /模型：gpt-6-astra/)
+      assert.match(error.message, /接口：https:\/\/gateway\.invalid\/v1\/responses/)
+      assert.match(error.message, /耗时：25\.5 秒/)
+      assert.match(error.message, /上游请求编号：upstream-failure-123/)
+      assert.ok(!error.message.includes(request.prompt))
+      return true
+    })
+    assert.equal(calls, 1)
+  })
+})
+
+test('upstream text error details are retained while credentials and endpoint query parameters stay hidden', async t => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ error: { message: 'Model temporarily unavailable. Bearer unit-test-secret', code: 'model_unavailable' } },
+    { status: 503, headers: { 'cf-ray': 'gateway-trace-456' } }))
+  await assert.rejects(generate({ id: 'error-text', remote_id: 'text-model', modality: 'text', protocol: 'responses', settings: {
+    request_path: 'responses?api_key=query-secret', request_template: { model: '{{model}}', input: '{{prompt}}' }, text_path: 'output_text',
+  } }, { adapter: 'http', base_url: 'https://user:password@gateway.invalid/v1' }, { prompt: '剧本' }, [], 'error-text', () => {}, () => 'unit-test-secret'),
+  (error: unknown) => {
+    assert.ok(error instanceof Error)
+    assert.match(error.message, /Model temporarily unavailable/)
+    assert.match(error.message, /错误码：model_unavailable/)
+    assert.match(error.message, /gateway-trace-456/)
+    assert.match(error.message, /接口：https:\/\/gateway\.invalid\/v1\/responses/)
+    assert.ok(!/unit-test-secret|query-secret|user:password/.test(error.message))
+    return true
+  })
+})
 
 test('RightAPI sends ordered data URL references and the chosen ratio, persists task ID, then consumes a status-less completed image', async t => {
   const images = await Promise.all(['png', 'jpeg', 'webp'].map(async extension => {

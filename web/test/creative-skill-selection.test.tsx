@@ -174,7 +174,7 @@ test('remembered base rules stay selected and restoring defaults resets only the
     await view.render(<RememberedHarness key="next-video-node" />)
     assert.deepEqual(selections().video_prompt, [], 'an explicitly empty selection must not fall back to the default primary')
     await act(() => button('视频提示词技能选择').click())
-    await act(() => (document.querySelector('.creative-skill-more-config summary') as HTMLElement).click())
+    await act(() => (document.querySelector('.creative-skill-more-config .workspace-disclosure-control') as HTMLElement).click())
     await act(() => button('恢复全局默认').click())
     assert.deepEqual(writes, ['/api/projects/one/skills/defaults/video_prompt'])
     assert.deepEqual(selections().video_prompt, ['video_prompt-a'])

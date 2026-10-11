@@ -7,12 +7,12 @@ export function libraryCollection(assets: Asset[], view: AssetLibraryView): Asse
   return assets.filter(asset => view === 'history' ? asset.source === 'generated' : asset.saved)
 }
 
-export function filterLibraryAssets(assets: Asset[], shots: Pick<Shot, 'id' | 'title'>[], filters: AssetLibraryFilters): Asset[] {
+export function filterLibraryAssets(assets: Asset[], shots: Pick<Shot, 'id' | 'title'>[], filters: AssetLibraryFilters, displayNames?: ReadonlyMap<string, string>): Asset[] {
   const query = filters.query.trim().toLocaleLowerCase()
   const titles = new Map(shots.map(shot => [shot.id, shot.title]))
   return assets.filter(asset => filters.kind === 'all' || asset.kind === filters.kind)
     .filter(asset => filters.source === 'all' || asset.source === filters.source)
-    .filter(asset => !query || `${asset.filename} ${asset.prompt || ''} ${titles.get(asset.shot_id || '') || ''}`.toLocaleLowerCase().includes(query))
+    .filter(asset => !query || `${displayNames?.get(asset.id) || ''} ${asset.filename} ${asset.prompt || ''} ${titles.get(asset.shot_id || '') || ''}`.toLocaleLowerCase().includes(query))
     .sort((left, right) => filters.sort === 'oldest' ? left.created_at.localeCompare(right.created_at) : right.created_at.localeCompare(left.created_at))
 }
 
