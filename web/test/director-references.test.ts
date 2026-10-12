@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { addReference, readReferences, referenceMessages, type DirectorReference } from '../src/director-references'
+import { addReference, readReferences, referenceMessages, type DirectorReference } from '../src/features/script/director-references'
+import { scriptArtifactLabels, scriptStageArtifacts } from '@video-studio/shared/script/script-stage-content'
 
 const document: DirectorReference = { key: 'outline:0', title: '故事大纲', artifact_type: 'outline', episode_number: 0, content: '前半段'.repeat(2000) + '重要结尾' }
+
+test('all design subdocuments retain their type, title and full body in reference snapshots', () => {
+  for (const type of [...scriptStageArtifacts.locations, ...scriptStageArtifacts.props]) {
+    const reference = { ...document, key: `${type}:0`, artifact_type: type, title: scriptArtifactLabels[type] }
+    assert.deepEqual(readReferences(JSON.parse(JSON.stringify(addReference([], reference)))), [reference])
+  }
+})
 
 test('references preserve full content separately from the typed question and replace duplicate documents', () => {
   const refs = addReference([], document)

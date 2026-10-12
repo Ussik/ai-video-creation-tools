@@ -4,18 +4,18 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import sharp from 'sharp'
-import type { Project, ScriptArtifact, ScriptScene } from '../src/db.js'
-import type { ProjectVisualStyle } from '../src/visual-style.js'
-import { withProjectStyle, projectStyleTemplateError } from '../src/visual-style.js'
+import type { Project, ScriptArtifact, ScriptScene } from '../src/infrastructure/database/db.js'
+import type { ProjectVisualStyle } from '@video-studio/shared/visuals/visual-style'
+import { withProjectStyle, projectStyleTemplateError } from '@video-studio/shared/visuals/visual-style'
 
 const directory = await mkdtemp(join(tmpdir(), 'project-style-'))
 process.env.VIDEO_STUDIO_DATA_DIR = directory
-const { buildApp } = await import('../src/server.js')
-const { db, all, one, run, now, initDb } = await import('../src/db.js')
-const { projectVisualStyle } = await import('../src/project-visual-style.js')
-const { documentTools } = await import('../src/script-document-tools.js')
-const { directorStageContext } = await import('../src/script-workflow.js')
-const { generate } = await import('../src/providers.js')
+const { buildApp } = await import('../src/app.js')
+const { db, all, one, run, now, initDb } = await import('../src/infrastructure/database/db.js')
+const { projectVisualStyle } = await import('../src/modules/visuals/project-visual-style.js')
+const { documentTools } = await import('../src/modules/script/script-document-tools.js')
+const { directorStageContext } = await import('../src/modules/script/script-workflow.js')
+const { generate } = await import('../src/infrastructure/providers/providers.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(directory, { recursive: true, force: true }) })
 async function call<T = any>(method: 'GET' | 'POST' | 'PUT' | 'PATCH', url: string, payload?: unknown): Promise<T> {

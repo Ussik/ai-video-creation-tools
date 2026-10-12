@@ -4,13 +4,15 @@ import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
-import type { Model, Provider, ProjectDetail } from '../src/api'
-import { editedToolDraft, toolDraftArtifacts, toolDraftScenes, toolDraftStage, toolDraftOutcome, documentChangePreview, type ScriptToolDraft } from '../src/script-tools'
-import { directorStageContext } from '../src/script-workflow'
-import { activeReplyChoice, replyClassificationVersion } from '../src/script-reply'
-import { directorStreamIdleTimeoutMs, directorStreamTotalTimeoutMs } from '../../backend/src/script-stream-policy'
-import type { ScriptCreationState, CreationNextStep } from '../../backend/src/script-creation-state-types'
-import { skillStageOptions } from '../src/skills-api'
+import type { Model, Provider, ProjectDetail } from '../src/shared/api/api'
+import { editedToolDraft, toolDraftArtifacts, toolDraftScenes, toolDraftStage, toolDraftOutcome, documentChangePreview, type ScriptToolDraft } from '../src/features/script/script-tools'
+import { directorStageContext } from '../src/features/script/script-workflow'
+import { activeReplyChoice, replyClassificationVersion } from '../src/features/script/script-reply'
+import { directorStreamIdleTimeoutMs, directorStreamTotalTimeoutMs } from '@video-studio/shared/script/script-stream-policy'
+import type { ScriptCreationState, CreationNextStep } from '@video-studio/shared/script/script-creation-state-types'
+import { scriptStageArtifacts, scriptArtifactLabels } from '@video-studio/shared/script/script-stage-content'
+import { creativeReviewCategories, documentFindingLabels } from '@video-studio/shared/script/script-quality'
+import { skillStageOptions } from '../src/shared/api/skills-api'
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
 for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLElement', 'Element', 'ShadowRoot', 'Event', 'MouseEvent']) Object.defineProperty(globalThis, key, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[key] })
@@ -19,7 +21,7 @@ Object.defineProperty(dom.window, 'matchMedia', { value: () => ({ matches: false
 Object.defineProperty(globalThis, 'ResizeObserver', { value: class { observe() {} unobserve() {} disconnect() {} } })
 dom.window.HTMLElement.prototype.scrollTo = () => {}
 dom.window.HTMLElement.prototype.scrollIntoView = () => {}
-const { default: ScriptDirectorPanel } = await import('../src/ScriptDirectorPanel')
+const { default: ScriptDirectorPanel } = await import('../src/features/script/ScriptDirectorPanel')
 const { createRoot } = await import('react-dom/client')
 after(() => dom.window.close())
 const doc = { id: 'character-doc', project_id: 'project-tools', artifact_type: 'characters' as const, episode_number: 0, title: '全剧人物设定', content: '# 林晚\n身份待定。\n# 陈默\n外科医生。', status: 'ready', position: 0 }
@@ -33,13 +35,15 @@ function revisionDraft(ready = false): ScriptToolDraft {
 }
 const stream = (value: object) => new Response(`data: ${JSON.stringify({ type: 'done', ...value })}\n\n`, { headers: { 'Content-Type': 'text/event-stream' } })
 function button(text: string) { const node = [...document.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === text || item.getAttribute('aria-label') === text); assert.ok(node, text); return node }
-async function mount(projectDetail = detail) {
+async function mount(projectDetail = detail, preserveDraft = false) {
   const mockedFetch = globalThis.fetch
   const fixtureFetch: typeof fetch = async (...args) => String(args[0]).endsWith('/skills/defaults')
     ? Response.json({ policies: skillStageOptions.map(({ value: stage, label }) => ({ stage, label, primary_id: null, auxiliary_ids: [], source: 'global', warning: '', skills: [] })) })
     : mockedFetch(...args)
   globalThis.fetch = fixtureFetch
-  for (const key of ['script-director-conversations:project-tools', 'script-director-draft:project-tools', 'script-director-composer:project-tools']) dom.window.localStorage.removeItem(key)
+  for (const key of ['script-director-conversations:project-tools', 'script-director-draft:project-tools', 'script-director-composer:project-tools']) {
+    if (!preserveDraft || key !== 'script-director-draft:project-tools') dom.window.localStorage.removeItem(key)
+  }
   dom.window.localStorage.setItem('script-director-model:project-tools', model.id)
   const container = document.createElement('div'); document.body.append(container); const root = createRoot(container)
   await act(async () => root.render(<MantineProvider env="test"><ScriptDirectorPanel detail={projectDetail} models={[model]} providers={[provider]} onRefresh={async () => {}} onClose={() => {}} onOpenModels={() => {}} onNotice={() => {}} /></MantineProvider>))
@@ -234,9 +238,30 @@ test('review sends only strict action fields and revision prefills editable inst
     await openDoc(); await act(async () => button('模型评审').click())
     const request = requests.find(item => item.url.endsWith('/chat/stream'))!
     assert.equal(request.body.use_tools, true); assert.deepEqual(request.body.document_action, { operation: 'review', document_ids: ['character-doc'] }); assert.match(view.container.textContent!, /职业仍待定/)
+    assert.match(request.body.messages.at(-1).text, /专业审读维度/)
+    assert.match(request.body.messages.at(-1).text, /causality[\s\S]*coherence/)
     await openDoc(); await act(() => button('对话修订').click())
     assert.match(view.container.querySelector<HTMLTextAreaElement>('textarea[aria-label="剧本创作对话"]')!.value, /我希望修改：/)
     assert.match(view.container.textContent!, /修订：全剧人物设定/)
+  } finally { await view.destroy() }
+})
+
+test('creative review reports render every quality dimension from saved conversation history', async t => {
+  const review = { id: 'quality-review', summary: '人物选择与剧情兑现的审读建议', documents: [{ id: doc.id, version: 'doc-version' }], created_at: '2026-10-12', findings: creativeReviewCategories.map(category => ({
+    document_id: doc.id, document_version: 'doc-version', category, severity: 'info', quote: '身份待定。', explanation: '需结合具体行动核对。', suggestion: '明确选择与后果。', related: [],
+  })) }
+  t.mock.method(globalThis, 'fetch', async (url: unknown) => {
+    const path = String(url)
+    if (path.endsWith('/tools-state')) return Response.json({ draft: null, decisions: [] })
+    if (path.endsWith('/conversations')) return Response.json({ conversations: [{ id: 'quality-conversation', title: '作品审读', messages: [{ id: 'quality-message', role: 'assistant', text: '专业评审已完成', review }] }] })
+    throw new Error(`Unexpected review request ${path}`)
+  })
+  const view = await mount()
+  try {
+    const report = view.container.querySelector('.sd-review-report')!
+    assert.ok(report)
+    for (const category of creativeReviewCategories) assert.ok(report.textContent!.includes(documentFindingLabels[category]))
+    assert.equal(report.querySelectorAll('blockquote').length, 5)
   } finally { await view.destroy() }
 })
 
@@ -648,7 +673,10 @@ const outlineStep: CreationNextStep = { id: 'ready-outline', stage: 'outline', e
 test('initial direction discussion leads to one native outline action, then saving advances to characters', async t => {
   let creation = stateFor(emptyProject), pending: ScriptToolDraft | null = null, chatCalls = 0
   const requests: any[] = []
-  const created: ScriptToolDraft = { id: 'outline-draft', version: 'outline-v1', kind: 'create', summary: '全剧大纲草稿', status: 'pending', workflow: { stage: 'outline', scope: 'project', episode_number: 0, artifacts: [{ artifact_type: 'outline', title: '全剧大纲', content: '林晚调查城市怪谈。' }], scenes: [] }, documents: [{ id: 'outline:0', artifact_type: 'outline', episode_number: 0, title: '全剧大纲', content: '林晚调查城市怪谈。', version: '', original_content: '', replacements: [] }] }
+  const artifacts = scriptStageArtifacts.outline.map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: `${scriptArtifactLabels[artifact_type]}：林晚调查城市怪谈。` }))
+  const created: ScriptToolDraft = { id: 'outline-draft', version: 'outline-v1', kind: 'create', summary: '全剧大纲草稿', status: 'pending',
+    workflow: { stage: 'outline', scope: 'project', episode_number: 0, artifacts, scenes: [] },
+    documents: artifacts.map(doc => ({ ...doc, id: `${doc.artifact_type}:0`, episode_number: 0, version: '', original_content: '', replacements: [] })) }
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
     const path = String(url), body = init?.body ? JSON.parse(String(init.body)) : undefined
     if (path.endsWith('/tools-state')) return Response.json({ draft: pending, decisions: [], creation })
@@ -660,9 +688,15 @@ test('initial direction discussion leads to one native outline action, then savi
       pending = created; creation = stateFor(emptyProject, null, 'review')
       return stream({ reply: '大纲草稿已准备，请检查后保存。', tool_draft: pending, classification_version: replyClassificationVersion, classification: { type: 'other' }, creation })
     }
+    if (path.endsWith('/tool-drafts/outline-draft') && init?.method === 'PUT') {
+      assert.equal(body.documents.length, 9)
+      assert.equal(body.documents.find((doc: any) => doc.id === 'foreshadowing:0').content, '第1集埋设，第3集回收。')
+      pending = { ...created, version: 'outline-v2', documents: created.documents.map(doc => ({ ...doc, content: body.documents.find((item: any) => item.id === doc.id).content })) }
+      return Response.json(pending)
+    }
     if (path.endsWith('/commit')) {
-      assert.equal(body.approved, true); assert.equal(body.version, 'outline-v1')
-      const saved = { ...created, status: 'saved' }; pending = null
+      assert.equal(body.approved, true); assert.equal(body.version, 'outline-v2')
+      const saved = { ...pending, status: 'saved' }; pending = null
       creation = stateFor(emptyProject, { ...outlineStep, id: 'ready-characters', stage: 'characters', summary: '大纲已保存', source: 'progress' })
       return Response.json(saved)
     }
@@ -671,22 +705,32 @@ test('initial direction discussion leads to one native outline action, then savi
   const view = await mount(emptyProject)
   try {
     assert.ok(button('探索故事方向'))
+    await act(() => button('对话工具').click())
+    assert.ok(!view.container.textContent!.includes('编辑发送提示词'))
+    await act(() => button('对话工具').click())
     assert.equal([...view.container.querySelectorAll('button')].filter(item => item.textContent === '生成全剧大纲').length, 0)
     await act(() => setInput('textarea[aria-label="剧本创作对话"]', '林晚调查城市怪谈，帮我确定故事方向。'))
     await act(async () => button('发送消息').click())
     assert.ok(view.container.querySelector('[aria-label="当前待回答问题"]'))
-    assert.equal(view.container.querySelector('.sd-creation-actions button'), null)
+    assert.equal(view.container.querySelector('.sd-creation-actions > button'), null)
     await act(async () => button('跳过').click())
     assert.equal(requests[1].question_response.status, 'skipped'); assert.equal(requests[1].use_tools, true)
-    assert.equal(view.container.querySelectorAll('.sd-creation-actions button').length, 1)
+    assert.equal(view.container.querySelectorAll('.sd-creation-actions > button').length, 1)
     await act(async () => button('生成全剧故事大纲').click())
     assert.equal(requests[2].use_tools, true); assert.equal(requests[2].next_step_id, outlineStep.id)
     assert.deepEqual(requests[2].workflow, { stage: 'outline', scope: 'project', episode_number: 0 })
     assert.match(view.container.querySelector('[aria-label="剧本草稿预览"]')!.textContent!, /林晚调查城市怪谈/)
     assert.equal(view.container.querySelector('.sd-creation-actions'), null)
+    assert.match(view.container.querySelector('.sd-document-meta')!.textContent!, /9 份文档/)
+    await act(() => (view.container.querySelector('[aria-label="选择草稿文档"]') as HTMLInputElement).click())
+    const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
+    assert.equal(options.length, 9)
+    await act(() => options.find(option => option.textContent === '伏笔与回收')!.click())
+    await act(() => button('编辑').click())
+    await act(() => setInput('textarea[aria-label="编辑草稿：伏笔与回收"]', '第1集埋设，第3集回收。'))
     await act(async () => button('确认保存').click())
     assert.ok(button('生成全剧人物设定'))
-    assert.equal(view.container.querySelectorAll('.sd-creation-actions button').length, 1)
+    assert.equal(view.container.querySelectorAll('.sd-creation-actions > button').length, 1)
     assert.equal([...view.container.querySelectorAll('button')].some(item => item.textContent === '探索故事方向' || item.textContent === '更新全剧大纲'), false)
   } finally { await view.destroy() }
 })
@@ -701,7 +745,7 @@ test('historical workflow text does not recreate an unvalidated or duplicate gen
   })
   const view = await mount(emptyProject)
   try {
-    assert.equal(view.container.querySelector('.sd-creation-actions button'), null)
+    assert.equal(view.container.querySelector('.sd-creation-actions > button'), null)
     assert.equal(view.container.querySelector('[aria-label="当前阶段创作操作"]'), null)
     assert.doesNotMatch(view.container.textContent!, /正在确定故事方向/)
     assert.equal(view.container.querySelector('.sd-creation-progress'), null)
@@ -762,7 +806,7 @@ test('a delayed initial state cannot overwrite a newer native proposal', async t
     assert.ok(button('生成全剧故事大纲'))
     await act(async () => releaseInitial(Response.json({ draft: null, decisions: [], creation: stateFor(emptyProject) })))
     assert.ok(button('生成全剧故事大纲'))
-    assert.equal(view.container.querySelectorAll('.sd-creation-actions button').length, 1)
+    assert.equal(view.container.querySelectorAll('.sd-creation-actions > button').length, 1)
   } finally { await view.destroy() }
 })
 
@@ -798,4 +842,157 @@ test('settings option Escape retains the dialog and draft; cancelling never save
     await act(() => button('剧本设定').click())
     assert.match(document.querySelector('.script-director-auto-card')!.textContent!, /自动/)
   } finally { await view.destroy() }
+})
+
+function savedStagesProject(): ProjectDetail {
+  return { ...detail, script: { ...detail.script, artifacts: [
+    ...['outline', 'characters', 'locations', 'props'].map((stage, index) => ({ ...doc, id: `${stage}-saved`, artifact_type: stage, title: stage, content: `${stage}完整原文`, position: index })),
+    { ...doc, id: 'episode-1', artifact_type: 'episode_script', episode_number: 1, title: '第一集', content: '确认的分集正文', position: 4 },
+  ] } } as ProjectDetail
+}
+function mockStageChat(t: any, project: ProjectDetail, requests: any[], response?: object) {
+  const next = { id: 'next-episode', stage: 'episode', episode_number: 2, purpose: 'generate', summary: '继续第二集', basis: '', document_ids: [], source: 'progress' } as CreationNextStep
+  const creation = stateFor(project, next)
+  t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
+    const path = String(url)
+    if (path.endsWith('/conversations')) return Response.json({ conversations: [] })
+    if (path.endsWith('/tools-state')) return Response.json({ draft: null, decisions: [], creation })
+    if (path.endsWith('/chat/stream')) {
+      const request = JSON.parse(String(init?.body)); requests.push(request)
+      return stream({ reply: '正在处理所选阶段', creation, classification: { type: 'other' }, classification_version: replyClassificationVersion,
+        stage_context: directorStageContext(project.script, { explicit: request.workflow }), ...response })
+    }
+    throw new Error(`Unexpected ${path}`)
+  })
+}
+
+test('new stage buttons lock future work and saved scenes expose three distinct actions', async t => {
+  const requests: any[] = []
+  mockStageChat(t, detail, requests)
+  const view = await mount()
+  try {
+    const row = view.container.querySelector('[aria-label="阶段处理"]')!
+    assert.equal([...row.querySelectorAll<HTMLButtonElement>('button')].find(node => node.textContent === '道具设计')!.disabled, true)
+    assert.equal([...row.querySelectorAll<HTMLButtonElement>('button')].find(node => node.textContent === '场景设计')!.disabled, false)
+    assert.ok(button('处理已保存的人物设定'))
+    assert.deepEqual(requests, [])
+  } finally { await view.destroy() }
+  const saved = savedStagesProject()
+  mockStageChat(t, saved, requests)
+  const second = await mount(saved)
+  try {
+    await act(() => button('处理已保存的场景设计').click())
+    assert.ok(button('局部修改')); assert.ok(button('重新设计')); assert.ok(button('补齐栏目 · 缺 3 项'))
+    assert.deepEqual(requests, [], 'opening the stage menu does not call a model')
+  } finally { await second.destroy() }
+})
+
+test('stage redesign and missing-section completion send exact typed actions without selecting episode two', async t => {
+  for (const [label, operation] of [['重新设计', 'regenerate'], ['补齐栏目 · 缺 3 项', 'supplement']]) {
+    const project = savedStagesProject(), requests: any[] = []
+    mockStageChat(t, project, requests)
+    const view = await mount(project)
+    try {
+      await act(() => button('处理已保存的场景设计').click())
+      await act(async () => button(label).click())
+      assert.equal(requests.length, 1)
+      assert.deepEqual(requests[0].workflow, { stage: 'locations', scope: 'project', episode_number: 0, operation })
+      assert.equal(requests[0].use_tools, true)
+      assert.match(requests[0].messages.at(-1).text, /不生成或改写分集正文/)
+      assert.equal(view.container.querySelector('.sd-creation-actions > button')?.textContent?.includes('第 2 集'), undefined)
+    } finally { await view.destroy() }
+  }
+})
+
+test('outline-stage revision retains its typed scope and bypasses the eight-document action limit', async t => {
+  const project = savedStagesProject(), requests: any[] = []
+  mockStageChat(t, project, requests)
+  const view = await mount(project)
+  try {
+    await act(() => button('处理已保存的故事大纲').click())
+    await act(() => button('局部修改').click())
+    assert.deepEqual(requests, [])
+    assert.match(view.container.querySelector('.sd-document-task')!.textContent!, /修订：故事大纲/)
+    await act(() => setInput('textarea[aria-label="剧本创作对话"]', '调整主线及结局，保留已有角色和分集。'))
+    await act(async () => button('发送消息').click())
+    assert.deepEqual(requests[0].workflow, { stage: 'outline', scope: 'project', episode_number: 0, operation: 'revise' })
+    assert.equal(requests[0].document_action, undefined)
+  } finally { await view.destroy() }
+})
+
+test('saved episodes can be selected for revision and pending drafts disable all stage actions', async t => {
+  const project = savedStagesProject(), requests: any[] = []
+  mockStageChat(t, project, requests)
+  const view = await mount(project)
+  try {
+    await act(() => button('处理已保存的分集剧本').click())
+    await act(() => button('修改第 1 集正文').click())
+    await act(() => setInput('textarea[aria-label="剧本创作对话"]', '修改第一集对白，保留分场和镜头关联。'))
+    await act(async () => button('发送消息').click())
+    assert.equal(requests[0].workflow.stage, 'episode'); assert.equal(requests[0].workflow.episode_number, 1); assert.equal(requests[0].workflow.operation, 'revise')
+  } finally { await view.destroy() }
+  t.mock.method(globalThis, 'fetch', async (url: unknown) => String(url).endsWith('/tools-state') ? Response.json({ draft, decisions: [] }) : Response.json({ conversations: [] }))
+  const pending = await mount(project)
+  try {
+    await act(() => button('收起预览').click())
+    for (const node of pending.container.querySelectorAll<HTMLButtonElement>('.sd-stage-actions button')) assert.equal(node.disabled, true)
+  } finally { await pending.destroy() }
+})
+
+test('saved episode redesign sends the selected saved episode rather than generating the next one', async t => {
+  const project = savedStagesProject(), requests: any[] = []
+  project.script.artifacts.push({ ...doc, id: 'episode-3', artifact_type: 'episode_script', episode_number: 3, title: '第三集', content: '第三集正文', position: 5 })
+  mockStageChat(t, project, requests)
+  const view = await mount(project)
+  try {
+    await act(() => button('处理已保存的分集剧本').click())
+    assert.ok(button('修改第 1 集正文'))
+    assert.ok(button('重新设计第 1 集正文'))
+    assert.ok(button('重新设计第 3 集正文'))
+    assert.ok(button('生成第 2 集正文'))
+    assert.deepEqual(requests, [], 'opening the menu does not generate')
+    await act(async () => button('重新设计第 3 集正文').click())
+    assert.equal(requests.length, 1)
+    assert.deepEqual(requests[0].workflow, { stage: 'episode', scope: 'episode', episode_number: 3, operation: 'regenerate' })
+    assert.equal(requests[0].use_tools, true)
+    assert.match(requests[0].messages.at(-1).text, /重新设计本集完整正文及对应分场/)
+    assert.match(requests[0].messages.at(-1).text, /source_scene_id/)
+    assert.match(requests[0].messages.at(-1).text, /仅处理第 3 集正文/)
+  } finally { await view.destroy() }
+})
+
+test('reopening a cached episode redesign preserves scene identity through normalization and manual edit serialization', async t => {
+  const project = savedStagesProject()
+  const source = project.script.artifacts.find(item => item.artifact_type === 'episode_script')!
+  const pending: ScriptToolDraft = { ...draft, kind: 'create', summary: '重新设计第一集', documents: [{ ...draft.documents[0], ...source, version: 'source-version', original_content: source.content, content: '新的第一集完整正文' }],
+    workflow: { stage: 'episode', scope: 'episode', episode_number: 1, operation: 'regenerate', artifacts: [{ artifact_type: 'episode_script', title: source.title, content: '新的第一集完整正文' }],
+      scenes: [{ source_scene_id: 'saved-scene-1', heading: '车站', location: '车站', time_of_day: '日', characters: '林晚', action: '追上列车', dialogue: '请等等我', narration: '', duration: 8 }] } }
+  window.localStorage.setItem(`script-director-draft:${project.id}`, JSON.stringify({ tool_draft: pending, workflow: pending.workflow, artifacts: toolDraftArtifacts(pending), scenes: toolDraftScenes(pending), outline: project.script.outline, characters: project.script.characters }))
+  t.mock.method(globalThis, 'fetch', async (url: unknown) => String(url).endsWith('/tools-state') ? Response.json({ draft: pending, decisions: [] }) : Response.json({ conversations: [] }))
+  const view = await mount(project, true)
+  try {
+    const restored = JSON.parse(window.localStorage.getItem(`script-director-draft:${project.id}`)!)
+    assert.equal(restored.workflow.operation, 'regenerate')
+    assert.equal(restored.scenes[0].source_scene_id, 'saved-scene-1')
+    const edited = editedToolDraft(pending, restored.artifacts, restored.scenes.map((scene: any) => ({ ...scene, dialogue: '手动调整对白' })))
+    assert.equal(edited.input.scenes![0].source_scene_id, 'saved-scene-1')
+    assert.equal(edited.input.scenes![0].dialogue, '手动调整对白')
+  } finally { await view.destroy() }
+})
+
+test('an unsent stage revision restores its target after reopening and cancelling clears that saved scope', async t => {
+  const project = savedStagesProject(), requests: any[] = []
+  mockStageChat(t, project, requests)
+  const first = await mount(project)
+  await act(() => button('处理已保存的场景设计').click())
+  await act(() => button('局部修改').click())
+  await first.destroy()
+  const reopened = await mount(project)
+  try {
+    assert.match(reopened.container.querySelector('.sd-document-task')!.textContent!, /场景设计/)
+    await act(() => button('取消阶段修订').click())
+    assert.equal(reopened.container.querySelector('.sd-document-task'), null)
+    assert.equal(window.localStorage.getItem(`script-director-stage-task:${project.id}`), null)
+    assert.deepEqual(requests, [])
+  } finally { await reopened.destroy() }
 })

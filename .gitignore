@@ -1,9 +1,13 @@
 node_modules/
 web/dist/
 backend/dist/
+packages/*/dist/
 data/
 *.tsbuildinfo
 .DS_Store
+
+# Local agent plans and task artifacts; existing tracked records remain intact.
+.planning/
 
 # Generated exports and local media
 exports/*

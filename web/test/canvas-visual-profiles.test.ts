@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { addVisualProfileNode, automaticVisualReferenceEdges, missingVisualReferences, syncVisualProfileNode, visualBoardJobs, visualBoardReferences, visualCandidateAssets, visualNodeAsset } from '../src/canvas-visual-profiles'
-import type { CanvasGraph, CanvasNode } from '../src/ProjectCanvas'
-import type { Job, Model, ProjectDetail, ShotVisualBinding, VisualProfile } from '../src/api'
+import { addVisualProfileNode, automaticVisualReferenceEdges, missingVisualReferences, syncVisualProfileNode, visualBoardJobs, visualBoardReferences, visualCandidateAssets, visualNodeAsset } from '../src/features/canvas/canvas-visual-profiles'
+import type { CanvasGraph, CanvasNode } from '../src/features/canvas/ProjectCanvas'
+import type { Job, Model, ProjectDetail, ShotVisualBinding, VisualProfile } from '../src/shared/api/api'
 
 const profile = { id: 'linwan', name: '林晚', variant: '常服', revision: 2, board_asset_id: 'approved', asset_task_id: 'task' } as VisualProfile
 const node = { id: 'node', type: 'generation', asset_id: 'candidate', shot_id: 'shot', settings: { modality: 'image', visual_profile_id: 'linwan' } } as CanvasNode

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { parseSpeechSceneEntries } from '../src/speech-import.js'
+import { parseSpeechSceneEntries } from '../src/modules/speech/speech-import.js'
 
 const scene = (dialogue = '', narration = '') => ({ id: 'scene-1', dialogue, narration })
 

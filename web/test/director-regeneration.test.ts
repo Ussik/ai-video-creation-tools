@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { regenerationSource } from '../src/director-regeneration'
-import { referenceMessages } from '../src/director-references'
+import { regenerationSource } from '../src/features/script/director-regeneration'
+import { referenceMessages } from '../src/features/script/director-references'
 
 test('regeneration reuses the original question and references, excluding the rejected answer', () => {
   const document = { key: 'outline:0', artifact_type: 'outline' as const, episode_number: 0, title: '故事大纲', content: '需要保留的故事事实' }

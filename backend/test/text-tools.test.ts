@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { textToolSession } from '../src/text-tools.js'
-import type { GenerationModel } from '../src/providers.js'
+import { textToolSession } from '../src/infrastructure/providers/text-tools.js'
+import type { GenerationModel } from '../src/infrastructure/providers/providers.js'
 
 const functions = [{ name: 'read_documents', description: '读取', parameters: { type: 'object', properties: { document_ids: { type: 'array', items: { type: 'string' } } } } }]
 const provider = { adapter: 'http' as const, base_url: 'https://test.invalid/v1', auth_header: 'X-Key', auth_prefix: '' }

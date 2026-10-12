@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { canvasNodeGap, freeCanvasPosition, placeNewCanvasNodes, type CanvasRectangle } from '../src/canvas-node-placement'
+import { canvasNodeGap, freeCanvasPosition, placeNewCanvasNodes, type CanvasRectangle } from '../src/features/canvas/canvas-node-placement'
 
 const rectangle = (id: string, x = 0, y = 0, width = 440, height = 420) => ({ id, x, y, width, height })
 function assertSeparated(a: CanvasRectangle, b: CanvasRectangle) {

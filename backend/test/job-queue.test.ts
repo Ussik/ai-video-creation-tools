@@ -6,9 +6,9 @@ import { after, beforeEach, test } from 'node:test'
 
 const testData = await mkdtemp(join(tmpdir(), 'video-studio-job-queue-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { buildApp, startWorker } = await import('../src/server.js')
-const { db, run, one, now } = await import('../src/db.js')
-const { initJobQueue, startJobQueue, jobQueueStatus } = await import('../src/job-queue.js')
+const { buildApp, startWorker } = await import('../src/app.js')
+const { db, run, one, now } = await import('../src/infrastructure/database/db.js')
+const { initJobQueue, startJobQueue, jobQueueStatus } = await import('../src/modules/jobs/job-queue.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 beforeEach(() => {

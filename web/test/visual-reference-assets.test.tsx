@@ -5,7 +5,7 @@ import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
-import type { Model, ProjectDetail, VisualProfile, VisualReferenceAsset } from '../src/api'
+import type { Model, ProjectDetail, VisualProfile, VisualReferenceAsset } from '../src/shared/api/api'
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
@@ -19,7 +19,7 @@ Object.defineProperty(globalThis, 'ResizeObserver', { value: class { observe() {
 Object.defineProperty(document, 'fonts', { value: { addEventListener() {}, removeEventListener() {} } })
 dom.window.HTMLElement.prototype.scrollIntoView = () => {}
 const { createRoot } = await import('react-dom/client')
-const { default: ReferenceAssets, normalizedReferenceCrop, referenceCropFromPoints, referenceAssetNeedsReview } = await import('../src/VisualReferenceAssets')
+const { default: ReferenceAssets, normalizedReferenceCrop, referenceCropFromPoints, referenceAssetNeedsReview } = await import('../src/features/visuals/VisualReferenceAssets')
 after(() => dom.window.close())
 
 const styleVersion = 'a'.repeat(64)

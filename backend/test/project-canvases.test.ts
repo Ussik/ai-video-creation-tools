@@ -6,8 +6,8 @@ import { after, test } from 'node:test'
 
 const directory = await mkdtemp(join(tmpdir(), 'studio-project-canvases-'))
 process.env.VIDEO_STUDIO_DATA_DIR = directory
-const { buildApp } = await import('../src/server.js')
-const { all, db, initDb, now, one, run } = await import('../src/db.js')
+const { buildApp } = await import('../src/app.js')
+const { all, db, initDb, now, one, run } = await import('../src/infrastructure/database/db.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(directory, { recursive: true, force: true }) })
 type Info = { id: string; name: string; is_default: boolean; node_count: number; viewport: unknown }

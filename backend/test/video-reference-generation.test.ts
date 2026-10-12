@@ -4,13 +4,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import sharp from 'sharp'
-import { seedance2VideoSettings } from '../src/seedance-video-settings.js'
+import { seedance2VideoSettings } from '@video-studio/shared/models/seedance-video-settings'
 
 const testData = await mkdtemp(join(tmpdir(), 'video-reference-generation-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { buildApp } = await import('../src/server.js')
-const { db, run, now } = await import('../src/db.js')
-const { generate, validateVideoReferenceRequest } = await import('../src/providers.js')
+const { buildApp } = await import('../src/app.js')
+const { db, run, now } = await import('../src/infrastructure/database/db.js')
+const { generate, validateVideoReferenceRequest } = await import('../src/infrastructure/providers/providers.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 

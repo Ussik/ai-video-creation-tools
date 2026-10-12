@@ -9,9 +9,9 @@ import sharp from 'sharp'
 
 const testData = await mkdtemp(join(tmpdir(), 'video-studio-timeline-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { buildApp } = await import('../src/server.js')
-const { db, initDb, now, one, run } = await import('../src/db.js')
-const { probeVideoDurationMs, render } = await import('../src/render.js')
+const { buildApp } = await import('../src/app.js')
+const { db, initDb, now, one, run } = await import('../src/infrastructure/database/db.js')
+const { probeVideoDurationMs, render } = await import('../src/infrastructure/media/render.js')
 const app = buildApp()
 
 after(async () => {

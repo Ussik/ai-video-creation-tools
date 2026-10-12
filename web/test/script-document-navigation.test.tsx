@@ -2,7 +2,7 @@ import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
-import { useScriptDocumentNavigation } from '../src/useScriptDocumentNavigation'
+import { useScriptDocumentNavigation } from '../src/features/script/useScriptDocumentNavigation'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/' })
 for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'Event', 'KeyboardEvent']) {
@@ -14,7 +14,8 @@ after(() => dom.window.close())
 
 type Section = 'outline' | 'synopsis' | 'world' | 'relationships' | 'characters' | 'episode-1'
 const offsets: Record<Section, number> = { outline: 200, synopsis: 800, world: 1800, relationships: 2400, characters: 200, 'episode-1': 200 }
-const storySections: Section[] = ['outline', 'synopsis', 'world', 'relationships']
+const storySections: Section[] = ['outline', 'synopsis', 'world']
+const characterSections: Section[] = ['characters', 'relationships']
 
 async function mount(initialSection?: Section, scrollHeight = 3000) {
   const container = document.createElement('div')
@@ -29,7 +30,7 @@ async function mount(initialSection?: Section, scrollHeight = 3000) {
     const { activeSection, editorRef, selectSection } = useScriptDocumentNavigation<Section>({
       documentId: 'test-script', initialSection: initial, defaultSection: 'outline',
     })
-    const sections = activeSection === 'characters' || activeSection === 'episode-1' ? [activeSection] : storySections
+    const sections = characterSections.includes(activeSection) ? characterSections : activeSection === 'episode-1' ? [activeSection] : storySections
     return <>
       <nav>{(Object.keys(offsets) as Section[]).map(section => <button key={section} aria-current={activeSection === section ? 'true' : undefined} onClick={() => selectSection(section)}>{section}</button>)}</nav>
       <button onClick={() => selectSection('outline', true)}>story</button>
@@ -93,7 +94,7 @@ test('manual scrolling follows the heading even when the previous long section i
     await view.scroll(1700)
     assert.equal(view.active(), 'synopsis')
     await view.scroll(2400)
-    assert.equal(view.active(), 'relationships', 'the final section is selected at the document bottom')
+    assert.equal(view.active(), 'world', 'the final story section is selected at the document bottom')
   } finally { await view.destroy() }
 })
 
@@ -139,7 +140,7 @@ test('a section near the document end remains selected when its scroll destinati
     await view.scroll(2100)
     assert.equal(view.active(), 'relationships')
     await view.scroll(2000)
-    assert.equal(view.active(), 'world')
+    assert.equal(view.active(), 'characters')
   } finally { await view.destroy() }
 })
 

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { rebasePromptDraft, videoPreferencePrompt } from '../src/canvas-prompt-draft'
-import { visualGenerationPrompt } from '../../backend/src/visual-prompt'
-import { shotImagePrompt, shotVideoPrompt } from '../../backend/src/shot-prompts'
-import { withProjectStyle } from '../../backend/src/visual-style'
+import { rebasePromptDraft, videoPreferencePrompt } from '../src/features/canvas/canvas-prompt-draft'
+import { visualGenerationPrompt } from '@video-studio/shared/visuals/visual-prompt'
+import { shotImagePrompt, shotVideoPrompt } from '@video-studio/shared/storyboard/shot-prompts'
+import { withProjectStyle } from '@video-studio/shared/visuals/visual-style'
 
 test('changing project style replaces stale final-prompt constraints while preserving manual creative edits and new parameters', () => {
   const oldStyle = { version: 'old', label: '日漫二维', source: 'settings' as const, details: { rendering: '赛璐璐' } }
@@ -83,7 +83,7 @@ test('video ratio and clarity selections update final requirements without disca
 })
 
 test('video reference mapping is rebuilt from submitted images after a broad manual edit or strategy change', async () => {
-  const { synchronizeVideoReferencePrompt } = await import('../../backend/src/visual-prompt')
+  const { synchronizeVideoReferencePrompt } = await import('@video-studio/shared/visuals/visual-prompt')
   const bindings = [
     { kind: 'character' as const, profile_id: 'person', name: '林晚', variant: '校服', revision: 1, definition: '短发', view_requirements: '三视图', board_asset_id: 'person-board', required: true },
     { kind: 'prop' as const, profile_id: 'prop', name: '书包', variant: '蓝色', revision: 1, definition: '蓝色书包', view_requirements: '细节', board_asset_id: 'prop-board', required: false },

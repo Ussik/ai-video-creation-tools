@@ -7,7 +7,19 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { JSDOM } from 'jsdom'
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
-const { DirectorDocumentBody } = await import('../src/DirectorDocuments')
+const { DirectorDocumentBody } = await import('../src/features/script/DirectorDocuments')
+
+test('director preview uses its document title once while retaining subsection headings and tables', () => {
+  const title = '全剧场景设计'
+  const text = `##${title}\n\n### 车站\n\n| 区域 | 用途 |\n| --- | --- |\n| 站台 | **救援** |`
+  const dom = new JSDOM(renderToStaticMarkup(<MantineProvider env="test"><div><h2>{title}</h2><DirectorDocumentBody text={text} title={title} /></div></MantineProvider>))
+  try {
+    assert.equal(dom.window.document.querySelectorAll('h2').length, 1)
+    assert.equal(dom.window.document.querySelector('h3')?.textContent, '车站')
+    assert.equal(dom.window.document.querySelector('tbody strong')?.textContent, '救援')
+    assert.equal(dom.window.document.querySelectorAll('table').length, 1)
+  } finally { dom.window.close() }
+})
 
 test('director document reader renders accessible scene tables with header, rows and formatting', () => {
   const text = '##全剧场景设计\n| 地点（暂名） | 类别 | 主要剧情功能 | 出现阶段 |\n| :--- | :---: | --- | ---: |\n| **旧祠堂** | 核心场景 | 家族记忆与真相浮出水面<br>承载家庭和解 | 1—20集 |\n| 桥头 | 外景 | ~~旧设定~~，_追逐与冲突_ | 中段 |'

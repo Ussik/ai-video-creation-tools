@@ -3,15 +3,16 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import { directorStageContext, type DirectorStageContext } from '../src/script-workflow.js'
-import { directorStageContext as frontendContext } from '../../web/src/script-workflow.ts'
-import { activeReplyChoice, replyWorkflowAction, replyClassificationVersion } from '../../web/src/script-reply.ts'
+import { scriptStageArtifacts, scriptArtifactLabels, type ScriptStage } from '@video-studio/shared/script/script-stage-content'
+import { directorStageContext, type DirectorStageContext } from '../src/modules/script/script-workflow.js'
+import { directorStageContext as frontendContext } from '../../web/src/features/script/script-workflow.ts'
+import { activeReplyChoice, replyWorkflowAction, replyClassificationVersion } from '../../web/src/features/script/script-reply.ts'
 
 const testData = await mkdtemp(join(tmpdir(), 'studio-director-stages-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { buildApp } = await import('../src/server.js')
-const { db } = await import('../src/db.js')
-const { installSkillBundle, configureSkill } = await import('../src/skills.js')
+const { buildApp } = await import('../src/app.js')
+const { db } = await import('../src/infrastructure/database/db.js')
+const { installSkillBundle, configureSkill } = await import('../src/modules/skills/skills.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 
@@ -78,14 +79,14 @@ test('new-project discussion is scoped to outline in both transports, keeps Skil
   assert.equal(replyWorkflowAction([message], incorrect.stage_context), null)
 })
 
-test('ordinary continuation cannot generate another stage or redo saved characters; explicit text and buttons can', async t => {
+test('first-generation order is enforced for continuation, explicit prose and typed buttons', async t => {
   const { project, model } = await fixture()
   let decision: Record<string, unknown> = { action: 'draft', operation: 'create', workflow: { stage: 'characters' }, creative_brief: '补全人物' }
   let writerCalls = 0
   mock(t, prompt => {
     if (prompt.includes('本次独立调用只理解创作者意图')) return decision
     writerCalls++
-    return { artifacts: [{ artifact_type: 'characters', title: '人物', content: '姐姐与弟弟' }], scenes: [] }
+    return { artifacts: scriptStageArtifacts.characters.map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '姐姐与弟弟' })), scenes: [] }
   })
   const body = { model_id: model.id, mode: 'script', messages: [{ role: 'user', text: '继续' }] }
   for (const stream of [false, true]) {
@@ -95,15 +96,15 @@ test('ordinary continuation cannot generate another stage or redo saved characte
   }
   assert.equal(writerCalls, 0)
   decision = { ...decision, authorization: 'explicit' }
-  assert.equal((await chat(project.id, { ...body, messages: [{ role: 'user', text: '先生成全剧人物设定' }] })).draft?.stage, 'characters')
-  assert.equal((await chat(project.id, { ...body, workflow: { stage: 'characters' } })).draft?.stage, 'characters')
+  assert.match((await chat(project.id, { ...body, messages: [{ role: 'user', text: '先生成全剧人物设定' }] })).reply, /请先完成并保存故事大纲/)
+  assert.match((await chat(project.id, { ...body, workflow: { stage: 'characters' } })).reply, /请先完成并保存故事大纲/)
   await call('PUT', `/api/projects/${project.id}/script/director/draft`, { stage: 'characters', artifacts: [{ artifact_type: 'characters', title: '人物', content: '已保存人物' }] })
   await call('PUT', `/api/projects/${project.id}/script/director/draft`, { stage: 'outline', artifacts: [{ artifact_type: 'outline', title: '大纲', content: '已保存大纲' }] })
   decision = { ...decision, authorization: 'continue' }
   const blocked = await chat(project.id, body)
   assert.match(blocked.reply, /当前应先完成全剧场景设计/)
   assert.equal(blocked.draft, undefined)
-  assert.equal(writerCalls, 2)
+  assert.equal(writerCalls, 0)
 })
 
 test('confirmed saving alone advances each default stage and keeps frontend/backend stage policies identical', async t => {
@@ -111,7 +112,7 @@ test('confirmed saving alone advances each default stage and keeps frontend/back
   let stage = 'outline'
   mock(t, prompt => prompt.includes('本次独立调用只理解创作者意图')
     ? { action: 'draft', operation: 'create', workflow: { stage, episode_number: stage === 'episode' ? 1 : 0 }, creative_brief: '整理当前阶段' }
-    : { artifacts: [{ artifact_type: stage === 'episode' ? 'episode_script' : stage, title: stage, content: '已确认故事事实' }],
+    : { artifacts: scriptStageArtifacts[stage as ScriptStage].map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '已确认故事事实' })),
       scenes: stage === 'episode' ? [{ heading: '老宅', action: '寻找姐姐', duration: 5 }] : [] })
   const body = { model_id: model.id, mode: 'script', messages: [{ role: 'user', text: '整理当前阶段草稿' }] }
   const stages = ['outline', 'characters', 'locations', 'props', 'episode']

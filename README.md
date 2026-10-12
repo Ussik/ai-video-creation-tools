@@ -4,21 +4,16 @@
 
 ## 运行
 
-需要 Node.js 22 或更新版本。分别打开两个终端：
+需要 Node.js 22 或更新版本。在项目根目录执行：
 
 ```bash
-cd backend
-npm install
+npm ci
 npm run dev
 ```
 
-```bash
-cd web
-npm install
-npm run dev
-```
+项目使用 npm workspaces，根目录统一安装前端、后端和共享包依赖。开发命令先编译共享规则，再同时启动前后端和共享包监听。需要分开启动时，先运行 `npm run build:shared`，再分别运行 `npm run dev --workspace=backend` 与 `npm run dev --workspace=web`。
 
-打开 [http://127.0.0.1:5173/](http://127.0.0.1:5173/)。后端默认监听 `127.0.0.1:8000`，前端开发服务器会代理 `/api`。生产构建可分别执行 `npm run build`，然后在 `backend` 执行 `npm start`；后端会托管已构建的前端。
+打开 [http://127.0.0.1:5173/](http://127.0.0.1:5173/)。后端默认监听 `127.0.0.1:8000`，前端开发服务器会代理 `/api`。生产构建在根目录执行 `npm run build`，然后执行 `npm start`；后端会托管已构建的前端。目录结构与模块边界见 [项目目录规范](docs/project-structure.md)。
 
 项目、配置、任务和素材保存在根目录 `data/`。可用 `VIDEO_STUDIO_DATA_DIR` 指定其他目录。API Key 使用本机 `data/secret.key` 加密后保存到 SQLite；请一起备份数据库、素材和密钥文件。服务只监听本机，没有账号权限系统，不适合直接暴露到公网。
 
@@ -42,7 +37,7 @@ npm run dev
 
 打开对话中的“项目文档”，阅读已保存文档后选择“模型评审”或“对话修订”；也可以直接说“读取人物设定，补齐林晚的待定职业，保留其他角色”。修改先进入草稿，可查看原文、编辑、继续对话修改或放弃，确认后才写入正文。草稿和已确认决定保存在项目数据库；“跳过”授权模型决定对应设定，集数与单集时长等明确配置会同步更新。保存检查草稿和原文版本，分集修订同步相关场次并保留场次与分镜关联；已经生成的分镜与媒体不会自动重做。
 
-工具对话要求文本接口实际支持 Chat Completions 的 `tool_calls` 或 Responses 的 `function_call`。请求模板需包含对应 `messages` 或 `input`，程序保留已配置的模型、地址、认证与其他请求选项。接口不支持工具时会报告错误；主剧本对话和分阶段生成使用工具链路，采纳旧回复、完整剧本专用生成及视觉创作等专门入口保留各自生成链路。
+工具对话要求文本接口实际支持 Chat Completions 的 `tool_calls` 或 Responses 的 `function_call`。请求模板需包含对应 `messages` 或 `input`，程序保留已配置的模型、地址、认证与其他请求选项。接口不支持工具时会报告错误；主剧本对话和分阶段生成使用工具链路，采纳旧回复及视觉创作等专门入口保留各自生成链路。剧本生成统一在对话中进行：大纲阶段包含九份完整设计文档，人物阶段包含人物小传与关系，场景、道具及分集各有详细内容要求。编辑器保留编辑、保存和分镜制作，移除独立的整本生成入口；旧版整本生成接口仅保留兼容。详见[阶段创作流程](docs/model-intent-workflow.md)。
 
 画布连线表示生成输入及素材来源，不决定成片顺序；分镜顺序、入片区间和最终导出仍以“成片工作台”的时间线为准。切换到其他页面再返回时，已保存的画布会恢复。
 
@@ -68,7 +63,7 @@ npm run dev
 
 文本模型支持 Responses 和 Chat Completions 风格的同步 HTTP 请求。剧本导演对话会优先使用流式接口，按 SSE 或 NDJSON 增量显示回复；模型设置可用 `stream_request_template` 覆盖流式请求体，用 `stream_text_paths` 指定增量文本路径，未显式关闭时会自动补 `stream: true`。界面只展示供应商返回的公开摘要和创作阶段，不透传 `reasoning_content`、`<think>` 等隐式推理内容。图片模型支持返回 Base64 或 URL 的同步接口，也可通过 `async_image: true`、`get_path`、`id_path`、`status_path` 配置异步接口；模型的 `api_base_url` 可覆盖共享提供商地址。图片任务编号会先保存，查询中断或重启后继续查询原任务，避免再次提交生成。视频模型通过可配置的创建路径、状态路径、结果路径和轮询状态处理异步任务。不同厂商的特殊参数可写进模型的 JSON 请求模板或按生成模式设置覆盖值。
 
-RightAPI 绘图按[官方文档](https://docs.rightapi.ai/docs/rc_draw/images-generations.html)配置为 `POST https://www.rightapi.ai/draw/v1/images/generations`，提交 `async: true`、`size: {{ratio}}` 和 `image: {{images}}`（Data URL 数组），再用 `GET https://www.rightapi.ai/v1/tasks/{id}` 获取结果。完整配置在 `backend/src/rightapi-image-settings.ts`；对现有 RightAPI 提供商的三种 `gpt-image-2.5` 模型，可在 backend 目录运行 `node --import tsx scripts/configure-rightapi-images.ts` 预览，添加 `--apply` 后应用并备份旧配置。该命令保留原来的比例选项、单价与共享提供商地址，不调用生成接口，也不会自动切换所选模型；厂商当前服务可用性请查看其模型列表。
+RightAPI 绘图按[官方文档](https://docs.rightapi.ai/docs/rc_draw/images-generations.html)配置为 `POST https://www.rightapi.ai/draw/v1/images/generations`，提交 `async: true`、`size: {{ratio}}` 和 `image: {{images}}`（Data URL 数组），再用 `GET https://www.rightapi.ai/v1/tasks/{id}` 获取结果。完整配置在 `backend/src/infrastructure/providers/rightapi-image-settings.ts`；对现有 RightAPI 提供商的三种 `gpt-image-2.5` 模型，可在 backend 目录运行 `node --import tsx scripts/configure-rightapi-images.ts` 预览，添加 `--apply` 后应用并备份旧配置。该命令保留原来的比例选项、单价与共享提供商地址，不调用生成接口，也不会自动切换所选模型；厂商当前服务可用性请查看其模型列表。
 
 画布图片参数默认提供五档画质、1K/2K/4K、自动/保留/透明背景和十三种比例，选择保存在节点上。模型可用 `image_qualities`、`image_clarities`、`image_backgrounds` 和 `ratios` 配置选项，用 `default_quality`、`default_clarity`、`default_background` 配置默认值。图片比例必须通过请求模板的 `{{ratio}}` 比例参数或比例完全一致的 `{{size}}` / `{{resolution}}` 尺寸提交；画布和设定信息图不会把所选比例替换为近似比例。缺少对应配置时会停止生成并提示补齐模型设置，通用初始比例选项不代表厂商的完整能力。最终提示词始终明确整张图片的宽高比例和横竖方向，其他图片要求没有原生映射时也会补充进实际提示词。模板中存在比例字段不代表服务商一定识别或执行，字段和尺寸应以服务商接口说明为准；提示词要求也不保证实际输出尺寸、清晰度或带 Alpha 的透明背景。提交确认会显示请求参数及完整提示词。
 
@@ -96,15 +91,14 @@ Seedance 2.0、Fast 和 Mini 视频节点的“整理提示词”会识别官方
 
 ## 验证
 
+在项目根目录执行：
+
 ```bash
-cd backend
+npm run check
 npm run build
 npm test
 ```
 
-```bash
-cd web
-npm run build
-```
+可用 `npm run test:web` 或 `npm run test:backend` 单独验证对应工作区。结构检查禁止前后端直接导入另一端的源码；共享规则通过 `@video-studio/shared` 使用。
 
 模型接口的能力、计费和参数范围由实际厂商决定。剧本草稿和分镜规划需要启用可用的文本模型；常见 JSON 代码块和带推理段落的结构化输出可解析，模型若只返回推理或缺少必需字段仍需检查其输出与配置。分镜一次最多规划 10 场，镜头数留空时模型逐场分析确定，填写时可建议 2 至 8 个镜头，实际按节奏分配；沿用现有数据约束，每场 1 至 30 秒、每镜至少 1 秒，镜头时长之和必须等于场次时长。生成的规划在确认前不会写入项目。旧项目选中的素材会进入时间线；已有分镜和素材可导入项目画布。原视频的动作和穿帮不会自动修复，需要重新审看切点并重拍不连续镜头。接镜审核记录帮助发现并追踪问题，不会自动修复画面，也不会阻止导出用于试看的版本。当前时间线每镜支持一个入片片段，未实现对白/音效轨、多轨字幕或角色一致性系统。需求来源和后续优先级见 [产品分析](docs/product-analysis.md)。

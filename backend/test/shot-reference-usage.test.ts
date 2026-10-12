@@ -6,8 +6,8 @@ import { join } from 'node:path'
 
 const directory = await mkdtemp(join(tmpdir(), 'shot-reference-usage-'))
 process.env.VIDEO_STUDIO_DATA_DIR = directory
-const { buildApp } = await import('../src/server.js')
-const { db, run, now, all } = await import('../src/db.js')
+const { buildApp } = await import('../src/app.js')
+const { db, run, now, all } = await import('../src/infrastructure/database/db.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(directory, { recursive: true, force: true }) })
 async function call(method: 'POST' | 'PUT' | 'PATCH' | 'GET', url: string, payload?: unknown) {

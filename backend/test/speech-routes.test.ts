@@ -6,8 +6,8 @@ import { after, test } from 'node:test'
 
 const testData = await mkdtemp(join(tmpdir(), 'video-studio-speech-routes-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { buildApp } = await import('../src/server.js')
-const { all, db, now, one, run } = await import('../src/db.js')
+const { buildApp } = await import('../src/app.js')
+const { all, db, now, one, run } = await import('../src/infrastructure/database/db.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 

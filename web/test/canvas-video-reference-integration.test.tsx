@@ -1,13 +1,13 @@
 import { chooseCombobox } from './component-controls'
-import { videoReferenceUsageLabels, type VideoReferenceUsage } from '../../backend/src/video-reference-usage'
+import { videoReferenceUsageLabels, type VideoReferenceUsage } from '@video-studio/shared/media/video-reference-usage'
 import assert from 'node:assert/strict'
 import { register } from 'node:module'
 import { after, test, type TestContext } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
-import type { Model, ProjectDetail, ShotVisualBinding, VisualProfile } from '../src/api'
-import type { CanvasGraph, CanvasNode, ProjectCanvasProps } from '../src/ProjectCanvas'
+import type { Model, ProjectDetail, ShotVisualBinding, VisualProfile } from '../src/shared/api/api'
+import type { CanvasGraph, CanvasNode, ProjectCanvasProps } from '../src/features/canvas/ProjectCanvas'
 
 // Render the actual canvas and composer; only CSS and HTTP transport are mocked.
 register(`data:text/javascript,${encodeURIComponent(`
@@ -65,7 +65,7 @@ Object.assign(dom.window, { ResizeObserver: TestResizeObserver, DOMMatrixReadOnl
   constructor(transform: string) { this.m22 = Number(/scale\(([-\d.]+)\)/.exec(transform)?.[1] || 1) }
 } })
 const { createRoot } = await import('react-dom/client')
-const { default: ProjectCanvas } = await import('../src/ProjectCanvas')
+const { default: ProjectCanvas } = await import('../src/features/canvas/ProjectCanvas')
 after(() => dom.window.close())
 
 const timestamp = '2026-10-10T00:00:00Z'
@@ -99,8 +99,9 @@ function initialGraph(mode: 'reference' | 'first_frame', extraManual = false): C
   ], edges: [{ id: 'storyboard-edge', source: 'storyboard-node', target: 'video-node', reference_asset_id: 'storyboard' },
     ...(extraManual ? [{ id: 'manual-edge', source: 'manual-node', target: 'video-node', reference_asset_id: 'manual' }] : [])] }
 }
-type PreviewInput = { video_reference_usages?: import('../../backend/src/video-reference-usage').VideoReferenceUsageSelection[]; mode: string; reference_asset_ids: string[]; prompt: string; visual_reference_mode: string; excluded_visual_profile_ids?: string[]; storyboard_reference_asset_id?: string | null }
-function mockApi(t: TestContext, graph: CanvasGraph, projectDetail = detail) {
+type PreviewInput = { video_reference_usages?: import('@video-studio/shared/media/video-reference-usage').VideoReferenceUsageSelection[]; mode: string; reference_asset_ids: string[]; prompt: string; visual_reference_mode: string; excluded_visual_profile_ids?: string[]; storyboard_reference_asset_id?: string | null }
+type ApiHandler = (path: string, method: string, body: Record<string, unknown>) => Response | Promise<Response> | undefined
+function mockApi(t: TestContext, graph: CanvasGraph, projectDetail = detail, handler?: ApiHandler, saveError = false) {
   const previews: PreviewInput[] = [], saved: CanvasGraph[] = []
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
     const path = String(url), method = init?.method || 'GET'
@@ -113,9 +114,12 @@ function mockApi(t: TestContext, graph: CanvasGraph, projectDetail = detail) {
     if (path === '/api/projects/video-reference-test/canvas') {
       if (method === 'GET') return Response.json(graph)
       assert.equal(method, 'PUT')
+      if (saveError) return Response.json({ message: '模拟画布保存失败' }, { status: 500 })
       const value = JSON.parse(String(init?.body)); saved.push(value)
       return Response.json({ ...value, revision: `saved-${saved.length}` })
     }
+    const handled = await handler?.(path, method, init?.body ? JSON.parse(String(init.body)) : {})
+    if (handled) return handled
     assert.equal(path, '/api/projects/video-reference-test/generate/preview', 'test must never create a paid generation job')
     assert.equal(method, 'POST')
     const request = JSON.parse(String(init?.body)) as PreviewInput
@@ -137,18 +141,19 @@ async function settle() {
     }
   })
 }
-async function mount(projectDetail = detail, portals = false) {
+async function mount(projectDetail = detail, portals = false, overrides: Partial<ProjectCanvasProps> = {}) {
   dom.window.localStorage.clear(); dom.window.sessionStorage.clear(); frames.clear()
   dom.window.localStorage.setItem('project-canvas-viewport:video-reference-test', JSON.stringify({ x: 0, y: 0, zoom: 0.8 }))
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container)
   const props: ProjectCanvasProps = { detail: projectDetail, models: [videoModel], providers: [{ id: 'provider', name: '本地测试', adapter: 'http', enabled: true } as ProjectCanvasProps['providers'][number]],
-    initialLocation: { view: 'canvas', storyboardId: null }, onRefresh: async () => {}, onOpenModels: () => {}, onNavigate: () => {}, onOpenScriptCreator: () => {} }
+    initialLocation: { view: 'canvas', storyboardId: null }, onRefresh: async () => {}, onOpenModels: () => {}, onNavigate: () => {}, onOpenScriptCreator: () => {}, ...overrides }
+  const render = () => root.render(<MantineProvider env={portals ? 'default' : 'test'} theme={portals ? { components: {
+    Modal: { defaultProps: { transitionProps: { duration: 0 } } },
+    Popover: { defaultProps: { transitionProps: { duration: 0 } } },
+  } } : undefined}><ProjectCanvas {...props} /></MantineProvider>)
   try {
-    await act(() => root.render(<MantineProvider env={portals ? 'default' : 'test'} theme={portals ? { components: {
-      Modal: { defaultProps: { transitionProps: { duration: 0 } } },
-      Popover: { defaultProps: { transitionProps: { duration: 0 } } },
-    } } : undefined}><ProjectCanvas {...props} /></MantineProvider>)); await settle()
+    await act(render); await settle()
     const video = container.querySelector<HTMLElement>('[data-id="video-node"]')!
     assert.ok(video)
     await act(() => video.click()); await settle()
@@ -178,6 +183,7 @@ async function mount(projectDetail = detail, portals = false) {
   }
   const preview = async () => { await act(() => button('查看生成信息').click()); await settle() }
   return { container, button, selectMode, prompt, images, editPrompt, preview,
+    renderDetail: async (next: ProjectDetail) => { props.detail = next; await act(render); await settle() },
     destroy: async () => { await act(() => root.unmount()); await settle(); container.remove(); frames.clear() } }
 }
 
@@ -560,4 +566,160 @@ test('per-image uses persist through node changes, mode changes and reload and m
     assert.equal(api.previews.at(-1)!.storyboard_reference_asset_id, null)
     assert.deepEqual(api.previews.at(-1)!.video_reference_usages, [{ asset_id: 'manual', usage: 'scale' }])
   } finally { await view.destroy() }
+})
+
+const imageModel: Model = { ...videoModel, id: 'image-model', name: '图片模型', modality: 'image', protocol: 'sync_image',
+  settings: { supported_modes: ['text', 'reference'], ratios: ['9:16', '16:9'], resolutions: ['1K', '2K', '4K'],
+    request_template: { prompt: '{{prompt}}', images: '{{images}}', ratio: '{{ratio}}', resolution: '{{resolution}}',
+      clarity: '{{clarity}}', quality: '{{quality}}', background: '{{background}}' } } }
+const alternateImageModel = { ...imageModel, id: 'alternate-image-model', name: '备用图片模型' }
+const withoutBoard = (profile: VisualProfile): VisualProfile => ({ ...profile, board_asset_id: null })
+const missingHero = withoutBoard(hero), missingStation = withoutBoard(station)
+type BoardRequest = { profileId: string; body: Record<string, unknown> }
+function mockBoards(t: TestContext, graph: CanvasGraph, projectDetail: ProjectDetail,
+  options: { failPreview?: string; saveError?: boolean; beforeEnqueue?: () => Promise<void> } = {}) {
+  const previews: BoardRequest[] = [], generated: BoardRequest[] = []
+  const api = mockApi(t, graph, projectDetail, async (path, method, body) => {
+    const match = /^\/api\/visual-profiles\/([^/]+)\/(board-preview|generate)$/.exec(path)
+    assert.ok(match, `unexpected request ${method} ${path}; target generation and candidate confirmation are forbidden`)
+    assert.equal(method, 'POST')
+    const profileId = match[1], profile = projectDetail.visual_profiles!.find(profile => profile.id === profileId)!
+    assert.ok(profile)
+    if (match[2] === 'board-preview') {
+      previews.push({ profileId, body })
+      if (profileId === options.failPreview) return Response.json({ message: '模型预览暂时不可用' }, { status: 422 })
+      return Response.json({ prompt: `${body.prompt_override || profile.definition}\n${body.prompt_append || ''}`,
+        mode: (body.reference_asset_ids as string[])?.length || (body.reference_profile_ids as string[])?.length ? 'reference' : 'text',
+        reference_asset_ids: body.reference_asset_ids || [], reference_names: [], reference_signature: `signature-${profileId}`,
+        project_style_version: 'test-style', project_visual_style: projectDetail.project_visual_style, style_warnings: [] })
+    }
+    assert.ok(api.saved.length, 'nodes must be persisted before enqueueing')
+    assert.equal(api.saved.at(-1)!.nodes.filter(node => node.settings.visual_profile_id === profileId).length, 1)
+    generated.push({ profileId, body })
+    await options.beforeEnqueue?.()
+    const jobs = Array.from({ length: Number(body.candidate_count) }, (_, index) => ({ id: `job-${profileId}-${index}`,
+      status: 'queued', created_at: timestamp, request: JSON.stringify({ visual_profile_id: profileId, visual_profile_revision: profile.revision }) }))
+    return Response.json({ job: jobs[0], jobs, task: { id: `task-${profileId}`, status: 'generating' } })
+  }, options.saveError)
+  return { ...api, boardPreviews: previews, generated }
+}
+
+test('one click fills only missing references, preserves each board configuration and prevents duplicate submission until refresh', async t => {
+  const optional = { ...missingHero, id: 'optional', name: '可选道具' }
+  const confirmed = { ...hero, id: 'confirmed', name: '已确认人物' }
+  const candidate = { ...missingHero, id: 'candidate', name: '待确认人物', candidate_asset_ids: ['manual'] }
+  const queued = { ...missingHero, id: 'queued', name: '排队人物' }
+  const running = { ...missingHero, id: 'running', name: '生成人物', asset_task_id: 'running-task' }
+  const unrelated = { ...missingHero, id: 'unrelated', name: '别的镜头人物' }
+  const profiles = [missingHero, missingStation, optional, confirmed, candidate, queued, running, unrelated]
+  const queuedJob = { id: 'already-queued', status: 'queued', created_at: timestamp,
+    request: JSON.stringify({ visual_profile_id: queued.id, visual_profile_revision: queued.revision }) } as ProjectDetail['jobs'][number]
+  const projectDetail: ProjectDetail = { ...detail, visual_profiles: profiles,
+    shot_visual_bindings: [...profiles.filter(profile => profile.id !== unrelated.id).map(profile => bind(profile, profile.id !== optional.id)),
+      { ...bind(unrelated, true), shot_id: 'other-shot' }], jobs: [queuedJob],
+    asset_tasks: [{ id: 'running-task', status: 'generating' } as ProjectDetail['asset_tasks'][number]] }
+  const graph = initialGraph('reference')
+  graph.nodes.push({ ...node('hero-node', 'generation', 900), model_id: alternateImageModel.id, title: '林晚设定', text: '保持蓝色校服',
+    settings: { modality: 'image', visual_profile_id: hero.id, visual_profile_revision: hero.revision,
+      ratio: '16:9', resolution: '4K', clarity: '4K', quality: 'high', background: 'transparent', candidate_count: 2,
+      profile_prompt_override: '手工设定提示词' } },
+    { ...node('notes', 'text', 1200), text: '不要添加装饰品' })
+  graph.edges.push({ id: 'hero-input', source: 'hero-node', target: 'video-node' }, { id: 'notes-input', source: 'notes', target: 'hero-node' })
+  const originalTarget = structuredClone(graph.nodes.find(node => node.id === 'video-node')!)
+  const api = mockBoards(t, graph, projectDetail)
+  let refreshes = 0
+  const view = await mount(projectDetail, false, { models: [videoModel, imageModel, alternateImageModel], onRefresh: async () => { refreshes++ } })
+  try {
+    const button = view.button('一键生成所需参考图')
+    assert.match(button.textContent!, /· 2/)
+    await act(() => { button.click(); button.click() }); await settle()
+    assert.deepEqual(api.generated.map(request => request.profileId), ['hero', 'station'])
+    assert.equal(refreshes, 1)
+    const heroRequest = api.generated[0].body, stationRequest = api.generated[1].body
+    assert.equal(heroRequest.model_id, alternateImageModel.id)
+    assert.equal(heroRequest.ratio, '16:9'); assert.equal(heroRequest.resolution, '4K')
+    assert.equal(heroRequest.clarity, '4K'); assert.equal(heroRequest.quality, 'high')
+    assert.equal(heroRequest.background, 'transparent'); assert.equal(heroRequest.candidate_count, 2)
+    assert.equal(heroRequest.prompt_override, '手工设定提示词')
+    assert.match(String(heroRequest.prompt), /手工设定提示词.*\n不要添加装饰品\n\n保持蓝色校服/)
+    assert.equal(heroRequest.expected_revision, hero.revision)
+    assert.equal(heroRequest.reference_signature, 'signature-hero'); assert.equal(heroRequest.project_style_version, 'test-style')
+    assert.ok(!('shot_id' in heroRequest) && !('mode' in heroRequest), 'strict board API receives only supported fields')
+    assert.equal(stationRequest.model_id, imageModel.id); assert.equal(stationRequest.candidate_count, 1)
+    assert.equal(stationRequest.ratio, '9:16'); assert.equal(stationRequest.clarity, '2K')
+    const saved = api.saved.at(-1)!
+    assert.deepEqual(saved.nodes.find(node => node.id === 'video-node'), originalTarget)
+    assert.equal(saved.nodes.find(node => node.id === 'hero-node')!.job_id, 'job-hero-0')
+    assert.equal(saved.nodes.find(node => node.settings.visual_profile_id === station.id)!.job_id, 'job-station-0')
+    assert.ok(view.container.querySelector('.react-flow__node[data-id="video-node"].selected'))
+    assert.match(view.container.querySelector('[aria-label="待补齐参考图"]')!.textContent!, /已提交 2 份设定图/)
+    assert.equal(view.button('一键生成所需参考图').disabled, true)
+    await act(() => view.button('一键生成所需参考图').click()); await settle()
+    assert.equal(api.generated.length, 2, 'stale project detail must not permit duplicate submission')
+    const completed = { ...projectDetail, assets: [...projectDetail.assets, { ...detail.assets[0], id: 'new-hero-board', shot_id: null }],
+      jobs: [...projectDetail.jobs, { id: 'job-hero-0', status: 'succeeded', created_at: timestamp, result_asset_id: 'new-hero-board',
+        request: JSON.stringify({ visual_profile_id: hero.id, visual_profile_revision: hero.revision }) } as ProjectDetail['jobs'][number],
+        { id: 'job-hero-1', status: 'failed', created_at: timestamp } as ProjectDetail['jobs'][number]] }
+    await view.renderDetail(completed)
+    assert.match(view.button('定位参考设定：林晚 · 校服').textContent!, /去确认/)
+    assert.equal(completed.visual_profiles![0].board_asset_id, null, 'generation does not confirm a candidate')
+  } finally { await view.destroy() }
+})
+
+test('reference batch isolates unavailable models, unconfirmed dependencies and preview errors while other references enter the queue', async t => {
+  const blocked = { ...missingHero, id: 'blocked', name: '依赖未确认人物' }
+  const unavailable = { ...missingHero, id: 'unavailable', name: '模型失效人物' }
+  const dependency = { ...missingHero, id: 'dependency', name: '待确认前置设定', candidate_asset_ids: ['manual'] }
+  const profiles = [missingHero, blocked, unavailable, missingStation, dependency]
+  const projectDetail: ProjectDetail = { ...detail, visual_profiles: profiles,
+    shot_visual_bindings: profiles.filter(profile => profile.id !== dependency.id).map(profile => bind(profile, true)) }
+  const graph = initialGraph('reference')
+  for (const profile of [blocked, unavailable, dependency]) graph.nodes.push({ ...node(`${profile.id}-node`, 'generation', 900),
+    model_id: profile === unavailable ? 'disabled-model' : imageModel.id,
+    settings: { modality: 'image', visual_profile_id: profile.id, visual_profile_revision: profile.revision } })
+  graph.edges.push({ id: 'blocked-dependency', source: 'dependency-node', target: 'blocked-node' })
+  const api = mockBoards(t, graph, projectDetail, { failPreview: hero.id })
+  const view = await mount(projectDetail, false, { models: [videoModel, imageModel] })
+  try {
+    await act(() => view.button('一键生成所需参考图').click()); await settle()
+    assert.deepEqual(api.generated.map(request => request.profileId), [station.id])
+    assert.deepEqual(api.boardPreviews.map(request => request.profileId), [hero.id, station.id])
+    const result = view.container.querySelector('.pc-required-reference-result')!.textContent!
+    assert.match(result, /已提交 1 份设定图/)
+    assert.match(result, /模型失效人物.*图片模型不可用/)
+    assert.match(result, /依赖未确认人物.*请先补齐并确认参考图.*待确认前置设定/)
+    assert.match(result, /林晚.*模型预览暂时不可用/)
+    assert.equal(api.saved.at(-1)!.nodes.find(node => node.settings.visual_profile_id === hero.id)!.job_id, null)
+    assert.equal(api.saved.at(-1)!.nodes.find(node => node.id === 'video-node')!.job_id, null)
+    assert.equal(view.button('一键生成所需参考图').disabled, false, 'failed references remain retryable')
+  } finally { await view.destroy() }
+})
+
+test('reference batch never creates jobs when the prerequisite nodes cannot be saved', async t => {
+  const projectDetail: ProjectDetail = { ...detail, visual_profiles: [missingHero], shot_visual_bindings: [bind(missingHero, true)] }
+  const api = mockBoards(t, initialGraph('reference'), projectDetail, { saveError: true })
+  const view = await mount(projectDetail, false, { models: [videoModel, imageModel] })
+  try {
+    await act(() => view.button('一键生成所需参考图').click()); await settle()
+    assert.deepEqual(api.generated, []); assert.deepEqual(api.boardPreviews, [])
+    assert.match(view.container.querySelector('.pc-required-reference-result')!.textContent!, /画布保存.*模拟画布保存失败/)
+    assert.equal(view.button('一键生成所需参考图').disabled, false)
+  } finally { await view.destroy() }
+})
+
+test('leaving the canvas during enqueue preserves the submitted job on its original reference node', async t => {
+  const projectDetail: ProjectDetail = { ...detail, visual_profiles: [missingHero, missingStation],
+    shot_visual_bindings: [bind(missingHero, true), bind(missingStation, true)] }
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  let refreshed!: () => void
+  const finished = new Promise<void>(resolve => { refreshed = resolve })
+  const api = mockBoards(t, initialGraph('reference'), projectDetail, { beforeEnqueue: () => pending })
+  const view = await mount(projectDetail, false, { models: [videoModel, imageModel], onRefresh: async () => { refreshed() } })
+  await act(() => view.button('一键生成所需参考图').click()); await settle()
+  assert.equal(api.generated.length, 1)
+  await view.destroy()
+  await act(async () => { release(); await finished }); await settle()
+  assert.equal(api.generated.length, 1, 'leaving stops additional submissions')
+  assert.equal(api.saved.at(-1)!.nodes.find(node => node.settings.visual_profile_id === hero.id)!.job_id, 'job-hero-0')
 })

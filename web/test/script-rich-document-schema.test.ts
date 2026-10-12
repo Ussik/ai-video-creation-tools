@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import test, { after } from 'node:test'
 import { JSDOM } from 'jsdom'
 import { Editor, type JSONContent } from '@tiptap/core'
-import { normalizeTextDocument, textDocumentText } from '../src/text-document.ts'
-import { scriptEditorExtensions } from '../src/script-editor-extensions.ts'
-import { parseScriptDocument, serializeScriptDocument } from '../src/script-rich-document.ts'
+import { normalizeTextDocument, textDocumentText } from '../src/shared/lib/editor/text-document.ts'
+import { scriptEditorExtensions } from '../src/features/script/script-editor-extensions.ts'
+import { parseScriptDocument, serializeScriptDocument } from '../src/features/script/script-rich-document.ts'
 
 // Tiptap only needs a small DOM shim to validate the codec output. Keeping the
 // check here catches invalid attrs or node nesting that a plain JSON equality

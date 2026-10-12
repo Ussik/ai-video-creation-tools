@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import { Editor, type JSONContent } from '@tiptap/core'
-import { applyTextFormat, textEditorExtensions } from '../src/text-editor.ts'
-import { normalizeTextDocument, plainTextDocument, textDocumentText } from '../src/text-document.ts'
+import { applyTextFormat, textEditorExtensions } from '../src/shared/lib/editor/text-editor.ts'
+import { normalizeTextDocument, plainTextDocument, textDocumentText } from '../src/shared/lib/editor/text-document.ts'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/' })
 for (const key of ['window', 'document', 'navigator', 'Node', 'HTMLElement', 'Element', 'MutationObserver', 'DOMParser', 'KeyboardEvent', 'Event']) {

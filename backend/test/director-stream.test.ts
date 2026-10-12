@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { streamText, type GenerationModel } from '../src/providers.js'
-import { textToolSession } from '../src/text-tools.js'
-import { createStreamScope, StreamWaitTimeoutError, textRequestTimeoutMs } from '../src/script-stream-policy.js'
+import { streamText, type GenerationModel } from '../src/infrastructure/providers/providers.js'
+import { textToolSession } from '../src/infrastructure/providers/text-tools.js'
+import { createStreamScope, StreamWaitTimeoutError, textRequestTimeoutMs } from '@video-studio/shared/script/script-stream-policy'
 const model: GenerationModel = { id: 'text', remote_id: 'fixture', modality: 'text', protocol: 'responses', settings: { request_path: 'responses', request_template: { model: '{{model}}', input: '{{prompt}}' }, text_path: 'output_text' } }
 const provider = { adapter: 'http' as const, base_url: 'https://fixture.invalid' }
 const encode = new TextEncoder()

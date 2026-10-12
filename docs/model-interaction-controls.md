@@ -11,7 +11,7 @@
 
 这些机制经常组合。剧本主对话向模型提供函数，但普通解释可以直接返回文本，不要求每轮都调用函数。Skill 当前提供专业规则和参考资料，加载规则会影响提示词，并不自动执行其脚本，也不等同于 Function Calling。
 
-“全能创作／剧本创编／导演执导”的名称和角色重点由 [script-creation-mode.ts](../backend/src/script-creation-mode.ts) 统一定义。原生 Function Calling、兼容对话和发送提示词编辑共用完整模式要求。模式调整专业观察重点；工具注册、Skill 按创作环节加载、当前阶段与操作授权继续使用原有逻辑。
+“全能创作／剧本创编／导演执导”的名称和角色重点由 [script-creation-mode.ts](../packages/shared/src/script/script-creation-mode.ts) 统一定义。原生 Function Calling、兼容对话和发送提示词编辑共用完整模式要求。模式调整专业观察重点；工具注册、Skill 按创作环节加载、当前阶段与操作授权继续使用原有逻辑。
 
 ## 提示词主导的内容
 
@@ -23,7 +23,7 @@
 | 人物／场景／道具信息图的基础生成提示词 | 程序模板＋提示词 | 模板包含设定、视图要求、参考用途、比例等；模型整理是单独任务 |
 | 图片和视频的实际媒体生成 | 提示词＋厂商 API 参数＋任务程序 | 提示词指导内容；真实比例、尺寸、时长、模式和引用由请求参数提交 |
 
-主要入口：[server.ts](../backend/src/server.ts)、[asset-prompt.ts](../backend/src/asset-prompt.ts)、[visual-profiles.ts](../backend/src/visual-profiles.ts)、[providers.ts](../backend/src/providers.ts)。
+主要入口：[app.ts](../backend/src/app.ts)、[asset-prompt.ts](../backend/src/modules/assets/asset-prompt.ts)、[visual-profiles.ts](../backend/src/modules/visuals/visual-profiles.ts)、[providers.ts](../backend/src/infrastructure/providers/providers.ts)。
 
 ## 提示词＋结构化输出的固定任务
 
@@ -32,7 +32,7 @@
 | 功能 | 模型返回 | 程序额外控制 |
 | --- | --- | --- |
 | 一次生成完整分场剧本 | `outline / characters / artifacts / scenes` | 保留可编辑正文；返回草稿，由现有确认流程写入 |
-| 兼容旧版分阶段生成 | 阶段文档和结构化场次 | 阶段、文档类型、集数和时长范围 |
+| 兼容旧版分阶段生成 | 本阶段所有完整文档和结构化场次 | 必需文档齐全且非空、无重复或越阶段类型、集数和时长范围 |
 | 采纳已有回复为分集正文 | 完整正文和分场 | 正文逐字保留，只整理场次；确认后保存 |
 | 从选定场次整理视觉设定草稿 | `profiles[]` | 人物／场景／道具类型与真实来源场次 |
 | 专项讨论后整理生图提示词 | `prompt_zh / prompt_en / notes` | 仅 `prompt_zh` 写入当前可编辑提示词和生成任务；英文与说明单独展示 |
@@ -44,7 +44,7 @@
 | 生成、视觉／分镜操作和保存语义核验 | `authorized / approved` | 核验最后一条创作者消息；执行仍检查范围、版本、当前草稿和明确 UI 事件 |
 | 自定义题材映射封面类型 | 类型与置信度 | 只匹配已有目录；精确名称直接映射，保留用户原始题材 |
 
-主要入口：[model-output.ts](../backend/src/model-output.ts)、[server.ts](../backend/src/server.ts)、[script-workflow.ts](../backend/src/script-workflow.ts)、[script-reply-classification.ts](../backend/src/script-reply-classification.ts)、[skill-routes.ts](../backend/src/skill-routes.ts)、[visual-profiles.ts](../backend/src/visual-profiles.ts)。
+主要入口：[model-output.ts](../backend/src/modules/generation/model-output.ts)、[app.ts](../backend/src/app.ts)、[script-workflow.ts](../backend/src/modules/script/script-workflow.ts)、[script-reply-classification.ts](../backend/src/modules/script/script-reply-classification.ts)、[skill-routes.ts](../backend/src/modules/skills/skill-routes.ts)、[visual-profiles.ts](../backend/src/modules/visuals/visual-profiles.ts)。
 
 ### 接口级结构约束如何启用
 
@@ -94,7 +94,7 @@
 | `propose_shot_plan` **新增** | 从指定场次提出新增分镜 | 提示词＋函数＋结构化镜头草稿；分别提供图片和视频提示词，新增镜头时长之和等于源场次时长 |
 | `propose_shot_patch` **新增** | 局部修订已有分镜内容与运镜 | 提示词＋函数＋结构化变更；保留镜头 ID、源场次和已有素材 |
 
-工具注册与公共草稿流程：[script-document-tools.ts](../backend/src/script-document-tools.ts)。新增视觉与分镜工具：[script-resource-tools.ts](../backend/src/script-resource-tools.ts)。专业评审：[script-document-review.ts](../backend/src/script-document-review.ts)。原生协议：[text-tools.ts](../backend/src/text-tools.ts)、[providers.ts](../backend/src/providers.ts)。
+工具注册与公共草稿流程：[script-document-tools.ts](../backend/src/modules/script/script-document-tools.ts)。新增视觉与分镜工具：[script-resource-tools.ts](../backend/src/modules/script/script-resource-tools.ts)。专业评审：[script-document-review.ts](../backend/src/modules/script/script-document-review.ts)。原生协议：[text-tools.ts](../backend/src/infrastructure/providers/text-tools.ts)、[providers.ts](../backend/src/infrastructure/providers/providers.ts)。
 
 ### 草稿、评审和交互的实际行为
 
@@ -153,7 +153,7 @@
 
 已确认信息图与镜头绑定也保存画风版本。项目画风变化后，原图保留为候选，需人工核对或重新生成，再确认使用；冻结的镜头引用另行刷新。手动上传或无记录的参考图显示核对提示。重新确认只记录人工选择，不会重绘图片；目前没有自动的像素级画风判定，也不保证厂商模型一定遵守提示词。
 
-实现：[visual-style.ts](../backend/src/visual-style.ts)、[project-visual-style.ts](../backend/src/project-visual-style.ts)、[visual-profiles.ts](../backend/src/visual-profiles.ts)、[ProjectCanvas.tsx](../web/src/ProjectCanvas.tsx)。
+实现：[visual-style.ts](../packages/shared/src/visuals/visual-style.ts)、[project-visual-style.ts](../backend/src/modules/visuals/project-visual-style.ts)、[visual-profiles.ts](../backend/src/modules/visuals/visual-profiles.ts)、[ProjectCanvas.tsx](../web/src/features/canvas/ProjectCanvas.tsx)。
 
 ## 验证与使用
 
@@ -178,3 +178,5 @@
 剧本主对话先加载其主技能；本轮其他环节的选择与版本被固定，模型不能自行切换。`read_visual_profiles` 和 `get_storyboard_context` 只读取资料，不会附带多个环节的技能正文。需要创作对应资源时通过 `load_creation_skills(stage)` 显式读取已选规则；新资源草稿入口检查相应规则是否已读取。纯绑定、资料浏览、加入画布与节点定位不额外加载规则。图片和视频的直接生成使用最终提示词，不自动启动技能整理。
 
 执行记录显示实际加载的主技能／辅助技能名称、版本和参考文件，表示规则提供给模型，并不保证模型逐条执行。提示词预览后切换技能，最终提交会替换预览中的旧技能前缀，保留任务正文编辑，避免重复加载旧规则。
+
+阶段入口使用明确的 `workflow.operation`：generate首次生成、revise局部修改、supplement补齐栏目、regenerate整阶段重新设计。未保存阶段须依序生成并确认保存；已保存阶段可以从对话下方按钮直接处理。整阶段重新设计读完原文后通过create_document_draft提交全部栏目，源版本与项目范围由程序校验；待确认保存时更新原文档ID，其他阶段及分集保留。已保存分集可选择局部修改或“重新设计第 N 集正文”。重新设计只处理所选集，完整读取原正文及分场，已有场次通过 `source_scene_id` 保留原 ID，可改写、重排和追加，不删除旧场次或改动其他集。原文版本与场次快照保护草稿编辑和确认保存，镜头与素材关联保留；JSON 与原生工具路径统一使用持久化版本草稿。

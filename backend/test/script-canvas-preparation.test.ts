@@ -4,14 +4,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import Fastify from 'fastify'
-import type { ScriptScene, ScriptArtifact } from '../src/db.js'
+import type { ScriptScene, ScriptArtifact } from '../src/infrastructure/database/db.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'script-canvas-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { buildApp } = await import('../src/server.js')
-const { all, db, now, one, run } = await import('../src/db.js')
-const { registerScriptCanvasRoutes } = await import('../src/script-canvas-preparation.js')
-const { installSkillBundle, configureSkill, removeInstalledSkill, setSkillDefault } = await import('../src/skills.js')
+const { buildApp } = await import('../src/app.js')
+const { all, db, now, one, run } = await import('../src/infrastructure/database/db.js')
+const { registerScriptCanvasRoutes } = await import('../src/modules/canvas/script-canvas-preparation.js')
+const { installSkillBundle, configureSkill, removeInstalledSkill, setSkillDefault } = await import('../src/modules/skills/skills.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 async function call(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, payload?: unknown) {

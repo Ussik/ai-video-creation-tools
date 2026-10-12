@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { visibleEdgeMotion } from '../src/canvas-edge-motion'
+import { visibleEdgeMotion } from '../src/features/canvas/canvas-edge-motion'
 
 const viewport = { x: 0, y: 0, zoom: 1 }
 function position(transform: string) { return transform.match(/-?[\d.]+/g)!.map(Number) }

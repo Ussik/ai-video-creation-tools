@@ -3,7 +3,7 @@ import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import { act, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
-import { ScriptThemeWaterCanvas } from '../src/ScriptThemeWaterCanvas.tsx'
+import { ScriptThemeWaterCanvas } from '../src/features/script/ScriptThemeWaterCanvas.tsx'
 
 // Exercise the component's actual lifecycle and RAF loop without relying on a
 // GPU or wall-clock timers. The WebGL mock records the values used to draw each

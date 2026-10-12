@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { fixture, canvasNode, projectId } from './fixtures/final-cut'
-import { findShotCanvasTarget, shotCanvasNode } from '../src/canvas-shot-navigation'
+import { findShotCanvasTarget, shotCanvasNode } from '../src/features/canvas/canvas-shot-navigation'
 
 test('shot lookup excludes visual profiles and prioritizes video generation nodes', () => {
   const profile = canvasNode('profile', 's1'); profile.settings.visual_profile_id = 'profile'

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import type { Asset, Job, ProjectDetail, VisualProfile } from '../src/api'
-import { assetPresentations } from '../src/asset-presentation'
-import { filterLibraryAssets } from '../src/asset-library'
+import type { Asset, Job, ProjectDetail, VisualProfile } from '../src/shared/api/api'
+import { assetPresentations } from '../src/features/assets/asset-presentation'
+import { filterLibraryAssets } from '../src/features/assets/asset-library'
 
 const asset = (id: string, patch: Partial<Asset> = {}): Asset => ({ id, project_id: 'p', shot_id: null, kind: 'image',
   filename: 'f765def3-95b0-490e-ba85-f8cecc65e639.png', source: 'generated', model_id: null, prompt: null,

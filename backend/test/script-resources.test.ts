@@ -3,18 +3,18 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import type { Project, ScriptArtifact, ScriptScene } from '../src/db.js'
-import type { ScriptSnapshot } from '../src/script-document-tools.js'
-import type { VisualReferenceAsset, VisualReferenceSnapshot } from '../src/visual-reference-types.js'
+import type { Project, ScriptArtifact, ScriptScene } from '../src/infrastructure/database/db.js'
+import type { ScriptSnapshot } from '../src/modules/script/script-document-tools.js'
+import type { VisualReferenceAsset, VisualReferenceSnapshot } from '@video-studio/shared/visuals/visual-reference-types'
 
 const testData = await mkdtemp(join(tmpdir(), 'studio-resource-tools-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { buildApp } = await import('../src/server.js')
-const { db, all, one, run } = await import('../src/db.js')
-const { documentTools, getToolDraft, commitToolDraft, editToolDraft } = await import('../src/script-document-tools.js')
-const { directorStageContext } = await import('../src/script-workflow.js')
-const { documentHealth } = await import('../src/script-document-review.js')
-const { projectDocuments } = await import('../src/script-document-tools.js')
+const { buildApp } = await import('../src/app.js')
+const { db, all, one, run } = await import('../src/infrastructure/database/db.js')
+const { documentTools, getToolDraft, commitToolDraft, editToolDraft } = await import('../src/modules/script/script-document-tools.js')
+const { directorStageContext } = await import('../src/modules/script/script-workflow.js')
+const { documentHealth } = await import('../src/modules/script/script-document-review.js')
+const { projectDocuments } = await import('../src/modules/script/script-document-tools.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 async function call<T = any>(method: 'POST' | 'PUT' | 'PATCH' | 'GET' | 'DELETE', url: string, payload?: unknown): Promise<T> {
@@ -181,7 +181,7 @@ test('read decoding keeps persisted binding hashes and no-refresh director write
   await tools.execute('read_visual_profiles', { profile_ids: [profile.id, legacy.id] })
   const context = await tools.execute('get_storyboard_context', { shot_ids: [currentShot.id], limit: 10 }) as any
   const current = context.objects.find((object: any) => object.type === 'shot')
-  const { resourceVersion } = await import('../src/script-resource-tools.js')
+  const { resourceVersion } = await import('../src/modules/script/script-resource-tools.js')
   assert.equal(current.binding_version, resourceVersion([
     one('SELECT * FROM shots WHERE id=?', currentShot.id), storedBefore,
     all('SELECT * FROM visual_profiles WHERE project_id=? ORDER BY kind, name, variant, id', f.project.id),
@@ -298,7 +298,7 @@ test('native interaction provenance and structured professional reviews survive 
 })
 
 test('resource edits reject invalid indices and duplicate names and can remove a refreshed binding', async () => {
-  const { editResourceValues } = await import('../src/script-resource-tools.js')
+  const { editResourceValues } = await import('../src/modules/script/script-resource-tools.js')
   const change = { type: 'visual_binding' as const, id: 'shot', title: '镜头', target_type: 'shot' as const, base_version: 'v', original: [], value: [{ profile_id: 'profile', required: true }], refresh_profile_ids: ['profile'] }
   assert.deepEqual((editResourceValues([change], [{ index: 0, value: [] }])[0] as typeof change).refresh_profile_ids, [])
   assert.throws(() => editResourceValues([change], [{ index: 1, value: [] }]), /当前草稿对象/)

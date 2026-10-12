@@ -6,8 +6,8 @@ import { after, test } from 'node:test'
 
 const testData = await mkdtemp(join(tmpdir(), 'video-studio-asset-download-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { buildApp } = await import('../src/server.js')
-const { db, newId, now, run } = await import('../src/db.js')
+const { buildApp } = await import('../src/app.js')
+const { db, newId, now, run } = await import('../src/infrastructure/database/db.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 

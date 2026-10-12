@@ -9,9 +9,10 @@
     "preview": "vite preview --host 127.0.0.1",
     "check:ui": "node scripts/check-ui-components.mjs",
     "prebuild": "npm run check:ui",
-    "test": "node --import ../backend/node_modules/tsx/dist/loader.mjs --test test/*.test.ts test/*.test.tsx"
+    "test": "node --import tsx --test --test-concurrency=4 test/*.test.ts test/*.test.tsx"
   },
   "dependencies": {
+    "@video-studio/shared": "file:../packages/shared",
     "@mantine/core": "^9.6.3",
     "@mantine/dropzone": "^9.6.3",
     "@mantine/hooks": "^9.6.3",
@@ -28,6 +29,7 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "tsx": "^4.20.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.7.0",

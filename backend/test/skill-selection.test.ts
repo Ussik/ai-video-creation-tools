@@ -3,16 +3,16 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import type { ScriptArtifact, ScriptScene } from '../src/db.js'
+import type { ScriptArtifact, ScriptScene } from '../src/infrastructure/database/db.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'studio-primary-skills-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { buildApp } = await import('../src/server.js')
-const { db, all } = await import('../src/db.js')
-const { installSkillBundle, configureSkill, removeInstalledSkill, skillPolicy, skillContext, setSkillDefault, withSkillRules, applySkillRules } = await import('../src/skills.js')
-const { documentTools } = await import('../src/script-document-tools.js')
-const { directorStageContext } = await import('../src/script-workflow.js')
-const { analyzeVisualProfiles } = await import('../src/visual-profiles.js')
+const { buildApp } = await import('../src/app.js')
+const { db, all } = await import('../src/infrastructure/database/db.js')
+const { installSkillBundle, configureSkill, removeInstalledSkill, skillPolicy, skillContext, setSkillDefault, withSkillRules, applySkillRules } = await import('../src/modules/skills/skills.js')
+const { documentTools } = await import('../src/modules/script/script-document-tools.js')
+const { directorStageContext } = await import('../src/modules/script/script-workflow.js')
+const { analyzeVisualProfiles } = await import('../src/modules/visuals/visual-profiles.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 async function call(method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: string, payload?: object, status = 200) {

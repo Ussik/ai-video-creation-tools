@@ -4,15 +4,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import Fastify from 'fastify'
-import { mentionsSeedanceVersion, seedance2PromptGuidance } from '../src/seedance-prompt.js'
-import { seedance2VideoSettings } from '../src/seedance-video-settings.js'
+import { mentionsSeedanceVersion, seedance2PromptGuidance } from '../src/modules/generation/seedance-prompt.js'
+import { seedance2VideoSettings } from '@video-studio/shared/models/seedance-video-settings'
 
 const testData = await mkdtemp(join(tmpdir(), 'seedance-prompt-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { buildApp } = await import('../src/server.js')
-const { db, run, all } = await import('../src/db.js')
-const { registerSkillRoutes } = await import('../src/skill-routes.js')
-const { installSkillBundle, configureSkill, skillContext } = await import('../src/skills.js')
+const { buildApp } = await import('../src/app.js')
+const { db, run, all } = await import('../src/infrastructure/database/db.js')
+const { registerSkillRoutes } = await import('../src/modules/skills/skill-routes.js')
+const { installSkillBundle, configureSkill, skillContext } = await import('../src/modules/skills/skills.js')
 const app = buildApp(), refineApp = Fastify()
 let captured = '', calls = 0
 refineApp.setErrorHandler((error, _request, reply) => reply.code((error as { statusCode?: number }).statusCode || 422).send({ detail: String(error) }))

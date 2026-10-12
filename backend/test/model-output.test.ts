@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { z } from 'zod'
-import { applyOutputContract, generateStructuredOutput, outputContract, restoreOptionalNulls, strictJsonSchema } from '../src/model-output.js'
-import { streamText, type GenerationModel } from '../src/providers.js'
-import { textToolSession } from '../src/text-tools.js'
-import { workflowInstructions } from '../src/script-workflow.js'
+import { applyOutputContract, generateStructuredOutput, outputContract, restoreOptionalNulls, strictJsonSchema } from '../src/modules/generation/model-output.js'
+import { streamText, type GenerationModel } from '../src/infrastructure/providers/providers.js'
+import { textToolSession } from '../src/infrastructure/providers/text-tools.js'
+import { workflowInstructions } from '../src/modules/script/script-workflow.js'
 
 test('native workflow instructions keep creative requirements without JSON-only protocol', () => {
   const request = { stage: 'characters' as const, scope: 'project' as const, episode_number: 0 }
   const native = workflowInstructions(request, 'tools')
-  assert.match(native, /人物身份、目标、阻力/); assert.match(native, /create_document_draft/)
+  assert.match(native, /人物小传逐人列出身份[\s\S]*目标、动机[\s\S]*阻力/); assert.match(native, /create_document_draft/)
   assert.doesNotMatch(native, /只输出一个合法 JSON 对象/)
   assert.match(workflowInstructions(request), /只输出一个合法 JSON 对象/)
 })

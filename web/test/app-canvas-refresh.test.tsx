@@ -4,8 +4,8 @@ import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
-import type { ProjectDetail } from '../src/api'
-import type { CanvasGraph, CanvasNode } from '../src/ProjectCanvas'
+import type { ProjectDetail } from '../src/shared/api/api'
+import type { CanvasGraph, CanvasNode } from '../src/features/canvas/ProjectCanvas'
 import { chooseCombobox } from './component-controls'
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
@@ -58,7 +58,7 @@ Object.assign(dom.window, { ResizeObserver: TestResizeObserver, DOMMatrixReadOnl
   constructor(transform: string) { this.m22 = Number(/scale\(([-\d.]+)\)/.exec(transform)?.[1] || 1) }
 } })
 const { createRoot } = await import('react-dom/client')
-const { default: App } = await import('../src/App')
+const { default: App } = await import('../src/app/App')
 after(() => dom.window.close())
 
 const timestamp = '2026-10-09T00:00:00Z'

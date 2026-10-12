@@ -3,13 +3,13 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import { parseThemeVisuals, themeVisualPrompt } from '../src/script-theme-visuals.js'
-import { scriptThemeCategories } from '../src/script-theme-catalog.js'
+import { parseThemeVisuals, themeVisualPrompt } from '../src/modules/script/script-theme-visuals.js'
+import { scriptThemeCategories } from '@video-studio/shared/script/script-theme-catalog'
 
 const dataDir = await mkdtemp(join(tmpdir(), 'studio-theme-'))
 process.env.VIDEO_STUDIO_DATA_DIR = dataDir
-const { buildApp } = await import('../src/server.js')
-const { db } = await import('../src/db.js')
+const { buildApp } = await import('../src/app.js')
+const { db } = await import('../src/infrastructure/database/db.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(dataDir, { recursive: true, force: true }) })
 const match = (primary: string | null, fusion: string | null, confidence = .95) => JSON.stringify({

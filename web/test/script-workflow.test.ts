@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { artifactKey, workflowInstruction, workflowRequestForStage, workflowStages, workflowProgress } from '../src/script-workflow.ts'
+import { artifactKey, workflowInstruction, workflowRequestForStage, workflowStages, workflowProgress } from '../src/features/script/script-workflow.ts'
 
 test('episode document keys keep separate episodes and project-level outlines distinct', () => {
   const keys = [1, 2, 20].map(episode_number => artifactKey({ artifact_type: 'episode_script', episode_number }))
@@ -27,6 +27,17 @@ test('all workflow buttons preserve concrete decisions delegated to the model an
     assert.match(instruction, /不再将这些设定标为待定/)
     assert.match(instruction, /其他尚未确定且未授权模型决定的设定标为待定/)
   }
+})
+
+test('episode redesign keeps the selected episode and requests complete prose, scenes and stable source IDs', () => {
+  const request = workflowRequestForStage('episode', 3, 120, 'regenerate')
+  assert.deepEqual(request, { stage: 'episode', scope: 'episode', episode_number: 3, target_duration: 120, operation: 'regenerate' })
+  const instruction = workflowInstruction(request, '重新设计第 3 集正文')
+  assert.match(instruction, /读完本集已保存正文和全部分场/)
+  assert.match(instruction, /完整正文及对应分场草稿/)
+  assert.match(instruction, /source_scene_id/)
+  assert.match(instruction, /仅处理第 3 集正文/)
+  assert.match(instruction, /不改动其他集/)
 })
 
 

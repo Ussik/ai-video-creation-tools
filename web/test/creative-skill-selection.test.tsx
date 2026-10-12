@@ -4,7 +4,7 @@ import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
-import { skillStageOptions, type SkillPolicy, type SkillStage } from '../src/skills-api'
+import { skillStageOptions, type SkillPolicy, type SkillStage } from '../src/shared/api/skills-api'
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
 for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLElement', 'Element', 'ShadowRoot', 'Event', 'MouseEvent', 'MutationObserver']) Object.defineProperty(globalThis, key, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[key] })
@@ -13,9 +13,9 @@ Object.defineProperty(dom.window, 'matchMedia', { value: () => ({ matches: false
 Object.defineProperty(globalThis, 'ResizeObserver', { value: class { observe() {} unobserve() {} disconnect() {} } })
 dom.window.HTMLElement.prototype.scrollIntoView = () => {}
 const { createRoot } = await import('react-dom/client')
-const { default: Selector } = await import('../src/CreativeSkillSelector')
-const { default: Settings } = await import('../src/SkillDefaultSettings')
-const { useCreativeSkills } = await import('../src/useCreativeSkills')
+const { default: Selector } = await import('../src/features/skills/CreativeSkillSelector')
+const { default: Settings } = await import('../src/features/skills/SkillDefaultSettings')
+const { useCreativeSkills } = await import('../src/features/skills/useCreativeSkills')
 after(() => dom.window.close())
 const policies = (): SkillPolicy[] => skillStageOptions.map(({ value: stage, label }) => ({ stage, label, primary_id: `${stage}-a`, auxiliary_ids: [], source: 'global', warning: '',
   skills: ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map(name => ({ id: `${stage}-${name}`, name: `${stage}技能${name}`, description: '测试创作方法', revision: 'a'.repeat(40) })) }))

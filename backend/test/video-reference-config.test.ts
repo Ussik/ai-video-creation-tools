@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { supportsVideoMultiReference, videoReferenceConfigError, videoReferenceMediaError } from '../src/video-reference-config.js'
-import { applySeedance2VideoSettings, seedance2VideoSettings } from '../src/seedance-video-settings.js'
-import { synchronizeVideoReferencePrompt, visualGenerationPrompt } from '../src/visual-prompt.js'
+import { supportsVideoMultiReference, videoReferenceConfigError, videoReferenceMediaError } from '@video-studio/shared/media/video-reference-config'
+import { applySeedance2VideoSettings, seedance2VideoSettings } from '@video-studio/shared/models/seedance-video-settings'
+import { synchronizeVideoReferencePrompt, visualGenerationPrompt } from '@video-studio/shared/visuals/visual-prompt'
 
 test('multi-reference availability requires declared mode and consumed multi-image variables', () => {
   const settings = { supported_modes: ['text', 'reference'], request_template: { images: '{{images}}' } }

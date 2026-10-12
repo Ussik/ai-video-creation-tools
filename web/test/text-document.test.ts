@@ -3,7 +3,7 @@ import test from 'node:test'
 import type { JSONContent } from '@tiptap/core'
 import {
   normalizeTextDocument, plainTextDocument, resolveTextDocument, textDocumentText,
-} from '../src/text-document.ts'
+} from '../src/shared/lib/editor/text-document.ts'
 
 test('plain text preserves blank lines, whitespace, and a trailing newline', () => {
   for (const text of ['', '第一场', '第一场\n第二场', '\n第一场\n\n第二场\n', '  保留缩进  \n\n']) {

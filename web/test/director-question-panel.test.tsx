@@ -3,8 +3,8 @@ import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { JSDOM } from 'jsdom'
 import React, { act, useState } from 'react'
-import DirectorQuestionPanel, { restoreChoiceAnswer, choiceAnswerText, type ChoiceAnswer } from '../src/DirectorQuestionPanel'
-import { parseMessageChoices, type ParsedMessageChoices } from '../src/director-choices'
+import DirectorQuestionPanel, { restoreChoiceAnswer, choiceAnswerText, type ChoiceAnswer } from '../src/features/script/DirectorQuestionPanel'
+import { parseMessageChoices, type ParsedMessageChoices } from '../src/features/script/director-choices'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/' })
 for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'HTMLTextAreaElement', 'Event', 'KeyboardEvent', 'MouseEvent']) {

@@ -3,12 +3,12 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import { videoRatioOptions, videoResolutionOptions, videoRatios, videoResolutions } from '../src/video-parameters.js'
+import { videoRatioOptions, videoResolutionOptions, videoRatios, videoResolutions } from '@video-studio/shared/media/video-parameters'
 
 const testData = await mkdtemp(join(tmpdir(), 'video-generation-parameters-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { buildApp } = await import('../src/server.js')
-const { db } = await import('../src/db.js')
+const { buildApp } = await import('../src/app.js')
+const { db } = await import('../src/infrastructure/database/db.js')
 const app = buildApp()
 
 after(async () => {

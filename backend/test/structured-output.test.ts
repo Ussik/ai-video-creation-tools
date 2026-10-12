@@ -3,7 +3,7 @@ import { test } from 'node:test'
 
 import { z } from 'zod'
 
-import { parseStructuredOutput } from '../src/structured-output.js'
+import { parseStructuredOutput } from '../src/modules/generation/structured-output.js'
 
 const scriptSchema = z.object({
   outline: z.string().min(1),

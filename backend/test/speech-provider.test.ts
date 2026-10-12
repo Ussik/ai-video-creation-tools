@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { maxSpeechResponseBytes, speechRequestTimeoutMs, synthesizeSpeech } from '../src/speech-provider.js'
+import { maxSpeechResponseBytes, speechRequestTimeoutMs, synthesizeSpeech } from '../src/infrastructure/providers/speech-provider.js'
 
 const input = { api_key: 'secret-for-speech-test', text: '你好，晚安。', speaker: 'zh_female_vv_uranus_bigtts' }
 const encode = (message: Record<string, unknown>) => new TextEncoder().encode(`${JSON.stringify(message)}\n`)

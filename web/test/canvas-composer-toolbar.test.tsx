@@ -59,7 +59,7 @@ class TestResizeObserver {
 Object.assign(globalThis, { ResizeObserver: TestResizeObserver })
 Object.assign(dom.window, { ResizeObserver: TestResizeObserver, DOMMatrixReadOnly: class { m22 = 1 } })
 const { createRoot } = await import('react-dom/client')
-const { default: CanvasComposerToolbar } = await import('../src/CanvasComposerToolbar')
+const { default: CanvasComposerToolbar } = await import('../src/features/canvas/CanvasComposerToolbar')
 after(() => dom.window.close())
 
 const initialNode: Node = { id: 'image', position: { x: 400, y: 100 }, width: 400, height: 250, data: {}, selected: true }

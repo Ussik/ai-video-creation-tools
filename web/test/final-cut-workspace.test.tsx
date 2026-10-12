@@ -56,7 +56,7 @@ Object.assign(dom.window, { ResizeObserver: TestResizeObserver, DOMMatrixReadOnl
   constructor(transform: string) { this.m22 = Number(/scale\(([-\d.]+)\)/.exec(transform)?.[1] || 1) }
 } })
 const { createRoot } = await import('react-dom/client')
-const { default: App } = await import('../src/App')
+const { default: App } = await import('../src/app/App')
 after(() => dom.window.close())
 
 async function settle() {

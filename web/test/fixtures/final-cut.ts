@@ -1,6 +1,6 @@
-import type { Asset, ProjectDetail } from '../../src/api'
-import type { CanvasGraph, CanvasNode } from '../../src/ProjectCanvas'
-import type { ProjectCanvasInfo } from '../../src/project-canvases'
+import type { Asset, ProjectDetail } from '../../src/shared/api/api'
+import type { CanvasGraph, CanvasNode } from '../../src/features/canvas/ProjectCanvas'
+import type { ProjectCanvasInfo } from '../../src/features/canvas/project-canvases'
 
 export const projectId = 'final-cut-fixture'
 const timestamp = '2026-10-11T00:00:00Z'

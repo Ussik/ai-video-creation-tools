@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { directorChatContext, directorChatMessageLimit, directorChatTextBudget } from '../src/director-chat-context'
-import { regenerationSource } from '../src/director-regeneration'
-import { referenceMessages } from '../src/director-references'
+import { directorChatContext, directorChatMessageLimit, directorChatTextBudget } from '../src/features/script/director-chat-context'
+import { regenerationSource } from '../src/features/script/director-regeneration'
+import { referenceMessages } from '../src/features/script/director-references'
 
 const bytes = (messages: Array<{ text: string }>) => messages.reduce((total, message) => total + new TextEncoder().encode(message.text).length, 0)
 

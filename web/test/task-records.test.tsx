@@ -4,7 +4,7 @@ import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
-import type { Asset, Job, Model, ProjectDetail, Provider } from '../src/api'
+import type { Asset, Job, Model, ProjectDetail, Provider } from '../src/shared/api/api'
 import { chooseCombobox } from './component-controls'
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
@@ -18,7 +18,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, getComputedStyle: do
 Object.defineProperty(dom.window, 'matchMedia', { value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) })
 dom.window.HTMLElement.prototype.scrollIntoView = () => {}
 const { createRoot } = await import('react-dom/client')
-const { default: TaskRecords } = await import('../src/TaskRecords')
+const { default: TaskRecords } = await import('../src/features/jobs/TaskRecords')
 after(() => dom.window.close())
 
 const timestamp = '2026-10-11T10:00:00Z'

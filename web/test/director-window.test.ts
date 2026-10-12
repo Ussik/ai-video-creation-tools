@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { clampDirectorWindow, defaultDirectorWindow, shouldSendDirectorMessage } from '../src/director-window'
+import { clampDirectorWindow, defaultDirectorWindow, shouldSendDirectorMessage } from '../src/features/script/director-window'
 
 test('dragging and resizing keep the full director window reachable', () => {
   assert.deepEqual(clampDirectorWindow({ x: 1600, y: -50, width: 900, height: 1000 }, { width: 1500, height: 800 }),

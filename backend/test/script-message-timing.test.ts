@@ -16,8 +16,8 @@ legacy.exec(`CREATE TABLE script_messages (
 legacy.prepare('INSERT INTO script_messages VALUES (?, ?, ?, ?, ?, ?)')
   .run('legacy-message', 'legacy-conversation', 0, 'assistant', '原有对话正文', '2026-10-01T00:00:00.000Z')
 legacy.close()
-const { buildApp } = await import('../src/server.js')
-const { db } = await import('../src/db.js')
+const { buildApp } = await import('../src/app.js')
+const { db } = await import('../src/infrastructure/database/db.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 

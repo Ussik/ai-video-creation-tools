@@ -4,7 +4,7 @@
 
 ## 视觉系统
 
-`web/src/theme.css` 是全局颜色 token 的来源；`theme.ts` 配置 Mantine 字体、尺寸、组件默认值及语义色。工作区、画布和挂载到 body 的 Portal 使用相同 token。既有 workspace、canvas-chrome、select、creation 变量只是这些 token 的别名。
+`web/src/styles/theme.css` 是全局颜色 token 的来源；`theme.ts` 配置 Mantine 字体、尺寸、组件默认值及语义色。工作区、画布和挂载到 body 的 Portal 使用相同 token。既有 workspace、canvas-chrome、select、creation 变量只是这些 token 的别名。
 
 | 用途 | Token | 当前值 |
 | --- | --- | --- |

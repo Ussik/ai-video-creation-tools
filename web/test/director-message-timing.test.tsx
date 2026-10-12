@@ -2,7 +2,7 @@ import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
-import DirectorMessageTiming, { finishMessageTiming, formatProcessingDuration, type MessageTiming } from '../src/DirectorMessageTiming'
+import DirectorMessageTiming, { finishMessageTiming, formatProcessingDuration, type MessageTiming } from '../src/features/script/DirectorMessageTiming'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/' })
 for (const key of ['window', 'document', 'navigator', 'HTMLElement']) {

@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import { act, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
-import { useThemeVisuals } from '../src/useThemeVisuals.ts'
+import { useThemeVisuals } from '../src/features/script/useThemeVisuals.ts'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>')
 for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'Element']) Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key as keyof Window] })

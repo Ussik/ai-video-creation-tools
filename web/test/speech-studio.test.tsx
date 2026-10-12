@@ -14,7 +14,7 @@ Object.defineProperty(dom.window.document, 'fonts', { value: new dom.window.Even
 Object.defineProperty(globalThis, 'ResizeObserver', { value: class { observe() {} unobserve() {} disconnect() {} } })
 dom.window.HTMLElement.prototype.scrollTo = () => {}
 dom.window.HTMLElement.prototype.scrollIntoView = () => {}
-const { default: SpeechStudio } = await import('../src/SpeechStudio')
+const { default: SpeechStudio } = await import('../src/features/speech/SpeechStudio')
 const { createRoot } = await import('react-dom/client')
 after(() => dom.window.close())
 

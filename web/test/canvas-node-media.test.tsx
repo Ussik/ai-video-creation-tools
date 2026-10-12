@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
-import type { Asset } from '../src/api'
+import type { Asset } from '../src/shared/api/api'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
 for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'Element', 'Event']) {
@@ -25,7 +25,7 @@ class TestIntersectionObserver {
 }
 Object.assign(globalThis, { IntersectionObserver: TestIntersectionObserver })
 const { createRoot } = await import('react-dom/client')
-const { default: CanvasNodeMedia } = await import('../src/CanvasNodeMedia')
+const { default: CanvasNodeMedia } = await import('../src/features/canvas/CanvasNodeMedia')
 after(() => dom.window.close())
 const video = { id: 'video', kind: 'video', url: '/api/assets/video/file', filename: '镜头.mp4' } as Asset
 const image = { id: 'image', kind: 'image', url: '/api/assets/image/file', filename: '参考.png' } as Asset

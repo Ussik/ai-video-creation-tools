@@ -3,11 +3,12 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
+import { scriptStageArtifacts, scriptArtifactLabels, type ScriptStage } from '@video-studio/shared/script/script-stage-content'
 
 const testData = await mkdtemp(join(tmpdir(), 'studio-intent-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { buildApp } = await import('../src/server.js')
-const { db } = await import('../src/db.js')
+const { buildApp } = await import('../src/app.js')
+const { db } = await import('../src/infrastructure/database/db.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 
@@ -24,6 +25,9 @@ async function fixture() {
   const project = await call<{ id: string }>('POST', '/api/projects', { name: '分集意图测试' })
   return { project, model }
 }
+async function saveProjectStages(projectId: string, stages = ['outline', 'characters', 'locations', 'props']) {
+  for (const stage of stages) await call('PUT', `/api/projects/${projectId}/script/director/draft`, { stage, artifacts: [{ artifact_type: stage, title: stage, content: `已保存${stage}资料` }] })
+}
 const episode = { artifacts: [{ artifact_type: 'episode_script', title: '第1集', content: '完整剧本文字' }], scenes: [
   { heading: '雨夜门厅', location: '旅馆', characters: '林', action: '林接起电话', dialogue: '别让他们走', duration: 10 },
 ] }
@@ -37,7 +41,7 @@ test('project generation after episode one ignores stale episode state, reads al
     { artifact_type: 'episode_script', episode_number: 1, title: '已保存第一集', content: '第一集确认事实', status: 'ready' },
     { artifact_type: 'episode_script', episode_number: 5, title: '已保存第五集', content: '远集标记：第五集已确认事实', status: 'ready' },
   ] })
-  const before = (await call<{ script: { scenes: unknown[]; artifacts: Array<{ artifact_type: string; episode_number: number }> } }>('GET', `/api/projects/${project.id}`)).script
+  let before = (await call<{ script: { scenes: unknown[]; artifacts: Array<{ artifact_type: string; episode_number: number }> } }>('GET', `/api/projects/${project.id}`)).script
   const originalFetch = globalThis.fetch
   let selectedStage = 'outline'
   globalThis.fetch = async (_url, init) => {
@@ -53,12 +57,14 @@ test('project generation after episode one ignores stale episode state, reads al
       assert.ok(prompt.includes('远集标记：第五集已确认事实'), 'project tasks see saved episodes beyond the selected and previous episode')
       assert.ok(prompt.includes(`"task_scope":{"stage":"${selectedStage}","scope":"project","episode_number":0}`))
       assert.doesNotMatch(prompt, /只写第 2 集|本集总时长目标/)
-      content = { artifacts: [{ artifact_type: selectedStage, title: `全剧${selectedStage}`, content: '全剧确认资料' }], scenes: [] }
+      content = { artifacts: scriptStageArtifacts[selectedStage as ScriptStage].map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '全剧确认资料' })), scenes: [] }
     }
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }), { headers: { 'Content-Type': 'application/json' } })
   }
   t.after(() => { globalThis.fetch = originalFetch })
   for (const stage of ['outline', 'characters', 'locations', 'props']) {
+    await saveProjectStages(project.id, ['outline', 'characters', 'locations', 'props'].slice(0, ['outline', 'characters', 'locations', 'props'].indexOf(stage)))
+    before = (await call<{ script: typeof before }>('GET', `/api/projects/${project.id}`)).script
     selectedStage = stage
     for (const suffix of ['', '/stream']) {
       const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat${suffix}`, payload: {
@@ -75,7 +81,7 @@ test('project generation after episode one ignores stale episode state, reads al
       if (stage === 'props' && suffix === '/stream') {
         const saved = await call<typeof before>('PUT', `/api/projects/${project.id}/script/director/draft`, result.draft)
         assert.deepEqual(saved.scenes, before.scenes)
-        assert.deepEqual(saved.artifacts.filter(item => item.episode_number > 0), before.artifacts)
+        assert.deepEqual(saved.artifacts.filter(item => item.episode_number > 0), before.artifacts.filter(item => item.episode_number > 0))
         assert.equal(saved.artifacts.find(item => item.artifact_type === 'props')?.episode_number, 0)
       }
     }
@@ -131,7 +137,7 @@ test('delegated decisions reach later outline and episode drafts through the int
   const { model, project } = await fixture()
   const question = '故事开场发生在哪里？'
   const decision = '我决定开场设在雨夜车站，因为封闭空间适合悬疑。'
-  const before = (await call<{ script: unknown }>('GET', `/api/projects/${project.id}`)).script
+  let before = (await call<{ script: unknown }>('GET', `/api/projects/${project.id}`)).script
   const originalFetch = globalThis.fetch
   t.after(() => { globalThis.fetch = originalFetch })
   let stage = 'outline'
@@ -153,7 +159,7 @@ test('delegated decisions reach later outline and episode drafts through the int
       assert.match(prompt, /创作者明确授权模型决定后已经作出的具体设定应沿用，不标为待定/)
       assert.match(prompt, /其他未知且未授权模型决定的设定标为待定/)
       assert.doesNotMatch(prompt, /未选方案：古代山寨/)
-      content = stage === 'episode' ? episode : { artifacts: [{ artifact_type: 'outline', title: '故事大纲', content: '雨夜车站开场。' }], scenes: [] }
+      content = stage === 'episode' ? episode : { artifacts: scriptStageArtifacts.outline.map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '雨夜车站开场。' })), scenes: [] }
     } else {
       assert.match(prompt, /明确授权你决定该项/)
       content = decision
@@ -172,7 +178,9 @@ test('delegated decisions reach later outline and episode drafts through the int
     assert.equal(delegated.reply, decision)
     assert.equal(delegated.draft, undefined)
     for (stage of ['outline', 'episode']) {
-      const generated = await request({ model_id: model.id, mode: 'script', workflow: { stage, episode_number: stage === 'episode' ? 1 : 0 },
+      if (stage === 'episode') await saveProjectStages(project.id)
+      before = (await call<{ script: unknown }>('GET', `/api/projects/${project.id}`)).script
+      const generated = await request({ model_id: model.id, mode: 'script', workflow: { stage, episode_number: stage === 'episode' ? 1 : 0, ...(stage === 'outline' && suffix ? { operation: 'regenerate' } : {}) },
         messages: [...messages, { role: 'assistant', text: delegated.reply }, { role: 'user', text: stage === 'episode' ? '开始写第一集' : '生成全剧大纲' }] })
       assert.equal(generated.draft.stage, stage)
       assert.deepEqual((await call<{ script: unknown }>('GET', `/api/projects/${project.id}`)).script, before)
@@ -258,6 +266,7 @@ test('valid long text with full references is not rejected by the default transp
 // control execution, and that the resulting drafts remain reviewable and scoped.
 test('model intent routes colloquial requests, confirmed settings and selected episode into isolated drafting', async t => {
   const { model, project } = await fixture()
+  await saveProjectStages(project.id)
   const prompts: string[] = []
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (_url, init) => {
@@ -286,7 +295,7 @@ test('model intent routes colloquial requests, confirmed settings and selected e
   assert.match(prompts[1]!, /本次创作要求/)
   const unchanged = await call<{ script: { scenes: unknown[]; artifacts?: unknown[] } }>('GET', `/api/projects/${project.id}`)
   assert.equal(unchanged.script.scenes.length, 0)
-  assert.equal(unchanged.script.artifacts?.length || 0, 0)
+  assert.equal(unchanged.script.artifacts?.length || 0, 4)
 })
 
 test('negation, discussion and ambiguous continuation respect model decisions without document generation', async t => {
@@ -378,6 +387,7 @@ test('stream routing announces document mode before chunks and returns a structu
 
 test('natural-language adoption uses the model-selected assistant message and rejects a user message reference', async t => {
   const { model, project } = await fixture()
+  await saveProjectStages(project.id)
   const source = '第一集正文：林推开车站门，旧电话响起。'
   let sourceIndex = 0
   const originalFetch = globalThis.fetch
@@ -401,6 +411,7 @@ test('natural-language adoption uses the model-selected assistant message and re
 
 test('explicit workflow selections retain confirmed conversational context without trusting model target changes', async t => {
   const { model, project } = await fixture()
+  await saveProjectStages(project.id)
   let draftingPrompt = ''
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (_url, init) => {

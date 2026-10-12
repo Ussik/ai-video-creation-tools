@@ -4,7 +4,7 @@ import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
-import type { Model, Provider, ProjectDetail, ScriptCanvasResult } from '../src/api'
+import type { Model, Provider, ProjectDetail, ScriptCanvasResult } from '../src/shared/api/api'
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
 for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLElement', 'Element', 'ShadowRoot', 'Event', 'MouseEvent']) Object.defineProperty(globalThis, key, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[key] })
@@ -14,7 +14,7 @@ Object.defineProperty(globalThis, 'ResizeObserver', { value: class { observe() {
 Object.defineProperty(dom.window.document, 'fonts', { value: new dom.window.EventTarget() })
 dom.window.HTMLElement.prototype.scrollTo = () => {}
 dom.window.HTMLElement.prototype.scrollIntoView = () => {}
-const { default: ScriptDirectorPanel } = await import('../src/ScriptDirectorPanel')
+const { default: ScriptDirectorPanel } = await import('../src/features/script/ScriptDirectorPanel')
 const { createRoot } = await import('react-dom/client')
 after(() => dom.window.close())
 const scene = { id: 'scene', episode_number: 1, heading: '车站', duration: 5, characters: '林晚', action: '等车' }

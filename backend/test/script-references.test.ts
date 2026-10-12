@@ -3,12 +3,13 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import { referenceDocuments, decodeReferenceDocuments, referenceContext } from '../src/script-references.js'
+import { scriptStageArtifacts, scriptArtifactLabels } from '@video-studio/shared/script/script-stage-content'
+import { referenceDocuments, decodeReferenceDocuments, referenceContext } from '../src/modules/script/script-references.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'studio-references-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { buildApp } = await import('../src/server.js')
-const { db } = await import('../src/db.js')
+const { buildApp } = await import('../src/app.js')
+const { db } = await import('../src/infrastructure/database/db.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 const document = { key: 'episode_script:1', title: '第1集测试文档', artifact_type: 'episode_script' as const, episode_number: 1, content: '测试剧情\n'.repeat(2000) + '结尾的关键事实' }
@@ -31,6 +32,14 @@ test('reference schemas reject duplicates and oversize bodies and tolerate old d
   assert.deepEqual(decodeReferenceDocuments(undefined), [])
   assert.deepEqual(decodeReferenceDocuments('invalid'), [])
   assert.ok(referenceContext([{ role: 'user', text: '分析结尾', reference_documents: [document] }]).includes('结尾的关键事实'))
+})
+
+test('all design subdocuments pass reference validation and decoding without losing their type or content', () => {
+  for (const type of [...scriptStageArtifacts.locations, ...scriptStageArtifacts.props]) {
+    const reference = { ...document, key: `${type}:0`, artifact_type: type, title: scriptArtifactLabels[type], episode_number: 0 }
+    assert.deepEqual(referenceDocuments.parse([reference]), [reference])
+    assert.deepEqual(decodeReferenceDocuments(JSON.stringify([reference])), [reference])
+  }
 })
 
 test('intent sees reference metadata while the writer receives the full snapshot as data', async t => {
@@ -62,7 +71,7 @@ test('intent sees reference metadata while the writer receives the full snapshot
     const intent = prompt.includes('本次独立调用只理解创作者意图')
     if (!intent) assert.ok(prompt.includes('结尾的关键事实'), 'workflow writer must receive the full reference too')
     const content = intent ? { action: 'draft', operation: 'create', workflow: { stage: 'outline', episode_number: 1 }, creative_brief: '根据引用资料调整结尾', settings_patch: {} }
-      : { artifacts: [{ artifact_type: 'outline', title: '修改后的故事大纲', content: '保留关键事实' }], scenes: [] }
+      : { artifacts: scriptStageArtifacts.outline.map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '保留关键事实' })), scenes: [] }
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }), { headers: { 'Content-Type': 'application/json' } })
   }
   const draft = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload: { model_id: model.id, mode: 'script', workflow: { stage: 'outline', episode_number: 1 }, messages: [{ role: 'user', text: '根据引用资料调整结尾', reference_documents: [document] }] } })

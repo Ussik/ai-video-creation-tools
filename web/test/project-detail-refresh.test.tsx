@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act, StrictMode } from 'react'
-import type { ProjectDetail } from '../src/api'
-import { shareProjectSnapshot } from '../src/project-snapshot'
-import { useProjectDetailRefresh } from '../src/useProjectDetailRefresh'
+import type { ProjectDetail } from '../src/shared/api/api'
+import { shareProjectSnapshot } from '../src/features/projects/project-snapshot'
+import { useProjectDetailRefresh } from '../src/app/hooks/useProjectDetailRefresh'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/' })
 for (const key of ['window', 'document', 'navigator', 'HTMLElement']) {

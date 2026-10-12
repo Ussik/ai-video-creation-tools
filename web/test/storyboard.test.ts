@@ -1,8 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { storyboardContext, storyboardItems, storyboardPrompt, storyboardStatus } from '../src/storyboard'
-import type { CanvasGraph, CanvasNode } from '../src/ProjectCanvas'
-import type { Asset, Job, Model, ProjectDetail, ScriptArtifact, Shot } from '../src/api'
+import { storyboardContext, storyboardItems, storyboardPrompt, storyboardStatus } from '../src/features/storyboard/storyboard'
+import type { CanvasGraph, CanvasNode } from '../src/features/canvas/ProjectCanvas'
+import type { Asset, Job, Model, ProjectDetail, ScriptArtifact, Shot } from '../src/shared/api/api'
 
 const project = (patch: Partial<ProjectDetail> = {}): ProjectDetail => ({
   id: 'project', name: '借光的人', brief: '', assets: [], shots: [], jobs: [],

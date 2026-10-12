@@ -4,8 +4,8 @@ import { after, test, type TestContext } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
-import type { ProjectDetail, VisualProfile } from '../src/api'
-import type { CanvasGraph, CanvasNode, ProjectCanvasProps } from '../src/ProjectCanvas'
+import type { ProjectDetail, VisualProfile } from '../src/shared/api/api'
+import type { CanvasGraph, CanvasNode, ProjectCanvasProps } from '../src/features/canvas/ProjectCanvas'
 
 // Count real preview renders as well as DOM mutations: React can reconcile an
 // unchanged preview without changing its DOM while still repeating its work.
@@ -91,7 +91,7 @@ Object.assign(dom.window, {
   },
 })
 const { createRoot } = await import('react-dom/client')
-const { default: ProjectCanvas } = await import('../src/ProjectCanvas')
+const { default: ProjectCanvas } = await import('../src/features/canvas/ProjectCanvas')
 after(() => dom.window.close())
 
 const timestamp = '2026-10-09T00:00:00Z'

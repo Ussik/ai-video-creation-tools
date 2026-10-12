@@ -6,14 +6,14 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 
 import sharp from 'sharp'
-import { imagePreferencePrompt } from '../../web/src/canvas-model-parameters.js'
-import { rightApiImageSettings } from '../src/rightapi-image-settings.js'
-import { textRequestTimeoutMs } from '../src/script-stream-policy.js'
+import { imagePreferencePrompt } from '../../web/src/features/canvas/canvas-model-parameters.js'
+import { rightApiImageSettings } from '../src/infrastructure/providers/rightapi-image-settings.js'
+import { textRequestTimeoutMs } from '@video-studio/shared/script/script-stream-policy'
 
 const testData = await mkdtemp(join(tmpdir(), 'video-studio-providers-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { generate, streamText } = await import('../src/providers.js')
-const { render } = await import('../src/render.js')
+const { generate, streamText } = await import('../src/infrastructure/providers/providers.js')
+const { render } = await import('../src/infrastructure/media/render.js')
 
 after(async () => { await rm(testData, { recursive: true, force: true }) })
 

@@ -7,10 +7,10 @@ import Fastify from 'fastify'
 
 const testData = await mkdtemp(join(tmpdir(), 'studio-skills-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { buildApp } = await import('../src/server.js')
-const { db, all, run } = await import('../src/db.js')
-const { registerSkillRoutes } = await import('../src/skill-routes.js')
-const { installedSkills, installedSkillDetail, installSkillBundle, configureSkill, normalizeSkillRepo, parseSkillDocument, loadSkillBundle, searchSkillCatalog, skillContext, withSkillRules } = await import('../src/skills.js')
+const { buildApp } = await import('../src/app.js')
+const { db, all, run } = await import('../src/infrastructure/database/db.js')
+const { registerSkillRoutes } = await import('../src/modules/skills/skill-routes.js')
+const { installedSkills, installedSkillDetail, installSkillBundle, configureSkill, normalizeSkillRepo, parseSkillDocument, loadSkillBundle, searchSkillCatalog, skillContext, withSkillRules } = await import('../src/modules/skills/skills.js')
 const app = buildApp(), remoteApp = Fastify()
 const revisionA = 'a'.repeat(40), revisionB = 'b'.repeat(40)
 let currentRevision = revisionA, capturedPrompt = '', generated = 0

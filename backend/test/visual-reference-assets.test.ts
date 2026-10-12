@@ -4,12 +4,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import sharp from 'sharp'
-import type { VisualReferenceAsset, VisualReferenceSnapshot } from '../src/visual-reference-types.js'
+import type { VisualReferenceAsset, VisualReferenceSnapshot } from '@video-studio/shared/visuals/visual-reference-types'
 
 const testData = await mkdtemp(join(tmpdir(), 'visual-reference-assets-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { buildApp, startWorker } = await import('../src/server.js')
-const { all, db, mediaDir, now, one, run } = await import('../src/db.js')
+const { buildApp, startWorker } = await import('../src/app.js')
+const { all, db, mediaDir, now, one, run } = await import('../src/infrastructure/database/db.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 type Profile = { id: string; revision: number; board_asset_id: string | null; asset_task_id: string | null; reference_assets: VisualReferenceAsset[] }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { synchronizeVideoReferencePrompt, visualGenerationPrompt, type PromptVisualBinding } from '../src/visual-prompt.js'
-import type { VisualReferenceSnapshot } from '../src/visual-reference-types.js'
+import { synchronizeVideoReferencePrompt, visualGenerationPrompt, type PromptVisualBinding } from '@video-studio/shared/visuals/visual-prompt'
+import type { VisualReferenceSnapshot } from '@video-studio/shared/visuals/visual-reference-types'
 
 const reference = (asset_id: string, view: VisualReferenceSnapshot['view'], purpose: VisualReferenceSnapshot['purpose'], label: string): VisualReferenceSnapshot => ({
   id: `${asset_id}-${view}`, asset_id, view, purpose, label, revision: 1, style_version: 'anime',

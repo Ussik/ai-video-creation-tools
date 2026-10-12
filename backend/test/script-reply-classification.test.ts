@@ -7,9 +7,9 @@ import { after, test } from 'node:test'
 
 const testData = await mkdtemp(join(tmpdir(), 'studio-reply-classification-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { buildApp } = await import('../src/server.js')
-const { db } = await import('../src/db.js')
-const { replyClassificationVersion, parseReplyClassifications, replyClassificationPrompt } = await import('../src/script-reply-classification.js')
+const { buildApp } = await import('../src/app.js')
+const { db } = await import('../src/infrastructure/database/db.js')
+const { replyClassificationVersion, parseReplyClassifications, replyClassificationPrompt } = await import('../src/modules/script/script-reply-classification.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 

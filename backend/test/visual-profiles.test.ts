@@ -6,14 +6,14 @@ import { after, test } from 'node:test'
 import { createServer } from 'node:http'
 import sharp from 'sharp'
 import Fastify from 'fastify'
-import { rightApiImageSettings } from '../src/rightapi-image-settings.js'
-import { visualGenerationPrompt, type PromptVisualBinding } from '../src/visual-prompt.js'
+import { rightApiImageSettings } from '../src/infrastructure/providers/rightapi-image-settings.js'
+import { visualGenerationPrompt, type PromptVisualBinding } from '@video-studio/shared/visuals/visual-prompt'
 
 const testData = await mkdtemp(join(tmpdir(), 'visual-profiles-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { buildApp, startWorker } = await import('../src/server.js')
-const { all, db, initDb, now, one, run } = await import('../src/db.js')
-const { registerVisualProfileRoutes } = await import('../src/visual-profiles.js')
+const { buildApp, startWorker } = await import('../src/app.js')
+const { all, db, initDb, now, one, run } = await import('../src/infrastructure/database/db.js')
+const { registerVisualProfileRoutes } = await import('../src/modules/visuals/visual-profiles.js')
 type Profile = { id: string; revision: number; definition: string; board_asset_id: string | null; board_prompt: string; asset_task_id: string | null }
 type Binding = { profile_id: string; revision: number; definition: string; board_asset_id: string | null; required: boolean }
 type Visuals = { visual_profiles: Profile[]; shot_visual_bindings: Binding[]; scene_visual_bindings: Array<{ scene_id: string; profile_id: string }> }

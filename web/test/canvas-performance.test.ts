@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Edge, Node } from '@xyflow/react'
-import type { CanvasGraph, CanvasNode } from '../src/ProjectCanvas'
-import type { Shot } from '../src/api'
-import { canvasPromptIndex, canvasReferenceKey, indexedCanvasPrompt, reuseFlowEdge, reuseFlowNode, sameCanvasContent, shouldVirtualizeCanvas, updateCanvasGeometry } from '../src/canvas-performance'
+import type { CanvasGraph, CanvasNode } from '../src/features/canvas/ProjectCanvas'
+import type { Shot } from '../src/shared/api/api'
+import { canvasPromptIndex, canvasReferenceKey, indexedCanvasPrompt, reuseFlowEdge, reuseFlowNode, sameCanvasContent, shouldVirtualizeCanvas, updateCanvasGeometry } from '../src/features/canvas/canvas-performance'
 
 function node(id: string, patch: Partial<CanvasNode> = {}): CanvasNode {
   return { id, type: 'text', x: 0, y: 0, width: 420, height: 340, title: '', text: '', prompt: '',

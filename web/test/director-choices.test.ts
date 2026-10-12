@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { choiceTitle, parseMessageChoices } from '../src/director-choices'
+import { choiceTitle, parseMessageChoices } from '../src/features/script/director-choices'
 
 test('legacy choices retain complete explanations and derive short button titles', () => {
   const text = '天道悬疑：小宗门验尸弟子发现了埋在禁地的飞升者遗骸。他必须在师父飞升前查明真相。'

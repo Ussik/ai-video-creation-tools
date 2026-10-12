@@ -15,7 +15,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, getComputedStyle: do
   ResizeObserver: class { observe() {} unobserve() {} disconnect() {} } })
 Object.defineProperty(dom.window, 'matchMedia', { value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) })
 const { createRoot } = await import('react-dom/client')
-const { default: JobQueueControls } = await import('../src/JobQueueControls')
+const { default: JobQueueControls } = await import('../src/features/jobs/JobQueueControls')
 after(() => dom.window.close())
 const queue = (concurrency = 3) => ({ concurrency, max_concurrency: 10, running: 2, queued: 6 })
 async function mount() {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { workflowProgress, workflowGuidance } from '../src/script-workflow.js'
-import { workflowProgress as frontendProgress } from '../../web/src/script-workflow.ts'
+import { workflowProgress, workflowGuidance } from '../src/modules/script/script-workflow.js'
+import { workflowProgress as frontendProgress } from '../../web/src/features/script/script-workflow.ts'
 
 test('backend and frontend recommendations agree across saved, draft, out-of-order and gapped projects', () => {
   const globalArtifacts = ['outline', 'characters', 'locations', 'props'].map(artifact_type => ({ artifact_type, content: artifact_type, status: 'ready', episode_number: 0 }))
@@ -19,5 +19,5 @@ test('backend and frontend recommendations agree across saved, draft, out-of-ord
   assert.match(workflowGuidance(script), /推荐下一步：全剧场景设计/)
   assert.match(workflowGuidance(script), /已保存全剧资料：全剧故事大纲、全剧人物设定、全剧道具设计/)
   assert.match(workflowGuidance(script), /大纲更新不自动使人物\/场景\/道具失效/)
-  assert.match(workflowGuidance(script), /不阻止创作者明确跳到指定阶段/)
+  assert.match(workflowGuidance(script), /未保存阶段必须依次生成并确认保存/)
 })

@@ -8,8 +8,8 @@ import sharp from 'sharp'
 
 const testData = await mkdtemp(join(tmpdir(), 'video-studio-api-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { buildApp, startWorker } = await import('../src/server.js')
-const { one, run, initDb, db } = await import('../src/db.js')
+const { buildApp, startWorker } = await import('../src/app.js')
+const { one, run, initDb, db } = await import('../src/infrastructure/database/db.js')
 const app = buildApp()
 const stopWorker = startWorker()
 

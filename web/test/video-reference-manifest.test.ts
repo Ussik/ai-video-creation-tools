@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { videoReferenceManifest, visualBindingReferenceAssetIds, type VideoReferenceBinding } from '../../backend/src/video-reference-manifest'
-import type { VisualReferenceSnapshot } from '../../backend/src/visual-reference-types'
+import { videoReferenceManifest, visualBindingReferenceAssetIds, type VideoReferenceBinding } from '@video-studio/shared/media/video-reference-manifest'
+import type { VisualReferenceSnapshot } from '@video-studio/shared/visuals/visual-reference-types'
 
 const options = { mode: 'reference', visual_reference_mode: 'profiles', storyboard_reference_asset_id: 'shot' }
 const binding = (profile_id: string, kind: VideoReferenceBinding['kind'], board_asset_id: string | null, overrides: Partial<VideoReferenceBinding> = {}): VideoReferenceBinding => ({

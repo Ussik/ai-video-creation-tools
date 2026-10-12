@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import type { Asset } from '../src/api'
-import { filterLibraryAssets, libraryCollection, libraryEmptyText } from '../src/asset-library'
+import type { Asset } from '../src/shared/api/api'
+import { filterLibraryAssets, libraryCollection, libraryEmptyText } from '../src/features/assets/asset-library'
 
 const assets = [
   { id: 'draft', filename: 'Draft.PNG', kind: 'image', source: 'generated', saved: false, prompt: '雨夜', shot_id: 'shot', created_at: '2026-10-06T03:00:00Z' },

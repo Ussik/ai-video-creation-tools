@@ -5,10 +5,13 @@ import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { Editor, getSchema } from '@tiptap/core'
 import { MantineProvider } from '@mantine/core'
-import { scriptEditorExtensions } from '../src/script-editor-extensions'
-import { serializeScriptDocument } from '../src/script-rich-document'
-import { findScriptTextMatches, highlightScriptSearch, resolveScriptArtifactDocument, ScriptSearchHighlight, searchScriptDocuments } from '../src/script-document-search'
-import type { ProjectDetail } from '../src/api'
+import { scriptEditorExtensions } from '../src/features/script/script-editor-extensions'
+import { parseScriptDocument, serializeScriptDocument } from '../src/features/script/script-rich-document'
+import { textDocumentText } from '../src/shared/lib/editor/text-document'
+import { findScriptTextMatches, highlightScriptSearch, resolveScriptArtifactDocument, ScriptSearchHighlight, searchScriptDocuments } from '../src/features/script/script-document-search'
+import type { ProjectDetail } from '../src/shared/api/api'
+import type { DocumentSection } from '../src/features/script/ScriptEditor'
+import { scriptStageArtifacts, scriptArtifactLabels } from '@video-studio/shared/script/script-stage-content'
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
@@ -28,7 +31,7 @@ Object.defineProperty(dom.window.Range.prototype, 'getBoundingClientRect', { val
 Object.defineProperty(dom.window.Range.prototype, 'getClientRects', { value: () => [] })
 dom.window.HTMLElement.prototype.scrollTo = () => {}
 dom.window.HTMLElement.prototype.scrollIntoView = () => {}
-const { default: ScriptEditor } = await import('../src/ScriptEditor')
+const { default: ScriptEditor } = await import('../src/features/script/ScriptEditor')
 const { createRoot } = await import('react-dom/client')
 after(() => dom.window.close())
 
@@ -58,6 +61,24 @@ test('document index includes hidden documents and resolves current rich edits i
   assert.deepEqual(searchScriptDocuments(documents, '凛').map(match => match.section), ['outline', 'characters', 'episode-2'])
   assert.equal(searchScriptDocuments(documents, '新设定').length, 1)
   assert.equal(searchScriptDocuments(documents, '旧设定').length, 0)
+})
+
+test('title removal resolves both saved rich documents and current Markdown before calculating search positions', () => {
+  const rich = parseScriptDocument('# **概要设计**\n\n| 场所 | 行动 |\n| --- | --- |\n| 地下枢纽 | 凛在救援 |')
+  rich.content!.unshift({ type: 'paragraph' })
+  const original = JSON.stringify(rich)
+  for (const content of [textDocumentText(rich), serializeScriptDocument(rich)]) {
+    const body = resolveScriptArtifactDocument(content, rich, '概要设计')
+    assert.equal(body.content![0], rich.content![2], 'preserves the actual rich table')
+    const document = schema.nodeFromJSON(body)
+    document.check()
+    const [match] = findScriptTextMatches(document, '凛在救援')
+    assert.equal(document.textBetween(match.from, match.to), '凛在救援')
+    assert.deepEqual(findScriptTextMatches(document, '概要设计'), [])
+  }
+  const current = resolveScriptArtifactDocument('# 概要设计\n\n最新救援正文。', rich, '概要设计')
+  assert.equal(textDocumentText(current), '最新救援正文。', 'stale rich content cannot replace new Markdown')
+  assert.equal(JSON.stringify(rich), original)
 })
 
 test('search decorations preserve content, selection, update events and edit undo/redo', () => {
@@ -96,17 +117,113 @@ const artifacts = [
 ].map(item => ({ ...item, status: 'ready' }))
 const detail = { id: 'search-project', name: '搜索测试', brief: '', ratio: '9:16', script: { outline: '', characters: '', scenes: [], artifacts, generation_options: {} }, shots: [], jobs: [], assets: [] } as unknown as ProjectDetail
 
-async function mount() {
+async function mount(initialSection?: DocumentSection, projectDetail = detail) {
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container)
   const dirtyStates: boolean[] = []
-  await act(async () => root.render(<MantineProvider env="test"><ScriptEditor detail={detail} models={[]} providers={[]} onRefresh={async () => detail} onOpenModels={() => {}} onOpenCanvas={() => {}} onNotice={() => {}} onDirtyChange={dirty => dirtyStates.push(dirty)} /></MantineProvider>))
+  await act(async () => root.render(<MantineProvider env="test"><ScriptEditor detail={projectDetail} initialSection={initialSection} models={[]} providers={[]} onRefresh={async () => projectDetail} onOpenModels={() => {}} onOpenCanvas={() => {}} onNotice={() => {}} onDirtyChange={dirty => dirtyStates.push(dirty)} /></MantineProvider>))
   return { container, dirtyStates, destroy: async () => { await act(() => root.unmount()); container.remove() } }
 }
 function button(container: HTMLElement, label: string) {
   const result = [...container.querySelectorAll<HTMLButtonElement>('button')].find(node => node.getAttribute('aria-label') === label || node.textContent === label)
   assert.ok(result, label); return result
 }
+
+test('editor displays the model title once, searches its body and preserves content across editing and saving', async t => {
+  const title = '城市救援 · 概要设计'
+  const content = `# ${title}\n\n## 核心冲突\n\n凛在**地下**交通枢纽救援。`
+  const modelDetail = { ...detail, script: { ...detail.script, artifacts: detail.script.artifacts!.map(artifact => artifact.artifact_type === 'outline' ? { ...artifact, title, content } : artifact) } }
+  const view = await mount('outline', modelDetail)
+  try {
+    const section = view.container.querySelector('[data-script-section="outline"]')!
+    assert.equal(section.querySelector('.script-long-section-heading h2')?.textContent, title)
+    assert.equal(section.querySelectorAll('h1,h2,h3').length, 2)
+    const element = section.querySelector<HTMLElement>('[role="textbox"]')!
+    assert.equal(element.getAttribute('aria-label'), title)
+    assert.equal(element.querySelector('h2')?.textContent, '核心冲突')
+    assert.equal(element.querySelector('h1'), null)
+    await act(() => button(view.container, '全文搜索').click())
+    await fill(view.container, '地下交通')
+    assert.equal(view.container.querySelector('[role="status"]')?.textContent, '1 / 1')
+    assert.equal([...section.querySelectorAll('[data-script-search-active]')].map(node => node.textContent).join(''), '地下交通')
+    assert.equal(view.container.querySelector('.script-search-caption > span')?.textContent, `故事大纲 · ${title}`)
+    const editor = (element as HTMLElement & { editor: Editor }).editor
+    const [match] = findScriptTextMatches(editor.state.doc, '地下交通')
+    assert.equal(editor.state.doc.textBetween(match.from, match.to), '地下交通')
+    assert.equal(view.dirtyStates.some(Boolean), false)
+    assert.equal(modelDetail.script.artifacts![0].content, content, 'opening leaves saved Markdown intact')
+    let payload: ProjectDetail['script'] | undefined
+    t.mock.method(globalThis, 'fetch', async (_input: unknown, options?: RequestInit) => {
+      payload = JSON.parse(String(options?.body))
+      return Response.json({ ...modelDetail.script, ...payload })
+    })
+    await act(() => {
+      editor.commands.setTextSelection(editor.state.doc.content.size - 1)
+      editor.commands.insertContent('新增路线。')
+    })
+    assert.equal(view.dirtyStates.at(-1), true)
+    await act(() => button(view.container, '保存').click())
+    const savedArtifact = payload?.artifacts?.find(artifact => artifact.id === 'outline')
+    assert.ok(savedArtifact)
+    assert.equal(savedArtifact.title, title)
+    assert.match(savedArtifact.content, /^## 核心冲突[\s\S]*\*\*地下\*\*[\s\S]*新增路线。/)
+    assert.doesNotMatch(savedArtifact.content, /城市救援 · 概要设计/)
+    for (const original of modelDetail.script.artifacts!.filter(artifact => artifact.id !== 'outline')) {
+      assert.equal(payload?.artifacts?.find(artifact => artifact.id === original.id)?.content, original.content)
+    }
+    assert.equal(section.querySelectorAll('h1,h2,h3').length, 2)
+    assert.equal(view.dirtyStates.at(-1), false)
+  } finally { await view.destroy() }
+})
+
+test('editor groups and rendered chapters match generation stages without dirtying saved documents', async () => {
+  const view = await mount()
+  try {
+    for (const stage of ['outline', 'characters', 'locations', 'props'] as const) {
+      const group = view.container.querySelector(`[data-script-stage="${stage}"]`)!
+      const children = [...group.querySelectorAll('.script-document-nav-item')].map(node => node.textContent)
+      if (scriptStageArtifacts[stage].length > 1) assert.deepEqual(children, scriptStageArtifacts[stage].map(type => scriptArtifactLabels[type]))
+      await act(() => group.querySelector<HTMLButtonElement>('.script-document-nav-primary')!.click())
+      assert.deepEqual([...view.container.querySelectorAll('[data-script-section]')].map(node => (node as HTMLElement).dataset.scriptSection), [...scriptStageArtifacts[stage]])
+      assert.ok(group.querySelector('.script-document-nav-primary.is-active'))
+    }
+    assert.doesNotMatch(view.container.textContent!, /人物清单|伏笔预设/)
+    assert.equal(view.dirtyStates.some(Boolean), false)
+  } finally { await view.destroy() }
+})
+
+test('relationship deep links and search stay in the character document with both chapters available', async () => {
+  const view = await mount('relationships')
+  try {
+    assert.equal(view.container.querySelector('h1')?.textContent, '人物设定')
+    assert.ok(view.container.querySelector('[data-script-section="characters"]'))
+    assert.ok(view.container.querySelector('[data-script-section="relationships"] table'))
+    assert.equal(view.container.querySelector('[data-script-section="outline"]'), null)
+    assert.ok(view.container.querySelector('[data-script-stage="characters"] .script-document-nav-primary.is-active'))
+    await act(() => button(view.container, '故事大纲').click())
+    await act(() => button(view.container, '全文搜索').click())
+    await fill(view.container, '奶奶')
+    assert.equal(view.container.querySelector('.script-search-caption > span')?.textContent, '人物设定 · 人物关系')
+    assert.ok(view.container.querySelector('[data-script-section="relationships"] [data-script-search-active]'))
+    assert.ok(view.container.querySelector('[data-script-stage="characters"] .script-document-nav-item.is-active'))
+    assert.equal(view.dirtyStates.some(Boolean), false)
+  } finally { await view.destroy() }
+})
+
+test('legacy unnumbered screenplay remains readable and searchable alongside numbered episodes', async () => {
+  const legacy = { ...detail, script: { ...detail.script, artifacts: [...detail.script.artifacts!, { id: 'legacy-script', project_id: detail.id, artifact_type: 'episode_script' as const, title: '旧版完整正文', content: '旧稿独有的桥段。', position: 8, status: 'ready' as const }] } }
+  const view = await mount('episode_script', legacy)
+  try {
+    assert.equal(view.container.querySelector('h1')?.textContent, '旧版完整正文')
+    assert.match(view.container.querySelector('[data-script-section="episode_script"]')!.textContent!, /旧稿独有/)
+    await act(() => button(view.container, '第2集').click())
+    assert.ok(view.container.querySelector('[data-script-section="episode-2"]'))
+    await act(() => button(view.container, '全文搜索').click())
+    await fill(view.container, '旧稿独有')
+    assert.ok(view.container.querySelector('[data-script-section="episode_script"] [data-script-search-active]'))
+    assert.equal(view.dirtyStates.some(Boolean), false)
+  } finally { await view.destroy() }
+})
 async function fill(container: HTMLElement, value: string) {
   const input = container.querySelector<HTMLInputElement>('input[aria-label="搜索全部剧本文档"]')!
   await act(() => {
@@ -128,7 +245,7 @@ test('page search switches across all documents, counts, wraps and closes withou
     assert.equal(view.container.querySelector('[data-script-search-active]')?.textContent, '凛')
     await key('Enter')
     assert.ok(view.container.querySelector('[data-script-section="characters"] [data-script-search-active]'))
-    assert.equal(view.container.querySelector('.script-search-caption > span')?.textContent, '人物小传')
+    assert.equal(view.container.querySelector('.script-search-caption > span')?.textContent, '人物设定 · 全剧人物')
     await act(() => button(view.container, '下一个搜索结果').click())
     assert.ok(view.container.querySelector('[data-script-section="props"] [data-script-search-active]'))
     await key('Enter')
@@ -198,7 +315,7 @@ test('table searches stay inside cells and use the same positions as the script 
 
 test('script page mounts tables without dirtying content and saves edited cells as reloadable Markdown', async () => {
   const originalFetch = globalThis.fetch
-  let payload: { artifacts: Array<{ artifact_type: string; content: string; document?: unknown }> } | undefined
+  let payload: { artifacts: Array<{ id?: string; artifact_type: string; episode_number?: number; title: string; content: string; document?: unknown }>; scenes: unknown[] } | undefined
   globalThis.fetch = async (input, options) => {
     if (String(input).endsWith('/script/commit')) {
       payload = JSON.parse(String(options?.body))
@@ -222,6 +339,16 @@ test('script page mounts tables without dirtying content and saves edited cells 
     assert.equal(view.dirtyStates.at(-1), true)
     await act(() => button(view.container, '保存').click())
     const artifact = payload?.artifacts.find(item => item.artifact_type === 'relationships')
+    assert.equal(artifact?.id, 'relationships')
+    assert.equal(artifact?.title, '人物关系')
+    for (const original of artifacts.filter(item => item.artifact_type !== 'relationships')) {
+      const saved = payload?.artifacts.find(item => item.id === original.id)
+      assert.ok(saved, `retains ${original.id}`)
+      assert.equal(saved.content, original.content)
+      assert.equal(saved.title, original.title)
+      assert.equal(saved.episode_number, original.episode_number)
+    }
+    assert.deepEqual(payload?.scenes, detail.script.scenes)
     assert.ok(artifact)
     assert.match(artifact.content, /\| 林晚与奶奶 \| 亲情 \| 误解转为信任 \|/)
     assert.equal(artifact.document, undefined, 'existing API still receives Markdown only')

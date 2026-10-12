@@ -4,9 +4,9 @@ import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import VideoReferencePanel, { type VideoReferencePanelProps } from '../src/VideoReferencePanel'
-import type { Asset } from '../src/api'
-import type { VideoReferenceEntry } from '../../backend/src/video-reference-manifest'
+import VideoReferencePanel, { type VideoReferencePanelProps } from '../src/features/visuals/VideoReferencePanel'
+import type { Asset } from '../src/shared/api/api'
+import type { VideoReferenceEntry } from '@video-studio/shared/media/video-reference-manifest'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/' })
 for (const key of ['window', 'document', 'navigator', 'Node', 'HTMLElement', 'Element']) {

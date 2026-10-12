@@ -5,7 +5,7 @@ register(`data:text/javascript,${encodeURIComponent(`export async function load(
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
-import type { Model, ProjectDetail, VisualProfile, VisualProjectData } from '../src/api'
+import type { Model, ProjectDetail, VisualProfile, VisualProjectData } from '../src/shared/api/api'
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
 for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLElement', 'Element', 'ShadowRoot', 'Event', 'MouseEvent']) Object.defineProperty(globalThis, key, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[key] })
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, getComputedStyle: dom.window.getComputedStyle.bind(dom.window), requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window), cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window) })
@@ -14,9 +14,9 @@ Object.defineProperty(dom.window.document, 'fonts', { value: { addEventListener(
 Object.defineProperty(globalThis, 'ResizeObserver', { value: class { observe() {} unobserve() {} disconnect() {} } })
 dom.window.HTMLElement.prototype.scrollIntoView = () => {}
 const { createRoot } = await import('react-dom/client')
-const { default: Inspector } = await import('../src/VisualProfileInspector')
-const { default: Bindings } = await import('../src/VisualBindingEditor')
-const { default: Organizer } = await import('../src/VisualProfileOrganizer')
+const { default: Inspector } = await import('../src/features/visuals/VisualProfileInspector')
+const { default: Bindings } = await import('../src/features/visuals/VisualBindingEditor')
+const { default: Organizer } = await import('../src/features/visuals/VisualProfileOrganizer')
 after(() => dom.window.close())
 const profile = { id: 'lin', project_id: 'project', kind: 'character', name: '林晚', variant: '默认', definition: '日漫风格，短发', view_requirements: '正侧背三视图', revision: 2, definition_status: 'ready', board_asset_id: 'new-board', asset_task_id: null, board_prompt: '人物信息图' } as VisualProfile
 const other = { ...profile, id: 'station', kind: 'location', name: '车站', board_asset_id: null } as VisualProfile

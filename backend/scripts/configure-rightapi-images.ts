@@ -1,13 +1,12 @@
 import Database from 'better-sqlite3'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { rightApiImageSettings } from '../src/rightapi-image-settings.js'
+import { dataDir } from '../src/infrastructure/paths.js'
+import { rightApiImageSettings } from '../src/infrastructure/providers/rightapi-image-settings.js'
 
 // Explicit maintenance command: preview by default, apply only with --apply.
 // Opens the existing database without running application startup migrations.
 const apply = process.argv.includes('--apply')
-const dataDir = process.env.VIDEO_STUDIO_DATA_DIR || fileURLToPath(new URL('../../data/', import.meta.url))
 const db = new Database(resolve(dataDir, 'studio.db'), { fileMustExist: true, readonly: !apply })
 try {
   const candidates = db.prepare(`SELECT m.id, m.name, m.remote_id, m.settings, p.base_url

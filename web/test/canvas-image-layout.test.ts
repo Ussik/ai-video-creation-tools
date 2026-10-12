@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { fitImageNode, imageNodeMinimum } from '../src/canvas-image-layout'
+import { fitImageNode, imageNodeMinimum } from '../src/features/canvas/canvas-image-layout'
 
 test('portrait results remove side strips without cropping or enlarging the existing frame', () => {
   const size = fitImageNode({ width: 440, height: 420 }, { width: 1024, height: 1536 })

@@ -4,10 +4,10 @@ import { JSDOM } from 'jsdom'
 import React, { act, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { MantineProvider } from '@mantine/core'
-import { CanvasGenerationParameters, CanvasVideoModeMenu, videoModeLabel, type CanvasGenerationParametersProps, type CanvasVideoMode } from '../src/CanvasGenerationControls'
-import { imageParameterOptions, imageParameterValue, imagePreferencePrompt, imageRatioError, imageRatios, imageRequestResolution } from '../src/canvas-model-parameters'
-import type { Model } from '../src/api'
-import { videoRatioOptions, videoResolutionOptions } from '../../backend/src/video-parameters'
+import { CanvasGenerationParameters, CanvasVideoModeMenu, videoModeLabel, type CanvasGenerationParametersProps, type CanvasVideoMode } from '../src/features/canvas/CanvasGenerationControls'
+import { imageParameterOptions, imageParameterValue, imagePreferencePrompt, imageRatioError, imageRatios, imageRequestResolution } from '../src/features/canvas/canvas-model-parameters'
+import type { Model } from '../src/shared/api/api'
+import { videoRatioOptions, videoResolutionOptions } from '@video-studio/shared/media/video-parameters'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
 for (const key of ['window', 'document', 'navigator', 'Node', 'HTMLElement', 'Element', 'Event', 'MouseEvent']) {

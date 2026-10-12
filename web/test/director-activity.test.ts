@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { activityDraftId, activitySources, canRetryExecution, conversationMessage, executionView, readActivity, settleActivity, updateActivity, type ScriptActivity, type ScriptExecution } from '../src/director-activity'
+import { activityDraftId, activitySources, canRetryExecution, conversationMessage, executionView, readActivity, settleActivity, updateActivity, type ScriptActivity, type ScriptExecution } from '../src/features/script/director-activity'
 const entry: ScriptActivity = { id: 'a', kind: 'tool', name: 'read_documents', label: '阅读文档', status: 'running', summary: '正在读取', started_at: 100 }
 
 test('same invocation updates, repeated calls survive and old summaries remain readable', () => {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { canAdoptReply, classificationBatch, classificationKey, activeReplyChoice, episodePreparationAction, followingMessages, latestReplyNeedsRecognition, replyChoices, replyRecognitionState, replyClassificationVersion, type ClassifiableMessage } from '../src/script-reply'
+import { canAdoptReply, classificationBatch, classificationKey, activeReplyChoice, episodePreparationAction, followingMessages, latestReplyNeedsRecognition, replyChoices, replyRecognitionState, replyClassificationVersion, type ClassifiableMessage } from '../src/features/script/script-reply'
 
 test('adoption requires positive model metadata, never words about episodes or scripts', () => {
   const base: ClassifiableMessage = { id: 'reply', role: 'assistant', text: '第一集剧本，第1集完。' }

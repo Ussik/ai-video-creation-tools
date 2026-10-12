@@ -4,15 +4,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import Fastify from 'fastify'
-import type { ScriptArtifact, ScriptScene } from '../src/db.js'
+import type { ScriptArtifact, ScriptScene } from '../src/infrastructure/database/db.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'controlled-storyboard-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { buildApp } = await import('../src/server.js')
-const { all, db, now, one, run } = await import('../src/db.js')
-const { registerStoryboardPlanningRoutes } = await import('../src/storyboard-planning.js')
-const { registerScriptCanvasRoutes } = await import('../src/script-canvas-preparation.js')
-const { installSkillBundle, configureSkill, removeInstalledSkill } = await import('../src/skills.js')
+const { buildApp } = await import('../src/app.js')
+const { all, db, now, one, run } = await import('../src/infrastructure/database/db.js')
+const { registerStoryboardPlanningRoutes } = await import('../src/modules/storyboard/storyboard-planning.js')
+const { registerScriptCanvasRoutes } = await import('../src/modules/canvas/script-canvas-preparation.js')
+const { installSkillBundle, configureSkill, removeInstalledSkill } = await import('../src/modules/skills/skills.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 async function call(method: 'GET' | 'POST' | 'PATCH' | 'PUT', url: string, payload?: object) {
@@ -56,7 +56,7 @@ async function setup(t: { after: (fn: () => Promise<unknown>) => void },
     script: (id: string) => ({ ...one<{ outline: string; characters: string }>('SELECT * FROM scripts WHERE project_id=?', id)!, generation_options: {},
       scenes: all<ScriptScene>('SELECT * FROM script_scenes WHERE project_id=? ORDER BY position', id), artifacts: all<ScriptArtifact>('SELECT * FROM script_artifacts WHERE project_id=? ORDER BY position', id) }),
     scenePrompt: (scene: ScriptScene) => `${scene.heading}\n${scene.action}\n${scene.dialogue}`,
-    generateText: async (_id: string, model: string, prompt: string, contract?: import('../src/model-output.js').OutputContract) => {
+    generateText: async (_id: string, model: string, prompt: string, contract?: import('../src/modules/generation/model-output.js').OutputContract) => {
       assert.equal(model, 'mock-text')
       if (contract?.name === 'visual_profiles') { visualCalls++; return generateVisual(prompt) }
       assert.equal(contract?.name, 'controlled_storyboard'); calls++; return generate(prompt)

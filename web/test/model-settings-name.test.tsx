@@ -4,7 +4,7 @@ import { after, test, type TestContext } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act, useState } from 'react'
 import { MantineProvider } from '@mantine/core'
-import type { Model, Provider } from '../src/api'
+import type { Model, Provider } from '../src/shared/api/api'
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
@@ -18,7 +18,7 @@ Object.defineProperty(dom.window, 'matchMedia', { value: () => ({ matches: false
 Object.defineProperty(dom.window.document, 'fonts', { value: new dom.window.EventTarget() })
 dom.window.HTMLElement.prototype.scrollIntoView = () => {}
 const { createRoot } = await import('react-dom/client')
-const { default: ModelSettings } = await import('../src/ModelSettings')
+const { default: ModelSettings } = await import('../src/features/models/ModelSettings')
 after(() => dom.window.close())
 
 const provider = { id: 'provider-one', name: 'gpt-image', adapter: 'http', base_url: 'https://example.invalid/v1', has_key: true,

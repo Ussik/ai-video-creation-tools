@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { JSDOM } from 'jsdom'
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
-const { default: ScriptMessageContent } = await import('../src/ScriptMessageContent')
+const { default: ScriptMessageContent } = await import('../src/features/script/ScriptMessageContent')
 
 function render(text: string) {
   return new JSDOM(renderToStaticMarkup(<MantineProvider env="test"><ScriptMessageContent text={text} /></MantineProvider>)).window.document

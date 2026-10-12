@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import type { Asset, Model, ProjectDetail, ScriptCanvasResult } from '../src/api'
-import type { CanvasGraph, CanvasNode } from '../src/ProjectCanvas'
-import { addScriptCanvasNodes, scriptCanvasInitialFocus } from '../src/script-canvas-handoff'
-import { automaticVisualReferenceEdges } from '../src/canvas-visual-profiles'
-import { canvasNodeGap } from '../src/canvas-node-placement'
+import type { Asset, Model, ProjectDetail, ScriptCanvasResult } from '../src/shared/api/api'
+import type { CanvasGraph, CanvasNode } from '../src/features/canvas/ProjectCanvas'
+import { addScriptCanvasNodes, scriptCanvasInitialFocus } from '../src/features/script/script-canvas-handoff'
+import { automaticVisualReferenceEdges } from '../src/features/canvas/canvas-visual-profiles'
+import { canvasNodeGap } from '../src/features/canvas/canvas-node-placement'
 
 const imageModel = { id: 'image-new', modality: 'image', settings: {} } as Model
 const models = [imageModel, { id: 'image-old', modality: 'image', settings: {} }, { id: 'video', modality: 'video', settings: {} }] as Model[]

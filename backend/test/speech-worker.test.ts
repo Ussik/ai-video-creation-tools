@@ -8,9 +8,9 @@ import ffmpegPath from 'ffmpeg-static'
 
 const testData = await mkdtemp(join(tmpdir(), 'video-studio-speech-worker-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
-const { buildApp, startWorker } = await import('../src/server.js')
-const { all, db, initDb, mediaDir, one, run } = await import('../src/db.js')
-const { probeSpeechDurationMs } = await import('../src/speech-audio.js')
+const { buildApp, startWorker } = await import('../src/app.js')
+const { all, db, initDb, mediaDir, one, run } = await import('../src/infrastructure/database/db.js')
+const { probeSpeechDurationMs } = await import('../src/modules/speech/speech-audio.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 

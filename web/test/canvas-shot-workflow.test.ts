@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { connectImageVideoHandoff, createImageVideoHandoff, fixedReferenceAsset, imageVideoConnection, pinnedCanvasReference } from '../src/canvas-shot-workflow'
-import { storyboardItems } from '../src/storyboard'
-import { visualNodeAsset } from '../src/canvas-visual-profiles'
-import type { CanvasGraph, CanvasNode } from '../src/ProjectCanvas'
-import type { Model, ProjectDetail } from '../src/api'
+import { connectImageVideoHandoff, createImageVideoHandoff, fixedReferenceAsset, imageVideoConnection, pinnedCanvasReference } from '../src/features/canvas/canvas-shot-workflow'
+import { storyboardItems } from '../src/features/storyboard/storyboard'
+import { visualNodeAsset } from '../src/features/canvas/canvas-visual-profiles'
+import type { CanvasGraph, CanvasNode } from '../src/features/canvas/ProjectCanvas'
+import type { Model, ProjectDetail } from '../src/shared/api/api'
 
 function fixture() {
   const source = { id: 'image', type: 'generation', title: '惊醒', x: 0, y: 0, width: 320, height: 240,

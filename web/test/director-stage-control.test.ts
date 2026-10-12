@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { directorStageContext, type DirectorStageContext, type DirectorInteraction } from '../src/script-workflow'
+import { directorStageContext, type DirectorStageContext, type DirectorInteraction } from '../src/features/script/script-workflow'
 import { activeReplyChoice, classificationBatch, episodePreparationAction, latestReplyNeedsRecognition,
-  replyDisplayText, replyWorkflowAction, replyClassificationVersion, type ClassifiableMessage } from '../src/script-reply'
+  replyDisplayText, replyWorkflowAction, replyClassificationVersion, type ClassifiableMessage } from '../src/features/script/script-reply'
 
 const outline = directorStageContext({})
 const draft = (stage: DirectorInteraction['stage'], purpose: DirectorInteraction['purpose'] = 'setting', episode_number?: number): DirectorInteraction =>

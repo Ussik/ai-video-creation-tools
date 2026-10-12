@@ -3,8 +3,8 @@ import { after, test, type TestContext } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act, useEffect } from 'react'
 import { MantineProvider, Portal, TextInput } from '@mantine/core'
-import ThemeToggle from '../src/ThemeToggle'
-import { theme } from '../src/theme'
+import ThemeToggle from '../src/shared/ui/ThemeToggle'
+import { theme } from '../src/shared/ui/theme'
 
 const dom = new JSDOM('<html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
 for (const key of ['window', 'document', 'navigator', 'Node', 'HTMLElement', 'Element', 'ShadowRoot', 'Event', 'MouseEvent', 'MutationObserver']) {

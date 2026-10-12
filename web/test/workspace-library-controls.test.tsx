@@ -3,8 +3,8 @@ import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act, useEffect, useRef, useState } from 'react'
 import { MantineProvider, TextInput } from '@mantine/core'
-import { WorkspaceDisclosure } from '../src/WorkspaceDisclosure'
-import { StudioMediaPlayer } from '../src/StudioMediaPlayer'
+import { WorkspaceDisclosure } from '../src/shared/ui/WorkspaceDisclosure'
+import { StudioMediaPlayer } from '../src/shared/ui/media/StudioMediaPlayer'
 
 const dom = new JSDOM('<html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
 for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLElement', 'Element', 'ShadowRoot', 'Event', 'MouseEvent', 'KeyboardEvent', 'MutationObserver']) Object.defineProperty(globalThis, key, { configurable: true, value: (dom.window as any)[key] })

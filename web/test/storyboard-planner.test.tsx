@@ -4,7 +4,7 @@ import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
-import type { Model, ProjectDetail, ScriptCanvasResult } from '../src/api'
+import type { Model, ProjectDetail, ScriptCanvasResult } from '../src/shared/api/api'
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
 for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLElement', 'Element', 'ShadowRoot', 'Event', 'MouseEvent']) Object.defineProperty(globalThis, key, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[key] })
@@ -14,7 +14,7 @@ Object.defineProperty(dom.window.document, 'fonts', { value: new dom.window.Even
 Object.defineProperty(globalThis, 'ResizeObserver', { value: class { observe() {} unobserve() {} disconnect() {} } })
 dom.window.HTMLElement.prototype.scrollTo = () => {}
 dom.window.HTMLElement.prototype.scrollIntoView = () => {}
-const { default: StoryboardPlanner } = await import('../src/StoryboardPlanner')
+const { default: StoryboardPlanner } = await import('../src/features/storyboard/StoryboardPlanner')
 const { createRoot } = await import('react-dom/client')
 after(() => dom.window.close())
 const scene = { id: 'scene', episode_number: 1, heading: '车站', duration: 30 }
@@ -343,6 +343,12 @@ test('confirmation uses a fresh source version to prepare references before impo
     await act(async () => button('开始规划').click())
     assert.equal(requests.length, 2); assert.equal(opened, 0)
     assert.match(document.querySelector('.storyboard-planner-reference-preparation')!.textContent!, /信息图设定技能/)
+    assert.equal(document.querySelector('[role="dialog"][aria-label="参考设定说明"]'), null)
+    await act(() => button('查看参考设定说明').click())
+    assert.match(document.querySelector('[role="dialog"][aria-label="参考设定说明"]')!.textContent!, /已有设定与确认图会复用/)
+    await act(() => button('查看参考设定说明').click())
+    assert.equal(document.querySelector('[role="dialog"][aria-label="参考设定说明"]'), null)
+    assert.equal(requests.length, 2, 'viewing the reference explanation does not trigger generation')
     await act(async () => button('确认加入画布').click())
     assert.deepEqual(requests.map(request => request.path.split('/').slice(-2).join('/')), [
       'storyboard/context', 'storyboard/plan', 'storyboard/commit', 'canvas/check', 'canvas/prepare', 'canvas/commit', 'storyboard/canvas',

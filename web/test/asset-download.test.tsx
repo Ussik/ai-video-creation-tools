@@ -3,7 +3,7 @@ import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { useAssetDownload } from '../src/useAssetDownload'
+import { useAssetDownload } from '../src/features/assets/useAssetDownload'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/' })
 Object.assign(globalThis, { window: dom.window, document: dom.window.document, IS_REACT_ACT_ENVIRONMENT: true })

@@ -1,14 +1,35 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { JSONContent } from '@tiptap/core'
-import { parseScriptDocument, serializeScriptDocument } from '../src/script-rich-document.ts'
-import { textDocumentText } from '../src/text-document.ts'
+import { omitRepeatedScriptTitle, parseScriptDocument, serializeScriptDocument } from '../src/features/script/script-rich-document.ts'
+import { textDocumentText } from '../src/shared/lib/editor/text-document.ts'
 
 function roundTrip(value: string): [JSONContent, string, JSONContent] {
   const parsed = parseScriptDocument(value)
   const markdown = serializeScriptDocument(parsed)
   return [parsed, markdown, parseScriptDocument(markdown)]
 }
+
+test('document bodies omit only the leading heading matching their title without mutating source content', () => {
+  for (const heading of ['# 概要设计', '##概要设计', '# **概要**_设计_']) {
+    const document = parseScriptDocument(`${heading}\n\n## 核心冲突\n\n凛在**地下**救援。\n\n## 概要设计\n\n后续小节。`)
+    const original = JSON.stringify(document)
+    const body = omitRepeatedScriptTitle(document, ' 概要设计 ')
+    assert.deepEqual(body.content, document.content!.slice(1))
+    assert.equal(textDocumentText(body.content![0]), '核心冲突')
+    assert.equal(textDocumentText(body.content![2]), '概要设计', 'later headings remain intact')
+    assert.equal(JSON.stringify(document), original)
+    assert.equal(omitRepeatedScriptTitle(body, '概要设计'), body, 'normalization is stable')
+  }
+  for (const value of ['## 核心冲突\n\n正文。', '概要设计\n\n正文。', '正文。\n\n# 概要设计']) {
+    const document = parseScriptDocument(value)
+    assert.equal(omitRepeatedScriptTitle(document, '概要设计'), document, 'keeps nonmatching headings and prose')
+  }
+  const document = parseScriptDocument('# 概要设计')
+  assert.equal(omitRepeatedScriptTitle(document), document)
+  assert.equal(omitRepeatedScriptTitle(document, '  '), document)
+  assert.deepEqual(omitRepeatedScriptTitle(document, '概要设计'), { type: 'doc', content: [{ type: 'paragraph' }] })
+})
 
 test('scene and relationship tables have real rows and cells across Markdown reloads', () => {
   const source = '## 全剧场景设计\n说明正文。\n| 地点（暂名） | 类别 | 主要剧情功能 | 出现阶段 |\n| --- | :---: | --- | ---: |\n| **旧祠堂** | 核心场景 | 家族记忆与真相浮出水面 | 1—20集 |\n| 桥头 | 外景 | 追逐与冲突 | 中段 |\n## 人物关系\n关系 | 性质 | 变化方向\n--- | --- | ---\n林晚与奶奶 | 亲情 | 依赖转为理解'

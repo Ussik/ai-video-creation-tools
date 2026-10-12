@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { recommendVisualReferences } from '../src/visual-reference-selection.js'
-import type { VisualReferenceAsset } from '../src/visual-reference-types.js'
+import { recommendVisualReferences } from '@video-studio/shared/visuals/visual-reference-selection'
+import type { VisualReferenceAsset } from '@video-studio/shared/visuals/visual-reference-types'
 
 const reference = (id: string, view: VisualReferenceAsset['view'], patch: Partial<VisualReferenceAsset> = {}): VisualReferenceAsset => ({
   id, asset_id: `asset-${id}`, profile_id: 'linwan', revision: 3, style_version: 'anime', view,

@@ -47,8 +47,8 @@ legacy.exec(`
 `)
 legacy.close()
 
-const { buildApp } = await import('../src/server.js')
-const { db, initDb, one, run } = await import('../src/db.js')
+const { buildApp } = await import('../src/app.js')
+const { db, initDb, one, run } = await import('../src/infrastructure/database/db.js')
 const app = buildApp()
 
 after(async () => {
