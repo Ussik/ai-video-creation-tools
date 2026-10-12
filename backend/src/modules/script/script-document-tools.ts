@@ -20,6 +20,7 @@ import { skillContext, skillStages, type SkillStage } from '../skills/skills.js'
 import { revisionSchemas, revisionLimit, revisionHash, revisionProblem, toolDiagnostic, documentParagraphs, resolvePassageEdits, applyResolvedEdits, type RevisionTask, type ToolDiagnostic } from './script-revision.js'
 import { missingStageArtifacts, scriptStageForArtifact } from '@video-studio/shared/script/script-stage-content'
 import { scriptReviewGuidance } from '@video-studio/shared/script/script-quality'
+import { ScriptDraftReviewError } from './script-draft-completeness.js'
 
 const ids = z.array(z.string().min(1).max(160)).min(1).max(8).refine(items => new Set(items).size === items.length, '文档不能重复')
 export const documentAction = z.object({ operation: z.enum(['review', 'revise']), document_ids: ids }).strict()
@@ -60,6 +61,7 @@ type ToolsContext = {
   action?: z.infer<typeof documentAction>; discussionOnly?: boolean; legacyPending?: boolean;
   currentSettings?: z.infer<typeof scriptSettingsSchema>;
   authorizeCreation?: (draft: WorkflowDraft, explicitStage: boolean) => Promise<boolean>;
+  validateCreation?: (draft: WorkflowDraft, preserved: ToolDocument[]) => Promise<void>;
   authorizeResource?: (summary: string, changes: ResourceChange[]) => Promise<boolean>;
   checkApproval: (draft: ScriptToolDraft) => Promise<boolean>;
   onEvent: (event: Record<string, unknown>) => void; signal?: AbortSignal
@@ -398,8 +400,8 @@ const descriptions: Record<keyof typeof schemas, string> = {
   read_episode_scenes: '分页读取指定集的正式分场原文、ID和版本。只有场次尚无episode_script正文的历史分集，重新设计前使用此工具读完全部场次。offset/limit按场次数分页，next_offset继续，complete为真代表读到末尾。读取其他集只作参考。',
   record_story_decision: '记录创作者明确确认的设定或其明确授权你决定后作出的具体选择。topic稳定标识同一事项，更新它会替代旧决定；必须引用一条真实创作者消息，不能记录未经接受的建议。若决定涉及集数、单集秒数、题材、视觉画风等配置，用settings_patch同步；画风写visual_style，不能只塞进genre，或使用set_project_visual_style记录画风及细节。不要写默认值或未接受的建议。记录不会保存文档正文。',
   ask_creator: '直接显示选择、填写或确认界面，等待创作者回答。request使用choice_request/input_request/confirmation_request/question_set和status:pending。一次一个关键决定；只问未确定且未委托你决定的事项。',
-  propose_next_step: '信息足以创作当前阶段时提出明确下一步，程序核验后显示生成或修订按钮。故事方向在首次对话中自然确定；引用真实创作者消息说明依据，不要求填写固定字段，不反复追问普通细节。generate只推荐最早缺失阶段；revise只针对创作者明确要求修改的已有文档并填写document_ids。不得将其他阶段操作放进ask_creator的设定选项。此函数不生成、不保存，等待创作者点击或明确要求生成。',
-  create_document_draft: '将当前阶段所有完整文档建立为待确认草稿，不能只提交主文档或摘要。每份新文档必须提供非空title作为唯一文档标题，content只写正文和小节标题，不在开头重复title；缺少title时补全后重新提交。' +
+  propose_next_step: '信息足以创作当前阶段时提出明确下一步，程序核验后显示生成或修订按钮。故事方向在首次对话中自然确定；引用真实创作者消息说明依据，不要求填写固定字段，不反复追问普通细节。首次大纲须已有创作者提供的创意、选择的方向或明确委托你决定方向；仅请求几个备选方向时，先用ask_creator展示选项，未选方案不能作为已确定故事依据或提出生成提议。generate只推荐最早缺失阶段；revise只针对创作者明确要求修改的已有文档并填写document_ids。不得将其他阶段操作放进ask_creator的设定选项。此函数不生成、不保存，等待创作者点击或明确要求生成。',
+  create_document_draft: '将当前阶段所有完整文档建立为待确认草稿，不能只提交主文档或摘要。已获阶段生成授权时主动设计范围内缺失的虚构细节，核心设定不用未定/待定占位；作者视角明确悬念答案和回收安排。程序独立核对新写内容，有问题按diagnostic修正后重提同阶段完整草稿，不重复授权，不另建任务。每份新文档必须提供非空title作为唯一文档标题，content只写正文和小节标题，不在开头重复title；缺少title时补全后重新提交。' +
     Object.entries(scriptStageArtifacts).map(([stage, types]) => `${stage}必须包含${types.join('/')}。`).join('') +
     '仅当程序current_operation为regenerate且已指定阶段及集数时，可在读完全部该阶段原文后提交完整新设计；不会立即覆盖，保留现有文档ID。重新设计单集还须读完全部分场，每个已有场次填source_scene_id为原ID，全部保留且各出现一次，可改写和调整顺序，新场次省略ID；不删除已有场次，不修改其他集或镜头素材。其他情况下已有阶段缺少文档时，先read_documents读完已有原文，将已有标题/正文原样保留并补齐缺失文档。已有文档修改用propose_document_patch，不用创建工具覆盖。非分集scenes为空，分集正文须含完整场次。不会保存。',
   propose_document_patch: '对已读取文档提出局部修改草稿。同一文档会合并，程序按8份一组处理；每份最多40处修改。find逐字匹配且唯一；可用paragraph_id整段替换，或限定find在指定段内，禁止模糊匹配。统一任务携带task_id和draft_version累积同一草稿：首次修改用saved读取版本，已修改文档用source:draft版本继续修订。修订分集正文必须scene_changes同步相关分场，保留ID和其他字段。原文在其他窗口变化时，分别读完新saved原文和已有draft，保留双方有效修改后rebase:true及新saved版本重新整理；不能直接覆盖。错误包含diagnostic和repair，先修正重试，不能把失败当完成。不会保存。',
@@ -434,6 +436,7 @@ export function documentTools(context: ToolsContext) {
   let mutated = false
   let settingsChanged = false
   let revisionWorked = false
+  const authorizedCreationScopes = new Set<string>()
   function saveDecision(data: z.infer<typeof schemas.record_story_decision>, sourceText: string) {
     if (context.action?.operation === 'review') problem('本轮只评审文档，不改动已确认设定')
     const existing = one<Decision>('SELECT * FROM script_story_decisions WHERE project_id=? AND topic=?', projectId, data.topic)
@@ -733,7 +736,11 @@ export function documentTools(context: ToolsContext) {
           if (issue) problem(issue)
           data.operation = context.operation || 'generate'
           const differentStage = data.stage !== progress.next_stage || data.stage === 'episode' && data.episode_number !== progress.next_episode
-          if (!context.workflow && context.authorizeCreation && !await context.authorizeCreation(data, differentStage)) problem('本轮尚未明确授权生成这个阶段，请先提出下一步供创作者选择')
+          const creationScope = `${data.stage}:${data.episode_number}`
+          if (!context.workflow && context.authorizeCreation && !authorizedCreationScopes.has(creationScope)) {
+            if (!await context.authorizeCreation(data, differentStage)) problem('本轮尚未明确授权生成这个阶段，请先提出下一步供创作者选择')
+            authorizedCreationScopes.add(creationScope)
+          }
           context.signal?.throwIfAborted()
           if (!context.workflow && differentStage && !context.authorizeCreation) problem('请先完成当前阶段；明确指定跳转时请使用对应阶段入口')
           if (context.workflow && (data.stage !== context.workflow || data.stage === 'episode' && data.episode_number !== context.stage.episode_number)) problem('只能创作明确指定的阶段与集数')
@@ -752,6 +759,8 @@ export function documentTools(context: ToolsContext) {
           const snapshot = context.script()
           validateWorkflowScenes(snapshot, data)
           if (regenerating && data.stage === 'episode' && snapshot.scenes.filter(scene => scene.episode_number === data.episode_number).some(scene => readScenes.get(scene.id) !== version(scene))) problem('重新设计本集前请分页读完全部分场当前原文，保留原场次ID和镜头关联')
+          await context.validateCreation?.(data, regenerating ? [] : stageDocuments.filter((doc): doc is ToolDocument => !!doc))
+          context.signal?.throwIfAborted()
           const documents = data.artifacts.map((doc, index) => ({ ...doc, id: stageDocuments[index]?.id || `${doc.artifact_type}:${data.episode_number}`, episode_number: data.episode_number, version: stageDocuments[index]?.version || '', original_content: stageDocuments[index]?.content || '', replacements: regenerating && stageDocuments[index] ? [{ find: stageDocuments[index]!.content, replace: doc.content, reason: '创作者明确要求重新设计此阶段' }] : [] }))
           const draft: ScriptToolDraft = { id: newId(), version: newId(), kind: 'create', summary: `${data.stage === 'episode' ? `第 ${data.episode_number} 集` : data.artifacts[0]!.title}${regenerating ? '重新设计' : ''}草稿`, status: 'pending', workflow: data,
             ...(data.stage === 'episode' ? { scene_version: episodeSceneVersion(snapshot, data.episode_number) } : {}), documents }
@@ -885,6 +894,8 @@ export function documentTools(context: ToolsContext) {
             validateWorkflowScenes(context.script(), draft.workflow)
             if (draft.workflow.operation === 'supplement' && draft.documents.some(doc => doc.version && doc.original_content.trim() && doc.content !== doc.original_content)) problem('补齐栏目不能改写已保存文档，请使用局部修改或重新设计')
           }
+          if (draft.workflow) await context.validateCreation?.(draft.workflow, draft.workflow.operation === 'regenerate' ? [] : docs())
+          context.signal?.throwIfAborted()
           draft.impacts = documentDraftImpacts(projectId, docs(), draft.documents, draftSceneIds(draft))
           if (draft.revision_task) return saveTask(draft, data.version!)
           resultDraft = persistDraft(projectId, draft, data.version)
@@ -1024,13 +1035,14 @@ export async function runScriptTools(context: ToolsContext & {
         const error = diagnostic.message
         const cancelled = context.signal?.aborted && context.signal.reason?.name === 'AbortError'
         activity.finish(operation, cancelled ? 'cancelled' : 'failed', { summary: (cancelled ? '已停止此项操作' : `操作未执行：${error}`).slice(0, 3000), ...activityPreview({ error, diagnostic }, 'output') })
-        if (context.signal?.aborted) throw issue
+        if (context.signal?.aborted || issue instanceof ScriptDraftReviewError) throw issue
         outputs.push({ id: call.id, output: JSON.stringify({ ok: false, error, diagnostic }) })
         context.onEvent({ type: 'process', label, summary: `操作未执行：${error}` })
+        if (diagnostic.code === 'setting_repair_limit') break
       }
       if (tools.result().classification) break
     }
-    if (tools.result().classification) break
+    if (tools.result().classification || lastFailure?.code === 'setting_repair_limit') break
     if (round === 15 || calls >= 64) { finalText = '本轮已达到处理上限，已保留当前进度，可继续原任务。'; break }
   }
   const result = tools.result()

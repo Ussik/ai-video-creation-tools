@@ -1,3 +1,4 @@
+import { draftCompletenessFixtureResponse } from './fixtures/script-draft-completeness.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -538,6 +539,7 @@ test('native recoverable failures are repaired after an early final text without
     const doc = script().artifacts![0], model = await nativeModel(protocol); let turn = 0, sourceVersion = ''
     const requests: any[] = []
     t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+      const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply;
       const body = JSON.parse(String(init.body)); requests.push(body); turn++
       const history = body.messages || body.input
@@ -566,6 +568,7 @@ test('unrepaired unified work and provider interruption return honest partial ch
     const { project, script } = await fixture(); await artifact(project.id)
     const model = await nativeModel(); let turn = 0
     t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+      const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply;
       turn++
       if (turn === 1) return Response.json({ choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: 'start-task', type: 'function', function: { name: 'manage_revision_task', arguments: JSON.stringify({ operation: 'start', scope: 'all_documents', summary: '补齐所有设定', source_message_index: 0 }) } }] }, finish_reason: 'tool_calls' }] })
@@ -583,6 +586,7 @@ test('unrepaired unified work and provider interruption return honest partial ch
 test('argument count diagnostics identify actual count and repeated identical failures stop boundedly', async t => {
   const { project } = await fixture(), model = await nativeModel(); let turn = 0
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply;
     const body = JSON.parse(String(init.body)); turn++
     if (turn === 2) {
@@ -632,6 +636,7 @@ test('all creation modes send the same complete role guidance in native and comp
           ? Response.json({ status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }], output_text: text })
           : Response.json({ choices: [{ message: { content: text }, finish_reason: 'stop' }] })
         t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+          const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
           calls++
           const body = JSON.parse(String(init.body))
           const prompt = typeof body.input === 'string' ? body.input : (body.messages || body.input)[0].content as string
@@ -674,6 +679,7 @@ test('native SSE read-patch loop preserves Skills, displays progress and returns
   configureSkill(skill.id, true, ['script'])
   const model = await nativeModel(), doc = script().artifacts![0]; let calls = 0
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply;
     const body = JSON.parse(String(init.body)); calls++; assert.ok(body.tools.some((tool: { function: { name: string } }) => tool.function.name === 'read_visual_profiles')); assert.ok(body.tools.some((tool: { function: { name: string } }) => tool.function.name === 'read_documents')); assert.match(body.messages[0].content, /每段对白明确人物动机/)
     const output = body.messages.at(-1); let fn: string, args: unknown
@@ -696,6 +702,7 @@ test('native SSE read-patch loop preserves Skills, displays progress and returns
 test('ask_creator returns a selectable interaction at the existing document stage without extra classification', async t => {
   const { project, script } = await fixture(); await artifact(project.id); const model = await nativeModel('responses'); let requests = 0
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply; requests++; return Response.json({ status: 'completed', output: [{ type: 'function_call', call_id: 'ask-1', name: 'ask_creator', arguments: JSON.stringify({ intro: '确定林晚的职业', request: { type: 'choice_request', status: 'pending', question: '林晚是什么记者？', options: [{ id: 'independent', title: '独立记者', text: '林晚是独立调查记者。' }, { id: 'newspaper', title: '报社记者', text: '林晚在报社任职。' }] } }) }] }) })
   const result = await call<{ reply: string; classification: { type: string; interaction: { stage: string } }; stage_context: { mode: string; stage: string } }>('POST', `/api/projects/${project.id}/script/director/chat`, { model_id: model.id, mode: 'script', use_tools: true, document_action: { operation: 'revise', document_ids: [script().artifacts![0].id] }, messages: [{ role: 'user', text: '补齐林晚职业' }] })
   assert.equal(requests, 1); assert.equal(result.classification.type, 'choice_request'); assert.equal(result.classification.interaction.stage, 'characters'); assert.equal(result.stage_context.stage, 'characters'); assert.equal(result.stage_context.mode, 'explicit'); assert.equal(JSON.parse(result.reply).kind, 'choices'); assert.equal(getToolDraft(project.id), null)
@@ -717,6 +724,7 @@ test('native save approval is independently checked with the selected model and 
   await tools.execute('propose_document_patch', patch(document.id, read.version))
   const draft = getToolDraft(project.id)!, model = await nativeModel(); let approved = false, approvalChecks = 0
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply;
     const body = JSON.parse(String(init.body))
     assert.equal(body.model, 'native')
@@ -763,6 +771,7 @@ test('execution traces retain repeated calls, native errors, public model text a
   run('UPDATE script_artifacts SET content=? WHERE id=?', '林晚：调查记者，追查失踪案件。'.repeat(500), doc.id)
   let turn = 0
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply;
     turn++
     if (turn === 10) return Response.json({ choices: [{ message: { content: '<think>private chain of thought</think>已阅读人物资料。', reasoning_content: 'private field' }, finish_reason: 'stop' }] })
@@ -806,6 +815,7 @@ test('execution traces retain repeated calls, native errors, public model text a
 test('provider failure is recorded as a failed model operation rather than a successful tool execution', async t => {
   const { project } = await fixture(), model = await nativeModel()
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply; throw new Error('provider unavailable') })
   const result = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat/stream`, payload: { model_id: model.id, mode: 'script', use_tools: true, messages: [{ role: 'user', text: '讨论故事方向' }] } })
   const events = result.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)))
@@ -839,6 +849,7 @@ test('whole-dialogue timeout fails an active native model operation and closes t
   let first = true, entered!: () => void, requestSignal!: AbortSignal
   const waiting = new Promise<void>(resolve => { entered = resolve })
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply;
     if (first) {
       first = false
@@ -877,6 +888,7 @@ test('direction readiness is proposed through native tools, persists, and cannot
   await assert.rejects(makeTools().execute('propose_next_step', { ...proposed, source_message_indexes: [3] }), /真实创作者/)
   let calls = 0
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply;
     calls++
     assert.ok(JSON.parse(String(init.body)).tools.some((tool: any) => tool.function.name === 'propose_next_step'))
@@ -902,6 +914,7 @@ test('stage button uses native drafting, waits for saving, and reuses characters
   const ready = creationState(project.id, script()).next_step!
   let calls = 0
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply;
     const body = JSON.parse(String(init.body)); calls++
     assert.ok(body.tools, 'stage button must not switch back to the legacy text path')
@@ -925,6 +938,7 @@ test('ordinary direction discussion cannot turn a model-generated draft into an 
   const { project, script } = await fixture(), model = await nativeModel()
   let checks = 0
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply;
     const body = JSON.parse(String(init.body))
     if (!body.tools) { checks++; return Response.json({ choices: [{ message: { content: '{"authorized":false}' } }] }) }
@@ -940,6 +954,7 @@ test('ordinary chat generation uses detailed stage standards and repairs missing
   const { project, script } = await fixture(), model = await nativeModel()
   let creationCalls = 0, authorizationChecks = 0
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply;
     const body = JSON.parse(String(init.body))
     if (!body.tools) { authorizationChecks++; return Response.json({ choices: [{ message: { content: '{"authorized":true}' } }] }) }
@@ -967,6 +982,7 @@ test('a missing document title is rejected and sent back for repair even when th
   artifacts[0].title = '城市救援 · 概要设计'
   let turns = 0, authorizationChecks = 0
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply;
     const body = JSON.parse(String(init.body))
     if (!body.tools) { authorizationChecks++; return Response.json({ choices: [{ message: { content: '{"authorized":true}' } }] }) }
@@ -1039,6 +1055,7 @@ test('accepting a revision proposal scopes native patches to its existing target
   const next = creationState(project.id, script()).next_step!
   let calls = 0
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply;
     const body = JSON.parse(String(init.body)); calls++
     assert.match(body.messages[0].content, /本轮明确操作/)
@@ -1058,6 +1075,7 @@ test('natural-language stage jumps cannot create unsaved future-stage drafts', a
   const { project, script } = await fixture(), model = await nativeModel()
   let checks = 0
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply;
     const body = JSON.parse(String(init.body))
     if (!body.tools) {

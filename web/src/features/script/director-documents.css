@@ -173,7 +173,7 @@
 .sd-review-report small { color: var(--text-muted, var(--fc-text-muted)); }
 .sd-revision-progress { margin: 6px 16px 10px; color: var(--text, var(--fc-text)); font-size: 11px; flex-shrink: 0; }
 .sd-revision-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; min-height: 24px; flex-wrap: wrap; }
-.sd-revision-toggle { display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0; background: none; color: var(--fc-text-secondary); font: inherit; text-align: left; cursor: pointer; }
+.sd-revision-toggle { display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; border: 0; background: none; color: var(--fc-text-secondary); font: inherit; text-align: left; cursor: pointer; }
 .sd-revision-toggle:hover { color: var(--fc-text); }
 .sd-revision-toggle:focus-visible, .sd-revision-progress .workspace-disclosure-control:focus-visible { outline: 2px solid #aaa; outline-offset: 3px; border-radius: 5px; }
 .sd-revision-meta { display: inline-flex; align-items: center; gap: 9px; font-size: 10px; font-variant-numeric: tabular-nums; }

@@ -69,7 +69,7 @@ import ScriptMessageContent from './ScriptMessageContent'
 import { clampDirectorWindow, defaultDirectorWindow, shouldSendDirectorMessage, type DirectorWindowRect } from './director-window'
 import { ScriptThemeWaterCanvas as WebGLScriptThemeWaterCanvas } from './ScriptThemeWaterCanvas'
 import { artifactKey, workflowLabels, workflowStages, workflowProgress, directorStageContext, type DirectorStageContext } from './script-workflow'
-import { workflowInstruction, workflowRequestForStage, type WorkflowDraft, type WorkflowRequest, type WorkflowStage } from './script-workflow'
+import { workflowInstruction, workflowRequestForStage, outlineGenerationIssue, exploreStoryDirectionMessage, type WorkflowDraft, type WorkflowRequest, type WorkflowStage } from './script-workflow'
 import { canAdoptReply, classificationBatch, classificationKey, followingMessages, replyRecognitionState, activeReplyChoice, replyChoices, replyDisplayText, replyClassificationVersion, contextualReplyTypes, type ReplyClassification } from './script-reply'
 import { regenerationSource } from './director-regeneration'
 import { directorChatContext } from './director-chat-context'
@@ -951,8 +951,9 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     } catch { /* Keep the selected scope in memory. */ }
   }, [stageTask, detail.id, detail.script])
   const nextStep = stageTask || stageContext.mode === 'explicit' && (creation?.next_step?.stage !== stageContext.stage || stageContext.stage === 'episode' && creation?.next_step?.episode_number !== stageContext.episode_number) ? null : creation?.next_step
+  const outlineIssue = outlineGenerationIssue(detail.script, { input, brief: detail.brief, referenceContents: references.map(reference => reference.content), nextStep })
   const workflowTarget = workflowRequestForStage(workflowStage, episodeNumber, episodeDuration, workflowOperation)
-  const workflowIssue = stageOperationError(detail.script, workflowTarget)
+  const workflowIssue = stageOperationError(detail.script, workflowTarget) || (workflowStage === 'outline' && workflowOperation === 'generate' ? outlineIssue : null)
   const directionStart = !messages.some(message => message.role === 'user') && creation?.status === 'direction'
   const primaryArtifact = artifactCards.find(artifact => artifact.artifact_type === 'episode_script' && artifact.episode_number === handoffEpisode)
     || [...artifactCards].reverse().find(artifact => artifact.artifact_type === 'episode_script') || artifactCards.at(-1)
@@ -1810,7 +1811,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     setWorkflowStage(stage)
     if (stage === 'episode') setEpisodeNumber(targetEpisode)
     const request = workflowRequestForStage(stage, targetEpisode, episodeDuration, operation === 'generate' ? undefined : operation)
-    const issue = stageOperationError(detail.script, request)
+    const issue = stageOperationError(detail.script, request) || (stage === 'outline' && operation === 'generate' ? outlineIssue : null)
     if (issue) { setError(issue); return }
     const prefix = operation === 'regenerate' ? '重新设计' : operation === 'supplement' ? '补齐' : operation === 'revise' ? '修订' : '生成'
     const instruction = workflowInstruction(request, label || `${prefix}${stage === 'episode' ? `第 ${targetEpisode} 集正文` : stageLabels[stage]}`)
@@ -2473,10 +2474,11 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       </Button>}
       {directionStart && !busy && !activeChoice && !(generated && !scriptSaved) && <Button type="button" disabled={closing || !selectedModel}
         title="提供几个故事方向供你选择"
-        onClick={() => void sendChatMessage('基于当前对话，给我几个故事方向供选择。保留已经确认的设定，说明各方向的区别。')} data-workspace-control="" variant="subtle">
+        onClick={() => void sendChatMessage(exploreStoryDirectionMessage)} data-workspace-control="" variant="subtle">
         <Lightbulb size={14} aria-hidden="true" />探索故事方向
       </Button>}
-      <ScriptStageActions script={detail.script} disabled={busy || closing || !selectedModel || Boolean(generated && !scriptSaved)} onAction={handleStageAction} />
+      <ScriptStageActions script={detail.script} outlineIssue={outlineIssue} disabled={busy || closing || !selectedModel || Boolean(generated && !scriptSaved)} onAction={handleStageAction} />
+      {outlineIssue && !busy && !closing && progress.next_stage === 'outline' && !(generated && !scriptSaved) && <span className="sd-creation-progress" role="status">{outlineIssue}</span>}
     </nav>}
     </div>
     <StoryboardPlanner opened={storyboardOpen} onClose={() => setStoryboardOpen(false)} detail={detail} models={availableModels} initialSceneIds={planningSceneIds}

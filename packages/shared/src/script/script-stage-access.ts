@@ -7,7 +7,7 @@ export type WorkflowProgressInput = {
   outline?: string; characters?: string;
   artifacts?: Array<{ artifact_type: string; content: string; episode_number?: number; status?: string }>;
   scenes?: Array<{ episode_number?: number }>;
-  generation_options?: { episode_count?: number };
+  generation_options?: { episode_count?: number; core_hook?: string; story_structure?: string; character_notes?: string };
 }
 export const stageLabels: Record<ScriptStage, string> = {
   outline: '故事大纲', characters: '人物设定', locations: '场景设计', props: '道具设计', episode: '分集剧本',

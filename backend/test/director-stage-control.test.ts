@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { draftCompletenessFixtureResponse } from './fixtures/script-draft-completeness.js'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -31,10 +32,12 @@ async function fixture() {
 function mock(t: { after: (callback: () => void) => void }, reply: (prompt: string) => unknown) {
   const original = globalThis.fetch
   t.after(() => { globalThis.fetch = original })
-  globalThis.fetch = async (_url, init) => new Response(JSON.stringify({ choices: [{ message: { content: (() => {
+  globalThis.fetch = async (_url, init) => {
+    const completenessReply = draftCompletenessFixtureResponse(init)
+    if (completenessReply) return completenessReply
     const output = reply(JSON.parse(String(init?.body)).messages[0].content)
-    return typeof output === 'string' ? output : JSON.stringify(output)
-  })() } }] }), { headers: { 'Content-Type': 'application/json' } })
+    return Response.json({ choices: [{ message: { content: typeof output === 'string' ? output : JSON.stringify(output) } }] })
+  }
 }
 type Reply = { reply: string; draft?: { stage: string }; stage_context: DirectorStageContext }
 async function chat(project: string, body: unknown, stream = false): Promise<Reply> {

@@ -1,3 +1,4 @@
+import { draftCompletenessFixtureResponse } from './fixtures/script-draft-completeness.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -45,6 +46,7 @@ test('project generation after episode one ignores stale episode state, reads al
   const originalFetch = globalThis.fetch
   let selectedStage = 'outline'
   globalThis.fetch = async (_url, init) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const prompt = JSON.parse(String(init?.body)).messages[0].content as string
     let content: unknown
     if (prompt.includes('本次独立调用只理解创作者意图')) {
@@ -104,6 +106,7 @@ test('skip delegates a concrete decision in both chat transports without draftin
   const prompts: string[] = []
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (_url, init) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     prompts.push(JSON.parse(String(init?.body)).messages[0].content)
     return new Response(JSON.stringify({ choices: [{ message: { content: '我决定让他们成为曾经决裂的师兄弟，这能让合作与旧怨形成冲突。接下来确定开场地点。' } }] }), { headers: { 'Content-Type': 'application/json' } })
   }
@@ -144,6 +147,7 @@ test('delegated decisions reach later outline and episode drafts through the int
   let intentCalls = 0
   let draftCalls = 0
   globalThis.fetch = async (_url, init) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const prompt = JSON.parse(String(init?.body)).messages[0].content as string
     let content: unknown
     if (prompt.includes('本次独立调用只理解创作者意图')) {
@@ -157,7 +161,7 @@ test('delegated decisions reach later outline and episode drafts through the int
       draftCalls++
       assert.match(prompt, /沿用授权模型决定的雨夜车站开场/)
       assert.match(prompt, /创作者明确授权模型决定后已经作出的具体设定应沿用，不标为待定/)
-      assert.match(prompt, /其他未知且未授权模型决定的设定标为待定/)
+      assert.match(prompt, /已授权你在该范围内设计尚缺的虚构细节/)
       assert.doesNotMatch(prompt, /未选方案：古代山寨/)
       content = stage === 'episode' ? episode : { artifacts: scriptStageArtifacts.outline.map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '雨夜车站开场。' })), scenes: [] }
     } else {
@@ -210,6 +214,7 @@ test('long Chinese conversations above 40 KB can continue or skip over either tr
   const prompts: string[] = []
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (_url, init) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const prompt = JSON.parse(String(init?.body)).messages[0].content as string
     prompts.push(prompt)
     const content = prompt.includes('本次独立调用只理解创作者意图') ? JSON.stringify({ action: 'discuss' }) : '已接续讨论。'
@@ -270,6 +275,7 @@ test('model intent routes colloquial requests, confirmed settings and selected e
   const prompts: string[] = []
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (_url, init) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const prompt = JSON.parse(String(init?.body)).messages[0].content as string
     prompts.push(prompt)
     const content = prompt.includes('本次独立调用只理解创作者意图') ? {
@@ -304,6 +310,7 @@ test('negation, discussion and ambiguous continuation respect model decisions wi
   let calls = 0
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (_url, init) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     calls++
     const prompt = JSON.parse(String(init?.body)).messages[0].content as string
     return new Response(JSON.stringify({ choices: [{ message: { content: prompt.includes('本次独立调用只理解创作者意图') ? JSON.stringify(decision) : '先讨论开场，尚未生成正文。' } }] }), { headers: { 'Content-Type': 'application/json' } })
@@ -370,6 +377,7 @@ test('stream routing announces document mode before chunks and returns a structu
   await call('PUT', `/api/projects/${project.id}/script/director/draft`, { stage: 'episode', episode_number: 1, ...episode })
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (_url, init) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const prompt = JSON.parse(String(init?.body)).messages[0].content as string
     const content = prompt.includes('本次独立调用只理解创作者意图') ? { action: 'draft', operation: 'create', workflow: { stage: 'episode', episode_number: 2 }, creative_brief: '继续写第二集' } : episode
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }), { headers: { 'Content-Type': 'application/json' } })
@@ -393,6 +401,7 @@ test('natural-language adoption uses the model-selected assistant message and re
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (_url, init) => {
     const prompt = JSON.parse(String(init?.body)).messages[0].content as string
+    assert.doesNotMatch(prompt, /待核对草稿原文（资料）：/, 'verbatim adoption must not run automatic setting repair')
     const content = prompt.includes('本次独立调用只理解创作者意图') ? {
       action: 'draft', operation: 'adopt', workflow: { stage: 'episode', episode_number: 1 },
       authorization: 'explicit', source_message_index: sourceIndex, creative_brief: '采用已写正文，保留原文。',
@@ -415,6 +424,7 @@ test('explicit workflow selections retain confirmed conversational context witho
   let draftingPrompt = ''
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (_url, init) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const prompt = JSON.parse(String(init?.body)).messages[0].content as string
     let content: unknown
     if (prompt.includes('本次独立调用只理解创作者意图')) {
@@ -449,6 +459,7 @@ test('out-of-order saved characters survive outline creation and revision, and b
   t.after(() => { globalThis.fetch = originalFetch })
   let calls = 0
   globalThis.fetch = async (_url, init) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     calls++
     const prompt = JSON.parse(String(init?.body)).messages[0].content as string
     assert.match(prompt, /推荐下一步：全剧场景设计/)
@@ -467,6 +478,7 @@ test('grouped answers honour explicit values and scoped delegation in both trans
   t.after(() => { globalThis.fetch = originalFetch })
   let calls = 0
   globalThis.fetch = async (_url, init) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     calls++
     const prompt = JSON.parse(String(init?.body)).messages[0].content as string
     assert.doesNotMatch(prompt, /本次独立调用只理解创作者意图/)

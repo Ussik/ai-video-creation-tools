@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { artifactKey, workflowInstruction, workflowRequestForStage, workflowStages, workflowProgress } from '../src/features/script/script-workflow.ts'
+import { artifactKey, workflowInstruction, workflowRequestForStage, workflowStages, workflowProgress, outlineGenerationIssue, outlineGenerationPrerequisite, exploreStoryDirectionMessage } from '../src/features/script/script-workflow.ts'
 
 test('episode document keys keep separate episodes and project-level outlines distinct', () => {
   const keys = [1, 2, 20].map(episode_number => artifactKey({ artifact_type: 'episode_script', episode_number }))
@@ -20,13 +20,33 @@ test('project buttons after episode one never carry the next episode or its runt
   assert.match(workflowInstruction(episode), /仅处理第 2 集正文/)
 })
 
-test('all workflow buttons preserve concrete decisions delegated to the model and distinguish other unknowns', () => {
+test('all workflow buttons preserve confirmed decisions and grant creative discretion inside the selected stage', () => {
   for (const stage of workflowStages) {
     const instruction = workflowInstruction(workflowRequestForStage(stage, 1))
     assert.match(instruction, /沿用我明确交给模型决定后已经作出的具体设定/)
     assert.match(instruction, /不再将这些设定标为待定/)
-    assert.match(instruction, /其他尚未确定且未授权模型决定的设定标为待定/)
+    assert.match(instruction, /已授权你在该范围内设计尚缺的虚构细节/)
+    assert.doesNotMatch(instruction, /其他尚未确定且未授权模型决定的设定标为待定/)
   }
+})
+
+test('empty projects and unselected story alternatives do not enable outline generation', () => {
+  assert.equal(outlineGenerationIssue({}), outlineGenerationPrerequisite)
+  assert.equal(outlineGenerationIssue({}, { input: '  ', brief: '\n', referenceContents: [''] }), outlineGenerationPrerequisite)
+  assert.equal(outlineGenerationIssue({}, { input: exploreStoryDirectionMessage, brief: exploreStoryDirectionMessage }), outlineGenerationPrerequisite)
+  assert.equal(outlineGenerationIssue({ generation_options: { episode_count: 12 } }), outlineGenerationPrerequisite)
+  assert.equal(outlineGenerationIssue({ artifacts: [{ artifact_type: 'outline', content: '未确认候选', status: 'draft' }] }), outlineGenerationPrerequisite)
+  assert.equal(outlineGenerationIssue({}, { nextStep: { stage: 'characters', purpose: 'generate' } }), outlineGenerationPrerequisite)
+})
+
+test('creator source text, current direction proposals and saved story facts enable outline generation', () => {
+  assert.equal(outlineGenerationIssue({}, { input: '退休侦探在故乡追查一封没有寄出的信。' }), null)
+  assert.equal(outlineGenerationIssue({}, { brief: '主角追查姐姐失踪的真相。' }), null)
+  assert.equal(outlineGenerationIssue({}, { referenceContents: ['主角追查姐姐失踪的真相。'] }), null)
+  assert.equal(outlineGenerationIssue({}, { nextStep: { stage: 'outline', purpose: 'generate' } }), null)
+  assert.equal(outlineGenerationIssue({ characters: '林晚是记者，追查姐姐的失踪。' }), null)
+  assert.equal(outlineGenerationIssue({ artifacts: [{ artifact_type: 'world', content: '主角每次开门都会失去记忆。', status: 'ready' }] }), null)
+  assert.equal(outlineGenerationIssue({ generation_options: { core_hook: '已确认核心冲突' } }), null)
 })
 
 test('episode redesign keeps the selected episode and requests complete prose, scenes and stable source IDs', () => {

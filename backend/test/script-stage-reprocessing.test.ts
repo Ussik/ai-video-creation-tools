@@ -1,3 +1,4 @@
+import { draftCompletenessFixtureResponse } from './fixtures/script-draft-completeness.js'
 import type { ScriptArtifact, ScriptScene } from '../src/infrastructure/database/db.js'
 import type { ScriptSnapshot } from '../src/modules/script/script-document-tools.js'
 import assert from 'node:assert/strict'
@@ -169,6 +170,7 @@ test('native and JSON model paths over JSON and SSE return versioned selected-ep
     const before = script(), originalReferences = references()
     let turns = 0, intentCalls = 0
     t.mock.method(globalThis, 'fetch', async (_url, init) => {
+      const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
       const body = JSON.parse(String(init?.body)), prompt = body.messages[0].content as string
       if (prompt.includes('本次独立调用只理解创作者意图')) {
         intentCalls++
@@ -218,6 +220,7 @@ test('JSON fallback rejects a source changed during generation and legacy save c
   const provider = await call('POST', '/api/providers', { name: '版本模拟', base_url: 'https://episode-conflict.invalid/v1' })
   const model = await call('POST', '/api/models', { provider_id: provider.id, name: '文本', remote_id: 'mock', modality: 'text', protocol: 'chat_completions', settings: { request_path: 'chat/completions', request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] }, text_path: 'choices.0.message.content' } })
   t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const prompt = JSON.parse(String(init?.body)).messages[0].content as string
     const content = prompt.includes('本次独立调用只理解创作者意图')
       ? { action: 'draft', operation: 'regenerate', authorization: 'explicit', workflow: { stage: 'episode', episode_number: 1 }, creative_brief: '重设计第一集', settings_patch: {} }
@@ -312,6 +315,7 @@ test('natural-language redesign resolves the old stage before tools over JSON an
     const before = script(), original = before.artifacts!.find(doc => doc.artifact_type === 'locations')!
     let intentCalls = 0, turns = 0
     t.mock.method(globalThis, 'fetch', async (_url, init) => {
+      const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
       const body = JSON.parse(String(init?.body)), prompt = body.messages[0].content
       if (prompt.includes('本次独立调用只理解创作者意图')) {
         intentCalls++

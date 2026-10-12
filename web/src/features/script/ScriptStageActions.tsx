@@ -1,11 +1,11 @@
-import { Button, Menu } from '@mantine/core'
+import { Box, Button, Menu, Tooltip } from '@mantine/core'
 import { Fragment } from 'react'
 import { ChevronDown, FileText, Lock, Pencil, Plus, RotateCcw } from 'lucide-react'
 import { scriptStageOrder } from '@video-studio/shared/script/script-stage-content'
 import { missingSavedStageArtifacts, stageLabels, workflowProgress, type StageTarget, type WorkflowProgressInput } from '@video-studio/shared/script/script-stage-access'
 
-export default function ScriptStageActions({ script, disabled, onAction }: {
-  script: WorkflowProgressInput; disabled: boolean; onAction: (target: StageTarget) => void;
+export default function ScriptStageActions({ script, disabled, outlineIssue, onAction }: {
+  script: WorkflowProgressInput; disabled: boolean; outlineIssue?: string | null; onAction: (target: StageTarget) => void;
 }) {
   const progress = workflowProgress(script)
   return <div className="sd-stage-actions" aria-label="阶段处理">
@@ -31,9 +31,14 @@ export default function ScriptStageActions({ script, disabled, onAction }: {
           </>}
         </Menu.Dropdown>
       </Menu>
-      return <Button key={stage} variant="subtle" className={`sd-stage-button${current ? ' is-current' : ''}`}
-        disabled={disabled || !current} title={current ? '生成后确认保存，再继续下一阶段' : '完成并保存前面的阶段后开放'}
-        onClick={() => onAction({ ...target, operation: 'generate' })}>{current ? <FileText size={13} /> : <Lock size={12} />}{stageLabels[stage]}</Button>
+      const issue = stage === 'outline' && current ? outlineIssue : null
+      return <Tooltip key={stage} label={issue} disabled={!issue} withinPortal zIndex={400} withArrow>
+        <Box component="span" w="100%" style={{ minWidth: 0 }}>
+          <Button variant="subtle" className={`sd-stage-button${current ? ' is-current' : ''}`}
+            disabled={disabled || !current || Boolean(issue)} title={issue || (current ? '生成后确认保存，再继续下一阶段' : '完成并保存前面的阶段后开放')}
+            onClick={() => onAction({ ...target, operation: 'generate' })}>{current ? <FileText size={13} /> : <Lock size={12} />}{stageLabels[stage]}</Button>
+        </Box>
+      </Tooltip>
     })}
   </div>
 }
