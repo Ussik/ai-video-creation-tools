@@ -250,6 +250,8 @@ export interface Model {
   enabled: boolean
 }
 export interface ProjectDetail extends Project {
+  speech?: import('../media/speech-timeline.js').SpeechData
+  audio_settings?: import('../media/speech-timeline.js').AudioMixSettings
   project_visual_style?: import('../visuals/visual-style.js').ProjectVisualStyle
   production_range: ProductionRange
   script: Script

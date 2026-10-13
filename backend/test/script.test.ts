@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { scriptStageArtifacts, scriptArtifactLabels } from '@video-studio/shared/script/script-stage-content'
+import { draftCompletenessFixtureResponse } from './fixtures/script-draft-completeness.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'video-studio-script-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
@@ -216,7 +217,7 @@ test('script commit writes the full project document atomically', async () => {
   assert.equal(afterRollback.script.artifacts?.some(artifact => artifact.content === '不应写入'), false)
 })
 
-test('configured text model returns an unsaved script draft and removes temporary output', async t => {
+test('configured text model returns an unsaved script draft without writing temporary output', async t => {
   const bodies: unknown[] = []
   const catalogApi = createServer(async (request, response) => {
     let body = ''
@@ -265,12 +266,13 @@ test('configured text model returns an unsaved script draft and removes temporar
   assert.equal(draft.scenes[0]?.heading, '抵达站台')
   assert.equal(draft.scenes[0]?.time_of_day, '')
   assert.match(JSON.stringify(bodies[0]), /临时创意/)
+  assert.equal((bodies[0] as { stream: boolean }).stream, true)
   const submitted = (bodies[0] as { messages: Array<{ content: string }> }).messages[0]!.content
   assert.match(submitted, /本次结构化返回契约/)
   assert.equal(submitted.split('【原始任务与资料】\n')[1], preview.prompt)
   assert.deepEqual((await call<{ script: Script; shots: Shot[] }>('GET', `/api/projects/${project.id}`)).script,
     { outline: '', characters: '', generation_options: {}, scenes: [] })
-  assert.deepEqual(await readdir(join(testData, 'media', project.id)), [])
+  await assert.rejects(readdir(join(testData, 'media', project.id)), { code: 'ENOENT' })
 
   const malformed = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/generate`, payload: {
     model_id: model.id, prompt_override: '请写一部阴雨车站悬疑剧。',
@@ -279,7 +281,7 @@ test('configured text model returns an unsaved script draft and removes temporar
   assert.equal((bodies[1] as { messages: Array<{ content: string }> }).messages[0]?.content.split('【原始任务与资料】\n')[1], '请写一部阴雨车站悬疑剧。')
   assert.equal(bodies.length, 3, 'malformed model output receives one format correction')
   assert.match(malformed.json<{ raw_output: string }>().raw_output, /没有 JSON/)
-  assert.deepEqual(await readdir(join(testData, 'media', project.id)), [])
+  await assert.rejects(readdir(join(testData, 'media', project.id)), { code: 'ENOENT' })
   assert.equal(one<{ outline: string }>('SELECT outline FROM scripts WHERE project_id=?', project.id), undefined)
 })
 
@@ -388,13 +390,16 @@ test('workflow generation streams reviewable drafts with selected episode contex
   const outlineArtifacts = scriptStageArtifacts.outline.map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: `${scriptArtifactLabels[artifact_type]}：林照追查明日报纸。` }))
   let modelReply = JSON.stringify({ artifacts: outlineArtifacts, scenes: [] })
   let submittedPrompt = '', generationReplies = 0
+  let workflowStage: 'outline' | 'episode' = 'outline'
+  let workflowOperation: 'create' | 'regenerate' = 'create'
   const generationPrompts: string[] = []
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (_input, init) => {
+    const completeness = draftCompletenessFixtureResponse(init); if (completeness) return completeness
     submittedPrompt = (JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> }).messages[0]?.content || ''
     const intent = submittedPrompt.includes('本次独立调用只理解创作者意图')
     if (!intent) generationPrompts.push(submittedPrompt)
-    const reply = intent ? JSON.stringify({ action: 'draft', operation: 'create', workflow: { stage: 'outline' }, creative_brief: '林照追查明日报纸，遵守已确认资料。' })
+    const reply = intent ? JSON.stringify({ action: 'draft', operation: workflowOperation, workflow: { stage: workflowStage, ...(workflowStage === 'episode' ? { episode_number: 2 } : {}) }, creative_brief: '林照追查明日报纸，遵守已确认资料。' })
       : ++generationReplies === 1 ? JSON.stringify({ artifacts: outlineArtifacts.slice(0, 1), scenes: [] }) : modelReply
     return Response.json({ choices: [{ message: { content: reply } }] })
   }
@@ -420,6 +425,7 @@ test('workflow generation streams reviewable drafts with selected episode contex
   const savedOutline = await call<{ script: { artifacts: typeof outlineArtifacts } }>('GET', `/api/projects/${project.id}`)
   assert.deepEqual(savedOutline.script.artifacts.map(doc => doc.artifact_type), [...scriptStageArtifacts.outline])
   await call('PUT', `/api/projects/${project.id}/script/artifacts`, { artifacts: [
+    ...[...scriptStageArtifacts.characters, ...scriptStageArtifacts.locations].map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '已确认的人物与空间资料', status: 'ready' })),
     { artifact_type: 'props', title: '道具设计', content: '红色齿轮挂件，边缘有缺口', status: 'ready' },
     { artifact_type: 'episode_script', episode_number: 1, title: '第1集', content: '上一集末尾林照忘记弟弟的名字。', status: 'ready' },
   ] })
@@ -429,12 +435,14 @@ test('workflow generation streams reviewable drafts with selected episode contex
     { heading: '天桥', action: '陌生乘客出现', duration: 15 },
   ] })
   const before = await call<{ script: Script }>('GET', `/api/projects/${project.id}`)
+  workflowStage = 'episode'
   const streamed = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat/stream`, payload: {
     ...request, workflow: { stage: 'episode', episode_number: 2, target_duration: 60 }, messages: [{ role: 'user', text: '开始写第2集' }],
   } })
   assert.equal(streamed.statusCode, 200, streamed.body)
   const events = streamed.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)))
   const done = events.find(event => event.type === 'done')
+  assert.ok(done?.draft, JSON.stringify(events))
   assert.equal(done?.draft.episode_number, 2)
   assert.equal(done?.draft.artifacts[0].title, '模型标题')
   assert.equal(done?.draft.scenes.reduce((sum: number, scene: Scene) => sum + scene.duration, 0), 60)
@@ -443,7 +451,9 @@ test('workflow generation streams reviewable drafts with selected episode contex
   assert.match(submittedPrompt, /红色齿轮挂件/)
   assert.deepEqual((await call<{ script: Script }>('GET', `/api/projects/${project.id}`)).script, before.script)
   modelReply = JSON.stringify({ artifacts: [{ artifact_type: 'props', title: '错误阶段', content: '不应该保存' }], scenes: [] })
-  const malformed = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload: request })
+  workflowStage = 'outline'
+  workflowOperation = 'regenerate'
+  const malformed = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload: { ...request, workflow: { stage: 'outline', operation: workflowOperation } } })
   assert.equal(malformed.statusCode, 422)
   assert.deepEqual((await call<{ script: Script }>('GET', `/api/projects/${project.id}`)).script, before.script)
 })
@@ -456,11 +466,13 @@ test('design JSON and whole-script generation repair missing subdocuments and sa
   const project = await call<{ id: string }>('POST', '/api/projects', { name: '车站与怀表' })
   await call('PUT', `/api/projects/${project.id}/script/artifacts`, { artifacts: [...scriptStageArtifacts.outline, ...scriptStageArtifacts.characters].map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '已确认的故事与人物资料', status: 'ready' })) })
   let stage: 'locations' | 'props' = 'locations', whole = false, attempts = 0
+  let operation: 'create' | 'regenerate' = 'create'
   const prompts: string[] = []
   const artifactsFor = (value: 'locations' | 'props') => scriptStageArtifacts[value].map(artifact_type => ({ artifact_type, title: `车站故事 · ${scriptArtifactLabels[artifact_type]}`, content: `${scriptArtifactLabels[artifact_type]}：第1集车站里的怀表。` }))
   t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const completeness = draftCompletenessFixtureResponse(init); if (completeness) return completeness
     const body = JSON.parse(String(init?.body)), prompt: string = body.messages[0].content
-    if (prompt.includes('本次独立调用只理解创作者意图')) return Response.json({ choices: [{ message: { content: JSON.stringify({ action: 'draft', operation: 'create', workflow: { stage }, creative_brief: '整理车站与怀表资料。' }) } }] })
+    if (prompt.includes('本次独立调用只理解创作者意图')) return Response.json({ choices: [{ message: { content: JSON.stringify({ action: 'draft', operation, workflow: { stage }, creative_brief: '整理车站与怀表资料。' }) } }] })
     prompts.push(prompt)
     const schema = JSON.stringify(body.response_format.json_schema.schema)
     for (const type of [...scriptStageArtifacts.locations, ...scriptStageArtifacts.props]) assert.ok(schema.includes(`"${type}"`), type)
@@ -488,8 +500,8 @@ test('design JSON and whole-script generation repair missing subdocuments and sa
     const task = await call<{ source_artifact_ids: string[] }>('POST', `/api/projects/${project.id}/asset-tasks`, { focus_artifact: stage === 'locations' ? 'location' : 'prop' })
     for (const type of scriptStageArtifacts[stage]) assert.ok(task.source_artifact_ids.includes(saved.artifacts!.find(doc => doc.artifact_type === type)!.id))
   }
-  stage = 'locations'; attempts = 0; prompts.length = 0
-  await call('POST', `/api/projects/${project.id}/script/director/chat`, { model_id: model.id, mode: 'script', workflow: { stage }, messages: [{ role: 'user', text: '核对全剧空间与道具一致性' }] })
+  stage = 'locations'; operation = 'regenerate'; attempts = 0; prompts.length = 0
+  await call('POST', `/api/projects/${project.id}/script/director/chat`, { model_id: model.id, mode: 'script', workflow: { stage, operation }, messages: [{ role: 'user', text: '按全剧空间与道具一致性重新设计场景' }] })
   assert.ok(prompts[0].includes('"type":"prop_continuity"'), 'the last of 19 global documents must remain in the writer context')
   whole = true; attempts = 0; prompts.length = 0
   const preview = await call<{ prompt: string }>('POST', `/api/projects/${project.id}/script/generate/prompt`, {})

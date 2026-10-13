@@ -7,6 +7,7 @@ import { analyzeVisualProfiles, applyProfileShotUsage, inheritSceneVisualBinding
 import type { OutputContract } from '../generation/model-output.js'
 import { projectVisualStyle } from '../visuals/project-visual-style.js'
 import { shotImagePrompt, shotVideoPrompt } from '@video-studio/shared/storyboard/shot-prompts'
+import { assertStoryboardReferenceBudget, storyboardReferenceBudget, storyboardReferenceBudgetIssues } from '../storyboard/storyboard-reference-budget.js'
 import { skillIdsInput } from '../skills/skills.js'
 
 type Context = {
@@ -31,9 +32,11 @@ export function scriptCanvasPreparationSnapshot(id: string, sceneIds: string[], 
   const style = projectVisualStyle(id)
   const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? ORDER BY position, id', id)
     .filter(shot => sceneIds.includes(shot.source_scene_id || ''))
+  const referenceBudget = storyboardReferenceBudget()
+  const overBudgetScenes = new Set(storyboardReferenceBudgetIssues(id, sceneIds).map(issue => issue.scene_id))
   const signatureFor = (scene: ScriptScene) => hash({
     brief: project.brief, outline: script.outline, characters: script.characters,
-    artifacts: (script.artifacts || []).filter(item => !item.episode_number || item.episode_number === scene.episode_number)
+    referenceBudget, artifacts: (script.artifacts || []).filter(item => !item.episode_number || item.episode_number === scene.episode_number)
       .map(item => [item.id, item.artifact_type, item.episode_number, item.content]), scene, style: style.version,
     shots: shots.filter(shot => shot.source_scene_id === scene.id).map(shot => ({
       id: shot.id, title: shot.title, prompt: shot.prompt, image_prompt: shot.image_prompt, video_prompt: shot.video_prompt,
@@ -41,6 +44,7 @@ export function scriptCanvasPreparationSnapshot(id: string, sceneIds: string[], 
     })),
   })
   const needsAnalysis = scenes.filter(scene => {
+    if (overBudgetScenes.has(scene.id)) return true
     const prepared = one<{ signature: string; profile_ids: string }>('SELECT * FROM script_canvas_preparations WHERE scene_id=?', scene.id)
     if (!prepared || prepared.signature !== signatureFor(scene)) return true
     const bindings = visuals.scene_visual_bindings.filter(binding => binding.scene_id === scene.id).map(binding => binding.profile_id).sort()
@@ -73,6 +77,7 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
       model_id: data.model_id || invalid('请选择文本模型，以整理缺少的视觉设定'),
       scene_ids: state.needsAnalysis.map(scene => scene.id),
       skill_ids: data.skill_ids,
+      inherit_scene_references: true,
     }, context) : { profiles: [], skills: [], loaded_files: [] }
     if (scriptCanvasPreparationSnapshot(id, data.scene_ids, context).signature !== state.signature) conflict()
     return { signature: state.signature, scene_ids: data.scene_ids, profiles: drafts.profiles,
@@ -105,6 +110,10 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
         const expected = state.shots.filter(shot => input.scene_ids.includes(shot.source_scene_id || ''))
         if (expected.some(shot => !input.shot_usage?.some(item => item.shot_id === shot.id))) invalid('请明确每个已规划镜头的图片与视频参考用途')
       }
+      assertStoryboardReferenceBudget(id, [...allowed], [...merged.values()], {
+        replaceSceneBindings: data.reference_usage_version === 1 || [...merged.values()].some(input => input.shot_usage !== undefined),
+        inheritSceneReferences: true,
+      })
       let createdProfiles = 0
       for (const input of merged.values()) {
         let profile = one<VisualProfile>('SELECT * FROM visual_profiles WHERE project_id=? AND kind=? AND name=? AND variant=?', id, input.kind, input.name, input.variant)
@@ -145,6 +154,7 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
         const profile = one<VisualProfile>('SELECT * FROM visual_profiles WHERE project_id=? AND kind=? AND name=? AND variant=?', id, input.kind, input.name, input.variant)!
         applyProfileShotUsage(profile, input)
       }
+      assertStoryboardReferenceBudget(id, data.scene_ids)
       // The legacy preparation route can create a scene template. Record the
       // final shot contents so that creation itself does not invalidate the cache.
       const prepared = scriptCanvasPreparationSnapshot(id, data.scene_ids, context)

@@ -47,7 +47,8 @@ async function mount(data = detail, onRefresh: () => Promise<unknown> = async ()
   await act(() => root.render(<MantineProvider env="test"><TaskRecords detail={data} models={models} providers={providers} busy={false}
     onRefresh={onRefresh} onPreview={asset => events.push({ type: 'preview', id: asset.id })}
     onOpenCanvas={id => events.push({ type: 'canvas', id })} onOpenSpeech={() => events.push({ type: 'speech' })}
-    onRetry={task => events.push({ type: 'retry', id: task.id })} /></MantineProvider>))
+    onRetry={task => events.push({ type: 'retry', id: task.id })}
+    onPromptOptimized={task => { events.push({ type: 'optimized', id: task.id }) }} /></MantineProvider>))
   return { container, events, async close() { await act(() => root.unmount()); container.remove() } }
 }
 function button(container: Element, label: string) {
@@ -141,4 +142,21 @@ test('manual refresh guards duplicate clicks, reports failure inline and allows 
     assert.equal(calls, 2)
     assert.equal(view.container.querySelector('[role="alert"]'), null)
   } finally { await view.close() }
+})
+
+test('only content-policy image failures offer optimization and never show continuation for a terminal refusal', async () => {
+  const policy = job('policy', 'failed', { request: '{"prompt":"原始画面描述"}', error: 'content_policy_violation', task_resume_available: true })
+  const view = await mount({ ...detail, jobs: [policy, ...detail.jobs] })
+  const originalFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = async () => { calls++; throw new Error('No automatic requests allowed') }
+  try {
+    assert.equal([...view.container.querySelectorAll('button')].filter(node => node.textContent === '优化提示词').length, 1)
+    const row = [...view.container.querySelectorAll('tbody tr')].find(row => row.textContent?.includes('content_policy_violation'))!
+    assert.doesNotMatch(row.textContent!, /继续查询/)
+    await act(() => button(view.container, '优化提示词').click())
+    assert.match(document.querySelector('[role="dialog"]')!.textContent!, /优化提示词/)
+    assert.equal(document.querySelector<HTMLTextAreaElement>('textarea[aria-label="优化前的提示词"]')!.value, '原始画面描述')
+    assert.equal(calls, 0); assert.deepEqual(view.events, [])
+  } finally { globalThis.fetch = originalFetch; await view.close() }
 })

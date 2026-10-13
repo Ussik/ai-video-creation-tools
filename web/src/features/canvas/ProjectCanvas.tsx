@@ -42,11 +42,15 @@ import type { MissingVisualReference } from './canvas-visual-profiles'
 import { imageReferenceConfigError } from '@video-studio/shared/media/image-reference-config'
 import CanvasTextEditor, { CanvasTextPreview } from './CanvasTextEditor'
 import NodeMedia from './CanvasNodeMedia'
+import CanvasMediaPreview from './CanvasMediaPreview'
 import CanvasEdgeMotionProvider, { useCanvasEdgeMotionPath } from './CanvasEdgeMotion'
 import CanvasSelect from './CanvasSelect'
 import StoryboardWorkspace from '../storyboard/StoryboardWorkspace'
 import CanvasComposerToolbar from './CanvasComposerToolbar'
 import PromptSkillAction from '../skills/PromptSkillAction'
+import PromptOptimizationModal from '../jobs/PromptOptimizationModal'
+import { canOptimizeImagePrompt } from '@video-studio/shared/jobs/prompt-optimization'
+import { addOptimizedPromptDraft, type OptimizedPromptDraft } from './canvas-optimized-prompt'
 import { useAppDialog } from '../../shared/ui/AppDialog'
 import ThemeToggle from '../../shared/ui/ThemeToggle'
 import { CanvasGenerationParameters, CanvasVideoModeMenu, videoModeLabel } from './CanvasGenerationControls'
@@ -163,6 +167,7 @@ type FlowData = Record<string, unknown> & {
   modelOptions: { value: string; label: string }[]
   busy: boolean
   onPromptChange: (id: string, value: string) => void
+  onOptimizePrompt: (id: string) => void
   onTextChange: (id: string, value: string) => void
   onTextDocumentChange: (id: string, text: string, document: JSONContent) => void
   onModelChange: (id: string, value: string) => void
@@ -256,6 +261,8 @@ export interface ProjectCanvasProps {
   onOpenScriptDirector?: (focusArtifact?: ScriptAction, context?: string) => void
   initialLocation?: CanvasLocation
   onLocationChange?: (location: CanvasLocation) => void
+  optimizedPromptDraft?: OptimizedPromptDraft | null
+  onOptimizedPromptDraftApplied?: () => void
 }
 
 export type CanvasSession = {
@@ -631,7 +638,9 @@ function StudioNode({ data, selected }: NodeProps<FlowNode>) {
     : node.title || asset?.filename || (node.type === 'generation' ? '生成节点' : node.type === 'image' ? '图片节点' : node.type === 'video' ? '视频节点' : '文本节点')
   const idlePlaceholder = <div className="pc-node-placeholder" aria-label={job?.status === 'running' || job?.status === 'queued' ? '生成中' : job?.status === 'failed' ? '生成失败' : '尚未生成'}>
     {job?.status === 'running' || job?.status === 'queued' ? <LoaderCircle size={42} className="pc-spin" />
-      : job?.status === 'failed' ? <><CircleAlert size={40} /><span>生成失败，请查看任务记录</span></>
+      : job?.status === 'failed' ? <><CircleAlert size={40} /><span>{canOptimizeImagePrompt(job, data.model?.modality) ? '内容审核拒绝，请调整提示词' : '生成失败，请查看任务记录'}</span>
+        {canOptimizeImagePrompt(job, data.model?.modality) && <Button className="nodrag nopan" variant="light" size="xs" disabled={data.busy}
+          leftSection={<Sparkles size={14} />} onClick={event => { event.stopPropagation(); data.onOptimizePrompt(node.id) }}>优化提示词</Button>}</>
         : node.settings.modality === 'video' ? <Film size={54} strokeWidth={1.2} /> : <ImageIcon size={54} strokeWidth={1.2} />}
   </div>
   const generationTryActions = <div className="pc-node-try-list" aria-label="尝试操作">
@@ -727,7 +736,7 @@ const MemoStudioNode = memo(StudioNode, (previous, next) => {
 })
 const nodeTypes = { studio: MemoStudioNode }
 
-function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProject, onNavigate, onOpenScriptCreator, onOpenScriptDocument, onOpenSpeech, onOpenScriptDirector: onOpenDirectorPanel, initialLocation, onLocationChange, canvas, canvasSession, canvasMenu, registerCanvasActions, onCanvasViewport }: CanvasInstanceProps) {
+function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProject, onNavigate, onOpenScriptCreator, onOpenScriptDocument, onOpenSpeech, onOpenScriptDirector: onOpenDirectorPanel, initialLocation, onLocationChange, canvas, canvasSession, canvasMenu, registerCanvasActions, onCanvasViewport, optimizedPromptDraft, onOptimizedPromptDraftApplied }: CanvasInstanceProps) {
   const { confirm, dialog } = useAppDialog()
   const canvasId = canvas.is_default ? undefined : canvas.id
   const storageId = canvas.id === detail.id ? detail.id : `${detail.id}:${canvas.id}`
@@ -766,8 +775,13 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   }, [notice])
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(canvasSession.selection?.nodeId || null)
   const [composerNodeId, setComposerNodeId] = useState<string | null>(canvasSession.selection?.composerNodeId || null)
+  const [optimizationNodeId, setOptimizationNodeId] = useState<string | null>(null)
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>(canvasSession.selection?.nodeIds || [])
   const [storyboardSelectedId, setStoryboardSelectedId] = useState<string | null>(initialLocation?.storyboardId || null)
+  const [storyboardQuery, setStoryboardQuery] = useState('')
+  useEffect(() => {
+    if (viewMode !== 'storyboard') setStoryboardQuery('')
+  }, [viewMode])
   useEffect(() => {
     onLocationChange?.({ view: viewMode, storyboardId: storyboardSelectedId })
   }, [viewMode, storyboardSelectedId, onLocationChange])
@@ -784,6 +798,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const [composerExpanded, setComposerExpanded] = useState(false)
   const [review, setReview] = useState<GenerationReview | null>(null)
   const [referencePreview, setReferencePreview] = useState<Asset | null>(null)
+  const [nodeMediaPreview, setNodeMediaPreview] = useState<{ asset: Asset; title: string } | null>(null)
   const [generationInfoOpen, setGenerationInfoOpen] = useState(false)
   const [generationInfoTrigger, setGenerationInfoTrigger] = useState<HTMLButtonElement | null>(null)
   const [generationInfoDropdown, setGenerationInfoDropdown] = useState<HTMLDivElement | null>(null)
@@ -851,6 +866,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const submittedReferenceJobs = useRef(new Map<string, string[]>())
   const [referenceBatch, setReferenceBatch] = useState<{ targetId: string; submitting: boolean; queued: number;
     failures: Array<{ profileId: string; name: string; message: string }> } | null>(null)
+  const [referenceConfirmation, setReferenceConfirmation] = useState<{ targetId: string; confirmed: number;
+    skipped: Array<{ profile_id: string; name: string; message: string }> } | null>(null)
   const removalPendingRef = useRef(false)
   const { fitView, screenToFlowPosition, setCenter, setViewport, zoomTo } = useReactFlow<FlowNode, Edge>()
 
@@ -1250,7 +1267,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         if (live.settings.visual_profile_id) {
           const profile = detail.visual_profiles?.find(item => item.id === live.settings.visual_profile_id)
           if (profile && live.settings.visual_completed_job_id !== job?.id) {
-            nodes[nodes.indexOf(live)] = { ...live, asset_id: asset.id,
+            nodes[nodes.indexOf(live)] = { ...live, asset_id: visualJobRequest(job).auto_confirm_first && profile.board_asset_id ? profile.board_asset_id : asset.id,
               settings: { ...live.settings, visual_completed_job_id: job!.id } }
             changed = true
           }
@@ -1501,6 +1518,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   }, [changeGraph, detail])
   const nodeActions = {
     onPromptChange: editNodePrompt,
+    onOptimizePrompt: (id: string) => { selectNodeForView(id); setOptimizationNodeId(id) },
     onTextChange: (id: string, value: string) => updateNodeById(id, { text: value }),
     onTextDocumentChange: (id: string, text: string, document: JSONContent) => changeGraph(current => ({
       ...current, nodes: current.nodes.map(item => item.id === id
@@ -1516,6 +1534,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   useLayoutEffect(() => { latestNodeActions.current = nodeActions })
   const nodeCallbacks = useMemo(() => ({
     onPromptChange: (...args: Parameters<typeof nodeActions.onPromptChange>) => latestNodeActions.current.onPromptChange(...args),
+    onOptimizePrompt: (id: string) => latestNodeActions.current.onOptimizePrompt(id),
     onTextChange: (...args: Parameters<typeof nodeActions.onTextChange>) => latestNodeActions.current.onTextChange(...args),
     onTextDocumentChange: (...args: Parameters<typeof nodeActions.onTextDocumentChange>) => latestNodeActions.current.onTextDocumentChange(...args),
     onModelChange: (...args: Parameters<typeof nodeActions.onModelChange>) => latestNodeActions.current.onModelChange(...args),
@@ -1552,7 +1571,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       const displayedAsset = assetMap.get(displayedAssetId || '')
       const { width, height } = nodeSize(node, displayedAsset)
       const selected = selectedIds.has(node.id)
-      const active = selected && selectedIds.size === 1
+      const active = selected && selectedIds.size === 1 && !nodeMediaPreview
       const modality = node.settings.modality || (node.type === 'image' ? 'image' : node.type === 'video' ? 'video' : undefined)
       return reuseFlowNode(previousById.get(node.id), {
         id: node.id, type: 'studio', position: { x: node.x, y: node.y },
@@ -1570,7 +1589,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     })
     const result = previousNodes.length === next.length && next.every((node, index) => node === previousNodes[index]) ? previousNodes : next
     return result
-  }, [graph, selectedIds, compactNodes, promptIndex, scriptInputPrompt, profileMap, assetMap, shotMap, jobMap, modelMap, busy, videoQuickModes, imageEditingModels, nodeModelOptions, nodeCallbacks, scriptNodeData])
+  }, [graph, selectedIds, nodeMediaPreview, compactNodes, promptIndex, scriptInputPrompt, profileMap, assetMap, shotMap, jobMap, modelMap, busy, videoQuickModes, imageEditingModels, nodeModelOptions, nodeCallbacks, scriptNodeData])
   useLayoutEffect(() => { flowNodesRef.current = flowNodes }, [flowNodes])
   const automaticReferenceEdgeIds = useMemo(() => new Set(automaticReferenceEdges.map(edge => edge.id)), [automaticReferenceEdges])
   const flowEdgesRef = useRef<Edge[]>([])
@@ -1632,6 +1651,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       detail, submittedReferenceJobs.current.get(profile.id)) : null]
   }))
   const referencesToGenerate = missingReferences.filter(reference => reference.action === 'generate' && !referenceGenerating.get(reference.profileId))
+  const referencesToConfirm = missingReferences.filter(reference => reference.action === 'confirm' && !profileMap.get(reference.profileId)?.board_asset_id && !referenceGenerating.get(reference.profileId))
   const referenceReturnNode = graph?.nodes.find(node => node.id === referenceReturnNodeId)
   const visualReferenceMode = selectedNode?.settings.visual_reference_mode || 'profiles'
   const selectedModel = modelMap.get(selectedNode?.model_id || '')
@@ -1748,6 +1768,27 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     preparedReferenceIds, inputVideo?.id, promptBindings, selectedProfile, profileDraftDirty])
   const generationInputRef = useRef(generationInputKey)
   generationInputRef.current = generationInputKey
+  const optimizedDraftAttempt = useRef<string | null>(null)
+  useEffect(() => {
+    const queue = queueRef.current
+    if (!graph || !queue || queue.conflict || !optimizedPromptDraft || optimizedDraftAttempt.current === optimizedPromptDraft.id) return
+    optimizedDraftAttempt.current = optimizedPromptDraft.id
+    try {
+      let added: ReturnType<typeof addOptimizedPromptDraft> | undefined
+      changeGraph(current => {
+        if (current.nodes.some(node => node.id === optimizedPromptDraft.id)) return current
+        added = addOptimizedPromptDraft(current, optimizedPromptDraft, detail, models)
+        return added.graph
+      })
+      if (added) {
+        setViewMode('canvas'); setSelectedNodeId(added.node.id); setSelectedNodeIds([added.node.id]); setSelectedEdgeId(null); setComposerNodeId(added.node.id)
+        const node = queue.graph.nodes.find(node => node.id === added!.node.id)!
+        window.requestAnimationFrame(() => { if (queueRef.current === queue) void setCenter(node.x + node.width / 2, node.y + node.height / 2, { zoom: 1, duration: 220 }) })
+        setNotice('优化提示词已加入新草稿，请确认参数和参考图后手动生成')
+      }
+      onOptimizedPromptDraftApplied?.()
+    } catch (issue) { showError(issue); onOptimizedPromptDraftApplied?.() }
+  }, [graph, optimizedPromptDraft, detail, models, changeGraph, setCenter, setNotice, showError, onOptimizedPromptDraftApplied])
   useEffect(() => {
     setGenerationInfoOpen(false)
     setReview(null)
@@ -2165,6 +2206,29 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     try {
       await useProfileBoard(selectedProfile, assetId)
     } catch (issue) { showError(issue) } finally { setBusy(false) }
+  }
+
+  async function confirmRequiredReferences() {
+    const queue = queueRef.current
+    if (!queue || !selectedNode || busy || visualPanelBusy || submittingRef.current || !referencesToConfirm.length) return
+    const targetId = selectedNode.id
+    submittingRef.current = true; setBusy(true)
+    try {
+      const result = await api<{ confirmed: VisualProfile[]; skipped: Array<{ profile_id: string; name: string; message: string }> }>(`/projects/${detail.id}/visual-profiles/confirm-first`, json('POST', {
+        profiles: referencesToConfirm.map(reference => ({ id: reference.profileId, expected_revision: profileMap.get(reference.profileId)!.revision })),
+        expected_style_version: detail.project_visual_style?.version,
+      }))
+      if (queueRef.current === queue) {
+        const confirmed = new Map(result.confirmed.map(profile => [profile.id, profile]))
+        changeGraph(current => ({ ...current, nodes: current.nodes.map(node => {
+          const profile = confirmed.get(node.settings.visual_profile_id || '')
+          return profile ? { ...node, asset_id: profile.board_asset_id, settings: { ...node.settings, visual_profile_revision: profile.revision } } : node
+        }) }))
+        setReferenceConfirmation({ targetId, confirmed: result.confirmed.length, skipped: result.skipped })
+      }
+      await onRefresh()
+      setNotice(result.confirmed.length ? `已确认 ${result.confirmed.length} 份参考图，可继续生成` : '没有新增确认，请查看待处理项')
+    } catch (issue) { showError(issue) } finally { submittingRef.current = false; setBusy(false) }
   }
 
   async function uploadProfileBoard(file: File) {
@@ -3176,7 +3240,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     onDrop={dropOnCanvas}>
     <FileButton ref={uploadInputRef} accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,audio/mpeg,audio/wav,audio/mp4" multiple onChange={files => { if (files.length) void uploadCanvasFiles(files) }}>{() => null}</FileButton>
     <FileButton ref={referenceUploadInputRef} accept="image/png,image/jpeg,image/webp" multiple onChange={files => { if (files.length && referenceUploadTargetId) void uploadCanvasFiles(files) }}>{() => null}</FileButton>
-    <div className="pc-toolbar">
+    <div className={`pc-toolbar ${viewMode === 'storyboard' ? 'pc-toolbar-storyboard' : ''}`}>
       <div className="pc-canvas-nav">
         <Tooltip label="项目"><ActionIcon variant="subtle" aria-label="返回项目" onClick={() => onNavigate('projects')}><FolderOpen size={18} /></ActionIcon></Tooltip>
         {projectNameEditing
@@ -3207,6 +3271,13 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           : saveState === 'saving' || saveState === 'pending' ? <><LoaderCircle size={14} className="pc-spin" />{saveState === 'saving' ? '保存中' : '待保存'}</>
             : <Button onClick={() => saveState === 'conflict' ? void inspectConflict() : queueRef.current && void flush(queueRef.current).catch(showError)} data-workspace-control="" variant="subtle"><CircleAlert size={14} />{saveState === 'conflict' ? '版本冲突 · 合并' : '保存失败 · 重试'}</Button>}
       </div>
+      {viewMode === 'storyboard' && graph && <div className="pc-storyboard-tools">
+        <TextInput className="pc-storyboard-search" aria-label="搜索故事板内容" placeholder="搜索文本、镜头或素材"
+          leftSection={<Search size={16} />} leftSectionPointerEvents="none"
+          rightSection={storyboardQuery ? <ActionIcon variant="subtle" size="sm" aria-label="清除故事板搜索" onClick={() => setStoryboardQuery('')}><X size={14} /></ActionIcon> : undefined}
+          value={storyboardQuery} onChange={event => setStoryboardQuery(event.currentTarget.value)} />
+        <Button className="pc-storyboard-director-button" type="button" onClick={() => openScriptDirector('all')} data-workspace-control="" variant="default" leftSection={<ScrollText size={15} />}>导演对话</Button>
+      </div>}
       <div className="pc-theme-control"><ThemeToggle /></div>
     </div>
     <div className={`pc-body ${viewMode === 'storyboard' ? 'pc-body-storyboard' : sidebarOpen ? 'pc-body-sidebar-open' : ''}`}>
@@ -3318,6 +3389,14 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
             setAddMenu(null); setContextMenu(null)
             if (event.metaKey || event.ctrlKey || event.shiftKey) return
             setComposerNodeId(node.id); setSelectedNodeId(node.id); setSelectedNodeIds([node.id]); setSelectedEdgeId(null)
+          }}
+          onNodeDoubleClick={(event, node) => {
+            if (event.target instanceof Element && event.target.closest('button, input, textarea, [contenteditable="true"], .react-flow__handle, .studio-media-controls')) return
+            const asset = node.data.asset
+            if (!['image', 'video', 'generation'].includes(node.data.node.type) || !asset || !['image', 'video'].includes(asset.kind)) return
+            event.preventDefault(); event.stopPropagation()
+            setAddMenu(null); setContextMenu(null)
+            setNodeMediaPreview({ asset, title: node.data.node.title || asset.filename })
           }}
           onNodeDragStart={() => setComposerNodeId(null)}
           onEdgeClick={(_, edge) => {
@@ -3438,6 +3517,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                     focusSidebarNode(referenceReturnNode.id); setReferenceReturnNodeId(null)
                   }}><ArrowLeft size={14} /><span>返回 {referenceReturnNode.title || '原节点'}</span></UnstyledButton>}
                   <Button type="button" className="pc-composer-chip" onClick={() => showSidebarAssets(selectedProfile ? 'image' : 'all', selectedNode.id)} data-workspace-control="" variant="subtle"><Plus size={15} />参考</Button>
+                  {selectedJob && canOptimizeImagePrompt(selectedJob, composerModality) && <Button type="button" className="pc-composer-chip" variant="light"
+                    leftSection={<Sparkles size={14} />} disabled={busy || selectedNodeGenerating} onClick={() => setOptimizationNodeId(selectedNode.id)}>优化提示词</Button>}
                   {(composerModality === 'image' || composerModality === 'video') && <PromptSkillAction key={selectedNode.id} projectId={detail.id} nodeId={selectedNode.id}
                     modality={composerModality} prompt={composerPrompt}
                     models={models.filter(model => model.modality === 'text' && model.enabled && providers.some(provider => provider.id === model.provider_id && provider.enabled && provider.adapter !== 'demo'))}
@@ -3480,7 +3561,10 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
               <div className="pc-composer-workspace">
               <div className="pc-composer-writing">
               {missingReferences.length > 0 && <div className="pc-missing-references" role="group" aria-label="待补齐参考图">
-                <div className="pc-missing-references-heading"><strong>待补齐参考图 · {missingReferences.length}</strong><span>生成后需确认使用</span>
+                <div className="pc-missing-references-heading"><strong>待补齐参考图 · {missingReferences.length}</strong><span>新生成默认确认第一张，可随时更换</span>
+                  {referencesToConfirm.length > 0 && <Button size="compact-xs" variant="default" className="pc-confirm-required-references"
+                    leftSection={<Check size={13} />} aria-label="一键确认所需参考图" disabled={busy || visualPanelBusy || selectedNodeGenerating}
+                    onClick={() => void confirmRequiredReferences()}>一键确认 · {referencesToConfirm.length}</Button>}
                   {missingReferences.some(reference => reference.action === 'generate') && <Button size="compact-xs" variant="default" className="pc-generate-required-references"
                     leftSection={<Sparkles size={13} />} aria-label="一键生成所需参考图" loading={referenceBatch?.targetId === selectedNode.id && referenceBatch.submitting}
                     disabled={busy || visualPanelBusy || selectedNodeGenerating || !referencesToGenerate.length}
@@ -3494,8 +3578,12 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                     : reference.action === 'bindings' ? '调整引用' : reference.action === 'confirm' ? '去确认' : '去生成'}</small><ArrowRight size={13} />
                 </UnstyledButton>)}</div>
                 {referenceBatch?.targetId === selectedNode.id && <div className="pc-required-reference-result" role="status" aria-live="polite">
-                  <p>{referenceBatch.submitting ? '正在提交所需参考图…' : referenceBatch.queued > 0 ? `已提交 ${referenceBatch.queued} 份设定图，生成完成后请确认使用。` : '所需参考图暂未提交，请处理以下问题。'}</p>
+                  <p>{referenceBatch.submitting ? '正在提交所需参考图…' : referenceBatch.queued > 0 ? `已提交 ${referenceBatch.queued} 份设定图，生成完成后自动确认第一张可用候选。` : '所需参考图暂未提交，请处理以下问题。'}</p>
                   {referenceBatch.failures.map(failure => <p key={failure.profileId || failure.name} className="pc-required-reference-error"><strong>{failure.name}</strong>：{failure.message}</p>)}
+                </div>}
+                {referenceConfirmation?.targetId === selectedNode.id && <div className="pc-required-reference-result" role="status" aria-live="polite">
+                  <p>已确认 {referenceConfirmation.confirmed} 份参考图。</p>
+                  {referenceConfirmation.skipped.map(item => <p key={item.profile_id} className="pc-required-reference-error"><strong>{item.name}</strong>：{item.message}</p>)}
                 </div>}
               </div>}
               {composerModality !== 'text' && detail.project_visual_style && detail.project_visual_style.source !== 'unspecified' && <p className="pc-project-style" role="status">
@@ -3692,6 +3780,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           detail={detail}
           graph={graph}
           models={models}
+          query={storyboardQuery}
           selectedId={storyboardSelectedId}
           saveState={saveState}
           onSelect={(id) => {
@@ -3763,9 +3852,18 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       classNames={{ content: 'pc-reference-preview', header: 'pc-reference-preview-header' }} zIndex={240}>
       {referencePreview && <img src={referencePreview.url} alt={referencePreview.filename} className="pc-reference-preview-image" />}
     </Modal>
+    {nodeMediaPreview && <CanvasMediaPreview asset={nodeMediaPreview.asset} title={nodeMediaPreview.title} onClose={() => setNodeMediaPreview(null)} />}
     <Modal opened={!!conflictReview} onClose={() => setConflictReview(null)} title="画布版本冲突" centered size="md">
       {conflictReview && <div className="pc-conflict"><p>服务器上的画布已被其他编辑更新。本地修改仍保留。合并会保留双方独立新增的节点；同一内容同时修改时以本地版本为准。</p><strong>{conflictReview.conflicts} 处内容冲突</strong><div><Button variant="default" onClick={useServerVersion}>加载服务器版本</Button><Button onClick={() => void applyMerge()} leftSection={<Save size={15} />}>合并并保存</Button></div></div>}
     </Modal>
+    {selectedNode && selectedNode.id === optimizationNodeId && selectedJob && canOptimizeImagePrompt(selectedJob, composerModality) &&
+      <PromptOptimizationModal key={`${selectedNode.id}:${selectedJob.id}`} job={selectedJob} models={models} providers={providers}
+        prompt={composerPrompt} sourceKey={generationInputKey} disabled={busy || selectedNodeGenerating} maxLength={selectedProfile ? 16_000 : 80_000}
+        onClose={() => setOptimizationNodeId(null)} onApply={value => {
+          if (selectedProfile) updateNodeSettingsById(selectedNode.id, { profile_prompt_override: value })
+          else editNodePrompt(selectedNode.id, value, { base: value, template: '' })
+          setNotice('已应用优化后的提示词，请确认后手动生成')
+        }} />}
     {dialog}
   </div>
 }
@@ -3783,20 +3881,23 @@ export default function ProjectCanvas(props: ProjectCanvasProps) {
   const hasDirector = !!props.onOpenScriptDirector
   const hasLocation = !!props.onLocationChange
   const hasSpeech = !!props.onOpenSpeech
+  const hasOptimizedDraftApplied = !!props.onOptimizedPromptDraftApplied
   const callbacks = useMemo(() => ({
     onRefresh: () => latest.current.onRefresh(),
     onOpenModels: () => latest.current.onOpenModels(),
     onNavigate: (destination: Parameters<ProjectCanvasProps['onNavigate']>[0]) => latest.current.onNavigate(destination),
     onOpenScriptCreator: () => latest.current.onOpenScriptCreator(),
     onOpenSpeech: hasSpeech ? () => latest.current.onOpenSpeech!() : undefined,
+    onOptimizedPromptDraftApplied: hasOptimizedDraftApplied ? () => latest.current.onOptimizedPromptDraftApplied!() : undefined,
     onRenameProject: hasRename ? (name: string) => latest.current.onRenameProject!(name) : undefined,
     onOpenScriptDocument: hasDocument ? (artifact: ScriptArtifact) => latest.current.onOpenScriptDocument!(artifact) : undefined,
     onOpenScriptDirector: hasDirector ? (focus?: ScriptAction, context?: string) => latest.current.onOpenScriptDirector!(focus, context) : undefined,
     onLocationChange: (location: CanvasLocation) => { locationRef.current = location; if (hasLocation) latest.current.onLocationChange!(location) },
-  }), [hasRename, hasDocument, hasDirector, hasLocation, hasSpeech])
+  }), [hasRename, hasDocument, hasDirector, hasLocation, hasSpeech, hasOptimizedDraftApplied])
   const renderCanvas = useCallback((canvas: ProjectCanvasInfo, session: CanvasSession, menu: React.ReactNode, register: (actions: CanvasActions | null) => void, viewportChanged: (viewport: ProjectCanvasInfo['viewport']) => void) =>
     <ReactFlowProvider key={canvas.id}><MemoProjectCanvasInner detail={props.detail} models={props.models} providers={props.providers} {...callbacks} initialLocation={locationRef.current}
+      optimizedPromptDraft={props.optimizedPromptDraft}
       canvas={canvas} canvasSession={session} canvasMenu={menu} registerCanvasActions={register} onCanvasViewport={viewportChanged} /></ReactFlowProvider>,
-  [props.detail, props.models, props.providers, callbacks])
+  [props.detail, props.models, props.providers, props.optimizedPromptDraft, callbacks])
   return <ProjectCanvasSwitcher projectId={props.detail.id}>{renderCanvas}</ProjectCanvasSwitcher>
 }

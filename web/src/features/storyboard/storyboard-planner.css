@@ -117,6 +117,7 @@ div.storyboard-planner-error > span { flex: 1; min-width: 0; white-space: pre-wr
 .storyboard-planner .mantine-CloseButton-root:hover { background: var(--fc-surface-muted); color: var(--fc-text); }
 .storyboard-planner :is(button, .workspace-disclosure-control):focus-visible { outline: 2px solid var(--fc-focus); outline-offset: 2px; }
 @keyframes storyboard-planner-spin { to { transform: rotate(360deg); } }
+.storyboard-planner-reference-budget { margin: 0; color: var(--fc-text-muted); font-size: 12px; line-height: 1.7; }
 @media (max-width: 720px) {
   .storyboard-planner.mantine-Modal-content { height: calc(100dvh - 32px); max-height: calc(100dvh - 32px); }
   .storyboard-planner .storyboard-planner-header { min-height: 56px; padding: 16px; }

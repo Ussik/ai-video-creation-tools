@@ -105,6 +105,8 @@
   background: var(--fc-primary, var(--fc-primary));
 }
 
+.timeline-preview-buffering { position: absolute; z-index: 2; right: 12px; top: 12px; padding: 6px 10px; border-radius: 6px; background: var(--fc-panel); color: var(--fc-text-secondary); font-size: 11px; }
+
 @media (max-width: 560px) {
   .timeline-preview-transport {
     flex-wrap: wrap;

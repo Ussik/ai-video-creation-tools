@@ -4,6 +4,8 @@ import { ArrowRight, Clapperboard, Clock3, Download, Eye, FileText, Film, Image 
 import type { Asset, Job, Model, ProjectDetail, Provider } from '../../shared/api/api'
 import JobInformationPopover from './JobInformationPopover'
 import JobQueueControls from './JobQueueControls'
+import PromptOptimizationModal from './PromptOptimizationModal'
+import { canOptimizeImagePrompt } from '@video-studio/shared/jobs/prompt-optimization'
 import { filterTaskRecords, isTaskActive, projectTaskRecords, taskKindLabels, type TaskKind, type TaskStatusFilter } from './task-records'
 import './task-records.css'
 
@@ -17,13 +19,16 @@ type Props = {
   onOpenCanvas: (shotId?: string) => void
   onOpenSpeech: () => void
   onRetry: (job: Job) => void
+  onPromptOptimized?: (job: Job, prompt: string) => void | Promise<void>
 }
 const statuses: Array<{ value: TaskStatusFilter; label: string }> = [
   { value: 'all', label: '全部' }, { value: 'active', label: '进行中' }, { value: 'failed', label: '失败' }, { value: 'succeeded', label: '已完成' },
 ]
 const kindIcons = { image: ImageIcon, video: Film, speech: Mic2, export: Clapperboard, text: FileText, unknown: Sparkles }
 
-export default function TaskRecords({ detail, models, providers, busy, onRefresh, onPreview, onOpenCanvas, onOpenSpeech, onRetry }: Props) {
+export default function TaskRecords({ detail, models, providers, busy, onRefresh, onPreview, onOpenCanvas, onOpenSpeech, onRetry, onPromptOptimized }: Props) {
+  const [optimizationJobId, setOptimizationJobId] = useState<string | null>(null)
+  const optimizationJob = detail.jobs.find(job => job.id === optimizationJobId)
   const [status, setStatus] = useState<TaskStatusFilter>('all')
   const [kind, setKind] = useState<'all' | TaskKind>('all')
   const [query, setQuery] = useState('')
@@ -75,6 +80,7 @@ export default function TaskRecords({ detail, models, providers, busy, onRefresh
         <Table.Thead><Table.Tr className="job-row job-header"><Table.Th>任务</Table.Th><Table.Th>状态</Table.Th><Table.Th className="job-date">提交时间</Table.Th><Table.Th>结果与操作</Table.Th></Table.Tr></Table.Thead>
         <Table.Tbody>{visible.map(record => {
           const { job, result, model, provider, shot, kind: taskKind, needsBillingCheck } = record
+          const canOptimize = canOptimizeImagePrompt(job, model?.modality)
           const Icon = kindIcons[taskKind]
           const statusLabel = job.status === 'queued' ? '排队中' : job.status === 'failed' ? '失败' : job.status === 'succeeded' ? '已完成'
             : taskKind === 'export' ? '导出中' : taskKind === 'speech' ? '合成中' : '生成中'
@@ -83,7 +89,8 @@ export default function TaskRecords({ detail, models, providers, busy, onRefresh
               <strong>{record.label}<span>{taskKind === 'speech' ? '豆包 TTS 2.0' : model?.name}</span></strong>
               <small title={record.context}>{record.context}{provider && ` · ${provider.name}`}</small>
               {job.error && <small className="task-records-error" title={job.error}>{job.error}</small>}
-              {needsBillingCheck && <small className="task-records-guidance">{taskKind === 'image' ? '请先核对提供商账单，再回到画布重新生成。' : '原模型不可用，请先核对提供商记录。'}</small>}
+              {canOptimize && <small className="task-records-guidance">内容审核拒绝，可调整提示词和参考图后重新生成。</small>}
+              {needsBillingCheck && !canOptimize && <small className="task-records-guidance">{taskKind === 'image' ? '请先核对提供商账单，再回到画布重新生成。' : '原模型不可用，请先核对提供商记录。'}</small>}
             </div></div></Table.Td>
             <Table.Td><Badge className={`job-status status-${job.status}`} variant="light" color={job.status === 'failed' ? 'red' : job.status === 'succeeded' ? 'teal' : 'gray'}
               leftSection={job.status === 'running' ? <LoaderCircle className="spin" size={12} /> : undefined}>{statusLabel}</Badge></Table.Td>
@@ -92,12 +99,13 @@ export default function TaskRecords({ detail, models, providers, busy, onRefresh
             </time></Table.Td>
             <Table.Td><div className="job-result">
               <JobInformationPopover job={job} model={model} provider={provider} shot={shot} projectName={detail.name} assets={detail.assets} />
+              {canOptimize && onPromptOptimized && <Button variant="light" size="xs" disabled={busy} leftSection={<Sparkles size={14} />} onClick={() => setOptimizationJobId(job.id)}>优化提示词</Button>}
               {result ? <>
                 <Button variant="default" size="xs" leftSection={<Eye size={14} />} onClick={() => onPreview(result)}>查看结果</Button>
                 {taskKind === 'export' && <Button component="a" variant="subtle" size="xs" href={result.url} download leftSection={<Download size={14} />}>下载成片</Button>}
               </> : job.status === 'failed' ? taskKind === 'speech'
                 ? <Button variant="default" size="xs" onClick={onOpenSpeech} leftSection={<Mic2 size={14} />}>返回配音</Button>
-                : needsBillingCheck
+                : needsBillingCheck || canOptimize
                   ? <Button variant="default" size="xs" onClick={() => onOpenCanvas(job.shot_id || undefined)} leftSection={<ArrowRight size={14} />}>回到画布</Button>
                   : <Button variant="default" size="xs" disabled={busy} onClick={() => onRetry(job)} leftSection={job.recovery_available ? <Download size={14} /> : <RefreshCcw size={14} />}>
                     {job.recovery_available ? '恢复下载' : job.task_resume_available ? '继续查询' : '重试'}
@@ -108,5 +116,8 @@ export default function TaskRecords({ detail, models, providers, busy, onRefresh
         })}</Table.Tbody>
       </Table> : <div className="task-records-empty" role="status"><Search size={28} strokeWidth={1.4} /><strong>没有符合条件的任务</strong><p>试试其他关键词，或清除筛选查看全部记录。</p><Button variant="default" onClick={clearFilters}>清除筛选</Button></div>}
     </> : <div className="task-records-empty" role="status"><Clock3 size={34} strokeWidth={1.3} /><strong>还没有任务记录</strong><p>在项目画布中生成素材后，可以在这里查看进度和结果。</p><Button variant="default" leftSection={<ArrowRight size={15} />} onClick={() => onOpenCanvas()}>进入画布</Button></div>}
+    {optimizationJob && onPromptOptimized && canOptimizeImagePrompt(optimizationJob, models.find(model => model.id === optimizationJob.model_id)?.modality) &&
+      <PromptOptimizationModal key={optimizationJob.id} job={optimizationJob} models={models} providers={providers} newDraft disabled={busy}
+        onClose={() => setOptimizationJobId(null)} onApply={prompt => onPromptOptimized(optimizationJob, prompt)} />}
   </section>
 }

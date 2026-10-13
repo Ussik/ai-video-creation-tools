@@ -723,3 +723,123 @@ test('leaving the canvas during enqueue preserves the submitted job on its origi
   assert.equal(api.generated.length, 1, 'leaving stops additional submissions')
   assert.equal(api.saved.at(-1)!.nodes.find(node => node.settings.visual_profile_id === hero.id)!.job_id, 'job-hero-0')
 })
+
+test('one-click confirmation handles only unresolved references for this shot and retains the target draft', async t => {
+  const pendingHero = { ...missingHero, candidate_asset_ids: ['hero-board'] }
+  const pendingStation = { ...missingStation, candidate_asset_ids: ['station-board'] }
+  const chosen = { ...hero, id: 'chosen', name: '已选人物' }
+  const queued = { ...pendingHero, id: 'queued', name: '生成人物' }
+  const unrelated = { ...pendingHero, id: 'unrelated', name: '其他镜头人物' }
+  const optional = { ...pendingHero, id: 'optional', name: '未使用道具' }
+  const profiles = [pendingHero, pendingStation, chosen, queued, unrelated, optional]
+  const projectDetail: ProjectDetail = { ...detail, visual_profiles: profiles, project_visual_style: { version: 'a'.repeat(64), label: '', source: 'unspecified', details: {} },
+    shot_visual_bindings: [bind(pendingHero, true), bind(pendingStation, true), bind(chosen, true), bind(queued, true), bind(optional, false), { ...bind(unrelated, true), shot_id: 'other-shot' }],
+    jobs: [{ id: 'queued-job', status: 'running', created_at: timestamp, request: JSON.stringify({ visual_profile_id: queued.id, visual_profile_revision: queued.revision }) } as ProjectDetail['jobs'][number]] }
+  const graph = initialGraph('reference')
+  graph.nodes.push({ ...node('hero-node', 'generation', 900), model_id: imageModel.id, asset_id: 'manual', settings: { modality: 'image', visual_profile_id: hero.id, visual_profile_revision: hero.revision } })
+  const originalTarget = structuredClone(graph.nodes.find(node => node.id === 'video-node')!)
+  const requests: Record<string, unknown>[] = []
+  const api = mockApi(t, graph, projectDetail, (path, method, body) => {
+    assert.equal(path, '/api/projects/video-reference-test/visual-profiles/confirm-first')
+    assert.equal(method, 'POST'); requests.push(body)
+    return Response.json({ confirmed: [hero, station], skipped: [] })
+  })
+  let refreshes = 0
+  const view = await mount(projectDetail, false, { models: [videoModel, imageModel], onRefresh: async () => { refreshes++ } })
+  try {
+    assert.match(view.button('一键确认所需参考图').textContent!, /· 2/)
+    await act(() => { view.button('一键确认所需参考图').click(); view.button('一键确认所需参考图').click() }); await settle()
+    assert.equal(requests.length, 1)
+    assert.deepEqual(requests[0].profiles, [{ id: hero.id, expected_revision: hero.revision }, { id: station.id, expected_revision: station.revision }])
+    assert.equal(requests[0].expected_style_version, 'a'.repeat(64))
+    assert.equal(refreshes, 1)
+    await view.renderDetail({ ...projectDetail, visual_profiles: profiles.map(profile => profile.id === hero.id ? hero : profile.id === station.id ? station : profile),
+      shot_visual_bindings: projectDetail.shot_visual_bindings!.map(binding => binding.profile_id === hero.id ? bind(hero, true) : binding.profile_id === station.id ? bind(station, true) : binding) })
+    await act(() => new Promise(resolve => setTimeout(resolve, 900))); await settle()
+    assert.equal(api.saved.at(-1)!.nodes.find(node => node.id === 'hero-node')!.asset_id, 'hero-board')
+    assert.deepEqual(api.saved.at(-1)!.nodes.find(node => node.id === 'video-node'), originalTarget)
+    assert.ok(!document.querySelector('button[aria-label="一键确认所需参考图"]'))
+    assert.equal(api.previews.length, 0, 'confirmation never starts target generation')
+  } finally { await view.destroy() }
+})
+
+test('automatic first-board selection displays the approved first image instead of the last completed candidate', async t => {
+  const job = { id: 'last-candidate', status: 'succeeded', result_asset_id: 'manual', created_at: timestamp,
+    request: JSON.stringify({ visual_profile_id: hero.id, visual_profile_revision: hero.revision, auto_confirm_first: true }) } as ProjectDetail['jobs'][number]
+  const profile = { ...hero, asset_task_id: 'hero-task' }
+  const projectDetail: ProjectDetail = { ...detail, visual_profiles: [profile, station], jobs: [job],
+    asset_tasks: [{ id: 'hero-task', status: 'ready', generation_job_id: job.id } as ProjectDetail['asset_tasks'][number]] }
+  const graph = initialGraph('reference')
+  graph.nodes.push({ ...node('hero-node', 'generation', 900), model_id: imageModel.id, job_id: job.id,
+    settings: { modality: 'image', visual_profile_id: hero.id, visual_profile_revision: hero.revision } })
+  const api = mockApi(t, graph, projectDetail)
+  const view = await mount(projectDetail, false, { models: [videoModel, imageModel] })
+  try {
+    await act(() => new Promise(resolve => setTimeout(resolve, 900))); await settle()
+    assert.equal(api.saved.at(-1)!.nodes.find(node => node.id === 'hero-node')!.asset_id, hero.board_asset_id)
+    assert.equal(api.saved.at(-1)!.nodes.find(node => node.id === 'hero-node')!.settings.visual_completed_job_id, job.id)
+  } finally { await view.destroy() }
+})
+
+test('double-click opens original images and displayed profile candidates without selecting or generating an asset', async t => {
+  const graph = initialGraph('reference')
+  graph.nodes.push({ ...node('profile-node', 'generation', 900, 'manual'), title: '道具候选', model_id: imageModel.id,
+    settings: { modality: 'image', visual_profile_id: hero.id, visual_profile_revision: hero.revision } })
+  const api = mockApi(t, graph)
+  const view = await mount(detail, true, { models: [videoModel, imageModel] })
+  try {
+    for (const [id, assetId] of [['storyboard-node', 'storyboard'], ['profile-node', 'manual']]) {
+      const card = view.container.querySelector<HTMLElement>(`[data-id="${id}"]`)!
+      await act(() => card.click()); await settle()
+      const writes = api.saved.length
+      await act(() => card.querySelector('img')!.dispatchEvent(new dom.window.MouseEvent('dblclick', { bubbles: true }))); await settle()
+      const image = document.querySelector<HTMLImageElement>('.pc-media-preview-stage > img')!
+      assert.ok(image)
+      assert.equal(image.getAttribute('src'), `/api/assets/${assetId}/file`, 'preview uses the original displayed candidate')
+      assert.equal(api.saved.length, writes)
+      assert.equal(api.previews.length, 0)
+      await act(() => image.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))); await settle()
+      assert.ok(!document.querySelector('.pc-media-preview'))
+      assert.ok(view.container.querySelector(`[data-id="${id}"].selected`), 'Escape preserves selection')
+    }
+    assert.equal(detail.visual_profiles![0].board_asset_id, 'hero-board', 'preview never confirms a candidate')
+    await act(() => view.container.querySelector<HTMLElement>('[data-id="video-node"]')!.dispatchEvent(new dom.window.MouseEvent('dblclick', { bubbles: true }))); await settle()
+    assert.ok(!document.querySelector('.pc-media-preview'), 'an empty generation node has no media preview')
+  } finally { await view.destroy() }
+})
+
+test('video double-click transfers playback to the large preview, ignores player controls and stops on close', async t => {
+  const video = { ...detail.assets[0], id: 'video-result', kind: 'video' as const, filename: '镜头.mp4', url: '/api/assets/video-result/file' }
+  const projectDetail = { ...detail, assets: [...detail.assets, video] }
+  const graph = initialGraph('reference')
+  graph.nodes.push({ ...node('video-result-node', 'video', 900, video.id), title: '完整镜头' })
+  const api = mockApi(t, graph, projectDetail)
+  const pauses: HTMLMediaElement[] = []
+  t.mock.method(dom.window.HTMLMediaElement.prototype, 'pause', function (this: HTMLMediaElement) { pauses.push(this) })
+  const view = await mount(projectDetail, true)
+  try {
+    const card = view.container.querySelector<HTMLElement>('[data-id="video-result-node"]')!
+    await act(() => card.click()); await settle()
+    const inline = card.querySelector<HTMLVideoElement>('video')!
+    assert.ok(inline)
+    Object.defineProperty(inline, 'paused', { configurable: true, value: false })
+    await act(() => card.querySelector('[aria-label="播放素材"]')!.dispatchEvent(new dom.window.MouseEvent('dblclick', { bubbles: true }))); await settle()
+    assert.ok(!document.querySelector('.pc-media-preview'), 'double-clicking player controls keeps their existing behavior')
+    const writes = api.saved.length
+    await act(() => inline.dispatchEvent(new dom.window.MouseEvent('dblclick', { bubbles: true }))); await settle()
+    const expanded = document.querySelector<HTMLVideoElement>('.pc-media-preview video')!
+    assert.ok(expanded)
+    assert.equal(expanded.getAttribute('src'), video.url)
+    assert.ok(document.querySelector('.pc-media-preview [aria-label="全屏播放素材"]'))
+    assert.equal(card.querySelector('video'), null, 'the canvas video becomes a poster while the preview is open')
+    assert.ok(pauses.includes(inline))
+    assert.equal(document.querySelectorAll('video').length, 1)
+    Object.defineProperty(expanded, 'paused', { configurable: true, value: false })
+    await act(() => view.button('关闭素材预览').click()); await settle()
+    assert.ok(pauses.includes(expanded), 'closing stops preview playback')
+    assert.ok(!document.querySelector('.pc-media-preview'))
+    assert.ok(view.container.querySelector('[data-id="video-result-node"].selected'))
+    assert.equal(api.saved.length, writes)
+    assert.equal(api.previews.length, 0)
+  } finally { await view.destroy() }
+})

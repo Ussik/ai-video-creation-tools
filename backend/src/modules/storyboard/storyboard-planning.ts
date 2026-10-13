@@ -11,6 +11,7 @@ import { installedSkills, skillContext, skillPolicy, resolveSkillSelections, ski
 import { inheritSceneVisualBindings, visualProjectData } from '../visuals/visual-profiles.js'
 import { shotImagePrompt, shotVideoPrompt } from '@video-studio/shared/storyboard/shot-prompts'
 import { checkScriptCanvasPreparation } from '../canvas/script-canvas-preparation.js'
+import { storyboardReferenceBudget, storyboardReferenceBudgetInstructions } from './storyboard-reference-budget.js'
 
 type Context = {
   script: (id: string) => Parameters<typeof projectDocuments>[1]
@@ -41,10 +42,11 @@ function snapshot(projectId: string, sceneIds: string[], context: Context) {
   const documents = projectDocuments(projectId, script).filter(document => document.content.trim())
   const style = projectVisualStyle(projectId)
   const skills = installedSkills().filter(skill => skill.enabled && skill.stages.includes('storyboard'))
+  const referenceBudget = storyboardReferenceBudget()
   // Reference preparation touches project.updated_at without changing any
   // planning input. Only creative project fields belong to this version.
   const signature = hash({ project: { name: project.name, brief: project.brief, ratio: project.ratio }, scenes, shots,
-    documents: documents.map(({ id, version }) => ({ id, version })), style: style.version,
+    documents: documents.map(({ id, version }) => ({ id, version })), style: style.version, referenceBudget,
     skills: skills.map(({ id, revision, updated_at }) => ({ id, revision, updated_at })) })
   const plannedScenes = new Set(scenes.filter(scene => {
     const existing = shots.filter(shot => shot.source_scene_id === scene.id)
@@ -59,7 +61,7 @@ function snapshot(projectId: string, sceneIds: string[], context: Context) {
         shot.video_prompt.trim() === shotVideoPrompt({ prompt: shot.prompt }) && !shot.start_state.trim() && !shot.end_state.trim() && !shot.cut_note.trim())
     })
   }).map(scene => scene.id))
-  return { project, scenes, shots, documents, style, skills, signature, plannedScenes }
+  return { project, scenes, shots, documents, style, skills, signature, plannedScenes, referenceBudget }
 }
 function validatePlan(value: z.infer<typeof draft>, state: ReturnType<typeof snapshot>, target?: number) {
   if (new Set(value.scenes.map(scene => scene.scene_id)).size !== state.scenes.length || value.scenes.length !== state.scenes.length ||
@@ -104,7 +106,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
   app.post('/api/projects/:id/script/storyboard/context', async request => {
     const { id } = z.object({ id: z.string().min(1) }).parse(request.params), input = scope.parse(request.body)
     const state = snapshot(id, input.scene_ids, context), covered = canvasShotIds(id)
-    return { signature: state.signature, scenes: state.scenes.map(scene => ({ id: scene.id, heading: scene.heading, duration: scene.duration, episode_number: scene.episode_number,
+    return { signature: state.signature, reference_budget: state.referenceBudget, scenes: state.scenes.map(scene => ({ id: scene.id, heading: scene.heading, duration: scene.duration, episode_number: scene.episode_number,
       planned: state.plannedScenes.has(scene.id),
       shot_count: state.shots.filter(shot => shot.source_scene_id === scene.id).length,
       canvas_shot_count: state.shots.filter(shot => shot.source_scene_id === scene.id && covered.has(shot.id)).length,
@@ -140,6 +142,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       `已有镜头必须全部保留shot_id，并可调整其描述与时长；细分时新增镜头的shot_id为null。不得删除、重复或改用其他场次的ID。现有素材仅保留关联，不代表读取了图片像素。\n` +
       `prompt写镜头叙事。image_prompt只写单幅开镜首帧的景别、机位、主体、姿态、构图和光线；video_prompt写连续动作、表演、运镜、声音与收镜，不写信息图拼版。二者遵守项目画风，不绘制字幕、水印。` +
       `start_state/end_state/cut_note分别写开镜、收镜状态和接镜方式。相邻镜头空间与动作连续。输出所有选中场次的完整JSON方案。\n` +
+      storyboardReferenceBudgetInstructions(state.referenceBudget) +
       `每镜image_prompt明确人物的正面、侧面、背面或四分之三机位与景别，以便选择对应参考图；按叙事需要选择，不强行统一机位。` +
       `同场景固定门窗、主要地标、人物相对位置与镜头轴线；反打保留视线和屏幕方向。start_state与end_state写清持握道具的手、服装状态和动作阶段，cut_note说明相邻镜头如何承接。\n` +
       `创作者补充要求：${input.instructions}\n` +

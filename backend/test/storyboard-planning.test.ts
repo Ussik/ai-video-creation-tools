@@ -19,6 +19,103 @@ async function call(method: 'GET' | 'POST' | 'PATCH' | 'PUT', url: string, paylo
   const response = await app.inject({ method, url, ...(payload === undefined ? {} : { payload }) }); assert.equal(response.statusCode, 200, response.body); return response.json()
 }
 
+async function upstreamPlanning(protocol: 'responses' | 'chat_completions' = 'responses', settings: Record<string, unknown> = {}) {
+  const project = await call('POST', '/api/projects', { name: '分镜流式测试' })
+  const scene = await call('POST', `/api/projects/${project.id}/script/scenes`, { heading: '车站', duration: 20 })
+  const provider = await call('POST', '/api/providers', { name: '流式测试', base_url: 'https://gateway.invalid/v1', api_key: 'storyboard-test-key' })
+  const model = await call('POST', '/api/models', { provider_id: provider.id, name: '文本模型', remote_id: 'gpt-6.1-sol', modality: 'text', protocol,
+    settings: { request_path: protocol === 'responses' ? 'responses' : 'chat/completions',
+      request_template: protocol === 'responses' ? { model: '{{model}}', input: '{{prompt}}' } : { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] },
+      text_path: protocol === 'responses' ? 'output_text' : 'choices.0.message.content', ...settings } })
+  const context = await call('POST', `/api/projects/${project.id}/script/storyboard/context`, { scene_ids: [scene.id] })
+  const draft = { scenes: [{ scene_id: scene.id, scene_duration: 20, shots: [shot(null, 10), shot(null, 10, '反应镜头')] }] }
+  return { project, scene, context, draft, plan: () => app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/storyboard/plan`,
+    payload: { signature: context.signature, scene_ids: [scene.id], model_id: model.id, skill_ids: [] } }) }
+}
+
+function planningStream(draft: unknown, protocol: 'responses' | 'chat_completions' = 'responses', complete = true) {
+  const raw = JSON.stringify(draft), events: unknown[] = []
+  for (let offset = 0; offset < raw.length; offset += 53) {
+    const text = raw.slice(offset, offset + 53)
+    events.push(protocol === 'responses' ? { type: 'response.output_text.delta', delta: text } : { choices: [{ delta: { content: text } }] })
+  }
+  if (complete) events.push(protocol === 'responses' ? { type: 'response.completed', response: { status: 'completed' } } : { choices: [{ delta: {}, finish_reason: 'stop' }] })
+  const bytes = new TextEncoder().encode(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(''))
+  let offset = 0
+  return new Response(new ReadableStream<Uint8Array>({ pull(controller) {
+    if (offset === bytes.length) { controller.close(); return }
+    const next = Math.min(bytes.length, offset + 23)
+    controller.enqueue(bytes.slice(offset, next)); offset = next
+  } }), { headers: { 'Content-Type': 'text/event-stream' } })
+}
+
+test('storyboard planning requests streams and validates the collected result for both text protocols', async t => {
+  for (const protocol of ['responses', 'chat_completions'] as const) await t.test(protocol, async t => {
+    const f = await upstreamPlanning(protocol, { structured_output_mode: 'json_schema' })
+    let calls = 0
+    t.mock.method(globalThis, 'fetch', async (url: unknown, init: RequestInit) => {
+      calls++
+      const body = JSON.parse(String(init.body)), headers = new Headers(init.headers)
+      assert.equal(String(url), `https://gateway.invalid/v1/${protocol === 'responses' ? 'responses' : 'chat/completions'}`)
+      assert.equal(body.model, 'gpt-6.1-sol'); assert.equal(body.stream, true)
+      assert.equal(headers.get('Authorization'), 'Bearer storyboard-test-key')
+      assert.match(headers.get('Accept') || '', /text\/event-stream/)
+      const format = protocol === 'responses' ? body.text.format : body.response_format.json_schema
+      assert.equal(format.name, 'controlled_storyboard'); assert.equal(format.strict, true)
+      assert.match(protocol === 'responses' ? body.input : body.messages[0].content, /本次结构化返回契约/)
+      return planningStream(f.draft, protocol)
+    })
+    const response = await f.plan()
+    assert.equal(response.statusCode, 200, response.body)
+    assert.deepEqual(response.json().scenes, [{ ...f.draft.scenes[0], scene_heading: f.scene.heading }])
+    assert.equal(calls, 1)
+    assert.equal(all('SELECT id FROM shots WHERE project_id=?', f.project.id).length, 0)
+  })
+})
+
+test('storyboard planning preserves an explicit non-streaming template and accepts ordinary JSON', async t => {
+  const f = await upstreamPlanning('responses', { request_template: { model: '{{model}}', input: '{{prompt}}', stream: false } })
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    assert.equal(JSON.parse(String(init.body)).stream, false)
+    return Response.json({ output: [
+      { type: 'reasoning', content: [{ type: 'summary_text', text: '这段不是分镜方案正文' }] },
+      { type: 'message', content: [{ type: 'output_text', text: JSON.stringify(f.draft) }] },
+    ] })
+  })
+  const response = await f.plan()
+  assert.equal(response.statusCode, 200, response.body)
+  assert.deepEqual(response.json().scenes, [{ ...f.draft.scenes[0], scene_heading: f.scene.heading }])
+})
+
+test('storyboard planning rejects a stream without completion even when its JSON is complete and does not retry', async t => {
+  const f = await upstreamPlanning()
+  let calls = 0
+  t.mock.method(console, 'error', () => {})
+  t.mock.method(globalThis, 'fetch', async () => { calls++; return planningStream(f.draft, 'responses', false) })
+  const response = await f.plan()
+  assert.equal(response.statusCode, 502)
+  assert.match(response.json().detail, /连接提前结束/)
+  assert.equal(calls, 1)
+  assert.equal(all('SELECT id FROM shots WHERE project_id=?', f.project.id).length, 0)
+  assert.equal((await call('POST', `/api/projects/${f.project.id}/script/storyboard/context`, { scene_ids: [f.scene.id] })).signature, f.context.signature)
+})
+
+test('storyboard planning still checks timing and requests one correction after a completed stream', async t => {
+  const f = await upstreamPlanning()
+  const invalid = structuredClone(f.draft); invalid.scenes[0]!.shots[0]!.duration = 9
+  let calls = 0
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    const body = JSON.parse(String(init.body)); assert.equal(body.stream, true)
+    if (++calls === 2) assert.match(body.input, /一次格式修正[\s\S]*镜头时长总和必须等于本场规划时长/)
+    return planningStream(calls === 1 ? invalid : f.draft)
+  })
+  const response = await f.plan()
+  assert.equal(response.statusCode, 200, response.body)
+  assert.deepEqual(response.json().scenes, [{ ...f.draft.scenes[0], scene_heading: f.scene.heading }])
+  assert.equal(calls, 2)
+  assert.equal(all('SELECT id FROM shots WHERE project_id=?', f.project.id).length, 0)
+})
+
 test('storyboard upstream failures reach the client and diagnostic log without changing project shots', async t => {
   const project = await call('POST', '/api/projects', { name: '分镜网关失败测试' })
   const scene = await call('POST', `/api/projects/${project.id}/script/scenes`, { heading: '车站', duration: 20 })

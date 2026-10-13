@@ -148,7 +148,7 @@ export function syncVisualProfileNode(node: CanvasNode, profile: VisualProfile, 
   const keepCompletion = !revisionChanged || task?.generation_job_id === node.job_id
   return { ...node, title: `${profile.name} · ${profile.variant}`, shot_id: null,
     job_id: task?.generation_job_id || (revisionChanged ? null : node.job_id),
-    asset_id: revisionChanged || profile.archived_candidate_asset_ids?.includes(node.asset_id || '') ? profile.board_asset_id : node.asset_id,
+    asset_id: revisionChanged || profile.archived_candidate_asset_ids?.includes(node.asset_id || '') ? profile.board_asset_id : node.asset_id || profile.board_asset_id,
     settings: { ...node.settings, modality: 'image', visual_profile_revision: profile.revision,
       profile_prompt_override: revisionChanged ? undefined : node.settings.profile_prompt_override,
       visual_completed_job_id: keepCompletion ? node.settings.visual_completed_job_id : undefined } }

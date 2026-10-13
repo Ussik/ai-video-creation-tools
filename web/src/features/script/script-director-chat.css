@@ -107,7 +107,6 @@
 .sd-composer-area:has(.sd-question-panel) { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; max-height: 60%; }
 .sd-composer-area:has(.sd-question-panel.is-input-request) { max-height: 72%; }
 .sd-composer-area:has(.sd-question-panel) .sd-composer-area-content { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.sd-composer-area .sd-question-panel { max-height: none; }
 .sd-chat.is-reviewing .sd-composer-area { display: none; }
 .sd-composer-area.is-collapsed .sd-composer-area-head { min-height: 44px; padding: 8px 16px; border-top: 1px solid #ffffff0a; }
 .sd-composer-expand { display: flex; align-items: center; flex: 1; gap: 6px; min-width: 0; min-height: 28px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--fc-text-secondary); font: inherit; font-size: 11px; text-align: left; cursor: pointer; }
@@ -176,19 +175,20 @@
 .sd-message-activity { margin-top: 16px; color: var(--fc-text-muted); font-size: 12px; }
 .sd-message-activity .workspace-disclosure-control { cursor: pointer; }
 .sd-message-activity p { margin: 10px 0; white-space: pre-wrap; }
-.sd-question-panel { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; max-height: 60%; margin: 0 8px 8px; padding: 16px; border: 1px solid var(--fc-border); border-radius: 20px; background: var(--fc-surface); color: var(--fc-text-secondary); }
-.sd-question-panel > header { flex: none; padding-bottom: 12px; font-size: 14px; line-height: 1.6; }
-.sd-question-panel > header strong { font-weight: 600; }
-.sd-question-panel > header .sd-question-hint { display: block; margin-bottom: 4px; }
-.sd-question-options { display: grid; gap: 5px; min-height: 48px; overflow-y: auto; scrollbar-color: #484848 transparent; }
+/* The composer owns the height limit; long questions and answers share one scroll area. */
+.sd-question-panel { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; margin: 0 8px 8px; padding: 16px; border: 1px solid var(--fc-border); border-radius: 20px; background: var(--fc-surface); color: var(--fc-text-secondary); }
+.sd-question-body { flex: 1 1 auto; min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; overflow-wrap: anywhere; scrollbar-color: #484848 transparent; }
+.sd-question-body > header { padding-bottom: 12px; font-size: 14px; line-height: 1.6; }
+.sd-question-body > header strong { font-weight: 600; }
+.sd-question-body > header .sd-question-hint { display: block; margin-bottom: 4px; }
+.sd-question-options { display: grid; gap: 5px; min-height: 48px; }
 .sd-question-options > button { display: flex; align-items: center; gap: 10px; flex: none; width: 100%; padding: 10px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--fc-text-secondary); text-align: left; font: inherit; font-size: 13px; line-height: 1.6; cursor: pointer; }
 .sd-question-options > button > span:nth-child(2) { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .sd-question-options > button.is-selected { border-color: var(--fc-border); background: var(--fc-surface-muted); color: var(--fc-text); }
 .sd-question-options > button:hover:not(:disabled) { background: var(--fc-surface-muted); }
 .sd-question-options > button:disabled { cursor: default; opacity: .65; }
 .sd-question-options > button.is-custom { color: var(--fc-text-muted); }
-.sd-question-fields { display: grid; gap: 14px; min-height: 0; overflow-y: auto; scrollbar-color: #484848 transparent; }
-.sd-question-panel.is-input-request { max-height: 72%; }
+.sd-question-fields { display: grid; gap: 14px; }
 .sd-question-hint { margin: 0; color: var(--fc-text-muted); font-size: 12px; line-height: 1.6; }
 .sd-question-field label { display: grid; gap: 7px; color: var(--fc-text-secondary); font-size: 13px; }
 .sd-question-field textarea { width: 100%; min-height: 56px; padding: 9px 11px; border: 1px solid var(--fc-border); border-radius: 10px; background: var(--fc-surface-muted); color: var(--fc-text); font: inherit; line-height: 1.6; resize: none; outline: none; }
@@ -198,7 +198,8 @@
 .sd-question-suggestions button:disabled { opacity: .5; cursor: default; }
 .sd-question-number { display: grid; place-items: center; width: 21px; height: 21px; flex: none; border-radius: 5px; background: var(--fc-surface-hover); color: var(--fc-text-secondary); font-size: 12px; line-height: 1; }
 .is-selected .sd-question-number { background: var(--fc-primary); color: var(--fc-on-primary); }
-.sd-question-panel > textarea { flex: none; width: 100%; min-height: 72px; max-height: 100px; margin-top: 12px; padding: 10px 12px; resize: none; border: 1px solid var(--fc-border); border-radius: 10px; outline: 0; background: var(--fc-surface-muted); color: var(--fc-text); font: inherit; font-size: 13px; line-height: 1.6; }
+.sd-question-body > .mantine-Textarea-root { margin-top: 12px; }
+.sd-question-body > .mantine-Textarea-root textarea { width: 100%; min-height: 72px; max-height: 100px; padding: 10px 12px; resize: none; border: 1px solid var(--fc-border); border-radius: 10px; outline: 0; background: var(--fc-surface-muted); color: var(--fc-text); font: inherit; font-size: 13px; line-height: 1.6; }
 .sd-chat .sd-question-panel textarea,
 .sd-chat .sd-question-panel textarea:focus,
 .sd-chat .sd-question-panel textarea:focus-visible { border: 0; outline: none; box-shadow: none; }
@@ -220,12 +221,13 @@
 .sd-utility-body > p { margin: 0 0 6px; color: var(--fc-text-secondary); font-size: 13px; line-height: 1.8; }
 .sd-utility-body .script-director-workflow-generate { min-height: 40px; margin-top: 10px; }
 .sd-utility-body .sd-artifact-card strong { white-space: normal; overflow-wrap: anywhere; }
-.sd-chat.is-compact .sd-question-panel { max-height: calc(100% - 24px); padding: 10px; overflow-y: auto; border-radius: 16px; }
-.sd-chat.is-compact .sd-question-panel > header { padding-bottom: 8px; font-size: 13px; }
-.sd-chat.is-compact .sd-question-options { min-height: 40px; max-height: 120px; }
+.sd-chat.is-compact .sd-question-panel { padding: 10px; border-radius: 16px; }
+.sd-chat.is-compact .sd-question-body > header { padding-bottom: 8px; font-size: 13px; }
+.sd-chat.is-compact .sd-question-options { min-height: 40px; }
 .sd-chat.is-compact .sd-question-options > button { padding: 7px 8px; }
-.sd-chat.is-compact .sd-question-panel > textarea { min-height: 48px; height: 56px; max-height: 64px; margin-top: 8px; }
-.sd-chat.is-compact .sd-question-panel > footer { position: sticky; bottom: 0; padding-top: 8px; background: var(--fc-surface); }
+.sd-chat.is-compact .sd-question-body > .mantine-Textarea-root { margin-top: 8px; }
+.sd-chat.is-compact .sd-question-body > .mantine-Textarea-root textarea { min-height: 48px; height: 56px; max-height: 64px; }
+.sd-chat.is-compact .sd-question-panel > footer { padding-top: 8px; }
 .sd-chat.is-compact .sd-question-panel > footer button { min-height: 32px; padding: 6px 12px; }
 @media (max-width: 480px) {
   .sd-chat .script-director-header { padding-left: 12px; }
@@ -245,6 +247,7 @@
 .sd-reply-classification-status button { margin-left: 8px; color: var(--director-text); background: transparent; border: 0; text-decoration: underline; cursor: pointer; }
 
 .sd-stage-actions { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: center; gap: 5px; width: 100%; }
+.sd-creation-actions > :not(.sd-stage-actions) + .sd-stage-actions { margin-top: 8px; }
 .sd-creation-actions .sd-stage-button { justify-content: center; padding: 5px 4px; min-height: 30px; min-width: 0; width: 100%; background: transparent; border: 1px solid var(--fc-border); font-size: 11px; }
 .sd-stage-actions .mantine-Button-inner { justify-content: center; width: 100%; min-width: 0; }
 .sd-stage-actions .mantine-Button-label { gap: 3px; }

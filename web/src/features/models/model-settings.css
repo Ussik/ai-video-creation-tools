@@ -241,7 +241,19 @@
 .ms-resolution-row .mantine-ActionIcon-root:hover { color: var(--fc-text); }
 .ms-resolution-pricing > .mantine-Button-root { justify-self: start; }
 .ms-pricing-error { grid-column: 1 / -1; margin: 0; color: #ffb4aa; font-size: 11px; line-height: 1.5; }
-.ms-json-head { display: flex; align-items: end; justify-content: space-between; margin-bottom: -12px; }
+.ms-image-config { display: grid; gap: 16px; padding: 18px; border: 1px solid var(--fc-border); border-radius: 7px; background: var(--fc-panel); }
+.ms-image-config-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ms-image-config-heading strong { color: var(--fc-text); font-size: 13px; font-weight: 700; }
+.ms-image-config-note { display: flex; flex-wrap: wrap; gap: 5px 10px; margin: -5px 0 0; color: var(--fc-text-secondary); font-size: 12px; line-height: 1.6; }
+.ms-image-address { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 0; color: var(--fc-text-muted); font-size: 11px; line-height: 1.5; }
+.ms-image-address span:last-child { color: var(--fc-text-secondary); overflow-wrap: anywhere; }
+.ms-image-fields .mantine-Accordion-control { padding-inline: 0; color: var(--fc-text-secondary); font-size: 12px; }
+.ms-image-fields .mantine-Accordion-content { padding-inline: 0; }
+.ms-image-field-controls { display: grid; gap: 14px; }
+.ms-advanced-config .mantine-Accordion-control { color: var(--fc-text-secondary); font-size: 12px; }
+.ms-advanced-config .mantine-Accordion-panel { padding-top: 2px; }
+.ms-video-preset { justify-self: start; }
+.ms-json-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
 .ms-json-head > span { margin-bottom: 0; }
 .ms-json-editor { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: 11px; line-height: 1.55; tab-size: 2; }
 .ms-confirm { padding-top: 8px; }

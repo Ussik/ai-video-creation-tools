@@ -52,6 +52,13 @@ export function supportsVideoMultiReference(settings?: Settings): boolean {
   return videoReferenceConfigError(settings, 2, 'reference') === null
 }
 
+/** The composition image occupies a slot in the same budget as all other images. */
+export function videoReferenceImageLimit(settings: Settings = {}): number {
+  const configured = settings.max_reference_images
+  const limit = typeof configured === 'number' && Number.isInteger(configured) && configured >= 1 && configured <= 10 ? configured : 10
+  return Math.min(limit, settings.video_reference_profile === 'seedance_2_0' ? 9 : 10)
+}
+
 export function videoReferenceConfigError(settings: Settings | undefined, count: number, mode = 'reference'): string | null {
   settings ??= {}
   const modes = Array.isArray(settings.supported_modes) ? settings.supported_modes : ['text']
@@ -59,7 +66,7 @@ export function videoReferenceConfigError(settings: Settings | undefined, count:
   if (!Number.isInteger(count) || count < 0) return '视频参考图片数量无效'
   const configuredLimit = settings.max_reference_images
   if (configuredLimit !== undefined && (typeof configuredLimit !== 'number' || !Number.isInteger(configuredLimit) || configuredLimit < 1 || configuredLimit > 10)) return '视频模型的 max_reference_images 必须为 1 到 10 的整数'
-  const limit = Math.min(typeof configuredLimit === 'number' ? configuredLimit : 10, settings.video_reference_profile === 'seedance_2_0' ? 9 : 10)
+  const limit = videoReferenceImageLimit(settings)
   if (count > limit) return `当前视频模型一次最多使用 ${limit} 张参考图片（包含分镜图）`
   if (mode === 'text' && count) return '文生视频模式不能传入图片，请切换到首帧或多图参考模式'
   if (mode === 'first_frame' && count !== 1) return '首帧模式需要一张参考图片'

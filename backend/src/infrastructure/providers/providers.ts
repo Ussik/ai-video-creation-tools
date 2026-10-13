@@ -8,6 +8,9 @@ import type { TextTool, ToolCall, ToolOutput, ToolTurn } from './text-tools.js'
 import { createStreamScope, textRequestTimeoutMs } from '@video-studio/shared/script/script-stream-policy'
 import { applyOutputContract, strictJsonSchema, type OutputContract } from '../../modules/generation/model-output.js'
 import { videoReferenceConfigError, videoReferenceMediaError } from '@video-studio/shared/media/video-reference-config'
+import { defaultImageRequestTimeoutSeconds } from '@video-studio/shared/models/images-api-settings'
+import { documentedImageConfigError, documentedImageProfile, documentedImageSettings } from '@video-studio/shared/models/documented-images-api'
+import { imageMultipartBody, prepareImageReferences } from './image-references.js'
 
 export type Modality = 'text' | 'image' | 'video'
 export type Adapter = 'http' | 'demo'
@@ -118,13 +121,14 @@ function isNetworkFailure(error: unknown): boolean {
   return error instanceof TypeError || networkCode(error) !== null
 }
 
-function imageNetworkError(stage: '厂商请求' | '结果图片下载', startedAt: number, error: unknown): Error {
+function imageNetworkError(stage: '厂商请求' | '结果图片下载', startedAt: number, error: unknown, timeoutMs?: number): Error {
   const code = networkCode(error) ?? 'UNKNOWN'
   const seconds = ((Date.now() - startedAt) / 1000).toFixed(1)
   const advice = stage === '厂商请求'
     ? '厂商可能已计费，请先核对厂商记录，再手动创建新的生成任务。'
     : '图片已生成，可重试下载现有结果，不会再次请求厂商生成。'
-  return new Error(`图片任务网络失败（阶段：${stage}；错误码：${code}；耗时：${seconds} 秒）。${advice}`)
+  const timeout = code === 'TIMEOUT' && timeoutMs ? `；最长等待：${Math.round(timeoutMs / 1000)} 秒` : ''
+  return new Error(`图片任务网络失败（阶段：${stage}；错误码：${code}；耗时：${seconds} 秒${timeout}）。${advice}`)
 }
 
 function textHttpError(response: Response, raw: string, url: string, startedAt: number, model: string,
@@ -132,6 +136,8 @@ function textHttpError(response: Response, raw: string, url: string, startedAt: 
   const secrets = authValues.flatMap(value => [value, value.replace(/^\S+\s+/, '')]).filter(value => value.length >= 6)
   const clean = (value: string) => secrets.reduce((text, secret) => text.split(secret).join('[已隐藏]'), value)
     .replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [已隐藏]')
+    .replace(/([?&](?:api_key|key|token)=)[^&\s"'<>]+/gi, '$1[已隐藏]')
+    .replace(/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+/gi, '[图片数据已隐藏]')
   let message = raw.trim()
   try {
     const payload = JSON.parse(message) as Record<string, unknown>
@@ -139,7 +145,7 @@ function textHttpError(response: Response, raw: string, url: string, startedAt: 
     const detail = error?.message ?? error?.detail ?? payload?.error
     if (typeof detail === 'string' && detail.trim()) {
       message = detail
-      if (typeof error?.code === 'string') message += `（错误码：${error.code}）`
+      if (typeof error?.code === 'string') message += `\n错误码：${error.code}`
     }
   } catch { /* Retain non-JSON upstream errors. */ }
   if (/^\s*(?:<!doctype|<html)/i.test(message)) message = message
@@ -161,20 +167,20 @@ function textHttpError(response: Response, raw: string, url: string, startedAt: 
 }
 
 async function requestJson(method: 'GET' | 'POST', url: string, headers: Record<string, string>, body?: unknown,
-  modality?: Modality, model = ''): Promise<Record<string, unknown>> {
+  modality?: Modality, model = '', timeoutMs = modality === 'text' ? textRequestTimeoutMs : 90_000): Promise<Record<string, unknown>> {
   const startedAt = Date.now()
   let response: Response
   let raw: string
   try {
     response = await fetch(url, {
       method,
-      headers: { ...headers, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(modality === 'text' ? textRequestTimeoutMs : 90_000),
+      headers: { ...headers, ...(body === undefined || body instanceof FormData ? {} : { 'Content-Type': 'application/json' }) },
+      body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
     })
     raw = await response.text()
   } catch (error) {
-    if (modality === 'image' && isNetworkFailure(error)) throw imageNetworkError('厂商请求', startedAt, error)
+    if (modality === 'image' && isNetworkFailure(error)) throw imageNetworkError('厂商请求', startedAt, error, timeoutMs)
     if (modality === 'text' && networkCode(error) === 'TIMEOUT') {
       throw new Error(`文本模型请求超时（最长等待 ${Math.round(textRequestTimeoutMs / 60_000)} 分钟），请稍后重试或切换文本模型。`)
     }
@@ -183,7 +189,10 @@ async function requestJson(method: 'GET' | 'POST', url: string, headers: Record<
   let parsed: unknown
   try { parsed = JSON.parse(raw) } catch { parsed = null }
   if (!response.ok) {
-    if (modality === 'image') throw new Error(`图片生成请求失败（阶段：厂商请求；HTTP ${response.status}；耗时：${((Date.now() - startedAt) / 1000).toFixed(1)} 秒）。厂商可能已计费，请先核对厂商记录。`)
+    if (modality === 'image') {
+      const detail = textHttpError(response, raw, url, startedAt, model, Object.values(headers))
+      throw new Error(`图片生成请求失败（阶段：厂商请求；HTTP ${response.status}）。\n${detail.message}\n厂商可能已计费，请先核对厂商记录。`)
+    }
     if (modality === 'text') throw textHttpError(response, raw, url, startedAt, model, Object.values(headers))
     const message = parsed && typeof parsed === 'object' ? JSON.stringify(parsed) : raw
     throw new Error(`模型接口返回 ${response.status}: ${message.slice(0, 800)}`)
@@ -521,8 +530,18 @@ export async function streamText(
     if (!response.body || (contentType && !contentType.includes('text/event-stream') && !contentType.includes('application/x-ndjson') && !contentType.includes('application/ndjson'))) {
       const raw = await scope.wait(response.text())
       const payload = parseStreamPayload(raw)
-      if (payload) await emitPayload(payload)
-      else if (raw.trim()) {
+      if (payload) {
+        await emitPayload(payload)
+        // A provider may return ordinary Responses JSON instead of a stream.
+        // Keep the same output-array fallback as non-streaming generation.
+        if (!fullText && model.protocol === 'responses') {
+          const text = textValue(payload.output)
+          if (text !== null) {
+            fullText = text
+            await onEvent({ type: 'delta', text })
+          }
+        }
+      } else if (raw.trim()) {
         fullText = raw.trim()
         await onEvent({ type: 'delta', text: fullText })
       }
@@ -790,7 +809,7 @@ function modeVariables(settings: Settings, request: GenerationRequest): Variable
     model: null,
     prompt: request.prompt,
     duration: request.duration ?? 5,
-    ratio: request.ratio ?? '16:9',
+    ratio: request.ratio ?? (settings.image_api_profile === documentedImageProfile ? settings.default_ratio : undefined) ?? '16:9',
     resolution: request.resolution ?? settings.default_resolution ?? settings.resolution ?? null,
     quality: request.quality ?? settings.default_quality ?? settings.quality ?? null,
     clarity: request.clarity ?? settings.default_clarity ?? settings.clarity ?? null,
@@ -913,7 +932,7 @@ async function pollConfiguredImage(
   while (Date.now() < deadline) {
     let result: Record<string, unknown>
     try {
-      result = await requestJson('GET', apiUrl(provider.base_url, getPath), headers)
+      result = await requestJson('GET', apiUrl(settingString(settings, 'image_task_base_url', provider.base_url), getPath), headers)
       transientErrors = 0
     } catch (error) {
       if (++transientErrors >= 3) throw new Error(`查询图片任务 ${externalId} 失败，可继续查询原任务：${error instanceof Error ? error.message : String(error)}`)
@@ -950,7 +969,13 @@ async function configuredNetwork(
   key: string,
   onImageUrl: (url: string) => void | Promise<void>,
 ): Promise<GenerationResult> {
-  const settings = asSettings(model)
+  let settings = asSettings(model)
+  const documentedImages = model.modality === 'image' && settings.image_api_profile === documentedImageProfile
+  if (documentedImages) {
+    const issue = documentedImageConfigError(settings)
+    if (issue) throw new Error(issue)
+    settings = documentedImageSettings(settings, provider.base_url)
+  }
   provider = { ...provider, base_url: settingString(settings, 'api_base_url', provider.base_url) }
   const authHeader = provider.auth_header || 'Authorization'
   const authPrefix = provider.auth_prefix ?? 'Bearer '
@@ -961,20 +986,34 @@ async function configuredNetwork(
   if (model.modality === 'image' && settings.async_image === true && request._external_id) {
     return pollConfiguredImage(request._external_id, settings, provider, headers, projectId, onImageUrl)
   }
+  if (documentedImages) {
+    if (['reference', 'edit'].includes(request.mode ?? '') && references.length === 0) throw new Error('参考图生成需要至少一张参考图片')
+    if (settings.image_clarity_parameter && request.clarity && !['1K', '2K', '4K'].includes(request.clarity)) throw new Error('imageSize 只支持 1K、2K 或 4K')
+    const size = settings.image_size_mode === 'pixels' ? request.resolution || settings.default_resolution : request.ratio || settings.default_ratio
+    if (typeof size !== 'string' || !(settings.image_size_mode === 'pixels' ? /^[1-9]\d*x[1-9]\d*$/ : /^[1-9]\d*:[1-9]\d*$/).test(size)) throw new Error('图片 size 应为画幅比例或像素尺寸')
+  }
   if (model.modality === 'video') {
     checkVideoReferenceRequestMode(settings, request)
     const issue = videoReferenceConfigError(settings, references.length, request.mode ?? 'text')
     if (issue) throw new Error(issue)
     await validateVideoReferenceAssets(settings, references)
   }
-  const images = await Promise.all(references.map(asset => referenceImage(asset, model.modality === 'video' ? settings : undefined)))
+  const preparedImages = model.modality === 'image' ? await prepareImageReferences(references, settings.compress_reference_images !== false) : []
+  const images = model.modality === 'image' ? preparedImages.map(image => image.dataUrl)
+    : await Promise.all(references.map(asset => referenceImage(asset, model.modality === 'video' ? settings : undefined)))
   const variables = mediaVariables(settings, request, images, model.remote_id)
 
   if (model.modality !== 'video') {
-    const payload = await requestJson('POST', apiUrl(provider.base_url, settingString(settings, 'request_path')), headers,
-      model.modality === 'text' ? applyOutputContract(compactTemplate(renderTemplate(requestTemplate(settings, request, { model: '{{model}}', prompt: '{{prompt}}' }), variables)), model.protocol, settings, request.structured_output)
-        : compactTemplate(renderTemplate(requestTemplate(settings, request, { model: '{{model}}', prompt: '{{prompt}}' }), variables)),
-      model.modality, model.remote_id)
+    const rendered = compactTemplate(renderTemplate(requestTemplate(settings, request, { model: '{{model}}', prompt: '{{prompt}}' }), variables))
+    const multipart = model.modality === 'image' && references.length > 0 && settings.image_reference_transport === 'multipart'
+    const path = model.modality === 'image' && references.length > 0
+      ? settingString(settings, 'image_reference_path', settingString(settings, 'request_path')) : settingString(settings, 'request_path')
+    const timeoutSeconds = Number(settings.request_timeout_seconds ?? defaultImageRequestTimeoutSeconds)
+    if (model.modality === 'image' && (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 30 || timeoutSeconds > 1800)) throw new Error('图片请求超时必须为 30 到 1800 秒的整数')
+    const payload = await requestJson('POST', apiUrl(provider.base_url, path), headers,
+      model.modality === 'text' ? applyOutputContract(rendered, model.protocol, settings, request.structured_output)
+        : multipart ? imageMultipartBody(rendered, preparedImages) : rendered,
+      model.modality, model.remote_id, model.modality === 'image' ? timeoutSeconds * 1000 : textRequestTimeoutMs)
     if (model.modality === 'text') {
       return { path: await saveBytes(projectId, '.txt', Buffer.from(responseText(payload, settings, model.protocol))), remoteUrl: null }
     }

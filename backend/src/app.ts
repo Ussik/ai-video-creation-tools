@@ -3,7 +3,7 @@ import Fastify, { type FastifyInstance } from 'fastify'
 import multipart from '@fastify/multipart'
 import { createHash } from 'node:crypto'
 import { createReadStream, createWriteStream, existsSync, readFileSync, statSync } from 'node:fs'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { basename, extname, join, resolve, sep } from 'node:path'
 import { webDist } from './infrastructure/paths.js'
 import { pipeline } from 'node:stream/promises'
@@ -26,11 +26,13 @@ import { videoReferenceUsages, videoReferenceUsageIssue } from '@video-studio/sh
 import { compileProjectStyle, projectVisualStyle, referenceStyleWarnings } from './modules/visuals/project-visual-style.js'
 import { projectStyleInstructions, withProjectStyle, projectStyleTemplateError } from '@video-studio/shared/visuals/visual-style'
 import { registerSkillRoutes } from './modules/skills/skill-routes.js'
+import { registerPromptOptimizationRoutes } from './modules/jobs/prompt-optimization.js'
+import { isContentPolicyRejection } from '@video-studio/shared/jobs/prompt-optimization'
 import { withSkillRules, applySkillRules, skillIdsInput, skillSelectionsInput, skillContext, skillStages, resolveSkillSelections } from './modules/skills/skills.js'
 import { registerStoryboardPlanningRoutes } from './modules/storyboard/storyboard-planning.js'
 import { activityRecorder, scriptActivitiesSchema, scriptExecutionSchema } from './modules/script/script-activity.js'
 import { createStreamScope, directorStreamHeartbeatMs } from '@video-studio/shared/script/script-stream-policy'
-import { inheritSceneVisualBindings, prepareVisualGeneration, registerVisualProfileRoutes, visualProjectData } from './modules/visuals/visual-profiles.js'
+import { autoConfirmGeneratedProfileBoard, inheritSceneVisualBindings, prepareVisualGeneration, registerVisualProfileRoutes, visualProjectData } from './modules/visuals/visual-profiles.js'
 import { registerGeneratedVisualReference } from './modules/visuals/visual-reference-assets.js'
 import { canvasRecord, defaultCanvas, registerProjectCanvasRoutes } from './modules/canvas/project-canvases.js'
 import { registerScriptCanvasRoutes } from './modules/canvas/script-canvas-preparation.js'
@@ -52,7 +54,9 @@ import { registerModelRoutes } from './modules/models/routes.js'
 import { checkProtocol, validateSettings } from './modules/models/validation.js'
 import { idParams, invalid, parse } from './infrastructure/http/request.js'
 import { extractVideoFrame, probeVideoDurationMs, render, type RenderClip } from './infrastructure/media/render.js'
-import { registerSpeechRoutes, speechCredentials, completeSpeechJob, type SpeechSnapshot } from './modules/speech/speech-routes.js'
+import { registerSpeechRoutes, projectSpeechData, speechCredentials, completeSpeechJob, type SpeechSnapshot } from './modules/speech/speech-routes.js'
+import { projectAudioSettings, speechExportPlan } from './modules/speech/speech-timeline.js'
+import type { SpeechAudioClip } from '@video-studio/shared/media/speech-timeline'
 import { synthesizeSpeech, type SpeechSynthesisResult } from './infrastructure/providers/speech-provider.js'
 import { probeSpeechDurationMs } from './modules/speech/speech-audio.js'
 import { registerAssetDownloadRoutes } from './modules/assets/asset-downloads.js'
@@ -455,7 +459,7 @@ function assetPublic(asset: Asset) {
 }
 
 function imageTaskResumable(job: Job, model?: Model): boolean {
-  return !!job.external_id && model?.modality === 'image' && (JSON.parse(model.settings) as Record<string, unknown>).async_image === true
+  return !isContentPolicyRejection(job.error) && !!job.external_id && model?.modality === 'image' && (JSON.parse(model.settings) as Record<string, unknown>).async_image === true
 }
 
 function jobPublic(job: Job) {
@@ -519,7 +523,8 @@ function completeAssetTaskJob(job: Job, assetId: string | null, error: string | 
       assetId ? 'ready' : 'failed', assetId, error, now(), taskId)
   }
   addAssetTaskEvent(taskId, assetId ? 'asset_ready' : 'failed', assetId
-    ? typeof batchId === 'string' ? '生成结果已加入候选；确认后可作为设定参考图使用' : '生成结果已回写；确认后可手动保存到资产库，再连接到画布'
+    ? JSON.parse(job.request).auto_confirm_first ? '生成结果已加入候选；本轮完成后自动确认第一张可用设定图'
+      : typeof batchId === 'string' ? '生成结果已加入候选；确认后可作为设定参考图使用' : '生成结果已回写；确认后可手动保存到资产库，再连接到画布'
     : `生成失败：${error}`)
 }
 
@@ -1351,25 +1356,20 @@ function distributeShotDurations(shots: z.infer<typeof plannedShot>[], duration:
   return allocations.map(value => value + 1)
 }
 
-async function generateTextOutput(model: Model, provider: Provider, projectId: string, prompt: string, contract?: OutputContract): Promise<string> {
-  let resultPath: string
+async function generateTextOutput(model: Model, provider: Provider, prompt: string, contract?: OutputContract): Promise<string> {
   try {
-    const result = await generate(model, provider, { prompt, structured_output: contract }, [], projectId, () => {},
+    // Collect the upstream stream before parsing or validating the full result.
+    // Long planning requests use the same transport as script dialogue.
+    return await streamText(model, provider, { prompt, structured_output: contract },
       item => decryptKey(item.key_ciphertext || null))
-    resultPath = result.path
   } catch (error) {
     const diagnostics = error && typeof error === 'object' && 'diagnostics' in error && typeof error.diagnostics === 'string' ? error.diagnostics : undefined
     throw Object.assign(new Error(`文本模型生成失败：${error instanceof Error ? error.message : String(error)}`), { statusCode: 502, ...(diagnostics ? { diagnostics } : {}) })
   }
-  try {
-    return await readFile(resultPath, 'utf8')
-  } finally {
-    await rm(resultPath, { force: true })
-  }
 }
 
-async function structuredTextOutput<T>(name: string, schema: z.ZodType<T>, model: Model, provider: Provider, projectId: string, prompt: string, validate?: (value: T) => void) {
-  return generateStructuredOutput(name, schema, (text, contract) => generateTextOutput(model, provider, projectId, text, contract), prompt, { validate })
+async function structuredTextOutput<T>(name: string, schema: z.ZodType<T>, model: Model, provider: Provider, prompt: string, validate?: (value: T) => void) {
+  return generateStructuredOutput(name, schema, (text, contract) => generateTextOutput(model, provider, text, contract), prompt, { validate })
 }
 
 async function reviewDirectorDraft(project: Project, data: DirectorInput, draft: WorkflowDraft, model: Model, provider: Provider,
@@ -1496,7 +1496,8 @@ async function processJob(job: Job): Promise<void> {
     const project = request.project as Project
     const clips = request.clips as RenderClip[]
     const assets = all<Asset>('SELECT * FROM assets WHERE project_id=?', job.project_id)
-    path = await render(project, clips, Object.fromEntries(assets.map(asset => [asset.id, asset])))
+    path = await render(project, clips, Object.fromEntries(assets.map(asset => [asset.id, asset])),
+      (request.speech_audio || []) as SpeechAudioClip[], request.audio_settings as ReturnType<typeof projectAudioSettings> | undefined)
     kind = 'video'
     source = 'export'
   } else if (request.tts) {
@@ -1545,6 +1546,7 @@ async function processJob(job: Job): Promise<void> {
     })
     registerGeneratedVisualReference(job, assetId)
     completeAssetTaskJob(job, assetId, null)
+    autoConfirmGeneratedProfileBoard(job)
     run('DELETE FROM job_image_recovery WHERE job_id=?', job.id)
     touchProject(job.project_id)
   })()
@@ -1556,6 +1558,7 @@ export function startWorker(): () => Promise<void> {
     db.transaction(() => {
       run("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?", message, now(), job.id)
       completeAssetTaskJob(job, null, message)
+      autoConfirmGeneratedProfileBoard(job)
     })()
   })
 }
@@ -1576,19 +1579,20 @@ export function buildApp(): FastifyInstance {
     })
   })
 
-  const creativeText = async (projectId: string, modelId: string, prompt: string, contract?: OutputContract) => {
+  const creativeText = async (_projectId: string, modelId: string, prompt: string, contract?: OutputContract) => {
     const model = required<Model>('models', modelId)
     if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
     checkProtocol(model.modality, model.protocol)
     validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>)
     const provider = required<Provider>('providers', model.provider_id)
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用')
-    return generateTextOutput(model, provider, projectId, prompt, contract)
+    return generateTextOutput(model, provider, prompt, contract)
   }
   registerSkillRoutes(app, { generateText: creativeText })
+  registerPromptOptimizationRoutes(app, { generateText: creativeText })
   registerVisualProfileRoutes(app, {
     script: projectScript,
-    generateBoard: (taskId, input, profile, candidateCount) => enqueueAssetTask(taskId, input, { visual_profile_id: profile.id, visual_profile_revision: profile.revision }, candidateCount),
+    generateBoard: (taskId, input, profile, candidateCount) => enqueueAssetTask(taskId, input, { visual_profile_id: profile.id, visual_profile_revision: profile.revision, auto_confirm_first: !profile.board_asset_id }, candidateCount),
     generateReference: async (profile, input, metadata, candidateCount) => {
       const { data, model } = await generationRequest(profile.project_id, input, false)
       if (required<{ revision: number }>('visual_profiles', profile.id).revision !== profile.revision) {
@@ -1626,6 +1630,7 @@ export function buildApp(): FastifyInstance {
       ...project, production_range: projectProductionRange(id),
       script: projectScript(id), shots: all<Shot>('SELECT * FROM shots WHERE project_id=? ORDER BY position', id),
       timeline_clips: projectClips(id),
+      speech: projectSpeechData(id), audio_settings: projectAudioSettings(id),
       asset_reviews: all<AssetReview>(`SELECT asset_reviews.* FROM asset_reviews
         JOIN shots ON shots.id=asset_reviews.shot_id WHERE shots.project_id=?`, id),
       assets: all<Asset>('SELECT * FROM assets WHERE project_id=? ORDER BY created_at DESC', id).map(assetPublic),
@@ -1854,7 +1859,7 @@ export function buildApp(): FastifyInstance {
     const snapshot = semanticContinuityContext(id)
     if (Buffer.byteLength(JSON.stringify(snapshot.context), 'utf8') > 200_000) invalid('制作范围过大，请缩小范围后进行语义检查')
     const issues = snapshot.context.pairs.length ? parseSemanticContinuity(JSON.stringify(
-      await structuredTextOutput('continuity_report', semanticContinuitySchema, model, provider, id, semanticContinuityPrompt(snapshot.context),
+      await structuredTextOutput('continuity_report', semanticContinuitySchema, model, provider, semanticContinuityPrompt(snapshot.context),
         value => { parseSemanticContinuity(JSON.stringify(value), snapshot.context.pairs) })), snapshot.context.pairs) : []
     if (semanticContinuityContext(id).signature !== snapshot.signature) {
       throw Object.assign(new Error('检查期间镜头或剧本资料已变化，请重新检查'), { statusCode: 409 })
@@ -2324,8 +2329,8 @@ export function buildApp(): FastifyInstance {
       generate_audio: false, draft: false,
     }
     db.transaction(() => {
-      for (const jobId of jobIds) run("INSERT INTO jobs VALUES (?, ?, NULL, ?, 'generation', ?, 'queued', NULL, NULL, NULL, ?, ?)",
-        jobId, task.project_id, model.id, JSON.stringify(requestPayload), timestamp, timestamp)
+      for (const [index, jobId] of jobIds.entries()) run("INSERT INTO jobs VALUES (?, ?, NULL, ?, 'generation', ?, 'queued', NULL, NULL, NULL, ?, ?)",
+        jobId, task.project_id, model.id, JSON.stringify({ ...requestPayload, ...(metadata.visual_profile_id ? { visual_candidate_index: index } : {}) }), timestamp, timestamp)
       run('UPDATE asset_tasks SET status=?, prompt=?, generation_job_id=?, result_asset_id=NULL, error=NULL, updated_at=? WHERE id=?',
         'generating', prompt, jobIds.at(-1)!, timestamp, task.id)
       addAssetTaskEvent(task.id, 'generating', candidateCount > 1 ? `正在生成 ${candidateCount} 张候选图片，结果完成后会自动回写到本任务` : '正在生成图片资产，结果完成后会自动回写到本任务')
@@ -2364,7 +2369,7 @@ export function buildApp(): FastifyInstance {
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用')
     // A read-only, isolated classification; it never patches generation options
     // or advances the director's conversation/workflow.
-    return parseThemeVisuals(JSON.stringify(await structuredTextOutput('theme_visuals', modelVisuals, model, provider, id, themeVisualPrompt(data))), data)
+    return parseThemeVisuals(JSON.stringify(await structuredTextOutput('theme_visuals', modelVisuals, model, provider, themeVisualPrompt(data))), data)
   })
   app.post('/api/projects/:id/script/replies/classify', async request => {
     const { id } = parse(idParams, request.params)
@@ -2397,7 +2402,7 @@ export function buildApp(): FastifyInstance {
     })
     if (missing.length) {
       const sourceIds = missing.map(item => item.id)
-      const classified = await structuredTextOutput('reply_classification', classificationResult, model, provider, id,
+      const classified = await structuredTextOutput('reply_classification', classificationResult, model, provider,
         replyClassificationPrompt(missing.map(source => ({ ...source, stage_context: source.stage_context || directorStageContext(projectScript(id)) }))),
         value => { parseReplyClassifications(JSON.stringify(value), sourceIds, data.stage_controlled) })
       const analyzed = parseReplyClassifications(JSON.stringify(classified), sourceIds, data.stage_controlled)
@@ -2530,7 +2535,7 @@ export function buildApp(): FastifyInstance {
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
     const prompt = withProjectStyle(data.prompt_override ? withSkillRules('storyboard', data.prompt_override, undefined, { projectId: id, selections: data.skill_selections })
       : buildShotPlanningPrompt(project, scenes, data.shots_per_scene, data.skill_selections), projectVisualStyle(id))
-    const draft = await structuredTextOutput('shot_plan', shotPlanDraft, model, provider, id, prompt, value => {
+    const draft = await structuredTextOutput('shot_plan', shotPlanDraft, model, provider, prompt, value => {
       const ids = new Set(value.scenes.map(scene => scene.scene_id))
       if (ids.size !== scenes.length || value.scenes.length !== scenes.length || scenes.some(scene => !ids.has(scene.id))) invalid('文本模型返回的场次与所选场次不一致')
       if (value.scenes.some(scene => scene.shots.length > scenes.find(item => item.id === scene.scene_id)!.duration)) invalid('文本模型生成的镜头数超过场次时长')
@@ -2732,7 +2737,7 @@ export function buildApp(): FastifyInstance {
     validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>)
     const provider = required<Provider>('providers', model.provider_id)
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
-    const raw = await generateTextOutput(model, provider, id, buildScriptArtifactPrompt(project, data))
+    const raw = await generateTextOutput(model, provider, buildScriptArtifactPrompt(project, data))
     const content = raw.trim()
     if (!content) return reply.code(502).send({ detail: '文本模型未返回产物内容' })
     return { artifact_type: data.artifact_type, title: defaultArtifactTitles[data.artifact_type], content }
@@ -2750,7 +2755,7 @@ export function buildApp(): FastifyInstance {
     const prompt = (data.prompt_override
       ? withSkillRules('script', appendMissingScriptSettings(data.prompt_override, data.generation_options), undefined, { projectId: id, selections: data.skill_selections })
       : buildScriptGenerationPrompt(project, data)) + referenceContext([{ role: 'user', text: data.idea || '生成完整剧本草稿', reference_documents: data.reference_documents }])
-    const draft = await structuredTextOutput('complete_script', scriptDraft, model, provider, id, prompt)
+    const draft = await structuredTextOutput('complete_script', scriptDraft, model, provider, prompt)
     const raw = JSON.stringify(draft)
     if (!draft) return reply.code(422).send({
       detail: '文本模型未返回符合格式的剧本 JSON，请检查模型输出或重新生成', raw_output: raw.slice(0, 5000),
@@ -3070,10 +3075,24 @@ export function buildApp(): FastifyInstance {
   app.post('/api/projects/:id/export', async request => {
     const { id } = parse(idParams, request.params)
     const project = required<Project>('projects', id)
+    const exportOptions = z.object({ allow_unplaced_speech: z.boolean().default(false) }).strict().parse(request.body || {})
     const range = projectProductionRange(id)
     const shots = selectedProductionShots(all<Shot>('SELECT * FROM shots WHERE project_id=? ORDER BY position', id), range)
     if (!shots.length) invalid('请先添加分镜')
     const clips = projectClips(id)
+    const speech = speechExportPlan(id, shots, clips)
+    const sceneIds = new Set(shots.map(shot => shot.source_scene_id).filter(Boolean))
+    const speechData = projectSpeechData(id)
+    const unplaced = speechData.lines.filter(line => line.selected_asset_id && (!line.scene_id || sceneIds.has(line.scene_id)) && !speechData.placements.some(item => item.line_id === line.id))
+    if (unplaced.length && !exportOptions.allow_unplaced_speech) invalid(`还有 ${unplaced.length} 句已选用配音未入片，请设置播放位置或明确选择继续导出当前成片`)
+    if (speech.issues.length) invalid(speech.issues[0]!.message)
+    for (const audio of speech.audio) {
+      const asset = required<Asset>('assets', audio.asset_id)
+      if (asset.project_id !== id || asset.kind !== 'audio' || !existsSync(asset.path)) invalid('入片配音素材不存在')
+      let duration: number
+      try { duration = await probeSpeechDurationMs(asset.path) } catch { invalid('入片配音素材无法解码，请重新生成可用音频') }
+      if (audio.out_ms > duration) invalid('入片配音取段超出实际音频时长，请重新保存播放位置')
+    }
     const byShot = new Map(clips.map(clip => [clip.shot_id, clip]))
     if (shots.some(shot => !byShot.has(shot.id))) invalid('存在未选定素材的分镜，请先补齐时间线')
     const renderClips: RenderClip[] = shots.map(shot => {
@@ -3096,7 +3115,8 @@ export function buildApp(): FastifyInstance {
     })
     const jobId = newId(), timestamp = now()
     run("INSERT INTO jobs VALUES (?, ?, NULL, NULL, 'export', ?, 'queued', NULL, NULL, NULL, ?, ?)", jobId, id,
-      JSON.stringify({ project, production_range: range, clips: renderClips }), timestamp, timestamp)
+      JSON.stringify({ project, production_range: range, clips: renderClips, speech_audio: speech.audio,
+        audio_settings: projectAudioSettings(id) }), timestamp, timestamp)
     return required<Job>('jobs', jobId)
   })
   app.post('/api/jobs/:id/retry', async request => {
@@ -3107,6 +3127,7 @@ export function buildApp(): FastifyInstance {
     if (job.job_type === 'generation') {
       const model = job.model_id ? one<Model>('SELECT * FROM models WHERE id=?', job.model_id) : undefined
       const recovery = one('SELECT 1 FROM job_image_recovery WHERE job_id=?', id)
+      if (model?.modality === 'image' && !recovery && isContentPolicyRejection(job.error)) invalid('图片任务已被内容审核拒绝，请先调整提示词和参考图，再创建新的生成任务。')
       if (model?.modality === 'image' && !recovery && !imageTaskResumable(job, model)) invalid('图片生成结果未保存；厂商可能已计费。请先核对厂商记录，再手动创建新的生成任务。')
       const provider = model ? one<Provider>('SELECT * FROM providers WHERE id=?', model.provider_id) : undefined
       if (!recovery && (!model?.enabled || model.archived || !provider?.enabled || provider.archived || provider.adapter === 'demo')) invalid('模型或提供商已停用，无法重试')

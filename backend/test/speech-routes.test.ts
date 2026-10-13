@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
+import { speechStandardVoices } from '@video-studio/shared/media/speech-voices'
 
 const testData = await mkdtemp(join(tmpdir(), 'video-studio-speech-routes-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
@@ -163,6 +164,18 @@ test('standard voices bind independently per project and reject paid clone speak
   assert.equal(edited.name, '林晚')
   assert.equal(edited.instructions, '自然克制，声音偏低')
   assert.equal(edited.speech_rate, -20)
+})
+
+test('the complete official 2.0 catalog can bind to roles without creating synthesis jobs', async () => {
+  const p = await project()
+  const preset = speechStandardVoices.find(voice => voice.speaker.startsWith('ICL_'))!
+  const created = await call<{ id: string }>('POST', `${p.url}/voices`, { name: '音色兼容性', speaker: preset.speaker })
+  for (const voice of speechStandardVoices) {
+    const saved = await call<{ speaker: string }>('PATCH', `${p.url}/voices/${created.id}`, { speaker: voice.speaker })
+    assert.equal(saved.speaker, voice.speaker)
+  }
+  assert.equal(all('SELECT id FROM jobs WHERE project_id=?', p.id).length, 0)
+  assert.equal(all('SELECT id FROM speech_takes WHERE project_id=?', p.id).length, 0)
 })
 
 test('script import is explicit, conservative and idempotent without generating any audio', async () => {

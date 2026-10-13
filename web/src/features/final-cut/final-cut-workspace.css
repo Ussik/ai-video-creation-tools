@@ -10,6 +10,42 @@
 .final-cut-inspector .trim-fields .mantine-Button-root { grid-column: 1 / -1; }
 .final-cut-inspector .inspector-actions .mantine-Button-root { width: 100%; }
 .final-cut-empty { padding: 22px 18px; color: var(--fc-text-muted); font-size: 12px; line-height: 1.6; }
+.studio-layout.final-cut-workspace { grid-template-rows: minmax(0, 1fr) 236px; }
+.final-cut-preview-tabs { margin: -6px 0 14px; }
+.final-cut-preview-tabs .mantine-Tabs-tab { font-size: 12px; }
+.final-cut-current-preview { width: 100%; max-width: 800px; margin: 0 auto 18px; }
+.final-cut-current-preview .timeline-preview-stage { max-width: calc(390px * 16 / 9); }
+.final-cut-current-preview .timeline-preview-stage.is-portrait { width: min(100%, calc(390px * 9 / 16)); }
+.final-cut-speech-panel { display: grid; gap: 12px; min-width: 0; }
+.final-cut-speech-text { color: var(--fc-text-secondary); font-size: 12px; line-height: 1.7; white-space: pre-wrap; }
+.final-cut-speech-empty { display: grid; gap: 12px; color: var(--fc-text-muted); font-size: 12px; line-height: 1.7; }
+.final-cut-output-settings { display: grid; gap: 18px; }
+.final-cut-audio-notice { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: var(--fc-text-secondary); font-size: 11px; margin: 4px 0; }
+.final-cut-timeline-editor { min-width: 0; }
+.final-cut-timeline-zoom { display: flex; align-items: center; gap: 14px; color: var(--fc-text-muted); font-size: 10px; height: 24px; }
+.final-cut-timeline-zoom .mantine-Slider-root { width: 100px; }
+.final-cut-timeline-scroll { max-height: 164px; overflow: auto; padding: 0 8px 5px 0; }
+.final-cut-time-ruler { height: 22px; position: relative; color: var(--fc-text-muted); font-size: 10px; }
+.final-cut-time-ruler > span { position: absolute; top: 5px; font-variant-numeric: tabular-nums; }
+.final-cut-time-ruler > span:last-child { transform: translateX(-100%); }
+.final-cut-visual-track { position: relative; height: 78px; }
+.final-cut-visual-track .timeline-clip { position: absolute; height: 76px; min-width: 0; border-radius: 3px; margin: 0; padding: 3px; overflow: hidden; }
+.final-cut-visual-track .timeline-clip.current { outline: 1px solid var(--fc-text-secondary); outline-offset: -1px; }
+.final-cut-visual-track .timeline-clip-preview { height: 45px; display: grid; place-items: center; }
+.final-cut-visual-track .timeline-clip-preview :is(img,video) { width: 100%; height: 100%; object-fit: cover; }
+.final-cut-visual-track .timeline-clip-label { align-items: center; }
+.final-cut-visual-track .timeline-clip-label b { white-space: nowrap; flex: none; font-size: 10px; }
+.final-cut-audio-tracks { padding-top: 5px; }
+.final-cut-audio-row { position: relative; height: 30px; margin-bottom: 3px; }
+.final-cut-audio-clip { position: absolute; height: 29px; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 0 8px; border: 1px solid var(--fc-border-strong); border-radius: 3px; background: var(--fc-surface-hover); color: var(--fc-text-secondary); overflow: hidden; font-size: 11px; }
+.final-cut-audio-clip strong { white-space: nowrap; flex: none; font-weight: 550; }
+.final-cut-audio-clip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.final-cut-audio-clip.needs-attention { border-color: var(--fc-danger, #b65e4f); }
+.final-cut-audio-empty { margin: 3px 0; font-size: 11px; color: var(--fc-text-muted); }
+.final-cut-music-track { height: 28px; display: flex; align-items: center; gap: 10px; padding: 0 8px; border: 1px solid var(--fc-border); border-radius: 3px; color: var(--fc-text-muted); font-size: 11px; }
+.final-cut-music-track strong { font-weight: 500; flex: none; }
+.final-cut-music-track span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.final-cut-music-track small { margin-left: auto; white-space: nowrap; font-size: 10px; }
 @media (min-width: 701px) and (max-width: 1050px) {
   .final-cut-inspector .inspector-scroll { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: auto 1fr; gap: 18px; align-items: start; }
   .final-cut-inspector .final-cut-shot-summary { grid-column: 1; grid-row: 1; }

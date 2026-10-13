@@ -1,3 +1,8 @@
+export interface StoryboardReferenceBudget {
+  max_images: number
+  storyboard_images: number
+  max_setting_images: number
+}
 export interface StoryboardShotDraft {
   shot_id?: string | null
   title: string
@@ -17,6 +22,7 @@ export interface StoryboardSceneDraft {
 }
 export interface StoryboardPlanningContext {
   signature: string
+  reference_budget?: StoryboardReferenceBudget
   scenes: Array<{ id: string; heading: string; duration: number; episode_number: number; planned: boolean; shot_count: number; canvas_shot_count?: number; material_count: number }>
   existing_shots: Array<StoryboardShotDraft & { shot_id: string; scene_id: string }>
   documents: Array<{ id: string; title: string; artifact_type: string; episode_number: number; characters: number }>

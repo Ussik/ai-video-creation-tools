@@ -8,14 +8,14 @@ export async function probeSpeechDurationMs(path: string): Promise<number> {
   return new Promise<number>((resolve, reject) => {
     const child = spawn(binary, [
       '-nostdin', '-hide_banner', '-loglevel', 'error', '-i', path,
-      '-map', '0:a:0', '-vn', '-sn', '-dn', '-progress', 'pipe:1', '-f', 'null', '-',
+      '-map', '0:a:0', '-vn', '-sn', '-dn', '-ac', '1', '-ar', '48000', '-c:a', 'pcm_s16le', '-f', 's16le', 'pipe:1',
     ], { stdio: ['ignore', 'pipe', 'pipe'] })
-    let output = ''
+    let decodedBytes = 0
     let stderr = ''
     let timedOut = false
     const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL') }, 30_000)
     timer.unref()
-    child.stdout.on('data', (chunk: Buffer) => { output = (output + chunk.toString('utf8')).slice(-64 * 1024) })
+    child.stdout.on('data', (chunk: Buffer) => { decodedBytes += chunk.length })
     child.stderr.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString('utf8')).slice(-2000) })
     child.once('error', () => {
       clearTimeout(timer)
@@ -24,8 +24,9 @@ export async function probeSpeechDurationMs(path: string): Promise<number> {
     child.once('close', code => {
       clearTimeout(timer)
       if (timedOut) { reject(new Error('语音文件校验超时，未保存为可用候选。')); return }
-      const times = [...output.matchAll(/^out_time_us=(\d+)$/gm)].map(match => Number(match[1]))
-      const durationMs = Math.round(Math.max(0, ...times) / 1000)
+      // Count decoded samples: FFmpeg progress can report the last frame's start
+      // timestamp, which drops a partial frame at the end of a PCM input.
+      const durationMs = Math.floor(decodedBytes / 2 / 48000 * 1000)
       if (code !== 0 || !Number.isFinite(durationMs) || durationMs <= 0 || /Invalid data|Error while decoding/i.test(stderr)) {
         reject(new Error('语音服务返回的文件无法解码为有效音频，未保存为可用候选。'))
         return

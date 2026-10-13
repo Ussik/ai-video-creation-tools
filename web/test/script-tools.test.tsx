@@ -6,7 +6,7 @@ import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
 import type { Model, Provider, ProjectDetail } from '../src/shared/api/api'
 import { editedToolDraft, toolDraftArtifacts, toolDraftScenes, toolDraftStage, toolDraftOutcome, documentChangePreview, type ScriptToolDraft } from '../src/features/script/script-tools'
-import { directorStageContext } from '../src/features/script/script-workflow'
+import { directorStageContext, outlineGenerationIssue } from '../src/features/script/script-workflow'
 import { activeReplyChoice, replyClassificationVersion } from '../src/features/script/script-reply'
 import { directorStreamIdleTimeoutMs, directorStreamTotalTimeoutMs } from '@video-studio/shared/script/script-stream-policy'
 import type { ScriptCreationState, CreationNextStep } from '@video-studio/shared/script/script-creation-state-types'
@@ -745,10 +745,10 @@ test('historical workflow text does not recreate an unvalidated or duplicate gen
   })
   const view = await mount(emptyProject)
   try {
-    assert.equal(view.container.querySelector('.sd-creation-actions > button'), null)
-    assert.equal(view.container.querySelector('[aria-label="当前阶段创作操作"]'), null)
+    assert.equal(Boolean(view.container.querySelector('.sd-creation-actions > button')), false, 'history must not recreate a generation action')
+    assert.equal(Boolean(view.container.querySelector('[aria-label="当前阶段创作操作"]')), false, 'history must not create a stage operation')
     assert.doesNotMatch(view.container.textContent!, /正在确定故事方向/)
-    assert.equal(view.container.querySelector('.sd-creation-progress'), null)
+    assert.equal(view.container.querySelector('.sd-creation-progress')?.textContent, outlineGenerationIssue(emptyProject.script), 'only the current outline prerequisite is shown')
   } finally { await view.destroy() }
 })
 

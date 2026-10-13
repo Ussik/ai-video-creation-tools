@@ -266,7 +266,8 @@ test('native missed questions stay unclassified, and asset prompts do not persis
   let native = true
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
     const body = JSON.parse(String(init.body))
-    const content = native ? '方案一：记者调查。方案二：医生追查。你选择哪个？' : JSON.stringify({ prompt_zh: '林晚人物信息图，黑发墨绿雨衣', prompt_en: 'Character design board for Lin Wan', notes: '尚需核实年龄' })
+    const intent = body.messages[0].content.includes('本次独立调用只理解创作者意图')
+    const content = intent ? JSON.stringify({ action: 'discuss', settings_patch: {} }) : native ? '方案一：记者调查。方案二：医生追查。你选择哪个？' : JSON.stringify({ prompt_zh: '林晚人物信息图，黑发墨绿雨衣', prompt_en: 'Character design board for Lin Wan', notes: '尚需核实年龄' })
     if (!native) assert.match(body.messages[0].content, /prompt_zh/)
     return Response.json({ choices: [{ message: { content }, finish_reason: 'stop' }] })
   })

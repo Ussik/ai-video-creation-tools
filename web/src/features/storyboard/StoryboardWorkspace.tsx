@@ -1,9 +1,9 @@
 import { StudioMediaPlayer } from '../../shared/ui/media/StudioMediaPlayer'
 import { supportsVideoMultiReference } from '@video-studio/shared/media/video-reference-config'
 import { useEffect, useMemo, useState } from 'react'
-import { UnstyledButton, TextInput, Button, ActionIcon, Modal } from '@mantine/core'
+import { UnstyledButton, Button, ActionIcon, Badge, Modal, Tooltip } from '@mantine/core'
 import type { JSONContent } from '@tiptap/core'
-import { ArrowLeft, ArrowRight, FileText, Film, Image as ImageIcon, Maximize2, Plus, ScrollText, Search, Settings2, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, CircleAlert, Clock3, FileText, Film, Image as ImageIcon, Maximize2, Play, Plus, ScrollText, Settings2, X } from 'lucide-react'
 import type { Asset, Model, ProjectDetail, ScriptArtifact } from '../../shared/api/api'
 import type { CanvasGraph } from '../canvas/ProjectCanvas'
 import CanvasTextEditor, { CanvasTextPreview } from '../canvas/CanvasTextEditor'
@@ -16,6 +16,7 @@ type Props = {
   detail: ProjectDetail
   graph: CanvasGraph
   models: Model[]
+  query: string
   selectedId: string | null
   saveState: 'saved' | 'pending' | 'saving' | 'error' | 'conflict'
   onSelect: (id: string | null) => void
@@ -28,11 +29,21 @@ type Props = {
 
 const labels: Record<StoryboardKind, string> = { text: '文本', image: '图片', video: '视频' }
 const icons = { text: FileText, image: ImageIcon, video: Film }
+const descriptions: Record<StoryboardKind, string> = { text: '剧本与创作文本', image: '镜头画面与生成结果', video: '动态镜头与视频素材' }
 
-function Media({ asset, controls = false }: { asset?: Asset; controls?: boolean }) {
+function Media({ asset, item, controls = false }: { asset?: Asset; item?: StoryboardItem; controls?: boolean }) {
   const [failed, setFailed] = useState(false)
   useEffect(() => setFailed(false), [asset?.url])
-  if (!asset || failed) return <div className="sb-media-placeholder">{failed ? '素材加载失败，请检查本地文件' : '暂无生成素材'}</div>
+  if (!asset || failed) {
+    const pending = item?.job?.status === 'queued' || item?.job?.status === 'running'
+    const error = failed || item?.job?.status === 'failed'
+    const Icon = error ? CircleAlert : pending ? Clock3 : item?.kind === 'video' ? Film : ImageIcon
+    return <div className="sb-media-placeholder" data-state={error ? 'error' : pending ? 'pending' : 'empty'}>
+      <span className="sb-placeholder-symbol"><Icon size={22} /></span>
+      <strong>{failed ? '素材加载失败' : item ? storyboardStatus(item) : '暂无生成素材'}</strong>
+      <small>{failed ? '请检查本地素材文件' : pending ? '完成后将在这里显示' : error ? controls ? '本次任务未生成素材' : '打开卡片查看失败原因' : controls ? '素材就绪后将在这里显示' : '选择卡片查看详情'}</small>
+    </div>
+  }
   if (asset.kind === 'image') return <img src={asset.url} alt={asset.filename} loading="lazy" onError={() => setFailed(true)} />
   if (asset.kind === 'video') return <StudioMediaPlayer src={asset.url} controls={controls} muted={!controls} playsInline preload="metadata" onError={() => setFailed(true)} />
   return null
@@ -43,10 +54,9 @@ function DocumentPreview({ content }: { content: string }) {
   return <CanvasTextPreview text={textDocumentText(document)} document={document} />
 }
 
-export default function StoryboardWorkspace({ detail, graph, models, selectedId, saveState, onSelect, onOpenDirector, onOpenScript, onOpenSettings, onCreateVideo, onTextChange }: Props) {
+export default function StoryboardWorkspace({ detail, graph, models, query, selectedId, saveState, onSelect, onOpenDirector, onOpenScript, onOpenSettings, onCreateVideo, onTextChange }: Props) {
   const items = useMemo(() => storyboardItems(detail, graph, models), [detail, graph, models])
   const selected = items.find(item => item.id === selectedId)
-  const [query, setQuery] = useState('')
   const [gallery, setGallery] = useState<'image' | 'video' | null>(null)
   const [previewId, setPreviewId] = useState<string | null>(null)
   const visibleItems = items.filter(item => !query.trim() || `${item.title}\n${item.content}\n${item.shot?.prompt || ''}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
@@ -75,10 +85,21 @@ export default function StoryboardWorkspace({ detail, graph, models, selectedId,
 
   function itemButton(item: StoryboardItem) {
     const Icon = item.overview || item.artifact ? ScrollText : icons[item.kind]
+    const status = item.job?.status || (item.asset ? 'ready' : 'empty')
     return <UnstyledButton key={item.id} type="button" className={`sb-item ${item.kind !== 'text' ? 'sb-media-card' : ''} ${selected?.id === item.id ? 'is-selected' : ''}`}
-      aria-label={`打开${labels[item.kind]}：${item.title}`} aria-pressed={selected?.id === item.id} onClick={() => onSelect(item.id)}>
-      {item.kind !== 'text' && <div className="sb-thumbnail"><Media asset={item.asset} /></div>}
-      <span className="sb-item-caption"><Icon size={15} /><span><strong>{item.title}</strong><small>{item.artifact?.episode_number ? `第 ${item.artifact.episode_number} 集 · ` : ''}{item.shot ? `镜头 ${item.shot.position + 1} · ` : ''}{storyboardStatus(item)}</small></span></span>
+      aria-label={`打开${labels[item.kind]}：${item.title}`} aria-pressed={selected?.id === item.id} data-status={status} onClick={() => onSelect(item.id)}>
+      {item.kind !== 'text' && <div className="sb-thumbnail"><Media asset={item.asset} item={item} />
+        {item.shot && <span className="sb-shot-number" aria-label={`镜头 ${item.shot.position + 1}`}>{String(item.shot.position + 1).padStart(2, '0')}</span>}
+        {item.asset && <span className={`sb-preview-affordance ${item.kind === 'video' ? 'is-video' : ''}`} aria-hidden="true">{item.kind === 'video' ? <Play size={19} /> : <Maximize2 size={15} />}</span>}
+      </div>}
+      <span className="sb-item-caption">{item.kind === 'text' && <span className="sb-item-icon"><Icon size={17} /></span>}
+        <span className="sb-item-copy"><strong title={item.title}>{item.title}</strong><small className="sb-item-meta">
+          {!!item.artifact?.episode_number && <span>第 {item.artifact.episode_number} 集</span>}
+          {item.shot && <span>镜头 {String(item.shot.position + 1).padStart(2, '0')}{item.shot.duration > 0 && ` · ${item.shot.duration} 秒`}</span>}
+          <span className={item.kind !== 'text' ? 'sb-item-status' : ''}>{storyboardStatus(item)}</span>
+        </small></span>
+        {item.kind === 'text' && <ArrowRight className="sb-text-arrow" size={15} aria-hidden="true" />}
+      </span>
     </UnstyledButton>
   }
 
@@ -87,18 +108,18 @@ export default function StoryboardWorkspace({ detail, graph, models, selectedId,
       event.stopPropagation(); onSelect(null)
     }
   }}>
-    <header className="sb-toolbar"><label><Search size={15} /><TextInput aria-label="搜索故事板内容" placeholder="搜索文本、镜头或素材" value={query} onChange={event => setQuery(event.target.value)} /></label>
-      <Button type="button" onClick={() => onOpenDirector()} data-workspace-control="" variant="subtle"><ScrollText size={15} />导演对话</Button>
-    </header>
     <div className="sb-content">
       <div className="sb-library" aria-label="故事板内容列表">
         {(['text', 'image', 'video'] as const).map(kind => {
           const group = visibleItems.filter(item => item.kind === kind)
           const total = items.filter(item => item.kind === kind)
+          const Icon = icons[kind]
           return <section key={kind} className={`sb-column sb-column-${kind}`} aria-label={`${labels[kind]}列表`}>
-            <header><h2>{labels[kind]}</h2><span>{group.length}</span>{kind !== 'text' && <ActionIcon type="button" aria-label={`放大${labels[kind]}`} disabled={!total.some(item => item.asset)} onClick={() => openGallery(kind)} data-workspace-control=""><Maximize2 size={15} /></ActionIcon>}</header>
+            <header><span className="sb-column-icon"><Icon size={17} /></span><div className="sb-column-heading"><div><h2>{labels[kind]}</h2><Badge className="sb-column-count" variant="light" aria-label={`${group.length} 个${labels[kind]}`}>{group.length}</Badge></div><p>{descriptions[kind]}</p></div>
+              {kind !== 'text' && <Tooltip label={`放大${labels[kind]}列表`}><ActionIcon type="button" aria-label={`放大${labels[kind]}`} disabled={!total.some(item => item.asset)} onClick={() => openGallery(kind)} data-workspace-control=""><Maximize2 size={15} /></ActionIcon></Tooltip>}
+            </header>
             <div className="sb-column-scroll"><div className={kind === 'text' ? 'sb-text-list' : 'sb-media-list'}>{group.map(itemButton)}</div>
-              {!group.length && <div className="sb-empty"><p>{query.trim() ? '没有匹配的内容' : `暂无${labels[kind]}`}</p><small>{kind === 'text' ? '剧本文档和画布文本会显示在这里' : '画布中的素材和生成结果会显示在这里'}</small></div>}
+              {!group.length && <div className="sb-empty"><Icon size={26} aria-hidden="true" /><p>{query.trim() ? '没有匹配的内容' : `暂无${labels[kind]}`}</p><small>{query.trim() ? '试试其他关键词' : kind === 'text' ? '剧本文档和画布文本会显示在这里' : '画布中的素材和生成结果会显示在这里'}</small></div>}
             </div>
           </section>
         })}
@@ -120,7 +141,7 @@ export default function StoryboardWorkspace({ detail, graph, models, selectedId,
           </article> : selected.artifact ? <article className="sb-document"><div className="sb-document-actions"><Button type="button" onClick={() => onOpenScript(selected.artifact)} data-workspace-control="" variant="subtle">编辑剧本文档 <ArrowRight size={14} /></Button></div><DocumentPreview content={selected.content} /></article>
             : selected.node?.type === 'text' ? <div className="sb-text-editor"><CanvasTextEditor text={selected.node.text} document={selected.node.settings.text_document} selected inline label={`故事板文本：${selected.title}`} onChange={(text, document) => onTextChange(selected.node!.id, text, document)} /></div>
               : selected.kind === 'text' ? <article className="sb-document"><DocumentPreview content={selected.content || '暂无生成的文本'} />{selected.node && <Button type="button" onClick={() => onOpenSettings(selected.node!.id)} data-workspace-control="" variant="subtle">配置文本生成</Button>}</article>
-                : <article className="sb-media-detail"><div className="sb-media-preview"><Media key={selected.asset?.id} asset={selected.asset} controls /></div>
+                : <article className="sb-media-detail"><div className="sb-media-preview"><Media key={selected.asset?.id} asset={selected.asset} item={selected} controls /></div>
                   <div className="sb-detail-actions">{selected.asset && <Button type="button" onClick={() => openGallery(selected.kind as 'image' | 'video', selected)} data-workspace-control="" variant="subtle"><Maximize2 size={15} />放大预览</Button>}{selected.node && <Button type="button" onClick={() => onOpenSettings(selected.node!.id)} data-workspace-control="" variant="subtle"><Settings2 size={15} />{selected.node.type === 'generation' ? '配置生成参数' : '定位画布节点'}</Button>}{selected.kind === 'image' && selected.asset && selected.node && onCreateVideo && <>
                     <Button type="button" onClick={() => onCreateVideo(selected.node!.id, 'first_frame')} data-workspace-control="" variant="subtle"><Film size={15} />首帧生成</Button>
                     {models.some(model => model.modality === 'video' && model.enabled && supportsVideoMultiReference(model.settings)) && <Button type="button" onClick={() => onCreateVideo(selected.node!.id, 'reference')} data-workspace-control="" variant="subtle"><Film size={15} />多图参考</Button>}

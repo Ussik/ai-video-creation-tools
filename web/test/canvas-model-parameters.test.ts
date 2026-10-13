@@ -3,8 +3,19 @@ import assert from 'node:assert/strict'
 import type { Model } from '../src/shared/api/api'
 import { generationCost, imageGenerationDefaults, imageParameterOptions, imageParameterValue, imagePreferencePrompt, imageRatioError, imageRatios, imageRequestResolution, imageSizeChoices, modelDefaultResolution, resolutionRatio, selectImageSize, usesModelParameter } from '../src/features/canvas/canvas-model-parameters'
 import { videoResolutionOptions } from '@video-studio/shared/media/video-parameters'
+import { imagesApiSettings } from '@video-studio/shared/models/images-api-settings'
 
 const model = (settings: Model['settings'], modality: Model['modality'] = 'image') => ({ settings, modality } as Model)
+
+test('automatic Images size sends auto and keeps the requested ratio in the prompt', () => {
+  const image = model(imagesApiSettings())
+  for (const mode of ['text', 'reference']) {
+    const resolution = imageRequestResolution(image, '2048x2048', { ratio: '16:9', clarity: '2K', mode })
+    assert.equal(resolution, 'auto')
+    assert.equal(imageRatioError(image, resolution, '16:9', mode), null)
+    assert.ok(imagePreferencePrompt(image, '保持人物身份', { ratio: '16:9', resolution, clarity: '2K', quality: 'high', background: 'auto' }, mode).includes('画面比例：16:9'))
+  }
+})
 
 test('size-only image templates expose creative preferences with usable defaults', () => {
   const image = model({ request_template: { size: '{{size}}' }, image_qualities: ['high'] })

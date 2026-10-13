@@ -1,10 +1,12 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useRef, useState, type ReactNode } from 'react'
 import { Button, Modal, Text, TextInput } from '@mantine/core'
 import { TriangleAlert } from 'lucide-react'
 
 type BaseOptions = {
   title: string
   message: string
+  details?: ReactNode
+  size?: string
   confirmLabel?: string
   cancelLabel?: string
   danger?: boolean
@@ -52,7 +54,7 @@ export function useAppDialog(options: { zIndex?: number } = {}) {
     zIndex={options.zIndex}
     onClose={() => finish(request.kind === 'prompt' ? null : false)}
     centered
-    size="sm"
+    size={request.size || 'sm'}
     withCloseButton={false}
     closeOnClickOutside={false}
     classNames={{ content: 'app-dialog', body: 'app-dialog-body' }}
@@ -64,6 +66,7 @@ export function useAppDialog(options: { zIndex?: number } = {}) {
         <h2>{request.title}</h2>
       </div>
       <Text component="p">{request.message}</Text>
+      {request.details}
     </div>
     {request.kind === 'prompt' && <TextInput
       autoFocus

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { all, db, newId, now, one, required, run } from '../../infrastructure/database/db.js'
-import type { Asset, AssetTask, Model, Project, ScriptArtifact, ScriptScene, Shot } from '../../infrastructure/database/db.js'
+import type { Asset, AssetTask, Job, Model, Project, ScriptArtifact, ScriptScene, Shot } from '../../infrastructure/database/db.js'
 import { generateStructuredOutput, type OutputContract } from '../generation/model-output.js'
 import { imageReferenceConfigError } from '@video-studio/shared/media/image-reference-config'
 import { videoReferenceConfigError } from '@video-studio/shared/media/video-reference-config'
@@ -16,6 +16,7 @@ import { visualReferenceAssets, normalizeVisualBinding, referenceSnapshot, selec
 import { recommendVisualReferences } from '@video-studio/shared/visuals/visual-reference-selection'
 import { visualBindingUsages, visualBindingsForModality, type VisualBindingUsage } from '@video-studio/shared/visuals/visual-binding-usage'
 import type { VideoReferenceUsageSelection } from '@video-studio/shared/media/video-reference-usage'
+import { assertStoryboardReferenceBudget, storyboardReferenceBudgetInstructions } from '../storyboard/storyboard-reference-budget.js'
 
 export type VisualKind = 'character' | 'location' | 'prop'
 export interface VisualProfile {
@@ -266,7 +267,7 @@ export function prepareVisualGeneration<T extends {
     reference_asset_ids: references, visual_reference_mode: referenceMode, visual_signature: signature,
     visual_source_prompt: data.visual_source_prompt ?? data.prompt,
     prompt: data.prompt_is_final ? withVideoReferenceMapping(data.prompt, bindings, references, referenceMode, promptOptions)
-      : visualGenerationPrompt(data.visual_source_prompt ?? data.prompt, bindings, references, referenceMode, promptOptions) }
+      : visualGenerationPrompt(data.visual_source_prompt ?? data.prompt, allBindings, references, referenceMode, promptOptions) }
 }
 
 export function updateVisualProfile(id: string, input: unknown) {
@@ -310,7 +311,46 @@ export function updateVisualProfile(id: string, input: unknown) {
     return publicProfile(required<VisualProfile>('visual_profiles', id))
 }
 
-export async function analyzeVisualProfiles(id: string, data: { model_id: string; scene_ids: string[]; skill_ids?: string[] }, context: {
+/** Select in submission order within the current batch, never by completion time. */
+function firstProfileBoard(profile: VisualProfile) {
+  const task = profile.asset_task_id ? one<AssetTask>('SELECT * FROM asset_tasks WHERE id=?', profile.asset_task_id) : undefined
+  if (task?.status === 'generating') return { message: '设定图仍在生成，完成后会自动确认' }
+  const jobs = all<Job & { candidate_order: number }>(`SELECT *, rowid AS candidate_order FROM jobs WHERE project_id=?
+    AND (json_extract(request, '$.visual_profile_id')=? OR json_extract(request, '$.asset_task_id')=?)
+    AND json_extract(request, '$.visual_reference_view') IS NULL ORDER BY created_at DESC, rowid DESC`, profile.project_id, profile.id, profile.asset_task_id)
+  const current = task?.generation_job_id ? jobs.find(job => job.id === task.generation_job_id) : jobs[0]
+  if (!current) return { message: '尚无可确认的候选图' }
+  const request = JSON.parse(current.request) as Record<string, unknown>
+  if (request.visual_profile_revision !== undefined && request.visual_profile_revision !== profile.revision) return { message: '候选图对应的设定已更新，请重新生成' }
+  const style = projectVisualStyle(profile.project_id)
+  if (request.project_style_version && request.project_style_version !== style.version) return { message: '候选图画风已过期，请先核对画风' }
+  const candidates = jobs.filter(job => request.asset_task_batch_id
+    ? JSON.parse(job.request).asset_task_batch_id === request.asset_task_batch_id : job.id === current.id)
+    .sort((a, b) => (JSON.parse(a.request).visual_candidate_index ?? a.candidate_order) - (JSON.parse(b.request).visual_candidate_index ?? b.candidate_order))
+  for (const job of candidates) {
+    if (job.status !== 'succeeded' || !job.result_asset_id) continue
+    const asset = one<Asset>('SELECT * FROM assets WHERE id=?', job.result_asset_id)
+    if (!asset || asset.project_id !== profile.project_id || asset.kind !== 'image') continue
+    if (one('SELECT 1 FROM visual_profile_candidates WHERE profile_id=? AND asset_id=? AND archived=1', profile.id, asset.id)) continue
+    return { job, asset, style }
+  }
+  return { message: '本轮没有可用候选图，请重新生成' }
+}
+
+export function autoConfirmGeneratedProfileBoard(job: Job): void {
+  const request = JSON.parse(job.request) as Record<string, unknown>
+  if (!request.auto_confirm_first || typeof request.visual_profile_id !== 'string' || request.visual_reference_view) return
+  const profile = one<VisualProfile>('SELECT * FROM visual_profiles WHERE id=?', request.visual_profile_id)
+  if (!profile || profile.project_id !== job.project_id || profile.board_asset_id || profile.revision !== request.visual_profile_revision) return
+  const first = firstProfileBoard(profile)
+  if (!first.asset || !first.job || !JSON.parse(first.job.request).auto_confirm_first) return
+  // A result from an older batch cannot approve the current batch.
+  const selectedRequest = JSON.parse(first.job.request)
+  if (selectedRequest.asset_task_batch_id ? selectedRequest.asset_task_batch_id !== request.asset_task_batch_id : first.job.id !== job.id) return
+  updateVisualProfile(profile.id, { board_asset_id: first.asset.id, expected_revision: profile.revision, expected_style_version: first.style.version })
+}
+
+export async function analyzeVisualProfiles(id: string, data: { model_id: string; scene_ids: string[]; skill_ids?: string[]; inherit_scene_references?: boolean }, context: {
   script: (projectId: string) => { outline: string; characters: string; artifacts?: ScriptArtifact[]; scenes: ScriptScene[] };
   generateText: (projectId: string, modelId: string, prompt: string, contract?: OutputContract) => Promise<string>;
 }) {
@@ -336,6 +376,7 @@ export async function analyzeVisualProfiles(id: string, data: { model_id: string
     `图片依据image_prompt的单幅开镜画面；视频依据video_prompt及开镜、收镜状态。背景中实际可见的对象也纳入；` +
     `仅在对白中提及、画外人物、仅提供光色而未出镜的灯体，不应成为该画面的必需对象。不要为凑全场设定将对象塞入画面。` +
     `只创建有实际需要的档案，不强求每场都包含人物、场景、道具三类，不为普通背景杂物创建参考。这里只整理待确认的设定，不生成图片。\n` +
+    storyboardReferenceBudgetInstructions() +
     `kind 只能取 character、location 或 prop。只输出合法 JSON：{"profiles":[{"kind":"character","name":"对象名称","variant":"服装或状态版本","definition":"详细中文设定","view_requirements":"信息图视图与细节要求","scene_ids":["所用场次ID"],"shot_usage":[{"shot_id":"已规划镜头ID","usage":"both"}]}]}。无已规划镜头时shot_usage为空数组。\n` +
     `${projectStyleInstructions(projectVisualStyle(id))}\n固定视觉特征必须符合项目画风；旧档案若缺少画风说明，需要在草稿中补齐，不把材质描述变成写实渲染要求。\n` +
     `项目：${project.name}；故事：${script.outline}\n已有档案：${JSON.stringify(visualProjectData(id).visual_profiles)}\n` +
@@ -351,6 +392,10 @@ export async function analyzeVisualProfiles(id: string, data: { model_id: string
           const expected = plannedShots.filter(shot => profile.scene_ids.includes(shot.scene_id || ''))
           if (expected.some(shot => !profile.shot_usage?.some(item => item.shot_id === shot.shot_id))) invalid('请明确每个已规划镜头的图片与视频参考用途')
         }
+        assertStoryboardReferenceBudget(id, data.scene_ids, value.profiles, {
+          replaceSceneBindings: data.inherit_scene_references === true,
+          inheritSceneReferences: data.inherit_scene_references,
+        })
       },
     })
   return { ...draft, skills: rules.skills, loaded_files: rules.files }
@@ -367,6 +412,29 @@ export function registerVisualProfileRoutes(app: FastifyInstance, context: {
     const { id } = idParams.parse(request.params)
     required<Project>('projects', id)
     return visualProjectData(id)
+  })
+  app.post('/api/projects/:id/visual-profiles/confirm-first', async request => {
+    const { id } = idParams.parse(request.params)
+    required<Project>('projects', id)
+    const data = z.object({ profiles: z.array(z.object({ id: z.string().min(1), expected_revision: z.number().int().min(1) }).strict()).min(1).max(100),
+      expected_style_version: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict().parse(request.body)
+    if (new Set(data.profiles.map(profile => profile.id)).size !== data.profiles.length) invalid('设定档案不能重复选择')
+    const profiles = data.profiles.map(item => required<VisualProfile>('visual_profiles', item.id))
+    if (profiles.some(profile => profile.project_id !== id)) invalid('设定档案必须来自当前项目')
+    return db.transaction(() => {
+      assertStyleVersion(projectVisualStyle(id), data.expected_style_version)
+      const confirmed: ReturnType<typeof publicProfile>[] = [], skipped: Array<{ profile_id: string; name: string; message: string }> = []
+      for (const [index, profile] of profiles.entries()) {
+        const first = !profile.board_asset_id && profile.revision === data.profiles[index]!.expected_revision ? firstProfileBoard(profile) : undefined
+        if (!first?.asset) {
+          skipped.push({ profile_id: profile.id, name: `${profile.name} · ${profile.variant}`, message: profile.board_asset_id ? '已确认，保留当前选择'
+            : profile.revision !== data.profiles[index]!.expected_revision ? '设定已更新，请刷新后重试' : first?.message || '尚无可确认的候选图' })
+          continue
+        }
+        confirmed.push(updateVisualProfile(profile.id, { board_asset_id: first.asset.id, expected_revision: profile.revision, expected_style_version: first.style.version }))
+      }
+      return { confirmed, skipped }
+    })()
   })
   app.post('/api/projects/:id/visual-profiles/analyze', async request => {
     const { id } = idParams.parse(request.params)

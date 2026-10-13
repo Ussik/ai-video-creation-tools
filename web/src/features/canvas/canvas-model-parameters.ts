@@ -80,6 +80,7 @@ export function selectImageSize(resolutions: string[], currentResolution: string
 
 /** A requested aspect ratio must map to an exact size or a native ratio parameter. */
 export function imageRequestResolution(model: Model, currentResolution: string, selection: { ratio: string; clarity: string; mode?: string }): string {
+  if (model.settings.image_size_mode === 'auto') return 'auto'
   const resolutions = Array.isArray(model.settings.resolutions)
     ? model.settings.resolutions.filter((value): value is string => typeof value === 'string') : []
   const current = !resolutions.length || resolutions.includes(currentResolution) ? currentResolution : modelDefaultResolution(model, resolutions)
@@ -96,6 +97,7 @@ export function imageRequestResolution(model: Model, currentResolution: string, 
 }
 
 export function imageRatioError(model: Model, resolution: string, ratio: string, mode = 'text'): string | null {
+  if (model.settings.image_size_mode === 'auto') return null
   if (usesModelParameter(model, 'ratio', mode)) return null
   const usesSize = usesModelParameter(model, 'size', mode) || usesModelParameter(model, 'resolution', mode)
   if (usesSize && resolutionRatio(resolution) === ratio) return null

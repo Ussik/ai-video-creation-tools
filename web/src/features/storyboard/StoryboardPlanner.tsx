@@ -273,6 +273,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
                 onChange={value => { setModelId(value || ''); resetDraft() }} comboboxProps={{ zIndex: 350 }} />
                 <NumberInput label="每场建议镜头数" placeholder="自动分析" description="留空时，按各场剧情与时长自动确定" inputWrapperOrder={['label', 'input', 'description', 'error']} min={2} max={8} allowDecimal={false} value={shotsPerScene} disabled={locked} onChange={value => { setShotsPerScene(value); resetDraft() }} /></div>
               {!eligibleModels.length && <p className="storyboard-planner-error">请先配置并启用文本模型，再开始规划。</p>}
+              {context.reference_budget && <p className="storyboard-planner-reference-budget" role="note">每镜最多 {context.reference_budget.max_setting_images} 张设定参考图，另为分镜图预留 {context.reference_budget.storyboard_images} 张；视频合计不超过 {context.reference_budget.max_images} 张。对象过多时按剧情拆分镜头。</p>}
               <Textarea label="导演要求" placeholder="例如：保留全部对白，强调人物反应和动作衔接" maxLength={4000} rows={2} value={instructions} disabled={locked} onChange={event => { setInstructions(event.currentTarget.value); resetDraft() }} />
               <WorkspaceDisclosure className="storyboard-planner-disclosure" label={<><span>参考资料</span><small>{documentIds.length ? `已选 ${documentIds.length} 份` : '可选'}</small></>}>
                 <div className="storyboard-planner-disclosure-body"><p className="storyboard-planner-note">所选场次正文、项目画幅与画风会用于规划。勾选其他文档可补充人物、世界观等设定。</p>

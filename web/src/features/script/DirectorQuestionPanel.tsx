@@ -110,6 +110,7 @@ export default function DirectorQuestionPanel({ choice: group, answer: groupAnsw
   }
 
   return <section className={`sd-question-panel${choice.fields?.length ? ' is-input-request' : ''}`} aria-label="当前待回答问题" aria-busy={disabled}>
+    <div className="sd-question-body">
     <header>{group.questions && <span className="sd-question-hint">第 {questionIndex + 1} / {group.questions.length} 项 · 全部回答后统一提交</span>}<strong>{choice.question}</strong></header>
     {choice.fields?.length ? <div className="sd-question-fields">
       <p className="sd-question-hint">填写你的设定；下方参考可多选，也可以自由补充。</p>
@@ -150,6 +151,7 @@ export default function DirectorQuestionPanel({ choice: group, answer: groupAnsw
       onChange={event => onChange({ ...answer, text: event.currentTarget.value })}
       onKeyDown={event => { if (shouldSendDirectorMessage({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing, keyCode: event.nativeEvent.keyCode })) { event.preventDefault(); void submit() } }} />}
     {!controls && unavailable && <Button type="button" className="sd-question-model" onClick={onConfigure} data-workspace-control="" variant="subtle">请先配置可用文本模型</Button>}
+    </div>
     <footer>{controls && <div className="sd-question-controls">{controls}</div>}
       <div className="sd-question-actions">
       {!!group.questions && questionIndex > 0 && <Button type="button" disabled={disabled} onClick={() => setQuestionIndex(index => index - 1)} data-workspace-control="" variant="subtle">上一项</Button>}

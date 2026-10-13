@@ -41,6 +41,14 @@ export function fixture() {
     requests.push({ path, method, body })
     if (path === '/api/projects') return Response.json([detail])
     if (path === '/api/models' || path === '/api/providers') return Response.json([])
+    if (path === '/api/speech/config') return Response.json({ enabled: true, has_key: false, default_speaker: 'zh_female_vv_uranus_bigtts', speech_rate: 0 })
+    if (path === `/api/projects/${projectId}/speech`) return Response.json(detail.speech || { voices: [], lines: [], placements: [] })
+    if (path === `/api/projects/${projectId}/audio-settings` && method === 'PUT') {
+      detail.audio_settings = { music_gain: body.music_gain, duck_music: body.duck_music, duck_source: body.duck_source }
+      if (body.ratio !== undefined) detail.ratio = body.ratio
+      if (body.music_asset_id !== undefined) detail.music_asset_id = body.music_asset_id
+      return Response.json(detail.audio_settings)
+    }
     if (path === `/api/projects/${projectId}`) {
       if (method === 'PATCH') Object.assign(detail, body)
       return Response.json(detail)

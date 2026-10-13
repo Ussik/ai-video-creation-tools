@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { UnstyledButton,
-  ActionIcon, Badge, Button, Modal, PasswordInput, Popover, SegmentedControl,
+  Accordion, ActionIcon, Alert, Badge, Button, Modal, PasswordInput, Popover, SegmentedControl,
   Select, Switch, Tabs, Textarea, TextInput, Tooltip,
 } from '@mantine/core'
 import {
@@ -12,8 +12,10 @@ import { api, json } from '../../shared/api/api'
 import type { Model, Modality, Protocol, Provider } from '../../shared/api/api'
 import { normalizeProviderBaseUrl } from './provider-url'
 import { imageRatios } from '../canvas/canvas-model-parameters'
+import { documentedImageConfigError, documentedImageProfile, documentedImageSettings } from '@video-studio/shared/models/documented-images-api'
 import { videoRatios, videoResolutions } from '@video-studio/shared/media/video-parameters'
 import { applySeedance2VideoSettings } from '@video-studio/shared/models/seedance-video-settings'
+import ImageModelConfig from './ImageModelConfig'
 import './model-settings.css'
 
 type Props = {
@@ -66,7 +68,7 @@ const emptyConnection = (): ConnectionDraft => ({ base_url: '', api_key: '' })
 const protocolLabels: Record<Protocol, string> = {
   responses: 'Responses',
   chat_completions: 'Chat Completions',
-  image_generations: 'Image Generations',
+  image_generations: 'Images API',
   async_video: 'Async Video',
 }
 
@@ -102,14 +104,10 @@ const starterSettings: Record<Protocol, Record<string, unknown>> = {
     request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] },
     text_path: 'choices.0.message.content',
   },
-  image_generations: {
-    request_path: 'images/generations',
-    request_template: { model: '{{model}}', prompt: '{{prompt}}', ratio: '{{ratio}}' },
-    image_base64_path: 'data.0.b64_json',
-    image_url_path: 'data.0.url',
+  image_generations: documentedImageSettings({
     ratios: imageRatios,
     default_ratio: '1:1',
-  },
+  }),
   async_video: {
     create_path: 'contents/generations/tasks',
     get_path: 'contents/generations/tasks/{id}',
@@ -232,6 +230,7 @@ export default function ModelSettings({ providers, models, refresh, action, busy
   const catalogRequestId = useRef(0)
   const [keyClearOpen, setKeyClearOpen] = useState(false)
   const [modelOpen, setModelOpen] = useState(false)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
   const [editingModelId, setEditingModelId] = useState<string | null>(null)
   const [modelDraft, setModelDraft] = useState<ModelDraft>(() => emptyModel(''))
   const [pricingDraft, setPricingDraft] = useState<PricingDraft>(() => pricingFromSettings(starterSettings.responses))
@@ -278,6 +277,7 @@ export default function ModelSettings({ providers, models, refresh, action, busy
   }, [providerId])
 
   function openNewModel() {
+    setAdvancedOpen(false)
     setEditingModelId(null)
     setModelDraft(emptyModel(providerId))
     setPricingDraft(pricingFromSettings(starterSettings.responses))
@@ -287,6 +287,7 @@ export default function ModelSettings({ providers, models, refresh, action, busy
   }
 
   function openModel(model: Model) {
+    setAdvancedOpen(false)
     setEditingModelId(model.id)
     setModelDraft({
       provider_id: model.provider_id, name: model.name, remote_id: model.remote_id,
@@ -538,7 +539,18 @@ export default function ModelSettings({ providers, models, refresh, action, busy
       settings = parsedSettings(modelDraft.settings)
     } catch {
       setFormError('模型配置必须是有效的 JSON 对象')
+      setAdvancedOpen(true)
       return
+    }
+    if (modelDraft.modality === 'image') {
+      const issue = documentedImageConfigError(settings)
+      if (issue) { setFormError(issue); return }
+      if (settings.image_api_profile === documentedImageProfile) settings = documentedImageSettings(settings,
+        configurableProviders.find(item => item.id === modelDraft.provider_id)?.base_url || '')
+      if (Array.isArray(settings.ratios) && (!settings.ratios.length || settings.default_ratio !== undefined && !settings.ratios.includes(settings.default_ratio))) {
+        setFormError('请选择至少一个画幅，并将默认画幅设为可选画幅之一')
+        return
+      }
     }
     const priceError = pricingError(pricingDraft, modelDraft.modality)
     if (priceError) {
@@ -847,6 +859,10 @@ export default function ModelSettings({ providers, models, refresh, action, busy
           const protocol = value as Protocol
           setModelDraft({ ...modelDraft, protocol, settings: formattedSettings(starterSettings[protocol]) })
         }} />
+        {modelDraft.modality === 'image' && <ImageModelConfig value={modelDraft.settings}
+          providerBaseUrl={configurableProviders.find(item => item.id === modelDraft.provider_id)?.base_url || ''}
+          onChange={settings => { setModelDraft(current => ({ ...current, settings: formattedSettings(settings) })); setFormError('') }}
+          onError={setFormError} onAdvanced={() => setAdvancedOpen(true)} />}
         <section className="ms-pricing" aria-labelledby="ms-pricing-title">
           <div className="ms-pricing-heading">
             <div><strong id="ms-pricing-title">费用估算</strong><p>填写模型实际价格，生成前可查看预计费用。</p></div>
@@ -881,17 +897,23 @@ export default function ModelSettings({ providers, models, refresh, action, busy
             onChange={value => value && changeTextCapability('structured_output_mode', value)} />
           <Switch label="严格函数参数" description="仅在接口支持严格工具 Schema 时开启；执行前仍会校验参数" checked={textCapability('strict_tool_arguments') === true} onChange={event => changeTextCapability('strict_tool_arguments', event.currentTarget.checked)} />
         </section>}
-        <div className="ms-json-head"><span>请求配置 JSON</span><div>
-          {modelDraft.modality === 'video' && <Button variant="subtle" size="compact-sm" onClick={() => {
+        {modelDraft.modality === 'video' && <Button variant="light" size="sm" className="ms-video-preset" onClick={() => {
             try {
               const previous = parsedSettings(modelDraft.settings)
               setModelDraft({ ...modelDraft, settings: formattedSettings(applySeedance2VideoSettings(previous)) })
               setFormError('')
             } catch (issue) { setFormError(issue instanceof Error ? issue.message : String(issue)) }
           }}>应用 Seedance 2.0 配置</Button>}
-          <Button variant="subtle" size="compact-sm" leftSection={<Braces size={14} />} onClick={formatModelSettings}>格式化</Button>
-        </div></div>
-        <Textarea aria-label="请求配置 JSON" classNames={{ input: 'ms-json-editor' }} spellCheck={false} rows={13} value={modelDraft.settings} onChange={(event) => { setModelDraft({ ...modelDraft, settings: event.currentTarget.value }); setFormError('') }} error={formError || undefined} />
+        <Accordion className="ms-advanced-config" variant="contained" value={advancedOpen ? 'json' : null} onChange={value => setAdvancedOpen(value === 'json')}>
+          <Accordion.Item value="json">
+            <Accordion.Control icon={<Braces size={16} />}>高级配置 · JSON</Accordion.Control>
+            <Accordion.Panel>
+              <div className="ms-json-head"><span>请求配置 JSON</span><Button variant="subtle" size="compact-sm" leftSection={<Braces size={14} />} onClick={formatModelSettings}>格式化</Button></div>
+              <Textarea aria-label="请求配置 JSON" classNames={{ input: 'ms-json-editor' }} spellCheck={false} rows={13} value={modelDraft.settings} onChange={(event) => { setModelDraft({ ...modelDraft, settings: event.currentTarget.value }); setFormError('') }} />
+            </Accordion.Panel>
+          </Accordion.Item>
+        </Accordion>
+        {formError && <Alert color="red" title="模型配置有误">{formError}</Alert>}
         <div className="ms-modal-actions"><Button variant="default" onClick={() => setModelOpen(false)}>取消</Button><Button className="ms-primary-action" leftSection={<Save size={15} />} disabled={busy || !modelDraft.provider_id || !modelDraft.name.trim() || !modelDraft.remote_id.trim()} onClick={saveModel}>保存模型</Button></div>
       </div>
     </Modal>

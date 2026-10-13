@@ -37,19 +37,20 @@ async function fillName(value: string) {
     input.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
   })
 }
-async function mount(t: TestContext, fail = false) {
+async function mount(t: TestContext, fail = false, modelSettings = model.settings) {
   let stored = { ...provider }
   const requests: Array<{ url: string; method?: string; body: Record<string, unknown> }> = [], errors: string[] = []
   t.mock.method(globalThis, 'fetch', async (url, init) => {
     const body = JSON.parse(String(init?.body || '{}'))
     requests.push({ url: String(url), method: init?.method, body })
     if (fail) return Response.json({ detail: '名称保存失败' }, { status: 503 })
+    if (String(url).startsWith('/api/models/')) return Response.json({ ...model, ...body })
     stored = { ...stored, name: body.name }
     return Response.json(stored)
   })
   function Harness() {
     const [providers, setProviders] = useState([stored]), [busy, setBusy] = useState(false)
-    return <MantineProvider env="test"><ModelSettings providers={providers} models={[model]} busy={busy}
+    return <MantineProvider env="test"><ModelSettings providers={providers} models={[{ ...model, settings: modelSettings }]} busy={busy}
       refresh={async () => { setProviders([{ ...stored }]) }} action={async task => {
         setBusy(true)
         try { await task() } catch (error) { errors.push(error instanceof Error ? error.message : String(error)) }
@@ -103,5 +104,122 @@ test('failed provider renames retain the draft and leave the displayed name unch
     assert.equal(document.querySelector<HTMLInputElement>('input[aria-label="提供商名称"]')!.value, '待重试名称')
     assert.equal(view.container.querySelector('.ms-provider-title h1')!.textContent, provider.name)
     assert.equal(button('保存名称').disabled, false)
+  } finally { await view.destroy() }
+})
+
+async function choose(label: string, option: string) {
+  const node = [...document.querySelectorAll<HTMLLabelElement>('label')].find(item => item.textContent === label)
+  assert.ok(node, label)
+  const input = document.getElementById(node.htmlFor) as HTMLInputElement
+  assert.ok(input)
+  await act(() => input.click())
+  const choice = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(item => item.textContent === option)
+  assert.ok(choice, option)
+  await act(() => choice.click())
+}
+
+test('image models apply the documented async form without changing model ID, provider or pricing', async t => {
+  const settings = { request_path: 'images/generations', request_template: { model: '{{model}}', prompt: '{{prompt}}', ratio: '{{ratio}}' },
+    image_url_path: 'data.0.url', ratios: ['1:1', '9:16'], default_ratio: '9:16', pricing: { per_image: 0.3, currency: '¥' } }
+  const view = await mount(t, false, settings)
+  try {
+    await act(() => button('编辑 图片模型').click())
+    assert.equal(button('高级配置 · JSON').getAttribute('aria-expanded'), 'false')
+    await choose('请求配置', 'Images API · 异步任务')
+    const dialog = document.querySelector('[role="dialog"]')!
+    assert.ok(!dialog.textContent!.includes('直接返回图片'))
+    assert.ok(!dialog.textContent!.includes('自动尺寸'))
+    assert.ok(!document.querySelector('[role="dialog"]')!.textContent!.includes('RightAPI'))
+    await act(async () => button('保存模型').click())
+    assert.equal(view.requests.length, 1)
+    const saved = view.requests[0]
+    assert.equal(saved.url, '/api/models/model-one')
+    assert.equal(saved.body.provider_id, provider.id)
+    assert.equal(saved.body.remote_id, model.remote_id)
+    const result = saved.body.settings as Record<string, unknown>
+    assert.equal(result.api_base_url, 'https://example.invalid/draw/v1')
+    assert.equal(result.image_task_base_url, 'https://example.invalid/v1')
+    assert.equal(result.image_reference_path, 'images/edits')
+    assert.equal(result.request_path, 'images/generations')
+    assert.equal(result.async_image, true)
+    assert.equal(result.get_path, 'tasks/{id}')
+    assert.deepEqual(result.ratios, settings.ratios)
+    assert.equal(result.default_ratio, settings.default_ratio)
+    assert.deepEqual(result.pricing, settings.pricing)
+    assert.deepEqual(result.request_template, { model: '{{model}}', prompt: '{{prompt}}', n: 1, size: '{{ratio}}', image: '{{images}}', async: true })
+    assert.deepEqual((result.request_templates as Record<string, unknown>).reference, result.request_template)
+    assert.deepEqual(view.errors, [])
+  } finally { await view.destroy() }
+})
+
+test('editing an existing nested image request leaves its custom payload and endpoint intact', async t => {
+  const settings = { request_path: 'custom/image', api_base_url: 'https://image-provider.invalid/v2',
+    request_template: { model: '{{model}}', prompt: '{{prompt}}', content: [{ type: 'image_url', url: '{{image}}' }] },
+    image_url_path: 'result.url', custom_flag: true }
+  const view = await mount(t, false, settings)
+  try {
+    await act(() => button('编辑 图片模型').click())
+    assert.match(document.querySelector('[role="dialog"]')!.textContent!, /已保留自定义请求/)
+    assert.equal(button('高级配置 · JSON').getAttribute('aria-expanded'), 'false')
+    await act(async () => button('保存模型').click())
+    assert.deepEqual(view.requests[0].body.settings, settings)
+    assert.deepEqual(view.errors, [])
+  } finally { await view.destroy() }
+})
+
+test('edits form uses repeated image files and pixel sizes; switching to generations restores JSON arrays', async t => {
+  const settings = { request_path: 'images/generations', request_template: { model: '{{model}}', prompt: '{{prompt}}', ratio: '{{ratio}}' }, image_url_path: 'data.0.url' }
+  const view = await mount(t, false, settings)
+  try {
+    await act(() => button('编辑 图片模型').click())
+    await choose('请求配置', 'Images API · 异步任务')
+    await choose('参考图传递方式', '文件上传 · multipart')
+    await choose('尺寸传递方式', '像素尺寸 · 例如 1280x720')
+    await act(async () => button('保存模型').click())
+    const saved = view.requests[0].body.settings as Record<string, unknown>
+    assert.equal(saved.image_reference_path, 'images/edits')
+    assert.equal(saved.image_reference_transport, 'multipart')
+    assert.equal(saved.request_timeout_seconds, 600)
+    assert.equal(saved.image_size_mode, 'pixels')
+    assert.deepEqual(saved.ratios, ['1:1', '16:9', '9:16'])
+    assert.equal((saved.request_template as Record<string, unknown>).image, '{{images}}')
+    assert.equal((saved.request_template as Record<string, unknown>)['image[]'], undefined)
+    await act(() => button('编辑 图片模型').click())
+    await choose('请求配置', 'Images API · 异步任务')
+    await choose('参考图传递方式', '文件上传 · multipart')
+    await choose('参考图用途', '参考生成 · images/generations')
+    assert.ok(!document.querySelector('[role="dialog"]')!.textContent!.includes('参考图传递方式'))
+    await act(async () => button('保存模型').click())
+    const generations = view.requests[1].body.settings as Record<string, unknown>
+    assert.equal(generations.image_reference_path, 'images/generations')
+    assert.equal(generations.image_reference_transport, 'json')
+    assert.deepEqual(view.errors, [])
+  } finally { await view.destroy() }
+})
+
+test('the form enables imageSize only explicitly and preserves an independent task API address', async t => {
+  const view = await mount(t)
+  try {
+    await act(() => button('编辑 图片模型').click())
+    await choose('请求配置', 'Images API · 异步任务')
+    const label = [...document.querySelectorAll<HTMLLabelElement>('label')].find(node => node.textContent?.includes('通过 imageSize 传递清晰度'))!
+    assert.ok(label)
+    await act(() => label.click())
+    await choose('默认清晰度', '4K')
+    await act(() => button('连接与任务查询').click())
+    const addressLabel = [...document.querySelectorAll<HTMLLabelElement>('label')].find(node => node.textContent === '任务查询 API 地址')!
+    const input = document.getElementById(addressLabel.htmlFor) as HTMLInputElement
+    await act(() => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(input, 'https://task-proxy.invalid/v1')
+      input.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+    })
+    await act(async () => button('保存模型').click())
+    const saved = view.requests[0].body.settings as Record<string, unknown>
+    assert.equal(saved.image_clarity_parameter, true)
+    assert.equal(saved.default_clarity, '4K')
+    assert.equal((saved.request_template as Record<string, unknown>).imageSize, '{{clarity}}')
+    assert.equal(saved.image_task_base_url, 'https://task-proxy.invalid/v1')
+    assert.equal(saved.api_base_url, 'https://example.invalid/draw/v1')
+    assert.deepEqual(view.errors, [])
   } finally { await view.destroy() }
 })

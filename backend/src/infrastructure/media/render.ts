@@ -7,6 +7,7 @@ import { join } from 'node:path'
 
 import ffmpegPath from 'ffmpeg-static'
 import { mediaDir, type MediaAsset } from '../providers/providers.js'
+import { defaultAudioMix, speechIntervals, type AudioMixSettings, type SpeechAudioClip } from '@video-studio/shared/media/speech-timeline'
 
 export interface RenderProject {
   id: string
@@ -32,11 +33,14 @@ function ffmpeg(): string {
 
 async function run(args: string[]): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(ffmpeg(), ['-hide_banner', '-loglevel', 'error', '-y', ...args], { stdio: ['ignore', 'ignore', 'pipe'] })
+    const child = spawn(ffmpeg(), ['-nostdin', '-hide_banner', '-loglevel', 'error', '-y', ...args], { stdio: ['ignore', 'ignore', 'pipe'] })
     let stderr = ''
+    let timedOut = false
+    const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL') }, 120000)
+    timer.unref()
     child.stderr.on('data', (data: Buffer) => { stderr = (stderr + data.toString()).slice(-1600) })
-    child.on('error', reject)
-    child.on('close', (code) => code === 0 ? resolve() : reject(new Error(stderr || `FFmpeg 退出状态 ${code}`)))
+    child.on('error', error => { clearTimeout(timer); reject(error) })
+    child.on('close', (code) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(timedOut ? 'FFmpeg 处理超时，请缩小制作范围或检查素材' : stderr || `FFmpeg 退出状态 ${code}`)) })
   })
 }
 
@@ -112,9 +116,23 @@ export async function render(
   project: RenderProject,
   clips: RenderClip[],
   assetsById: Record<string, MediaAsset>,
+  speechAudio: SpeechAudioClip[] = [],
+  audioSettings: AudioMixSettings = defaultAudioMix,
 ): Promise<string> {
   if (!clips.length) throw new Error('请先为至少一个分镜选定图片或视频')
   if (!/^[a-zA-Z0-9_-]+$/.test(project.id)) throw new Error('无效的项目 ID')
+  const totalMs = clips.reduce((sum, clip) => sum + clip.out_ms - clip.in_ms, 0)
+  if (!Number.isFinite(audioSettings.music_gain) || audioSettings.music_gain < 0 || audioSettings.music_gain > 1) throw new Error('配乐音量无效')
+  for (const audio of speechAudio) {
+    const asset = assetsById[audio.asset_id]
+    if (!asset || asset.kind !== 'audio') throw new Error('入片配音素材不存在')
+    if (audio.stale || !Number.isSafeInteger(audio.start_ms) || !Number.isSafeInteger(audio.end_ms) ||
+      !Number.isSafeInteger(audio.in_ms) || !Number.isSafeInteger(audio.out_ms) || audio.in_ms < 0 ||
+      audio.out_ms <= audio.in_ms || audio.start_ms < 0 || audio.end_ms > totalMs ||
+      audio.end_ms - audio.start_ms !== audio.out_ms - audio.in_ms ||
+      !Number.isFinite(audio.gain) || audio.gain < 0 || audio.gain > 2) throw new Error('入片配音版本或播放区间无效')
+    await stat(asset.path)
+  }
   const [width, height] = project.ratio === '9:16' ? [720, 1280] : [1280, 720]
   const outputDir = join(mediaDir, project.id)
   await mkdir(outputDir, { recursive: true })
@@ -175,17 +193,39 @@ export async function render(
     await writeFile(concatList, segments.map((name) => `file '${name}'\n`).join(''))
     const joined = join(tempDir, 'joined.mp4')
     await run(['-f', 'concat', '-safe', '0', '-i', concatList, '-c', 'copy', joined])
-    if (project.music_asset_id) {
-      const music = assetsById[project.music_asset_id]
-      if (!music || music.kind !== 'audio') throw new Error('项目配乐文件不存在')
-      try { await stat(music.path) } catch { throw new Error('项目配乐文件不存在') }
-      const totalDuration = clips.reduce((sum, clip) => sum + (clip.out_ms - clip.in_ms), 0) / 1000
-      const loopedMusic = join(tempDir, 'music.m4a')
-      await run(['-stream_loop', '-1', '-i', music.path, '-vn', '-t', String(totalDuration),
-        '-c:a', 'aac', '-ar', '48000', loopedMusic])
+    if (project.music_asset_id || speechAudio.length) {
+      const totalDuration = totalMs / 1000
+      const intervals = speechIntervals(speechAudio)
+      const active = intervals.map(([start, end]) => `gte(t,${start / 1000})*lt(t,${end / 1000})`).join('+') || '0'
+      const duck = `if(gt(${active},0),0.25,1)`
+      const inputs = ['-i', joined]
+      const filters = [`[0:a]volume='${audioSettings.duck_source ? duck : '1'}':eval=frame[original]`]
+      const mixed = ['[original]']
+      for (const [index, audio] of speechAudio.entries()) {
+        inputs.push('-i', assetsById[audio.asset_id]!.path)
+        const length = (audio.out_ms - audio.in_ms) / 1000
+        const fade = Math.min(0.015, length / 2)
+        filters.push(`[${index + 1}:a]atrim=start=${audio.in_ms / 1000}:end=${audio.out_ms / 1000},asetpts=PTS-STARTPTS,volume=${audio.gain},` +
+          `afade=t=in:d=${fade},afade=t=out:st=${length - fade}:d=${fade},adelay=${audio.start_ms}:all=1,apad,atrim=duration=${totalDuration}[speech${index}]`)
+        mixed.push(`[speech${index}]`)
+      }
+      if (project.music_asset_id) {
+        const music = assetsById[project.music_asset_id]
+        if (!music || music.kind !== 'audio') throw new Error('项目配乐文件不存在')
+        try { await stat(music.path) } catch { throw new Error('项目配乐文件不存在') }
+        // Materialize a finite music stream before mixing; infinite looping inputs can
+        // leave FFmpeg's multi-input filter graph waiting after the last video frame.
+        const loopedMusic = join(tempDir, 'music.m4a')
+        await run(['-stream_loop', '-1', '-i', music.path, '-vn', '-t', String(totalDuration), '-c:a', 'aac', '-ar', '48000', loopedMusic])
+        inputs.push('-i', loopedMusic)
+        filters.push(`[${speechAudio.length + 1}:a]atrim=duration=${totalDuration},asetpts=PTS-STARTPTS,volume='${audioSettings.music_gain}*(${audioSettings.duck_music ? duck : '1'})':eval=frame[music]`)
+        mixed.push('[music]')
+      }
+      filters.push(`${mixed.join('')}amix=inputs=${mixed.length}:duration=first:dropout_transition=0:normalize=0[a]`)
+      const mixScript = join(tempDir, 'audio-mix.txt')
+      await writeFile(mixScript, filters.join(';'))
       await run([
-        '-i', joined, '-i', loopedMusic,
-        '-filter_complex', '[1:a]volume=0.24[m];[0:a][m]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]',
+        ...inputs, '-filter_complex_script', mixScript,
         '-map', '0:v', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac',
         '-movflags', '+faststart', '-t', String(totalDuration), finalPath,
       ])

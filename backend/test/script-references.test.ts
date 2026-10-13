@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { scriptStageArtifacts, scriptArtifactLabels } from '@video-studio/shared/script/script-stage-content'
 import { referenceDocuments, decodeReferenceDocuments, referenceContext } from '../src/modules/script/script-references.js'
+import { draftCompletenessFixtureResponse } from './fixtures/script-draft-completeness.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'studio-references-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
@@ -67,6 +68,7 @@ test('intent sees reference metadata while the writer receives the full snapshot
   assert.equal(calls, 2)
 
   globalThis.fetch = async (_url, init) => {
+    const completeness = draftCompletenessFixtureResponse(init); if (completeness) return completeness
     const prompt = JSON.parse(String(init?.body)).messages[0].content as string
     const intent = prompt.includes('本次独立调用只理解创作者意图')
     if (!intent) assert.ok(prompt.includes('结尾的关键事实'), 'workflow writer must receive the full reference too')

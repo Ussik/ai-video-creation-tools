@@ -188,3 +188,58 @@ test('empty workbench guides users back to canvas and disables preview/export', 
     assert.equal(view.data.requests.filter(request => request.method !== 'GET').length, 0)
   } finally { await view.destroy() }
 })
+
+function withSpeech(data = fixture()) {
+  const timestamp = data.detail.created_at
+  const voice = { id: 'voice', name: '旁白', speaker: 'zh_female_vv_uranus_bigtts', instructions: '', speech_rate: 0 }
+  const line = { id: 'dialogue', project_id: projectId, voice_id: voice.id, scene_id: null, position: 0, text: '列车驶离站台。', instructions: '', context_text: '',
+    selected_asset_id: 'audio', selected_is_stale: false, source_status: 'manual' as const, created_at: timestamp, updated_at: timestamp,
+    takes: [{ id: 'take', line_id: 'dialogue', job_id: null, asset_id: 'audio', status: 'succeeded' as const, error: null, text: '列车驶离站台。',
+      speaker: voice.speaker, instructions: '', context_text: '', speech_rate: 0, created_at: timestamp, url: '/voice.wav', filename: 'voice.wav', duration_ms: 1800 }] }
+  data.detail.speech = { voices: [voice], lines: [line], placements: [] }
+  data.detail.assets.push({ ...data.detail.assets[0], id: 'audio', shot_id: null, kind: 'audio', url: '/voice.wav', filename: 'voice.wav' })
+  return data
+}
+
+test('unplaced speech requires an explicit export choice and cancel preserves the cut', async t => {
+  const view = await mount(t, withSpeech())
+  try {
+    assert.match(view.container.querySelector('.final-cut-audio-notice')!.textContent!, /1 句已选用配音尚未加入成片/)
+    await click(button(view.container.querySelector('.timeline')!, '导出视频'))
+    assert.match(document.querySelector('.app-dialog')!.textContent!, /本次导出不会包含这些配音/)
+    await click(button(document.body, '返回检查'))
+    assert.equal(view.data.requests.filter(request => request.path.endsWith('/export')).length, 0)
+    await click(button(view.container.querySelector('.timeline')!, '导出视频'))
+    await click(button(document.body, '继续导出当前成片'))
+    assert.deepEqual(view.data.requests.find(request => request.path.endsWith('/export'))!.body, { allow_unplaced_speech: true })
+  } finally { await view.destroy() }
+})
+
+test('stale placement blocks export and attention action opens its exact dialogue', async t => {
+  const data = withSpeech(), line = data.detail.speech!.lines[0]
+  data.detail.speech!.lines.unshift({ ...line, id: 'other', text: '另一句台词。', selected_asset_id: null, takes: [] })
+  data.detail.speech!.placements = [{ id: 'placement', project_id: projectId, line_id: line.id, asset_id: 'audio', shot_id: 's2',
+    offset_ms: 0, in_ms: 0, out_ms: 1800, gain: 1, text: line.text, voice_name: '旁白', stale: true }]
+  const view = await mount(t, data)
+  try {
+    assert.equal(button(view.container.querySelector('.timeline')!, '导出视频').disabled, true)
+    await click(button(view.container, '处理配音'))
+    assert.equal(document.querySelector<HTMLTextAreaElement>('[aria-label="朗读文本"]')!.value, line.text)
+    assert.match(document.querySelector('.speech-placement-heading')!.textContent!, /入片版本需更新/)
+    const start = document.querySelector<HTMLInputElement>('.speech-placement-editor input[placeholder="选择播放起点"]')!
+    assert.equal(start.value, '02 · 回望站台')
+  } finally { await view.destroy() }
+})
+
+test('output controls save ratio and mix atomically in one request', async t => {
+  const view = await mount(t, withSpeech())
+  try {
+    await click(button(view.container, '成片设置'))
+    const dialog = document.querySelector('.final-cut-output-settings')!
+    await input(dialog, '配乐音量', '35')
+    await click(button(dialog, '保存成片设置'))
+    assert.deepEqual(view.data.requests.filter(request => request.path.endsWith('/audio-settings')).map(request => request.body),
+      [{ ratio: '16:9', music_asset_id: null, music_gain: 0.35, duck_music: true, duck_source: true }])
+    assert.equal(view.data.requests.some(request => request.path === `/api/projects/${projectId}` && request.method === 'PATCH'), false)
+  } finally { await view.destroy() }
+})
