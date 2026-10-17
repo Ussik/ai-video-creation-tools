@@ -8,7 +8,7 @@ import { replyClassification, replyClassificationVersion, inputFields, interacti
 import { scriptSettingsSchema, visualStyleDetailsSchema, mergeConfirmedScriptSettings } from './script-intent.js'
 import { assertStyleVersion, projectVisualStyle } from '../visuals/project-visual-style.js'
 import { textToolSession, type TextTool, type ToolOutput } from '../../infrastructure/providers/text-tools.js'
-import type { GenerationModel, GenerationProvider } from '../../infrastructure/providers/providers.js'
+import type { GenerationModel, GenerationProvider, TextRequestMetrics } from '../../infrastructure/providers/providers.js'
 import { activityRecorder, activityPreview } from './script-activity.js'
 import type { CreationNextStep, ScriptCreationState } from '@video-studio/shared/script/script-creation-state-types'
 import { restoreOptionalNulls } from '../generation/model-output.js'
@@ -20,7 +20,10 @@ import { skillContext, skillStages, type SkillStage } from '../skills/skills.js'
 import { revisionSchemas, revisionLimit, revisionHash, revisionProblem, toolDiagnostic, documentParagraphs, resolvePassageEdits, applyResolvedEdits, type RevisionTask, type ToolDiagnostic } from './script-revision.js'
 import { missingStageArtifacts, scriptStageForArtifact } from '@video-studio/shared/script/script-stage-content'
 import { scriptReviewGuidance } from '@video-studio/shared/script/script-quality'
-import { ScriptDraftReviewError } from './script-draft-completeness.js'
+import { ScriptDraftReviewError, ScriptDraftNeedsResolution } from './script-draft-completeness.js'
+import { readScriptSource, scriptSourceIndex, searchScriptSource } from './script-source-documents.js'
+import { commitScriptSourceUpdate, effectiveScriptSource, scriptDocumentVersion } from './script-source-versions.js'
+import type { ScriptSourceUpdate } from '@video-studio/shared/script/script-source-document'
 
 const ids = z.array(z.string().min(1).max(160)).min(1).max(8).refine(items => new Set(items).size === items.length, '文档不能重复')
 export const documentAction = z.object({ operation: z.enum(['review', 'revise']), document_ids: ids }).strict()
@@ -44,6 +47,9 @@ type Replacement = { find: string; replace: string; reason: string }
 export type ToolDocument = { id: string; artifact_type: ScriptArtifact['artifact_type']; episode_number: number; title: string; content: string; version: string; status: string }
 export type ToolDraftDocument = Omit<ToolDocument, 'status'> & { original_content: string; replacements: Replacement[] }
 export type ScriptToolDraft = {
+  source_update?: ScriptSourceUpdate
+  /** null records that no source existed; undefined is an unverifiable legacy draft. */
+  source_version?: string | null
   id: string; version: string; kind: 'create' | 'patch' | 'resource'; summary: string; documents: ToolDraftDocument[];
   workflow?: WorkflowDraft; scene_version?: string; status: 'pending' | 'saved' | 'discarded'
   scene_changes?: Array<{ id: string; version: string; episode_number: number; original: z.infer<typeof workflowScene>; scene: z.infer<typeof workflowScene> }>
@@ -58,8 +64,12 @@ type ToolsContext = {
   skillRules?: Partial<Record<SkillStage, ReturnType<typeof skillContext>>>;
   project: Project; script: () => ScriptSnapshot; stage: DirectorStageContext;
   messages: Array<{ role: 'user' | 'assistant'; text: string }>; workflow?: WorkflowDraft['stage']; operation?: StageOperation;
+  /** Supply the source snapshot captured before generation when presenting a generated draft. */
+  sourceVersion?: string | null;
   action?: z.infer<typeof documentAction>; discussionOnly?: boolean; legacyPending?: boolean;
   currentSettings?: z.infer<typeof scriptSettingsSchema>;
+  /** Synchronous notification for the server-owned intent save, before execution yields. */
+  onVisualStyleSaved?: () => void;
   authorizeCreation?: (draft: WorkflowDraft, explicitStage: boolean) => Promise<boolean>;
   validateCreation?: (draft: WorkflowDraft, preserved: ToolDocument[]) => Promise<void>;
   authorizeResource?: (summary: string, changes: ResourceChange[]) => Promise<boolean>;
@@ -200,11 +210,15 @@ function persistDraft(projectId: string, draft: ScriptToolDraft, expected?: stri
   })()
   return draft
 }
-export const toolDraftEdit = z.object({ version: z.string().min(1), documents: z.array(z.object({ id: z.string().min(1), content: z.string().trim().min(1).max(100000) }).strict()).max(revisionLimit), scenes: z.array(workflowScene).max(20000).optional(), resource_values: z.array(resourceValueEdit).max(300).optional() }).strict()
+export const toolDraftEdit = z.object({ version: z.string().min(1), source_content: z.string().min(1).max(100000).refine(value => !!value.trim(), '文稿正文不能为空').optional(), documents: z.array(z.object({ id: z.string().min(1), content: z.string().trim().min(1).max(100000) }).strict()).max(revisionLimit), scenes: z.array(workflowScene).max(20000).optional(), resource_values: z.array(resourceValueEdit).max(300).optional() }).strict()
 export function editToolDraft(projectId: string, id: string, input: z.infer<typeof toolDraftEdit>) {
   const draft = getToolDraft(projectId, id)
   if (!draft || draft.status !== 'pending') problem('找不到待确认草稿', 404)
   if (input.version !== draft.version) problem('草稿已变化，请刷新', 409)
+  if (input.source_content !== undefined) {
+    if (!draft.source_update) problem('当前草稿没有文稿修订')
+    draft.source_update.content = input.source_content
+  }
   if (draft.kind === 'resource') {
     if (input.documents.length || input.scenes) problem('此草稿只包含视觉设定或分镜对象')
     if (input.resource_values?.some(edit => edit.index >= (draft.resource_changes?.length || 0))) problem('只能编辑当前草稿对象')
@@ -258,6 +272,13 @@ export function validateWorkflowScenes(script: Pick<ScriptSnapshot, 'scenes'>, w
   }
   if (sources.some(scene => !retained.has(scene.id))) problem('重新设计必须保留本集全部已有场次，并为每场填写source_scene_id；可改写、调整顺序或补充新场次，不能删除已有场次')
 }
+
+export function attachDraftSourceUpdate(projectId: string, id: string, update: ScriptSourceUpdate) {
+  const draft = getToolDraft(projectId, id)
+  if (!draft || draft.status !== 'pending') problem('找不到待确认草稿', 404)
+  draft.source_update = update
+  return persistDraft(projectId, draft, draft.version)
+}
 function draftSceneIds(draft: ScriptToolDraft) {
   return draft.workflow?.stage === 'episode' && draft.workflow.operation === 'regenerate'
     ? draft.workflow.scenes.flatMap(scene => scene.source_scene_id ? [scene.source_scene_id] : [])
@@ -307,6 +328,12 @@ export function commitToolDraft(projectId: string, id: string, expected: string,
       run('UPDATE projects SET updated_at=? WHERE id=?', timestamp, projectId)
       return { ...draft, status: 'saved' as const }
     }
+    // Check before any document, scene, decision or source write. In particular,
+    // a source_update changes this version later in this same transaction.
+    if (draft.source_version === undefined) problem('此历史草稿缺少原稿版本记录，草稿仍保留可查看；请结合当前原稿重新生成并核对后保存', 409)
+    const source = effectiveScriptSource(projectId)
+    if (draft.source_version !== (source ? scriptDocumentVersion(source) : null)) problem('原剧本来源已变化，草稿仍保留，正式文档未修改；请结合当前原稿重新生成并核对后保存', 409)
+    if (draft.source_update && draft.source_update.base_version !== draft.source_version) problem('文稿修订与草稿依据的原稿版本不一致，草稿仍保留；请重新生成并核对后保存', 409)
     for (const doc of draft.documents) {
       const original = documents.find(item => item.id === doc.id || item.artifact_type === doc.artifact_type && item.episode_number === doc.episode_number)
       if (doc.version ? original?.version !== doc.version : Boolean(original)) problem(`「${doc.title}」已被修改，请重新读取后修订`, 409)
@@ -353,6 +380,7 @@ export function commitToolDraft(projectId: string, id: string, expected: string,
           summary: ('统一修订已核对并由创作者确认保存。' + batch.map(({ item }) => `「${item.title}」${item.assessment?.explanation || ''}${item.assessment?.findings.map(finding => `；${finding.explanation}`).join('') || ''}`).join('\n')).slice(0, 3000) })
       }
     }
+    if (draft.source_update) commitScriptSourceUpdate(projectId, draft.source_update)
     run("UPDATE script_tool_drafts SET status='saved', updated_at=? WHERE id=?", timestamp, id)
     run('UPDATE projects SET updated_at=? WHERE id=?', timestamp, projectId)
     return { ...draft, status: 'saved' as const }
@@ -372,6 +400,8 @@ const schemas = {
     basis: z.enum(['creator_confirmed', 'delegated_model']),
   }).strict(),
   search_project_content: z.object({ query: z.string().trim().min(1).max(200), limit: z.number().int().min(1).max(30).default(12) }).strict(),
+  read_source_document: z.object({ offset: z.number().int().min(0), length: z.number().int().min(1).max(10000).default(5000) }).strict(),
+  search_source_document: z.object({ query: z.string().trim().min(1).max(200), limit: z.number().int().min(1).max(20).default(8) }).strict(),
   read_documents: z.object({ document_ids: ids, source: z.enum(['saved', 'draft']).default('saved'), offset: z.number().int().min(0).default(0), length: z.number().int().min(1).max(20000).default(20000), scene_offset: z.number().int().min(0).default(0), scene_limit: z.number().int().min(1).max(10).default(3) }).strict(),
   read_episode_scenes: z.object({ episode_number: z.number().int().min(1).max(200), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(10).default(3) }).strict(),
   record_story_decision: z.object({ topic: z.string().trim().min(1).max(200), content: z.string().trim().min(1).max(4000), basis: z.enum(['creator_confirmed', 'delegated_model']), source_message_index: z.number().int().min(0).max(31), settings_patch: scriptSettingsSchema.optional() }).strict(),
@@ -396,7 +426,9 @@ const descriptions: Record<keyof typeof schemas, string> = {
   get_project_visual_style: '读取项目统一画风、版本、结构化表现要求及旧项目的已确认来源。没有专用画风字段时，按语义从明确确认的来源整理，不能把题材、作品借鉴、默认值或否定项当成画风。',
   set_project_visual_style: '将创作者明确给出/接受或明确授权决定的画风规范化为项目统一设置，并记录真实来源。先读取当前version作为expected_version。新决定引用source_message_index；仅规范化已有确认决定时引用get_project_visual_style返回的source_decision_id。两种来源只能选一种。name写画风，details仅填写已确认的媒介/渲染/线条/配色/排除表现，不补造细节；替换旧规范而非混用。仅修改画风，不改文档或付费生成。',
   search_project_content: '在本项目文档、已确认决定和已保存对话中按词搜索，返回原文片段及来源。可分词多次检索。',
-  read_documents: '读取指定文档原文及版本和带版本的paragraphs段落定位。source默认saved；统一修订任务中检查最新有效草稿用draft（包含范围内尚未修改文档），不可把已改草稿覆盖回正式原文。offset/length按字符分段读完；仅完全读到的段落返回定位。分集正文分页返回场次及版本，用scene_next_offset继续读完。',
+  read_source_document: '按字符偏移读取当前有效文稿（含已确认修订）；使用请求中的分段目录确定位置。返回总长度、修订次数和下一段偏移。不要把目录预览当成完整剧情依据。',
+  search_source_document: '在当前有效文稿（含已确认修订）中搜索原文，返回命中片段和字符偏移；需要完整上下文时接着read_source_document。',
+  read_documents: '读取指定文档原文及版本和带版本的paragraphs段落定位。source默认saved；统一修订任务中检查最新有效草稿用draft（包含范围内尚未修改文档），不可把已改草稿覆盖回正式原文。offset/length按字符分段读完；每次总结果最多48000字符，超限减少文档数量或length，不省略后续段落；仅完全读到的段落返回定位。分集正文分页返回场次及版本，用scene_next_offset继续读完。',
   read_episode_scenes: '分页读取指定集的正式分场原文、ID和版本。只有场次尚无episode_script正文的历史分集，重新设计前使用此工具读完全部场次。offset/limit按场次数分页，next_offset继续，complete为真代表读到末尾。读取其他集只作参考。',
   record_story_decision: '记录创作者明确确认的设定或其明确授权你决定后作出的具体选择。topic稳定标识同一事项，更新它会替代旧决定；必须引用一条真实创作者消息，不能记录未经接受的建议。若决定涉及集数、单集秒数、题材、视觉画风等配置，用settings_patch同步；画风写visual_style，不能只塞进genre，或使用set_project_visual_style记录画风及细节。不要写默认值或未接受的建议。记录不会保存文档正文。',
   ask_creator: '直接显示选择、填写或确认界面，等待创作者回答。request使用choice_request/input_request/confirmation_request/question_set和status:pending。一次一个关键决定；只问未确定且未委托你决定的事项。',
@@ -415,6 +447,10 @@ export const scriptFunctions: TextTool[] = (Object.keys(schemas) as Array<keyof 
 
 export function documentTools(context: ToolsContext) {
   const projectId = context.project.id
+  const source = effectiveScriptSource(projectId)
+  // Capture once for the entire tool session; edits to an existing draft must
+  // retain its original binding instead of silently adopting the newest source.
+  const sourceVersion = context.sourceVersion === undefined ? source ? scriptDocumentVersion(source) : null : context.sourceVersion
   const initialDraft = getToolDraft(projectId)
   const resources = resourceTools(projectId)
   const loadedSkillStages = new Set<SkillStage>(['script'])
@@ -538,7 +574,7 @@ export function documentTools(context: ToolsContext) {
           loadedSkillStages.add(stage)
           return { stage, ...rules }
         }
-        case 'get_creation_state': schemas.get_creation_state.parse(args); return { project: context.project, settings: mergeConfirmedScriptSettings(context.script().generation_options, context.currentSettings), saved_settings: context.script().generation_options, project_visual_style: projectVisualStyle(projectId),
+        case 'get_creation_state': schemas.get_creation_state.parse(args); return { project: context.project, settings: mergeConfirmedScriptSettings(context.script().generation_options, context.currentSettings), saved_settings: context.script().generation_options, project_visual_style: projectVisualStyle(projectId), uploaded_script: scriptSourceIndex(projectId),
           selected_skills: Object.entries(context.skillRules || {}).map(([stage, rules]) => ({ stage, skills: rules.skills.map(({ id, name, role }) => ({ id, name, role })) })),
           stage: context.stage, stage_content_requirements: context.stage.stage ? workflowContentInstructions({ stage: context.stage.stage, scope: context.stage.stage === 'episode' ? 'episode' : 'project', episode_number: context.stage.episode_number || 0 }) : null,
           missing_stage_documents: context.stage.stage ? missingStageArtifacts(context.stage.stage, docs().filter(doc => doc.episode_number === (context.stage.episode_number || 0))) : [],
@@ -560,7 +596,7 @@ export function documentTools(context: ToolsContext) {
               if (!doc) problem('文档不存在或不属于当前项目', 404)
               return { id, title: doc.title, source_version: doc.version, status: 'pending' as const }
             })
-            const draft: ScriptToolDraft = { id: newId(), version: newId(), kind: 'patch', summary: data.summary, documents: [], scene_changes: [], status: 'pending',
+            const draft: ScriptToolDraft = { id: newId(), version: newId(), kind: 'patch', source_version: sourceVersion, summary: data.summary, documents: [], scene_changes: [], status: 'pending',
               revision_task: { id: newId(), summary: data.summary, scope: data.scope, source_text: source.text, created_at: now(), updated_at: now(), context_version: version(revisionContext(projectId)), status: 'in_progress', documents, decisions: data.decisions || [], references: [], batches: 0 } }
             resultDraft = persistDraft(projectId, draft)
             revisionWorked = true
@@ -620,10 +656,13 @@ export function documentTools(context: ToolsContext) {
           if (data.source_decision_id ? !source : !message || message.role !== 'user') problem('画风来源不存在或不属于当前项目')
           saveDecision({ topic: '视觉风格', content: JSON.stringify({ name: data.name, ...data.details }), basis: source?.basis as 'creator_confirmed' | 'delegated_model' || data.basis,
             source_message_index: data.source_message_index || 0, settings_patch: { visual_style: data.name, visual_style_details: data.details || {} } }, source?.source_text || message!.text)
+          context.onVisualStyleSaved?.()
           return { saved: true, project_visual_style: projectVisualStyle(projectId), document_saved: false,
             note: '后续生成统一使用此画风；已有图片、视频和设定正文保留，需要核对旧参考图。' }
         }
         case 'search_project_content': { const data = schemas.search_project_content.parse(args); return search(data.query, data.limit, false) }
+        case 'read_source_document': { const data = schemas.read_source_document.parse(args); return readScriptSource(projectId, data.offset, data.length) }
+        case 'search_source_document': { const data = schemas.search_source_document.parse(args); return searchScriptSource(projectId, data.query, data.limit) }
         case 'find_related_content': { const data = schemas.find_related_content.parse(args); return search(data.query, data.limit, true) }
         case 'get_document_review_context': {
           const data = schemas.get_document_review_context.parse(args), documents = docs()
@@ -658,7 +697,7 @@ export function documentTools(context: ToolsContext) {
             return { ...doc, source: data.source, paragraphs: documentParagraphs(doc.content, doc.version).filter(p => p.start >= data.offset && p.end <= end), content: doc.content.slice(data.offset, end), offset: data.offset, next_offset: end, complete: end === doc.content.length, total_length: doc.content.length,
               ...(scenes ? { scenes, scene_offset: data.scene_offset, scene_next_offset: data.scene_offset + scenes.length, scenes_complete: data.scene_offset + scenes.length === allScenes!.length, total_scenes: allScenes!.length } : {}) }
           })
-          if (Buffer.byteLength(JSON.stringify(documents), 'utf8') > 500_000) problem('本次读取过大，请减少文档数量')
+          if (JSON.stringify(documents).length > 48000) problem('本次读取超过48000字符，请减少文档数量或length，并继续分页读完')
           for (const doc of documents) {
             const reads = draft ? readDraftDocuments : readVersions
             const previous = reads.get(doc.id), ranges: Array<[number, number]> = previous?.version === doc.version ? [...previous.ranges] : []
@@ -762,7 +801,7 @@ export function documentTools(context: ToolsContext) {
           await context.validateCreation?.(data, regenerating ? [] : stageDocuments.filter((doc): doc is ToolDocument => !!doc))
           context.signal?.throwIfAborted()
           const documents = data.artifacts.map((doc, index) => ({ ...doc, id: stageDocuments[index]?.id || `${doc.artifact_type}:${data.episode_number}`, episode_number: data.episode_number, version: stageDocuments[index]?.version || '', original_content: stageDocuments[index]?.content || '', replacements: regenerating && stageDocuments[index] ? [{ find: stageDocuments[index]!.content, replace: doc.content, reason: '创作者明确要求重新设计此阶段' }] : [] }))
-          const draft: ScriptToolDraft = { id: newId(), version: newId(), kind: 'create', summary: `${data.stage === 'episode' ? `第 ${data.episode_number} 集` : data.artifacts[0]!.title}${regenerating ? '重新设计' : ''}草稿`, status: 'pending', workflow: data,
+          const draft: ScriptToolDraft = { id: newId(), version: newId(), kind: 'create', source_version: sourceVersion, summary: `${data.stage === 'episode' ? `第 ${data.episode_number} 集` : data.artifacts[0]!.title}${regenerating ? '重新设计' : ''}草稿`, status: 'pending', workflow: data,
             ...(data.stage === 'episode' ? { scene_version: episodeSceneVersion(snapshot, data.episode_number) } : {}), documents }
           if (regenerating) draft.impacts = documentDraftImpacts(projectId, docs(), documents, draftSceneIds(draft))
           resultDraft = persistDraft(projectId, draft)
@@ -834,7 +873,7 @@ export function documentTools(context: ToolsContext) {
             return { ...saveTask(draft, data.draft_version!), batches: Math.ceil(changes.length / 8) }
           }
           const impacts = documentDraftImpacts(projectId, docs(), documents, scene_changes.map(change => change.id))
-          resultDraft = persistDraft(projectId, { id: newId(), version: newId(), kind: 'patch', summary: data.summary, documents, scene_changes, impacts, status: 'pending' })
+          resultDraft = persistDraft(projectId, { id: newId(), version: newId(), kind: 'patch', source_version: sourceVersion, summary: data.summary, documents, scene_changes, impacts, status: 'pending' })
           return { draft_id: resultDraft.id, version: resultDraft.version, summary: resultDraft.summary, impacts, batches: Math.ceil(changes.length / 8), saved: false }
         }
         case 'manage_document_draft': {
@@ -932,8 +971,11 @@ const operationLabels: Record<string, string> = {
 }
 function operationSummary(name: string, result: unknown) {
   const value = result as Record<string, unknown>
-  if (name === 'get_project_visual_style') return `已读取项目画风：${value.label}${value.source === 'confirmed_context' ? '；可从已确认来源规范化' : ''}`
-  if (name === 'set_project_visual_style') return `项目画风已保存：${(value.project_visual_style as { label: string }).label}；已有素材保留，旧参考图需核对`
+  if (name === 'get_project_visual_style') return value.source === 'unspecified'
+    ? '查询时项目尚未保存画风'
+    : value.source === 'confirmed_context' ? '查询时项目尚未单独保存画风，可从已确认的描述整理'
+      : `查询时已保存的项目画风：${value.label}`
+  if (name === 'set_project_visual_style') return `已保存项目画风：${(value.project_visual_style as { label: string }).label}；已有素材保留，旧参考图需核对`
   if (name === 'propose_next_step') return '已核验下一步创作，等待创作者选择；尚未生成或保存'
   if (name === 'get_creation_state') return `已读取 ${(value.documents as unknown[]).length} 份文档目录、${(value.decisions as unknown[]).length} 项已确认设定${value.pending_draft ? '，存在待确认草稿' : ''}`
   if (name === 'read_documents') return (value.documents as Array<{ title: string; offset: number; next_offset: number; total_length: number }>).map(doc => `「${doc.title}」已读 ${doc.offset + 1}–${doc.next_offset} / ${doc.total_length} 字`).join('；')
@@ -963,17 +1005,25 @@ export async function runScriptTools(context: ToolsContext & {
   activity?: ReturnType<typeof activityRecorder>
 }) {
   const activity = context.activity || activityRecorder(context.onEvent)
-  const registry = activity.start({ kind: 'context', label: 'Function Calling', summary: `本轮已向模型提供 ${scriptFunctions.length} 项函数，由模型按需选择调用`,
-    ...activityPreview(scriptFunctions.map(({ name, description }) => ({ name, description })), 'output') })
+  const stageGeneration = Boolean(context.workflow && context.operation !== 'revise')
+  const stageToolNames = new Set(['get_creation_state', 'read_documents', 'read_source_document', 'search_source_document',
+    'create_document_draft', 'propose_document_patch', 'find_related_content', 'manage_document_draft',
+    ...(context.workflow === 'episode' && context.operation === 'regenerate' ? ['read_episode_scenes'] : [])])
+  const availableFunctions = stageGeneration ? scriptFunctions.filter(tool => stageToolNames.has(tool.name)) : scriptFunctions
+  const toolPrompt = stageGeneration ? `${context.prompt}\n本轮已明确授权生成当前阶段。已选剧本技能规则已包含在本条指令中，不要重复加载技能；只使用为本阶段提供的函数完成生成。` : context.prompt
+  const registry = activity.start({ kind: 'context', label: 'Function Calling', summary: `本轮已向模型提供 ${availableFunctions.length} 项函数，由模型按需选择调用`,
+    ...activityPreview(availableFunctions.map(({ name, description }) => ({ name, description })), 'output') })
   activity.finish(registry, 'succeeded')
-  const tools = documentTools(context), turn = textToolSession(context.model, context.provider, context.prompt, scriptFunctions, context.resolveKey, context.signal,
-    text => context.onEvent({ type: 'progress', text }))
+  let roundMetrics: TextRequestMetrics | undefined
+  const tools = documentTools(context), turn = textToolSession(context.model, context.provider, toolPrompt, availableFunctions, context.resolveKey, context.signal,
+    text => context.onEvent({ type: 'progress', text }), metrics => { roundMetrics = metrics })
   let outputs: ToolOutput[] = [], finalText = '', calls = 0, forcedRepairs = 0, successes = 0
   let continuation: string | undefined, lastFailure: ToolDiagnostic | undefined, transportFailure: string | undefined
   const failures = new Map<string, { attempts: number; successes: number }>()
   const unresolved = new Map<string, ToolDiagnostic>()
   for (let round = 0; round < 16; round++) {
     context.signal?.throwIfAborted()
+    roundMetrics = undefined
     const modelStep = activity.start({ kind: 'model', label: round ? '模型继续处理' : '模型处理请求', name: context.model.name || context.model.remote_id,
       round: round + 1, summary: round ? '根据工具返回的真实结果继续处理' : '正在根据项目资料、对话与已加载的规则处理请求' })
     let response: Awaited<ReturnType<typeof turn>>
@@ -981,10 +1031,10 @@ export async function runScriptTools(context: ToolsContext & {
       response = await turn(outputs, continuation)
       continuation = undefined
       activity.finish(modelStep, 'succeeded', { summary: response.calls.length ? `模型提出 ${response.calls.length} 项函数调用` : '模型已返回本轮回复',
-        ...(response.text ? activityPreview(response.text, 'output') : {}) })
+        ...response.metrics, ...(response.text ? activityPreview(response.text, 'output') : {}) })
     } catch (issue) {
       const cancelled = context.signal?.aborted && context.signal.reason?.name === 'AbortError'
-      activity.finish(modelStep, cancelled ? 'cancelled' : 'failed', { summary: cancelled ? '已停止模型请求' : `模型请求失败：${issue instanceof Error ? issue.message : String(issue)}`.slice(0, 3000) })
+      activity.finish(modelStep, cancelled ? 'cancelled' : 'failed', { summary: cancelled ? '已停止模型请求' : `模型请求失败：${issue instanceof Error ? issue.message : String(issue)}`.slice(0, 3000), ...(roundMetrics || {}) })
       if (!context.signal?.aborted && tools.result().tool_draft) { transportFailure = issue instanceof Error ? issue.message : String(issue); break }
       throw issue
     }
@@ -1024,9 +1074,16 @@ export async function runScriptTools(context: ToolsContext & {
         lastFailure = [...unresolved.values()].at(-1)
         if (call.name === 'load_creation_skills') activity.skills((result as { stage: SkillStage }).stage, result as ReturnType<typeof skillContext>)
         context.onEvent({ type: 'process', label, summary: operationSummary(call.name, result) })
-        activity.finish(operation, 'succeeded', { summary: operationSummary(call.name, result).slice(0, 3000), targets: activityTargets(call.name, result), ...activityPreview(result, 'output') })
+        const publicResult = call.name === 'read_source_document' ? { offset: (result as { offset: number }).offset,
+          next_offset: (result as { next_offset: number }).next_offset, total_length: (result as { total_length: number }).total_length }
+          : call.name === 'search_source_document' ? { matches: (result as { matches: unknown[] }).matches.length } : result
+        activity.finish(operation, 'succeeded', { summary: operationSummary(call.name, result).slice(0, 3000), targets: activityTargets(call.name, result), ...activityPreview(publicResult, 'output') })
         outputs.push({ id: call.id, output: JSON.stringify({ ok: true, result }) })
       } catch (issue) {
+        if (issue instanceof ScriptDraftNeedsResolution) {
+          activity.finish(operation, 'succeeded', { summary: '候选草稿已核对，等待处理冲突或缺口' })
+          throw issue
+        }
         const diagnostic = toolDiagnostic(issue, args)
         const signature = revisionHash([call.name, call.arguments]), previous = failures.get(signature)
         failures.set(signature, { attempts: (previous?.attempts || 0) + 1, successes })

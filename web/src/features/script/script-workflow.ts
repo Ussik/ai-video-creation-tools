@@ -12,7 +12,7 @@ export type WorkflowScene = {
   action: string; dialogue: string; narration: string; duration: number; episode_number?: number
 }
 export type WorkflowArtifact = { artifact_type: ScriptArtifactType; title: string; content: string; episode_number?: number }
-export type WorkflowDraft = WorkflowRequest & { artifacts: WorkflowArtifact[]; scenes: WorkflowScene[] }
+export type WorkflowDraft = WorkflowRequest & { source_version?: string | null; artifacts: WorkflowArtifact[]; scenes: WorkflowScene[] }
 export const workflowLabels: Record<WorkflowStage, string> = {
   outline: '全剧故事大纲', characters: '全剧人物设定', locations: '全剧场景设计', props: '全剧道具设计', episode: '指定集正文',
 }

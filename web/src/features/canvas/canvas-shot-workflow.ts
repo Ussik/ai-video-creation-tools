@@ -88,7 +88,7 @@ export function connectImageVideoHandoff(graph: CanvasGraph, connection: NonNull
       ratio: target.settings.ratio || 'adaptive',
       resolution: target.settings.resolution
         ? resolutions.find(value => value.toLowerCase() === target.settings.resolution?.toLowerCase()) || target.settings.resolution
-        : modelDefaultResolution(model, resolutions) || null,
+        : model ? modelDefaultResolution(model, resolutions) || null : '480p',
     } }
   // A single-frame mode replaces the previous image input. Text inputs and
   // outgoing edges remain; multi-frame/reference modes retain image order.
@@ -133,7 +133,7 @@ export function createImageVideoHandoff(graph: CanvasGraph, source: CanvasNode, 
     settings: { modality: 'video', mode, visual_reference_mode: referenceModel ? 'profiles' : 'keyframe', candidate_count: 1,
       storyboard_reference_asset_id: asset.id,
       duration,
-      ratio: 'adaptive', resolution: modelDefaultResolution(model, videoResolutionOptions(model?.settings)) || null } }
+      ratio: 'adaptive', resolution: model ? modelDefaultResolution(model, videoResolutionOptions(model.settings)) || null : '480p' } }
   return { graph: { ...graph, nodes: [...graph.nodes, node], edges: [...graph.edges,
     { id: edgeId, source: source.id, target: node.id, reference_asset_id: asset.id }] }, nodeId: node.id, created: true }
 }

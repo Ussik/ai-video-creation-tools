@@ -1,10 +1,16 @@
 /** Public execution records shared by API and UI, without server dependencies. */
 export type ScriptActivity = {
+  task_id?: string; step_id?: string; attempt?: number; sequence?: number;
   id: string; kind: 'skill' | 'tool' | 'model' | 'context';
   status: 'running' | 'succeeded' | 'failed' | 'cancelled';
   label: string; summary: string; started_at: number; ended_at?: number; duration_ms?: number;
   round?: number; name?: string; skill_id?: string; revision?: string; files?: string[];
+  scope?: 'task' | 'step' | 'notice'; parent_id?: string; reused?: boolean;
   input?: string; output?: string; input_truncated?: boolean; output_truncated?: boolean;
+  request_bytes?: number; response_chars?: number; first_event_ms?: number;
+  input_tokens?: number; output_tokens?: number; reasoning_tokens?: number; output_limit?: number;
+  estimated_input_tokens?: number; context_window_tokens?: number; reserved_output_tokens?: number;
+  upstream_request_id?: string; http_status?: number;
   targets?: ScriptActivityTarget[];
 }
 

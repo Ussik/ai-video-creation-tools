@@ -822,6 +822,7 @@ test('provider failure is recorded as a failed model operation rather than a suc
   const modelEvents = events.filter(event => event.type === 'activity' && event.activity.kind === 'model')
   assert.equal(modelEvents[0].activity.status, 'running'); assert.equal(modelEvents[1].activity.status, 'failed')
   assert.match(modelEvents[1].activity.summary, /provider unavailable/)
+  assert.ok(modelEvents[1].activity.request_bytes > 0)
   assert.equal(events.filter(event => event.type === 'activity' && event.activity.kind === 'tool').length, 0)
   assert.ok(events.some(event => event.type === 'error'))
 })
@@ -843,33 +844,31 @@ test('server heartbeat keeps a slow director connection visibly alive without ch
   assert.equal(events.find(event => event.type === 'done').reply, '先确定故事方向。')
 })
 
-test('whole-dialogue timeout fails an active native model operation and closes the stream', async t => {
+test('native decision timeout closes an active request while retaining completed tool reads', async t => {
   const { project } = await fixture(), model = await nativeModel()
   t.mock.timers.enable({ apis: ['setTimeout'] })
-  let first = true, entered!: () => void, requestSignal!: AbortSignal
+  let rounds = 0, entered!: () => void, requestSignal!: AbortSignal
   const waiting = new Promise<void>(resolve => { entered = resolve })
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
     const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply;
-    if (first) {
-      first = false
-      // Spend nineteen minutes on the first request, then let the model read state
-      // and start a second request. Each call alone fits the provider deadline.
-      t.mock.timers.tick(19 * 60_000)
-      return Response.json({ choices: [{ message: { tool_calls: [{ id: 'state-1', type: 'function', function: { name: 'get_creation_state', arguments: '{}' } }] }, finish_reason: 'tool_calls' }] })
+    if (rounds++ < 4) {
+      // Finished tool decisions fit their individual five-minute budgets.
+      t.mock.timers.tick(60_000)
+      return Response.json({ choices: [{ message: { tool_calls: [{ id: `state-${rounds}`, type: 'function', function: { name: 'get_creation_state', arguments: '{}' } }] }, finish_reason: 'tool_calls' }] })
     }
     requestSignal = init.signal!; entered()
     return new Promise<Response>(() => {})
   })
   const pending = app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat/stream`, payload: { model_id: model.id, mode: 'script', use_tools: true, messages: [{ role: 'user', text: '检查创作进度然后继续讨论' }] } })
   await waiting
-  t.mock.timers.tick(10 * 60_000)
+  t.mock.timers.tick(4 * 60_000)
   assert.equal(requestSignal.aborted, false)
   t.mock.timers.tick(60_000)
   const response = await pending
   const events = response.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)))
   assert.equal(requestSignal.aborted, true)
-  assert.match(events.find(event => event.type === 'error').message, /30 分钟/)
+  assert.match(events.find(event => event.type === 'error').message, /5 分钟/)
   assert.equal(events.at(-1).type, 'close')
   assert.ok(!events.some(event => event.type === 'done'))
   const activity = events.filter(event => event.type === 'activity').map(event => event.activity)
@@ -906,8 +905,10 @@ test('direction readiness is proposed through native tools, persists, and cannot
   assert.equal(stale.statusCode, 409); assert.equal(calls, 1, 'reject outdated readiness before requesting the provider')
 })
 
-test('stage button uses native drafting, waits for saving, and reuses characters saved before the outline', async t => {
+test('stage button directly drafts, waits for saving, and reuses characters saved before the outline', async t => {
   const { project, script, makeTools } = await fixture(), model = await nativeModel()
+  const skill = installSkillBundle({ repo: 'test/stage-direct', path: 'SKILL.md', name: 'stage-direct-rule', description: '阶段规则', license: null, revision: 'c'.repeat(40), tool_requirements: [], suggested_stages: ['script'], url: 'https://github.com/test/stage-direct', files: [{ path: 'SKILL.md', content: '---\nname: stage-direct-rule\ndescription: 阶段规则\n---\n每段对白明确人物动机。' }] })
+  configureSkill(skill.id, true, ['script']); t.after(() => configureSkill(skill.id, false, ['script']))
   await artifact(project.id)
   const originalCharacters = script().characters
   await makeTools().execute('propose_next_step', { stage: 'outline', summary: '方向明确', basis: '创作者已经提供主线', source_message_indexes: [0] })
@@ -917,14 +918,15 @@ test('stage button uses native drafting, waits for saving, and reuses characters
     const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply;
     const body = JSON.parse(String(init.body)); calls++
-    assert.ok(body.tools, 'stage button must not switch back to the legacy text path')
-    assert.match(body.messages[0].content, /创作者本轮明确要求处理这个阶段/)
+    assert.equal(body.tools, undefined, 'typed stage generation needs no function-call round trips')
+    assert.match(body.messages[0].content, /本轮为“全剧故事大纲”文档生成/)
     assert.match(body.messages[0].content, /每段对白明确人物动机/, 'stage generation keeps enabled Skill rules')
-    return body.messages.at(-1).role === 'tool' ? Response.json({ choices: [{ message: { content: '全剧大纲草稿已准备。' }, finish_reason: 'stop' }] })
-      : Response.json({ choices: [{ message: { tool_calls: [{ id: 'outline', type: 'function', function: { name: 'create_document_draft', arguments: JSON.stringify({ stage: 'outline', artifacts: stageArtifacts('outline', '林晚在城市中调查怪谈。'), scenes: [] }) } }] }, finish_reason: 'tool_calls' }] })
+    return Response.json({ choices: [{ message: { content: JSON.stringify({ artifacts: stageArtifacts('outline', '林晚在城市中调查怪谈。'), scenes: [] }) }, finish_reason: 'stop' }] })
   })
-  const done = await call<any>('POST', `/api/projects/${project.id}/script/director/chat`, { model_id: model.id, mode: 'script', use_tools: true, next_step_id: ready.id, workflow: { stage: 'outline', scope: 'project', episode_number: 0 }, messages: [{ role: 'user', text: '生成全剧大纲，沿用已保存人物。' }] })
-  assert.equal(calls, 2); assert.equal(done.tool_draft.status, 'pending'); assert.equal(done.creation.status, 'review'); assert.equal(done.creation.next_step, null)
+  const done = await call<any>('POST', `/api/projects/${project.id}/script/director/chat`, { model_id: model.id, mode: 'script', use_tools: true, skill_selections: { script: [skill.id] }, next_step_id: ready.id, workflow: { stage: 'outline', scope: 'project', episode_number: 0 }, messages: [{ role: 'user', text: '生成全剧大纲，沿用已保存人物。' }] })
+  assert.equal(calls, 1); assert.equal(done.tool_draft.status, 'pending'); assert.equal(done.creation.status, 'review'); assert.equal(done.creation.next_step, null)
+  const generation = done.activity.find((step: { label: string }) => step.label === '生成阶段草稿')
+  assert.ok(generation.request_bytes > 0); assert.ok(generation.response_chars > 0); assert.equal(generation.http_status, 200)
   assert.equal(script().outline, '')
   assert.deepEqual(done.tool_draft.documents.map((doc: any) => doc.artifact_type), [...scriptStageArtifacts.outline])
   await call('POST', `/api/projects/${project.id}/script/director/tool-drafts/${done.tool_draft.id}/commit`, { version: done.tool_draft.version, approved: true })

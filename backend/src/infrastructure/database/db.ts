@@ -197,6 +197,15 @@ export function initDb(): void {
       generation_options TEXT NOT NULL DEFAULT '{}',
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS script_source_documents (
+      project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+      filename TEXT NOT NULL, content TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS script_source_analyses (
+      project_id TEXT PRIMARY KEY REFERENCES script_source_documents(project_id) ON DELETE CASCADE,
+      id TEXT NOT NULL, source_version TEXT NOT NULL, status TEXT NOT NULL,
+      snapshot TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS script_scenes (
       id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       position INTEGER NOT NULL, heading TEXT NOT NULL,
@@ -216,6 +225,28 @@ export function initDb(): void {
       text TEXT NOT NULL, created_at TEXT NOT NULL,
       PRIMARY KEY (conversation_id, id)
     );
+    CREATE TABLE IF NOT EXISTS script_director_tasks (
+      id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      conversation_id TEXT NOT NULL REFERENCES script_conversations(id) ON DELETE CASCADE,
+      user_message_id TEXT NOT NULL, message_id TEXT NOT NULL, request_hash TEXT NOT NULL,
+      status TEXT NOT NULL, snapshot TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_script_director_active_project
+      ON script_director_tasks(project_id) WHERE status='running';
+    CREATE TABLE IF NOT EXISTS script_text_responses (
+      task_id TEXT NOT NULL REFERENCES script_director_tasks(id) ON DELETE CASCADE,
+      request_key TEXT NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (task_id, request_key)
+    );
+    CREATE TABLE IF NOT EXISTS script_generation_checkpoints (
+      project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+      cache_key TEXT NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS script_step_checkpoints (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      namespace TEXT NOT NULL, cache_key TEXT NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (project_id, namespace)
+    );
     CREATE TABLE IF NOT EXISTS script_reply_classifications (
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       message_id TEXT NOT NULL, text_hash TEXT NOT NULL, classification TEXT NOT NULL,
@@ -228,6 +259,16 @@ export function initDb(): void {
       source_text TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
       UNIQUE(project_id, topic)
     );
+    CREATE TABLE IF NOT EXISTS script_draft_resolutions (
+      project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+      payload TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS script_source_revisions (
+      id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      source_base_version TEXT NOT NULL, revision INTEGER NOT NULL,
+      original_content TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_script_source_revisions ON script_source_revisions(project_id, source_base_version, revision);
     CREATE TABLE IF NOT EXISTS script_tool_drafts (
       id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       version TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', payload TEXT NOT NULL,
@@ -304,6 +345,12 @@ export function initDb(): void {
       asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
       status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected')),
       note TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
+      PRIMARY KEY (shot_id, asset_id)
+    );
+    CREATE TABLE IF NOT EXISTS shot_candidate_archives (
+      shot_id TEXT NOT NULL REFERENCES shots(id) ON DELETE CASCADE,
+      asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
       PRIMARY KEY (shot_id, asset_id)
     );
     CREATE TABLE IF NOT EXISTS cut_reviews (
@@ -525,6 +572,9 @@ export function initDb(): void {
     db.exec("ALTER TABLE script_messages ADD COLUMN reply_metadata TEXT NOT NULL DEFAULT '{}'")
   }
 
+  for (const field of ['request_payload', 'resume_key']) {
+    if (!(db.prepare('PRAGMA table_info(script_director_tasks)').all() as Array<{ name: string }>).some(column => column.name === field)) db.exec(`ALTER TABLE script_director_tasks ADD COLUMN ${field} TEXT`)
+  }
   const sceneColumns = db.pragma('table_info(script_scenes)') as Array<{ name: string }>
   if (!sceneColumns.some(column => column.name === 'episode_number')) {
     db.exec('ALTER TABLE script_scenes ADD COLUMN episode_number INTEGER NOT NULL DEFAULT 0')

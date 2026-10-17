@@ -9,7 +9,7 @@ import {
   ArrowDown, ArrowDownWideNarrow, ArrowRight, ArrowUp, ArrowUpWideNarrow, Check, Clapperboard,
   ChevronDown, Clock3, Download, Eye, FileText, Film, Image as ImageIcon, Layers3, LayoutGrid, List, Menu,
   MoreHorizontal, Music2, PanelLeftClose, PanelLeftOpen, Play, Plus, RefreshCcw, Save, Scissors, ScrollText, Search, Settings2,
-  Upload, FolderOpen, X, Puzzle, Mic2,
+  Upload, FolderOpen, X, Puzzle, Mic2, Trash2,
 } from 'lucide-react'
 import { api, json } from '../shared/api/api'
 import type { Asset, ContinuityReport, Model, ProductionRange, Project, ProjectDetail, Provider, Shot, TimelineClip } from '../shared/api/api'
@@ -161,6 +161,8 @@ function App() {
   const [projectCovers, setProjectCovers] = useState<Record<string, Asset | null>>({})
   const [projectQuery, setProjectQuery] = useState('')
   const [projectSort, setProjectSort] = useState<'updated' | 'name' | 'created'>('updated')
+  const [projectSelectionMode, setProjectSelectionMode] = useState(false)
+  const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([])
   const [assetQuery, setAssetQuery] = useState('')
   const [assetKindFilter, setAssetKindFilter] = useState<'all' | Asset['kind']>('all')
   const [assetSourceFilter, setAssetSourceFilter] = useState<'all' | Asset['source']>('all')
@@ -289,6 +291,7 @@ function App() {
           ? right.created_at.localeCompare(left.created_at)
           : right.updated_at.localeCompare(left.updated_at))
   }, [projectQuery, projectSort, projects])
+  const selectedVisibleProjectCount = visibleProjects.filter(project => selectedProjectIds.includes(project.id)).length
   const libraryAssets = useMemo(() => libraryCollection(detail?.assets || [], 'personal'), [detail])
   const historyAssets = useMemo(() => libraryCollection(detail?.assets || [], 'history'), [detail])
   const assetLabels = useMemo(() => assetPresentations(detail, assetNameNodes?.projectId === detail?.id ? assetNameNodes?.nodes : []), [detail, assetNameNodes])
@@ -310,6 +313,7 @@ function App() {
   async function refreshProjects() {
     const next = await api<Project[]>('/projects')
     setProjects(next)
+    setSelectedProjectIds(selected => selected.filter(id => next.some(project => project.id === id)))
     return next
   }
 
@@ -490,6 +494,34 @@ function App() {
       setScriptDirectorOpen(false)
       setTab('projects')
     }, '项目已删除')
+  }
+
+  function toggleProjectSelection(id: string) {
+    setSelectedProjectIds(selected => selected.includes(id) ? selected.filter(item => item !== id) : [...selected, id])
+  }
+
+  async function deleteSelectedProjects() {
+    const selected = projects.filter(project => selectedProjectIds.includes(project.id))
+    if (busy || !selected.length || !await confirm({
+      title: `删除 ${selected.length} 个项目`,
+      message: '所选项目中的剧本、镜头、素材和任务记录都会被永久删除，无法恢复。',
+      details: <ul className="project-delete-list">{selected.map(project => <li key={project.id}>{project.name}</li>)}</ul>,
+      confirmLabel: `确认删除 ${selected.length} 个项目`, danger: true,
+    })) return
+    await action(async () => {
+      const result = await api<{ deleted_ids: string[] }>('/projects/batch-delete', json('POST', { project_ids: selected.map(project => project.id) }))
+      const deleted = new Set(result.deleted_ids)
+      const remaining = projects.filter(project => !deleted.has(project.id))
+      setProjects(remaining)
+      setSelectedProjectIds([])
+      setProjectSelectionMode(false)
+      if (activeProjectId.current && deleted.has(activeProjectId.current)) {
+        setDetail(null)
+        setProjectId(remaining[0]?.id || null)
+        setScriptDirectorOpen(false)
+      }
+      await refreshProjects()
+    }, `已删除 ${selected.length} 个项目`)
   }
 
   async function renameCurrentProject(nextName: string): Promise<boolean> {
@@ -764,7 +796,6 @@ function App() {
 
   function selectedNav(id: Tab) {
     if (id !== 'canvas') {
-      setScriptDirectorOpen(false)
       setScriptEditorOpen(false)
     }
     setTab(id)
@@ -782,9 +813,9 @@ function App() {
     if (id !== projectId) {
       setDetail(null)
       setAssetPreview(null)
+      setScriptDirectorOpen(false)
     }
     setProjectId(id)
-    setScriptDirectorOpen(false)
     setTab('canvas')
     setMobileMenu(false)
   }
@@ -851,17 +882,28 @@ function App() {
 
       {tab === 'projects' && <section className="project-page" aria-label="项目">
         <div className="project-page-head">
-          <div className="project-page-title"><div><h1>全部项目</h1>{(projectQuery || projects.length > 0) && <p>{projectQuery ? `${visibleProjects.length} / ${projects.length} 个项目` : `${projects.length} 个项目`}</p>}</div><ActionIcon className="mobile-toggle" variant="subtle" aria-label="打开导航" onClick={() => setMobileMenu(true)}><Menu size={20} /></ActionIcon></div>
+          <div className="project-page-title"><div><h1>全部项目</h1>{(projectQuery || projects.length > 0) && <p>{projectQuery ? `${visibleProjects.length} / ${projects.length} 个项目` : `${projects.length} 个项目`}</p>}</div><div className="project-page-actions">{!projectSelectionMode && <Button size="sm" variant="default" disabled={busy || !projects.length} onClick={() => setProjectSelectionMode(true)}>批量管理</Button>}<ActionIcon className="mobile-toggle" variant="subtle" aria-label="打开导航" onClick={() => setMobileMenu(true)}><Menu size={20} /></ActionIcon></div></div>
           <div className="project-page-tools"><TextInput size="sm" aria-label="搜索项目" placeholder="搜索项目或简介" leftSection={<Search size={15} />} value={projectQuery} onChange={(event) => setProjectQuery(event.currentTarget.value)} /><Select size="sm" aria-label="项目排序" value={projectSort} onChange={(value) => { if (value) setProjectSort(value as typeof projectSort) }} data={[{ value: 'updated', label: '最近更新' }, { value: 'created', label: '最近创建' }, { value: 'name', label: '名称排序' }]} allowDeselect={false} /><ThemeToggle /></div>
         </div>
+        {projectSelectionMode && <div className="project-batch-toolbar" role="region" aria-label="项目批量管理">
+          <Checkbox label="全选当前结果" checked={visibleProjects.length > 0 && selectedVisibleProjectCount === visibleProjects.length} indeterminate={selectedVisibleProjectCount > 0 && selectedVisibleProjectCount < visibleProjects.length} disabled={busy || !visibleProjects.length} onChange={(event) => {
+            const checked = event.currentTarget.checked
+            setSelectedProjectIds(selected => checked ? [...new Set([...selected, ...visibleProjects.map(project => project.id)])] : selected.filter(id => !visibleProjects.some(project => project.id === id)))
+          }} />
+          <span className="project-batch-count" role="status">已选 {selectedProjectIds.length} 个项目{selectedProjectIds.length > selectedVisibleProjectCount && <small>（{selectedProjectIds.length - selectedVisibleProjectCount} 个不在当前结果中）</small>}</span>
+          <div className="project-batch-actions">
+            <Button size="sm" variant="default" disabled={busy} onClick={() => { setSelectedProjectIds([]); setProjectSelectionMode(false) }}>取消批量管理</Button>
+            <Button size="sm" color="red" leftSection={<Trash2 size={15} />} loading={busy} disabled={!selectedProjectIds.length} onClick={() => void deleteSelectedProjects()}>删除所选项目</Button>
+          </div>
+        </div>}
         <div className="project-gallery">
-          <UnstyledButton className="project-card project-create" onClick={() => void createProject()}><div className="project-cover project-create-cover"><span className="project-create-icon"><Plus size={28} strokeWidth={1.8} /></span><span>开始创作</span></div></UnstyledButton>
-          {visibleProjects.map((project) => { const cover = project.id === detail?.id ? detail.assets.find((asset) => asset.kind === 'image' || asset.kind === 'video') || null : projectCovers[project.id]; return <article className="project-card" key={project.id}>
-            <UnstyledButton className="project-card-main" onClick={() => openProject(project.id)}><div className="project-cover">{cover ? <AssetPreview asset={cover} compact /> : <div className="project-cover-empty"><Clapperboard size={29} strokeWidth={1.25} /><span>暂无封面</span></div>}<span className="project-cover-ratio">{project.ratio}</span></div><div className="project-card-meta"><strong className="truncate">{project.name}</strong><small>{dateLabel(project.updated_at)} 更新</small></div></UnstyledButton>
-            <MantineMenu shadow="md" width={164} position="bottom-end">
+          {!projectSelectionMode && <UnstyledButton className="project-card project-create" disabled={busy} onClick={() => void createProject()}><div className="project-cover project-create-cover"><span className="project-create-icon"><Plus size={28} strokeWidth={1.8} /></span><span>开始创作</span></div></UnstyledButton>}
+          {visibleProjects.map((project) => { const cover = project.id === detail?.id ? detail.assets.find((asset) => asset.kind === 'image' || asset.kind === 'video') || null : projectCovers[project.id]; return <article className={`project-card${projectSelectionMode && selectedProjectIds.includes(project.id) ? ' project-card-selected' : ''}`} key={project.id}>
+            <UnstyledButton className="project-card-main" disabled={busy} aria-pressed={projectSelectionMode ? selectedProjectIds.includes(project.id) : undefined} onClick={() => projectSelectionMode ? toggleProjectSelection(project.id) : openProject(project.id)}><div className="project-cover">{cover ? <AssetPreview asset={cover} compact /> : <div className="project-cover-empty"><Clapperboard size={29} strokeWidth={1.25} /><span>暂无封面</span></div>}<span className="project-cover-ratio">{project.ratio}</span></div><div className="project-card-meta"><strong className="truncate">{project.name}</strong><small>{dateLabel(project.updated_at)} 更新</small></div></UnstyledButton>
+            {projectSelectionMode ? <Checkbox className="project-card-select" aria-label={`选择项目：${project.name}`} checked={selectedProjectIds.includes(project.id)} disabled={busy} onChange={() => toggleProjectSelection(project.id)} /> : <MantineMenu shadow="md" width={164} position="bottom-end">
               <MantineMenu.Target><ActionIcon className="project-card-more" variant="subtle" aria-label={`项目操作：${project.name}`} onClick={(event) => event.stopPropagation()}><MoreHorizontal size={17} /></ActionIcon></MantineMenu.Target>
               <MantineMenu.Dropdown><MantineMenu.Item onClick={() => void renameProject(project)}>重命名</MantineMenu.Item><MantineMenu.Divider /><MantineMenu.Item color="red" onClick={() => { if (project.id === projectId) void deleteProject(); else void (async () => { if (!await confirm({ title: `删除项目「${project.name}」`, message: '项目中的镜头、素材和任务记录都会被删除。', confirmLabel: '删除项目', danger: true })) return; await action(async () => { await api(`/projects/${project.id}`, { method: 'DELETE' }); await refreshProjects() }, '项目已删除') })() }}>删除项目</MantineMenu.Item></MantineMenu.Dropdown>
-            </MantineMenu>
+            </MantineMenu>}
           </article> })}
           {!visibleProjects.length && <div className="project-page-empty"><Search size={24} /><strong>没有匹配的项目</strong><span>换个关键词试试，或创建一个新项目。</span></div>}
         </div>
@@ -902,7 +944,7 @@ function App() {
           setScriptDirectorContext(context || '')
           openScriptDirector(focusArtifact)
         }}
-        onNavigate={(destination) => { setScriptDirectorOpen(false); setTab(destination) }} />}
+        onNavigate={(destination) => { setScriptEditorOpen(false); setTab(destination) }} />}
 
       {detail && speechProjectId === detail.id && <SpeechStudio key={`speech-${detail.id}`} projectId={detail.id} projectName={detail.name}
         scenes={detail.script.scenes} shots={detail.shots} initialLineId={speechFocus.lineId} initialSceneId={speechFocus.sceneId} initialShotId={speechFocus.shotId}
@@ -911,7 +953,7 @@ function App() {
 
       {detail && scriptDirectorOpen && <ScriptDirectorPanel
         key={`script-director-${detail.id}`}
-        hidden={scriptEditorOpen}
+        hidden={scriptEditorOpen || tab !== 'canvas'}
         openRequestId={scriptDirectorOpenRequest}
         detail={detail}
         models={models}

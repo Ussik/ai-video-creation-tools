@@ -34,7 +34,7 @@ async function mount(options: { models?: Model[]; detail?: ProjectDetail; refres
   return { container, destroy: async () => { await act(() => root.unmount()); container.remove() } }
 }
 const common = (path: string) => path.endsWith('/skills/defaults') ? Response.json({ policies: [{ stage: 'script', label: '剧本创作', primary_id: null, auxiliary_ids: [], source: 'global', warning: '', skills: [] }] }) : path.endsWith('/tools-state') ? Response.json({ draft: null, decisions: [] })
-  : path.endsWith('/conversations') ? Response.json({ conversations: [] }) : null
+  : path.endsWith('/conversations') ? Response.json({ conversations: [] }) : path.endsWith('/script/source') ? Response.json(null) : null
 
 test('the single 加入画布 entry opens planning metadata without a model request or scene-import shortcut', async t => {
   const requests: Array<{ path: string; body: any }> = []; let closed = 0

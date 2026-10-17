@@ -1,7 +1,21 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { activityDraftId, activitySources, canRetryExecution, conversationMessage, executionView, readActivity, settleActivity, updateActivity, type ScriptActivity, type ScriptExecution } from '../src/features/script/director-activity'
+import { activityDraftId, activitySources, activityStatusLabel, canRetryExecution, conversationMessage, executionView, readActivity, settleActivity, updateActivity, type ScriptActivity, type ScriptExecution } from '../src/features/script/director-activity'
 const entry: ScriptActivity = { id: 'a', kind: 'tool', name: 'read_documents', label: '阅读文档', status: 'running', summary: '正在读取', started_at: 100 }
+
+test('legacy begin-only records are notices; task, phase and actual requests retain their hierarchy', () => {
+  const legacy = { ...entry, kind: 'context' as const, status: 'succeeded' as const, label: '正在生成故事梗概', duration_ms: 1 }
+  const notice = readActivity([legacy])[0]
+  assert.equal(notice.scope, 'notice'); assert.equal(activityStatusLabel(notice), '开始提示')
+  const task: ScriptActivity = { ...entry, id: 'task', kind: 'context', scope: 'task', label: '生成阶段草稿' }
+  const phase: ScriptActivity = { ...task, id: 'phase', scope: 'step', parent_id: task.id, label: '生成故事梗概' }
+  const model: ScriptActivity = { ...entry, id: 'model', kind: 'model', scope: 'step', parent_id: phase.id }
+  const reused: ScriptActivity = { ...phase, id: 'previous', status: 'succeeded', reused: true, duration_ms: 0 }
+  const view = executionView([notice, task, reused, phase, model], undefined, true)
+  assert.equal(view.active?.id, 'model'); assert.equal(view.groups.length, 1)
+  assert.equal(activityStatusLabel(reused), '已复用')
+  assert.equal(readActivity([{ ...legacy, scope: 'step' }])[0].scope, 'step', 'actual fast steps are not rewritten as notices')
+})
 
 test('same invocation updates, repeated calls survive and old summaries remain readable', () => {
   let activity = updateActivity([], entry)
@@ -17,11 +31,22 @@ test('task summaries count real unique sources and loaded Skills while retaining
   const skill: ScriptActivity = { ...entry, id: 'skill', kind: 'skill', skill_id: 'consistency', status: 'succeeded', label: '人物一致性' }
   const activity = [read, { ...read, id: 'reread' }, skill, { ...skill, id: 'reload' }, { ...entry, id: 'missing', status: 'failed' as const }, { ...entry, id: 'model', kind: 'model' as const, name: 'model' }]
   const view = executionView(activity, undefined, true)
-  assert.deepEqual(view.stats, ['查阅 1 份文档', '1 个 Skill 已加载', '1 项操作未完成'])
+  assert.deepEqual(view.stats, ['查阅 1 份文档', '1 个 Skill 已加载', '含 1 条失败记录'])
   assert.equal(view.active?.id, 'model'); assert.equal(view.stateLabel, '处理中')
   assert.equal(view.groups.find(group => group.key === 'sources')?.events.length, 3)
   assert.equal(view.groups.find(group => group.key === 'rules')?.events.length, 2)
   assert.equal(view.events.length, 6)
+})
+
+test('a recovered model failure retains its history without marking a completed draft as unfinished', () => {
+  const failed: ScriptActivity = { ...entry, id: 'attempt-1', kind: 'model', status: 'failed' }
+  const succeeded: ScriptActivity = { ...failed, id: 'attempt-2', status: 'succeeded' }
+  const execution: ScriptExecution = { title: '生成大纲', request: '生成', started_at: 100,
+    outcome: { kind: 'draft', summary: '核对通过，草稿待确认' } }
+  const view = executionView([failed, succeeded], execution)
+  assert.equal(view.stateLabel, '草稿待确认')
+  assert.deepEqual(view.stats, ['含 1 条失败记录'])
+  assert.equal(view.events[0].status, 'failed')
 })
 
 test('legacy sources require complete valid public payloads and never count directory listings or malformed IDs', () => {

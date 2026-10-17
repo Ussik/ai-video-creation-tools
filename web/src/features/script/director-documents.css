@@ -192,7 +192,7 @@
 .sd-revision-note { margin: 0 16px 12px; font-size: 12px; }
 .sd-change-preview { margin: 12px 0 18px; font-size: 12px; }
 .sd-change-preview .workspace-disclosure-control { cursor: pointer; color: var(--text-muted, var(--fc-text-secondary)); }
-.sd-change-preview > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 10px; }
+.sd-change-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 10px; }
 .sd-change-preview section { min-width: 0; border: 1px solid var(--border, var(--fc-border)); padding: 10px; border-radius: 9px; }
 .sd-change-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 0; font: inherit; line-height: 1.7; max-height: 260px; overflow: auto; }
-@media (max-width: 620px) { .sd-change-preview > div { grid-template-columns: 1fr; } }
+@media (max-width: 620px) { .sd-change-columns { grid-template-columns: 1fr; } }

@@ -29,6 +29,7 @@ export interface Shot {
   video_prompt?: string
   duration: number
   selected_asset_id: string | null
+  archived_candidate_asset_ids?: string[]
   source_scene_id: string | null
   start_state: string
   end_state: string

@@ -5,7 +5,7 @@
   height: 100%;
   min-width: 0;
   min-height: 0;
-  padding: 74px 20px 96px;
+  padding: 82px 20px 96px;
   background: var(--fc-canvas);
   color: var(--fc-text);
 }
@@ -123,7 +123,7 @@
 }
 @media (max-width:900px) { .sb-workspace.is-reading .sb-library { width:220px; flex-basis:220px; } }
 @media (max-width:760px) {
-  .sb-workspace { padding:102px 12px 92px; }
+  .sb-workspace { padding:110px 12px 92px; }
   .sb-library { display:flex; flex-direction:column; overflow-y:auto; overscroll-behavior:contain; scrollbar-width:thin; }
   .sb-column { flex:none; min-height:0; }
   .sb-column-scroll { flex:none; overflow:visible; }

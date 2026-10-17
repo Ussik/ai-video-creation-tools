@@ -345,7 +345,7 @@ test('confirmation uses a fresh source version to prepare references before impo
     assert.match(document.querySelector('.storyboard-planner-reference-preparation')!.textContent!, /信息图设定技能/)
     assert.equal(document.querySelector('[role="dialog"][aria-label="参考设定说明"]'), null)
     await act(() => button('查看参考设定说明').click())
-    assert.match(document.querySelector('[role="dialog"][aria-label="参考设定说明"]')!.textContent!, /已有设定与确认图会复用/)
+    assert.match(document.querySelector('[role="dialog"][aria-label="参考设定说明"]')!.textContent!, /未变化的设定与确认图会复用/)
     await act(() => button('查看参考设定说明').click())
     assert.equal(document.querySelector('[role="dialog"][aria-label="参考设定说明"]'), null)
     assert.equal(requests.length, 2, 'viewing the reference explanation does not trigger generation')

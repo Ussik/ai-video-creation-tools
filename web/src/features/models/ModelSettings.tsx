@@ -15,7 +15,9 @@ import { imageRatios } from '../canvas/canvas-model-parameters'
 import { documentedImageConfigError, documentedImageProfile, documentedImageSettings } from '@video-studio/shared/models/documented-images-api'
 import { videoRatios, videoResolutions } from '@video-studio/shared/media/video-parameters'
 import { applySeedance2VideoSettings } from '@video-studio/shared/models/seedance-video-settings'
+import { textContextConfigError } from '@video-studio/shared/models/text-context-settings'
 import ImageModelConfig from './ImageModelConfig'
+import TextModelContextSettings from './TextModelContextSettings'
 import './model-settings.css'
 
 type Props = {
@@ -542,6 +544,10 @@ export default function ModelSettings({ providers, models, refresh, action, busy
       setAdvancedOpen(true)
       return
     }
+    if (modelDraft.modality === 'text') {
+      const issue = textContextConfigError(settings)
+      if (issue) { setFormError(issue); return }
+    }
     if (modelDraft.modality === 'image') {
       const issue = documentedImageConfigError(settings)
       if (issue) { setFormError(issue); return }
@@ -892,6 +898,8 @@ export default function ModelSettings({ providers, models, refresh, action, busy
           </div>}
         </section>
         {modelDraft.modality === 'text' && <section className="ms-text-capabilities">
+          <TextModelContextSettings value={modelDraft.settings}
+            onChange={settings => { setModelDraft(current => ({ ...current, settings: formattedSettings(settings) })); setFormError('') }} onError={setFormError} />
           <Select label="结构化输出" description="按厂商实际支持选择；未知时使用兼容模式" value={String(textCapability('structured_output_mode') || 'prompt')} allowDeselect={false}
             data={[{ value: 'prompt', label: '兼容模式 · 提示词与本地校验' }, { value: 'json_object', label: 'JSON 模式' }, { value: 'json_schema', label: 'JSON Schema · 严格结构' }]}
             onChange={value => value && changeTextCapability('structured_output_mode', value)} />

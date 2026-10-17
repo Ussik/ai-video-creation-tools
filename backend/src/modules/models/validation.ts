@@ -1,6 +1,7 @@
 import type { Model } from '../../infrastructure/database/db.js'
 import { invalid } from '../../infrastructure/http/request.js'
 import { documentedImageConfigError } from '@video-studio/shared/models/documented-images-api'
+import { textContextConfigError } from '@video-studio/shared/models/text-context-settings'
 
 export function checkBaseUrl(value: string): void {
   try {
@@ -24,6 +25,10 @@ export function validateSettings(mod: Model['modality'], settings: Record<string
   if (mod === 'text' && !settings.text_path && !Array.isArray(settings.text_paths)) invalid('文本模型需配置 text_path 或 text_paths')
   if (mod === 'text' && settings.structured_output_mode !== undefined && !['prompt', 'json_object', 'json_schema'].includes(String(settings.structured_output_mode))) invalid('结构化输出模式必须为 prompt、json_object 或 json_schema')
   if (mod === 'text' && settings.strict_tool_arguments !== undefined && typeof settings.strict_tool_arguments !== 'boolean') invalid('strict_tool_arguments 必须为布尔值')
+  if (mod === 'text') {
+    const issue = textContextConfigError(settings)
+    if (issue) invalid(issue)
+  }
   if (mod === 'image' && !settings.image_base64_path && !settings.image_url_path) invalid('图片模型需配置 image_base64_path 或 image_url_path')
   if (mod === 'image') {
     const issue = documentedImageConfigError(settings)

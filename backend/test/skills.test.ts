@@ -142,6 +142,83 @@ test('prompt refinement uses bound rules and frozen settings, returns draft with
   assert.equal(noBinding.statusCode, 200); assert.deepEqual(noBinding.json().skills, []); assert.equal(generated, calls + 1)
 })
 
+test('adjustment requests use the current editable draft with protected shot context and never write source content or nodes', async () => {
+  const project = await call<{ id: string }>('POST', '/api/projects', { name: '定向整理' }, app)
+  const scene = await call<{ id: string }>('POST', `/api/projects/${project.id}/script/scenes`, {
+    heading: '雨夜站台', action: '林晚在站台等待', dialogue: '林晚：我会回来。',
+  }, app)
+  const visuals = await call<{ visual_profiles: Array<{ id: string; revision: number }> }>('POST', `/api/projects/${project.id}/visual-profiles`, {
+    profiles: [{ kind: 'character', name: '林晚', definition: '短发、深绿雨衣', view_requirements: '正侧背与面部细节', scene_ids: [scene.id] }],
+  }, app)
+  const board = `${project.id}-board`, composition = `${project.id}-composition`
+  for (const id of [board, composition]) run("INSERT INTO assets (id, project_id, kind, filename, path, source, created_at) VALUES (?, ?, 'image', ?, '/tmp/ref.png', 'upload', '2026-10-17')", id, project.id, `${id}.png`)
+  await call('PATCH', `/api/visual-profiles/${visuals.visual_profiles[0]!.id}`, { board_asset_id: board, expected_revision: 1 }, app)
+  const shot = await call<{ id: string }>('POST', `/api/projects/${project.id}/shots`, {
+    title: '林晚等待', source_scene_id: scene.id, video_prompt: '源分镜中的旧提示词：林晚在远景等候。',
+  }, app)
+  run("INSERT INTO canvas_nodes (id, project_id, position, type, x, y, width, height, shot_id, prompt) VALUES ('adjustment-node', ?, 0, 'video', 0, 0, 300, 200, ?, ?)", project.id, shot.id, '画布上尚未应用的新稿')
+  run("INSERT INTO script_source_documents (project_id, filename, content, updated_at) VALUES (?, '原稿.txt', '上传的原稿保持完整', '2026-10-17')", project.id)
+  const tables = ['shots', 'canvas_nodes', 'script_scenes', 'script_source_documents', 'scripts', 'visual_profiles', 'shot_visual_bindings', 'jobs']
+  const before = tables.map(table => all(`SELECT * FROM ${table}`))
+  const prompt = '这是上轮整理后由我编辑的近景稿。林晚轻轻握拳，她说：“我会回来。”'
+  const adjustment = '保留动作和对白，加强面部情绪，镜头缓慢推近。'
+  await call('POST', `/api/projects/${project.id}/skills/refine-prompt`, {
+    model_id: 'text-fixture', stage: 'video_prompt', shot_id: shot.id, prompt, adjustment_request: `  ${adjustment}\n`,
+    ratio: '16:9', duration: 8, mode: 'reference', storyboard_reference_asset_id: composition, reference_asset_ids: [composition, board],
+  })
+  assert.ok(capturedPrompt.includes(`原提示词：\n${prompt}\n本次调整要求：\n${adjustment}\n`))
+  assert.match(capturedPrompt, /当前提示词是本次修改基稿/)
+  assert.match(capturedPrompt, /不得用其中的旧提示词替换本次基稿/)
+  assert.match(capturedPrompt, /仅修改要求涉及的方面，保留其余剧情、人物身份、人物关系和逐字对白/)
+  assert.match(capturedPrompt, /调整要求不能覆盖项目画风、比例、时长、生成模式、实际参考图顺序及输出格式/)
+  assert.match(capturedPrompt, /不增加无依据的剧情/)
+  assert.match(capturedPrompt, /不得伪造已提供参考图的可见内容/)
+  assert.match(capturedPrompt, /"ratio":"16:9","duration":8,"mode":"reference"/)
+  assert.match(capturedPrompt, /"image_number":1,"purpose":"storyboard"/)
+  assert.match(capturedPrompt, /"image_number":2,"purpose":"character","objects":"林晚"/)
+  assert.match(capturedPrompt, /短发、深绿雨衣/)
+  assert.deepEqual(tables.map(table => all(`SELECT * FROM ${table}`)), before)
+})
+
+test('missing and blank adjustment requests preserve ordinary refinement, and oversized requests fail before calling the model', async () => {
+  const project = await call<{ id: string }>('POST', '/api/projects', { name: '整理要求兼容' }, app)
+  const input = { model_id: 'text-fixture', stage: 'image_prompt', prompt: '人物站在站台边，保持原有身份。' }
+  const url = `/api/projects/${project.id}/skills/refine-prompt`
+  await call('POST', url, input)
+  const ordinary = capturedPrompt
+  assert.match(ordinary, /本次调整要求：\n未指定，按现有规则整理当前提示词。/)
+  for (const adjustment_request of ['', '  \n\t ']) {
+    await call('POST', url, { ...input, adjustment_request })
+    assert.equal(capturedPrompt, ordinary)
+  }
+  const maximum = '细'.repeat(4000)
+  await call('POST', url, { ...input, adjustment_request: ` ${maximum} ` })
+  assert.ok(capturedPrompt.includes(`本次调整要求：\n${maximum}\n`))
+  const calls = generated
+  const invalid = await remoteApp.inject({ method: 'POST', url, payload: { ...input, adjustment_request: '细'.repeat(4001) } })
+  assert.equal(invalid.statusCode, 422)
+  assert.match(invalid.body, /adjustment_request/)
+  assert.equal(generated, calls)
+})
+
+test('visual setting refinement receives the profile definition and views with the requested direction', async () => {
+  const project = await call<{ id: string }>('POST', '/api/projects', { name: '设定图定向调整' }, app)
+  const { visual_profiles: [profile] } = await call<{ visual_profiles: Array<{ id: string }> }>('POST', `/api/projects/${project.id}/visual-profiles`, {
+    profiles: [{ kind: 'prop', name: '旧铜灯', definition: '磨损的黄铜灯罩、木制底座', view_requirements: '正面、侧面与底座特写' }],
+  }, app)
+  const before = all('SELECT * FROM visual_profiles')
+  await call('POST', `/api/projects/${project.id}/skills/refine-prompt`, {
+    model_id: 'text-fixture', stage: 'image_prompt', profile_id: profile!.id, prompt: '旧铜灯的多视图设定图。', adjustment_request: '突出黄铜磨损和木质纹理。',
+  })
+  assert.match(capturedPrompt, /为当前视觉设定图节点/)
+  assert.match(capturedPrompt, /当前为道具设定图，依据该设定的定义与视图要求/)
+  assert.match(capturedPrompt, /不套用剧情镜头或视频动作流程/)
+  assert.match(capturedPrompt, /磨损的黄铜灯罩、木制底座/)
+  assert.match(capturedPrompt, /正面、侧面与底座特写/)
+  assert.match(capturedPrompt, /本次调整要求：\n突出黄铜磨损和木质纹理。/)
+  assert.deepEqual(all('SELECT * FROM visual_profiles'), before)
+})
+
 test('a refined board override is identical in preview and task, and changing it invalidates the reference signature', async () => {
   const project = await call<{ id: string }>('POST', '/api/projects', { name: '信息图提示词' }, app)
   const scene = await call<{ id: string }>('POST', `/api/projects/${project.id}/script/scenes`, { heading: '车站' }, app)

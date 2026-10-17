@@ -140,6 +140,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       `${input.target_duration !== undefined ? `本次所选场次的总时长必须为 ${input.target_duration} 秒，可以重新分配各场时长。` : '保留各源场次的时长。'}每场1至30秒，每镜至少1秒，镜头时长之和等于该场scene_duration。\n` +
       `每场至少1个镜头，镜头数不得超过本场scene_duration的秒数，不得为了凑数量拆出无叙事意义的镜头。\n` +
       `已有镜头必须全部保留shot_id，并可调整其描述与时长；细分时新增镜头的shot_id为null。不得删除、重复或改用其他场次的ID。现有素材仅保留关联，不代表读取了图片像素。\n` +
+      `重新规划时，选中参考文档中的最新明确设定优先于旧场次与已有镜头描述。人物年龄、外貌或关系等已变更时，镜头内容必须使用新设定，不能照抄旧值；未变更的内容保持连续。\n` +
       `prompt写镜头叙事。image_prompt只写单幅开镜首帧的景别、机位、主体、姿态、构图和光线；video_prompt写连续动作、表演、运镜、声音与收镜，不写信息图拼版。二者遵守项目画风，不绘制字幕、水印。` +
       `start_state/end_state/cut_note分别写开镜、收镜状态和接镜方式。相邻镜头空间与动作连续。输出所有选中场次的完整JSON方案。\n` +
       storyboardReferenceBudgetInstructions(state.referenceBudget) +

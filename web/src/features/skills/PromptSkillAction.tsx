@@ -16,6 +16,20 @@ type Props = {
   storyboardReferenceAssetId?: string | null; visualReferenceMode?: string; excludedVisualProfileIds?: string[];
   videoReferenceUsages?: VideoReferenceUsageSelection[];
 }
+const maxAdjustmentLength = 4_000
+const conciseDirection = { label: '精简描述', text: '精简重复和空泛描述，保留关键事实、画面要求和逐字对白。' }
+const imageDirections = [
+  { label: '加强构图', text: '加强主体位置、景别和画面层次，保持原有剧情与人物动作。' },
+  { label: '突出情绪', text: '细化表情、视线和光线对情绪的表达，保持人物身份和原有情境。' }, conciseDirection,
+]
+const videoDirections = [
+  { label: '细化动作', text: '细化动作先后和衔接，让动作在当前时长内自然完成，保留原有事件和对白。' },
+  { label: '优化运镜', text: '明确机位、镜头运动和节奏，保持单个镜头连续，不增加新镜头。' }, conciseDirection,
+]
+const profileDirections = [
+  { label: '细化材质', text: '细化已有服装、物体或建筑的材质与关键细节，保持设定身份和造型特征。' },
+  { label: '补充视图', text: '按照已有设定的视图要求，明确各视角和局部细节的展示，保持同一对象一致。' }, conciseDirection,
+]
 export default function PromptSkillAction(props: Props) {
   const [opened, setOpened] = useState(false), [pending, setPending] = useState(false), [error, setError] = useState('')
   const [modelId, setModelId] = useState(''), [result, setResult] = useState('')
@@ -23,6 +37,9 @@ export default function PromptSkillAction(props: Props) {
   const skillControl = useCreativeSkills(props.projectId, opened, { rememberSelections: true })
   const stage = props.modality === 'image' ? 'image_prompt' : 'video_prompt'
   const [sourceKey, setSourceKey] = useState(''), [usedSkills, setUsedSkills] = useState<string[]>([])
+  const [sourceNodeKey, setSourceNodeKey] = useState('')
+  const [adjustment, setAdjustment] = useState(''), [resultAdjustment, setResultAdjustment] = useState('')
+  const refining = useRef(false)
   const serial = useRef(0), abort = useRef<AbortController | null>(null)
   useEffect(() => () => { serial.current++; abort.current?.abort() }, [])
   useEffect(() => {
@@ -36,34 +53,54 @@ export default function PromptSkillAction(props: Props) {
   const matchesDefaults = selectedIds.length === defaults.length && selectedIds.every((id, index) => id === defaults[index])
   const selectionSource = !policy ? '配置未读取' : matchesDefaults ? policy.source === 'project' ? '项目默认' : '全局默认' : '已记住的选择'
   const skillName = skillControl.loading ? '正在读取技能' : skillControl.error ? '技能配置未读取' : selectedIds[0] && !primary ? '技能需重新选择' : primary?.name || '基础创作规则'
-  const modalityLabel = props.modality === 'image' ? '图片' : '视频'
-  const currentKey = JSON.stringify([props.projectId, props.nodeId, props.modality, props.shotId, props.profileId,
+  const modalityLabel = props.profileId ? '设定图' : props.modality === 'image' ? '图片' : '视频'
+  const directions = props.profileId ? profileDirections : props.modality === 'video' ? videoDirections : imageDirections
+  const adjustmentPlaceholder = props.profileId ? '例如：突出服装材质和配饰细节，减少环境描述。'
+    : props.modality === 'video' ? '例如：前半段缓慢推进，后半段人物回头，动作自然，不增加新镜头。'
+      : '例如：保留人物动作，改成近景，突出面部情绪，背景简化。'
+  const nodeKey = JSON.stringify([props.projectId, props.nodeId, props.modality, props.shotId, props.profileId,
     props.prompt, props.ratio, props.duration, props.mode, props.referenceAssetIds, props.storyboardReferenceAssetId,
-    props.visualReferenceMode, props.excludedVisualProfileIds, props.videoReferenceUsages, props.targetModelId, modelId, skillControl.ids(stage)])
+    props.visualReferenceMode, props.excludedVisualProfileIds, props.videoReferenceUsages, props.targetModelId])
+  const currentKey = JSON.stringify([nodeKey, modelId, selectedIds])
   const maxPromptLength = props.profileId ? 16_000 : 80_000
+  const stale = !!result && sourceKey !== currentKey
+  const nodeChanged = !!result && sourceNodeKey !== nodeKey
+  const adjustmentChanged = !!result && adjustment.trim() !== resultAdjustment
+  const continueFromResult = !!result.trim() && !nodeChanged
+  const refineLabel = result ? nodeChanged ? '重新整理' : '继续调整' : '整理提示词'
   function open() {
-    setOpened(true); setError(''); setResult('')
+    setOpened(true); setError(''); setResult(''); setAdjustment(''); setResultAdjustment(''); setUsedSkills([])
     setModelId(previous => props.models.some(model => model.id === previous) ? previous : props.models[0]?.id || '')
   }
-  function close() { serial.current++; abort.current?.abort(); setOpened(false); setPending(false); setResult(''); setUsedSkills([]); setError('') }
+  function close() { serial.current++; abort.current?.abort(); refining.current = false; setOpened(false); setPending(false); setResult(''); setUsedSkills([]); setError(''); setAdjustment(''); setResultAdjustment('') }
+  function addDirection(text: string) {
+    setAdjustment(current => {
+      if (current.includes(text)) return current
+      const next = [current.trim(), text].filter(Boolean).join('\n')
+      return next.length <= maxAdjustmentLength ? next : current
+    })
+  }
   async function refine() {
-    const turn = ++serial.current, capturedKey = currentKey
-    setRequestLabel(result ? '重新整理' : '整理提示词'); setElapsed(0)
-    setPending(true); setError(''); setResult(''); abort.current = new AbortController()
+    if (refining.current || props.disabled || !modelId || skillControl.loading || skillControl.error) return
+    const prompt = continueFromResult ? result.trim() : props.prompt.trim()
+    if (!prompt || prompt.length > 80_000 || adjustment.length > maxAdjustmentLength) return
+    refining.current = true
+    const turn = ++serial.current, capturedKey = currentKey, capturedNodeKey = nodeKey, capturedAdjustment = adjustment.trim()
+    setRequestLabel(refineLabel); setElapsed(0)
+    setPending(true); setError(''); abort.current = new AbortController()
     try {
       const response = await api<{ prompt: string; skills: Array<{ name: string }> }>(`/projects/${props.projectId}/skills/refine-prompt`, {
-        ...json('POST', { stage, skill_ids: skillControl.ids(stage), model_id: modelId, prompt: props.prompt, target_model_id: props.targetModelId || null, shot_id: props.shotId,
+        ...json('POST', { stage, skill_ids: skillControl.ids(stage), model_id: modelId, prompt, adjustment_request: capturedAdjustment, target_model_id: props.targetModelId || null, shot_id: props.shotId,
           profile_id: props.profileId, ratio: props.ratio, duration: props.duration, mode: props.mode, reference_asset_ids: props.referenceAssetIds,
           ...(props.modality === 'video' ? { storyboard_reference_asset_id: props.storyboardReferenceAssetId || null,
             video_reference_usages: props.mode === 'reference' ? props.videoReferenceUsages || [] : [],
             visual_reference_mode: props.visualReferenceMode, excluded_visual_profile_ids: props.excludedVisualProfileIds || [] } : {}) }), signal: abort.current.signal,
       })
       if (turn !== serial.current) return
-      setResult(response.prompt); setSourceKey(capturedKey); setUsedSkills(response.skills.map(skill => skill.name))
+      setResult(response.prompt); setSourceKey(capturedKey); setSourceNodeKey(capturedNodeKey); setResultAdjustment(capturedAdjustment); setUsedSkills(response.skills.map(skill => skill.name))
     } catch (issue) { if (turn === serial.current) setError(issue instanceof Error ? issue.message : String(issue)) }
-    finally { if (turn === serial.current) setPending(false) }
+    finally { if (turn === serial.current) { refining.current = false; setPending(false) } }
   }
-  const stale = !!result && sourceKey !== currentKey
   return <>
     <UnstyledButton type="button" className="pc-composer-chip" aria-label="使用技能整理提示词" disabled={props.disabled || !props.prompt.trim()} onClick={() => void open()}><Puzzle size={14} /><span>整理提示词</span></UnstyledButton>
     <Modal opened={opened} onClose={close} centered size="min(620px, calc(100vw - 32px))" radius={18}
@@ -75,7 +112,7 @@ export default function PromptSkillAction(props: Props) {
           <header><span>本次{modalityLabel}提示词技能</span><small>{selectionSource}</small></header>
           <div className="prompt-skill-selection"><div className="prompt-skill-primary"><Puzzle size={16} /><strong>{skillName}</strong></div>
             <CreativeSkillSelector stage={stage} policies={skillControl.policies} ids={selectedIds}
-              onChange={values => { skillControl.change(stage, values); setResult('') }} projectId={props.projectId} disabled={pending}
+              onChange={values => skillControl.change(stage, values)} projectId={props.projectId} disabled={pending}
               loading={skillControl.loading} error={skillControl.error} onDefaultsChanged={() => skillControl.reload(stage)}
               onRetry={() => skillControl.reload(stage, { keepSelection: true })} appearance="prompt" triggerLabel="更换" />
           </div>
@@ -90,21 +127,35 @@ export default function PromptSkillAction(props: Props) {
         <WorkspaceDisclosure className="prompt-skill-source" label={<><span>原始提示词</span><small>{props.prompt.length.toLocaleString()} 字</small><ChevronDown size={14} /></>}>
           <p>{props.prompt}</p>
         </WorkspaceDisclosure>
+        <section className="prompt-skill-adjustment" aria-label="提示词调整方向">
+          <Textarea label="本次调整要求" aria-label="本次调整要求" value={adjustment}
+            onChange={event => setAdjustment(event.currentTarget.value)} disabled={pending} autosize minRows={3} maxRows={5}
+            maxLength={maxAdjustmentLength} placeholder={adjustmentPlaceholder} classNames={{ input: 'prompt-skill-adjustment-input' }}
+            description="可留空，按现有内容整理。画风、比例、时长和引用以节点设置为准。" />
+          <div className="prompt-skill-directions" role="group" aria-label={`${modalityLabel}调整快捷方向`}>
+            {directions.map(direction => <Button key={direction.label} variant="default" size="compact-xs" aria-pressed={adjustment.includes(direction.text)}
+              disabled={pending || !adjustment.includes(direction.text) && adjustment.trim().length + direction.text.length + 1 > maxAdjustmentLength}
+              onClick={() => addDirection(direction.text)}>{direction.label}</Button>)}
+          </div>
+          <div className="prompt-skill-adjustment-hint"><span>{continueFromResult ? '继续调整将以当前整理结果为基础。' : '只调整指定部分，其余内容尽量保留。'}</span><small>{adjustment.length.toLocaleString()} / 4,000</small></div>
+        </section>
         {!props.models.length && <p className="prompt-skill-error">请先在模型设置中启用一个文本模型。</p>}
         {skillControl.error && <p className="prompt-skill-error" role="alert">{skillControl.error}</p>}
         {error && <p className="prompt-skill-error" role="alert">{error}</p>}
         {!!result && <div className="prompt-skill-result">
-          <Textarea aria-label="整理后的完整提示词" label="整理结果 · 可编辑" value={result} onChange={event => setResult(event.currentTarget.value)} rows={10}
+          <Textarea aria-label="整理后的完整提示词" label="整理结果 · 可编辑" value={result} onChange={event => setResult(event.currentTarget.value)} rows={10} disabled={pending}
             maxLength={maxPromptLength} classNames={{ input: 'prompt-skill-editor' }} />
           <p className="prompt-skill-used">使用技能：{usedSkills.join(' · ') || '基础创作规则'}</p>
         </div>}
-        {stale && <p className="prompt-skill-error" role="alert">当前节点内容或生成配置已变化，请重新整理。</p>}
+        {nodeChanged && <p className="prompt-skill-error" role="alert">当前节点内容或生成配置已变化，请重新整理。</p>}
+        {stale && !nodeChanged && <p className="prompt-skill-adjustment-notice" role="status">文本模型或技能已变化，请点击「继续调整」后应用，当前结果将保留为调整基稿。</p>}
+        {adjustmentChanged && !stale && <p className="prompt-skill-adjustment-notice" role="status">调整要求已变化，请点击「继续调整」生成新结果后应用。</p>}
       </div>
       <div className="prompt-skill-footer">
         {pending ? <div className="prompt-skill-progress" role="status"><LoaderCircle size={14} /><span>正在整理 · {elapsed} 秒</span></div>
           : <span className="prompt-skill-status">{result ? `已整理 · ${result.length.toLocaleString()} 字` : '确认应用后更新节点'}</span>}
-        <div className="prompt-skill-actions"><Button variant="default" disabled={pending || !modelId || skillControl.loading || !!skillControl.error} onClick={() => void refine()}>{pending ? requestLabel : result ? '重新整理' : '整理提示词'}</Button>
-        {!!result && <Button className="prompt-skill-apply" disabled={pending || stale || !result.trim() || result.length > maxPromptLength} onClick={() => { props.onApply(result.trim()); close() }}>应用提示词</Button>}</div>
+        <div className="prompt-skill-actions"><Button variant="default" disabled={pending || props.disabled || !modelId || skillControl.loading || !!skillControl.error || !(continueFromResult ? result : props.prompt).trim() || adjustment.length > maxAdjustmentLength} onClick={() => void refine()}>{pending ? requestLabel : refineLabel}</Button>
+        {!!result && <Button className="prompt-skill-apply" disabled={pending || props.disabled || stale || adjustmentChanged || !result.trim() || result.length > maxPromptLength} onClick={() => { props.onApply(result.trim()); close() }}>应用提示词</Button>}</div>
       </div>
     </Modal>
   </>

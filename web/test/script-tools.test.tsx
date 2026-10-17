@@ -35,10 +35,11 @@ function revisionDraft(ready = false): ScriptToolDraft {
 }
 const stream = (value: object) => new Response(`data: ${JSON.stringify({ type: 'done', ...value })}\n\n`, { headers: { 'Content-Type': 'text/event-stream' } })
 function button(text: string) { const node = [...document.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === text || item.getAttribute('aria-label') === text); assert.ok(node, text); return node }
-async function mount(projectDetail = detail, preserveDraft = false) {
+async function mount(projectDetail = detail, preserveDraft = false, sourceDocument: unknown = null) {
   const mockedFetch = globalThis.fetch
   const fixtureFetch: typeof fetch = async (...args) => String(args[0]).endsWith('/skills/defaults')
     ? Response.json({ policies: skillStageOptions.map(({ value: stage, label }) => ({ stage, label, primary_id: null, auxiliary_ids: [], source: 'global', warning: '', skills: [] })) })
+    : String(args[0]).endsWith('/script/source') ? Response.json(sourceDocument)
     : mockedFetch(...args)
   globalThis.fetch = fixtureFetch
   for (const key of ['script-director-conversations:project-tools', 'script-director-draft:project-tools', 'script-director-composer:project-tools']) {
@@ -376,7 +377,8 @@ test('a failed discussion never claims a preexisting draft as its result or reop
     await act(async () => button('发送消息').click())
     assert.match(view.container.querySelector('.sd-activity-state')!.textContent!, /未完成/)
     assert.equal(view.container.querySelector('[aria-label="剧本草稿预览"]'), null)
-    assert.match(view.container.querySelector('.sd-activity-result')!.textContent!, /模拟讨论中断/)
+    assert.match(view.container.querySelector('.sd-message-failure')!.textContent!, /模拟讨论中断/)
+    assert.doesNotMatch(view.container.querySelector('.sd-activity-result')!.textContent!, /模拟讨论中断/)
   } finally { await view.destroy() }
 })
 
@@ -473,10 +475,9 @@ test('execution UI updates live calls, preserves repeated invocations and persis
     assert.match(section.textContent!, /查阅 1 份文档 · 1 个 Skill 已加载/)
     await act(() => section.querySelector<HTMLButtonElement>('button')!.click())
     assert.equal(section.querySelectorAll('.is-tool').length, 9)
-    const technical = section.querySelector<HTMLDetailsElement>('.sd-activity-technical')!
-    assert.equal(technical.querySelector('.workspace-disclosure-control')!.getAttribute('aria-expanded'), 'false')
-    await act(() => technical.querySelector<HTMLElement>('.workspace-disclosure-control')!.click())
-    const readDetail = technical.querySelectorAll<HTMLDetailsElement>('.sd-activity-detail')[1]
+    assert.equal(section.querySelector('.sd-activity-technical'), null, 'there is no second global copy of the calls')
+    const readDetail = section.querySelectorAll('.sd-activity-step.is-tool')[0].querySelector('.sd-activity-calls')!
+    assert.equal(readDetail.querySelector('.workspace-disclosure-control')!.getAttribute('aria-expanded'), 'false')
     await act(() => readDetail.querySelector<HTMLElement>('.workspace-disclosure-control')!.click())
     assert.equal(readDetail.querySelector('.workspace-disclosure-control')!.getAttribute('aria-expanded'), 'true')
     assert.match(readDetail.textContent!, /read_documents/); assert.match(readDetail.textContent!, /document_ids/); assert.match(readDetail.textContent!, /林晚是记者/)
@@ -567,6 +568,60 @@ test('a completed document draft opens its preview immediately even if the serve
   } finally { await view.destroy() }
 })
 
+test('workflow draft keeps the server source version through save conflicts and local restoration instead of adopting the current source', async t => {
+  for (const sourceVersion of ['generated-source-version', null]) await t.test(sourceVersion === null ? 'generated without a source' : 'generated from an earlier source', async t => {
+    const content = '# 林晚\n调查记者，追踪失踪案件。\n候选原文与未涉及的设定须保留。'
+    const result = { reply: '人物设定草稿已准备。', classification_version: replyClassificationVersion, classification: { type: 'other' },
+      draft: { stage: 'characters', scope: 'project', episode_number: 0, source_version: sourceVersion,
+        artifacts: [{ artifact_type: 'characters', title: '全剧人物设定', content }], scenes: [] } }
+    const sourceDocument = { project_id: detail.id, filename: '已经替换的当前原稿.txt', content: '这是后来上传的新剧本，不能成为旧候选稿的保存基准。', updated_at: '2026-10-16T10:00:00.000Z',
+      analysis: { id: 'current-analysis', source_version: 'current-analysis-source', model_id: model.id, status: 'ready', phase: 'ready', completed_chunks: 1, total_chunks: 1, sections: [], error: null, updated_at: '2026-10-16T10:00:01.000Z' } }
+    const submitted: any[] = []
+    t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
+      const path = String(url), body = init?.body ? JSON.parse(String(init.body)) : undefined
+      if (path.endsWith('/tools-state')) return Response.json({ draft: null, decisions: [] })
+      if (path.endsWith('/conversations')) return Response.json({ conversations: [] })
+      if (path.endsWith('/chat/stream')) return stream(result)
+      if (path.endsWith('/director/draft')) {
+        assert.equal(init?.method, 'PUT'); submitted.push(body)
+        return Response.json({ detail: '文稿来源已变化，草稿仍保留，请重新生成核对后保存' }, { status: 409 })
+      }
+      throw new Error(`Unexpected request ${path}`)
+    })
+    const draftKey = `script-director-draft:${detail.id}`
+    const view = await mount()
+    try {
+      await act(() => setInput('textarea[aria-label="剧本创作对话"]', '生成全剧人物设定'))
+      await act(async () => button('发送消息').click())
+      assert.equal(JSON.parse(window.localStorage.getItem(draftKey)!).source_version, sourceVersion)
+      await act(async () => button('确认保存').click())
+      assert.equal(submitted[0].source_version, sourceVersion)
+      assert.equal(submitted[0].artifacts[0].content, content)
+      assert.match(view.container.textContent!, /文稿来源已变化/)
+      assert.ok(view.container.querySelector('[aria-label="剧本草稿预览"]'), 'a rejected save leaves the preview open')
+      assert.equal(JSON.parse(window.localStorage.getItem(draftKey)!).artifacts[0].content, content)
+      assert.equal(JSON.parse(window.localStorage.getItem(draftKey)!).source_version, sourceVersion)
+    } finally { await view.destroy() }
+
+    const reopened = await mount(detail, true, sourceDocument)
+    try {
+      assert.equal(JSON.parse(window.localStorage.getItem(draftKey)!).source_version, sourceVersion, 'restoring local data retains an explicit null as well as a hash')
+      await act(() => button('稍后处理').click())
+      assert.match(reopened.container.querySelector('[aria-label="原剧本来源"]')!.textContent!, /已经替换的当前原稿/)
+      await act(() => button('查看草稿').click())
+      assert.match(reopened.container.querySelector('[aria-label="剧本草稿预览"]')!.textContent!, /候选原文与未涉及的设定须保留/)
+      await act(async () => button('确认保存').click())
+      assert.deepEqual(submitted.map(body => body.source_version), [sourceVersion, sourceVersion], 'a current upload never replaces the draft source version')
+      assert.equal(submitted[1].artifacts[0].content, content)
+      assert.match(reopened.container.textContent!, /文稿来源已变化/)
+      assert.ok(reopened.container.querySelector('[aria-label="剧本草稿预览"]'))
+      const preserved = JSON.parse(window.localStorage.getItem(draftKey)!)
+      assert.equal(preserved.source_version, sourceVersion)
+      assert.equal(preserved.artifacts[0].content, content, '409 preserves the candidate for review or a later retry')
+    } finally { await reopened.destroy() }
+  })
+})
+
 test('a skipped question becomes a completed historical task while keeping the skip button wording', async t => {
   let calls = 0
   t.mock.method(globalThis, 'fetch', async (url: unknown) => {
@@ -622,7 +677,15 @@ test('a stalled connection exits pending state, preserves received text and fail
     assert.equal(cancelled, true); assert.equal(calls, 1, 'timeout must not retry a request that may have written a draft')
     assert.equal(view.container.querySelector('button[aria-label="停止生成"]'), null)
     assert.match(view.container.textContent!, /已收到的人物分析内容/)
-    assert.match(view.container.textContent!, /180 秒未收到服务响应/)
+    assert.match(view.container.textContent!, /60 秒未收到服务事件/)
+    assert.equal(view.container.querySelector('.script-director-error'), null, 'a chat failure belongs to its reply, without a second global banner')
+    assert.equal(view.container.querySelectorAll('.sd-message-failure').length, 1)
+    assert.match(view.container.querySelector('.sd-message-failure')!.textContent!, /本轮未完成.*60 秒未收到服务事件/s)
+    assert.equal(view.container.querySelectorAll('.sd-message-failure .sd-message-timing').length, 1)
+    const failedReply = view.container.querySelector('.sd-message-failure')!.closest('.script-director-message')!
+    assert.match(failedReply.querySelector('.script-director-bubble')!.textContent!, /已收到的人物分析内容/)
+    assert.doesNotMatch(failedReply.querySelector('.script-director-bubble')!.textContent!, /60 秒未收到服务事件/)
+    assert.doesNotMatch(failedReply.querySelector('.sd-activity-result')!.textContent!, /60 秒未收到服务事件/)
     await act(() => view.container.querySelector<HTMLButtonElement>('.sd-activity-toggle')!.click())
     assert.match(view.container.querySelector('.sd-activity-step.is-model')!.textContent!, /未完成/)
     assert.match(view.container.querySelector('.sd-activity-step.is-skill')!.textContent!, /规则已加载/)
@@ -631,7 +694,150 @@ test('a stalled connection exits pending state, preserves received text and fail
   } finally { await view.destroy() }
 })
 
-test('server heartbeats keep slow work pending but the complete dialogue still has a deadline', async t => {
+test('execution sequence nests calls, keeps active ancestors in progress and retains durations and disclosure state', async () => {
+  const { default: DirectorActivity } = await import('../src/features/script/DirectorActivity')
+  const started_at = Date.now() - 5000
+  const task = { id: 'task', kind: 'context' as const, scope: 'task' as const, status: 'running' as const, label: '生成阶段草稿', summary: '按栏目生成', started_at }
+  const phase = { ...task, id: 'phase', scope: 'step' as const, parent_id: task.id, label: '生成故事梗概' }
+  const directory = { ...phase, id: 'directory', parent_id: phase.id, label: '筛选第 1/2 批剧情目录' }
+  const request = { ...phase, id: 'request', kind: 'model' as const, parent_id: directory.id, label: '模型筛选剧情目录', request_bytes: 12345,
+    input_tokens: 60315, output_tokens: 28391, reasoning_tokens: 4096, output_limit: 32768,
+    estimated_input_tokens: 72000, context_window_tokens: 128000, reserved_output_tokens: 32768 }
+  const reused = { ...phase, id: 'reused', label: '建立共同骨架', status: 'succeeded' as const, reused: true, duration_ms: 0 }
+  const notice = { id: 'notice', kind: 'context' as const, status: 'succeeded' as const, label: '正在生成旧栏目', summary: '开始处理', started_at, duration_ms: 1 }
+  const activity = [task, reused, phase, directory, request, notice]
+  const container = document.createElement('div'); document.body.append(container)
+  const root = createRoot(container)
+  try {
+    await act(async () => root.render(<MantineProvider><DirectorActivity activity={activity} pending /></MantineProvider>))
+    assert.match(container.querySelector('.sd-activity-current')!.textContent!, /生成故事梗概.*当前调用：模型筛选剧情目录/)
+    assert.match(container.querySelector('.sd-activity-task')!.textContent!, /生成阶段草稿.*进行中/)
+    assert.equal(container.querySelector('.sd-activity-task .script-director-spinner'), null)
+    await act(() => container.querySelector<HTMLButtonElement>('.sd-activity-toggle')!.click())
+    const rows = container.querySelectorAll('.sd-activity-step')
+    assert.equal(rows.length, 2)
+    assert.match(rows[0].textContent!, /建立共同骨架.*已复用/); assert.equal(rows[0].querySelector('.sd-activity-row time'), null)
+    assert.match(rows[1].querySelector('.sd-activity-row')!.textContent!, /生成故事梗概.*进行中/)
+    assert.equal(rows[1].querySelector('.sd-activity-row .script-director-spinner'), null)
+    const notices = container.querySelector('.sd-activity-notices')!
+    assert.equal(notices.querySelector('.workspace-disclosure-control')!.getAttribute('aria-expanded'), 'false')
+    await act(() => notices.querySelector<HTMLElement>('.workspace-disclosure-control')!.click())
+    assert.match(notices.textContent!, /过程提示.*1 条.*正在生成旧栏目.*开始处理/s)
+    assert.equal(notices.querySelector('.sd-activity-status, time, .sd-activity-calls'), null)
+    assert.equal(container.querySelector('.sd-activity-technical'), null)
+    const calls = rows[1].querySelector('.sd-activity-calls')!
+    await act(() => calls.querySelector<HTMLElement>('.workspace-disclosure-control')!.click())
+    assert.match(calls.textContent!, /步骤用时包含内部调用/)
+    const directoryCall = calls.querySelector('[data-activity-id="directory"]')!
+    assert.match(directoryCall.textContent!, /进行中/)
+    assert.equal(directoryCall.querySelector('.script-director-spinner'), null)
+    const requestCall = calls.querySelector('[data-activity-id="request"]')!
+    assert.ok(requestCall.querySelector('.script-director-spinner'))
+    assert.equal(container.querySelectorAll('.script-director-spinner').length, 1)
+    await act(() => requestCall.querySelector<HTMLElement>('.workspace-disclosure-control')!.click())
+    await act(async () => root.render(<MantineProvider><DirectorActivity activity={activity.map(event => event.status === 'running' ? { ...event, status: 'succeeded', duration_ms: 2345 } : event)} /></MantineProvider>))
+    assert.equal(container.querySelector('.sd-activity-icon.is-running'), null)
+    assert.equal(requestCall.querySelector('.workspace-disclosure-control')!.getAttribute('aria-expanded'), 'true', 'live updates preserve expanded call details')
+    assert.match(requestCall.querySelector('time')!.textContent!, /2.3 秒/)
+    assert.match(requestCall.textContent!, /发送 12,345 字节/)
+    assert.match(requestCall.textContent!, /输入 60,315/)
+    assert.match(requestCall.textContent!, /输出 28,391/)
+    assert.match(requestCall.textContent!, /其中推理 4,096/)
+    assert.match(requestCall.textContent!, /请求输出上限 32,768/)
+    const capacity = requestCall.querySelector('.sd-activity-capacity')!
+    assert.match(capacity.textContent!, /末次输入估算 72,000 tokens/)
+    assert.match(capacity.textContent!, /模型上下文容量 128,000 tokens/)
+    assert.match(capacity.textContent!, /末次输出预留 32,768 tokens/)
+    assert.doesNotMatch(capacity.textContent!, /60,315|28,391|其中推理/)
+    assert.match(requestCall.textContent!, /实际 Token 用量以供应商返回为准/)
+    assert.match(container.querySelector('.sd-activity-task time')!.textContent!, /2.3 秒/)
+    await act(async () => root.render(<MantineProvider><DirectorActivity activity={activity.map(event => event.id === request.id
+      ? { ...event, context_window_tokens: undefined, reserved_output_tokens: undefined } : event)} /></MantineProvider>))
+    assert.match(requestCall.querySelector('.sd-activity-capacity')!.textContent!, /末次输入估算 72,000 tokens/)
+    assert.doesNotMatch(requestCall.querySelector('.sd-activity-capacity')!.textContent!, /模型上下文容量|末次输出预留/)
+    await act(async () => root.render(<MantineProvider><DirectorActivity activity={activity.map(event => event.id === request.id
+      ? { ...event, estimated_input_tokens: undefined, context_window_tokens: undefined, reserved_output_tokens: undefined } : event)} /></MantineProvider>))
+    assert.equal(requestCall.querySelector('.sd-activity-capacity'), null, 'legacy requests without capacity metrics do not invent a checked window')
+    assert.doesNotMatch(requestCall.textContent!, /实际 Token 用量以供应商返回为准/)
+    assert.match(requestCall.textContent!, /输入 60,315/)
+    await act(async () => root.render(<MantineProvider><DirectorActivity activity={activity} /></MantineProvider>))
+    assert.equal(container.querySelector('.script-director-spinner'), null, 'terminal history cannot leave old running records spinning')
+    assert.match(container.querySelector('.sd-activity-task')!.textContent!, /未记录完成/)
+  } finally { await act(() => root.unmount()); container.remove() }
+})
+
+for (const noticeParent of ['task', 'draft']) {
+  test(`continuation progress under ${noticeParent} stays a process notice while the draft and real calls retain their states`, async () => {
+    const { default: DirectorActivity } = await import('../src/features/script/DirectorActivity')
+    const started_at = Date.now() - 605000
+    const task = { id: 'task', kind: 'context' as const, scope: 'task' as const, status: 'running' as const, label: '生成阶段草稿', summary: '正在生成全剧大纲', started_at }
+    const completed = ['读取原剧本', '核对创作要求', '建立共同骨架', '准备阶段资料'].map((label, index) => ({
+      ...task, id: `prepare-${index}`, scope: 'step' as const, parent_id: task.id, status: 'succeeded' as const, label, duration_ms: 100,
+    }))
+    const phase = { ...task, id: 'draft', scope: 'step' as const, parent_id: task.id, step_id: 'draft', label: '编写阶段草稿', summary: '完成后校验并保留当前步骤结果' }
+    const initial = { ...phase, id: 'initial', kind: 'model' as const, parent_id: phase.id, status: 'failed' as const,
+      label: '模型编写完整阶段草稿', summary: '输出截断，已保留 8 份文档', duration_ms: 562000, output: '已完成的八份文档内容' }
+    const continuation = { ...phase, id: 'continuation', kind: 'model' as const, parent_id: phase.id,
+      label: '模型继续编写未完成内容', summary: '正在补齐剩余文档', started_at: started_at + 562000 }
+    const notice = { ...phase, id: 'notice', scope: 'notice' as const, parent_id: noticeParent, status: 'succeeded' as const,
+      label: '继续未完成内容', summary: '已保留 8 份完整文档，正在接续第 9 份文档。', started_at: continuation.started_at, duration_ms: 1 }
+    const activity = [task, ...completed, phase, initial, notice, continuation]
+    const original = structuredClone(activity)
+    const container = document.createElement('div'); document.body.append(container)
+    const root = createRoot(container)
+    try {
+      await act(async () => root.render(<MantineProvider><DirectorActivity activity={activity} pending /></MantineProvider>))
+      assert.match(container.querySelector('.sd-activity-state')!.textContent!, /处理中/)
+      assert.match(container.querySelector('.sd-activity-current')!.textContent!, /编写阶段草稿.*当前调用：模型继续编写未完成内容.*正在补齐剩余文档/s)
+      await act(() => container.querySelector<HTMLButtonElement>('.sd-activity-toggle')!.click())
+      const steps = container.querySelectorAll('.sd-activity-step')
+      assert.equal(steps.length, 5, 'continuation notices must not create a sixth execution step')
+      const draftStep = steps[4]
+      assert.equal(draftStep.getAttribute('data-activity-id'), phase.id)
+      assert.equal(draftStep.querySelector('.sd-activity-step-number')!.textContent, '5')
+      assert.match(draftStep.querySelector('.sd-activity-row')!.textContent!, /编写阶段草稿.*进行中/)
+      assert.equal(container.querySelector('.sd-activity-step[data-activity-id="notice"]'), null)
+      assert.doesNotMatch(container.textContent!, /等待子步骤|历史记录仅表示开始处理|开始提示/)
+
+      const calls = draftStep.querySelector('.sd-activity-calls')!
+      assert.match(calls.querySelector('.workspace-disclosure-control')!.textContent!, /2 条记录/)
+      await act(() => calls.querySelector<HTMLElement>('.workspace-disclosure-control')!.click())
+      assert.equal(calls.querySelectorAll('.sd-activity-call').length, 2)
+      const initialCall = calls.querySelector('[data-activity-id="initial"]')!
+      const continuationCall = calls.querySelector('[data-activity-id="continuation"]')!
+      assert.match(initialCall.textContent!, /模型编写完整阶段草稿.*未完成.*输出截断，已保留 8 份文档/s)
+      assert.match(initialCall.querySelector('time')!.textContent!, /9 分 22 秒/)
+      await act(() => initialCall.querySelector<HTMLElement>('.workspace-disclosure-control')!.click())
+      assert.match(initialCall.textContent!, /已完成的八份文档内容/)
+      assert.match(continuationCall.textContent!, /模型继续编写未完成内容.*进行中/s)
+      await act(() => continuationCall.querySelector<HTMLElement>('.workspace-disclosure-control')!.click())
+      assert.equal(container.querySelectorAll('.script-director-spinner').length, 1)
+
+      const notices = container.querySelector('.sd-activity-notices')!
+      const noticeToggle = notices.querySelector<HTMLElement>('.workspace-disclosure-control')!
+      assert.equal(noticeToggle.getAttribute('aria-expanded'), 'false')
+      await act(() => noticeToggle.click())
+      assert.match(notices.textContent!, /过程提示.*1 条.*继续未完成内容.*已保留 8 份完整文档，正在接续第 9 份文档。/s)
+      assert.equal(notices.querySelectorAll('[data-activity-id="notice"]').length, 1)
+      assert.equal(notices.querySelector('.sd-activity-step-number, .sd-activity-status, time, .sd-activity-calls, .script-director-spinner'), null)
+
+      const finished = activity.map(event => event.id === continuation.id ? { ...event, status: 'succeeded' as const, duration_ms: 43800 }
+        : event.status === 'running' ? { ...event, status: 'succeeded' as const, duration_ms: 605800 } : event)
+      await act(async () => root.render(<MantineProvider><DirectorActivity activity={finished} /></MantineProvider>))
+      assert.equal(container.querySelectorAll('.sd-activity-step').length, 5)
+      assert.equal(continuationCall.querySelector('.workspace-disclosure-control')!.getAttribute('aria-expanded'), 'true')
+      assert.equal(noticeToggle.getAttribute('aria-expanded'), 'true')
+      assert.match(continuationCall.textContent!, /已完成/)
+      assert.match(continuationCall.querySelector('time')!.textContent!, /43.8 秒/)
+      assert.match(initialCall.textContent!, /未完成/)
+      assert.match(initialCall.querySelector('time')!.textContent!, /9 分 22 秒/)
+      assert.equal(container.querySelector('.script-director-spinner'), null)
+      assert.deepEqual(activity, original, 'display updates never rewrite the original trace')
+    } finally { await act(() => root.unmount()); container.remove() }
+  })
+}
+
+test('server heartbeats keep work pending beyond the browser deadline until an authoritative server result', async t => {
   let channel!: ReadableStreamDefaultController<Uint8Array>, cancelled = false, calls = 0
   const encoder = new TextEncoder()
   t.mock.method(globalThis, 'fetch', async (url: unknown) => {
@@ -655,11 +861,12 @@ test('server heartbeats keep slow work pending but the complete dialogue still h
     }
     assert.doesNotMatch(view.container.textContent!, /heartbeat|连接已中断/)
     await act(async () => { t.mock.timers.tick(30_000) })
-    assert.equal(cancelled, true); assert.equal(calls, 1)
+    assert.equal(cancelled, false); assert.equal(calls, 1)
+    assert.ok(button('停止生成'))
+    await act(async () => { channel.enqueue(encoder.encode('data: {"type":"done","reply":"后端已完成独立复核，草稿待确认。"}\n\n')); channel.close() })
     assert.equal(view.container.querySelector('button[aria-label="停止生成"]'), null)
-    assert.match(view.container.textContent!, /本轮对话处理超时/)
-    assert.match(view.container.textContent!, /30 分钟/)
-    assert.doesNotMatch(view.container.textContent!, /已停止生成/)
+    assert.match(view.container.textContent!, /后端已完成独立复核/)
+    assert.doesNotMatch(view.container.textContent!, /本轮对话处理超时|已停止生成/)
   } finally { await view.destroy() }
 })
 

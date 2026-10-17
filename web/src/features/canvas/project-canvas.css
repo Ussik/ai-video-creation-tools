@@ -58,7 +58,7 @@
   .pc-toolbar-storyboard .pc-save-status { grid-column: 3; grid-row: 1; }
   .pc-toolbar-storyboard .pc-theme-control { grid-column: 4; grid-row: 1; }
   .project-canvas .pc-toolbar.pc-toolbar-storyboard .pc-storyboard-tools { grid-column: 1 / -1; min-width: 0; margin-left: 0; }
-  .pc-body-storyboard .sb-workspace { padding-top: 124px; }
+  .pc-body-storyboard .sb-workspace { padding-top: 132px; }
 }
 @media (max-width: 700px) {
   .pc-toolbar.pc-toolbar-storyboard { grid-template-columns: auto minmax(0, 1fr) 32px 40px; }
@@ -68,11 +68,11 @@
   .pc-toolbar-storyboard .pc-mode-switch-root { grid-column: 1; grid-row: 2; }
   .project-canvas .pc-toolbar.pc-toolbar-storyboard .pc-storyboard-tools { grid-column: 2 / -1; grid-row: 2; gap: 6px; }
   .pc-storyboard-tools .pc-storyboard-director-button { padding-inline: 8px; font-size: 11px; }
-  .pc-body-storyboard .sb-workspace { padding-top: 116px; }
+  .pc-body-storyboard .sb-workspace { padding-top: 124px; }
 }
 @media (max-width: 380px) {
   .project-canvas .pc-toolbar.pc-toolbar-storyboard .pc-storyboard-tools { grid-column: 1 / -1; grid-row: 3; }
-  .pc-body-storyboard .sb-workspace { padding-top: 166px; }
+  .pc-body-storyboard .sb-workspace { padding-top: 174px; }
 }
 
 .pc-selection-toolbar {

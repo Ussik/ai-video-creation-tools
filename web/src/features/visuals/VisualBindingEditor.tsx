@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Accordion, UnstyledButton, ActionIcon, Button, Checkbox, Select, Tabs, TextInput, Tooltip } from '@mantine/core'
+import { useEffect, useRef, useState } from 'react'
+import { Accordion, UnstyledButton, ActionIcon, Button, Checkbox, Modal, Select, Tabs, TextInput, Tooltip } from '@mantine/core'
 import { ArrowUpRight, Check, ChevronUp, Image as ImageIcon, LoaderCircle, RefreshCcw, Search, X } from 'lucide-react'
 import { api, json } from '../../shared/api/api'
 import type { Asset, ProjectDetail, VisualProfile, VisualProjectData } from '../../shared/api/api'
@@ -7,6 +7,7 @@ import { visualDropdownProps, visualKinds } from './VisualProfileFields'
 import { recommendVisualReferences } from '@video-studio/shared/visuals/visual-reference-selection'
 import { visualReferencePurposeLabels, visualReferenceViewLabels } from '@video-studio/shared/visuals/visual-reference-types'
 import { visualBindingUsageLabels, type VisualBindingUsage } from '@video-studio/shared/visuals/visual-binding-usage'
+import { visualBindingNeedsRefresh } from './visual-binding-status'
 import './visual-binding-references.css'
 
 export type VisualBindingContext = { target?: string; profileId?: string }
@@ -29,12 +30,20 @@ export default function VisualBindingEditor({ detail, context, onRefresh, onClos
     && detail.shot_visual_bindings?.some(binding => binding.shot_id === context.target!.slice(5)) ? 'selected' : 'all')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [refreshOpen, setRefreshOpen] = useState(false)
+  const saving = useRef(false)
+  const refreshTrigger = useRef<HTMLButtonElement>(null)
+  const searchInput = useRef<HTMLInputElement>(null)
   useEffect(() => setData(projectData(detail)), [detail.visual_profiles, detail.scene_visual_bindings, detail.shot_visual_bindings])
-  useEffect(() => { onBusyChange(busy); return () => onBusyChange(false) }, [busy, onBusyChange])
+  useEffect(() => { onBusyChange(busy || refreshOpen); return () => onBusyChange(false) }, [busy, refreshOpen, onBusyChange])
+  useEffect(() => { setNotice(''); setRefreshOpen(false) }, [target])
   const isShot = target.startsWith('shot:')
   const id = target.slice(isShot ? 5 : 6)
   const exists = isShot ? detail.shots.some(shot => shot.id === id) : detail.script.scenes.some(scene => scene.id === id)
   const selected = isShot ? data.shot_visual_bindings.filter(binding => binding.shot_id === id) : data.scene_visual_bindings.filter(binding => binding.scene_id === id)
+  const staleBindings = isShot ? data.shot_visual_bindings.filter(binding => binding.shot_id === id && data.visual_profiles.some(profile =>
+    profile.id === binding.profile_id && visualBindingNeedsRefresh(binding, profile, detail.project_visual_style))) : []
   const profile = data.visual_profiles.find(item => item.id === context.profileId)
   const profiles = data.visual_profiles.filter(item => (!context.profileId || item.id === context.profileId)
     && (!inline || category === 'all' || (category === 'selected' ? selected.some(binding => binding.profile_id === item.id) : item.kind === category))
@@ -50,8 +59,9 @@ export default function VisualBindingEditor({ detail, context, onRefresh, onClos
     ...data.shot_visual_bindings.filter(binding => binding.profile_id === profile.id).map(binding => ({ value: `shot:${binding.shot_id}`, label: detail.shots.find(shot => shot.id === binding.shot_id)?.title || '镜头' })),
   ] : []
   async function persist(bindings: Array<{ profile_id: string; required: boolean; reference_asset_ids?: string[]; usage?: VisualBindingUsage }>, refreshIds: string[] = [], apply = false) {
-    if (busy || !exists) return
-    setBusy(true); setError('')
+    if (saving.current || !exists) return false
+    saving.current = true
+    setBusy(true); setError(''); setNotice('')
     try {
       const result = await api<VisualProjectData>(apply ? `/script-scenes/${id}/visual-bindings/apply-to-shots` : `/${isShot ? 'shots' : 'script-scenes'}/${id}/visual-bindings`, json(apply ? 'POST' : 'PUT', apply ? {} : {
         bindings: bindings.map(binding => ({ profile_id: binding.profile_id, required: !!binding.required,
@@ -60,8 +70,14 @@ export default function VisualBindingEditor({ detail, context, onRefresh, onClos
         ...(isShot ? { refresh_profile_ids: refreshIds } : {}),
       }))
       setData(result); await onRefresh()
-    } catch (issue) { setError(issue instanceof Error ? issue.message : String(issue)) }
-    finally { setBusy(false) }
+      if (refreshIds.length) setNotice(`已更新当前镜头的 ${refreshIds.length} 个引用`)
+      return true
+    } catch (issue) { setError(issue instanceof Error ? issue.message : String(issue)); return false }
+    finally { saving.current = false; setBusy(false) }
+  }
+  async function refreshAll() {
+    if (!staleBindings.length) { setRefreshOpen(false); return }
+    if (await persist(selected, staleBindings.map(binding => binding.profile_id))) setRefreshOpen(false)
   }
   const Surface = inline ? 'section' : 'aside'
   return <Surface id={editorId} className={inline ? `pc-binding-inline${drawer ? ' pc-binding-drawer' : ''}` : 'pc-visual-panel pc-profile-inspector'}
@@ -69,7 +85,7 @@ export default function VisualBindingEditor({ detail, context, onRefresh, onClos
     onKeyDown={inline && !drawer ? event => {
       if (event.key === 'Escape' && !event.nativeEvent.isComposing) {
         event.stopPropagation()
-        if (!busy) onClose()
+        if (!busy && !refreshOpen) onClose()
       }
     } : undefined}>
     <header><div><small>{inline ? '镜头引用' : profile ? '设定使用范围' : '镜头参考设定'}</small>
@@ -79,20 +95,24 @@ export default function VisualBindingEditor({ detail, context, onRefresh, onClos
       {!inline && <p className="pc-visual-note">场次设定是候选资料。镜头可分别指定开镜图片与视频过程使用的对象；两者共用设定版本和参考图。勾选及用途调整会立即保存。</p>}
       {profile && <section className="pc-visual-usage"><strong>已引用 · {usage.length}</strong>{usage.length ? <div>{usage.map(item => <UnstyledButton type="button" key={item.value} disabled={busy} aria-pressed={target === item.value} onClick={() => { setTarget(item.value); setError('') }}>{item.value.startsWith('shot:') ? '镜头' : '场次'} · {item.label}</UnstyledButton>)}</div> : <p>尚未被场次或镜头使用。</p>}</section>}
       {!inline && <Select label="编辑使用范围" aria-label="选择绑定场次或镜头" value={exists ? target : null} data={options} searchable allowDeselect={false} disabled={busy} placeholder="选择场次或镜头" comboboxProps={visualDropdownProps} onChange={value => { if (value) { setTarget(value); setError('') } }} />}
-      {!context.profileId && <TextInput aria-label="搜索引用设定" placeholder="搜索人物、场景或道具" size={drawer ? 'md' : inline ? 'xs' : 'sm'} leftSection={<Search size={14} />} value={search} onChange={event => setSearch(event.currentTarget.value)} />}
+      {isShot && exists && !context.profileId && staleBindings.length > 0 && <div className="pc-binding-update-bar" aria-label="引用更新">
+        <span>{staleBindings.length} 项引用待更新</span>
+        <Button ref={refreshTrigger} variant="default" size="xs" leftSection={<RefreshCcw size={14} />} disabled={busy}
+          onClick={() => { setError(''); setRefreshOpen(true) }}>更新本镜头全部引用（{staleBindings.length}）</Button>
+      </div>}
+      {!context.profileId && <TextInput ref={searchInput} aria-label="搜索引用设定" placeholder="搜索人物、场景或道具" size={drawer ? 'md' : inline ? 'xs' : 'sm'} leftSection={<Search size={14} />} value={search} onChange={event => setSearch(event.currentTarget.value)} />}
       {inline && <Tabs value={category} onChange={value => value && setCategory(value)} variant="pills" className="pc-binding-category-tabs">
         <Tabs.List aria-label="引用设定分类"><Tabs.Tab value="all">全部 <span>{data.visual_profiles.length}</span></Tabs.Tab>
           <Tabs.Tab value="selected">已引用 <span>{selected.length}</span></Tabs.Tab>
           {visualKinds.map(kind => <Tabs.Tab key={kind.value} value={kind.value}>{kind.label} <span>{data.visual_profiles.filter(item => item.kind === kind.value).length}</span></Tabs.Tab>)}
         </Tabs.List></Tabs>}
-      {error && <p role="alert" className="pc-visual-error">{error}</p>}
+      {error && !refreshOpen && <p role="alert" className="pc-visual-error">{error}</p>}
+      {notice && <p role="status" className="pc-binding-update-success"><Check size={14} />{notice}</p>}
       {!exists ? <p className="pc-visual-note">尚无可引用的场次或镜头，请先保存剧本或制作分镜。</p> : <div className="pc-visual-bindings">{profiles.map(item => {
         const binding = selected.find(binding => binding.profile_id === item.id)
         const snapshot = isShot ? data.shot_visual_bindings.find(binding => binding.shot_id === id && binding.profile_id === item.id) : undefined
         const frozen = snapshot?.reference_assets || []
-        const stale = !!snapshot && (snapshot.revision !== item.revision || (frozen.length
-          ? frozen.some(reference => detail.project_visual_style && reference.style_version && reference.style_version !== detail.project_visual_style.version)
-          : snapshot.board_asset_id !== item.board_asset_id || snapshot.board_style_version !== item.board_style_version))
+        const stale = !!snapshot && visualBindingNeedsRefresh(snapshot, item, detail.project_visual_style)
         const boardId = snapshot ? snapshot.board_asset_id : item.board_asset_id
         const available = (item.reference_assets || []).filter(reference => reference.status === 'confirmed' && reference.revision === item.revision
           && (!detail.project_visual_style || reference.style_version === detail.project_visual_style.version))
@@ -154,5 +174,20 @@ export default function VisualBindingEditor({ detail, context, onRefresh, onClos
       {inline && <small>勾选及用途调整会立即保存</small>}
       {!isShot && exists && detail.shots.some(shot => shot.source_scene_id === id) && <Button variant="default" disabled={busy} onClick={() => void persist(selected, [], true)}>应用到本场镜头</Button>}
     </footer>
+    <Modal opened={refreshOpen} onClose={() => { if (!busy) setRefreshOpen(false) }} title="更新本镜头引用"
+      centered size="sm" radius={16} zIndex={250} closeOnEscape={!busy} closeOnClickOutside={!busy}
+      returnFocus={false} onExitTransitionEnd={() => (refreshTrigger.current || searchInput.current)?.focus()}
+      closeButtonProps={{ disabled: busy, 'aria-label': '关闭更新引用确认' }}>
+      <div className="pc-binding-update-confirm">
+        <strong>{shotTitle ? `${shotTitle.position + 1}. ${shotTitle.title}` : '当前镜头'}</strong>
+        <p>将本镜头的 {staleBindings.length} 个过期引用同步到最新设定，参考图按当前镜头重新匹配。</p>
+        <p>保留「必需」和「使用范围」，只影响本镜头后续生成，已有图片和视频保持不变。</p>
+        {error && <p role="alert" className="pc-visual-error">{error}</p>}
+        <div className="pc-binding-update-confirm-actions">
+          <Button variant="default" disabled={busy} onClick={() => setRefreshOpen(false)}>取消</Button>
+          <Button loading={busy} disabled={!staleBindings.length} onClick={() => void refreshAll()}>确认更新</Button>
+        </div>
+      </div>
+    </Modal>
   </Surface>
 }

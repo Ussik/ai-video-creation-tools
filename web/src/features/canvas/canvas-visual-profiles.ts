@@ -141,7 +141,7 @@ export function missingVisualReferences(graph: CanvasGraph, nodeId: string, deta
   return [...missing.values()]
 }
 
-export function syncVisualProfileNode(node: CanvasNode, profile: VisualProfile, detail: ProjectDetail): CanvasNode {
+export function syncVisualProfileNode(node: CanvasNode, profile: VisualProfile, detail: Pick<ProjectDetail, 'asset_tasks'>): CanvasNode {
   const task = detail.asset_tasks.find(item => item.id === profile.asset_task_id)
   const revisionChanged = node.settings.visual_profile_revision !== profile.revision
   // Board approval changes the revision, but must not replay an already applied job.

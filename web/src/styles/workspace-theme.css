@@ -1513,6 +1513,15 @@ body,
 .project-page { padding: 16px 48px 64px; max-width: 1600px; width: 100%; margin-inline: auto; }
 .project-page-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 24px; margin-bottom: 34px; }
 .project-page-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.project-page-actions { display: flex; align-items: center; gap: 8px; }
+.project-batch-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 20px; padding: 14px 16px; margin-bottom: 24px; border: 1px solid var(--fc-border); border-radius: 10px; background: var(--fc-panel); }
+.project-batch-count { color: var(--fc-text-secondary); font-size: 13px; }
+.project-batch-count small { color: var(--fc-text-muted); }
+.project-batch-actions { display: flex; gap: 8px; margin-left: auto; }
+.project-card-select { position: absolute; top: 12px; left: 12px; padding: 5px; border-radius: 7px; background: var(--fc-panel); box-shadow: 0 1px 6px #0002; }
+.project-card-selected .project-card-main .project-cover { border-color: var(--mantine-primary-color-filled); box-shadow: 0 0 0 2px var(--mantine-primary-color-filled); }
+.project-delete-list { max-height: 200px; overflow-y: auto; padding-left: 20px; margin: 12px 0 0; color: var(--fc-text-secondary); font-size: 13px; overflow-wrap: anywhere; }
+.project-delete-list li + li { margin-top: 6px; }
 .mobile-nav-panel, .mobile-nav-header { background: var(--fc-panel); color: var(--fc-text); }
 .mobile-nav-body { padding: 16px; }
 .mobile-nav-panel .main-nav span { display: inline; }
@@ -1555,6 +1564,9 @@ body,
 .speech-performance .mantine-Accordion-content { display: grid; gap: 14px; }
 @media (max-width: 1000px) {
   .project-page { padding: 16px 28px 32px; }
+  .project-page-head { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .project-page-tools { width: 100%; }
+  .project-page-tools .mantine-TextInput-root { flex: 1; }
   .project-page-tools .mantine-TextInput-root { width: 200px; }
 }
 @media (max-width: 700px) {
@@ -1563,6 +1575,7 @@ body,
   .project-page-head { grid-template-columns: minmax(0, 1fr); gap: 18px; margin-bottom: 24px; }
   .project-page-title { width: 100%; }
   .project-page-tools { width: 100%; }
+  .project-batch-actions { width: 100%; justify-content: flex-end; }
   .project-page-tools .mantine-TextInput-root { flex: 1; min-width: 0; width: auto; }
   .project-gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px 14px; }
   .project-card-meta strong { font-size: 12px; }

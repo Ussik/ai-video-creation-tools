@@ -289,7 +289,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
                 {useTarget && <NumberInput label="本次目标时长" suffix=" 秒" min={minimum} max={planningScenes.length * 30} value={target} disabled={locked} onChange={value => { setTarget(value); resetDraft() }} />}
                 {invalidTarget && <p className="storyboard-planner-error">本次总时长应在 {minimum} 至 {planningScenes.length * 30} 秒之间。</p>}
                 <p className="storyboard-planner-note">默认保留剧本场次时长；调整后会在确认时同步场次时长。</p></>}
-              {selected.some(scene => scene.shot_count) && <p className="storyboard-planner-note">重新规划会保留已有镜头及素材关联，调整内容后请核对素材是否仍适用。</p>}
+              {selected.some(scene => scene.shot_count) && <p className="storyboard-planner-note">重新规划会同步本次镜头与参考设定，保留已有镜头及素材关联。设定变化后需重新制作对应参考图；已有镜头素材不会自动重新生成。</p>}
             </div></WorkspaceDisclosure>
           </> : focusedScene && <>
             <div className="storyboard-planner-reference-preparation">
@@ -333,7 +333,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
           {hasPreview && <Popover position="top-start" offset={6} width="min(360px, calc(100vw - 32px))" withinPortal zIndex={350} returnFocus>
             <Popover.Target><ActionIcon className="storyboard-planner-info-button" variant="subtle" size={20} aria-label="查看参考设定说明" title="查看参考设定说明"><Info size={14} /></ActionIcon></Popover.Target>
             <Popover.Dropdown className="storyboard-planner-info-popover" role="dialog" aria-label="参考设定说明">
-              <p>确认时会整理所需人物、场景与关键道具设定，并和分镜一起加入画布。先生成并确认必需信息图，再生成依赖它们的分镜；已有设定与确认图会复用。</p>
+              <p>确认时会整理所需人物、场景与关键道具设定，并和分镜一起加入画布。先生成并确认必需信息图，再生成依赖它们的分镜；未变化的设定与确认图会复用，设定已变更时会同步本次镜头引用，并需重新制作对应参考图。</p>
             </Popover.Dropdown>
           </Popover>}
         </small>

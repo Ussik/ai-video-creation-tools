@@ -214,10 +214,13 @@ test('legacy unnumbered screenplay remains readable and searchable alongside num
   const legacy = { ...detail, script: { ...detail.script, artifacts: [...detail.script.artifacts!, { id: 'legacy-script', project_id: detail.id, artifact_type: 'episode_script' as const, title: '旧版完整正文', content: '旧稿独有的桥段。', position: 8, status: 'ready' as const }] } }
   const view = await mount('episode_script', legacy)
   try {
-    assert.equal(view.container.querySelector('h1')?.textContent, '旧版完整正文')
+    assert.equal(view.container.querySelector('h1')?.textContent, '分集剧本')
+    assert.equal(view.container.querySelector('.script-long-section-heading h2')?.textContent, '旧版完整正文')
     assert.match(view.container.querySelector('[data-script-section="episode_script"]')!.textContent!, /旧稿独有/)
     await act(() => button(view.container, '第2集').click())
     assert.ok(view.container.querySelector('[data-script-section="episode-2"]'))
+    assert.equal(view.container.querySelector('h1')?.textContent, '分集剧本')
+    assert.equal(view.container.querySelector('.script-long-section-heading h2')?.textContent, '第2集')
     await act(() => button(view.container, '全文搜索').click())
     await fill(view.container, '旧稿独有')
     assert.ok(view.container.querySelector('[data-script-section="episode_script"] [data-script-search-active]'))

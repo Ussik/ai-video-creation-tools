@@ -9,6 +9,7 @@ import sharp from 'sharp'
 import { imagePreferencePrompt } from '../../web/src/features/canvas/canvas-model-parameters.js'
 import { rightApiImageSettings } from '../src/infrastructure/providers/rightapi-image-settings.js'
 import { textRequestTimeoutMs } from '@video-studio/shared/script/script-stream-policy'
+import { TextOutputLimitError, TextProviderError } from '../src/infrastructure/providers/text-errors.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'video-studio-providers-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
@@ -20,6 +21,35 @@ after(async () => { await rm(testData, { recursive: true, force: true }) })
 const imageBytes = await sharp({
   create: { width: 16, height: 16, channels: 3, background: '#dc6250' },
 }).png().toBuffer()
+
+test('nonstream text generation rejects output limits with returned partial text before saving a result', async t => {
+  for (const protocol of ['responses', 'chat_completions'] as const) await t.test(protocol, async t => {
+    let calls = 0
+    const payload = protocol === 'responses'
+      ? { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, output: [{ type: 'message', content: [{ type: 'output_text', text: '完整保留的半段正文' }] }] }
+      : { choices: [{ message: { content: '完整保留的半段正文' }, finish_reason: 'length' }] }
+    t.mock.method(globalThis, 'fetch', async () => { calls++; return Response.json(payload) })
+    const result = generate({ id: 'limited-text', remote_id: 'fixture', modality: 'text', protocol, settings: {
+      request_path: 'generate', text_path: protocol === 'responses' ? 'output_text' : 'choices.0.message.content', request_template: { prompt: '{{prompt}}' },
+    } }, { adapter: 'http', base_url: 'https://fixture.invalid' }, { prompt: 'private source' }, [], 'limited-text', () => {})
+    await assert.rejects(result, issue => {
+      assert.ok(issue instanceof TextOutputLimitError); assert.equal(issue.partialText, '完整保留的半段正文')
+      assert.equal(issue.reason, protocol === 'responses' ? 'max_output_tokens' : 'length')
+      assert.equal(issue.retryable, false); assert.ok(!issue.message.includes('private source')); return true
+    })
+    assert.equal(calls, 1)
+  })
+})
+
+test('nonstream text generation keeps content filtering distinct from output-limit continuation', async t => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ status: 'incomplete', output_text: 'partial', incomplete_details: { reason: 'content_filter' } }))
+  await assert.rejects(generate({ id: 'filtered-text', remote_id: 'fixture', modality: 'text', protocol: 'responses', settings: {
+    request_path: 'responses', request_template: { input: '{{prompt}}' }, text_path: 'output_text',
+  } }, { adapter: 'http', base_url: 'https://fixture.invalid' }, { prompt: 'source' }, [], 'filtered-text', () => {}), issue => {
+    assert.ok(issue instanceof TextProviderError); assert.ok(!(issue instanceof TextOutputLimitError)); assert.equal(issue.retryable, false)
+    assert.equal(issue.upstreamCode, 'content_filter'); return true
+  })
+})
 
 test('empty upstream text errors expose model, endpoint, duration and request ID without retrying', async t => {
   for (const mode of ['generate', 'stream'] as const) await t.test(mode, async t => {
@@ -289,7 +319,7 @@ test('text timeouts cover both waiting for a response and reading its body witho
     const failure = assert.rejects(generate({ id: 'timeout-text', remote_id: 'timeout-text', modality: 'text', settings: {
       request_path: '/text', text_path: 'output_text',
     } }, { adapter: 'http', base_url: 'https://example.invalid' }, { prompt: '整理视觉设定' }, [], 'timeout-text', () => {}),
-    /文本模型请求超时（最长等待 20 分钟）/)
+    /文本模型请求超时（最长等待 30 分钟）/)
     await waiting
     t.mock.timers.tick(10 * 60_000)
     assert.equal(requestSignal.aborted, false)

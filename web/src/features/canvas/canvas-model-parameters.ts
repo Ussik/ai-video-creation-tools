@@ -17,30 +17,61 @@ export function usesModelParameter(model: Model | undefined, field: string, mode
 }
 
 export function imageParameterOptions(model: Model | undefined, field: ImageParameter): string[] {
-  if (model?.modality !== 'image') return []
+  if (model && model.modality !== 'image') return []
   const key = field === 'quality' ? 'qualities' : field === 'clarity' ? 'clarities' : 'backgrounds'
   const configured = model?.settings[`image_${key}`] ?? model?.settings[key]
   const options = Array.isArray(configured)
     ? [...new Set(configured.filter((value): value is string => typeof value === 'string' && !!value.trim()))] : []
-  return options.length ? options : [...imageOptions[field]]
+  const choices = options.length ? options : [...imageOptions[field]]
+  if (field === 'clarity' && !usesModelParameter(model, 'clarity')
+    && (usesModelParameter(model, 'resolution') || usesModelParameter(model, 'size'))) {
+    const resolutions = model?.settings.resolutions
+    const levels = Array.isArray(resolutions) ? resolutions.filter((value): value is string => typeof value === 'string' && /^(1|2|4)k$/i.test(value)) : []
+    if (levels.length) {
+      const supported = choices.filter(value => levels.some(level => level.toUpperCase() === value.toUpperCase()))
+      return supported.length ? supported : levels.map(level => level.toUpperCase())
+    }
+  }
+  return choices
 }
 
 export function imageParameterValue(model: Model | undefined, field: ImageParameter, selected?: string | null): string {
   const options = imageParameterOptions(model, field)
   const configured = model?.settings[`default_${field}`]
   const preferred = field === 'quality' ? options.includes('standard') ? 'standard' : 'medium' : field === 'clarity' ? '2K' : 'auto'
-  return options.includes(selected || '') ? selected! : typeof configured === 'string' && options.includes(configured)
+  if (options.includes(selected || '')) return selected!
+  if (selected && field !== 'background') {
+    const supported = (field === 'quality' ? ['extreme', 'ultra', 'high', 'standard', 'medium', 'low'] : ['4K', '2K', '1K'])
+      .find(value => options.includes(value))
+    if (supported) return supported
+  }
+  return typeof configured === 'string' && options.includes(configured)
     ? configured : options.includes(preferred) ? preferred : options[0] || ''
 }
 
-/** Canvas defaults; provider values are resolved from its configured choices. */
+/** New canvas images prefer the highest supported quality; saved node values win at the call site. */
 export function imageGenerationDefaults(model?: Model) {
-  const ratios = Array.isArray(model?.settings.ratios) ? model.settings.ratios : imageRatios
-  const quality = imageParameterOptions(model, 'quality').includes('standard') ? 'standard' : 'medium'
+  const preferred = (field: ImageParameter, values: string[]) => {
+    const options = imageParameterOptions(model, field)
+    return imageParameterValue(model, field, values.find(value => options.includes(value)))
+  }
+  const resolutions = Array.isArray(model?.settings.resolutions)
+    ? model.settings.resolutions.filter((value): value is string => typeof value === 'string') : ['1K', '2K', '4K']
+  const defaultResolution = modelDefaultResolution(model, resolutions)
+  const fixedSizes = model?.settings.image_size_mode !== 'auto' && !usesModelParameter(model, 'ratio')
+    ? imageSizeChoices(resolutions) : []
+  const configuredRatios = Array.isArray(model?.settings.ratios)
+    ? model.settings.ratios.filter((value): value is string => typeof value === 'string' && !!value.trim()) : []
+  const ratios = configuredRatios.length ? configuredRatios : fixedSizes.length ? [...new Set(fixedSizes.map(size => size.ratio))] : imageRatios
+  const ratio = ratios.includes('16:9') ? '16:9' : ratios.find(value => value === resolutionRatio(defaultResolution)) || ratios[0] || '16:9'
+  const clarity = preferred('clarity', ['4K', '2K', '1K'])
+  const fixedSize = fixedSizes.filter(size => size.ratio === ratio)
+    .sort((a, b) => Number.parseInt(b.clarity) - Number.parseInt(a.clarity))[0]
   return {
-    ratio: ratios.includes('9:16') ? '9:16' : ratios.find((value): value is string => typeof value === 'string') || '9:16',
-    clarity: imageParameterValue(model, 'clarity', '2K'),
-    quality: imageParameterValue(model, 'quality', quality),
+    ratio,
+    resolution: model?.settings.image_size_mode === 'auto' ? 'auto' : fixedSize?.resolution || defaultResolution || null,
+    clarity: fixedSize?.clarity || clarity,
+    quality: preferred('quality', ['extreme', 'ultra', 'high', 'standard', 'medium', 'low']),
     background: imageParameterValue(model, 'background', 'auto'),
     candidate_count: 1,
   }
@@ -61,12 +92,18 @@ export function imageSizeChoices(resolutions: string[]): Array<{ resolution: str
     const dimensions = /^(\d{1,7})x(\d{1,7})$/.exec(resolution)
     const ratio = dimensions ? resolutionRatio(resolution) : null
     if (!dimensions || !ratio) return []
-    // Group equivalent pixel areas together so landscape and portrait sizes
-    // share a clarity level; the provider still receives the exact dimensions.
-    const scale = Math.sqrt(Number(dimensions[1]) * Number(dimensions[2])) / 1024
+    // Clarity follows the longer edge, so a 3840x2160 image remains 4K in
+    // either orientation; the provider still receives the exact dimensions.
+    const scale = Math.max(Number(dimensions[1]), Number(dimensions[2])) / 1024
     const level = [1, 2, 4].reduce((closest, candidate) => Math.abs(candidate - scale) < Math.abs(closest - scale) ? candidate : closest)
     return [{ resolution, ratio, clarity: `${level}K` }]
   })
+}
+
+/** Older nodes may have saved their clarity only as a resolution value. */
+export function imageResolutionClarity(resolution?: string | null): string | undefined {
+  if (!resolution) return undefined
+  return /^(1|2|4)k$/i.test(resolution) ? resolution.toUpperCase() : imageSizeChoices([resolution])[0]?.clarity
 }
 
 export function selectImageSize(resolutions: string[], currentResolution: string, selection: { ratio?: string; clarity?: string }) {
@@ -144,6 +181,14 @@ export function modelDefaultResolution(model: Model | undefined, resolutions: st
   if (model?.modality === 'video') {
     const defaultVideoResolution = resolutions.find(value => value.toLowerCase() === '480p')
     if (defaultVideoResolution) return defaultVideoResolution
+  }
+  if (!model || model.modality === 'image') {
+    const fourK = resolutions.find(value => value.toUpperCase() === '4K')
+    if (fourK) return fourK
+    const fourKSizes = imageSizeChoices(resolutions).filter(size => size.clarity === '4K')
+    if (fourKSizes.length) return (fourKSizes.find(size => size.ratio === '16:9') || fourKSizes[0]).resolution
+    const nextClarity = ['2K', '1K'].flatMap(clarity => resolutions.filter(value => value.toUpperCase() === clarity))[0]
+    if (nextClarity) return nextClarity
   }
   const configured = model?.settings.default_resolution
   return typeof configured === 'string' && resolutions.includes(configured) ? configured : resolutions[0] || ''

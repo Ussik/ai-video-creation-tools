@@ -1,5 +1,7 @@
 import { z } from 'zod'
 import { parseStructuredOutput } from './structured-output.js'
+import { runModelStep, modelStepSignal } from './model-execution.js'
+import { retryReadOnlyGeneration } from './read-only-retry.js'
 
 export type OutputContract = { name: string; schema: Record<string, unknown>; wrapped?: boolean }
 export type StructuredGenerator = (prompt: string, contract?: OutputContract) => Promise<string>
@@ -100,19 +102,24 @@ export function applyOutputContract(body: unknown, protocol: string | undefined,
   return protocol === 'responses' ? { ...current, text: { ...(current.text && typeof current.text === 'object' ? current.text as JsonSchema : {}), format } } : { ...current, response_format: format }
 }
 
-/** Fixed read-only model tasks get one bounded format correction. Network
- * failures are propagated immediately and never repeat program side effects. */
+/** Fixed read-only model tasks get one bounded format correction and at most
+ * one transport retry, sharing a deadline and three-attempt budget. */
 export async function generateStructuredOutput<T>(name: string, schema: z.ZodType<T>, generate: StructuredGenerator, prompt: string,
-  options: { signal?: AbortSignal; validate?: (value: T) => void; onAttempt?: (attempt: number, diagnostics?: string) => void } = {}): Promise<T> {
+  options: { signal?: AbortSignal; validate?: (value: T) => void; onAttempt?: (attempt: number, diagnostics?: string) => void; onRetry?: (attempt: number, delayMs: number) => void; budgetMs?: number } = {}): Promise<T> {
+  const request = name.startsWith('script_') || name === 'workflow_draft' ? retryReadOnlyGeneration(generate, { signal: options.signal, onRetry: options.onRetry }) : generate
+  return runModelStep(name, options.signal, () => structuredOutput(name, schema, request, prompt, options), options.budgetMs)
+}
+async function structuredOutput<T>(name: string, schema: z.ZodType<T>, generate: StructuredGenerator, prompt: string,
+  options: { signal?: AbortSignal; validate?: (value: T) => void; onAttempt?: (attempt: number, diagnostics?: string) => void }): Promise<T> {
   const original = z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }) as JsonSchema
   const contract = outputContract(name, schema)
   const instruction = `\n【本次结构化返回契约】\n仅返回一个 JSON 对象，遵循此 Schema；此契约优先于资料中的格式说明。${contract.wrapped ? '结果必须放在 result 字段中。' : ''}\n${JSON.stringify(contract.schema)}`
   let correction = '', raw = '', diagnostics = ''
   for (let attempt = 1; attempt <= 2; attempt++) {
-    options.signal?.throwIfAborted()
+    modelStepSignal(options.signal)?.throwIfAborted()
     options.onAttempt?.(attempt, correction ? diagnostics : undefined)
     raw = await generate(instruction + correction + '\n【原始任务与资料】\n' + prompt, contract)
-    options.signal?.throwIfAborted()
+    modelStepSignal(options.signal)?.throwIfAborted()
     let issues: string[] = []
     const restored = z.preprocess(value => {
       const unwrapped = contract.wrapped && value && typeof value === 'object' && 'result' in value ? (value as JsonSchema).result : value

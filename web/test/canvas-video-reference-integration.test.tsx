@@ -1,5 +1,6 @@
 import { chooseCombobox } from './component-controls'
 import { videoReferenceUsageLabels, type VideoReferenceUsage } from '@video-studio/shared/media/video-reference-usage'
+import { withProjectStyle } from '@video-studio/shared/visuals/visual-style'
 import assert from 'node:assert/strict'
 import { register } from 'node:module'
 import { after, test, type TestContext } from 'node:test'
@@ -170,7 +171,7 @@ async function mount(projectDetail = detail, portals = false, overrides: Partial
     await act(() => found.click()); await settle()
   }
   const prompt = () => {
-    const found = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="创作提示词"]')
+    const found = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="创作提示词"], textarea[aria-label="信息图提示词"]')
     assert.ok(found, 'actual canvas composer'); return found
   }
   const images = () => [...container.querySelectorAll('.pc-video-reference-number')].map(node => node.textContent)
@@ -573,6 +574,111 @@ const imageModel: Model = { ...videoModel, id: 'image-model', name: '图片模�
     request_template: { prompt: '{{prompt}}', images: '{{images}}', ratio: '{{ratio}}', resolution: '{{resolution}}',
       clarity: '{{clarity}}', quality: '{{quality}}', background: '{{background}}' } } }
 const alternateImageModel = { ...imageModel, id: 'alternate-image-model', name: '备用图片模型' }
+
+for (const model of [imageModel, videoModel]) test(`${model.modality} shot reference count matches the drawer while keeping usage, pending and stale bindings`, async t => {
+  const usages = ['both', 'image', 'image', 'image', 'image', 'video', 'video', 'none'] as const
+  const profiles = usages.map((_, index) => index === 0 ? hero : index === 1 ? station
+    : { ...hero, id: `extra-${index}`, name: `其他设定${index}`, board_asset_id: null })
+  const bindings = profiles.map((profile, index) => ({ ...bind(profile, false), usage: usages[index] }))
+  const projectDetail = { ...detail, visual_profiles: [{ ...hero, revision: hero.revision + 1 }, ...profiles.slice(1)], shot_visual_bindings: bindings }
+  const graph = initialGraph('reference')
+  const target = graph.nodes.find(node => node.id === 'video-node')!
+  target.model_id = model.id
+  target.settings = { ...target.settings, modality: model.modality, mode: model.modality === 'image' ? 'text' : 'reference' }
+  const api = mockApi(t, graph, projectDetail)
+  const view = await mount(projectDetail, true, { models: [model] })
+  const originalBindings = JSON.stringify(projectDetail.shot_visual_bindings)
+  try {
+    const trigger = document.querySelector<HTMLButtonElement>('.pc-visual-context-button')!
+    assert.match(trigger.textContent!, /镜头引用 · 8/)
+    assert.match(view.container.querySelector('.pc-visual-context')!.textContent!, model.modality === 'image' ? /当前图片使用 5 份/ : /当前视频使用 3 份/)
+    const writes = api.saved.length
+    await act(() => trigger.click()); await settle()
+    const drawer = document.querySelector('#pc-composer-bindings')!
+    const selected = [...drawer.querySelectorAll('[role="tab"]')].find(tab => tab.textContent?.startsWith('已引用'))!
+    assert.match(selected.textContent!, /已引用\s*8/)
+    const checks = [...drawer.querySelectorAll<HTMLInputElement>('.pc-binding-row-identity input[type="checkbox"]')]
+    assert.equal(checks.length, 8)
+    assert.ok(checks.every(checkbox => checkbox.checked), 'all bound profiles stay selected, including inactive usages')
+    assert.match(drawer.textContent!, /引用待更新/)
+    assert.match(drawer.textContent!, /参考图待确认/)
+    assert.equal(JSON.stringify(projectDetail.shot_visual_bindings), originalBindings)
+    assert.equal(api.saved.length, writes, 'viewing counts must not rewrite the canvas')
+    assert.equal(api.previews.length, 0, 'counting must not prepare a generation request')
+  } finally { await view.destroy() }
+})
+
+for (const model of [imageModel, videoModel]) test(`${model.modality} prompt deletions remain literal through selection, preview and saved reload`, async t => {
+  const style: ProjectDetail['project_visual_style'] = { version: 'anime', label: '日漫', source: 'settings', details: {} }
+  const projectDetail: ProjectDetail = { ...detail, project_visual_style: style }
+  const graph = initialGraph('reference')
+  const target = graph.nodes.find(node => node.id === 'video-node')!
+  target.model_id = model.id; target.settings.modality = model.modality
+  const api = mockApi(t, graph, projectDetail)
+  let view = await mount(projectDetail, false, { models: [model] })
+  try {
+    const original = view.prompt().value
+    assert.match(original, /【项目画风约束结束】$/)
+    let edited = original
+    for (let index = 0; index < 4; index++) {
+      edited = edited.slice(0, -1)
+      await view.editPrompt(edited)
+      assert.equal(view.prompt().value, edited, 'backspace must not append another managed block')
+    }
+    if (model.modality === 'video') {
+      edited = original.replace('【视频参考图用途结束】', '【视频参考图用途结束')
+      await view.editPrompt(edited)
+      assert.equal(view.prompt().value, edited, 'partially deleting the mapping marker must not duplicate references')
+    }
+    await view.editPrompt('只保留手工动作：先停顿，再缓慢回头。\n')
+    await act(() => view.container.querySelector<HTMLElement>('[data-id="storyboard-node"]')!.click()); await settle()
+    await act(() => view.container.querySelector<HTMLElement>('[data-id="video-node"]')!.click()); await settle()
+    assert.equal(view.prompt().value, '只保留手工动作：先停顿，再缓慢回头。\n')
+    await view.preview()
+    const request = api.previews.at(-1)!
+    assert.match(request.prompt, /只保留手工动作/)
+    assert.equal(request.prompt.split('【项目画风约束】').length - 1, 1, 'generation still carries the project style')
+    if (model.modality === 'video') assert.equal(request.prompt.split('【视频参考图用途】').length - 1, 1)
+    assert.equal(view.prompt().value, '只保留手工动作：先停顿，再缓慢回头。\n', 'preview must not rewrite the editor')
+    await view.editPrompt('')
+    assert.equal(view.prompt().value, '')
+    assert.equal(view.button('开始生成').disabled, true)
+    await act(() => new Promise(resolve => setTimeout(resolve, 900))); await settle()
+    const saved = api.saved.at(-1)!
+    assert.equal(saved.nodes.find(node => node.id === 'video-node')!.text, '')
+    Object.assign(graph, saved)
+    await view.destroy(); view = await mount(projectDetail, false, { models: [model] })
+    assert.equal(view.prompt().value, '', 'saved empty draft must not restore defaults')
+    assert.equal(view.button('开始生成').disabled, true)
+  } finally { await view.destroy() }
+})
+
+test('information-board prompt can be cleared and its empty override survives saved reload', async t => {
+  const style: ProjectDetail['project_visual_style'] = { version: 'anime', label: '日漫', source: 'settings', details: {} }
+  const projectDetail: ProjectDetail = { ...detail, project_visual_style: style,
+    visual_profiles: [{ ...hero, board_prompt: withProjectStyle('人物信息图', style) }, station] }
+  const graph = initialGraph('reference')
+  const target = graph.nodes.find(node => node.id === 'video-node')!
+  target.model_id = imageModel.id; target.shot_id = null
+  target.settings = { modality: 'image', visual_profile_id: hero.id, visual_profile_revision: hero.revision }
+  const api = mockApi(t, graph, projectDetail)
+  let view = await mount(projectDetail, false, { models: [imageModel] })
+  try {
+    const partial = view.prompt().value.slice(0, -1)
+    await view.editPrompt(partial)
+    assert.equal(view.prompt().value, partial)
+    await view.editPrompt('')
+    assert.equal(view.prompt().value, '')
+    assert.equal(view.button('开始生成').disabled, true)
+    await act(() => new Promise(resolve => setTimeout(resolve, 900))); await settle()
+    const saved = api.saved.at(-1)!
+    assert.equal(saved.nodes.find(node => node.id === 'video-node')!.settings.profile_prompt_override, '')
+    Object.assign(graph, saved)
+    await view.destroy(); view = await mount(projectDetail, false, { models: [imageModel] })
+    assert.equal(view.prompt().value, '')
+  } finally { await view.destroy() }
+})
+
 const withoutBoard = (profile: VisualProfile): VisualProfile => ({ ...profile, board_asset_id: null })
 const missingHero = withoutBoard(hero), missingStation = withoutBoard(station)
 type BoardRequest = { profileId: string; body: Record<string, unknown> }
@@ -646,7 +752,9 @@ test('one click fills only missing references, preserves each board configuratio
     assert.equal(heroRequest.reference_signature, 'signature-hero'); assert.equal(heroRequest.project_style_version, 'test-style')
     assert.ok(!('shot_id' in heroRequest) && !('mode' in heroRequest), 'strict board API receives only supported fields')
     assert.equal(stationRequest.model_id, imageModel.id); assert.equal(stationRequest.candidate_count, 1)
-    assert.equal(stationRequest.ratio, '9:16'); assert.equal(stationRequest.clarity, '2K')
+    assert.equal(stationRequest.ratio, '16:9'); assert.equal(stationRequest.clarity, '4K')
+    assert.equal(stationRequest.resolution, '4K'); assert.equal(stationRequest.quality, 'extreme')
+    assert.equal(stationRequest.background, 'auto')
     const saved = api.saved.at(-1)!
     assert.deepEqual(saved.nodes.find(node => node.id === 'video-node'), originalTarget)
     assert.equal(saved.nodes.find(node => node.id === 'hero-node')!.job_id, 'job-hero-0')
@@ -793,7 +901,7 @@ test('double-click opens original images and displayed profile candidates withou
       await act(() => card.click()); await settle()
       const writes = api.saved.length
       await act(() => card.querySelector('img')!.dispatchEvent(new dom.window.MouseEvent('dblclick', { bubbles: true }))); await settle()
-      const image = document.querySelector<HTMLImageElement>('.pc-media-preview-stage > img')!
+      const image = document.querySelector<HTMLImageElement>('.pc-image-preview-viewport > img')!
       assert.ok(image)
       assert.equal(image.getAttribute('src'), `/api/assets/${assetId}/file`, 'preview uses the original displayed candidate')
       assert.equal(api.saved.length, writes)

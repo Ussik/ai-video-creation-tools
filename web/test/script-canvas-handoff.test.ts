@@ -118,6 +118,38 @@ test('an explicitly saved replan updates image and video prompts while preservin
   assert.equal(previous.nodes[0].prompt, 'old image'); assert.equal(previous.nodes[1].prompt, 'old video')
 })
 
+test('setting revisions refresh reused profile nodes and discard old final prompt caches after replan', () => {
+  const profile = { ...node('profile-node', { visual_profile_id: 'profile', visual_profile_revision: 1,
+    profile_prompt_override: '林晚21岁', visual_completed_job_id: 'old-job' }), asset_id: 'old-board', job_id: 'old-job', x: 150 }
+  const cache = { prompt_override: true, prompt_is_final: true, prompt_base: '林晚21岁', prompt_template: '林晚21岁' }
+  const image = { ...node('legacy-image', cache), shot_id: 'shot', asset_id: 'old-frame', prompt: '林晚21岁', text: '林晚21岁', x: 800 }
+  const video = { ...node('video', { ...cache, modality: 'video' }), shot_id: 'shot', asset_id: 'old-video', prompt: '林晚21岁', x: 1400 }
+  const other = { ...node('other', cache), shot_id: 'other-shot', prompt: '历史镜头' }
+  const input = structuredClone(result)
+  input.updated_shot_ids = ['shot']; input.visual_profiles[0].revision = 2
+  input.visual_profiles[0].definition = '林晚32岁'; input.visual_profiles[0].board_prompt = '林晚32岁正侧背'
+  input.shot_visual_bindings[0].revision = 2; input.shot_visual_bindings[0].definition = '林晚32岁'
+  input.shots[0].image_prompt = '林晚32岁开镜'; input.shots[0].video_prompt = '林晚32岁向前走'
+  const previous = graph([profile, image, video, other]), before = structuredClone(previous)
+  const imported = addScriptCanvasNodes(previous, input, '9:16', imageModel, models)
+  assert.deepEqual(previous, before)
+  assert.equal(imported.addedProfiles, 0); assert.equal(imported.addedShots, 0)
+  const updated = imported.graph.nodes[0]
+  assert.equal(updated.id, profile.id); assert.equal(updated.x, profile.x)
+  assert.equal(updated.settings.visual_profile_revision, 2)
+  assert.equal(updated.settings.profile_prompt_override, undefined)
+  assert.equal(updated.settings.visual_completed_job_id, undefined)
+  assert.equal(updated.asset_id, null); assert.equal(updated.job_id, null)
+  for (const [index, source] of [image, video].entries()) {
+    const target = imported.graph.nodes[index + 1]
+    assert.equal(target.id, source.id); assert.equal(target.x, source.x); assert.equal(target.asset_id, source.asset_id)
+    assert.equal(target.prompt, index ? '林晚32岁向前走' : '林晚32岁开镜')
+    for (const key of Object.keys(cache)) assert.equal(target.settings[key as keyof typeof cache], undefined)
+  }
+  assert.equal(imported.graph.nodes[3], other)
+  assert.equal(scriptCanvasInitialFocus(imported, input, detail(input), models).missingReferenceCount, 1)
+})
+
 test('adds related nodes with ratio/defaults and pending-board lines, preserving local edits and geometry', () => {
   const existing = { ...node('old'), width: 900, height: 800, prompt: '未保存提示词' }
   const previous = graph([existing]), before = structuredClone(previous)
@@ -127,7 +159,11 @@ test('adds related nodes with ratio/defaults and pending-board lines, preserving
   assert.equal(added.addedProfiles, 1); assert.equal(added.addedShots, 1)
   for (let i = 1; i < added.graph.nodes.length; i++) {
     const fresh = added.graph.nodes[i]
-    assert.equal(fresh.settings.ratio, '9:16'); assert.equal(fresh.settings.modality, 'image')
+    assert.equal(fresh.settings.ratio, fresh.settings.visual_profile_id ? '16:9' : '9:16')
+    assert.equal(fresh.settings.modality, 'image')
+    assert.equal(fresh.settings.resolution, '4K'); assert.equal(fresh.settings.clarity, '4K')
+    assert.equal(fresh.settings.quality, 'extreme'); assert.equal(fresh.settings.background, 'auto')
+    assert.equal(fresh.settings.candidate_count, 1)
     for (const other of added.graph.nodes.slice(0, i)) assert.ok(
       fresh.x >= other.x + other.width + canvasNodeGap || other.x >= fresh.x + fresh.width + canvasNodeGap
       || fresh.y >= other.y + other.height + canvasNodeGap || other.y >= fresh.y + fresh.height + canvasNodeGap)

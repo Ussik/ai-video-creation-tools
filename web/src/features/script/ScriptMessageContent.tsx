@@ -39,12 +39,12 @@ function remarkCellBreaks() {
   }
 }
 
-/** Read-only model replies use GFM; stored/editable script documents keep their existing codec. */
-export default function ScriptMessageContent({ text }: { text: string }) {
+/** Read-only replies and Markdown manuscripts use GFM; editable documents keep their existing codec. */
+export default function ScriptMessageContent({ text, tableLabel = '回复表格' }: { text: string; tableLabel?: string }) {
   const content = useMemo(() => normalizeMessageHeadings(text), [text])
   return <div className="script-message-content pc-rich-text-preview pc-rich-text-content">
     <Markdown remarkPlugins={[remarkGfm, remarkCellBreaks]} skipHtml components={{
-      table: ({ children }) => <div className="script-message-table-scroll" role="region" aria-label="回复表格" tabIndex={0}><Table>{children}</Table></div>,
+      table: ({ children }) => <div className="script-message-table-scroll" role="region" aria-label={tableLabel} tabIndex={0}><Table>{children}</Table></div>,
       th: ({ children, style }) => <th scope="col" style={style}>{children}</th>,
       a: ({ children, href }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>,
       img: ({ alt }) => <span>{alt || ''}</span>,

@@ -5,11 +5,14 @@ import type { DraftImpact } from '@video-studio/shared/script/script-review-type
 import type { ResourceChange } from '@video-studio/shared/script/script-resource-types'
 import type { RevisionTask } from '@video-studio/shared/script/script-revision-types'
 import type { ScriptExecution } from '@video-studio/shared/script/script-activity-types'
+import type { ScriptSourceUpdate } from '@video-studio/shared/script/script-source-document'
 import { scriptStageForArtifact } from '@video-studio/shared/script/script-stage-content'
 import { scriptReviewGuidance } from '@video-studio/shared/script/script-quality'
 
 export type DocumentAction = { operation: 'review' | 'revise'; document_ids: string[] }
 export type ScriptToolDraft = {
+  source_update?: ScriptSourceUpdate;
+  source_version?: string | null;
   id: string; version: string; kind: 'create' | 'patch' | 'resource'; summary: string; status: 'pending' | 'saved' | 'discarded';
   workflow?: WorkflowDraft;
   impacts?: DraftImpact[];
@@ -57,15 +60,17 @@ export function documentChangePreview(before: string, after: string) {
   return { changed: before !== after, before: oldLines.slice(start, oldLines.length - tail).join('\n'), after: newLines.slice(start, newLines.length - tail).join('\n') }
 }
 
-export function editedToolDraft(draft: ScriptToolDraft, artifacts: WorkflowArtifact[], scenes: WorkflowScene[], resources = draft.resource_changes) {
+export function editedToolDraft(draft: ScriptToolDraft, artifacts: WorkflowArtifact[], scenes: WorkflowScene[], resources = draft.resource_changes, sourceUpdate = draft.source_update) {
   if (draft.kind === 'resource') return { changed: JSON.stringify(resources) !== JSON.stringify(draft.resource_changes), input: {
     version: draft.version, documents: [], resource_values: (resources || []).map((change, index) => ({ index, value: change.value })),
   } }
   const documents = draft.documents.map(doc => ({ id: doc.id, content: artifacts.find(item => artifactKey(item) === artifactKey(doc))?.content ?? doc.content }))
   const hasScenes = draft.workflow?.stage === 'episode' || Boolean(draft.scene_changes?.length)
+  const sourceChanged = !!draft.source_update && !!sourceUpdate && sourceUpdate.content !== draft.source_update.content
   const changed = documents.some((doc, index) => doc.content !== draft.documents[index].content)
     || hasScenes && JSON.stringify(scenes) !== JSON.stringify(toolDraftScenes(draft))
-  return { changed, input: { version: draft.version, documents, ...(hasScenes ? { scenes: scenes.map(({ episode_number: _episode, ...scene }) => scene) } : {}) } }
+    || sourceChanged
+  return { changed, input: { version: draft.version, documents, ...(sourceChanged ? { source_content: sourceUpdate!.content } : {}), ...(hasScenes ? { scenes: scenes.map(({ episode_number: _episode, ...scene }) => scene) } : {}) } }
 }
 
 export function documentTaskPrompt(title: string, operation: DocumentAction['operation']) {

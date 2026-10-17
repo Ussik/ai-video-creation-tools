@@ -1,0 +1,188 @@
+{
+  "steps": {
+    "review:content:0": {
+      "input_hash": "23c6b92e6bc6cd9e2a6d5cf4258d23168954ad69a8bb31bf0b2d43f7cbd58474",
+      "value": {
+        "facts": [
+          {
+            "source_key": "characters",
+            "quote": "林舟是记者。他追查失物。他追查失物。他追查失物。他追查失物。他追",
+            "meaning": "真实人物事实"
+          },
+          {
+            "source_key": "characters",
+            "quote": "他追查失物。他追查失物。他追查失物。他追查失物。他追查失物。他追",
+            "meaning": "真实人物事实"
+          },
+          {
+            "source_key": "characters",
+            "quote": "他追查失物。他追查失物。他追查失物。他追查失物。他追查失物。他追",
+            "meaning": "真实人物事实"
+          },
+          {
+            "source_key": "characters",
+            "quote": "他追查失物。他追查失物。他追查失物。他追查失物。他追查失物。他追",
+            "meaning": "真实人物事实"
+          },
+          {
+            "source_key": "characters",
+            "quote": "他追查失物。他追查失物。他追查失物。他追查失物。他追查失物。他追",
+            "meaning": "真实人物事实"
+          },
+          {
+            "source_key": "characters",
+            "quote": "他追查失物。他追查失物。他追查失物。他追查失物。他追查失物。他追",
+            "meaning": "真实人物事实"
+          },
+          {
+            "source_key": "characters",
+            "quote": "他追查失物。他追查失物。他追查失物。他追查失物。他追查失物。他追",
+            "meaning": "真实人物事实"
+          }
+        ],
+        "checked_artifacts": [
+          "characters"
+        ],
+        "findings": []
+      },
+      "duration_ms": 5
+    },
+    "review:content:1": {
+      "input_hash": "ce761a178648a2e8548999f47a809fd64d9b40003e4b4f253f83190f0f0b3bc5",
+      "value": {
+        "facts": [
+          {
+            "source_key": "characters",
+            "quote": "他追查失物。他追查失物。他追查失物。他追查失物。他追查失物。他追",
+            "meaning": "真实人物事实"
+          },
+          {
+            "source_key": "characters",
+            "quote": "他追查失物。他追查失物。他追查失物。他追查失物。他追查失物。他追",
+            "meaning": "真实人物事实"
+          },
+          {
+            "source_key": "characters",
+            "quote": "他追查失物。他追查失物。他追查失物。他追查失物。他追查失物。他追",
+            "meaning": "真实人物事实"
+          },
+          {
+            "source_key": "characters",
+            "quote": "他追查失物。最终归还钥匙。",
+            "meaning": "真实人物事实"
+          },
+          {
+            "source_key": "relationships",
+            "quote": "林舟和伙伴一起归还钥匙。",
+            "meaning": "真实人物事实"
+          }
+        ],
+        "checked_artifacts": [
+          "characters",
+          "relationships"
+        ],
+        "findings": []
+      },
+      "duration_ms": 1
+    },
+    "review:consistency:0": {
+      "input_hash": "e60558f7114d17bff3cabc33de676222233faf45805945d0839d69ef123b022c",
+      "value": {
+        "facts": [
+          {
+            "source_key": "characters",
+            "quote": "林舟是记者。他追查失物。他追查失物。他追查失物。他追查失物。他追",
+            "meaning": "真实人物事实"
+          },
+          {
+            "source_key": "characters",
+            "quote": "他追查失物。他追查失物。他追查失物。他追查失物。他追查失物。他追",
+            "meaning": "真实人物事实"
+          },
+          {
+            "source_key": "characters",
+            "quote": "他追查失物。最终归还钥匙。",
+            "meaning": "真实人物事实"
+          },
+          {
+            "source_key": "relationships",
+            "quote": "林舟和伙伴一起归还钥匙。",
+            "meaning": "真实人物事实"
+          }
+        ],
+        "checked_artifacts": [
+          "characters",
+          "relationships"
+        ],
+        "findings": []
+      },
+      "duration_ms": 0
+    },
+    "review:source:0:0": {
+      "input_hash": "47ae9bb52e3f4dc9ee8244628a0c3c9b0e8161fdad404a86801a74bf9b8df279",
+      "value": {
+        "facts": [
+          {
+            "source_key": "characters",
+            "quote": "林舟是记者。他追查失物。他追查失物。他追查失物。他追查失物。他追",
+            "meaning": "真实人物事实"
+          },
+          {
+            "source_key": "characters",
+            "quote": "他追查失物。他追查失物。他追查失物。他追查失物。他追查失物。他追",
+            "meaning": "真实人物事实"
+          },
+          {
+            "source_key": "characters",
+            "quote": "他追查失物。最终归还钥匙。",
+            "meaning": "真实人物事实"
+          },
+          {
+            "source_key": "relationships",
+            "quote": "林舟和伙伴一起归还钥匙。",
+            "meaning": "真实人物事实"
+          }
+        ],
+        "checked_artifacts": [
+          "characters",
+          "relationships"
+        ],
+        "findings": []
+      },
+      "duration_ms": 0
+    },
+    "review:source:1:0": {
+      "input_hash": "d3ba42e26254134cefa314515796d0d94180efe8d6d7ac36be3fec32ef431333",
+      "value": {
+        "facts": [
+          {
+            "source_key": "characters",
+            "quote": "林舟是记者。他追查失物。他追查失物。他追查失物。他追查失物。他追",
+            "meaning": "真实人物事实"
+          },
+          {
+            "source_key": "characters",
+            "quote": "他追查失物。他追查失物。他追查失物。他追查失物。他追查失物。他追",
+            "meaning": "真实人物事实"
+          },
+          {
+            "source_key": "characters",
+            "quote": "他追查失物。最终归还钥匙。",
+            "meaning": "真实人物事实"
+          },
+          {
+            "source_key": "relationships",
+            "quote": "林舟和伙伴一起归还钥匙。",
+            "meaning": "真实人物事实"
+          }
+        ],
+        "checked_artifacts": [
+          "characters",
+          "relationships"
+        ],
+        "findings": []
+      },
+      "duration_ms": 0
+    }
+  }
+}

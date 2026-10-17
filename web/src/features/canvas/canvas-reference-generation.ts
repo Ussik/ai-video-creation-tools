@@ -1,7 +1,7 @@
 import { api, json } from '../../shared/api/api'
 import type { AssetTask, Job, Model, ProjectDetail, VisualBoardPreview, VisualProfile } from '../../shared/api/api'
 import type { CanvasGraph, CanvasNode } from './ProjectCanvas'
-import { imageGenerationDefaults, imageParameterValue, imagePreferencePrompt, imageRatioError, imageRequestResolution, modelDefaultResolution } from './canvas-model-parameters'
+import { imageGenerationDefaults, imageParameterValue, imagePreferencePrompt, imageRatioError, imageRequestResolution, imageResolutionClarity, modelDefaultResolution } from './canvas-model-parameters'
 import { missingVisualReferences, visualBoardJobs, visualBoardReferences } from './canvas-visual-profiles'
 import { imageReferenceConfigError } from '@video-studio/shared/media/image-reference-config'
 import { withProjectStyle } from '@video-studio/shared/visuals/visual-style'
@@ -35,7 +35,7 @@ export async function prepareCanvasVisualBoard(node: CanvasNode, profile: Visual
   }))
   const defaults = imageGenerationDefaults(model)
   const ratio = node.settings.ratio || defaults.ratio
-  const clarity = imageParameterValue(model, 'clarity', node.settings.clarity || defaults.clarity)
+  const clarity = imageParameterValue(model, 'clarity', node.settings.clarity || imageResolutionClarity(node.settings.resolution) || defaults.clarity)
   const configured = model.settings.resolutions
   const resolutions = Array.isArray(configured) && configured.some(value => typeof value === 'string')
     ? configured.filter((value): value is string => typeof value === 'string') : ['1K', '2K', '4K']

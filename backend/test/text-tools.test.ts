@@ -31,6 +31,7 @@ test('Chat Completions assembles fragmented calls and relays private reasoning, 
   const session = textToolSession(model('chat_completions'), provider, '创作者请求', functions, () => 'secret', undefined, text => visibleText.push(text))
   const first = await session()
   assert.equal(first.text, '')
+  assert.ok(first.metrics.request_bytes > 0); assert.equal(first.metrics.http_status, 200)
   assert.deepEqual(visibleText, [])
   assert.deepEqual(first.calls, [{ id: 'call-1', name: 'read_documents', arguments: '{"document_ids":["doc-1"]}' }])
   const second = await session([{ id: 'call-1', output: '{"ok":true}' }])
@@ -80,6 +81,18 @@ test('incomplete, truncated, duplicate and missing-call responses never return e
     await assert.rejects(textToolSession(model(fixture.protocol), provider, 'request', functions, () => '')(), /提前结束|截断|无效|完整/)
     t.mock.restoreAll()
   }
+})
+
+test('Responses output-limit failures explain the upstream reason without exposing prompt contents', async t => {
+  const prompt = 'private original screenplay'
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ status: 'incomplete',
+    incomplete_details: { reason: 'max_output_tokens' }, output: [] }))
+  await assert.rejects(textToolSession(model('responses'), provider, prompt, functions, () => '')(), (error: unknown) => {
+    assert.ok(error instanceof Error)
+    assert.match(error.message, /已达到模型输出长度上限/)
+    assert.ok(!error.message.includes(prompt))
+    return true
+  })
 })
 
 test('abort and provider errors stop the tool session without falling back to simulated tools', async t => {

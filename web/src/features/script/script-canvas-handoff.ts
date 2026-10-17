@@ -1,6 +1,6 @@
 import type { Asset, Model, ProjectDetail, ScriptCanvasResult } from '../../shared/api/api'
 import type { CanvasGraph, CanvasNode } from '../canvas/ProjectCanvas'
-import { missingVisualReferences } from '../canvas/canvas-visual-profiles'
+import { missingVisualReferences, syncVisualProfileNode } from '../canvas/canvas-visual-profiles'
 import { imageGenerationDefaults } from '../canvas/canvas-model-parameters'
 import { shotImagePrompt, shotVideoPrompt } from '@video-studio/shared/storyboard/shot-prompts'
 import { placeNewCanvasNodes } from '../canvas/canvas-node-placement'
@@ -35,9 +35,11 @@ export function addScriptCanvasNodes(graph: CanvasGraph, result: ScriptCanvasRes
   for (const [index, node] of nodes.entries()) {
     if (node.type !== 'generation' || node.settings.visual_profile_id || !result.updated_shot_ids?.includes(node.shot_id || '')) continue
     const shot = result.shots.find(shot => shot.id === node.shot_id)
-    if (!shot || !['image', 'video'].includes(String(modality(node)))) continue
-    nodes[index] = { ...node, title: shot.title, prompt: modality(node) === 'video' ? shotVideoPrompt(shot) : shotImagePrompt(shot),
-      settings: { ...node.settings, duration: shot.duration } }
+    const nodeModality = modality(node) || (!node.model_id ? 'image' : undefined)
+    if (!shot || !['image', 'video'].includes(String(nodeModality))) continue
+    const { prompt_is_final, prompt_base, prompt_template, prompt_override, ...settings } = node.settings
+    nodes[index] = { ...node, title: shot.title, prompt: nodeModality === 'video' ? shotVideoPrompt(shot) : shotImagePrompt(shot),
+      settings: { ...settings, modality: nodeModality === 'video' ? 'video' : 'image', duration: shot.duration } }
   }
   const baseY = nodes.length ? Math.max(...nodes.map(node => node.y + node.height)) + 100 : 80
   function blank(x: number, y: number): CanvasNode {
@@ -51,8 +53,11 @@ export function addScriptCanvasNodes(graph: CanvasGraph, result: ScriptCanvasRes
     let node = nodes.find(item => item.settings.visual_profile_id === profile.id)
     if (!node) {
       node = { ...blank(80, baseY + index * 490), title: `${profile.name} · ${profile.variant}`, asset_id: profile.board_asset_id,
-        settings: { ...blankSettings(imageModel, ratio), visual_profile_id: profile.id, visual_profile_revision: profile.revision } }
+        settings: { modality: 'image', ...imageGenerationDefaults(imageModel), visual_profile_id: profile.id, visual_profile_revision: profile.revision } }
       nodes.push(node); addedProfiles++
+    } else if (node.settings.visual_profile_revision !== profile.revision) {
+      node = syncVisualProfileNode(node, profile, { asset_tasks: [] })
+      nodes[nodes.findIndex(item => item.id === node!.id)] = node
     }
     profileNodeIds.push(node.id)
   }

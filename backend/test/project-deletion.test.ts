@@ -124,6 +124,70 @@ test('deleting a linked project cascades every owned row and media without touch
   assert.equal((await app.inject({ method: 'DELETE', url: `/api/projects/${removed.id}` })).statusCode, 404)
 })
 
+test('batch deletion removes selected projects and their complete reference graphs, deduplicating IDs', async () => {
+  const expectedRows = databaseRows()
+  const first = await seedProject('batch-first'), second = await seedProject('batch-second')
+  const response = await app.inject({ method: 'POST', url: '/api/projects/batch-delete',
+    payload: { project_ids: [first.id, second.id, first.id] } })
+  assert.equal(response.statusCode, 200, response.body)
+  assert.deepEqual(response.json(), { ok: true, deleted_ids: [first.id, second.id] })
+  assert.deepEqual(databaseRows(), expectedRows, 'unselected projects and shared settings are preserved')
+  assert.deepEqual(db.pragma('foreign_key_check'), [])
+  for (const project of [first, second]) await assert.rejects(access(join(mediaDir, project.id)), { code: 'ENOENT' })
+})
+
+test('batch deletion rejects invalid or missing IDs before deleting any selected project', async () => {
+  const project = await seedProject('batch-invalid')
+  const expectedRows = databaseRows()
+  for (const payload of [{ project_ids: [] }, { project_ids: [' '] }, { project_ids: [123] },
+    { project_ids: [project.id], unexpected: true }, { project_ids: [project.id, 'missing-project'] }]) {
+    const response = await app.inject({ method: 'POST', url: '/api/projects/batch-delete', payload })
+    assert.equal(response.statusCode, payload.project_ids.some(id => id === 'missing-project') ? 404 : 422, response.body)
+    assert.deepEqual(databaseRows(), expectedRows)
+    assert.equal(await readFile(project.file, 'utf8'), project.id)
+  }
+  await app.inject({ method: 'DELETE', url: `/api/projects/${project.id}` })
+})
+
+test('batch deletion keeps the entire selection when any generation or director task is active', async () => {
+  const idle = await seedProject('batch-idle'), active = await seedProject('batch-active')
+  async function expectBlocked() {
+    const expectedRows = databaseRows()
+    const response = await app.inject({ method: 'POST', url: '/api/projects/batch-delete', payload: { project_ids: [idle.id, active.id] } })
+    assert.equal(response.statusCode, 422, response.body)
+    assert.match(response.json().detail, /batch-active.*进行中/)
+    assert.deepEqual(databaseRows(), expectedRows)
+    for (const project of [idle, active]) assert.equal(await readFile(project.file, 'utf8'), project.id)
+  }
+  for (const status of ['queued', 'running']) {
+    run('UPDATE jobs SET status=? WHERE id=?', status, active.jobId)
+    await expectBlocked()
+  }
+  run("UPDATE jobs SET status='succeeded' WHERE id=?", active.jobId)
+  run(`INSERT INTO script_director_tasks (id, project_id, conversation_id, user_message_id, message_id, request_hash, status, snapshot, created_at, updated_at)
+    VALUES ('batch-director', ?, ?, 'user', 'reply', 'hash', 'running', '{}', ?, ?)`, active.id, `${active.id}-conversation`, now(), now())
+  await expectBlocked()
+  const single = await app.inject({ method: 'DELETE', url: `/api/projects/${active.id}` })
+  assert.equal(single.statusCode, 422, single.body)
+  run("UPDATE script_director_tasks SET status='cancelled' WHERE id='batch-director'")
+  assert.equal((await app.inject({ method: 'POST', url: '/api/projects/batch-delete', payload: { project_ids: [idle.id, active.id] } })).statusCode, 200)
+})
+
+test('batch deletion rolls back every database change if a later project cannot be deleted', async () => {
+  const first = await seedProject('batch-rollback-first'), second = await seedProject('batch-rollback-second')
+  const expectedRows = databaseRows()
+  db.exec(`CREATE TRIGGER reject_batch_delete BEFORE DELETE ON projects
+    WHEN OLD.id='batch-rollback-second' BEGIN SELECT RAISE(ABORT, 'fixture delete failure'); END`)
+  try {
+    const response = await app.inject({ method: 'POST', url: '/api/projects/batch-delete', payload: { project_ids: [first.id, second.id] } })
+    assert.equal(response.statusCode, 500, response.body)
+    assert.deepEqual(databaseRows(), expectedRows)
+    for (const project of [first, second]) assert.equal(await readFile(project.file, 'utf8'), project.id)
+    assert.deepEqual(db.pragma('foreign_key_check'), [])
+  } finally { db.exec('DROP TRIGGER reject_batch_delete') }
+  assert.equal((await app.inject({ method: 'POST', url: '/api/projects/batch-delete', payload: { project_ids: [first.id, second.id] } })).statusCode, 200)
+})
+
 test('legacy RESTRICT bindings migrate without changing snapshots and project deletion succeeds after restart', async () => {
   const expectedRows = databaseRows()
   const project = await seedProject('legacy')

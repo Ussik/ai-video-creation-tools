@@ -9,15 +9,25 @@ export type { ScriptActivity } from '@video-studio/shared/script/script-activity
 // Provider protocol history, credentials and private reasoning never enter them.
 export const scriptActivitySchema = z.object({
   id: z.string().min(1).max(160),
+  task_id: z.string().max(160).optional(), step_id: z.string().max(160).optional(),
+  attempt: z.number().int().min(1).max(3).optional(), sequence: z.number().int().min(0).optional(),
   kind: z.enum(['skill', 'tool', 'model', 'context']),
   status: z.enum(['running', 'succeeded', 'failed', 'cancelled']),
   label: z.string().min(1).max(200), summary: z.string().max(3000),
   started_at: z.number().int().min(0), ended_at: z.number().int().min(0).optional(),
   duration_ms: z.number().int().min(0).optional(), round: z.number().int().min(1).max(20).optional(),
+  scope: z.enum(['task', 'step', 'notice']).optional(), parent_id: z.string().max(160).optional(), reused: z.boolean().optional(),
   name: z.string().max(200).optional(), skill_id: z.string().max(160).optional(), revision: z.string().max(160).optional(),
   files: z.array(z.string().max(500)).max(100).optional(),
   input: z.string().max(4000).optional(), output: z.string().max(4000).optional(),
   input_truncated: z.boolean().optional(), output_truncated: z.boolean().optional(),
+  request_bytes: z.number().int().min(0).optional(), response_chars: z.number().int().min(0).optional(),
+  first_event_ms: z.number().int().min(0).optional(), input_tokens: z.number().int().min(0).optional(),
+  output_tokens: z.number().int().min(0).optional(), reasoning_tokens: z.number().int().min(0).optional(),
+  output_limit: z.number().int().min(1).optional(), upstream_request_id: z.string().max(160).optional(),
+  estimated_input_tokens: z.number().int().min(0).optional(), context_window_tokens: z.number().int().min(1).optional(),
+  reserved_output_tokens: z.number().int().min(1).optional(),
+  http_status: z.number().int().min(100).max(599).optional(),
   targets: z.array(z.object({ kind: z.enum(['document', 'scene', 'shot', 'visual_profile']), id: z.string().min(1).max(160), title: z.string().max(200) }).strict()).max(100).optional(),
 }).strict()
 export const scriptExecutionSchema = z.object({
@@ -27,9 +37,9 @@ export const scriptExecutionSchema = z.object({
   workflow: z.object({ operation: z.enum(stageOperations).optional(), stage: z.enum(['outline', 'characters', 'locations', 'props', 'episode']), scope: z.enum(['project', 'episode']).optional(), episode_number: z.number().int().min(0).max(200), target_duration: z.number().int().min(5).max(600).optional() }).strict().optional(),
   outcome: z.object({ kind: z.enum(['reply', 'question', 'draft', 'partial', 'saved', 'discarded', 'review', 'next_step', 'failed', 'cancelled']), summary: z.string().max(3000), draft_id: z.string().max(160).optional(), draft_version: z.string().max(160).optional() }).strict().optional(),
 }).strict()
-export const scriptActivitiesSchema = z.array(scriptActivitySchema).max(120)
+export const scriptActivitiesSchema = z.array(scriptActivitySchema).max(2000)
   .refine(value => new Set(value.map(event => event.id)).size === value.length, '执行记录 ID 不能重复')
-  .refine(value => JSON.stringify(value).length <= 300_000, '执行记录内容过长')
+  .refine(value => JSON.stringify(value).length <= 1_000_000, '执行记录内容过长')
 
 export function activityPreview(value: unknown, field: 'input' | 'output') {
   const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2) || ''

@@ -41,6 +41,14 @@
 @media (prefers-reduced-motion: reduce) { .sd-chat .sd-reply-actions .sd-reply-recognize { transition: none; } }
 .sd-message-timing { display: flex; align-items: center; gap: 5px; min-height: 18px; margin-top: 8px; color: var(--director-muted); font-size: 11px; line-height: 1.6; font-variant-numeric: tabular-nums; }
 .sd-message-timing svg { flex: none; }
+.sd-chat .sd-message-failure { margin-top: 12px; padding: 15px 16px; border: 1px solid color-mix(in srgb, var(--fc-danger) 28%, var(--fc-border-soft)); border-radius: 12px; background: color-mix(in srgb, var(--fc-danger-soft) 62%, var(--fc-panel)); color: var(--fc-text-secondary); }
+.sd-chat .sd-message-failure-icon { color: var(--fc-danger); }
+.sd-chat .sd-message-failure-title { color: var(--fc-danger); font-size: 12px; font-weight: 600; }
+.sd-chat .sd-message-failure-content { min-width: 0; color: var(--fc-text-secondary); }
+.sd-chat .sd-message-failure .pc-rich-text-preview { font-size: 13px; line-height: 1.85; }
+.sd-chat .sd-message-failure .sd-message-timing { margin-top: 12px; color: var(--fc-text-muted); font-size: 10px; }
+.sd-chat .sd-message-failure .pc-rich-text-preview p { margin-bottom: 10px; }
+.sd-chat .sd-message-failure .pc-rich-text-preview > :last-child { margin-bottom: 0; }
 .sd-chat .pc-rich-text-preview { padding: 0; color: inherit; font-size: 14px; line-height: 1.8; border: 0; background: none; white-space: normal; }
 .sd-chat .pc-rich-text-preview p { margin: 0 0 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .sd-chat .pc-rich-text-preview h1,.sd-chat .pc-rich-text-preview h2,.sd-chat .pc-rich-text-preview h3 { margin: 18px 0 10px; color: var(--fc-text); font-size: 16px; font-weight: 600; line-height: 1.6; }
@@ -128,7 +136,7 @@
 .sd-chat .script-director-send:disabled { background: #575757; color: var(--fc-text-subtle); opacity: .65; }
 .sd-composer-add { display: grid; place-items: center; width: 28px; height: 30px; flex: none; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--fc-text-secondary); cursor: pointer; }
 .sd-composer-add:hover { background: var(--fc-surface-hover); color: var(--fc-text); }
-.sd-composer-menu { position: absolute; z-index: 5; bottom: 44px; left: 0; display: grid; padding: 7px; width: 220px; border: 1px solid var(--fc-border); border-radius: 12px; background: var(--fc-surface-muted); box-shadow: 0 10px 32px #00000055; }
+.sd-composer-menu { padding: 7px; border: 1px solid var(--fc-border); border-radius: 12px; background: var(--fc-surface-muted); box-shadow: 0 10px 32px #00000055; }
 .sd-composer-menu button { display: flex; gap: 10px; align-items: center; padding: 10px; border: 0; border-radius: 7px; background: transparent; color: var(--fc-text-secondary); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
 .sd-composer-menu button:hover:not(:disabled) { background: var(--fc-surface-hover); }
 .sd-composer-menu button:disabled { opacity: .4; cursor: default; }

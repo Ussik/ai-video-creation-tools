@@ -138,6 +138,96 @@ test('same-revision board changes can refresh a shot snapshot without dropping o
   } finally { await view.destroy() }
 })
 
+test('bulk shot reference updates require confirmation and cancellation leaves snapshots unchanged', async t => {
+  const requests: string[] = []
+  t.mock.method(globalThis, 'fetch', async url => { requests.push(String(url)); return Response.json(data()) })
+  const view = await mount(<Bindings presentation="drawer" detail={detail} context={{ target: 'shot:shot' }} onRefresh={async () => {}} onClose={noop} onBusyChange={noop} onLocate={noop} />)
+  try {
+    assert.match(view.container.textContent!, /1 项引用待更新/)
+    await act(() => button('更新本镜头全部引用（1）').click())
+    const dialog = document.querySelector('[role="dialog"]')!
+    assert.ok(dialog)
+    assert.match(dialog.textContent!, /更新本镜头引用/)
+    assert.equal(requests.length, 0, 'opening the confirmation must not refresh snapshots')
+    await act(() => button('取消').click())
+    assert.equal(document.querySelector('[role="dialog"]'), null)
+    assert.equal(requests.length, 0)
+    assert.equal(button('更新本镜头全部引用（1）').disabled, false)
+    assert.match(view.container.textContent!, /引用待更新/)
+  } finally { await view.destroy() }
+})
+
+test('bulk refresh includes every stale binding in the current shot despite filters and preserves fresh bindings and usage', async t => {
+  const station = { ...other, board_asset_id: 'station-new' }
+  const ticket = { ...profile, id: 'ticket', kind: 'prop', name: '车票', board_asset_id: null } as VisualProfile
+  const elder = { ...profile, id: 'elder', name: '老人' }
+  const bindings = [
+    { ...detail.shot_visual_bindings![0], revision: 1, usage: 'image' as const },
+    { ...detail.shot_visual_bindings![0], profile_id: station.id, kind: station.kind, name: station.name, board_asset_id: 'station-old', required: false, usage: 'none' as const },
+    { ...detail.shot_visual_bindings![0], profile_id: ticket.id, kind: ticket.kind, name: ticket.name, board_asset_id: null, required: false, usage: 'video' as const },
+    { ...detail.shot_visual_bindings![0], profile_id: elder.id, name: elder.name, shot_id: 'other-shot', revision: 1, usage: 'both' as const },
+  ]
+  const base = { ...detail, visual_profiles: [profile, station, ticket, elder], shots: [...detail.shots, { ...detail.shots[0], id: 'other-shot', title: '出站', position: 1 }], shot_visual_bindings: bindings } as ProjectDetail
+  const refreshed = { ...base, shot_visual_bindings: bindings.map(binding => {
+    const current = base.visual_profiles!.find(item => item.id === binding.profile_id)!
+    return binding.shot_id === 'shot' ? { ...binding, revision: current.revision, board_asset_id: current.board_asset_id } : binding
+  }) }
+  const requests: Array<{ path: string; body: any }> = []
+  let release!: (response: Response) => void
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    requests.push({ path: String(url), body: JSON.parse(String(init?.body)) })
+    return new Promise<Response>(resolve => { release = resolve })
+  })
+  const view = await mount(<Bindings presentation="drawer" detail={base} context={{ target: 'shot:shot' }} onRefresh={async () => {}} onClose={noop} onBusyChange={noop} onLocate={noop} />)
+  try {
+    assert.match(view.container.textContent!, /2 项引用待更新/)
+    const propTab = [...view.container.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(tab => tab.textContent?.startsWith('道具'))!
+    await act(() => propTab.click())
+    await fill('搜索引用设定', '不存在的设定')
+    assert.equal(view.container.querySelectorAll('.pc-visual-binding').length, 0)
+    await act(() => button('更新本镜头全部引用（2）').click())
+    const confirm = button('确认更新')
+    await act(() => { confirm.click(); confirm.click() })
+    assert.deepEqual(requests, [{ path: '/api/shots/shot/visual-bindings', body: {
+      bindings: [
+        { profile_id: 'lin', required: true, usage: 'image' },
+        { profile_id: 'station', required: false, usage: 'none' },
+        { profile_id: 'ticket', required: false, usage: 'video' },
+      ], refresh_profile_ids: ['lin', 'station'],
+    } }])
+    assert.equal(button('确认更新').disabled, true, 'a pending update blocks duplicate submissions')
+    assert.equal(button('取消').disabled, true)
+    await act(() => release(Response.json(data(refreshed))))
+    assert.equal(document.querySelector('[role="dialog"]'), null)
+    assert.equal(view.container.querySelector('[aria-label="引用更新"]'), null, 'stale references belonging to other shots do not keep this action visible')
+    assert.match(view.container.textContent!, /已更新当前镜头的 2 个引用/)
+  } finally { await view.destroy() }
+})
+
+test('failed bulk refresh preserves the shot snapshots and permits retrying the same confirmed update', async t => {
+  const requests: Array<{ path: string; body: any }> = []
+  const updated = { ...detail, shot_visual_bindings: [{ ...detail.shot_visual_bindings![0], board_asset_id: profile.board_asset_id }] }
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    requests.push({ path: String(url), body: JSON.parse(String(init?.body)) })
+    return requests.length === 1 ? Response.json({ error: '暂时无法更新' }, { status: 500 }) : Response.json(data(updated))
+  })
+  const view = await mount(<Bindings presentation="drawer" detail={detail} context={{ target: 'shot:shot' }} onRefresh={async () => {}} onClose={noop} onBusyChange={noop} onLocate={noop} />)
+  try {
+    await act(() => button('更新本镜头全部引用（1）').click())
+    await act(() => button('确认更新').click())
+    assert.ok(document.querySelector('[role="dialog"]'), 'a failed update leaves the confirmation available to retry')
+    assert.match(document.querySelector('[role="dialog"] [role="alert"]')!.textContent!, /暂时无法更新/)
+    assert.equal(button('确认更新').disabled, false)
+    assert.match(view.container.textContent!, /1 项引用待更新/)
+    await act(() => button('确认更新').click())
+    assert.equal(requests.length, 2)
+    assert.deepEqual(requests[1], requests[0], 'retry retains the original usage, required flags and refresh scope')
+    assert.equal(document.querySelector('[role="dialog"]'), null)
+    assert.equal(view.container.querySelector('[aria-label="引用更新"]'), null)
+    assert.match(view.container.textContent!, /已更新当前镜头的 1 个引用/)
+  } finally { await view.destroy() }
+})
+
 test('shot usage can change independently while retaining other objects and frozen references', async t => {
   const original = { ...detail, shot_visual_bindings: [{ ...detail.shot_visual_bindings![0], usage: 'both' as const }] }
   let saved: any

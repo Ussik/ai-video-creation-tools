@@ -87,6 +87,7 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
     const { id } = idParams.parse(request.params), project = required<Project>('projects', id)
     const input = z.object({
       model_id: z.string().min(1), stage: z.enum(['image_prompt', 'video_prompt']), prompt: z.string().trim().min(1).max(80_000),
+      adjustment_request: z.string().trim().max(4000).default(''),
       target_model_id: z.string().min(1).nullable().optional(), shot_id: z.string().min(1).nullable().optional(),
       profile_id: z.string().min(1).optional(),
       reference_asset_ids: z.array(z.string().min(1)).max(20).default([]),
@@ -140,10 +141,14 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
       const issue = videoReferenceConfigError(target.settings, references.length, input.mode || 'text')
       if (issue) fail(issue)
     }
-    const task = `为当前${input.stage === 'image_prompt' ? '图片' : '视频'}节点整理一份可直接提交的完整提示词。保留创作者原有意图，不增加其他镜头。` +
+    const task = `为当前${profile ? '视觉设定图' : input.stage === 'image_prompt' ? '图片' : '视频'}节点整理一份可直接提交的完整提示词。保留创作者原有意图，不增加其他镜头。` +
       `\n${projectStyleInstructions(projectVisualStyle(id))}\n` +
       '不要改变比例、时长、生成模式或参考图顺序。不得伪造已提供参考图的可见内容，只根据设定文字和明确的参考用途写要求。' +
       '不生成媒体，不添加工作流说明、文件路径、Markdown 文档结构或第二次确认。输出中文；原有逐字对白保持原文。\n' +
+      '当前提示词是本次修改基稿；镜头和设定资料用于理解与一致性校验，不得用其中的旧提示词替换本次基稿。' +
+      '优先落实明确的本次调整要求，其优先于通用整理建议和 Skill 写作偏好；仅修改要求涉及的方面，保留其余剧情、人物身份、人物关系和逐字对白，不增加无依据的剧情。' +
+      '调整要求不能覆盖项目画风、比例、时长、生成模式、实际参考图顺序及输出格式；未填写要求时，沿用原有整理规则。\n' +
+      (profile ? `当前为${{ character: '人物', location: '场景', prop: '道具' }[profile.kind]}设定图，依据该设定的定义与视图要求组织外观和各视图呈现，不套用剧情镜头或视频动作流程。\n` : '') +
       `项目：${project.name}；创意：${project.brief}；配置：${JSON.stringify({ ratio: input.ratio || project.ratio, duration: input.duration, mode: input.mode })}\n` +
       `目标模型：${JSON.stringify(target)}\n当前镜头：${JSON.stringify(shot)}\n视觉设定：${JSON.stringify({ profile, bindings, profiles })}\n` +
       `实际参考图（按输入顺序）：${JSON.stringify(references.map((reference, index) => {
@@ -155,6 +160,7 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
       (input.stage === 'video_prompt' ? `使用“图片N”引用实际图片，N严格对应上述顺序；逐图usage_instruction优先于素材的默认用途。${videoReferenceShotGuidance}不复制信息图拼版、标签或其他角色。\n` : '') +
       (input.stage === 'video_prompt' ? seedance2PromptGuidance(target) : '') +
       `原提示词：\n${input.prompt}\n` +
+      `本次调整要求：\n${input.adjustment_request || '未指定，按现有规则整理当前提示词。'}\n` +
       '只输出合法 JSON 对象：{"prompt":"完整可编辑的提示词"}。'
     const rules = skillContext(input.stage, task, input.skill_ids, id)
     const result = await generateStructuredOutput('refined_prompt', z.object({ prompt: z.string().trim().min(1).max(80_000) }).strict(),

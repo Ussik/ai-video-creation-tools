@@ -101,8 +101,8 @@ test('first-generation order is enforced for continuation, explicit prose and ty
   decision = { ...decision, authorization: 'explicit' }
   assert.match((await chat(project.id, { ...body, messages: [{ role: 'user', text: '先生成全剧人物设定' }] })).reply, /请先完成并保存故事大纲/)
   assert.match((await chat(project.id, { ...body, workflow: { stage: 'characters' } })).reply, /请先完成并保存故事大纲/)
-  await call('PUT', `/api/projects/${project.id}/script/director/draft`, { stage: 'characters', artifacts: [{ artifact_type: 'characters', title: '人物', content: '已保存人物' }] })
-  await call('PUT', `/api/projects/${project.id}/script/director/draft`, { stage: 'outline', artifacts: [{ artifact_type: 'outline', title: '大纲', content: '已保存大纲' }] })
+  await call('PUT', `/api/projects/${project.id}/script/director/draft`, { stage: 'characters', source_version: null, artifacts: [{ artifact_type: 'characters', title: '人物', content: '已保存人物' }] })
+  await call('PUT', `/api/projects/${project.id}/script/director/draft`, { stage: 'outline', source_version: null, artifacts: [{ artifact_type: 'outline', title: '大纲', content: '已保存大纲' }] })
   decision = { ...decision, authorization: 'continue' }
   const blocked = await chat(project.id, body)
   assert.match(blocked.reply, /当前应先完成全剧场景设计/)
@@ -153,7 +153,7 @@ test('explicit discussion scope survives answers, skips and reload, then expires
   const answering = await chat(project.id, { ...body, question_response: { status: 'skipped', question: '关键道具的材质？' }, intent_context: { discussion: restored } }, true)
   assert.deepEqual(answering.stage_context, restored)
   assert.equal(answering.draft, undefined)
-  await call('PUT', `/api/projects/${project.id}/script/director/draft`, { stage: 'outline', artifacts: [{ artifact_type: 'outline', title: '大纲', content: '已确认主线' }] })
+  await call('PUT', `/api/projects/${project.id}/script/director/draft`, { stage: 'outline', source_version: null, artifacts: [{ artifact_type: 'outline', title: '大纲', content: '已确认主线' }] })
   decision = { action: 'discuss' }
   const current = await chat(project.id, { ...body, intent_context: { discussion: restored } })
   assert.equal(current.stage_context.stage, 'characters')

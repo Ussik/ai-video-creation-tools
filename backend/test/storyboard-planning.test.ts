@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 import Fastify from 'fastify'
 import type { ScriptArtifact, ScriptScene } from '../src/infrastructure/database/db.js'
+import { scriptArtifactTypes, scriptStageForArtifact } from '@video-studio/shared/script/script-stage-content'
 
 const testData = await mkdtemp(join(tmpdir(), 'controlled-storyboard-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
@@ -569,4 +570,118 @@ test('changing a saved shot plan invalidates reference preparation and retries p
   assert.equal(f.visualCalls(), 2)
   await f.invoke('canvas', { scene_ids: [sceneId], mode: 'existing' })
   assert.deepEqual((await f.context()).reference_preparation.needs_analysis, [])
+})
+
+test('replanning with changed documents refreshes all setting types and only the selected shot snapshots', async t => {
+  const definitions = {
+    character: '主角林晚，21岁，黑色短发，蓝色夹克。',
+    location: '车站候车室，北侧木门，白色墙面。',
+    prop: '黄铜钥匙，三厘米，圆形钥匙头。',
+  }
+  const names = { character: '林晚', location: '候车室', prop: '钥匙' }
+  let shotId: string | null = null, changedDocument = '', latestContent = '', sceneId = ''
+  const f = await setup(t, async prompt => {
+    if (changedDocument) {
+      assert.match(prompt, /选中参考文档中的最新明确设定优先/)
+      assert.ok(prompt.includes(JSON.stringify(latestContent)))
+    }
+    return JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [
+      { ...shot(shotId, 30), image_prompt: Object.values(definitions).join('\n'), video_prompt: Object.values(definitions).join('\n') + '人物拿起钥匙' },
+    ] }] })
+  }, async prompt => {
+    if (changedDocument) {
+      assert.match(prompt, /当前剧本文档和人物资料中的明确设定优先/)
+      assert.ok(prompt.includes(JSON.stringify(latestContent)))
+    }
+    return JSON.stringify({ profiles: Object.entries(definitions).map(([kind, definition]) => ({
+      kind, name: names[kind as keyof typeof names], variant: '默认', definition, view_requirements: '正侧背与局部细节',
+      scene_ids: [sceneId], shot_usage: [{ shot_id: shotId, usage: 'both' }],
+    })) })
+  })
+  sceneId = f.scene.id
+  const timestamp = now()
+  for (const [position, type] of scriptArtifactTypes.entries()) run(`INSERT INTO script_artifacts
+    (id,project_id,artifact_type,title,episode_number,content,status,position,created_at,updated_at) VALUES (?,?,?,?,?,?,'ready',?,?,?)`,
+    `${f.project.id}-${type}`, f.project.id, type, type, type === 'episode_script' ? 1 : 0, `${type}原文`, position, timestamp, timestamp)
+  const savePlan = async () => {
+    const context = await f.context()
+    const draft = await f.invoke('plan', { scene_ids: [sceneId], signature: context.signature, model_id: 'mock-text',
+      document_ids: changedDocument ? [...new Set([changedDocument, `${f.project.id}-relationships`])] : [] })
+    if (changedDocument) assert.ok(draft.source_documents.some((document: { id: string }) => document.id === changedDocument))
+    return f.invoke('commit', { signature: draft.signature, request_id: crypto.randomUUID(),
+      scenes: draft.scenes.map(({ scene_id, scene_duration, shots }: { scene_id: string; scene_duration: number; shots: unknown[] }) => ({ scene_id, scene_duration, shots })) })
+  }
+  shotId = (await savePlan()).shots[0].id
+  const initial = await f.prepareReferences(), profiles = initial.visual_profiles
+  // A draft shared by another scene must remain frozen when only this scene is replanned.
+  for (const profile of profiles) run('INSERT INTO scene_visual_bindings VALUES (?,?,1)', f.other.id, profile.id)
+  const historical = await call('POST', `/api/projects/${f.project.id}/shots`, { title: '历史镜头', source_scene_id: f.other.id })
+  const mediaId = `media-${shotId}`
+  run("INSERT INTO assets (id,project_id,shot_id,kind,filename,path,source,created_at) VALUES (?,?,?,'image','frame.png','/tmp/frame.png','upload',?)", mediaId, f.project.id, shotId, now())
+  run('UPDATE shots SET selected_asset_id=? WHERE id=?', mediaId, shotId)
+  run('UPDATE shot_visual_bindings SET required=0 WHERE shot_id=?', shotId)
+
+  for (const type of ['characters', ...scriptArtifactTypes.filter(type => type !== 'characters')]) {
+    const stage = scriptStageForArtifact(type)
+    const kind = stage === 'locations' ? 'location' : stage === 'props' ? 'prop' : 'character'
+    definitions[kind] = type === 'characters' ? definitions.character.replace('21岁', '32岁') : `${definitions[kind]}\n${type}新约束。`
+    latestContent = definitions[kind]; changedDocument = `${f.project.id}-${type}`
+    const beforeBindings = all<any>('SELECT * FROM shot_visual_bindings WHERE shot_id=? ORDER BY profile_id', shotId)
+    const historicalBindings = all('SELECT * FROM shot_visual_bindings WHERE shot_id=? ORDER BY profile_id', historical.id)
+    run('UPDATE script_artifacts SET content=?,updated_at=? WHERE id=?', latestContent, now(), changedDocument)
+    if (type === 'characters') run('UPDATE scripts SET characters=? WHERE project_id=?', latestContent, f.project.id)
+    const before = all<any>('SELECT * FROM visual_profiles WHERE project_id=?', f.project.id)
+    const saved = await savePlan()
+    assert.equal(saved.shots[0].id, shotId); assert.equal(saved.shots[0].selected_asset_id, mediaId)
+    assert.deepEqual((await f.context()).reference_preparation.needs_analysis, [sceneId])
+    const refreshed = await f.prepareReferences()
+    for (const profile of refreshed.visual_profiles) {
+      const previous = before.find(item => item.id === profile.id)!
+      assert.equal(profile.definition, definitions[profile.kind as keyof typeof definitions])
+      assert.equal(profile.revision, previous.revision + Number(profile.kind === kind))
+      assert.equal(profile.board_asset_id, profile.kind === kind ? null : previous.board_asset_id)
+      const binding = refreshed.shot_visual_bindings.find((item: { profile_id: string }) => item.profile_id === profile.id)
+      assert.equal(binding.definition, profile.definition); assert.equal(binding.revision, profile.revision)
+      assert.equal(binding.required, false)
+      if (profile.kind === kind) assert.deepEqual(binding.reference_assets, [])
+      else assert.deepEqual(one('SELECT * FROM shot_visual_bindings WHERE shot_id=? AND profile_id=?', shotId, profile.id),
+        beforeBindings.find(item => item.profile_id === profile.id))
+    }
+    assert.deepEqual(all('SELECT * FROM shot_visual_bindings WHERE shot_id=? ORDER BY profile_id', historical.id), historicalBindings)
+    assert.deepEqual((await f.context()).reference_preparation.needs_analysis, [])
+    const calls = f.visualCalls()
+    await f.prepareReferences(); assert.equal(f.visualCalls(), calls)
+    const canvas = await f.invoke('canvas', { scene_ids: [sceneId], mode: 'existing' })
+    assert.equal(canvas.shots[0].id, shotId)
+    // The next edit must invalidate an approved board, while preserving its asset as history.
+    const styleVersion = (await call('GET', `/api/projects/${f.project.id}`)).project_visual_style.version
+    const nextBindings = []
+    for (const profile of refreshed.visual_profiles) {
+      const assetId = `board-${profile.id}-${profile.revision}`
+      run("INSERT OR IGNORE INTO assets (id,project_id,kind,filename,path,source,created_at) VALUES (?,?,'image','board.png','/tmp/board.png','upload',?)", assetId, f.project.id, now())
+      await call('PATCH', `/api/visual-profiles/${profile.id}`, { expected_revision: profile.revision, board_asset_id: assetId })
+      const viewAssetId = `view-${profile.id}-${profile.revision}`
+      run("INSERT OR IGNORE INTO assets (id,project_id,kind,filename,path,source,created_at) VALUES (?,?,'image','view.png','/tmp/view.png','upload',?)", viewAssetId, f.project.id, now())
+      const withView = await call('POST', `/api/visual-profiles/${profile.id}/reference-assets`, {
+        expected_revision: profile.revision, expected_style_version: styleVersion, asset_id: viewAssetId,
+        view: 'front', purpose: profile.kind === 'character' ? 'costume' : profile.kind === 'location' ? 'space' : 'structure',
+        status: 'confirmed', is_default: true,
+      })
+      nextBindings.push({ profile_id: profile.id, required: false, usage: 'both',
+        reference_asset_ids: [withView.reference_assets.find((reference: { asset_id: string }) => reference.asset_id === viewAssetId).id] })
+    }
+    await call('PUT', `/api/shots/${shotId}/visual-bindings`, { bindings: nextBindings })
+    for (const binding of beforeBindings.filter(binding => binding.kind === kind)) {
+      for (const reference of JSON.parse(binding.reference_assets)) {
+        assert.ok(one('SELECT 1 FROM visual_profile_reference_assets WHERE id=?', reference.id))
+        assert.ok(one('SELECT 1 FROM assets WHERE id=?', reference.asset_id))
+      }
+    }
+    for (const profile of before.filter(profile => profile.kind === kind && profile.board_asset_id)) {
+      assert.ok(one('SELECT 1 FROM assets WHERE id=?', profile.board_asset_id))
+      assert.ok(one('SELECT 1 FROM visual_profile_candidates WHERE profile_id=? AND asset_id=?', profile.id, profile.board_asset_id))
+    }
+  }
+  assert.equal(all('SELECT 1 FROM jobs WHERE project_id=?', f.project.id).length, 0)
+  assert.equal(all('SELECT 1 FROM asset_tasks WHERE project_id=?', f.project.id).length, 0)
 })

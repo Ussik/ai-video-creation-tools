@@ -18,7 +18,9 @@ export function readActivity(value: unknown): ScriptActivity[] {
     if (!item || typeof item.id !== 'string' || typeof item.label !== 'string' || typeof item.summary !== 'string') continue
     const kind = ['skill', 'tool', 'model', 'context'].includes(item.kind) ? item.kind : 'context'
     const status = ['running', 'succeeded', 'failed', 'cancelled'].includes(item.status) ? item.status : 'succeeded'
+    const legacyNotice = !item.scope && kind === 'context' && status === 'succeeded' && /^正在生成/.test(item.label) && typeof item.duration_ms === 'number' && item.duration_ms < 100
     entries.push({ ...item, kind, status, started_at: Number.isFinite(item.started_at) && item.started_at >= 0 && item.started_at <= 8.64e15 ? item.started_at : 0,
+      ...(legacyNotice ? { scope: 'notice' } : {}),
       ...(Array.isArray(item.targets) ? { targets: item.targets.map(sourceTarget).filter((target: ScriptActivityTarget | null): target is ScriptActivityTarget => target !== null).slice(0, 100) } : {}) })
   }
   return entries
@@ -38,12 +40,13 @@ export function settleActivity(entries: ScriptActivity[] | undefined, status: 'f
 // Use the same serializer for debounced saves and closing the panel.
 export function conversationMessage<T extends { id: string; role: 'assistant' | 'user'; text: string; activity?: ScriptActivity[];
   stage_context?: unknown; reference_documents?: unknown[]; processing_duration_ms?: number | null; review?: DocumentReview; execution?: ScriptExecution;
-  pending?: boolean; classification?: unknown; classification_version?: number; classification_context?: string; classification_source?: string }>(message: T) {
+  pending?: boolean; task_id?: string; classification?: unknown; classification_version?: number; classification_context?: string; classification_source?: string }>(message: T) {
   const { id, role, text, stage_context, reference_documents, processing_duration_ms } = message
   const activity = readActivity(message.activity)
   const reply_metadata = { ...(message.classification_source && message.classification ? { classification: message.classification,
     classification_version: message.classification_version, classification_context: message.classification_context, classification_source: message.classification_source } : {}),
-    ...(message.review ? { review: message.review } : {}), ...(message.execution ? { execution: message.pending ? { ...message.execution,
+    ...(message.task_id ? { task_id: message.task_id } : {}),
+    ...(message.review ? { review: message.review } : {}), ...(message.execution ? { execution: message.pending && !message.task_id ? { ...message.execution,
       outcome: { ...message.execution.outcome, kind: 'cancelled', summary: '本轮尚未记录完整结果，请检查草稿和项目当前状态。' } } : message.execution } : {}) }
   return { id, role, text, ...(stage_context ? { stage_context } : {}), ...(reference_documents?.length ? { reference_documents } : {}),
     ...(processing_duration_ms != null ? { processing_duration_ms } : {}), ...(role === 'assistant' && activity.length ? { activity } : {}),
@@ -58,9 +61,25 @@ function readPayload(event: ScriptActivity) {
 }
 export function activityGroup(event: ScriptActivity): 'sources' | 'rules' | 'model' | 'results' {
   if (event.kind === 'skill' || event.label === 'Skill 配置') return 'rules'
-  if (event.kind === 'model') return 'model'
+  if (event.kind === 'model' || event.scope) return 'model'
   if (event.kind === 'tool' && !readTools.has(event.name || '') && !(['manage_document_draft', 'manage_revision_task'].includes(event.name || '') && readDraftOnly(event))) return 'results'
   return 'sources'
+}
+export function activityStatusLabel(event: ScriptActivity) {
+  if (event.scope === 'notice') return '开始提示'
+  if (event.reused && event.status === 'succeeded') return '已复用'
+  return { running: '进行中', succeeded: '已完成', failed: '未完成', cancelled: '已停止' }[event.status]
+}
+
+export function activityDepth(event: ScriptActivity, events: ScriptActivity[]) {
+  const seen = new Set([event.id])
+  let depth = 0, parentId = event.parent_id
+  while (parentId && depth < 3 && !seen.has(parentId)) {
+    const parent = events.find(item => item.id === parentId)
+    if (!parent) break
+    seen.add(parentId); depth++; parentId = parent.parent_id
+  }
+  return depth
 }
 function readDraftOnly(event: ScriptActivity) {
   try { return JSON.parse(event.input || '{}').operation === 'read' } catch { return false }
@@ -118,6 +137,6 @@ export function executionView(activity: ScriptActivity[] | undefined, execution:
   const draftCount = events.filter(event => event.status === 'succeeded' && ['create_document_draft', 'propose_document_patch', 'propose_visual_profile_draft', 'propose_visual_binding_patch', 'propose_shot_plan', 'propose_shot_patch'].includes(event.name || '')).length
   if (draftCount) stats.push('已准备草稿')
   const rejected = events.filter(event => event.status === 'failed').length
-  if (rejected && state !== 'failed') stats.push(`${rejected} 项操作未完成`)
+  if (rejected && state !== 'failed') stats.push(`含 ${rejected} 条失败记录`)
   return { events, sources, skills, active, groups, state, stateLabel: labels[state], stats, outcome, canRetry: canRetryExecution(events) }
 }

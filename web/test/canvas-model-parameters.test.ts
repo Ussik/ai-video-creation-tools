@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Model } from '../src/shared/api/api'
-import { generationCost, imageGenerationDefaults, imageParameterOptions, imageParameterValue, imagePreferencePrompt, imageRatioError, imageRatios, imageRequestResolution, imageSizeChoices, modelDefaultResolution, resolutionRatio, selectImageSize, usesModelParameter } from '../src/features/canvas/canvas-model-parameters'
+import { generationCost, imageGenerationDefaults, imageParameterOptions, imageParameterValue, imagePreferencePrompt, imageRatioError, imageRatios, imageRequestResolution, imageResolutionClarity, imageSizeChoices, modelDefaultResolution, resolutionRatio, selectImageSize, usesModelParameter } from '../src/features/canvas/canvas-model-parameters'
 import { videoResolutionOptions } from '@video-studio/shared/media/video-parameters'
 import { imagesApiSettings } from '@video-studio/shared/models/images-api-settings'
 
@@ -32,17 +32,40 @@ test('size-only image templates expose creative preferences with usable defaults
   assert.equal(resolutionRatio('720p'), null)
 })
 
-test('canvas image defaults use standard quality, 2K, auto, 9:16 and one candidate with real provider values', () => {
-  assert.deepEqual(imageGenerationDefaults(model({})), { quality: 'standard', clarity: '2K', background: 'auto', ratio: '9:16', candidate_count: 1 })
-  const native = model({ image_qualities: ['low', 'medium', 'high'], default_quality: 'high', default_clarity: '1K', default_background: 'transparent', request_template: { size: '{{ratio}}', resolution: '{{resolution}}' }, resolutions: ['1K', '2K', '4K'] })
+test('canvas image defaults prefer 4K, extreme quality, auto, 16:9 and one candidate with real provider values', () => {
+  const expected = { quality: 'extreme', clarity: '4K', resolution: '4K', background: 'auto', ratio: '16:9', candidate_count: 1 }
+  assert.deepEqual(imageGenerationDefaults(model({})), expected)
+  assert.deepEqual(imageGenerationDefaults(), expected, 'new nodes have defaults before choosing a model')
+  const native = model({ image_qualities: ['low', 'medium', 'high'], default_quality: 'low', default_clarity: '1K', default_background: 'transparent', request_template: { size: '{{ratio}}', resolution: '{{resolution}}' }, resolutions: ['1K', '2K', '4K'] })
   const defaults = imageGenerationDefaults(native)
-  assert.equal(defaults.quality, 'medium')
-  assert.equal(defaults.clarity, '2K')
+  assert.equal(defaults.quality, 'high')
+  assert.equal(defaults.clarity, '4K')
   assert.equal(defaults.background, 'auto')
-  assert.equal(imageRequestResolution(native, '1K', defaults), '2K')
+  assert.equal(imageRequestResolution(native, '1K', defaults), '4K')
   assert.equal(imageParameterValue(native, 'quality', 'high'), 'high', 'saved choices stay authoritative')
+  assert.equal(imageParameterValue(native, 'quality', 'low'), 'low', 'explicit low-quality choice stays authoritative')
+  assert.equal(imageParameterValue(native, 'quality', 'extreme'), 'high', 'unsupported quality uses the highest supported option')
   assert.equal(imageParameterValue(native, 'clarity', '4K'), '4K')
   assert.equal(imageParameterValue(native, 'background', 'transparent'), 'transparent')
+})
+
+test('image defaults use supported native levels and exact pixel sizes instead of inventing 4K capabilities', () => {
+  const limited = imageGenerationDefaults(model({ image_qualities: ['low', 'high'], image_clarities: ['1K', '2K'],
+    default_quality: 'low', default_clarity: '1K', resolutions: ['1K', '2K'], ratios: ['1:1'],
+    request_template: { ratio: '{{ratio}}', resolution: '{{resolution}}' } }))
+  assert.equal(limited.quality, 'high'); assert.equal(limited.clarity, '2K'); assert.equal(limited.resolution, '2K')
+  assert.equal(limited.ratio, '1:1')
+  const resolutionOnlyModel = model({ resolutions: ['1K', '2K'], request_template: { ratio: '{{ratio}}', resolution: '{{resolution}}' } })
+  const resolutionOnly = imageGenerationDefaults(resolutionOnlyModel)
+  assert.equal(resolutionOnly.resolution, '2K'); assert.equal(resolutionOnly.clarity, '2K')
+  assert.equal(imageParameterValue(resolutionOnlyModel, 'clarity', '4K'), '2K', 'model selection safely adapts a new node default')
+  const pixels = imageGenerationDefaults(model({ resolutions: ['1024x1024', '1536x1024', '1024x1536'],
+    default_resolution: '1536x1024', request_template: { size: '{{size}}' } }))
+  assert.equal(pixels.resolution, '1536x1024'); assert.equal(pixels.ratio, '3:2'); assert.equal(pixels.clarity, '1K')
+  assert.equal(imageRatioError(model({ request_template: { size: '{{size}}' } }), pixels.resolution!, pixels.ratio), null)
+  const wide = imageGenerationDefaults(model({ resolutions: ['1536x864', '3840x2160'], request_template: { size: '{{size}}' } }))
+  assert.equal(wide.resolution, '3840x2160'); assert.equal(wide.ratio, '16:9'); assert.equal(wide.clarity, '4K')
+  assert.equal(imageGenerationDefaults(model(imagesApiSettings())).resolution, 'auto')
 })
 
 test('explicit model choices and configured defaults remain usable', () => {
@@ -53,6 +76,10 @@ test('explicit model choices and configured defaults remain usable', () => {
   assert.equal(imageParameterValue(image, 'quality', 'low'), 'low')
   assert.equal(imageParameterValue(model({default_quality: 'high'}), 'quality'), 'high')
   assert.equal(imageParameterValue(model({}), 'quality'), 'standard')
+  assert.equal(imageResolutionClarity('2K'), '2K', 'older explicit resolutions retain their clarity')
+  assert.equal(imageResolutionClarity('1536x1024'), '1K')
+  assert.equal(imageResolutionClarity('3840x2160'), '4K')
+  assert.equal(imageResolutionClarity('auto'), undefined)
 })
 
 test('video node defaults prefer 480p while preserving image model defaults', () => {

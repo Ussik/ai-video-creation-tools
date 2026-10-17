@@ -810,8 +810,9 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
             const artifact = selectedEpisode || legacyScript!
             const section: DocumentSection = selectedEpisode ? `episode-${selectedEpisode.episode_number!}` : 'episode_script'
             return <>
-            <header className="script-long-document-cover script-standalone-cover"><span className="script-kicker">分集正文</span><h1>{artifact.title}</h1><p>{selectedEpisode ? '只修改当前集，其他集和已保存资料保留。' : '已保存的剧本正文，支持手动修改。'}</p></header>
+            <header className="script-long-document-cover script-standalone-cover"><span className="script-kicker">分集剧本</span><h1>分集剧本</h1><p>{selectedEpisode ? '只修改当前集，其他集和已保存资料保留。' : '已保存的剧本正文，支持手动修改。'}</p></header>
             <section id={`script-section-${section}`} data-script-section={section} className="script-long-section script-standalone-section">
+              <header className="script-long-section-heading"><div><h2>{artifact.title}</h2></div></header>
               <RichArtifactEditor
                 key={artifact.id}
                 {...artifactSearchProps(artifact)}

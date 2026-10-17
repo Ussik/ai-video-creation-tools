@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { all, db, newId, now, one, required, run } from '../../infrastructure/database/db.js'
 import type { Project, ScriptArtifact, ScriptScene, Shot } from '../../infrastructure/database/db.js'
-import { analyzeVisualProfiles, applyProfileShotUsage, inheritSceneVisualBindings, profileDraft, validateProfileShotUsage, visualProjectData, type VisualProfile } from '../visuals/visual-profiles.js'
+import { analyzeVisualProfiles, applyProfileShotUsage, inheritSceneVisualBindings, profileDraft, updateVisualProfile, validateProfileShotUsage, visualProjectData, type VisualProfile } from '../visuals/visual-profiles.js'
 import type { OutputContract } from '../generation/model-output.js'
 import { projectVisualStyle } from '../visuals/project-visual-style.js'
 import { shotImagePrompt, shotVideoPrompt } from '@video-studio/shared/storyboard/shot-prompts'
@@ -35,6 +35,8 @@ export function scriptCanvasPreparationSnapshot(id: string, sceneIds: string[], 
   const referenceBudget = storyboardReferenceBudget()
   const overBudgetScenes = new Set(storyboardReferenceBudgetIssues(id, sceneIds).map(issue => issue.scene_id))
   const signatureFor = (scene: ScriptScene) => hash({
+    // Invalidate preparation caches created before definition refresh was supported.
+    preparation_version: 2,
     brief: project.brief, outline: script.outline, characters: script.characters,
     referenceBudget, artifacts: (script.artifacts || []).filter(item => !item.episode_number || item.episode_number === scene.episode_number)
       .map(item => [item.id, item.artifact_type, item.episode_number, item.content]), scene, style: style.version,
@@ -54,7 +56,8 @@ export function scriptCanvasPreparationSnapshot(id: string, sceneIds: string[], 
   // cannot race a user editing the same settings during preparation.
   const signature = hash({ sources: scenes.map(signatureFor), profiles: visuals.visual_profiles,
     bindings: visuals.scene_visual_bindings, shot_bindings: visuals.shot_visual_bindings.filter(binding => shots.some(shot => shot.id === binding.shot_id)), shots })
-  return { scenes, shots, visuals, signature, signatureFor, needsAnalysis }
+  const refreshSceneIds = new Set(needsAnalysis.filter(scene => one('SELECT 1 FROM script_canvas_preparations WHERE scene_id=?', scene.id)).map(scene => scene.id))
+  return { scenes, shots, visuals, signature, signatureFor, needsAnalysis, refreshSceneIds }
 }
 
 export function checkScriptCanvasPreparation(id: string, sceneIds: string[], context: Pick<Context, 'script'>) {
@@ -78,6 +81,7 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
       scene_ids: state.needsAnalysis.map(scene => scene.id),
       skill_ids: data.skill_ids,
       inherit_scene_references: true,
+      refresh_scene_ids: [...state.refreshSceneIds],
     }, context) : { profiles: [], skills: [], loaded_files: [] }
     if (scriptCanvasPreparationSnapshot(id, data.scene_ids, context).signature !== state.signature) conflict()
     return { signature: state.signature, scene_ids: data.scene_ids, profiles: drafts.profiles,
@@ -123,8 +127,12 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
             VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'draft', ?, ?)`, profileId, id, input.kind, input.name, input.variant, input.definition, input.view_requirements, timestamp, timestamp)
           profile = required<VisualProfile>('visual_profiles', profileId)
           createdProfiles++
+        } else if (input.scene_ids.some(sceneId => state.refreshSceneIds.has(sceneId)) &&
+          (profile.definition !== input.definition || profile.view_requirements !== input.view_requirements)) {
+          profile = updateVisualProfile(profile.id, { expected_revision: profile.revision, definition: input.definition,
+            view_requirements: input.view_requirements, definition_status: 'draft' }, { refreshUnresolvedBindings: false })
         }
-        // Existing definitions, approved boards and optional bindings are kept.
+        // Reanalysis updates this definition; unrelated shot snapshots stay frozen.
         for (const sceneId of input.scene_ids) run('INSERT OR IGNORE INTO scene_visual_bindings VALUES (?, ?, 1)', sceneId, profile.id)
       }
       for (const scene of state.scenes) {
@@ -152,7 +160,7 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
       }
       for (const input of merged.values()) {
         const profile = one<VisualProfile>('SELECT * FROM visual_profiles WHERE project_id=? AND kind=? AND name=? AND variant=?', id, input.kind, input.name, input.variant)!
-        applyProfileShotUsage(profile, input)
+        applyProfileShotUsage(profile, input, state.refreshSceneIds)
       }
       assertStoryboardReferenceBudget(id, data.scene_ids)
       // The legacy preparation route can create a scene template. Record the

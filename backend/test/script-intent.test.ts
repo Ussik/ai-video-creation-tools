@@ -27,7 +27,7 @@ async function fixture() {
   return { project, model }
 }
 async function saveProjectStages(projectId: string, stages = ['outline', 'characters', 'locations', 'props']) {
-  for (const stage of stages) await call('PUT', `/api/projects/${projectId}/script/director/draft`, { stage, artifacts: [{ artifact_type: stage, title: stage, content: `已保存${stage}资料` }] })
+  for (const stage of stages) await call('PUT', `/api/projects/${projectId}/script/director/draft`, { stage, source_version: null, artifacts: [{ artifact_type: stage, title: stage, content: `已保存${stage}资料` }] })
 }
 const episode = { artifacts: [{ artifact_type: 'episode_script', title: '第1集', content: '完整剧本文字' }], scenes: [
   { heading: '雨夜门厅', location: '旅馆', characters: '林', action: '林接起电话', dialogue: '别让他们走', duration: 10 },
@@ -136,7 +136,7 @@ test('skip delegates a concrete decision in both chat transports without draftin
   assert.deepEqual((await call<{ script: unknown }>('GET', `/api/projects/${project.id}`)).script, before)
 })
 
-test('delegated decisions reach later outline and episode drafts through the intent brief over both transports', async t => {
+test('delegated decisions reach later outline and episode drafts with original dialogue and the intent brief over both transports', async t => {
   const { model, project } = await fixture()
   const question = '故事开场发生在哪里？'
   const decision = '我决定开场设在雨夜车站，因为封闭空间适合悬疑。'
@@ -162,7 +162,8 @@ test('delegated decisions reach later outline and episode drafts through the int
       assert.match(prompt, /沿用授权模型决定的雨夜车站开场/)
       assert.match(prompt, /创作者明确授权模型决定后已经作出的具体设定应沿用，不标为待定/)
       assert.match(prompt, /已授权你在该范围内设计尚缺的虚构细节/)
-      assert.doesNotMatch(prompt, /未选方案：古代山寨/)
+      assert.match(prompt, /未选方案：古代山寨/)
+      assert.match(prompt, /未被创作者明确接受、未提交的选项均不构成已确认设定/)
       content = stage === 'episode' ? episode : { artifacts: scriptStageArtifacts.outline.map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '雨夜车站开场。' })), scenes: [] }
     } else {
       assert.match(prompt, /明确授权你决定该项/)
@@ -297,7 +298,8 @@ test('model intent routes colloquial requests, confirmed settings and selected e
   assert.deepEqual(result.generation_options, { episode_count: 20, episode_duration: 300 })
   assert.equal(prompts.length, 2)
   assert.match(prompts[0]!, /第一集开始/)
-  assert.doesNotMatch(prompts[1]!, /未选的另一个方向/)
+  assert.match(prompts[1]!, /未选的另一个方向/)
+  assert.match(prompts[1]!, /未被创作者明确接受、未提交的选项均不构成已确认设定/)
   assert.match(prompts[1]!, /本次创作要求/)
   const unchanged = await call<{ script: { scenes: unknown[]; artifacts?: unknown[] } }>('GET', `/api/projects/${project.id}`)
   assert.equal(unchanged.script.scenes.length, 0)
@@ -369,12 +371,12 @@ test('adopting existing text preserves it verbatim and saves an editable episode
   assert.equal(handoff.shots.length, 1)
 })
 
-test('stream routing announces document mode before chunks and returns a structured draft', async t => {
+test('stream routing announces document mode before authoring and keeps structured model output out of chat', async t => {
   const { model, project } = await fixture()
   for (const stage of ['outline', 'characters', 'locations', 'props']) {
-    await call('PUT', `/api/projects/${project.id}/script/director/draft`, { stage, artifacts: [{ artifact_type: stage, title: stage, content: '已确认全剧资料' }] })
+    await call('PUT', `/api/projects/${project.id}/script/director/draft`, { stage, source_version: null, artifacts: [{ artifact_type: stage, title: stage, content: '已确认全剧资料' }] })
   }
-  await call('PUT', `/api/projects/${project.id}/script/director/draft`, { stage: 'episode', episode_number: 1, ...episode })
+  await call('PUT', `/api/projects/${project.id}/script/director/draft`, { stage: 'episode', episode_number: 1, source_version: null, ...episode })
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (_url, init) => {
     const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
@@ -387,8 +389,9 @@ test('stream routing announces document mode before chunks and returns a structu
   assert.equal(result.statusCode, 200)
   const events = result.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)))
   const intentIndex = events.findIndex(event => event.type === 'intent')
-  const deltaIndex = events.findIndex(event => event.type === 'delta')
-  assert.ok(intentIndex < deltaIndex)
+  const authoringIndex = events.findIndex(event => event.type === 'progress' && event.stage === 'analysis')
+  assert.ok(intentIndex >= 0 && authoringIndex > intentIndex)
+  assert.ok(!events.some(event => event.type === 'delta'), 'internal workflow JSON must not appear as chat text')
   assert.equal(events[intentIndex].workflow.episode_number, 2)
   assert.equal(events.find(event => event.type === 'done').draft.episode_number, 2)
 })
@@ -443,15 +446,16 @@ test('explicit workflow selections retain confirmed conversational context witho
   })
   assert.equal(result.draft.episode_number, 1)
   assert.match(draftingPrompt, /只写雨夜车站/)
-  assert.doesNotMatch(draftingPrompt, /未选方案是古代山寨/)
+  assert.match(draftingPrompt, /未选方案是古代山寨/)
+  assert.match(draftingPrompt, /未被创作者明确接受、未提交的选项均不构成已确认设定/)
 })
 
 test('out-of-order saved characters survive outline creation and revision, and both models recommend the next missing stage', async t => {
   const { project, model } = await fixture()
-  await call('PUT', `/api/projects/${project.id}/script/director/draft`, { stage: 'characters', artifacts: [{ artifact_type: 'characters', title: '已确认人物', content: '林：医生，寻找失踪的姐姐。' }] })
+  await call('PUT', `/api/projects/${project.id}/script/director/draft`, { stage: 'characters', source_version: null, artifacts: [{ artifact_type: 'characters', title: '已确认人物', content: '林：医生，寻找失踪的姐姐。' }] })
   const before = (await call<{ script: { artifacts: Array<{ id: string; artifact_type: string; content: string }> } }>('GET', `/api/projects/${project.id}`)).script.artifacts[0]
   for (const content of ['寻找姐姐的三幕故事', '修订故事大纲']) {
-    const saved = await call<{ characters: string; artifacts: Array<{ id: string; artifact_type: string; content: string }> }>('PUT', `/api/projects/${project.id}/script/director/draft`, { stage: 'outline', artifacts: [{ artifact_type: 'outline', title: '大纲', content }] })
+    const saved = await call<{ characters: string; artifacts: Array<{ id: string; artifact_type: string; content: string }> }>('PUT', `/api/projects/${project.id}/script/director/draft`, { stage: 'outline', source_version: null, artifacts: [{ artifact_type: 'outline', title: '大纲', content }] })
     assert.deepEqual(saved.artifacts.find(item => item.artifact_type === 'characters'), before)
     assert.equal(saved.characters, before.content)
   }
