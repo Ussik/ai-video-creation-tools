@@ -1029,7 +1029,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     if (!scriptSource || hidden || sourceUploading || sourceAnalysisStarting || !['queued', 'running'].includes(scriptSource.analysis?.status || '')) return
     let active = true
     const version = sourceReadVersion.current, sourceUpdatedAt = scriptSource.updated_at, analysisId = scriptSource.analysis!.id
-    let timer: ReturnType<typeof window.setTimeout>
+    let timer: number
     const poll = async () => {
       try {
         const analysis = await api<ScriptSourceAnalysis | null>(`/projects/${detail.id}/script/source/analysis`)
