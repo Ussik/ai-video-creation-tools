@@ -3306,8 +3306,8 @@ export function buildApp(): FastifyInstance {
     return db.transaction(() => {
       const shot = required<Shot>('shots', id)
       const asset = required<Asset>('assets', assetId)
-      if (asset.project_id !== shot.project_id || asset.shot_id !== id || asset.kind !== 'image' || asset.source !== 'generated') {
-        invalid('只能管理当前镜头生成的分镜图片候选')
+      if (asset.project_id !== shot.project_id || asset.shot_id !== id || !['image', 'video'].includes(asset.kind) || asset.source !== 'generated') {
+        invalid('只能管理当前镜头生成的图片或视频候选')
       }
       const generated = all<{ request: string }>(`SELECT request FROM jobs WHERE project_id=? AND shot_id=?
         AND job_type='generation' AND status='succeeded' AND result_asset_id=?`, shot.project_id, id, assetId)
@@ -3319,8 +3319,8 @@ export function buildApp(): FastifyInstance {
               !input.visual_reference_view && !['character', 'location', 'prop'].includes(String(input.source_artifact_type ?? ''))
           } catch { return false }
         })
-      if (!generated) invalid('图片不属于此镜头的分镜候选')
-      if (archived && shot.selected_asset_id === assetId) invalid('已选入成片的分镜图片不能归档，请先更换选片')
+      if (!generated) invalid('素材不属于此镜头的生成候选')
+      if (archived && shot.selected_asset_id === assetId) invalid('已选入成片的候选不能归档，请先更换选片')
       if (archived) run('INSERT OR IGNORE INTO shot_candidate_archives (shot_id, asset_id, created_at) VALUES (?, ?, ?)', id, assetId, now())
       else run('DELETE FROM shot_candidate_archives WHERE shot_id=? AND asset_id=?', id, assetId)
       touchProject(shot.project_id)

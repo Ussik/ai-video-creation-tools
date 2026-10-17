@@ -189,6 +189,58 @@ test('empty workbench guides users back to canvas and disables preview/export', 
   } finally { await view.destroy() }
 })
 
+test('partial cuts preview available clips, explain skipped shots and keep export blocked without changing the cut', async t => {
+  const data = fixture()
+  data.detail.timeline_clips = data.detail.timeline_clips.slice(0, 1)
+  data.detail.shots[1].selected_asset_id = null
+  const original = structuredClone(data.detail)
+  t.mock.method(dom.window.HTMLMediaElement.prototype, 'pause', () => {})
+  const view = await mount(t, data)
+  try {
+    assert.equal(button(view.container, '连续预览').disabled, false)
+    assert.equal(button(view.container.querySelector('.timeline')!, '导出视频').disabled, true)
+    assert.match(view.container.querySelector('.timeline-duration')!.textContent!, /可预览 5s.*1\/2 镜就绪/)
+    await click(button(view.container, '连续预览'))
+    const dialog = document.querySelector('.timeline-preview-modal')!
+    assert.match(dialog.querySelector('.final-cut-preview-summary')!.textContent!, /部分预览1 \/ 2 镜预览时长 5s/)
+    assert.equal(dialog.querySelectorAll('.timeline-preview-media').length, 1)
+    assert.equal(dialog.querySelector<HTMLVideoElement>('.timeline-preview-media')!.src, data.detail.assets[0].url)
+    assert.equal(dialog.querySelector<HTMLButtonElement>('[aria-label="播放预览"]')!.disabled, false)
+    assert.match(dialog.querySelector('.timeline-preview-clock')!.textContent!, /00:00\.0 \/ 00:05\.0/)
+    assert.ok(!dialog.querySelector('.timeline-preview-message')!.textContent!.includes('时间线尚未完整'))
+    await click(button(dialog, '已跳过 1 个镜头'))
+    await click(button(dialog, '02 · 回望站台'))
+    assert.match(view.container.querySelector('.final-cut-shot-summary')!.textContent!, /回望站台/)
+    assert.deepEqual(data.detail, original, 'preview and navigation preserve selections, trims and production range')
+    assert.equal(data.requests.filter(request => request.method !== 'GET').length, 0)
+  } finally { await view.destroy() }
+})
+
+test('a complete cut previews every shot and retains export eligibility', async t => {
+  t.mock.method(dom.window.HTMLMediaElement.prototype, 'pause', () => {})
+  const view = await mount(t)
+  try {
+    assert.equal(button(view.container.querySelector('.timeline')!, '导出视频').disabled, false)
+    await click(button(view.container, '连续预览'))
+    const dialog = document.querySelector('.timeline-preview-modal')!
+    assert.match(dialog.querySelector('.final-cut-preview-summary')!.textContent!, /完整预览2 \/ 2 镜预览时长 8s/)
+    assert.equal(dialog.querySelectorAll('.timeline-preview-media').length, 2)
+    assert.equal(dialog.querySelector('.final-cut-preview-missing'), null)
+    assert.equal(dialog.querySelector<HTMLButtonElement>('[aria-label="播放预览"]')!.disabled, false)
+  } finally { await view.destroy() }
+})
+
+test('a cut with no eligible clips disables continuous preview and export', async t => {
+  const data = fixture()
+  data.detail.asset_reviews = data.detail.shots.map(shot => ({ shot_id: shot.id, asset_id: shot.selected_asset_id!, status: 'rejected', note: '需重做', updated_at: data.detail.updated_at }))
+  const view = await mount(t, data)
+  try {
+    assert.equal(button(view.container, '连续预览').disabled, true)
+    assert.equal(button(view.container.querySelector('.timeline')!, '导出视频').disabled, true)
+    assert.match(view.container.querySelector('.timeline-duration')!.textContent!, /可预览 0s.*0\/2 镜就绪/)
+  } finally { await view.destroy() }
+})
+
 function withSpeech(data = fixture()) {
   const timestamp = data.detail.created_at
   const voice = { id: 'voice', name: '旁白', speaker: 'zh_female_vv_uranus_bigtts', instructions: '', speech_rate: 0 }

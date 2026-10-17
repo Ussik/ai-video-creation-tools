@@ -1,7 +1,7 @@
 import { StudioMediaPlayer } from '../shared/ui/media/StudioMediaPlayer'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Tabs, FileButton, UnstyledButton,
-  ActionIcon, Badge, Button, Checkbox, Drawer, Modal, NumberInput,
+  Accordion, ActionIcon, Badge, Button, Checkbox, Drawer, Modal, NumberInput,
   Menu as MantineMenu, Notification, Select, Textarea, TextInput, Tooltip,
   } from '@mantine/core'
 import { Dropzone } from '@mantine/dropzone'
@@ -20,6 +20,7 @@ import TimelinePreview from '../features/final-cut/TimelinePreview'
 import FinalCutSpeechPanel from '../features/final-cut/FinalCutSpeechPanel'
 import FinalCutOutputSettings from '../features/final-cut/FinalCutOutputSettings'
 import FinalCutTimeline from '../features/final-cut/FinalCutTimeline'
+import { buildPartialTimelinePreview } from '../features/final-cut/partial-timeline-preview'
 import { resolveSpeechTimeline, sliceSpeechAudio } from '@video-studio/shared/media/speech-timeline'
 import CutReviewPanel from '../features/final-cut/CutReviewPanel'
 import CandidateCompare from '../features/final-cut/CandidateCompare'
@@ -222,7 +223,6 @@ function App() {
     ? !detail.production_range?.start_shot_id && !detail.production_range?.end_shot_id
     : startIndex >= 0 && endIndex >= startIndex)
   const productionShots = productionRangeValid ? detail!.shots.slice(startIndex, endIndex + 1) : []
-  const productionShotIds = new Set(productionShots.map((shot) => shot.id))
   const draftStartIndex = rangeDraft.start_shot_id
     ? detail?.shots.findIndex((shot) => shot.id === rangeDraft.start_shot_id) ?? -1 : 0
   const draftEndIndex = rangeDraft.end_shot_id
@@ -240,18 +240,13 @@ function App() {
   const previousAsset = assetMap.get(previousClip?.asset_id || '')
   const shotAssets = detail?.assets.filter((asset) => ((asset.shot_id === shotId && asset.source !== 'export') || asset.id === currentShot?.selected_asset_id) && (asset.kind === 'image' || asset.kind === 'video')) || []
   const continuityModels = models.filter(model => model.modality === 'text' && model.enabled && providers.some(provider => provider.id === model.provider_id && provider.enabled))
-  const totalDurationMs = productionShots.reduce((sum, shot) => sum + clipDuration(clipMap.get(shot.id)), 0)
   const plannedDuration = productionShots.reduce((sum, shot) => sum + shot.duration, 0)
-  const readyCount = productionShots.filter((shot) => {
-    const clip = clipMap.get(shot.id)
-    const asset = assetMap.get(clip?.asset_id || '')
-    return !!shot.selected_asset_id && clip?.asset_id === shot.selected_asset_id && !!asset &&
-      !detail?.asset_reviews.some((review) => review.shot_id === shot.id && review.asset_id === asset.id && review.status === 'rejected') &&
-      (asset.kind === 'image' || asset.kind === 'video') && clip.out_ms - clip.in_ms >= 200 && clip.in_ms >= 0 &&
-      (asset.kind === 'image' ? clip.in_ms === 0 : clip.source_duration_ms !== null && clip.out_ms <= clip.source_duration_ms)
-  }).length
-  const canPreview = productionShots.length > 0 && readyCount === productionShots.length
   const speechTimeline = resolveSpeechTimeline(productionShots, detail?.timeline_clips || [], detail?.speech?.placements || [])
+  const timelinePreview = buildPartialTimelinePreview({ shots: productionShots, clips: detail?.timeline_clips || [],
+    assets: detail?.assets || [], assetReviews: detail?.asset_reviews || [], speechAudio: speechTimeline.audio })
+  const readyCount = timelinePreview.shots.length
+  const totalDurationMs = timelinePreview.durationMs
+  const canPreview = readyCount > 0
   const allSpeechTimeline = resolveSpeechTimeline(detail?.shots || [], detail?.timeline_clips || [], detail?.speech?.placements || [])
   const currentSpeechTimeline = productionShots.some(shot => shot.id === shotId) ? speechTimeline : allSpeechTimeline
   const currentStart = currentSpeechTimeline.shot_starts.get(shotId || '') || 0
@@ -261,7 +256,7 @@ function App() {
     !detail?.speech?.placements?.some(item => item.line_id === line.id))
   const unplacedSpeechCount = unplacedSpeechLines.length
   const speechAttentionLineId = detail?.speech?.placements?.find(item => item.id === speechTimeline.issues[0]?.placement_id)?.line_id || unplacedSpeechLines[0]?.id
-  const canExport = canPreview && speechTimeline.issues.length === 0
+  const canExport = timelinePreview.complete && speechTimeline.issues.length === 0
   const inMs = Math.round(Number(trimIn) * 1000)
   const outMs = Math.round(Number(trimOut) * 1000)
   const trimIssue = !currentClip ? null
@@ -1061,7 +1056,7 @@ function App() {
         <section className="timeline">
           <div className="timeline-head">
             <div><strong>成片时间线</strong><span className="timeline-duration">{productionRangeValid
-              ? `本次 ${productionShots.length} 镜 · 实际 ${secondsLabel(totalDurationMs)} / 规划 ${plannedDuration.toFixed(1)}s · ${readyCount}/${productionShots.length} 镜已选`
+              ? `本次 ${productionShots.length} 镜 · 可预览 ${secondsLabel(totalDurationMs)} / 规划 ${plannedDuration.toFixed(1)}s · ${readyCount}/${productionShots.length} 镜就绪`
               : '制作范围已失效，请重新选择'}</span>{productionRangeValid && <span className={`timeline-target ${totalDurationMs > targetSeconds * 1000 ? 'is-over' : ''}`}>目标约 {targetSeconds} 秒{totalDurationMs > targetSeconds * 1000 ? ` · 超出 ${secondsLabel(totalDurationMs - targetSeconds * 1000)}` : ''}</span>}</div>
             <div className="timeline-actions">
               <CutReviewPanel detail={detail} onChanged={async () => { await refreshDetail(detail.id) }} />
@@ -1070,7 +1065,9 @@ function App() {
                   end_shot_id: detail.production_range?.end_shot_id ?? null })
                 setShowProductionRange(true)
               }} leftSection={<Scissors size={15} />}>制作范围</Button>
-              <Button variant="default" size="xs" onClick={() => setShowTimelinePreview(true)} disabled={!canPreview} leftSection={<Play size={15} />}>连续预览</Button>
+              <Button variant="default" size="xs" onClick={() => setShowTimelinePreview(true)} disabled={!canPreview}
+                title={canPreview ? timelinePreview.complete ? '预览制作范围内的全部镜头' : `预览 ${readyCount} 个可用镜头，跳过 ${timelinePreview.missingShots.length} 个暂不可入片的镜头` : '选定至少一个有效片段后即可预览'}
+                leftSection={<Play size={15} />}>连续预览</Button>
               <Button variant="default" size="xs" onClick={exportVideo} disabled={busy || !canExport} title={!canExport ? '请先为制作范围内的镜头选定有效片段' : '导出视频'} leftSection={<Download size={15} />}>导出视频</Button>
             </div>
           </div>
@@ -1202,10 +1199,25 @@ function App() {
       </div>}
     </Modal>
     <Modal className="timeline-preview-modal" opened={showTimelinePreview} onClose={() => setShowTimelinePreview(false)} title="成片连续预览" size="xl" centered>
-      {detail && <TimelinePreview clips={detail.timeline_clips.filter((clip) => productionShotIds.has(clip.shot_id))}
-        assets={detail.assets} shots={productionShots} ratio={detail.ratio}
-        speechAudio={speechTimeline.audio} audioSettings={detail.audio_settings}
-        musicAsset={detail.assets.find((asset) => asset.id === detail.music_asset_id && asset.kind === 'audio') || null} />}
+      {detail && <>
+        <div className="final-cut-preview-summary">
+          <div className="final-cut-preview-summary-heading"><Badge variant="light" color={timelinePreview.complete ? 'teal' : 'gray'}>{timelinePreview.complete ? '完整预览' : '部分预览'}</Badge>
+            <strong>{readyCount} / {productionShots.length} 镜</strong><span>预览时长 {secondsLabel(totalDurationMs)}</span></div>
+          {!timelinePreview.complete && <>
+            <p>自动跳过暂不可入片的镜头，配音随画面对齐。补齐制作范围后可导出完整成片。</p>
+            <Accordion className="final-cut-preview-missing" variant="default">
+              <Accordion.Item value="missing"><Accordion.Control>已跳过 {timelinePreview.missingShots.length} 个镜头</Accordion.Control>
+                <Accordion.Panel><div className="final-cut-preview-missing-shots">{timelinePreview.missingShots.map(shot => <Button key={shot.id} variant="subtle" size="compact-xs" onClick={() => {
+                  setShowTimelinePreview(false); setShotId(shot.id)
+                }} title="查看并处理此镜头">{String(shot.position + 1).padStart(2, '0')} · {shot.title}</Button>)}</div></Accordion.Panel>
+              </Accordion.Item>
+            </Accordion>
+          </>}
+        </div>
+        <TimelinePreview clips={timelinePreview.clips} assets={detail.assets} shots={timelinePreview.shots} ratio={detail.ratio}
+          speechAudio={timelinePreview.audio} audioSettings={detail.audio_settings}
+          musicAsset={detail.assets.find((asset) => asset.id === detail.music_asset_id && asset.kind === 'audio') || null} />
+      </>}
     </Modal>
     <Modal opened={showProductionRange} onClose={() => setShowProductionRange(false)} title="本次制作范围" centered>
       {detail && <div className="production-range-editor">

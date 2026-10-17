@@ -16,6 +16,17 @@
 .final-cut-current-preview { width: 100%; max-width: 800px; margin: 0 auto 18px; }
 .final-cut-current-preview .timeline-preview-stage { max-width: calc(390px * 16 / 9); }
 .final-cut-current-preview .timeline-preview-stage.is-portrait { width: min(100%, calc(390px * 9 / 16)); }
+.final-cut-preview-summary { margin-bottom: 16px; color: var(--fc-text-secondary); }
+.final-cut-preview-summary-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; font-size: 12px; }
+.final-cut-preview-summary-heading strong { font-weight: 550; color: var(--fc-text); }
+.final-cut-preview-summary-heading > span:last-child { margin-left: auto; font-variant-numeric: tabular-nums; }
+.final-cut-preview-summary p { margin: 10px 0 6px; color: var(--fc-text-muted); font-size: 12px; line-height: 1.7; }
+.final-cut-preview-missing .mantine-Accordion-item { border-bottom-color: var(--fc-border-soft); }
+.final-cut-preview-missing .mantine-Accordion-control { padding: 0; color: var(--fc-text-secondary); }
+.final-cut-preview-missing .mantine-Accordion-label { padding: 8px 0; font-size: 12px; }
+.final-cut-preview-missing .mantine-Accordion-content { padding: 0 0 10px; }
+.final-cut-preview-missing-shots { display: flex; flex-wrap: wrap; gap: 6px; max-height: 108px; overflow-y: auto; }
+.final-cut-preview-missing-shots .mantine-Button-root { max-width: 100%; }
 .final-cut-speech-panel { display: grid; gap: 12px; min-width: 0; }
 .final-cut-speech-text { color: var(--fc-text-secondary); font-size: 12px; line-height: 1.7; white-space: pre-wrap; }
 .final-cut-speech-empty { display: grid; gap: 12px; color: var(--fc-text-muted); font-size: 12px; line-height: 1.7; }

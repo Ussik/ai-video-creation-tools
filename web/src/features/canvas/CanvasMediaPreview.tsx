@@ -5,7 +5,7 @@ import CanvasImagePreview from './CanvasImagePreview'
 import './canvas-media-preview.css'
 
 export default function CanvasMediaPreview({ asset, title, onClose }: { asset: Asset; title: string; onClose: () => void }) {
-  return <Modal opened onClose={onClose} closeOnEscape={false} centered size="min(1600px, calc(100vw - 32px))" radius={14} padding={0} zIndex={240}
+  return <Modal opened onClose={onClose} closeOnEscape={false} fullScreen xOffset={0} yOffset={0} radius={0} padding={0} zIndex={240}
     title={title || asset.filename} closeButtonProps={{ 'aria-label': '关闭素材预览' }}
     classNames={{ content: 'pc-media-preview', header: 'pc-media-preview-header', title: 'pc-media-preview-title', body: 'pc-media-preview-body' }}
     onPointerDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()} onKeyDown={event => {

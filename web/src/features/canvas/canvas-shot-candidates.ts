@@ -1,7 +1,7 @@
 import type { Asset, ProjectDetail } from '../../shared/api/api'
 
 /** Candidates belong to a shot, so earlier runs and other canvases share its history. */
-export function shotImageCandidates(shotId: string | null | undefined, detail: Pick<ProjectDetail, 'id' | 'assets' | 'jobs'>): Asset[] {
+export function shotMediaCandidates(shotId: string | null | undefined, detail: Pick<ProjectDetail, 'id' | 'assets' | 'jobs'>, modality: 'image' | 'video'): Asset[] {
   if (!shotId) return []
   const ids = new Set<string>()
   for (const job of detail.jobs) {
@@ -18,6 +18,6 @@ export function shotImageCandidates(shotId: string | null | undefined, detail: P
     } catch { /* Malformed legacy task metadata cannot establish candidate provenance. */ }
   }
   return detail.assets.filter(asset => ids.has(asset.id) && asset.project_id === detail.id && asset.shot_id === shotId
-    && asset.kind === 'image' && asset.source === 'generated')
+    && asset.kind === modality && asset.source === 'generated')
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
 }

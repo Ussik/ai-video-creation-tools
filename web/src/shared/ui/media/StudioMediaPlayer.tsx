@@ -39,7 +39,10 @@ export function StudioMediaPlayer({ kind = 'video', ref, controls = true, onLoad
     onError: (event: React.SyntheticEvent<HTMLVideoElement & HTMLAudioElement>) => { setError('素材无法播放，请检查文件。'); onError?.(event) },
   }
   const changeVolume = (value: number) => { if (element.current) { element.current.muted = value === 0; element.current.volume = value / 100 }; setVolume(value) }
-  return <div ref={wrapper} className={`studio-media-player is-${kind}${controls ? ' has-controls' : ''}`} onPointerDown={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
+  return <div ref={wrapper} className={`studio-media-player is-${kind}${controls ? ' has-controls' : ''}`} onPointerDown={event => event.stopPropagation()} onKeyDown={event => {
+    // Dialog dismissal and focus trapping also apply while a media control is focused.
+    if (event.key !== 'Escape' && event.key !== 'Tab') event.stopPropagation()
+  }}>
     {kind === 'video' ? <video {...engineProps as VideoHTMLAttributes<HTMLVideoElement>} ref={mergedRef as Ref<HTMLVideoElement>} /> : <audio {...engineProps as AudioHTMLAttributes<HTMLAudioElement>} ref={mergedRef as Ref<HTMLAudioElement>} />}
     {controls && <div className="studio-media-controls nodrag nowheel" role="group" aria-label={kind === 'video' ? '视频播放控制' : '音频播放控制'}>
       <Tooltip label={playing ? '暂停' : '播放'}><ActionIcon aria-label={playing ? '暂停素材' : '播放素材'} onClick={() => {

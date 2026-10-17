@@ -140,7 +140,15 @@ async function mount(props: ProjectCanvasProps, viewport?: { width: number; heig
     await act(() => root.unmount()); container.remove()
     throw issue instanceof AggregateError ? issue.errors[0] : issue
   }
-  return { container, render, destroy: async () => { await act(() => root.unmount()); container.remove(); frames.clear() } }
+  return { container, render, destroy: async () => {
+    // d3 camera transitions use real elapsed time as well as RAF. Let their
+    // final frame run before discarding this harness's manual frame queue so
+    // d3 can clear its animation timer rather than leave an active interval.
+    if (frames.size) {
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 350)) }); await settle()
+    }
+    await act(() => root.unmount()); container.remove(); frames.clear()
+  } }
 }
 function propsFor(base: ProjectDetail, version: number, calls: string[]): ProjectCanvasProps {
   return { detail: base, models, providers, initialLocation: { view: 'canvas', storyboardId: null },
@@ -161,14 +169,18 @@ function button(container: HTMLElement, label: string) {
   const element = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)
   assert.ok(element, label); return element
 }
-function mockCanvas(t: TestContext) {
+function mockCanvas(t: TestContext, canvasGraph: CanvasGraph = graph) {
   const requests: Array<{ path: string; method: string }> = []
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
-    if (String(url) === '/api/projects/refresh/canvases') return Response.json([{ id: 'refresh', project_id: 'refresh', name: '画布 1', is_default: true, node_count: graph.nodes.length, viewport: null }])
+    if (String(url) === '/api/projects/refresh/canvases') return Response.json([{ id: 'refresh', project_id: 'refresh', name: '画布 1', is_default: true, node_count: canvasGraph.nodes.length, viewport: null }])
     const path = String(url), method = init?.method || 'GET'; requests.push({ path, method })
+    if (path === '/api/projects/refresh/canvases/refresh' && method === 'PATCH') {
+      return Response.json({ id: 'refresh', project_id: 'refresh', name: '画布 1', is_default: true, node_count: canvasGraph.nodes.length,
+        ...JSON.parse(String(init?.body)) })
+    }
     assert.equal(path, '/api/projects/refresh/canvas')
     assert.equal(method, 'GET', 'unchanged canvas must not autosave')
-    return Response.json(graph)
+    return Response.json(canvasGraph)
   })
   return requests
 }
@@ -320,6 +332,150 @@ async function answerDialog(text: '取消' | '移除' | '清空画布') {
 
 const selectedIds = (container: HTMLElement) => geometry(container).nodes.filter(item => item.selected).map(item => item.id)
 const nodeIds = (container: HTMLElement) => geometry(container).nodes.map(item => item.id)
+
+async function nodeFilterMenu(container: HTMLElement) {
+  await act(() => button(container, '筛选画布节点类型').click()); await settle()
+  const menu = document.querySelector<HTMLElement>('[role="menu"]')
+  assert.ok(menu, 'node filter opens the component menu')
+  return menu
+}
+
+async function chooseNodeFilter(container: HTMLElement, label: string) {
+  const menu = await nodeFilterMenu(container)
+  const option = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(item => item.textContent?.trim().startsWith(label))
+  assert.ok(option, `filter option ${label}`)
+  await act(() => option.click()); await settle()
+}
+
+function mixedModalityCanvas() {
+  const canvasGraph = structuredClone(graph)
+  canvasGraph.nodes.push(
+    { ...node('image-generation', 'generation', 1400, 80, 400, 300), title: '补充图片', settings: { modality: 'image' } },
+    { ...node('video-generation', 'generation', 1400, 550, 440, 300), title: '镜头视频', model_id: 'video-model' },
+    { ...node('text-generation', 'generation', 1400, 980, 420, 340), title: '文字生成', settings: { modality: 'text' } },
+  )
+  canvasGraph.edges.push({ id: 'image-to-video', source: 'image', target: 'video-generation' })
+  const props = propsFor(detail, 0, [])
+  props.models = [{ id: 'video-model', provider_id: 'provider', name: '视频模型', remote_id: 'video-model', modality: 'video',
+    protocol: 'async_video', enabled: true, settings: { supported_modes: ['text'], resolutions: ['720p'], ratios: ['9:16'] } }]
+  return { canvasGraph, props }
+}
+
+test('node type filters include generated modalities and profile images, hide crossing edges and minimap entries, and restore the complete canvas', async t => {
+  const { canvasGraph, props } = mixedModalityCanvas()
+  const original = structuredClone(canvasGraph), requests = mockCanvas(t, canvasGraph)
+  const view = await mount(props)
+  try {
+    const menu = await nodeFilterMenu(view.container)
+    for (const [label, count] of [['全部节点', 7], ['图片节点', 3], ['视频节点', 1], ['文本节点', 2], ['剧本节点', 1]] as const) {
+      const option = [...menu.querySelectorAll('[role="menuitem"]')].find(item => item.textContent?.trim().startsWith(label))
+      assert.ok(option, label)
+      assert.match(option.textContent!.trim(), new RegExp(`${label}\\s*${count}$`), `${label} shows its full graph count`)
+    }
+    const imageOption = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(item => item.textContent?.startsWith('图片节点'))!
+    await act(() => imageOption.click()); await settle()
+    assert.deepEqual(nodeIds(view.container), ['image', 'profile', 'image-generation'])
+    assert.equal(view.container.querySelectorAll('.react-flow__edge-path').length, 1, 'only the image-to-image connection remains visible')
+    await act(() => button(view.container, '显示小地图').click()); await settle()
+    assert.equal(view.container.querySelectorAll('.react-flow__minimap-node').length, 3, 'minimap excludes hidden nodes')
+    await chooseNodeFilter(view.container, '视频节点')
+    assert.deepEqual(nodeIds(view.container), ['video-generation'], 'a generation node inherits its model modality')
+    assert.equal(view.container.querySelectorAll('.react-flow__edge-path').length, 0)
+    assert.equal(view.container.querySelectorAll('.react-flow__minimap-node').length, 1)
+    await chooseNodeFilter(view.container, '文本节点')
+    assert.deepEqual(nodeIds(view.container), ['text', 'text-generation'])
+    await chooseNodeFilter(view.container, '剧本节点')
+    assert.deepEqual(nodeIds(view.container), ['script'])
+    await chooseNodeFilter(view.container, '全部节点')
+    assert.deepEqual(nodeIds(view.container), canvasGraph.nodes.map(node => node.id))
+    assert.equal(view.container.querySelectorAll('.react-flow__edge-path').length, 3)
+    assert.equal(view.container.querySelectorAll('.react-flow__minimap-node').length, 7)
+    assert.deepEqual(canvasGraph, original, 'filtering never changes persisted nodes or connections')
+    assert.equal(requests.some(request => request.method === 'PUT'), false)
+  } finally { await view.destroy() }
+})
+
+test('filter changes trim hidden selections and select-all scopes to visible nodes; an empty filter can recover without saving', async t => {
+  const requests = mockCanvas(t)
+  const view = await mount(propsFor(detail, 0, []))
+  try {
+    const surface = view.container.querySelector('.pc-flow')!
+    await key(surface, 'a', { ctrlKey: true })
+    assert.deepEqual(selectedIds(view.container), graph.nodes.map(node => node.id))
+    await chooseNodeFilter(view.container, '图片节点')
+    assert.deepEqual(selectedIds(view.container), ['image', 'profile'], 'hidden script and text nodes leave the selection')
+    await key(surface, 'Escape')
+    await key(surface, 'a', { ctrlKey: true })
+    assert.deepEqual(selectedIds(view.container), ['image', 'profile'], 'select-all cannot select hidden nodes')
+    assert.match(view.container.querySelector('.pc-selection-toolbar')!.textContent!, /已选 2 个节点/)
+    await chooseNodeFilter(view.container, '视频节点')
+    assert.deepEqual(nodeIds(view.container), [])
+    assert.deepEqual(selectedIds(view.container), [])
+    assert.equal(view.container.querySelector('.pc-selection-toolbar'), null)
+    await key(surface, 'a', { ctrlKey: true })
+    assert.equal(view.container.querySelector('.pc-selection-toolbar'), null, 'empty view cannot select hidden graph records')
+    await clickText(view.container, '显示全部节点')
+    assert.deepEqual(nodeIds(view.container), graph.nodes.map(node => node.id))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 750)) }); await settle()
+    assert.equal(requests.some(request => request.method === 'PUT'), false, 'filter and selection changes do not autosave graph data')
+    assert.equal(dom.window.localStorage.getItem('project-canvas-draft:refresh'), null)
+  } finally { await view.destroy() }
+})
+
+test('parent refresh preserves the session filter and locating a hidden node from the sidebar reveals and selects it without saving', async t => {
+  const requests = mockCanvas(t)
+  const view = await mount(propsFor(detail, 0, []))
+  try {
+    await chooseNodeFilter(view.container, '图片节点')
+    await view.render(propsFor(structuredClone(detail), 1, []))
+    assert.deepEqual(nodeIds(view.container), ['image', 'profile'], 'polling does not reset the current filter')
+    await act(() => button(view.container, '打开左侧节点列表').click()); await settle()
+    const hiddenNode = [...view.container.querySelectorAll<HTMLButtonElement>('.pc-sidebar-node-main')]
+      .find(item => item.querySelector('strong')?.textContent === '镜头提示词')
+    assert.ok(hiddenNode, 'sidebar retains hidden canvas nodes')
+    await act(() => hiddenNode.click()); await settle()
+    assert.deepEqual(nodeIds(view.container), graph.nodes.map(node => node.id), 'locating a hidden node restores all node types')
+    assert.deepEqual(selectedIds(view.container), ['text'])
+    assert.ok(view.container.querySelector('[data-id="text"] [contenteditable="true"]'), 'revealed text node is the active editing target')
+    assert.equal(requests.some(request => request.method === 'PUT'), false)
+  } finally { await view.destroy() }
+})
+
+test('filtered deletion saves the complete remaining graph and undo restores it; adding a hidden type reveals the new node', async t => {
+  const { saved } = mockEditableCanvas(t)
+  const view = await mount(propsFor(detail, 0, []))
+  try {
+    const surface = view.container.querySelector('.pc-flow')!
+    await chooseNodeFilter(view.container, '文本节点')
+    await key(surface, 'a', { ctrlKey: true })
+    assert.deepEqual(selectedIds(view.container), ['text'])
+    await key(surface, 'Delete'); await answerDialog('移除')
+    assert.deepEqual(nodeIds(view.container), [], 'the only visible text node was removed')
+    await chooseNodeFilter(view.container, '全部节点')
+    assert.deepEqual(nodeIds(view.container), ['script', 'image', 'profile'], 'hidden nodes survive the visible selection deletion')
+    assert.equal(view.container.querySelectorAll('.react-flow__edge-path').length, 1)
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 750)) }); await settle()
+    assert.equal(saved.length, 1)
+    assert.deepEqual(saved[0].nodes.map(node => node.id), ['script', 'image', 'profile'])
+    assert.deepEqual(saved[0].edges, [{ id: 'reference', source: 'image', target: 'profile' }], 'an unrelated hidden-node connection is persisted')
+    await act(() => button(view.container, '撤销画布操作').click()); await settle()
+    assert.deepEqual(nodeIds(view.container), graph.nodes.map(node => node.id))
+    assert.equal(view.container.querySelectorAll('.react-flow__edge-path').length, 2)
+    await chooseNodeFilter(view.container, '图片节点')
+    await act(() => button(view.container, '添加视频生成节点').click()); await settle()
+    const newId = nodeIds(view.container).find(id => !graph.nodes.some(node => node.id === id))
+    assert.ok(newId, 'new video generation node becomes visible despite the previous image filter')
+    assert.deepEqual(nodeIds(view.container), [...graph.nodes.map(node => node.id), newId], 'adding a hidden type restores all nodes')
+    assert.deepEqual(selectedIds(view.container), [newId])
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 750)) }); await settle()
+    const latest = saved.at(-1)!
+    assert.equal(latest.nodes.find(node => node.id === newId)?.settings.modality, 'video')
+    assert.deepEqual(latest.edges, graph.edges)
+    for (const snapshot of saved) {
+      for (const item of [...snapshot.nodes, ...snapshot.edges]) assert.equal(Object.hasOwn(item, 'hidden'), false, 'view-only visibility is never serialized')
+    }
+  } finally { await view.destroy() }
+})
 
 test('Shift box selection keeps its complete batch when the selection overlay receives a right click', async t => {
   mockCanvas(t)

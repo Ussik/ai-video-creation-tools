@@ -7,7 +7,7 @@
 .pc-shot-candidate-strip > button { position: relative; flex: 0 0 104px; height: 76px; padding: 0; border: 1px solid var(--fc-border); border-radius: 7px; overflow: hidden; background: var(--fc-surface-muted); cursor: pointer; }
 .pc-shot-candidate-strip > button[aria-pressed="true"] { border-color: var(--fc-border-strong); box-shadow: 0 0 0 1px var(--fc-border-strong); }
 .pc-shot-candidate-strip img { display: block; width: 100%; height: 100%; object-fit: contain; }
-.pc-shot-candidate-strip > button > span { position: absolute; right: 0; bottom: 0; left: 0; display: flex; justify-content: center; align-items: center; gap: 3px; padding: 3px; background: rgba(0, 0, 0, .66); color: #fff; font-size: 10px; }
+.pc-shot-candidate-strip > button > span { position: absolute; right: 0; bottom: 0; left: 0; display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 3px; padding: 3px; background: rgba(0, 0, 0, .66); color: #fff; font-size: 10px; }
 .pc-shot-candidate-strip > button:disabled:not([aria-pressed="true"]) { cursor: wait; opacity: .6; }
 .pc-shot-candidate-strip > button[aria-pressed="true"] { cursor: default; }
 .pc-shot-candidate-empty-inline { margin: 0; padding: 9px 0; font-size: 11px; color: var(--fc-text-muted); }
@@ -20,11 +20,21 @@
 .pc-shot-candidate-grid > button { min-width: 0; padding: 0; overflow: hidden; border: 1px solid var(--fc-border); border-radius: 8px; color: var(--fc-text-secondary); background: var(--fc-surface-muted); cursor: pointer; }
 .pc-shot-candidate-grid > button[aria-pressed="true"] { border-color: var(--fc-border-strong); box-shadow: 0 0 0 1px var(--fc-border-strong); }
 .pc-shot-candidate-grid img { display: block; width: 100%; height: 100px; object-fit: contain; }
-.pc-shot-candidate-grid > button > span { display: flex; justify-content: center; align-items: center; gap: 4px; padding: 6px; font-size: 11px; }
+.pc-shot-candidate-strip .pc-node-empty,
+.pc-shot-candidate-grid .pc-node-empty { display: grid; justify-items: center; align-content: center; gap: 5px; height: 100%; padding: 8px; color: var(--fc-text-muted); }
+.pc-shot-candidate-strip .pc-node-empty > span,
+.pc-shot-candidate-grid .pc-node-empty > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+.pc-shot-candidate-grid .pc-node-empty { height: 100px; }
+.pc-shot-candidate-grid > button > span { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px; padding: 6px; font-size: 11px; }
+.pc-shot-candidate-state { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
 .pc-shot-candidate-detail { min-width: 0; display: grid; align-content: start; gap: 12px; }
 .pc-shot-candidate-preview { position: relative; display: grid; place-items: center; width: 100%; height: min(48vh, 440px); min-height: 200px; overflow: hidden; border: 1px solid var(--fc-border); border-radius: 10px; background: var(--fc-surface); cursor: zoom-in; }
 .pc-shot-candidate-preview > img { width: 100%; height: 100%; min-height: 0; object-fit: contain; }
 .pc-shot-candidate-preview > span { position: absolute; right: 10px; bottom: 10px; display: flex; align-items: center; gap: 5px; padding: 5px 8px; border-radius: 6px; background: rgba(0, 0, 0, .66); color: #fff; font-size: 11px; }
+.pc-shot-candidate-video-preview { cursor: default; }
+.pc-shot-candidate-video-preview > .studio-media-player { min-height: 0; }
+.pc-shot-candidate-video-preview > img { height: 100%; }
+.pc-shot-candidate-expand { justify-self: end; color: var(--fc-text-secondary); }
 .pc-shot-candidate-meta { display: grid; gap: 4px; font-size: 11px; color: var(--fc-text-secondary); }
 .pc-shot-candidate-meta > strong { font-size: 12px; color: var(--fc-text); }
 .pc-shot-candidate-actions { display: flex; flex-wrap: wrap; gap: 8px; }

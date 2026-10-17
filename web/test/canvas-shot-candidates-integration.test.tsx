@@ -24,6 +24,7 @@ Object.defineProperty(dom.window, 'matchMedia', { value: () => ({ matches: false
 Object.defineProperty(dom.window.document, 'fonts', { value: { addEventListener() {}, removeEventListener() {} } })
 dom.window.HTMLElement.prototype.scrollIntoView = () => {}
 dom.window.HTMLElement.prototype.scrollTo = () => {}
+dom.window.HTMLMediaElement.prototype.pause = () => {}
 let frameId = 0
 const frames = new Map<number, FrameRequestCallback>()
 const requestFrame = (callback: FrameRequestCallback) => { frames.set(++frameId, callback); return frameId }
@@ -147,7 +148,7 @@ async function settle() {
     }
   })
 }
-async function mount(detail: ProjectDetail) {
+async function mount(detail: ProjectDetail, nodeId = 'image-node') {
   dom.window.localStorage.clear(); dom.window.sessionStorage.clear(); frames.clear()
   dom.window.localStorage.setItem(`project-canvas-viewport:${projectId}`, JSON.stringify({ x: 0, y: 0, zoom: 0.8 }))
   const container = document.createElement('div'); document.body.append(container)
@@ -158,7 +159,7 @@ async function mount(detail: ProjectDetail) {
   const render = () => root.render(<MantineProvider env="test"><ProjectCanvas {...props} /></MantineProvider>)
   try {
     await act(render); await settle()
-    const image = container.querySelector<HTMLElement>('[data-id="image-node"]')
+    const image = container.querySelector<HTMLElement>(`[data-id="${nodeId}"]`)
     assert.ok(image)
     await act(() => image.click()); await settle()
   } catch (issue) { await act(() => root.unmount()); container.remove(); throw issue instanceof AggregateError ? issue.errors[0] : issue }
@@ -292,4 +293,117 @@ test('choosing history after a failed job does not consume that job before its s
     assert.equal(api.graph().nodes.find(node => node.id === 'image-node')?.settings.generation_completed_job_id, 'retry-job')
     assert.equal(api.requests.some(request => request.path.includes('/generate')), false, 'this test simulates status polling without creating a generation')
   } finally { if (view.container.isConnected) await view.destroy() }
+})
+
+function videoFixture() {
+  const data = fixture()
+  data.detail.assets.find(asset => asset.id === 'final-video')!.created_at = latestTimestamp
+  data.detail.assets.push(asset('older-video', { kind: 'video', filename: 'older-video.mp4', model_id: videoModel.id }),
+    asset('profile-video', { kind: 'video' }), asset('failed-video', { kind: 'video' }),
+    asset('foreign-video', { kind: 'video', shot_id: 'other-shot' }), asset('uploaded-video', { kind: 'video', source: 'upload' }))
+  data.detail.jobs.push(job('older-video-job', 'older-video', { modality: 'video' }, { model_id: videoModel.id }),
+    job('profile-video-job', 'profile-video', { modality: 'video', visual_profile_id: 'hero' }),
+    job('failed-video-job', 'failed-video', { modality: 'video' }, { status: 'failed' }),
+    job('foreign-video-job', 'foreign-video', { modality: 'video' }, { shot_id: 'other-shot' }))
+  return data
+}
+function videoStrip(container: HTMLElement) {
+  const strip = container.querySelector<HTMLElement>('[aria-label="视频候选"]')
+  assert.ok(strip, 'video composer exposes candidate management'); return strip
+}
+function selectedVideo(container: HTMLElement) {
+  return container.querySelector<HTMLVideoElement>('[data-id="video-node"] .pc-node-output video')?.getAttribute('src')
+}
+async function useVideoCandidate(container: HTMLElement, index = 2) {
+  const button = videoStrip(container).querySelector<HTMLButtonElement>(`[aria-label="使用视频候选 ${index}"]`)
+  assert.ok(button)
+  await act(() => button.click()); await settle()
+}
+
+test('video candidates filter media provenance and persist an older choice through polling and reload without changing the final cut', async t => {
+  const { detail, graph } = videoFixture(), original = structuredClone(detail)
+  const api = mockApi(t, graph)
+  let view = await mount(detail, 'video-node')
+  try {
+    assert.equal(videoStrip(view.container).querySelector('.pc-shot-candidates-count')?.textContent, '2')
+    assert.equal(videoStrip(view.container).querySelectorAll('[aria-label^="使用视频候选"]').length, 2)
+    assert.match(videoStrip(view.container).textContent!, /已入片/)
+    await useVideoCandidate(view.container)
+    assert.equal(selectedVideo(view.container), '/api/assets/older-video/file')
+    await view.rerender(structuredClone(detail))
+    assert.equal(selectedVideo(view.container), '/api/assets/older-video/file', 'completed latest-job polling cannot override the older video')
+    await view.destroy()
+    const saved = api.graph(), video = saved.nodes.find(node => node.id === 'video-node')!
+    assert.equal(video.asset_id, 'older-video')
+    assert.equal(video.job_id, 'video-job')
+    assert.equal(video.settings.generation_completed_job_id, 'video-job')
+    assert.deepEqual(saved.edges, graph.edges, 'pinned storyboard references remain intact')
+    assert.equal(video.settings.storyboard_reference_asset_id, 'latest')
+    assert.deepEqual(detail, original, 'candidate use changes only the canvas, preserving the chosen final clip and trim')
+    view = await mount(structuredClone(detail), 'video-node')
+    assert.equal(selectedVideo(view.container), '/api/assets/older-video/file')
+    assert.ok(api.requests.every(request => !/generate|selection|timeline/.test(request.path)))
+  } finally { if (view.container.isConnected) await view.destroy() }
+})
+
+test('a failed video candidate save restores the current video and can be retried', async t => {
+  const { detail, graph } = videoFixture()
+  const api = mockApi(t, graph)
+  const view = await mount(detail, 'video-node')
+  try {
+    api.control.failNextSave = true
+    await useVideoCandidate(view.container)
+    assert.equal(selectedVideo(view.container), '/api/assets/final-video/file')
+    assert.match(videoStrip(view.container).querySelector('[role="alert"]')!.textContent!, /模拟候选保存失败/)
+    await useVideoCandidate(view.container)
+    assert.equal(selectedVideo(view.container), '/api/assets/older-video/file')
+    assert.equal(api.graph().nodes.find(node => node.id === 'video-node')?.asset_id, 'older-video')
+  } finally { await view.destroy() }
+})
+
+test('a new video job completion applies once and subsequent history choices survive its refresh', async t => {
+  const { detail, graph } = videoFixture()
+  const video = graph.nodes.find(node => node.id === 'video-node')!
+  video.job_id = 'next-video-job'; video.asset_id = null
+  video.settings.generation_completed_job_id = 'video-job'
+  const queued = { ...detail, jobs: [...detail.jobs, job('next-video-job', '', { modality: 'video' }, { model_id: videoModel.id, status: 'queued', result_asset_id: null })] }
+  const api = mockApi(t, graph)
+  const view = await mount(queued, 'video-node')
+  try {
+    assert.equal(videoStrip(view.container).querySelector<HTMLButtonElement>('[aria-label="使用视频候选 2"]')!.disabled, true)
+    const completed = { ...detail,
+      jobs: [...detail.jobs, job('next-video-job', 'next-video', { modality: 'video' }, { model_id: videoModel.id, created_at: '2026-10-17T03:00:00Z' })],
+      assets: [...detail.assets, asset('next-video', { kind: 'video', model_id: videoModel.id, created_at: '2026-10-17T03:00:00Z' })] }
+    await view.rerender(completed)
+    assert.equal(selectedVideo(view.container), '/api/assets/next-video/file')
+    await useVideoCandidate(view.container, 3)
+    assert.equal(selectedVideo(view.container), '/api/assets/older-video/file')
+    await view.rerender(structuredClone(completed))
+    assert.equal(selectedVideo(view.container), '/api/assets/older-video/file')
+    assert.equal(api.graph().nodes.find(node => node.id === 'video-node')?.settings.generation_completed_job_id, 'next-video-job')
+  } finally { await view.destroy() }
+})
+
+test('video candidate management and full-screen playback pause underlying players and Escape preserves the selected node', async t => {
+  const { detail, graph } = videoFixture()
+  mockApi(t, graph)
+  const view = await mount(detail, 'video-node')
+  try {
+    const manage = [...videoStrip(view.container).querySelectorAll('button')].find(button => button.textContent === '管理候选')!
+    await act(() => manage.click()); await settle()
+    assert.equal(selectedVideo(view.container), undefined, 'opening the manager pauses the canvas video')
+    assert.ok(document.querySelector('.pc-shot-candidate-video-preview video'))
+    await act(() => document.querySelector<HTMLButtonElement>('[aria-label="全屏查看视频候选"]')!.click()); await settle()
+    const preview = document.querySelector<HTMLElement>('.pc-media-preview')!
+    assert.ok(preview.hasAttribute('data-full-screen'))
+    assert.equal(preview.querySelector('video')?.getAttribute('src'), '/api/assets/final-video/file')
+    assert.equal(document.querySelector('.pc-shot-candidate-video-preview video'), null, 'full-screen playback pauses the manager video')
+    await act(() => preview.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))); await settle()
+    assert.equal(document.querySelector('.pc-media-preview'), null)
+    assert.ok(document.querySelector('.pc-shot-candidate-modal'), 'Escape leaves the manager open')
+    assert.ok(document.querySelector('.pc-shot-candidate-video-preview video'))
+    await act(() => document.querySelector<HTMLButtonElement>('[aria-label="关闭视频候选"]')!.click()); await settle()
+    assert.equal(selectedVideo(view.container), '/api/assets/final-video/file', 'closing the manager restores the selected node player')
+    assert.ok(videoStrip(view.container))
+  } finally { await view.destroy() }
 })

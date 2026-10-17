@@ -51,9 +51,10 @@ async function pointer(element: HTMLElement, type: string, x: number, y: number,
   await act(() => element.dispatchEvent(event))
 }
 
-test('preview uses original pixels, starts fitted, and offers 100%, zoom controls and reset', async () => {
+test('full-screen image preview uses original pixels, starts fitted, and offers 100%, zoom controls and reset', async () => {
   const view = await mount()
   try {
+    assert.equal(document.querySelector('[role="dialog"]')?.hasAttribute('data-full-screen'), true)
     const { element } = await view.load()
     assert.equal(element.getAttribute('src'), image.url)
     assert.match(element.style.transform, /scale\(0\.244\)/)
@@ -127,19 +128,20 @@ test('a failed image shows a clear state and disables zoom; preview remains dism
   } finally { await view.destroy() }
 })
 
-test('video preview keeps the original player and has no image zoom controls', async () => {
+test('full-screen video preview keeps the original player and has no image zoom controls', async () => {
   const view = await mount({ ...image, kind: 'video', filename: '视频.mp4' })
   try {
+    assert.equal(document.querySelector('[role="dialog"]')?.hasAttribute('data-full-screen'), true)
     assert.equal(document.querySelector('video')?.getAttribute('src'), image.url)
     assert.equal(document.querySelector('[aria-label="图片缩放控制"]'), null)
   } finally { await view.destroy() }
 })
 
-test('Escape closes only a candidate image preview, preserving its manager and canvas composer; Tab reaches document', async () => {
+for (const modality of ['image', 'video'] as const) test(`Escape closes only a candidate ${modality} preview, preserving its manager and canvas composer; Tab reaches document`, async () => {
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container)
   let canvasEscapes = 0, candidateCloses = 0, previewCloses = 0, documentTabs = 0
-  const candidate = { ...image, created_at: '2026-10-17T10:00:00Z', source: 'generated' } as Asset
+  const candidate = { ...image, kind: modality, created_at: '2026-10-17T10:00:00Z', source: 'generated' } as Asset
   const observeTab = (event: KeyboardEvent) => { if (event.key === 'Tab') documentTabs++ }
   function Harness() {
     const [composerOpen, setComposerOpen] = useState(true)
@@ -149,7 +151,7 @@ test('Escape closes only a candidate image preview, preserving its manager and c
       if (event.key === 'Escape') { canvasEscapes++; setComposerOpen(false) }
     }}>
       <div data-testid="composer-state">{composerOpen ? 'composer-open' : 'composer-closed'}</div>
-      {managerOpen && <ShotCandidateManager candidates={[candidate]} archivedAssetIds={[]} displayedAssetId={candidate.id} models={[]} title="船头分镜"
+      {managerOpen && <ShotCandidateManager modality={modality} candidates={[candidate]} archivedAssetIds={[]} displayedAssetId={candidate.id} models={[]} title="船头分镜"
         previewOpen={Boolean(preview)} onUse={async () => {}} onArchive={async () => {}} onPreview={setPreview}
         onClose={() => { candidateCloses++; setManagerOpen(false) }} />}
       {preview && <CanvasMediaPreview asset={preview} title="分镜图候选预览" onClose={() => { previewCloses++; setPreview(null) }} />}
@@ -158,14 +160,22 @@ test('Escape closes only a candidate image preview, preserving its manager and c
   document.addEventListener('keydown', observeTab)
   try {
     await act(() => root.render(<MantineProvider env="test"><Harness /></MantineProvider>))
-    await click('放大查看分镜候选图')
+    await click(modality === 'image' ? '放大查看分镜候选图' : '全屏查看视频候选')
     assert.equal(document.querySelectorAll('[role="dialog"]').length, 2)
-    const viewport = document.querySelector<HTMLElement>('.pc-media-preview [aria-label="图片详情查看器"]')!
-    assert.ok(viewport)
-    await act(() => viewport.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })))
+    const focusTarget = document.querySelector<HTMLElement>(modality === 'image'
+      ? '.pc-media-preview [aria-label="图片详情查看器"]' : '.pc-media-preview [aria-label="播放素材"]')!
+    assert.ok(focusTarget)
+    await act(() => focusTarget.focus())
+    if (modality === 'video') {
+      const video = document.querySelector<HTMLVideoElement>('.pc-media-preview video')!
+      video.play = async () => {}
+      await act(() => focusTarget.click())
+    }
+    assert.equal(document.activeElement, focusTarget)
+    await act(() => focusTarget.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })))
     assert.equal(documentTabs, 1, 'Tab must reach Mantine document-level focus trapping')
     const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
-    await act(() => viewport.dispatchEvent(escape))
+    await act(() => focusTarget.dispatchEvent(escape))
     assert.equal(escape.defaultPrevented, true)
     assert.equal(previewCloses, 1)
     assert.equal(document.querySelector('.pc-media-preview'), null)
