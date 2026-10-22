@@ -1,5 +1,7 @@
 # 标准音色配音
 
+实现核对：2026-10-22，代码提交 `9ba5a25`；官方音色目录仍使用 2026-10-13 的本地快照，本次未联网刷新目录或发起语音合成。
+
 项目使用豆包语音合成大模型 2.0 的标准音色，为角色对白和旁白生成独立 MP3 音频。官方标准音色可用于对白与旁白；每个角色固定 Speaker ID，单句调整表演。当前不接入声音复刻槽位。
 
 ## 入口与流程
@@ -11,6 +13,8 @@
 - 编辑朗读正文、表演要求和情境参考；点击“生成配音”才会创建合成任务。表演/情境通过语音指令提交，不拼入朗读正文。
 - 在候选音频中试听，点击“选用此版本”保存到资产库。修改台词或角色声音后可生成新候选；旧版本保留原始文本、音色和表演快照。
 - 选用后，在“配音入片”选择起始镜头，设置相对镜头起点的时间、音频入出点和音量，再点击“加入成片”。也可在成片工作台右侧直接处理本场台词。配音可以跨镜头播放，镜头重排后起点跟随所锚定的镜头。
+
+角色声音、台词和候选属于项目；入片位置按成片方案分别保存。同一句已选配音可以在原方案和重新设计方案中分别设置起始镜头，修改其中一套入片位置不会覆盖另一套。普通画布共享原方案，重新设计的画布拥有独立方案。在成片工作台确认当前方案和制作范围后，再安排对白；API 通过 `canvas_id` 确定镜头和配音作用域。项目画幅、背景配乐和混音设置仍是项目级配置。
 
 ## 批量处理与剧本改版
 
@@ -38,6 +42,18 @@
 截至 2026-10-13，已收录官方 2.0 列表的 466 种音色，包含标准音色、官方预设角色音色和外语音色；可按名称、Speaker ID、语种、性别和场景搜索。角色声音旁的“试听”直接播放官方控制台公开样音，无需语音 API Key，不发起合成、不消耗合成额度、不创建项目音频或任务。切换音色、试听其他角色、切换页签或关闭配音会停止当前试听；加载失败会提示重试。样音使用官方固定文本与表演，角色语速和表演设置在实际生成配音时生效。
 
 音色名称、用途与语言来自官方文档，样音地址来自官方控制台；目录快照保存在 `packages/shared/src/media/speech-voices.ts`，不依赖登录控制台来展示或试听。仍可手动填写其他标准 Speaker ID；没有收录的音色不提供官方样音。服务端拒绝用户复刻的 `S_` 音色，官方预设角色的 `ICL_` 音色可以使用。实际合成权限以账号开通的 2.0 服务为准。
+
+## 实现入口
+
+| 职责 | 当前文件 |
+| --- | --- |
+| 配音管理、音色选择与样音 | `web/src/features/speech/SpeechStudio.tsx`、`SpeechVoicePicker.tsx`、`use-speech-voice-preview.ts` |
+| 台词导入、同步与候选 API | `backend/src/modules/speech/speech-routes.ts`、`speech-import.ts`、`speech-sync.ts` |
+| 合成协议与音频校验 | `backend/src/infrastructure/providers/speech-provider.ts`、`backend/src/modules/speech/speech-audio.ts` |
+| 入片位置、有效版本与方案隔离 | `backend/src/modules/speech/speech-timeline.ts`、`packages/shared/src/media/speech-timeline.ts` |
+| 时间线试听、成片设置与渲染 | `web/src/features/final-cut/TimelinePreview.tsx`、`FinalCutOutputSettings.tsx`、`backend/src/infrastructure/media/render.ts` |
+
+应用生成的音频和成片写入数据目录的 `media/<projectId>/`，默认在仓库 `data/` 下；`VIDEO_STUDIO_DATA_DIR` 可隔离整个数据目录。根目录 `exports/` 中的试片是另行整理的本地产物，详见[项目目录说明](project-structure.md)。
 
 ## 官方文档
 

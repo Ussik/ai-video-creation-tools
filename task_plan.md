@@ -1,5 +1,7 @@
 # AI Video Studio MVP
 
+> 历史计划：主要记录 2026-09-28 至 2026-10-04 的开发阶段；下文的 “Current task”、待办和验证仅适用于当时。2026-10-22 已按代码基线 `9ba5a25` 另行整理 [当前状态](docs/current-status.md) 与 [文档索引](docs/README.md)，本文件保留原始计划，不作为当前待办清单。
+
 ## Goal
 Build a local-first personal AI video tool with projects, shot planning, configurable text/image/video providers, generation history and selection, and simple video export.
 

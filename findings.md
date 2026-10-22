@@ -1,5 +1,7 @@
 # Findings
 
+> 历史调研：本文件保留早期产品对比与实现观察，其缺口、路径和外部能力描述只适用于记录日期。2026-10-22 的实现以 [当前状态](docs/current-status.md)、[产品分析](docs/product-analysis.md) 和 [文档索引](docs/README.md) 为准；本轮没有重新访问外部产品。
+
 - Workspace was empty and was not a Git repository at the start.
 - Node 22.22.2 and Python 3.9.6 are present.
 - System `ffmpeg` and `redis-server` are unavailable.

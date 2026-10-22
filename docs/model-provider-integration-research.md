@@ -1,6 +1,20 @@
 # 模型提供商接入调研
 
-调研日期：2026-10-13。依据 Cherry Studio、LobeHub 当前公开主分支源码，以及 Open WebUI 官方站点文档；不是对这些工具的完整实测。主分支实现可能继续变化。
+调研日期：2026-10-13。外部结论依据当日 Cherry Studio、LobeHub 公开主分支源码，以及 Open WebUI 官方站点文档；不是对这些工具的完整实测。主分支实现可能继续变化。
+
+本项目实现核对：2026-10-22，代码提交 `9ba5a25`。本次仅核对本地源码，没有重新访问外部项目、查询本地模型配置或调用付费模型。下文的外部证据、真实任务和验收结果保留为 2026-10-13 的历史记录。
+
+## 当前实现与研究建议的对应关系
+
+| 领域 | `9ba5a25` 的实现与边界 | 代码入口 |
+| --- | --- | --- |
+| 提供商和模型分开 | HTTP 提供商记录连接地址、认证头/前缀、密钥和目录映射；模型独立记录 `remote_id`、输出类型、协议和设置，支持手动添加及目录导入 | `backend/src/modules/models/schemas.ts`、`routes.ts`；`web/src/features/models/ModelSettings.tsx` |
+| 类型与协议 | 文本支持 `responses` / `chat_completions`，图片支持 `image_generations`，视频支持 `async_video`。目录仅给出类型提示，用户确认类型与协议；不根据模型名称启用能力 | `backend/src/infrastructure/providers/model-catalog.ts`、`backend/src/modules/models/validation.ts` |
+| 图片配置 | 新建图片模型采用“Images API · 异步任务”，表单与后端共用文档契约校验；既有自定义模板仍有自己的配置路径 | `packages/shared/src/models/documented-images-api.ts`；`web/src/features/models/ImageModelConfig.tsx` |
+| 参数与预设 | 图片尺寸、参考图、清晰度等有专用表单；文本上下文和 Seedance 2.0 视频也有显式配置。视频预设由用户应用，不因 `remote_id` 自动启用 | `web/src/features/models/TextModelContextSettings.tsx`；`packages/shared/src/models/seedance-video-settings.ts` |
+| 异步恢复 | 图片任务保存上游任务编号和下载链接后可查询原任务或重新下载，避免恢复时重复 POST 生成 | `backend/src/infrastructure/providers/providers.ts`；`backend/src/app.ts` |
+
+本项目已落实连接、模型、协议和参数的分层，但尚不是研究中所有厂商原生协议的通用适配器平台。当前没有独立的原生 Gemini 生图或 Anthropic 协议选项，不能把研究中的原生接入视作开箱即用；使用兼容服务或自定义模板时，仍需核对认证、请求结构、参考图编码和结果解析。获取模型目录、配置保存校验、模拟协议测试和真实生成成功是不同证据，不能相互替代。
 
 ## 结论
 
@@ -72,7 +86,7 @@
 
 提供商可以承载多种模型；图片与聊天也可以使用不同端点。模型 ID 不应自动修改提供商地址或切换协议。
 
-## 当前完成的范围：按指定图片接口文档实现
+## 2026-10-13 实现与验证记录：指定图片接口
 
 2026-10-13 重新核对了用户指定的 [图片生成](https://docs.rightapi.ai/docs/rc_draw/images-generations.html)、[图片编辑](https://docs.rightapi.ai/docs/rc_draw/images-edits.html) 和它们引用的 [任务查询](https://docs.rightapi.ai/docs/rc_draw/tasks.html) 文档。当前图片模型默认采用这份异步契约，替代此前从其他平台推断的同步／自动尺寸配置。
 
@@ -87,7 +101,7 @@
 | 查询地址 | `GET /v1/tasks/{task_id}`，不含 `/draw`，使用相同提供商认证；独立于图片提交 API 地址 |
 | 未完成 | `queued`、`in_progress` 等状态继续查询；默认间隔 5 秒 |
 | 已完成 | `completed` 或不带状态但有 `data[].url` 的响应；先保存恢复链接，再下载图片 |
-| 已失败 | `failed`、`expired`、`canceled`；显示上游 `error.message` |
+| 已失败 | `failed`、`expired`、`canceled`、`cancelled`；显示上游 `error.message` |
 | 恢复 | 持久化任务编号后只 GET 查询原任务；不重新上传参考图，也不自动再次 POST；下载失败保留恢复链接 |
 
 文档说明生成接口的 `response_format` 无效，异步结果只返回 URL；编辑接口的 `mask` 参数尚未生效，variations 不支持。当前规范因此不提供 Base64 返回、蒙版或变体生成配置。
@@ -101,7 +115,7 @@
 - 默认从提供商地址推导同一主机的 `/draw/v1` 和 `/v1`，也支持代理前缀及显式任务地址覆盖。不固定服务商或模型名称。
 - 高级 JSON 默认折叠。选择文档规范后，后端校验并使用规定字段，防止旧模板遗漏 `async` 或发送不支持的字段。
 
-现有 `gpt-image-2.5` 模型已通过本地模型 PATCH 接口更新为这份契约：保留模型记录、模型 ID、提供商、密钥、价格和可选画幅；提交地址为 `https://www.rightapi.ai/draw/v1`，任务地址为 `https://www.rightapi.ai/v1`，参考图沿用 JSON 编辑接口。原始素材与历史任务未改动。
+当日的本地 `gpt-image-2.5` 模型已通过模型 PATCH 接口更新为这份契约：保留模型记录、模型 ID、提供商、密钥、价格和可选画幅；提交地址为 `https://www.rightapi.ai/draw/v1`，任务地址为 `https://www.rightapi.ai/v1`，参考图沿用 JSON 编辑接口。原始素材与历史任务未改动。这是当时的数据操作记录，不代表其他安装或当前本地数据库一定有同一模型配置。
 
 ### 已确认的失败证据与验证范围
 

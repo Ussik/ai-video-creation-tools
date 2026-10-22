@@ -1,5 +1,7 @@
 # 项目目录与模块规则
 
+核对基线：2026-10-22，代码提交 `9ba5a25`。本文说明当前目录和职责；研究、试片与历史验收记录各自保留原始边界。
+
 项目使用 npm workspaces。依赖在根目录安装，根目录 `package-lock.json` 是唯一依赖锁文件。
 
 ```text
@@ -33,7 +35,7 @@
 ├── docs/                       架构、工作流与产品文档
 ├── production/                 制作示例、脚本与验收记录
 ├── data/                       本地数据库、密钥、技能和素材，不进入 Git
-└── exports/                    本地导出媒体，不进入 Git
+└── exports/                    手工整理的本地试片、截图，不进入 Git
 ```
 
 ## 模块归属
@@ -46,11 +48,23 @@
 - 共享包只能包含适用于浏览器和 Node 的纯规则与类型，不依赖数据库、文件系统、前端组件或第三方平台 SDK。
 - 后端新功能按业务放在 `modules/<业务>`；外部连接、存储和媒体处理放在 `infrastructure`。新增路由优先提供 `registerXxxRoutes`，在 `app.ts` 中注册。
 
+## 当前工作流的代码入口
+
+| 领域 | 前端 | 后端与共享规则 |
+| --- | --- | --- |
+| 剧本与导演 | `features/script/ScriptDirectorPanel.tsx`、`ScriptEditor.tsx`、`DirectorDraftResolution.tsx` | `modules/script/` 管理原稿版本、阶段生成、独立核对、候选修复和保存；公共阶段、核对与执行状态在 `packages/shared/src/script/` |
+| 多画布与剧本交接 | `features/canvas/ProjectCanvas.tsx`、`project-canvases.ts`、`features/script/script-canvas-handoff.ts` | `modules/canvas/project-canvases.ts`、`script-canvas-preparation.ts` 管理画布与剧本准备任务；各画布保留自己的节点、边和视口 |
+| 分镜与视觉档案 | `features/storyboard/`、`features/visuals/` | `modules/storyboard/`、`modules/visuals/`；引用选择、用途、预算和风格规则在共享包 |
+| 配音与成片 | `features/speech/`、`features/final-cut/` | `modules/speech/`、`modules/final-cut/`；`infrastructure/media/render.ts` 负责 FFmpeg，`packages/shared/src/media/speech-timeline.ts` 共用播放范围与混音规则 |
+| 模型与任务 | `features/models/`、`features/jobs/` | `modules/models/`、`modules/jobs/`、`modules/generation/` 和 `infrastructure/providers/`；模型设置与请求限制在共享包 |
+
+表中的前端路径相对 `web/src/`，后端路径相对 `backend/src/`。项目剧本文档由项目共享，画布、重新设计的分镜方案和成片制作范围具有各自作用域；新增请求应沿用现有 `canvas_id` / `design_id` 约定，不能把其他方案的镜头或入片配音混入当前方案。普通画布共享原方案，重新设计的画布使用独立方案。具体成片边界由两端的 `final-cut-scope.ts` 处理，配音入片由 `modules/speech/speech-timeline.ts` 按方案保存。
+
 ## 样式与组件
 
 通用交互组件使用 Mantine，已有检查禁止手写基础控件。主题配置位于 `web/src/shared/ui/theme.ts`，全局样式按 `main.tsx` 中的顺序加载。功能 CSS 与组件同目录，通过组件导入。
 
-本次迁移保留原有 CSS 内容和导入顺序；`workspace.css`、`workspace-theme.css` 中的历史业务规则尚未按选择器拆分，后续拆分需要单独验证层叠优先级。不要继续用全局主题文件覆盖新功能的局部样式。
+现有目录迁移保留原有 CSS 内容和导入顺序；`workspace.css`、`workspace-theme.css` 中的历史业务规则尚未按选择器拆分，后续拆分需要单独验证层叠优先级。不要继续用全局主题文件覆盖新功能的局部样式。
 
 ## 工程命令
 
@@ -66,6 +80,8 @@ npm run test:backend   # 仅运行后端测试
 npm start              # 启动已编译的后端，并托管 web/dist
 ```
 
+运行环境要求 Node.js 22 或更新版本。`npm run check` 只检查目录、导入和 UI 组件约束；构建与业务测试是独立检查，不能用检查通过替代测试结论。
+
 分别运行开发服务器时，先执行 `npm run build:shared`，再使用 `npm run dev --workspace=backend` 和 `npm run dev --workspace=web`。修改共享规则时，额外运行 `npm run dev --workspace=@video-studio/shared` 或重新构建共享包。
 
 修改依赖使用根目录命令，例如 `npm install <package> --workspace=web`，只更新根锁文件。共享包通过声明文件供 TypeScript 检查，通过编译后的 ESM 供 Node/Vite 使用。
@@ -76,6 +92,8 @@ npm start              # 启动已编译的后端，并托管 web/dist
 
 数据与静态产物路径统一由 `backend/src/infrastructure/paths.ts` 定位，源码和编译产物保持相同目录深度，不能根据进程工作目录改变数据位置。`VIDEO_STUDIO_DATA_DIR` 继续支持隔离数据目录。
 
+数据库为 `<dataDir>/studio.db`，素材和应用生成的成片都写入 `<dataDir>/media/`；成片文件为 `<dataDir>/media/<projectId>/export-<uuid>.mp4`。默认 `dataDir` 是仓库的 `data/`，设置 `VIDEO_STUDIO_DATA_DIR` 后随之隔离。根目录 `exports/` 不作为 FFmpeg 默认输出目录；历史文档链接到这里的试片和截图通常仅存在于制作机器上。
+
 `.planning/` 为本地任务记录，新增记录及媒体不进入 Git；已有受版本控制的历史记录暂时保留。根目录旧的 `task_plan.md`、`findings.md`、`progress.md` 保留原状，避免影响已有任务的恢复。需要长期维护的结论应整理到 `docs/`。
 
-`ProjectCanvas.tsx`、`ScriptDirectorPanel.tsx` 和 `app.ts` 仍有较多历史职责。本次已分离后端启动入口、模型路由/校验/序列化和公共 API 合同；后续进一步提取画布状态、剧本对话与生成服务时，应按职责逐项迁移，保持现有回归用例和接口。
+`ProjectCanvas.tsx`、`ScriptDirectorPanel.tsx` 和 `app.ts` 仍有较多历史职责。当前已分离后端启动入口、模型路由/校验/序列化、公共 API 合同，以及剧本原稿分析、生成检查点、候选修复、画布准备和成片作用域等模块；后续进一步提取画布状态、剧本对话与生成服务时，应按职责逐项迁移，保持现有回归用例和接口。

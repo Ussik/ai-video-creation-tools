@@ -1,8 +1,17 @@
 # 文本模型上下文容量预检
 
+> 实现核对：2026-10-22，代码基线 `9ba5a25`。容量由用户按实际供应商配置；程序估算最终请求，未联网发现或验证模型硬上限。
+
 模型设置的“上下文容量（tokens）”填写供应商实际提供的输入与输出合计窗口，对应 `settings.context_window_tokens`。未知时留空；系统不根据模型名称推断容量，也不把上传字符上限当作模型上下文保证。
 
-“输出预留（tokens）”对应 `settings.output_reserve_tokens`，用于请求模板没有显式输出上限时，为供应商默认输出预算留出空间。应按供应商实际输出限制填写；该字段不会改写实际输出参数。Responses 优先采用最终请求的 `max_output_tokens`，Chat Completions 优先采用 `max_completion_tokens`，其次是 `max_tokens`；这些字段都优先于输出预留。
+“输出预留（tokens）”对应 `settings.output_reserve_tokens`，用于请求模板没有显式输出上限时，为供应商默认输出预算留出空间。应按供应商实际输出限制填写；该字段不会改写实际输出参数。当前文本协议的取值顺序如下：
+
+| 文本协议 | 本次请求的输出预算 |
+| --- | --- |
+| Responses | 最终请求 `max_output_tokens`，未设置时用 `output_reserve_tokens` |
+| Chat Completions | 最终请求 `max_completion_tokens`，其次 `max_tokens`，均未设置时用 `output_reserve_tokens` |
+
+新建模型的默认请求模板没有固定输出上限或上下文容量；导入、编辑和现有模型各自保留保存的配置。兼容网关后面的厂商名称不改变上述协议规则。
 
 配置项必须是安全范围内的正整数，输出预留须小于上下文窗口。只填写上下文窗口且请求没有显式输出上限时，系统会在发送前停止并提示补充输出预留，避免把未知输出额度当成零。
 
@@ -12,4 +21,8 @@
 
 未配置窗口时保持兼容：请求可继续发送，模型设置明确提示尚不能预检，运行指标中的 `context_window_tokens` 仍为空，不能将该状态描述为已通过容量验证。
 
-验证覆盖：配置解析及保存校验、Unicode 估算、实际输出参数优先级、完整原稿、最终 Schema、工具定义与结果、接续要求、未知模型，以及容量失败时 `fetch` 未调用且不自动重试。测试使用本地模拟响应，不调用收费模型。
+容量预检与[候选分析累计用量预算](script-analysis-cost-control.md)分别执行：前者核算本次完整请求能否容纳，后者控制一条候选分析链路已使用和预留的累计 token。累计账本在未知输出预算时使用的 4096 token 初始预留，不会补齐本页缺少的容量配置，也不会改写模型请求。
+
+实现位置：配置校验为 `packages/shared/src/models/text-context-settings.ts`；最终请求估算与拒绝为 `backend/src/infrastructure/providers/text-context.ts`；调用接入为同目录 `providers.ts`；表单为 `web/src/features/models/TextModelContextSettings.tsx`。
+
+现有测试覆盖：配置解析及保存校验、Unicode 估算、实际输出参数优先级、完整原稿、最终 Schema、工具定义与结果、接续要求、未知模型，以及容量失败时 `fetch` 未调用且不自动重试。测试使用本地模拟响应，不调用收费模型；本次文档核对未重新运行真实模型容量实验。

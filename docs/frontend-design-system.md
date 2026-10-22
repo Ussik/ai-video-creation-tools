@@ -1,6 +1,6 @@
 # 前端组件与视觉规范
 
-此规范以当前代码实现为准。技术栈保持 React 19、TypeScript、Vite 6、Mantine 9、React Flow 12、Tiptap 3 与 Lucide，改造不引入新依赖。
+核对基线：2026-10-22，代码提交 `9ba5a25`。此规范以当前代码实现为准。技术栈为 React 19、TypeScript、Vite 6、Mantine 9、React Flow 12、Tiptap 3 与 Lucide；当前文档同步不新增依赖。
 
 ## 视觉系统
 
@@ -58,6 +58,10 @@
 
 `WorkspaceDisclosure` 使用 `keepMounted` 和 `display-none` 模式，关闭不会重挂载草稿、输入和媒体。`StudioMediaPlayer` 向外暴露原媒体元素引用，事件的 `currentTarget` 也仍是该元素；组件更新不会自行重载或暂停媒体。
 
+剧本文档使用 Tiptap 编辑，正文与格式保存为受支持的 Markdown/GFM 表示；`script-editor-extensions.ts` 为剧本文档加入表格扩展，画布文本节点沿用自己的 schema。消息、文档预览和可编辑正文分别使用既有渲染路径，不能通过把所有正文统一当作 HTML 或纯文本来替换。表格外层可横向滚动，单元格保留段落与行内格式；全屏正文、目录和顶部工具栏各自承担滚动与固定职责。
+
+导演生成与恢复状态使用 `DirectorActivity`、`DirectorActivityDetails`、`DirectorDraftResolution`、`DirectorResourceDraft` 等业务组件。待核对候选、待解决的问题、正式保存和画布准备是不同状态；界面文案、禁用条件和操作入口必须与服务端返回的执行结果一致。请求结束或流断开不能直接显示为“已保存”，恢复候选也不能自动执行保存或重新生成。
+
 ## CSS 与弹层
 
 `main.tsx` 必须先导入 Mantine 样式，再加载 App 及业务组件样式，最后导入全局 `theme.css`。否则同优先级的库样式可能覆盖导航和卡片布局。全局组件规则不得覆盖业务控件明确配置的前景色或危险色。
@@ -83,14 +87,18 @@
 在仓库根目录运行：
 
 ```sh
-npm --prefix web run check:ui
-npm --prefix web test
-npm --prefix web run build
+npm run check
+npm run test:web
+npm run build
 git diff --check
 ```
 
-`prebuild` 自动执行 JSX 组件约束扫描，禁止原生基础控件、表格、dialog、手写交互角色和浏览器媒体工具栏。测试必须从 web 的 npm 脚本运行，以使用正确的 JSX/TypeScript 配置。
+根目录命令会处理共享包构建顺序；若只运行 `npm run test --workspace=web`，先执行 `npm run build:shared`。前端 `prebuild` 自动执行 JSX 组件约束扫描，禁止原生基础控件、表格、dialog、手写交互角色和浏览器媒体工具栏。Tiptap 扩展渲染语义表格属于编辑器文档内容；不因此放宽业务表单手写原生控件的约束。测试应使用仓库 npm 脚本，以保留正确的 JSX/TypeScript 配置和并发限制。
+
+### 历史视觉验收记录
+
+以下数字和浏览器覆盖范围保留自此前视觉改造的验收记录，不表示 `9ba5a25` 的全量测试结果。2026-10-22 本次文档同步仅核对代码、路径和文档一致性，没有重新执行浏览器验收或付费生成。
 
 本次改造前 409 项测试通过；改造后 413 项测试通过，新增折叠草稿保留、媒体 ref/事件与失败反馈、设定器取消与嵌套 Escape 回归。生产构建通过。浏览器覆盖项目、画布菜单、故事板、剧本目录与搜索、导演设定器、配音、资产及本地视频、任务详情、模型设置、技能中心和成片工作台，并检查 768px / 390px 的关键布局。付费生成和真实成片导出未在本次视觉验收中重复执行。
 
-镜头引用及连线细节调整后，全量 415 项测试通过，新增内嵌引用分类与保存契约、提示词保留和两次 Escape 顺序的回归检查。最新构建与组件约束扫描通过；浏览器验证两处分隔线、选中节点的连线颜色及桌面／390px 镜头引用布局。
+该轮镜头引用及连线细节调整后，全量 415 项测试通过，新增内嵌引用分类与保存契约、提示词保留和两次 Escape 顺序的回归检查。该轮构建与组件约束扫描通过；浏览器验证两处分隔线、选中节点的连线颜色及桌面／390px 镜头引用布局。
