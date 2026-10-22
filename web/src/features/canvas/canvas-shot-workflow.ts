@@ -5,9 +5,10 @@ import { videoResolutionOptions } from '@video-studio/shared/media/video-paramet
 import { supportsVideoMultiReference } from '@video-studio/shared/media/video-reference-config'
 import { modelDefaultResolution } from './canvas-model-parameters'
 import { visualBindingApplies } from '@video-studio/shared/visuals/visual-binding-usage'
+import { canvasJobMatchesStoryboard, storyboardRevision } from './canvas-storyboard-revision'
 
 function imageAsset(source: CanvasNode, detail: ProjectDetail) {
-  const job = detail.jobs.find(job => job.id === source.job_id && job.status === 'succeeded')
+  const job = detail.jobs.find(job => job.id === source.job_id && job.status === 'succeeded' && canvasJobMatchesStoryboard(source, job))
   const asset = detail.assets.find(asset => asset.id === (source.asset_id || job?.result_asset_id))
   return asset?.kind === 'image' ? asset : undefined
 }
@@ -63,20 +64,22 @@ export function connectImageVideoHandoff(graph: CanvasGraph, connection: NonNull
     throw new Error('视频节点与分镜图属于不同镜头，请连接对应镜头的视频节点')
   }
   const shotId = target.shot_id || sourceId
+  const shot = detail.shots.find(shot => shot.id === shotId)
+  const revision = storyboardRevision(shot?.storyboard_revision)
   const existing = graph.edges.find(edge => edge.source === source.id && edge.target === target.id)
   if (existing?.reference_asset_id === asset.id && target.shot_id === shotId && target.settings.mode
+    && storyboardRevision(target.settings.storyboard_revision) === revision
     && target.settings.mode !== 'text' && (target.settings.mode !== 'reference' || target.settings.storyboard_reference_asset_id)
     && (target.settings.mode !== 'first_frame' || !target.settings.storyboard_reference_asset_id || target.settings.storyboard_reference_asset_id === asset.id)) return graph
   const automaticModel = !target.settings.mode || target.settings.mode === 'text'
     ? hasShotVisualBindings(detail, shotId) && multiReferenceModel(models, target.model_id) : undefined
   const mode = target.settings.mode && target.settings.mode !== 'text' ? target.settings.mode : automaticModel ? 'reference' : 'first_frame'
   const model = automaticModel || videoModel(models, mode, target.model_id)
-  const shot = detail.shots.find(shot => shot.id === shotId)
   const hasDraft = target.settings.prompt_override || target.settings.prompt_is_final || target.text.trim() || target.prompt.trim()
   const resolutions = videoResolutionOptions(model?.settings)
   const node: CanvasNode = { ...target, shot_id: shotId, model_id: model?.id || null,
     prompt: hasDraft ? target.prompt : shotVideoPrompt(shot || { prompt: source.prompt || asset.prompt || source.title }),
-    settings: { ...target.settings, modality: 'video', mode,
+    settings: { ...target.settings, modality: 'video', mode, storyboard_revision: revision,
       ...(['first_frame', 'first_last_frame'].includes(mode) ? { visual_reference_mode: 'keyframe' as const } : {}),
       ...(mode === 'first_frame' && target.settings.storyboard_reference_asset_id
         ? { storyboard_reference_asset_id: asset.id } : {}),
@@ -121,7 +124,8 @@ export function createImageVideoHandoff(graph: CanvasGraph, source: CanvasNode, 
     && (node.settings.storyboard_reference_asset_id === asset.id || graph.edges.some(edge => edge.target === node.id
       && edge.reference_asset_id === asset.id && (node.settings.mode === 'first_frame' || edge.source === source.id))))
   if (existing) return { graph, nodeId: existing.id, created: false }
-  if (graph.nodes.length >= 500 || graph.edges.length >= 1000) throw new Error('画布节点或连线已达到上限')
+  const nodeLimit = graph.nodes.filter(node => node.type === 'project_script_ref').length === 1 ? 501 : 500
+  if (graph.nodes.length >= nodeLimit || graph.edges.length >= 1000) throw new Error('画布节点或连线已达到上限')
   const shot = detail.shots.find(shot => shot.id === shotId)
   const referenceModel = mode === 'reference' ? multiReferenceModel(models, freshNode.model_id) : undefined
   if (mode === 'reference' && !referenceModel) throw new Error('没有支持多图参考的可用视频模型，请先配置模型')
@@ -131,6 +135,7 @@ export function createImageVideoHandoff(graph: CanvasGraph, source: CanvasNode, 
   const node: CanvasNode = { ...freshNode, type: 'generation', shot_id: shotId, model_id: model?.id || null,
     title: `${shot?.title || source.title || asset.filename} · 视频`, prompt, text: '', asset_id: null, job_id: null,
     settings: { modality: 'video', mode, visual_reference_mode: referenceModel ? 'profiles' : 'keyframe', candidate_count: 1,
+      storyboard_revision: storyboardRevision(shot?.storyboard_revision),
       storyboard_reference_asset_id: asset.id,
       duration,
       ratio: 'adaptive', resolution: model ? modelDefaultResolution(model, videoResolutionOptions(model.settings)) || null : '480p' } }

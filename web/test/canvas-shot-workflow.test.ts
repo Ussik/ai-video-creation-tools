@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import { connectImageVideoHandoff, createImageVideoHandoff, fixedReferenceAsset, imageVideoConnection, pinnedCanvasReference } from '../src/features/canvas/canvas-shot-workflow'
 import { storyboardItems } from '../src/features/storyboard/storyboard'
 import { visualNodeAsset } from '../src/features/canvas/canvas-visual-profiles'
+import { syncCanvasStoryboardRevision } from '../src/features/canvas/canvas-storyboard-revision'
 import type { CanvasGraph, CanvasNode } from '../src/features/canvas/ProjectCanvas'
 import type { Model, ProjectDetail } from '../src/shared/api/api'
 
@@ -34,7 +35,7 @@ test('handoff adds one same-shot video generator, selects a compatible model and
   assert.equal(video.asset_id, null)
   assert.equal(video.job_id, null)
   assert.deepEqual(video.settings, { modality: 'video', mode: 'first_frame', visual_reference_mode: 'keyframe', candidate_count: 1, storyboard_reference_asset_id: 'chosen',
-    duration: 10, ratio: 'adaptive', resolution: '480p' })
+    storyboard_revision: 0, duration: 10, ratio: 'adaptive', resolution: '480p' })
   assert.deepEqual(result.graph.edges, [{ id: 'frame-edge', source: 'image', target: 'video', reference_asset_id: 'chosen' }])
   assert.deepEqual(storyboardItems(f.detail, result.graph, f.models).map(item => item.kind), ['image', 'video'])
 })
@@ -391,4 +392,47 @@ test('image-only and inactive bindings do not automatically switch dragged image
     const result = connectImageVideoHandoff(f.graph, imageVideoConnection(f.source, f.target, detail, [model])!, detail, [model], 'edge')
     assert.equal(result.nodes[1].settings.mode, 'first_frame')
   }
+})
+
+test('new video handoffs and newly associated generators carry the current storyboard revision without losing their chosen frame', () => {
+  const f = connectionFixture()
+  f.detail.shots[0].storyboard_revision = 3
+  f.source.settings.storyboard_revision = 3
+  const created = createImageVideoHandoff(f.graph, f.source, f.detail, f.models, { ...f.fresh, id: 'new-video' }, 'new-frame')
+  const video = created.graph.nodes.find(node => node.id === 'new-video')!
+  assert.equal(video.settings.storyboard_revision, 3)
+  assert.equal(video.settings.storyboard_reference_asset_id, 'chosen')
+  const synchronized = syncCanvasStoryboardRevision(created.graph, f.detail.shots, f.models, f.detail.assets)
+  assert.equal(synchronized.nodes.find(node => node.id === video.id), video)
+  assert.equal(synchronized.edges.find(edge => edge.target === video.id)?.reference_asset_id, 'chosen')
+
+  const connected = connectImageVideoHandoff(f.graph, imageVideoConnection(f.source, f.target, f.detail, f.models)!, f.detail, f.models, 'existing-frame')
+  assert.equal(connected.nodes[1].settings.storyboard_revision, 3)
+  assert.equal(syncCanvasStoryboardRevision(connected, f.detail.shots, f.models, f.detail.assets), connected)
+  assert.equal(connected.edges[0].reference_asset_id, 'chosen')
+})
+
+test('image handoffs reject automatic fallback to an older storyboard job while preserving explicit historical image choices', () => {
+  const f = connectionFixture()
+  f.detail.shots[0].storyboard_revision = 3
+  f.source.settings.storyboard_revision = 3
+  f.detail.jobs[0].shot_id = 'shot'; f.detail.jobs[0].request = JSON.stringify({ storyboard_revision: 2 })
+  const unselected = { ...f.source, asset_id: null }
+  assert.equal(imageVideoConnection(unselected, f.target, f.detail, f.models), undefined)
+  assert.throws(() => createImageVideoHandoff(f.graph, unselected, f.detail, f.models, f.fresh, 'edge'), /选择一张/)
+  assert.equal(imageVideoConnection(f.source, f.target, f.detail, f.models)!.asset.id, 'chosen', 'an explicit historical candidate remains usable')
+  f.detail.jobs[0].request = JSON.stringify({ storyboard_revision: 3 })
+  assert.equal(imageVideoConnection(unselected, f.target, f.detail, f.models)!.asset.id, 'new')
+  f.detail.jobs[0].request = '{}'
+  assert.equal(imageVideoConnection({ ...unselected, settings: { modality: 'image' } }, f.target, f.detail, f.models)!.asset.id, 'new', 'legacy revision zero remains supported')
+})
+
+test('the permanent script card does not consume an ordinary node slot during video handoff', () => {
+  const f = fixture()
+  const script = { ...f.source, id: 'project-script', type: 'project_script_ref' as const, shot_id: null }
+  const full = { ...f.graph, nodes: [script, f.source, ...Array.from({ length: 498 }, (_, index) => ({ ...f.source, id: `filler-${index}` }))] }
+  const created = createImageVideoHandoff(full, f.source, f.detail, f.models, f.fresh, 'last-slot')
+  assert.equal(created.graph.nodes.length, 501)
+  assert.throws(() => createImageVideoHandoff(created.graph, { ...f.source, asset_id: 'new' }, f.detail, f.models,
+    { ...f.fresh, id: 'overflow' }, 'overflow'), /上限/)
 })

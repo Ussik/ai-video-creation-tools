@@ -132,6 +132,26 @@ export function parseWorkflowDraft(raw: string, request: z.infer<typeof workflow
 
 export const workflowEnvelope = z.object({ artifacts: z.array(workflowArtifact).min(1).max(maxStageArtifacts), scenes: z.array(workflowScene).max(100).default([]) }).strict()
 
+export function workflowDraftFieldInstructions(stage: WorkflowStage): string {
+  return 'artifacts 中每份文档必须且只能包含 artifact_type、title、content 三个字段。' +
+    'artifact_type 是必填的文档类型，不得用 type 代替；历史资料中的 type、status、episode_number 和保存元数据只用于理解上下文，不得复制到输出文档。' +
+    `本轮 artifact_type 只允许 ${stageTypes[stage].join('、')}，每种恰好一份；不要把中文文档名、道具名或小节名当作文档类型。` +
+    'title 和 content 必须保留原任务要求的完整内容；只修正字段结构，不压缩、改写或遗漏正文。' +
+    (stage === 'episode' ? 'scenes 按本集正文返回对应分场。' : 'scenes 必须返回空数组。')
+}
+
+/** Narrow the actual wire schema as well as the prose instructions. Keep the
+ * generic envelope for historical drafts and streamed-unit recovery. */
+export function workflowStageEnvelope(stage: WorkflowStage) {
+  return workflowEnvelope.extend({
+    artifacts: z.array(workflowArtifact.extend({
+      artifact_type: z.enum(stageTypes[stage]).describe('必填文档类型；使用本阶段列出的类型标识，不能使用 type 字段、中文名称或条目名称'),
+    })).min(1).max(stageTypes[stage].length),
+    scenes: stage === 'episode' ? workflowEnvelope.shape.scenes : z.array(workflowScene).max(0).default([])
+      .describe('全剧资料没有分场，必须返回空数组'),
+  }).describe(workflowDraftFieldInstructions(stage))
+}
+
 export function workflowReply(draft: WorkflowDraft): string {
   const scope = draft.stage === 'episode' ? `第 ${draft.episode_number} 集` : workflowLabels[draft.stage]
   return `${scope}草稿已生成：${draft.artifacts.length} 份文档${draft.scenes.length ? `，${draft.scenes.length} 场、${draft.scenes.reduce((sum, scene) => sum + scene.duration, 0)} 秒` : ''}。请检查下方预览，确认后保存并继续下一阶段。`

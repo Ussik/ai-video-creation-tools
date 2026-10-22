@@ -6,6 +6,7 @@ import { decryptKey, encryptKey } from '../../infrastructure/security/secrets.js
 import { parseSpeechSceneEntries } from './speech-import.js'
 import { isSpeechTakeCurrent } from '@video-studio/shared/media/speech-timeline'
 import { projectSpeechPlacements, registerSpeechTimelineRoutes } from './speech-timeline.js'
+import { finalCutCanvasId } from '../final-cut/final-cut-scope.js'
 import { applySpeechSync, initSpeechSources, previewSpeechSync, recordImportedSpeechSource, speechSourceKey, speechSourceStatus } from './speech-sync.js'
 
 export const standardSpeaker = 'zh_female_vv_uranus_bigtts'
@@ -91,10 +92,10 @@ function linePublic(line: Line) {
   return { ...fields, takes, source_status, selected_is_stale: !!line.selected_asset_id && (!selected || !isSpeechTakeCurrent(selected, line, voice) || source_status === 'changed' || source_status === 'removed') }
 }
 
-export function projectSpeechData(projectId: string) {
+export function projectSpeechData(projectId: string, canvasId?: string) {
   return { voices: all<Voice>('SELECT * FROM speech_voices WHERE project_id=? ORDER BY created_at,rowid', projectId),
     lines: all<Line>('SELECT * FROM speech_lines WHERE project_id=? ORDER BY position,rowid', projectId).map(linePublic),
-    placements: projectSpeechPlacements(projectId) }
+    placements: projectSpeechPlacements(projectId, canvasId) }
 }
 function validateReferences(projectId: string, fields: {voice_id?: string | null; scene_id?: string | null}): void {
   if (fields.voice_id) scopedVoice(projectId, fields.voice_id)
@@ -141,7 +142,7 @@ export function registerSpeechRoutes(app: FastifyInstance, deps: {touchProject: 
   })
   app.get<{Params:{projectId:string}}>('/api/projects/:projectId/speech', async request => {
     const {projectId} = request.params; project(projectId)
-    return projectSpeechData(projectId)
+    return projectSpeechData(projectId, finalCutCanvasId(request.query))
   })
   app.post<{Params:{projectId:string}}>('/api/projects/:projectId/speech/voices', async request => {
     const {projectId} = request.params; project(projectId)

@@ -34,11 +34,18 @@ export function fixture() {
     [projectId]: { revision: 'default-rev', nodes: [canvasNode('notes', null, 'text')], edges: [] },
     second: { revision: 'second-rev', nodes: [canvasNode('video-node', 's1'), canvasNode('shot-two', 's2')], edges: [] },
   }
+  const scopes: Record<string, ProjectDetail> = {}
+  const failures = new Map<string, string>()
+  const delays = new Map<string, Promise<void>>()
   const requests: Array<{ path: string; method: string; body: Record<string, unknown> | null }> = []
   async function fetchFixture(url: unknown, init?: RequestInit): Promise<Response> {
-    const path = String(url), method = init?.method || 'GET'
+    const requestPath = String(url), parsed = new URL(requestPath, 'http://localhost')
+    const path = parsed.pathname, canvasId = parsed.searchParams.get('canvas_id'), method = init?.method || 'GET'
     const body = init?.body ? JSON.parse(String(init.body)) : null
-    requests.push({ path, method, body })
+    requests.push({ path: requestPath, method, body })
+    if (delays.has(requestPath)) await delays.get(requestPath)
+    if (failures.has(requestPath)) return Response.json({ detail: failures.get(requestPath) }, { status: 422 })
+    const activeDetail = canvasId ? scopes[canvasId] || detail : detail
     if (path === '/api/projects') return Response.json([detail])
     if (path === '/api/models' || path === '/api/providers') return Response.json([])
     if (path === '/api/speech/config') return Response.json({ enabled: true, has_key: false, default_speaker: 'zh_female_vv_uranus_bigtts', speech_rate: 0 })
@@ -51,7 +58,7 @@ export function fixture() {
     }
     if (path === `/api/projects/${projectId}`) {
       if (method === 'PATCH') Object.assign(detail, body)
-      return Response.json(detail)
+      return Response.json(canvasId ? { ...activeDetail, final_cut_canvas_id: canvasId } : detail)
     }
     if (path === `/api/projects/${projectId}/canvases`) return Response.json(canvases)
     if (path === `/api/projects/${projectId}/canvas`) {
@@ -63,19 +70,44 @@ export function fixture() {
       if (method === 'PUT') graphs[graphMatch[1]] = { ...body, revision: 'saved-rev' } as CanvasGraph
       return Response.json(method === 'PATCH' ? canvases.find(canvas => canvas.id === graphMatch[1]) : graphs[graphMatch[1]])
     }
+    if (path === `/api/projects/${projectId}/production-range` && method === 'PUT') { activeDetail.production_range = body; return Response.json(body) }
+    if (path === `/api/projects/${projectId}/continuity/analyze` && method === 'POST') return Response.json({})
     if (path === `/api/projects/${projectId}/continuity`) return Response.json({ shots: [], summary: { status: 'ready', error_count: 0, warning_count: 0 }, signature: 'fixture' })
     if (path === `/api/projects/${projectId}/cut-reviews`) return Response.json({ cuts: [] })
-    const clipMatch = path.match(/^\/api\/timeline-clips\/(c[12])$/)
-    if (clipMatch && method === 'PATCH') { Object.assign(detail.timeline_clips.find(clip => clip.id === clipMatch[1])!, body); return Response.json({}) }
-    const selection = path.match(/^\/api\/shots\/(s[12])\/selection$/)
+    const clipMatch = path.match(/^\/api\/timeline-clips\/([^/]+)$/)
+    if (clipMatch && method === 'PATCH') { Object.assign(activeDetail.timeline_clips.find(clip => clip.id === clipMatch[1])!, body); return Response.json({}) }
+    const selection = path.match(/^\/api\/shots\/([^/]+)\/selection$/)
     if (selection && method === 'PUT') {
-      const shot = detail.shots.find(shot => shot.id === selection[1])!, clip = detail.timeline_clips.find(clip => clip.shot_id === shot.id)!
+      const shot = activeDetail.shots.find(shot => shot.id === selection[1])!, clip = activeDetail.timeline_clips.find(clip => clip.shot_id === shot.id)!
       shot.selected_asset_id = body.asset_id
       Object.assign(clip, { asset_id: body.asset_id, in_ms: 0, out_ms: 5000, source_duration_ms: body.asset_id === 'video' ? 6000 : null })
       return Response.json({})
     }
+    const shotPosition = path.match(/^\/api\/shots\/([^/]+)$/)
+    if (shotPosition && method === 'PATCH') { Object.assign(activeDetail.shots.find(shot => shot.id === shotPosition[1])!, body); return Response.json({}) }
     if (path === `/api/projects/${projectId}/export` && method === 'POST') return Response.json({ id: 'export' })
     throw new Error(`Unexpected fixture request: ${method} ${path}`)
   }
-  return { detail, canvases, graphs, requests, fetchFixture }
+  return { detail, canvases, graphs, scopes, failures, delays, requests, fetchFixture, initialCanvasId: null as string | null }
+}
+
+
+export function redesignedFixture() {
+  const data = fixture()
+  const original = structuredClone(data.detail)
+  const redesign = structuredClone(data.detail)
+  redesign.shots = redesign.shots.map((shot, index) => ({ ...shot, id: `new-${shot.id}`, title: index ? '新方案 · 车窗回望' : '新方案 · 雨夜登车',
+    design_id: 'design-2', selected_asset_id: `new-${shot.selected_asset_id}` }))
+  redesign.assets = redesign.assets.map(asset => ({ ...asset, id: `new-${asset.id}`, shot_id: asset.shot_id ? `new-${asset.shot_id}` : null }))
+  redesign.timeline_clips = redesign.timeline_clips.map((clip, index) => ({ ...clip, id: `new-${clip.id}`, shot_id: `new-${clip.shot_id}`,
+    asset_id: `new-${clip.asset_id}`, in_ms: 0, out_ms: index ? 4000 : 2000 }))
+  redesign.production_range = { start_shot_id: 'new-s2', end_shot_id: 'new-s2' }
+  data.scopes[projectId] = original
+  data.scopes.second = redesign
+  Object.assign(data.detail, structuredClone(redesign), { historical_shots: original.shots.map(shot => ({ ...shot, superseded_by: 'design-2' })) })
+  data.canvases[1] = { ...data.canvases[1], name: '方案 2 · 雨夜', design_id: 'design-2' }
+  data.graphs[projectId].nodes = [canvasNode('old-shot-one', 's1'), canvasNode('old-shot-two', 's2')]
+  data.graphs.second.nodes = [canvasNode('new-shot-one', 'new-s1'), canvasNode('new-shot-two', 'new-s2')]
+  data.initialCanvasId = 'second'
+  return data
 }

@@ -28,6 +28,7 @@
 .sd-source-analysis-steps > li { min-width: 0; padding-top: 6px; border-top: 2px solid var(--fc-border); color: var(--fc-text-muted); font-size: 10px; line-height: 1.5; }
 .sd-source-analysis-steps > li[data-state="active"] { border-color: var(--workspace-accent); color: var(--workspace-accent); }
 .sd-source-analysis-steps > li[data-state="completed"] { border-color: var(--fc-text-secondary); color: var(--fc-text-secondary); }
+.sd-source-analysis-steps > li[data-state="failed"], .sd-source-analysis-steps > li[data-state="paused"] { border-color: var(--fc-text-secondary); color: var(--fc-text-secondary); border-top-style: dashed; }
 .sd-source-analysis-steps .mantine-List-itemWrapper { align-items: flex-start; gap: 5px; }
 .sd-source-analysis-steps .mantine-List-itemIcon { margin: 0; }
 .sd-source-analysis-step-icon { border-color: var(--fc-border); background: var(--fc-surface-muted); color: inherit; font-size: 9px; }

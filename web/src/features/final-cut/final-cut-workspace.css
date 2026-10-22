@@ -73,3 +73,18 @@
   .final-cut-workspace .workspace-center { overflow: visible; }
   .final-cut-inspector .inspector-scroll { flex: none; }
 }
+.final-cut-scope-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 20px; padding: 12px 24px; border-bottom: 1px solid var(--fc-border-soft, var(--fc-border)); }
+.final-cut-scope-bar .mantine-Select-root { width: 280px; max-width: 100%; }
+.final-cut-scope-bar > span { color: var(--fc-text-muted); font-size: 12px; }
+.final-cut-scope-state { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--fc-text-secondary); font-size: 13px; }
+.final-cut-scope-state[role="alert"] { color: var(--fc-danger, #b65e4f); }
+
+@media (min-width: 981px) {
+  .main-content.is-final-cut { height: 100dvh; overflow: hidden; }
+  .main-content.is-final-cut > .final-cut-scope-bar { flex: none; }
+  .main-content.is-final-cut > .final-cut-workspace { height: auto; min-height: 0; flex: 1; }
+}
+@media (max-width: 700px) {
+  .final-cut-scope-bar { padding: 12px; gap: 8px; }
+  .final-cut-scope-bar .mantine-Select-root { width: 100%; }
+}

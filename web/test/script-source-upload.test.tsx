@@ -246,15 +246,15 @@ test('queued analysis shows its position, pauses and resumes while preserving un
     assert.match(view.container.textContent!, /等待分析剧本 · 队列第 3 项/)
     await act(() => button('暂停分析').click()); await settle()
     assert.equal(api.analysisPauses, 1)
-    assert.match(view.container.textContent!, /分析已暂停，已完成结果和原稿已保留/)
-    assert.ok(button('继续分析'))
-    assert.equal(view.container.querySelector('[aria-label="剧本分析步骤"]'), null)
+    assert.match(view.container.textContent!, /分析已暂停，原剧本已保留/)
+    assert.ok(button('重试分析'))
+    assert.match(view.container.querySelector('[aria-label="剧本分析步骤"] [data-state="paused"]')!.textContent!, /全文分析已暂停/)
     assert.equal(field.disabled, false); assert.equal(field.value, request); assert.equal(send.disabled, true)
     await act(() => pressEnter(field))
     assert.equal(api.calls.length, 0)
     const expanded = `${request}\n女主不能失忆。`
     await act(() => typeMessage(field, expanded))
-    await act(() => button('继续分析').click()); await settle()
+    await act(() => button('重试分析').click()); await settle()
     assert.equal(api.analysisStarts, 1)
     assert.ok(button('暂停分析')); assert.equal(field.value, expanded); assert.equal(send.disabled, true)
     api.setAnalysis({ ...api.saved!.analysis!, status: 'ready', completed_chunks: 1 })
@@ -272,9 +272,9 @@ test('a late running poll cannot replace a successful pause response', async t =
     await pollAnalysis(); await delayed.started
     assert.equal(api.analysisReads, 1)
     await act(() => button('暂停分析').click()); await settle()
-    assert.ok(button('继续分析'))
+    assert.ok(button('重试分析'))
     await act(() => delayed.release()); await settle()
-    assert.ok(button('继续分析'), 'the stale GET must not write running over the authoritative paused response')
+    assert.ok(button('重试分析'), 'the stale GET must not write running over the authoritative paused response')
     assert.equal(button('暂停分析'), undefined)
     await pollAnalysis()
     assert.equal(api.analysisReads, 1, 'paused analyses stop polling')
@@ -449,6 +449,13 @@ test('independent quality review remains active until completion and the prepare
     for (const [index, label] of ['全文分析', '全剧整合', '质量核对'].entries()) assert.ok(steps[index]?.textContent?.includes(label))
     assert.deepEqual(steps.map(step => step.getAttribute('data-state')), ['completed', 'completed', 'active'])
     assert.equal(steps[2]!.getAttribute('aria-current'), 'step')
+    await act(() => root.render(<MantineProvider env="test"><ScriptSourceAnalysisStatus source={{ ...source, analysis: { ...ready,
+      status: 'running', phase: 'synthesis', progress: { stage: 'repairing', message: '正在修补第 2/3 项核对问题，已保存的分析保持可恢复' } } }}
+      starting={false} unavailable={false} pollError={false} onStart={() => {}} /></MantineProvider>))
+    assert.match(container.textContent!, /正在修补分析问题/)
+    assert.match(container.textContent!, /正在修补第 2\/3 项核对问题/)
+    assert.doesNotMatch(container.textContent!, /正在独立核对分析结果/)
+    assert.deepEqual([...container.querySelectorAll('[aria-label="剧本分析步骤"] li')].map(step => step.getAttribute('data-state')), ['completed', 'completed', 'active'])
     await act(() => root.render(<MantineProvider env="test"><ScriptSourcePreview source={{ ...source, analysis: ready }} /></MantineProvider>))
     await act(() => [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(item => item.textContent === '全剧信息')!.click())
     assert.match(container.textContent!, /阿舟/); assert.match(container.textContent!, /终场归还/); assert.match(container.textContent!, /来源：剧情段落 1/)
@@ -483,8 +490,9 @@ test('full-source analysis shows stages without partial reading percentages and 
     assert.match(container.textContent!, /完整读取当前文稿/)
     assert.doesNotMatch(container.textContent!, /细分|缩小范围/)
     await render({ ...current, status: 'failed', error: '服务暂时不可用' })
-    assert.match(container.textContent!, /当前文稿和有效分析结果已保留，可重试全文分析/)
-    assert.doesNotMatch(container.textContent!, /重试将从未完成处继续/)
+    assert.match(container.textContent!, /已完成的分析步骤已保留，可继续处理未完成部分/)
+    assert.match(container.textContent!, /上次处理项：正在修复河岸段落的证据/)
+    assert.ok(button('继续未完成步骤'))
     assert.doesNotMatch(container.textContent!, /历史结果/)
     await render({ ...current, status: 'ready' })
     assert.match(container.textContent!, /剧本地图已准备/); assert.match(container.textContent!, /历史结果/)
@@ -526,8 +534,8 @@ test('revised effective source explains the map update and a prepared map stays 
     assert.equal(container.querySelector('[aria-current="step"]'), null, 'an unavailable poll must not imply an actively updating stage')
 
     await render({ ...running, status: 'paused' })
-    assert.match(container.textContent!, /已完成结果和当前有效稿已保留/)
-    assert.ok(button('继续分析'))
+    assert.match(container.textContent!, /分析已暂停，当前有效稿已保留/)
+    assert.ok(button('重试分析'))
     assert.doesNotMatch(container.textContent!, /正在更新剧本地图/)
 
     await render({ ...analysis, status: 'ready', phase: 'ready', completed_chunks: 1, sections: [{ offset: 0, length: source.content.length, title: '返乡', episode_number: 1, summary: '林舟回家', characters: [], events: [] }] })
@@ -586,9 +594,72 @@ test('analysis steps distinguish the live phase from queued and stale polling st
 
     for (const status of ['ready', 'paused', 'failed'] as const) {
       await render({ ...analysis, status, phase: 'synthesis', story })
-      assert.equal(container.querySelector('[aria-label="剧本分析步骤"]'), null)
+      if (status === 'ready') assert.equal(container.querySelector('[aria-label="剧本分析步骤"]'), null)
+      else {
+        assert.deepEqual(stepStates(), ['completed', 'completed', status])
+        assert.equal(currentStep(), undefined, 'an interrupted task must not claim a live step')
+        assert.ok(button('继续未完成步骤'))
+      }
       assert.equal(container.querySelector('[role="progressbar"]'), null)
     }
+  } finally { await act(() => root.unmount()); container.remove() }
+})
+
+test('interrupted analysis identifies the unfinished step and describes only reusable checkpoints', async () => {
+  const { ScriptSourceAnalysisStatus } = await import('../src/features/script/ScriptSourceAnalysisView')
+  const container = document.createElement('div'); document.body.append(container); const root = createRoot(container)
+  const render = (state: ScriptSourceAnalysis) => act(() => root.render(<MantineProvider env="test"><ScriptSourceAnalysisStatus
+    source={{ ...source, analysis: state }} starting={false} unavailable={false} pollError={false} onStart={() => {}} /></MantineProvider>))
+  const stepStates = () => [...container.querySelectorAll('[aria-label="剧本分析步骤"] li')].map(step => step.getAttribute('data-state'))
+  try {
+    await render({ ...analysis, status: 'failed', phase: 'reading', completed_characters: source.content.length,
+      progress: { stage: 'reading', message: '正在生成全文目录' }, error: '当前步骤处理超时',
+      resume: { available: false, message: '尚无校验通过的目录，重试将重新进行全文分析。' } })
+    assert.deepEqual(stepStates(), ['failed', 'pending', 'pending'])
+    assert.match(container.textContent!, /上次处理项：正在生成全文目录/)
+    assert.match(container.textContent!, /尚无校验通过的目录/)
+    assert.ok(button('重试分析'))
+    assert.equal(button('继续未完成步骤'), undefined)
+    assert.doesNotMatch(container.textContent!, /有效分析结果已保留|\d+%/)
+    assert.equal(container.querySelector('.script-director-spinner'), null)
+    assert.equal(container.querySelector('[aria-current="step"]'), null)
+
+    const partial: ScriptSourceAnalysis = { ...analysis, status: 'failed', phase: 'reading',
+      sections: [{ offset: 0, length: 10, title: '第一集', episode_number: 1, summary: '主角返乡。', characters: [], events: [] }],
+      progress: { stage: 'reading', message: '正在整理第 2 页全文目录' }, error: '当前步骤处理超时',
+      resume: { available: true, message: '已校验第 1 页目录，继续生成后续目录；原文仍将完整提供。' } }
+    await render(partial)
+    assert.deepEqual(stepStates(), ['failed', 'pending', 'pending'], 'a saved directory page does not certify completed full-source analysis')
+    assert.ok(button('继续未完成步骤'))
+    assert.match(container.textContent!, /已校验第 1 页目录/)
+    assert.match(container.textContent!, /上次处理项：正在整理第 2 页全文目录/)
+
+    await render({ ...partial, phase: 'synthesis', completed_chunks: 1, progress: { stage: 'synthesis', message: '正在整理全剧事件，第 2 页' },
+      resume: { available: true, message: '全文目录和第 1 页全剧信息已保存，继续整合剩余信息。' } })
+    assert.deepEqual(stepStates(), ['completed', 'failed', 'pending'])
+    assert.match(container.textContent!, /全文目录和第 1 页全剧信息已保存/)
+    assert.ok(button('继续未完成步骤'))
+
+    await render({ ...partial, status: 'paused', phase: 'synthesis', completed_chunks: 1,
+      progress: { stage: 'synthesis', message: '正在整合人物与因果' },
+      resume: { available: true, message: '全文目录已校验，可继续全剧整合。' } })
+    assert.deepEqual(stepStates(), ['completed', 'paused', 'pending'])
+    assert.match(container.textContent!, /上次处理项：正在整合人物与因果/)
+    assert.ok(button('继续未完成步骤'))
+    assert.equal(container.querySelector('[aria-current="step"]'), null)
+    assert.equal(container.querySelector('.script-director-spinner'), null)
+
+    await render({ ...partial, status: 'queued', phase: 'synthesis', completed_chunks: 1,
+      resume: { available: true, message: '全文目录已校验，等待继续整合。' } })
+    assert.deepEqual(stepStates(), ['completed', 'pending', 'pending'], 'a queued resumed synthesis retains completed full-source analysis')
+    assert.match(container.textContent!, /全文目录已校验，等待继续整合/)
+    assert.equal(container.querySelector('[aria-current="step"]'), null)
+
+    await render({ ...partial, resume: undefined })
+    assert.ok(button('继续未完成步骤'), 'legacy section checkpoints remain compatible without an explicit resume field')
+    await render({ ...partial, resume: { available: false, message: '已有目录需要重新校验，重试全文分析。' } })
+    assert.ok(button('重试分析'), 'an explicit backend rejection overrides optimistic legacy checkpoint inference')
+    assert.equal(button('继续未完成步骤'), undefined)
   } finally { await act(() => root.unmount()); container.remove() }
 })
 

@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { applyOutputContract, generateStructuredOutput, outputContract, restoreOptionalNulls, strictJsonSchema } from '../src/modules/generation/model-output.js'
 import { streamText, type GenerationModel } from '../src/infrastructure/providers/providers.js'
 import { textToolSession } from '../src/infrastructure/providers/text-tools.js'
-import { workflowInstructions } from '../src/modules/script/script-workflow.js'
+import { workflowEnvelope, workflowInstructions } from '../src/modules/script/script-workflow.js'
 
 test('native workflow instructions keep creative requirements without JSON-only protocol', () => {
   const request = { stage: 'characters' as const, scope: 'project' as const, episode_number: 0 }
@@ -64,6 +64,110 @@ test('invalid results receive exactly one correction with diagnostics; valid tex
   attempts = 0
   await assert.rejects(generateStructuredOutput('bad', z.object({ count: z.number() }), async () => { attempts++; return '缺少结果' }, '分析'), /已修正一次/)
   assert.equal(attempts, 2)
+})
+
+test('workflow correction identifies missing and extra fields at exact artifact paths without expanding the full enum', async () => {
+  const content = '# 真官印\n方形铜印，缺角处铜绿发亮；原文要求与完整正文均须保留。'
+  const invalid = JSON.stringify({ artifacts: [{ type: 'props', content }], scenes: [], summary: '多余的概括' })
+  const corrected = { artifacts: [{ artifact_type: 'props' as const, title: '全剧道具清单', content }], scenes: [] }
+  const guidance = '文档类型字段必须名为 artifact_type，不能使用 type；将原 type 的合法值写入 artifact_type 后删除 type，正文保持完整。'
+  const source = '仅设计全剧道具，保持原故事、名称与使用规则。'
+  const observations: Array<{ attempt: number; diagnostics?: string }> = []
+  let calls = 0
+  const result = await generateStructuredOutput('workflow_draft', workflowEnvelope, async text => {
+    calls++
+    assert.ok(text.endsWith(source), 'the complete original task remains available on every request')
+    if (calls === 1) {
+      assert.ok(!text.includes(guidance), 'task-specific correction guidance applies only to the bounded repair')
+      return invalid
+    }
+    assert.match(text, /一次格式修正/)
+    assert.ok(text.includes(guidance))
+    assert.ok(text.includes(JSON.stringify(invalid)), 'the rejected invocation remains unchanged in the repair context')
+    assert.match(text, /保留原任务内容、正文与范围/)
+    return JSON.stringify(corrected)
+  }, source, { correctionInstructions: guidance, onAttempt: (attempt, diagnostics) => observations.push({ attempt, diagnostics }) })
+  assert.equal(calls, 2)
+  assert.deepEqual(result, corrected)
+  assert.equal(observations[0]!.diagnostics, undefined)
+  const diagnostics = observations[1]!.diagnostics!
+  assert.match(diagnostics, /\$\.artifacts\[0\]\.artifact_type: 缺少必填字段/)
+  assert.match(diagnostics, /\$\.artifacts\[0\]\.title: 缺少必填字段/)
+  assert.match(diagnostics, /\$\.artifacts\[0\]\.type: .*请删除该字段/)
+  assert.match(diagnostics, /\$\.summary: .*请删除该字段/)
+  assert.doesNotMatch(diagnostics, /Invalid option|episode_script|location_continuity/)
+})
+
+test('workflow correction reports illegal values and field types while retaining the full schema contract', async () => {
+  let calls = 0, diagnostics = ''
+  const result = await generateStructuredOutput('workflow_draft', workflowEnvelope, async (text, contract) => {
+    calls++
+    if (calls === 1) return JSON.stringify({ artifacts: [{ artifact_type: 'prop', title: 42, content: '原道具正文。' }], scenes: [] })
+    assert.equal(contract!.schema.additionalProperties, false)
+    assert.ok(text.includes('prop_visuals'), 'the complete schema still provides every allowed artifact type')
+    return JSON.stringify({ artifacts: [{ artifact_type: 'props', title: '道具清单', content: '原道具正文。' }], scenes: [] })
+  }, '全剧道具设计', { onAttempt: (_attempt, value) => { if (value) diagnostics = value } })
+  assert.equal(calls, 2)
+  assert.match(diagnostics, /\$\.artifacts\[0\]\.artifact_type: 字段取值不合法/)
+  assert.match(diagnostics, /其余合法值见本次 Schema/)
+  assert.match(diagnostics, /\$\.artifacts\[0\]\.title: 字段类型不合法，要求 string，当前为 number/)
+  assert.doesNotMatch(diagnostics, /episode_script|Invalid option/)
+  assert.equal(result.artifacts[0]!.content, '原道具正文。')
+})
+
+test('unrelated JSON candidates do not replace actionable workflow diagnostics with missing root fields', async () => {
+  let calls = 0, diagnostics = ''
+  await generateStructuredOutput('workflow_draft', workflowEnvelope, async () => {
+    calls++
+    if (calls === 1) return JSON.stringify({ artifacts: [{ type: 'props', title: '道具', content: '正文。' }], scenes: [] }) + '\n{"note":"额外说明对象"}'
+    return JSON.stringify({ artifacts: [{ artifact_type: 'props', title: '道具', content: '正文。' }], scenes: [] })
+  }, '全剧道具设计', { onAttempt: (_attempt, value) => { if (value) diagnostics = value } })
+  assert.equal(calls, 2)
+  assert.match(diagnostics, /\$\.artifacts\[0\]\.artifact_type/)
+  assert.match(diagnostics, /\$\.artifacts\[0\]\.type/)
+  assert.doesNotMatch(diagnostics, /\$\.artifacts: 缺少必填字段|\$\.note/)
+})
+
+test('persistent workflow field errors stop after one correction without silently discarding unknown fields', async () => {
+  const invalid = JSON.stringify({ artifacts: [{ type: 'props', title: '道具', content: '不可丢失的原正文。' }], scenes: [] })
+  let calls = 0
+  await assert.rejects(generateStructuredOutput('workflow_draft', workflowEnvelope, async () => {
+    calls++
+    return invalid
+  }, '全剧道具设计'), (error: unknown) => {
+    const failure = error as Error & { statusCode: number; raw_output: string; diagnostics: string }
+    assert.match(failure.message, /已修正一次/)
+    assert.equal(failure.statusCode, 422)
+    assert.equal(failure.raw_output, invalid)
+    assert.match(failure.diagnostics, /\$\.artifacts\[0\]\.type: .*请删除该字段/)
+    return true
+  })
+  assert.equal(calls, 2)
+})
+
+test('generic corrections keep their own schema field names and do not introduce workflow-specific aliases', async () => {
+  const schema = z.object({ type: z.string(), count: z.number() }).strict()
+  let calls = 0
+  const result = await generateStructuredOutput('inventory', schema, async text => {
+    calls++
+    if (calls === 1) return '{"type":8,"count":2}'
+    assert.match(text, /\$\.type: 字段类型不合法/)
+    assert.doesNotMatch(text, /artifact_type/)
+    return '{"type":"copper","count":2}'
+  }, '统计铜印')
+  assert.equal(calls, 2)
+  assert.deepEqual(result, { type: 'copper', count: 2 })
+})
+
+test('wrapped result diagnostics include the wire envelope and array index in the exact field path', async () => {
+  let calls = 0, diagnostics = ''
+  const result = await generateStructuredOutput('count_list', z.array(z.object({ count: z.number() }).strict()), async () => {
+    calls++
+    return calls === 1 ? '{"result":[{"count":"wrong"}]}' : '{"result":[{"count":2}]}'
+  }, '统计数量', { onAttempt: (_attempt, value) => { if (value) diagnostics = value } })
+  assert.equal(calls, 2)
+  assert.match(diagnostics, /\$\.result\[0\]\.count: 字段类型不合法/)
+  assert.deepEqual(result, [{ count: 2 }])
 })
 
 test('domain validation can correct IDs once; network failures and cancellation never retry', async () => {

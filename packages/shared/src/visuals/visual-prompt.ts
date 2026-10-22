@@ -2,6 +2,9 @@ import { videoReferenceManifest, visualBindingReferenceAssetIds, type VideoRefer
 import { visualReferenceViewLabels, type VisualReferencePurpose, type VisualReferenceSnapshot } from './visual-reference-types.js'
 import type { VisualBindingUsage } from './visual-binding-usage.js'
 import { videoReferenceUsageInstructions, videoReferenceShotGuidance, type VideoReferenceUsageSelection } from '../media/video-reference-usage.js'
+import { stripManagedPromptBlocks } from './prompt-document.js'
+import { withImageReferenceMapping } from './image-reference-prompt.js'
+export { withImageReferenceMapping } from './image-reference-prompt.js'
 
 export type PromptVisualBinding = {
   kind: 'character' | 'location' | 'prop'; name: string; variant: string; revision: number;
@@ -11,12 +14,13 @@ export type PromptVisualBinding = {
   usage?: VisualBindingUsage
 }
 export type VideoReferencePromptOptions = {
+  /** An authored full document is compiled elsewhere and must not be regenerated. */
+  prompt_document?: boolean
   mode?: string
   storyboard_reference_asset_id?: string | null
   excluded_visual_profile_ids?: string[]
   video_reference_usages?: VideoReferenceUsageSelection[]
 }
-const referenceBlock = /【视频参考图用途】[\s\S]*?【视频参考图用途结束】\s*/g
 const selectedPurposes: Record<VisualReferencePurpose, string> = {
   identity: '对应对象的身份、五官、发型与外貌特征', costume: '服装款式、配色、纹理与身体比例',
   space: '场景空间结构、位置关系、视线方向与光线连续性', structure: '对应对象的外形、结构、尺度与材质',
@@ -26,7 +30,7 @@ const selectedPurposes: Record<VisualReferencePurpose, string> = {
 /** Replace only the managed mapping; manually edited action/camera/visual prose stays intact. */
 export function withVideoReferenceMapping(prompt: string, bindings: PromptVisualBinding[], references: string[], visualMode: string,
   options: VideoReferencePromptOptions = {}): string {
-  const base = prompt.replace(referenceBlock, '').trim()
+  const base = stripManagedPromptBlocks(prompt, { blockNames: ['视频参考图用途'] })
   if (options.mode !== 'reference' || !references.length) return base
   const referenceBindings = bindings.map((binding, index): VideoReferenceBinding => ({ ...binding,
     profile_id: binding.profile_id ?? `profile-${index}`, required: !!binding.required,
@@ -58,14 +62,21 @@ export const synchronizeVideoReferencePrompt = withVideoReferenceMapping
 
 export function visualGenerationPrompt(prompt: string, bindings: PromptVisualBinding[], references: string[], mode: string,
   options: VideoReferencePromptOptions = {}): string {
-  if (!bindings.length) return withVideoReferenceMapping(prompt, bindings, references, mode, options)
+  if (options.prompt_document) return prompt
+  const base = stripManagedPromptBlocks(prompt, { blockNames: ['镜头视觉设定', '图片参考图用途', '视频参考图用途'] })
+  const excluded = new Set(options.excluded_visual_profile_ids || [])
+  const referenceBindings = bindings.filter(binding => !binding.profile_id || !excluded.has(binding.profile_id))
+  const mapReferences = (value: string) => options.mode === undefined
+    ? withImageReferenceMapping(value, referenceBindings, references, mode) : withVideoReferenceMapping(value, bindings, references, mode, options)
+  if (!bindings.length) return mapReferences(base)
   const labels = { character: '人物', location: '场景', prop: '道具' }
   const context = bindings.map(binding => {
-    const indexes = mode === 'profiles' && options.mode !== 'reference'
+    const usesImages = mode === 'profiles' && options.mode !== 'reference' && (!binding.profile_id || !excluded.has(binding.profile_id))
+    const indexes = usesImages
       ? visualBindingReferenceAssetIds(binding).map(id => references.indexOf(id) + 1).filter(index => index > 0) : []
-    const selected = mode === 'profiles' && options.mode !== 'reference' ? binding.reference_assets?.filter(reference => references.includes(reference.asset_id)) : []
+    const selected = usesImages ? binding.reference_assets?.filter(reference => references.includes(reference.asset_id)) : []
     const views = selected?.length ? `\n本次参考用途：${selected.map(reference => `${visualReferenceViewLabels[reference.view]}，用于${selectedPurposes[reference.purpose]}`).join('；')}` : ''
     return `${labels[binding.kind]}：${binding.name}（${binding.variant}，版本 ${binding.revision}）${indexes.length ? `；参考图 ${indexes.join('、')}` : ''}\n${binding.definition}${views}`
   }).join('\n\n')
-  return withVideoReferenceMapping(`${prompt}\n\n【镜头视觉设定】\n${context}\n保持上述对象的外观、比例、服装、材质与空间关系。只生成当前镜头的一幅完整画面或连续视频；不要复制设定板的多视角拼版、文字、标签或色板。`, bindings, references, mode, options)
+  return mapReferences(`${base}\n\n【镜头视觉设定】\n${context}\n保持上述对象的外观、比例、服装、材质与空间关系。只生成当前镜头的一幅完整画面或连续视频；不要复制设定板的多视角拼版、文字、标签或色板。\n【镜头视觉设定结束】`)
 }

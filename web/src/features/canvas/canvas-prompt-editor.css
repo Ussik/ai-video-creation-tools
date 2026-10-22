@@ -1,0 +1,64 @@
+.pc-prompt-editor { position: relative; width: 100%; color: var(--mantine-color-text); }
+.pc-prompt-editor-surface { position: relative; }
+.pc-prompt-editor-content { min-height: calc(var(--pc-prompt-min-rows, 6) * 1.65em); max-height: 300px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 14px; border: 1px solid var(--mantine-color-default-border); border-radius: 12px; outline: none; background: var(--mantine-color-body); font-size: 13px; line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; }
+.pc-prompt-editor-content:focus { border-color: var(--mantine-primary-color-filled); }
+.pc-prompt-editor-content p { margin: 0; min-height: 1.8em; }
+.pc-prompt-editor-content > p.pc-prompt-section-spacer { min-height: 3px; line-height: 3px; }
+.pc-prompt-editor-content.ProseMirror-focused > p.pc-prompt-section-spacer.is-current { min-height: 1.8em; line-height: inherit; }
+.pc-prompt-editor-content p:first-child:last-child:empty::before { color: var(--mantine-color-placeholder); content: attr(data-placeholder); pointer-events: none; }
+.pc-prompt-editor-content:has(> p:first-child:last-child:empty)::before { position: absolute; color: var(--mantine-color-placeholder); content: attr(data-placeholder); pointer-events: none; }
+.pc-prompt-editor.is-expanded .pc-prompt-editor-content { min-height: 240px; max-height: min(58vh, 620px); padding: 18px 20px; font-size: 14px; line-height: 1.9; }
+/* The expanded composer's body owns scrolling, including references and notes. */
+.pc-composer-modal-content .pc-prompt-editor.is-expanded .pc-prompt-editor-content { max-height: none; overflow-y: visible; scrollbar-gutter: auto; }
+.pc-prompt-editor.is-disabled .pc-prompt-editor-content { cursor: default; }
+.pc-prompt-editor.is-readonly .pc-prompt-editor-content { background: var(--mantine-color-default-hover); cursor: default; }
+.pc-prompt-managed-section { margin: 8px 0; padding: 12px 14px; border: 1px solid var(--mantine-color-default-border); border-radius: 9px; background: var(--mantine-color-default-hover); }
+.pc-prompt-managed-section:first-child { margin-top: 0; }
+.pc-prompt-managed-section:last-child { margin-bottom: 0; }
+.pc-prompt-managed-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 26px; margin-bottom: 9px; padding-bottom: 9px; border-bottom: 1px solid var(--mantine-color-default-border); color: var(--mantine-color-text); font-size: 12px; line-height: 1.5; white-space: normal; user-select: none; }
+.pc-prompt-managed-section-title { font-weight: 600; overflow-wrap: anywhere; }
+.pc-prompt-managed-section-head > button { display: inline-flex; align-items: center; flex: none; gap: 4px; padding: 4px 6px; border-radius: 5px; color: var(--mantine-color-dimmed); font-size: 11px; }
+.pc-prompt-managed-section-head > button:hover:not(:disabled) { background: var(--mantine-color-body); color: var(--mantine-color-red-6); }
+.pc-prompt-managed-section-head > button:focus-visible { outline: 2px solid var(--mantine-primary-color-filled); outline-offset: 2px; }
+.pc-prompt-managed-section-head > button:disabled { opacity: .45; cursor: default; }
+.pc-prompt-managed-section-content { color: var(--mantine-color-text); }
+.pc-prompt-managed-section-content p + p { margin-top: 4px; }
+.pc-prompt-managed-section-content p.pc-prompt-section-label { margin-top: 12px; color: var(--mantine-color-text); font-size: .92em; font-weight: 600; }
+.pc-prompt-managed-section-content p.pc-prompt-section-label:first-child { margin-top: 0; }
+.pc-prompt-managed-section-content p.pc-prompt-section-label + p { margin-top: 2px; }
+.pc-prompt-managed-section-end { display: none; }
+.pc-prompt-system { margin-top: 12px; }
+.pc-prompt-system-note { margin: 0 0 8px; color: var(--mantine-color-dimmed); font-size: 12px; }
+.pc-prompt-mention-anchor { position: fixed; width: 1px; pointer-events: none; }
+.pc-prompt-reference-wrap { display: inline; vertical-align: baseline; }
+.pc-prompt-reference { display: inline-flex; max-width: 220px; gap: 5px; align-items: center; height: 26px; padding: 2px 7px 2px 3px; margin: 1px 2px; vertical-align: middle; border-radius: 6px; border: 1px solid var(--mantine-color-default-border); background: var(--mantine-color-default-hover); font-size: 12px; line-height: 20px; color: inherit; }
+.pc-prompt-reference > img { height: 20px; width: 24px; object-fit: cover; border-radius: 3px; }
+.pc-prompt-reference > span:not(.pc-prompt-reference-required) { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.pc-prompt-reference:hover { border-color: var(--mantine-primary-color-filled); }
+.pc-prompt-reference.is-invalid { color: var(--mantine-color-red-6); border-color: var(--mantine-color-red-5); background: var(--mantine-color-red-light); }
+.pc-prompt-reference.is-invalid > img { opacity: .65; }
+.pc-prompt-reference-required { color: var(--mantine-primary-color-filled); }
+.pc-prompt-reference-preview { display: flex; flex-direction: column; gap: 7px; }
+.pc-prompt-reference-preview > img { width: 100%; max-height: 220px; object-fit: contain; border-radius: 5px; }
+.pc-prompt-reference-preview small, .pc-prompt-reference-menu p, .pc-prompt-reference-options > p { font-size: 11px; color: var(--mantine-color-dimmed); }
+.pc-prompt-reference-menu-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; margin-bottom: 8px; }
+.pc-prompt-reference-menu-preview { display: block; width: 100%; max-height: 150px; object-fit: contain; border-radius: 5px; margin-bottom: 10px; }
+.pc-prompt-reference-options { display: flex; flex-direction: column; gap: 3px; margin-top: 7px; }
+.pc-prompt-reference-option { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px; border-radius: 6px; color: inherit; font-size: 12px; }
+.pc-prompt-reference-option img { width: 35px; height: 29px; border-radius: 4px; object-fit: cover; }
+.pc-prompt-reference-option > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-prompt-reference-option-text { display: flex; flex-direction: column; gap: 2px; text-align: left; line-height: 1.45; }
+.pc-prompt-reference-option-text > span, .pc-prompt-reference-option-text > small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-prompt-reference-option-text > small { color: var(--mantine-color-dimmed); font-size: 11px; }
+.pc-prompt-reference-provenance { font-size: 10px; }
+.pc-prompt-reference-option:hover, .pc-prompt-reference-option.is-highlighted { background: var(--mantine-color-default-hover); }
+.pc-prompt-reference-picker-heading { display: flex; flex-direction: column; gap: 3px; margin-bottom: 9px; font-size: 12px; }
+.pc-prompt-reference-picker-heading > span { color: var(--mantine-color-dimmed); font-size: 11px; }
+.pc-prompt-reference-scope-label { color: var(--mantine-color-dimmed); font-size: 11px; margin-bottom: 7px; }
+.pc-prompt-reference-scope { display: flex; align-items: center; gap: 5px; color: var(--mantine-color-dimmed); font-size: 11px; padding: 3px 0; margin-bottom: 5px; }
+.pc-prompt-reference-scope:hover { color: var(--mantine-primary-color-filled); }
+.pc-prompt-reference-add { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; padding: 9px 4px 2px; margin-top: 7px; border-top: 1px solid var(--mantine-color-default-border); color: var(--mantine-primary-color-filled); font-size: 12px; }
+.pc-prompt-reference-add:hover { color: var(--mantine-primary-color-filled-hover); }
+.pc-prompt-reference-reconnect { display: flex; align-items: center; gap: 5px; margin-bottom: 10px; color: var(--mantine-primary-color-filled); font-size: 12px; }
+.pc-prompt-reference-preview .pc-prompt-reference-invalid-note, .pc-prompt-reference-menu .pc-prompt-reference-invalid-note { color: var(--mantine-color-red-6); }
+.pc-prompt-reference-remove { display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 4px 0; margin-top: 8px; border-top: 1px solid var(--mantine-color-default-border); color: var(--mantine-color-red-6); font-size: 12px; }

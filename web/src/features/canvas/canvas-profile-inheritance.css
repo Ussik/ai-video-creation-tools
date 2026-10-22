@@ -1,0 +1,44 @@
+.pc-profile-inheritance {
+  display: grid;
+  gap: 9px;
+  margin-bottom: 12px;
+  padding: 11px 12px;
+  border: 1px solid var(--fc-border);
+  border-radius: 10px;
+  background: var(--fc-surface-muted);
+  color: var(--fc-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.pc-profile-inheritance-source { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.pc-profile-inheritance-thumb {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 54px;
+  height: 58px;
+  overflow: hidden;
+  border: 1px solid var(--fc-border);
+  border-radius: 7px;
+  background: var(--fc-surface);
+  color: var(--fc-text-muted);
+}
+.pc-profile-inheritance-thumb img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.pc-profile-inheritance-thumb:focus-visible { outline: 2px solid var(--pc-teal); outline-offset: 2px; }
+.pc-profile-inheritance-thumb:disabled { cursor: default; }
+.pc-profile-inheritance-copy { flex: 1; min-width: 0; }
+.pc-profile-inheritance-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.pc-profile-inheritance-heading > strong { color: var(--fc-text); font-size: 12px; font-weight: 600; }
+.pc-profile-inheritance-name { display: block; margin-top: 3px; overflow-wrap: anywhere; }
+.pc-profile-inheritance-copy p { margin: 3px 0 0; color: var(--fc-text-muted); font-size: 11px; overflow-wrap: anywhere; }
+.pc-profile-inheritance-copy p[role="alert"] { color: var(--fc-text); }
+.pc-profile-inheritance-source > .mantine-Button-root { flex: none; align-self: flex-start; }
+.pc-profile-inheritance-delta { display: flex; align-items: baseline; gap: 9px; margin: 0; min-width: 0; }
+.pc-profile-inheritance-delta strong { flex: none; font-size: 11px; font-weight: 500; color: var(--fc-text-muted); }
+.pc-profile-inheritance-delta span { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 540px) {
+  .pc-profile-inheritance-source { flex-wrap: wrap; }
+  .pc-profile-inheritance-source > .mantine-Button-root { margin-left: 64px; }
+  .pc-profile-inheritance-copy { flex-basis: calc(100% - 64px); }
+  .pc-profile-inheritance-delta { display: grid; gap: 2px; }
+}

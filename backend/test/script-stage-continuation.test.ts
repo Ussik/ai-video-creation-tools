@@ -119,7 +119,9 @@ test('a duplicate artifact cannot be discarded to make a rejected complete respo
     calls++; onPartial?.(raw); return raw
   }, { steps }), (error: unknown) => (error as { code: string }).code === 'stage_continuation_conflict')
   assert.equal(calls, 1)
-  assert.ok(!JSON.stringify(steps.checkpoint).includes('撕毁钥匙'))
+  const state = steps.checkpoint.steps['draft:stream:state']!.value as { artifacts: unknown[]; blockedArtifacts: unknown[] }
+  assert.ok(!JSON.stringify(state.artifacts).includes('撕毁钥匙'), 'conflicting prose must not become accepted content')
+  assert.match(JSON.stringify(state.blockedArtifacts), /撕毁钥匙/, 'retain the rejected original so resume cannot silently skip it')
 })
 
 test('a complete terminal response that changes retained prose still fails before envelope recovery', async () => {
@@ -628,6 +630,8 @@ test('scene recovery never skips an invalid middle scene and keeps later scenes 
   await assert.rejects(generateStageDraftWithContinuation(req, sourcePrompt, async (_prompt, _contract, onPartial) => {
     const raw = '{"scenes":[' + [scene('场一'), { ...scene('场二'), duration: null }, scene('场三')].map(item => JSON.stringify(item)).join(',') + '],"artifacts":['
     onPartial?.(raw); throw new Error('connection lost')
-  }, { steps }), /connection lost/)
-  assert.deepEqual((steps.checkpoint.steps['draft:stream:state']!.value as { scenes: Array<{ heading: string }> }).scenes.map(item => item.heading), ['场一'])
+  }, { steps }), (error: unknown) => (error as { code: string }).code === 'stage_continuation_invalid_unit')
+  const state = steps.checkpoint.steps['draft:stream:state']!.value as { scenes: Array<{ heading: string }>; blockedScenes: unknown[] }
+  assert.deepEqual(state.scenes.map(item => item.heading), ['场一'])
+  assert.match(JSON.stringify(state.blockedScenes), /场二/, 'the closed invalid scene blocks recovery immediately, before transport can fail')
 })

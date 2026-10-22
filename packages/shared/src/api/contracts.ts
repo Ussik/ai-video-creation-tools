@@ -22,11 +22,14 @@ export interface ProductionRange {
 export interface Shot {
   id: string
   project_id: string
+  design_id?: string | null
+  superseded_by?: string | null
   position: number
   title: string
   prompt: string
   image_prompt?: string
   video_prompt?: string
+  storyboard_revision?: number
   duration: number
   selected_asset_id: string | null
   archived_candidate_asset_ids?: string[]
@@ -251,12 +254,14 @@ export interface Model {
   enabled: boolean
 }
 export interface ProjectDetail extends Project {
+  final_cut_canvas_id?: string
   speech?: import('../media/speech-timeline.js').SpeechData
   audio_settings?: import('../media/speech-timeline.js').AudioMixSettings
   project_visual_style?: import('../visuals/visual-style.js').ProjectVisualStyle
   production_range: ProductionRange
   script: Script
   shots: Shot[]
+  historical_shots?: Shot[]
   timeline_clips: TimelineClip[]
   asset_reviews: AssetReview[]
   assets: Asset[]
@@ -270,17 +275,24 @@ export interface ProjectDetail extends Project {
 export type VisualKind = 'character' | 'location' | 'prop'
 export type VisualReferenceMode = 'profiles' | 'keyframe' | 'text_only'
 export interface VisualProfileDraft {
+  design_id?: string | null
   kind: VisualKind
   name: string
   variant: string
   definition: string
   view_requirements: string
+  /** Temporary keys resolve relations inside one reviewed creation batch. */
+  draft_key?: string
+  base_profile_id?: string | null
+  base_draft_key?: string | null
+  state_delta?: string
   scene_ids: string[]
   shot_usage?: Array<{ shot_id: string; usage: import('../visuals/visual-binding-usage.js').VisualBindingUsage }>
 }
-export interface VisualProfile extends Omit<VisualProfileDraft, 'scene_ids' | 'shot_usage'> {
+export interface VisualProfile extends Omit<VisualProfileDraft, 'scene_ids' | 'shot_usage' | 'draft_key' | 'base_draft_key'> {
   id: string
   project_id: string
+  design_id?: string | null
   revision: number
   definition_status?: 'draft' | 'ready'
   board_asset_id: string | null
@@ -288,6 +300,15 @@ export interface VisualProfile extends Omit<VisualProfileDraft, 'scene_ids' | 's
   board_prompt: string
   board_style_version?: string | null
   board_style_status?: 'missing' | 'unrecorded' | 'current' | 'needs_review'
+  identity_profile_id?: string
+  base_reference_status?: 'none' | 'waiting' | 'ready' | 'needs_review'
+  base_reference_signature?: string | null
+  /** Readable derived prose; original fields remain the editable source. */
+  display_definition?: string
+  display_view_requirements?: string
+  display_state_delta?: string
+  source_draft_key?: string | null
+  text_reference_issues?: Array<{ field: 'definition' | 'view_requirements' | 'state_delta'; token: string; reason: 'unresolved' | 'ambiguous' }>
   candidate_asset_ids?: string[]
   archived_candidate_asset_ids?: string[]
   reference_assets?: VisualReferenceAsset[]
@@ -349,6 +370,7 @@ export interface VisualReferenceGenerationInput extends VisualReferencePreviewIn
 }
 export interface VisualReferenceGenerationResult { job: Job; jobs: Job[] }
 export interface VisualProjectData {
+  created_profile_ids?: string[]
   project_visual_style?: import('../visuals/visual-style.js').ProjectVisualStyle
   visual_profiles: VisualProfile[]
   scene_visual_bindings: SceneVisualBinding[]
@@ -362,6 +384,8 @@ export interface ScriptCanvasPlan {
   loaded_files?: string[]
 }
 export interface ScriptCanvasResult {
+  design_id?: string | null
+  target_canvas_id?: string | null
   scene_ids: string[]
   shots: Shot[]
   visual_profiles: VisualProfile[]
@@ -371,6 +395,7 @@ export interface ScriptCanvasResult {
   updated_shot_ids?: string[]
 }
 export interface VisualBoardPreview {
+  prompt_document?: boolean
   project_style_version?: string
   project_visual_style?: import('../visuals/visual-style.js').ProjectVisualStyle
   style_warnings?: string[]
@@ -379,6 +404,9 @@ export interface VisualBoardPreview {
   reference_asset_ids: string[]
   reference_names: string[]
   reference_signature: string
+  base_profile_id?: string | null
+  base_reference_signature?: string
+  reference_sources?: Array<{ asset_id: string; profile_id?: string; revision?: number; role: 'base' | 'manual' }>
 }
 
 export type ContinuitySeverity = 'error' | 'warning'

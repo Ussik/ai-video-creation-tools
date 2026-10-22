@@ -4,7 +4,7 @@ import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
-import { fixture, projectId, canvasNode } from './fixtures/final-cut'
+import { fixture, redesignedFixture, projectId, canvasNode } from './fixtures/final-cut'
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
@@ -84,8 +84,20 @@ async function input(scope: ParentNode, label: string, value: string) {
   })
   await settle()
 }
-async function mount(t: import('node:test').TestContext, data = fixture()) {
+async function mount(t: import('node:test').TestContext, data = fixture(), beforeStudio?: () => void) {
+  // Final-cut interactions start from already initialized canvases. Keep the
+  // permanent project card in each fixture so migration writes cannot mask an
+  // unexpected shot import or a mutation made by preview/navigation actions.
+  for (const [canvasId, graph] of Object.entries(data.graphs)) {
+    if (!graph.nodes.some(node => node.type === 'project_script_ref')) graph.nodes.unshift({
+      ...canvasNode(`project-script:${canvasId}`, null, 'project_script_ref'),
+      title: data.detail.name, x: 60, y: 80, width: 720, height: 480,
+    })
+    const canvas = data.canvases.find(item => item.id === canvasId)
+    if (canvas) canvas.node_count = graph.nodes.length
+  }
   dom.window.localStorage.clear(); dom.window.sessionStorage.clear(); frames.clear()
+  if (data.initialCanvasId) dom.window.localStorage.setItem(`project-active-canvas:${projectId}`, data.initialCanvasId)
   t.mock.method(globalThis, 'fetch', data.fetchFixture)
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container)
@@ -94,10 +106,18 @@ async function mount(t: import('node:test').TestContext, data = fixture()) {
   const openStudio = async () => {
     await click(container.querySelector<HTMLButtonElement>('button[aria-label="切换创作页面"]')!)
     await click(button(document.body, '成片工作台'))
-    assert.ok(container.querySelector('.final-cut-workspace'))
+    assert.ok(container.querySelector('.final-cut-scope-bar'))
   }
+  beforeStudio?.()
   await openStudio()
-  return { container, data, openStudio, destroy: async () => { await act(() => root.unmount()); container.remove(); frames.clear() } }
+  return { container, data, openStudio, destroy: async () => {
+    // Camera transitions use elapsed time as well as RAF. Let the last frame
+    // clear d3's timer before removing this harness's manual frame queue.
+    if (frames.size) {
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 350)) }); await settle()
+    }
+    await act(() => root.unmount()); container.remove(); frames.clear()
+  } }
 }
 
 test('final-cut workspace preserves trim, audio, selection and export contracts without generation inputs', async t => {
@@ -112,20 +132,20 @@ test('final-cut workspace preserves trim, audio, selection and export contracts 
     assert.ok(!button(view.container, '连续预览').disabled)
     await input(inspector, '素材入点', '1'); await input(inspector, '素材出点', '4.5')
     await click(button(inspector, '保存取段'))
-    assert.deepEqual(view.data.requests.filter(request => request.path === '/api/timeline-clips/c1').at(-1)?.body, { in_ms: 1000, out_ms: 4500 })
+    assert.deepEqual(view.data.requests.filter(request => request.path.split('?')[0] === '/api/timeline-clips/c1').at(-1)?.body, { in_ms: 1000, out_ms: 4500 })
     await input(inspector, '素材出点', '0.5')
     assert.ok(button(inspector, '保存取段').disabled, 'invalid reverse interval is blocked')
     await input(inspector, '素材出点', '4.5')
     await input(inspector, '原声音量', '70'); await input(inspector, '首尾淡变', '200')
     await click(button(inspector, '保存原声'))
-    assert.deepEqual(view.data.requests.filter(request => request.path === '/api/timeline-clips/c1').at(-1)?.body,
+    assert.deepEqual(view.data.requests.filter(request => request.path.split('?')[0] === '/api/timeline-clips/c1').at(-1)?.body,
       { source_audio_gain: 0.7, source_audio_fade_ms: 200 })
     await click(button(view.container.querySelector('.candidate-grid')!, '选为成片'))
-    assert.deepEqual(view.data.requests.find(request => request.path === '/api/shots/s1/selection')?.body, { asset_id: 'alternate' })
+    assert.deepEqual(view.data.requests.find(request => request.path.split('?')[0] === '/api/shots/s1/selection')?.body, { asset_id: 'alternate' })
     assert.equal(view.container.querySelector('.source-audio-editor'), null, 'still images have no original audio controls')
     assert.ok(!button(view.container, '连续预览').disabled)
     await click(button(view.container.querySelector('.timeline')!, '导出视频'))
-    assert.equal(view.data.requests.filter(request => request.path.endsWith('/export') && request.method === 'POST').length, 1)
+    assert.equal(view.data.requests.filter(request => request.path.split('?')[0].endsWith('/export') && request.method === 'POST').length, 1)
     assert.ok(view.data.requests.every(request => !request.path.includes('/generations') && !request.path.includes('/generation')))
   } finally { await view.destroy() }
 })
@@ -137,7 +157,8 @@ test('return to canvas selects an existing shot node on another canvas without d
     assert.equal(dom.window.localStorage.getItem(`project-active-canvas:${projectId}`), 'second')
     const selected = view.container.querySelector('.react-flow__node[data-id="video-node"]')
     assert.ok(selected?.classList.contains('selected'), 'actual matching node is selected')
-    assert.equal(view.container.querySelectorAll('.react-flow__node').length, 2)
+    assert.equal(view.container.querySelectorAll('.react-flow__node').length, 3)
+    assert.equal(view.container.querySelectorAll('.pc-node-project_script_ref').length, 1)
     assert.match(view.container.querySelector('.react-flow__viewport')!.getAttribute('style')!, /scale\(1\)/)
     assert.equal(view.data.requests.filter(request => request.method === 'PUT' || request.method === 'POST').length, 0)
     assert.equal(dom.window.sessionStorage.getItem(`shot-canvas-open:${projectId}`), null)
@@ -148,13 +169,14 @@ test('return to canvas honors a conflicting local draft instead of importing a s
   const view = await mount(t)
   try {
     const draft = structuredClone(view.data.graphs.second)
-    draft.nodes = [canvasNode('draft-video', 's1')]
+    draft.nodes = [...draft.nodes.filter(node => node.type === 'project_script_ref'), canvasNode('draft-video', 's1')]
     dom.window.localStorage.setItem(`project-canvas-draft:${projectId}:second`, JSON.stringify({
       base: { ...view.data.graphs.second, revision: 'older-rev' }, graph: draft,
     }))
     await click(button(view.container, '在画布调整此镜头'))
     assert.ok(view.container.querySelector('.react-flow__node[data-id="draft-video"]')?.classList.contains('selected'))
-    assert.equal(view.container.querySelectorAll('.react-flow__node').length, 1)
+    assert.equal(view.container.querySelectorAll('.react-flow__node').length, 2)
+    assert.equal(view.container.querySelectorAll('.pc-node-project_script_ref').length, 1)
     assert.equal(view.data.requests.filter(request => request.method === 'PUT' || request.method === 'POST').length, 0)
     assert.ok(dom.window.localStorage.getItem(`project-canvas-draft:${projectId}:second`), 'draft is preserved')
   } finally { await view.destroy() }
@@ -167,7 +189,10 @@ test('return to an empty canvas imports only the missing current shot once', asy
     await click(button(view.container, '在画布调整此镜头'))
     const saved = JSON.parse(dom.window.localStorage.getItem(`project-canvas-draft:${projectId}`)!)
     assert.ok(saved.graph.nodes.length > 0)
-    assert.ok(saved.graph.nodes.every((node: { shot_id: string }) => node.shot_id === 's1'), 'unrelated shot is not auto-imported')
+    assert.equal(saved.graph.nodes.filter((node: { type: string }) => node.type === 'project_script_ref').length, 1)
+    const shotNodes = saved.graph.nodes.filter((node: { type: string }) => node.type !== 'project_script_ref')
+    assert.ok(shotNodes.length > 0)
+    assert.ok(shotNodes.every((node: { shot_id: string }) => node.shot_id === 's1'), 'unrelated shot is not auto-imported')
     assert.equal(saved.graph.nodes.filter((node: { type: string }) => node.type === 'generation').length, 1)
     assert.equal(view.container.querySelectorAll('.react-flow__node.selected').length, 1)
     assert.ok(view.data.requests.every(request => !request.path.includes('/generations')))
@@ -260,10 +285,10 @@ test('unplaced speech requires an explicit export choice and cancel preserves th
     await click(button(view.container.querySelector('.timeline')!, '导出视频'))
     assert.match(document.querySelector('.app-dialog')!.textContent!, /本次导出不会包含这些配音/)
     await click(button(document.body, '返回检查'))
-    assert.equal(view.data.requests.filter(request => request.path.endsWith('/export')).length, 0)
+    assert.equal(view.data.requests.filter(request => request.path.split('?')[0].endsWith('/export')).length, 0)
     await click(button(view.container.querySelector('.timeline')!, '导出视频'))
     await click(button(document.body, '继续导出当前成片'))
-    assert.deepEqual(view.data.requests.find(request => request.path.endsWith('/export'))!.body, { allow_unplaced_speech: true })
+    assert.deepEqual(view.data.requests.find(request => request.path.split('?')[0].endsWith('/export'))!.body, { allow_unplaced_speech: true })
   } finally { await view.destroy() }
 })
 
@@ -293,5 +318,169 @@ test('output controls save ratio and mix atomically in one request', async t => 
     assert.deepEqual(view.data.requests.filter(request => request.path.endsWith('/audio-settings')).map(request => request.body),
       [{ ratio: '16:9', music_asset_id: null, music_gain: 0.35, duck_music: true, duck_source: true }])
     assert.equal(view.data.requests.some(request => request.path === `/api/projects/${projectId}` && request.method === 'PATCH'), false)
+  } finally { await view.destroy() }
+})
+
+
+async function chooseScheme(container: ParentNode, canvasId: string) {
+  const input = container.querySelector<HTMLElement>('[aria-label="切换成片制作方案"]')!
+  await click(input)
+  const list = document.getElementById(input.getAttribute('aria-controls')!)!
+  const option = list.querySelector<HTMLElement>(`[role="option"][value="${canvasId}"]`)
+  assert.ok(option, `scheme ${canvasId} exists`)
+  await click(option)
+}
+
+const scopePath = (canvasId: string, suffix = '') => `/api/projects/${projectId}${suffix}?canvas_id=${canvasId}`
+
+test('entering final cut follows the active redesign canvas and switching preserves separate shots, clips and ranges', async t => {
+  const data = redesignedFixture(), before = structuredClone(data.scopes)
+  const view = await mount(t, data)
+  try {
+    assert.equal(view.container.querySelector<HTMLInputElement>('[aria-label="切换成片制作方案"]')!.value, '方案 2 · 雨夜')
+    assert.match(view.container.querySelector('.shot-list')!.textContent!, /新方案 · 雨夜登车/)
+    assert.match(view.container.querySelector('.timeline-duration')!.textContent!, /本次 1 镜.*4s/)
+    assert.match(view.container.querySelector('.final-cut-shot-summary')!.textContent!, /新方案 · 雨夜登车.*2/)
+    assert.ok(data.requests.some(request => request.path === scopePath('second')))
+    assert.ok(data.requests.some(request => request.path === scopePath('second', '/cut-reviews')))
+    await chooseScheme(view.container, 'second')
+    assert.ok(view.container.querySelector('.final-cut-workspace'), 'selecting the current scheme keeps its loaded cut')
+    await chooseScheme(view.container, projectId)
+    assert.match(view.container.querySelector('.shot-list')!.textContent!, /走向列车/)
+    assert.ok(!view.container.querySelector('.shot-list')!.textContent!.includes('新方案'))
+    assert.match(view.container.querySelector('.final-cut-shot-summary')!.textContent!, /走向列车.*5/)
+    assert.match(view.container.querySelector('.timeline-duration')!.textContent!, /本次 2 镜.*8s/)
+    await chooseScheme(view.container, 'second')
+    assert.match(view.container.querySelector('.timeline-duration')!.textContent!, /本次 1 镜.*4s/)
+    assert.deepEqual(data.scopes, before, 'scheme switching does not change either cut')
+    assert.equal(data.requests.filter(request => request.method !== 'GET').length, 0)
+    assert.equal(dom.window.localStorage.getItem(`project-active-canvas:${projectId}`), 'second')
+  } finally { await view.destroy() }
+})
+
+test('final-cut writes, continuity and export use the selected scheme query', async t => {
+  const view = await mount(t, redesignedFixture())
+  try {
+    const inspector = view.container.querySelector('.final-cut-inspector')!
+    await input(inspector, '素材出点', '1.5')
+    await click(button(inspector, '保存取段'))
+    assert.ok(view.data.requests.some(request => request.path === '/api/timeline-clips/new-c1?canvas_id=second' && request.method === 'PATCH'))
+    await click(view.container.querySelector<HTMLButtonElement>('[aria-label="后移镜头"]')!)
+    assert.ok(view.data.requests.some(request => request.path === '/api/shots/new-s1?canvas_id=second' && request.method === 'PATCH'))
+    await click(button(view.container, '制作范围'))
+    const range = [...document.querySelectorAll<HTMLElement>('[role="dialog"]')].find(dialog => dialog.textContent?.includes('本次制作范围'))!
+    await click(button(range, '全部镜头'))
+    await click(button(range, '应用范围'))
+    assert.ok(view.data.requests.some(request => request.path === scopePath('second', '/production-range') && request.method === 'PUT'))
+    assert.ok(view.data.requests.some(request => request.path === scopePath('second', '/continuity')))
+    await click(button(view.container.querySelector('.timeline')!, '导出视频'))
+    assert.ok(view.data.requests.some(request => request.path === scopePath('second', '/export') && request.method === 'POST'))
+  } finally { await view.destroy() }
+})
+
+test('loading and failed scheme switches never retain editable content from the previous scheme', async t => {
+  const data = redesignedFixture(), pendingPath = scopePath(projectId)
+  let release!: () => void
+  data.delays.set(pendingPath, new Promise<void>(resolve => { release = resolve }))
+  data.failures.set(pendingPath, '此制作方案已被移除')
+  const view = await mount(t, data)
+  try {
+    await chooseScheme(view.container, projectId)
+    assert.equal(view.container.querySelector('.final-cut-workspace'), null)
+    assert.match(view.container.querySelector('.final-cut-scope-state')!.textContent!, /正在读取/)
+    await act(async () => release()); await settle()
+    assert.equal(view.container.querySelector('.final-cut-workspace'), null)
+    assert.match(view.container.querySelector('[role="alert"]')!.textContent!, /此制作方案已被移除/)
+    assert.equal(view.container.querySelector('.topbar-actions button[title="导出视频"]'), null)
+    data.failures.delete(pendingPath)
+    await click(button(view.container, '重新加载'))
+    assert.match(view.container.querySelector('.shot-list')!.textContent!, /走向列车/)
+    assert.equal(data.requests.filter(request => request.method !== 'GET').length, 0)
+  } finally { release(); await view.destroy() }
+})
+
+test('a late response from an abandoned scheme cannot overwrite the newly selected cut', async t => {
+  const data = redesignedFixture()
+  let release!: () => void
+  data.delays.set(scopePath(projectId), new Promise<void>(resolve => { release = resolve }))
+  const view = await mount(t, data)
+  try {
+    await chooseScheme(view.container, projectId)
+    await chooseScheme(view.container, 'second')
+    assert.match(view.container.querySelector('.shot-list')!.textContent!, /新方案 · 雨夜登车/)
+    await act(async () => release()); await settle()
+    assert.match(view.container.querySelector('.shot-list')!.textContent!, /新方案 · 雨夜登车/)
+    assert.match(view.container.querySelector('.timeline-duration')!.textContent!, /本次 1 镜.*4s/)
+    assert.equal(data.requests.filter(request => request.method !== 'GET').length, 0)
+  } finally { release(); await view.destroy() }
+})
+
+test('an empty redesign remains empty and a replaced selected shot falls back to its current first shot', async t => {
+  const data = redesignedFixture()
+  data.scopes.second.shots = []
+  data.scopes.second.timeline_clips = []
+  data.scopes.second.production_range = { start_shot_id: null, end_shot_id: null }
+  const view = await mount(t, data)
+  try {
+    assert.match(view.container.querySelector('.no-shot')!.textContent!, /还没有入片镜头/)
+    assert.equal(view.container.querySelectorAll('.shot-item').length, 0)
+    await chooseScheme(view.container, projectId)
+    assert.match(view.container.querySelector('.final-cut-shot-summary')!.textContent!, /走向列车/)
+    data.scopes[projectId].shots.shift()
+    data.scopes[projectId].timeline_clips.shift()
+    await click(button(view.container, '成片设置'))
+    const settings = document.querySelector('.final-cut-output-settings')!
+    await input(settings, '配乐音量', '45')
+    await click(button(settings, '保存成片设置'))
+    assert.match(view.container.querySelector('.final-cut-shot-summary')!.textContent!, /回望站台/)
+    assert.equal(view.container.querySelectorAll('.shot-item').length, 1)
+  } finally { await view.destroy() }
+})
+
+
+test('ordinary canvases share one original scheme and a failed catalog can be retried', async t => {
+  const data = fixture()
+  const view = await mount(t, data, () => data.failures.set(`/api/projects/${projectId}/canvases`, '无法读取方案列表'))
+  try {
+    assert.equal(view.container.querySelector('.final-cut-workspace'), null)
+    assert.match(view.container.querySelector('.final-cut-scope-state')!.textContent!, /无法读取方案列表/)
+    data.failures.clear()
+    await click(button(view.container, '重新加载'))
+    assert.ok(view.container.querySelector('.final-cut-workspace'))
+    const input = view.container.querySelector<HTMLElement>('[aria-label="切换成片制作方案"]')!
+    await click(input)
+    const list = document.getElementById(input.getAttribute('aria-controls')!)!
+    assert.equal(list.querySelectorAll('[role="option"]').length, 1, 'ordinary canvases share one cut')
+    assert.equal(data.requests.filter(request => request.method !== 'GET').length, 0)
+  } finally { await view.destroy() }
+})
+
+test('a mismatched scope response is rejected instead of exposing another scheme', async t => {
+  const data = redesignedFixture(), originalFetch = data.fetchFixture
+  data.fetchFixture = async (url, init) => {
+    const response = await originalFetch(url, init)
+    return String(url) === scopePath('second') ? Response.json({ ...await response.json(), final_cut_canvas_id: projectId }) : response
+  }
+  const view = await mount(t, data)
+  try {
+    assert.equal(view.container.querySelector('.final-cut-workspace'), null)
+    assert.match(view.container.querySelector('.final-cut-scope-state')!.textContent!, /返回不匹配/)
+    assert.equal(data.requests.filter(request => request.method !== 'GET').length, 0)
+  } finally { await view.destroy() }
+})
+
+test('recent export downloads follow the selected scheme rather than the newest project export', async t => {
+  const data = redesignedFixture()
+  const jobs = ['second', projectId].map((canvasId, index) => ({ id: `export-${index}`, project_id: projectId, shot_id: null, model_id: null,
+    job_type: 'export' as const, status: 'succeeded' as const, request: JSON.stringify({ final_cut_canvas_id: canvasId }),
+    external_id: null, result_asset_id: `export-asset-${index}`, recovery_available: false, error: null, created_at: data.detail.created_at }))
+  const assets = jobs.map((job, index) => ({ ...data.detail.assets[0], id: job.result_asset_id!, url: `/exports/${index}.mp4`, source: 'export' as const }))
+  for (const detail of [data.detail, ...Object.values(data.scopes)]) { detail.jobs = jobs; detail.assets.push(...assets) }
+  const view = await mount(t, data)
+  try {
+    assert.equal(view.container.querySelector<HTMLAnchorElement>('.topbar-actions a[title="下载最近成片"]')!.getAttribute('href'), '/exports/0.mp4')
+    await chooseScheme(view.container, projectId)
+    assert.equal(view.container.querySelector<HTMLAnchorElement>('.topbar-actions a[title="下载最近成片"]')!.getAttribute('href'), '/exports/1.mp4')
+    assert.equal(data.requests.filter(request => request.method !== 'GET').length, 0)
   } finally { await view.destroy() }
 })

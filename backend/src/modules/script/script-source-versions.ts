@@ -1,7 +1,9 @@
-import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { db, one, run } from '../../infrastructure/database/db.js'
 import { scriptSourceCharacterLimit, type ScriptSourceDocument, type ScriptSourceUpdate } from '@video-studio/shared/script/script-source-document'
+import { scriptDocumentVersion } from './script-source-identity.js'
+import { captureSourceRevisionBase } from './script-source-revision-reuse.js'
+export { scriptDocumentVersion } from './script-source-identity.js'
 
 type Source = Omit<ScriptSourceDocument, 'analysis'>
 type Revision = { id: string; project_id: string; source_base_version: string; revision: number; original_content: string; content: string; created_at: string }
@@ -10,7 +12,6 @@ export const scriptSourceUpdateSchema = z.object({
   original_content: z.string().min(1).max(scriptSourceCharacterLimit), content: z.string().min(1).max(scriptSourceCharacterLimit).refine(value => !!value.trim(), '文稿正文不能为空'),
   replacements: z.array(z.object({ find: z.string().min(1).max(scriptSourceCharacterLimit), replace: z.string().max(scriptSourceCharacterLimit), reason: z.string().min(1).max(2000) }).strict()).max(2000),
 }).strict()
-export const scriptDocumentVersion = (source: Source) => createHash('sha256').update(JSON.stringify([source.filename, source.content, source.updated_at])).digest('hex')
 export const originalScriptSource = (projectId: string) => one<Source>('SELECT * FROM script_source_documents WHERE project_id=?', projectId) || null
 const revisionListeners = new Set<(projectId: string, modelId: string) => void>()
 export function onScriptSourceRevision(listener: (projectId: string, modelId: string) => void) {
@@ -44,9 +45,14 @@ export function commitScriptSourceUpdate(projectId: string, input: ScriptSourceU
     run('INSERT INTO script_source_revisions (id, project_id, source_base_version, revision, original_content, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       update.id, projectId, scriptDocumentVersion(original), (current.revision || 0) + 1, current.content, update.content, timestamp)
     const analysis = one<{ snapshot: string }>('SELECT snapshot FROM script_source_analyses WHERE project_id=?', projectId)
-    const modelId = analysis && (JSON.parse(analysis.snapshot) as { model_id?: string }).model_id
-    run('DELETE FROM script_source_analyses WHERE project_id=?', projectId)
+    let modelId: string | undefined
+    try {
+      const candidate = analysis && (JSON.parse(analysis.snapshot) as { model_id?: unknown }).model_id
+      if (typeof candidate === 'string' && candidate.trim()) modelId = candidate
+    } catch { /* A damaged old analysis must not prevent a confirmed revision. */ }
     const revised = effectiveScriptSource(projectId)!, revisionVersion = scriptDocumentVersion(revised)
+    captureSourceRevisionBase(current, original, revised, update.id)
+    run('DELETE FROM script_source_analyses WHERE project_id=?', projectId)
     // Notifications run after the outer document transaction commits. A failed
     // transaction or another replacement must never launch a stale analysis.
     if (modelId) queueMicrotask(() => {

@@ -87,6 +87,41 @@ test('moving nodes preserves identities, snapshots, relative layout and internal
   assert.deepEqual(db.pragma('foreign_key_check'), [])
 })
 
+test('moving ordinary nodes reserves the project script slot and never moves script references', async () => {
+  const { id } = await project()
+  await call('GET', `/api/projects/${id}/canvases`)
+  const other = await call<Info>('POST', `/api/projects/${id}/canvases`, {})
+  const sourceBase = await call<Graph>('GET', path(id, id)), targetBase = await call<Graph>('GET', path(id, other.id))
+  const script = (id: string) => ({ ...node(id), type: 'project_script_ref' })
+  const source = await call<Graph>('PUT', path(id, id), { ...sourceBase,
+    nodes: [script('source-script'), node('to-move'), node('overflow')], edges: [] })
+  const target = await call<Graph>('PUT', path(id, other.id), { ...targetBase,
+    nodes: [script('target-script'), ...Array.from({ length: 499 }, (_, index) => node(`target-${index}`))], edges: [] })
+  const payload = { target_canvas_id: other.id, node_ids: ['source-script', 'to-move'],
+    revision: source.revision, target_revision: target.revision }
+  const protectedMove = await app.inject({ method: 'POST', url: `${path(id, id)}/move-nodes`, payload })
+  assert.equal(protectedMove.statusCode, 422, protectedMove.body)
+  assert.match(protectedMove.json<{ detail: string }>().detail, /项目剧本节点/)
+  assert.deepEqual(await call('GET', path(id, id)), source)
+  assert.deepEqual(await call('GET', path(id, other.id)), target)
+
+  const moved = await call<{ source: Graph; target: Graph }>('POST', `${path(id, id)}/move-nodes`, {
+    ...payload, node_ids: ['to-move'],
+  })
+  assert.deepEqual(moved.source.nodes.map(item => item.id), ['source-script', 'overflow'])
+  assert.equal(moved.target.nodes.length, 501)
+  assert.equal(moved.target.nodes.filter(item => item.type !== 'project_script_ref').length, 500)
+  assert.deepEqual(moved.target.nodes.slice(0, -1), target.nodes)
+
+  const overflow = await app.inject({ method: 'POST', url: `${path(id, id)}/move-nodes`, payload: {
+    ...payload, node_ids: ['overflow'], revision: moved.source.revision, target_revision: moved.target.revision,
+  } })
+  assert.equal(overflow.statusCode, 422, overflow.body)
+  assert.match(overflow.json<{ detail: string }>().detail, /容量不足/)
+  assert.deepEqual(await call('GET', path(id, id)), moved.source)
+  assert.deepEqual(await call('GET', path(id, other.id)), moved.target)
+})
+
 test('deleting a canvas preserves project resources, rejects stale deletion and keeps at least one canvas', async () => {
   const { id } = await project()
   await call('GET', `/api/projects/${id}/canvases`)

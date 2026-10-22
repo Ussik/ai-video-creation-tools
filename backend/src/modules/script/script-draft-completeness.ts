@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { maxStageArtifacts, scriptArtifactTypes, type StageArtifactType } from '@video-studio/shared/script/script-stage-content'
+import { maxStageArtifacts, scriptArtifactLabels, scriptArtifactTypes, type StageArtifactType } from '@video-studio/shared/script/script-stage-content'
 import { scriptSettingCompletenessGuidance } from '@video-studio/shared/script/script-setting-completeness'
 import { generateStructuredOutput, type StructuredGenerator } from '../generation/model-output.js'
 import { ScriptToolProblem } from './script-revision.js'
@@ -17,13 +17,17 @@ export class ScriptDraftNeedsResolution extends ScriptToolProblem {
 }
 
 type Artifact = { artifact_type: string; episode_number?: number; content: string }
-type Source = { key: string; artifact_type: StageArtifactType; content: string }
+type Source = { key: string; artifact_type: StageArtifactType; title: string; content: string }
+const sceneFieldLabels = { heading: '场次标题', location: '地点', time_of_day: '时段', characters: '出场人物',
+  action: '动作', dialogue: '对白', narration: '旁白' } as const
 /** A failed audit transport/contract must stop the tool loop rather than
  * invite another potentially billable request with the same candidate. */
 export class ScriptDraftReviewError extends Error {
   statusCode: number
-  constructor(issue: unknown) {
-    super(`阶段设定核对未完成：${issue instanceof Error ? issue.message : String(issue)}`, { cause: issue })
+  constructor(issue: unknown, public phase: 'source_analysis' | 'revision_analysis' | 'review' = 'review') {
+    const label = phase === 'revision_analysis' ? '修订稿分析未完成，尚未开始阶段设定核对'
+      : phase === 'source_analysis' ? '剧本来源分析未完成，尚未开始阶段设定核对' : '阶段设定核对未完成'
+    super(`${label}：${issue instanceof Error ? issue.message : String(issue)}`, { cause: issue })
     this.name = 'ScriptDraftReviewError'
     this.statusCode = typeof (issue as { statusCode?: unknown })?.statusCode === 'number' ? (issue as { statusCode: number }).statusCode : 502
   }
@@ -46,10 +50,12 @@ export const draftCompletenessInput = z.object({
 export function draftCompletenessSources(draft: WorkflowDraft, preserved: Artifact[] = []): Source[] {
   const artifacts = draft.artifacts.filter(artifact => !preserved.some(original => original.artifact_type === artifact.artifact_type &&
     (original.episode_number || 0) === draft.episode_number && original.content.trim() === artifact.content.trim()))
-  const sources: Source[] = artifacts.map(artifact => ({ key: artifact.artifact_type, artifact_type: artifact.artifact_type, content: artifact.content }))
+  const sources: Source[] = artifacts.map(artifact => ({ key: artifact.artifact_type, artifact_type: artifact.artifact_type,
+    title: scriptArtifactLabels[artifact.artifact_type], content: artifact.content }))
   if (draft.stage === 'episode') draft.scenes.forEach((scene, index) => {
     for (const field of ['heading', 'location', 'time_of_day', 'characters', 'action', 'dialogue', 'narration'] as const) {
-      if (scene[field]) sources.push({ key: `scene:${index}:${field}`, artifact_type: 'episode_script', content: scene[field] })
+      if (scene[field]) sources.push({ key: `scene:${index}:${field}`, artifact_type: 'episode_script',
+        title: `第 ${index + 1} 场 · ${sceneFieldLabels[field]}`, content: scene[field] })
     }
   })
   return sources
@@ -70,6 +76,7 @@ export async function reviewScriptDraftCompleteness(draft: WorkflowDraft, genera
     : options.context || {}
   const prompt = '你是本阶段草稿的独立设定审读员。本次只核对完整性，不生成故事、不调用文档操作、不保存。\n' +
     '本次一次送审完整候选文档、全部分场和完整有效稿及已保存设定背景。整体阅读后核对前后因果、跨文档一致性与原稿忠实度，不将任何片段或摘要当成全文，不遗漏文档。\n' +
+    '面向创作者的 explanation、suggestion 和新建 topic 使用简体中文。提及文档或分场位置时使用所给 title，不以内部 key、artifact_type 或 JSON 字段名代称；必要的专有名词和原文英文名称保留。source_key、checked_artifacts 等定位字段仍使用真实机器标识，不翻译；quote 必须保留原文，既有事项的 topic 原样沿用，不因语言规范改写身份。\n' +
     '每个finding的topic使用具体、稳定的设定事项名（如“铜钥匙使用后的记忆代价”，不能只写“人物”或“因果”）；相同事项沿用已有问题的topic。不同问题不得共用topic。既有处理记录只证明已作过决定，不证明正文已修好；对已回答或已委托的问题核对当前正文是否落实，仍有缺口时说明具体未落实的位置，不重新要求用户作同一决定。\n' +
     scriptSettingCompletenessGuidance(draft.stage) +
     '\n逐份检查下方新写或修改的正文和分场，判断作者设定是否具体、核心事项是否缺失、各文档与既有事实是否矛盾。checked_artifacts 必须且只包含本次送审的全部文档类型，各出现一次。\n' +

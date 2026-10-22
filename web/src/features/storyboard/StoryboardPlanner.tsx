@@ -27,9 +27,17 @@ function planIssue(result: StoryboardPlanningResult): string {
   }
   return ''
 }
-const planned = (scene: StoryboardPlanningContext['scenes'][number]) => scene.planned === true
+const planned = (scene: StoryboardPlanningContext['scenes'][number]) => scene.planned === true && !scene.needs_replan
 const needsCanvasNodes = (scene: StoryboardPlanningContext['scenes'][number]) => planned(scene) &&
   typeof scene.canvas_shot_count === 'number' && scene.canvas_shot_count < scene.shot_count
+const replanLabel = (scene: StoryboardPlanningContext['scenes'][number]) =>
+  scene.replan_reason === 'episode_script_changed' || scene.replan_reason === 'scene_changed'
+    ? '正文已更新，需重新规划' : '资料已更新，需重新规划'
+function episodeDocumentIds(context: StoryboardPlanningContext, sceneIds: string[]) {
+  const episodes = new Set(context.scenes.filter(scene => sceneIds.includes(scene.id)).map(scene => scene.episode_number))
+  return context.documents.filter(document => document.artifact_type === 'episode_script' && episodes.has(document.episode_number) &&
+    (!context.default_document_ids || context.default_document_ids.includes(document.id))).map(document => document.id)
+}
 export default function StoryboardPlanner({ opened, onClose, detail, models, initialSceneIds, onRefresh, onOpenCanvas, onNotice }: Props) {
   const [sceneIds, setSceneIds] = useState<string[]>([]), [documentIds, setDocumentIds] = useState<string[]>([]), [skillIds, setSkillIds] = useState<string[]>([])
   const [referenceSkillIds, setReferenceSkillIds] = useState<string[]>([])
@@ -41,7 +49,9 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
   const [error, setError] = useState(''), [result, setResult] = useState<StoryboardPlanningResult | null>(null), [elapsed, setElapsed] = useState(0)
   const [refreshKey, setRefreshKey] = useState(0), [view, setView] = useState<'setup' | 'preview'>('setup')
   const [focusedSceneId, setFocusedSceneId] = useState(''), [replanExisting, setReplanExisting] = useState(false)
+  const [planningMode, setPlanningMode] = useState<'redesign' | 'update'>('redesign')
   const initialized = useRef(false), skillInitialized = useRef(false), referenceSkillInitialized = useRef(false)
+  const documentChoices = useRef(new Map<string, boolean>())
   const serial = useRef(0), requestId = useRef(''), applied = useRef<ScriptCanvasResult | null>(null), prepared = useRef<ScriptCanvasResult | null>(null), imported = useRef<ScriptCanvasResult | null>(null), controller = useRef<AbortController | null>(null)
   const rangeIds = initialSceneIds.length ? initialSceneIds : detail.script.scenes.map(scene => scene.id)
   const rangeKey = rangeIds.join(',')
@@ -50,8 +60,9 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
   useEffect(() => {
     if (!opened) { serial.current++; controller.current?.abort(); return }
     initialized.current = false; skillInitialized.current = false; referenceSkillInitialized.current = false
+    documentChoices.current.clear()
     setSceneIds(rangeIds.slice(0, batchLimit)); setDocumentIds([]); setSkillIds([]); setReferenceSkillIds([]); setReferenceReloading(false); setContext(null); setResult(null); setError(''); setInstructions('')
-    setUseTarget(false); setShotsPerScene(''); setReplanExisting(false); setView('setup'); setFocusedSceneId(''); setModelId(eligibleModels[0]?.id || '')
+    setUseTarget(false); setShotsPerScene(''); setReplanExisting(false); setPlanningMode('redesign'); setView('setup'); setFocusedSceneId(''); setModelId(eligibleModels[0]?.id || '')
     applied.current = null; prepared.current = null; imported.current = null
     // Opening loads metadata only; the creator explicitly starts any model work.
   }, [opened, detail.id])
@@ -79,6 +90,13 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
       .finally(() => { if (turn === serial.current) setPending(null) })
     return () => abort.abort()
   }, [opened, detail.id, rangeKey, refreshKey])
+  const sceneSelectionKey = sceneIds.join(',')
+  useEffect(() => {
+    if (!context) return
+    const defaults = new Set(episodeDocumentIds(context, sceneIds))
+    const ids = context.documents.filter(document => documentChoices.current.get(document.id) ?? defaults.has(document.id)).map(document => document.id)
+    setDocumentIds(current => current.length === ids.length && current.every((id, index) => id === ids[index]) ? current : ids)
+  }, [context, sceneSelectionKey])
   useEffect(() => {
     if (pending !== 'plan' && pending !== 'references') return
     const started = Date.now(); setElapsed(0)
@@ -88,12 +106,16 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
   const selected = context?.scenes.filter(scene => sceneIds.includes(scene.id)) || []
   const savedScenes = context?.scenes.filter(planned) || []
   const unplannedScenes = context?.scenes.filter(scene => !planned(scene)) || []
-  const planningScenes = selected.filter(scene => replanExisting || !planned(scene))
+  const pendingPlanningScenes = selected.filter(scene => replanExisting || !planned(scene))
+  const canChoosePlanningMode = pendingPlanningScenes.length > 0 && selected.some(scene => scene.shot_count > 0)
+  const effectivePlanningMode = canChoosePlanningMode ? planningMode : 'update'
+  const planningScenes = effectivePlanningMode === 'redesign' ? selected : pendingPlanningScenes
+  const staleScenes = selected.filter(scene => scene.needs_replan)
   const reusedScenes = selected.filter(scene => !planningScenes.some(item => item.id === scene.id))
   const planningIds = planningScenes.map(scene => scene.id)
   const hasPreview = !!result || selected.length > 0 && !planningScenes.length
   const total = planningScenes.reduce((sum, scene) => sum + scene.duration, 0)
-  const minimum = planningScenes.reduce((sum, scene) => sum + Math.max(1, scene.shot_count), 0) || 1
+  const minimum = planningScenes.reduce((sum, scene) => sum + (effectivePlanningMode === 'redesign' ? 1 : Math.max(1, scene.shot_count)), 0) || 1
   const invalidTarget = useTarget && (!Number.isInteger(Number(target)) || Number(target) < minimum || Number(target) > planningScenes.length * 30)
   const automaticShotCount = String(shotsPerScene).trim() === ''
   const invalidShotCount = !automaticShotCount && (!Number.isInteger(Number(shotsPerScene)) || Number(shotsPerScene) < 2 || Number(shotsPerScene) > 8)
@@ -103,7 +125,9 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
     shots: (context?.existing_shots || []).filter(shot => shot.scene_id === scene.id),
   })
   const focusedScene = previewScenes.find(scene => scene.scene_id === focusedSceneId) || previewScenes[0]
-  const focusedIsDraft = !!result?.scenes.some(scene => scene.scene_id === focusedScene?.scene_id)
+  const planIsSaved = !!applied.current
+  const focusedHasResult = !!result?.scenes.some(scene => scene.scene_id === focusedScene?.scene_id)
+  const focusedIsDraft = focusedHasResult && !planIsSaved
   const previewCount = previewScenes.reduce((sum, scene) => sum + scene.shots.length, 0)
   const skillPolicy: SkillPolicy | null = context ? context.skill_policy || {
     stage: 'storyboard', label: '分镜规划', primary_id: context.default_skill_ids?.[0] || null,
@@ -138,12 +162,12 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
   function resetDraft() { setResult(null); setError(''); applied.current = null; prepared.current = null; imported.current = null }
   function chooseScene(id: string, checked: boolean) {
     const next = toggle(sceneIds, id, checked)
-    resetDraft(); setSceneIds(next); setUseTarget(false); setFocusedSceneId(checked ? id : next[0] || '')
+    resetDraft(); setSceneIds(next); setUseTarget(false); setPlanningMode('redesign'); setFocusedSceneId(checked ? id : next[0] || '')
     setView(!replanExisting && next.length && next.every(id => context?.scenes.some(scene => scene.id === id && planned(scene))) ? 'preview' : 'setup')
   }
   function chooseBatch(scenes: StoryboardPlanningContext['scenes']) {
     const batch = scenes.slice(0, batchLimit), ids = batch.map(scene => scene.id)
-    resetDraft(); setSceneIds(ids); setUseTarget(false); setReplanExisting(false); setFocusedSceneId(ids[0] || '')
+    resetDraft(); setSceneIds(ids); setUseTarget(false); setReplanExisting(false); setPlanningMode('redesign'); setFocusedSceneId(ids[0] || '')
     setView(batch.length && batch.every(planned) ? 'preview' : 'setup')
   }
   async function startPlanning() {
@@ -155,11 +179,13 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
       const scope = sameScope ? context : await api<StoryboardPlanningContext>(`/projects/${detail.id}/script/storyboard/context`, { ...json('POST', { scene_ids: planningIds }), signal: abort.signal })
       if (turn !== serial.current) return
       const value = await api<StoryboardPlanningResult>(`/projects/${detail.id}/script/storyboard/plan`, { ...json('POST', {
-        signature: scope.signature, scene_ids: planningIds, document_ids: documentIds, skill_ids: skillIds, model_id: modelId,
+        signature: scope.signature, scene_ids: planningIds, document_ids: documentIds, skill_ids: skillIds, model_id: modelId, mode: effectivePlanningMode,
         ...(!automaticShotCount ? { shots_per_scene: Number(shotsPerScene) } : {}), ...(useTarget ? { target_duration: Number(target) } : {}), instructions,
       }), signal: abort.signal })
       if (turn !== serial.current) return
-      requestId.current = crypto.randomUUID(); setResult(value); setFocusedSceneId(value.scenes[0]?.scene_id || ''); setView('preview')
+      if (value.mode && value.mode !== effectivePlanningMode) throw new Error('返回的分镜方案方式不匹配，请重新规划')
+      if (effectivePlanningMode === 'redesign' && value.scenes.some(scene => scene.shots.some(shot => !!shot.shot_id))) throw new Error('新方案包含旧镜头，请重新规划')
+      requestId.current = crypto.randomUUID(); setResult({ ...value, mode: value.mode || effectivePlanningMode, instructions: value.instructions ?? instructions }); setFocusedSceneId(value.scenes[0]?.scene_id || ''); setView('preview')
     } catch (issue) { if (turn === serial.current) setError(errorText(issue)) }
     finally { if (turn === serial.current) setPending(null) }
   }
@@ -175,7 +201,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
     try {
       if (result && !applied.current) {
         const saved = await api<ScriptCanvasResult>(`/projects/${detail.id}/script/storyboard/commit`, { ...json('POST', {
-          signature: result.signature, request_id: requestId.current,
+          signature: result.signature, request_id: requestId.current, mode: result.mode || 'update', instructions: result.instructions || '',
           scenes: result.scenes.map(({ scene_id, scene_duration, shots }) => ({ scene_id, scene_duration, shots })),
         }), signal: abort.signal })
         if (!active()) return
@@ -209,6 +235,8 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
       await onRefresh()
       if (!active()) return
       const canvas = { ...imported.current,
+        design_id: applied.current?.design_id ?? imported.current.design_id,
+        target_canvas_id: applied.current?.target_canvas_id || imported.current.target_canvas_id,
         created_shots: imported.current.created_shots + (applied.current?.created_shots || 0) + (prepared.current?.created_shots || 0),
         created_profiles: imported.current.created_profiles + (applied.current?.created_profiles || 0) + (prepared.current?.created_profiles || 0),
         updated_shot_ids: [...new Set([...(imported.current.updated_shot_ids || []), ...(applied.current?.updated_shot_ids || [])])],
@@ -241,7 +269,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
               <Checkbox aria-label={`选择场次：${sceneLabel(id)}`} checked={checked} disabled={locked || !checked && sceneIds.length >= batchLimit} onChange={event => chooseScene(id, event.currentTarget.checked)} />
               <UnstyledButton type="button" className="storyboard-planner-scene-button" disabled={locked || !checked && sceneIds.length >= batchLimit} title={!checked && sceneIds.length >= batchLimit ? '本批已选满，可清空选择或切换已规划场次' : undefined} onClick={() => { if (checked && hasPreview) { setFocusedSceneId(id); setView('preview') } else chooseScene(id, !checked) }}>
                 <span className="storyboard-planner-scene-number">{String(index + 1).padStart(2, '0')}</span>
-                <strong>{sceneLabel(id)}</strong><small>{meta?.duration || detail.script.scenes.find(scene => scene.id === id)?.duration || 0} 秒<span>{draftScene ? `草稿 · ${count} 镜` : meta && planned(meta) ? `${typeof meta.canvas_shot_count !== 'number' ? '已规划' : needsCanvasNodes(meta) ? meta.canvas_shot_count ? '待补齐' : '待加入' : '已加入'} · ${count} 镜` : '待规划'}</span></small>
+                <strong>{sceneLabel(id)}</strong><small>{draftScene?.scene_duration || meta?.duration || detail.script.scenes.find(scene => scene.id === id)?.duration || 0} 秒<span>{draftScene ? `${planIsSaved ? '已保存' : '草稿'} · ${count} 镜` : meta?.needs_replan ? replanLabel(meta) : meta && planned(meta) ? `${typeof meta.canvas_shot_count !== 'number' ? '已规划' : needsCanvasNodes(meta) ? meta.canvas_shot_count ? '待补齐' : '待加入' : '已加入'} · ${count} 镜` : '待规划'}</span></small>
               </UnstyledButton>
             </div>
           })}
@@ -251,15 +279,20 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
         <nav className="storyboard-planner-tabs" aria-label="分镜工作步骤">
           <UnstyledButton type="button" aria-label="规划设置" aria-current={view === 'setup' ? 'step' : undefined} onClick={() => setView('setup')}><span>1</span>规划设置</UnstyledButton><ChevronRight size={13} />
           <UnstyledButton type="button" aria-label="分镜预览" aria-current={view === 'preview' ? 'step' : undefined} disabled={!hasPreview} onClick={() => setView('preview')}><span>{hasPreview ? <Check size={11} /> : '2'}</span>分镜预览</UnstyledButton>
-          <small>确认后准备参考设定并加入画布</small>
+          <small>{planIsSaved ? '分镜已保存，继续准备参考设定并加入画布' : '确认后准备参考设定并加入画布'}</small>
         </nav>
         <div className="storyboard-planner-scroll">
           {error && <div className="storyboard-planner-error" role="alert"><span>{error}</span>{!applied.current && <Button variant="subtle" size="compact-xs" disabled={!!pending} onClick={() => setRefreshKey(key => key + 1)}>刷新资料</Button>}</div>}
           {!context ? <div className="storyboard-planner-empty">{pending === 'context' ? <><LoaderCircle size={22} /><strong>正在读取剧本与分镜</strong></> : <><Clapperboard size={24} /><strong>没有可用场次</strong></>}</div>
           : !sceneIds.length ? <div className="storyboard-planner-empty"><Clapperboard size={24} /><strong>选择要加入画布的场次</strong><p>从左侧勾选场次，再规划镜头。</p></div>
           : view === 'setup' ? <>
-            <header className="storyboard-planner-section-title"><h3>{result ? '调整规划设置' : planningScenes.length ? '规划所选场次' : '所选分镜已准备好'}</h3><p>{planningScenes.length ? `${planningScenes.length} 场待规划${reusedScenes.length ? `，另有 ${reusedScenes.length} 场复用已保存分镜` : ''}。生成后可以逐镜修改，再确认加入。` : '可以预览已保存镜头后直接加入，也可以重新规划。'}</p></header>
+            <header className="storyboard-planner-section-title"><h3>{planIsSaved ? '分镜已保存' : result ? '调整规划设置' : planningScenes.length ? '规划所选场次' : '所选分镜已准备好'}</h3><p>{planIsSaved ? '本次镜头已保存，继续准备参考设定并加入画布。' : planningScenes.length ? `${planningScenes.length} 场待规划${reusedScenes.length ? `，另有 ${reusedScenes.length} 场复用已保存分镜` : ''}。生成后可以逐镜修改，再确认加入。` : '可以预览已保存镜头后直接加入，也可以重新规划。'}</p></header>
+            {!!staleScenes.length && !planIsSaved && <p className="storyboard-planner-note" role="status">旧分镜和素材仍会保留，请先按最新资料重新规划后再加入画布。</p>}
             {planningScenes.length > 0 && <>
+              {canChoosePlanningMode && <><Select label="规划方式" aria-label="分镜规划方式" value={planningMode} allowDeselect={false} disabled={locked}
+                data={[{ value: 'redesign', label: '重新设计新方案' }, { value: 'update', label: '沿用当前方案更新' }]} comboboxProps={{ zIndex: 350 }}
+                onChange={value => { if (value === 'redesign' || value === 'update') { setPlanningMode(value); setUseTarget(false); resetDraft() } }} />
+                <p className="storyboard-planner-note">{planningMode === 'redesign' ? '所选场次的镜头与视觉设定会形成新方案并进入独立画布。旧方案和素材保留，不会自动参与新方案。' : '沿用当前镜头与视觉设定更新。未变化的设定和确认图会复用。'}</p></>}
               <section className="storyboard-planner-skill-card" aria-label="本次分镜技能">
                 <header><span>本次分镜规划</span><small>{skillSource}</small></header>
                 <div className="storyboard-planner-skill-choice"><span className="storyboard-planner-primary-skill"><Puzzle size={15} /><strong title={primarySkill?.name}>{skillIds.length && !primarySkill ? '技能需重新选择' : primarySkill?.name || '基础分镜规则'}</strong></span>
@@ -276,20 +309,20 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
               {context.reference_budget && <p className="storyboard-planner-reference-budget" role="note">每镜最多 {context.reference_budget.max_setting_images} 张设定参考图，另为分镜图预留 {context.reference_budget.storyboard_images} 张；视频合计不超过 {context.reference_budget.max_images} 张。对象过多时按剧情拆分镜头。</p>}
               <Textarea label="导演要求" placeholder="例如：保留全部对白，强调人物反应和动作衔接" maxLength={4000} rows={2} value={instructions} disabled={locked} onChange={event => { setInstructions(event.currentTarget.value); resetDraft() }} />
               <WorkspaceDisclosure className="storyboard-planner-disclosure" label={<><span>参考资料</span><small>{documentIds.length ? `已选 ${documentIds.length} 份` : '可选'}</small></>}>
-                <div className="storyboard-planner-disclosure-body"><p className="storyboard-planner-note">所选场次正文、项目画幅与画风会用于规划。勾选其他文档可补充人物、世界观等设定。</p>
+                <div className="storyboard-planner-disclosure-body"><p className="storyboard-planner-note">所选场次正文、项目画幅与画风会用于规划。默认参考所选集的最新分集剧本，勾选其他文档可补充人物、世界观等设定。</p>
                   <div className="storyboard-planner-source-list">{context.documents.map(document => <Checkbox key={document.id} label={`${document.title} · ${document.characters.toLocaleString()} 字`} checked={documentIds.includes(document.id)} disabled={locked}
-                    onChange={event => { const checked = event.currentTarget.checked; setDocumentIds(current => toggle(current, document.id, checked)); resetDraft() }} />)}</div>
+                    onChange={event => { const checked = event.currentTarget.checked; documentChoices.current.set(document.id, checked); setDocumentIds(current => toggle(current, document.id, checked)); resetDraft() }} />)}</div>
                   {!!context.project.style && <WorkspaceDisclosure className="storyboard-planner-details" label={<>查看项目画风</>}><p>{context.project.style}</p></WorkspaceDisclosure>}
                 </div>
               </WorkspaceDisclosure>
             </>}
             <WorkspaceDisclosure className="storyboard-planner-disclosure" label={<><span>时长与重新规划</span><small>{useTarget ? `${target} 秒` : '保留原时长'}</small></>}><div className="storyboard-planner-disclosure-body">
-              {selected.some(scene => planned(scene)) && <Checkbox label="重新规划已有分镜" checked={replanExisting} disabled={locked} onChange={event => { setReplanExisting(event.currentTarget.checked); setUseTarget(false); resetDraft() }} />}
+              {selected.some(scene => planned(scene)) && <Checkbox label="重新规划已有分镜" checked={replanExisting} disabled={locked} onChange={event => { setReplanExisting(event.currentTarget.checked); setPlanningMode('redesign'); setUseTarget(false); resetDraft() }} />}
               {!!planningScenes.length && <><Checkbox label={`指定本次总时长（源场次合计 ${total} 秒）`} checked={useTarget} disabled={locked} onChange={event => { setUseTarget(event.currentTarget.checked); resetDraft() }} />
                 {useTarget && <NumberInput label="本次目标时长" suffix=" 秒" min={minimum} max={planningScenes.length * 30} value={target} disabled={locked} onChange={value => { setTarget(value); resetDraft() }} />}
                 {invalidTarget && <p className="storyboard-planner-error">本次总时长应在 {minimum} 至 {planningScenes.length * 30} 秒之间。</p>}
                 <p className="storyboard-planner-note">默认保留剧本场次时长；调整后会在确认时同步场次时长。</p></>}
-              {selected.some(scene => scene.shot_count) && <p className="storyboard-planner-note">重新规划会同步本次镜头与参考设定，保留已有镜头及素材关联。设定变化后需重新制作对应参考图；已有镜头素材不会自动重新生成。</p>}
+              {selected.some(scene => scene.shot_count) && <p className="storyboard-planner-note">{effectivePlanningMode === 'redesign' ? '新方案从新的镜头与设定开始，原画布和历史素材不变。确认后仍需手动生成所需图片。' : '沿用更新会同步本次镜头与参考设定。设定变化后需重新制作对应参考图；已有镜头素材不会自动重新生成。'}</p>}
             </div></WorkspaceDisclosure>
           </> : focusedScene && <>
             <div className="storyboard-planner-reference-preparation">
@@ -304,7 +337,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
               <Select label="整理设定的文本模型" aria-label="整理参考设定文本模型" data={eligibleModels.map(model => ({ value: model.id, label: model.name }))} value={modelId || null} allowDeselect={false} disabled={!!pending || !!imported.current} onChange={value => setModelId(value || '')} comboboxProps={{ zIndex: 350 }} />
               {!eligibleModels.length && referenceNeedsAnalysis.length > 0 && <p className="storyboard-planner-error">这些场次还需要整理参考设定，请先启用一个文本模型。</p>}
             </div>
-            <header className="storyboard-planner-section-title"><h3>{focusedScene.scene_heading}</h3><p>{focusedScene.shots.length} 个镜头 · {focusedScene.scene_duration} 秒 · {focusedIsDraft ? '未保存草稿，可修改后确认' : '复用已保存分镜'}</p></header>
+            <header className="storyboard-planner-section-title"><h3>{focusedScene.scene_heading}</h3><p>{focusedScene.shots.length} 个镜头 · {focusedScene.scene_duration} 秒 · {focusedIsDraft ? '未保存草稿，可修改后确认' : focusedHasResult && planIsSaved ? '已保存分镜' : '复用已保存分镜'}</p></header>
             {result && <WorkspaceDisclosure className="storyboard-planner-used-sources" label={<><Puzzle size={13} /><span>已使用：{result.used_skills[0]?.name || '基础分镜规则'}<small>辅助技能 {Math.max(0, result.used_skills.length - 1)} 个<span>·</span>参考资料 {result.source_documents.length} 份</small></span><ChevronRight size={13} /></>}>
 
               <div className="storyboard-planner-used-details"><p>参考文档：{result.source_documents.map(document => document.title).join(' · ') || '未选择额外文档'}</p>{result.used_skills.map((skill, index) => <p key={skill.id}><strong>{index === 0 ? '主技能' : '辅助技能'} · {skill.name}</strong><small>版本 {skill.revision.slice(0, 8)} · {skill.files.join(' · ')}</small></p>)}</div>
@@ -329,7 +362,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
     <footer className="storyboard-planner-actions">
       <div className="storyboard-planner-footer-status" role="status">{pending ? <><LoaderCircle size={14} />{pending === 'context' ? '正在读取资料' : pending === 'save' ? saveLabel : pending === 'references' ? `正在整理参考设定 · ${elapsed} 秒` : `正在规划分镜 · ${elapsed} 秒`}</> : <>
         {hasPreview ? `${sceneIds.length} 场 · ${previewCount} 个镜头` : `${sceneIds.length} 场已选`}
-        <small><span>{hasPreview ? '先补齐参考图，再生成分镜' : '先规划，再确认加入'}</span>
+        <small><span>{planIsSaved ? imported.current ? '分镜与设定已保存，继续打开画布' : '分镜已保存，继续准备参考设定' : hasPreview ? '先补齐参考图，再生成分镜' : '先规划，再确认加入'}</span>
           {hasPreview && <Popover position="top-start" offset={6} width="min(360px, calc(100vw - 32px))" withinPortal zIndex={350} returnFocus>
             <Popover.Target><ActionIcon className="storyboard-planner-info-button" variant="subtle" size={20} aria-label="查看参考设定说明" title="查看参考设定说明"><Info size={14} /></ActionIcon></Popover.Target>
             <Popover.Dropdown className="storyboard-planner-info-popover" role="dialog" aria-label="参考设定说明">
@@ -339,7 +372,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
         </small>
       </>}</div>
       {pending === 'plan' || pending === 'references' ? <Button variant="default" onClick={cancelPlanning}>{pending === 'references' ? '取消整理' : '取消规划'}</Button> : <Button variant="subtle" disabled={pending === 'save'} onClick={onClose}>取消</Button>}
-      {hasPreview ? <Button className="storyboard-planner-primary" leftSection={<Plus size={14} />} disabled={!!pending || referenceReloading || !!issue} onClick={() => void addToCanvas()}>确认加入画布</Button>
+      {hasPreview ? <Button className="storyboard-planner-primary" leftSection={<Plus size={14} />} disabled={!!pending || referenceReloading || !!issue} onClick={() => void addToCanvas()}>{planIsSaved ? '继续加入画布' : '确认加入画布'}</Button>
         : <Button className="storyboard-planner-primary" leftSection={<Clapperboard size={14} />} disabled={locked || !context || !planningIds.length || invalidTarget || invalidShotCount || !eligibleModels.some(model => model.id === modelId)} onClick={() => void startPlanning()}>开始规划</Button>}
     </footer>
   </Modal>

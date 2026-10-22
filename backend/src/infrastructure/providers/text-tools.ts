@@ -1,5 +1,8 @@
 import { createTextToolTransport, type GenerationModel, type GenerationProvider, type TextRequestMetrics } from './providers.js'
 import { compactToolHistory, deduplicateToolHistory } from './text-tool-history.js'
+import { retryReadOnlyRequest } from '../../modules/generation/read-only-retry.js'
+import { runModelStep } from '../../modules/generation/model-execution.js'
+import { generationStepBudgets } from '@video-studio/shared/script/script-stream-policy'
 
 export type TextTool = { name: string; description: string; parameters: Record<string, unknown> }
 export type ToolCall = { id: string; name: string; arguments: string }
@@ -14,11 +17,14 @@ export function textToolSession(model: GenerationModel, provider: GenerationProv
   let history: unknown[] | undefined
   let initialLength = 0
   return async (outputs: ToolOutput[] = [], continuation?: string): Promise<ToolTurn> => {
-    if (history) {
-      history = deduplicateToolHistory(history, outputs)
-      history = await compactToolHistory(history, initialLength, model, provider, key, signal, onMetrics)
-    }
-    const result = await createTextToolTransport(model, provider, prompt, tools, history, outputs, key, signal, onText, continuation, onMetrics)
+    signal?.throwIfAborted()
+    const preparedHistory = history ? await compactToolHistory(deduplicateToolHistory(history, outputs), initialLength, model, provider, key, signal, onMetrics) : undefined
+    // Retry only the pending model decision. Tool execution is outside this
+    // session, and neither partial calls nor failed histories are committed.
+    const result = await runModelStep('tool_decision', signal, () => retryReadOnlyRequest(
+      () => createTextToolTransport(model, provider, prompt, tools, preparedHistory, outputs, key, signal, onText, continuation, onMetrics),
+      { signal, onRetry: () => onText?.('模型连接暂时中断，正在重试当前请求；已完成的操作会保留。') },
+    ), generationStepBudgets.discussion, '当前工具决策请求超时（5 分钟），已保留完成步骤，请检查后继续。')
     history = result.history
     initialLength = result.initial_history_length || initialLength
     return result

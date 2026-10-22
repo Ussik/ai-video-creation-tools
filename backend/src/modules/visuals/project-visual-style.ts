@@ -28,10 +28,10 @@ export function projectVisualStyle(projectId: string): ProjectVisualStyle {
 export function assertStyleVersion(style: ProjectVisualStyle, expected?: string) {
   if (expected && expected !== style.version) throw Object.assign(new Error('项目画风已更新，请重新检查生成信息后再生成'), { statusCode: 409 })
 }
-export function compileProjectStyle<T extends { prompt: string; project_style_version?: string }>(projectId: string, input: T, preview = false) {
+export function compileProjectStyle<T extends { prompt: string; prompt_document?: boolean; project_style_version?: string }>(projectId: string, input: T, preview = false) {
   const style = projectVisualStyle(projectId)
   if (!preview) assertStyleVersion(style, input.project_style_version)
-  return { ...input, prompt: withProjectStyle(input.prompt, style), project_style_version: style.version, project_visual_style: style }
+  return { ...input, prompt: input.prompt_document ? input.prompt : withProjectStyle(input.prompt, style), project_style_version: style.version, project_visual_style: style }
 }
 
 /** Known old generation snapshots need review; uploads/legacy media remain explicitly unknown. */

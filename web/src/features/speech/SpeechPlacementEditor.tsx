@@ -4,22 +4,25 @@ import { Check, Link2, Unlink } from 'lucide-react'
 import type { SpeechLine, SpeechPlacement } from '@video-studio/shared/media/speech-timeline'
 import type { Shot } from '../../shared/api/api'
 import { api, json } from '../../shared/api/api'
+import { finalCutPath } from '../final-cut/final-cut-scope'
 
-export default function SpeechPlacementEditor({ projectId, line, placement, shots, initialShotId, onChanged }: {
-  projectId: string; line: SpeechLine; placement?: SpeechPlacement; shots: Shot[]; initialShotId?: string | null; onChanged: () => Promise<unknown> | void
+export default function SpeechPlacementEditor({ projectId, line, placement, shots, initialShotId, finalCutCanvasId, onChanged }: {
+  projectId: string; line: SpeechLine; placement?: SpeechPlacement; shots: Shot[]; initialShotId?: string | null; finalCutCanvasId?: string | null; onChanged: () => Promise<unknown> | void
 }) {
   const take = line.takes.find(item => item.asset_id === line.selected_asset_id)
   const [shotId, setShotId] = useState<string | null>(null)
   const [offset, setOffset] = useState<number | string>(0), [inPoint, setInPoint] = useState<number | string>(0)
   const [outPoint, setOutPoint] = useState<number | string>(0), [volume, setVolume] = useState<number | string>(100)
   const [busy, setBusy] = useState(false), [error, setError] = useState('')
+  const shotIds = shots.map(shot => shot.id).join(',')
   useEffect(() => {
-    setShotId(placement?.shot_id || initialShotId || shots.find(shot => shot.source_scene_id === line.scene_id)?.id || null)
+    const preferred = placement?.shot_id || initialShotId
+    setShotId(shots.some(shot => shot.id === preferred) ? preferred! : shots.find(shot => shot.source_scene_id === line.scene_id)?.id || null)
     setOffset((placement?.offset_ms || 0) / 1000); setInPoint((placement?.in_ms || 0) / 1000)
     const end = placement && placement.asset_id === line.selected_asset_id ? placement.out_ms : take?.duration_ms
     setOutPoint(end ? end / 1000 : '')
     setVolume((placement?.gain ?? 1) * 100); setError('')
-  }, [line.id, line.selected_asset_id, placement?.id, placement?.asset_id, placement?.offset_ms, placement?.in_ms, placement?.out_ms, placement?.gain, initialShotId])
+  }, [line.id, line.scene_id, line.selected_asset_id, placement?.id, placement?.asset_id, placement?.offset_ms, placement?.in_ms, placement?.out_ms, placement?.gain, initialShotId, finalCutCanvasId, shotIds])
   const stale = !!line.selected_is_stale
   const valid = !!shotId && !stale && !!take && [offset, inPoint, volume].every(value => value !== '' && Number.isFinite(Number(value))) &&
     Number(inPoint) >= 0 && (outPoint === '' || Number.isFinite(Number(outPoint)) && Number(outPoint) > Number(inPoint) && (!take.duration_ms || Number(outPoint) * 1000 <= take.duration_ms)) && Number(volume) >= 0 && Number(volume) <= 200
@@ -31,7 +34,7 @@ export default function SpeechPlacementEditor({ projectId, line, placement, shot
     if (busy || !remove && !valid) return
     setBusy(true); setError('')
     try {
-      await api(`/projects/${projectId}/speech/lines/${line.id}/placement`, remove ? { method: 'DELETE' } : json('PUT', input))
+      await api(finalCutPath(`/projects/${projectId}/speech/lines/${line.id}/placement`, finalCutCanvasId), remove ? { method: 'DELETE' } : json('PUT', input))
       await onChanged()
     } catch (issue) { setError(issue instanceof Error ? issue.message : String(issue)) }
     finally { setBusy(false) }

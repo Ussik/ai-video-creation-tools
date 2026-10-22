@@ -12,12 +12,13 @@ import { useSpeechVoicePreview } from './use-speech-voice-preview'
 import { speechStandardVoice, speechStandardVoices } from '@video-studio/shared/media/speech-voices'
 import { useAppDialog } from '../../shared/ui/AppDialog'
 import './speech-studio.css'
+import { finalCutPath } from '../final-cut/final-cut-scope'
 
 type SpeechConfig = { enabled: boolean; has_key: boolean; default_speaker: string; speech_rate: number; endpoint: string; resource_id: string }
 type SyncPreview = { sync_token: string; added: number; updated: number; removed: number; preserved: number;
   changes: Array<{ kind: 'added' | 'updated' | 'removed' | 'preserved'; role?: string; scene_id: string; before?: string; after?: string }> }
 export type SpeechStudioProps = { projectId: string; projectName?: string; scenes?: ScriptScene[]; shots?: Shot[]; initialLineId?: string | null;
-  initialSceneId?: string | null; initialShotId?: string | null; onOpenFinalCut?: () => void; onClose: () => void; onAssetsChanged?: () => Promise<unknown> | void }
+  initialSceneId?: string | null; initialShotId?: string | null; finalCutCanvasId?: string | null; onOpenFinalCut?: () => void; onClose: () => void; onAssetsChanged?: () => Promise<unknown> | void }
 
 const isActive = (take: Take) => take.status === 'queued' || take.status === 'running'
 const errorText = (issue: unknown) => issue instanceof Error ? issue.message : String(issue)
@@ -36,7 +37,7 @@ const filterComboboxProps: ComboboxProps = {
   middlewares: { flip: true, shift: { mainAxis: true, padding: 12 } },
 }
 
-export default function SpeechStudio({ projectId, projectName, scenes = [], shots = [], initialLineId, initialSceneId, initialShotId, onOpenFinalCut, onClose, onAssetsChanged }: SpeechStudioProps) {
+export default function SpeechStudio({ projectId, projectName, scenes = [], shots = [], initialLineId, initialSceneId, initialShotId, finalCutCanvasId, onOpenFinalCut, onClose, onAssetsChanged }: SpeechStudioProps) {
   const [config, setConfig] = useState<SpeechConfig | null>(null), [data, setData] = useState<SpeechData>({ voices: [], lines: [] })
   const [voices, setVoices] = useState<Voice[]>([]), [drafts, setDrafts] = useState<Record<string, LineDraft>>({})
   const [selectedId, setSelectedId] = useState(''), [tab, setTab] = useState<'lines' | 'voices'>('lines')
@@ -53,11 +54,12 @@ export default function SpeechStudio({ projectId, projectName, scenes = [], shot
   const alive = useRef(true), dataRef = useRef(data), refreshRef = useRef(onAssetsChanged), pollError = useRef(false), localVoiceId = useRef(0)
   dataRef.current = data; refreshRef.current = onAssetsChanged
   const path = `/projects/${encodeURIComponent(projectId)}/speech`
+  const speechPath = finalCutPath(path, finalCutCanvasId)
   useEffect(() => {
     alive.current = true
     const controller = new AbortController()
     setLoading(true); setError(''); setDrafts({}); setSelectedId(''); setSceneIds(initialSceneId ? [initialSceneId] : [])
-    void Promise.all([api<SpeechConfig>('/speech/config', { signal: controller.signal }), api<SpeechData>(path, { signal: controller.signal })])
+    void Promise.all([api<SpeechConfig>('/speech/config', { signal: controller.signal }), api<SpeechData>(speechPath, { signal: controller.signal })])
       .then(([configuration, speech]) => {
         if (controller.signal.aborted) return
         setConfig(configuration); setData(speech); setVoices(speech.voices)
@@ -69,7 +71,7 @@ export default function SpeechStudio({ projectId, projectName, scenes = [], shot
       .catch(issue => { if (!controller.signal.aborted) setError(errorText(issue)) })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => { alive.current = false; controller.abort() }
-  }, [path])
+  }, [speechPath])
 
   const pendingKey = data.lines.flatMap(line => line.takes.filter(isActive).map(take => take.id)).sort().join(',')
   useEffect(() => {
@@ -78,7 +80,7 @@ export default function SpeechStudio({ projectId, projectName, scenes = [], shot
     const controller = new AbortController()
     const tick = async () => {
       try {
-        const next = await api<SpeechData>(path, { signal: controller.signal })
+        const next = await api<SpeechData>(speechPath, { signal: controller.signal })
         if (stopped) return
         const completed = dataRef.current.lines.some(line => line.takes.some(take => isActive(take) &&
           next.lines.some(current => current.takes.some(updated => updated.id === take.id && !isActive(updated)))))
@@ -90,7 +92,7 @@ export default function SpeechStudio({ projectId, projectName, scenes = [], shot
     }
     timer = window.setTimeout(tick, 2500)
     return () => { stopped = true; controller.abort(); if (timer) window.clearTimeout(timer) }
-  }, [pendingKey, path])
+  }, [pendingKey, speechPath])
   useEffect(() => {
     if (!pendingKey) return
     setNow(Date.now()); const timer = window.setInterval(() => setNow(Date.now()), 1000)
@@ -152,7 +154,7 @@ export default function SpeechStudio({ projectId, projectName, scenes = [], shot
     finally { if (alive.current) setBusy('') }
   }
   async function reload() {
-    const next = await api<SpeechData>(path)
+    const next = await api<SpeechData>(speechPath)
     if (alive.current) setData(next)
     return next
   }
@@ -356,7 +358,7 @@ export default function SpeechStudio({ projectId, projectName, scenes = [], shot
               </div>
             })}
           </section>
-          {selectedTake && selected && <SpeechPlacementEditor projectId={projectId} line={{ ...selected, selected_is_stale: selectedStale || draftDirty || selectedVoiceDirty }} placement={data.placements?.find(item => item.line_id === selected.id)} shots={shots} initialShotId={initialShotId} onChanged={async () => { await reload(); await onAssetsChanged?.() }} />}
+          {selectedTake && selected && <SpeechPlacementEditor projectId={projectId} line={{ ...selected, selected_is_stale: selectedStale || draftDirty || selectedVoiceDirty }} placement={data.placements?.find(item => item.line_id === selected.id)} shots={shots} initialShotId={initialShotId} finalCutCanvasId={finalCutCanvasId} onChanged={async () => { await reload(); await onAssetsChanged?.() }} />}
           {!selectedTake && <section className="speech-placement-placeholder"><h4>配音入片</h4><p>选用候选音频后，设置起始镜头与播放时间，将对白加入成片。</p></section>}
         </aside>
         </div>

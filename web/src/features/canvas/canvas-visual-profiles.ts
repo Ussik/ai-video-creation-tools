@@ -2,6 +2,7 @@ import type { Asset, Job, Model, ProjectDetail, VisualProfile } from '../../shar
 import type { CanvasGraph, CanvasNode } from './ProjectCanvas'
 import { visualBindingReferenceAssetIds } from '@video-studio/shared/media/video-reference-manifest'
 import { visualBindingApplies } from '@video-studio/shared/visuals/visual-binding-usage'
+import { visualProfileBaseChain, visualProfileBoardReady } from '../visuals/visual-profile-inheritance'
 
 export function requestVisualCanvas(projectId: string, profileIds: string[], context?: { shotId?: string }) {
   window.sessionStorage.setItem(`visual-canvas-open:${projectId}`, JSON.stringify(context ? { profileIds, ...context } : profileIds))
@@ -38,6 +39,22 @@ export function visualNodeAsset(node: CanvasNode, detail: ProjectDetail, referen
   return detail.assets.find(asset => asset.id === id)
 }
 
+/** Only explicit inheritance creates this execution dependency. Ordinary
+ * reference lines remain reference inputs, even when they join two profiles. */
+export function visualProfileDependencyEdges(graph: CanvasGraph, detail: Pick<ProjectDetail, 'visual_profiles' | 'assets' | 'project_visual_style'>): CanvasGraph['edges'] {
+  const edges: CanvasGraph['edges'] = []
+  for (const target of graph.nodes) {
+    const profile = detail.visual_profiles?.find(item => item.id === target.settings.visual_profile_id)
+    if (!profile?.base_profile_id || visualProfileBaseChain(profile, detail.visual_profiles || []).error) continue
+    const base = detail.visual_profiles?.find(item => item.id === profile.base_profile_id)
+    const source = graph.nodes.find(node => node.id !== target.id && node.settings.visual_profile_id === base?.id)
+    if (!source || !base || graph.edges.some(edge => edge.source === source.id && edge.target === target.id)) continue
+    edges.push({ id: `auto-visual-base:${JSON.stringify([target.id, base.id])}`, source: source.id, target: target.id,
+      ...(visualProfileBoardReady(base, detail) ? { reference_asset_id: base.board_asset_id! } : {}) })
+  }
+  return edges
+}
+
 /** Show backend-resolved shot references without turning them into manual inputs.
  * Bindings retain their own board snapshot, which may differ from today's profile.
  */
@@ -46,12 +63,23 @@ export function automaticVisualReferenceEdges(graph: CanvasGraph, detail: Projec
   const sources = graph.nodes.filter(node => node.type === 'image' || node.type === 'generation' && modality(node) === 'image')
     .map(node => ({ node, assetId: visualNodeAsset(node, detail, true)?.id }))
     .filter(source => source.assetId && detail.assets.some(asset => asset.id === source.assetId && asset.kind === 'image'))
-  const edges: CanvasGraph['edges'] = []
+  const edges: CanvasGraph['edges'] = visualProfileDependencyEdges(graph, detail)
   for (const target of graph.nodes) {
     if (target.type !== 'generation' || !target.shot_id || target.settings.visual_profile_id ||
       (target.settings.visual_reference_mode || 'profiles') !== 'profiles') continue
     const targetModality = modality(target)
     if (targetModality !== 'image' && !(targetModality === 'video' && target.settings.mode === 'reference')) continue
+    const replacements = target.settings.prompt_reference_overrides || {}
+    const effectiveAsset = (assetId: string): string | null => {
+      let current: string | null = assetId
+      const visited = new Set<string>()
+      while (current && Object.hasOwn(replacements, current) && replacements[current] !== current) {
+        if (visited.has(current)) return null
+        visited.add(current)
+        current = replacements[current]!
+      }
+      return current
+    }
     const usedAssets = new Set(graph.edges.filter(edge => edge.target === target.id)
       .map(edge => edge.reference_asset_id || sources.find(source => source.node.id === edge.source)?.assetId).filter(Boolean))
     for (const binding of detail.shot_visual_bindings || []) {
@@ -65,17 +93,19 @@ export function automaticVisualReferenceEdges(graph: CanvasGraph, detail: Projec
         continue
       }
       if (binding.shot_id !== target.shot_id) continue
-      for (const assetId of assetIds) {
+      for (const originalAssetId of assetIds) {
+        const assetId = effectiveAsset(originalAssetId)
+        if (!assetId) continue
         if (usedAssets.has(assetId) || !detail.assets.some(asset => asset.id === assetId && asset.kind === 'image')) continue
         const candidates = sources.filter(source => source.node.id !== target.id && source.assetId === assetId)
         // Independent views stay under the bound profile; legacy boards need an exact asset match.
-        const profileSource = binding.reference_assets?.length ? graph.nodes.find(node => node.id !== target.id && node.settings.visual_profile_id === binding.profile_id
+        const profileSource = assetId === originalAssetId && binding.reference_assets?.length ? graph.nodes.find(node => node.id !== target.id && node.settings.visual_profile_id === binding.profile_id
           && node.settings.visual_profile_revision === binding.revision) : undefined
         const source = profileSource ? { node: profileSource } : candidates.find(item => item.node.settings.visual_profile_id === binding.profile_id)
           || candidates.find(item => item.node.type === 'image') || candidates[0]
         if (!source) continue
         edges.push({ id: `auto-visual:${JSON.stringify([target.id, assetId])}`, source: source.node.id, target: target.id,
-          ...(binding.reference_assets?.length ? { reference_asset_id: assetId } : {}) })
+          reference_asset_id: assetId })
         usedAssets.add(assetId)
       }
     }
@@ -89,6 +119,7 @@ export type MissingVisualReference = {
   variant: string
   nodeId?: string
   action: 'generate' | 'confirm' | 'bindings'
+  reason?: string
 }
 
 export function missingVisualReferences(graph: CanvasGraph, nodeId: string, detail: ProjectDetail, models: Pick<Model, 'id' | 'modality'>[] = []): MissingVisualReference[] {
@@ -104,6 +135,20 @@ export function missingVisualReferences(graph: CanvasGraph, nodeId: string, deta
     missing.set(profileId, { profileId, name, variant, nodeId: node?.id,
       action: !profile || staleBinding ? 'bindings' : candidates?.length ? 'confirm' : 'generate' })
   }
+  const addBases = (profile: VisualProfile) => {
+    const chain = visualProfileBaseChain(profile, detail.visual_profiles || [])
+    if (chain.error) {
+      add(profile.id, profile.name, profile.variant, true)
+      missing.set(profile.id, { ...missing.get(profile.id)!, reason: chain.error })
+      return
+    }
+    for (const base of chain.ancestors) if (!visualProfileBoardReady(base, detail)) {
+      add(base.id, base.name, base.variant)
+      missing.set(base.id, { ...missing.get(base.id)!, reason: `请先确认 ${base.name} · ${base.variant} 的基础图` })
+    }
+  }
+  const targetProfile = detail.visual_profiles?.find(profile => profile.id === target.settings.visual_profile_id)
+  if (targetProfile) addBases(targetProfile)
   // Manual profile inputs remain required even when automatic shot boards are disabled.
   for (const edge of graph.edges.filter(edge => edge.target === target.id)) {
     const source = graph.nodes.find(node => node.id === edge.source)
@@ -121,7 +166,11 @@ export function missingVisualReferences(graph: CanvasGraph, nodeId: string, deta
       if (!ready) add(binding!.profile_id, binding!.name, binding!.variant, true)
       continue
     }
+    // Explicit canvas references keep the image chosen when connected. A newer
+    // profile candidate/board must not change or invalidate that snapshot.
+    if (edge.reference_asset_id && detail.assets.some(asset => asset.id === edge.reference_asset_id && asset.kind === 'image')) continue
     if (visualNodeAsset(source, detail, true)?.kind === 'image' && profile?.board_style_status !== 'needs_review') continue
+    if (profile) addBases(profile)
     add(source.settings.visual_profile_id, profile?.name || source.title, profile?.variant || '')
   }
   if (!target.settings.visual_profile_id && target.shot_id && modality !== 'text' && (!target.settings.visual_reference_mode || target.settings.visual_reference_mode === 'profiles')) {
@@ -135,6 +184,7 @@ export function missingVisualReferences(graph: CanvasGraph, nodeId: string, deta
       if (!binding.required && target.settings.excluded_visual_profile_ids?.includes(binding.profile_id)) continue
       if (binding.shot_id !== target.shot_id || !binding.required && !assetIds.length ||
         !staleStyle && assetIds.length > 0 && assetIds.every(id => detail.assets.some(asset => asset.id === id && asset.kind === 'image'))) continue
+      if (profile) addBases(profile)
       add(binding.profile_id, binding.name, binding.variant, !!binding.reference_assets?.length || profile?.board_style_status !== 'needs_review' && !!profile && (staleStyle || binding.revision !== profile.revision || !!profile.board_asset_id))
     }
   }
@@ -144,13 +194,17 @@ export function missingVisualReferences(graph: CanvasGraph, nodeId: string, deta
 export function syncVisualProfileNode(node: CanvasNode, profile: VisualProfile, detail: Pick<ProjectDetail, 'asset_tasks'>): CanvasNode {
   const task = detail.asset_tasks.find(item => item.id === profile.asset_task_id)
   const revisionChanged = node.settings.visual_profile_revision !== profile.revision
+  const keepDocument = node.settings.prompt_document === true || !!node.settings.prompt_sections
   // Board approval changes the revision, but must not replay an already applied job.
   const keepCompletion = !revisionChanged || task?.generation_job_id === node.job_id
   return { ...node, title: `${profile.name} · ${profile.variant}`, shot_id: null,
     job_id: task?.generation_job_id || (revisionChanged ? null : node.job_id),
     asset_id: revisionChanged || profile.archived_candidate_asset_ids?.includes(node.asset_id || '') ? profile.board_asset_id : node.asset_id || profile.board_asset_id,
     settings: { ...node.settings, modality: 'image', visual_profile_revision: profile.revision,
-      profile_prompt_override: revisionChanged ? undefined : node.settings.profile_prompt_override,
+      profile_prompt_override: revisionChanged && !keepDocument ? undefined : node.settings.profile_prompt_override,
+      prompt_document: revisionChanged && !keepDocument ? undefined : node.settings.prompt_document,
+      prompt_sections: revisionChanged && !keepDocument ? undefined : node.settings.prompt_sections,
+      prompt_body: revisionChanged && !keepDocument ? undefined : node.settings.prompt_body,
       visual_completed_job_id: keepCompletion ? node.settings.visual_completed_job_id : undefined } }
 }
 
@@ -164,9 +218,16 @@ export function addVisualProfileNode(graph: CanvasGraph, profile: VisualProfile,
 }
 
 export function visualBoardReferences(graph: CanvasGraph, nodeId: string, detail: ProjectDetail) {
-  const sources = graph.edges.filter(edge => edge.target === nodeId).map(edge => graph.nodes.find(node => node.id === edge.source)).filter((node): node is CanvasNode => !!node)
   const profileIds: string[] = [], assetIds: string[] = []
-  for (const source of sources) {
+  for (const edge of graph.edges.filter(edge => edge.target === nodeId)) {
+    const source = graph.nodes.find(node => node.id === edge.source)
+    if (!source) continue
+    if (edge.reference_asset_id) {
+      const asset = detail.assets.find(asset => asset.id === edge.reference_asset_id && asset.kind === 'image')
+      if (!asset) throw new Error(`参考节点 ${source.title} 的固定图片已失效，请重新选择`)
+      if (!assetIds.includes(asset.id)) assetIds.push(asset.id)
+      continue
+    }
     if (source.settings.visual_profile_id) {
       const profile = detail.visual_profiles?.find(item => item.id === source.settings.visual_profile_id)
       if (!profile?.board_asset_id) throw new Error(`请先确认 ${profile?.name || source.title} 的设定图`)

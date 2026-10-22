@@ -26,6 +26,13 @@ export interface Shot {
   duration: number; selected_asset_id: string | null; created_at: string;
   source_scene_id: string | null; start_state: string; end_state: string; cut_note: string
   image_prompt: string; video_prompt: string
+  storyboard_revision?: number
+  design_id?: string | null
+  superseded_by?: string | null
+}
+export interface StoryboardDesign {
+  id: string; project_id: string; canvas_id: string | null; name: string;
+  scene_ids: string; instructions: string; created_at: string
 }
 export interface TimelineClip {
   id: string; project_id: string; shot_id: string; asset_id: string;
@@ -299,6 +306,13 @@ export function initDb(): void {
       shot_ids TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS storyboard_scene_plans (
+      scene_id TEXT PRIMARY KEY REFERENCES script_scenes(id) ON DELETE CASCADE,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      source_fingerprint TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_storyboard_scene_plans_project ON storyboard_scene_plans(project_id);
     CREATE TABLE IF NOT EXISTS shots (
       id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       position INTEGER NOT NULL, title TEXT NOT NULL, prompt TEXT NOT NULL DEFAULT '',
@@ -415,6 +429,8 @@ export function initDb(): void {
       kind TEXT NOT NULL CHECK (kind IN ('character', 'location', 'prop')),
       name TEXT NOT NULL, variant TEXT NOT NULL DEFAULT '默认',
       definition TEXT NOT NULL, view_requirements TEXT NOT NULL,
+      base_profile_id TEXT REFERENCES visual_profiles(id) ON DELETE SET NULL,
+      state_delta TEXT NOT NULL DEFAULT '', board_base_signature TEXT, source_draft_key TEXT,
       revision INTEGER NOT NULL DEFAULT 1,
       board_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
       asset_task_id TEXT REFERENCES asset_tasks(id) ON DELETE SET NULL,
@@ -544,6 +560,12 @@ export function initDb(): void {
   if (!all<{ name: string }>('PRAGMA table_info(visual_profiles)').some(column => column.name === 'definition_status')) {
     db.exec("ALTER TABLE visual_profiles ADD COLUMN definition_status TEXT NOT NULL DEFAULT 'ready' CHECK (definition_status IN ('draft', 'ready'))")
   }
+  const visualProfileColumns = all<{ name: string }>('PRAGMA table_info(visual_profiles)')
+  if (!visualProfileColumns.some(column => column.name === 'base_profile_id')) db.exec('ALTER TABLE visual_profiles ADD COLUMN base_profile_id TEXT REFERENCES visual_profiles(id) ON DELETE SET NULL')
+  if (!visualProfileColumns.some(column => column.name === 'state_delta')) db.exec("ALTER TABLE visual_profiles ADD COLUMN state_delta TEXT NOT NULL DEFAULT ''")
+  if (!visualProfileColumns.some(column => column.name === 'board_base_signature')) db.exec('ALTER TABLE visual_profiles ADD COLUMN board_base_signature TEXT')
+  if (!visualProfileColumns.some(column => column.name === 'source_draft_key')) db.exec('ALTER TABLE visual_profiles ADD COLUMN source_draft_key TEXT')
+  db.exec('CREATE INDEX IF NOT EXISTS visual_profiles_base ON visual_profiles(base_profile_id)')
   if (!all<{ name: string }>('PRAGMA table_info(shot_visual_bindings)').some(column => column.name === 'reference_assets')) {
     db.exec("ALTER TABLE shot_visual_bindings ADD COLUMN reference_assets TEXT NOT NULL DEFAULT '[]'")
   }
@@ -601,6 +623,9 @@ export function initDb(): void {
   }
 
   const shotColumns = db.pragma('table_info(shots)') as Array<{ name: string }>
+  if (!shotColumns.some(column => column.name === 'storyboard_revision')) {
+    db.exec('ALTER TABLE shots ADD COLUMN storyboard_revision INTEGER NOT NULL DEFAULT 0')
+  }
   if (!shotColumns.some(column => column.name === 'source_scene_id')) {
     db.exec('ALTER TABLE shots ADD COLUMN source_scene_id TEXT REFERENCES script_scenes(id) ON DELETE SET NULL')
   }
@@ -690,6 +715,34 @@ export function initDb(): void {
       db.exec(`UPDATE ${table} SET canvas_id=(SELECT id FROM project_canvases WHERE project_id=${table}.project_id AND is_default=1) WHERE canvas_id IS NULL;
         CREATE INDEX IF NOT EXISTS idx_${table}_canvas ON ${table}(canvas_id, position);`)
     }
+  }).immediate()
+  db.exec(`CREATE TABLE IF NOT EXISTS canvas_production_ranges (
+    canvas_id TEXT PRIMARY KEY REFERENCES project_canvases(id) ON DELETE CASCADE,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    start_shot_id TEXT, end_shot_id TEXT
+  );
+  CREATE TABLE IF NOT EXISTS canvas_continuity_analyses (
+    canvas_id TEXT PRIMARY KEY REFERENCES project_canvases(id) ON DELETE CASCADE,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    model_id TEXT NOT NULL, signature TEXT NOT NULL, issues TEXT NOT NULL, updated_at TEXT NOT NULL
+  );`)
+  // New storyboard designs preserve the previous shots, media and canvas as
+  // history. Legacy projects keep their existing active shots unchanged.
+  db.transaction(() => {
+    db.exec(`CREATE TABLE IF NOT EXISTS storyboard_designs (
+      id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      canvas_id TEXT REFERENCES project_canvases(id) ON DELETE SET NULL,
+      name TEXT NOT NULL, scene_ids TEXT NOT NULL, instructions TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_storyboard_designs_project ON storyboard_designs(project_id, created_at);`)
+    for (const field of ['design_id', 'superseded_by']) {
+      if (!shotColumns.some(column => column.name === field)) db.exec(`ALTER TABLE shots ADD COLUMN ${field} TEXT REFERENCES storyboard_designs(id) ON DELETE SET NULL`)
+    }
+    const profileColumns = db.pragma('table_info(visual_profiles)') as Array<{ name: string }>
+    if (!profileColumns.some(column => column.name === 'design_id')) db.exec('ALTER TABLE visual_profiles ADD COLUMN design_id TEXT REFERENCES storyboard_designs(id) ON DELETE SET NULL')
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_shots_active_scene ON shots(project_id, source_scene_id) WHERE superseded_by IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_shots_design ON shots(design_id);
+      CREATE INDEX IF NOT EXISTS idx_visual_profiles_design ON visual_profiles(design_id);`)
   }).immediate()
   const clipColumns = db.pragma('table_info(timeline_clips)') as Array<{ name: string }>
   if (!clipColumns.some(column => column.name === 'source_audio_gain')) {

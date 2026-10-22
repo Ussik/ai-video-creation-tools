@@ -5,6 +5,7 @@ import { addOptimizedPromptDraft, validateOptimizedPromptReferences } from '../s
 import type { CanvasGraph } from '../src/features/canvas/ProjectCanvas'
 import type { Job, Model, ProjectDetail } from '../src/shared/api/api'
 import { rebasePromptDraft } from '../src/features/canvas/canvas-prompt-draft'
+import { serializePromptSectionDocument } from '@video-studio/shared/visuals/prompt-section-document'
 
 test('moderation refusals match without treating network, billing or ordinary task failures as policy errors', () => {
   for (const error of ['We are so sorry, but the prompt may violate our content policies.', 'content_policy_violation',
@@ -50,4 +51,17 @@ test('missing references and wrong projects cannot silently create a different i
   assert.throws(() => addOptimizedPromptDraft({ nodes: [], edges: [], revision: 'v' }, { id: 'draft', projectId: 'other', job, prompt: 'new' }, detail, models), /不属于/)
   const added = addOptimizedPromptDraft({ nodes: [], edges: [], revision: 'v' }, { id: 'draft', projectId: 'project', job, prompt: 'new' }, detail, [])
   assert.equal(added.node.model_id, null)
+})
+
+test('historical complete optimization keeps reviewed settings and stable reference identities as an authoritative document', () => {
+  const source = '【镜头视觉设定】\n参考图 1 保持蓝衣\n【镜头视觉设定结束】'
+  const prompt = `克制的画面描述\n\n${source.replace('蓝衣', '深蓝衣')}`
+  const historical = { ...job, request: JSON.stringify({ ...jobPromptRequest(job.request), prompt: `原始提示词\n\n${source}` }) }
+  const result = addOptimizedPromptDraft({ nodes: [], edges: [], revision: 'r' }, { id: 'draft', projectId: 'project', job: historical, prompt }, detail, models)
+  assert.equal(result.node.settings.prompt_document, true)
+  assert.equal(result.node.settings.prompt_body, '克制的画面描述')
+  assert.equal(serializePromptSectionDocument(result.node.settings.prompt_sections!), '克制的画面描述\n\n【镜头视觉设定】\n[[ref:b]] 保持深蓝衣\n【镜头视觉设定结束】')
+  const section = result.node.settings.prompt_sections!.blocks.find(block => block.kind === 'managed')!
+  assert.equal(section.sourceText, source.replace('参考图 1', '[[ref:b]]'))
+  assert.doesNotMatch(JSON.stringify(result.node), /原始提示词/)
 })

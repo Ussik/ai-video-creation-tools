@@ -107,6 +107,61 @@ test('manual creation saves a definition without adding a node or generating ima
   } finally { await view.destroy() }
 })
 
+test('manual creation in a new design permits a historical name and uses the returned created identity', async t => {
+  let saved: VisualProfile | undefined, body: any
+  const created = { ...profile, id: 'new-lin', design_id: 'design-new', variant: '默认 · 新方案', definition: '新方案白发', board_asset_id: null }
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    body = JSON.parse(String(init?.body))
+    return Response.json({ ...data(), visual_profiles: [...detail.visual_profiles!, created], created_profile_ids: [created.id] })
+  })
+  const view = await mount(<Inspector {...inspectorProps} profile={undefined} designId="design-new" onSaved={value => { saved = value }} />)
+  try {
+    await fill('设定名称', profile.name); await fill('固定视觉设定', '新方案白发')
+    await act(() => button('创建设定').click())
+    assert.equal(body.design_id, 'design-new')
+    assert.equal(saved?.id, created.id, 'backend variant scoping cannot turn a successful save into an apparent failure')
+    assert.equal(view.container.querySelector('[role="alert"]'), null)
+  } finally { await view.destroy() }
+})
+
+test('shot reference choices follow the selected design and historical shots retain their own choices', async () => {
+  const currentProfile = { ...profile, id: 'new-lin', name: '新方案人物', design_id: 'design-new' }
+  const base = { ...detail, visual_profiles: [...detail.visual_profiles!, currentProfile], shots: [
+    ...detail.shots, { ...detail.shots[0], id: 'shot-new', title: '新方案开镜', design_id: 'design-new' },
+  ] } as ProjectDetail
+  const props = { detail: base, onRefresh: async () => {}, onClose: noop, onBusyChange: noop, onLocate: noop }
+  const view = await mount(<Bindings {...props} context={{ target: 'shot:shot-new' }} />)
+  try {
+    assert.match(view.container.querySelector('.pc-visual-bindings')!.textContent!, /新方案人物/)
+    assert.doesNotMatch(view.container.querySelector('.pc-visual-bindings')!.textContent!, /车站/)
+    await choose('选择绑定场次或镜头', 'shot:shot')
+    assert.match(view.container.querySelector('.pc-visual-bindings')!.textContent!, /车站/)
+    assert.doesNotMatch(view.container.querySelector('.pc-visual-bindings')!.textContent!, /新方案人物/)
+  } finally { await view.destroy() }
+})
+
+test('new design batch organization scopes scenes and preserves design id through analysis and save', async t => {
+  const current = { ...detail, shots: [{ ...detail.shots[0], design_id: 'design-new' }], script: { ...detail.script, scenes: [
+    ...detail.script.scenes, { ...detail.script.scenes[0], id: 'other-scene', heading: '其他方案场次' },
+  ] } } as ProjectDetail
+  const requests: Array<{ path: string; body: any }> = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    const path = String(url)
+    if (path.endsWith('/skills/defaults')) return Response.json({ policies: [{ stage: 'visual_assets', label: '视觉设定', primary_id: null, auxiliary_ids: [], source: 'global', warning: '', skills: [] }] })
+    if (path === '/api/models') return Response.json([model])
+    requests.push({ path, body: JSON.parse(String(init?.body)) })
+    return Response.json(path.endsWith('/analyze') ? { profiles: [{ ...profile, definition: '新设计人物', scene_ids: ['scene'] }] } : data())
+  })
+  const view = await mount(<Organizer detail={current} designId="design-new" models={[model]} onRefresh={async () => {}} onClose={noop} onDirtyChange={noop} onBusyChange={noop} />)
+  try {
+    await act(() => button('整理设定草稿').click())
+    assert.equal(button('确认保存 1 份设定').disabled, false, 'an identically named historical profile does not discard a new design draft')
+    await act(() => button('确认保存 1 份设定').click())
+    assert.equal(requests[0].body.design_id, 'design-new'); assert.deepEqual(requests[0].body.scene_ids, ['scene'])
+    assert.equal(requests[1].body.design_id, 'design-new')
+  } finally { await view.destroy() }
+})
+
 test('editing retains unsaved text and sends the original revision after a concurrent profile refresh', async t => {
   let requestBody: any
   t.mock.method(globalThis, 'fetch', async (_url, init) => { requestBody = JSON.parse(String(init?.body)); return Response.json({ error: '版本已变化' }, { status: 409 }) })

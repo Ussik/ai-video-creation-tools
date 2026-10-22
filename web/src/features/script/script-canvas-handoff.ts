@@ -2,14 +2,19 @@ import type { Asset, Model, ProjectDetail, ScriptCanvasResult } from '../../shar
 import type { CanvasGraph, CanvasNode } from '../canvas/ProjectCanvas'
 import { missingVisualReferences, syncVisualProfileNode } from '../canvas/canvas-visual-profiles'
 import { imageGenerationDefaults } from '../canvas/canvas-model-parameters'
-import { shotImagePrompt, shotVideoPrompt } from '@video-studio/shared/storyboard/shot-prompts'
+import { shotImagePrompt } from '@video-studio/shared/storyboard/shot-prompts'
 import { placeNewCanvasNodes } from '../canvas/canvas-node-placement'
+import { rememberedCanvas } from '../canvas/project-canvases'
+import { storyboardRevision, syncCanvasStoryboardRevision } from '../canvas/canvas-storyboard-revision'
+import { orderedVisualProfiles, visualProfileBaseChain } from '../visuals/visual-profile-inheritance'
 
-type Request = { id: string; project_id: string; ratio: string; result: ScriptCanvasResult }
+type Request = { id: string; project_id: string; canvas_id?: string; ratio: string; result: ScriptCanvasResult }
 export const scriptCanvasRequestKey = (projectId: string) => `script-canvas-open:${projectId}`
 
 export function requestScriptCanvas(projectId: string, ratio: string, result: ScriptCanvasResult) {
-  const request: Request = { id: crypto.randomUUID(), project_id: projectId, ratio, result }
+  if (result.design_id && !result.target_canvas_id) throw new Error('新方案缺少目标画布，请重新读取方案后加入')
+  const canvasId = result.target_canvas_id || rememberedCanvas(projectId)
+  const request: Request = { id: crypto.randomUUID(), project_id: projectId, ...(canvasId ? { canvas_id: canvasId } : {}), ratio, result }
   window.sessionStorage.setItem(scriptCanvasRequestKey(projectId), JSON.stringify(request))
   window.dispatchEvent(new Event('script-canvas-open'))
 }
@@ -19,37 +24,50 @@ export function readScriptCanvasRequest(projectId: string): Request | null {
   if (!saved) return null
   const request = JSON.parse(saved) as Request
   if (request.project_id !== projectId || !request.id || !request.result ||
+    (request.canvas_id !== undefined && (typeof request.canvas_id !== 'string' || !request.canvas_id.trim())) ||
     !Array.isArray(request.result.shots) || !Array.isArray(request.result.visual_profiles) || !Array.isArray(request.result.shot_visual_bindings)) {
     throw new Error('加入画布的数据不完整，请从剧本对话重新操作')
   }
   return request
 }
 
+/** Bind legacy requests once, before any asynchronous canvas work starts. */
+export function bindScriptCanvasRequest(projectId: string, requestId: string, canvasId: string): Request | null {
+  const request = readScriptCanvasRequest(projectId)
+  if (!request || request.id !== requestId || request.canvas_id && request.canvas_id !== canvasId) return null
+  if (request.canvas_id) return request
+  const bound = { ...request, canvas_id: canvasId }
+  window.sessionStorage.setItem(scriptCanvasRequestKey(projectId), JSON.stringify(bound))
+  return bound
+}
+
+/** A completed import must not consume a newer request or another canvas's request. */
+export function clearScriptCanvasRequest(projectId: string, requestId: string, canvasId: string): void {
+  const request = readScriptCanvasRequest(projectId)
+  if (request?.id === requestId && (!request.canvas_id || request.canvas_id === canvasId)) {
+    window.sessionStorage.removeItem(scriptCanvasRequestKey(projectId))
+  }
+}
+
 export function addScriptCanvasNodes(graph: CanvasGraph, result: ScriptCanvasResult, ratio: string, imageModel?: Model,
   models: Pick<Model, 'id' | 'modality'>[] = [], assets: Pick<Asset, 'id' | 'kind'>[] = []) {
-  const nodes = [...graph.nodes]
+  const synchronized = syncCanvasStoryboardRevision(graph, result.shots, models, assets)
+  const nodes = [...synchronized.nodes]
   const imageAssetIds = new Set(assets.filter(asset => asset.kind === 'image').map(asset => asset.id))
   const profileNodeIds: string[] = [], shotNodeIds: string[] = []
   let addedProfiles = 0, addedShots = 0, addedReferences = 0
   const modality = (node: CanvasNode) => models.find(model => model.id === node.model_id)?.modality || node.settings.modality
-  for (const [index, node] of nodes.entries()) {
-    if (node.type !== 'generation' || node.settings.visual_profile_id || !result.updated_shot_ids?.includes(node.shot_id || '')) continue
-    const shot = result.shots.find(shot => shot.id === node.shot_id)
-    const nodeModality = modality(node) || (!node.model_id ? 'image' : undefined)
-    if (!shot || !['image', 'video'].includes(String(nodeModality))) continue
-    const { prompt_is_final, prompt_base, prompt_template, prompt_override, ...settings } = node.settings
-    nodes[index] = { ...node, title: shot.title, prompt: nodeModality === 'video' ? shotVideoPrompt(shot) : shotImagePrompt(shot),
-      settings: { ...settings, modality: nodeModality === 'video' ? 'video' : 'image', duration: shot.duration } }
-  }
   const baseY = nodes.length ? Math.max(...nodes.map(node => node.y + node.height)) + 100 : 80
   function blank(x: number, y: number): CanvasNode {
     return { id: crypto.randomUUID(), type: 'generation', x, y, width: 440, height: 420, title: '', text: '',
       asset_id: null, shot_id: null, model_id: imageModel?.id || null, job_id: null, prompt: '',
       settings: blankSettings(imageModel, ratio) }
   }
-  for (const [index, profile] of result.visual_profiles.entries()) {
+  const profiles = orderedVisualProfiles(result.visual_profiles)
+  const inheritedIds = new Set(profiles.flatMap(profile => visualProfileBaseChain(profile, profiles).ancestors.map(base => base.id)))
+  for (const [index, profile] of profiles.entries()) {
     if (result.shot_visual_bindings.some(binding => binding.profile_id === profile.id)
-      && !result.shot_visual_bindings.some(binding => binding.profile_id === profile.id && binding.usage !== 'none')) continue
+      && !result.shot_visual_bindings.some(binding => binding.profile_id === profile.id && binding.usage !== 'none') && !inheritedIds.has(profile.id)) continue
     let node = nodes.find(item => item.settings.visual_profile_id === profile.id)
     if (!node) {
       node = { ...blank(80, baseY + index * 490), title: `${profile.name} · ${profile.variant}`, asset_id: profile.board_asset_id,
@@ -86,6 +104,7 @@ export function addScriptCanvasNodes(graph: CanvasGraph, result: ScriptCanvasRes
       node = { ...blank(740, baseY + index * 490), title: shot.title, shot_id: shot.id, prompt: shotImagePrompt(shot),
         asset_id: shot.selected_asset_id && imageAssetIds.has(shot.selected_asset_id) ? shot.selected_asset_id : null,
         settings: { ...blankSettings(imageModel, ratio), duration: shot.duration, visual_dependencies: true,
+          storyboard_revision: storyboardRevision(shot.storyboard_revision),
           group_id: shot.id, group_title: `镜头 ${String(shot.position + 1).padStart(2, '0')} · ${shot.title}` } }
       nodes.push(node); addedShots++
     } else if (!node.settings.visual_dependencies) {
@@ -94,8 +113,9 @@ export function addScriptCanvasNodes(graph: CanvasGraph, result: ScriptCanvasRes
     }
     shotNodeIds.push(node.id)
   }
-  if (nodes.length > 500) throw new Error('画布节点将超过 500 个。设定与分镜已准备好，请清理节点后点击重试加入画布')
-  return { graph: { ...graph, nodes: placeNewCanvasNodes(graph.nodes, nodes) }, addedProfiles, addedShots, addedReferences, profileNodeIds: [...new Set(profileNodeIds)], shotNodeIds }
+  const nodeLimit = nodes.filter(node => node.type === 'project_script_ref').length === 1 ? 501 : 500
+  if (nodes.length > nodeLimit) throw new Error('画布节点将超过 500 个。设定与分镜已准备好，请清理节点后点击重试加入画布')
+  return { graph: { ...synchronized, nodes: placeNewCanvasNodes(graph.nodes, nodes) }, addedProfiles, addedShots, addedReferences, profileNodeIds: [...new Set(profileNodeIds)], shotNodeIds }
 }
 
 /** Guide an imported storyboard to its required references before its first frame.

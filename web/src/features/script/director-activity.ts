@@ -53,7 +53,7 @@ export function conversationMessage<T extends { id: string; role: 'assistant' | 
     ...(role === 'assistant' && Object.keys(reply_metadata).length ? { reply_metadata } : {}) }
 }
 
-const readTools = new Set(['get_creation_state', 'get_project_visual_style', 'search_project_content', 'read_documents', 'find_related_content', 'get_document_review_context', 'read_visual_profiles', 'get_storyboard_context'])
+const readTools = new Set(['get_creation_state', 'get_project_visual_style', 'search_project_content', 'read_documents', 'read_source_document', 'search_source_document', 'read_episode_scenes', 'find_related_content', 'get_document_review_context', 'read_visual_profiles', 'get_storyboard_context'])
 const nonMutatingTools = new Set([...readTools, 'ask_creator'])
 function readPayload(event: ScriptActivity) {
   if (event.output_truncated || !event.output) return null

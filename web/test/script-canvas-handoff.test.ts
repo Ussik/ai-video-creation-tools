@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 import type { Asset, Model, ProjectDetail, ScriptCanvasResult } from '../src/shared/api/api'
 import type { CanvasGraph, CanvasNode } from '../src/features/canvas/ProjectCanvas'
-import { addScriptCanvasNodes, scriptCanvasInitialFocus } from '../src/features/script/script-canvas-handoff'
+import { addScriptCanvasNodes, bindScriptCanvasRequest, clearScriptCanvasRequest, readScriptCanvasRequest, requestScriptCanvas, scriptCanvasInitialFocus, scriptCanvasRequestKey } from '../src/features/script/script-canvas-handoff'
+import { rememberCanvas } from '../src/features/canvas/project-canvases'
 import { automaticVisualReferenceEdges } from '../src/features/canvas/canvas-visual-profiles'
 import { canvasNodeGap } from '../src/features/canvas/canvas-node-placement'
 
@@ -19,6 +20,112 @@ function node(id: string, settings: CanvasNode['settings'] = {}): CanvasNode {
 }
 const graph = (nodes: CanvasNode[] = []): CanvasGraph => ({ nodes, edges: [], revision: 'version', viewport: { x: 7, y: 8, zoom: 0.6 } })
 const detail = (input = result) => ({ assets: [], jobs: [], asset_tasks: [], visual_profiles: input.visual_profiles, shot_visual_bindings: input.shot_visual_bindings } as unknown as ProjectDetail)
+
+function browserStorage(t: TestContext) {
+  const storage = () => {
+    const values = new Map<string, string>()
+    return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) }, removeItem: (key: string) => { values.delete(key) } }
+  }
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const events: string[] = []
+  const browser = { localStorage: storage(), sessionStorage: storage(), dispatchEvent: (event: Event) => { events.push(event.type); return true } }
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: browser })
+  t.after(() => {
+    if (previous) Object.defineProperty(globalThis, 'window', previous)
+    else Reflect.deleteProperty(globalThis, 'window')
+  })
+  return { ...browser, events }
+}
+
+test('explicit handoff captures the active canvas independently for each project', t => {
+  const browser = browserStorage(t)
+  rememberCanvas('project-a', 'canvas-a')
+  rememberCanvas('project-b', 'canvas-b')
+  requestScriptCanvas('project-a', '9:16', result)
+  const request = readScriptCanvasRequest('project-a')!
+  assert.equal(request.canvas_id, 'canvas-a')
+  assert.equal(request.ratio, '9:16')
+  assert.deepEqual(request.result, result)
+  rememberCanvas('project-a', 'another-canvas')
+  assert.equal(readScriptCanvasRequest('project-a')!.canvas_id, 'canvas-a', 'switching later cannot move a pending import')
+  requestScriptCanvas('project-b', '16:9', result)
+  assert.equal(readScriptCanvasRequest('project-b')!.canvas_id, 'canvas-b')
+  assert.equal(readScriptCanvasRequest('project-a')!.id, request.id)
+  assert.deepEqual(browser.events, ['script-canvas-open', 'script-canvas-open'])
+})
+
+test('a new design targets its dedicated canvas rather than the remembered old canvas', t => {
+  browserStorage(t)
+  rememberCanvas('project', 'old-canvas')
+  const fresh = { ...result, design_id: 'fresh-design', target_canvas_id: 'fresh-canvas' }
+  requestScriptCanvas('project', '9:16', fresh)
+  const request = readScriptCanvasRequest('project')!
+  assert.equal(request.canvas_id, 'fresh-canvas')
+  assert.equal(bindScriptCanvasRequest('project', request.id, 'old-canvas'), null)
+  assert.equal(bindScriptCanvasRequest('project', request.id, 'fresh-canvas')?.result.design_id, 'fresh-design')
+  assert.throws(() => requestScriptCanvas('project', '9:16', { ...fresh, target_canvas_id: undefined }), /缺少目标画布/)
+  assert.equal(readScriptCanvasRequest('project')!.id, request.id, 'invalid new requests cannot overwrite a recoverable design import')
+})
+
+test('an unbound legacy handoff binds to the first consuming canvas and rejects other canvases', t => {
+  const browser = browserStorage(t)
+  const legacy = { id: 'legacy', project_id: 'project', ratio: '9:16', result }
+  browser.sessionStorage.setItem(scriptCanvasRequestKey('project'), JSON.stringify(legacy))
+  assert.equal(bindScriptCanvasRequest('project', 'unrelated', 'wrong-canvas'), null)
+  assert.deepEqual(readScriptCanvasRequest('project'), legacy, 'a stale callback cannot bind another request')
+  const bound = bindScriptCanvasRequest('project', 'legacy', 'canvas-a')!
+  assert.equal(bound.canvas_id, 'canvas-a')
+  assert.deepEqual(readScriptCanvasRequest('project'), bound)
+  assert.equal(bindScriptCanvasRequest('project', 'legacy', 'canvas-b'), null)
+  assert.deepEqual(bindScriptCanvasRequest('project', 'legacy', 'canvas-a'), bound)
+  clearScriptCanvasRequest('project', 'legacy', 'canvas-b')
+  assert.deepEqual(readScriptCanvasRequest('project'), bound, 'another canvas cannot consume the request')
+  clearScriptCanvasRequest('project', 'legacy', 'canvas-a')
+  assert.equal(readScriptCanvasRequest('project'), null)
+})
+
+test('a delayed import completion cannot clear or bind a newer handoff request', t => {
+  browserStorage(t)
+  rememberCanvas('project', 'canvas-a')
+  requestScriptCanvas('project', '9:16', result)
+  const earlier = readScriptCanvasRequest('project')!
+  assert.ok(bindScriptCanvasRequest('project', earlier.id, 'canvas-a'))
+  rememberCanvas('project', 'canvas-b')
+  requestScriptCanvas('project', '16:9', result)
+  const replacement = readScriptCanvasRequest('project')!
+  assert.notEqual(replacement.id, earlier.id)
+  clearScriptCanvasRequest('project', earlier.id, 'canvas-a')
+  assert.equal(bindScriptCanvasRequest('project', earlier.id, 'canvas-a'), null)
+  assert.deepEqual(readScriptCanvasRequest('project'), replacement)
+  assert.equal(bindScriptCanvasRequest('project', replacement.id, 'canvas-a'), null)
+  clearScriptCanvasRequest('project', replacement.id, 'canvas-a')
+  assert.deepEqual(readScriptCanvasRequest('project'), replacement)
+  clearScriptCanvasRequest('project', replacement.id, 'canvas-b')
+  assert.equal(readScriptCanvasRequest('project'), null)
+})
+
+test('requests without a remembered canvas remain compatible and can be consumed by matching id', t => {
+  browserStorage(t)
+  requestScriptCanvas('project', '9:16', result)
+  const request = readScriptCanvasRequest('project')!
+  assert.equal(request.canvas_id, undefined)
+  clearScriptCanvasRequest('project', 'other-request', 'canvas')
+  assert.equal(readScriptCanvasRequest('project')!.id, request.id)
+  clearScriptCanvasRequest('project', request.id, 'canvas')
+  assert.equal(readScriptCanvasRequest('project'), null)
+  assert.equal(bindScriptCanvasRequest('project', request.id, 'canvas'), null)
+  assert.doesNotThrow(() => clearScriptCanvasRequest('project', request.id, 'canvas'))
+})
+
+test('handoff parsing rejects malformed canvas targets without accepting them as legacy requests', t => {
+  const browser = browserStorage(t)
+  for (const canvas_id of [null, 42, {}, [], '', '   ']) {
+    browser.sessionStorage.setItem(scriptCanvasRequestKey('project'), JSON.stringify({ id: 'request', project_id: 'project', canvas_id, ratio: '9:16', result }))
+    assert.throws(() => readScriptCanvasRequest('project'), /加入画布的数据不完整/)
+  }
+  browser.sessionStorage.setItem(scriptCanvasRequestKey('project'), JSON.stringify({ id: 'valid', project_id: 'project', canvas_id: 'canvas', ratio: '9:16', result }))
+  assert.equal(readScriptCanvasRequest('project')!.canvas_id, 'canvas')
+})
 
 test('import first focuses a required ungenerated profile and keeps its pending dependency visible', () => {
   const imported = addScriptCanvasNodes(graph(), result, '9:16', imageModel, models)
@@ -103,16 +210,18 @@ test('import readiness uses incoming bindings over stale project data and dedupl
   })
 })
 
-test('an explicitly saved replan updates image and video prompts while preserving node positions and assets', () => {
+test('a newer saved replan updates image and video prompts, resets old results and preserves node positions', () => {
   const image = { ...node('image', { modality: 'image' }), shot_id: 'shot', asset_id: 'old-frame', x: 200, y: 150, prompt: 'old image' }
   const video = { ...node('video', { modality: 'video' }), shot_id: 'shot', asset_id: 'old-video', x: 750, y: 150, prompt: 'old video' }
   const input = structuredClone(result)
   input.updated_shot_ids = ['shot']; input.shots[0].image_prompt = '新首帧'; input.shots[0].video_prompt = '新动作'; input.shots[0].duration = 8
+  input.shots[0].storyboard_revision = 1
   const previous = graph([image, video]), updated = addScriptCanvasNodes(previous, input, '9:16', imageModel, models)
   assert.equal(updated.addedShots, 0)
   for (const [index, source] of [image, video].entries()) {
     const target = updated.graph.nodes[index]
-    assert.equal(target.id, source.id); assert.equal(target.x, source.x); assert.equal(target.y, source.y); assert.equal(target.asset_id, source.asset_id)
+    assert.equal(target.id, source.id); assert.equal(target.x, source.x); assert.equal(target.y, source.y); assert.equal(target.asset_id, null)
+    assert.equal(target.settings.storyboard_revision, 1)
     assert.equal(target.prompt, index ? '新动作' : '新首帧'); assert.equal(target.settings.duration, 8)
   }
   assert.equal(previous.nodes[0].prompt, 'old image'); assert.equal(previous.nodes[1].prompt, 'old video')
@@ -127,6 +236,7 @@ test('setting revisions refresh reused profile nodes and discard old final promp
   const other = { ...node('other', cache), shot_id: 'other-shot', prompt: '历史镜头' }
   const input = structuredClone(result)
   input.updated_shot_ids = ['shot']; input.visual_profiles[0].revision = 2
+  input.shots[0].storyboard_revision = 1
   input.visual_profiles[0].definition = '林晚32岁'; input.visual_profiles[0].board_prompt = '林晚32岁正侧背'
   input.shot_visual_bindings[0].revision = 2; input.shot_visual_bindings[0].definition = '林晚32岁'
   input.shots[0].image_prompt = '林晚32岁开镜'; input.shots[0].video_prompt = '林晚32岁向前走'
@@ -142,12 +252,38 @@ test('setting revisions refresh reused profile nodes and discard old final promp
   assert.equal(updated.asset_id, null); assert.equal(updated.job_id, null)
   for (const [index, source] of [image, video].entries()) {
     const target = imported.graph.nodes[index + 1]
-    assert.equal(target.id, source.id); assert.equal(target.x, source.x); assert.equal(target.asset_id, source.asset_id)
+    assert.equal(target.id, source.id); assert.equal(target.x, source.x); assert.equal(target.asset_id, null)
+    assert.equal(target.text, ''); assert.equal(target.job_id, null)
     assert.equal(target.prompt, index ? '林晚32岁向前走' : '林晚32岁开镜')
     for (const key of Object.keys(cache)) assert.equal(target.settings[key as keyof typeof cache], undefined)
   }
   assert.equal(imported.graph.nodes[3], other)
   assert.equal(scriptCanvasInitialFocus(imported, input, detail(input), models).missingReferenceCount, 1)
+})
+
+test('a current-version handoff preserves a chosen historical candidate and the current prompt draft', () => {
+  const image = { ...node('image', { modality: 'image', storyboard_revision: 2, visual_dependencies: true,
+    prompt_override: true, prompt_is_final: true, prompt_base: '当前草稿', prompt_template: '当前完整稿' }),
+    shot_id: 'shot', asset_id: 'explicit-historical-candidate', job_id: 'older-job', prompt: '当前手动修改', text: '当前最终稿' }
+  const input = structuredClone(result)
+  input.updated_shot_ids = ['shot']; input.shots[0].storyboard_revision = 2
+  const previous = graph([image]), imported = addScriptCanvasNodes(previous, input, '9:16', imageModel, models)
+  assert.equal(imported.graph.nodes.find(node => node.id === image.id), image)
+  assert.equal(imported.addedShots, 0)
+})
+
+test('new handoff generators carry the current storyboard revision and stale pinned edges are removed', () => {
+  const input = structuredClone(result)
+  input.shots[0].storyboard_revision = 4
+  const initial = addScriptCanvasNodes(graph(), input, '9:16', imageModel, models)
+  assert.equal(initial.graph.nodes.find(node => node.shot_id === 'shot')!.settings.storyboard_revision, 4)
+  const image = { ...node('image', { modality: 'image', storyboard_revision: 3 }), shot_id: 'shot', asset_id: 'old-frame' }
+  const video = { ...node('video', { modality: 'video', storyboard_revision: 3,
+    storyboard_reference_asset_id: 'old-frame' }), shot_id: 'shot' }
+  const previous = { ...graph([image, video]), edges: [{ id: 'old-first-frame', source: image.id, target: video.id, reference_asset_id: 'old-frame' }] }
+  const imported = addScriptCanvasNodes(previous, input, '9:16', imageModel, models)
+  assert.deepEqual(imported.graph.edges, [])
+  assert.equal(imported.graph.nodes.find(node => node.id === video.id)!.settings.storyboard_reference_asset_id, undefined)
 })
 
 test('adds related nodes with ratio/defaults and pending-board lines, preserving local edits and geometry', () => {
@@ -279,4 +415,16 @@ test('capacity failure is atomic and adding works without an image model configu
   const added = addScriptCanvasNodes(graph(), result, '9:16')
   assert.equal(added.graph.nodes[1].model_id, null)
   assert.equal(automaticVisualReferenceEdges(added.graph, detail()).length, 1)
+})
+
+test('the permanent script card keeps its reserved slot when importing the 500th ordinary node', () => {
+  const script = { ...node('project-script'), type: 'project_script_ref' as const }
+  const previous = graph([script, ...Array.from({ length: 498 }, (_, i) => ({ ...node(String(i)), x: i * 500 }))])
+  const imported = addScriptCanvasNodes(previous, result, '9:16', imageModel, models)
+  assert.equal(imported.graph.nodes.length, 501)
+  assert.equal(imported.graph.nodes[0], script)
+  assert.equal(imported.graph.nodes.filter(node => node.type !== 'project_script_ref').length, 500)
+  const tooFull = graph([...previous.nodes, node('overflow')]), before = structuredClone(tooFull)
+  assert.throws(() => addScriptCanvasNodes(tooFull, result, '9:16', imageModel, models), /500/)
+  assert.deepEqual(tooFull, before)
 })

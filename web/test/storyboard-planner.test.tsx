@@ -39,6 +39,14 @@ async function check(label: string) {
   const element = [...document.querySelectorAll<HTMLLabelElement>('label')].find(node => node.textContent === label)
   assert.ok(element, label); await act(async () => element.click())
 }
+async function choosePlanningMode(label: '重新设计新方案' | '沿用当前方案更新') {
+  const input = document.querySelector<HTMLInputElement>('input[aria-label="分镜规划方式"]')
+  assert.ok(input)
+  await act(() => input.click())
+  const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(node => node.textContent === label)
+  assert.ok(option, label)
+  await act(() => option.click())
+}
 async function fillTextarea(label: string, value: string) {
   const input = [...document.querySelectorAll<HTMLTextAreaElement>('textarea')].find(node => node.id === document.querySelector<HTMLLabelElement>(`label[for="${node.id}"]`)?.htmlFor && document.querySelector(`label[for="${node.id}"]`)?.textContent === label)!
   assert.ok(input, label)
@@ -160,7 +168,7 @@ test('refresh failure retries the same saved result without a second commit', as
     await act(async () => button('开始规划').click())
     await act(async () => button('确认加入画布').click())
     assert.match(document.body.textContent!, /分镜已保存，后续操作失败/)
-    await act(async () => button('确认加入画布').click())
+    await act(async () => button('继续加入画布').click())
     assert.equal(commits, 1); assert.equal(refreshes, 2)
   } finally { await view.destroy() }
 })
@@ -168,6 +176,108 @@ test('refresh failure retries the same saved result without a second commit', as
 const savedShot = { ...draft.scenes[0].shots[0], shot_id: 'saved-shot', scene_id: 'saved-scene', title: '已保存的镜头' }
 const savedScene = { ...scene, id: 'saved-scene', heading: '已有场次' }
 const emptyCanvas = { scene_ids: ['scene'], shots: [], visual_profiles: [], shot_visual_bindings: [], created_profiles: 0, created_shots: 0 }
+
+test('updated screenplay scenes must be replanned from the current episode document before old shots can return to the canvas', async t => {
+  const requests: Array<{ path: string; body: any }> = []
+  const updatedScene = { ...savedScene, planned: false, needs_replan: true, replan_reason: 'episode_script_changed', shot_count: 1, material_count: 1 }
+  const updatedDocument = { id: 'episode-current', title: '第一集（已修改）', artifact_type: 'episode_script', episode_number: 1, characters: 560 }
+  const freshDraft = { ...draft, scenes: [{ ...draft.scenes[0], scene_id: savedScene.id,
+    shots: [{ ...savedShot, prompt: '按修改后的正文重新规划', image_prompt: '修改后的新首帧' }] }] }
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    const path = String(url), body = JSON.parse(String(init?.body)); requests.push({ path, body })
+    if (path.endsWith('/context')) return Response.json({ ...context, scenes: [updatedScene], documents: [updatedDocument],
+      default_document_ids: [updatedDocument.id], existing_shots: [savedShot] })
+    if (path.endsWith('/plan')) return Response.json(freshDraft)
+    if (path.endsWith('/commit')) return Response.json({ ...emptyCanvas, updated_shot_ids: [savedShot.shot_id] })
+    if (path.endsWith('/check')) return Response.json({ signature, scene_ids: [savedScene.id], needs_analysis: [] })
+    if (path.endsWith('/canvas')) return Response.json({ ...emptyCanvas, scene_ids: [savedScene.id],
+      shots: [{ ...freshDraft.scenes[0].shots[0], id: savedShot.shot_id }] })
+    throw new Error(`Unexpected ${path}`)
+  })
+  const project = { ...detail, script: { ...detail.script, scenes: [savedScene] } } as ProjectDetail
+  const view = await mount({ project, initialSceneIds: [savedScene.id] })
+  try {
+    assert.match(document.querySelector('.storyboard-planner-sidebar')!.textContent!, /正文已更新，需重新规划/)
+    assert.match(document.body.textContent!, /旧分镜和素材仍会保留，请先按最新资料重新规划后再加入画布/)
+    assert.equal(document.querySelector<HTMLButtonElement>('button[aria-label="分镜预览"]')!.disabled, true)
+    assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '确认加入画布'), false)
+    assert.equal(document.querySelector('.storyboard-planner-preview'), null, 'historical shots cannot be presented as a ready plan')
+    assert.equal(document.querySelector<HTMLInputElement>('.storyboard-planner-source-list input')!.checked, true, 'the current edited episode is selected automatically')
+    assert.deepEqual(requests.map(request => request.path.split('/').at(-1)), ['context'])
+    await choosePlanningMode('沿用当前方案更新')
+    await act(async () => button('开始规划').click())
+    const plan = requests.find(request => request.path.endsWith('/plan'))!
+    assert.deepEqual(plan.body.scene_ids, [savedScene.id])
+    assert.deepEqual(plan.body.document_ids, [updatedDocument.id])
+    assert.equal(document.querySelector<HTMLTextAreaElement>('.storyboard-planner-preview textarea')!.value, '按修改后的正文重新规划')
+    assert.equal(requests.some(request => /\/(commit|canvas)$/.test(request.path)), false, 'planning still requires explicit save confirmation')
+    await act(async () => button('确认加入画布').click())
+    const handoff = JSON.parse(dom.window.sessionStorage.getItem('script-canvas-open:planner')!)
+    assert.equal(handoff.result.shots[0].prompt, '按修改后的正文重新规划')
+    assert.equal(requests.filter(request => request.path.endsWith('/plan')).length, 1)
+  } finally { await view.destroy() }
+})
+
+test('a stale scene cannot bypass replanning even if a saved-plan flag remains true and no model is configured', async t => {
+  const requests: string[] = []
+  t.mock.method(globalThis, 'fetch', async url => {
+    const path = String(url); requests.push(path)
+    assert.ok(path.endsWith('/context'))
+    return Response.json({ ...context, scenes: [{ ...savedScene, planned: true, needs_replan: true,
+      replan_reason: '历史分镜缺少来源版本记录，请重新规划后使用', shot_count: 1, material_count: 1 }], existing_shots: [savedShot] })
+  })
+  const project = { ...detail, script: { ...detail.script, scenes: [savedScene] } } as ProjectDetail
+  const view = await mount({ project, initialSceneIds: [savedScene.id], models: [] })
+  try {
+    assert.match(document.querySelector('.storyboard-planner-sidebar')!.textContent!, /资料已更新，需重新规划/)
+    assert.equal(button('已规划').disabled, true)
+    assert.equal(button('开始规划').disabled, true)
+    assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '确认加入画布'), false)
+    assert.equal(requests.length, 1, 'no saved-plan import or model work runs implicitly')
+  } finally { await view.destroy() }
+})
+
+test('default episode documents follow the selected scenes while manual reference choices are retained', async t => {
+  const secondScene = { ...scene, id: 'second-scene', heading: '车厢', episode_number: 2 }
+  const episodeDocuments = [
+    { id: 'episode-one', title: '第一集（已修改）', artifact_type: 'episode_script', episode_number: 1, characters: 560 },
+    { id: 'episode-two', title: '第二集', artifact_type: 'episode_script', episode_number: 2, characters: 420 },
+  ]
+  const requests: Array<{ path: string; body: any }> = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    const path = String(url), body = JSON.parse(String(init?.body)); requests.push({ path, body })
+    if (path.endsWith('/context')) return Response.json({ ...context,
+      scenes: [...context.scenes, { ...secondScene, planned: false, shot_count: 0, material_count: 0 }],
+      documents: [...context.documents, ...episodeDocuments], default_document_ids: episodeDocuments.map(document => document.id) })
+    if (path.endsWith('/plan')) return Response.json(draft)
+    throw new Error(`Unexpected ${path}`)
+  })
+  const project = { ...detail, script: { ...detail.script, scenes: [scene, secondScene] } } as ProjectDetail
+  const view = await mount({ project, initialSceneIds: [scene.id, secondScene.id] })
+  const checked = (name: string) => {
+    const label = [...document.querySelectorAll<HTMLLabelElement>('label')].find(node => node.textContent === name)
+    assert.ok(label, name)
+    return (document.getElementById(label.htmlFor) as HTMLInputElement).checked
+  }
+  try {
+    assert.equal(checked('第一集（已修改） · 560 字'), true)
+    assert.equal(checked('第二集 · 420 字'), true)
+    assert.equal(checked('故事大纲 · 100 字'), false)
+    await check('故事大纲 · 100 字')
+    await act(() => document.querySelector<HTMLInputElement>('input[aria-label="选择场次：车厢"]')!.click())
+    assert.equal(checked('第一集（已修改） · 560 字'), true)
+    assert.equal(checked('第二集 · 420 字'), false, 'another episode is not retained as an automatic reference after deselection')
+    assert.equal(checked('故事大纲 · 100 字'), true, 'manual supplementary references survive scene changes')
+    await act(async () => button('开始规划').click())
+    assert.deepEqual(requests.find(request => request.path.endsWith('/plan'))!.body.document_ids, ['outline', 'episode-one'])
+    await act(() => button('规划设置').click())
+    await check('第一集（已修改） · 560 字')
+    await act(() => document.querySelector<HTMLInputElement>('input[aria-label="选择场次：车厢"]')!.click())
+    assert.equal(checked('第一集（已修改） · 560 字'), false, 'manual checkbox choices remain available')
+    assert.equal(checked('第二集 · 420 字'), true)
+    assert.equal(checked('故事大纲 · 100 字'), true)
+  } finally { await view.destroy() }
+})
 
 test('deleted storyboard nodes take priority and full batches can switch to saved plans for model-free re-add', async t => {
   const sourceScenes = Array.from({ length: 24 }, (_, index) => ({ ...scene, id: `scene-${index}`, heading: `场次 ${index + 1}` }))
@@ -222,7 +332,7 @@ test('saved professional plans can be previewed and reused without a model or a 
   t.mock.method(globalThis, 'fetch', async (url, init) => {
     const path = String(url), body = JSON.parse(String(init?.body)); requests.push({ path, body })
     if (path.endsWith('/check')) return Response.json({ signature, scene_ids: [], needs_analysis: [] })
-    if (path.endsWith('/context')) return Response.json({ ...context, scenes: [{ ...savedScene, shot_count: 1, material_count: 1, planned: true }], existing_shots: [savedShot] })
+    if (path.endsWith('/context')) return Response.json({ ...context, scenes: [{ ...savedScene, shot_count: 1, material_count: 1, planned: true, needs_replan: false }], existing_shots: [savedShot] })
     if (path.endsWith('/canvas')) return Response.json({ ...emptyCanvas, scene_ids: ['saved-scene'] })
     throw new Error(`Unexpected ${path}`)
   })
@@ -258,6 +368,7 @@ test('mixed scope only plans missing scenes and imports both new and saved plans
   try {
     assert.equal(document.querySelector<HTMLInputElement>('input[aria-label="选择场次：已有场次"]')!.checked, false)
     await act(() => document.querySelector<HTMLInputElement>('input[aria-label="选择场次：已有场次"]')!.click())
+    await choosePlanningMode('沿用当前方案更新')
     await act(async () => button('开始规划').click())
     const plannedRequest = requests.find(request => request.path.endsWith('/plan'))!
     assert.deepEqual(plannedRequest.body.scene_ids, ['scene']); assert.equal(plannedRequest.body.signature, subsetSignature)
@@ -286,15 +397,102 @@ test('replanning passes updated shot identities to the canvas even when refresh 
   try {
     await act(() => button('规划设置').click())
     await check('重新规划已有分镜')
+    await choosePlanningMode('沿用当前方案更新')
     await act(async () => button('开始规划').click())
     await act(async () => button('确认加入画布').click())
     assert.equal(dom.window.sessionStorage.getItem('script-canvas-open:planner'), null)
-    await act(async () => button('确认加入画布').click())
+    await act(async () => button('继续加入画布').click())
     const handoff = JSON.parse(dom.window.sessionStorage.getItem('script-canvas-open:planner')!)
     assert.deepEqual(handoff.result.updated_shot_ids, [savedShot.shot_id])
     assert.equal(handoff.result.shots[0].image_prompt, '重新规划的首帧')
     assert.equal(handoff.result.created_shots, 1)
     assert.equal(commits, 1); assert.equal(imports, 1)
+  } finally { await view.destroy() }
+})
+
+test('redesign defaults to fresh shots and a dedicated canvas while retries keep the committed target', async t => {
+  const requests: Array<{ path: string; body: any }> = []
+  let refreshes = 0
+  const freshDraft = { ...draft, mode: 'redesign', instructions: '重新设计开镜和人物状态', scenes: [
+    { ...draft.scenes[0], scene_id: savedScene.id, shots: [{ ...draft.scenes[0].shots[0], shot_id: null, title: '全新开镜' }] },
+  ] }
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    const path = String(url), body = JSON.parse(String(init?.body)); requests.push({ path, body })
+    if (path.endsWith('/context')) return Response.json({ ...context, scenes: [{ ...savedScene, shot_count: 8, material_count: 5, planned: true }], existing_shots: [savedShot] })
+    if (path.endsWith('/plan')) return Response.json(freshDraft)
+    if (path.endsWith('/storyboard/commit')) return Response.json({ ...emptyCanvas, design_id: 'new-design', target_canvas_id: 'new-canvas', created_shots: 1 })
+    if (path.endsWith('/check')) return Response.json({ signature, scene_ids: [savedScene.id], needs_analysis: [] })
+    if (path.endsWith('/storyboard/canvas')) return Response.json({ ...emptyCanvas, shots: [{ ...freshDraft.scenes[0].shots[0], id: 'new-shot', design_id: 'new-design' }] })
+    throw new Error(`Unexpected ${path}`)
+  })
+  const project = { ...detail, script: { ...detail.script, scenes: [savedScene] } } as ProjectDetail
+  const view = await mount({ project, initialSceneIds: [savedScene.id], refresh: async () => { if (++refreshes === 1) throw new Error('刷新失败') } })
+  try {
+    await act(() => button('规划设置').click())
+    await check('重新规划已有分镜')
+    assert.equal(document.querySelector<HTMLInputElement>('input[aria-label="分镜规划方式"]')!.value, '重新设计新方案')
+    await fillTextarea('导演要求', freshDraft.instructions)
+    await check('指定本次总时长（源场次合计 30 秒）')
+    const durationLabel = [...document.querySelectorAll<HTMLLabelElement>('label')].find(node => node.textContent === '本次目标时长')!
+    const durationInput = document.getElementById(durationLabel.htmlFor) as HTMLInputElement
+    const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!
+    await act(() => { setter.call(durationInput, '1'); durationInput.dispatchEvent(new dom.window.Event('input', { bubbles: true })); durationInput.dispatchEvent(new dom.window.Event('blur', { bubbles: true })) })
+    await act(async () => button('开始规划').click())
+    const plan = requests.find(request => request.path.endsWith('/plan'))!
+    assert.equal(plan.body.mode, 'redesign'); assert.equal(plan.body.instructions, freshDraft.instructions)
+    assert.equal(plan.body.target_duration, 1, 'fresh designs are not constrained by the old eight-shot count')
+    assert.equal(document.querySelector<HTMLTextAreaElement>('.storyboard-planner-preview textarea')!.readOnly, false)
+    assert.ok(button('移除新增镜头'), 'fresh shots remain independently removable')
+    await fillTextarea('首帧图片提示词', '只属于新方案的首帧')
+    await act(async () => button('确认加入画布').click())
+    assert.equal(dom.window.sessionStorage.getItem('script-canvas-open:planner'), null)
+    await act(async () => button('继续加入画布').click())
+    const commits = requests.filter(request => request.path.endsWith('/storyboard/commit'))
+    assert.equal(commits.length, 1)
+    assert.equal(commits[0].body.mode, 'redesign'); assert.equal(commits[0].body.instructions, freshDraft.instructions)
+    assert.equal(commits[0].body.scenes[0].shots[0].shot_id, null)
+    assert.equal(commits[0].body.scenes[0].shots[0].image_prompt, '只属于新方案的首帧')
+    const handoff = JSON.parse(dom.window.sessionStorage.getItem('script-canvas-open:planner')!)
+    assert.equal(handoff.canvas_id, 'new-canvas'); assert.equal(handoff.result.design_id, 'new-design')
+    assert.equal(handoff.result.shots[0].id, 'new-shot')
+  } finally { await view.destroy() }
+})
+
+test('redesign covers the entire selected scope and changing its mode invalidates the preview', async t => {
+  const requests: any[] = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (String(url).endsWith('/context')) return Response.json({ ...context, scenes: [...context.scenes, { ...savedScene, shot_count: 2, material_count: 1, planned: true }], existing_shots: [savedShot] })
+    if (String(url).endsWith('/plan')) {
+      requests.push(JSON.parse(String(init?.body)))
+      return Response.json({ ...draft, mode: 'redesign', scenes: [draft.scenes[0], { ...draft.scenes[0], scene_id: savedScene.id }] })
+    }
+    throw new Error(`Unexpected ${url}`)
+  })
+  const project = { ...detail, script: { ...detail.script, scenes: [scene, savedScene] } } as ProjectDetail
+  const view = await mount({ project, initialSceneIds: [scene.id, savedScene.id] })
+  try {
+    await act(() => document.querySelector<HTMLInputElement>('input[aria-label="选择场次：已有场次"]')!.click())
+    await act(async () => button('开始规划').click())
+    assert.deepEqual(requests[0].scene_ids, [scene.id, savedScene.id]); assert.equal(requests[0].mode, 'redesign')
+    await act(() => button('规划设置').click())
+    await choosePlanningMode('沿用当前方案更新')
+    assert.equal(document.querySelector('.storyboard-planner-preview'), null)
+    assert.ok(button('开始规划'))
+    assert.equal(document.querySelector<HTMLButtonElement>('button[aria-label="分镜预览"]')!.disabled, true)
+  } finally { await view.destroy() }
+})
+
+test('redesign does not silently reuse a legacy shot identity returned by the model', async t => {
+  t.mock.method(globalThis, 'fetch', async url => {
+    if (String(url).endsWith('/context')) return Response.json({ ...context, scenes: [{ ...savedScene, shot_count: 1, material_count: 1, planned: false }], existing_shots: [savedShot] })
+    if (String(url).endsWith('/plan')) return Response.json({ ...draft, mode: 'redesign', scenes: [{ ...draft.scenes[0], scene_id: savedScene.id, shots: [savedShot] }] })
+    throw new Error(`Unexpected ${url}`)
+  })
+  const view = await mount({ project: { ...detail, script: { ...detail.script, scenes: [savedScene] } }, initialSceneIds: [savedScene.id] })
+  try {
+    await act(async () => button('开始规划').click())
+    assert.match(document.body.textContent!, /新方案包含旧镜头/)
+    assert.equal(document.querySelector('.storyboard-planner-preview'), null)
   } finally { await view.destroy() }
 })
 
@@ -379,12 +577,62 @@ test('failed reference preparation keeps saved shots and retries without another
   const view = await mount({ openCanvas: () => opened++ })
   try {
     await act(async () => button('开始规划').click())
+    assert.match(document.querySelector('.storyboard-planner-section-title')!.textContent!, /未保存草稿，可修改后确认/)
+    assert.equal(document.querySelector<HTMLTextAreaElement>('.storyboard-planner-preview textarea')!.readOnly, false)
     await act(async () => button('确认加入画布').click())
     assert.match(document.body.textContent!, /分镜已保存，后续操作失败/)
+    assert.match(document.querySelector('.storyboard-planner-section-title')!.textContent!, /已保存分镜/)
+    assert.doesNotMatch(document.querySelector('.storyboard-planner-section-title')!.textContent!, /未保存草稿/)
+    assert.match(document.querySelector('.storyboard-planner-scene-list')!.textContent!, /已保存 · 1 镜/)
+    assert.doesNotMatch(document.querySelector('.storyboard-planner-scene-list')!.textContent!, /草稿/)
+    assert.equal(document.querySelector<HTMLTextAreaElement>('.storyboard-planner-preview textarea')!.readOnly, true)
+    assert.equal([...document.querySelectorAll('button')].some(item => item.textContent === '添加镜头' || item.textContent === '移除新增镜头'), false)
     assert.equal(opened, 0); assert.equal(dom.window.sessionStorage.getItem('script-canvas-open:planner'), null)
     assert.equal(button('视觉设定技能选择').disabled, false, 'failed reference analysis can switch skills without unlocking the saved storyboard')
-    await act(async () => button('确认加入画布').click())
+    assert.equal(button('继续加入画布').disabled, false)
+    await act(async () => button('继续加入画布').click())
     assert.equal(commits, 1); assert.equal(preparations, 2); assert.equal(opened, 1)
+  } finally { await view.destroy() }
+})
+
+test('a failed reference draft save resumes the saved new design without recreating shots or losing its canvas', async t => {
+  const paths: string[] = []
+  let referenceSaves = 0, opened = 0
+  const freshSignature = 'd'.repeat(64)
+  t.mock.method(globalThis, 'fetch', async url => {
+    const path = String(url); paths.push(path)
+    if (path.endsWith('/context')) return Response.json({ ...referenceContext, scenes: [{ ...scene, planned: true, shot_count: 1, material_count: 1 }],
+      existing_shots: [{ ...savedShot, scene_id: scene.id }] })
+    if (path.endsWith('/plan')) return Response.json({ ...draft, mode: 'redesign', instructions: '重新设计' })
+    if (path.endsWith('/storyboard/commit')) return Response.json({ ...emptyCanvas, created_shots: 1, design_id: 'design-saved', target_canvas_id: 'canvas-saved' })
+    if (path.endsWith('/check')) return Response.json({ signature: freshSignature, scene_ids: ['scene'], needs_analysis: ['scene'] })
+    if (path.endsWith('/prepare')) return Response.json({ signature: freshSignature, scene_ids: ['scene'], profiles: [{ ...profileDraft, design_id: 'design-saved' }] })
+    if (path.endsWith('/script/canvas/commit')) {
+      if (++referenceSaves === 1) return Response.json({ error: '视觉草稿的设计方案与当前场次不一致' }, { status: 422 })
+      return Response.json(referenceCanvas)
+    }
+    if (path.endsWith('/storyboard/canvas')) return Response.json({ ...referenceCanvas, created_profiles: 0 })
+    throw new Error(`Unexpected ${path}`)
+  })
+  const view = await mount({ openCanvas: () => opened++ })
+  try {
+    await act(() => button('规划设置').click())
+    await check('重新规划已有分镜')
+    await act(async () => button('开始规划').click())
+    await act(async () => button('确认加入画布').click())
+    assert.match(document.querySelector('[role="alert"]')!.textContent!, /分镜已保存.*视觉草稿的设计方案/)
+    assert.match(document.querySelector('.storyboard-planner-section-title')!.textContent!, /已保存分镜/)
+    assert.equal(document.querySelector<HTMLTextAreaElement>('.storyboard-planner-preview textarea')!.readOnly, true)
+    assert.equal(dom.window.sessionStorage.getItem('script-canvas-open:planner'), null)
+    assert.equal(opened, 0)
+    await act(async () => button('继续加入画布').click())
+    assert.equal(paths.filter(path => path.endsWith('/storyboard/commit')).length, 1)
+    assert.equal(paths.filter(path => path.endsWith('/plan')).length, 1)
+    assert.equal(referenceSaves, 2); assert.equal(opened, 1)
+    const handoff = JSON.parse(dom.window.sessionStorage.getItem('script-canvas-open:planner')!)
+    assert.equal(handoff.canvas_id, 'canvas-saved')
+    assert.equal(handoff.result.design_id, 'design-saved')
+    assert.equal(handoff.result.created_shots, 1)
   } finally { await view.destroy() }
 })
 
@@ -426,12 +674,12 @@ test('cancelling reference analysis prevents a late result from being committed 
     await act(async () => button('开始规划').click())
     await act(async () => { button('确认加入画布').click(); await new Promise(resolve => setTimeout(resolve, 0)) })
     assert.match(document.querySelector('.storyboard-planner-footer-status')!.textContent!, /正在整理参考设定/)
-    assert.equal(button('确认加入画布').disabled, true)
+    assert.equal(button('继续加入画布').disabled, true)
     await act(() => button('取消整理').click())
     await act(async () => { resolveAnalysis(Response.json({ signature, scene_ids: ['scene'], profiles: [profileDraft] })); await new Promise(resolve => setTimeout(resolve, 0)) })
     assert.equal(paths.some(path => path.endsWith('/script/canvas/commit') || path.endsWith('/storyboard/canvas')), false)
     assert.equal(opened, 0); assert.equal(dom.window.sessionStorage.getItem('script-canvas-open:planner'), null)
-    assert.equal(button('确认加入画布').disabled, false)
+    assert.equal(button('继续加入画布').disabled, false)
   } finally { await view.destroy() }
 })
 

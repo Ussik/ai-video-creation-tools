@@ -216,7 +216,7 @@ test('editable final prompts stay identical through preview and queue, while key
   const video = await model(true, false, true)
   image(project.id, 'final-pinned-frame')
   const detail = await call<{ shot_visual_bindings: PromptVisualBinding[] }>('GET', `/api/projects/${project.id}`)
-  const template = visualGenerationPrompt('连续动作\n\n【视频生成要求】\n视频时长：5 秒\n首帧要求：承接参考图', detail.shot_visual_bindings, ['final-pinned-frame'], 'keyframe')
+  const template = visualGenerationPrompt('连续动作\n\n【视频生成要求】\n视频时长：5 秒\n首帧要求：承接参考图', detail.shot_visual_bindings, ['final-pinned-frame'], 'keyframe', { mode: 'first_frame' })
   const edited = template.replace('连续动作', '阿宁停顿后拿起钥匙，镜头缓慢推近').replace('深绿雨衣', '雨衣保留湿润的深绿色')
   const input = { shot_id: shot.id, model_id: video.id, mode: 'first_frame', visual_reference_mode: 'keyframe', ratio: 'adaptive',
     prompt: edited, prompt_is_final: true, prompt_template: template, visual_source_prompt: '连续动作', reference_asset_ids: ['final-pinned-frame'] }
@@ -271,7 +271,8 @@ test('information boards preview confirmed reference profiles, validate selectio
   assert.match(preview.prompt, /同框、互动或尺度对比/)
   assert.doesNotMatch(preview.prompt, /不要混入其他人物/)
   assert.equal(all('SELECT * FROM asset_tasks WHERE project_id=?', project.id).length, 0)
-  assert.equal((await app.inject({ method: 'POST', url, payload: { ...input, reference_asset_ids: preview.reference_asset_ids } })).statusCode, 422, 'profile and asset selections cannot duplicate the same image')
+  assert.deepEqual((await call<{ reference_asset_ids: string[] }>('POST', url, { ...input, reference_asset_ids: preview.reference_asset_ids })).reference_asset_ids,
+    preview.reference_asset_ids, 'profile and asset selections resolve to one copy of the same image')
   const unsupported = await model(false)
   assert.equal((await app.inject({ method: 'POST', url, payload: { ...input, model_id: unsupported.id } })).statusCode, 422)
   image(project.id, 'extra-reference')

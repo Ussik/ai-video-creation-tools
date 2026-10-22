@@ -71,3 +71,14 @@ test('invalid, duplicate, unsubmitted and strict-frame uses fail before creating
   assert.equal(stale.statusCode, 409, stale.body)
   assert.equal(all('SELECT * FROM jobs WHERE project_id=?', project.id).length, 0)
 })
+
+test('explicit image removal clears its use while disconnected selections cannot disappear through overrides', async () => {
+  const { project, ids, input } = await fixture(), url = `/api/projects/${project.id}/generate/preview`
+  const removed = await call('POST', url, { ...input, prompt_reference_overrides: { [ids[0]!]: null } })
+  assert.deepEqual(removed.reference_asset_ids, [ids[1]])
+  assert.deepEqual(removed.video_reference_usages, [{ asset_id: ids[1], usage: 'identity' }])
+  const invalid = await app.inject({ method: 'POST', url, payload: { ...input,
+    video_reference_usages: [{ asset_id: 'unsubmitted', usage: 'scale' }], prompt_reference_overrides: { unsubmitted: null } } })
+  assert.equal(invalid.statusCode, 422, invalid.body)
+  assert.equal(all('SELECT * FROM jobs WHERE project_id=?', project.id).length, 0)
+})

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { activityDraftId, activitySources, activityStatusLabel, canRetryExecution, conversationMessage, executionView, readActivity, settleActivity, updateActivity, type ScriptActivity, type ScriptExecution } from '../src/features/script/director-activity'
+import { activityDraftId, activityGroup, activitySources, activityStatusLabel, canRetryExecution, conversationMessage, executionView, readActivity, settleActivity, updateActivity, type ScriptActivity, type ScriptExecution } from '../src/features/script/director-activity'
 const entry: ScriptActivity = { id: 'a', kind: 'tool', name: 'read_documents', label: '阅读文档', status: 'running', summary: '正在读取', started_at: 100 }
 
 test('legacy begin-only records are notices; task, phase and actual requests retain their hierarchy', () => {
@@ -69,6 +69,21 @@ test('possible write attempts prevent automatic retry; recovery retains exact dr
   assert.equal(activityDraftId([{ ...entry, name: 'commit_document_draft', input: '{"draft_id":"exact-draft","version":"v1"}' }]), 'exact-draft')
   assert.equal(activityDraftId([{ ...entry, name: 'propose_document_patch', status: 'succeeded', output: '{"draft_id":"new-draft"}' }]), 'new-draft')
   assert.equal(activityDraftId([{ ...entry, output: '{"draft_id":"unknown"}', output_truncated: true }]), undefined)
+})
+
+test('source and episode reads remain retryable after a later failure without allowing any write replay', () => {
+  const reads: ScriptActivity[] = ['read_source_document', 'search_source_document', 'read_episode_scenes'].map((name, index) => ({
+    ...entry, id: `read-${index}`, name, status: 'succeeded',
+  }))
+  const failedModel: ScriptActivity = { ...entry, id: 'interrupted-model', kind: 'model', status: 'failed' }
+  assert.equal(canRetryExecution([...reads, failedModel]), true)
+  for (const read of reads) {
+    assert.equal(activityGroup(read), 'sources')
+    for (const status of ['succeeded', 'failed', 'cancelled'] as const) assert.equal(canRetryExecution([{ ...read, status }]), true)
+  }
+  for (const name of ['create_document_draft', 'propose_document_patch', 'record_story_decision', 'commit_document_draft', 'unknown_function']) {
+    assert.equal(canRetryExecution([...reads, { ...entry, id: name, name, status: 'succeeded' }, failedModel]), false)
+  }
 })
 
 test('task scope and actual outcome survive persistence; pending snapshots remain incomplete on reload', () => {

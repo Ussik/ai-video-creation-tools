@@ -942,6 +942,12 @@ body,
   overflow-y: auto;
   overscroll-behavior: contain;
 }
+/* Give the outer scrollbar its own lane beyond the editor's right edge. */
+:is(.pc-composer-anchor, .pc-composer-modal-content) .pc-prompt-composer-body {
+  margin-inline-end: -12px;
+  padding-inline-end: 12px;
+  scrollbar-gutter: stable;
+}
 .pc-composer-modal-content .pc-prompt-composer-body > :not(.pc-prompt-composer-input) { flex-shrink: 0; }
 .pc-composer-modal-content .pc-prompt-composer-input { display: flex; flex-direction: column; flex: 1; }
 .pc-composer-modal-content .pc-prompt-composer-input .mantine-Input-wrapper { display: flex; flex: 1; }

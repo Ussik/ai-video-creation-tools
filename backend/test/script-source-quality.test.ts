@@ -46,6 +46,24 @@ test('independent review receives every source character through the final evide
   assert.equal(state.quality?.input_hash, sourceQualityInputHash(state))
 })
 
+test('source review asks for Chinese explanations without translating original English names or evidence IDs', async () => {
+  const content = '开场 John 使用口令 “world”。尾声 John 归还信物。', state = stateFor(content)
+  const finding = { kind: 'unsupported', explanation: '人物资料误读了 John 使用口令的目的。', unit_ids: [0] }
+  let calls = 0
+  await assert.rejects(reviewSourceQuality({ filename: '剧本.txt', content }, state, async prompt => {
+    calls++
+    const input = reviewed(prompt)
+    assert.match(prompt, /explanation 使用简体中文/)
+    assert.match(prompt, /中文栏目名说明问题/)
+    assert.match(prompt, /证据内容保持原值，不翻译或改写/)
+    assert.equal(input.units.map(unit => unit.text).join(''), content)
+    assert.ok(input.units.some(unit => unit.id === finding.unit_ids[0] && unit.text.includes('John')))
+    return JSON.stringify({ checked_section_ids: [0, 1], findings: [finding] })
+  }, () => {}, signal()), /人物资料误读了 John 使用口令的目的/)
+  assert.equal(calls, 1)
+  assert.deepEqual(state.quality?.findings, [finding], 'language guidance preserves the structured evidence and stored explanation')
+})
+
 test('coverage IDs cannot omit, duplicate or invent sections even when the remaining response is valid', async t => {
   for (const checked of [[0], [0, 0, 1], [0, 1, 999]]) await t.test(JSON.stringify(checked), async () => {
     const content = '开场约定。尾声归还信物。', state = stateFor(content)
@@ -69,6 +87,37 @@ test('findings reject nonexistent, whitespace-only and repeated evidence IDs bef
       calls++; return JSON.stringify({ checked_section_ids: [0, 1], findings: [{ kind: 'omission', explanation: '遗漏结局', unit_ids: evidence }] })
     }, () => { saves++ }, signal()), /真实且非空的原文句段/)
     assert.equal(calls, 2); assert.equal(saves, 0); assert.equal(state.quality, undefined)
+  })
+})
+
+test('quality issue messages preserve sentence endings and add punctuation only when missing', async t => {
+  const cases = [
+    ['遗漏责任轻重的判断', '遗漏责任轻重的判断。'],
+    ['遗漏责任轻重的判断。', '遗漏责任轻重的判断。'],
+    ['遗漏责任轻重的判断！', '遗漏责任轻重的判断！'],
+    ['遗漏责任轻重的判断？', '遗漏责任轻重的判断？'],
+    ['Missing the cause.', 'Missing the cause.'],
+    ['Missing the cause!', 'Missing the cause!'],
+    ['Missing the cause?', 'Missing the cause?'],
+    ['遗漏了“责任轻重的判断。”', '遗漏了“责任轻重的判断。”'],
+    ['遗漏了「责任轻重的判断！」', '遗漏了「责任轻重的判断！」'],
+    ['遗漏了（责任轻重的判断。）', '遗漏了（责任轻重的判断。）'],
+    ['Missing the "cause?"', 'Missing the "cause?"'],
+    ['遗漏了“责任轻重的判断”', '遗漏了“责任轻重的判断”。'],
+  ] as const
+  for (const [explanation, completedSentence] of cases) await t.test(explanation, async () => {
+    const content = '开场约定。尾声归还信物。', state = stateFor(content)
+    const finding = { kind: 'omission', explanation, unit_ids: [0] }
+    let saves = 0
+    await assert.rejects(reviewSourceQuality({ filename: '剧本.txt', content }, state, async () =>
+      JSON.stringify({ checked_section_ids: [0, 1], findings: [finding] }), () => { saves++ }, signal()), error => {
+      assert.equal((error as Error).message,
+        `剧本资料核对发现 1 项遗漏或误读：${completedSentence}可继续修补这些问题并重新核对，原稿和已完成分析已保留。`)
+      assert.equal((error as Error & { statusCode: number }).statusCode, 422)
+      return true
+    })
+    assert.equal(saves, 1)
+    assert.deepEqual(state.quality?.findings, [finding], 'display punctuation does not alter the stored finding')
   })
 })
 
@@ -100,32 +149,53 @@ async function terminal(id: string) {
   throw new Error('analysis did not finish')
 }
 
-test('substantive omissions keep analysis failed until explicit retry rebuilds map and story with the original evidence feedback', async () => {
+test('explicit retry repairs substantive omissions while reusing the completed map and story before independent review', async () => {
   const content = '开场林舟许下约定。\n尾声：沈月是林舟的妹妹，她归还信物。', projectId = newId(), stamp = now()
   run('INSERT INTO projects (id,name,created_at,updated_at) VALUES (?,?,?,?)', projectId, '独立核对测试', stamp, stamp)
   run('INSERT INTO script_source_documents (project_id,filename,content,updated_at) VALUES (?,?,?,?)', projectId, '剧本.txt', content, stamp)
-  let maps = 0, stories = 0, reviews = 0
+  let maps = 0, stories = 0, reviews = 0, repairs = 0
   const explanation = '全剧人物和目录遗漏尾声沈月是林舟妹妹的身份'
-  const analyzer = createScriptSourceAnalyzer(async (_projectId, _model, prompt) => {
+  const repairMarker = '【原稿分析定点修补资料】\n'
+  const analyzer = createScriptSourceAnalyzer(async (_projectId, _model, prompt, contract) => {
     if (prompt.includes(marker)) {
       reviews++; const input = reviewed(prompt), tail = input.units.find(unit => unit.text.includes('沈月'))!
       assert.ok(tail)
       return JSON.stringify({ checked_section_ids: input.sections.map(section => section.id),
         findings: reviews === 1 ? [{ kind: 'omission', explanation, unit_ids: [tail.id] }] : [] })
     }
+    if (prompt.includes(repairMarker)) {
+      repairs++
+      assert.equal(contract?.name, 'script_source_quality_repair')
+      const input = JSON.parse(prompt.slice(prompt.lastIndexOf(repairMarker) + repairMarker.length))
+      assert.equal(input.complete_source, true)
+      assert.equal(input.units.map((unit: { text: string }) => unit.text).join(''), content)
+      assert.equal(input.finding.explanation, explanation, 'retry receives the durable independent-review finding')
+      assert.equal(input.finding_index, 0); assert.equal(input.total_findings, 1)
+      assert.equal(input.sections.length, 2)
+      assert.equal(input.sections[0].characters[0].name, '林舟', 'completed analysis is available to the repair')
+      const tail = input.units.find((unit: { text: string }) => unit.text.includes('沈月'))!
+      return JSON.stringify({ status: 'patched', reason: '补充尾声已经明示的沈月身份，保留原有分析', changes: [
+        { target: 'section.characters', section_id: 1, operation: 'append', index: null, expected: null,
+          value: { name: '沈月', description: '林舟的妹妹，尾声归还信物', evidence: { unit_id: tail.id } } },
+        { target: 'story.characters', section_id: null, operation: 'append', index: null, expected: null,
+          value: { name: '沈月', aliases: [], description: '林舟的妹妹，尾声归还信物', section_ids: [1] } },
+      ] })
+    }
     if (prompt.includes('【全剧整合资料】')) stories++
-    const value = JSON.parse(sourceAnalysisFixture(prompt)!)
     if (prompt.includes('【原文片段】')) {
       maps++
-      if (maps === 2) {
-        assert.ok(prompt.includes(explanation), 'explicit retry receives durable review feedback')
-        const mapMarker = '【原文片段】\n', input = JSON.parse(prompt.slice(prompt.lastIndexOf(mapMarker) + mapMarker.length))
-        const units = input.passages.flatMap((passage: { units: Array<{ id: number; text: string }> }) => passage.units)
-        assert.equal(units.map((unit: { text: string }) => unit.text).join(''), content)
-        value.sections[0].characters = [{ name: '沈月', description: '林舟的妹妹', evidence: { unit_id: units.find((unit: { text: string }) => unit.text.includes('沈月')).id } }]
-      }
+      const mapMarker = '【原文片段】\n', input = JSON.parse(prompt.slice(prompt.lastIndexOf(mapMarker) + mapMarker.length))
+      const units = input.passages.flatMap((passage: { units: Array<{ id: number; text: string }> }) => passage.units)
+      const first = units[0]!, tail = units.find((unit: { text: string }) => unit.text.includes('沈月'))!
+      return JSON.stringify({ sections: [
+        { start_unit: first.id, title: '开场', episode_number: null, summary: '林舟许下约定。',
+          characters: [{ name: '林舟', description: '许下约定的主角', evidence: { unit_id: first.id } }],
+          events: [{ summary: '林舟许下约定。', evidence: { unit_id: first.id } }] },
+        { start_unit: tail.id, title: '尾声', episode_number: null, summary: '有人归还信物。', characters: [],
+          events: [{ summary: '归还信物。', evidence: { unit_id: tail.id } }] },
+      ] })
     }
-    return JSON.stringify(value)
+    return sourceAnalysisFixture(prompt)!
   })
   try {
     analyzer.start(projectId, 'quality-model')
@@ -135,13 +205,20 @@ test('substantive omissions keep analysis failed until explicit retry rebuilds m
     assert.ok(failed.error!.includes(explanation))
     assert.equal(scriptSourceIndex(projectId)!.story_map, undefined)
     await assert.rejects(analyzer.ensure(projectId, 'quality-model'), /请先重试/)
-    assert.deepEqual([maps, stories, reviews], [1, 1, 1], 'no automatic generation follows a semantic finding')
+    assert.deepEqual([maps, stories, repairs, reviews], [1, 1, 0, 1], 'no automatic generation follows a semantic finding')
+    const completed = structuredClone(failed)
     analyzer.start(projectId, 'quality-model')
     const ready = await terminal(projectId)
     assert.equal(ready.status, 'ready', ready.error || '')
     assert.equal(ready.quality!.status, 'passed')
-    assert.deepEqual([maps, stories, reviews], [2, 2, 2])
-    assert.equal(ready.story!.characters[0]!.name, '沈月')
+    assert.deepEqual([maps, stories, repairs, reviews], [1, 1, 1, 2], 'retry repairs the finding and reruns review without regenerating completed stages')
+    assert.deepEqual(ready.sections[0], completed.sections[0], 'unrelated directory entries remain unchanged')
+    assert.deepEqual(ready.sections[1], { ...completed.sections[1], characters: [{ name: '沈月', description: '林舟的妹妹，尾声归还信物',
+      evidence: { offset: content.indexOf('尾声'), quote: content.slice(content.indexOf('尾声')) } }] })
+    assert.deepEqual(ready.story, { ...completed.story, characters: [...completed.story!.characters,
+      { name: '沈月', aliases: [], description: '林舟的妹妹，尾声归还信物', section_ids: [1] }] }, 'unrelated story facts remain unchanged')
+    assert.equal(ready.completed_chunks, completed.completed_chunks)
+    assert.equal(ready.completed_characters, content.length)
     assert.equal(db.prepare('SELECT content FROM script_source_documents WHERE project_id=?').get(projectId)!.content, content)
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM script_artifacts WHERE project_id=?').get(projectId)!.count, 0)
   } finally { await analyzer.close() }

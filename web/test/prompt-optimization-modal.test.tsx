@@ -15,6 +15,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, getComputedStyle: do
   requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window), cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
   ResizeObserver: class { observe() {} unobserve() {} disconnect() {} } })
 Object.defineProperty(dom.window, 'matchMedia', { value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) })
+Object.defineProperty(dom.window.document, 'fonts', { value: { addEventListener() {}, removeEventListener() {} } })
 dom.window.HTMLElement.prototype.scrollIntoView = () => {}
 const { createRoot } = await import('react-dom/client')
 const { default: PromptOptimizationModal } = await import('../src/features/jobs/PromptOptimizationModal')
@@ -29,19 +30,31 @@ function button(label: string) {
   const node = [...document.querySelectorAll<HTMLButtonElement>('button')].find(node => node.textContent === label)
   assert.ok(node, label); return node
 }
-async function edit(value: string) {
-  const field = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="优化后的提示词"]')!
+function textarea(label: string) {
+  const field = document.querySelector<HTMLTextAreaElement>(`textarea[aria-label="${label}"]`)
+  assert.ok(field, label); return field
+}
+async function fill(label: string, value: string) {
+  const field = textarea(label)
   await act(() => {
     Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value')!.set!.call(field, value)
     field.dispatchEvent(new Event('input', { bubbles: true }))
   })
 }
+const edit = (value: string) => fill('优化后的提示词', value)
+async function chooseModel(value: string) {
+  const input = document.querySelector<HTMLInputElement>('input[aria-label="优化提示词的文本模型"]')!
+  await act(() => input.click())
+  const option = document.querySelector<HTMLElement>(`[role="option"][value="${value}"]`)
+  assert.ok(option, value)
+  await act(() => option.click())
+}
 async function mount() {
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container), applied: string[] = []
   let closed = 0
-  const render = async (sourceKey = 'v1', catalog = models) => act(() => root.render(<MantineProvider env="test">
-    <PromptOptimizationModal job={job} models={catalog} providers={providers} sourceKey={sourceKey} newDraft
+  const render = async (sourceKey = 'v1', catalog = models, prompt?: string) => act(() => root.render(<MantineProvider env="test">
+    <PromptOptimizationModal job={job} models={catalog} providers={providers} sourceKey={sourceKey} prompt={prompt} newDraft
       onClose={() => { closed++ }} onApply={value => { applied.push(value) }} />
   </MantineProvider>))
   await render()
@@ -60,7 +73,7 @@ test('opening is free of model calls; explicit optimization returns an editable 
     await act(async () => { button('生成优化建议').click(); button('生成优化建议').click() })
     assert.equal(requests.length, 1)
     assert.equal(requests[0].url, '/api/projects/project/jobs/job/optimize-prompt')
-    assert.deepEqual(requests[0].body, { model_id: 'text', prompt: '原始画面描述' })
+    assert.deepEqual(requests[0].body, { model_id: 'text', prompt: '原始画面描述', adjustment_request: '' })
     assert.equal(document.querySelector<HTMLTextAreaElement>('textarea[aria-label="优化前的提示词"]')!.value, '原始画面描述')
     await edit(''); await edit('人工编辑的适宜描述')
     await act(async () => button('应用到画布').click())
@@ -70,15 +83,99 @@ test('opening is free of model calls; explicit optimization returns an editable 
 })
 
 test('changed source/configuration makes suggestions stale and blocks applying until regenerated', async () => {
-  globalThis.fetch = async () => new Response(JSON.stringify({ prompt: '优化建议', changes: ['调整'] }), { status: 200 })
+  const requests: Array<Record<string, unknown>> = []
+  globalThis.fetch = async (_url, options) => {
+    requests.push(JSON.parse(String(options?.body)))
+    return new Response(JSON.stringify({ prompt: '优化建议', changes: ['调整'] }), { status: 200 })
+  }
   const view = await mount()
   try {
+    await fill('本次调整要求', '保留人物关系')
     await act(async () => button('生成优化建议').click())
+    await edit('用户编辑过的候选')
     await view.render('v2')
     assert.equal(button('应用到画布').disabled, true)
     assert.match(document.body.textContent!, /生成配置已变化/)
     await act(async () => button('重新优化').click())
+    assert.deepEqual(requests[1], { model_id: 'text', prompt: '原始画面描述', adjustment_request: '保留人物关系' })
     assert.equal(button('应用到画布').disabled, false)
+    await edit('针对旧草稿编辑的候选')
+    await view.render('v2', models, '新的画布草稿')
+    assert.equal(button('应用到画布').disabled, true)
+    await act(async () => button('重新优化').click())
+    assert.deepEqual(requests[2], { model_id: 'text', prompt: '新的画布草稿', adjustment_request: '保留人物关系' })
+    assert.equal(button('应用到画布').disabled, false)
+  } finally { await view.close() }
+})
+
+test('custom directions are trimmed and continuation keeps manual edits through failure and retry', async () => {
+  const requests: Array<Record<string, unknown>> = []
+  let resolve!: (value: Response) => void
+  globalThis.fetch = async (_url, options) => {
+    requests.push(JSON.parse(String(options?.body)))
+    if (requests.length === 1) return new Response(JSON.stringify({ prompt: '适宜的画面建议', changes: ['调整细节'] }), { status: 200 })
+    if (requests.length === 2) return new Promise(done => { resolve = done })
+    return new Response(JSON.stringify({ prompt: '保留用户编辑后的新建议', changes: ['精简描述'] }), { status: 200 })
+  }
+  const view = await mount()
+  try {
+    assert.equal(textarea('本次调整要求').maxLength, 4_000)
+    await fill('本次调整要求', '  保留人物身份和场景关系。\n  ')
+    await act(async () => button('生成优化建议').click())
+    assert.deepEqual(requests[0], { model_id: 'text', prompt: '原始画面描述', adjustment_request: '保留人物身份和场景关系。' })
+    assert.equal(button('应用到画布').disabled, false)
+    await edit('适宜的画面建议，用户手动加入红色围巾')
+    await fill('本次调整要求', '  精简描述，保留红色围巾。  ')
+    assert.equal(button('应用到画布').disabled, true, 'directions need a fresh suggestion before applying')
+    await act(() => button('继续调整').click())
+    assert.equal(textarea('本次调整要求').disabled, true)
+    assert.equal(textarea('优化后的提示词').value, '适宜的画面建议，用户手动加入红色围巾')
+    assert.deepEqual(requests[1], { model_id: 'text', prompt: '适宜的画面建议，用户手动加入红色围巾', adjustment_request: '精简描述，保留红色围巾。' })
+    await act(async () => resolve(new Response(JSON.stringify({ detail: '文本模型暂不可用' }), { status: 502 })))
+    assert.equal(textarea('优化后的提示词').value, '适宜的画面建议，用户手动加入红色围巾')
+    assert.equal(textarea('本次调整要求').value, '  精简描述，保留红色围巾。  ')
+    assert.equal(textarea('本次调整要求').disabled, false)
+    assert.equal(button('应用到画布').disabled, true)
+    assert.match(document.body.textContent!, /文本模型暂不可用/)
+    await act(async () => button('继续调整').click())
+    assert.deepEqual(requests[2], requests[1], 'retry keeps the same manual candidate and directions')
+    assert.equal(button('应用到画布').disabled, false)
+    await act(async () => button('应用到画布').click())
+    assert.deepEqual(view.applied, ['保留用户编辑后的新建议'])
+  } finally { await view.close() }
+})
+
+test('changing the text model keeps the edited candidate as the next adjustment basis', async () => {
+  const requests: Array<Record<string, unknown>> = []
+  globalThis.fetch = async (_url, options) => {
+    requests.push(JSON.parse(String(options?.body)))
+    return new Response(JSON.stringify({ prompt: requests.length === 1 ? '首轮候选' : '另一模型的建议', changes: ['调整'] }), { status: 200 })
+  }
+  const view = await mount()
+  try {
+    await view.render('v1', [...models, { ...models[0]!, id: 'text-other', name: '另一文本模型' }])
+    await act(async () => button('生成优化建议').click())
+    await edit('首轮候选，保留手动添加的衣着细节')
+    await chooseModel('text-other')
+    assert.equal(textarea('优化后的提示词').value, '首轮候选，保留手动添加的衣着细节')
+    assert.equal(button('应用到画布').disabled, true)
+    await act(async () => button('继续调整').click())
+    assert.deepEqual(requests[1], { model_id: 'text-other', prompt: '首轮候选，保留手动添加的衣着细节', adjustment_request: '' })
+    assert.equal(button('应用到画布').disabled, false)
+  } finally { await view.close() }
+})
+
+test('overlong adjustment directions cannot start optimization', async () => {
+  let calls = 0
+  globalThis.fetch = async () => { calls++; return new Response('{}') }
+  const view = await mount()
+  try {
+    await fill('本次调整要求', '长'.repeat(4_001))
+    assert.equal(button('生成优化建议').disabled, true)
+    await act(() => button('生成优化建议').click())
+    assert.equal(calls, 0)
+    await fill('本次调整要求', '长'.repeat(4_000))
+    assert.equal(button('生成优化建议').disabled, false)
   } finally { await view.close() }
 })
 

@@ -14,7 +14,7 @@ import type { CreationNextStep, ScriptCreationState } from '@video-studio/shared
 import { restoreOptionalNulls } from '../generation/model-output.js'
 import { documentHealth, documentReviewInput, saveDocumentReview, projectReferences, documentDraftImpacts } from './script-document-review.js'
 import type { DocumentReview, DraftImpact } from '@video-studio/shared/script/script-review-types'
-import { resourceTools, resourceSchemas, resourceDescriptions, resourceValueEdit, editResourceValues, validateResourceChanges, applyResourceChanges, resourceDraftImpacts } from './script-resource-tools.js'
+import { resourceTools, resourceSchemas, modelResourceSchemas, resourceDescriptions, resourceValueEdit, modelResourceValueEdit, editResourceValues, validateResourceChanges, applyResourceChanges, resourceDraftImpacts } from './script-resource-tools.js'
 import type { ResourceChange } from '@video-studio/shared/script/script-resource-types'
 import { skillContext, skillStages, type SkillStage } from '../skills/skills.js'
 import { revisionSchemas, revisionLimit, revisionHash, revisionProblem, toolDiagnostic, documentParagraphs, resolvePassageEdits, applyResolvedEdits, type RevisionTask, type ToolDiagnostic } from './script-revision.js'
@@ -66,6 +66,8 @@ type ToolsContext = {
   messages: Array<{ role: 'user' | 'assistant'; text: string }>; workflow?: WorkflowDraft['stage']; operation?: StageOperation;
   /** Supply the source snapshot captured before generation when presenting a generated draft. */
   sourceVersion?: string | null;
+  /** Explicit local source questions run with read-only tools and a pinned manuscript. */
+  sourceContextMode?: 'full' | 'targeted';
   action?: z.infer<typeof documentAction>; discussionOnly?: boolean; legacyPending?: boolean;
   currentSettings?: z.infer<typeof scriptSettingsSchema>;
   /** Synchronous notification for the server-owned intent save, before execution yields. */
@@ -389,7 +391,7 @@ export function commitToolDraft(projectId: string, id: string, expected: string,
 
 const schemas = {
   load_creation_skills: z.object({ stage: z.enum(skillStages) }).strict(),
-  ...resourceSchemas,
+  ...modelResourceSchemas,
   ...revisionSchemas,
   get_creation_state: z.object({}).strict(),
   get_project_visual_style: z.object({}).strict(),
@@ -400,8 +402,9 @@ const schemas = {
     basis: z.enum(['creator_confirmed', 'delegated_model']),
   }).strict(),
   search_project_content: z.object({ query: z.string().trim().min(1).max(200), limit: z.number().int().min(1).max(30).default(12) }).strict(),
-  read_source_document: z.object({ offset: z.number().int().min(0), length: z.number().int().min(1).max(10000).default(5000) }).strict(),
-  search_source_document: z.object({ query: z.string().trim().min(1).max(200), limit: z.number().int().min(1).max(20).default(8) }).strict(),
+  read_source_document: z.object({ source_version: z.string().regex(/^[a-f0-9]{64}$/).optional(), offset: z.number().int().min(0), length: z.number().int().min(1).max(10000).default(5000) }).strict(),
+  search_source_document: z.object({ source_version: z.string().regex(/^[a-f0-9]{64}$/).optional(), query: z.string().trim().min(1).max(200), limit: z.number().int().min(1).max(20).default(8), cursor: z.string().min(1).max(2048).optional() }).strict(),
+  read_full_source_document: z.object({ source_version: z.string().regex(/^[a-f0-9]{64}$/).optional(), reason: z.string().trim().min(1).max(500) }).strict(),
   read_documents: z.object({ document_ids: ids, source: z.enum(['saved', 'draft']).default('saved'), offset: z.number().int().min(0).default(0), length: z.number().int().min(1).max(20000).default(20000), scene_offset: z.number().int().min(0).default(0), scene_limit: z.number().int().min(1).max(10).default(3) }).strict(),
   read_episode_scenes: z.object({ episode_number: z.number().int().min(1).max(200), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(10).default(3) }).strict(),
   record_story_decision: z.object({ topic: z.string().trim().min(1).max(200), content: z.string().trim().min(1).max(4000), basis: z.enum(['creator_confirmed', 'delegated_model']), source_message_index: z.number().int().min(0).max(31), settings_patch: scriptSettingsSchema.optional() }).strict(),
@@ -414,7 +417,7 @@ const schemas = {
   find_related_content: z.object({ query: z.string().trim().min(1).max(200), limit: z.number().int().min(1).max(30).default(15) }).strict(),
   get_document_review_context: z.object({ document_ids: ids.optional() }).strict(),
   submit_document_review: documentReviewInput,
-  manage_document_draft: z.object({ operation: z.enum(['read', 'update', 'discard']), draft_id: z.string().optional(), version: z.string().optional(), changes: patchSchema.shape.changes.optional(), scene_changes: z.array(sceneChange).max(100).optional(), scenes: z.array(workflowScene).max(100).optional(), summary: z.string().max(3000).optional(), resource_values: z.array(resourceValueEdit).max(300).optional() }).strict(),
+  manage_document_draft: z.object({ operation: z.enum(['read', 'update', 'discard']), draft_id: z.string().optional(), version: z.string().optional(), changes: patchSchema.shape.changes.optional(), scene_changes: z.array(sceneChange).max(100).optional(), scenes: z.array(workflowScene).max(100).optional(), summary: z.string().max(3000).optional(), resource_values: z.array(modelResourceValueEdit).max(300).optional() }).strict(),
   commit_document_draft: z.object({ draft_id: z.string().min(1), version: z.string().min(1) }).strict(),
 }
 const descriptions: Record<keyof typeof schemas, string> = {
@@ -426,8 +429,9 @@ const descriptions: Record<keyof typeof schemas, string> = {
   get_project_visual_style: '读取项目统一画风、版本、结构化表现要求及旧项目的已确认来源。没有专用画风字段时，按语义从明确确认的来源整理，不能把题材、作品借鉴、默认值或否定项当成画风。',
   set_project_visual_style: '将创作者明确给出/接受或明确授权决定的画风规范化为项目统一设置，并记录真实来源。先读取当前version作为expected_version。新决定引用source_message_index；仅规范化已有确认决定时引用get_project_visual_style返回的source_decision_id。两种来源只能选一种。name写画风，details仅填写已确认的媒介/渲染/线条/配色/排除表现，不补造细节；替换旧规范而非混用。仅修改画风，不改文档或付费生成。',
   search_project_content: '在本项目文档、已确认决定和已保存对话中按词搜索，返回原文片段及来源。可分词多次检索。',
-  read_source_document: '按字符偏移读取当前有效文稿（含已确认修订）；使用请求中的分段目录确定位置。返回总长度、修订次数和下一段偏移。不要把目录预览当成完整剧情依据。',
-  search_source_document: '在当前有效文稿（含已确认修订）中搜索原文，返回命中片段和字符偏移；需要完整上下文时接着read_source_document。',
+  read_source_document: '按字符偏移读取本轮绑定的有效文稿（含已确认修订）。source_version使用资料索引/上次检索返回的稿件版本，不是analysis_source_version。返回下一段位置；complete仅表示读到文稿末尾，不代表已读全稿。用完整上下文核实，不能把目录/摘要当原文证据。旧版本失败后不能省略版本绕过。',
+  search_source_document: '对本轮绑定有效文稿做字面搜索。source_version使用稿件版本；返回精确match_offset、摘录offset、total_matches/truncated/next_cursor。用同query/version和next_cursor继续读完；零命中仅说明此搜索词未匹配，不能证明全剧不存在。片段不证明身份相同；需要身份、因果或连续语境时读取原文。',
+  read_full_source_document: '局部资料不足、发现跨集依赖或需要核实全文时，携带本轮source_version与reason补读同版本完整有效稿。返回complete_source:true与完整正文；不会生成、修改或保存。不得仅凭索引、别名命中或未查完的搜索结果作全局结论。',
   read_documents: '读取指定文档原文及版本和带版本的paragraphs段落定位。source默认saved；统一修订任务中检查最新有效草稿用draft（包含范围内尚未修改文档），不可把已改草稿覆盖回正式原文。offset/length按字符分段读完；每次总结果最多48000字符，超限减少文档数量或length，不省略后续段落；仅完全读到的段落返回定位。分集正文分页返回场次及版本，用scene_next_offset继续读完。',
   read_episode_scenes: '分页读取指定集的正式分场原文、ID和版本。只有场次尚无episode_script正文的历史分集，重新设计前使用此工具读完全部场次。offset/limit按场次数分页，next_offset继续，complete为真代表读到末尾。读取其他集只作参考。',
   record_story_decision: '记录创作者明确确认的设定或其明确授权你决定后作出的具体选择。topic稳定标识同一事项，更新它会替代旧决定；必须引用一条真实创作者消息，不能记录未经接受的建议。若决定涉及集数、单集秒数、题材、视觉画风等配置，用settings_patch同步；画风写visual_style，不能只塞进genre，或使用set_project_visual_style记录画风及细节。不要写默认值或未接受的建议。记录不会保存文档正文。',
@@ -445,12 +449,27 @@ const descriptions: Record<keyof typeof schemas, string> = {
 }
 export const scriptFunctions: TextTool[] = (Object.keys(schemas) as Array<keyof typeof schemas>).map(name => ({ name, description: descriptions[name], parameters: z.toJSONSchema(schemas[name], { io: 'input', unrepresentable: 'any' }) }))
 
+const localSourceReadTools = new Set(['get_creation_state', 'get_project_visual_style', 'search_project_content',
+  'read_source_document', 'search_source_document', 'read_full_source_document', 'read_documents', 'read_episode_scenes',
+  'find_related_content', 'get_document_review_context', 'read_visual_profiles', 'get_storyboard_context'])
+
 export function documentTools(context: ToolsContext) {
   const projectId = context.project.id
   const source = effectiveScriptSource(projectId)
   // Capture once for the entire tool session; edits to an existing draft must
   // retain its original binding instead of silently adopting the newest source.
   const sourceVersion = context.sourceVersion === undefined ? source ? scriptDocumentVersion(source) : null : context.sourceVersion
+  function assertSourceUnchanged() {
+    const current = effectiveScriptSource(projectId)
+    if ((current ? scriptDocumentVersion(current) : null) !== sourceVersion) {
+      problem('当前有效稿已变化，请基于新版本重新提问，不能沿用旧原文位置或混合不同版本作答', 409)
+    }
+  }
+  function sourceReadOptions(requested?: string) {
+    assertSourceUnchanged()
+    if (requested !== undefined && requested !== sourceVersion) problem('请求的原文版本与本轮资料不一致，请重新提问，不能沿用旧位置', 409)
+    return sourceVersion ? { source_version: sourceVersion } : {}
+  }
   const initialDraft = getToolDraft(projectId)
   const resources = resourceTools(projectId)
   const loadedSkillStages = new Set<SkillStage>(['script'])
@@ -531,7 +550,7 @@ export function documentTools(context: ToolsContext) {
     for (const item of storyDecisions(projectId)) add('decision', item.id, item.topic, item.content)
     if (related) {
       for (const scene of context.script().scenes) add('scene', scene.id, scene.heading, JSON.stringify(scene))
-      for (const shot of all<Shot>('SELECT * FROM shots WHERE project_id=? ORDER BY position', projectId)) add('shot', shot.id, shot.title, JSON.stringify(shot))
+      for (const shot of all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position', projectId)) add('shot', shot.id, shot.title, JSON.stringify(shot))
       for (const profile of all<{ id: string; name: string; definition: string; variant: string }>('SELECT id, name, definition, variant FROM visual_profiles WHERE project_id=?', projectId)) add('visual_profile', profile.id, profile.name, profile.variant + '\n' + profile.definition)
     } else {
       for (const [index, message] of context.messages.entries()) add('current_conversation', String(index), message.role, message.text)
@@ -540,10 +559,15 @@ export function documentTools(context: ToolsContext) {
     return { matches: matches.slice(0, limit), total: matches.length, has_more: matches.length > limit }
   }
   return {
+    assertSourceUnchanged,
     result: () => ({ tool_draft: resultDraft?.revision_task && resultDraft.status === 'pending' ? getToolDraft(projectId, resultDraft.id) : resultDraft, revision_worked: revisionWorked, review: resultReview, classification: interaction, reply: interactionText, project_changed: mutated,
       ...(settingsChanged ? { generation_options: context.script().generation_options } : {}) }),
     async execute(name: string, args: unknown): Promise<unknown> {
       context.signal?.throwIfAborted()
+      if (context.sourceContextMode === 'targeted') {
+        assertSourceUnchanged()
+        if (!localSourceReadTools.has(name)) problem('本轮仅查询剧本原文，不执行创作修改；请另行明确提出修改要求')
+      }
       const schema = schemas[name as keyof typeof schemas]
       if (schema) args = restoreOptionalNulls(args, z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }))
       if (name in resourceSchemas) {
@@ -661,8 +685,13 @@ export function documentTools(context: ToolsContext) {
             note: '后续生成统一使用此画风；已有图片、视频和设定正文保留，需要核对旧参考图。' }
         }
         case 'search_project_content': { const data = schemas.search_project_content.parse(args); return search(data.query, data.limit, false) }
-        case 'read_source_document': { const data = schemas.read_source_document.parse(args); return readScriptSource(projectId, data.offset, data.length) }
-        case 'search_source_document': { const data = schemas.search_source_document.parse(args); return searchScriptSource(projectId, data.query, data.limit) }
+        case 'read_source_document': { const data = schemas.read_source_document.parse(args); return readScriptSource(projectId, data.offset, data.length, sourceReadOptions(data.source_version)) }
+        case 'search_source_document': { const data = schemas.search_source_document.parse(args); return searchScriptSource(projectId, data.query, data.limit, { ...sourceReadOptions(data.source_version), cursor: data.cursor }) }
+        case 'read_full_source_document': {
+          const data = schemas.read_full_source_document.parse(args), options = sourceReadOptions(data.source_version)
+          const current = effectiveScriptSource(projectId)
+          return { ...readScriptSource(projectId, 0, current?.content.length || 1, options), complete_source: true }
+        }
         case 'find_related_content': { const data = schemas.find_related_content.parse(args); return search(data.query, data.limit, true) }
         case 'get_document_review_context': {
           const data = schemas.get_document_review_context.parse(args), documents = docs()
@@ -958,6 +987,7 @@ export function documentTools(context: ToolsContext) {
 }
 
 const operationLabels: Record<string, string> = {
+  read_source_document: '读取剧本原文', search_source_document: '查找剧本原文', read_full_source_document: '补读完整剧本',
   read_episode_scenes: '读取分集场次',
   load_creation_skills: '加载本次创作技能',
   manage_revision_task: '管理统一修订任务', review_revision_batch: '核对修订结果与关联内容',
@@ -971,6 +1001,8 @@ const operationLabels: Record<string, string> = {
 }
 function operationSummary(name: string, result: unknown) {
   const value = result as Record<string, unknown>
+  if (name === 'read_source_document' || name === 'read_full_source_document') return `已读取原文 ${Number(value.offset) + 1}–${value.next_offset} / ${value.total_length} 字${name === 'read_full_source_document' ? '，已补入完整有效稿' : ''}`
+  if (name === 'search_source_document') return `本次返回 ${(value.matches as unknown[]).length} 条，共 ${value.total_matches} 处字面命中${value.truncated ? '，后续命中可继续读取' : ''}；身份关系需核对原文`
   if (name === 'get_project_visual_style') return value.source === 'unspecified'
     ? '查询时项目尚未保存画风'
     : value.source === 'confirmed_context' ? '查询时项目尚未单独保存画风，可从已确认的描述整理'
@@ -1009,7 +1041,8 @@ export async function runScriptTools(context: ToolsContext & {
   const stageToolNames = new Set(['get_creation_state', 'read_documents', 'read_source_document', 'search_source_document',
     'create_document_draft', 'propose_document_patch', 'find_related_content', 'manage_document_draft',
     ...(context.workflow === 'episode' && context.operation === 'regenerate' ? ['read_episode_scenes'] : [])])
-  const availableFunctions = stageGeneration ? scriptFunctions.filter(tool => stageToolNames.has(tool.name)) : scriptFunctions
+  const availableFunctions = context.sourceContextMode === 'targeted' ? scriptFunctions.filter(tool => localSourceReadTools.has(tool.name))
+    : stageGeneration ? scriptFunctions.filter(tool => stageToolNames.has(tool.name)) : scriptFunctions
   const toolPrompt = stageGeneration ? `${context.prompt}\n本轮已明确授权生成当前阶段。已选剧本技能规则已包含在本条指令中，不要重复加载技能；只使用为本阶段提供的函数完成生成。` : context.prompt
   const registry = activity.start({ kind: 'context', label: 'Function Calling', summary: `本轮已向模型提供 ${availableFunctions.length} 项函数，由模型按需选择调用`,
     ...activityPreview(availableFunctions.map(({ name, description }) => ({ name, description })), 'output') })
@@ -1023,6 +1056,7 @@ export async function runScriptTools(context: ToolsContext & {
   const unresolved = new Map<string, ToolDiagnostic>()
   for (let round = 0; round < 16; round++) {
     context.signal?.throwIfAborted()
+    if (context.sourceContextMode === 'targeted') tools.assertSourceUnchanged()
     roundMetrics = undefined
     const modelStep = activity.start({ kind: 'model', label: round ? '模型继续处理' : '模型处理请求', name: context.model.name || context.model.remote_id,
       round: round + 1, summary: round ? '根据工具返回的真实结果继续处理' : '正在根据项目资料、对话与已加载的规则处理请求' })
@@ -1038,6 +1072,7 @@ export async function runScriptTools(context: ToolsContext & {
       if (!context.signal?.aborted && tools.result().tool_draft) { transportFailure = issue instanceof Error ? issue.message : String(issue); break }
       throw issue
     }
+    if (context.sourceContextMode === 'targeted') tools.assertSourceUnchanged()
     if (!response.calls.length) {
       finalText = response.text
       const current = tools.result(), task = current.tool_draft?.revision_task
@@ -1074,9 +1109,13 @@ export async function runScriptTools(context: ToolsContext & {
         lastFailure = [...unresolved.values()].at(-1)
         if (call.name === 'load_creation_skills') activity.skills((result as { stage: SkillStage }).stage, result as ReturnType<typeof skillContext>)
         context.onEvent({ type: 'process', label, summary: operationSummary(call.name, result) })
-        const publicResult = call.name === 'read_source_document' ? { offset: (result as { offset: number }).offset,
-          next_offset: (result as { next_offset: number }).next_offset, total_length: (result as { total_length: number }).total_length }
-          : call.name === 'search_source_document' ? { matches: (result as { matches: unknown[] }).matches.length } : result
+        const sourceResult = result as { offset: number; next_offset: number; total_length: number; source_version: string; complete_source?: boolean }
+        const searchResult = result as { matches: unknown[]; total_matches: number; truncated: boolean; next_cursor: string | null; source_version: string }
+        const publicResult = call.name === 'read_source_document' || call.name === 'read_full_source_document' ? {
+          offset: sourceResult.offset, next_offset: sourceResult.next_offset, total_length: sourceResult.total_length,
+          source_version: sourceResult.source_version, complete_source: sourceResult.complete_source }
+          : call.name === 'search_source_document' ? { matches: searchResult.matches.length, total_matches: searchResult.total_matches,
+            truncated: searchResult.truncated, next_cursor: searchResult.next_cursor, source_version: searchResult.source_version } : result
         activity.finish(operation, 'succeeded', { summary: operationSummary(call.name, result).slice(0, 3000), targets: activityTargets(call.name, result), ...activityPreview(publicResult, 'output') })
         outputs.push({ id: call.id, output: JSON.stringify({ ok: true, result }) })
       } catch (issue) {
@@ -1092,7 +1131,7 @@ export async function runScriptTools(context: ToolsContext & {
         const error = diagnostic.message
         const cancelled = context.signal?.aborted && context.signal.reason?.name === 'AbortError'
         activity.finish(operation, cancelled ? 'cancelled' : 'failed', { summary: (cancelled ? '已停止此项操作' : `操作未执行：${error}`).slice(0, 3000), ...activityPreview({ error, diagnostic }, 'output') })
-        if (context.signal?.aborted || issue instanceof ScriptDraftReviewError) throw issue
+        if (context.signal?.aborted || issue instanceof ScriptDraftReviewError || context.sourceContextMode === 'targeted' && (issue as { statusCode?: number })?.statusCode === 409) throw issue
         outputs.push({ id: call.id, output: JSON.stringify({ ok: false, error, diagnostic }) })
         context.onEvent({ type: 'process', label, summary: `操作未执行：${error}` })
         if (diagnostic.code === 'setting_repair_limit') break

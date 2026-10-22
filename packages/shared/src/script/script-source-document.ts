@@ -15,6 +15,10 @@ export type ScriptSourceStory = {
   ending: { summary: string; section_ids: number[] }
   uncertainties: Array<{ description: string; section_ids: number[] }>
 }
+export type ScriptSourceCharacterEvidenceIssue = {
+  task_key: string; character_name: string; name: string
+  section_ids: number[]; evidence_section_ids: number[]
+}
 export type ScriptSourceAnalysis = {
   id: string; source_version: string; model_id: string; status: 'queued' | 'running' | 'ready' | 'failed' | 'paused'
   completed_chunks: number; total_chunks: number; sections: ScriptSourceSection[]; error: string | null; updated_at: string
@@ -23,10 +27,26 @@ export type ScriptSourceAnalysis = {
   phase?: 'reading' | 'synthesis' | 'ready'
   story?: ScriptSourceStory
   synthesis?: { level: number; cursor: number; inputs: unknown[]; outputs: unknown[] }
+  /** Private durable synthesis tasks; omitted from public responses. */
+  story_work?: { input_hash: string; tasks: Array<{ key: string; result?: unknown;
+    recovery?: 'character-coverage-v1'
+    context?: { strategy: 'whole-source-v1' | 'character-evidence-v1'; input_hash: string; fallback_from_hash?: string; reason?: string }
+    failure?: { message: string; evidence?: ScriptSourceCharacterEvidenceIssue } }> }
+  /** Public description of results that an explicit retry can actually reuse. */
+  resume?: { available: boolean; message: string }
   pipeline_version?: number
+  /** Private execution configuration and revision reuse provenance. */
+  configuration_hash?: string
+  revision_reuse?: { input_hash: string; base_source_version: string; source_version: string;
+    status: 'pending' | 'verified' | 'discarded'; planned_pages: number[]; reused_pages: number[];
+    reused_section_ids: number[]; reused_characters: number }
   completed_characters?: number
   queue_position?: number
   quality?: { input_hash: string; status: 'passed' | 'issues'; findings: Array<{ kind: 'omission' | 'unsupported' | 'causality'; explanation: string; unit_ids: number[] }> }
+  /** Private marker: review feedback has already started one corrective run. */
+  quality_rebuild_for?: string
+  /** Private durable progress for guarded repairs to one independent review. */
+  quality_repair?: { review_hash: string; findings_hash: string; current_hash: string; completed_findings: number }
   progress?: { stage: 'reading' | 'repairing' | 'splitting' | 'synthesis' | 'validating'; message: string }
   work?: Array<{ offset: number; length: number; depth: number; result?: unknown }>
 }

@@ -1,0 +1,4 @@
+.pc-profile-inheritance { display: grid; gap: 6px; margin-block: 10px; padding: 10px 12px; border: 1px solid var(--fc-border); border-radius: 8px; background: var(--fc-surface-hover); color: var(--fc-text-secondary); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.pc-profile-inheritance strong { color: var(--fc-text); font-weight: 500; }
+.pc-profile-inheritance .mantine-Button-root { width: fit-content; }
+.pc-profile-inheritance.is-waiting { border-color: var(--fc-border-strong); }

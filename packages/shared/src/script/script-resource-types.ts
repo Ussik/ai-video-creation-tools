@@ -1,4 +1,5 @@
-export type VisualDraftValue = { kind: 'character' | 'location' | 'prop'; name: string; variant: string; definition: string; view_requirements: string; scene_ids: string[] }
+export type VisualDraftValue = { kind: 'character' | 'location' | 'prop'; name: string; variant: string; definition: string; view_requirements: string; scene_ids: string[]; design_id?: string | null;
+  draft_key?: string; base_profile_id?: string | null; base_draft_key?: string | null; state_delta?: string }
 export type ShotDraftValue = { title: string; prompt: string; image_prompt: string; video_prompt: string; duration: number; start_state: string; end_state: string; cut_note: string }
 export type BindingDraftValue = { profile_id: string; required: boolean; usage?: import('../visuals/visual-binding-usage.js').VisualBindingUsage }
 export type ResourceChange =

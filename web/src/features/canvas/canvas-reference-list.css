@@ -1,0 +1,37 @@
+.pc-reference-list {
+  margin-bottom: 12px;
+  overflow: hidden;
+  border: 1px solid var(--fc-border);
+  border-radius: 9px;
+  background: var(--fc-surface);
+  color: var(--fc-text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.pc-reference-list-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 10px;
+  color: var(--fc-text-secondary);
+}
+.pc-reference-list-heading > span { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; min-width: 0; }
+.pc-reference-list-heading strong { color: var(--fc-text); font-size: 11px; font-weight: 600; }
+.pc-reference-list-heading > svg { flex: none; transition: transform 120ms ease; transform: rotate(-90deg); }
+.pc-reference-list-heading > svg.is-expanded { transform: rotate(0); }
+.pc-reference-list-heading:focus-visible, .pc-reference-list-thumb:focus-visible { outline: 2px solid var(--pc-teal); outline-offset: -2px; }
+.pc-reference-list-empty { margin: 0; padding: 0 10px 10px; color: var(--fc-text-muted); }
+.pc-reference-list-items { display: grid; gap: 0; max-height: 210px; margin: 0; padding: 0 10px 5px; overflow-y: auto; list-style: none; }
+.pc-reference-list-item { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 7px 0; border-top: 1px solid var(--fc-border); }
+.pc-reference-list-thumb { display: grid; flex: none; place-items: center; width: 36px; height: 42px; overflow: hidden; border: 1px solid var(--fc-border); border-radius: 5px; background: var(--fc-surface-muted); color: var(--fc-text-muted); }
+.pc-reference-list-thumb img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.pc-reference-list-thumb:disabled { cursor: default; }
+.pc-reference-list-copy { flex: 1; min-width: 0; }
+.pc-reference-list-name { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; color: var(--fc-text); }
+.pc-reference-list-name > span:first-child { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.pc-reference-list-copy p { margin: 2px 0 0; color: var(--fc-text-muted); font-size: 10px; overflow-wrap: anywhere; }
+.pc-reference-list-actions { display: flex; align-items: center; flex: none; gap: 1px; }
+@media (prefers-reduced-motion: reduce) { .pc-reference-list-heading > svg { transition: none; } }

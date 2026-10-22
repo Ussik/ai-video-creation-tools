@@ -4,7 +4,7 @@ import type { ScriptSourceSection } from '@video-studio/shared/script/script-sou
 export type SourceUnit = { id: number; offset: number; text: string }
 export type SourcePassage = { id: number; offset: number; content: string; units: SourceUnit[] }
 export type SourceWork = { offset: number; length: number; depth: number; result?: unknown }
-export const sourceAnalysisPipelineVersion = 5
+export const sourceAnalysisPipelineVersion = 6
 
 /** Stable sentence/line IDs are the only coordinates the model writes. Every
  * character belongs to one unit, including whitespace and surrogate pairs. */
@@ -34,17 +34,43 @@ export function scriptSourcePassages(content: string): SourcePassage[] {
   return passages
 }
 
-/** Passage IDs provide evidence coordinates, not separate model requests. */
+const sourceOutputPageTarget = 8000
+const sourceOutputPageMaximum = 12000
+const sourceSinglePageLimit = 16000
+const sourceHeadingStart = /^[ \t]{0,8}(?:#{1,2}[ \t]+|第[一二三四五六七八九十百千万零两〇\d]+[集场幕章回]|(?:INT|EXT)[. \t])/
+
+/** These ranges bound the directory output, not the source context supplied to
+ * the model. Every page still reads the whole manuscript. Prefer semantic
+ * headings near the target; long uninterrupted scenes use passage boundaries.
+ * All boundaries retain the original stable evidence units. */
 export function sourceWorkPlan(passages: SourcePassage[]): SourceWork[] {
   const length = passages.at(-1) ? passages.at(-1)!.offset + passages.at(-1)!.content.length : 0
-  return length ? [{ offset: 0, length, depth: 0 }] : []
+  if (!length) return []
+  if (length <= sourceSinglePageLimit) return [{ offset: 0, length, depth: 0 }]
+  const headings = passages.filter(passage => sourceHeadingStart.test(passage.content)).map(passage => passage.offset)
+  const boundaries = passages.map(passage => passage.offset)
+  const units = passages.flatMap(passage => passage.units.map(unit => unit.offset))
+  const work: SourceWork[] = []
+  let offset = 0
+  while (offset < length) {
+    if (length - offset <= sourceOutputPageMaximum) {
+      work.push({ offset, length: length - offset, depth: 0 }); break
+    }
+    const nearest = (positions: number[]) => positions.filter(position =>
+      position >= offset + sourceOutputPageTarget / 2 && position <= offset + sourceOutputPageMaximum)
+      .sort((a, b) => Math.abs(a - offset - sourceOutputPageTarget) - Math.abs(b - offset - sourceOutputPageTarget) || b - a)[0]
+    const end = nearest(headings) ?? nearest(boundaries) ?? nearest(units)
+    if (end === undefined) throw new Error('剧本目录分页未找到完整句段边界，不能截断原文')
+    work.push({ offset, length: end - offset, depth: 0 }); offset = end
+  }
+  return work
 }
 
 export function workPassages(passages: SourcePassage[], work: SourceWork): SourcePassage[] {
   const end = work.offset + work.length
   return passages.flatMap(passage => {
-    // Local evidence repairs read exact semantic ranges while the initial
-    // understanding always receives the complete source in one request.
+    // Directory pages and local evidence repairs validate their exact ranges;
+    // the source context sent for understanding still contains the full text.
     const units = passage.units.flatMap(unit => {
       const start = Math.max(unit.offset, work.offset), stop = Math.min(unit.offset + unit.text.length, end)
       return start < stop ? [{ ...unit, offset: start, text: unit.text.slice(start - unit.offset, stop - unit.offset) }] : []

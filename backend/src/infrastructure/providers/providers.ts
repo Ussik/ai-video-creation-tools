@@ -16,6 +16,7 @@ import { imageMultipartBody, prepareImageReferences } from './image-references.j
 import { generateCompatibleStructuredText } from './text-output-capability.js'
 import { TextOutputLimitError, TextProviderError, transientTextStatus, transientTextNetworkError, textRetryAfter } from './text-errors.js'
 import { assertTextRequestCapacity } from './text-context.js'
+import { beginTextRequest, isTextRequestBudgetError } from './text-request-usage.js'
 export { TextOutputLimitError } from './text-errors.js'
 
 export type Modality = 'text' | 'image' | 'video'
@@ -95,6 +96,13 @@ function usageMetrics(payload: Record<string, unknown>): Pick<TextRequestMetrics
   return { ...(typeof input === 'number' && Number.isSafeInteger(input) && input >= 0 ? { input_tokens: input } : {}),
     ...(typeof output === 'number' && Number.isSafeInteger(output) && output >= 0 ? { output_tokens: output } : {}),
     ...(typeof reasoning === 'number' && Number.isSafeInteger(reasoning) && reasoning >= 0 ? { reasoning_tokens: reasoning } : {}) }
+}
+
+function rawUsageMetrics(raw: string): Pick<TextRequestMetrics, 'input_tokens' | 'output_tokens' | 'reasoning_tokens'> {
+  try {
+    const payload: unknown = JSON.parse(raw)
+    return payload && typeof payload === 'object' && !Array.isArray(payload) ? usageMetrics(payload as Record<string, unknown>) : {}
+  } catch { return {} }
 }
 
 function outputLimitMetrics(body: unknown, protocol: GenerationModel['protocol']): Pick<TextRequestMetrics, 'output_limit'> {
@@ -477,7 +485,11 @@ export async function createTextToolTransport(model: GenerationModel, provider: 
     idleMs: (body as Record<string, unknown>).stream === false || settings.stream === false || settings.reasoning_effort || (body as Record<string, unknown>).reasoning ? textReasoningIdleTimeoutMs : textStreamIdleTimeoutMs,
     idleMessage: '模型接口长时间没有返回事件，当前步骤已停止，已完成结果保留。',
     totalMessage: '当前工具决策请求超时（5 分钟），已保留完成步骤，请检查后继续。' })
+  let usageRequest: ReturnType<typeof beginTextRequest> | undefined
   try {
+    scope.signal.throwIfAborted()
+    usageRequest = beginTextRequest({ request_bytes: metrics.request_bytes, estimated_input_tokens: capacity.estimated_input_tokens,
+      reserved_output_tokens: metrics.output_limit ?? capacity.reserved_output_tokens })
     const response = await scope.wait(fetch(requestUrl, {
       method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream, application/json',
         ...(key ? { [provider.auth_header || 'Authorization']: `${provider.auth_prefix ?? 'Bearer '}${key}` } : {}) },
@@ -488,7 +500,9 @@ export async function createTextToolTransport(model: GenerationModel, provider: 
     metrics.http_status = response.status
     metrics.upstream_request_id = requestId(response)
     if (!response.ok) {
-      throw textHttpError(response, await scope.wait(response.text()), requestUrl, startedAt, model.remote_id,
+      const raw = await scope.wait(response.text())
+      Object.assign(metrics, rawUsageMetrics(raw))
+      throw textHttpError(response, raw, requestUrl, startedAt, model.remote_id,
         key ? [`${provider.auth_prefix ?? 'Bearer '}${key}`] : [])
     }
     const chatMessage: Record<string, unknown> = { role: 'assistant', content: '' }
@@ -497,6 +511,9 @@ export async function createTextToolTransport(model: GenerationModel, provider: 
     const responseItems = new Map<number, Record<string, unknown>>()
     let text = ''
     let completed = false
+    let streamEnded = false
+    const awaitUsageFooter = protocol === 'chat_completions' &&
+      (body as { stream_options?: { include_usage?: boolean } }).stream_options?.include_usage === true
     let finishReason: unknown
     const markPayload = (payload: Record<string, unknown>) => {
       scope.touch()
@@ -518,7 +535,7 @@ export async function createTextToolTransport(model: GenerationModel, provider: 
       }
       if (protocol === 'responses') {
         if (payload.type === 'response.output_item.done') responseItems.set(Number(payload.output_index), payload.item as Record<string, unknown>)
-        if (payload.type === 'response.completed') { finalOutput = (payload.response as { output?: typeof finalOutput })?.output || []; completed = true }
+        if (payload.type === 'response.completed') { finalOutput = (payload.response as { output?: typeof finalOutput })?.output || []; completed = true; streamEnded = true }
         if (Array.isArray(payload.output)) { finalOutput = payload.output as typeof finalOutput; completed = true }
         if (payload.type === 'response.output_text.delta' && typeof payload.delta === 'string') { text += payload.delta; publish(text) }
         if (typeof payload.output_text === 'string') text = payload.output_text
@@ -526,7 +543,7 @@ export async function createTextToolTransport(model: GenerationModel, provider: 
       }
       const choice = (payload.choices as Array<Record<string, unknown>> | undefined)?.[0]
       if (!choice) return
-      if (choice.finish_reason) { finishReason = choice.finish_reason; completed = true }
+      if (choice.finish_reason) { finishReason = choice.finish_reason; completed = true; streamEnded = !awaitUsageFooter }
       const message = choice.message as Record<string, unknown> | undefined
       if (message) { Object.assign(chatMessage, message, { role: 'assistant' }); completed = true; return }
       const delta = choice.delta as Record<string, unknown> | undefined
@@ -545,19 +562,23 @@ export async function createTextToolTransport(model: GenerationModel, provider: 
       const reader = response.body.getReader(), decoder = new TextDecoder()
       let buffer = ''
       try {
-        while (!completed) {
+        while (!streamEnded) {
           const { done, value } = await scope.wait(reader.read())
           buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
           const lines = buffer.split(/\r?\n/); buffer = lines.pop() || ''
           for (const line of lines) {
-            if (line.startsWith('data:')) { const payload = parseStreamPayload(line.slice(5)); if (payload) consume(payload) }
-            if (completed) break
+            if (line.startsWith('data:')) {
+              const data = line.slice(5).trim()
+              if (data === '[DONE]') streamEnded = true
+              else { const payload = parseStreamPayload(data); if (payload) consume(payload) }
+            }
+            if (streamEnded) break
           }
           if (done) break
         }
-        if (!completed && buffer.startsWith('data:')) { const payload = parseStreamPayload(buffer.slice(5)); if (payload) consume(payload) }
+        if (!streamEnded && buffer.startsWith('data:')) { const payload = parseStreamPayload(buffer.slice(5)); if (payload) consume(payload) }
       } finally { void reader.cancel().catch(() => {}); reader.releaseLock() }
-      if (!completed) throw new Error('模型工具调用连接提前结束，未执行未完成的调用')
+      if (!completed) throw new TextProviderError('模型工具调用连接提前结束，未执行未完成的调用；可继续当前任务。', true, 'stream_disconnected')
     } else consume(await scope.wait(response.json()) as Record<string, unknown>)
     if (!completed) throw new Error('模型未返回完整的工具调用结果')
     if (finishReason && !['stop', 'tool_calls'].includes(String(finishReason))) throw new Error('模型输出被截断或异常结束，未执行工具调用')
@@ -576,7 +597,15 @@ export async function createTextToolTransport(model: GenerationModel, provider: 
     if (calls.length > 10 || calls.some(call => !call.id || !call.name || typeof call.arguments !== 'string' || call.arguments.length > 650_000) || new Set(calls.map(call => call.id)).size !== calls.length) throw new Error('模型返回了无效的工具调用')
     metrics.response_chars = text.length + calls.reduce((total, call) => total + call.arguments.length, 0)
     return { text: publicToolText(text), calls, history, initial_history_length: initial.length, metrics }
-  } finally { onMetrics?.(metrics); scope.close() }
+  } catch (issue) {
+    if (!scope.signal.aborted && !(issue instanceof TextProviderError) && transientTextNetworkError(issue)) {
+      throw new TextProviderError('模型接口连接中断，未完成的工具调用未执行；可继续当前任务。', true, 'connection_error', undefined, { cause: issue })
+    }
+    throw issue
+  } finally {
+    try { usageRequest?.complete(metrics); onMetrics?.(metrics) }
+    finally { scope.close() }
+  }
 }
 
 /**
@@ -634,14 +663,20 @@ export async function streamText(
     idleMs: background || (body as Record<string, unknown>).stream === false || settings.stream === false || settings.reasoning_effort || (body as Record<string, unknown>).reasoning ? textReasoningIdleTimeoutMs : textStreamIdleTimeoutMs,
     idleMessage: '模型接口长时间没有返回事件，当前步骤已停止，已完成结果保留。',
     totalMessage: `文本模型请求超时（最长等待 ${Math.round((request.structured_output ? textRequestTimeoutMs : generationStepBudgets.discussion) / 60_000)} 分钟）。请检查草稿后重试或切换文本模型。` })
+  let usageRequest: ReturnType<typeof beginTextRequest> | undefined
   try {
     try {
+      scope.signal.throwIfAborted()
+      if (!background) usageRequest = beginTextRequest({ request_bytes: metrics.request_bytes, estimated_input_tokens: capacity.estimated_input_tokens,
+        reserved_output_tokens: metrics.output_limit ?? capacity.reserved_output_tokens })
       response = background
-        ? await backgroundTextResponse(requestUrl, body as Record<string, unknown>, { ...headers, 'Content-Type': 'application/json' }, scope.signal, scope.wait, scope.touch)
+        ? await backgroundTextResponse(requestUrl, body as Record<string, unknown>, { ...headers, 'Content-Type': 'application/json' }, scope.signal, scope.wait, scope.touch,
+          capacity.reserved_output_tokens)
         : await scope.wait(fetch(requestUrl, {
           method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: requestBody, signal: scope.signal,
         }))
     } catch (error) {
+      if (isTextRequestBudgetError(error)) throw error
       throw new Error(`文本模型流式请求失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
     }
     scope.touch()
@@ -649,11 +684,15 @@ export async function streamText(
     metrics.upstream_request_id = requestId(response)
     if (!response.ok) {
       const raw = await scope.wait(response.text())
+      Object.assign(metrics, rawUsageMetrics(raw))
       throw textHttpError(response, raw, requestUrl, startedAt, model.remote_id, key ? [headers[authHeader]!] : [])
     }
 
     let fullText = ''
     let completed = false
+    let streamEnded = false
+    const awaitUsageFooter = model.protocol === 'chat_completions' &&
+      (body as { stream_options?: { include_usage?: boolean } }).stream_options?.include_usage === true
     const emitPayload = async (payload: Record<string, unknown>) => {
       scope.touch()
       metrics.first_event_ms ??= Date.now() - startedAt
@@ -674,7 +713,10 @@ export async function streamText(
       }
       const failure = textResponseFailure(payload, fullText)
       if (failure) throw failure
-      if (finish === 'stop' || payload.type === 'response.completed' || status === 'completed') completed = true
+      if (finish === 'stop' || payload.type === 'response.completed' || status === 'completed') {
+        completed = true
+        streamEnded = !awaitUsageFooter || payload.type === 'response.completed' || status === 'completed'
+      }
     }
 
     const contentType = response.headers.get('content-type')?.toLowerCase() || ''
@@ -707,30 +749,33 @@ export async function streamText(
       const trimmed = line.trim()
       if (!trimmed) return
       const value = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed
-      if (value === '[DONE]') { completed = true; return }
+      if (value === '[DONE]') { completed = true; streamEnded = true; return }
       const payload = parseStreamPayload(value)
       if (payload) await emitPayload(payload)
     }
     try {
-      while (!completed) {
+      while (!streamEnded) {
         const { done, value } = await scope.wait(reader.read())
         buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
         const lines = buffer.split(/\r?\n/)
         buffer = lines.pop() || ''
-        for (const line of lines) { await consumeLine(line); if (completed) break }
+        for (const line of lines) { await consumeLine(line); if (streamEnded) break }
         if (done) break
       }
-      if (!completed && buffer.trim()) await consumeLine(buffer)
+      if (!streamEnded && buffer.trim()) await consumeLine(buffer)
       if (!completed && contentType.includes('text/event-stream')) throw new TextProviderError('文本模型连接提前结束，未收到完成事件；请检查已收到内容后重试', true, 'stream_disconnected')
     } finally { void reader.cancel().catch(() => {}); reader.releaseLock() }
     metrics.response_chars = fullText.length
     return fullText
   } catch (issue) {
     if (!scope.signal.aborted && !(issue instanceof TextProviderError) && transientTextNetworkError(issue)) {
-      throw new TextProviderError(issue instanceof Error ? issue.message : String(issue), true, 'connection_error', undefined, { cause: issue })
+      throw new TextProviderError('文本模型连接中断，已通过校验的进度会保留；可继续当前任务。', true, 'connection_error', undefined, { cause: issue })
     }
     throw issue
-  } finally { onMetrics?.(metrics); scope.close() }
+  } finally {
+    try { usageRequest?.complete(metrics); onMetrics?.(metrics) }
+    finally { scope.close() }
+  }
 }
 
 function base64Bytes(value: string): Buffer {

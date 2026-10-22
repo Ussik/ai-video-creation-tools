@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import Fastify from 'fastify'
+import { stripManagedPromptBlocks } from '@video-studio/shared/visuals/prompt-document'
 
 const testData = await mkdtemp(join(tmpdir(), 'studio-skills-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
@@ -231,7 +232,8 @@ test('a refined board override is identical in preview and task, and changing it
     settings: { request_path: '/images', request_template: { prompt: '{{prompt}}' }, image_base64_path: 'data.0.b64_json' } }, app)
   const input = { model_id: model.id, expected_revision: profile.revision, prompt_override: '整理后的完整人物信息图：深绿雨衣，同一身份的正侧背视图。' }
   const preview = await call<{ prompt: string; reference_signature: string }>('POST', `/api/visual-profiles/${profile.id}/board-preview`, input, app)
-  assert.equal(preview.prompt, input.prompt_override)
+  assert.equal(stripManagedPromptBlocks(preview.prompt), input.prompt_override)
+  assert.match(preview.prompt, /【设定图固定要求】/)
   const task = await call<{ prompt: string }>('POST', `/api/visual-profiles/${profile.id}/board-task`, { ...input, reference_signature: preview.reference_signature }, app)
   assert.equal(task.prompt, preview.prompt)
   const changed = await app.inject({ method: 'POST', url: `/api/visual-profiles/${profile.id}/board-preview`, payload: { ...input, prompt_override: '已修改提示词', reference_signature: preview.reference_signature } })

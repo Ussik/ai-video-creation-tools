@@ -2,16 +2,18 @@ import { createHash } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { all, db, newId, now, one, required, run } from '../../infrastructure/database/db.js'
-import type { Project, ScriptScene, Shot } from '../../infrastructure/database/db.js'
+import type { Project, ScriptScene, Shot, StoryboardDesign } from '../../infrastructure/database/db.js'
 import { generateStructuredOutput, type OutputContract } from '../generation/model-output.js'
 import { projectDocuments } from '../script/script-document-tools.js'
 import { projectVisualStyle } from '../visuals/project-visual-style.js'
 import { projectStyleInstructions } from '@video-studio/shared/visuals/visual-style'
 import { installedSkills, skillContext, skillPolicy, resolveSkillSelections, skillIdsInput } from '../skills/skills.js'
-import { inheritSceneVisualBindings, visualProjectData } from '../visuals/visual-profiles.js'
-import { shotImagePrompt, shotVideoPrompt } from '@video-studio/shared/storyboard/shot-prompts'
+import { inheritSceneVisualBindings, sceneVisualDesignIds, visualProjectData } from '../visuals/visual-profiles.js'
 import { checkScriptCanvasPreparation } from '../canvas/script-canvas-preparation.js'
 import { storyboardReferenceBudget, storyboardReferenceBudgetInstructions } from './storyboard-reference-budget.js'
+import { savedStoryboardSources, saveStoryboardSource, storyboardSourceFingerprint } from './storyboard-freshness.js'
+import { invalidateStoryboardShot } from './storyboard-invalidation.js'
+import { resolveFinalCutScope } from '../final-cut/final-cut-scope.js'
 
 type Context = {
   script: (id: string) => Parameters<typeof projectDocuments>[1]
@@ -20,25 +22,31 @@ type Context = {
 }
 const ids = z.array(z.string().min(1)).max(100).refine(value => new Set(value).size === value.length, '选择项不可重复')
 const scope = z.object({ scene_ids: ids.min(1) }).strict()
-const planning = scope.extend({ signature: z.string().length(64), model_id: z.string().min(1), document_ids: ids.default([]),
+const designMode = z.enum(['update', 'redesign']).default('update')
+type DesignMode = z.infer<typeof designMode>
+const designInstructions = z.string().max(4000).default('')
+const planning = scope.extend({ signature: z.string().length(64), model_id: z.string().min(1), document_ids: ids.default([]), mode: designMode,
   skill_ids: skillIdsInput.optional(), shots_per_scene: z.number().int().min(2).max(8).nullish(),
-  target_duration: z.number().int().min(1).max(600).optional(), instructions: z.string().max(4000).default('') })
+  target_duration: z.number().int().min(1).max(600).optional(), instructions: designInstructions })
 const shotDraft = z.object({ shot_id: z.string().min(1).nullable().optional(), title: z.string().trim().min(1).max(120),
   prompt: z.string().trim().min(1).max(10000), image_prompt: z.string().trim().min(1).max(20000), video_prompt: z.string().trim().min(1).max(20000),
   duration: z.number().int().min(1).max(30), start_state: z.string().max(2000), end_state: z.string().max(2000), cut_note: z.string().max(2000) }).strict()
 const sceneDraft = z.object({ scene_id: z.string().min(1), scene_duration: z.number().int().min(1).max(30), shots: z.array(shotDraft).min(1).max(30) }).strict()
 const draft = z.object({ scenes: z.array(sceneDraft).min(1).max(10) }).strict()
-const commit = draft.extend({ signature: z.string().length(64), request_id: z.uuid() }).strict()
+const commit = draft.extend({ signature: z.string().length(64), request_id: z.uuid(), mode: designMode, instructions: designInstructions }).strict()
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 function fail(message: string, statusCode = 422): never { throw Object.assign(new Error(message), { statusCode }) }
+// Empty legacy updates retain their old source signature. Every explicit task
+// binds the preview to the same design mode and creator instructions on commit.
+function planSignature(source: string, mode: DesignMode, instructions: string) {
+  return mode === 'update' && !instructions ? source : hash({ source, mode, instructions })
+}
 
 function snapshot(projectId: string, sceneIds: string[], context: Context) {
   const project = required<Project>('projects', projectId), script = context.script(projectId)
   const scenes = script.scenes.filter(scene => sceneIds.includes(scene.id))
   if (scenes.length !== sceneIds.length) fail('所选场次不存在或不属于当前项目')
-  const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? ORDER BY position, id', projectId).filter(shot => sceneIds.includes(shot.source_scene_id || ''))
-  const plannedShotIds = new Set(all<{ shot_ids: string }>('SELECT shot_ids FROM shot_plan_requests WHERE project_id=?', projectId)
-    .flatMap(request => JSON.parse(request.shot_ids) as string[]))
+  const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position, id', projectId).filter(shot => sceneIds.includes(shot.source_scene_id || ''))
   const documents = projectDocuments(projectId, script).filter(document => document.content.trim())
   const style = projectVisualStyle(projectId)
   const skills = installedSkills().filter(skill => skill.enabled && skill.stages.includes('storyboard'))
@@ -48,22 +56,26 @@ function snapshot(projectId: string, sceneIds: string[], context: Context) {
   const signature = hash({ project: { name: project.name, brief: project.brief, ratio: project.ratio }, scenes, shots,
     documents: documents.map(({ id, version }) => ({ id, version })), style: style.version, referenceBudget,
     skills: skills.map(({ id, revision, updated_at }) => ({ id, revision, updated_at })) })
+  const savedSources = savedStoryboardSources(projectId)
+  const sourceFingerprints = new Map(scenes.map(scene => [scene.id, storyboardSourceFingerprint(project, scene, documents, style.version)]))
+  const staleScenes = new Set<string>(), replanReasons = new Map<string, string>()
   const plannedScenes = new Set(scenes.filter(scene => {
     const existing = shots.filter(shot => shot.source_scene_id === scene.id)
     if (!existing.length) return false
-    return existing.every(shot => {
-      if (!shot.prompt.trim() || !shot.image_prompt.trim() || !shot.video_prompt.trim()) return false
-      if (plannedShotIds.has(shot.id)) return true
-      // Older scene imports populated all prompt fields without actually planning
-      // a shot. Recognize that exact template, while keeping authored or tool
-      // generated shots that do not have a shot_plan_requests entry usable.
-      return !(shot.image_prompt.trim() === shotImagePrompt({ prompt: shot.prompt }) &&
-        shot.video_prompt.trim() === shotVideoPrompt({ prompt: shot.prompt }) && !shot.start_state.trim() && !shot.end_state.trim() && !shot.cut_note.trim())
-    })
+    if (savedSources.get(scene.id) !== sourceFingerprints.get(scene.id)) {
+      staleScenes.add(scene.id)
+      replanReasons.set(scene.id, savedSources.has(scene.id) ? '剧本正文、场次或项目设定已更新，请重新规划分镜' : '历史分镜缺少来源版本记录，请重新规划后使用')
+      return false
+    }
+    if (existing.some(shot => !shot.prompt.trim() || !shot.image_prompt.trim() || !shot.video_prompt.trim())) {
+      replanReasons.set(scene.id, '已有分镜内容不完整，请重新规划后使用')
+      return false
+    }
+    return true
   }).map(scene => scene.id))
-  return { project, scenes, shots, documents, style, skills, signature, plannedScenes, referenceBudget }
+  return { project, scenes, shots, documents, style, skills, signature, plannedScenes, sourceFingerprints, staleScenes, replanReasons, referenceBudget }
 }
-function validatePlan(value: z.infer<typeof draft>, state: ReturnType<typeof snapshot>, target?: number) {
+function validatePlan(value: z.infer<typeof draft>, state: ReturnType<typeof snapshot>, target?: number, mode: DesignMode = 'update') {
   if (new Set(value.scenes.map(scene => scene.scene_id)).size !== state.scenes.length || value.scenes.length !== state.scenes.length ||
     value.scenes.some(scene => !state.scenes.some(source => source.id === scene.scene_id))) fail('分镜方案与所选场次不一致')
   if (target !== undefined && value.scenes.reduce((sum, scene) => sum + scene.scene_duration, 0) !== target) fail(`分镜规划总时长必须为 ${target} 秒`)
@@ -71,18 +83,38 @@ function validatePlan(value: z.infer<typeof draft>, state: ReturnType<typeof sna
     if (scene.shots.reduce((sum, shot) => sum + shot.duration, 0) !== scene.scene_duration) fail('镜头时长总和必须等于本场规划时长')
     const existing = state.shots.filter(shot => shot.source_scene_id === scene.scene_id)
     const reused = scene.shots.flatMap(shot => shot.shot_id ? [shot.shot_id] : [])
-    if (new Set(reused).size !== reused.length || reused.length !== existing.length || reused.some(id => !existing.some(shot => shot.id === id))) {
+    if (mode === 'redesign' && reused.length) fail('独立新方案不能复用已有镜头 ID，请为每个新镜头返回空 shot_id')
+    if (mode === 'update' && (new Set(reused).size !== reused.length || reused.length !== existing.length || reused.some(id => !existing.some(shot => shot.id === id)))) {
       fail('重新规划必须保留本场所有已有镜头 ID，不能删除、重复或引用其他场次的镜头')
     }
     if (target === undefined && scene.scene_duration !== state.scenes.find(source => source.id === scene.scene_id)!.duration) fail('未指定新时长时，应保留源场次时长')
   }
 }
-function canvasResult(projectId: string, sceneIds: string[], counts = { created_shots: 0, updated_shot_ids: [] as string[] }) {
-  const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? ORDER BY position, id', projectId).filter(shot => sceneIds.includes(shot.source_scene_id || ''))
+function canvasResult(projectId: string, sceneIds: string[], counts = { created_shots: 0, updated_shot_ids: [] as string[] }, savedShotIds?: string[]) {
+  const shots = (savedShotIds
+    ? all<Shot>('SELECT * FROM shots WHERE project_id=? ORDER BY position, id', projectId).filter(shot => savedShotIds.includes(shot.id))
+    : all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position, id', projectId).filter(shot => sceneIds.includes(shot.source_scene_id || '')))
   const shotIds = new Set(shots.map(shot => shot.id)), visuals = visualProjectData(projectId)
   const bindings = visuals.shot_visual_bindings.filter(binding => shotIds.has(binding.shot_id))
+  const profileById = new Map(visuals.visual_profiles.map(profile => [profile.id, profile]))
+  for (const binding of bindings) {
+    const profile = profileById.get(binding.profile_id), shot = shots.find(shot => shot.id === binding.shot_id)!
+    if (!profile || (profile.design_id || null) !== (shot.design_id || null)) fail('镜头参考设定不属于同一设计方案，请重新整理后加入画布')
+  }
   const profileIds = new Set(bindings.map(binding => binding.profile_id))
+  const includeBase = (profileId: string) => {
+    const profile = profileById.get(profileId), baseId = profile?.base_profile_id
+    if (!baseId) return
+    const base = profileById.get(baseId)
+    if (!base || (base.design_id || null) !== (profile!.design_id || null)) fail('基础设定不属于同一设计方案，请检查设定后加入画布')
+    if (!profileIds.has(baseId)) { profileIds.add(baseId); includeBase(baseId) }
+  }
+  for (const profileId of [...profileIds]) includeBase(profileId)
+  const designs = new Set(shots.map(shot => shot.design_id || null))
+  const design = designs.size === 1 && shots[0]?.design_id ? one<StoryboardDesign>('SELECT * FROM storyboard_designs WHERE id=? AND project_id=?', shots[0].design_id, projectId) : null
+  if (design && !design.canvas_id) fail('此方案的专属画布已删除，请重新设计为独立新方案后加入画布', 409)
   return { scene_ids: sceneIds, shots, visual_profiles: visuals.visual_profiles.filter(profile => profileIds.has(profile.id)),
+    ...(design ? { design_id: design.id, target_canvas_id: design.canvas_id } : {}),
     shot_visual_bindings: bindings, created_profiles: 0, ...counts }
 }
 function canvasShotIds(projectId: string) {
@@ -108,12 +140,15 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
     const state = snapshot(id, input.scene_ids, context), covered = canvasShotIds(id)
     return { signature: state.signature, reference_budget: state.referenceBudget, scenes: state.scenes.map(scene => ({ id: scene.id, heading: scene.heading, duration: scene.duration, episode_number: scene.episode_number,
       planned: state.plannedScenes.has(scene.id),
+      needs_replan: state.replanReasons.has(scene.id), replan_reason: state.replanReasons.get(scene.id) || '',
       shot_count: state.shots.filter(shot => shot.source_scene_id === scene.id).length,
       canvas_shot_count: state.shots.filter(shot => shot.source_scene_id === scene.id && covered.has(shot.id)).length,
       material_count: state.shots.filter(shot => shot.source_scene_id === scene.id && shot.selected_asset_id).length })),
       existing_shots: state.shots.map(shot => ({ shot_id: shot.id, scene_id: shot.source_scene_id!, title: shot.title, duration: shot.duration,
         prompt: shot.prompt, image_prompt: shot.image_prompt, video_prompt: shot.video_prompt, start_state: shot.start_state, end_state: shot.end_state, cut_note: shot.cut_note })),
       documents: state.documents.map(({ id, title, artifact_type, episode_number, content }) => ({ id, title, artifact_type, episode_number, characters: content.length })),
+      default_document_ids: state.documents.filter(document => document.artifact_type === 'episode_script' &&
+        state.scenes.some(scene => scene.episode_number === document.episode_number)).map(document => document.id),
       skills: state.skills.map(({ id, name, description, revision }) => ({ id, name, description, revision })),
       default_skill_ids: resolveSkillSelections(id).storyboard || [],
       skill_policy: skillPolicy(id).find(policy => policy.stage === 'storyboard'),
@@ -128,8 +163,11 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
     const state = snapshot(id, input.scene_ids, context)
     if (state.signature !== input.signature) fail('资料、镜头或技能配置已更新，请刷新规划资料', 409)
     if (input.document_ids.some(id => !state.documents.some(document => document.id === id))) fail('所选参考文档不存在或不属于当前项目')
-    const sources = state.documents.filter(document => input.document_ids.includes(document.id))
-    const minimum = state.scenes.reduce((sum, scene) => sum + Math.max(1, state.shots.filter(shot => shot.source_scene_id === scene.id).length), 0)
+    const episodes = new Set(state.scenes.map(scene => scene.episode_number))
+    const sources = state.documents.filter(document => input.document_ids.includes(document.id) ||
+      document.artifact_type === 'episode_script' && episodes.has(document.episode_number))
+    const minimum = input.mode === 'redesign' ? state.scenes.length
+      : state.scenes.reduce((sum, scene) => sum + Math.max(1, state.shots.filter(shot => shot.source_scene_id === scene.id).length), 0)
     if (input.target_duration !== undefined && (input.target_duration < minimum || input.target_duration > state.scenes.length * 30)) fail(`本次总时长应在 ${minimum} 至 ${state.scenes.length * 30} 秒之间`)
     const shotCountInstruction = input.shots_per_scene == null
       ? '创作者未指定镜头数。请根据每场剧本内容、对白、动作节拍、情绪变化、场次时长和接镜需要，独立分析并决定该场的合理镜头数；不同场次可以有不同数量，不要默认每场3镜或统一固定数量。'
@@ -139,8 +177,12 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       `${shotCountInstruction}按对白、动作节拍和情绪停顿分配时长，不能机械均分。` +
       `${input.target_duration !== undefined ? `本次所选场次的总时长必须为 ${input.target_duration} 秒，可以重新分配各场时长。` : '保留各源场次的时长。'}每场1至30秒，每镜至少1秒，镜头时长之和等于该场scene_duration。\n` +
       `每场至少1个镜头，镜头数不得超过本场scene_duration的秒数，不得为了凑数量拆出无叙事意义的镜头。\n` +
-      `已有镜头必须全部保留shot_id，并可调整其描述与时长；细分时新增镜头的shot_id为null。不得删除、重复或改用其他场次的ID。现有素材仅保留关联，不代表读取了图片像素。\n` +
-      `重新规划时，选中参考文档中的最新明确设定优先于旧场次与已有镜头描述。人物年龄、外貌或关系等已变更时，镜头内容必须使用新设定，不能照抄旧值；未变更的内容保持连续。\n` +
+      (input.mode === 'redesign'
+        ? `本次为所选场次创建独立新方案。依据当前剧本与创作者要求重新设计镜头，不沿用旧方案的镜头数量、ID、提示词或素材；所有shot_id必须为null。旧方案及其素材另行保留，不属于本次方案的参考。\n`
+        : `已有镜头必须全部保留shot_id，并可调整其描述与时长；细分时新增镜头的shot_id为null。不得删除、重复或改用其他场次的ID。现有素材仅保留关联，不代表读取了图片像素。\n`) +
+      `重新规划时，选中参考文档中的最新明确设定优先于旧场次${input.mode === 'update' ? '与已有镜头描述' : ''}。已自动提供本次所选场次对应集的最新正式正文；必须按最新正文和当前场次重新理解剧情，` +
+      (input.mode === 'update' ? '已有镜头只用于保留ID与必要的连续性，不得将其旧情节当作当前原文。' : '不读取或恢复旧方案镜头作为本次设计。') +
+      `正文与旧场次不一致时，按最新正文中对应场次内容规划，不引用其他场次剧情。人物年龄、外貌或关系等已变更时，镜头内容必须使用新设定，不能照抄旧值；未变更的内容保持连续。\n` +
       `prompt写镜头叙事。image_prompt只写单幅开镜首帧的景别、机位、主体、姿态、构图和光线；video_prompt写连续动作、表演、运镜、声音与收镜，不写信息图拼版。二者遵守项目画风，不绘制字幕、水印。` +
       `start_state/end_state/cut_note分别写开镜、收镜状态和接镜方式。相邻镜头空间与动作连续。输出所有选中场次的完整JSON方案。\n` +
       storyboardReferenceBudgetInstructions(state.referenceBudget) +
@@ -148,30 +190,57 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       `同场景固定门窗、主要地标、人物相对位置与镜头轴线；反打保留视线和屏幕方向。start_state与end_state写清持握道具的手、服装状态和动作阶段，cut_note说明相邻镜头如何承接。\n` +
       `创作者补充要求：${input.instructions}\n` +
       `选中参考文档：${JSON.stringify(sources.map(({ id, title, content }) => ({ id, title, content })))}\n` +
-      `选中场次：${JSON.stringify(state.scenes.map(scene => ({ ...scene, existing_shots: state.shots.filter(shot => shot.source_scene_id === scene.id) })))}\n`
+      `选中场次：${JSON.stringify(state.scenes.map(scene => ({ ...scene, existing_shots: input.mode === 'redesign' ? [] : state.shots.filter(shot => shot.source_scene_id === scene.id) })))}\n`
     const rules = skillContext('storyboard', base, input.skill_ids, id)
     const value = await generateStructuredOutput('controlled_storyboard', draft,
       (prompt, contract) => context.generateText(id, input.model_id, prompt, contract), rules.text + '\n【本次任务】\n' + base,
-      { validate: value => validatePlan(value, state, input.target_duration) })
+      { validate: value => validatePlan(value, state, input.target_duration, input.mode) })
     if (snapshot(id, input.scene_ids, context).signature !== state.signature) fail('规划期间资料或镜头已更新，请重新规划', 409)
-    return { signature: state.signature, scenes: state.scenes.map(scene => ({ ...value.scenes.find(item => item.scene_id === scene.id)!, scene_heading: scene.heading })),
+    return { signature: planSignature(state.signature, input.mode, input.instructions), mode: input.mode, instructions: input.instructions,
+      scenes: state.scenes.map(scene => ({ ...value.scenes.find(item => item.scene_id === scene.id)!, scene_heading: scene.heading })),
       used_skills: rules.skills, source_documents: sources.map(({ id, title }) => ({ id, title })) }
   })
   app.post('/api/projects/:id/script/storyboard/commit', async request => {
     const { id } = z.object({ id: z.string().min(1) }).parse(request.params), input = commit.parse(request.body)
     required<Project>('projects', id)
-    const payloadHash = hash({ kind: 'controlled_storyboard', signature: input.signature, scenes: input.scenes })
+    const payloadHash = hash({ kind: 'controlled_storyboard', signature: input.signature, mode: input.mode, instructions: input.instructions, scenes: input.scenes })
     return db.transaction(() => {
       const previous = one<{ project_id: string; payload_hash: string; shot_ids: string }>('SELECT * FROM shot_plan_requests WHERE request_id=?', input.request_id)
       const sceneIds = input.scenes.map(scene => scene.scene_id)
       if (previous) {
-        if (previous.project_id !== id || previous.payload_hash !== payloadHash) fail('此方案已保存，修改后的预览请重新规划后提交', 409)
-        return { ...canvasResult(id, sceneIds, { created_shots: 0, updated_shot_ids: JSON.parse(previous.shot_ids) }), replayed: true }
+        const legacyHash = input.mode === 'update' && !input.instructions ? hash({ kind: 'controlled_storyboard', signature: input.signature, scenes: input.scenes }) : null
+        if (previous.project_id !== id || previous.payload_hash !== payloadHash && previous.payload_hash !== legacyHash) fail('此方案已保存，修改后的预览请重新规划后提交', 409)
+        return { ...canvasResult(id, sceneIds, { created_shots: 0, updated_shot_ids: JSON.parse(previous.shot_ids) }, JSON.parse(previous.shot_ids)),
+          mode: input.mode, instructions: input.instructions, replayed: true }
       }
       const state = snapshot(id, sceneIds, context)
-      if (state.signature !== input.signature) fail('资料或已有镜头已更新，请重新规划后保存', 409)
-      validatePlan(input, state, input.scenes.reduce((sum, scene) => sum + scene.scene_duration, 0))
-      const existing = all<Shot>('SELECT * FROM shots WHERE project_id=? ORDER BY position, id', id), ordered = existing.map(shot => shot.id)
+      if (planSignature(state.signature, input.mode, input.instructions) !== input.signature) fail('资料、方案模式或规划要求已更新，请重新规划后保存', 409)
+      validatePlan(input, state, input.scenes.reduce((sum, scene) => sum + scene.scene_duration, 0), input.mode)
+      const existing = all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position, id', id), ordered = existing.map(shot => shot.id)
+      let design: StoryboardDesign | undefined
+      if (input.mode === 'redesign') {
+        // Freeze inherited ranges before replacing their active boundaries.
+        // The previous scheme must remain editable with its original cut.
+        const affectedDesigns = new Set(state.shots.map(shot => shot.design_id || null))
+        const previousCanvases = all<{ id: string; design_id: string | null }>(`SELECT c.id, d.id AS design_id
+          FROM project_canvases c LEFT JOIN storyboard_designs d ON d.canvas_id=c.id AND d.project_id=c.project_id
+          WHERE c.project_id=?`, id)
+        for (const canvas of previousCanvases) {
+          if (!affectedDesigns.has(canvas.design_id)) continue
+          const { range } = resolveFinalCutScope(id, canvas.id)
+          run(`INSERT OR IGNORE INTO canvas_production_ranges (canvas_id, project_id, start_shot_id, end_shot_id)
+            VALUES (?, ?, ?, ?)`, canvas.id, id, range.start_shot_id, range.end_shot_id)
+        }
+        const canvasId = newId(), timestamp = now()
+        const number = one<{ total: number }>('SELECT COUNT(*) AS total FROM storyboard_designs WHERE project_id=?', id)!.total + 2
+        const name = `分镜方案 ${number}`
+        const canvasPosition = one<{ next: number }>('SELECT COALESCE(MAX(position), -1)+1 AS next FROM project_canvases WHERE project_id=?', id)!.next
+        run('INSERT INTO project_canvases (id, project_id, name, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', canvasId, id, name, canvasPosition, timestamp, timestamp)
+        run('INSERT INTO storyboard_designs (id, project_id, canvas_id, name, scene_ids, instructions, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          input.request_id, id, canvasId, name, JSON.stringify(sceneIds), input.instructions, timestamp)
+        design = one<StoryboardDesign>('SELECT * FROM storyboard_designs WHERE id=? AND project_id=?', input.request_id, id)!
+        for (const shot of state.shots) run('UPDATE shots SET superseded_by=? WHERE id=? AND project_id=? AND superseded_by IS NULL', design.id, shot.id, id)
+      }
       const scenePositions = new Map(context.script(id).scenes.map(scene => [scene.id, scene.position]))
       let position = Math.max(-1, ...existing.map(shot => shot.position)) + 1, created = 0
       const updated: string[] = [], saved: string[] = []
@@ -186,30 +255,57 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
         for (const shot of plan.shots) {
           const shotId = shot.shot_id || newId()
           if (shot.shot_id) {
+            const original = state.shots.find(existing => existing.id === shotId)!
+            const changed = (['title', 'prompt', 'image_prompt', 'video_prompt', 'duration', 'start_state', 'end_state', 'cut_note'] as const)
+              .some(field => original[field] !== shot[field])
             run('UPDATE shots SET title=?, prompt=?, image_prompt=?, video_prompt=?, duration=?, start_state=?, end_state=?, cut_note=? WHERE id=? AND project_id=?',
               shot.title, shot.prompt, shot.image_prompt, shot.video_prompt, shot.duration, shot.start_state, shot.end_state, shot.cut_note, shotId, id)
+            if (changed || state.staleScenes.has(source.id)) invalidateStoryboardShot({ ...original, ...shot }, (original.storyboard_revision || 0) + 1)
             updated.push(shotId)
           } else {
-            run(`INSERT INTO shots (id, project_id, position, title, prompt, duration, selected_asset_id, created_at, source_scene_id, image_prompt, video_prompt, start_state, end_state, cut_note)
-              VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`, shotId, id, position++, shot.title, shot.prompt, shot.duration, now(), source.id, shot.image_prompt, shot.video_prompt, shot.start_state, shot.end_state, shot.cut_note)
-            inheritSceneVisualBindings(shotId, source.id); created++
+            const designId = design?.id || sceneVisualDesignIds(id, [source.id]).get(source.id) || null
+            run(`INSERT INTO shots (id, project_id, position, title, prompt, duration, selected_asset_id, created_at, source_scene_id, image_prompt, video_prompt, start_state, end_state, cut_note, design_id)
+              VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`, shotId, id, position++, shot.title, shot.prompt, shot.duration, now(), source.id, shot.image_prompt, shot.video_prompt, shot.start_state, shot.end_state, shot.cut_note, designId)
+            if (!design) inheritSceneVisualBindings(shotId, source.id)
+            created++
           }
           sequence.push(shotId); saved.push(shotId)
         }
         ordered.splice(insertion, 0, ...sequence)
         if (source.duration !== plan.scene_duration) run('UPDATE script_scenes SET duration=?, updated_at=? WHERE id=?', plan.scene_duration, now(), source.id)
       }
-      ordered.forEach((shotId, position) => run('UPDATE shots SET position=? WHERE id=?', position, shotId))
+      ordered.forEach((shotId, position) => {
+        if (!design || !state.shots.some(previous => previous.id === shotId)) run('UPDATE shots SET position=? WHERE id=? AND superseded_by IS NULL', position, shotId)
+      })
+      if (design) {
+        const range = one<{ start_shot_id: string | null; end_shot_id: string | null }>('SELECT start_shot_id, end_shot_id FROM production_ranges WHERE project_id=?', id)
+        if (range) {
+          const replacement = (shotId: string | null, end: boolean) => {
+            const old = state.shots.find(shot => shot.id === shotId)
+            if (!old) return shotId
+            const candidates = all<{ id: string }>(`SELECT id FROM shots WHERE project_id=? AND source_scene_id=? AND design_id=? AND superseded_by IS NULL ORDER BY position ${end ? 'DESC' : 'ASC'}, id`, id, old.source_scene_id, design!.id)
+            return candidates[0]?.id || null
+          }
+          run('UPDATE production_ranges SET start_shot_id=?, end_shot_id=? WHERE project_id=?', replacement(range.start_shot_id, false), replacement(range.end_shot_id, true), id)
+        }
+      }
+      // Planned scene duration may have changed during this commit. Save the
+      // final creative source, so our own write does not immediately stale it.
+      const committed = snapshot(id, sceneIds, context)
+      for (const scene of committed.scenes) saveStoryboardSource(id, scene.id, committed.sourceFingerprints.get(scene.id)!)
       run('INSERT INTO shot_plan_requests VALUES (?, ?, ?, ?, ?)', input.request_id, id, payloadHash, JSON.stringify(saved), now())
       run('UPDATE projects SET updated_at=? WHERE id=?', now(), id)
-      return { ...canvasResult(id, sceneIds, { created_shots: created, updated_shot_ids: updated }), replayed: false }
-    })()
+      return { ...canvasResult(id, sceneIds, { created_shots: created, updated_shot_ids: updated }), mode: input.mode, instructions: input.instructions, replayed: false }
+    }).immediate()
   })
   app.post('/api/projects/:id/script/storyboard/canvas', async request => {
     const { id } = z.object({ id: z.string().min(1) }).parse(request.params), input = scope.extend({ mode: z.enum(['existing', 'scene']) }).parse(request.body)
     if (input.mode !== 'existing') fail('加入画布前必须先规划并确认分镜，不再支持直接按场次创建镜头')
     return db.transaction(() => {
       const state = snapshot(id, input.scene_ids, context)
+      if (new Set(state.shots.map(shot => shot.design_id || null)).size > 1) fail('所选场次属于不同方案，请分批加入对应画布，或重新设计为同一新方案')
+      const outdated = state.scenes.find(scene => state.replanReasons.has(scene.id))
+      if (outdated) fail(state.replanReasons.get(outdated.id)!)
       if (state.scenes.some(scene => !state.plannedScenes.has(scene.id))) fail('所选场次尚未完成分镜规划，请先规划并确认后加入画布')
       if (checkScriptCanvasPreparation(id, input.scene_ids, context).needs_analysis.length) {
         fail('所选场次的分镜参考设定尚未整理，请先整理人物、场景与道具引用后加入画布')

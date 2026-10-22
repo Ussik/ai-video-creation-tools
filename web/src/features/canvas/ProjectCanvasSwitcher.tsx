@@ -5,6 +5,7 @@ import { api, json } from '../../shared/api/api'
 import { useAppDialog } from '../../shared/ui/AppDialog'
 import { preferredCanvas, rememberCanvas, rememberedCanvas, type ProjectCanvasInfo } from './project-canvases'
 import type { CanvasSession } from './ProjectCanvas'
+import { readScriptCanvasRequest } from '../script/script-canvas-handoff'
 import './project-canvases.css'
 
 export type CanvasActions = { revision: () => string | undefined; leave: () => Promise<boolean>; move: (target: string) => Promise<boolean> }
@@ -24,7 +25,10 @@ function ProjectCanvasSwitcher({ projectId, children }: {
   const viewportWrites = useRef(new Map<string, Promise<unknown>>())
   const mounted = useRef(true)
   const operation = useRef(false)
-  const register = useRef((next: CanvasActions | null) => { actions.current = next }).current
+  const activeIdRef = useRef(activeId)
+  activeIdRef.current = activeId
+  const resumeHandoff = useRef<(() => void) | null>(null)
+  const register = useRef((next: CanvasActions | null) => { actions.current = next; if (next) resumeHandoff.current?.() }).current
   const reload = async () => {
     const next = await api<ProjectCanvasInfo[]>(`/projects/${projectId}/canvases`)
     if (mounted.current) setCanvases(next)
@@ -34,20 +38,59 @@ function ProjectCanvasSwitcher({ projectId, children }: {
     mounted.current = true
     void reload().then(next => {
       if (!mounted.current) return
-      const selected = preferredCanvas(next, rememberedCanvas(projectId))
+      const request = readScriptCanvasRequest(projectId)
+      const requested = request?.result.design_id ? next.find(canvas => canvas.id === request.canvas_id) : undefined
+      if (request?.result.design_id && !requested) throw new Error('新方案画布尚未读取，请重新载入')
+      const selected = requested || preferredCanvas(next, rememberedCanvas(projectId))
       if (!selected) throw new Error('项目没有可用画布')
       setActiveId(selected.id); rememberCanvas(projectId, selected.id)
     }).catch(issue => { if (mounted.current) setError(issue instanceof Error ? issue.message : String(issue)) })
     return () => { mounted.current = false }
   }, [projectId])
   const active = canvases.find(canvas => canvas.id === activeId)
-  const select = (canvas: ProjectCanvasInfo) => { setActiveId(canvas.id); rememberCanvas(projectId, canvas.id) }
+  const select = (canvas: ProjectCanvasInfo) => { activeIdRef.current = canvas.id; setActiveId(canvas.id); rememberCanvas(projectId, canvas.id) }
   const perform = async (work: () => Promise<void>) => {
     if (operation.current) return
     operation.current = true; setBusy(true); setError('')
     try { await work() } catch (issue) { setError(issue instanceof Error ? issue.message : String(issue)) }
-    finally { operation.current = false; if (mounted.current) setBusy(false) }
+    finally { operation.current = false; if (mounted.current) { setBusy(false); resumeHandoff.current?.() } }
   }
+  useEffect(() => {
+    let active = true
+    const openRequestedCanvas = async () => {
+      if (!active || operation.current) return
+      let request
+      try { request = readScriptCanvasRequest(projectId) }
+      catch (issue) { setError(issue instanceof Error ? issue.message : String(issue)); return }
+      if (!request?.result.design_id || !request.canvas_id || request.canvas_id === activeIdRef.current) return
+      if (!actions.current) return
+      operation.current = true; setBusy(true); setError('')
+      try {
+        if (!await actions.current.leave() || !active) return
+        const next = await reload()
+        if (!active) return
+        const current = readScriptCanvasRequest(projectId)
+        if (!current || current.id !== request.id) return
+        const target = next.find(canvas => canvas.id === current.canvas_id)
+        if (!target) throw new Error('新方案画布尚未读取，请重试打开画布')
+        select(target)
+      } catch (issue) { if (active) setError(issue instanceof Error ? issue.message : String(issue)) }
+      finally {
+        operation.current = false
+        if (active) {
+          setBusy(false)
+          // A newer request can arrive while edits are saving or metadata is loading.
+          // Resume that request once, while a failed current request waits for an explicit retry.
+          try { if (readScriptCanvasRequest(projectId)?.id !== request.id) void openRequestedCanvas() }
+          catch (issue) { setError(issue instanceof Error ? issue.message : String(issue)) }
+        }
+      }
+    }
+    const open = () => { void openRequestedCanvas() }
+    resumeHandoff.current = open
+    open(); window.addEventListener('script-canvas-open', open)
+    return () => { active = false; resumeHandoff.current = null; window.removeEventListener('script-canvas-open', open) }
+  }, [projectId])
   const switchTo = (canvas: ProjectCanvasInfo) => void perform(async () => {
     if (canvas.id === activeId) return
     if (!actions.current || !await actions.current.leave()) return

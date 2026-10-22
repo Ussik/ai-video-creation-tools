@@ -17,6 +17,13 @@ initDb()
 after(async () => { db.close(); await rm(testData, { recursive: true, force: true }) })
 const signal = () => new AbortController().signal
 const qualityMarker = '【原稿分析核对资料】\n'
+const repairMarker = '【原稿分析定点修补资料】\n'
+type RepairInput = { story: NonNullable<ScriptSourceAnalysis['story']>; finding: { explanation: string }; finding_index: number }
+function repairReply(prompt: string) {
+  const input = JSON.parse(prompt.slice(prompt.lastIndexOf(repairMarker) + repairMarker.length)) as RepairInput
+  return JSON.stringify({ status: 'patched', reason: '依据原文补充已核对的事实。', changes: [{ target: 'story.summary', section_id: null,
+    operation: 'replace', index: null, expected: input.story.summary, value: `${input.story.summary}；${input.finding.explanation}` }] })
+}
 function source(label: string): ScriptSourceDocument {
   const id = newId(), timestamp = now()
   run('INSERT INTO projects (id,name,created_at,updated_at) VALUES (?,?,?,?)', id, label, timestamp, timestamp)
@@ -45,10 +52,16 @@ async function finished(projectId: string) {
   throw new Error('source analysis did not finish')
 }
 
-test('private proposed-source analysis rebuilds a known-defective map/story on explicit retry with the durable evidence feedback', async () => {
+test('private proposed-source analysis retains its map/story and repairs known omissions before a new independent review', async () => {
   const document = source('私有修订稿恢复'), explanation = '目录遗漏沈月是林舟妹妹的身份'
-  let maps = 0, stories = 0, reviews = 0
+  let maps = 0, stories = 0, reviews = 0, repairs = 0
   const generate = async (prompt: string) => {
+    if (prompt.includes(repairMarker)) {
+      repairs++
+      assert.ok(prompt.includes(explanation), 'targeted repair receives durable original findings and complete source')
+      assert.ok(prompt.includes(document.content.split('\n')[1]!))
+      return repairReply(prompt)
+    }
     if (prompt.includes(qualityMarker)) {
       reviews++
       const input = JSON.parse(prompt.slice(prompt.lastIndexOf(qualityMarker) + qualityMarker.length))
@@ -57,16 +70,19 @@ test('private proposed-source analysis rebuilds a known-defective map/story on e
     }
     if (prompt.includes('【原文片段】')) {
       maps++
-      if (maps === 2) assert.ok(prompt.includes(explanation), 'the new full map receives the original finding and evidence')
     }
     if (prompt.includes('【全剧整合资料】')) stories++
     return sourceAnalysisFixture(prompt)!
   }
   await assert.rejects(analyzeSourceSnapshot(document, 'model', generate, signal()), /核对发现 1 项遗漏或误读/)
   assert.equal(checkpoint(document.project_id).quality!.status, 'issues')
+  const original = checkpoint(document.project_id)
   const result = await analyzeSourceSnapshot(document, 'model', generate, signal())
   assert.equal(result.status, 'ready'); assert.equal(result.quality!.status, 'passed')
-  assert.deepEqual([maps, stories, reviews], [2, 2, 2], 'retry rebuilds the map and story rather than only rechecking the same known omissions')
+  assert.deepEqual([maps, stories, repairs, reviews], [1, 1, 1, 2], 'retry repairs the completed analysis rather than regenerating its map and story')
+  assert.deepEqual(result.sections, original.sections)
+  assert.deepEqual({ ...result.story, summary: original.story!.summary }, original.story)
+  assert.ok(result.story!.summary.includes(explanation))
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM script_source_documents WHERE project_id=?').get(document.project_id)!.count, 0, 'private source analysis never publishes the proposed manuscript')
 })
 
@@ -95,12 +111,13 @@ test('disk ready checkpoints require valid story provenance and a current passed
     run("UPDATE script_step_checkpoints SET payload=? WHERE project_id=? AND namespace='source-proposal'", JSON.stringify(saved), document.project_id)
     const calls: string[] = []
     const ready = await analyzeSourceSnapshot(document, 'model', async prompt => {
-      calls.push(prompt.includes(qualityMarker) ? 'review' : prompt.includes('【全剧整合资料】') ? 'story' : 'map')
+      calls.push(prompt.includes(repairMarker) ? 'repair' : prompt.includes(qualityMarker) ? 'review' : prompt.includes('【全剧整合资料】') ? 'story' : 'map')
+      if (prompt.includes(repairMarker)) return repairReply(prompt)
       return sourceAnalysisFixture(prompt)!
     }, signal())
     assert.equal(ready.status, 'ready'); assert.equal(ready.quality!.status, 'passed')
     assert.equal(ready.quality!.input_hash, sourceQualityInputHash(ready))
-    assert.deepEqual(calls, defect === 'known_issues' || defect === 'invented_story_reference' ? ['map', 'story', 'review'] : ['review'])
+    assert.deepEqual(calls, defect === 'known_issues' ? ['repair', 'review'] : defect === 'invented_story_reference' ? ['map', 'story', 'review'] : ['review'])
   })
 })
 

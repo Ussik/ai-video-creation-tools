@@ -145,7 +145,7 @@ test('refinement receives ending and scale purposes in actual order and returns 
   assert.equal(calls, before)
 })
 
-test('refinement omits image-only, inactive and excluded bindings from its video context and input images', async () => {
+test('video refinement omits inactive bindings but keeps excluded definitions without their input images', async () => {
   const { project, ids, input } = await setup()
   async function create(method: 'POST' | 'PUT' | 'PATCH', url: string, payload: unknown) {
     const response = await app.inject({ method, url, payload })
@@ -166,7 +166,12 @@ test('refinement omits image-only, inactive and excluded bindings from its video
   } })
   assert.equal(response.statusCode, 200, response.body)
   assert.match(captured, /视频演员固定外观/)
-  assert.doesNotMatch(captured, /静态专用人物固定外观|不出镜道具固定外观|排除场地固定外观/)
+  assert.match(captured, /排除场地固定外观/)
+  assert.doesNotMatch(captured, /静态专用人物固定外观|不出镜道具固定外观/)
+  const result = response.json()
+  assert.match(result.prompt, /排除场地固定外观/)
+  const mapping = result.prompt.split('【视频参考图用途】')[1]!.split('【视频参考图用途结束】')[0]!
+  assert.doesNotMatch(mapping, /排除场地/)
   const referenceLine = captured.split('\n').find(line => line.startsWith('实际参考图'))!
   assert.match(referenceLine, new RegExp(ids[0]))
   for (const id of ids.slice(1, 4)) assert.ok(!referenceLine.includes(id))

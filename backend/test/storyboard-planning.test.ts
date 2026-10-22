@@ -181,6 +181,227 @@ async function setup(t: { after: (fn: () => Promise<unknown>) => void },
 function shot(shotId: string | null, duration: number, title = '推近镜头') {
   return { shot_id: shotId, title, duration, prompt: '人物沿通道移动', image_prompt: '日漫，人物站在通道左侧，近景', video_prompt: '人物向前移动，镜头跟随', start_state: '在通道左侧', end_state: '走到出口', cut_note: '接前一镜' }
 }
+
+test('updating an empty redesigned scene keeps its design instead of returning to legacy references', async t => {
+  let sceneId = ''
+  const f = await setup(t, async () => JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(null, 30)] }] }))
+  sceneId = f.scene.id
+  const originalContext = await f.context()
+  const plan = await f.invoke('plan', { scene_ids: [sceneId], signature: originalContext.signature, model_id: 'mock-text', mode: 'redesign' })
+  const redesigned = await f.invoke('commit', { signature: plan.signature, mode: plan.mode, instructions: plan.instructions, request_id: crypto.randomUUID(),
+    scenes: plan.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene) })
+  run('DELETE FROM shots WHERE project_id=? AND design_id=?', f.project.id, redesigned.design_id)
+  const timestamp = now(), legacyProfile = `legacy-empty-${sceneId}`, currentProfile = `current-empty-${sceneId}`
+  for (const [profileId, designId] of [[legacyProfile, null], [currentProfile, redesigned.design_id]]) {
+    run(`INSERT INTO visual_profiles (id,project_id,kind,name,definition,view_requirements,design_id,created_at,updated_at)
+      VALUES (?,?,'character',?,'蓝色外套','正侧背',?,?,?)`, profileId, f.project.id, profileId, designId, timestamp, timestamp)
+    run('INSERT INTO scene_visual_bindings VALUES (?,?,1)', sceneId, profileId)
+  }
+  const context = await f.context()
+  const updated = await f.invoke('commit', { signature: context.signature, request_id: crypto.randomUUID(), scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(null, 30)] }] })
+  assert.equal(updated.design_id, redesigned.design_id)
+  assert.equal(updated.target_canvas_id, redesigned.target_canvas_id)
+  assert.equal(updated.shots[0].design_id, redesigned.design_id)
+  assert.deepEqual(all<any>('SELECT profile_id FROM shot_visual_bindings WHERE shot_id=?', updated.shots[0].id).map(binding => binding.profile_id), [currentProfile])
+  assert.ok(one('SELECT 1 FROM scene_visual_bindings WHERE scene_id=? AND profile_id=?', sceneId, legacyProfile))
+})
+
+test('an independent redesign excludes old shots, preserves their complete history and creates one isolated canvas idempotently', async t => {
+  let sceneId = '', oldShotId = '', calls = 0
+  const instructions = '重新设计为俯视全景，人物与场景也独立设计'
+  const f = await setup(t, async prompt => {
+    calls++
+    assert.match(prompt, /创建独立新方案/)
+    assert.ok(prompt.includes(instructions))
+    assert.ok(!prompt.includes(oldShotId), 'old shot IDs must never reach the redesign request')
+    assert.doesNotMatch(prompt, /旧镜头专属提示词/)
+    assert.match(prompt, /"existing_shots":\[\]/)
+    return JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(null, 30, '全新俯视镜头')] }] })
+  })
+  sceneId = f.scene.id
+  const before = await f.invoke('context', { scene_ids: [sceneId, f.other.id] })
+  const original = await f.invoke('commit', { signature: before.signature, request_id: crypto.randomUUID(), scenes: [
+    { scene_id: sceneId, scene_duration: 30, shots: [{ ...shot(null, 15), prompt: '旧镜头专属提示词' }, shot(null, 15, '旧反应镜头')] },
+    { scene_id: f.other.id, scene_duration: 30, shots: [shot(null, 30, '其他场次保留')] },
+  ] })
+  oldShotId = original.shots[0].id
+  const oldOther = original.shots.find((item: any) => item.source_scene_id === f.other.id)
+  const profileId = `old-profile-${sceneId}`, assetId = `old-video-${sceneId}`, jobId = `old-job-${sceneId}`, timestamp = now()
+  run(`INSERT INTO visual_profiles (id,project_id,kind,name,definition,view_requirements,created_at,updated_at)
+    VALUES (?,?,'character','旧人物','蓝色外套','正侧背',?,?)`, profileId, f.project.id, timestamp, timestamp)
+  run('INSERT INTO scene_visual_bindings VALUES (?,?,1)', sceneId, profileId)
+  run(`INSERT INTO shot_visual_bindings (shot_id,profile_id,required,revision,kind,name,variant,definition,view_requirements)
+    VALUES (?,?,1,1,'character','旧人物','默认','蓝色外套','正侧背')`, oldShotId, profileId)
+  run(`INSERT INTO assets (id,project_id,shot_id,kind,filename,path,source,created_at)
+    VALUES (?,?,?,'video','old.mp4','/tmp/old.mp4','generated',?)`, assetId, f.project.id, oldShotId, timestamp)
+  run('UPDATE shots SET selected_asset_id=? WHERE id=?', assetId, oldShotId)
+  run(`INSERT INTO jobs (id,project_id,shot_id,job_type,request,status,result_asset_id,created_at,updated_at)
+    VALUES (?,?,?,'generation','{}','succeeded',?,?,?)`, jobId, f.project.id, oldShotId, assetId, timestamp, timestamp)
+  run(`INSERT INTO timeline_clips (id,project_id,shot_id,asset_id,in_ms,out_ms,source_duration_ms)
+    VALUES (?,?,?,?,0,15000,15000)`, `old-clip-${sceneId}`, f.project.id, oldShotId, assetId)
+  const canvases = await call('GET', `/api/projects/${f.project.id}/canvases`), oldCanvas = canvases[0]
+  run(`INSERT INTO canvas_nodes (id,project_id,canvas_id,position,type,x,y,width,height,shot_id,asset_id,job_id,prompt,settings)
+    VALUES (?,?,?,0,'generation',80,80,320,240,?,?,?,'旧画布提示词','{"modality":"video"}')`,
+    `old-node-${sceneId}`, f.project.id, oldCanvas.id, oldShotId, assetId, jobId)
+  run('INSERT INTO production_ranges (project_id,start_shot_id,end_shot_id) VALUES (?,?,?)', f.project.id, oldShotId, oldOther.id)
+  const historical = {
+    shots: all<any>('SELECT * FROM shots WHERE project_id=? AND source_scene_id=? ORDER BY position', f.project.id, sceneId),
+    assets: all('SELECT * FROM assets WHERE project_id=?', f.project.id),
+    jobs: all('SELECT * FROM jobs WHERE project_id=?', f.project.id),
+    clips: all('SELECT * FROM timeline_clips WHERE project_id=?', f.project.id),
+    nodes: all('SELECT * FROM canvas_nodes WHERE project_id=?', f.project.id),
+    bindings: all('SELECT * FROM shot_visual_bindings WHERE shot_id=?', oldShotId),
+    profile: one('SELECT * FROM visual_profiles WHERE id=?', profileId),
+  }
+  const context = await f.context()
+  const plan = await f.invoke('plan', { scene_ids: [sceneId], signature: context.signature, model_id: 'mock-text', mode: 'redesign', instructions })
+  assert.equal(plan.mode, 'redesign'); assert.equal(plan.instructions, instructions)
+  assert.notEqual(plan.signature, context.signature)
+  const request = { signature: plan.signature, mode: plan.mode, instructions: plan.instructions, request_id: crypto.randomUUID(),
+    scenes: plan.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene) }
+  const saved = await f.invoke('commit', request)
+  assert.equal(saved.design_id, request.request_id)
+  assert.ok(saved.target_canvas_id && saved.target_canvas_id !== oldCanvas.id)
+  assert.equal(saved.created_shots, 1); assert.deepEqual(saved.updated_shot_ids, [])
+  assert.equal(saved.shots.length, 1); assert.ok(!historical.shots.some(shot => shot.id === saved.shots[0].id))
+  assert.equal(saved.shots[0].design_id, saved.design_id)
+  assert.equal(saved.shots[0].selected_asset_id, null)
+  assert.deepEqual(saved.shot_visual_bindings, []); assert.deepEqual(saved.visual_profiles, [])
+  const design = one<any>('SELECT * FROM storyboard_designs WHERE id=?', saved.design_id)!
+  assert.equal(design.instructions, instructions); assert.deepEqual(JSON.parse(design.scene_ids), [sceneId])
+  assert.equal(design.name, '分镜方案 2')
+  const oldShots = all<any>('SELECT * FROM shots WHERE project_id=? AND source_scene_id=? AND superseded_by IS NOT NULL ORDER BY position', f.project.id, sceneId)
+  assert.deepEqual(oldShots, historical.shots.map(shot => ({ ...shot, superseded_by: saved.design_id })))
+  for (const [table, expected] of [['assets', historical.assets], ['jobs', historical.jobs], ['timeline_clips', historical.clips], ['canvas_nodes', historical.nodes]] as const) {
+    assert.deepEqual(all(`SELECT * FROM ${table} WHERE project_id=?`, f.project.id), expected, `${table} history remains unchanged`)
+  }
+  assert.deepEqual(one('SELECT * FROM visual_profiles WHERE id=?', profileId), historical.profile)
+  assert.deepEqual(all('SELECT * FROM shot_visual_bindings WHERE shot_id=?', oldShotId), historical.bindings)
+  assert.equal(one<any>('SELECT * FROM shots WHERE id=?', oldOther.id)!.superseded_by, null)
+  assert.deepEqual(one('SELECT * FROM production_ranges WHERE project_id=?', f.project.id), {
+    project_id: f.project.id, start_shot_id: saved.shots[0].id, end_shot_id: oldOther.id,
+  })
+  const oldCut = await call('GET', `/api/projects/${f.project.id}?canvas_id=${oldCanvas.id}`)
+  assert.deepEqual(oldCut.production_range, { start_shot_id: oldShotId, end_shot_id: oldOther.id })
+  assert.equal(oldCut.timeline_clips[0].shot_id, oldShotId)
+  assert.deepEqual(one('SELECT * FROM canvas_production_ranges WHERE canvas_id=?', oldCanvas.id), {
+    canvas_id: oldCanvas.id, project_id: f.project.id, start_shot_id: oldShotId, end_shot_id: oldOther.id,
+  })
+  const next = await f.context()
+  assert.deepEqual(next.existing_shots.map((item: any) => item.shot_id), saved.shots.map((item: any) => item.id))
+  assert.equal(next.scenes[0].shot_count, 1); assert.equal(next.scenes[0].material_count, 0); assert.equal(next.scenes[0].canvas_shot_count, 0)
+  const repeated = await f.invoke('commit', request)
+  assert.equal(repeated.replayed, true); assert.equal(repeated.design_id, saved.design_id); assert.equal(repeated.target_canvas_id, saved.target_canvas_id)
+  assert.deepEqual(repeated.shots, saved.shots)
+  assert.equal(all('SELECT * FROM storyboard_designs WHERE project_id=?', f.project.id).length, 1)
+  assert.equal((await call('GET', `/api/projects/${f.project.id}/canvases`)).length, 2)
+  assert.equal(calls, 1)
+  await f.invoke('commit', { ...request, mode: 'update' }, 409)
+  await f.invoke('commit', { ...request, instructions: '改掉要求' }, 409)
+  const mixed = await f.invoke('canvas', { scene_ids: [sceneId, f.other.id], mode: 'existing' }, 422)
+  assert.match(mixed.message, /不同方案/)
+  assert.deepEqual(all('PRAGMA foreign_key_check'), [])
+})
+
+test('redesign rejects old shot IDs, stale sources and changed mode or instructions before writing any design', async t => {
+  let sceneId = '', outputShotId: string | null = null
+  const f = await setup(t, async () => JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(outputShotId, 30)] }] }))
+  sceneId = f.scene.id
+  const initial = await f.context()
+  const old = await f.invoke('commit', { signature: initial.signature, request_id: crypto.randomUUID(), scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(null, 30)] }] })
+  outputShotId = old.shots[0].id
+  const context = await f.context(), input = { signature: context.signature, scene_ids: [sceneId], model_id: 'mock-text', mode: 'redesign', instructions: '换一种设计' }
+  const invalid = await f.invoke('plan', input, 422)
+  assert.match(invalid.message, /不能复用已有镜头/)
+  assert.equal(f.calls(), 2)
+  outputShotId = null
+  const plan = await f.invoke('plan', input)
+  const request = { signature: plan.signature, mode: plan.mode, instructions: plan.instructions, request_id: crypto.randomUUID(),
+    scenes: plan.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene) }
+  await f.invoke('commit', { ...request, mode: 'update' }, 409)
+  await f.invoke('commit', { ...request, instructions: '另一要求' }, 409)
+  await f.invoke('commit', { ...request, scenes: [{ ...request.scenes[0], shots: [shot(old.shots[0].id, 30)] }] }, 422)
+  run('UPDATE script_scenes SET action=? WHERE id=?', '规划后修改了动作', sceneId)
+  await f.invoke('commit', request, 409)
+  assert.equal(all('SELECT * FROM storyboard_designs WHERE project_id=?', f.project.id).length, 0)
+  assert.equal(one<any>('SELECT * FROM shots WHERE id=?', old.shots[0].id)!.superseded_by, null)
+  assert.equal(all('SELECT * FROM shots WHERE project_id=?', f.project.id).length, 1)
+})
+
+test('a new redesign can combine selected scenes from different previous designs without modifying unselected history', async t => {
+  let scenes: any[] = []
+  const f = await setup(t, async () => JSON.stringify({ scenes }))
+  const redesign = async (sceneIds: string[]) => {
+    const context = await f.invoke('context', { scene_ids: sceneIds })
+    scenes = sceneIds.map(scene_id => ({ scene_id, scene_duration: 30, shots: [shot(null, 30)] }))
+    const plan = await f.invoke('plan', { scene_ids: sceneIds, signature: context.signature, model_id: 'mock-text', mode: 'redesign' })
+    return f.invoke('commit', { signature: plan.signature, mode: plan.mode, instructions: plan.instructions, request_id: crypto.randomUUID(),
+      scenes: plan.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene) })
+  }
+  const first = await redesign([f.scene.id]), second = await redesign([f.other.id])
+  const combined = await redesign([f.scene.id, f.other.id])
+  assert.equal(combined.shots.length, 2)
+  assert.ok(combined.shots.every((shot: any) => shot.design_id === combined.design_id))
+  assert.equal(one<any>('SELECT * FROM shots WHERE id=?', first.shots[0].id)!.superseded_by, combined.design_id)
+  assert.equal(one<any>('SELECT * FROM shots WHERE id=?', second.shots[0].id)!.superseded_by, combined.design_id)
+  assert.equal(all('SELECT * FROM storyboard_designs WHERE project_id=?', f.project.id).length, 3)
+  assert.notEqual(first.target_canvas_id, combined.target_canvas_id)
+  assert.notEqual(second.target_canvas_id, combined.target_canvas_id)
+  assert.deepEqual(all('PRAGMA foreign_key_check'), [])
+})
+
+test('canvas import includes same-design base profiles even without their own shot binding and rejects cross-design ancestry', async t => {
+  let sceneId = '', shotId = ''
+  const f = await setup(t,
+    async () => JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(null, 30)] }] }),
+    async () => JSON.stringify({ profiles: [
+      { draft_key: 'base', kind: 'character', name: '林晚', variant: '基础', definition: '基础人物黑发蓝衣', view_requirements: '正侧背',
+        scene_ids: [sceneId], shot_usage: [{ shot_id: shotId, usage: 'none' }] },
+      { draft_key: 'wet', base_draft_key: 'base', state_delta: '右袖湿润', kind: 'character', name: '林晚', variant: '湿袖', definition: '基础人物右袖湿润', view_requirements: '正侧背与右袖局部',
+        scene_ids: [sceneId], shot_usage: [{ shot_id: shotId, usage: 'both' }] },
+    ] }))
+  sceneId = f.scene.id
+  const context = await f.context()
+  const plan = await f.invoke('plan', { scene_ids: [sceneId], signature: context.signature, model_id: 'mock-text', mode: 'redesign' })
+  const saved = await f.invoke('commit', { signature: plan.signature, mode: plan.mode, instructions: plan.instructions, request_id: crypto.randomUUID(),
+    scenes: plan.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene) })
+  shotId = saved.shots[0].id
+  const prepared = await f.prepareReferences()
+  const child = prepared.visual_profiles.find((profile: any) => profile.base_profile_id), baseId = child.base_profile_id
+  run('DELETE FROM shot_visual_bindings WHERE shot_id=? AND profile_id=?', shotId, baseId)
+  const result = await f.invoke('canvas', { scene_ids: [sceneId], mode: 'existing' })
+  assert.deepEqual(new Set(result.visual_profiles.map((profile: any) => profile.id)), new Set([child.id, baseId]))
+  assert.ok(result.visual_profiles.every((profile: any) => profile.design_id === saved.design_id))
+  assert.deepEqual(result.shot_visual_bindings.map((binding: any) => binding.profile_id), [child.id])
+  const timestamp = now(), legacyId = `legacy-base-${sceneId}`
+  run(`INSERT INTO visual_profiles (id,project_id,kind,name,definition,view_requirements,created_at,updated_at)
+    VALUES (?,?,'character','旧基础人物','旧版','正侧背',?,?)`, legacyId, f.project.id, timestamp, timestamp)
+  run('UPDATE visual_profiles SET base_profile_id=? WHERE id=?', legacyId, child.id)
+  const invalid = await f.invoke('canvas', { scene_ids: [sceneId], mode: 'existing' }, 422)
+  assert.match(invalid.message, /同一设计方案/)
+})
+
+test('deleted design canvases cannot silently fall back on import or commit replay', async t => {
+  let sceneId = ''
+  const f = await setup(t, async () => JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(null, 30)] }] }))
+  sceneId = f.scene.id
+  const context = await f.context()
+  const plan = await f.invoke('plan', { scene_ids: [sceneId], signature: context.signature, model_id: 'mock-text', mode: 'redesign' })
+  const request = { signature: plan.signature, mode: plan.mode, instructions: plan.instructions, request_id: crypto.randomUUID(),
+    scenes: plan.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene) }
+  const saved = await f.invoke('commit', request)
+  await f.prepareReferences()
+  run('DELETE FROM project_canvases WHERE id=? AND project_id=?', saved.target_canvas_id, f.project.id)
+  assert.equal(one<any>('SELECT * FROM storyboard_designs WHERE id=?', saved.design_id)!.canvas_id, null)
+  const count = all('SELECT * FROM project_canvases WHERE project_id=?', f.project.id).length
+  const missing = await f.invoke('canvas', { scene_ids: [sceneId], mode: 'existing' }, 409)
+  assert.match(missing.message, /专属画布已删除/)
+  const replay = await f.invoke('commit', request, 409)
+  assert.match(replay.message, /专属画布已删除/)
+  assert.equal(all('SELECT * FROM project_canvases WHERE project_id=?', f.project.id).length, count)
+  assert.equal(all('SELECT * FROM storyboard_designs WHERE project_id=?', f.project.id).length, 1)
+  assert.equal(all('SELECT * FROM shots WHERE project_id=?', f.project.id).length, 1)
+})
 function skill(name: string, rule: string) {
   const installed = installSkillBundle({ repo: 'qa/storyboard', path: name, name, description: name, license: 'MIT', revision: 'a'.repeat(40),
     tool_requirements: [], suggested_stages: ['storyboard'], url: '', files: [{ path: `${name}/SKILL.md`, content: `---\nname: ${name}\ndescription: 分镜规则\n---\n${rule}` }] })
@@ -225,7 +446,206 @@ test('planning versions follow creative project inputs without false conflicts f
   assert.equal(f.calls(), 0); assert.equal(f.visualCalls(), 0)
 })
 
-test('old scene templates stay unplanned after script edits; structured authored shots can be reused', async t => {
+test('patching one scene field keeps its episode, timing and other creative source fields', async t => {
+  const f = await setup(t)
+  run('UPDATE script_scenes SET location=?, time_of_day=?, characters=?, narration=? WHERE id=?',
+    '地下站台', '夜', '林晚、站长', '远处传来列车声', f.scene.id)
+  const patched = await call('PATCH', `/api/script-scenes/${f.scene.id}`, { action: '林晚拉住站长，避开坍塌的横梁。' })
+  assert.equal(patched.action, '林晚拉住站长，避开坍塌的横梁。')
+  assert.equal(patched.episode_number, 1)
+  assert.equal(patched.duration, 30)
+  assert.equal(patched.location, '地下站台')
+  assert.equal(patched.time_of_day, '夜')
+  assert.equal(patched.characters, '林晚、站长')
+  assert.equal(patched.dialogue, '快走')
+  assert.equal(patched.narration, '远处传来列车声')
+})
+
+test('planning always reads the selected episodes latest saved body, even without selected reference documents', async t => {
+  let sceneId = ''
+  const f = await setup(t, async prompt => {
+    assert.match(prompt, /最新正式正文/)
+    assert.match(prompt, /EPISODE_ONE_CURRENT_BODY/)
+    assert.doesNotMatch(prompt, /EPISODE_TWO_UNRELATED_BODY|人物未选择内容/)
+    return JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(null, 30)] }] })
+  })
+  sceneId = f.scene.id
+  await call('PUT', `/api/projects/${f.project.id}/script/artifacts`, { artifacts: [
+    { artifact_type: 'episode_script', episode_number: 1, title: '第一集正文', content: 'EPISODE_ONE_OLD_BODY' },
+    { artifact_type: 'episode_script', episode_number: 2, title: '第二集正文', content: 'EPISODE_TWO_UNRELATED_BODY' },
+  ] })
+  const body = one<{ id: string }>("SELECT id FROM script_artifacts WHERE project_id=? AND artifact_type='episode_script' AND episode_number=1", f.project.id)!
+  const edited = await call('PATCH', `/api/script-artifacts/${body.id}`, { content: 'EPISODE_ONE_CURRENT_BODY' })
+  assert.equal(edited.episode_number, 1, 'editing body must keep the episode association')
+  const context = await f.context()
+  assert.deepEqual(context.default_document_ids, [body.id])
+  const planned = await f.invoke('plan', { signature: context.signature, scene_ids: [sceneId], model_id: 'mock-text', document_ids: [] })
+  assert.deepEqual(planned.source_documents.map((document: { id: string }) => document.id), [body.id])
+  assert.equal(f.calls(), 1)
+})
+
+test('saved source fingerprints ignore timestamps, canvas deletion and unrelated episodes but reject changed episode body', async t => {
+  const f = await setup(t)
+  await call('PUT', `/api/projects/${f.project.id}/script/artifacts`, { artifacts: [
+    { artifact_type: 'episode_script', episode_number: 1, title: '第一集', content: '林晚在车站救援。' },
+    { artifact_type: 'episode_script', episode_number: 2, title: '第二集', content: '其他集原文。' },
+  ] })
+  const first = await f.context()
+  await f.invoke('commit', { signature: first.signature, request_id: crypto.randomUUID(), scenes: [
+    { scene_id: f.scene.id, scene_duration: 30, shots: [shot(null, 30)] },
+  ] })
+  const baseline = one<{ source_fingerprint: string }>('SELECT * FROM storyboard_scene_plans WHERE scene_id=? AND project_id=?', f.scene.id, f.project.id)!
+  assert.match(baseline.source_fingerprint, /^[a-f0-9]{64}$/)
+  run('UPDATE projects SET updated_at=? WHERE id=?', '2099-01-01T00:00:00.000Z', f.project.id)
+  run('UPDATE script_scenes SET updated_at=? WHERE id=?', '2099-01-01T00:00:00.000Z', f.scene.id)
+  run('UPDATE script_artifacts SET updated_at=? WHERE project_id=?', '2099-01-01T00:00:00.000Z', f.project.id)
+  run("UPDATE script_artifacts SET content='其他集修改，与第一集无关。' WHERE project_id=? AND episode_number=2", f.project.id)
+  run('DELETE FROM canvas_nodes WHERE project_id=?', f.project.id)
+  const unchanged = await f.context()
+  assert.equal(unchanged.scenes[0].planned, true)
+  assert.equal(unchanged.scenes[0].needs_replan, false)
+  run("UPDATE script_artifacts SET content='第一集改为林晚在车站追踪失踪者。' WHERE project_id=? AND episode_number=1", f.project.id)
+  const changed = await f.context()
+  assert.equal(changed.scenes[0].planned, false)
+  assert.equal(changed.scenes[0].needs_replan, true)
+  assert.match(changed.scenes[0].replan_reason, /已更新/)
+  assert.match((await f.invoke('canvas', { scene_ids: [f.scene.id], mode: 'existing' }, 422)).message, /重新规划/)
+  assert.equal(one<{ source_fingerprint: string }>('SELECT * FROM storyboard_scene_plans WHERE scene_id=?', f.scene.id)!.source_fingerprint, baseline.source_fingerprint)
+})
+
+test('scene, shared documents and project style changes each make a confirmed plan require replanning', async t => {
+  for (const kind of ['scene', 'document', 'style'] as const) await t.test(kind, async t => {
+    const f = await setup(t), initial = await f.context()
+    await f.invoke('commit', { signature: initial.signature, request_id: crypto.randomUUID(), scenes: [
+      { scene_id: f.scene.id, scene_duration: 30, shots: [shot(null, 30)] },
+    ] })
+    if (kind === 'scene') run('UPDATE script_scenes SET action=? WHERE id=?', '新的救援动作', f.scene.id)
+    else if (kind === 'document') run('UPDATE scripts SET characters=? WHERE project_id=?', '人物已改为银色长发', f.project.id)
+    else run('UPDATE scripts SET generation_options=? WHERE project_id=?', JSON.stringify({ visual_style: '水彩动画' }), f.project.id)
+    const changed = await f.context()
+    assert.equal(changed.scenes[0].planned, false)
+    assert.equal(changed.scenes[0].needs_replan, true)
+  })
+})
+
+test('unchanged current plans keep selected media; stale sources reset it even when new shot wording is identical, once', async t => {
+  const f = await setup(t), initial = await f.context()
+  const saved = await f.invoke('commit', { signature: initial.signature, request_id: crypto.randomUUID(), scenes: [
+    { scene_id: f.scene.id, scene_duration: 30, shots: [shot(null, 30)] },
+  ] })
+  const shotId = saved.shots[0].id, assetId = `freshness-${shotId}`
+  assert.equal(saved.shots[0].storyboard_revision, 0)
+  run("INSERT INTO assets (id,project_id,shot_id,kind,filename,path,source,created_at) VALUES (?,?,?,'image','frame.png','/tmp/frame.png','upload',?)",
+    assetId, f.project.id, shotId, now())
+  run('UPDATE shots SET selected_asset_id=? WHERE id=?', assetId, shotId)
+  const current = await f.context()
+  const same = await f.invoke('commit', { signature: current.signature, request_id: crypto.randomUUID(), scenes: [
+    { scene_id: f.scene.id, scene_duration: 30, shots: [shot(shotId, 30)] },
+  ] })
+  assert.equal(same.shots[0].selected_asset_id, assetId)
+  assert.equal(same.shots[0].storyboard_revision, 0)
+  run('UPDATE script_scenes SET dialogue=? WHERE id=?', '本场改为另一个救援目标', f.scene.id)
+  const changed = await f.context(), submission = { signature: changed.signature, request_id: crypto.randomUUID(), scenes: [
+    { scene_id: f.scene.id, scene_duration: 30, shots: [shot(shotId, 30)] },
+  ] }
+  const reset = await f.invoke('commit', submission)
+  assert.equal(reset.shots[0].selected_asset_id, null)
+  assert.equal(reset.shots[0].storyboard_revision, 1)
+  assert.ok(one('SELECT 1 FROM assets WHERE id=?', assetId))
+  assert.equal((await f.context()).scenes[0].planned, true)
+  run('UPDATE shots SET selected_asset_id=? WHERE id=?', assetId, shotId)
+  const replayed = await f.invoke('commit', submission)
+  assert.equal(replayed.replayed, true)
+  assert.equal(replayed.shots[0].storyboard_revision, 1)
+  assert.equal(replayed.shots[0].selected_asset_id, assetId, 'a replay cannot clear media selected after the successful commit')
+})
+
+test('a changed replan refreshes image and video nodes across canvases while preserving independent nodes and media history', async t => {
+  const f = await setup(t), initial = await f.context()
+  const saved = await f.invoke('commit', { signature: initial.signature, request_id: crypto.randomUUID(), scenes: [
+    { scene_id: f.scene.id, scene_duration: 30, shots: [shot(null, 30)] },
+  ] })
+  const shotId = saved.shots[0].id
+  const other = await call('POST', `/api/projects/${f.project.id}/shots`, { title: '无关镜头', source_scene_id: f.other.id })
+  const imageId = `old-image-${shotId}`, videoId = `old-video-${shotId}`, otherAssetId = `unrelated-${shotId}`
+  const imageJobId = `image-job-${shotId}`, videoJobId = `video-job-${shotId}`
+  const providerId = `provider-${shotId}`, videoModelId = `video-model-${shotId}`
+  run("INSERT INTO providers (id,name,adapter,base_url,created_at) VALUES (?,?,'http','https://example.invalid',?)", providerId, '回归模型', now())
+  run("INSERT INTO models (id,provider_id,name,remote_id,modality) VALUES (?,?,?,?,'video')", videoModelId, providerId, '视频模型', 'video-test')
+  for (const [id, sourceShot, kind] of [[imageId, shotId, 'image'], [videoId, shotId, 'video'], [otherAssetId, other.id, 'image']]) {
+    run('INSERT INTO assets (id,project_id,shot_id,kind,filename,path,source,created_at) VALUES (?,?,?,?,?,?,?,?)',
+      id, f.project.id, sourceShot, kind, `${id}.png`, '/tmp/history.png', 'generated', now())
+  }
+  for (const [jobId, assetId] of [[imageJobId, imageId], [videoJobId, videoId]]) {
+    run(`INSERT INTO jobs (id,project_id,shot_id,job_type,request,status,result_asset_id,created_at,updated_at)
+      VALUES (?,?,?,'generation','{}','succeeded',?,?,?)`, jobId, f.project.id, shotId, assetId, now(), now())
+  }
+  run('UPDATE shots SET selected_asset_id=? WHERE id=?', videoId, shotId)
+  run('UPDATE shots SET selected_asset_id=? WHERE id=?', otherAssetId, other.id)
+  run('INSERT INTO timeline_clips (id,project_id,shot_id,asset_id,in_ms,out_ms) VALUES (?,?,?,?,0,5000)',
+    `old-clip-${shotId}`, f.project.id, shotId, videoId)
+  run('INSERT INTO timeline_clips (id,project_id,shot_id,asset_id,in_ms,out_ms) VALUES (?,?,?,?,0,5000)',
+    `other-clip-${shotId}`, f.project.id, other.id, otherAssetId)
+  const defaultGraph = await call('GET', `/api/projects/${f.project.id}/canvas`)
+  const second = await call('POST', `/api/projects/${f.project.id}/canvases`, {})
+  const graphPaths = [`/api/projects/${f.project.id}/canvas`, `/api/projects/${f.project.id}/canvases/${second.id}`]
+  const before = []
+  for (const [index, path] of graphPaths.entries()) {
+    const key = `c${index}`
+    const generationNode = (modality: 'image' | 'video') => ({ id: `${key}-${modality}`, type: 'generation', shot_id: shotId,
+      x: index * 1000, y: modality === 'image' ? 80 : 600, width: 440, height: 420,
+      title: '旧标题', prompt: '旧提示词', text: '已整理旧提示词', asset_id: modality === 'image' ? imageId : videoId,
+      job_id: modality === 'image' ? imageJobId : videoJobId,
+      model_id: modality === 'video' ? videoModelId : null,
+      // Legacy snapshots may retain image settings after switching to a video model.
+      settings: { modality: 'image', mode: 'reference', duration: 30, ratio: '16:9', resolution: '1080p',
+        storyboard_revision: 0, prompt_override: true, prompt_is_final: true, prompt_base: '旧原始提示词', prompt_template: '旧模板',
+        generation_completed_job_id: modality === 'image' ? imageJobId : videoJobId,
+        storyboard_reference_asset_id: imageId, reference_video_url: 'https://example.invalid/old.mp4',
+        video_reference_usages: [{ asset_id: imageId, usage: 'composition' }], group_id: shotId, group_title: '旧镜头分组' } })
+    const current = index === 0 ? defaultGraph : await call('GET', path)
+    before.push(await call('PUT', path, { revision: current.revision, nodes: [
+      generationNode('image'), generationNode('video'),
+      { id: `${key}-history`, type: 'image', shot_id: shotId, asset_id: imageId, x: 100, y: 1200, width: 400, height: 272, title: '独立历史图片' },
+      { id: `${key}-other`, type: 'generation', shot_id: other.id, asset_id: otherAssetId, x: 600, y: 1200, width: 440, height: 420,
+        title: '无关生成节点', prompt: '独立提示词', settings: { modality: 'image', storyboard_revision: 0, prompt_override: true } },
+    ], edges: [{ id: `${key}-old-reference`, source: `${key}-history`, target: `${key}-video`, reference_asset_id: imageId }] }))
+  }
+  const current = await f.context()
+  const result = await f.invoke('commit', { signature: current.signature, request_id: crypto.randomUUID(), scenes: [
+    { scene_id: f.scene.id, scene_duration: 20, shots: [{ ...shot(shotId, 20, '全新镜头标题'),
+      prompt: 'NEW_STORY', image_prompt: 'NEW_IMAGE_COMPOSITION', video_prompt: 'NEW_VIDEO_ACTION' }] },
+  ] })
+  assert.equal(result.shots[0].selected_asset_id, null)
+  assert.equal(result.shots[0].storyboard_revision, 1)
+  for (const [index, path] of graphPaths.entries()) {
+    const refreshed = await call('GET', path), key = `c${index}`
+    for (const modality of ['image', 'video']) {
+      const node = refreshed.nodes.find((node: { id: string }) => node.id === `${key}-${modality}`)
+      const previous = before[index].nodes.find((item: { id: string }) => item.id === node.id)
+      assert.equal(node.title, '全新镜头标题')
+      assert.equal(node.prompt, modality === 'image' ? 'NEW_IMAGE_COMPOSITION' : 'NEW_VIDEO_ACTION')
+      assert.equal(node.text, ''); assert.equal(node.asset_id, null); assert.equal(node.job_id, null)
+      assert.equal(node.settings.storyboard_revision, 1); assert.equal(node.settings.duration, 20)
+      assert.equal(node.settings.modality, modality)
+      assert.equal(node.settings.resolution, '1080p')
+      assert.deepEqual([node.x, node.y, node.width, node.height], [previous.x, previous.y, previous.width, previous.height])
+      for (const field of ['prompt_override', 'prompt_is_final', 'prompt_base', 'prompt_template', 'generation_completed_job_id',
+        'storyboard_reference_asset_id', 'reference_video_url']) assert.equal(node.settings[field], undefined, field)
+      assert.deepEqual(node.settings.video_reference_usages, [])
+    }
+    for (const id of [`${key}-history`, `${key}-other`]) assert.deepEqual(
+      refreshed.nodes.find((node: { id: string }) => node.id === id), before[index].nodes.find((node: { id: string }) => node.id === id))
+    assert.deepEqual(refreshed.edges, [])
+  }
+  assert.equal(one('SELECT 1 FROM timeline_clips WHERE shot_id=?', shotId), undefined)
+  assert.ok(one('SELECT 1 FROM timeline_clips WHERE shot_id=?', other.id))
+  assert.equal(one<{ selected_asset_id: string }>('SELECT selected_asset_id FROM shots WHERE id=?', other.id)!.selected_asset_id, otherAssetId)
+  assert.equal(all('SELECT 1 FROM assets WHERE project_id=?', f.project.id).length, 3)
+  assert.equal(all('SELECT 1 FROM jobs WHERE project_id=?', f.project.id).length, 2)
+})
+
+test('historical templates and authored shots need a confirmed source baseline before reuse', async t => {
   const f = await setup(t)
   const legacy = await call('POST', `/api/projects/${f.project.id}/script/convert-to-shots`, { scene_ids: [f.scene.id] })
   assert.equal((await f.context()).scenes[0].planned, false)
@@ -236,8 +656,15 @@ test('old scene templates stay unplanned after script edits; structured authored
   run('UPDATE shots SET prompt=?, image_prompt=?, video_prompt=?, start_state=?, end_state=?, cut_note=? WHERE id=?',
     value.prompt, value.image_prompt, value.video_prompt, value.start_state, value.end_state, value.cut_note, legacy.shots[0].id)
   const context = await f.context()
-  assert.equal(context.scenes[0].planned, true)
+  assert.equal(context.scenes[0].planned, false)
+  assert.equal(context.scenes[0].needs_replan, true)
+  assert.match(context.scenes[0].replan_reason, /缺少来源版本/)
   assert.deepEqual(context.existing_shots, [{ ...value, scene_id: f.scene.id, title: '车站场次' }])
+  await f.invoke('canvas', { scene_ids: [f.scene.id], mode: 'existing' }, 422)
+  await f.invoke('commit', { signature: context.signature, request_id: crypto.randomUUID(), scenes: [
+    { scene_id: f.scene.id, scene_duration: 30, shots: [{ ...value, title: '车站场次' }] },
+  ] })
+  assert.equal((await f.context()).scenes[0].planned, true)
   await f.prepareReferences()
   const first = await f.invoke('canvas', { scene_ids: [f.scene.id], mode: 'existing' })
   const second = await f.invoke('canvas', { scene_ids: [f.scene.id], mode: 'existing' })
@@ -443,7 +870,7 @@ test('a total duration is allocated across selected scenes; invalid allocation i
   assert.equal(one<ScriptScene>('SELECT * FROM script_scenes WHERE id=?', sceneId)!.duration, 30)
 })
 
-test('confirming a replan preserves shot IDs, media, timeline and bindings, replaces the plan and replays once', async t => {
+test('confirming a changed replan preserves shot IDs and history, detaches old media and timeline, and replays once', async t => {
   const f = await setup(t)
   const profileId = 'profile-' + f.scene.id, timestamp = now()
   run(`INSERT INTO visual_profiles (id,project_id,kind,name,definition,view_requirements,created_at,updated_at)
@@ -457,15 +884,17 @@ test('confirming a replan preserves shot IDs, media, timeline and bindings, repl
   run('INSERT INTO timeline_clips (id,project_id,shot_id,asset_id,in_ms,out_ms,source_duration_ms) VALUES (?,?,?,?,0,5000,5000)', 'clip-' + oldId, f.project.id, oldId, assetId)
   const context = await f.context(), plan = { signature: context.signature, request_id: crypto.randomUUID(), scenes: [{ scene_id: f.scene.id, scene_duration: 15, shots: [shot(oldId, 6), shot(null, 9, '出口反应')] }] }
   const result = await f.invoke('commit', plan)
-  assert.equal(result.shots.length, 2); assert.equal(result.shots[0].id, oldId); assert.equal(result.shots[0].selected_asset_id, assetId)
+  assert.equal(result.shots.length, 2); assert.equal(result.shots[0].id, oldId); assert.equal(result.shots[0].selected_asset_id, null)
+  assert.equal(result.shots[0].storyboard_revision, 1)
   assert.deepEqual(result.updated_shot_ids, [oldId]); assert.equal(result.created_shots, 1)
   assert.equal(one<ScriptScene>('SELECT * FROM script_scenes WHERE id=?', f.scene.id)!.duration, 15)
-  assert.equal(one<{ out_ms: number }>('SELECT * FROM timeline_clips WHERE shot_id=?', oldId)!.out_ms, 5000)
+  assert.equal(one('SELECT * FROM timeline_clips WHERE shot_id=?', oldId), undefined)
   assert.equal(one<{ shot_id: string }>('SELECT * FROM assets WHERE id=?', assetId)!.shot_id, oldId)
   assert.deepEqual(one('SELECT * FROM shot_visual_bindings WHERE shot_id=? AND profile_id=?', oldId, profileId), originalBinding)
   assert.equal(result.shot_visual_bindings.length, 2)
   assert.ok(result.shot_visual_bindings.every((binding: { profile_id: string; required: boolean }) => binding.profile_id === profileId && !binding.required))
   const retry = await f.invoke('commit', plan); assert.equal(retry.replayed, true); assert.equal(retry.shots.length, 2)
+  assert.equal(retry.shots[0].storyboard_revision, 1)
   await f.invoke('commit', { ...plan, scenes: [{ ...plan.scenes[0], shots: [shot(oldId, 5), shot(null, 10)] }] }, 409)
   assert.equal(all('SELECT * FROM shots WHERE project_id=?', f.project.id).length, 2)
   assert.equal((await f.context()).scenes[0].planned, true)
@@ -558,9 +987,10 @@ test('changing a saved shot plan invalidates reference preparation and retries p
   assert.deepEqual((await f.context()).reference_preparation.needs_analysis, [])
   const current = await f.context()
   extraProp = true
-  await f.invoke('commit', { signature: current.signature, request_id: crypto.randomUUID(), scenes: [
+  const changed = await f.invoke('commit', { signature: current.signature, request_id: crypto.randomUUID(), scenes: [
     { scene_id: sceneId, scene_duration: 30, shots: [{ ...shot(saved.shots[0].id, 30), image_prompt: '日漫，林晚拿着新增红色雨伞' }] },
   ] })
+  assert.equal(changed.shots[0].storyboard_revision, 1, 'new shot wording invalidates media even when source documents did not change')
   assert.deepEqual((await f.context()).reference_preparation.needs_analysis, [sceneId])
   await f.invoke('canvas', { scene_ids: [sceneId], mode: 'existing' }, 422)
   const refreshed = await f.prepareReferences()
@@ -632,7 +1062,8 @@ test('replanning with changed documents refreshes all setting types and only the
     if (type === 'characters') run('UPDATE scripts SET characters=? WHERE project_id=?', latestContent, f.project.id)
     const before = all<any>('SELECT * FROM visual_profiles WHERE project_id=?', f.project.id)
     const saved = await savePlan()
-    assert.equal(saved.shots[0].id, shotId); assert.equal(saved.shots[0].selected_asset_id, mediaId)
+    assert.equal(saved.shots[0].id, shotId); assert.equal(saved.shots[0].selected_asset_id, null)
+    assert.ok(one('SELECT 1 FROM assets WHERE id=?', mediaId), 'old shot media remains in history')
     assert.deepEqual((await f.context()).reference_preparation.needs_analysis, [sceneId])
     const refreshed = await f.prepareReferences()
     for (const profile of refreshed.visual_profiles) {

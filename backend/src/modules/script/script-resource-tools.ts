@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { all, newId, now, one, required, run, type AssetTask, type ScriptScene, type Shot } from '../../infrastructure/database/db.js'
-import { profileInput, updateVisualProfile, checkBindings, insertShotBinding, inheritSceneVisualBindings, type VisualProfile, type VisualBinding } from '../visuals/visual-profiles.js'
+import { profileInput, updateVisualProfile, checkBindings, insertShotBinding, inheritSceneVisualBindings, sceneVisualDesignIds, scopeVisualProfileDrafts, resolveVisualProfileDrafts, type VisualProfile, type VisualBinding } from '../visuals/visual-profiles.js'
+import { visualProfileTextInstructions } from '@video-studio/shared/visuals/visual-profile-display-text'
 import { visualBindingUsages } from '@video-studio/shared/visuals/visual-binding-usage'
 import type { ResourceChange, ShotDraftValue } from '@video-studio/shared/script/script-resource-types'
 import type { DraftImpact } from '@video-studio/shared/script/script-review-types'
@@ -17,13 +18,22 @@ export const shotDraftValue = z.object({ title: z.string().trim().min(1).max(120
 }).strict()
 const bindings = z.array(z.object({ profile_id: id, required: z.boolean(), usage: z.enum(visualBindingUsages).optional() }).strict()).max(50)
 export const resourceValueEdit = z.object({ index: z.number().int().min(0).max(299), value: z.union([profileInput, shotDraftValue, bindings]) }).strict()
+// Model-only optional scope: strict tool protocols emit null for unspecified
+// fields; restoreOptionalNulls restores it to omission before API validation.
+const modelProfileInput = profileInput.extend({ design_id: z.string().min(1).optional() })
+export const modelResourceValueEdit = resourceValueEdit.extend({ value: z.union([modelProfileInput, shotDraftValue, bindings]) })
 export function editResourceValues(changes: ResourceChange[], edits: z.infer<typeof resourceValueEdit>[]) {
   if (new Set(edits.map(edit => edit.index)).size !== edits.length) fail('同一草稿对象不能重复编辑')
   if (edits.some(edit => edit.index >= changes.length)) fail('只能编辑当前草稿对象')
   return changes.map((change, index) => {
     const edit = edits.find(edit => edit.index === index)
     if (!edit) return change
-    if (change.type === 'visual_profile') return { ...change, value: profileInput.parse(edit.value) }
+    if (change.type === 'visual_profile') {
+      const value = profileInput.parse(edit.value)
+      if (value.design_id !== undefined && change.value.design_id !== undefined && value.design_id !== change.value.design_id) fail('视觉草稿不能迁移到其他设计方案')
+      return { ...change, value: value.design_id === undefined && change.value.design_id !== undefined
+        ? { ...value, design_id: change.value.design_id } : value }
+    }
     if (change.type === 'visual_binding') {
       const value = bindings.parse(edit.value)
       return { ...change, value, refresh_profile_ids: change.refresh_profile_ids.filter(id => value.some(binding => binding.profile_id === id)) }
@@ -41,22 +51,50 @@ export const resourceSchemas = {
     changes: shotDraftValue.partial().extend({ start_state: z.string().max(3000).optional(), end_state: z.string().max(3000).optional(), cut_note: z.string().max(3000).optional() }).strict().refine(value => Object.keys(value).length > 0, '请提供修改字段'),
   }).strict()).min(1).max(20) }).strict(),
 }
+export const modelResourceSchemas = {
+  ...resourceSchemas,
+  propose_visual_profile_draft: resourceSchemas.propose_visual_profile_draft.extend({
+    profiles: z.array(resourceSchemas.propose_visual_profile_draft.shape.profiles.element.extend({ profile: modelProfileInput })).min(1).max(20),
+  }),
+}
 export const resourceDescriptions: Record<keyof typeof resourceSchemas, string> = {
   read_visual_profiles: '分页读取本项目视觉档案原文、版本、候选图ID、已确认独立参考图的角度/用途/版本/画风元数据、信息图与实际绑定。reference_status按当前可用参考判断；仅返回媒体状态及文字，不代表已经看过图片。缺图只能如实说明，不能伪造参考图。',
   get_storyboard_context: '分页读取实际场次、已有镜头及图片/视频提示词、版本和冻结参考绑定；独立图按镜头已选快照读取，未选择时回退信息图，并返回图片存在状态，不代表已检查图片内容。scene_ids/shot_ids可限定范围。scene.version用于拆镜，shot.version用于镜头修改，binding_version用于绑定草稿；继续读next_offset直到complete。',
-  propose_visual_profile_draft: '提交视觉设定草稿。新对象不填profile_id/base_version；已有对象必须先read_visual_profiles并传读取的版本。写详细多视角信息图设定，scene_ids限定真实场次。已有绑定通过单独绑定草稿调整。仅准备草稿，确认后才保存，不生成图片。',
-  propose_visual_binding_patch: '为已读取场次或镜头提出完整绑定列表草稿，base_version使用binding_version；引用档案必须已读取。镜头绑定的usage明确both=图片与视频、image=仅开镜图片、video=仅视频过程、none=本镜头不使用，省略时保留原用途；场次仅作候选资料池。列表之外的旧绑定会移除；只有明确要求更新到新档案版本时才填refresh_profile_ids。确认后才执行，不会自动同步其他镜头。',
+  propose_visual_profile_draft: '提交视觉设定草稿。新对象不填profile_id/base_version；已有对象必须先read_visual_profiles并传读取的版本。写详细多视角信息图设定，scene_ids限定真实场次。已有绑定通过单独绑定草稿调整。仅准备草稿，确认后才保存，不生成图片。' + visualProfileTextInstructions,
+  propose_visual_binding_patch: '为已读取场次或镜头提出当前设计方案的完整绑定列表草稿，base_version使用binding_version；引用档案必须已读取且属于同一设计方案。镜头绑定的usage明确both=图片与视频、image=仅开镜图片、video=仅视频过程、none=本镜头不使用，省略时保留原用途；场次仅作候选资料池。列表之外的当前方案绑定会移除，其他方案的历史绑定保留；只有明确要求更新到新档案版本时才填refresh_profile_ids。确认后才执行，不会自动同步其他镜头。',
   propose_shot_plan: '为已读取场次提交新增分镜草稿，base_version使用scene.version。每场新增镜头时长之和须等于场次秒数；同时提供独立图片首帧提示词和视频动作运镜提示词。已有镜头保留，新镜头确认后追加；修改已有镜头用propose_shot_patch。',
   propose_shot_patch: '对已读取的现存分镜提出局部字段修改，使用shot.version。保留镜头ID、素材与场次关联；图片和视频提示词各自明确，叙事变化时检查两者及开收镜状态。只准备草稿，确认后才保存。',
 }
 export function resourceVersion(value: unknown) { return createHash('sha256').update(JSON.stringify(value)).digest('hex') }
 const profiles = (projectId: string) => all<VisualProfile>('SELECT * FROM visual_profiles WHERE project_id=? ORDER BY kind, name, variant, id', projectId)
-function profileValue(profile: VisualProfile) { return profileInput.parse({ kind: profile.kind, name: profile.name, variant: profile.variant, definition: profile.definition, view_requirements: profile.view_requirements, scene_ids: [] }) }
+function profileValue(profile: VisualProfile) { return profileInput.parse({ kind: profile.kind, name: profile.name, variant: profile.variant, definition: profile.definition, view_requirements: profile.view_requirements, scene_ids: [], design_id: profile.design_id || null,
+  base_profile_id: profile.base_profile_id || null, state_delta: profile.state_delta || '' }) }
+function scopedProfileValue(projectId: string, value: unknown, original: VisualProfile | null) {
+  const input = profileInput.parse(value)
+  if (original) {
+    if (input.design_id !== undefined && input.design_id !== (original.design_id || null)) fail('已有视觉设定不能迁移到其他设计方案')
+    if (input.base_draft_key) fail('已有视觉设定的基础关系请使用已保存档案的 ID')
+    return { ...input, design_id: original.design_id || null }
+  }
+  const scoped = scopeVisualProfileDrafts(projectId, [input])[0]!
+  return { ...scoped, design_id: scoped.design_id || null }
+}
 export function shotValue(shot: Shot): ShotDraftValue { return { title: shot.title, prompt: shot.prompt, image_prompt: shot.image_prompt || shot.prompt, video_prompt: shot.video_prompt || shot.prompt, duration: shot.duration, start_state: shot.start_state, end_state: shot.end_state, cut_note: shot.cut_note } }
 function target(projectId: string, type: 'scene' | 'shot', id: string) {
   const item = type === 'scene' ? required<ScriptScene>('script_scenes', id) : required<Shot>('shots', id)
   if (item.project_id !== projectId) throw new Error('对象不属于当前项目')
   return item
+}
+function targetDesignId(projectId: string, type: 'scene' | 'shot', id: string) {
+  const item = target(projectId, type, id)
+  return type === 'scene' ? sceneVisualDesignIds(projectId, [id]).get(id) || null : (item as Shot).design_id || null
+}
+function checkedTargetBindings(projectId: string, type: 'scene' | 'shot', id: string, value: z.infer<typeof bindings>) {
+  const current = target(projectId, type, id)
+  if (type === 'shot' && (current as Shot).superseded_by) fail('不能修改历史方案镜头的参考绑定')
+  const selected = checkBindings(projectId, value), designId = targetDesignId(projectId, type, id)
+  if (selected.some(binding => (binding.profile.design_id || null) !== designId)) fail('参考设定必须属于目标的同一设计方案')
+  return selected
 }
 type SceneResourceBinding = { profile_id: string; required: number }
 type StoredShotBinding = Omit<VisualBinding, 'reference_assets'> & { reference_assets?: string | null }
@@ -65,15 +103,22 @@ function storedTargetBindings(type: 'scene', id: string): SceneResourceBinding[]
 function storedTargetBindings(type: 'shot', id: string): StoredShotBinding[]
 function storedTargetBindings(type: 'scene' | 'shot', id: string): Array<SceneResourceBinding | StoredShotBinding>
 function storedTargetBindings(type: 'scene' | 'shot', id: string): Array<SceneResourceBinding | StoredShotBinding> {
-  return type === 'scene' ? all<SceneResourceBinding>('SELECT * FROM scene_visual_bindings WHERE scene_id=? ORDER BY profile_id', id)
-    : all<StoredShotBinding>('SELECT * FROM shot_visual_bindings WHERE shot_id=? ORDER BY profile_id', id)
+  if (type === 'shot') return all<StoredShotBinding>('SELECT * FROM shot_visual_bindings WHERE shot_id=? ORDER BY profile_id', id)
+  const scene = required<ScriptScene>('script_scenes', id)
+  return all<SceneResourceBinding>(`SELECT b.* FROM scene_visual_bindings b JOIN visual_profiles p ON p.id=b.profile_id
+    WHERE b.scene_id=? AND p.design_id IS ? ORDER BY b.profile_id`, id, targetDesignId(scene.project_id, 'scene', id))
 }
 function targetBindings(type: 'scene' | 'shot', id: string): Array<SceneResourceBinding | DecodedShotBinding> {
   return type === 'scene' ? storedTargetBindings('scene', id) : storedTargetBindings('shot', id).map(normalizeVisualBinding)
 }
 // Keep the persisted bytes in draft hashes; read-only decoding and availability must not change versions.
-function bindingVersion(projectId: string, type: 'scene' | 'shot', id: string) { return resourceVersion([target(projectId, type, id), storedTargetBindings(type, id), profiles(projectId)]) }
-function sceneVersion(projectId: string, scene: ScriptScene) { return resourceVersion([scene, all<Shot>('SELECT * FROM shots WHERE source_scene_id=? ORDER BY position, id', scene.id), targetBindings('scene', scene.id), profiles(projectId)]) }
+function bindingVersion(projectId: string, type: 'scene' | 'shot', id: string) {
+  const value: unknown[] = [target(projectId, type, id), storedTargetBindings(type, id), profiles(projectId)]
+  const designId = type === 'scene' ? targetDesignId(projectId, type, id) : null
+  if (designId) value.push({ design_id: designId })
+  return resourceVersion(value)
+}
+function sceneVersion(projectId: string, scene: ScriptScene) { return resourceVersion([scene, all<Shot>('SELECT * FROM shots WHERE source_scene_id=? AND superseded_by IS NULL ORDER BY position, id', scene.id), targetBindings('scene', scene.id), profiles(projectId)]) }
 function fail(message: string, statusCode = 422): never { throw Object.assign(new Error(message), { statusCode }) }
 
 function referenceReadContext(projectId: string) {
@@ -127,24 +172,28 @@ export function resourceTools(projectId: string) {
           return { profiles: found, project_visual_style: projectVisualStyle(projectId), next_offset: data.offset + found.length, complete: data.offset + found.length >= selected.length, total: selected.length }
         }
         case 'get_storyboard_context': {
-          const data = resourceSchemas.get_storyboard_context.parse(args), scenes = all<ScriptScene>('SELECT * FROM script_scenes WHERE project_id=? ORDER BY position, id', projectId), shots = all<Shot>('SELECT * FROM shots WHERE project_id=? ORDER BY position, id', projectId)
+          const data = resourceSchemas.get_storyboard_context.parse(args), scenes = all<ScriptScene>('SELECT * FROM script_scenes WHERE project_id=? ORDER BY position, id', projectId), shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position, id', projectId)
           const referenceContext = referenceReadContext(projectId)
           if (data.scene_ids?.some(id => !scenes.some(scene => scene.id === id)) || data.shot_ids?.some(id => !shots.some(shot => shot.id === id))) fail('场次或镜头不存在或不属于当前项目')
           const objects: Array<{ type: 'scene'; value: ScriptScene } | { type: 'shot'; value: Shot }> = [
             ...scenes.filter(scene => (!data.scene_ids || data.scene_ids.includes(scene.id)) && (!data.shot_ids || shots.some(shot => data.shot_ids!.includes(shot.id) && shot.source_scene_id === scene.id))).map(value => ({ type: 'scene' as const, value })),
             ...shots.filter(shot => (!data.shot_ids || data.shot_ids.includes(shot.id)) && (!data.scene_ids || !!shot.source_scene_id && data.scene_ids.includes(shot.source_scene_id))).map(value => ({ type: 'shot' as const, value })),
           ]
+          const sceneDesigns = sceneVisualDesignIds(projectId, objects.filter(item => item.type === 'scene').map(item => item.value.id))
+          const designFor = (type: 'scene' | 'shot', value: ScriptScene | Shot) => type === 'scene' ? sceneDesigns.get(value.id) || null : (value as Shot).design_id || null
+          const selectedDesigns = new Set(objects.map(({ type, value }) => designFor(type, value)))
+          if (!objects.length && !data.scene_ids && !data.shot_ids) selectedDesigns.add(null)
           if (data.offset > objects.length) fail('读取位置超过场次/镜头数量')
           const found = objects.slice(data.offset, data.offset + data.limit).map(({ type, value }) => {
             const version = type === 'scene' ? sceneVersion(projectId, value as ScriptScene) : resourceVersion(value)
             const binding_version = bindingVersion(projectId, type, value.id)
             reads.set(`${type}:${value.id}`, version); reads.set(`bindings:${type}:${value.id}`, binding_version)
-            return { type, ...value, version, binding_version, bindings: targetBindings(type, value.id).map(binding => readableBinding(binding, referenceContext)) }
+            return { type, ...value, design_id: designFor(type, value), version, binding_version, bindings: targetBindings(type, value.id).map(binding => readableBinding(binding, referenceContext)) }
           })
           return { objects: found, next_offset: data.offset + found.length, complete: data.offset + found.length >= objects.length, total: objects.length,
             project_visual_style: projectVisualStyle(projectId),
-            visual_profile_catalog: profiles(projectId).map(profile => ({ id: profile.id, kind: profile.kind, name: profile.name,
-              variant: profile.variant, revision: profile.revision, board_asset_id: profile.board_asset_id, ...profileReferenceMetadata(profile, referenceContext) })) }
+            visual_profile_catalog: profiles(projectId).filter(profile => selectedDesigns.has(profile.design_id || null)).map(profile => ({ id: profile.id, kind: profile.kind, name: profile.name,
+              design_id: profile.design_id || null, variant: profile.variant, revision: profile.revision, board_asset_id: profile.board_asset_id, ...profileReferenceMetadata(profile, referenceContext) })) }
         }
         case 'propose_visual_profile_draft': {
           const data = resourceSchemas.propose_visual_profile_draft.parse(args)
@@ -155,11 +204,12 @@ export function resourceTools(projectId: string) {
             else if (item.base_version) fail('新档案不能提供已有版本')
             if (item.profile.scene_ids.some(id => target(projectId, 'scene', id).project_id !== projectId)) fail('来源场次不属于项目')
             if (original && item.profile.scene_ids.length) fail('已有档案的场次引用请使用绑定修改草稿，避免隐式同步')
-            const duplicate = profiles(projectId).find(profile => profile.id !== original?.id && profile.kind === item.profile.kind && profile.name === item.profile.name && profile.variant === item.profile.variant)
+            const value = scopedProfileValue(projectId, item.profile, original)
+            const duplicate = profiles(projectId).find(profile => profile.id !== original?.id && profile.kind === value.kind && profile.name === value.name && profile.variant === value.variant)
             if (duplicate) fail('同名同版本档案已存在，请读取后修订')
-            return { type: 'visual_profile', id: original?.id || newId(), title: `${item.profile.name} · ${item.profile.variant}`, base_version: original ? resourceVersion(original) : '', original: original ? profileValue(original) : null, value: item.profile }
+            return { type: 'visual_profile', id: original?.id || newId(), title: `${value.name} · ${value.variant}`, base_version: original ? resourceVersion(original) : '', original: original ? profileValue(original) : null, value }
           })
-          if (new Set(changes.map(change => change.id)).size !== changes.length || new Set(data.profiles.map(item => JSON.stringify([item.profile.kind, item.profile.name, item.profile.variant]))).size !== changes.length) fail('同一档案不能重复提交')
+          if (new Set(changes.map(change => change.id)).size !== changes.length || new Set(changes.map(change => change.type === 'visual_profile' ? JSON.stringify([change.value.kind, change.value.name, change.value.variant]) : '')).size !== changes.length) fail('同一档案不能重复提交')
           return { summary: data.summary, changes }
         }
         case 'propose_visual_binding_patch': {
@@ -168,7 +218,7 @@ export function resourceTools(projectId: string) {
             const current = target(projectId, item.target_type, item.target_id)
             if (item.base_version !== bindingVersion(projectId, item.target_type, item.target_id)) fail('绑定或设定版本已变化，请重新读取')
             requireRead(`bindings:${item.target_type}:${item.target_id}`, item.base_version)
-            for (const binding of checkBindings(projectId, item.bindings)) requireRead(`profile:${binding.profile.id}`, resourceVersion(binding.profile))
+            for (const binding of checkedTargetBindings(projectId, item.target_type, item.target_id, item.bindings)) requireRead(`profile:${binding.profile.id}`, resourceVersion(binding.profile))
             if (item.refresh_profile_ids.some(id => !item.bindings.some(binding => binding.profile_id === id))) fail('只能刷新本次保留的绑定')
             if (item.target_type === 'scene' && item.refresh_profile_ids.length) fail('场次绑定无需刷新镜头版本')
             return { type: 'visual_binding', id: current.id, title: 'heading' in current ? current.heading : current.title, target_type: item.target_type, base_version: item.base_version,
@@ -220,13 +270,11 @@ export function resourceDraftImpacts(projectId: string, changes: ResourceChange[
 
 export function validateResourceChanges(projectId: string, changes: ResourceChange[]) {
   const newShotGroups = new Map<string, number>()
-  const names = changes.filter(change => change.type === 'visual_profile').map(change => JSON.stringify([change.value.kind, change.value.name, change.value.variant]))
-  if (new Set(names).size !== names.length) fail('同名同版本档案不能重复提交')
   for (const change of changes) {
     if (change.type === 'visual_profile') {
-      profileInput.parse(change.value)
       const current = one<VisualProfile>('SELECT * FROM visual_profiles WHERE id=?', change.id)
       if (change.original ? !current || current.project_id !== projectId || resourceVersion(current) !== change.base_version : !!current) fail('视觉设定原文已变化，请重新读取后修订', 409)
+      change.value = scopedProfileValue(projectId, change.value, current || null)
       const duplicate = profiles(projectId).find(profile => profile.id !== change.id && profile.kind === change.value.kind && profile.name === change.value.name && profile.variant === change.value.variant)
       if (duplicate) fail('同名同版本档案已存在', 409)
       for (const id of change.value.scene_ids) target(projectId, 'scene', id)
@@ -244,23 +292,36 @@ export function validateResourceChanges(projectId: string, changes: ResourceChan
       newShotGroups.set(scene.id, (newShotGroups.get(scene.id) || 0) + change.value.duration)
     } else {
       if (bindingVersion(projectId, change.target_type, change.id) !== change.base_version) fail('引用或档案版本已变化，请重新读取', 409)
-      checkBindings(projectId, bindings.parse(change.value))
+      checkedTargetBindings(projectId, change.target_type, change.id, bindings.parse(change.value))
       if (change.refresh_profile_ids.some(id => !change.value.some(binding => binding.profile_id === id))) fail('只能刷新本次保留的绑定')
     }
   }
+  const names = changes.filter(change => change.type === 'visual_profile').map(change => JSON.stringify([change.value.kind, change.value.name, change.value.variant]))
+  if (new Set(names).size !== names.length) fail('同名同版本档案不能重复提交')
+  const visualChanges = changes.filter(change => change.type === 'visual_profile')
+  resolveVisualProfileDrafts(projectId, visualChanges.map(change => profileInput.parse(change.value)), visualChanges.map(change => change.id))
   for (const [id, duration] of newShotGroups) if ((target(projectId, 'scene', id) as ScriptScene).duration !== duration) fail('新增镜头总时长与源场次不一致')
 }
 
 /** Caller wraps validation and all writes in the existing draft transaction. */
 export function applyResourceChanges(projectId: string, changes: ResourceChange[]) {
   const timestamp = now()
+  const visualChanges = changes.filter(change => change.type === 'visual_profile')
+  const resolved = resolveVisualProfileDrafts(projectId, visualChanges.map(change => profileInput.parse(change.value)), visualChanges.map(change => change.id))
+  const resolvedProfiles = new Map(resolved.map(value => [value.id, value]))
+  // Persist every new base first, so forward draft relations are valid foreign keys.
+  for (const change of visualChanges) if (!change.original) {
+    const { input } = resolvedProfiles.get(change.id)!
+    run(`INSERT INTO visual_profiles (id, project_id, kind, name, variant, definition, view_requirements, design_id, source_draft_key, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+      change.id, projectId, input.kind, input.name, input.variant, input.definition, input.view_requirements, input.design_id || null, input.draft_key || null, timestamp, timestamp)
+  }
   for (const change of changes) {
     if (change.type === 'visual_profile') {
-      const { scene_ids, ...value } = change.value
-      if (change.original) updateVisualProfile(change.id, { ...value, expected_revision: required<VisualProfile>('visual_profiles', change.id).revision })
+      const { input, base_profile_id, state_delta } = resolvedProfiles.get(change.id)!
+      const { scene_ids, design_id: _designId, draft_key: _draftKey, base_draft_key: _baseDraftKey, ...value } = input
+      if (change.original) updateVisualProfile(change.id, { ...value, base_profile_id, state_delta, expected_revision: required<VisualProfile>('visual_profiles', change.id).revision })
       else {
-        run(`INSERT INTO visual_profiles (id, project_id, kind, name, variant, definition, view_requirements, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-          change.id, projectId, value.kind, value.name, value.variant, value.definition, value.view_requirements, timestamp, timestamp)
+        run('UPDATE visual_profiles SET base_profile_id=?, state_delta=? WHERE id=?', base_profile_id, state_delta, change.id)
         for (const sceneId of scene_ids) run('INSERT INTO scene_visual_bindings VALUES (?, ?, 1)', sceneId, change.id)
       }
     } else if (change.type === 'shot') {
@@ -268,14 +329,15 @@ export function applyResourceChanges(projectId: string, changes: ResourceChange[
       run('UPDATE shots SET title=?, prompt=?, image_prompt=?, video_prompt=?, duration=?, start_state=?, end_state=?, cut_note=? WHERE id=? AND project_id=?', value.title, value.prompt, value.image_prompt, value.video_prompt, value.duration, value.start_state, value.end_state, value.cut_note, change.id, projectId)
     } else if (change.type === 'new_shot') {
       const value = change.value
-      const position = one<{ position: number }>('SELECT COALESCE(MAX(position), -1)+1 AS position FROM shots WHERE project_id=?', projectId)!.position
-      run(`INSERT INTO shots (id, project_id, position, title, prompt, image_prompt, video_prompt, duration, source_scene_id, start_state, end_state, cut_note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        change.id, projectId, position, value.title, value.prompt, value.image_prompt, value.video_prompt, value.duration, change.source_scene_id, value.start_state, value.end_state, value.cut_note, timestamp)
+      const position = one<{ position: number }>('SELECT COALESCE(MAX(position), -1)+1 AS position FROM shots WHERE project_id=? AND superseded_by IS NULL', projectId)!.position
+      run(`INSERT INTO shots (id, project_id, position, title, prompt, image_prompt, video_prompt, duration, source_scene_id, start_state, end_state, cut_note, created_at, design_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        change.id, projectId, position, value.title, value.prompt, value.image_prompt, value.video_prompt, value.duration, change.source_scene_id, value.start_state, value.end_state, value.cut_note, timestamp, sceneVisualDesignIds(projectId, [change.source_scene_id]).get(change.source_scene_id) || null)
       inheritSceneVisualBindings(change.id, change.source_scene_id)
     } else {
-      const selected = checkBindings(projectId, change.value)
+      const selected = checkedTargetBindings(projectId, change.target_type, change.id, change.value)
       if (change.target_type === 'scene') {
-        run('DELETE FROM scene_visual_bindings WHERE scene_id=?', change.id)
+        run(`DELETE FROM scene_visual_bindings WHERE scene_id=? AND profile_id IN
+          (SELECT id FROM visual_profiles WHERE project_id=? AND design_id IS ?)`, change.id, projectId, targetDesignId(projectId, 'scene', change.id))
         for (const binding of selected) run('INSERT INTO scene_visual_bindings VALUES (?, ?, ?)', change.id, binding.profile.id, Number(binding.required))
       } else {
         const previous = targetBindings('shot', change.id)

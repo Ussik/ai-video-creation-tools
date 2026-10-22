@@ -174,7 +174,7 @@ export function imagePreferencePrompt(model: Model, prompt: string, request: {
     && !(usesSize && request.resolution === request.clarity)) requirements.push(`清晰度要求：${request.clarity}`)
   if (request.quality && !usesModelParameter(model, 'quality', mode)) requirements.push(`画质要求：${qualityRequirements[request.quality] || request.quality}`)
   if (request.background && !usesModelParameter(model, 'background', mode)) requirements.push(`背景要求：${backgroundRequirements[request.background] || request.background}`)
-  return requirements.length ? `${prompt}\n\n图片生成要求：\n${requirements.join('\n')}` : prompt
+  return requirements.length ? `${prompt}\n\n【图片生成要求】\n${requirements.join('\n')}\n【图片生成要求结束】` : prompt
 }
 
 export function modelDefaultResolution(model: Model | undefined, resolutions: string[]): string {

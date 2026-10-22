@@ -4,6 +4,7 @@ import { ArrowRight, Check, Eye, RefreshCcw, TriangleAlert, X } from 'lucide-rea
 import { api, json } from '../../shared/api/api'
 import type { CutReview, CutReviewReport, CutReviewStatus, ProjectDetail } from '../../shared/api/api'
 import CutPointTrial from './CutPointTrial'
+import { finalCutPath } from './final-cut-scope'
 import './cut-review.css'
 
 function pairKey(cut: CutReview) {
@@ -40,7 +41,9 @@ function ReviewFrame({ url, label, title, time, onFailed }: {
   </div>
 }
 
-export default function CutReviewPanel({ detail, onChanged }: { detail: ProjectDetail; onChanged: () => Promise<void> }) {
+export default function CutReviewPanel({ detail, finalCutCanvasId, onChanged }: {
+  detail: ProjectDetail; finalCutCanvasId?: string | null; onChanged: () => Promise<void>
+}) {
   const [opened, setOpened] = useState(false)
   const [report, setReport] = useState<CutReviewReport | null>(null)
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
@@ -64,7 +67,7 @@ export default function CutReviewPanel({ detail, onChanged }: { detail: ProjectD
     const id = ++requestId.current
     setLoading(true)
     try {
-      const next = await api<CutReviewReport>(`/projects/${detail.id}/cut-reviews`)
+      const next = await api<CutReviewReport>(finalCutPath(`/projects/${detail.id}/cut-reviews`, finalCutCanvasId))
       if (id !== requestId.current) return
       setReport(next)
       setFailedFrames(new Set())
@@ -82,7 +85,7 @@ export default function CutReviewPanel({ detail, onChanged }: { detail: ProjectD
   useEffect(() => {
     void refresh()
     return () => { requestId.current += 1 }
-  }, [detail.id, revision])
+  }, [detail.id, finalCutCanvasId, revision])
 
   const cuts = report?.cuts || []
   const selected = cuts.find((cut) => pairKey(cut) === selectedKey) || cuts[0]
@@ -105,7 +108,7 @@ export default function CutReviewPanel({ detail, onChanged }: { detail: ProjectD
     setError(null)
     setSuccess(null)
     try {
-      await api<CutReview>(`/projects/${detail.id}/cut-reviews`, json('PUT', {
+      await api<CutReview>(finalCutPath(`/projects/${detail.id}/cut-reviews`, finalCutCanvasId), json('PUT', {
         from_shot_id: selected.from_shot_id,
         to_shot_id: selected.to_shot_id,
         signature: selected.signature,
@@ -167,7 +170,7 @@ export default function CutReviewPanel({ detail, onChanged }: { detail: ProjectD
               <ReviewFrame key={`to:${selected.to.frame_url}:${frameRevision}`} url={selected.to.frame_url} label="下一镜实际首帧" title={selected.to.title} time={selected.to.in_ms}
                 onFailed={(url) => setFailedFrames((current) => new Set(current).add(url))} />
             </div>
-            <CutPointTrial cut={selected} detail={detail} noteDirty={note.trim() !== selected.note}
+            <CutPointTrial cut={selected} detail={detail} finalCutCanvasId={finalCutCanvasId} noteDirty={note.trim() !== selected.note}
               onSaved={async () => {
                 await onChanged()
                 await refresh()

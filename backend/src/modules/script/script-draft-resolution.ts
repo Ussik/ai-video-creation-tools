@@ -7,6 +7,7 @@ import { applyResolvedEdits, resolvePassageEdits } from './script-revision.js'
 import type { ScriptSourceDocument, ScriptSourceUpdate } from '@video-studio/shared/script/script-source-document'
 import { scriptDocumentVersion } from './script-source-versions.js'
 import { consolidateFindings, findingsWithHistory, scriptDraftFindingLimit, type FindingResolutionRecord } from './script-finding-state.js'
+import { canContinueScriptDraftRepair, completedScriptDraftRepairRounds, scriptDraftRepairRoundLimitMessage } from './script-draft-repair-rounds.js'
 
 export const draftResolutionInput = z.object({ id: z.string().min(1).max(160), version: z.string().min(1).max(160),
   strategy: z.enum(['manual', 'ai', 'continue']), answers: z.array(z.string().trim().max(4000)).max(scriptDraftFindingLimit).optional() }).strict()
@@ -16,6 +17,8 @@ export type PendingScriptDraft = {
   request: Record<string, unknown>; source_version: string;
   source_update?: ScriptSourceUpdate
   resolutions?: FindingResolutionRecord[]
+  /** Survives candidate version changes and replacement of the resumable answers. */
+  completed_rounds?: number
   run?: ScriptDraftRepairRun & { answers: string[] }
 }
 const active = new Set<string>()
@@ -32,7 +35,8 @@ export function publicDraftResolution(pending: PendingScriptDraft | null): Scrip
   return pending && { id: pending.id, version: pending.version, stage: pending.draft.stage, episode_number: pending.draft.episode_number,
     findings: findingsWithHistory(pending.findings, pending.resolutions || []).map((finding, index) => ({ ...finding,
       ...(pending.run?.strategy === 'manual' ? { previous_answer: pending.run.answers[index] } : {}) })), document_count: pending.draft.artifacts.length,
-    ...(pending.run ? { run: progress as ScriptDraftRepairRun } : {}) }
+      ...(completedScriptDraftRepairRounds(pending) > 0 ? { completed_rounds: completedScriptDraftRepairRounds(pending) } : {}),
+      ...(pending.run ? { run: progress as ScriptDraftRepairRun } : {}) }
 }
 
 /** Authorization and progress belong to this candidate version. Updating them
@@ -40,12 +44,16 @@ export function publicDraftResolution(pending: PendingScriptDraft | null): Scrip
 export function updateScriptDraftRun(projectId: string, pending: PendingScriptDraft, value: NonNullable<PendingScriptDraft['run']>) {
   const current = pendingScriptDraft(projectId)
   if (!current || current.id !== pending.id || current.version !== pending.version) conflict('待补齐草稿已变化，请重新打开当前版本')
-  run('UPDATE script_draft_resolutions SET payload=?, updated_at=? WHERE project_id=?', JSON.stringify({ ...current, run: value }), now(), projectId)
+  const { completed_rounds: _previousRounds, ...candidate } = current!
+  const rounds = completedScriptDraftRepairRounds(value)
+  run('UPDATE script_draft_resolutions SET payload=?, updated_at=? WHERE project_id=?', JSON.stringify({ ...candidate,
+    ...(rounds > 0 ? { completed_rounds: rounds } : {}), run: value }), now(), projectId)
 }
 export function retainScriptDraft(projectId: string, value: Omit<PendingScriptDraft, 'id' | 'version'>, previous?: PendingScriptDraft) {
   const current = pendingScriptDraft(projectId)
   if (previous ? current?.id !== previous.id || current.version !== previous.version : !!current) conflict('已有待补齐草稿，请继续处理当前版本')
-  const pending = { ...value, findings: consolidateFindings(value.findings), id: previous?.id || newId(), version: newId() }
+  const rounds = Math.max(completedScriptDraftRepairRounds(current || undefined), completedScriptDraftRepairRounds(value))
+  const pending = { ...value, ...(rounds > 0 ? { completed_rounds: rounds } : {}), findings: consolidateFindings(value.findings), id: previous?.id || newId(), version: newId() }
   run(`INSERT INTO script_draft_resolutions (project_id, payload, updated_at) VALUES (?, ?, ?)
     ON CONFLICT(project_id) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at`, projectId, JSON.stringify(pending), now())
   return pending
@@ -60,6 +68,7 @@ export function claimScriptDraft(projectId: string, input: z.infer<typeof draftR
   const pending = pendingScriptDraft(projectId)
   if (!pending || pending.id !== input.id || pending.version !== input.version) return conflict('待补齐草稿已变化，请重新打开当前版本')
   if (pending.source_version !== sourceVersion) conflict('项目资料或原剧本已变化，旧候选稿仍保留；请放弃旧候选稿后重新生成')
+  if (input.strategy === 'continue' && !canContinueScriptDraftRepair(pending)) conflict(scriptDraftRepairRoundLimitMessage)
   if (input.strategy === 'continue' && (!pending.run || pending.run.answers.length !== pending.findings.length)) conflict('当前草稿尚无可继续的处理方案，请先填写方案或交给 AI 决定')
   if (input.strategy === 'manual' && (input.answers?.length !== pending.findings.length || input.answers.some(answer => !answer.trim()))) {
     throw Object.assign(new Error('请填写每项处理方案，或选择全部交给 AI 决定'), { statusCode: 422 })

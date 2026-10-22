@@ -1,8 +1,8 @@
 import { WorkspaceDisclosure } from '../../shared/ui/WorkspaceDisclosure'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Tabs, FileButton, UnstyledButton,
-  ActionIcon, Badge, Button, Drawer, Menu, Modal, Popover, Textarea, TextInput, Tooltip,
-   } from '@mantine/core'
+  ActionIcon, Badge, Button, Drawer, Menu, Modal, Popover, Text, TextInput, Tooltip,
+} from '@mantine/core'
 import { useClickOutside } from '@mantine/hooks'
 import {
   ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, CircleAlert, Clock3, FileText, Film, FolderOpen,
@@ -24,7 +24,7 @@ import type { Asset, Job, Model, ProjectDetail, Provider, ScriptArtifact, Shot, 
 import { videoRatioOptions, videoResolutionOptions } from '@video-studio/shared/media/video-parameters'
 import { videoReferenceConfigError, supportsVideoMultiReference } from '@video-studio/shared/media/video-reference-config'
 import { videoReferenceUsageLabels, type VideoReferenceUsageSelection } from '@video-studio/shared/media/video-reference-usage'
-import { videoReferenceManifest, visualBindingReferenceAssetIds } from '@video-studio/shared/media/video-reference-manifest'
+import { scopedVisualReferenceAssetIds, videoReferenceManifest, visualBindingReferenceAssetIds } from '@video-studio/shared/media/video-reference-manifest'
 import VideoReferencePanel from '../visuals/VideoReferencePanel'
 import VisualBindingEditor, { type VisualBindingContext } from '../visuals/VisualBindingEditor'
 import { visualBindingNeedsRefresh } from '../visuals/visual-binding-status'
@@ -33,12 +33,30 @@ import VisualProfileInspector from '../visuals/VisualProfileInspector'
 import VisualCandidateManager from '../visuals/VisualCandidateManager'
 import ShotCandidateManager, { ShotCandidateStrip } from './ShotCandidateManager'
 import { shotMediaCandidates } from './canvas-shot-candidates'
+import { canvasJobMatchesStoryboard, storyboardRevision, syncCanvasStoryboardRevision } from './canvas-storyboard-revision'
 import { addVisualProfileNode, automaticVisualReferenceEdges, missingVisualReferences, syncVisualProfileNode, visualBoardJobs, visualBoardReferences, visualCandidateAssets, visualJobRequest, visualNodeAsset } from './canvas-visual-profiles'
 import { connectImageVideoHandoff, createImageVideoHandoff, fixedReferenceAsset, imageVideoConnection, pinnedCanvasReference } from './canvas-shot-workflow'
 import { enqueueCanvasVisualBoard, prepareCanvasVisualBoard, visualReferenceGenerating } from './canvas-reference-generation'
-import { rebasePromptDraft, videoPreferencePrompt } from './canvas-prompt-draft'
+import { videoPreferencePrompt } from './canvas-prompt-draft'
+import { canvasPromptBody, rewriteCanvasPromptSections } from './canvas-prompt-composition'
+import { extractPromptBody, getManagedPromptBlocks } from '@video-studio/shared/visuals/prompt-document'
+import { isPromptSectionDocument, parsePromptSectionDocument, reconcilePromptSectionDocument, resolvePromptSectionSource,
+  serializePromptSectionDocument, type PromptSectionDocument } from '@video-studio/shared/visuals/prompt-section-document'
+import { findPromptParameterConflicts, synchronizePromptParameters } from '@video-studio/shared/visuals/prompt-parameter-conflicts'
+import CanvasPromptDocumentStatus from './CanvasPromptDocumentStatus'
+import { withVisualProfilePrompt } from '@video-studio/shared/visuals/visual-profile-prompt'
+import { replacePromptReference, promptReferenceBindings, disconnectedPromptReferenceIds, disconnectRemovedPromptReplacements } from './canvas-prompt-references'
+import { materializePromptReference, replaceConnectedPromptReference, promptReferenceSources, freezeLegacyPromptReferenceDrafts } from './canvas-prompt-reference-graph'
+import { extractPromptReferenceIds, resolvePromptReferences, tokenizePromptReferenceNumbers } from '@video-studio/shared/visuals/prompt-references'
+import CanvasPromptEditor from './CanvasPromptEditor'
+import CanvasProfileInheritance from './CanvasProfileInheritance'
+import CanvasReferenceList, { type CanvasReferenceItem } from './CanvasReferenceList'
+import { activeProfileReferenceSnapshot, profileCandidateReferenceState, resolveCanvasVisualBoardReferences } from './canvas-visual-board-references'
+import { resolveCanvasProfileDisplayText } from './canvas-profile-display-text'
+import { visualProfileBaseReadiness, visualProfileBoardReady } from '../visuals/visual-profile-inheritance'
+import { createReferenceBatch, evaluateReferenceBatch, markReferenceBatchSubmitting, recordReferenceBatchSubmission, recordReferenceBatchFailure, readReferenceBatch, writeReferenceBatch, clearReferenceBatch, type ReferenceBatchState } from './canvas-reference-batch'
 import { shotImagePrompt, shotVideoPrompt } from '@video-studio/shared/storyboard/shot-prompts'
-import { synchronizeVideoReferencePrompt, visualGenerationPrompt } from '@video-studio/shared/visuals/visual-prompt'
+import { visualGenerationPrompt } from '@video-studio/shared/visuals/visual-prompt'
 import { visualBindingApplies, visualBindingsForModality } from '@video-studio/shared/visuals/visual-binding-usage'
 import { withProjectStyle, styleReferenceWarning } from '@video-studio/shared/visuals/visual-style'
 import type { MissingVisualReference } from './canvas-visual-profiles'
@@ -66,9 +84,10 @@ import { textDocumentText } from '../../shared/lib/editor/text-document'
 import { fitImageNode, imageNodeMinimum } from './canvas-image-layout'
 import { placeNewCanvasNodes } from './canvas-node-placement'
 import { canvasPromptIndex, canvasReferenceKey, compactCanvasZoom, indexedCanvasPrompt, reuseFlowEdge, reuseFlowNode, sameCanvasContent, shallowEqual, shouldVirtualizeCanvas, updateCanvasGeometry } from './canvas-performance'
-import { addScriptCanvasNodes, readScriptCanvasRequest, scriptCanvasInitialFocus, scriptCanvasRequestKey } from '../script/script-canvas-handoff'
+import { addScriptCanvasNodes, bindScriptCanvasRequest, clearScriptCanvasRequest, readScriptCanvasRequest, scriptCanvasInitialFocus } from '../script/script-canvas-handoff'
 import ProjectCanvasSwitcher, { type CanvasActions } from './ProjectCanvasSwitcher'
 import { canvasGraphPath, type ProjectCanvasInfo } from './project-canvases'
+import { allProjectShots, canvasDesignShots } from './canvas-design-scope'
 import { clearShotCanvasRequest, readShotCanvasRequest, shotCanvasNode } from './canvas-shot-navigation'
 import './project-canvas.css'
 import './canvas-visual-profiles.css'
@@ -102,8 +121,10 @@ export type CanvasNode = {
     visual_profile_revision?: number
     visual_dependencies?: boolean
     profile_prompt_override?: string
+    prompt_reference_overrides?: Record<string, string | null>
     visual_completed_job_id?: string
     generation_completed_job_id?: string
+    storyboard_revision?: number
     visual_reference_mode?: VisualReferenceMode
     storyboard_reference_asset_id?: string | null
     video_reference_usages?: VideoReferenceUsageSelection[]
@@ -127,6 +148,9 @@ export type CanvasNode = {
     reference_video_url?: string | null
     prompt_override?: boolean
     prompt_is_final?: boolean
+    prompt_document?: boolean
+    prompt_sections?: PromptSectionDocument
+    prompt_body?: string
     prompt_base?: string
     prompt_template?: string
   }
@@ -195,10 +219,14 @@ type FlowData = Record<string, unknown> & {
 }
 type FlowNode = Node<FlowData, 'studio'>
 type GenerationRequest = {
+  prompt_reference_overrides?: Record<string, string | null>
+  storyboard_revision?: number
   project_style_version?: string
   project_visual_style?: import('@video-studio/shared/visuals/visual-style').ProjectVisualStyle
   style_warnings?: string[]
   prompt_is_final?: boolean
+  prompt_document?: boolean
+  prompt_body?: string
   prompt_template?: string
   visual_reference_mode?: VisualReferenceMode
   storyboard_reference_asset_id?: string | null
@@ -284,7 +312,6 @@ type CanvasInstanceProps = ProjectCanvasProps & {
 }
 
 function draftKey(projectId: string) { return `project-canvas-draft:${projectId}` }
-function autoImportKey(projectId: string) { return `project-canvas-imported:${projectId}` }
 function viewportKey(projectId: string) { return `project-canvas-viewport:${projectId}` }
 function minimapKey(projectId: string) { return `project-canvas-minimap:v2:${projectId}` }
 
@@ -345,6 +372,14 @@ function blankNode(type: CanvasNode['type'], x: number, y: number): CanvasNode {
     text: '', asset_id: null, shot_id: null, model_id: null, job_id: null,
     prompt: '', settings: {},
   }
+}
+
+function ensureCanvasScript(graph: CanvasGraph, canvasId: string, title: string, previous?: CanvasNode): CanvasGraph {
+  if (graph.nodes.some(node => node.type === 'project_script_ref')) return graph
+  const x = graph.nodes.length ? Math.max(-1_000_000, Math.min(...graph.nodes.map(node => node.x)) - projectScriptDefaultSize.width - 120) : 60
+  const y = graph.nodes.length ? Math.min(...graph.nodes.map(node => node.y)) : 80
+  const script = previous || { ...blankNode('project_script_ref', x, y), id: `project-script:${canvasId}`, title: title || '项目剧本' }
+  return { ...graph, nodes: [script, ...graph.nodes] }
 }
 
 function normalizeGraph(input: CanvasGraph): CanvasGraph {
@@ -744,6 +779,9 @@ const MemoStudioNode = memo(StudioNode, (previous, next) => {
 const nodeTypes = { studio: MemoStudioNode }
 
 function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProject, onNavigate, onOpenScriptCreator, onOpenScriptDocument, onOpenSpeech, onOpenScriptDirector: onOpenDirectorPanel, initialLocation, onLocationChange, canvas, canvasSession, canvasMenu, registerCanvasActions, onCanvasViewport, optimizedPromptDraft, onOptimizedPromptDraftApplied }: CanvasInstanceProps) {
+  const allShots = useMemo(() => allProjectShots(detail), [detail.shots, detail.historical_shots])
+  const canvasShots = useMemo(() => canvasDesignShots(detail, canvas.design_id), [allShots, canvas.design_id])
+  const browsingDetail = useMemo(() => ({ ...detail, shots: allShots }), [detail, allShots])
   const { confirm, dialog } = useAppDialog()
   const canvasId = canvas.is_default ? undefined : canvas.id
   const storageId = canvas.id === detail.id ? detail.id : `${detail.id}:${canvas.id}`
@@ -756,6 +794,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const [sidebarTab, setSidebarTab] = useState<'canvas' | 'assets' | 'profiles'>('canvas')
   const [profileSearch, setProfileSearch] = useState('')
   const [profileFilter, setProfileFilter] = useState<'all' | VisualProfile['kind']>('all')
+  const [profileScope, setProfileScope] = useState<'canvas' | 'all'>('canvas')
   const [profileInspectorId, setProfileInspectorId] = useState<string | null>(null)
   const [profileDraftDirty, setProfileDraftDirty] = useState(false)
   const [candidateProfileId, setCandidateProfileId] = useState<string | null>(null)
@@ -842,6 +881,10 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const queueRef = useRef<SaveQueue | null>(null)
   const placementDetailRef = useRef(detail)
   placementDetailRef.current = detail
+  const storyboardModelsRef = useRef(models)
+  storyboardModelsRef.current = models
+  const syncStoryboardGraph = useCallback((value: CanvasGraph) => syncCanvasStoryboardRevision(value,
+    allProjectShots(placementDetailRef.current), storyboardModelsRef.current, placementDetailRef.current.assets), [])
   const historyRef = useRef<{ past: CanvasGraph[]; future: CanvasGraph[] }>(canvasSession.history)
   // React Flow emits many position changes while a node is dragged. Keep one
   // undo checkpoint for the complete gesture so history and autosave remain
@@ -851,7 +894,6 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   canvasSession.history = historyRef.current
   canvasSession.nodeTypeFilter = nodeTypeFilter
   canvasSession.selection = { nodeId: selectedNodeId, nodeIds: selectedNodeIds, edgeId: selectedEdgeId, composerNodeId }
-  const autoImportAttempted = useRef(false)
   const initialViewApplied = useRef(false)
   const minimapDragRef = useRef<{
     pointerId: number
@@ -875,12 +917,15 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const profileUploadInputRef = useRef<HTMLInputElement>(null)
   const submittingRef = useRef(false)
   const submittedReferenceJobs = useRef(new Map<string, string[]>())
+  const [persistentReferenceBatch, setPersistentReferenceBatch] = useState<ReferenceBatchState | null>(null)
+  const referenceBatchPlanRef = useRef<ReferenceBatchState | null>(null)
   const [referenceBatch, setReferenceBatch] = useState<{ targetId: string; submitting: boolean; queued: number;
     failures: Array<{ profileId: string; name: string; message: string }> } | null>(null)
   const [referenceConfirmation, setReferenceConfirmation] = useState<{ targetId: string; confirmed: number;
     skipped: Array<{ profile_id: string; name: string; message: string }> } | null>(null)
   const removalPendingRef = useRef(false)
-  const { fitView, screenToFlowPosition, setCenter, setViewport, zoomTo } = useReactFlow<FlowNode, Edge>()
+  const { fitView, screenToFlowPosition, setCenter, setViewport, zoomTo, getInternalNode } = useReactFlow<FlowNode, Edge>()
+  const [selectionRevision, setSelectionRevision] = useState(0)
 
   useEffect(() => {
     if (!projectNameEditing) setProjectNameDraft(detail.name)
@@ -1166,7 +1211,9 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const changeGraph = useCallback((updater: (current: CanvasGraph) => CanvasGraph) => {
     const queue = queueRef.current
     if (!queue || queue.id !== detail.id) return
-    const candidate = updater(queue.graph)
+    const stable = freezeLegacyPromptReferenceDrafts(queue.graph, placementDetailRef.current, models)
+    const candidate = ensureCanvasScript(syncStoryboardGraph(disconnectRemovedPromptReplacements(queue.graph, updater(stable))), canvas.id, placementDetailRef.current.name,
+      queue.graph.nodes.find(node => node.type === 'project_script_ref'))
     const nodes = placeNewCanvasNodes(queue.graph.nodes, candidate.nodes,
       node => nodeSize(node, visualNodeAsset(node, placementDetailRef.current)))
     const updated = nodes === candidate.nodes ? candidate : { ...candidate, nodes }
@@ -1187,7 +1234,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     keepDraft(queue)
     setGraph(next)
     scheduleSave(queue)
-  }, [detail.id, scheduleSave])
+  }, [detail.id, canvas.id, scheduleSave, syncStoryboardGraph, models])
 
   useEffect(() => {
     let active = true
@@ -1201,7 +1248,6 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     setShowEdges(true)
     dragSnapshotRef.current = null
     initialViewApplied.current = false
-    autoImportAttempted.current = false
     historyRef.current = canvasSession.history
     setHistoryTick((value) => value + 1)
     setGraph(null)
@@ -1233,6 +1279,9 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           setConflictReview(mergeGraphs(draft.base, draft.graph, remote))
         } else scheduleSave(queue)
       } else if (draft) clearDraft(storageId)
+      const withScript = ensureCanvasScript(syncStoryboardGraph(queue.graph), canvas.id, detail.name)
+      const addedScript = withScript !== queue.graph
+      queue.graph = withScript
       queueRef.current = queue
       setGraph(queue.graph)
       const selection = rememberedSelection
@@ -1243,10 +1292,11 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         setSelectedEdgeId(selection.edgeId && queue.graph.edges.some(edge => edge.id === selection.edgeId) ? selection.edgeId : null)
         setComposerNodeId(selection.composerNodeId && ids.has(selection.composerNodeId) ? selection.composerNodeId : null)
       }
-      // Persist the migration once so stale script edges disappear from the
-      // server snapshot as well as the local canvas.
-      if (removedScriptEdges && !queue.conflict) {
+      // Persist missing project cards and old script-edge cleanup once. The
+      // card references shared project documents; it never imports old shots.
+      if ((removedScriptEdges || addedScript) && !queue.conflict) {
         queue.serial = Math.max(queue.serial, 1)
+        keepDraft(queue)
         scheduleSave(queue)
       }
     }).catch((error: unknown) => { if (active) setLoadError(error instanceof Error ? error.message : String(error)) })
@@ -1259,7 +1309,11 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         queueRef.current = null
       }
     }
-  }, [detail.id, flush, scheduleSave])
+  }, [detail.id, flush, scheduleSave, syncStoryboardGraph])
+
+  useEffect(() => {
+    if (graph && syncStoryboardGraph(graph) !== graph) changeGraph(syncStoryboardGraph)
+  }, [detail.shots, detail.historical_shots, graph, changeGraph, syncStoryboardGraph])
 
   useEffect(() => {
     if (!graph) return
@@ -1274,7 +1328,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         const live = nodes.find((item) => item.id === node.id)
         const job = detail.jobs.find((item) => item.id === live?.job_id)
         const asset = detail.assets.find((item) => item.id === job?.result_asset_id)
-        if (!live || !asset) continue
+        if (!live || !asset || !canvasJobMatchesStoryboard(live, job)) continue
         if (live.settings.visual_profile_id) {
           const profile = detail.visual_profiles?.find(item => item.id === live.settings.visual_profile_id)
           if (profile && live.settings.visual_completed_job_id !== job?.id) {
@@ -1346,8 +1400,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   }, [graph, detail.name, changeGraph])
 
   const assetMap = useMemo(() => new Map(detail.assets.map((asset) => [asset.id, asset])), [detail.assets])
-  const assetLabels = useMemo(() => assetPresentations(detail, graph?.nodes), [detail, graph?.nodes])
-  const shotMap = useMemo(() => new Map(detail.shots.map((shot) => [shot.id, shot])), [detail.shots])
+  const assetLabels = useMemo(() => assetPresentations(browsingDetail, graph?.nodes), [browsingDetail, graph?.nodes])
+  const shotMap = useMemo(() => new Map(allShots.map((shot) => [shot.id, shot])), [allShots])
   const jobMap = useMemo(() => new Map(detail.jobs.map((job) => [job.id, job])), [detail.jobs])
   const modelMap = useMemo(() => new Map(models.map((model) => [model.id, model])), [models])
   const profileMap = useMemo(() => new Map((detail.visual_profiles || []).map(profile => [profile.id, profile])), [detail.visual_profiles])
@@ -1367,10 +1421,13 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     changeGraph((current) => ({ ...current, nodes: current.nodes.map((node) => node.id === id
       ? { ...node, settings: { ...node.settings, ...patch } } : node) }))
   }, [changeGraph])
-  const editNodePrompt = useCallback((id: string, value: string, prepared?: { base: string; template: string }) => {
+  const editNodePrompt = useCallback((id: string, value: string, prepared?: { base: string; template: string; document?: PromptSectionDocument }) => {
     changeGraph((current) => ({ ...current, nodes: current.nodes.map((node) => node.id === id
       ? { ...node, text: value, settings: { ...node.settings, prompt_override: true,
-        ...(prepared ? { prompt_is_final: true, prompt_base: prepared.base, prompt_template: prepared.template } : {}) } } : node) }))
+        ...(prepared ? { prompt_is_final: true, prompt_document: true, prompt_body: extractPromptBody({ prompt: value, prompt_template: prepared.template }),
+          prompt_sections: prepared.document ?? parsePromptSectionDocument(value, {
+            sourceText: prepared.template, previousDocument: node.settings.prompt_sections }),
+          prompt_base: prepared.base, prompt_template: prepared.template } : {}) } } : node) }))
   }, [changeGraph])
   const selectNodeModel = useCallback((id: string, modelId: string) => {
     const model = modelMap.get(modelId)
@@ -1564,7 +1621,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     onOpenScriptCreator: () => latestNodeActions.current.onOpenScriptCreator(),
     onOpenScriptDocument: (artifact: ScriptArtifact) => latestNodeActions.current.onOpenScriptDocument(artifact),
   }), [])
-  const promptIndex = useMemo(() => graph ? canvasPromptIndex(graph, detail.shots) : null, [graph, detail.shots])
+  const promptIndex = useMemo(() => graph ? canvasPromptIndex(graph, allShots) : null, [graph, allShots])
   const scriptInputPrompt = useMemo(() => scriptPrompt(detail.script), [detail.script])
   const referenceKey = useMemo(() => canvasReferenceKey(graph?.nodes || []), [graph?.nodes])
   const automaticReferenceEdges = useMemo(() => graph ? automaticVisualReferenceEdges(graph, detail, models) : [], [referenceKey, graph?.edges, detail.assets, detail.visual_profiles, detail.shot_visual_bindings, models])
@@ -1581,6 +1638,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     return counts
   }, [nodeCategories])
   const selectedIds = useMemo(() => new Set([...selectedNodeIds, ...(selectedNodeId ? [selectedNodeId] : [])]), [selectedNodeId, selectedNodeIds])
+  const hasSelectableCanvasNodes = graph?.nodes.some(node => node.type !== 'project_script_ref' && visibleNodeIds.has(node.id)) || false
+  const hasRemovableCanvasContent = !!graph?.edges.length || graph?.nodes.some(node => node.type !== 'project_script_ref') || false
   useEffect(() => {
     if (viewMode !== 'canvas' || nodeTypeFilter === 'all' || !selectedNodeId || !nodeCategories.has(selectedNodeId)) return
     // Explicit navigation and newly created nodes must always reveal their target.
@@ -1615,11 +1674,12 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       const selected = visibleNodeIds.has(node.id) && selectedIds.has(node.id)
       const active = selected && selectedIds.size === 1 && !nodeMediaPreview && !shotCandidateNodeId
       const modality = node.settings.modality || (node.type === 'image' ? 'image' : node.type === 'video' ? 'video' : undefined)
-      return reuseFlowNode(previousById.get(node.id), {
+      const next = reuseFlowNode(previousById.get(node.id), {
         id: node.id, type: 'studio', position: { x: node.x, y: node.y },
         // React Flow uses these persisted dimensions to retain handle bounds
         // and visibility when controlled nodes update.
         width, height, measured: { width, height }, style: { width, height }, selected, hidden: !visibleNodeIds.has(node.id),
+        deletable: node.type !== 'project_script_ref',
         data: {
           node, active, compact: compactNodes && !active, asset: displayedAsset, profile, shot: shotMap.get(node.shot_id || ''),
           job: jobMap.get(node.job_id || ''), model: modelMap.get(node.model_id || ''), videoQuickModes, imageEditingModels,
@@ -1628,10 +1688,14 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           ...(node.type === 'project_script_ref' ? scriptNodeData : {}),
         },
       })
+      // Box selection updates React Flow's internal selection before notifying
+      // us. Resend rejected selections even if our controlled props are equal.
+      const internal = getInternalNode(node.id)
+      return internal && !!internal.selected !== selected ? { ...next } : next
     })
     const result = previousNodes.length === next.length && next.every((node, index) => node === previousNodes[index]) ? previousNodes : next
     return result
-  }, [graph, selectedIds, visibleNodeIds, nodeMediaPreview, shotCandidateNodeId, compactNodes, promptIndex, scriptInputPrompt, profileMap, assetMap, shotMap, jobMap, modelMap, busy, videoQuickModes, imageEditingModels, nodeModelOptions, nodeCallbacks, scriptNodeData])
+  }, [graph, selectedIds, selectionRevision, visibleNodeIds, nodeMediaPreview, shotCandidateNodeId, compactNodes, promptIndex, scriptInputPrompt, profileMap, assetMap, shotMap, jobMap, modelMap, busy, videoQuickModes, imageEditingModels, nodeModelOptions, nodeCallbacks, scriptNodeData, getInternalNode])
   useLayoutEffect(() => { flowNodesRef.current = flowNodes }, [flowNodes])
   const automaticReferenceEdgeIds = useMemo(() => new Set(automaticReferenceEdges.map(edge => edge.id)), [automaticReferenceEdges])
   const flowEdgesRef = useRef<Edge[]>([])
@@ -1684,7 +1748,13 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const selectedBoardAsset = selectedNode && visualNodeAsset(selectedNode, detail)
   const selectedJob = jobMap.get(selectedNode?.job_id || '')
   const selectedNodeGenerating = selectedNode?.type === 'generation' && (selectedJob?.status === 'queued' || selectedJob?.status === 'running'
-    || profileJobs.some(job => job.status === 'queued' || job.status === 'running'))
+    || profileJobs.some(job => job.status === 'queued' || job.status === 'running')
+    || !!selectedProfile && !!visualReferenceGenerating(selectedProfile, selectedNode, detail, submittedReferenceJobs.current.get(selectedProfile.id)))
+  const selectedProfileNeedsReview = selectedProfile?.board_style_status === 'needs_review'
+    || selectedProfile?.base_reference_status === 'needs_review' || selectedProfile?.base_reference_status === 'waiting'
+  const selectedProfileBoardStatus = selectedNodeGenerating ? '生成中'
+    : selectedBoardAsset && selectedBoardAsset.id === selectedProfile?.board_asset_id ? selectedProfileNeedsReview ? '需复核' : '已确认'
+      : selectedBoardAsset ? '候选待确认' : '待生成'
   const selectedShot = shotMap.get(selectedNode?.shot_id || '')
   const shotCandidateModality = (selectedNode?.settings.modality || modelMap.get(selectedNode?.model_id || '')?.modality) === 'video' ? 'video' : 'image'
   const shotCandidates = useMemo(() => shotMediaCandidates(selectedShot?.id, detail, shotCandidateModality),
@@ -1701,8 +1771,6 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     ...(candidateShot?.selected_asset_id ? [candidateShot.selected_asset_id] : []),
   ])]
   const allVisualBindings = (detail.shot_visual_bindings || []).filter(binding => binding.shot_id === selectedShot?.id)
-  const staleVisualBindingCount = allVisualBindings.filter(binding => detail.visual_profiles?.some(profile =>
-    profile.id === binding.profile_id && visualBindingNeedsRefresh(binding, profile, detail.project_visual_style))).length
   const missingReferences = useMemo(() => graph && selectedNode ? missingVisualReferences(graph, selectedNode.id, detail, models) : [], [graph, selectedNode, detail, models])
   const referenceGenerating = new Map(missingReferences.map(reference => {
     const profile = profileMap.get(reference.profileId)
@@ -1720,6 +1788,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     ? selectedNode.settings.modality || composerModel?.modality
     : composerModel?.modality || (selectedNode?.type === 'image' ? 'image' : selectedNode?.type === 'video' ? 'video' : undefined)
   const visualBindings = visualBindingsForModality(allVisualBindings, composerModality)
+  const staleVisualBindingCount = visualBindings.filter(binding => detail.visual_profiles?.some(profile =>
+    profile.id === binding.profile_id && visualBindingNeedsRefresh(binding, profile, detail.project_visual_style))).length
   const composerResolutions = modelResolutions(composerModel)
   const savedResolution = selectedNode?.settings.resolution
   const composerResolution = composerModality === 'video' && savedResolution
@@ -1759,12 +1829,10 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     .filter((asset): asset is Asset => asset?.kind === 'image').map(asset => [asset.id, asset])).values()]
   // Switching to strict first-frame keeps other connections available for a
   // later multi-reference run, while only the pinned opening image is sent.
-  const inputImages = composerModality === 'video' && selectedMode === 'first_frame' && selectedNode?.settings.storyboard_reference_asset_id
-    ? connectedImages.filter(asset => asset.id === selectedNode.settings.storyboard_reference_asset_id) : connectedImages
+  const inputImages = composerModality === 'video' && selectedMode === 'text' ? []
+    : composerModality === 'video' && selectedMode === 'first_frame' && selectedNode?.settings.storyboard_reference_asset_id
+      ? connectedImages.filter(asset => asset.id === selectedNode.settings.storyboard_reference_asset_id) : connectedImages
   const inputVideo = composerReferences.map((node) => assetMap.get(node.asset_id || '')).find((asset) => asset?.kind === 'video')
-  const lastBoardReferences = visualJobRequest(selectedJob).reference_asset_ids
-  const profileReferenceChanged = selectedProfile && selectedJob && Array.isArray(lastBoardReferences) &&
-    !sameValue([...lastBoardReferences].sort(), inputImages.map(asset => asset.id).sort())
   const shotPrompt = selectedShot ? composerModality === 'video' ? shotVideoPrompt(selectedShot) : shotImagePrompt(selectedShot) : ''
   const sourcePrompt = selectedNode?.prompt.trim() && selectedNode.prompt !== selectedShot?.prompt ? selectedNode.prompt : shotPrompt
   const ownBasePrompt = selectedNode?.settings.prompt_is_final ? selectedNode.settings.prompt_base ?? sourcePrompt
@@ -1775,24 +1843,80 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const resolutions = modelResolutions(selectedModel)
   const { min: durationMin, max: durationMax } = modelDurationBounds(selectedModel)
   const composerDuration = modelDuration(selectedModel, selectedNode?.settings.duration || selectedShot?.duration || 5)
-  const promptBindings = [...visualBindings].sort((a, b) => {
+  const promptOverrides = selectedNode?.settings.prompt_reference_overrides || {}
+  const promptBindings = promptReferenceBindings([...visualBindings].sort((a, b) => {
     const left = `${a.kind}\0${a.name}\0${a.profile_id}`, right = `${b.kind}\0${b.name}\0${b.profile_id}`
     return left < right ? -1 : left > right ? 1 : 0
-  })
+  }), promptOverrides)
   const storyboardCandidate = selectedNode?.settings.storyboard_reference_asset_id !== undefined ? selectedNode.settings.storyboard_reference_asset_id
     : composerModality === 'video' && selectedShot ? inputImages.find(asset => asset.shot_id === selectedShot.id)?.id : undefined
-  const storyboardReferenceAssetId = inputImages.some(asset => asset.id === storyboardCandidate) ? storyboardCandidate : undefined
-  const videoReferences = videoReferenceManifest(inputImages.map(asset => asset.id), promptBindings, {
+  const rawStoryboardReferenceAssetId = inputImages.some(asset => asset.id === storyboardCandidate) ? storyboardCandidate : undefined
+  const rawVideoReferences = videoReferenceManifest(inputImages.map(asset => asset.id), promptBindings, {
     mode: selectedMode, visual_reference_mode: visualReferenceMode,
-    storyboard_reference_asset_id: storyboardReferenceAssetId,
+    storyboard_reference_asset_id: rawStoryboardReferenceAssetId,
     excluded_visual_profile_ids: selectedNode?.settings.excluded_visual_profile_ids,
     video_reference_usages: selectedNode?.settings.video_reference_usages,
   })
-  const activeVideoReferenceUsages: VideoReferenceUsageSelection[] = videoReferences.flatMap(entry => entry.usage ? [{ asset_id: entry.asset_id, usage: entry.usage }] : [])
-  const preparedReferenceIds = composerModality === 'video' ? videoReferences.map(entry => entry.asset_id) : inputImages.map(asset => asset.id)
-  if (composerModality !== 'video' && visualReferenceMode === 'profiles') for (const binding of promptBindings) {
-    for (const id of visualBindingReferenceAssetIds(binding)) if (!preparedReferenceIds.includes(id)) preparedReferenceIds.push(id)
+  const activeImageBindings = visualBindings.filter(binding => !selectedNode?.settings.excluded_visual_profile_ids?.includes(binding.profile_id))
+  const rawPreparedReferenceIds = composerModality === 'video' ? rawVideoReferences.map(entry => entry.asset_id)
+    : selectedProfile ? inputImages.map(asset => asset.id)
+      : scopedVisualReferenceAssetIds(inputImages.map(asset => asset.id), allVisualBindings, activeImageBindings)
+  if (composerModality !== 'video' && visualReferenceMode === 'profiles') for (const binding of promptBindings.filter(binding => !selectedNode?.settings.excluded_visual_profile_ids?.includes(binding.profile_id))) {
+    for (const id of visualBindingReferenceAssetIds(binding)) if (!rawPreparedReferenceIds.includes(id)) rawPreparedReferenceIds.push(id)
   }
+  const profileInheritance = selectedProfile ? visualProfileBaseReadiness(selectedProfile, detail) : undefined
+  const directBaseProfile = profileInheritance?.baseProfile
+  const baseProfileReady = !!directBaseProfile && !profileInheritance?.error && !profileInheritance?.waitingProfile && visualProfileBoardReady(directBaseProfile, detail)
+  const baseProfileReferences = directBaseProfile?.board_asset_id ? [directBaseProfile.board_asset_id] : []
+  const waitingBaseProfile = profileInheritance?.waitingProfile || directBaseProfile
+  const baseProfileGenerating = !!waitingBaseProfile && !!visualReferenceGenerating(waitingBaseProfile,
+    graph?.nodes.find(node => node.settings.visual_profile_id === waitingBaseProfile.id), detail, submittedReferenceJobs.current.get(waitingBaseProfile.id))
+  for (const id of [...baseProfileReferences].reverse()) {
+    const index = rawPreparedReferenceIds.indexOf(id)
+    if (index >= 0) rawPreparedReferenceIds.splice(index, 1)
+    rawPreparedReferenceIds.unshift(id)
+  }
+  const profileReferences = selectedProfile && selectedNode && graph
+    ? resolveCanvasVisualBoardReferences(selectedNode, selectedProfile, graph, detail) : undefined
+  if (profileReferences) rawPreparedReferenceIds.splice(0, rawPreparedReferenceIds.length, ...profileReferences.rawAssetIds)
+  let promptReferenceIssue: string | undefined = graph?.edges.some(edge => edge.target === selectedNodeId
+    && edge.reference_asset_id && assetMap.get(edge.reference_asset_id)?.kind !== 'image')
+    ? '连线引用的图片已不存在，请移除或重新选择参考' : undefined
+  let preparedReferenceIds = rawPreparedReferenceIds
+  let resolvedPromptReplacements: Record<string, string | null> = {}
+  try {
+    // Resolve the graph/binding inputs first. Mentions may describe those
+    // inputs, but may not silently add an image after its edge was removed.
+    if (profileReferences) {
+      preparedReferenceIds = profileReferences.assetIds
+      resolvedPromptReplacements = profileReferences.replacements
+      promptReferenceIssue ||= profileReferences.error
+    } else {
+      const resolved = resolvePromptReferences({ prompt: '', referenceAssetIds: rawPreparedReferenceIds,
+        overrides: promptOverrides, requiredAssetIds: baseProfileReferences })
+      preparedReferenceIds = resolved.referenceAssetIds
+      resolvedPromptReplacements = resolved.replacements
+    }
+  } catch (error) { promptReferenceIssue = error instanceof Error ? error.message : '图片引用无效' }
+  const profileReferenceState = selectedProfile && profileReferences ? profileCandidateReferenceState({
+    profile: selectedProfile, detail, displayedAssetId: selectedBoardAsset?.id, references: profileReferences,
+    generating: selectedNodeGenerating, currentBaseSignature: selectedProfile.base_reference_signature || undefined,
+  }) : undefined
+  const submittedProfileReferences = selectedProfile && selectedNodeGenerating ? activeProfileReferenceSnapshot(selectedProfile, detail) : undefined
+  const submittedProfileRequest = visualJobRequest(submittedProfileReferences?.job)
+  const overrideAsset = (id: string | null | undefined) => id && Object.hasOwn(promptOverrides, id) ? promptOverrides[id] || undefined : id || undefined
+  const effectiveStoryboardId = overrideAsset(rawStoryboardReferenceAssetId)
+  const storyboardReferenceAssetId = effectiveStoryboardId && preparedReferenceIds.includes(effectiveStoryboardId) ? effectiveStoryboardId : undefined
+  const mappedVideoUsages = selectedNode?.settings.video_reference_usages?.flatMap(item => {
+    const asset_id = overrideAsset(item.asset_id)
+    return asset_id ? [{ ...item, asset_id }] : []
+  })
+  const videoReferences = videoReferenceManifest(preparedReferenceIds, promptBindings, {
+    mode: selectedMode, visual_reference_mode: visualReferenceMode, storyboard_reference_asset_id: storyboardReferenceAssetId,
+    excluded_visual_profile_ids: selectedNode?.settings.excluded_visual_profile_ids, video_reference_usages: mappedVideoUsages,
+    append_profile_assets: false,
+  })
+  const activeVideoReferenceUsages: VideoReferenceUsageSelection[] = videoReferences.flatMap(entry => entry.usage ? [{ asset_id: entry.asset_id, usage: entry.usage }] : [])
   const styleWarnings = preparedReferenceIds.flatMap((id, index) => {
     const asset = assetMap.get(id)
     if (!asset || detail.visual_profiles?.some(profile => profile.board_asset_id === id && profile.board_style_version === detail.project_visual_style?.version
@@ -1804,30 +1928,187 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   })
   const promptImageMode = preparedReferenceIds.length ? 'reference' : 'text'
   const promptResolution = composerModel?.modality === 'image' ? imageRequestResolution(composerModel, composerResolution, { ratio: composerRatio, clarity: composerClarity, mode: promptImageMode }) || null : null
-  const preferencePrompt = composerModel?.modality === 'image' ? imagePreferencePrompt(composerModel, compiledPrompt, {
-    ratio: composerRatio, resolution: promptResolution, clarity: composerClarity, quality: composerQuality, background: composerBackground,
-  }, promptImageMode) : composerModel?.modality === 'video' ? videoPreferencePrompt(compiledPrompt, selectedMode, composerDuration, { ratio: composerRatio, resolution: composerResolution }) : compiledPrompt
-  const automaticPrompt = composerModel && composerModel.modality !== 'text'
-    ? withProjectStyle(visualGenerationPrompt(preferencePrompt, promptBindings, preparedReferenceIds, visualReferenceMode,
+  function compileComposerPrompt(body: string) {
+    if (!composerModel || composerModel.modality === 'text') return body
+    const profilePrompt = selectedProfile ? withVisualProfilePrompt(body, {
+      ...selectedProfile,
+      definition: resolveCanvasProfileDisplayText(selectedProfile.definition, selectedProfile, detail),
+      view_requirements: resolveCanvasProfileDisplayText(selectedProfile.view_requirements, selectedProfile, detail),
+      state_delta: resolveCanvasProfileDisplayText(selectedProfile.state_delta || '', selectedProfile, detail),
+    }, (selectedProfile.base_profile_id && !baseProfileReady ? [] : preparedReferenceIds).map(asset_id => {
+      const source = profileReferences?.sources.find(source => source.assetId === asset_id)
+      const profile = profileMap.get(source?.profileId || '')
+      return { asset_id, name: profile?.name || source?.label || assetMap.get(asset_id)?.filename || '参考图片', variant: profile?.variant,
+        definition: profile ? resolveCanvasProfileDisplayText(profile.definition, profile, detail) : undefined, role: source?.role }
+    })) : body
+    const preferencePrompt = composerModel.modality === 'image' ? imagePreferencePrompt(composerModel, profilePrompt, {
+      ratio: composerRatio, resolution: promptResolution, clarity: composerClarity, quality: composerQuality, background: composerBackground,
+    }, promptImageMode) : videoPreferencePrompt(profilePrompt, selectedMode, composerDuration, { ratio: composerRatio, resolution: composerResolution })
+    return withProjectStyle(selectedProfile ? preferencePrompt : visualGenerationPrompt(preferencePrompt, promptBindings, preparedReferenceIds, visualReferenceMode,
       composerModality === 'video' ? { mode: selectedMode, storyboard_reference_asset_id: storyboardReferenceAssetId,
-        excluded_visual_profile_ids: selectedNode?.settings.excluded_visual_profile_ids, video_reference_usages: activeVideoReferenceUsages } : undefined), detail.project_visual_style) : preferencePrompt
-  const editablePrompt = selectedProfile ? selectedNode?.settings.profile_prompt_override ?? [selectedProfile.board_prompt, ...inputTexts, selectedNode?.text].filter(Boolean).join('\n\n') : selectedNode?.type === 'text' ? selectedNode.text
-    : selectedNode?.settings.prompt_is_final ? selectedNode.text.trim() ? rebasePromptDraft(selectedNode.settings.prompt_template || '', selectedNode.text, automaticPrompt) : selectedNode.text : automaticPrompt
-  const hasManualPrompt = selectedProfile ? selectedNode?.settings.profile_prompt_override !== undefined : selectedNode?.settings.prompt_is_final
-  const promptContextChanged = !selectedProfile && !!selectedNode?.text.trim() && selectedNode.settings.prompt_template !== automaticPrompt
-  // Synchronize changed controls/references, never individual keystrokes. A
-  // partially deleted block marker must not cause another block to be appended.
-  const synchronizePrompt = selectedNode?.type !== 'text' && (!hasManualPrompt || promptContextChanged)
-  const synchronizedPrompt = synchronizePrompt && composerModality === 'video' ? synchronizeVideoReferencePrompt(editablePrompt, promptBindings,
-    preparedReferenceIds, visualReferenceMode, { mode: selectedMode, storyboard_reference_asset_id: storyboardReferenceAssetId,
-      excluded_visual_profile_ids: selectedNode?.settings.excluded_visual_profile_ids, video_reference_usages: activeVideoReferenceUsages }) : editablePrompt
-  const composerPrompt = synchronizePrompt && composerModality && composerModality !== 'text' ? withProjectStyle(synchronizedPrompt, detail.project_visual_style) : synchronizedPrompt
-  const missingShotCount = detail.shots.filter((shot) => !graph?.nodes.some((node) =>
+        excluded_visual_profile_ids: selectedNode?.settings.excluded_visual_profile_ids, video_reference_usages: activeVideoReferenceUsages }
+        : { excluded_visual_profile_ids: selectedNode?.settings.excluded_visual_profile_ids }), detail.project_visual_style)
+  }
+  const automaticPrompt = compileComposerPrompt(compiledPrompt)
+  const automaticPromptDraft = tokenizePromptReferenceNumbers(automaticPrompt, preparedReferenceIds)
+  const legacyTemplate = tokenizePromptReferenceNumbers(selectedNode?.settings.prompt_template || '', preparedReferenceIds)
+  const savedSections = isPromptSectionDocument(selectedNode?.settings.prompt_sections) ? selectedNode.settings.prompt_sections : undefined
+  const savedPromptText = selectedProfile ? selectedNode?.settings.profile_prompt_override ?? '' : selectedNode?.text || ''
+  const savedDocument = savedSections ? serializePromptSectionDocument(savedSections)
+    : selectedNode?.settings.prompt_document || selectedNode?.settings.prompt_is_final && getManagedPromptBlocks(savedPromptText).length > 0
+      ? savedPromptText : undefined
+  const savedBody = savedDocument !== undefined ? extractPromptBody({ prompt: savedDocument }) : selectedNode?.settings.prompt_body
+  const composerBody = tokenizePromptReferenceNumbers(selectedProfile ? resolveCanvasProfileDisplayText(canvasPromptBody({
+    prompt: selectedNode?.settings.profile_prompt_override ?? ['按照已保存的视觉设定与视图要求制作当前对象的信息图。', ...inputTexts, selectedNode?.text].filter(Boolean).join('\n\n'),
+    prompt_body: savedBody, prompt_template: legacyTemplate,
+  }), selectedProfile, detail) : selectedNode?.type === 'text' ? savedBody ?? selectedNode.text
+    : selectedNode?.settings.prompt_is_final || savedBody !== undefined ? canvasPromptBody({ prompt: tokenizePromptReferenceNumbers(selectedNode?.text || '', preparedReferenceIds),
+      prompt_body: savedBody, prompt_template: legacyTemplate }, compiledPrompt) : compiledPrompt, preparedReferenceIds)
+  const generatedPrompt = tokenizePromptReferenceNumbers(compileComposerPrompt(composerBody), preparedReferenceIds)
+  const composerSections = savedDocument === undefined
+    ? parsePromptSectionDocument(generatedPrompt, { sourceText: generatedPrompt })
+    : reconcilePromptSectionDocument(parsePromptSectionDocument(tokenizePromptReferenceNumbers(savedDocument, preparedReferenceIds), {
+      sourceText: legacyTemplate, previousDocument: savedSections }), generatedPrompt, { body: composerBody })
+  const composerPrompt = serializePromptSectionDocument(composerSections)
+  const composerParameters = { modality: composerModality === 'video' ? 'video' as const : 'image' as const,
+    ratio: composerRatio, duration: composerDuration, resolution: composerModality === 'image' ? promptResolution : composerResolution,
+    clarity: composerClarity, quality: composerQuality, background: composerBackground,
+    mode: composerModality === 'image' ? promptImageMode : selectedMode }
+  const promptParameterConflicts = findPromptParameterConflicts(composerPrompt, composerParameters)
+  function saveComposerDocument(value: string, document?: PromptSectionDocument) {
+    if (!selectedNode) return
+    const sections = document ?? parsePromptSectionDocument(value, { sourceText: automaticPromptDraft, previousDocument: composerSections })
+    if (selectedProfile) updateNodeSettingsById(selectedNode.id, { prompt_document: true, prompt_sections: sections,
+      prompt_body: extractPromptBody({ prompt: value }), profile_prompt_override: value, prompt_template: automaticPromptDraft })
+    else editNodePrompt(selectedNode.id, value, { base: ownBasePrompt, template: automaticPromptDraft, document: sections })
+  }
+  function resolveComposerSource(id: string, choice: 'keep_custom' | 'follow_source') {
+    const document = resolvePromptSectionSource(composerSections, id, choice)
+    saveComposerDocument(serializePromptSectionDocument(document), document)
+  }
+  const composerHasContent = !!composerBody.trim()
+  const promptSourcePending = composerSections.blocks.some(block => block.pendingSourceText !== undefined)
+  // A saved document can contain authored mentions inside marked blocks too.
+  // Every mention still needs an active graph/binding input.
+  const explicitReferencePrompt = savedDocument === undefined ? composerBody : composerPrompt
+  let mentionedReferenceIds: string[] = []
+  try {
+    mentionedReferenceIds = extractPromptReferenceIds(composerPrompt)
+    const disconnected = disconnectedPromptReferenceIds(explicitReferencePrompt, rawPreparedReferenceIds, promptOverrides)
+    if (disconnected.length) promptReferenceIssue = '提示词中的参考已断开或未在当前模式生效，请点击失效标签重新连接、替换或移除'
+  } catch (error) { promptReferenceIssue = error instanceof Error ? error.message : '图片引用无效' }
+  const promptReferenceChoices = profileReferences ? profileReferences.sources.flatMap(source => {
+    const asset = assetMap.get(source.assetId)
+    return asset?.kind === 'image' ? [{ ...source, url: asset.url, required: source.role === 'base',
+      description: source.role === 'base' ? '自动继承 · 必需参考' : source.profileId ? '设定库 · 补充参考' : '素材库 · 补充参考',
+      provenance: source.role === 'base' ? 'base' as const : 'connection' as const }] : []
+  }) : graph && selectedNode ? promptReferenceSources(graph, selectedNode.id, preparedReferenceIds, detail)
+    .map(source => ({ ...source, url: assetMap.get(source.assetId)!.url, required: baseProfileReferences.includes(source.assetId) })) : []
+  const profileReferenceItems: CanvasReferenceItem[] = submittedProfileReferences ? submittedProfileReferences.assetIds.map((assetId, index) => {
+    const sources = Array.isArray(submittedProfileRequest.reference_sources) ? submittedProfileRequest.reference_sources : []
+    const saved = sources.find((source: unknown): source is Record<string, unknown> => !!source && typeof source === 'object'
+      && (source as Record<string, unknown>).asset_id === assetId)
+    const names = Array.isArray(submittedProfileRequest.reference_names) ? submittedProfileRequest.reference_names : []
+    const asset = assetMap.get(assetId)
+    const sourceNode = graph?.nodes.find(node => node.id !== selectedNodeId && visualNodeAsset(node, detail, true)?.id === assetId)
+    return { assetId, asset, name: typeof names[index] === 'string' ? names[index] : asset?.filename || `参考图 ${index + 1}`,
+      source: saved?.role === 'base' ? 'base' : typeof saved?.profile_id === 'string' ? 'profile' : 'snapshot',
+      version: typeof saved?.revision === 'number' ? `v${saved.revision}` : '提交时版本',
+      required: saved?.role === 'base', canLocate: !!sourceNode }
+  }) : (profileReferences?.sources || []).map(source => {
+    const profile = profileMap.get(source.profileId || '')
+    return { assetId: source.assetId, asset: assetMap.get(source.assetId),
+      name: profile ? `${profile.name} · ${profile.variant}` : source.label,
+      source: source.role === 'base' ? 'base' : source.profileId ? 'profile' : 'asset',
+      version: profile ? `v${profile.revision}` : undefined,
+      required: source.role === 'base', canLocate: !!(source.nodeId || source.profileId) }
+  })
+  const submittedPromptReferences = profileReferenceItems.map(item => ({ assetId: item.assetId, url: item.asset?.url || '',
+    label: item.name, required: !!item.required, invalid: item.asset?.kind !== 'image',
+    description: item.version || '提交时版本', provenance: '本次任务' }))
+  const displayedProfilePrompt = submittedProfileReferences && typeof submittedProfileRequest.prompt === 'string'
+    ? tokenizePromptReferenceNumbers(submittedProfileRequest.prompt, submittedProfileReferences.assetIds) : composerPrompt
+  const promptAdditionalChoices = detail.assets.filter(asset => asset.kind === 'image' && !preparedReferenceIds.includes(asset.id)).map(asset => {
+    const profile = detail.visual_profiles?.find(profile => profile.board_asset_id === asset.id ||
+      profile.reference_assets?.some(reference => reference.asset_id === asset.id))
+    const node = graph?.nodes.find(node => node.id !== selectedNodeId && node.asset_id === asset.id)
+    return { assetId: asset.id, url: asset.url, nodeId: node?.id,
+      label: node?.title || (profile ? `${profile.name} · ${profile.variant}` : asset.filename),
+      description: '添加后建立固定图片引用', provenance: '项目素材' }
+  })
+  const promptEditorReferences = [...new Set([...preparedReferenceIds, ...mentionedReferenceIds])].flatMap(id => {
+    const mappedId = Object.hasOwn(resolvedPromptReplacements, id) ? resolvedPromptReplacements[id] : id
+    const reference = promptReferenceChoices.find(choice => choice.assetId === mappedId)
+    if (reference) return [{ ...reference, assetId: id, invalid: false }]
+    const asset = assetMap.get(mappedId || id)
+    const previous = promptAdditionalChoices.find(choice => choice.assetId === (mappedId || id))
+    return [{ assetId: id, url: asset?.url || '', label: previous?.label || '已失效的引用图片', required: false,
+      description: '引用已断开或未在当前模式生效', provenance: '失效引用', invalid: true }]
+  })
+  useLayoutEffect(() => {
+    if (!selectedNode || selectedNode.type === 'text' || !preparedReferenceIds.length || promptReferenceIssue) return
+    // Freeze legacy numeric drafts while their original input order is still
+    // available, before a subsequent link edit can change that order.
+    const migrate = (value: string | undefined) => value === undefined ? value : tokenizePromptReferenceNumbers(value, preparedReferenceIds)
+    const text = selectedNode.settings.prompt_is_final ? migrate(selectedNode.text)! : selectedNode.text
+    const template = migrate(selectedNode.settings.prompt_template)
+    const profilePrompt = migrate(selectedNode.settings.profile_prompt_override)
+    const body = migrate(selectedNode.settings.prompt_body)
+    const sections = rewriteCanvasPromptSections(selectedNode.settings.prompt_sections, value => migrate(value)!)
+    if (text === selectedNode.text && template === selectedNode.settings.prompt_template && profilePrompt === selectedNode.settings.profile_prompt_override && body === selectedNode.settings.prompt_body
+      && JSON.stringify(sections) === JSON.stringify(selectedNode.settings.prompt_sections)) return
+    changeGraph(current => ({ ...current, nodes: current.nodes.map(node => node.id === selectedNode.id
+      ? { ...node, text, settings: { ...node.settings, prompt_sections: sections, prompt_body: body, prompt_template: template, profile_prompt_override: profilePrompt } } : node) }))
+  }, [selectedNode, preparedReferenceIds.join('\0'), promptReferenceIssue, changeGraph])
+  function addComposerPromptReference(reference: { assetId: string; nodeId?: string }): boolean {
+    if (!selectedNode || busy) return false
+    if (composerModality === 'video' && selectedMode === 'first_frame' && preparedReferenceIds.length) {
+      setNotice('首帧模式仅使用一张图片，请替换现有参考，或切换到多图参考后再添加')
+      return false
+    }
+    try {
+      changeGraph(current => {
+        const connected = materializePromptReference(current, selectedNode.id, reference.assetId, detail, { sourceNodeId: reference.nodeId })
+        return { ...connected, nodes: connected.nodes.map(node => {
+          if (node.id !== selectedNode.id || !Object.hasOwn(node.settings.prompt_reference_overrides || {}, reference.assetId)) return node
+          const overrides = { ...node.settings.prompt_reference_overrides }
+          delete overrides[reference.assetId]
+          return { ...node, settings: { ...node.settings, prompt_reference_overrides: overrides } }
+        }) }
+      })
+      return true
+    } catch (error) { showError(error); return false }
+  }
+  function changeComposerPromptReference(source: string, replacement: string | null): boolean {
+    if (!selectedNode || busy || baseProfileReferences.includes(source)) return false
+    try {
+      changeGraph(current => {
+        const connected = replaceConnectedPromptReference(current, selectedNode.id, source, replacement, detail,
+          { sourceNodeId: promptAdditionalChoices.find(item => item.assetId === replacement)?.nodeId })
+        return { ...connected, nodes: connected.nodes.map(node => {
+          if (node.id !== selectedNode.id) return node
+          const overrides = replacePromptReference(node.settings.prompt_reference_overrides, source, replacement)
+          const rewrite = (value: string) => value.replace(/\[\[ref:([^\]]+)\]\]/g, (token, id: string) =>
+            id === source ? replacement ? `[[ref:${replacement}]]` : '' : overrides[id] === null ? '' : token)
+          return { ...node, text: rewrite(node.text), settings: { ...node.settings, prompt_reference_overrides: overrides,
+            ...(node.settings.prompt_sections ? { prompt_sections: rewriteCanvasPromptSections(node.settings.prompt_sections, rewrite) } : {}),
+            ...(node.settings.prompt_body !== undefined ? { prompt_body: rewrite(node.settings.prompt_body) } : {}),
+            ...(node.settings.profile_prompt_override !== undefined ? { profile_prompt_override: rewrite(node.settings.profile_prompt_override) } : {}),
+            ...(node.settings.prompt_template !== undefined ? { prompt_template: rewrite(node.settings.prompt_template) } : {}),
+            ...(node.settings.storyboard_reference_asset_id === source ? { storyboard_reference_asset_id: replacement } : {}),
+            video_reference_usages: node.settings.video_reference_usages?.flatMap(item => item.asset_id === source
+              ? replacement ? [{ ...item, asset_id: replacement }] : [] : [item]),
+          } }
+        }) }
+      })
+      return true
+    } catch (error) { showError(error); return false }
+  }
+  const referenceBatchDecision = persistentReferenceBatch && graph ? evaluateReferenceBatch(persistentReferenceBatch, graph, detail) : null
+  const missingShotCount = canvasShots.filter((shot) => !graph?.nodes.some((node) =>
     node.type === 'generation' && node.shot_id === shot.id)).length
   const requestTemplate = JSON.stringify(selectedModel?.settings.request_template || {})
   const supportsAudio = selectedModel?.modality === 'video' && requestTemplate.includes('{{generate_audio}}')
-  const supportsImageReferences = selectedModel?.modality === 'image' &&
-    !imageReferenceConfigError(selectedModel.settings, 1, 'reference')
   const generationInputKey = JSON.stringify([selectedNode?.id, composerPrompt, selectedNode?.settings, composerModel,
     preparedReferenceIds, inputVideo?.id, promptBindings, selectedProfile, profileDraftDirty])
   const generationInputRef = useRef(generationInputKey)
@@ -1956,12 +2237,15 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   }
 
   function submitComposer() {
-    if (!selectedNode || busy || previewingRef.current || submittingRef.current) return
+    if (!graph || !selectedNode || busy || previewingRef.current || submittingRef.current) return
+    if (promptReferenceIssue) { setNotice(promptReferenceIssue); return }
+    if (promptParameterConflicts.length) { setNotice(promptParameterConflicts[0].message); return }
+    if (promptSourcePending) { setNotice('设定来源已更新，请在「设定来源与同步」中确认保留本节点修改或跟随项目'); return }
     if (selectedProfile) { setPendingRunNodeId(selectedNode.id); return }
     const prompt = composerPrompt.trim()
-    if (!prompt) { setNotice('请先输入提示词'); return }
+    if (!composerHasContent) { setNotice('请先输入提示词'); return }
     if (selectedNode?.type === 'generation') {
-      editNodePrompt(selectedNode.id, prompt, { base: ownBasePrompt, template: automaticPrompt })
+      editNodePrompt(selectedNode.id, prompt, { base: ownBasePrompt, template: automaticPromptDraft, document: composerSections })
       if (composerModelId !== (selectedNode.model_id || '')) selectNodeModel(selectedNode.id, composerModelId)
       setPendingRunNodeId(selectedNode.id)
       return
@@ -1978,7 +2262,12 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       text: prompt,
       shot_id: selectedNode.shot_id || assetMap.get(selectedNode.asset_id || '')?.shot_id || null,
       model_id: model?.id || null,
-      settings: { modality, prompt_override: true, prompt_is_final: true, prompt_base: ownBasePrompt, prompt_template: automaticPrompt,
+      settings: { modality, prompt_override: true, prompt_is_final: true, prompt_document: true, prompt_sections: composerSections, prompt_body: composerBody, prompt_base: ownBasePrompt, prompt_template: automaticPromptDraft,
+        prompt_reference_overrides: selectedNode.settings.prompt_reference_overrides,
+        storyboard_reference_asset_id: selectedNode.settings.storyboard_reference_asset_id,
+        video_reference_usages: selectedNode.settings.video_reference_usages,
+        excluded_visual_profile_ids: selectedNode.settings.excluded_visual_profile_ids,
+        reference_video_url: selectedNode.settings.reference_video_url,
         visual_reference_mode: visualReferenceMode, ratio: nextRatios.includes(composerRatio) ? composerRatio : nextRatios[0],
         resolution: nextResolutions.includes(composerResolution) ? composerResolution : nextResolutions[0] || null,
         clarity: modality === 'image'
@@ -1993,16 +2282,16 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         duration: modality === 'video' ? composerDuration : undefined, generate_audio: selectedNode.settings.generate_audio,
         candidate_count: selectedNode.settings.candidate_count,
         draft: selectedNode.settings.draft,
-        mode: modality === 'video' && selectedNode.type === 'image' && supportedModes(model).includes('first_frame')
+        mode: modality === 'video' && selectedNode.type === 'image' && !selectedNode.settings.mode && supportedModes(model).includes('first_frame')
           ? 'first_frame' : selectedNode.settings.mode || 'text' },
     }
-    const sourceIds = [...new Set([selectedNode.id, ...composerReferences.map(source => source.id)])]
-    const edges = sourceIds.map(source => {
-      const reference = source === selectedNode.id ? selectedNode : composerReferences.find(item => item.id === source)
-      const asset = reference && !reference.settings.visual_profile_id ? visualNodeAsset(reference, detail) : undefined
-      return { id: crypto.randomUUID(), source, target: node.id,
-        ...(asset?.kind === 'image' ? { reference_asset_id: asset.id } : {}) }
-    })
+    const sourceIds = new Set(composerReferences.map(source => source.id))
+    // Preserve every image snapshot, including several views from one node.
+    const edges = graph.edges.filter(edge => edge.target === selectedNode.id && sourceIds.has(edge.source))
+      .map(edge => ({ ...edge, id: crypto.randomUUID(), target: node.id }))
+    const ownAsset = visualNodeAsset(selectedNode, detail, true)
+    edges.push({ id: crypto.randomUUID(), source: selectedNode.id, target: node.id,
+      ...(ownAsset?.kind === 'image' ? { reference_asset_id: ownAsset.id } : {}) })
     changeGraph((current) => ({ ...current, nodes: [...current.nodes, node], edges: [...current.edges, ...edges] }))
     setSelectedNodeId(node.id)
     setSelectedNodeIds([node.id])
@@ -2052,7 +2341,9 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       const nearbyCount = currentGraph.edges.filter(edge => edge.target === target.id).length
       if (!existingReference) reference.y += nearbyCount * 100
       changeGraph(current => ({ ...current, nodes: [
-        ...current.nodes.map(node => node.id === target.id && !node.settings.visual_profile_id && !node.shot_id && asset.shot_id ? { ...node, shot_id: asset.shot_id } : node),
+        ...current.nodes.map(node => node.id === target.id && !node.settings.visual_profile_id && !node.shot_id && asset.shot_id
+          ? { ...node, shot_id: asset.shot_id, settings: { ...node.settings,
+            storyboard_revision: storyboardRevision(shotMap.get(asset.shot_id || '')?.storyboard_revision) } } : node),
         ...(!existingReference ? [reference] : []),
       ],
         edges: [...current.edges, { id: crypto.randomUUID(), source: reference.id, target: target.id }] }))
@@ -2116,6 +2407,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   }
 
   function addProfileToCanvas(profile: VisualProfile, targetId = referenceTargetNodeId) {
+    if ((profile.design_id || null) !== (canvas.design_id || null)) { setNotice('该设定属于其他方案，请切换对应画布查看'); return }
     const current = queueRef.current?.graph
     if (!current) return
     const target = current.nodes.find(node => node.id === targetId)
@@ -2152,82 +2444,124 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     else addProfileToCanvas(profile, null)
   }
 
+  function saveReferenceBatchPlan(plan: ReferenceBatchState) {
+    writeReferenceBatch(plan)
+    const current = queueRef.current
+    if (current?.id === plan.projectId && (current.canvasId || current.id) === plan.canvasId) {
+      referenceBatchPlanRef.current = plan
+      setPersistentReferenceBatch(plan)
+    }
+  }
+
   async function generateRequiredReferences() {
     const queue = queueRef.current
     if (!queue || !selectedNode || busy || visualPanelBusy || previewingRef.current || submittingRef.current) return
-    const targetId = selectedNode.id
-    const references = missingVisualReferences(queue.graph, targetId, detail, models).filter(reference => {
-      const profile = profileMap.get(reference.profileId)
-      return reference.action === 'generate' && profile && !visualReferenceGenerating(profile,
-        queue.graph.nodes.find(node => node.settings.visual_profile_id === profile.id), detail, submittedReferenceJobs.current.get(profile.id))
-    })
-    if (!references.length) return
+    try {
+      const plan = createReferenceBatch({ projectId: detail.id, canvasId: canvas.id, targetId: selectedNode.id,
+        profileIds: missingVisualReferences(queue.graph, selectedNode.id, detail, models)
+          .filter(reference => reference.action === 'generate').map(reference => reference.profileId) }, detail)
+      if (!plan.items.length) return
+      saveReferenceBatchPlan(plan)
+      await submitReferenceBatch(plan)
+    } catch (error) { showError(error) }
+  }
+
+  async function submitReferenceBatch(initial: ReferenceBatchState) {
+    const queue = queueRef.current
+    if (!queue || queue.id !== initial.projectId || (queue.canvasId || detail.id) !== (canvasId || detail.id)
+      || initial.canvasId !== canvas.id || submittingRef.current || previewingRef.current || busy || visualPanelBusy) return
+    const decision = evaluateReferenceBatch(initial, queue.graph, detail)
+    if (!decision.ready.length) return
     submittingRef.current = true
     setBusy(true)
-    const result = { targetId, submitting: true, queued: 0,
+    let plan = initial
+    const result = { targetId: initial.targetId, submitting: true,
+      queued: initial.items.filter(item => item.status === 'submitted').length,
       failures: [] as Array<{ profileId: string; name: string; message: string }> }
-    const fail = (reference: MissingVisualReference, issue: unknown) => {
-      result.failures.push({ profileId: reference.profileId, name: `${reference.name}${reference.variant ? ` · ${reference.variant}` : ''}`,
-        message: issue instanceof Error ? issue.message : String(issue) })
-    }
-    setReferenceBatch({ ...result })
+    setReferenceBatch(result)
     try {
       let nextGraph = queue.graph
-      const candidates: Array<{ reference: MissingVisualReference; nodeId: string; model: Model }> = []
-      for (const [index, reference] of references.entries()) {
+      const candidates: Array<{ profile: VisualProfile; nodeId: string; model: Model }> = []
+      const target = nextGraph.nodes.find(node => node.id === initial.targetId)!
+      for (const [index, reference] of decision.ready.entries()) {
+        const profile = profileMap.get(reference.profileId)!
         try {
-          const profile = profileMap.get(reference.profileId)!
           const existing = nextGraph.nodes.find(node => node.settings.visual_profile_id === profile.id)
           const model = existing?.model_id ? availableModels.find(item => item.id === existing.model_id && item.modality === 'image')
             : availableModels.find(item => item.modality === 'image')
           if (!model) throw new Error(existing?.model_id ? '此设定的图片模型不可用，请重新选择' : '请先配置可用的图片模型')
           if (profileDraftDirty && profileInspectorId === profile.id) throw new Error('请先保存正在编辑的设定')
-          if (!existing && nextGraph.nodes.length >= 500) throw new Error('画布节点已达到上限')
-          const added = addVisualProfileNode(nextGraph, profile, { ...blankNode('generation', selectedNode.x - 540, selectedNode.y + index * 300),
+          if (!existing && nextGraph.nodes.filter(node => node.type !== 'project_script_ref').length >= 500) throw new Error('画布节点已达到上限')
+          const added = addVisualProfileNode(nextGraph, profile, { ...blankNode('generation', target.x - 540, target.y + index * 300),
             model_id: model.id, settings: { modality: 'image', ...imageGenerationDefaults(model) } })
           nextGraph = added.graph
           if (existing && !existing.model_id) nextGraph = { ...nextGraph, nodes: nextGraph.nodes.map(node => node.id === existing.id ? { ...node, model_id: model.id } : node) }
-          candidates.push({ reference, nodeId: added.nodeId, model })
-        } catch (issue) { fail(reference, issue) }
+          candidates.push({ profile, nodeId: added.nodeId, model })
+        } catch (error) { plan = recordReferenceBatchFailure(plan, profile.id, error instanceof Error ? error.message : String(error)) }
       }
       changeGraph(() => nextGraph)
-      // Persist node IDs before creating jobs so each result has its own destination.
       await flush(queue)
-      for (const { reference, nodeId, model } of candidates) {
+      for (const { profile, nodeId, model } of candidates) {
         let submitted = false
         try {
-          if (queueRef.current !== queue) throw new Error('画布已切换，请回到原画布继续')
+          if (queueRef.current !== queue) break
           const node = queue.graph.nodes.find(item => item.id === nodeId)
           if (!node) throw new Error('参考节点已移除')
-          const profile = profileMap.get(reference.profileId)!
           const prepared = await prepareCanvasVisualBoard(node, profile, queue.graph, detail, model)
-          if (queueRef.current !== queue) throw new Error('画布已切换，请回到原画布继续')
+          if (queueRef.current !== queue) break
+          plan = markReferenceBatchSubmitting(plan, profile.id)
+          saveReferenceBatchPlan(plan)
           const generated = await enqueueCanvasVisualBoard(prepared.board, prepared.request, prepared.candidateCount)
           submitted = true
-          submittedReferenceJobs.current.set(profile.id, (generated.jobs?.length ? generated.jobs : [generated.job]).map(job => job.id))
+          const ids = (generated.jobs?.length ? generated.jobs : [generated.job]).map(job => job.id)
+          plan = recordReferenceBatchSubmission(plan, profile.id, ids)
+          submittedReferenceJobs.current.set(profile.id, ids)
+          saveReferenceBatchPlan(plan)
           result.queued += 1
           if (queueRef.current === queue) updateNodeById(nodeId, { job_id: generated.job.id })
           else {
-            // A submitted job still belongs to its original canvas if the user leaves while the request is in flight.
             queue.graph = { ...queue.graph, nodes: queue.graph.nodes.map(node => node.id === nodeId ? { ...node, job_id: generated.job.id } : node) }
-            queue.serial += 1
-            keepDraft(queue)
+            queue.serial += 1; keepDraft(queue)
           }
-          setReferenceBatch({ ...result, failures: [...result.failures] })
           await flush(queue)
-        } catch (issue) {
-          fail(reference, submitted ? '任务已入队，画布关联保存失败；可在任务记录中查看' : issue)
+        } catch (error) {
+          const message = submitted ? '任务已入队，画布关联保存失败；可在任务记录中查看' : error instanceof Error ? error.message : String(error)
+          // An uncertain submission is never retried automatically.
+          plan = recordReferenceBatchFailure(plan, profile.id, message)
         }
       }
-    } catch (issue) {
-      result.failures.push({ profileId: '', name: '画布保存', message: issue instanceof Error ? issue.message : String(issue) })
+    } catch (error) {
+      for (const item of plan.items.filter(item => item.status === 'pending')) plan = recordReferenceBatchFailure(plan, item.profileId,
+        `画布保存：${error instanceof Error ? error.message : String(error)}`)
     } finally {
-      setReferenceBatch({ ...result, submitting: false, failures: [...result.failures] })
+      saveReferenceBatchPlan(plan)
+      result.failures = evaluateReferenceBatch(plan, queue.graph, detail).blocked.map(item => ({ ...item,
+        name: profileMap.get(item.profileId)?.name || '参考图' }))
+      setReferenceBatch({ ...result, submitting: false })
+      submittingRef.current = false; setBusy(false)
       try { await onRefresh() } catch { setNotice('任务状态刷新失败，可在任务记录中查看') }
-      submittingRef.current = false
-      setBusy(false)
     }
   }
+
+  useEffect(() => {
+    const plan = readReferenceBatch(detail.id, canvas.id)
+    referenceBatchPlanRef.current = plan
+    setPersistentReferenceBatch(plan)
+  }, [detail.id, canvas.id])
+  useEffect(() => {
+    const plan = referenceBatchPlanRef.current
+    if (!plan || !graph || queueRef.current?.graph !== graph || plan.canvasId !== canvas.id || busy || visualPanelBusy
+      || submittingRef.current || previewingRef.current) return
+    const decision = evaluateReferenceBatch(plan, graph, detail)
+    if (decision.completed.length === plan.items.length) {
+      clearReferenceBatch(detail.id, canvas.id); referenceBatchPlanRef.current = null; setPersistentReferenceBatch(null)
+    } else if (decision.ready.length) void submitReferenceBatch(plan)
+  }, [persistentReferenceBatch, graph, detail, busy, visualPanelBusy, canvas.id])
+  useEffect(() => {
+    if (!persistentReferenceBatch || !persistentReferenceBatch.items.some(item => item.status === 'submitted')) return
+    const timer = window.setInterval(() => { void onRefresh().catch(() => {}) }, 4000)
+    return () => window.clearInterval(timer)
+  }, [persistentReferenceBatch, onRefresh])
 
   function changeVideoMode(mode: CanvasMode) {
     if (!selectedNode) return
@@ -2304,7 +2638,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     if (queue.conflict) throw new Error('画布版本冲突，请先合并后再切换候选')
     const modality = node.settings.modality || modelMap.get(node.model_id || '')?.modality
     if (modality !== 'image' && modality !== 'video') throw new Error('当前节点不支持分镜素材候选')
-    const shot = detail.shots.find(item => item.id === node.shot_id)
+    const shot = shotMap.get(node.shot_id)
     if (!shot || !shotMediaCandidates(shot.id, detail, modality).some(asset => asset.id === assetId)) throw new Error('该素材不属于当前镜头的候选')
     if (shot.archived_candidate_asset_ids?.includes(assetId)) throw new Error('请先恢复该候选，再设为当前素材')
     const job = detail.jobs.find(item => item.id === node.job_id)
@@ -2373,25 +2707,32 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       if (!queue || queue.id !== detail.id) return
       let request
       try { request = readScriptCanvasRequest(detail.id) } catch (issue) { setScriptCanvasError(issue instanceof Error ? issue.message : String(issue)); return }
-      if (!request || scriptCanvasAttempt.current === request.id) return
+      if (!request || request.canvas_id && request.canvas_id !== canvas.id || scriptCanvasAttempt.current === request.id) return
+      if (request.result.design_id && request.result.design_id !== canvas.design_id) { setScriptCanvasError('分镜方案与当前画布不一致，请打开对应方案画布'); return }
+      try { request = bindScriptCanvasRequest(detail.id, request.id, canvas.id) } catch (issue) { setScriptCanvasError(issue instanceof Error ? issue.message : String(issue)); return }
+      if (!request) return
+      const currentRequest = request
       scriptCanvasAttempt.current = request.id
-      autoImportAttempted.current = true
       setScriptCanvasError('')
+      let applied = false
       try {
         const imageModel = availableModels.find(model => model.modality === 'image')
         let imported: ReturnType<typeof addScriptCanvasNodes> | undefined
         changeGraph(current => {
-          imported = addScriptCanvasNodes(current, request.result, request.ratio, imageModel, models, detail.assets)
+          imported = addScriptCanvasNodes(current, currentRequest.result, currentRequest.ratio, imageModel, models, detail.assets)
           return imported.graph
         })
         if (!imported) throw new Error('画布尚未加载，请稍后重试')
+        // The local graph and recoverable draft now own these nodes. A failed
+        // save must retry that graph, rather than replay the import on remount.
+        applied = true
+        clearScriptCanvasRequest(detail.id, currentRequest.id, canvas.id)
         setViewMode('canvas'); setSidebarOpen(true); setSidebarTab('profiles'); setReferenceTargetNodeId(null)
-        const focus = scriptCanvasInitialFocus(imported, request.result, detail, models)
+        const focus = scriptCanvasInitialFocus(imported, currentRequest.result, detail, models)
         const targetId = focus.targetNodeId
         setSelectedNodeId(targetId || null); setSelectedNodeIds(targetId ? [targetId] : [])
         setComposerNodeId(null)
         await flush(queue)
-        if (readScriptCanvasRequest(detail.id)?.id === request.id) window.sessionStorage.removeItem(scriptCanvasRequestKey(detail.id))
         if (queueRef.current === queue) {
           const guidance = focus.bindingUpdateCount === focus.missingReferenceCount ? '请调整镜头设定引用'
             : `请先生成并确认设定信息图${focus.bindingUpdateCount ? '，已有图的设定需调整镜头引用' : ''}`
@@ -2400,18 +2741,19 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           window.requestAnimationFrame(() => { if (queueRef.current === queue) void fitView({ nodes: nodeIds.map(id => ({ id })), padding: 0.2, duration: 320 }) })
         }
       } catch (issue) {
-        if (queueRef.current === queue) setScriptCanvasError(issue instanceof Error ? issue.message : String(issue))
+        if (queueRef.current === queue) {
+          if (applied) showError(issue)
+          else setScriptCanvasError(issue instanceof Error ? issue.message : String(issue))
+        }
       }
     }
     void open()
     window.addEventListener('script-canvas-open', open)
     return () => { window.removeEventListener('script-canvas-open', open) }
-  }, [graph, detail.id, models, scriptCanvasRetry, changeGraph, flush, fitView])
+  }, [graph, detail.id, canvas.id, models, scriptCanvasRetry, changeGraph, flush, fitView, showError])
 
   function importShots(shotIds?: string[], focus = true) {
-    if (!detail.shots.length) { setNotice('项目还没有分镜，请先在剧本或时间线中创建'); return }
-    autoImportAttempted.current = true
-    try { window.localStorage.setItem(autoImportKey(detail.id), '1') } catch { /* Import still proceeds. */ }
+    if (!canvasShots.length) { setNotice('当前画布方案还没有可导入分镜'); return }
     let addedShots = 0
     let addedJobs = 0
     let addedAssets = 0
@@ -2422,11 +2764,19 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       const nodes = [...current.nodes]
       const edges = [...current.edges]
       let y = nodes.length ? Math.max(...nodes.map((node) => node.y + node.height)) + 100 : 80
-      for (const shot of detail.shots.filter(shot => !shotIds || shotIds.includes(shot.id))) {
-        const job = detail.jobs.find((item) => item.job_type === 'generation' && item.shot_id === shot.id)
+      for (const shot of canvasShots.filter(shot => !shotIds || shotIds.includes(shot.id))) {
+        const revision = storyboardRevision(shot.storyboard_revision)
+        const shotJobs = detail.jobs.filter((item) => {
+          if (item.job_type !== 'generation' || item.shot_id !== shot.id) return false
+          const request = visualJobRequest(item)
+          return storyboardRevision(request.storyboard_revision) === revision
+            && !request.visual_profile_id && !request.asset_task_id && request.visual_reference_generation !== true
+            && !request.visual_reference_view && !['character', 'location', 'prop'].includes(String(request.source_artifact_type || ''))
+        })
+        const job = shotJobs[0]
         const imageModel = availableModels.find(model => model.modality === 'image')
         let settings: CanvasNode['settings'] = { ...(!job ? { modality: 'image' as const, ...imageGenerationDefaults(imageModel) } : {}), duration: shot.duration, ratio: detail.ratio,
-          group_id: shot.id,
+          group_id: shot.id, storyboard_revision: revision,
           group_title: `镜头 ${String(shot.position + 1).padStart(2, '0')} · ${shot.title}` }
         let referenceIds: string[] = []
         let restoredDraft = ''
@@ -2445,7 +2795,10 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
             if (request.prompt_is_final && typeof request.prompt === 'string') {
               restoredDraft = request.prompt
               settings = { ...settings, prompt_is_final: true, prompt_override: true, prompt_base: prompt,
-                prompt_template: request.prompt_template || '' }
+                prompt_document: request.prompt_document, prompt_body: request.prompt_body, prompt_template: request.prompt_template || '',
+                ...(request.prompt_document ? { prompt_sections: parsePromptSectionDocument(tokenizePromptReferenceNumbers(request.prompt, referenceIds), {
+                  sourceText: tokenizePromptReferenceNumbers(request.prompt_template || '', referenceIds),
+                }) } : {}) }
             }
           } catch { /* Keep the shot defaults for legacy jobs. */ }
         }
@@ -2481,8 +2834,10 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
             edges.push({ id: crypto.randomUUID(), source: source.id, target: generation.id, reference_asset_id: asset.id })
           }
         }
+        const currentResults = new Set(shotJobs.map(item => item.result_asset_id))
         const assets = detail.assets.filter((asset) => asset.kind !== 'audio' && asset.source !== 'export' &&
-          !referenceIds.includes(asset.id) && (asset.shot_id === shot.id || asset.id === shot.selected_asset_id))
+          !referenceIds.includes(asset.id) && (asset.id === shot.selected_asset_id
+            || asset.shot_id === shot.id && (revision === 0 || currentResults.has(asset.id))))
         let rightY = Math.max(generation.y, ...nodes.filter((node) => node.shot_id === shot.id &&
           (node.type === 'image' || node.type === 'video' || node.type === 'text')).map((node) => node.y + node.height + 22))
         for (const asset of assets) {
@@ -2525,7 +2880,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     if (!graph) return
     const request = readShotCanvasRequest(detail.id)
     if (!request || request.canvasId !== canvas.id) return
-    const shot = detail.shots.find(shot => shot.id === request.shotId)
+    const shot = shotMap.get(request.shotId)
     if (!shot) { clearShotCanvasRequest(detail.id, request.requestId); return }
     setViewMode('canvas')
     initialViewApplied.current = true
@@ -2543,11 +2898,11 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       void setCenter(target.x + target.width / 2 + ((viewportRef.current?.clientWidth || 0) > 900 ? 80 : 0),
         target.y + target.height / 2, { zoom: 1, duration: 0 })
     })
-  }, [graph, detail.id, detail.shots, canvas.id, setCenter])
+  }, [graph, detail.id, allShots, canvas.id, setCenter])
 
   function organizeShotGroups() {
-    if (!detail.shots.length) { setNotice('项目还没有分镜，请先在剧本中创建'); return }
-    const titles = new Map(detail.shots.map((shot) => [shot.id,
+    if (!allShots.length) { setNotice('项目还没有分镜，请先在剧本中创建'); return }
+    const titles = new Map(allShots.map((shot) => [shot.id,
       `镜头 ${String(shot.position + 1).padStart(2, '0')} · ${shot.title}`]))
     let changed = 0
     changeGraph((current) => {
@@ -2618,13 +2973,6 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     if (viewMode === 'canvas') window.setTimeout(() => { void fitView({ padding: 0.16, duration: 320 }) }, 50)
   }
 
-  useEffect(() => {
-    if (canvas.id !== detail.id || !graph || graph.nodes.length || !detail.shots.length) return
-    if (autoImportAttempted.current) return
-    try { if (window.localStorage.getItem(autoImportKey(detail.id))) return } catch { /* Continue once in memory. */ }
-    importShots()
-  }, [graph, detail.id, detail.shots.length])
-
   function onNodesChange(changes: NodeChange<FlowNode>[]) {
     const selectionChanges = changes.filter((change): change is Extract<NodeChange<FlowNode>, { type: 'select' }> => change.type === 'select')
     if (selectionChanges.length) {
@@ -2634,13 +2982,17 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       // selection race a click and can repeatedly rebuild the whole node tree.
       const selected = new Map(selectionChanges.map((change) => [change.id, change.selected]))
       const sourceNodes = queueRef.current?.graph.nodes || graph?.nodes || []
-      const ids = sourceNodes.filter((node) => visibleNodeIds.has(node.id) && (selected.get(node.id) ?? selectedIds.has(node.id))).map((node) => node.id)
+      const selectedNodes = sourceNodes.filter((node) => visibleNodeIds.has(node.id) && (selected.get(node.id) ?? selectedIds.has(node.id)))
+      const ids = selectedNodes.filter(node => selectedNodes.length === 1 || node.type !== 'project_script_ref').map(node => node.id)
+      if (ids.length !== selectedNodes.length) setSelectionRevision(value => value + 1)
       setSelectedNodeIds((current) => sameStringList(current, ids) ? current : ids)
       setSelectedNodeId((current) => {
         const next = current && ids.includes(current) ? current : ids[0] || null
         return current === next ? current : next
       })
     }
+    const scriptIds = new Set((queueRef.current?.graph.nodes || []).filter(node => node.type === 'project_script_ref').map(node => node.id))
+    changes = changes.filter(change => change.type !== 'remove' || !scriptIds.has(change.id))
     if (!changes.some((change) => change.type === 'position' || change.type === 'dimensions' || change.type === 'remove')) return
     const removedIds = new Set(changes.flatMap((change) => change.type === 'remove' ? [change.id] : []))
     const positionChanges = changes.filter((change): change is Extract<NodeChange<FlowNode>, { type: 'position' }> => change.type === 'position')
@@ -2728,7 +3080,12 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       } catch (issue) { showError(issue) }
       return
     }
-    const asset = source && !source.settings.visual_profile_id ? visualNodeAsset(source, detail) : undefined
+    const bound = source?.settings.visual_profile_id && target?.shot_id
+      ? detail.shot_visual_bindings?.find(binding => binding.shot_id === target.shot_id && binding.profile_id === source.settings.visual_profile_id) : undefined
+    // Explicit links keep the selected/confirmed image version. Multi-view
+    // bindings already carry their own independent image snapshots.
+    const asset = bound?.reference_assets?.length ? undefined : bound?.board_asset_id ? assetMap.get(bound.board_asset_id)
+      : source ? visualNodeAsset(source, detail, true) : undefined
     changeGraph((current) => ({ ...current, edges: [...current.edges,
       { id: crypto.randomUUID(), source: connection.source!, target: connection.target!,
         ...(asset?.kind === 'image' && target?.type === 'generation' ? { reference_asset_id: asset.id } : {}) }] }))
@@ -2765,11 +3122,10 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   }
 
   function selectAllCanvasNodes() {
-    const nodes = (queueRef.current?.graph.nodes || []).filter(node => visibleNodeIds.has(node.id))
-    if (!nodes.length) return
+    const nodes = (queueRef.current?.graph.nodes || []).filter(node => node.type !== 'project_script_ref' && visibleNodeIds.has(node.id))
     const ids = nodes.map(node => node.id)
     setSelectedNodeIds(ids)
-    setSelectedNodeId(ids.includes(selectedNodeId || '') ? selectedNodeId : ids[0])
+    setSelectedNodeId(ids.includes(selectedNodeId || '') ? selectedNodeId : ids[0] || null)
     setSelectedEdgeId(null); setComposerNodeId(null); setContextMenu(null); setAddMenu(null)
     viewportRef.current?.focus({ preventScroll: true })
   }
@@ -2778,7 +3134,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     const queue = queueRef.current
     if (!queue || queue.id !== detail.id || removalPendingRef.current) return
     const requestedNodeIds = new Set(nodeIds)
-    const nodeIdSet = new Set(queue.graph.nodes.filter(node => requestedNodeIds.has(node.id)).map(node => node.id))
+    const removableNodes = queue.graph.nodes.filter(node => node.type !== 'project_script_ref')
+    const nodeIdSet = new Set(removableNodes.filter(node => requestedNodeIds.has(node.id)).map(node => node.id))
     const requestedEdgeIds = new Set(edgeIds)
     const edgeIdSet = new Set(queue.graph.edges.filter(edge => requestedEdgeIds.has(edge.id) ||
       nodeIdSet.has(edge.source) || nodeIdSet.has(edge.target)).map(edge => edge.id))
@@ -2793,9 +3150,16 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       // Confirmation belongs to the graph that opened it, even if the project
       // changes while the dialog is open. New nodes are outside its scope.
       if (!ok || queueRef.current !== queue) return
-      if (nodeIdSet.size) {
-        autoImportAttempted.current = true
-        try { window.localStorage.setItem(autoImportKey(queue.id), '1') } catch { /* Keep the choice for this session. */ }
+      if (clear || nodeIdSet.size === removableNodes.length && nodeIdSet.size > 0) {
+        // Clearing the graph also cancels an earlier un-applied import for this
+        // canvas. Returning here must not turn that old request into new nodes.
+        try {
+          const request = readScriptCanvasRequest(queue.id)
+          if (request && (!request.canvas_id || request.canvas_id === canvas.id)) {
+            clearScriptCanvasRequest(queue.id, request.id, canvas.id)
+            setScriptCanvasError('')
+          }
+        } catch { /* An invalid handoff must not prevent removing canvas nodes. */ }
       }
       changeGraph(current => ({
         ...current,
@@ -2824,7 +3188,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   function commitHistoryGraph(snapshot: CanvasGraph) {
     const queue = queueRef.current
     if (!queue || queue.id !== detail.id) return
-    const next = { ...cloneGraph(snapshot), revision: queue.graph.revision }
+    const next = ensureCanvasScript(syncStoryboardGraph({ ...cloneGraph(snapshot), revision: queue.graph.revision }), canvas.id, detail.name,
+      queue.graph.nodes.find(node => node.type === 'project_script_ref'))
     if (sameValue({ nodes: next.nodes, edges: next.edges }, { nodes: queue.graph.nodes, edges: queue.graph.edges })) return
     queue.graph = next
     queue.serial += 1
@@ -2938,16 +3303,20 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       setNotice('请先选择已启用的模型')
       return
     }
+    if (promptReferenceIssue) { setNotice(promptReferenceIssue); return }
+    if (promptParameterConflicts.length) { setNotice(promptParameterConflicts[0].message); return }
+    if (promptSourcePending) { setNotice('设定来源已更新，请在「设定来源与同步」中确认保留本节点修改或跟随项目'); return }
+    if (preparedReferenceIds.some(id => assetMap.get(id)?.kind !== 'image')) { setNotice('提示词引用的图片已不存在，请重新选择'); return }
     if (missingReferences.length) {
       setNotice(`请先补齐参考图：${missingReferences.map(reference => reference.name).join('、')}，点击「待补齐参考图」中的对应项定位处理`)
       return
     }
-    if (!composerPrompt.trim()) { setNotice('请输入提示词'); return }
+    if (!composerHasContent) { setNotice('请输入提示词'); return }
     if (selectedProfile) {
       if (profileDraftDirty && profileInspectorId === selectedProfile.id) { setNotice('请先保存右侧编辑的设定，再生成信息图'); return }
       previewingRef.current = true; setBusy(true)
       try {
-        return { ...await prepareCanvasVisualBoard(selectedNode, selectedProfile, queueRef.current!.graph, detail, model),
+        return { ...await prepareCanvasVisualBoard(selectedNode, selectedProfile, queueRef.current!.graph, detail, model, composerPrompt),
           provider: providers.find(provider => provider.id === model.provider_id) }
       } catch (issue) { showError(issue) } finally { previewingRef.current = false; setBusy(false) }
       return
@@ -2969,15 +3338,15 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       const issue = videoReferenceConfigError(model.settings, preparedReferenceIds.length, mode)
       if (issue) { setNotice(issue); return }
     }
-    if (inputImages.length && model.modality === 'video' && !['first_frame', 'first_last_frame', 'reference'].includes(mode)) {
+    if (preparedReferenceIds.length && model.modality === 'video' && !['first_frame', 'first_last_frame', 'reference'].includes(mode)) {
       setNotice('连接的参考图未被当前模式使用，请选择首帧、首尾帧或参考生成')
       return
     }
-    if (inputImages.length && model.modality === 'image') {
-      const referenceIssue = imageReferenceConfigError(model.settings, inputImages.length, 'reference')
+    if (preparedReferenceIds.length && model.modality === 'image') {
+      const referenceIssue = imageReferenceConfigError(model.settings, preparedReferenceIds.length, 'reference')
       if (referenceIssue) { setNotice(referenceIssue); return }
     }
-    if (inputImages.length && model.modality === 'text') {
+    if (preparedReferenceIds.length && model.modality === 'text') {
       setNotice('文本模型不会使用参考图片，请移除图片连接')
       return
     }
@@ -2989,12 +3358,12 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       setNotice('连接的视频未被当前模式使用，请选择参考生成、编辑或延长')
       return
     }
-    if (mode === 'first_frame' && inputImages.length !== 1) { setNotice('首帧模式需要连接 1 张图片'); return }
-    if (mode === 'first_last_frame' && inputImages.length !== 2) { setNotice('首尾帧模式需要连接 2 张图片'); return }
+    if (mode === 'first_frame' && preparedReferenceIds.length !== 1) { setNotice('首帧模式需要引用 1 张图片'); return }
+    if (mode === 'first_last_frame' && preparedReferenceIds.length !== 2) { setNotice('首尾帧模式需要引用 2 张图片'); return }
     const videoUrl = ['reference', 'edit', 'extend'].includes(mode)
       ? (selectedNode.settings.reference_video_url || inputVideo?.remote_url || '').trim() : ''
     if (['edit', 'extend'].includes(mode) && !videoUrl) { setNotice('编辑或延长模式需要参考视频地址'); return }
-    if (mode === 'reference' && !inputImages.length && !videoUrl && !(visualBindings.length && visualReferenceMode === 'profiles')) { setNotice('参考生成需要图片连接或视频地址'); return }
+    if (mode === 'reference' && !preparedReferenceIds.length && !videoUrl) { setNotice('参考生成需要引用图片或视频地址'); return }
     // Image generation has no duration parameter. Keep the request value
     // neutral so a newly created image task does not look like a 5-second
     // video in the confirmation dialog or create an unnecessarily long shot.
@@ -3028,16 +3397,16 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     const request: GenerationRequest = {
       project_style_version: detail.project_visual_style?.version,
       shot_id: shot?.id || '', model_id: model.id,
+      ...(shot ? { storyboard_revision: storyboardRevision(selectedNode.settings.storyboard_revision) } : {}),
       visual_reference_mode: visualReferenceMode,
+      excluded_visual_profile_ids: selectedNode.settings.excluded_visual_profile_ids || [],
+      prompt_reference_overrides: promptOverrides,
       ...(model.modality === 'video' ? { storyboard_reference_asset_id: mode === 'reference' ? storyboardReferenceAssetId || null : null,
-        excluded_visual_profile_ids: selectedNode.settings.excluded_visual_profile_ids || [], video_reference_usages: mode === 'reference' ? activeVideoReferenceUsages : [] } : {}),
-      prompt: withProjectStyle(model.modality === 'video' ? synchronizeVideoReferencePrompt(composerPrompt, promptBindings,
-        preparedReferenceIds, visualReferenceMode, { mode: selectedMode, storyboard_reference_asset_id: storyboardReferenceAssetId,
-          excluded_visual_profile_ids: selectedNode.settings.excluded_visual_profile_ids, video_reference_usages: activeVideoReferenceUsages }) : composerPrompt,
-        detail.project_visual_style).trim(), prompt_is_final: true, prompt_template: automaticPrompt,
+        video_reference_usages: mode === 'reference' ? activeVideoReferenceUsages : [] } : {}),
+      prompt: composerPrompt.trim(), prompt_is_final: true, prompt_document: true, prompt_body: composerBody, prompt_template: automaticPromptDraft,
       ...(compiledPrompt.trim() ? { visual_source_prompt: compiledPrompt.trim() } : {}),
       mode: model.modality === 'image' ? imageMode : mode,
-      reference_asset_ids: inputImages.map((asset) => asset.id),
+      reference_asset_ids: resolvePromptReferences({ prompt: explicitReferencePrompt, referenceAssetIds: inputImages.map(asset => asset.id), overrides: promptOverrides }).referenceAssetIds,
       reference_video_url: videoUrl || null, resolution, clarity, quality, background, duration, ratio,
       generate_audio: supportsAudio ? selectedNode.settings.generate_audio ?? true : false,
       draft: model.settings.supports_draft === true && selectedNode.settings.draft === true,
@@ -3111,6 +3480,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       }
       if (!latestJob) throw new Error('没有创建生成任务')
       changeGraph((graphValue) => ({ ...graphValue, nodes: graphValue.nodes.map((node) => node.id === current.nodeId
+        && storyboardRevision(node.settings.storyboard_revision) === storyboardRevision(request.storyboard_revision)
         ? { ...node, job_id: latestJob!.id, asset_id: null,
           settings: { ...node.settings, generation_completed_job_id: undefined } } : node) }))
       setReview(null)
@@ -3197,7 +3567,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     const queue = queueRef.current
     if (!queue || !conflictReview) return
     queue.base = conflictReview.remote
-    queue.graph = conflictReview.merged
+    queue.graph = ensureCanvasScript(syncStoryboardGraph(conflictReview.merged), canvas.id, detail.name)
     queue.serial += 1
     queue.conflict = false
     keepDraft(queue)
@@ -3212,8 +3582,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     const ok = await confirm({ title: '加载服务器版本', message: '当前未保存的画布修改将被丢弃。', confirmLabel: '加载并丢弃', danger: true })
     if (!ok) return
     queue.base = conflictReview.remote
-    queue.graph = conflictReview.remote
-    queue.serial = 0
+    queue.graph = ensureCanvasScript(syncStoryboardGraph(conflictReview.remote), canvas.id, detail.name)
+    queue.serial = queue.graph === conflictReview.remote ? 0 : 1
     queue.savedSerial = 0
     queue.conflict = false
     clearDraft(queue.storageId)
@@ -3222,6 +3592,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     setConflictReview(null)
     setSelectedNodeId(null)
     setSelectedNodeIds([])
+    if (queue.serial) { keepDraft(queue); scheduleSave(queue) }
   }
 
   const canvasLeaveRef = useRef<CanvasActions | null>(null)
@@ -3235,7 +3606,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       try { await flush(queue); canvasSession.revision = queue.base.revision; return true } catch (issue) { showError(issue); return false }
     },
     move: async targetId => {
-      const ids = selectedCanvasNodeIds
+      const ids = selectedCanvasNodeIds.filter(id => queueRef.current?.graph.nodes.find(node => node.id === id)?.type !== 'project_script_ref')
       if (!ids.length) { setNotice('请先选择要移动的节点'); return false }
       if (!await canvasLeaveRef.current!.leave()) return false
       const queue = queueRef.current!
@@ -3267,27 +3638,31 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         || (sidebarFilter === 'text' && node.type === 'project_script_ref'))
       .filter((node) => {
         if (!query) return true
-        const shotTitle = detail.shots.find((shot) => shot.id === node.shot_id)?.title || ''
+        const shotTitle = shotMap.get(node.shot_id || '')?.title || ''
         return `${node.title} ${node.text} ${shotTitle}`.toLocaleLowerCase().includes(query)
       })
       .sort((a, b) => a.y - b.y || a.x - b.x)
-  }, [detail.shots, graph?.nodes, sidebarFilter, sidebarSearch])
-  const sidebarProfiles = useMemo(() => (detail.visual_profiles || []).filter(profile =>
+  }, [shotMap, graph?.nodes, sidebarFilter, sidebarSearch])
+  const scopedSidebarProfiles = useMemo(() => (detail.visual_profiles || []).filter(profile =>
+    profileScope === 'all' || (profile.design_id || null) === (canvas.design_id || null)),
+  [detail.visual_profiles, canvas.design_id, profileScope])
+  const sidebarProfiles = useMemo(() => scopedSidebarProfiles.filter(profile =>
     (profileFilter === 'all' || profile.kind === profileFilter)
     && `${profile.name} ${profile.variant}`.toLocaleLowerCase().includes(profileSearch.trim().toLocaleLowerCase())),
-  [detail.visual_profiles, profileFilter, profileSearch])
+  [scopedSidebarProfiles, profileFilter, profileSearch])
+  const availableSidebarAssets = useMemo(() => detail.assets.filter(asset =>
+    (asset.saved || !!referenceTargetNodeId) && asset.source !== 'export'), [detail.assets, referenceTargetNodeId])
   const sidebarAssets = useMemo(() => {
     const query = sidebarAssetSearch.trim().toLocaleLowerCase()
-    return detail.assets
-      .filter((asset) => (asset.saved || !!referenceTargetNodeId) && asset.source !== 'export')
+    return availableSidebarAssets
       .filter((asset) => sidebarAssetFilter === 'all' || asset.kind === sidebarAssetFilter)
       .filter((asset) => {
         if (!query) return true
-        const shotTitle = detail.shots.find((shot) => shot.id === asset.shot_id)?.title || ''
+        const shotTitle = shotMap.get(asset.shot_id || '')?.title || ''
         return `${assetLabels.get(asset.id)?.title || ''} ${asset.filename} ${shotTitle}`.toLocaleLowerCase().includes(query)
       })
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
-  }, [detail.assets, detail.shots, assetLabels, sidebarAssetFilter, sidebarAssetSearch, referenceTargetNodeId])
+  }, [availableSidebarAssets, shotMap, assetLabels, sidebarAssetFilter, sidebarAssetSearch])
   const contextNode = contextMenu?.nodeId ? graph?.nodes.find((node) => node.id === contextMenu.nodeId) : undefined
   const contextEdge = contextMenu?.edgeId ? graph?.edges.find((edge) => edge.id === contextMenu.edgeId) : undefined
   const contextSelectionCount = contextNode && selectedCanvasNodeIds.includes(contextNode.id) ? selectedCanvasNodeIds.length : 0
@@ -3409,15 +3784,15 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     <div className={`pc-body ${viewMode === 'storyboard' ? 'pc-body-storyboard' : sidebarOpen ? 'pc-body-sidebar-open' : ''}`}>
       {viewMode === 'canvas' && sidebarOpen && <aside className="pc-canvas-sidebar" aria-label="画布节点与素材" data-canvas-overlay>
         <Tabs value={sidebarTab} variant="pills" activateTabWithKeyboard={false} className="pc-sidebar-tabs-root"><Tabs.List className="pc-sidebar-tabs" aria-label="画布侧栏">
-          <Tabs.Tab type="button" className={sidebarTab === 'canvas' ? 'active' : ''}
+          <Tooltip label="当前画布的节点总数，包含项目剧本" openDelay={300}><Tabs.Tab type="button" className={sidebarTab === 'canvas' ? 'active' : ''}
             onClick={() => setSidebarTab('canvas')} value="canvas" leftSection={<Layers3 size={15} />}
-            rightSection={<Badge className="pc-sidebar-tab-count" color="gray" size="xs">{graph?.nodes.length || 0}</Badge>}>画布</Tabs.Tab>
-          <Tabs.Tab type="button" className={sidebarTab === 'assets' ? 'active' : ''}
+            rightSection={<Badge className="pc-sidebar-tab-count" color="gray" size="xs">{graph?.nodes.length || 0}</Badge>}>画布</Tabs.Tab></Tooltip>
+          <Tooltip label={referenceTargetNodeId ? '项目内可引用的素材，包含未保存候选' : '项目共享的已保存素材，不含成片导出'} openDelay={300}><Tabs.Tab type="button" className={sidebarTab === 'assets' ? 'active' : ''}
             onClick={() => setSidebarTab('assets')} value="assets" leftSection={<ImageIcon size={15} />}
-            rightSection={<Badge className="pc-sidebar-tab-count" color="gray" size="xs">{detail.assets.filter((asset) => (asset.saved || !!referenceTargetNodeId) && asset.source !== 'export').length}</Badge>}>资产</Tabs.Tab>
-          <Tabs.Tab type="button" className={sidebarTab === 'profiles' ? 'active' : ''}
+            rightSection={<Badge className="pc-sidebar-tab-count" color="gray" size="xs">{availableSidebarAssets.length}</Badge>}>资产</Tabs.Tab></Tooltip>
+          <Tooltip label={profileScope === 'all' ? '整个项目全部方案的设定总数，包含历史方案' : '当前方案的设定总数，不同状态分别计数'} openDelay={300}><Tabs.Tab type="button" className={sidebarTab === 'profiles' ? 'active' : ''}
             onClick={() => setSidebarTab('profiles')} value="profiles" leftSection={<LayoutDashboard size={15} />}
-            rightSection={<Badge className="pc-sidebar-tab-count" color="gray" size="xs">{detail.visual_profiles?.length || 0}</Badge>}>设定</Tabs.Tab>
+            rightSection={<Badge className="pc-sidebar-tab-count" color="gray" size="xs">{scopedSidebarProfiles.length}</Badge>}>设定</Tabs.Tab></Tooltip>
         </Tabs.List></Tabs>
         {sidebarTab === 'canvas' ? <>
           <div className="pc-sidebar-tools">
@@ -3440,8 +3815,10 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                 <Menu shadow="md" width={150} position="right-start" classNames={{ dropdown: 'pc-sidebar-dropdown' }}><Menu.Target><ActionIcon variant="subtle" className="pc-sidebar-more" aria-label={`更多操作：${node.title || '节点'}`} onClick={(event) => event.stopPropagation()}><MoreHorizontal size={16} /></ActionIcon></Menu.Target><Menu.Dropdown>
                   <Menu.Item leftSection={<LocateFixed size={14} />} onClick={() => focusSidebarNode(node.id)}>定位节点</Menu.Item>
                   <Menu.Item leftSection={<Settings2 size={14} />} onClick={() => selectNodeForView(node.id)}>选择节点</Menu.Item>
-                  <Menu.Item leftSection={<Plus size={14} />} onClick={() => duplicateSelection(node.id)}>复制节点</Menu.Item>
-                  <Menu.Item color="red" leftSection={<Trash2 size={14} />} onClick={() => deleteSelection(node.id, null)}>删除节点</Menu.Item>
+                  {node.type !== 'project_script_ref' && <>
+                    <Menu.Item leftSection={<Plus size={14} />} onClick={() => duplicateSelection(node.id)}>复制节点</Menu.Item>
+                    <Menu.Item color="red" leftSection={<Trash2 size={14} />} onClick={() => deleteSelection(node.id, null)}>删除节点</Menu.Item>
+                  </>}
                 </Menu.Dropdown></Menu>
               </div>
             })}
@@ -3450,6 +3827,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         </> : sidebarTab === 'profiles' ? <>
           <div className="pc-sidebar-tools">
             <TextInput size="xs" aria-label="搜索视觉设定" placeholder="搜索名称或版本" value={profileSearch} leftSection={<Search size={14} />} onChange={event => setProfileSearch(event.currentTarget.value)} />
+            <CanvasSelect aria-label="设定方案范围" value={profileScope} data={[{ value: 'canvas', label: '当前方案设定' }, { value: 'all', label: '全部方案（含历史）' }]}
+              onChange={value => { if (value === 'canvas' || value === 'all') setProfileScope(value) }} />
             <div className="pc-sidebar-filter-row">
               <div className="pc-sidebar-filter-pills" role="group" aria-label="设定类型筛选">{(['all', 'character', 'location', 'prop'] as const).map(kind => <UnstyledButton type="button" key={kind} aria-pressed={profileFilter === kind} className={profileFilter === kind ? 'active' : ''} onClick={() => setProfileFilter(kind)}>{kind === 'all' ? '全部' : kind === 'character' ? '人物' : kind === 'location' ? '场景' : '道具'}</UnstyledButton>)}</div>
               <div className="pc-sidebar-profile-tools">
@@ -3471,14 +3850,15 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                   <span className="pc-profile-list-thumb">{board ? <img src={board.url} alt={`${profile.name} 设定图`} /> : <ImageIcon size={18} />}</span>
                   <span className="pc-sidebar-node-copy"><strong>{profile.name}</strong><small>{profile.variant} · v{profile.revision}</small><small className="pc-profile-list-status">{profile.definition_status === 'draft' ? '设定草稿' : profile.board_style_status === 'needs_review' ? '画风待核对' : profile.board_asset_id ? '信息图已确认' : '待制作信息图'}{inCanvas ? ' · 已在画布' : ''}</small></span>
                 </UnstyledButton>
-                <Tooltip label={referenceTargetNodeId ? '添加为参考' : inCanvas ? '定位节点' : '加入画布'}><ActionIcon variant="subtle" aria-label={`${referenceTargetNodeId ? '添加设定参考' : inCanvas ? '定位设定节点' : '加入设定画布'}：${profile.name} · ${profile.variant}`} disabled={visualPanelBusy} onClick={() => void (async () => { if (await leaveVisualPanel()) { setVisualTool(null); addProfileToCanvas(profile) } })()}>{inCanvas && !referenceTargetNodeId ? <LocateFixed size={15} /> : <Plus size={15} />}</ActionIcon></Tooltip>
+                <Tooltip label={(profile.design_id || null) !== (canvas.design_id || null) ? '其他方案设定，可查看历史' : referenceTargetNodeId ? '添加为参考' : inCanvas ? '定位节点' : '加入画布'}><ActionIcon variant="subtle" aria-label={`${referenceTargetNodeId ? '添加设定参考' : inCanvas ? '定位设定节点' : '加入设定画布'}：${profile.name} · ${profile.variant}`} disabled={visualPanelBusy || (profile.design_id || null) !== (canvas.design_id || null)} onClick={() => void (async () => { if (await leaveVisualPanel()) { setVisualTool(null); addProfileToCanvas(profile) } })()}>{inCanvas && !referenceTargetNodeId ? <LocateFixed size={15} /> : <Plus size={15} />}</ActionIcon></Tooltip>
                 <Tooltip label="管理候选"><ActionIcon variant="subtle" aria-label={`管理候选：${profile.name} · ${profile.variant}`} onClick={() => setCandidateProfileId(profile.id)}><Layers3 size={15} /></ActionIcon></Tooltip>
               </div>
             })}
-            {!sidebarProfiles.length && <div className="pc-sidebar-empty"><span className="pc-sidebar-empty-icon"><ImageIcon size={24} /></span><strong>{detail.visual_profiles?.length ? '没有匹配的设定' : '暂无视觉设定'}</strong><p>{detail.visual_profiles?.length ? '试试其他关键词或切换类型。' : '剧本中点击「加入画布」，会自动整理人物、场景和道具设定。'}</p></div>}
+            {!sidebarProfiles.length && <div className="pc-sidebar-empty"><span className="pc-sidebar-empty-icon"><ImageIcon size={24} /></span><strong>{scopedSidebarProfiles.length ? '没有匹配的设定' : profileScope === 'canvas' ? '当前方案暂无视觉设定' : '暂无视觉设定'}</strong><p>{scopedSidebarProfiles.length ? '试试其他关键词或切换类型。' : '剧本中点击「加入画布」，会自动整理人物、场景和道具设定。'}</p></div>}
           </div>
         </> : <>
           <div className="pc-sidebar-tools">
+            <Text size="xs" className="pc-sidebar-scope-label">项目共享 · {referenceTargetNodeId ? '可引用素材（含未保存候选）' : '已保存素材'}</Text>
             <TextInput size="xs" aria-label="搜索资产" placeholder="搜索素材、镜头或文件名" value={sidebarAssetSearch}
               leftSection={<Search size={14} />} onChange={(event) => setSidebarAssetSearch(event.currentTarget.value)} />
             <div className="pc-sidebar-filter-pills" role="group" aria-label="资产类型筛选">
@@ -3494,7 +3874,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
               <div className="pc-sidebar-asset-copy"><strong title={assetLabels.get(asset.id)?.title || asset.filename}>{assetLabels.get(asset.id)?.title || asset.filename}</strong><small>{asset.kind === 'image' ? '图片' : asset.kind === 'video' ? '视频' : asset.kind === 'audio' ? '音频' : '文本'} · {asset.source === 'generated' ? '生成' : '导入'}</small></div>
               {asset.kind === 'audio' ? <Tooltip label="音频素材可在时间线中使用"><span className="pc-sidebar-audio-mark"><Music2 size={14} /></span></Tooltip> : <Tooltip label={referenceTargetNodeId ? '添加为当前节点的参考' : '添加到画布'}><ActionIcon variant="subtle" aria-label={`将 ${assetLabels.get(asset.id)?.title || asset.filename} ${referenceTargetNodeId ? '添加为参考' : '添加到画布'}`} onClick={() => addAssetNode(asset)}><Plus size={16} /></ActionIcon></Tooltip>}
             </div>)}
-            {!sidebarAssets.length && <div className="pc-sidebar-empty"><span className="pc-sidebar-empty-icon"><ImageIcon size={24} /></span><strong>还没有匹配的素材</strong><p>生成或上传的素材会出现在这里。</p><Button type="button" onClick={openCanvasUpload} data-workspace-control="" variant="subtle">上传素材</Button></div>}
+            {!sidebarAssets.length && <div className="pc-sidebar-empty"><span className="pc-sidebar-empty-icon"><ImageIcon size={24} /></span><strong>还没有匹配的素材</strong><p>{referenceTargetNodeId ? '试试其他关键词，或上传参考素材。' : '上传素材，或将生成结果保存到资产库后，可在各画布共享使用。'}</p><Button type="button" onClick={openCanvasUpload} data-workspace-control="" variant="subtle">上传素材</Button></div>}
           </div>
         </>}
       </aside>}
@@ -3627,9 +4007,9 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
               <Menu.Target><ActionIcon variant="subtle" aria-label="画布操作菜单" data-canvas-overlay><MoreHorizontal size={16} /></ActionIcon></Menu.Target>
               <Menu.Dropdown data-canvas-overlay>
                 <Menu.Label>Shift 框选 · ⌘ / Ctrl 点击多选</Menu.Label>
-                <Menu.Item leftSection={<Check size={14} />} disabled={!visibleNodeIds.size} onClick={selectAllCanvasNodes}>{nodeTypeFilter === 'all' ? '全选节点' : '全选可见节点'}（⌘ / Ctrl + A）</Menu.Item>
+                <Menu.Item leftSection={<Check size={14} />} disabled={!hasSelectableCanvasNodes} onClick={selectAllCanvasNodes}>{nodeTypeFilter === 'all' ? '全选节点' : '全选可见节点'}（⌘ / Ctrl + A）</Menu.Item>
                 <Menu.Divider />
-                <Menu.Item color="red" leftSection={<Trash2 size={14} />} disabled={!graph.nodes.length && !graph.edges.length} onClick={() => void clearCanvas()}>清空画布</Menu.Item>
+                <Menu.Item color="red" leftSection={<Trash2 size={14} />} disabled={!hasRemovableCanvasContent} onClick={() => void clearCanvas()}>清空画布</Menu.Item>
               </Menu.Dropdown>
             </Menu>
           </div>
@@ -3643,20 +4023,32 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                   {referenceReturnNode && referenceReturnNode.id !== selectedNode.id && <UnstyledButton type="button" className="pc-composer-chip pc-reference-return" aria-label={`返回生成节点：${referenceReturnNode.title}`} onClick={() => {
                     focusSidebarNode(referenceReturnNode.id); setReferenceReturnNodeId(null)
                   }}><ArrowLeft size={14} /><span>返回 {referenceReturnNode.title || '原节点'}</span></UnstyledButton>}
-                  <Button type="button" className="pc-composer-chip" onClick={() => showSidebarAssets(selectedProfile ? 'image' : 'all', selectedNode.id)} data-workspace-control="" variant="subtle"><Plus size={15} />参考</Button>
+                  <Menu withinPortal position="bottom-start">
+                    <Menu.Target><Button type="button" className="pc-composer-chip" disabled={busy || !!selectedProfile && selectedNodeGenerating}
+                      data-workspace-control="" variant="subtle" leftSection={<Plus size={15} />} rightSection={<ChevronDown size={12} />}>添加参考</Button></Menu.Target>
+                    <Menu.Dropdown data-canvas-overlay>
+                      <Menu.Item leftSection={<ImageIcon size={14} />} onClick={() => showSidebarAssets(selectedProfile ? 'image' : 'all', selectedNode.id)}>从素材库选择</Menu.Item>
+                      <Menu.Item leftSection={<Layers3 size={14} />} onClick={() => {
+                        setComposerExpanded(false); setSidebarOpen(true); setSidebarTab('profiles'); setReferenceTargetNodeId(selectedNode.id)
+                      }}>从设定库选择</Menu.Item>
+                    </Menu.Dropdown>
+                  </Menu>
                   {selectedJob && canOptimizeImagePrompt(selectedJob, composerModality) && <Button type="button" className="pc-composer-chip" variant="light"
                     leftSection={<Sparkles size={14} />} disabled={busy || selectedNodeGenerating} onClick={() => setOptimizationNodeId(selectedNode.id)}>优化提示词</Button>}
                   {(composerModality === 'image' || composerModality === 'video') && <PromptSkillAction key={selectedNode.id} projectId={detail.id} nodeId={selectedNode.id}
-                    modality={composerModality} prompt={composerPrompt}
+                    modality={composerModality} prompt={composerPrompt} promptDocument promptSections={composerSections} promptReferences={promptEditorReferences} promptTemplate={legacyTemplate}
                     models={models.filter(model => model.modality === 'text' && model.enabled && providers.some(provider => provider.id === model.provider_id && provider.enabled && provider.adapter !== 'demo'))}
-                    disabled={busy || selectedNodeGenerating} targetModelId={composerModelId} shotId={selectedNode.shot_id} profileId={selectedProfile?.id}
-                    ratio={composerRatio} duration={composerDuration} mode={selectedMode} referenceAssetIds={preparedReferenceIds}
+                    disabled={busy || selectedNodeGenerating || !!promptReferenceIssue || !!promptParameterConflicts.length || promptSourcePending || !!selectedProfile?.base_profile_id && !baseProfileReady} targetModelId={composerModelId} shotId={selectedNode.shot_id} profileId={selectedProfile?.id}
+                    ratio={composerRatio} duration={composerDuration} mode={composerModality === 'image' ? promptImageMode : selectedMode} referenceAssetIds={preparedReferenceIds}
+                    promptReferenceOverrides={promptOverrides}
+                    resolution={composerModality === 'image' ? promptResolution : composerResolution} clarity={composerClarity} quality={composerQuality} background={composerBackground}
                     storyboardReferenceAssetId={selectedMode === 'reference' ? storyboardReferenceAssetId : null}
                     visualReferenceMode={visualReferenceMode} excludedVisualProfileIds={selectedNode.settings.excluded_visual_profile_ids}
                     videoReferenceUsages={activeVideoReferenceUsages}
-                    onApply={value => {
-                      if (selectedProfile) updateNodeSettingsById(selectedNode.id, { profile_prompt_override: value })
-                      else editNodePrompt(selectedNode.id, value, { base: ownBasePrompt, template: automaticPrompt })
+                    onApply={(value, _body, document) => {
+                      const draft = tokenizePromptReferenceNumbers(value, preparedReferenceIds)
+                      saveComposerDocument(draft, document ? rewriteCanvasPromptSections(document,
+                        text => tokenizePromptReferenceNumbers(text, preparedReferenceIds)) : undefined)
                       setNotice('已应用整理后的提示词')
                     }} />}
                   {!selectedProfile && selectedBoardAsset?.kind === 'image' && <>
@@ -3665,18 +4057,18 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                     {availableModels.some(model => model.modality === 'video' && supportsVideoMultiReference(model.settings)) && <UnstyledButton type="button" className="pc-composer-chip" aria-label="作为参考设计视频" disabled={busy || selectedNodeGenerating}
                       onClick={() => void tryNodeAction(selectedNode.id, 'video-reference')}><ImageIcon size={15} /><span>多图参考</span></UnstyledButton>}
                   </>}
-                  {selectedProfile && <><Button type="button" className="pc-composer-chip" onClick={() => { setComposerExpanded(false); setSidebarOpen(true); setSidebarTab('profiles'); setReferenceTargetNodeId(selectedNode.id) }} data-workspace-control="" variant="subtle"><ImageIcon size={15} />设定参考</Button><Tooltip label="编辑设定"><ActionIcon type="button" className="pc-composer-chip" aria-label="编辑设定" onClick={() => { setComposerExpanded(false); openProfileInspector(selectedProfile) }} data-workspace-control=""><PenLine size={15} /></ActionIcon></Tooltip></>}
+                  {selectedProfile && <Tooltip label="编辑设定"><ActionIcon type="button" className="pc-composer-chip" aria-label="编辑设定" onClick={() => { setComposerExpanded(false); openProfileInspector(selectedProfile) }} data-workspace-control=""><PenLine size={15} /></ActionIcon></Tooltip>}
                   {selectedProfile && <Tooltip label="上传设定图"><ActionIcon type="button" className="pc-composer-chip" aria-label="上传设定图" disabled={busy || selectedNodeGenerating} onClick={() => profileUploadInputRef.current?.click()} data-workspace-control=""><Upload size={15} /></ActionIcon></Tooltip>}
                 </div>
                 <ActionIcon size={30} type="button" className="pc-composer-expand" aria-label={composerExpanded ? '缩小创作区' : '放大创作区'} title={composerExpanded ? '缩小创作区' : '放大创作区'} aria-expanded={composerExpanded} onClick={() => setComposerExpanded((value) => !value)} data-workspace-control="" variant="subtle">{composerExpanded ? <Minimize2 size={17} /> : <Maximize2 size={17} />}</ActionIcon>
               </div>
               <div className="pc-prompt-composer-body">
               {selectedShot && <div className="pc-visual-context">
-                <Tooltip label="全部已绑定设定，包含待确认、待更新和不同使用范围的设定；实际参考图片可查看生成信息。" multiline w={280}>
+                <Tooltip label="当前用途启用的设定，包含待确认和待更新项；实际传入的参考图片可查看生成信息。" multiline w={280}>
                   <Button ref={composerBindingsTriggerRef} type="button" className="pc-composer-chip pc-visual-context-button" aria-expanded={composerBindingsOpen} aria-controls="pc-composer-bindings"
-                    disabled={visualPanelBusy} onClick={() => setComposerBindingsOpen(value => !value)} data-workspace-control="" variant="subtle"><ImageIcon size={14} />镜头引用 · {allVisualBindings.length}{staleVisualBindingCount > 0 && <span className="pc-binding-stale"> · {staleVisualBindingCount} 项待更新</span>}<ChevronDown size={13} className="pc-binding-toggle-chevron" /></Button>
+                    disabled={visualPanelBusy} onClick={() => setComposerBindingsOpen(value => !value)} data-workspace-control="" variant="subtle"><ImageIcon size={14} />镜头引用 · {visualBindings.length}{staleVisualBindingCount > 0 && <span className="pc-binding-stale"> · {staleVisualBindingCount} 项待更新</span>}<ChevronDown size={13} className="pc-binding-toggle-chevron" /></Button>
                 </Tooltip>
-                {allVisualBindings.length !== visualBindings.length && <span className="pc-visual-context-status">当前{composerModality === 'image' ? '图片' : composerModality === 'video' ? '视频' : '生成'}使用 {visualBindings.length} 份</span>}
+                {allVisualBindings.length !== visualBindings.length && <span className="pc-visual-context-status">本镜头关联 {allVisualBindings.length} 份设定</span>}
                 {visualBindings.length > 0 && <><span className="pc-visual-context-status">{visualReferenceMode !== 'profiles' ? '文字设定已带入'
                   : visualBindings.filter(binding => binding.required && !visualBindingReferenceAssetIds(binding).length).length ? '必需参考图待确认' : '已绑定'}</span>
                   {composerModality !== 'video' && <CanvasSelect className="pc-visual-reference-select" size="xs" aria-label="视觉设定引用方式" value={visualReferenceMode}
@@ -3690,6 +4082,14 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
               </div>}
               <div className="pc-composer-workspace">
               <div className="pc-composer-writing">
+              {selectedProfile?.base_profile_id && <CanvasProfileInheritance profile={selectedProfile} baseProfile={directBaseProfile}
+                asset={assetMap.get(directBaseProfile?.board_asset_id || '')} waitingProfile={profileInheritance?.waitingProfile}
+                error={profileInheritance?.error} baseReady={baseProfileReady} baseGenerating={baseProfileGenerating}
+                busy={busy || visualPanelBusy} onLocateBase={() => {
+                  if (!directBaseProfile) return
+                  locateMissingReference({ profileId: directBaseProfile.id, name: directBaseProfile.name, variant: directBaseProfile.variant,
+                    action: 'confirm', nodeId: graph?.nodes.find(node => node.settings.visual_profile_id === directBaseProfile.id)?.id })
+                }} />}
               {missingReferences.length > 0 && <div className="pc-missing-references" role="group" aria-label="待补齐参考图">
                 <div className="pc-missing-references-heading"><strong>待补齐参考图 · {missingReferences.length}</strong><span>新生成默认确认第一张，可随时更换</span>
                   {referencesToConfirm.length > 0 && <Button size="compact-xs" variant="default" className="pc-confirm-required-references"
@@ -3707,7 +4107,15 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                   <small>{referenceGenerating.get(reference.profileId) === 'running' ? '生成中' : referenceGenerating.get(reference.profileId) === 'queued' ? '排队中'
                     : reference.action === 'bindings' ? '调整引用' : reference.action === 'confirm' ? '去确认' : '去生成'}</small><ArrowRight size={13} />
                 </UnstyledButton>)}</div>
-                {referenceBatch?.targetId === selectedNode.id && <div className="pc-required-reference-result" role="status" aria-live="polite">
+                {persistentReferenceBatch?.targetId === selectedNode.id && referenceBatchDecision && <div className="pc-required-reference-result" role="status" aria-live="polite">
+                  <p>{referenceBatch?.submitting ? '正在提交所需参考图…' : `已提交 ${persistentReferenceBatch.items.filter(item => item.status === 'submitted').length} 份设定图，已确认 ${referenceBatchDecision.completed.length} / ${persistentReferenceBatch.items.length}，基础图确认后自动继续生成后续状态。`}</p>
+                  {referenceBatchDecision.waiting.map(item => <p key={item.profileId}>{profileMap.get(item.profileId)?.name}：{item.message}</p>)}
+                  {referenceBatchDecision.blocked.map(item => <p key={item.profileId} className="pc-required-reference-error">{profileMap.get(item.profileId)?.name}：{item.message}</p>)}
+                  <Button size="xs" variant="subtle" disabled={!!referenceBatch?.submitting} onClick={() => {
+                    clearReferenceBatch(detail.id, canvas.id); referenceBatchPlanRef.current = null; setPersistentReferenceBatch(null); setReferenceBatch(null)
+                  }}>停止自动续跑</Button>
+                </div>}
+                {referenceBatch?.targetId === selectedNode.id && !persistentReferenceBatch && <div className="pc-required-reference-result" role="status" aria-live="polite">
                   <p>{referenceBatch.submitting ? '正在提交所需参考图…' : referenceBatch.queued > 0 ? `已提交 ${referenceBatch.queued} 份设定图，生成完成后自动确认第一张可用候选。` : '所需参考图暂未提交，请处理以下问题。'}</p>
                   {referenceBatch.failures.map(failure => <p key={failure.profileId || failure.name} className="pc-required-reference-error"><strong>{failure.name}</strong>：{failure.message}</p>)}
                 </div>}
@@ -3720,6 +4128,21 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                 项目画风：{detail.project_visual_style.label} · {detail.project_visual_style.source === 'confirmed_context' ? '继承已确认设定，可在剧本对话中规范化' : '统一用于设定图、分镜和视频'}
               </p>}
               {styleWarnings.length > 0 && <WorkspaceDisclosure className="pc-project-style" label={<>参考图画风需核对 · {styleWarnings.length}</>}>{styleWarnings.map(warning => <p key={warning}>{warning}</p>)}</WorkspaceDisclosure>}
+              {selectedProfile && (selectedNodeGenerating && !submittedProfileReferences
+                ? <p className="pc-profile-reference-notice" role="status">任务已提交，正在同步本次使用的参考与提示词…</p>
+                : <CanvasReferenceList items={profileReferenceItems} generating={selectedNodeGenerating} disabled={busy}
+                  onPreview={item => { if (item.asset) setReferencePreview(item.asset) }}
+                  onLocate={item => {
+                    const source = !submittedProfileReferences ? profileReferences?.sources.find(source => source.assetId === item.assetId) : undefined
+                    const node = graph?.nodes.find(node => node.id === source?.nodeId)
+                      || graph?.nodes.find(node => node.id !== selectedNode.id && visualNodeAsset(node, detail, true)?.id === item.assetId)
+                    if (node) { setReferenceReturnNodeId(selectedNode.id); focusSidebarNode(node.id) }
+                    else if (source?.profileId) {
+                      const profile = profileMap.get(source.profileId)
+                      if (profile) locateMissingReference({ profileId: profile.id, name: profile.name, variant: profile.variant, action: 'confirm' })
+                    }
+                  }}
+                  onRemove={item => changeComposerPromptReference(item.assetId, null)} />)}
               {composerModality === 'video' && <VideoReferencePanel entries={videoReferences} assets={detail.assets}
                 disabled={busy || selectedNodeGenerating}
                 excludedBindings={selectedMode === 'reference' ? visualBindings.filter(binding => !binding.required && selectedNode.settings.excluded_visual_profile_ids?.includes(binding.profile_id)) : []}
@@ -3737,17 +4160,9 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                 onChangeUsage={selectedMode === 'reference' ? (assetId, usage) => updateNodeSettingsById(selectedNode.id, {
                   video_reference_usages: [...activeVideoReferenceUsages.filter(item => item.asset_id !== assetId), ...(usage ? [{ asset_id: assetId, usage }] : [])],
                 }) : undefined}
-                onRemoveManual={id => changeGraph(current => ({ ...current,
-                  nodes: current.nodes.map(node => node.id === selectedNode.id ? { ...node, settings: { ...node.settings,
-                    ...(storyboardReferenceAssetId === id ? { storyboard_reference_asset_id: null } : {}),
-                    video_reference_usages: node.settings.video_reference_usages?.filter(item => item.asset_id !== id),
-                  } } : node), edges: current.edges.filter(edge => {
-                  if (edge.target !== selectedNode.id) return true
-                  const source = current.nodes.find(node => node.id === edge.source)
-                  return (edge.reference_asset_id || source && visualNodeAsset(source, detail, true)?.id) !== id
-                }) }))} />}
-              {composerReferences.some(node => composerModality !== 'video' || visualNodeAsset(node, detail, true)?.kind !== 'image') && <div className="pc-composer-references" aria-label="已连接的参考">
-                {composerReferences.filter(node => composerModality !== 'video' || visualNodeAsset(node, detail, true)?.kind !== 'image').map((node, index) => <div className="pc-composer-reference" key={node.id}>
+                onRemoveManual={id => { changeComposerPromptReference(id, null) }} />}
+              {composerReferences.some(node => composerModality !== 'video' && !selectedProfile || visualNodeAsset(node, detail, true)?.kind !== 'image') && <div className="pc-composer-references" aria-label="已连接的参考">
+                {composerReferences.filter(node => composerModality !== 'video' && !selectedProfile || visualNodeAsset(node, detail, true)?.kind !== 'image').map((node, index) => <div className="pc-composer-reference" key={node.id}>
                   <UnstyledButton type="button" title={node.title || '参考节点'} aria-label={`定位参考：${node.title || index + 1}`} onClick={() => focusSidebarNode(node.id)}>
                     {visualNodeAsset(node, detail, true)?.kind === 'image' ? <img src={visualNodeAsset(node, detail, true)!.url} alt={node.title} />
                       : node.type === 'project_script_ref' ? <ScrollText size={22} />
@@ -3764,7 +4179,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                 onChange={event => updateNodeSettingsById(selectedNode.id, { reference_video_url: event.currentTarget.value })}
                 styles={{ input: { borderColor: 'var(--pc-reference-video-border)', backgroundColor: 'var(--fc-surface-muted)' } }} className="pc-reference-video-input" />}
               {selectedProfile && <div className="pc-profile-board-review">
-                <div><strong>{selectedProfile.name} · v{selectedProfile.revision}</strong><span>{selectedBoardAsset?.id === selectedProfile.board_asset_id ? '已确认' : selectedBoardAsset ? '候选待确认' : '待生成'}</span>
+                <div><strong>{selectedProfile.name} · v{selectedProfile.revision}</strong><span role="status" aria-label="当前设定状态" aria-live="polite">{selectedProfileBoardStatus}</span>
                   {selectedBoardAsset && <a href={selectedBoardAsset.url} target="_blank" rel="noreferrer" title="查看信息图"><Maximize2 size={14} /></a>}
                   <Button className="pc-candidate-manager-entry" variant="default" size="xs" leftSection={<Layers3 size={13} />} onClick={() => setCandidateProfileId(selectedProfile.id)}>管理候选 · {visualCandidateAssets(selectedProfile, detail, selectedNode.asset_id).filter(asset => !selectedProfile.archived_candidate_asset_ids?.includes(asset.id)).length}</Button>
                   <Button variant="default" size="xs" onClick={() => openProfileInspector(selectedProfile)}>独立参考图 · {selectedProfile.reference_assets?.filter(reference => reference.status === 'confirmed' && reference.revision === selectedProfile.revision).length || 0}</Button>
@@ -3774,7 +4189,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                   {selectedProfile.board_asset_id && !profileCandidates.some(asset => asset.id === selectedProfile.board_asset_id) && assetMap.get(selectedProfile.board_asset_id) && <Button type="button" aria-label="查看已确认设定图" onClick={() => updateNodeById(selectedNode.id, { asset_id: selectedProfile.board_asset_id })} data-workspace-control="" variant="subtle"><img src={assetMap.get(selectedProfile.board_asset_id)!.url} alt="已确认设定图" /><Check size={12} /></Button>}
                 </div>}
                 {selectedJob?.error && <p role="alert">{selectedJob.error}</p>}
-                {profileReferenceChanged && <p role="status">参考图已变化，可重新生成候选图</p>}
+                {profileReferenceState?.status === 'changed' && <p className="pc-profile-reference-notice" role="status">{profileReferenceState.message}</p>}
                 {selectedProfile?.board_style_status === 'needs_review' && <p role="status">项目画风已更新，原信息图需核对。<Button type="button" onClick={() => setCandidateProfileId(selectedProfile.id)} data-workspace-control="" variant="subtle">查看并重新确认</Button></p>}
               </div>}
               {!selectedProfile && selectedShot && selectedNode.type === 'generation' && (composerModality === 'image' || composerModality === 'video') && <ShotCandidateStrip
@@ -3782,18 +4197,25 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                 displayedAssetId={selectedNode.asset_id} selectedAssetId={selectedShot.selected_asset_id} busy={busy} generating={selectedNodeGenerating}
                 onUse={assetId => useShotCandidate(selectedNode.id, assetId)} onManage={() => setShotCandidateNodeId(selectedNode.id)} />}
               {!selectedProfile && <div className="pc-prompt-kind-label">{composerModality === 'video' ? '视频提示词' : '图片提示词'}</div>}
-              <Textarea className="pc-prompt-composer-input" aria-label={selectedProfile ? '信息图提示词' : '创作提示词'} autosize={!composerExpanded} minRows={6} maxRows={10} maxLength={80000}
-                disabled={busy}
-                data-autofocus={composerExpanded || undefined}
-                styles={{ input: { minHeight: composerExpanded ? 240 : selectedProfile ? 64 : 160 } }}
-                placeholder={selectedProfile ? '描述信息图内容与视图要求' : composerModality === 'video' ? '描述画面、动作和运镜，可通过「参考」添加素材' : supportsImageReferences ? '描述画面，可通过「参考」添加图片进行编辑' : '描述主体、场景、光线与构图'}
-                value={composerPrompt} onChange={(event) => {
-                  const value = event.currentTarget.value
-                  if (selectedProfile) updateNodeSettingsById(selectedNode.id, { profile_prompt_override: value })
-                  else if (selectedNode?.type === 'generation') editNodePrompt(selectedNode.id, value, { base: ownBasePrompt, template: automaticPrompt })
-                  else if (selectedNode?.type === 'text') updateNodeById(selectedNode.id, { text: value })
-                  else if (selectedNode) editNodePrompt(selectedNode.id, value, { base: ownBasePrompt, template: automaticPrompt })
-                }} />
+              <p className="pc-prompt-system-note">可直接编辑正文与各项设定，输入 @ 引用图片。</p>
+              {!(selectedProfile && selectedNodeGenerating && !submittedProfileReferences) && <CanvasPromptEditor key={selectedNode.id} aria-label={selectedProfile ? '信息图提示词' : '创作提示词'}
+                  expanded={composerExpanded} disabled={busy || !!selectedProfile && selectedNodeGenerating} minRows={6}
+                  placeholder={selectedProfile ? '描述信息图内容与视图要求，输入 @ 引用图片' : '描述画面、动作与构图，输入 @ 引用图片'}
+                  references={selectedProfile && submittedProfileReferences ? submittedPromptReferences : promptEditorReferences}
+                  choices={selectedProfile && submittedProfileReferences ? submittedPromptReferences : promptReferenceChoices}
+                  additionalChoices={selectedProfile && selectedNodeGenerating ? [] : promptAdditionalChoices}
+                  value={selectedProfile && submittedProfileReferences ? displayedProfilePrompt : composerPrompt}
+                  sectionDocument={selectedProfile && submittedProfileReferences ? undefined : composerSections}
+                  onReferenceAdd={addComposerPromptReference} onReferenceChange={changeComposerPromptReference}
+                  onChange={saveComposerDocument} />}
+              {!selectedNodeGenerating && <CanvasPromptDocumentStatus document={composerSections} references={promptEditorReferences}
+                disabled={busy} onResolve={resolveComposerSource} />}
+              {promptParameterConflicts.length > 0 && <div className="pc-prompt-parameter-conflicts" role="alert">
+                {promptParameterConflicts.map((conflict, index) => <p key={`${conflict.field}:${index}`}>{conflict.message}</p>)}
+                <Button size="compact-xs" variant="light" disabled={busy || selectedNodeGenerating}
+                  onClick={() => saveComposerDocument(synchronizePromptParameters(composerPrompt, composerParameters))}>按生成参数同步提示词</Button>
+              </div>}
+              {promptReferenceIssue && <p className="pc-required-reference-error" role="alert">{promptReferenceIssue}</p>}
               </div>
               </div>
               </div>
@@ -3861,7 +4283,11 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                       </div> : <div className="pc-generation-info-loading" role="status"><LoaderCircle size={16} className="pc-spin" />正在整理生成信息</div>}
                     </Popover.Dropdown>
                   </Popover>}
-                  <ActionIcon type="button" className="pc-composer-submit" aria-label={selectedNodeGenerating ? '生成中，请等待' : '开始生成'} disabled={busy || selectedNodeGenerating || !composerPrompt.trim() || (!selectedProfile && !compiledPrompt.trim() && !selectedNode.settings.prompt_is_final) || !composerModelId} onClick={submitComposer} data-workspace-control="" variant="filled">{selectedNodeGenerating ? <LoaderCircle size={18} className="pc-spin" /> : <ArrowRight size={18} />}</ActionIcon>
+                  <ActionIcon type="button" className="pc-composer-submit" aria-label={selectedNodeGenerating ? '生成中，请等待' : '开始生成'}
+                    title={selectedNodeGenerating ? '生成中，请等待' : selectedProfile ? selectedBoardAsset ? '重新生成当前设定图' : '生成当前设定图' : '开始生成'}
+                    disabled={busy || selectedNodeGenerating || !composerHasContent || (!selectedProfile && !compiledPrompt.trim() && !selectedNode.settings.prompt_is_final) || !composerModelId
+                      || !!selectedProfile && (visualPanelBusy || !!promptReferenceIssue || !!missingReferences.length || !!selectedProfile.base_profile_id && !baseProfileReady)}
+                    onClick={submitComposer} data-workspace-control="" variant="filled">{selectedNodeGenerating ? <LoaderCircle size={18} className="pc-spin" /> : <ArrowRight size={18} />}</ActionIcon>
                 </div>
               </div>
             </div>
@@ -3879,8 +4305,10 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
               : <Menu.Item role="menuitem" onClick={() => { selectNodeForView(contextNode.id); setContextMenu(null) }} data-workspace-control=""><Settings2 size={16} />编辑节点</Menu.Item>}
             {contextNode.type === 'generation' && <Menu.Item role="menuitem" onClick={() => { setPendingRunNodeId(contextNode.id); setContextMenu(null) }} data-workspace-control=""><Sparkles size={16} />提交生成</Menu.Item>}
             {contextNode.type !== 'project_script_ref' && <Menu.Item role="menuitem" onClick={() => duplicateSelection(contextNode.id)} data-workspace-control=""><Plus size={16} />复制节点</Menu.Item>}
-            <div className="pc-context-divider" />
-            <Menu.Item className="is-danger" role="menuitem" onClick={() => deleteSelection(contextNode.id, null)} data-workspace-control=""><Trash2 size={16} />删除节点</Menu.Item>
+            {contextNode.type !== 'project_script_ref' && <>
+              <div className="pc-context-divider" />
+              <Menu.Item className="is-danger" role="menuitem" onClick={() => deleteSelection(contextNode.id, null)} data-workspace-control=""><Trash2 size={16} />删除节点</Menu.Item>
+            </>}
           </> : contextEdge ? <>
             <div className="pc-context-heading"><span>节点连接</span><strong>参考或结果关系</strong></div>
             <Menu.Item className="is-danger" role="menuitem" onClick={() => deleteSelection(null, contextEdge.id)} data-workspace-control=""><Trash2 size={16} />删除连接</Menu.Item>
@@ -3889,11 +4317,11 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
             <Menu.Item role="menuitem" onClick={() => { addNode('text', undefined, contextMenu.position); setContextMenu(null) }} data-workspace-control=""><FileText size={16} />添加文本</Menu.Item>
             <Menu.Item role="menuitem" onClick={() => { addNode('generation', 'image', contextMenu.position); setContextMenu(null) }} data-workspace-control=""><ImageIcon size={16} />图片生成</Menu.Item>
             <Menu.Item role="menuitem" onClick={() => { addNode('generation', 'video', contextMenu.position); setContextMenu(null) }} data-workspace-control=""><Film size={16} />视频生成</Menu.Item>
-            {detail.shots.length > 0 && <Menu.Item role="menuitem" onClick={() => { importShots(); setContextMenu(null) }} data-workspace-control=""><ScrollText size={16} />导入分镜</Menu.Item>}
+            {canvasShots.length > 0 && <Menu.Item role="menuitem" onClick={() => { importShots(); setContextMenu(null) }} data-workspace-control=""><ScrollText size={16} />导入分镜</Menu.Item>}
             <div className="pc-context-divider" />
             <Menu.Item role="menuitem" onClick={() => { void fitView({ padding: 0.15, duration: 300 }); setContextMenu(null) }} data-workspace-control=""><MousePointer2 size={16} />适配全部节点</Menu.Item>
-            <Menu.Item role="menuitem" disabled={!visibleNodeIds.size} onClick={selectAllCanvasNodes} data-workspace-control=""><Check size={16} />{nodeTypeFilter === 'all' ? '全选节点' : '全选可见节点'}</Menu.Item>
-            <Menu.Item className="is-danger" role="menuitem" disabled={!graph?.nodes.length && !graph?.edges.length} onClick={() => void clearCanvas()} data-workspace-control=""><Trash2 size={16} />清空画布</Menu.Item>
+            <Menu.Item role="menuitem" disabled={!hasSelectableCanvasNodes} onClick={selectAllCanvasNodes} data-workspace-control=""><Check size={16} />{nodeTypeFilter === 'all' ? '全选节点' : '全选可见节点'}</Menu.Item>
+            <Menu.Item className="is-danger" role="menuitem" disabled={!hasRemovableCanvasContent} onClick={() => void clearCanvas()} data-workspace-control=""><Trash2 size={16} />清空画布</Menu.Item>
           </>}
         </Menu.Dropdown></Menu>}
         {selectedCanvasNodeIds.length > 1 && <div className="pc-selection-toolbar" role="toolbar" aria-label="多选节点操作" data-canvas-overlay
@@ -3905,7 +4333,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         </div>}
         {graph && !graph.nodes.length && <div className="pc-empty">
           <div className="pc-empty-hint"><MousePointer2 size={16} />双击画布，自由生成节点</div>
-          <div className="pc-empty-actions"><Button variant="default" onClick={() => addNode('text')} leftSection={<FileText size={16} />}>文本</Button><Button variant="default" onClick={() => addNode('generation', 'image')} leftSection={<ImageIcon size={16} />}>图片生成</Button><Button variant="default" onClick={() => addNode('generation', 'video')} leftSection={<Film size={16} />}>视频生成</Button><Button variant="default" onClick={() => openScriptDirector('all')} leftSection={<ScrollText size={16} />}>剧本生成</Button>{detail.shots.length > 0 && <Button variant="default" onClick={() => importShots()} leftSection={<Layers3 size={16} />}>导入分镜</Button>}</div>
+          <div className="pc-empty-actions"><Button variant="default" onClick={() => addNode('text')} leftSection={<FileText size={16} />}>文本</Button><Button variant="default" onClick={() => addNode('generation', 'image')} leftSection={<ImageIcon size={16} />}>图片生成</Button><Button variant="default" onClick={() => addNode('generation', 'video')} leftSection={<Film size={16} />}>视频生成</Button><Button variant="default" onClick={() => openScriptDirector('all')} leftSection={<ScrollText size={16} />}>剧本生成</Button>{canvasShots.length > 0 && <Button variant="default" onClick={() => importShots()} leftSection={<Layers3 size={16} />}>导入分镜</Button>}</div>
         </div>}
         {graph && graph.nodes.length > 0 && !visibleNodeIds.size && <div className="pc-empty pc-type-filter-empty" role="status" data-canvas-overlay>
           <div className="pc-empty-hint">当前没有{nodeTypeFilter === 'image' ? '图片' : nodeTypeFilter === 'video' ? '视频' : nodeTypeFilter === 'text' ? '文本' : '剧本'}节点</div>
@@ -3915,7 +4343,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           : graph && graph.nodes.length > 0 && missingShotCount > 0 && <div className="pc-import-prompt"><span>{missingShotCount} 个分镜尚未加入画布</span><Button variant="default" size="xs" onClick={() => importShots()} leftSection={<Layers3 size={14} />}>导入分镜</Button></div>}
         </div>}
       {viewMode === 'storyboard' && (graph ? <StoryboardWorkspace
-          detail={detail}
+          detail={browsingDetail}
           graph={graph}
           models={models}
           query={storyboardQuery}
@@ -3956,15 +4384,15 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         <Menu.Item role="menuitem" onClick={() => { setAddMenu(null); openCanvasUpload() }} data-workspace-control=""><Upload size={17} />上传素材</Menu.Item>
         <Menu.Item role="menuitem" onClick={() => showSidebarAssets()} data-workspace-control=""><Layers3 size={17} />素材库</Menu.Item>
         <Menu.Item role="menuitem" onClick={() => { onNavigate('jobs'); setAddMenu(null) }} data-workspace-control=""><Clock3 size={17} />生成历史</Menu.Item>
-        {detail.shots.length > 0 && <Menu.Item role="menuitem" onClick={() => { importShots(); setAddMenu(null) }} data-workspace-control=""><ScrollText size={17} />导入分镜</Menu.Item>}
+        {canvasShots.length > 0 && <Menu.Item role="menuitem" onClick={() => { importShots(); setAddMenu(null) }} data-workspace-control=""><ScrollText size={17} />导入分镜</Menu.Item>}
         <Menu.Item role="menuitem" onClick={() => { organizeShotGroups(); setAddMenu(null) }} data-workspace-control=""><WandSparkles size={17} />按镜头整理生成器组</Menu.Item>
-        {(selectedNodeId || selectedEdgeId) && <Menu.Item role="menuitem" onClick={() => { deleteSelection(); setAddMenu(null) }} data-workspace-control=""><Trash2 size={17} />移除所选</Menu.Item>}
+        {(selectedNode?.type !== 'project_script_ref' && selectedNodeId || selectedEdgeId) && <Menu.Item role="menuitem" onClick={() => { deleteSelection(); setAddMenu(null) }} data-workspace-control=""><Trash2 size={17} />移除所选</Menu.Item>}
       </Menu.Dropdown></Menu>}
 
     </div>
     {notice && <div className="pc-notice" role="status"><span>{notice.message}</span><ActionIcon aria-label="关闭提示" onClick={() => setNotice(null)} data-workspace-control=""><X size={14} /></ActionIcon></div>}
     <FileButton ref={profileUploadInputRef} accept="image/png,image/jpeg,image/webp"  onChange={file => { if (file) void uploadProfileBoard(file); if (profileUploadInputRef.current) profileUploadInputRef.current.value = '' }}>{() => null}</FileButton>
-    {candidateProfile && <VisualCandidateManager key={candidateProfile.id} profile={candidateProfile} detail={detail} models={models} displayedAssetId={candidateNode?.asset_id} generating={candidateGenerating} onConfirm={assetId => useProfileBoard(candidateProfile, assetId)} onRefresh={onRefresh} onClose={() => setCandidateProfileId(null)} />}
+    {candidateProfile && <VisualCandidateManager key={candidateProfile.id} profile={candidateProfile} detail={detail} models={models} displayedAssetId={candidateNode?.asset_id} generating={candidateGenerating} onConfirm={assetId => useProfileBoard(candidateProfile, assetId)} onRefresh={onRefresh} onClose={() => setCandidateProfileId(null)} onError={showError} />}
     {candidateShot && shotCandidateNode && <ShotCandidateManager key={`${shotCandidateNode.id}:${managedShotModality}`} modality={managedShotModality} title={candidateShot.title}
       candidates={managedShotCandidates} archivedAssetIds={candidateShot.archived_candidate_asset_ids || []}
       displayedAssetId={shotCandidateNode.asset_id} selectedAssetId={candidateShot.selected_asset_id} protectedAssetIds={protectedShotCandidateIds} models={models}
@@ -3972,7 +4400,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       onArchive={(assetId, archived) => archiveShotCandidate(shotCandidateNode.id, assetId, archived)}
       onPreview={asset => setNodeMediaPreview({ asset, title: `${candidateShot.title} · ${managedShotModality === 'video' ? '分镜视频候选' : '分镜图候选'}` })}
       onClose={() => setShotCandidateNodeId(null)} />}
-    {viewMode === 'canvas' && (inspectedProfile || visualTool === 'create') && <VisualProfileInspector key={inspectedProfile?.id || 'new'} profile={inspectedProfile} detail={detail} models={models} generating={inspectedProfileGenerating}
+    {viewMode === 'canvas' && (inspectedProfile || visualTool === 'create') && <VisualProfileInspector key={inspectedProfile?.id || 'new'} profile={inspectedProfile} detail={browsingDetail} designId={canvas.design_id} models={models} generating={inspectedProfileGenerating}
       inCanvas={!!inspectedProfile && !!graph?.nodes.some(node => node.settings.visual_profile_id === inspectedProfile.id)} onRefresh={onRefresh} onClose={() => void closeVisualPanel()}
       onBindings={() => void openVisualTool('bindings', { profileId: inspectedProfile?.id })} onDirtyChange={setProfileDraftDirty} onBusyChange={setVisualPanelBusy}
       onSaved={profile => { setVisualTool(null); setProfileInspectorId(profile.id); setNotice('设定已保存') }} onDeleted={removeProfileNodes}
@@ -3985,14 +4413,14 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       attributes={{ content: { 'aria-label': '镜头引用' } }}
       classNames={{ root: 'pc-shot-references-root', content: 'pc-shot-references-content', body: 'pc-shot-references-body' }}
       onPointerDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()} onKeyDown={event => { if (event.key !== 'Tab') event.stopPropagation() }}>
-      {selectedShot && composerBindingsOpen && <VisualBindingEditor key={selectedShot.id} id="pc-composer-bindings" presentation="drawer"
-        detail={detail} context={{ target: `shot:${selectedShot.id}` }} onRefresh={onRefresh} onClose={closeComposerBindings}
+      {selectedShot && composerBindingsOpen && <VisualBindingEditor key={`${selectedShot.id}:${composerModality}`} id="pc-composer-bindings" presentation="drawer"
+        detail={browsingDetail} context={{ target: `shot:${selectedShot.id}`, scope: composerModality === 'image' || composerModality === 'video' ? composerModality : undefined }} onRefresh={onRefresh} onClose={closeComposerBindings}
         onBusyChange={setVisualPanelBusy} onPreview={setReferencePreview}
         onLocate={profile => { setComposerBindingsOpen(false); addProfileToCanvas(profile, null) }} />}
     </Drawer>
-    {viewMode === 'canvas' && visualTool === 'bindings' && <VisualBindingEditor key={JSON.stringify(visualBindingContext)} detail={detail} context={visualBindingContext} onRefresh={onRefresh}
+    {viewMode === 'canvas' && visualTool === 'bindings' && <VisualBindingEditor key={JSON.stringify(visualBindingContext)} detail={browsingDetail} context={visualBindingContext} onRefresh={onRefresh}
       onClose={() => void closeVisualPanel()} onBusyChange={setVisualPanelBusy} onLocate={profile => { setVisualTool(null); addProfileToCanvas(profile, null) }} />}
-    {viewMode === 'canvas' && visualTool === 'organize' && <VisualProfileOrganizer detail={detail} models={models} onRefresh={onRefresh} onClose={() => void closeVisualPanel()} onBusyChange={setVisualPanelBusy} onDirtyChange={setProfileDraftDirty} />}
+    {viewMode === 'canvas' && visualTool === 'organize' && <VisualProfileOrganizer detail={browsingDetail} designId={canvas.design_id} models={models} onRefresh={onRefresh} onClose={() => void closeVisualPanel()} onBusyChange={setVisualPanelBusy} onDirtyChange={setProfileDraftDirty} />}
     <Modal opened={!!referencePreview} onClose={() => setReferencePreview(null)} title={referencePreview?.filename || '参考图'} centered size="min(960px, 90vw)" radius={18}
       classNames={{ content: 'pc-reference-preview', header: 'pc-reference-preview-header' }} zIndex={240}>
       {referencePreview && <img src={referencePreview.url} alt={referencePreview.filename} className="pc-reference-preview-image" />}
@@ -4003,10 +4431,9 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     </Modal>
     {selectedNode && selectedNode.id === optimizationNodeId && selectedJob && canOptimizeImagePrompt(selectedJob, composerModality) &&
       <PromptOptimizationModal key={`${selectedNode.id}:${selectedJob.id}`} job={selectedJob} models={models} providers={providers}
-        prompt={composerPrompt} sourceKey={generationInputKey} disabled={busy || selectedNodeGenerating} maxLength={selectedProfile ? 16_000 : 80_000}
+        prompt={composerPrompt} sourceKey={generationInputKey} disabled={busy || selectedNodeGenerating} maxLength={80_000}
         onClose={() => setOptimizationNodeId(null)} onApply={value => {
-          if (selectedProfile) updateNodeSettingsById(selectedNode.id, { profile_prompt_override: value })
-          else editNodePrompt(selectedNode.id, value, { base: value, template: '' })
+          saveComposerDocument(value)
           setNotice('已应用优化后的提示词，请确认后手动生成')
         }} />}
     {dialog}

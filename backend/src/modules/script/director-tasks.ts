@@ -16,7 +16,7 @@ export type DirectorTaskSnapshot = {
 type TaskRow = { id: string; project_id: string; conversation_id: string; message_id: string; request_hash: string; snapshot: string; status: Status; request_payload?: string; resume_key?: string }
 export type DirectorTaskInput = { id: string; conversation: { id: string; label?: string; messages: ConversationMessage[] }; execution: ScriptExecution }
 type Running = { snapshot: DirectorTaskSnapshot; controller: AbortController; listeners: Set<(event: Event) => void>; timer?: ReturnType<typeof setTimeout>; work?: Promise<void> }
-const readOnlyTools = new Set(['get_creation_state', 'get_project_visual_style', 'search_project_content', 'read_documents', 'find_related_content', 'get_document_review_context', 'read_visual_profiles', 'get_storyboard_context', 'read_source_document', 'search_source_document', 'ask_creator'])
+const readOnlyTools = new Set(['get_creation_state', 'get_project_visual_style', 'search_project_content', 'read_documents', 'find_related_content', 'get_document_review_context', 'read_visual_profiles', 'get_storyboard_context', 'read_source_document', 'search_source_document', 'read_episode_scenes', 'ask_creator'])
 function canReplayAfter(activity: ScriptActivity) {
   return readOnlyTools.has(activity.name || '') || activity.name === 'set_project_visual_style'
     && activity.step_id === 'confirmed_visual_style_sync' && activity.scope === 'step' && activity.round === undefined

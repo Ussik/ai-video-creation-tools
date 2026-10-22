@@ -19,6 +19,7 @@ import { parseStructuredOutput } from './modules/generation/structured-output.js
 import { generateStructuredOutput, type OutputContract } from './modules/generation/model-output.js'
 import { modelAttemptNumber } from './modules/generation/model-execution.js'
 import { TextProviderError } from './infrastructure/providers/text-errors.js'
+import { isTextRequestBudgetError, scriptRequestUsageTokens, type ScriptRequestUsage, type ScriptRequestUsageLimits } from './infrastructure/providers/text-request-usage.js'
 import { retryReadOnlyGeneration } from './modules/generation/read-only-retry.js'
 import { assetPromptResult, assetPromptInstructions } from './modules/assets/asset-prompt.js'
 import { imageReferenceConfigError } from '@video-studio/shared/media/image-reference-config'
@@ -27,16 +28,19 @@ import { videoReferenceConfigError } from '@video-studio/shared/media/video-refe
 import { videoReferenceUsages, videoReferenceUsageIssue } from '@video-studio/shared/media/video-reference-usage'
 import { compileProjectStyle, projectVisualStyle, referenceStyleWarnings } from './modules/visuals/project-visual-style.js'
 import { projectStyleInstructions, withProjectStyle, projectStyleTemplateError } from '@video-studio/shared/visuals/visual-style'
+import { promptParameterConflictMessage } from '@video-studio/shared/visuals/prompt-parameter-conflicts'
+import { managedPromptBlockNames } from '@video-studio/shared/visuals/prompt-document'
+import { isPromptSectionDocument } from '@video-studio/shared/visuals/prompt-section-document'
 import { registerSkillRoutes } from './modules/skills/skill-routes.js'
 import { registerPromptOptimizationRoutes } from './modules/jobs/prompt-optimization.js'
 import { isContentPolicyRejection } from '@video-studio/shared/jobs/prompt-optimization'
 import { withSkillRules, applySkillRules, skillIdsInput, skillSelectionsInput, skillContext, skillStages, resolveSkillSelections } from './modules/skills/skills.js'
 import { registerStoryboardPlanningRoutes } from './modules/storyboard/storyboard-planning.js'
-import { activityRecorder, scriptActivitiesSchema, scriptExecutionSchema, type ScriptActivity } from './modules/script/script-activity.js'
+import { activityRecorder, activityPreview, scriptActivitiesSchema, scriptExecutionSchema, type ScriptActivity } from './modules/script/script-activity.js'
 import { createDirectorTasks } from './modules/script/director-tasks.js'
 import { saveConversation } from './modules/script/script-conversations.js'
 import { createStreamScope, directorStreamHeartbeatMs } from '@video-studio/shared/script/script-stream-policy'
-import { autoConfirmGeneratedProfileBoard, inheritSceneVisualBindings, prepareVisualGeneration, registerVisualProfileRoutes, visualProjectData } from './modules/visuals/visual-profiles.js'
+import { autoConfirmGeneratedProfileBoard, inheritSceneVisualBindings, prepareVisualGeneration, registerVisualProfileRoutes, sceneVisualDesignIds, visualProjectData } from './modules/visuals/visual-profiles.js'
 import { registerGeneratedVisualReference } from './modules/visuals/visual-reference-assets.js'
 import { canvasRecord, defaultCanvas, registerProjectCanvasRoutes } from './modules/canvas/project-canvases.js'
 import { registerScriptCanvasRoutes } from './modules/canvas/script-canvas-preparation.js'
@@ -55,11 +59,15 @@ import { isScriptThemeCategory } from '@video-studio/shared/script/script-theme-
 import { inputFields, interactionQuestions, classificationResult, directorInteractionSchema, directorStageContextSchema, hasStageInteractionMetadata, contextualReplyTypes, replyClassification, replyClassificationPrompt, parseReplyClassifications, replyClassificationVersion, replyFollowingMessages, type ReplySource } from './modules/script/script-reply-classification.js'
 import { referenceDocuments, decodeReferenceDocuments, referenceContext } from './modules/script/script-references.js'
 import { registerScriptSourceRoutes, scriptSourceContext, scriptSourceDocument, scriptSourceIndex, scriptSourceFallbackContext } from './modules/script/script-source-documents.js'
+import { buildScriptChatSourceContext } from './modules/script/script-chat-source-context.js'
 import { createGenerationSteps, type GenerationSteps } from './modules/script/script-generation-steps.js'
 import { generateStageDraftWithContinuation } from './modules/script/script-stage-continuation.js'
+import { hasRetainedGenerationWork, workflowDocumentContext } from './modules/script/script-workflow-context.js'
 import { generationCheckpointStore, clearGenerationCheckpoint } from './modules/script/script-generation-checkpoints.js'
 import { completeSourceEvidence } from './modules/script/script-source-material.js'
 import { analyzeSourceSnapshot, scriptSourceVersion, sourceAnalysisConfiguration } from './modules/script/script-source-analysis.js'
+import { sourceProposalBudget, scriptProposalBudgetScope } from './modules/script/script-proposal-budget.js'
+import { startScriptDraftRepairRounds, completedScriptDraftRepairRounds, completeScriptDraftRepairRound, canContinueScriptDraftRepair, scriptDraftRepairRoundLimit, scriptDraftRepairRoundLimitMessage } from './modules/script/script-draft-repair-rounds.js'
 import { prepareConfirmedScriptContext, type PreparedScriptContext } from './modules/script/script-confirmed-context.js'
 import { findingIdentity, rememberFindingResolutions, reconcileFindingResolutions, resolutionContext, type FindingResolutionRecord } from './modules/script/script-finding-state.js'
 import { semanticContinuitySchema, semanticContinuityPrompt, parseSemanticContinuity } from './modules/storyboard/continuity-semantics.js'
@@ -78,6 +86,8 @@ import { probeSpeechDurationMs } from './modules/speech/speech-audio.js'
 import { registerAssetDownloadRoutes } from './modules/assets/asset-downloads.js'
 import { getAssetPreview } from './modules/assets/asset-previews.js'
 import { registerJobQueueRoutes, startJobQueue } from './modules/jobs/job-queue.js'
+import { savedStoryboardSources, storyboardSourceFingerprint } from './modules/storyboard/storyboard-freshness.js'
+import { finalCutCanvasId, requireFinalCutShot, resolveFinalCutScope, saveFinalCutRange, selectFinalCutShots, type ProductionRange } from './modules/final-cut/final-cut-scope.js'
 
 const projectInput = z.object({ name: z.string().trim().min(1).max(120), brief: z.string().default(''), ratio: z.enum(['16:9', '9:16']).default('16:9') })
 const projectBatchDeleteInput = z.object({ project_ids: z.array(z.string().trim().min(1).max(120)).min(1) }).strict()
@@ -130,13 +140,21 @@ const scriptArtifactInput = z.object({
   status: z.enum(['draft', 'ready', 'edited']).default('draft'),
 })
 const scriptArtifactsInput = z.object({ artifacts: z.array(scriptArtifactInput).max(40) }).strict()
-const scriptArtifactPatch = scriptArtifactInput.partial().omit({ id: true, artifact_type: true }).strict()
+// PATCH must not apply the creation defaults to fields the editor did not send.
+const scriptArtifactPatch = scriptArtifactInput.omit({ id: true, artifact_type: true }).extend({
+  episode_number: scriptArtifactInput.shape.episode_number.unwrap(),
+  content: scriptArtifactInput.shape.content.unwrap(),
+  status: scriptArtifactInput.shape.status.unwrap(),
+}).partial().strict()
 const scriptArtifactGenerationInput = z.object({
   skill_selections: skillSelectionsInput.optional(),
   model_id: z.string().min(1), artifact_type: scriptArtifactType,
   prompt_override: z.string().trim().min(1).max(200000).optional(),
 }).strict()
-const scriptScenePatch = scriptSceneFields.partial().extend({ position: z.number().int().min(0).optional() })
+const scriptScenePatch = z.object({
+  ...Object.fromEntries(Object.entries(scriptSceneFields.shape).map(([key, value]) => [key, value instanceof z.ZodDefault ? value.unwrap() : value])),
+  position: z.number().int().min(0),
+}).partial()
 const directorMessageText = z.object({ role: z.enum(['assistant', 'user']), text: z.string().trim().min(1).max(80_000) })
   .superRefine((message, context) => {
     if (message.role === 'user' && message.text.length > 40_000) {
@@ -274,14 +292,18 @@ const shotPlanDraft = z.object({
 })
 const createPlannedShotsInput = shotPlanDraft.extend({ request_id: z.uuid() })
 const videoReferenceUsageInput = z.array(z.object({ asset_id: z.string().min(1).max(100), usage: z.enum(videoReferenceUsages) }).strict()).max(10)
+const promptReferenceOverridesInput = z.record(z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/), z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/).nullable())
+  .refine(value => Object.keys(value).length <= 100, '参考图片调整不能超过 100 项')
 const generationInput = z.object({
   // Image assets created from the script director are project-level and do
   // not belong to a shot yet. Video generation still requires a shot in the
   // route below; keeping the field nullable lets both flows use the same
   // provider-neutral queue and worker.
-  shot_id: z.string().min(1).nullable().optional(), model_id: z.string().min(1), prompt: z.string().trim().min(1),
+  shot_id: z.string().min(1).nullable().optional(), model_id: z.string().min(1), prompt: z.string().min(1).refine(value => !!value.trim(), '请输入提示词'),
+  storyboard_revision: z.number().int().nonnegative().optional(),
   mode: z.enum(['text', 'first_frame', 'first_last_frame', 'reference', 'edit', 'extend']).default('text'),
   reference_asset_ids: z.array(z.string()).max(10).default([]),
+  prompt_reference_overrides: promptReferenceOverridesInput.optional(),
   storyboard_reference_asset_id: z.string().min(1).nullable().optional(),
   video_reference_usages: videoReferenceUsageInput.optional(),
   excluded_visual_profile_ids: z.array(z.string().min(1)).max(50).optional(),
@@ -299,6 +321,8 @@ const generationInput = z.object({
   visual_source_prompt: z.string().trim().min(1).optional(),
   visual_signature: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   prompt_is_final: z.boolean().optional(),
+  prompt_document: z.boolean().optional(),
+  prompt_body: z.string().max(80000).optional(),
   project_style_version: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   prompt_template: z.string().max(80000).optional(),
 })
@@ -366,13 +390,32 @@ const canvasTextDocument = z.unknown().superRefine((value, context) => {
     context.addIssue({ code: 'custom', message: '富文本文档不能超过 256 KB' })
   }
 })
+const canvasPromptSections = z.object({
+  version: z.literal(1),
+  blocks: z.array(z.object({
+    id: z.string().min(1).max(100), kind: z.enum(['body', 'managed']), text: z.string().max(80_000),
+    name: z.enum(managedPromptBlockNames).optional(), sourceText: z.string().max(80_000).optional(),
+    pendingSourceText: z.string().max(80_000).optional(), sourceStatus: z.literal('source_changed').optional(),
+    deleted: z.boolean().optional(), deletionSource: z.literal('source').optional(),
+  }).strict()).max(1_000),
+}).strict().refine(isPromptSectionDocument, '提示词结构文档格式不正确，请重新打开节点后重试')
+  .superRefine((document, context) => {
+    for (const field of ['text', 'sourceText', 'pendingSourceText'] as const) {
+      if (document.blocks.reduce((length, block) => length + (block[field]?.length || 0), 0) > 80_000) {
+        context.addIssue({ code: 'custom', message: '提示词结构文档的正文、来源快照或待确认内容各不能超过 80,000 字符' })
+        return
+      }
+    }
+  })
 const canvasSettings = z.object({
   visual_dependencies: z.boolean().optional(),
   visual_profile_id: z.string().min(1).max(100).optional(),
   visual_profile_revision: z.number().int().min(1).optional(),
-  profile_prompt_override: z.string().trim().min(1).max(80000).optional(),
+  profile_prompt_override: z.string().max(80000).optional(),
+  prompt_reference_overrides: promptReferenceOverridesInput.optional(),
   visual_completed_job_id: canvasId.optional(),
   generation_completed_job_id: canvasId.optional(),
+  storyboard_revision: z.number().int().nonnegative().optional(),
   visual_reference_mode: z.enum(['profiles', 'keyframe', 'text_only']).optional(),
   storyboard_reference_asset_id: canvasId.nullable().optional(),
   video_reference_usages: videoReferenceUsageInput.optional(),
@@ -385,6 +428,9 @@ const canvasSettings = z.object({
   modality: z.enum(['text', 'image', 'video']).optional(),
   prompt_override: z.boolean().optional(),
   prompt_is_final: z.boolean().optional(),
+  prompt_document: z.boolean().optional(),
+  prompt_sections: canvasPromptSections.optional(),
+  prompt_body: z.string().max(80000).optional(),
   prompt_base: z.string().max(80000).optional(),
   prompt_template: z.string().max(80000).optional(),
   mode: z.enum(['text', 'first_frame', 'first_last_frame', 'reference', 'edit', 'extend']).optional(),
@@ -418,7 +464,9 @@ const canvasNodeInput = z.object({
 const canvasEdgeInput = z.object({ id: canvasId, source: canvasId, target: canvasId, reference_asset_id: z.string().min(1).optional() }).strict()
 const canvasInput = z.object({
   revision: z.string().regex(/^[a-f0-9]{64}$/),
-  nodes: z.array(canvasNodeInput).max(500), edges: z.array(canvasEdgeInput).max(1_000),
+  nodes: z.array(canvasNodeInput).max(501).refine(nodes => nodes.length <= 500 ||
+    nodes.filter(node => node.type === 'project_script_ref').length === 1,
+  '画布最多容纳 500 个普通节点和一个项目剧本节点'), edges: z.array(canvasEdgeInput).max(1_000),
 }).strict()
 const timelineClipPatch = z.object({
   in_ms: z.number().int().min(0).optional(),
@@ -452,8 +500,9 @@ const assetTaskPatchInput = z.object({
   source_scene_ids: z.array(z.string().min(1)).max(100).optional(),
 }).strict()
 const assetTaskGenerateInput = z.object({
+  prompt_document: z.boolean().optional(),
   project_style_version: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-  model_id: z.string().min(1), prompt: z.string().trim().min(1).max(80_000).optional(),
+  model_id: z.string().min(1), prompt: z.string().min(1).max(80_000).optional(),
   mode: z.enum(['text', 'reference']).default('text'),
   reference_asset_ids: z.array(z.string().min(1)).max(10).default([]),
   resolution: z.string().trim().max(80).nullable().optional(),
@@ -575,13 +624,10 @@ function projectCanvas(projectId: string, canvasId = defaultCanvas(projectId).id
   return { nodes, edges, revision: createHash('sha256').update(JSON.stringify({ nodes, edges })).digest('hex') }
 }
 
-function projectClips(projectId: string): TimelineClip[] {
-  return all<TimelineClip>(`SELECT timeline_clips.* FROM timeline_clips
-    JOIN shots ON shots.id=timeline_clips.shot_id
-    WHERE timeline_clips.project_id=? ORDER BY shots.position`, projectId)
+function sceneStoryboardDesign(projectId: string, sceneId: string | null): string | null {
+  if (!sceneId) return null
+  return sceneVisualDesignIds(projectId, [sceneId]).get(sceneId) || null
 }
-
-interface ProductionRange { start_shot_id: string | null; end_shot_id: string | null }
 
 function projectProductionRange(projectId: string): ProductionRange {
   return one<ProductionRange>('SELECT start_shot_id, end_shot_id FROM production_ranges WHERE project_id=?', projectId) ??
@@ -589,12 +635,7 @@ function projectProductionRange(projectId: string): ProductionRange {
 }
 
 function selectedProductionShots(shots: Shot[], range: ProductionRange): Shot[] {
-  if (!shots.length && range.start_shot_id === null && range.end_shot_id === null) return []
-  const start = range.start_shot_id === null ? 0 : shots.findIndex(shot => shot.id === range.start_shot_id)
-  const end = range.end_shot_id === null ? shots.length - 1 : shots.findIndex(shot => shot.id === range.end_shot_id)
-  if (start < 0 || end < 0) invalid('制作范围引用的镜头不存在，请重新选择范围')
-  if (start > end) invalid('制作范围的起始镜头不能晚于结束镜头')
-  return shots.slice(start, end + 1)
+  return selectFinalCutShots(shots, range)
 }
 
 interface CutSide {
@@ -667,10 +708,11 @@ function cutSnapshot(from: Shot, to: Shot, clipsByShot: Map<string, TimelineClip
   }
 }
 
-function projectCutReviews(projectId: string): { production_range: ProductionRange; cuts: CutReviewView[] } {
-  const range = projectProductionRange(projectId)
-  const shots = selectedProductionShots(all<Shot>('SELECT * FROM shots WHERE project_id=? ORDER BY position', projectId), range)
-  const clipsByShot = new Map(projectClips(projectId).map(clip => [clip.shot_id, clip]))
+function projectCutReviews(projectId: string, canvasId?: string): { production_range: ProductionRange; cuts: CutReviewView[] } {
+  const scope = resolveFinalCutScope(projectId, canvasId)
+  const range = scope.range
+  const shots = selectedProductionShots(scope.shots, range)
+  const clipsByShot = new Map(scope.clips.map(clip => [clip.shot_id, clip]))
   const assetsById = new Map(all<Asset>('SELECT * FROM assets WHERE project_id=?', projectId).map(asset => [asset.id, asset]))
   const reviewsByPair = new Map(all<CutReview>('SELECT * FROM cut_reviews WHERE project_id=?', projectId)
     .map(review => [`${review.from_shot_id}:${review.to_shot_id}`, review]))
@@ -715,16 +757,17 @@ function continuityIssue(issue: Omit<ContinuityIssue, 'severity'> & { severity?:
   return { severity: issue.severity ?? 'warning', ...issue }
 }
 
-function semanticContinuityContext(projectId: string) {
-  const range = projectProductionRange(projectId)
-  const shots = selectedProductionShots(all<Shot>('SELECT * FROM shots WHERE project_id=? ORDER BY position', projectId), range)
+function semanticContinuityContext(projectId: string, canvasId?: string) {
+  const scope = resolveFinalCutScope(projectId, canvasId)
+  const range = scope.range
+  const shots = selectedProductionShots(scope.shots, range)
   const script = projectScript(projectId)
   const scenes = new Map(script.scenes.map(scene => [scene.id, scene]))
   const side = (shot: Shot) => ({ id: shot.id, title: shot.title, prompt: shot.prompt,
     start_state: shot.start_state, end_state: shot.end_state, cut_note: shot.cut_note,
     scene: scenes.get(shot.source_scene_id || '') || null })
   const pairs = shots.slice(1).map((current, index) => ({ previous: side(shots[index]!), current: side(current) }))
-  const context = { range, pairs, characters: script.characters,
+  const context = { ...(canvasId === undefined ? {} : { canvas_id: canvasId }), range, pairs, characters: script.characters,
     documents: (script.artifacts || []).filter(item => ['characters', 'locations', 'props'].includes(scriptStageForArtifact(item.artifact_type) || ''))
       .map(item => ({ type: item.artifact_type, content: item.content })) }
   const signature = createHash('sha256').update(JSON.stringify(context)).digest('hex')
@@ -858,15 +901,19 @@ function baseScriptGenerationPrompt(project: Project, data: z.infer<typeof scrip
     `每场写清楚可拍摄的视觉内容，人物与场景在各场保持一致。`
 }
 
-function buildScriptDirectorChatPrompt(project: Project, data: z.infer<typeof scriptDirectorChatInput>, task?: { brief?: string; sourceText?: string; savedContext?: PreparedScriptContext }, activity?: ReturnType<typeof activityRecorder>): string {
+type DirectorPromptTask = { brief?: string; sourceText?: string; savedContext?: PreparedScriptContext; redesignEpisode?: number; legacyArtifactContext?: boolean }
+function buildScriptDirectorChatPrompt(project: Project, data: z.infer<typeof scriptDirectorChatInput>, task?: DirectorPromptTask, activity?: ReturnType<typeof activityRecorder>): string {
   const stage = data.focus_artifact === 'all' ? 'script' : 'visual_assets'
   return withSkillRules(stage, baseScriptDirectorChatPrompt(project, data, task), context => activity?.skills(stage, context), { projectId: project.id, selections: data.skill_selections })
 }
-function baseScriptDirectorChatPrompt(project: Project, data: z.infer<typeof scriptDirectorChatInput>, task?: { brief?: string; sourceText?: string; savedContext?: PreparedScriptContext }): string {
+function baseScriptDirectorChatPrompt(project: Project, data: z.infer<typeof scriptDirectorChatInput>, task?: DirectorPromptTask): string {
   const script = projectScript(project.id)
   const stageContext = conversationStageContext(project, data)
   const episodeWorkflow = data.workflow?.stage === 'episode' ? data.workflow : undefined
   const projectWorkflow = Boolean(data.workflow && !episodeWorkflow)
+  const contextArtifacts = (script.artifacts || [])
+    .filter(artifact => (!projectWorkflow || !artifact.episode_number) && (!episodeWorkflow || !artifact.episode_number || artifact.episode_number === episodeWorkflow.episode_number || artifact.episode_number === episodeWorkflow.episode_number - 1))
+    .filter(artifact => task?.redesignEpisode === undefined || artifact.artifact_type !== 'episode_script' || artifact.episode_number !== task.redesignEpisode)
   const generationOptions = { ...script.generation_options, ...data.generation_options }
   const modeGuidance = directorModeInstructions(data.mode)
   const focusLabels = { all: '全能创作', character: '角色视觉资产', location: '场景视觉资产', prop: '道具视觉资产' } as const
@@ -885,13 +932,12 @@ function baseScriptDirectorChatPrompt(project: Project, data: z.infer<typeof scr
       outline: script.artifacts?.some(item => item.artifact_type === 'outline') ? undefined : script.outline,
       characters: script.artifacts?.some(item => item.artifact_type === 'characters') ? undefined : script.characters,
       ...(task?.savedContext ? { saved_context: task.savedContext } : {}),
-      artifacts: task?.savedContext ? undefined : (script.artifacts || [])
-        .filter(artifact => (!projectWorkflow || !artifact.episode_number) && (!episodeWorkflow || !artifact.episode_number || artifact.episode_number === episodeWorkflow.episode_number || artifact.episode_number === episodeWorkflow.episode_number - 1))
-        .map(artifact => ({ type: artifact.artifact_type, episode_number: artifact.episode_number, title: artifact.title, content: artifact.content, status: artifact.status })),
+      ...(task?.savedContext ? {} : workflowDocumentContext(contextArtifacts, !data.workflow || task?.legacyArtifactContext)),
       generation_options: generationOptions,
       ...(projectWorkflow && !task?.savedContext ? { saved_episodes: (script.artifacts || []).filter(artifact => artifact.artifact_type === 'episode_script' && artifact.episode_number)
         .map(artifact => ({ episode_number: artifact.episode_number, title: artifact.title, content: artifact.content })) } : {}),
-      recent_scenes: script.scenes.filter(scene => !episodeWorkflow || !scene.episode_number || scene.episode_number === episodeWorkflow.episode_number || scene.episode_number === episodeWorkflow.episode_number - 1).map(scene => ({
+      recent_scenes: script.scenes.filter(scene => (!episodeWorkflow || !scene.episode_number || scene.episode_number === episodeWorkflow.episode_number || scene.episode_number === episodeWorkflow.episode_number - 1)
+        && (task?.redesignEpisode === undefined || scene.episode_number !== task.redesignEpisode)).map(scene => ({
         episode_number: scene.episode_number,
         heading: scene.heading, location: scene.location,
         time_of_day: scene.time_of_day, characters: scene.characters,
@@ -969,7 +1015,8 @@ async function toolDirectorChat(project: Project, data: DirectorInput, model: Mo
   }
   const stageDocuments = data.workflow ? projectDocuments(project.id, projectScript(project.id)).filter(doc =>
     doc.episode_number === data.workflow!.episode_number && new Set<string>(scriptStageArtifacts[data.workflow!.stage]).has(doc.artifact_type) && doc.content.trim()) : []
-  if (data.workflow && (!data.workflow.operation || data.workflow.operation === 'generate') && !stageDocuments.length) {
+  if (data.workflow && ((!data.workflow.operation || data.workflow.operation === 'generate') && !stageDocuments.length
+    || data.workflow.stage === 'episode' && data.workflow.operation === 'regenerate')) {
     const result = await directStageDirectorChat(project, data, model, provider, onEvent, signal, activity, creativeBrief)
     return { ...result, ...(settingsChanged ? { project_changed: true } : {}) }
   }
@@ -979,9 +1026,24 @@ async function toolDirectorChat(project: Project, data: DirectorInput, model: Mo
   onEvent({ type: 'intent', stage_context: stage, workflow: data.workflow, generation_options: data.generation_options })
   const messages = data.messages.map((message, index) => ({ index, ...message }))
   const pending = getToolDraft(project.id)
-  const uploadedSource = scriptSourceDocument(project.id, false)
+  const uploadedSource = scriptSourceDocument(project.id)
+  const sourceContext = buildScriptChatSourceContext(uploadedSource, { messages: data.messages, toolsAvailable: true,
+    enabled: process.env.VIDEO_STUDIO_SCRIPT_TARGETED_CONTEXT !== '0', workflow: data.workflow, documentAction: data.document_action,
+    pendingDraft: pending || data.intent_context?.pending_draft, questionResponse: data.question_response,
+    resourceActions: data.mode !== 'script' || data.messages.some(message => message.reference_documents?.length) })
+  if (uploadedSource) {
+    const contextStep = activity.start({ kind: 'context', label: sourceContext.mode === 'targeted' ? '读取相关剧本原文' : '使用完整剧本资料',
+      summary: sourceContext.mode === 'targeted'
+        ? `已选入 ${sourceContext.coverage.selected_length} / ${sourceContext.coverage.total_length} 字原文；可继续补读，局部结果不代表全剧完整结论`
+        : `本轮使用完整有效稿，共 ${uploadedSource.content.length} 字`,
+      ...activityPreview({ mode: sourceContext.mode, reason: sourceContext.reason, source_version: sourceContext.source_version,
+        ...sourceContext.coverage }, 'output') })
+    activity.finish(contextStep, 'succeeded')
+  }
   const initialState = { stage, project_visual_style: projectVisualStyle(project.id), documents: projectDocuments(project.id, script).map(({ content, ...doc }) => ({ ...doc, length: content.length })),
-    confirmed_decisions: storyDecisions(project.id).map(({ source_text: _source, ...decision }) => decision), uploaded_script: uploadedSource && { filename: uploadedSource.filename, revision: uploadedSource.revision || 0, total_length: uploadedSource.content.length },
+    confirmed_decisions: storyDecisions(project.id).map(({ source_text: _source, ...decision }) => decision), uploaded_script: uploadedSource && {
+      filename: uploadedSource.filename, revision: uploadedSource.revision || 0, total_length: uploadedSource.content.length,
+      source_kind: 'effective', source_version: sourceContext.source_version, analysis_source_version: uploadedSource.analysis?.source_version },
     pending_draft: pending && { id: pending.id, version: pending.version, summary: pending.summary, revision_task: pending.revision_task } }
   const selectedSkills = resolveSkillSelections(project.id, data.skill_selections)
   const skillRules = Object.fromEntries(skillStages.map(stage => [stage, skillContext(stage, data.messages.map(message => message.text).join('\n'), selectedSkills[stage], project.id)]))
@@ -990,7 +1052,7 @@ async function toolDirectorChat(project: Project, data: DirectorInput, model: Mo
     scriptToolGuidance({ workflow: data.workflow, action: data.document_action, revisionTask: pending?.revision_task }) +
     (settingsChanged ? '本轮明确确认的画风已由程序同步保存，已记录真实来源。直接沿用本轮开始时资料中的project_visual_style，不重复保存同一项画风决定，继续处理创作者的其他要求。\n' : '') +
     `程序阶段：${JSON.stringify(stage)}\n当前创作设置：${JSON.stringify(data.generation_options)}\n本轮开始时的项目资料目录：${JSON.stringify(initialState)}\n` +
-    scriptSourceContext(project.id, true, true) + scriptSourceFallbackContext(project.id) +
+    (sourceContext.mode === 'targeted' ? sourceContext.prompt : scriptSourceContext(project.id, true, true)) + scriptSourceFallbackContext(project.id) +
     (data.workflow ? `创作者本轮明确要求处理这个阶段：${JSON.stringify(data.workflow)}。operation=regenerate时先读完该阶段全部原文，再用create_document_draft提交完整的新设计草稿；operation=supplement时原样保留已有标题正文并补齐；operation=revise时读取并用propose_document_patch局部修订。未指定operation只生成尚未保存的当前阶段，仅处理指定阶段与集数。无需再建议点击生成，不自行保存。\n` : '') +
     (data.workflow ? workflowInstructions(data.workflow, 'tools') : '') +
     (!data.workflow && stage.stage ? `以下是当前阶段的内容标准，仅在创作者明确要求生成或修订时适用；普通讨论、设定回答和跳过不授权创建草稿。\n${workflowContentInstructions({ stage: stage.stage, scope: stage.stage === 'episode' ? 'episode' : 'project', episode_number: stage.episode_number || 0, target_duration: data.generation_options?.episode_duration })}` : '') +
@@ -1001,6 +1063,7 @@ async function toolDirectorChat(project: Project, data: DirectorInput, model: Mo
   const result = await runScriptTools({ project, script: () => projectScript(project.id), stage,
     model, provider, prompt, activity, skillRules, messages: data.messages, action: data.document_action, workflow: data.workflow?.stage, operation: data.workflow?.operation, currentSettings: data.generation_options,
     discussionOnly: Boolean(data.question_response), legacyPending: Boolean(data.intent_context?.pending_draft), signal, onEvent,
+    sourceVersion: sourceContext.source_version, sourceContextMode: sourceContext.mode,
     resolveKey: item => decryptKey(item.key_ciphertext || null),
     validateCreation: (draft, preserved) => reviewDirectorDraft(project, data, draft, model, provider, signal, activity, preserved),
     authorizeResource: async (summary, changes) => {
@@ -1040,6 +1103,9 @@ async function toolDirectorChat(project: Project, data: DirectorInput, model: Mo
       }
     },
   })
+  if (sourceContext.mode === 'targeted' && currentScriptSourceVersion(project.id) !== sourceContext.source_version) {
+    throw Object.assign(new Error('当前有效稿已变化，请基于新版本重新提问，不能混合不同版本作答'), { statusCode: 409 })
+  }
   return { ...result, ...(settingsChanged ? { project_changed: true, generation_options: result.generation_options || data.generation_options } : {}),
     ...(data.workflow ? { workflow: data.workflow } : {}) }
 }
@@ -1047,6 +1113,8 @@ async function toolDirectorChat(project: Project, data: DirectorInput, model: Mo
 async function directStageDirectorChat(project: Project, data: DirectorInput, model: Model, provider: Provider,
   onEvent: (event: Record<string, unknown>) => void, signal: AbortSignal | undefined,
   activity: ReturnType<typeof activityRecorder>, creativeBrief?: string) {
+  // Intent resolution and a later typed resume must serialize the same scope.
+  data = { ...data, workflow: workflowRequest.parse(data.workflow) }
   const workflow = data.workflow!
   if (getToolDraft(project.id)) invalid('已有待确认草稿，请先保存或放弃它')
   clearCreationProposal(project.id)
@@ -1058,11 +1126,13 @@ async function directStageDirectorChat(project: Project, data: DirectorInput, mo
     }
   }
   const redesign = signal ? await prepareEpisodeRedesign(project, data, signal) : null
-  const savedContext = await preparedDirectorContext(project, data, model, provider, signal)
-  const prompt = buildScriptDirectorChatPrompt(project, data, { brief: creativeBrief, savedContext }, activity) + (redesign?.prompt || '')
+  const savedContext = await preparedDirectorContext(project, data, model, provider, signal, redesign?.episodeNumber)
+  const promptTask = { savedContext, redesignEpisode: redesign?.episodeNumber }
+  const prompt = buildScriptDirectorChatPrompt(project, data, { brief: creativeBrief, ...promptTask }, activity) + (redesign?.prompt || '')
   // A retry can carry an explicit workflow instead of rerunning intent
   // recognition. Keep its original creative brief with the saved progress.
-  const checkpointContext = creativeBrief ? buildScriptDirectorChatPrompt(project, data, { savedContext }) + (redesign?.prompt || '') : prompt
+  const checkpointContext = creativeBrief ? buildScriptDirectorChatPrompt(project, data, promptTask) + (redesign?.prompt || '') : prompt
+  const legacyCheckpointContext = buildScriptDirectorChatPrompt(project, data, { ...promptTask, legacyArtifactContext: true }) + (redesign?.prompt || '')
   onEvent({ type: 'intent', workflow, generation_options: data.generation_options,
     stage_context: directorStageContext(projectScript(project.id), { explicit: workflow }) })
   onEvent({ type: 'progress', stage: 'analysis', text: '正在编写当前阶段的可编辑文档…' })
@@ -1072,16 +1142,16 @@ async function directStageDirectorChat(project: Project, data: DirectorInput, mo
   let generated: ReturnType<typeof directorResult>
   try {
     const raw = await directorTextOutput(project, model, provider, data, prompt, event => onEvent(event), signal, activity, redesign?.validate, false,
-      metrics => measurements.push(metrics), checkpointContext)
+      metrics => measurements.push(metrics), checkpointContext, legacyCheckpointContext)
     generated = directorResult(raw, data)
     activity.finish(generation, 'succeeded', { summary: '模型已返回有效的阶段草稿', ...combineTextMetrics(measurements) })
   } catch (error) {
     activity.finish(generation, error instanceof ScriptDraftNeedsResolution ? 'succeeded' : signal?.aborted && signal.reason?.name === 'AbortError' ? 'cancelled' : 'failed', { summary: (error instanceof Error ? error.message : String(error)).slice(0, 3000), ...combineTextMetrics(measurements) })
     throw error
   }
+  assertSourcesUnchanged()
   if (redesign) return { ...await redesign.finish(generated), creation: creationState(project.id, projectScript(project.id)),
     stage_context: directorStageContext(projectScript(project.id), { explicit: workflow }), generation_options: data.generation_options, activity: activity.entries }
-  assertSourcesUnchanged()
   return presentStageDraft(project, data, generated.draft!, generated.reply, onEvent, signal, activity, sourceVersion)
 }
 
@@ -1218,8 +1288,8 @@ function directorResult(raw: string, data: DirectorInput, sourceText?: string) {
   return { reply }
 }
 
-/** JSON-only models use the same persisted, versioned redesign draft as
- * native tools. Capture full sources before generation, never save by index. */
+/** Episode redesign always uses structured, resumable generation and the same
+ * versioned confirmation draft. Read complete sources before writing prose. */
 async function prepareEpisodeRedesign(project: Project, data: DirectorInput, signal: AbortSignal) {
   if (data.workflow?.stage !== 'episode' || data.workflow.operation !== 'regenerate') return null
   if (getToolDraft(project.id)) invalid('已有待确认草稿，请先保存或放弃它')
@@ -1235,8 +1305,9 @@ async function prepareEpisodeRedesign(project: Project, data: DirectorInput, sig
   for (let offset = 0; offset < scenes.length; offset += 10) {
     await instance.execute('read_episode_scenes', { episode_number: workflow.episode_number, offset, limit: 10 })
   }
-  const sourceVersion = JSON.stringify([documents, scenes])
+  const sourceVersion = JSON.stringify([documents, scenes]), contextVersion = resolutionSourceVersion(project)
   return {
+    episodeNumber: workflow.episode_number,
     prompt: `\n本集重新设计的完整原文与场次（以下ID只用于本集对应场次，其他集只作承接参考）：\n${JSON.stringify({ documents, scenes: scenes.map(scene => ({ ...scene, source_scene_id: scene.id })) })}\n`,
     validate: (draft: Parameters<typeof validateWorkflowScenes>[1]) => validateWorkflowScenes(snapshot, draft),
     finish: async (result: ReturnType<typeof directorResult>) => {
@@ -1245,8 +1316,12 @@ async function prepareEpisodeRedesign(project: Project, data: DirectorInput, sig
       if (JSON.stringify([projectDocuments(project.id, current).filter(doc => doc.artifact_type === 'episode_script' && doc.episode_number === workflow.episode_number), current.scenes.filter(scene => scene.episode_number === workflow.episode_number)]) !== sourceVersion) {
         throw Object.assign(new Error('本集正文或场次已被修改，请重新读取后设计；已有剧本未修改'), { statusCode: 409 })
       }
+      if (resolutionSourceVersion(project) !== contextVersion) {
+        throw Object.assign(new Error('项目资料或上传剧本已变化，请重新生成；已有文档未修改'), { statusCode: 409 })
+      }
       if (!result.draft) invalid('模型未返回有效的分集重新设计草稿')
       await instance.execute('create_document_draft', result.draft)
+      clearGenerationCheckpoint(project.id)
       return { reply: result.reply, tool_draft: instance.result().tool_draft, workflow }
     },
   }
@@ -1292,10 +1367,10 @@ async function resumeScriptDraft(project: Project, data: DirectorInput, model: M
   // Continue only the same authorized decisions. Never bypass the final audit
   // or spin without a bound when a model cannot make the draft converge.
   for (let round = 0; ; round++) {
-    const result = await resumeScriptDraftOnce(project, request, model, provider, send, signal, activity, round < 3, round > 0)
+    const result = await resumeScriptDraftOnce(project, request, model, provider, send, signal, activity, round < scriptDraftRepairRoundLimit - 1, round > 0)
     if (!('retry_resolution' in result) || !result.retry_resolution) return result
     const pending = result.retry_resolution
-    const step = activity.start({ kind: 'context', label: '继续落实已有处理方案', summary: `第 ${round + 2}/4 轮：沿用同一决定，同步仍未落实的段落并再次独立复核` })
+    const step = activity.start({ kind: 'context', label: '继续落实已有处理方案', summary: `第 ${completedScriptDraftRepairRounds(pending) + 1}/${scriptDraftRepairRoundLimit} 轮：沿用同一决定，同步仍未落实的段落并再次独立复核` })
     activity.finish(step, 'succeeded')
     request = { ...data, draft_resolution: { id: pending.id, version: pending.version, strategy: 'continue' } }
   }
@@ -1307,7 +1382,7 @@ async function resumeScriptDraftOnce(project: Project, data: DirectorInput, mode
   const sourceVersion = resolutionSourceVersion(project)
   const { pending: claimed, release } = claimScriptDraft(project.id, data.draft_resolution!, sourceVersion)
   // Mutable run metadata is deliberately excluded from checkpoint identity.
-  const { run: previousRun, ...pending } = claimed
+  const { run: previousRun, completed_rounds: _completedRounds, ...pending } = claimed
   const input = data.draft_resolution!.strategy === 'continue' ? previousRun! : data.draft_resolution! as { strategy: 'manual' | 'ai'; answers?: string[] }
   let repairRun: NonNullable<PendingScriptDraft['run']> | undefined
   const publishRun = () => {
@@ -1338,7 +1413,9 @@ async function resumeScriptDraftOnce(project: Project, data: DirectorInput, mode
       provider: { id: provider.id, base_url: provider.base_url, adapter: provider.adapter }, skills: original.skill_selections }, 'repair')
     const completedCount = (state: typeof repairStore.checkpoint) => state.steps.repair ? pending.findings.length
       : Object.keys(state.steps).filter(key => /^repair:\d+$/.test(key)).length
+    const repairRounds = startScriptDraftRepairRounds(data.draft_resolution!.strategy, claimed)
     repairRun = { strategy: input.strategy, answers: answers.map(item => item.decision!), status: 'running',
+      ...(repairRounds ? { completed_rounds: repairRounds } : {}),
       completed: completedCount(repairStore.checkpoint), total: pending.findings.length }
     publishRun()
     const saveCheckpoint = repairStore.save
@@ -1348,11 +1425,15 @@ async function resumeScriptDraftOnce(project: Project, data: DirectorInput, mode
       if (completed !== repairRun!.completed) { repairRun!.completed = completed; publishRun() }
     }
     const repairSteps = directorGenerationSteps(repairStore, signal, activity, step)
-    const generateRepair = (text: string, contract?: OutputContract) => streamText(model, provider, { prompt: text, structured_output: contract }, item => decryptKey(item.key_ciphertext || null), () => {}, signal)
-    if (proposedSource && (proposedSource.analysis?.status !== 'ready' || proposedSource.analysis?.source_version !== scriptSourceVersion(proposedSource))) {
-      proposedSource.analysis = await analyzeSourceSnapshot(proposedSource, model.id,
-        (text, contract, requestSignal) => generateTextOutput(model, provider, text, contract, requestSignal), signal, sourceAnalysisConfiguration(model, provider))
+    const repairBudget = source ? sourceProposalBudget(project.id, scriptProposalBudgetScope(pending.draft), usage => {
+      activity.update(step, { summary: proposalAnalysisSummary('正在补齐候选稿并保留已完成结果', proposedSource?.analysis || null, usage, repairBudget!.limits) })
+    }) : null
+    const generateRepair = (text: string, contract?: OutputContract) => {
+      const generate = () => streamText(model, provider, { prompt: text, structured_output: contract }, item => decryptKey(item.key_ciphertext || null), () => {}, signal)
+      return repairBudget ? repairBudget.run(generate) : generate()
     }
+    // The repair consumes the full current manuscript directly, never its map.
+    // Analyze the resulting candidate once in reviewDirectorDraft after edits.
     const prompt = withSkillRules('script', `继续已授权阶段的候选草稿，只补齐下列冲突和缺口，并同步受影响文档及分场。返回精确替换 edits、简短 summary 及按问题顺序逐项对应的 decisions（每项写实际采用的具体决定，不只写委托AI），不重写整套文档，不保存。\n` +
       `find 必须逐字引用对应 source_key 的原文且唯一；同一来源的替换范围不得重叠。需插入时用包含插入位置的原文作为 find。保留无关段落的全部文字、标题、原场次ID、人物身份、集数、主线与结局。\n` +
       `原剧本已明确的故事事实、集数、主线和结局作为依据；原稿未展开的细节按本次决定补齐。用户方案优先于 AI 建议，AI 委托仅针对列出的问题及其直接关联。已有事实互相冲突时采用最小改动使因果自洽，在 summary 中说明调整，不扩展到其他阶段。\n` +
@@ -1390,14 +1471,18 @@ async function resumeScriptDraftOnce(project: Project, data: DirectorInput, mode
     } catch (error) {
       if (!(error instanceof ScriptDraftNeedsResolution)) throw error
       ensureCurrent()
+      repairRun!.completed_rounds = completeScriptDraftRepairRound(repairRun!)
+      publishRun()
+      const mayContinue = canContinueScriptDraftRepair(repairRun!)
       const known = error.findings.every(finding => finding.topic?.trim() && pending.findings.some(original => findingIdentity(original) === findingIdentity(finding)))
       const remainingRun: PendingScriptDraft['run'] = known ? { strategy: input.strategy,
+        completed_rounds: repairRun!.completed_rounds,
         answers: error.findings.map(finding => resolutions.find(record => record.id === findingIdentity(finding))!.answer || '沿用本项 AI 决定。'),
         status: 'interrupted', completed: 0, total: error.findings.length,
-        message: '复核仍发现已授权事项有未落实的段落。已有方案已保留，可继续修订，无需重新作决定。' } : undefined
+        message: mayContinue ? '复核仍发现已授权事项有未落实的段落。已有方案已保留，可继续修订，无需重新作决定。' : scriptDraftRepairRoundLimitMessage } : undefined
       const updated = retainScriptDraft(project.id, { ...pending, draft: repaired!, source_update: sourceUpdate, findings: error.findings,
         resolutions: reconcileFindingResolutions(resolutions, error.findings), request: continued, run: remainingRun }, pending)
-      if (allowKnownRetry && known) {
+      if (allowKnownRetry && known && mayContinue) {
         return { retry_resolution: updated }
       }
       return draftResolutionResult(project, updated, activity)
@@ -1467,11 +1552,14 @@ async function executeDirectorChatRequest(project: Project, data: DirectorInput,
   if (resolved.reply) return { reply: resolved.reply, stage_context, generation_options: resolved.data.generation_options,
     ...(resolved.settingsChanged ? { project_changed: true } : {}), activity: activity.entries }
   const redesign = await prepareEpisodeRedesign(project, resolved.data, signal)
-  const savedContext = await preparedDirectorContext(project, resolved.data, model, provider, signal)
-  const prompt = buildScriptDirectorChatPrompt(project, resolved.data, { ...resolved, savedContext }, activity) + (redesign?.prompt || '')
+  const savedContext = await preparedDirectorContext(project, resolved.data, model, provider, signal, redesign?.episodeNumber)
+  const prompt = buildScriptDirectorChatPrompt(project, resolved.data, { ...resolved, savedContext, redesignEpisode: redesign?.episodeNumber }, activity) + (redesign?.prompt || '')
+  const legacyCheckpointContext = resolved.data.workflow
+    ? buildScriptDirectorChatPrompt(project, resolved.data, { ...resolved, savedContext, redesignEpisode: redesign?.episodeNumber, legacyArtifactContext: true }) + (redesign?.prompt || '')
+    : undefined
   const generation = activity.start({ kind: 'model', label: '模型处理请求', name: model.name, summary: resolved.data.workflow ? '正在编写当前阶段草稿' : '正在处理创作对话' })
   send({ type: 'progress', stage: 'analysis', text: resolved.data.workflow ? '正在编写当前阶段的可编辑文档…' : '正在分析故事结构、人物动机和当前问题…' })
-  const fullText = await directorTextOutput(project, model, provider, resolved.data, prompt, send, signal, activity, redesign?.validate, Boolean(resolved.sourceText))
+  const fullText = await directorTextOutput(project, model, provider, resolved.data, prompt, send, signal, activity, redesign?.validate, Boolean(resolved.sourceText), undefined, undefined, legacyCheckpointContext)
   signal.throwIfAborted()
   const generated = directorResult(fullText, resolved.data, resolved.sourceText)
   if (generated.draft && currentScriptSourceVersion(project.id) !== sourceVersion) {
@@ -1633,7 +1721,7 @@ function buildShotPlanningPrompt(project: Project, scenes: ScriptScene[], shotsP
 }
 function baseShotPlanningPrompt(project: Project, scenes: ScriptScene[], shotsPerScene: number): string {
   const script = projectScript(project.id)
-  const existingShots = all<Shot>('SELECT * FROM shots WHERE project_id=? ORDER BY position', project.id)
+  const existingShots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position', project.id)
   return `你是一位分镜导演。把所列场次拆成可直接用于 AI 图片和视频生成的连续镜头。\n` +
     `${projectStyleInstructions(projectVisualStyle(project.id))}\n` +
     `项目：${project.name}；画幅：${project.ratio}；创意：${project.brief}\n` +
@@ -1704,6 +1792,7 @@ async function generateTextOutput(model: Model, provider: Provider, prompt: stri
     return await generate(model, provider, prompt, contract, signal)
   } catch (error) {
     if (signal?.aborted) throw error
+    if (isTextRequestBudgetError(error)) throw error
     if (error instanceof TextProviderError) {
       error.message = `文本模型生成失败：${error.message}`
       throw error
@@ -1721,9 +1810,10 @@ function relevantDirectorDocuments(project: Project, workflow: { stage: string; 
   return projectDocuments(project.id, projectScript(project.id)).filter(doc => !doc.episode_number || workflow.stage !== 'episode' ||
     [workflow.episode_number, workflow.episode_number - 1].includes(doc.episode_number))
 }
-async function preparedDirectorContext(project: Project, data: DirectorInput, model: Model, provider: Provider, signal?: AbortSignal) {
+async function preparedDirectorContext(project: Project, data: DirectorInput, model: Model, provider: Provider, signal?: AbortSignal, redesignEpisode?: number) {
   if (!data.workflow || data.adopt_source) return
-  return prepareConfirmedScriptContext(relevantDirectorDocuments(project, data.workflow),
+  return prepareConfirmedScriptContext(relevantDirectorDocuments(project, data.workflow)
+    .filter(doc => redesignEpisode === undefined || doc.artifact_type !== 'episode_script' || doc.episode_number !== redesignEpisode),
     (text, contract) => streamText(model, provider, { prompt: text, structured_output: contract }, item => decryptKey(item.key_ciphertext || null), undefined, signal), signal)
 }
 
@@ -1752,19 +1842,41 @@ async function reviewDirectorDraft(project: Project, data: DirectorInput, draft:
   sourceOverride?: ScriptSourceDocument | null, steps?: GenerationSteps, resolutions?: FindingResolutionRecord[]) {
   if (!draftCompletenessSources(draft, preserved).length) return
   const parent = activity && [...activity.entries].reverse().find(entry => entry.scope === 'task' && entry.status === 'running')
-  const step = activity?.start({ kind: 'context', scope: 'step', parent_id: parent?.id, label: '核对阶段设定', summary: '独立核对核心设定、作者视角的答案和跨文档一致性' })
+  let step: ScriptActivity | undefined
+  let phase: ScriptDraftReviewError['phase'] = 'review'
   const measurements: TextRequestMetrics[] = []
   try {
     const current = projectScript(project.id)
     const source = sourceOverride === undefined ? scriptSourceDocument(project.id) : sourceOverride
-    if (source && (source.analysis?.status !== 'ready' || source.analysis.source_version !== scriptSourceVersion(source))) {
-      source.analysis = await analyzeSourceSnapshot(source, model.id,
-        (text, contract, requestSignal) => generateTextOutput(model, provider, text, contract, requestSignal),
-        signal || new AbortController().signal, sourceAnalysisConfiguration(model, provider))
+    let latestProgress: NonNullable<ScriptSourceDocument['analysis']> | undefined
+    let currentMessage = '正在准备全文目录与证据校验'
+    let budget: ReturnType<typeof sourceProposalBudget> | undefined
+    const report = (state?: NonNullable<ScriptSourceDocument['analysis']>) => {
+      latestProgress = state || latestProgress
+      const message = latestProgress?.progress?.message || currentMessage
+      if (step && budget) activity?.update(step, { summary: proposalAnalysisSummary(message, latestProgress, budget.usage, budget.limits) })
     }
+    if (source) budget = sourceProposalBudget(project.id, scriptProposalBudgetScope(draft), () => report())
+    if (source && (source.analysis?.status !== 'ready' || source.analysis.source_version !== scriptSourceVersion(source))) {
+      const revised = sourceOverride !== undefined && sourceOverride !== null
+      phase = revised ? 'revision_analysis' : 'source_analysis'
+      step = activity?.start({ kind: 'context', scope: 'step', parent_id: parent?.id, label: revised ? '分析修订稿' : '分析剧本来源',
+        summary: '准备当前文稿的剧情目录与人物、事件关系，完成后再独立核对阶段设定' })
+      currentMessage = source.analysis?.phase === 'synthesis' ? '正在整合全剧人物、事件与伏笔' : '正在准备全文目录与证据校验'
+      report(source.analysis || undefined)
+      source.analysis = await budget!.run(() => analyzeSourceSnapshot(source, model.id,
+        (text, contract, requestSignal) => generateTextOutput(model, provider, text, contract, requestSignal),
+        signal || new AbortController().signal, sourceAnalysisConfiguration(model, provider), { base: source, onProgress: report }))
+      if (step) activity!.finish(step, 'succeeded', { summary: proposalAnalysisSummary('当前文稿分析已完成，开始独立核对阶段设定', source.analysis, budget!.usage, budget!.limits) })
+    }
+    phase = 'review'
+    step = activity?.start({ kind: 'context', scope: 'step', parent_id: parent?.id, label: '核对阶段设定', summary: '独立核对核心设定、作者视角的答案和跨文档一致性' })
+    currentMessage = '正在独立核对阶段设定'
+    latestProgress = undefined
+    report()
     const savedDocuments = relevantDirectorDocuments(project, draft)
     const request = (text: string, contract?: OutputContract) => tracedDirectorRequest(model, provider, text, contract, signal, activity, steps ? undefined : step?.id, undefined, metrics => measurements.push(metrics))
-    await reviewScriptDraftCompleteness(draft, retryDirectorReadOnlyRequest(request, signal, activity),
+    const review = () => reviewScriptDraftCompleteness(draft, retryDirectorReadOnlyRequest(request, signal, activity),
       { signal, preserved, steps, parentId: step?.id, resolutions, verifySourceSync: sourceOverride !== undefined && sourceOverride !== null,
         context: { project: { name: project.name, brief: project.brief },
         uploaded_script: source,
@@ -1772,15 +1884,27 @@ async function reviewDirectorDraft(project: Project, data: DirectorInput, draft:
         saved_documents: savedDocuments,
         requested_settings: data.generation_options,
         creator_messages: data.messages, task_scope: data.workflow || { stage: draft.stage, scope: draft.scope, episode_number: draft.episode_number } } })
-    if (step) activity!.finish(step, 'succeeded', { summary: '新写设定已核对，草稿等待创作者预览确认', ...combineTextMetrics(measurements) })
+    if (budget) await budget.run(review); else await review()
+    if (step) activity!.finish(step, 'succeeded', { summary: budget
+      ? proposalAnalysisSummary('新写设定已核对，草稿等待创作者预览确认', latestProgress, budget.usage, budget.limits)
+      : '新写设定已核对，草稿等待创作者预览确认', ...combineTextMetrics(measurements) })
   } catch (error) {
     if (step) activity!.finish(step, error instanceof ScriptDraftNeedsResolution ? 'succeeded' : signal?.aborted && signal.reason?.name === 'AbortError' ? 'cancelled' : 'failed', { summary: (error instanceof Error ? error.message : String(error)).slice(0, 3000), ...combineTextMetrics(measurements) })
-    throw error instanceof ScriptToolProblem || signal?.aborted ? error : new ScriptDraftReviewError(error)
+    throw error instanceof ScriptToolProblem || signal?.aborted ? error : new ScriptDraftReviewError(error, phase)
   }
 }
 
 function retryDirectorReadOnlyRequest(generate: Parameters<typeof retryReadOnlyGeneration>[0], signal?: AbortSignal, activity?: ReturnType<typeof activityRecorder>) {
   return retryReadOnlyGeneration(generate, { signal, onRetry: directorRetryNotice(activity) })
+}
+
+function proposalAnalysisSummary(message: string, state: ScriptSourceDocument['analysis'], usage: ScriptRequestUsage, limits: ScriptRequestUsageLimits) {
+  const pages = state ? `目录页 ${state.completed_chunks}/${state.total_chunks}` : ''
+  const tokens = scriptRequestUsageTokens(usage)
+  const estimated = usage.estimated_input_tokens + usage.estimated_output_tokens
+  return [message, pages, `已发起 ${usage.requests}/${limits.max_requests} 次模型请求`,
+    `累计 ${tokens.toLocaleString('en-US')}/${limits.max_tokens!.toLocaleString('en-US')} tokens（保守估算 ${estimated.toLocaleString('en-US')}）`]
+    .filter(Boolean).join(' · ').slice(0, 3000)
 }
 
 function directorRetryNotice(activity?: ReturnType<typeof activityRecorder>) {
@@ -1810,7 +1934,7 @@ function directorGenerationSteps(store: ReturnType<typeof generationCheckpointSt
 
 async function directorTextOutput(project: Project, model: Model, provider: Provider, data: DirectorInput, prompt: string,
   onEvent: (event: Record<string, unknown>) => void = () => {}, signal?: AbortSignal, activity?: ReturnType<typeof activityRecorder>, validate?: (draft: Parameters<typeof validateWorkflowScenes>[1]) => void, preserveSource = false,
-  onMetrics?: (metrics: TextRequestMetrics) => void, checkpointContext?: string) {
+  onMetrics?: (metrics: TextRequestMetrics) => void, checkpointContext?: string, legacyCheckpointContext?: string) {
   const source = scriptSourceDocument(project.id)
   if (source) completeSourceEvidence(source)
   const parent = activity && [...activity.entries].reverse().find(entry => entry.scope === 'task' && entry.status === 'running')
@@ -1826,11 +1950,14 @@ async function directorTextOutput(project: Project, model: Model, provider: Prov
       }, onMetrics)
   }
   if (!data.workflow) return request(prompt)
-  const store = data.workflow ? generationCheckpointStore(project.id, {
+  const checkpointIdentity = {
     strategy: 'whole-source-v1', prompt: checkpointContext || prompt, messages: data.messages, workflow: data.workflow, source, model: { id: model.id, remote_id: model.remote_id, protocol: model.protocol, settings: model.settings },
     provider: { id: provider.id, adapter: provider.adapter, base_url: provider.base_url, auth_header: provider.auth_header, auth_prefix: provider.auth_prefix },
-  }) : undefined
-  const generationPrompt = store?.checkpoint.prompt || prompt
+  }
+  const store = generationCheckpointStore(project.id, checkpointIdentity, 'generation',
+    legacyCheckpointContext ? [{ ...checkpointIdentity, prompt: legacyCheckpointContext }] : [])
+  const generationPrompt = store.reusedCompatibleIdentity && !hasRetainedGenerationWork(store.checkpoint)
+    ? prompt : store.checkpoint.prompt || prompt
   if (store) store.checkpoint.prompt = generationPrompt
   const steps = store ? directorGenerationSteps(store, signal, activity, parent) : undefined
   const value = await steps!.run('draft', '编写阶段草稿', { prompt: generationPrompt, workflow: data.workflow }, async () => {
@@ -1862,6 +1989,8 @@ async function directorTextOutput(project: Project, model: Model, provider: Prov
 }
 
 function validateGeneration(data: z.infer<typeof generationInput>, model: Model, projectId: string): Asset[] {
+  const parameterIssue = model.modality === 'text' ? null : promptParameterConflictMessage(data.prompt, { ...data, modality: model.modality })
+  if (parameterIssue) invalid(parameterIssue)
   const settings = JSON.parse(model.settings) as Record<string, unknown>
   const references = data.reference_asset_ids.map(id => required<Asset>('assets', id))
   if (references.some(asset => asset.project_id !== projectId || asset.kind !== 'image')) invalid('参考图片必须来自当前项目')
@@ -2048,7 +2177,11 @@ export function buildApp(): FastifyInstance {
   registerPromptOptimizationRoutes(app, { generateText: creativeText })
   registerVisualProfileRoutes(app, {
     script: projectScript,
-    generateBoard: (taskId, input, profile, candidateCount) => enqueueAssetTask(taskId, input, { visual_profile_id: profile.id, visual_profile_revision: profile.revision, auto_confirm_first: !profile.board_asset_id }, candidateCount),
+    generateBoard: (taskId, input, profile, candidateCount) => {
+      const { visual_base_signature, reference_names, reference_sources, ...generation } = input
+      return enqueueAssetTask(taskId, generation, { visual_profile_id: profile.id, visual_profile_revision: profile.revision,
+        auto_confirm_first: !profile.board_asset_id, visual_base_signature, reference_names, reference_sources }, candidateCount)
+    },
     generateReference: async (profile, input, metadata, candidateCount) => {
       const { data, model } = await generationRequest(profile.project_id, input, false)
       if (required<{ revision: number }>('visual_profiles', profile.id).revision !== profile.revision) {
@@ -2082,6 +2215,8 @@ export function buildApp(): FastifyInstance {
   app.get('/api/projects/:id', async request => {
     const { id } = parse(idParams, request.params)
     const project = required<Project>('projects', id)
+    const canvasId = finalCutCanvasId(request.query)
+    const scope = resolveFinalCutScope(id, canvasId)
     const archivedByShot = new Map<string, string[]>()
     for (const archive of all<{ shot_id: string; asset_id: string }>(`SELECT archives.shot_id, archives.asset_id
       FROM shot_candidate_archives archives JOIN shots ON shots.id=archives.shot_id
@@ -2091,11 +2226,13 @@ export function buildApp(): FastifyInstance {
       archivedByShot.set(archive.shot_id, ids)
     }
     return {
-      ...project, production_range: projectProductionRange(id),
-      script: projectScript(id), shots: all<Shot>('SELECT * FROM shots WHERE project_id=? ORDER BY position', id)
+      ...project, ...(canvasId === undefined ? {} : { final_cut_canvas_id: canvasId }), production_range: scope.range,
+      script: projectScript(id), shots: scope.shots
         .map(shot => ({ ...shot, archived_candidate_asset_ids: archivedByShot.get(shot.id) ?? [] })),
-      timeline_clips: projectClips(id),
-      speech: projectSpeechData(id), audio_settings: projectAudioSettings(id),
+      historical_shots: (canvasId === undefined ? all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NOT NULL ORDER BY created_at, position', id) : [])
+        .map(shot => ({ ...shot, archived_candidate_asset_ids: archivedByShot.get(shot.id) ?? [] })),
+      timeline_clips: scope.clips,
+      speech: projectSpeechData(id, canvasId), audio_settings: projectAudioSettings(id),
       asset_reviews: all<AssetReview>(`SELECT asset_reviews.* FROM asset_reviews
         JOIN shots ON shots.id=asset_reviews.shot_id WHERE shots.project_id=?`, id),
       assets: all<Asset>('SELECT * FROM assets WHERE project_id=? ORDER BY created_at DESC', id).map(assetPublic),
@@ -2144,6 +2281,13 @@ export function buildApp(): FastifyInstance {
         }
         if (node.shot_id && one<Shot>('SELECT * FROM shots WHERE id=? AND project_id=?', node.shot_id, id) === undefined) {
           invalid('画布镜头不属于当前项目')
+        }
+        if (node.type === 'generation' && node.shot_id && !node.settings.visual_profile_id
+          && ((node.model_id && one<Model>('SELECT * FROM models WHERE id=?', node.model_id)?.modality) || node.settings.modality || 'image') !== 'text') {
+          const shot = required<Shot>('shots', node.shot_id)
+          if ((node.settings.storyboard_revision || 0) !== (shot.storyboard_revision || 0)) {
+            throw Object.assign(new Error('分镜已重新规划，请刷新画布后重试；旧画面仍保留在历史候选中'), { statusCode: 409 })
+          }
         }
         if (node.model_id && one<Model>('SELECT * FROM models WHERE id=?', node.model_id) === undefined) {
           invalid('画布模型不存在')
@@ -2198,11 +2342,11 @@ export function buildApp(): FastifyInstance {
   registerProjectCanvasRoutes(app, { graph: projectCanvas, save: persistCanvas })
   app.get('/api/projects/:id/continuity', async request => {
     const { id } = parse(idParams, request.params)
-    required<Project>('projects', id)
-    const range = projectProductionRange(id)
-    const allShots = all<Shot>('SELECT * FROM shots WHERE project_id=? ORDER BY position', id)
-    const shots = selectedProductionShots(allShots, range)
-    const clips = all<TimelineClip>('SELECT * FROM timeline_clips WHERE project_id=?', id)
+    const canvasId = finalCutCanvasId(request.query)
+    const scope = resolveFinalCutScope(id, canvasId)
+    const range = scope.range
+    const shots = selectedProductionShots(scope.shots, range)
+    const clips = scope.clips
     const assets = all<Asset>('SELECT * FROM assets WHERE project_id=?', id)
     const reviews = all<AssetReview>(`SELECT asset_reviews.* FROM asset_reviews
       JOIN shots ON shots.id=asset_reviews.shot_id WHERE shots.project_id=?`, id)
@@ -2286,9 +2430,10 @@ export function buildApp(): FastifyInstance {
       issues.push(...shotIssues)
     }
 
-    const snapshot = semanticContinuityContext(id)
+    const snapshot = semanticContinuityContext(id, canvasId)
     const stored = one<{ signature: string; issues: string; model_id: string; updated_at: string }>(
-      'SELECT * FROM continuity_analyses WHERE project_id=?', id)
+      canvasId === undefined ? 'SELECT * FROM continuity_analyses WHERE project_id=?' : 'SELECT * FROM canvas_continuity_analyses WHERE project_id=? AND canvas_id=?',
+      ...(canvasId === undefined ? [id] : [id, canvasId]))
     const semanticStatus = !stored ? 'not_checked' : stored.signature === snapshot.signature ? 'checked' : 'stale'
     if (semanticStatus === 'checked') {
       const semanticIssues = JSON.parse(stored!.issues) as ContinuityIssue[]
@@ -2313,7 +2458,8 @@ export function buildApp(): FastifyInstance {
   })
   app.post('/api/projects/:id/continuity/analyze', async request => {
     const { id } = parse(idParams, request.params)
-    required<Project>('projects', id)
+    const canvasId = finalCutCanvasId(request.query)
+    resolveFinalCutScope(id, canvasId)
     const data = parse(z.object({ model_id: z.string().min(1) }).strict(), request.body)
     const model = required<Model>('models', data.model_id)
     if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
@@ -2321,15 +2467,18 @@ export function buildApp(): FastifyInstance {
     validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>)
     const provider = required<Provider>('providers', model.provider_id)
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用')
-    const snapshot = semanticContinuityContext(id)
+    const snapshot = semanticContinuityContext(id, canvasId)
     if (Buffer.byteLength(JSON.stringify(snapshot.context), 'utf8') > 200_000) invalid('制作范围过大，请缩小范围后进行语义检查')
     const issues = snapshot.context.pairs.length ? parseSemanticContinuity(JSON.stringify(
       await structuredTextOutput('continuity_report', semanticContinuitySchema, model, provider, semanticContinuityPrompt(snapshot.context),
         value => { parseSemanticContinuity(JSON.stringify(value), snapshot.context.pairs) })), snapshot.context.pairs) : []
-    if (semanticContinuityContext(id).signature !== snapshot.signature) {
+    if (semanticContinuityContext(id, canvasId).signature !== snapshot.signature) {
       throw Object.assign(new Error('检查期间镜头或剧本资料已变化，请重新检查'), { statusCode: 409 })
     }
-    run(`INSERT INTO continuity_analyses (project_id, model_id, signature, issues, updated_at) VALUES (?, ?, ?, ?, ?)
+    if (canvasId !== undefined) run(`INSERT INTO canvas_continuity_analyses (canvas_id, project_id, model_id, signature, issues, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(canvas_id) DO UPDATE SET model_id=excluded.model_id, signature=excluded.signature,
+      issues=excluded.issues, updated_at=excluded.updated_at`, canvasId, id, model.id, snapshot.signature, JSON.stringify(issues), now())
+    else run(`INSERT INTO continuity_analyses (project_id, model_id, signature, issues, updated_at) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(project_id) DO UPDATE SET model_id=excluded.model_id, signature=excluded.signature,
       issues=excluded.issues, updated_at=excluded.updated_at`, id, model.id, snapshot.signature, JSON.stringify(issues), now())
     return { status: 'checked', issue_count: issues.length }
@@ -2348,32 +2497,25 @@ export function buildApp(): FastifyInstance {
   })
   app.put('/api/projects/:id/production-range', async request => {
     const { id } = parse(idParams, request.params)
-    required<Project>('projects', id)
+    const canvasId = finalCutCanvasId(request.query)
     const range = parse(productionRangeInput, request.body)
-    selectedProductionShots(all<Shot>('SELECT * FROM shots WHERE project_id=? ORDER BY position', id), range)
-    db.transaction(() => {
-      if (range.start_shot_id === null && range.end_shot_id === null) {
-        run('DELETE FROM production_ranges WHERE project_id=?', id)
-      } else {
-        run(`INSERT INTO production_ranges (project_id, start_shot_id, end_shot_id) VALUES (?, ?, ?)
-          ON CONFLICT(project_id) DO UPDATE SET start_shot_id=excluded.start_shot_id,
-            end_shot_id=excluded.end_shot_id`, id, range.start_shot_id, range.end_shot_id)
-      }
-      touchProject(id)
-    })()
-    return projectProductionRange(id)
+    saveFinalCutRange(id, canvasId, range)
+    touchProject(id)
+    return range
   })
   app.get('/api/projects/:id/cut-reviews', async request => {
     const { id } = parse(idParams, request.params)
-    required<Project>('projects', id)
-    return projectCutReviews(id)
+    const canvasId = finalCutCanvasId(request.query)
+    resolveFinalCutScope(id, canvasId)
+    return projectCutReviews(id, canvasId)
   })
   app.put('/api/projects/:id/cut-points', async request => {
     const { id } = parse(idParams, request.params)
-    required<Project>('projects', id)
+    const canvasId = finalCutCanvasId(request.query)
+    resolveFinalCutScope(id, canvasId)
     const data = parse(cutPointsInput, request.body)
     return db.transaction(() => {
-      const cut = projectCutReviews(id).cuts.find(item =>
+      const cut = projectCutReviews(id, canvasId).cuts.find(item =>
         item.from_shot_id === data.from_shot_id && item.to_shot_id === data.to_shot_id)
       if (!cut) invalid('这两个分镜不是当前制作范围内的相邻镜头')
       if (cut.signature !== data.signature) {
@@ -2396,16 +2538,17 @@ export function buildApp(): FastifyInstance {
       run('UPDATE timeline_clips SET out_ms=? WHERE id=?', data.from_out_ms, fromClip.id)
       run('UPDATE timeline_clips SET in_ms=? WHERE id=?', data.to_in_ms, toClip.id)
       touchProject(id)
-      return projectCutReviews(id).cuts.find(item =>
+      return projectCutReviews(id, canvasId).cuts.find(item =>
         item.from_shot_id === data.from_shot_id && item.to_shot_id === data.to_shot_id)!
     })()
   })
   app.put('/api/projects/:id/cut-reviews', async request => {
     const { id } = parse(idParams, request.params)
-    required<Project>('projects', id)
+    const canvasId = finalCutCanvasId(request.query)
+    resolveFinalCutScope(id, canvasId)
     const data = parse(cutReviewInput, request.body)
     return db.transaction(() => {
-      const cut = projectCutReviews(id).cuts.find(item =>
+      const cut = projectCutReviews(id, canvasId).cuts.find(item =>
         item.from_shot_id === data.from_shot_id && item.to_shot_id === data.to_shot_id)
       if (!cut) invalid('这两个分镜不是当前制作范围内的相邻镜头')
       if (cut.signature !== data.signature) {
@@ -2438,7 +2581,7 @@ export function buildApp(): FastifyInstance {
         snapshot.from_clip_asset_id, snapshot.to_clip_asset_id,
         snapshot.from_in_ms, snapshot.from_out_ms, snapshot.to_in_ms, snapshot.to_out_ms, now())
       touchProject(id)
-      return projectCutReviews(id).cuts.find(item =>
+      return projectCutReviews(id, canvasId).cuts.find(item =>
         item.from_shot_id === data.from_shot_id && item.to_shot_id === data.to_shot_id)!
     })()
   })
@@ -2803,18 +2946,20 @@ export function buildApp(): FastifyInstance {
     if (references.length && data.mode !== 'reference') invalid('选择参考图片后请使用参考生成模式')
     const referenceError = imageReferenceConfigError(JSON.parse(model.settings) as Record<string, unknown>, references.length, data.mode)
     if (referenceError) invalid(referenceError)
-    const styled = compileProjectStyle(task.project_id, { prompt: data.prompt || task.prompt,
+    const styled = compileProjectStyle(task.project_id, { prompt: data.prompt || task.prompt, prompt_document: data.prompt_document,
       project_style_version: data.project_style_version })
     const styleTemplateError = projectStyleTemplateError(styled.project_visual_style, JSON.parse(model.settings), data.mode)
     if (styleTemplateError) invalid(styleTemplateError)
     const prompt = styled.prompt
     if (!prompt.trim()) invalid('请先填写图片生成提示词')
+    const parameterIssue = promptParameterConflictMessage(prompt, { ...data, modality: 'image' })
+    if (parameterIssue) invalid(parameterIssue)
     const jobIds = Array.from({ length: candidateCount }, () => newId()), timestamp = now()
     const batchId = candidateCount > 1 ? newId() : undefined
     const requestPayload = {
       ...metadata,
       ...(batchId ? { asset_task_batch_id: batchId } : {}),
-      asset_task_id: task.id, prompt, mode: data.mode, reference_asset_ids: data.reference_asset_ids,
+      asset_task_id: task.id, prompt, prompt_document: data.prompt_document, mode: data.mode, reference_asset_ids: data.reference_asset_ids,
       project_style_version: styled.project_style_version, project_visual_style: styled.project_visual_style,
       reference_video_url: null, resolution: data.resolution ?? null, quality: data.quality ?? null,
       clarity: data.clarity ?? null, background: data.background ?? null, duration: 5, ratio: data.ratio,
@@ -2965,18 +3110,18 @@ export function buildApp(): FastifyInstance {
     const { scene_ids } = parse(sceneConversionInput, request.body)
     const scenes = selectedScenes(id, scene_ids)
     const existing = new Set(all<{ source_scene_id: string }>(
-      'SELECT source_scene_id FROM shots WHERE project_id=? AND source_scene_id IS NOT NULL', id,
+      'SELECT source_scene_id FROM shots WHERE project_id=? AND superseded_by IS NULL AND source_scene_id IS NOT NULL', id,
     ).map(item => item.source_scene_id))
     const shots: Shot[] = [], skipped_scene_ids: string[] = []
     db.transaction(() => {
-      let position = one<{ next: number }>('SELECT COALESCE(MAX(position), -1)+1 AS next FROM shots WHERE project_id=?', id)!.next
+      let position = one<{ next: number }>('SELECT COALESCE(MAX(position), -1)+1 AS next FROM shots WHERE project_id=? AND superseded_by IS NULL', id)!.next
       for (const scene of scenes) {
         if (existing.has(scene.id)) { skipped_scene_ids.push(scene.id); continue }
         const shotId = newId()
         const prompt = scenePrompt(scene)
-        run(`INSERT INTO shots (id, project_id, position, title, prompt, duration, selected_asset_id, created_at, source_scene_id, image_prompt, video_prompt)
-          VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
-          shotId, id, position++, scene.heading, prompt, scene.duration, now(), scene.id, shotImagePrompt({ prompt }), shotVideoPrompt({ prompt }))
+        run(`INSERT INTO shots (id, project_id, position, title, prompt, duration, selected_asset_id, created_at, source_scene_id, image_prompt, video_prompt, design_id)
+          VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+          shotId, id, position++, scene.heading, prompt, scene.duration, now(), scene.id, shotImagePrompt({ prompt }), shotVideoPrompt({ prompt }), sceneStoryboardDesign(id, scene.id))
         inheritSceneVisualBindings(shotId, scene.id)
         shots.push(required<Shot>('shots', shotId))
       }
@@ -3053,7 +3198,7 @@ export function buildApp(): FastifyInstance {
     }
     const scenePositions = new Map(all<ScriptScene>('SELECT * FROM script_scenes WHERE project_id=?', id)
       .map(scene => [scene.id, scene.position]))
-    const existing = all<Shot>('SELECT * FROM shots WHERE project_id=? ORDER BY position', id)
+    const existing = all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position', id)
     const ordered = existing.map(shot => ({ id: shot.id, source_scene_id: shot.source_scene_id }))
     const createdIds: string[] = []
     db.transaction(() => {
@@ -3072,10 +3217,10 @@ export function buildApp(): FastifyInstance {
         for (const shot of plans.get(scene.id)!) {
           const shotId = newId()
           run(`INSERT INTO shots (id, project_id, position, title, prompt, duration, selected_asset_id, created_at, source_scene_id,
-            start_state, end_state, cut_note, image_prompt, video_prompt)
-            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
+            start_state, end_state, cut_note, image_prompt, video_prompt, design_id)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
             shotId, id, provisionalPosition++, shot.title, shot.prompt, shot.duration, now(), scene.id,
-            shot.start_state, shot.end_state, shot.cut_note, shotImagePrompt(shot), shotVideoPrompt(shot))
+            shot.start_state, shot.end_state, shot.cut_note, shotImagePrompt(shot), shotVideoPrompt(shot), sceneStoryboardDesign(id, scene.id))
           inheritSceneVisualBindings(shotId, scene.id)
           createdIds.push(shotId)
           additions.push({ id: shotId, source_scene_id: scene.id })
@@ -3241,12 +3386,13 @@ export function buildApp(): FastifyInstance {
     if (data.source_scene_id && required<ScriptScene>('script_scenes', data.source_scene_id).project_id !== id) {
       invalid('来源场次不属于当前项目')
     }
-    const position = one<{ next: number }>('SELECT COALESCE(MAX(position), -1)+1 AS next FROM shots WHERE project_id=?', id)!.next
+    const position = one<{ next: number }>('SELECT COALESCE(MAX(position), -1)+1 AS next FROM shots WHERE project_id=? AND superseded_by IS NULL', id)!.next
     const shotId = newId()
     run(`INSERT INTO shots (id, project_id, position, title, prompt, duration, selected_asset_id, created_at, source_scene_id,
-      start_state, end_state, cut_note, image_prompt, video_prompt)
-      VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`, shotId, id, position, data.title, data.prompt,
-      data.duration, now(), data.source_scene_id ?? null, data.start_state, data.end_state, data.cut_note, data.image_prompt, data.video_prompt)
+      start_state, end_state, cut_note, image_prompt, video_prompt, design_id)
+      VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`, shotId, id, position, data.title, data.prompt,
+      data.duration, now(), data.source_scene_id ?? null, data.start_state, data.end_state, data.cut_note, data.image_prompt, data.video_prompt,
+      sceneStoryboardDesign(id, data.source_scene_id ?? null))
     inheritSceneVisualBindings(shotId, data.source_scene_id ?? null)
     touchProject(id)
     return required<Shot>('shots', shotId)
@@ -3254,14 +3400,29 @@ export function buildApp(): FastifyInstance {
   app.patch('/api/shots/:id', async request => {
     const { id } = parse(idParams, request.params)
     const shot = required<Shot>('shots', id)
+    const canvasId = finalCutCanvasId(request.query)
+    const scope = canvasId === undefined ? undefined : requireFinalCutShot(shot.project_id, canvasId, id)
     const data = parse(shotPatch, request.body)
     if (data.position !== undefined) {
-      const ids = all<{ id: string }>('SELECT id FROM shots WHERE project_id=? ORDER BY position', shot.project_id).map(item => item.id).filter(item => item !== id)
+      if (shot.superseded_by && !scope) invalid('历史方案镜头不参与当前制作顺序')
+      const ids = (scope?.shots ?? resolveFinalCutScope(shot.project_id).shots).map(item => item.id).filter(item => item !== id)
       ids.splice(Math.min(data.position, ids.length), 0, id)
       db.transaction(() => {
         ids.forEach((item, index) => run('UPDATE shots SET position=? WHERE id=?', index, item))
-        selectedProductionShots(all<Shot>('SELECT * FROM shots WHERE project_id=? ORDER BY position', shot.project_id),
-          projectProductionRange(shot.project_id))
+        const updatedScope = resolveFinalCutScope(shot.project_id, canvasId)
+        selectedProductionShots(updatedScope.shots, updatedScope.range)
+        // The compatibility project range and legacy canvases can share the
+        // same shots. Reordering must not leave one of their saved ranges
+        // reversed while the currently edited canvas uses a different range.
+        const reordered = new Set(ids)
+        const activeScope = resolveFinalCutScope(shot.project_id)
+        if (activeScope.shots.some(item => reordered.has(item.id))) selectedProductionShots(activeScope.shots, activeScope.range)
+        for (const saved of all<ProductionRange & { canvas_id: string }>(
+          'SELECT canvas_id, start_shot_id, end_shot_id FROM canvas_production_ranges WHERE project_id=?', shot.project_id)) {
+          if (!reordered.has(saved.start_shot_id || '') && !reordered.has(saved.end_shot_id || '')) continue
+          const savedScope = resolveFinalCutScope(shot.project_id, saved.canvas_id)
+          selectedProductionShots(savedScope.shots, savedScope.range)
+        }
       })()
       delete data.position
     }
@@ -3273,15 +3434,20 @@ export function buildApp(): FastifyInstance {
     const { id } = parse(idParams, request.params)
     const shot = required<Shot>('shots', id)
     const range = projectProductionRange(shot.project_id)
-    if (range.start_shot_id === id || range.end_shot_id === id) invalid('该镜头是制作范围边界，请先调整制作范围')
+    if (range.start_shot_id === id || range.end_shot_id === id || one(
+      'SELECT 1 FROM canvas_production_ranges WHERE project_id=? AND (start_shot_id=? OR end_shot_id=?)', shot.project_id, id, id)) {
+      invalid('该镜头是制作范围边界，请先调整制作范围')
+    }
     run('DELETE FROM shots WHERE id=?', id)
-    all<{ id: string }>('SELECT id FROM shots WHERE project_id=? ORDER BY position', shot.project_id).forEach((item, index) => run('UPDATE shots SET position=? WHERE id=?', index, item.id))
+    all<{ id: string }>('SELECT id FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position', shot.project_id).forEach((item, index) => run('UPDATE shots SET position=? WHERE id=?', index, item.id))
     touchProject(shot.project_id)
     return { ok: true }
   })
   app.put('/api/shots/:id/assets/:assetId/review', async request => {
     const { id, assetId } = parse(assetReviewParams, request.params)
     const shot = required<Shot>('shots', id)
+    const canvasId = finalCutCanvasId(request.query)
+    if (canvasId !== undefined) requireFinalCutShot(shot.project_id, canvasId, id)
     const asset = required<Asset>('assets', assetId)
     if (asset.project_id !== shot.project_id || !['image', 'video'].includes(asset.kind)) {
       invalid('只能审核当前项目的图片或视频素材')
@@ -3331,6 +3497,8 @@ export function buildApp(): FastifyInstance {
   app.put('/api/shots/:id/selection', async request => {
     const { id } = parse(idParams, request.params)
     const shot = required<Shot>('shots', id)
+    const canvasId = finalCutCanvasId(request.query)
+    if (canvasId !== undefined) requireFinalCutShot(shot.project_id, canvasId, id)
     const { asset_id } = parse(z.object({ asset_id: z.string().nullable() }), request.body)
     let asset: Asset | undefined
     let sourceDuration: number | null = null
@@ -3369,6 +3537,8 @@ export function buildApp(): FastifyInstance {
   app.patch('/api/timeline-clips/:id', async request => {
     const { id } = parse(idParams, request.params)
     const clip = required<TimelineClip>('timeline_clips', id)
+    const canvasId = finalCutCanvasId(request.query)
+    if (canvasId !== undefined) requireFinalCutShot(clip.project_id, canvasId, clip.shot_id)
     const data = parse(timelineClipPatch, request.body)
     const asset = required<Asset>('assets', clip.asset_id)
     const updated = { ...clip, ...data }
@@ -3542,6 +3712,22 @@ export function buildApp(): FastifyInstance {
     const shot = input.shot_id ? required<Shot>('shots', input.shot_id) : null
     const model = required<Model>('models', input.model_id)
     if ((shot && shot.project_id !== projectId) || !model.enabled || model.archived) invalid('分镜或模型不可用')
+    const storyboardRevision = shot?.storyboard_revision || 0
+    const ensureCurrentStoryboardSource = () => {
+      if (!shot?.source_scene_id) return
+      const baseline = savedStoryboardSources(projectId).get(shot.source_scene_id)
+      if (!baseline) return
+      const project = required<Project>('projects', projectId), script = projectScript(projectId)
+      const scene = script.scenes.find(scene => scene.id === shot.source_scene_id)
+      if (!scene || baseline !== storyboardSourceFingerprint(project, scene,
+        projectDocuments(projectId, script).filter(document => document.content.trim()), projectVisualStyle(projectId).version)) {
+        throw Object.assign(new Error('剧本已更新，请先重新规划并确认分镜后再生成；旧素材仍保留在历史候选中'), { statusCode: 409 })
+      }
+    }
+    ensureCurrentStoryboardSource()
+    if (shot && input.storyboard_revision !== undefined && input.storyboard_revision !== storyboardRevision) {
+      throw Object.assign(new Error('分镜已重新规划，请刷新画布并确认新的提示词后再生成'), { statusCode: 409 })
+    }
     if (!preview && !shot && (model.modality !== 'image' || !input.source_artifact_type)) invalid('视频生成需要先关联分镜')
     const provider = required<Provider>('providers', model.provider_id)
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
@@ -3559,7 +3745,11 @@ export function buildApp(): FastifyInstance {
       try { await validateVideoReferenceRequest(JSON.parse(model.settings) as Record<string, unknown>, references, data, model.remote_id) }
       catch (error) { invalid(error instanceof Error ? error.message : '参考图片无法读取，请重新选择') }
     }
-    return { data, shot, model }
+    if (shot && (required<Shot>('shots', shot.id).storyboard_revision || 0) !== storyboardRevision) {
+      throw Object.assign(new Error('分镜已在检查期间重新规划，请重新确认生成内容'), { statusCode: 409 })
+    }
+    ensureCurrentStoryboardSource()
+    return { data: { ...data, ...(shot ? { storyboard_revision: storyboardRevision } : {}) }, shot, model }
   }
   app.post('/api/projects/:id/generate/preview', async request => {
     const { id } = parse(idParams, request.params)
@@ -3576,13 +3766,15 @@ export function buildApp(): FastifyInstance {
     const { id } = parse(idParams, request.params)
     const project = required<Project>('projects', id)
     const exportOptions = z.object({ allow_unplaced_speech: z.boolean().default(false) }).strict().parse(request.body || {})
-    const range = projectProductionRange(id)
-    const shots = selectedProductionShots(all<Shot>('SELECT * FROM shots WHERE project_id=? ORDER BY position', id), range)
+    const canvasId = finalCutCanvasId(request.query)
+    const scope = resolveFinalCutScope(id, canvasId)
+    const range = scope.range
+    const shots = selectedProductionShots(scope.shots, range)
     if (!shots.length) invalid('请先添加分镜')
-    const clips = projectClips(id)
-    const speech = speechExportPlan(id, shots, clips)
+    const clips = scope.clips
+    const speech = speechExportPlan(id, shots, clips, canvasId)
     const sceneIds = new Set(shots.map(shot => shot.source_scene_id).filter(Boolean))
-    const speechData = projectSpeechData(id)
+    const speechData = projectSpeechData(id, canvasId)
     const unplaced = speechData.lines.filter(line => line.selected_asset_id && (!line.scene_id || sceneIds.has(line.scene_id)) && !speechData.placements.some(item => item.line_id === line.id))
     if (unplaced.length && !exportOptions.allow_unplaced_speech) invalid(`还有 ${unplaced.length} 句已选用配音未入片，请设置播放位置或明确选择继续导出当前成片`)
     if (speech.issues.length) invalid(speech.issues[0]!.message)
@@ -3615,7 +3807,7 @@ export function buildApp(): FastifyInstance {
     })
     const jobId = newId(), timestamp = now()
     run("INSERT INTO jobs VALUES (?, ?, NULL, NULL, 'export', ?, 'queued', NULL, NULL, NULL, ?, ?)", jobId, id,
-      JSON.stringify({ project, production_range: range, clips: renderClips, speech_audio: speech.audio,
+      JSON.stringify({ project, ...(canvasId === undefined ? {} : { final_cut_canvas_id: canvasId }), production_range: range, clips: renderClips, speech_audio: speech.audio,
         audio_settings: projectAudioSettings(id) }), timestamp, timestamp)
     return required<Job>('jobs', jobId)
   })

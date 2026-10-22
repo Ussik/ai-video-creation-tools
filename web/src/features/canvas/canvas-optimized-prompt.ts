@@ -1,6 +1,9 @@
 import { jobPromptRequest } from '@video-studio/shared/jobs/prompt-optimization'
 import type { Job, Model, ProjectDetail } from '../../shared/api/api'
 import type { CanvasGraph, CanvasNode } from './ProjectCanvas'
+import { extractPromptBody, getManagedPromptBlocks } from '@video-studio/shared/visuals/prompt-document'
+import { parsePromptSectionDocument } from '@video-studio/shared/visuals/prompt-section-document'
+import { tokenizePromptReferenceNumbers } from '@video-studio/shared/visuals/prompt-references'
 
 export type OptimizedPromptDraft = { id: string; projectId: string; job: Job; prompt: string }
 
@@ -21,9 +24,11 @@ export function addOptimizedPromptDraft(graph: CanvasGraph, request: OptimizedPr
   const x = graph.nodes.length ? Math.max(...graph.nodes.map(node => node.x + node.width)) + 100 : 80
   const y = 80
   const stringValue = (key: string) => typeof original[key] === 'string' ? original[key] as string : undefined
+  const prompt = tokenizePromptReferenceNumbers(request.prompt, referenceIds)
+  const template = tokenizePromptReferenceNumbers(getManagedPromptBlocks(stringValue('prompt_template') || stringValue('prompt') || '').join('\n\n'), referenceIds)
   const node: CanvasNode = {
     id: request.id, type: 'generation', x, y, width: 440, height: 420, title: '图片生成 · 优化草稿',
-    text: request.prompt, prompt: request.prompt, asset_id: null, job_id: null,
+    text: prompt, prompt, asset_id: null, job_id: null,
     shot_id: detail.shots.some(shot => shot.id === request.job.shot_id) ? request.job.shot_id : null,
     model_id: models.some(model => model.id === request.job.model_id && model.enabled) ? request.job.model_id : null,
     settings: { modality: 'image', mode: referenceIds.length ? 'reference' : 'text',
@@ -32,7 +37,8 @@ export function addOptimizedPromptDraft(graph: CanvasGraph, request: OptimizedPr
       // Keep the reviewed full prompt authoritative on import; rebuilding it
       // from shot/profile prose could reintroduce the rejected descriptions.
       visual_reference_mode: 'text_only', visual_dependencies: false, prompt_override: true,
-      prompt_is_final: true, prompt_base: request.prompt, prompt_template: '' },
+      prompt_is_final: true, prompt_document: true, prompt_base: prompt, prompt_body: extractPromptBody({ prompt }),
+      prompt_template: template, prompt_sections: parsePromptSectionDocument(prompt, { sourceText: template }) },
   }
   const references: CanvasNode[] = referenceIds.map((id, i) => ({
     id: `${request.id}-ref-${i}`, type: 'image', x: x - 520, y: y + i * 310, width: 400, height: 272,

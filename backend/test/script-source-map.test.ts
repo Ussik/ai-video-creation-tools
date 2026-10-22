@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { resolveSourceSections, scriptSourcePassages, sourceMapSchema,
   sourcePromptUnits, sourceWorkPlan, validateSourceCoverage, workPassages } from '../src/modules/script/script-source-map.js'
 
-test('dense headings, long paragraphs, episodes and Unicode remain one complete source request', () => {
+test('dense headings, long paragraphs, episodes and Unicode retain exact source coordinates across output pages', () => {
   for (const content of [
     Array.from({ length: 160 }, (_, index) => `## ${index} 世界规则\r\n### 人物设定\r\n${'江河有灵，😀渡舟。'.repeat(25)}\r\n`).join(''),
     `第1集\n${'😀连续对白。'.repeat(3000)}\n第2集\n终章`,
@@ -12,12 +12,86 @@ test('dense headings, long paragraphs, episodes and Unicode remain one complete 
     assert.equal(passages.map(passage => passage.units.map(unit => unit.text).join('')).join(''), content)
     assert.equal(passages.map(passage => sourcePromptUnits(passage.units).map(unit => unit.text).join('')).join(''), content)
     assert.equal(work.map(item => workPassages(passages, item).map(p => p.content).join('')).join(''), content)
-    assert.deepEqual(work, [{ offset: 0, length: content.length, depth: 0 }])
+    assert.ok(work.length > 1)
+    assert.ok(work.every(item => item.length > 0 && item.length <= 12000 && item.depth === 0))
+    const starts = new Set(passages.flatMap(passage => passage.units.map(unit => unit.offset)))
+    let end = 0
+    for (const item of work) {
+      assert.equal(item.offset, end); assert.ok(starts.has(item.offset)); end += item.length
+    }
+    assert.equal(end, content.length)
     for (const unit of passages.flatMap(passage => passage.units)) {
       assert.equal(content.slice(unit.offset, unit.offset + unit.text.length), unit.text)
       assert.doesNotMatch(unit.text, /^[\udc00-\udfff]|[\ud800-\udbff]$/)
     }
   }
+})
+
+test('short manuscripts keep one output page and long manuscripts have deterministic bounded output windows', () => {
+  for (const length of [1, 8000, 12000, 16000]) {
+    assert.deepEqual(sourceWorkPlan(scriptSourcePassages('文'.repeat(length))), [{ offset: 0, length, depth: 0 }])
+  }
+  assert.deepEqual(sourceWorkPlan([]), [])
+  const content = '文'.repeat(16001), passages = scriptSourcePassages(content)
+  const work = sourceWorkPlan(passages)
+  assert.ok(work.length > 1)
+  assert.ok(work.every(item => item.length <= 12000))
+  assert.deepEqual(work, sourceWorkPlan(passages))
+})
+
+test('a 65,594-character 59-episode manuscript uses episode boundaries and every completed page contributes exact verified coverage', () => {
+  const headings = Array.from({ length: 59 }, (_, id) => `第${id + 1}集\n`)
+  const bodyCharacters = 65594 - headings.join('').length
+  const ending = '终场，沈月归还信物，城市恢复流动。\n'
+  const content = headings.map((heading, id) => {
+    const bodyLength = Math.floor(bodyCharacters / headings.length) + (id < bodyCharacters % headings.length ? 1 : 0)
+    const suffix = id === headings.length - 1 ? ending : '😀\n \t\n'
+    return heading + '林舟与沈月沿旧城寻找信物。\n'.repeat(100).slice(0, bodyLength - suffix.length) + suffix
+  }).join('')
+  assert.equal(content.length, 65594)
+  const passages = scriptSourcePassages(content), work = sourceWorkPlan(passages)
+  assert.ok(work.length >= 6 && work.length <= 10)
+  assert.equal(work.map(item => workPassages(passages, item).map(passage => passage.content).join('')).join(''), content)
+  const sections = work.flatMap(item => {
+    assert.match(content.slice(item.offset), /^第\d+集\n/, 'pages prefer a complete episode heading over a nearby arbitrary passage')
+    assert.ok(item.length <= 12000)
+    const selected = workPassages(passages, item), units = selected.flatMap(passage => passage.units)
+    const lastEvidence = units.filter(unit => unit.text.trim()).at(-1)!
+    const resolved = resolveSourceSections(sourceMapSchema.parse({ sections: [{
+      start_unit: units[0]!.id, title: '本页目录', episode_number: null, summary: '保留本页事件', characters: [],
+      events: [{ summary: '本页最后的原文事实', evidence: { unit_id: lastEvidence.id } }],
+    }] }), selected)
+    assert.deepEqual(resolved.problems, [])
+    return resolved.sections
+  })
+  validateSourceCoverage(content, sections)
+  assert.match(sections.at(-1)!.events[0]!.evidence.quote, /城市恢复流动/)
+  assert.throws(() => validateSourceCoverage(content, sections.filter((_, id) => id !== 1)), /未完整连续覆盖/)
+  assert.throws(() => validateSourceCoverage(content, [sections[0]!, ...sections]), /未完整连续覆盖/)
+})
+
+test('one very long episode pages on existing passage boundaries without cutting Unicode or whitespace', () => {
+  const content = `\n \t第1集\n${'😀连续对白。\n\n \t'.repeat(4000)}终章，完整保留。\n\n`
+  const passages = scriptSourcePassages(content), work = sourceWorkPlan(passages)
+  const starts = new Set(passages.map(passage => passage.offset))
+  assert.ok(work.length >= 3)
+  assert.equal(work.map(item => workPassages(passages, item).map(passage => passage.content).join('')).join(''), content)
+  for (const item of work) {
+    assert.ok(starts.has(item.offset))
+    assert.ok(item.length > 0 && item.length <= 12000)
+    assert.doesNotMatch(content.slice(item.offset, item.offset + item.length), /^[\udc00-\udfff]|[\ud800-\udbff]$/)
+  }
+})
+
+test('a heading at the target boundary starts the following output page with its body', () => {
+  const opening = '序幕。\n'.repeat(2000)
+  assert.equal(opening.length, 8000)
+  const content = `${opening}第2集\n${'河岸行动。\n'.repeat(3000)}`
+  const passages = scriptSourcePassages(content), work = sourceWorkPlan(passages)
+  assert.equal(work[0]!.length, opening.length)
+  assert.equal(work[1]!.offset, opening.length)
+  assert.match(workPassages(passages, work[1]!).map(passage => passage.content).join(''), /^第2集\n河岸行动/)
+  assert.equal(work.map(item => workPassages(passages, item).map(passage => passage.content).join('')).join(''), content)
 })
 
 test('compact prompt units preserve whitespace and stable evidence IDs without sending a blank-line ID for every newline', () => {

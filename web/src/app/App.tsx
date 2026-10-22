@@ -21,6 +21,7 @@ import FinalCutSpeechPanel from '../features/final-cut/FinalCutSpeechPanel'
 import FinalCutOutputSettings from '../features/final-cut/FinalCutOutputSettings'
 import FinalCutTimeline from '../features/final-cut/FinalCutTimeline'
 import { buildPartialTimelinePreview } from '../features/final-cut/partial-timeline-preview'
+import { exportBelongsToFinalCut, finalCutPath, useFinalCutScope } from '../features/final-cut/final-cut-scope'
 import { resolveSpeechTimeline, sliceSpeechAudio } from '@video-studio/shared/media/speech-timeline'
 import CutReviewPanel from '../features/final-cut/CutReviewPanel'
 import CandidateCompare from '../features/final-cut/CandidateCompare'
@@ -140,11 +141,18 @@ function App() {
   const [providers, setProviders] = useState<Provider[]>([])
   const [models, setModels] = useState<Model[]>([])
   const [projectId, setProjectId] = useState<string | null>(null)
-  const { detail, setDetail, refreshDetail: refreshProjectDetail } = useProjectDetailRefresh(projectId)
+  const { detail: projectDetail, setDetail, refreshDetail: refreshProjectDetail } = useProjectDetailRefresh(projectId)
   const activeProjectId = useRef(projectId)
   activeProjectId.current = projectId
   const [shotId, setShotId] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('projects')
+  const finalCut = useFinalCutScope(projectId, tab === 'studio')
+  const detail = tab === 'studio' ? finalCut.detail : projectDetail
+  const finalCutCanvasId = tab === 'studio' ? finalCut.canvasId : null
+  const finalCutRefresh = useRef(finalCut.refresh)
+  finalCutRefresh.current = finalCut.refresh
+  const activeView = useRef('')
+  activeView.current = `${projectId}:${tab}:${finalCutCanvasId || ''}`
   const taskPollingState = useRef({ tab, active: false })
   taskPollingState.current = { tab, active: !!detail?.jobs.some(isTaskActive) }
   const [scriptDirectorOpen, setScriptDirectorOpen] = useState(false)
@@ -274,7 +282,8 @@ function App() {
     ? '原声音量需在 0–200%，首尾淡变需在 0–500 毫秒之间'
     : null
   const audioChanged = !!currentClip && (audioGain !== currentClip.source_audio_gain || audioFade !== currentClip.source_audio_fade_ms)
-  const latestExport = detail?.jobs.find((job) => job.job_type === 'export' && job.status === 'succeeded')
+  const latestExport = detail?.jobs.find((job) => job.job_type === 'export' && job.status === 'succeeded' &&
+    exportBelongsToFinalCut(job, finalCutCanvasId, finalCut.canvases))
   const latestExportAsset = detail?.assets.find((asset) => asset.id === latestExport?.result_asset_id)
   const visibleProjects = useMemo(() => {
     const query = projectQuery.trim().toLocaleLowerCase()
@@ -315,35 +324,44 @@ function App() {
   async function refreshDetail(id = activeProjectId.current) {
     const next = await refreshProjectDetail(id)
     if (!next) return
-    void refreshContinuity(id, true).catch(report)
+    await finalCutRefresh.current(id || undefined)
+    void continuityRefresh.current(id, true).catch(report)
     return next
   }
 
+  const continuityContext = useRef({ projectId, tab, canvasId: finalCutCanvasId })
+  continuityContext.current = { projectId, tab, canvasId: finalCutCanvasId }
+  const continuityRefresh = useRef(refreshContinuity)
+  continuityRefresh.current = refreshContinuity
+
   async function refreshContinuity(id = activeProjectId.current, background = false) {
-    if (!id || id !== activeProjectId.current) return
+    const scope = continuityContext.current
+    if (!id || id !== scope.projectId || scope.tab !== 'studio' || !scope.canvasId) return
+    const isCurrent = () => continuityContext.current.projectId === id && continuityContext.current.tab === 'studio' && continuityContext.current.canvasId === scope.canvasId
     const requestId = ++continuityRequest.current
     if (!background) setContinuityLoading(true)
     try {
-      const next = await api<ContinuityReport>(`/projects/${id}/continuity`)
-      if (requestId === continuityRequest.current && id === activeProjectId.current) {
+      const next = await api<ContinuityReport>(finalCutPath(`/projects/${id}/continuity`, scope.canvasId))
+      if (requestId === continuityRequest.current && isCurrent()) {
         setContinuity(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next)
       }
       return next
     } catch (error) {
-      if (requestId === continuityRequest.current && id === activeProjectId.current) throw error
+      if (requestId === continuityRequest.current && isCurrent()) throw error
     } finally {
-      if (requestId === continuityRequest.current && id === activeProjectId.current) setContinuityLoading(false)
+      if (requestId === continuityRequest.current && isCurrent()) setContinuityLoading(false)
     }
   }
 
   async function analyzeContinuity() {
-    if (!projectId || !continuityModelId || semanticChecking) return
+    if (!projectId || !finalCutCanvasId || !continuityModelId || semanticChecking) return
     const targetProject = projectId
+    const view = activeView.current
     setSemanticChecking(true)
     try {
-      await api(`/projects/${targetProject}/continuity/analyze`, json('POST', { model_id: continuityModelId }))
-      await refreshContinuity(targetProject)
-    } catch (error) { report(error) } finally { setSemanticChecking(false) }
+      await api(finalCutPath(`/projects/${targetProject}/continuity/analyze`, finalCutCanvasId), json('POST', { model_id: continuityModelId }))
+      if (view === activeView.current) await refreshContinuity(targetProject)
+    } catch (error) { if (view === activeView.current) report(error) } finally { if (view === activeView.current) setSemanticChecking(false) }
   }
 
   function report(error: unknown) {
@@ -351,13 +369,16 @@ function App() {
   }
 
   async function action(task: () => Promise<unknown>, success?: string) {
+    const scope = finalCutCanvasId ? { projectId, canvasId: finalCutCanvasId } : null
+    const isCurrent = () => !scope || activeProjectId.current === scope.projectId &&
+      (continuityContext.current.tab !== 'studio' || continuityContext.current.canvasId === scope.canvasId)
     setBusy(true)
     setNotice(null)
     try {
       await task()
-      if (success) setNotice(success)
+      if (success && isCurrent()) setNotice(success)
     } catch (error) {
-      report(error)
+      if (isCurrent()) report(error)
     } finally {
       setBusy(false)
     }
@@ -370,9 +391,24 @@ function App() {
   }, [notice])
 
   useEffect(() => {
+    setCandidateReview(null)
+    setShowTimelinePreview(false)
+    setShowProductionRange(false)
+    setContinuity(null)
+    setContinuityLoading(false)
+    setSemanticChecking(false)
+    continuityRequest.current += 1
+    if (tab === 'studio' && finalCutCanvasId) void refreshContinuity().catch(report)
+  }, [projectId, tab, finalCutCanvasId])
+
+  useEffect(() => {
+    if (detail) setShotId(current => detail.shots.some(shot => shot.id === current) ? current : detail.shots[0]?.id || null)
+  }, [detail?.id, detail?.shots])
+
+  useEffect(() => {
     setRangeDraft({ start_shot_id: detail?.production_range?.start_shot_id ?? null,
       end_shot_id: detail?.production_range?.end_shot_id ?? null })
-  }, [detail?.id, detail?.production_range?.start_shot_id, detail?.production_range?.end_shot_id])
+  }, [detail?.id, detail?.production_range?.start_shot_id, detail?.production_range?.end_shot_id, finalCutCanvasId])
 
   useEffect(() => {
     if (!projectId) return
@@ -626,7 +662,7 @@ function App() {
   async function saveTrim() {
     if (!currentClip || trimIssue || !trimChanged) return
     await action(async () => {
-      await api(`/timeline-clips/${currentClip.id}`, json('PATCH', { in_ms: inMs, out_ms: outMs }))
+      await api(finalCutPath(`/timeline-clips/${currentClip.id}`, finalCutCanvasId), json('PATCH', { in_ms: inMs, out_ms: outMs }))
       await refreshDetail()
     }, '入片区间已保存')
   }
@@ -656,7 +692,7 @@ function App() {
   async function saveSourceAudio() {
     if (!currentClip || audioIssue || !audioChanged) return
     await action(async () => {
-      await api(`/timeline-clips/${currentClip.id}`, json('PATCH', {
+      await api(finalCutPath(`/timeline-clips/${currentClip.id}`, finalCutCanvasId), json('PATCH', {
         source_audio_gain: audioGain, source_audio_fade_ms: audioFade,
       }))
       await refreshDetail()
@@ -665,7 +701,7 @@ function App() {
 
   async function moveShot(shot: Shot, direction: number) {
     await action(async () => {
-      await api(`/shots/${shot.id}`, json('PATCH', { position: Math.max(0, shot.position + direction) }))
+      await api(finalCutPath(`/shots/${shot.id}`, finalCutCanvasId), json('PATCH', { position: Math.max(0, (detail?.shots.findIndex(item => item.id === shot.id) ?? 0) + direction) }))
       await refreshDetail()
     })
   }
@@ -687,7 +723,7 @@ function App() {
   async function selectCandidate(assetId: string) {
     if (!shotId || currentShot?.selected_asset_id === assetId) return
     await action(async () => {
-      await api(`/shots/${shotId}/selection`, json('PUT', { asset_id: assetId }))
+      await api(finalCutPath(`/shots/${shotId}/selection`, finalCutCanvasId), json('PUT', { asset_id: assetId }))
       await refreshDetail()
     }, '已选为成片镜头')
   }
@@ -715,7 +751,7 @@ function App() {
     const { shotId: reviewedShotId, assetId, note } = candidateReview
     const wasSelected = detail?.shots.find((shot) => shot.id === reviewedShotId)?.selected_asset_id === assetId
     await action(async () => {
-      await api(`/shots/${reviewedShotId}/assets/${assetId}/review`, json('PUT', { status, note }))
+      await api(finalCutPath(`/shots/${reviewedShotId}/assets/${assetId}/review`, finalCutCanvasId), json('PUT', { status, note }))
       await refreshDetail()
       setCandidateReview(null)
     }, status === 'approved' ? '候选已通过审核' : status === 'rejected'
@@ -731,11 +767,13 @@ function App() {
   }
 
   async function exportVideo() {
-    if (!projectId || !canExport) return
+    if (!projectId || !finalCutCanvasId || !canExport) return
+    const view = activeView.current
     if (unplacedSpeechCount && !await confirm({ title: '还有配音未入片', message: `${unplacedSpeechCount} 句已选用的配音尚未设置播放位置，本次导出不会包含这些配音。`, confirmLabel: '继续导出当前成片', cancelLabel: '返回检查' })) return
+    if (view !== activeView.current) return
     await action(async () => {
-      await api(`/projects/${projectId}/export`, json('POST', { allow_unplaced_speech: unplacedSpeechCount > 0 }))
-      setTab('jobs')
+      await api(finalCutPath(`/projects/${projectId}/export`, finalCutCanvasId), json('POST', { allow_unplaced_speech: unplacedSpeechCount > 0 }))
+      if (view === activeView.current) setTab('jobs')
       await refreshDetail()
     }, '导出任务已开始')
   }
@@ -752,7 +790,7 @@ function App() {
   async function saveProductionRange() {
     if (!projectId || !rangeDraftValid) return
     await action(async () => {
-      await api(`/projects/${projectId}/production-range`, json('PUT', rangeDraft))
+      await api(finalCutPath(`/projects/${projectId}/production-range`, finalCutCanvasId), json('PUT', rangeDraft))
       await refreshDetail()
       setShowProductionRange(false)
     }, '制作范围已更新')
@@ -786,6 +824,11 @@ function App() {
     // Keep the director mounted while reading/editing documents so its running
     // requests, pending messages and draft preview survive the round trip.
     setScriptEditorOpen(true)
+    setTab('canvas')
+  }
+
+  function returnToCanvas() {
+    if (projectId && finalCutCanvasId) rememberCanvas(projectId, finalCutCanvasId)
     setTab('canvas')
   }
 
@@ -860,11 +903,11 @@ function App() {
       </nav>
     </Drawer>
 
-    <main className={`main-content ${canvasOpen ? 'is-canvas' : ''}`}>
+    <main className={`main-content ${canvasOpen ? 'is-canvas' : ''} ${tab === 'studio' ? 'is-final-cut' : ''}`}>
       {tab !== 'projects' && !scriptEditorOpen && <header className="topbar">
         <div className="topbar-start"><ActionIcon className="mobile-toggle" variant="subtle" aria-label="打开导航" onClick={() => setMobileMenu(!mobileMenu)}><Menu size={20} /></ActionIcon><Button className="breadcrumb-link" onClick={() => selectedNav('projects')} data-workspace-control="" variant="subtle">项目</Button><span className="breadcrumb-sep">/</span>{tab === 'skills' || tab === 'models' ? <strong>{tab === 'skills' ? '技能中心' : '模型设置'}</strong> : <Select className="header-project-switcher" aria-label="切换项目" placeholder="选择项目" value={projectId} onChange={switchProject} data={projects.map(project => ({ value: project.id, label: project.name }))} searchable allowDeselect={false} disabled={busy || assetDownload.downloading} rightSection={<ChevronDown size={14} />} comboboxProps={{ width: 340, position: 'bottom-start' }} />}{tab === 'studio' && <span className="topbar-meta">成片工作台</span>}</div>
         <div className="topbar-actions">
-          {tab === 'studio' && detail && <Button variant="default" onClick={() => setTab('canvas')} leftSection={<Layers3 size={16} />}>返回画布</Button>}
+          {tab === 'studio' && detail && <Button variant="default" onClick={returnToCanvas} leftSection={<Layers3 size={16} />}>返回画布</Button>}
           {detail && tab === 'studio' && <Button variant="default" onClick={() => openSpeech()} leftSection={<Mic2 size={16} />}>配音</Button>}
           {detail && tab === 'studio' && <FinalCutOutputSettings detail={detail} onRefresh={() => refreshDetail(detail.id)} />}
           {tab === 'studio' && latestExportAsset && <Button component="a" variant="default" href={latestExportAsset.url} download title="下载最近成片" leftSection={<Download size={16} />}>最近成片</Button>}
@@ -941,8 +984,8 @@ function App() {
         }}
         onNavigate={(destination) => { setScriptEditorOpen(false); setTab(destination) }} />}
 
-      {detail && speechProjectId === detail.id && <SpeechStudio key={`speech-${detail.id}`} projectId={detail.id} projectName={detail.name}
-        scenes={detail.script.scenes} shots={detail.shots} initialLineId={speechFocus.lineId} initialSceneId={speechFocus.sceneId} initialShotId={speechFocus.shotId}
+      {detail && speechProjectId === detail.id && <SpeechStudio key={`speech-${detail.id}:${finalCutCanvasId || 'project'}`} projectId={detail.id} projectName={detail.name}
+        scenes={detail.script.scenes} shots={detail.shots} finalCutCanvasId={finalCutCanvasId} initialLineId={speechFocus.lineId} initialSceneId={speechFocus.sceneId} initialShotId={speechFocus.shotId}
         onOpenFinalCut={() => { setSpeechProjectId(null); setTab('studio'); void refreshDetail(detail.id) }}
         onClose={() => { setSpeechProjectId(null); void refreshDetail(detail.id) }} onAssetsChanged={() => refreshDetail(detail.id)} />}
 
@@ -962,6 +1005,17 @@ function App() {
         onNotice={setNotice}
       />}
 
+      {projectDetail && tab === 'studio' && <section className="final-cut-scope-bar" aria-label="成片制作方案">
+        <Select label="制作方案" aria-label="切换成片制作方案" placeholder={finalCut.loading ? '正在读取方案…' : '选择制作方案'}
+          value={finalCutCanvasId} data={finalCut.choices.map(canvas => ({ value: canvas.id, label: canvas.design_id ? canvas.name : `${canvas.name} · 默认方案` }))}
+          onChange={value => { setNotice(null); finalCut.choose(value) }} allowDeselect={false} searchable disabled={busy || !finalCut.choices.length} />
+        {finalCutCanvasId && <span>镜头、制作范围与成片预览随方案切换</span>}
+        {!detail && <div className="final-cut-scope-state" role={finalCut.error ? 'alert' : 'status'}>
+          {finalCut.error || '正在读取所选方案的镜头与成片…'}
+          {finalCut.error && <Button variant="subtle" size="xs" onClick={finalCut.retry}>重新加载</Button>}
+        </div>}
+      </section>}
+
       {detail && tab === 'studio' && <div className="studio-layout final-cut-workspace" aria-label="成片工作台">
         <section className="shot-rail" aria-label="分镜列表">
           <div className="panel-heading"><div><span className="eyebrow">入片顺序</span><h2>镜头 <span className="panel-count">{detail.shots.length}</span></h2></div></div>
@@ -976,12 +1030,12 @@ function App() {
             })}
             {!detail.shots.length && <div className="rail-empty">还没有镜头</div>}
           </div>
-          <Button variant="default" onClick={() => setTab('canvas')} leftSection={<Layers3 size={16} />}>在画布制作镜头</Button>
+          <Button variant="default" onClick={returnToCanvas} leftSection={<Layers3 size={16} />}>在画布制作镜头</Button>
         </section>
 
         <section className="workspace-center">
           {currentShot ? <>
-            <div className="workspace-header"><div><span className="eyebrow">镜头 {String(currentShot.position + 1).padStart(2, '0')} / {String(detail.shots.length).padStart(2, '0')}{currentScene && ` · ${currentScene.heading}`}</span><h1>{currentShot.title}</h1></div><div className="workspace-header-actions"><Tooltip label="前移镜头"><ActionIcon variant="subtle" aria-label="前移镜头" disabled={currentShot.position === 0} onClick={() => moveShot(currentShot, -1)}><ArrowUp size={17} /></ActionIcon></Tooltip><Tooltip label="后移镜头"><ActionIcon variant="subtle" aria-label="后移镜头" disabled={currentShot.position === detail.shots.length - 1} onClick={() => moveShot(currentShot, 1)}><ArrowDown size={17} /></ActionIcon></Tooltip></div></div>
+            <div className="workspace-header"><div><span className="eyebrow">镜头 {String(shotIndex + 1).padStart(2, '0')} / {String(detail.shots.length).padStart(2, '0')}{currentScene && ` · ${currentScene.heading}`}</span><h1>{currentShot.title}</h1></div><div className="workspace-header-actions"><Tooltip label="前移镜头"><ActionIcon variant="subtle" aria-label="前移镜头" disabled={shotIndex <= 0} onClick={() => moveShot(currentShot, -1)}><ArrowUp size={17} /></ActionIcon></Tooltip><Tooltip label="后移镜头"><ActionIcon variant="subtle" aria-label="后移镜头" disabled={shotIndex === detail.shots.length - 1} onClick={() => moveShot(currentShot, 1)}><ArrowDown size={17} /></ActionIcon></Tooltip></div></div>
             <Tabs value={cutPreviewMode} onChange={value => value && setCutPreviewMode(value)} className="final-cut-preview-tabs"><Tabs.List><Tabs.Tab value="cut">实际入片</Tabs.Tab><Tabs.Tab value="source">原始素材</Tabs.Tab></Tabs.List></Tabs>
             {currentClip && cutPreviewMode === 'cut' ? <div className="final-cut-current-preview"><TimelinePreview key={`${currentShot.id}:${currentClip.id}`} clips={[currentClip]} assets={detail.assets} shots={[currentShot]} ratio={detail.ratio} speechAudio={currentSpeechAudio} audioSettings={detail.audio_settings} musicOffsetMs={currentStart} active={!showTimelinePreview && speechProjectId !== detail.id && !candidateReview}
               musicAsset={detail.assets.find(asset => asset.id === detail.music_asset_id && asset.kind === 'audio')} /></div>
@@ -1038,7 +1092,7 @@ function App() {
                 </div>)}
               </div> : <div className="continuity-empty"><Check size={15} />未发现素材与时长问题{continuity.semantic_review?.status === 'checked' ? '，文字状态检查无提醒' : '；文字状态尚未完成模型检查'}</div>}
             </section>}
-          </> : <div className="no-shot"><Clapperboard size={30} /><h2>还没有入片镜头</h2>{detail.script.scenes.length > 0 && <Button variant="default" onClick={() => openScriptEditor()} leftSection={<ScrollText size={16} />}>打开剧本创作</Button>}<Button onClick={() => setTab('canvas')} leftSection={<Layers3 size={16} />}>前往画布制作</Button></div>}
+          </> : <div className="no-shot"><Clapperboard size={30} /><h2>还没有入片镜头</h2>{detail.script.scenes.length > 0 && <Button variant="default" onClick={() => openScriptEditor()} leftSection={<ScrollText size={16} />}>打开剧本创作</Button>}<Button onClick={returnToCanvas} leftSection={<Layers3 size={16} />}>前往画布制作</Button></div>}
         </section>
 
         <aside className="inspector final-cut-inspector" aria-label="成片片段设置">
@@ -1048,7 +1102,7 @@ function App() {
               <div className="final-cut-shot-summary"><strong>{currentShot.title}</strong><span>{selectedAsset ? selectedAsset.filename : '尚未选定成片素材'}</span><small>规划 {currentShot.duration} 秒{currentClip ? ` · 实际入片 ${secondsLabel(clipDuration(currentClip))}` : ''}</small></div>
               {currentClip ? <div className="trim-editor"><div className="trim-editor-heading"><Scissors size={16} /><strong>成片取段</strong><span>规划 {currentShot.duration}s · 素材 {currentClip.source_duration_ms === null ? '静帧' : secondsLabel(currentClip.source_duration_ms)}</span></div><div className="trim-fields"><NumberInput label="素材入点" suffix=" 秒" min={0} max={currentClip.source_duration_ms === null ? 0 : currentClip.source_duration_ms / 1000} step={0.1} decimalScale={3} hideControls disabled={currentClip.source_duration_ms === null} value={trimIn} onChange={setTrimIn} /><NumberInput label={currentClip.source_duration_ms === null ? '画面停留至' : '素材出点'} suffix=" 秒" min={0.2} max={currentClip.source_duration_ms === null ? 30 : currentClip.source_duration_ms / 1000} step={0.1} decimalScale={3} hideControls value={trimOut} onChange={setTrimOut} /><Button variant="default" onClick={saveTrim} disabled={busy || !!trimIssue || !trimChanged} leftSection={<Save size={15} />}>保存取段</Button></div>{trimIssue && <span className="trim-error" role="status">{trimIssue}</span>}{selectedAsset?.kind === 'video' && <div className="source-audio-editor"><div className="trim-editor-heading"><Music2 size={16} /><strong>片段原声</strong><span>预览与导出使用同一设置</span></div><div className="source-audio-fields"><NumberInput label="原声音量" suffix=" %" min={0} max={200} step={10} decimalScale={0} hideControls value={sourceAudioPercent} onChange={setSourceAudioPercent} /><NumberInput label="首尾淡变" suffix=" 毫秒" min={0} max={500} step={50} decimalScale={0} hideControls value={sourceAudioFadeMs} onChange={setSourceAudioFadeMs} /><Button variant="default" onClick={() => setSourceAudioPercent(Number(sourceAudioPercent) === 0 ? 100 : 0)}>{Number(sourceAudioPercent) === 0 ? '恢复原声' : '静音'}</Button><Button variant="default" onClick={saveSourceAudio} disabled={busy || !!audioIssue || !audioChanged} leftSection={<Save size={15} />}>保存原声</Button></div>{audioIssue && <span className="trim-error" role="status">{audioIssue}</span>}</div>}</div> : <p className="cut-empty">选定候选素材后，可从素材中截取自然的动作片段，成片将按这里的入点和出点导出。</p>}
               <div className="inspector-divider" />
-              <FinalCutSpeechPanel detail={detail} shot={currentShot} onRefresh={() => refreshDetail(detail.id)} onOpenSpeech={lineId => openSpeech(lineId)} />
+              <FinalCutSpeechPanel detail={detail} shot={currentShot} finalCutCanvasId={finalCutCanvasId} onRefresh={() => refreshDetail(detail.id)} onOpenSpeech={lineId => openSpeech(lineId)} />
             </div>
             <div className="inspector-actions"><Button variant="default" onClick={() => void openShotInCanvas(currentShot.id)} loading={busy} leftSection={<Layers3 size={16} />}>在画布调整此镜头</Button></div>
           </> : <div className="final-cut-empty">选择一个镜头后，可设置入片区间和原声。</div>}
@@ -1059,7 +1113,7 @@ function App() {
               ? `本次 ${productionShots.length} 镜 · 可预览 ${secondsLabel(totalDurationMs)} / 规划 ${plannedDuration.toFixed(1)}s · ${readyCount}/${productionShots.length} 镜就绪`
               : '制作范围已失效，请重新选择'}</span>{productionRangeValid && <span className={`timeline-target ${totalDurationMs > targetSeconds * 1000 ? 'is-over' : ''}`}>目标约 {targetSeconds} 秒{totalDurationMs > targetSeconds * 1000 ? ` · 超出 ${secondsLabel(totalDurationMs - targetSeconds * 1000)}` : ''}</span>}</div>
             <div className="timeline-actions">
-              <CutReviewPanel detail={detail} onChanged={async () => { await refreshDetail(detail.id) }} />
+              <CutReviewPanel key={`${detail.id}:${finalCutCanvasId}`} detail={detail} finalCutCanvasId={finalCutCanvasId} onChanged={async () => { await refreshDetail(detail.id) }} />
               <Button variant="default" size="xs" onClick={() => {
                 setRangeDraft({ start_shot_id: detail.production_range?.start_shot_id ?? null,
                   end_shot_id: detail.production_range?.end_shot_id ?? null })

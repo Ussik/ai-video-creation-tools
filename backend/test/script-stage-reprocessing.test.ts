@@ -15,6 +15,8 @@ process.env.VIDEO_STUDIO_DATA_DIR = testData
 const { buildApp } = await import('../src/app.js')
 const { db, all, one, run } = await import('../src/infrastructure/database/db.js')
 const { documentTools, commitToolDraft, discardToolDraft, getToolDraft, editToolDraft } = await import('../src/modules/script/script-document-tools.js')
+const { scriptSourceVersion } = await import('../src/modules/script/script-source-analysis.js')
+const { sourceAnalysisPipelineVersion } = await import('../src/modules/script/script-source-map.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 async function call(method: 'POST' | 'PUT' | 'GET', url: string, payload?: unknown): Promise<any> {
@@ -162,16 +164,26 @@ test('historical scene-only and prose-only episodes support full redesign withou
   assert.equal(prose.script().scenes.length, 1)
 })
 
-test('native and JSON model paths over JSON and SSE return versioned selected-episode redesign drafts', async t => {
-  for (const useTools of [true, false]) for (const suffix of ['', '/stream']) {
+test('typed and intent-selected episodes use structured redesign with full sources over JSON and SSE', async t => {
+  for (const useTools of [true, false]) for (const typed of [true, false]) for (const suffix of ['', '/stream']) {
     const { project, script, source, sources, request, references } = await episodeFixture()
+    const proseMarker = `UNIQUE_EPISODE_PROSE_${project.id}`
+    source.content += proseMarker
+    run('UPDATE script_artifacts SET content=? WHERE id=?', source.content, source.id)
+    const sceneMarkers = sources.map((scene, index) => {
+      const marker = `UNIQUE_ORIGINAL_SCENE_${index}_${project.id}`
+      scene.dialogue += marker
+      run('UPDATE script_scenes SET dialogue=? WHERE id=?', scene.dialogue, scene.id)
+      return marker
+    })
     const provider = await call('POST', '/api/providers', { name: '分集重设计模拟', base_url: 'https://episode-redesign.invalid/v1' })
-    const model = await call('POST', '/api/models', { provider_id: provider.id, name: '文本模拟', remote_id: 'mock', modality: 'text', protocol: 'chat_completions', settings: { request_path: 'chat/completions', request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] }, text_path: 'choices.0.message.content' } })
+    const model = await call('POST', '/api/models', { provider_id: provider.id, name: '文本模拟', remote_id: 'mock', modality: 'text', protocol: 'chat_completions', settings: { request_path: 'chat/completions', request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] }, structured_output_mode: 'json_schema', text_path: 'choices.0.message.content' } })
     const before = script(), originalReferences = references()
-    let turns = 0, intentCalls = 0
+    let turns = 0, intentCalls = 0, reviews = 0
     t.mock.method(globalThis, 'fetch', async (_url, init) => {
-      const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
+      const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) { reviews++; return completenessReply }
       const body = JSON.parse(String(init?.body)), prompt = body.messages[0].content as string
+      assert.equal(body.tools, undefined, 'full prose is generated through the resumable structured path, not a large tool argument')
       if (prompt.includes('本次独立调用只理解创作者意图')) {
         intentCalls++
         assert.match(prompt, /明确重做\/重新设计已保存单集用regenerate/)
@@ -180,17 +192,20 @@ test('native and JSON model paths over JSON and SSE return versioned selected-ep
       assert.match(prompt, /仅第 1 集正文/)
       assert.match(prompt, /source_scene_id/)
       turns++
-      if (useTools) {
-        const operation = turns === 1 ? { name: 'read_documents', arguments: { document_ids: [source.id], scene_limit: 10 } }
-          : turns === 2 ? { name: 'create_document_draft', arguments: request } : null
-        return Response.json({ choices: [{ message: operation ? { tool_calls: [{ id: `turn-${turns}`, type: 'function', function: { name: operation.name, arguments: JSON.stringify(operation.arguments) } }] } : { content: '第一集重新设计草稿已准备，尚未保存。' }, finish_reason: operation ? 'tool_calls' : 'stop' }] })
-      }
+      assert.equal(body.response_format?.json_schema?.name, 'workflow_draft')
       assert.match(prompt, /本集重新设计的完整原文与场次/)
+      const originalSection = prompt.indexOf('本集重新设计的完整原文与场次')
+      for (const marker of [proseMarker, ...sceneMarkers]) {
+        assert.equal(prompt.split(marker).length - 1, 1, 'target prose and scenes appear once in the complete original-source section')
+        assert.ok(!prompt.slice(0, originalSection).includes(marker), 'the general context does not duplicate originals supplied separately')
+      }
       for (const scene of sources) { assert.ok(prompt.includes(scene.id)); assert.ok(prompt.includes(scene.dialogue)) }
       assert.ok(prompt.includes(source.content))
       return Response.json({ choices: [{ message: { content: JSON.stringify({ artifacts: request.artifacts, scenes: request.scenes }) }, finish_reason: 'stop' }] })
     })
-    const payload = { model_id: model.id, mode: 'script', use_tools: useTools, messages: [{ role: 'assistant', text: '下一步可以生成第三集。' }, { role: 'user', text: '重新设计第一集完整正文和分场，别写第三集' }] }
+    const payload = { model_id: model.id, mode: 'script', use_tools: useTools,
+      ...(typed ? { workflow: { stage: 'episode', episode_number: 1, operation: 'regenerate' } } : {}),
+      messages: [{ role: 'assistant', text: '下一步可以生成第三集。' }, { role: 'user', text: '重新设计第一集完整正文和分场，别写第三集' }] }
     const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat${suffix}`, payload })
     assert.equal(response.statusCode, 200, response.body)
     const done = suffix ? response.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5))).find(event => event.type === 'done') : response.json()
@@ -199,13 +214,64 @@ test('native and JSON model paths over JSON and SSE return versioned selected-ep
     assert.equal(done.tool_draft.workflow.operation, 'regenerate')
     assert.equal(done.tool_draft.workflow.episode_number, 1)
     assert.equal(done.tool_draft.documents[0].id, source.id)
-    assert.equal(intentCalls, 1)
+    assert.equal(intentCalls, useTools && typed ? 0 : 1)
+    assert.equal(turns, 1, 'one controlled writing request replaces read/decide/write model rounds')
+    assert.equal(reviews, 1, 'the complete redesigned episode still receives an independent audit')
+    assert.equal(one('SELECT * FROM script_generation_checkpoints WHERE project_id=?', project.id), undefined)
     assert.deepEqual(script(), before)
     assert.deepEqual(references(), originalReferences)
     const saved = await call('POST', `/api/projects/${project.id}/script/director/tool-drafts/${done.tool_draft.id}/commit`, { version: done.tool_draft.version, approved: true })
     assert.equal(saved.status, 'saved')
     assert.deepEqual(script().scenes.filter(scene => scene.episode_number === 1).map(scene => scene.id), sources.map(scene => scene.id))
     assert.deepEqual(references(), originalReferences)
+    t.mock.restoreAll()
+  }
+})
+
+test('redesign context keeps global settings, previous episode, complete uploaded source and original dialogue while excluding duplicate target material', async t => {
+  for (const useTools of [true, false]) {
+    const { project, script } = await episodeFixture()
+    const target = script().artifacts!.find(doc => doc.artifact_type === 'episode_script' && doc.episode_number === 2)!
+    const previous = script().artifacts!.find(doc => doc.artifact_type === 'episode_script' && doc.episode_number === 1)!
+    const scene = script().scenes.find(scene => scene.episode_number === 2)!
+    const globalDocument = script().artifacts!.find(doc => doc.artifact_type === 'characters')!
+    const targetMarker = `TARGET_SECOND_EPISODE_${project.id}`, sceneMarker = `TARGET_SECOND_SCENE_${project.id}`
+    run('UPDATE script_artifacts SET content=? WHERE id=?', targetMarker, target.id)
+    run('UPDATE script_scenes SET dialogue=? WHERE id=?', sceneMarker, scene.id)
+    const uploaded = { project_id: project.id, filename: '完整来源.txt', content: `完整源稿起点_${project.id}\n第一集守护车站，第二集揭示归属。\n完整源稿终点_${project.id}`, updated_at: new Date().toISOString() }
+    const provider = await call('POST', '/api/providers', { name: '原文唯一份模拟', base_url: 'https://episode-context.invalid/v1' })
+    const model = await call('POST', '/api/models', { provider_id: provider.id, name: '文本', remote_id: 'mock', modality: 'text', protocol: 'chat_completions', settings: {
+      request_path: 'chat/completions', request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] }, structured_output_mode: 'json_schema', text_path: 'choices.0.message.content',
+    } })
+    const analysis = { pipeline_version: sourceAnalysisPipelineVersion, id: `context-map-${project.id}`, source_version: scriptSourceVersion(uploaded), model_id: model.id,
+      status: 'ready', phase: 'ready', completed_chunks: 1, total_chunks: 1, error: null, updated_at: uploaded.updated_at,
+      sections: [{ offset: 0, length: uploaded.content.length, title: '全剧', episode_number: null, summary: '守护与归属', characters: [], events: [] }],
+      story: { summary: '完整全剧故事', characters: [], timeline: [], threads: [], ending: { summary: '归属揭晓', section_ids: [0] }, uncertainties: [] } }
+    run('INSERT INTO script_source_documents (project_id,filename,content,updated_at) VALUES (?,?,?,?)', project.id, uploaded.filename, uploaded.content, uploaded.updated_at)
+    run('INSERT INTO script_source_analyses (project_id,id,source_version,status,snapshot,updated_at) VALUES (?,?,?,?,?,?)', project.id, analysis.id, analysis.source_version, analysis.status, JSON.stringify(analysis), analysis.updated_at)
+    const before = script(), userMarker = `创作者原始要求_${project.id}`, assistantMarker = `导演历史原文_${project.id}`
+    const redesigned = { artifacts: [{ artifact_type: 'episode_script', title: '第二集新设计', content: '第二集完整新正文，揭示车站钥匙的归属。' }],
+      scenes: [{ source_scene_id: scene.id, heading: scene.heading, location: scene.location, time_of_day: scene.time_of_day, characters: scene.characters,
+        action: '重新设计的完整动作', dialogue: '完整的对白', narration: scene.narration, duration: scene.duration }] }
+    t.mock.method(globalThis, 'fetch', async (_url, init) => {
+      const reviewed = draftCompletenessFixtureResponse(init); if (reviewed) return reviewed
+      const body = JSON.parse(String(init?.body)), prompt = body.messages[0].content as string
+      if (body.response_format?.json_schema?.name === 'script_intent') return Response.json({ choices: [{ message: { content: JSON.stringify({
+        action: 'draft', operation: 'regenerate', authorization: 'explicit', workflow: { stage: 'episode', episode_number: 2 }, creative_brief: '重新设计第二集', settings_patch: {},
+      }) }, finish_reason: 'stop' }] })
+      assert.equal(body.response_format?.json_schema?.name, 'workflow_draft')
+      assert.equal(body.tools, undefined)
+      for (const marker of [targetMarker, sceneMarker]) assert.equal(prompt.split(marker).length - 1, 1)
+      assert.ok(prompt.includes(previous.content)); assert.ok(prompt.includes(globalDocument.content))
+      assert.ok(prompt.includes(JSON.stringify(uploaded.content)), 'the entire uploaded source remains in the generation request')
+      assert.ok(prompt.includes(userMarker)); assert.ok(prompt.includes(assistantMarker))
+      assert.ok(prompt.includes(scene.id)); assert.ok(prompt.includes('source_scene_id'))
+      return Response.json({ choices: [{ message: { content: JSON.stringify(redesigned) }, finish_reason: 'stop' }] })
+    })
+    const result = await call('POST', `/api/projects/${project.id}/script/director/chat`, { model_id: model.id, mode: 'script', use_tools: useTools,
+      workflow: { stage: 'episode', episode_number: 2, operation: 'regenerate' }, messages: [{ role: 'assistant', text: assistantMarker }, { role: 'user', text: userMarker }] })
+    assert.equal(result.tool_draft.workflow.episode_number, 2)
+    assert.deepEqual(script(), before)
     t.mock.restoreAll()
   }
 })
@@ -234,6 +300,103 @@ test('JSON fallback rejects a source changed during generation and legacy save c
   assert.equal(getToolDraft(project.id), null)
   assert.equal(script().artifacts!.find(doc => doc.id === source.id)!.content, '生成期间作者自己修改的正文')
   assert.deepEqual(script().scenes, before.scenes)
+})
+
+test('intent-selected episode redesign resumes with an explicit workflow and retains complete streamed scenes', async t => {
+  const { project, script, source, sources, request, references } = await episodeFixture()
+  const provider = await call('POST', '/api/providers', { name: '重设计断流模拟', base_url: 'https://episode-disconnect.invalid/v1' })
+  const model = await call('POST', '/api/models', { provider_id: provider.id, name: '文本', remote_id: 'mock', modality: 'text', protocol: 'responses', settings: {
+    request_path: 'responses', request_template: { model: '{{model}}', input: '{{prompt}}' }, structured_output_mode: 'json_schema', text_path: 'output_text',
+  } })
+  const before = script(), originalReferences = references(), contracts: string[] = []
+  let writes = 0, reviews = 0
+  const sse = (events: unknown[]) => new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'Content-Type': 'text/event-stream' } })
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const body = JSON.parse(String(init?.body)), prompt = body.input as string, contract = body.text?.format?.name
+    assert.equal(body.tools, undefined)
+    contracts.push(contract)
+    if (contract === 'script_intent') return Response.json({ status: 'completed', output_text: JSON.stringify({
+      action: 'draft', operation: 'regenerate', authorization: 'explicit', workflow: { stage: 'episode', episode_number: 1 }, creative_brief: '重新设计第一集，保留全部场次与镜头关联', settings_patch: {},
+    }) })
+    const completenessReply = draftCompletenessFixtureResponse(init)
+    if (completenessReply) { reviews++; return completenessReply }
+    assert.ok(prompt.includes(source.content))
+    for (const scene of sources) assert.ok(prompt.includes(scene.id))
+    if (contract === 'workflow_draft') {
+      writes++
+      assert.equal(writes, 1, 'a partially received candidate cannot be replaced with a second full candidate')
+      const partial = '{"artifacts":' + JSON.stringify(request.artifacts) + ',"scenes":['
+        + request.scenes.slice(0, 2).map(scene => JSON.stringify(scene)).join(',') + ',{"heading":"DISCONNECTED_TAIL'
+      return sse([{ type: 'response.output_text.delta', delta: partial }])
+    }
+    assert.equal(contract, 'script_stage_blocks')
+    assert.match(prompt, /模式：scenes/)
+    assert.ok(prompt.includes(request.artifacts[0].content))
+    assert.ok(!prompt.includes('DISCONNECTED_TAIL'))
+    const raw = JSON.stringify({ blocks: request.scenes.slice(2).map((scene, index) => ({
+      id: `remaining-scene:${index + 2}`, title: request.artifacts[0].title, content: '', scenes: [scene],
+    })), complete: true })
+    return sse([{ type: 'response.output_text.delta', delta: raw }, { type: 'response.completed', response: { status: 'completed', output_text: raw } }])
+  })
+  const payload = { model_id: model.id, mode: 'script', use_tools: true, messages: [{ role: 'user', text: '重新设计第一集，保留所有已有场次和原有镜头引用' }] }
+  const stream = async (explicit = false) => {
+    const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat/stream`, payload: {
+      ...payload, ...(explicit ? { workflow: { stage: 'episode', episode_number: 1, operation: 'regenerate' } } : {}),
+    } })
+    assert.equal(response.statusCode, 200, response.body)
+    return response.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)))
+  }
+  const first = await stream()
+  assert.match(first.find(event => event.type === 'error')?.message || '', /连接提前结束/)
+  assert.ok(!first.some(event => event.type === 'done' || event.type === 'delta'))
+  assert.equal(writes, 1); assert.equal(reviews, 0)
+  assert.equal(getToolDraft(project.id), null)
+  const checkpoint = JSON.parse(one<{ payload: string }>('SELECT payload FROM script_generation_checkpoints WHERE project_id=?', project.id)!.payload)
+  assert.deepEqual(checkpoint.steps['draft:stream:state'].value.artifacts, request.artifacts)
+  assert.deepEqual(checkpoint.steps['draft:stream:state'].value.scenes, request.scenes.slice(0, 2))
+  assert.ok(!JSON.stringify(checkpoint).includes('DISCONNECTED_TAIL'))
+  assert.deepEqual(script(), before); assert.deepEqual(references(), originalReferences)
+  const second = await stream(true), done = second.find(event => event.type === 'done')
+  assert.ok(done?.tool_draft, JSON.stringify(second))
+  assert.deepEqual(contracts, ['script_intent', 'workflow_draft', 'script_stage_blocks', 'script_draft_completeness'])
+  assert.equal(reviews, 1)
+  assert.equal(done.tool_draft.documents[0].id, source.id)
+  assert.deepEqual(done.tool_draft.workflow.scenes, request.scenes)
+  assert.equal(one('SELECT * FROM script_generation_checkpoints WHERE project_id=?', project.id), undefined)
+  assert.deepEqual(script(), before); assert.deepEqual(references(), originalReferences)
+})
+
+test('episode redesign rejects concurrent global settings and effective-source changes before presenting a draft', async t => {
+  for (const conflict of ['document', 'settings', 'source'] as const) {
+    const { project, script, source, request } = await episodeFixture()
+    const before = script()
+    const provider = await call('POST', '/api/providers', { name: '全局版本模拟', base_url: 'https://episode-global-conflict.invalid/v1' })
+    const model = await call('POST', '/api/models', { provider_id: provider.id, name: '文本', remote_id: 'mock', modality: 'text', protocol: 'chat_completions', settings: {
+      request_path: 'chat/completions', request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] }, structured_output_mode: 'json_schema', text_path: 'choices.0.message.content',
+    } })
+    t.mock.method(globalThis, 'fetch', async (_url, init) => {
+      const reviewed = draftCompletenessFixtureResponse(init); if (reviewed) return reviewed
+      const body = JSON.parse(String(init?.body))
+      assert.equal(body.tools, undefined)
+      if (conflict === 'document') {
+        run('UPDATE script_artifacts SET content=? WHERE project_id=? AND artifact_type=?', '并发更新的全剧人物身份', project.id, 'characters')
+      } else if (conflict === 'settings') {
+        run('UPDATE scripts SET generation_options=? WHERE project_id=?', JSON.stringify({ visual_style: '新的确认画风' }), project.id)
+      } else {
+        run('INSERT INTO script_source_documents (project_id,filename,content,updated_at) VALUES (?,?,?,?)', project.id, '新有效稿.txt', '并发上传的完整新剧本', new Date().toISOString())
+      }
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ artifacts: request.artifacts, scenes: request.scenes }) }, finish_reason: 'stop' }] })
+    })
+    const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload: {
+      model_id: model.id, mode: 'script', use_tools: true, workflow: { stage: 'episode', episode_number: 1, operation: 'regenerate' }, messages: [{ role: 'user', text: '重新设计第一集' }],
+    } })
+    assert.equal(response.statusCode, 409, response.body)
+    assert.match(response.body, /资料或上传剧本已变化|上传剧本已变化/)
+    assert.equal(getToolDraft(project.id), null)
+    assert.deepEqual(script().artifacts!.find(doc => doc.id === source.id), before.artifacts!.find(doc => doc.id === source.id))
+    assert.deepEqual(script().scenes, before.scenes)
+    t.mock.restoreAll()
+  }
 })
 
 test('unfinished stages and episode gaps are locked while saved stages remain available without resetting progress', async () => {

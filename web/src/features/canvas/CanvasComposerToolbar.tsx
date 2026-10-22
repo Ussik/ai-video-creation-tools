@@ -26,7 +26,7 @@ export default function CanvasComposerToolbar({ nodeId, children, expanded = fal
   useEffect(() => {
     if (expanded) returnFocusRef.current = true
     else if (anchor && returnFocusRef.current) {
-      anchor.querySelector('textarea')?.focus({ preventScroll: true })
+      anchor.querySelector<HTMLElement>('textarea, [role="textbox"][contenteditable="true"]')?.focus({ preventScroll: true })
       returnFocusRef.current = false
     }
   }, [expanded, anchor])

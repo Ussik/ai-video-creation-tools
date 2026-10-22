@@ -1,0 +1,6 @@
+.pc-prompt-document-status { margin-top: 10px; }
+.pc-prompt-source-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; padding: 8px 0; border-bottom: 1px solid var(--mantine-color-default-border); }
+.pc-prompt-source-row > div, .pc-prompt-source-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.pc-prompt-source-actions { justify-content: flex-end; }
+.pc-prompt-parameter-conflicts { margin-top: 10px; padding: 10px; border: 1px solid var(--mantine-color-orange-light-color); border-radius: 8px; background: var(--mantine-color-orange-light); }
+.pc-prompt-parameter-conflicts p { margin: 0 0 6px; font-size: 12px; }

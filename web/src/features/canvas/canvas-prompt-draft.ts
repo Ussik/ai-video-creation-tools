@@ -74,5 +74,5 @@ export function videoPreferencePrompt(prompt: string, mode: string, duration: nu
     ? `\n首帧要求：以提交的第一张参考图作为开镜画面，保持人物、服装、场景${fixedRatio ? '与动作起始状态，在所选画幅下安排构图' : '、构图与动作起始状态'}，再连续展开动作。` : ''
   const ratio = selection.ratio ? `\n画面比例：${fixedRatio ? `${selection.ratio}（宽:高），整段视频保持此画幅。` : '自适应，依据输入素材与内容确定画幅。'}` : ''
   const resolution = selection.resolution ? `\n清晰度要求：${/^4k$/i.test(selection.resolution) ? '4K' : selection.resolution}。` : ''
-  return `${prompt}\n\n【视频生成要求】\n视频时长：${duration} 秒。动作与运镜安排在此时长内，保持镜头连续。${ratio}${resolution}${frame}`
+  return `${prompt}\n\n【视频生成要求】\n视频时长：${duration} 秒。动作与运镜安排在此时长内，保持镜头连续。${ratio}${resolution}${frame}\n【视频生成要求结束】`
 }

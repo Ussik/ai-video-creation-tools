@@ -48,6 +48,18 @@ test('board edges resolve profile references, reject unconfirmed profiles and ke
   assert.throws(() => visualBoardReferences(graph, 'target', { ...detail, visual_profiles: [{ ...profile, board_asset_id: null }] }), /请先确认 林晚/)
 })
 
+test('fixed profile and ordinary image edges pass their selected asset version, never the latest result', () => {
+  const graph = { nodes: [node, { ...node, id: 'upload-node', title: '上传图片', asset_id: 'candidate', settings: {} }], edges: [
+    { id: 'e1', source: 'node', target: 'target', reference_asset_id: 'upload' },
+    { id: 'e2', source: 'upload-node', target: 'target', reference_asset_id: 'approved' },
+    { id: 'dedup', source: 'node', target: 'target', reference_asset_id: 'approved' },
+  ] } as CanvasGraph
+  const updated = { ...detail, visual_profiles: [{ ...profile, board_asset_id: 'candidate' }] }
+  assert.deepEqual(visualBoardReferences(graph, 'target', updated), { reference_profile_ids: [], reference_asset_ids: ['upload', 'approved'] })
+  assert.throws(() => visualBoardReferences(graph, 'target', { ...updated, assets: updated.assets.filter(asset => asset.id !== 'upload') }), /固定图片已失效/)
+  assert.throws(() => visualBoardReferences(graph, 'target', { ...updated, assets: updated.assets.map(asset => asset.id === 'upload' ? { ...asset, kind: 'video' } : asset) }), /固定图片已失效/)
+})
+
 test('candidate history survives board replacement but excludes a prior definition version', () => {
   const job = (id: string, request: object) => ({ id, created_at: id, request: JSON.stringify(request) }) as Job
   const jobs = [job('1', { visual_profile_id: 'linwan', visual_profile_revision: 1, asset_task_id: 'task' }), job('2', { visual_profile_id: 'linwan', visual_profile_revision: 2, asset_task_id: 'task' }), job('3', { visual_profile_id: 'other' })]
@@ -88,6 +100,19 @@ test('confirming an older board does not replay the latest completed candidate',
   assert.equal(changed.asset_id, null)
   assert.equal(changed.job_id, null)
   assert.equal(changed.settings.visual_completed_job_id, undefined)
+})
+
+test('profile revisions preserve complete prompt documents so source changes can be reconciled', () => {
+  const authored = { ...node, settings: { ...node.settings, visual_profile_revision: 1,
+    prompt_document: true, profile_prompt_override: '用户完整提示词', prompt_body: '用户正文',
+    prompt_sections: { version: 1 as const, blocks: [{ id: 'body-1', kind: 'body' as const, text: '用户完整提示词' }] } } }
+  const updated = syncVisualProfileNode(authored, profile, { asset_tasks: [] })
+  assert.equal(updated.settings.visual_profile_revision, profile.revision)
+  assert.equal(updated.settings.profile_prompt_override, authored.settings.profile_prompt_override)
+  assert.equal(updated.settings.prompt_sections, authored.settings.prompt_sections)
+  assert.equal(updated.settings.prompt_body, '用户正文')
+  const legacy = syncVisualProfileNode({ ...authored, settings: { visual_profile_revision: 1, profile_prompt_override: '旧模板' } }, profile, { asset_tasks: [] })
+  assert.equal(legacy.settings.profile_prompt_override, undefined)
 })
 
 test('candidate management includes earlier definition versions and uploaded boards without duplicates', () => {
@@ -271,12 +296,27 @@ test('strict first-frame only checks its pinned image while dormant unconfirmed 
   assert.deepEqual(missingVisualReferences(fixture.graph, fixture.target.id, fixture.detail).map(item => item.profileId), ['linwan', 'bedroom'])
 })
 
-test('strict first-frame still checks a manually pinned profile board that actually participates in the request', () => {
+test('strict first-frame keeps its manually pinned image despite a newer profile board needing review', () => {
   const fixture = referenceFixture()
   fixture.detail.visual_profiles![0].board_style_status = 'needs_review'
   fixture.target.settings = { modality: 'video', mode: 'first_frame', visual_reference_mode: 'keyframe', storyboard_reference_asset_id: 'approved' }
   fixture.graph.edges = [{ id: 'first-frame-profile', source: 'linwan', target: fixture.target.id, reference_asset_id: 'approved' }]
+  assert.deepEqual(missingVisualReferences(fixture.graph, fixture.target.id, fixture.detail), [])
+  fixture.detail.assets = fixture.detail.assets.filter(asset => asset.id !== 'approved')
   assert.deepEqual(missingVisualReferences(fixture.graph, fixture.target.id, fixture.detail).map(item => item.profileId), ['linwan'])
+})
+
+test('fixed independent snapshot edges still enforce their selected style version', () => {
+  const target = { ...node, id: 'target', shot_id: 'shot', asset_id: null, settings: { modality: 'image', visual_reference_mode: 'profiles' } } as CanvasNode
+  const graph = { nodes: [node, target], edges: [{ id: 'fixed', source: node.id, target: target.id, reference_asset_id: 'upload' }] } as CanvasGraph
+  const base = { ...detail, assets: detail.assets.map(asset => ({ ...asset, created_at: '2026-10-10' })), jobs: [], asset_tasks: [], project_visual_style: { version: 'new-style' },
+    visual_profiles: [{ ...profile, board_style_status: 'needs_review' }],
+    shot_visual_bindings: [{ ...profile, profile_id: profile.id, shot_id: 'shot', required: true, reference_assets: [
+      { asset_id: 'upload', view: 'side', purpose: 'costume', label: '侧面', revision: 2, style_version: 'old-style' }] }],
+  } as ProjectDetail
+  assert.equal(missingVisualReferences(graph, target.id, base)[0]?.action, 'bindings')
+  base.shot_visual_bindings![0].reference_assets![0].style_version = 'new-style'
+  assert.deepEqual(missingVisualReferences(graph, target.id, base), [])
 })
 
 test('unconfirmed candidates lead to approval, archived candidates to generation and older snapshots to binding management', () => {

@@ -28,9 +28,10 @@ export function remainingModelStepMs() { return (currentStep.getStore()?.deadlin
 
 /** Nested formatting and transport retries share one clock and one attempt
  * counter. Independent story/review batches each own their own step. */
-export async function runModelStep<T>(name: string, signal: AbortSignal | undefined, work: () => Promise<T>, totalMs = modelStepBudget(name)): Promise<T> {
+export async function runModelStep<T>(name: string, signal: AbortSignal | undefined, work: () => Promise<T>, totalMs = modelStepBudget(name),
+  totalMessage = '当前步骤处理超时，已保留完成部分，可继续未完成步骤。'): Promise<T> {
   if (currentStep.getStore()) return work()
-  const scope = createStreamScope(modelStepSignal(signal), { totalMs, totalMessage: `当前步骤处理超时，已保留完成部分，可继续未完成步骤。` })
+  const scope = createStreamScope(modelStepSignal(signal), { totalMs, totalMessage })
   try { return await currentStep.run({ signal: scope.signal, attempts: 0, deadline: Date.now() + totalMs, name }, () => scope.wait(work())) }
   finally { scope.close() }
 }

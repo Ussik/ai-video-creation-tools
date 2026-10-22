@@ -11,6 +11,7 @@ import { projectVisualStyle } from '../visuals/project-visual-style.js'
 
 type ProfileDraft = Pick<VisualProfile, 'kind' | 'name' | 'variant'> & {
   scene_ids: string[]
+  design_id?: string | null
   shot_usage?: Array<{ shot_id: string; usage: VisualBindingUsage }>
 }
 type Binding = { shot_id: string; profile_id: string; name: string; usage?: VisualBindingUsage;
@@ -43,7 +44,7 @@ export function storyboardReferenceBudgetInstructions(budget = storyboardReferen
  * by shot usage, and estimate unresolved profiles as their future single board. */
 export function storyboardReferenceBudgetIssues(projectId: string, sceneIds: string[], drafts?: ProfileDraft[], options: DraftOptions = {}): Array<{ scene_id: string; message: string }> {
   const budget = storyboardReferenceBudget()
-  const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? ORDER BY position', projectId)
+  const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position', projectId)
     .filter(shot => sceneIds.includes(shot.source_scene_id || ''))
   const saved = all<Binding>(`SELECT b.* FROM shot_visual_bindings b JOIN shots s ON s.id=b.shot_id WHERE s.project_id=?`, projectId)
   const profiles = all<VisualProfile>('SELECT * FROM visual_profiles WHERE project_id=?', projectId)
@@ -53,16 +54,19 @@ export function storyboardReferenceBudgetIssues(projectId: string, sceneIds: str
   const key = (profile: Pick<VisualProfile, 'kind' | 'name' | 'variant'>) => JSON.stringify([profile.kind, profile.name, profile.variant])
   const issues: Array<{ scene_id: string; message: string }> = []
   for (const shot of shots) {
-    const bindings = new Map(saved.filter(binding => binding.shot_id === shot.id).map(binding => [binding.profile_id, binding]))
+    const designId = shot.design_id || null
+    const bindings = new Map(saved.filter(binding => binding.shot_id === shot.id
+      && profiles.some(profile => profile.id === binding.profile_id && (profile.design_id || null) === designId)).map(binding => [binding.profile_id, binding]))
     if (drafts) {
       if (options.replaceSceneBindings !== false) for (const binding of bindings.values()) {
         if (sceneBindings.some(scene => scene.scene_id === shot.source_scene_id && scene.profile_id === binding.profile_id)) binding.usage = 'none'
       }
       for (const draft of drafts) {
         if (!draft.scene_ids.includes(shot.source_scene_id || '')) continue
+        if (draft.design_id !== undefined && draft.design_id !== designId) continue
         const usage = draft.shot_usage ? draft.shot_usage.find(item => item.shot_id === shot.id)?.usage || 'none' : 'both'
-        const profile = profiles.find(profile => key(profile) === key(draft))
-        const profileId = profile?.id || `planned:${key(draft)}`
+        const profile = profiles.find(profile => (profile.design_id || null) === designId && key(profile) === key(draft))
+        const profileId = profile?.id || `planned:${designId || 'legacy'}:${key(draft)}`
         const existing = bindings.get(profileId)
         // Canvas preparation inherits new bindings before applying their usage,
         // so it freezes image-camera selections even for video-only objects.

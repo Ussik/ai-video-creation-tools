@@ -1,7 +1,7 @@
 import ScriptStageActions from './ScriptStageActions'
 import { stageOperationError, missingSavedStageArtifacts, stageLabels, type StageOperation, type StageTarget } from '@video-studio/shared/script/script-stage-access'
 import { WorkspaceDisclosure } from '../../shared/ui/WorkspaceDisclosure'
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Menu, UnstyledButton, Slider, Button, TextInput, Textarea, ActionIcon, NumberInput, Popover, Modal, Switch, Select, FileButton } from '@mantine/core'
 import {
@@ -57,6 +57,7 @@ import DirectorMessageTiming, { finishMessageTiming, type MessageTiming } from '
 import DirectorActivity from './DirectorActivity'
 import DirectorMessageFailure from './DirectorMessageFailure'
 import { directorFailureText, directorMessageFailure } from './director-message-failure'
+import { scriptDiagnosticDisplayText } from './script-display-text'
 import { activityDraftId, canRetryExecution, conversationMessage, readActivity, updateActivity, settleActivity, type ScriptActivity, type ScriptExecution } from './director-activity'
 import type { ScriptActivityTarget } from '@video-studio/shared/script/script-activity-types'
 import { createStreamScope, directorStreamIdleTimeoutMs, directorReconnectDelay } from '@video-studio/shared/script/script-stream-policy'
@@ -1100,6 +1101,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     // remounting it, replacing the draft or interrupting a running request.
     setMinimized(false)
     setReaderKey(null)
+    setReaderReference(null)
     setArtifactsOpen(false)
     setWorkflowOpen(false)
   }, [openRequestId])
@@ -1172,15 +1174,31 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     }
   }, [detail.id, history, messages])
 
-  useEffect(() => {
-    if (hidden || !followMessagesRef.current || messageScrollFrameRef.current !== null) return
-    messageScrollFrameRef.current = window.requestAnimationFrame(() => {
+  const messagesVisible = !hidden && !minimized && !readerArtifact && !(previewOpen && generated)
+  useLayoutEffect(() => {
+    if (!messagesVisible) return
+    // Each entry opens at the latest reply, including history loaded after
+    // mounting. Ordinary message updates still respect manual history reading.
+    followMessagesRef.current = true
+    setShowLatest(false)
+    const viewport = messagesViewportRef.current
+    if (viewport && viewport.clientHeight > 0) viewport.scrollTo({ top: messageScrollEnd(viewport), behavior: 'auto' })
+  }, [detail.id, openRequestId, messagesVisible, conversationId, conversationLoaded])
+
+  useLayoutEffect(() => {
+    if (!messagesVisible || !followMessagesRef.current) return
+    const frame = window.requestAnimationFrame(() => {
       messageScrollFrameRef.current = null
       const viewport = messagesViewportRef.current
-      if (!viewport || !followMessagesRef.current) return
+      if (!viewport || viewport.clientHeight <= 0 || !followMessagesRef.current) return
       viewport.scrollTo({ top: messageScrollEnd(viewport), behavior: 'auto' })
     })
-  }, [messages, assetTaskStatus, artifactsOpen, previewOpen, workflowOpen, minimized, readerKey, hidden, nextStep?.id, composerCollapsed])
+    messageScrollFrameRef.current = frame
+    return () => {
+      window.cancelAnimationFrame(frame)
+      if (messageScrollFrameRef.current === frame) messageScrollFrameRef.current = null
+    }
+  }, [messages, assetTaskStatus, artifactsOpen, previewOpen, workflowOpen, minimized, readerKey, hidden, nextStep?.id, composerCollapsed, messagesVisible, openRequestId, conversationLoaded])
 
   useEffect(() => {
     mountedRef.current = true
@@ -1465,6 +1483,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   }
 
   function updateMessageFollow() {
+    if (!messagesVisible || !messagesViewportRef.current?.clientHeight) return
     const isAtBottom = (element: HTMLElement | null) => !element || messageScrollEnd(element) - element.scrollTop < 72
     // The panel is a fixed flex shell with overflow hidden. Its scrollHeight
     // includes the composer and other fixed sections, so checking it here
@@ -2853,7 +2872,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     {showLatest && <Button type="button" className="sd-latest" onClick={latestMessages} data-workspace-control="" variant="subtle"><ArrowDown size={14} />回到最新消息</Button>}
 
     {connectionStatus && <div className="sd-activity-wait" role="status">{connectionStatus}</div>}
-    {error && <div className="script-director-error" role="alert">{error}<ActionIcon type="button" onClick={() => setError(null)} aria-label="关闭错误" data-workspace-control=""><X size={14} /></ActionIcon></div>}
+    {error && <div className="script-director-error" role="alert">{scriptDiagnosticDisplayText(error)}<ActionIcon type="button" onClick={() => setError(null)} aria-label="关闭错误" data-workspace-control=""><X size={14} /></ActionIcon></div>}
 
     {activeFocus === 'all' && <DirectorDraftResolution resolution={draftResolution} opened={resolutionOpen && !hidden && !minimized} busy={busy || closing}
       onClose={() => setResolutionOpen(false)} onOpen={() => setResolutionOpen(true)} onResolve={value => void resolveDraft(value)} onDiscard={() => void discardDraftResolution()} />}

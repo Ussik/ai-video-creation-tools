@@ -5,6 +5,7 @@ import { WorkspaceDisclosure } from '../../shared/ui/WorkspaceDisclosure'
 import { formatProcessingDuration } from './DirectorMessageTiming'
 import { activitySources, type ScriptActivity } from './director-activity'
 import { activityCalls, activityDuration, activityPresentation, type ActivityDisplayStatus, type ActivityNode } from './director-activity-view'
+import { scriptDiagnosticDisplayText } from './script-display-text'
 
 export function ActivityStatusIcon({ status, notice, hasActiveChildren }: { status: ActivityDisplayStatus; notice?: boolean; hasActiveChildren?: boolean }) {
   if (notice || hasActiveChildren || status === 'waiting' || status === 'unconfirmed') return <Clock3 size={13} />
@@ -49,7 +50,7 @@ export function ActivityCallDetails({ step, now, pending, onOpenSource }: { step
       const duration = activityDuration(event, now, pending)
       return <li key={event.id} className={`sd-activity-call is-${event.kind}${depth ? ` is-child is-depth-${Math.min(depth, 2)}` : ''}`} data-activity-id={event.id}>
         <WorkspaceDisclosure className="sd-activity-detail" label={<><span className={`sd-activity-icon is-${status}`}><ActivityStatusIcon status={status} hasActiveChildren={node.waiting} /></span><span className="sd-activity-title">{event.label}</span><span className="sd-activity-status">{label}</span>{typeof duration === 'number' && <time>{formatProcessingDuration(duration)}</time>}</>}>
-          <p className="sd-activity-summary">{event.summary}</p>
+          <p className="sd-activity-summary">{scriptDiagnosticDisplayText(event.summary)}</p>
           <ActivityTargets events={[event]} onOpenSource={onOpenSource} />
           <ActivityMetadata event={event} now={now} pending={pending} />
         </WorkspaceDisclosure>

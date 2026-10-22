@@ -33,6 +33,15 @@ async function putCanvas(projectId: string, graph: { nodes: unknown[]; edges: un
   return call<CanvasSnapshot>('PUT', `/api/projects/${projectId}/canvas`, { ...graph, revision })
 }
 
+test('removing the final reference may persist an empty visual prompt draft', async () => {
+  const project = await call<{ id: string }>('POST', '/api/projects', { name: '清空参考提示词' })
+  const graph = { nodes: [{ id: 'visual', type: 'generation', x: 0, y: 0, width: 320, height: 240,
+    settings: { modality: 'image', profile_prompt_override: '', prompt_reference_overrides: { old: null } } }], edges: [] }
+  const saved = await putCanvas(project.id, graph, (await getCanvas(project.id)).revision)
+  assert.deepEqual(saved.nodes[0].settings, graph.nodes[0].settings)
+  assert.deepEqual(await getCanvas(project.id), saved)
+})
+
 test('canvas survives reinitialization, preserves order, and repeated PUT is idempotent', async () => {
   const project = await call<{ id: string }>('POST', '/api/projects', { name: '画布项目' })
   const other = await call<{ id: string }>('POST', '/api/projects', { name: '另一个项目' })
@@ -106,7 +115,7 @@ test('fixed frame edges and complete prompt drafts persist, reject foreign image
   const graph = { nodes: [
     { id: 'source', type: 'image', x: 0, y: 0, width: 320, height: 240 },
     { id: 'target', type: 'generation', x: 500, y: 0, width: 320, height: 240, text: prompt,
-      settings: { modality: 'video', mode: 'first_frame', prompt_is_final: true, prompt_override: true, prompt_base: '动作描述', prompt_template: prompt } },
+      settings: { modality: 'video', mode: 'first_frame', prompt_is_final: true, prompt_override: true, prompt_base: '动作描述', prompt_template: prompt, prompt_body: '保留人物动作与逐字对白。' } },
   ], edges: [{ id: 'frame', source: 'source', target: 'target', reference_asset_id: 'fixed-frame' }] }
   const saved = await putCanvas(project.id, graph, (await getCanvas(project.id)).revision)
   assert.deepEqual(saved.edges, graph.edges)
@@ -230,6 +239,30 @@ test('canvas persists a project script reference node', async () => {
   assert.deepEqual(saved.edges, graph.edges)
   initDb()
   assert.deepEqual(await getCanvas(project.id), saved)
+})
+
+test('a project script reference has a reserved slot without reducing the 500 ordinary node capacity', async () => {
+  const project = await call<{ id: string }>('POST', '/api/projects', { name: '满容量剧本节点' })
+  const ordinary = Array.from({ length: 500 }, (_, index) => ({
+    id: `full-${index}`, type: 'text', x: index, y: 80, width: 200, height: 140, text: `保留 ${index}`,
+  }))
+  const full = await putCanvas(project.id, { nodes: ordinary, edges: [] }, (await getCanvas(project.id)).revision)
+  const script = { id: 'full-script', type: 'project_script_ref', x: -480, y: 80, width: 360, height: 240 }
+  const withScript = await putCanvas(project.id, { nodes: [script, ...ordinary], edges: [] }, full.revision)
+  assert.equal(withScript.nodes.length, 501)
+  assert.deepEqual(withScript.nodes.slice(1), full.nodes)
+  assert.deepEqual(await getCanvas(project.id), withScript)
+
+  for (const nodes of [
+    [...ordinary, { ...ordinary[0], id: 'overflow' }],
+    [script, ...ordinary, { ...ordinary[0], id: 'overflow' }],
+    [script, { ...script, id: 'duplicate-script' }, ...ordinary.slice(1)],
+  ]) {
+    const rejected = await app.inject({ method: 'PUT', url: `/api/projects/${project.id}/canvas`,
+      payload: { nodes, edges: [], revision: withScript.revision } })
+    assert.equal(rejected.statusCode, 422, rejected.body)
+    assert.deepEqual(await getCanvas(project.id), withScript)
+  }
 })
 
 test('canvas accepts persisted image generation controls', async () => {

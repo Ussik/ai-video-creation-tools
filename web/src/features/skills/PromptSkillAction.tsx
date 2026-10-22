@@ -7,12 +7,20 @@ import type { Model } from '../../shared/api/api'
 import { useCreativeSkills } from './useCreativeSkills'
 import CreativeSkillSelector from './CreativeSkillSelector'
 import type { VideoReferenceUsageSelection } from '@video-studio/shared/media/video-reference-usage'
+import { extractPromptBody, getManagedPromptBlocks } from '@video-studio/shared/visuals/prompt-document'
+import { parsePromptSectionDocument, type PromptSectionDocument } from '@video-studio/shared/visuals/prompt-section-document'
+import { tokenizePromptReferenceNumbers } from '@video-studio/shared/visuals/prompt-references'
+import CanvasPromptEditor, { type CanvasPromptReference } from '../canvas/CanvasPromptEditor'
 import './prompt-skill-action.css'
 
 type Props = {
   projectId: string; nodeId: string; modality: 'image' | 'video'; prompt: string; models: Model[]; disabled: boolean;
   targetModelId: string; shotId: string | null; profileId?: string; ratio: string; duration: number; mode: string;
-  referenceAssetIds: string[]; onApply: (prompt: string) => void;
+  referenceAssetIds: string[]; onApply: (prompt: string, body?: string, document?: PromptSectionDocument) => void;
+  promptBody?: string; promptTemplate?: string; promptDocument?: boolean;
+  promptSections?: PromptSectionDocument; promptReferences?: CanvasPromptReference[];
+  promptReferenceOverrides?: Record<string, string | null>;
+  resolution?: string | null; clarity?: string | null; quality?: string | null; background?: string | null;
   storyboardReferenceAssetId?: string | null; visualReferenceMode?: string; excludedVisualProfileIds?: string[];
   videoReferenceUsages?: VideoReferenceUsageSelection[];
 }
@@ -33,9 +41,13 @@ const profileDirections = [
 export default function PromptSkillAction(props: Props) {
   const [opened, setOpened] = useState(false), [pending, setPending] = useState(false), [error, setError] = useState('')
   const [modelId, setModelId] = useState(''), [result, setResult] = useState('')
+  const [resultSystemPrompt, setResultSystemPrompt] = useState('')
+  const [resultSections, setResultSections] = useState<PromptSectionDocument>()
   const [elapsed, setElapsed] = useState(0), [requestLabel, setRequestLabel] = useState('整理提示词')
   const skillControl = useCreativeSkills(props.projectId, opened, { rememberSelections: true })
   const stage = props.modality === 'image' ? 'image_prompt' : 'video_prompt'
+  const sourceBody = extractPromptBody({ prompt: props.prompt, prompt_body: props.promptDocument ? undefined : props.promptBody, prompt_template: props.promptTemplate })
+  const resultPreview = [result, resultSystemPrompt].filter(Boolean).join('\n\n')
   const [sourceKey, setSourceKey] = useState(''), [usedSkills, setUsedSkills] = useState<string[]>([])
   const [sourceNodeKey, setSourceNodeKey] = useState('')
   const [adjustment, setAdjustment] = useState(''), [resultAdjustment, setResultAdjustment] = useState('')
@@ -59,20 +71,22 @@ export default function PromptSkillAction(props: Props) {
     : props.modality === 'video' ? '例如：前半段缓慢推进，后半段人物回头，动作自然，不增加新镜头。'
       : '例如：保留人物动作，改成近景，突出面部情绪，背景简化。'
   const nodeKey = JSON.stringify([props.projectId, props.nodeId, props.modality, props.shotId, props.profileId,
-    props.prompt, props.ratio, props.duration, props.mode, props.referenceAssetIds, props.storyboardReferenceAssetId,
+    props.prompt, sourceBody, props.promptDocument, props.promptTemplate, props.promptSections, props.ratio, props.duration, props.mode, props.resolution, props.clarity, props.quality, props.background,
+    props.referenceAssetIds, props.storyboardReferenceAssetId, props.promptReferenceOverrides,
     props.visualReferenceMode, props.excludedVisualProfileIds, props.videoReferenceUsages, props.targetModelId])
   const currentKey = JSON.stringify([nodeKey, modelId, selectedIds])
-  const maxPromptLength = props.profileId ? 16_000 : 80_000
+  const maxPromptLength = props.profileId && !props.promptDocument ? 16_000 : 80_000
+  const resultReferences = props.promptReferences ?? props.referenceAssetIds.map((assetId, index) => ({ assetId, label: `参考图 ${index + 1}`, url: `/api/assets/${assetId}/file` }))
   const stale = !!result && sourceKey !== currentKey
   const nodeChanged = !!result && sourceNodeKey !== nodeKey
   const adjustmentChanged = !!result && adjustment.trim() !== resultAdjustment
   const continueFromResult = !!result.trim() && !nodeChanged
   const refineLabel = result ? nodeChanged ? '重新整理' : '继续调整' : '整理提示词'
   function open() {
-    setOpened(true); setError(''); setResult(''); setAdjustment(''); setResultAdjustment(''); setUsedSkills([])
+    setOpened(true); setError(''); setResult(''); setResultSections(undefined); setResultSystemPrompt(''); setAdjustment(''); setResultAdjustment(''); setUsedSkills([])
     setModelId(previous => props.models.some(model => model.id === previous) ? previous : props.models[0]?.id || '')
   }
-  function close() { serial.current++; abort.current?.abort(); refining.current = false; setOpened(false); setPending(false); setResult(''); setUsedSkills([]); setError(''); setAdjustment(''); setResultAdjustment('') }
+  function close() { serial.current++; abort.current?.abort(); refining.current = false; setOpened(false); setPending(false); setResult(''); setResultSections(undefined); setResultSystemPrompt(''); setUsedSkills([]); setError(''); setAdjustment(''); setResultAdjustment('') }
   function addDirection(text: string) {
     setAdjustment(current => {
       if (current.includes(text)) return current
@@ -82,29 +96,41 @@ export default function PromptSkillAction(props: Props) {
   }
   async function refine() {
     if (refining.current || props.disabled || !modelId || skillControl.loading || skillControl.error) return
-    const prompt = continueFromResult ? result.trim() : props.prompt.trim()
+    const prompt = continueFromResult ? result.trim() : (props.promptDocument ? props.prompt : sourceBody).trim()
+    const body = props.promptDocument ? extractPromptBody({ prompt }) : prompt
     if (!prompt || prompt.length > 80_000 || adjustment.length > maxAdjustmentLength) return
     refining.current = true
     const turn = ++serial.current, capturedKey = currentKey, capturedNodeKey = nodeKey, capturedAdjustment = adjustment.trim()
     setRequestLabel(refineLabel); setElapsed(0)
     setPending(true); setError(''); abort.current = new AbortController()
     try {
-      const response = await api<{ prompt: string; skills: Array<{ name: string }> }>(`/projects/${props.projectId}/skills/refine-prompt`, {
-        ...json('POST', { stage, skill_ids: skillControl.ids(stage), model_id: modelId, prompt, adjustment_request: capturedAdjustment, target_model_id: props.targetModelId || null, shot_id: props.shotId,
+      const response = await api<{ prompt: string; prompt_body?: string; skills: Array<{ name: string }> }>(`/projects/${props.projectId}/skills/refine-prompt`, {
+        ...json('POST', { stage, skill_ids: skillControl.ids(stage), model_id: modelId, prompt, prompt_body: body,
+          ...(props.promptDocument ? { prompt_document: true } : {}),
+          prompt_template: props.promptTemplate, adjustment_request: capturedAdjustment, target_model_id: props.targetModelId || null, shot_id: props.shotId,
           profile_id: props.profileId, ratio: props.ratio, duration: props.duration, mode: props.mode, reference_asset_ids: props.referenceAssetIds,
+          prompt_reference_overrides: props.promptReferenceOverrides,
+          resolution: props.resolution, clarity: props.clarity, quality: props.quality, background: props.background,
+          visual_reference_mode: props.visualReferenceMode, excluded_visual_profile_ids: props.excludedVisualProfileIds || [],
           ...(props.modality === 'video' ? { storyboard_reference_asset_id: props.storyboardReferenceAssetId || null,
-            video_reference_usages: props.mode === 'reference' ? props.videoReferenceUsages || [] : [],
-            visual_reference_mode: props.visualReferenceMode, excluded_visual_profile_ids: props.excludedVisualProfileIds || [] } : {}) }), signal: abort.current.signal,
+            video_reference_usages: props.mode === 'reference' ? props.videoReferenceUsages || [] : [] } : {}) }), signal: abort.current.signal,
       })
       if (turn !== serial.current) return
-      setResult(response.prompt); setSourceKey(capturedKey); setSourceNodeKey(capturedNodeKey); setResultAdjustment(capturedAdjustment); setUsedSkills(response.skills.map(skill => skill.name))
+      const nextResult = props.promptDocument ? tokenizePromptReferenceNumbers(response.prompt, props.referenceAssetIds)
+        : extractPromptBody({ prompt: response.prompt, prompt_body: response.prompt_body })
+      setResult(nextResult)
+      setResultSections(props.promptDocument ? parsePromptSectionDocument(nextResult, {
+        sourceText: props.promptTemplate, previousDocument: continueFromResult ? resultSections : props.promptSections,
+      }) : undefined)
+      setResultSystemPrompt(props.promptDocument ? '' : getManagedPromptBlocks(response.prompt).join('\n\n'));
+      setSourceKey(capturedKey); setSourceNodeKey(capturedNodeKey); setResultAdjustment(capturedAdjustment); setUsedSkills(response.skills.map(skill => skill.name))
     } catch (issue) { if (turn === serial.current) setError(issue instanceof Error ? issue.message : String(issue)) }
     finally { if (turn === serial.current) { refining.current = false; setPending(false) } }
   }
   return <>
-    <UnstyledButton type="button" className="pc-composer-chip" aria-label="使用技能整理提示词" disabled={props.disabled || !props.prompt.trim()} onClick={() => void open()}><Puzzle size={14} /><span>整理提示词</span></UnstyledButton>
+    <UnstyledButton type="button" className="pc-composer-chip" aria-label="使用技能整理提示词" disabled={props.disabled || !sourceBody.trim()} onClick={() => void open()}><Puzzle size={14} /><span>整理提示词</span></UnstyledButton>
     <Modal opened={opened} onClose={close} centered size="min(620px, calc(100vw - 32px))" radius={18}
-      title={<div className="prompt-skill-heading"><span>整理提示词</span><small>{modalityLabel}提示词 · 编辑后应用到节点</small></div>} zIndex={230}
+      title={<div className="prompt-skill-heading"><span>整理提示词</span><small>{modalityLabel}正文 · 编辑后应用到节点</small></div>} zIndex={230}
       classNames={{ content: 'prompt-skill-modal', header: 'prompt-skill-header', title: 'prompt-skill-title', body: 'prompt-skill-body', close: 'prompt-skill-close' }}
       overlayProps={{ backgroundOpacity: 0.6, blur: 4 }} closeButtonProps={{ 'aria-label': '关闭整理提示词' }}>
       <div className="prompt-skill-content">
@@ -124,14 +150,15 @@ export default function PromptSkillAction(props: Props) {
             disabled={pending} allowDeselect={false} searchable rightSection={<ChevronDown size={14} />} rightSectionPointerEvents="none"
             classNames={{ input: 'prompt-skill-model-input', dropdown: 'prompt-skill-dropdown' }} comboboxProps={{ zIndex: 320 }} />
         </div>
-        <WorkspaceDisclosure className="prompt-skill-source" label={<><span>原始提示词</span><small>{props.prompt.length.toLocaleString()} 字</small><ChevronDown size={14} /></>}>
-          <p>{props.prompt}</p>
+        <WorkspaceDisclosure className="prompt-skill-source" label={<><span>原始提示词正文</span><small>{sourceBody.length.toLocaleString()} 字</small><ChevronDown size={14} /></>}>
+          <p>{sourceBody}</p>
         </WorkspaceDisclosure>
         <section className="prompt-skill-adjustment" aria-label="提示词调整方向">
           <Textarea label="本次调整要求" aria-label="本次调整要求" value={adjustment}
             onChange={event => setAdjustment(event.currentTarget.value)} disabled={pending} autosize minRows={3} maxRows={5}
             maxLength={maxAdjustmentLength} placeholder={adjustmentPlaceholder} classNames={{ input: 'prompt-skill-adjustment-input' }}
-            description="可留空，按现有内容整理。画风、比例、时长和引用以节点设置为准。" />
+            description={props.promptDocument ? '只整理标记区块外的正文。标记内的设定、参考、画风和参数原样保留，不交给整理模型改写。'
+              : '只整理正文。设定、引用、画风和生成参数由系统按节点设置保留。'} />
           <div className="prompt-skill-directions" role="group" aria-label={`${modalityLabel}调整快捷方向`}>
             {directions.map(direction => <Button key={direction.label} variant="default" size="compact-xs" aria-pressed={adjustment.includes(direction.text)}
               disabled={pending || !adjustment.includes(direction.text) && adjustment.trim().length + direction.text.length + 1 > maxAdjustmentLength}
@@ -143,8 +170,14 @@ export default function PromptSkillAction(props: Props) {
         {skillControl.error && <p className="prompt-skill-error" role="alert">{skillControl.error}</p>}
         {error && <p className="prompt-skill-error" role="alert">{error}</p>}
         {!!result && <div className="prompt-skill-result">
-          <Textarea aria-label="整理后的完整提示词" label="整理结果 · 可编辑" value={result} onChange={event => setResult(event.currentTarget.value)} rows={10} disabled={pending}
-            maxLength={maxPromptLength} classNames={{ input: 'prompt-skill-editor' }} />
+          {props.promptDocument ? <><label className="mantine-InputWrapper-label">整理后的完整提示词 · 可编辑</label>
+            <CanvasPromptEditor aria-label="整理后的完整提示词" value={result} sectionDocument={resultSections}
+              onChange={(value, document) => { setResult(value); setResultSections(document) }}
+              references={resultReferences} choices={resultReferences} disabled={pending} minRows={10} />
+            {result.length > maxPromptLength && <p className="prompt-skill-error" role="alert">提示词超过 80,000 字，请精简后应用。</p>}</>
+            : <Textarea aria-label="整理后的正文" label="整理后的正文 · 可编辑" value={result} onChange={event => setResult(event.currentTarget.value)} rows={10} disabled={pending}
+              maxLength={maxPromptLength} classNames={{ input: 'prompt-skill-editor' }} />}
+          {!props.promptDocument && <WorkspaceDisclosure label="完整提示词预览"><Textarea aria-label="整理后的完整提示词预览" value={resultPreview} readOnly autosize minRows={4} maxRows={12} /></WorkspaceDisclosure>}
           <p className="prompt-skill-used">使用技能：{usedSkills.join(' · ') || '基础创作规则'}</p>
         </div>}
         {nodeChanged && <p className="prompt-skill-error" role="alert">当前节点内容或生成配置已变化，请重新整理。</p>}
@@ -154,8 +187,8 @@ export default function PromptSkillAction(props: Props) {
       <div className="prompt-skill-footer">
         {pending ? <div className="prompt-skill-progress" role="status"><LoaderCircle size={14} /><span>正在整理 · {elapsed} 秒</span></div>
           : <span className="prompt-skill-status">{result ? `已整理 · ${result.length.toLocaleString()} 字` : '确认应用后更新节点'}</span>}
-        <div className="prompt-skill-actions"><Button variant="default" disabled={pending || props.disabled || !modelId || skillControl.loading || !!skillControl.error || !(continueFromResult ? result : props.prompt).trim() || adjustment.length > maxAdjustmentLength} onClick={() => void refine()}>{pending ? requestLabel : refineLabel}</Button>
-        {!!result && <Button className="prompt-skill-apply" disabled={pending || props.disabled || stale || adjustmentChanged || !result.trim() || result.length > maxPromptLength} onClick={() => { props.onApply(result.trim()); close() }}>应用提示词</Button>}</div>
+        <div className="prompt-skill-actions"><Button variant="default" disabled={pending || props.disabled || !modelId || skillControl.loading || !!skillControl.error || !(continueFromResult ? result : sourceBody).trim() || adjustment.length > maxAdjustmentLength} onClick={() => void refine()}>{pending ? requestLabel : refineLabel}</Button>
+        {!!result && <Button className="prompt-skill-apply" disabled={pending || props.disabled || stale || adjustmentChanged || !result.trim() || result.length > maxPromptLength} onClick={() => { props.onApply(resultPreview.trim(), props.promptDocument ? extractPromptBody({ prompt: result }) : result.trim(), resultSections); close() }}>应用提示词</Button>}</div>
       </div>
     </Modal>
   </>

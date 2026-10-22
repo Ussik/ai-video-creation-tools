@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { all, db, newId, now, one, required, run, type Project } from '../../infrastructure/database/db.js'
 
 export type ProjectCanvasRecord = { id: string; project_id: string; name: string; position: number; is_default: number; viewport: string | null; created_at: string; updated_at: string }
-type Graph = { revision: string; nodes: Array<{ id: string; x: number; y: number; width: number; settings: { visual_profile_id?: string } }>; edges: Array<{ id: string; source: string; target: string }> }
+type Graph = { revision: string; nodes: Array<{ id: string; type: string; x: number; y: number; width: number; settings: { visual_profile_id?: string } }>; edges: Array<{ id: string; source: string; target: string }> }
 const id = z.string().min(1).max(100)
 const params = z.object({ id, canvasId: id })
 function fail(message: string, statusCode = 422): never { throw Object.assign(new Error(message), { statusCode }) }
@@ -24,7 +24,8 @@ export function canvasRecord(projectId: string, canvasId: string) {
   return canvas
 }
 function metadata(canvas: ProjectCanvasRecord) {
-  return { ...canvas, is_default: !!canvas.is_default, viewport: canvas.viewport ? JSON.parse(canvas.viewport) : null,
+  const design = one<{ id: string }>('SELECT id FROM storyboard_designs WHERE project_id=? AND canvas_id=?', canvas.project_id, canvas.id)
+  return { ...canvas, design_id: design?.id || null, is_default: !!canvas.is_default, viewport: canvas.viewport ? JSON.parse(canvas.viewport) : null,
     node_count: one<{ total: number }>('SELECT COUNT(*) AS total FROM canvas_nodes WHERE project_id=? AND (canvas_id=? OR (canvas_id IS NULL AND ?=1))', canvas.project_id, canvas.id, canvas.is_default)!.total }
 }
 function touch(projectId: string) { run('UPDATE projects SET updated_at=? WHERE id=?', now(), projectId) }
@@ -97,8 +98,10 @@ export function registerProjectCanvasRoutes(app: FastifyInstance, context: { gra
       if (source.revision !== data.revision || target.revision !== data.target_revision) fail('画布已更新，请重新移动', 409)
       const selected = new Set(data.node_ids), moved = source.nodes.filter(node => selected.has(node.id))
       if (selected.size !== data.node_ids.length || moved.length !== selected.size) fail('请选择当前画布的节点')
+      if (moved.some(node => node.type === 'project_script_ref')) fail('项目剧本节点会在每张画布显示，无需移动')
       const internal = source.edges.filter(edge => selected.has(edge.source) && selected.has(edge.target))
-      if (target.nodes.length + moved.length > 500 || target.edges.length + internal.length > 1000) fail('目标画布容量不足')
+      const targetNodeLimit = target.nodes.filter(node => node.type === 'project_script_ref').length === 1 ? 501 : 500
+      if (target.nodes.length + moved.length > targetNodeLimit || target.edges.length + internal.length > 1000) fail('目标画布容量不足')
       const profiles = new Set(target.nodes.map(node => node.settings.visual_profile_id).filter(Boolean))
       if (moved.some(node => node.settings.visual_profile_id && profiles.has(node.settings.visual_profile_id))) fail('目标画布已有相同设定，请使用已有节点')
       const dx = (target.nodes.length ? Math.max(...target.nodes.map(node => node.x + node.width)) + 160 : 80) - Math.min(...moved.map(node => node.x))

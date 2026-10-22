@@ -30,7 +30,7 @@ async function terminal(id: string) {
 }
 
 test('long-script maps cover every source character and persist verified original positions', async () => {
-  const content = `第1集\n${'林舟回家。\n'.repeat(2500)}第2集\n终场事实：林舟发现故乡已经改变。`
+  const content = `第1集\n${'林舟回家。\n'.repeat(4000)}第2集\n终场事实：林舟发现故乡已经改变。`
   const id = project(content), prompts: string[] = []
   const analyzer = createScriptSourceAnalyzer(async (_id, _model, prompt) => { prompts.push(prompt); return mapReply(prompt) })
   try {
@@ -40,10 +40,10 @@ test('long-script maps cover every source character and persist verified origina
     const state = await terminal(id)
     assert.equal(state.status, 'ready', state.error || '')
     assert.ok(prompts.length > 1)
-    assert.equal(prompts.filter(prompt => prompt.includes('【原文片段】')).length, 1)
+    assert.equal(prompts.filter(prompt => prompt.includes('【原文片段】')).length, state.total_chunks)
     assert.equal(prompts.filter(prompt => prompt.includes('【全剧整合资料】')).length, 1)
     assert.equal(batchUnits(prompts[0]!).map(unit => unit.text).join(''), content)
-    assert.equal(state.total_chunks, 1)
+    assert.ok(state.total_chunks > 1)
     assert.equal(state.completed_chunks, state.total_chunks)
     assert.equal(state.sections.map(section => content.slice(section.offset, section.offset + section.length)).join(''), content)
     for (const section of state.sections) for (const event of section.events) assert.equal(content.slice(event.evidence.offset, event.evidence.offset + event.evidence.quote.length), event.evidence.quote)
@@ -68,12 +68,14 @@ test('the exact 100,000-character limit is read whole and oversized direct analy
   })
   try {
     analyzer.start(id, 'model'); const ready = await terminal(id)
-    assert.equal(ready.status, 'ready', ready.error || ''); assert.equal(mapCalls, 1)
+    assert.equal(ready.status, 'ready', ready.error || ''); assert.equal(mapCalls, ready.total_chunks)
+    assert.ok(mapCalls > 1)
+    const completedMapCalls = mapCalls
     const oversizedId = project(`${content}超`)
     assert.throws(() => analyzer.start(oversizedId, 'model'), /不能超过 10 万字符/)
     await assert.rejects(analyzeSourceSnapshot({ project_id: oversizedId, filename: '剧本.txt', content: `${content}超`, updated_at: '' }, 'model',
       async () => { throw new Error('must reject before invoking model') }, new AbortController().signal), /不能超过 10 万字符/)
-    assert.equal(mapCalls, 1)
+    assert.equal(mapCalls, completedMapCalls)
   } finally { await analyzer.close() }
 })
 

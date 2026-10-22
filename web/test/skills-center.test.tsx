@@ -11,7 +11,7 @@ register(`data:text/javascript,${encodeURIComponent(`export async function load(
   return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context)
 }`)}`, import.meta.url)
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
-for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLElement', 'Element', 'ShadowRoot', 'Event', 'MouseEvent', 'MutationObserver']) {
+for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLElement', 'Element', 'ShadowRoot', 'Event', 'MouseEvent', 'MutationObserver', 'DOMParser']) {
   Object.defineProperty(globalThis, key, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[key] })
 }
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, getComputedStyle: dom.window.getComputedStyle.bind(dom.window),
@@ -23,6 +23,7 @@ dom.window.HTMLElement.prototype.scrollIntoView = () => {}
 const { createRoot } = await import('react-dom/client')
 const { default: SkillsCenter } = await import('../src/features/skills/SkillsCenter')
 const { default: PromptSkillAction } = await import('../src/features/skills/PromptSkillAction')
+const { promptEditorDocument, promptEditorText } = await import('../src/features/canvas/CanvasPromptEditor')
 after(() => dom.window.close())
 const reply = (body: unknown) => new Response(JSON.stringify(body))
 const skill: InstalledSkill = {
@@ -53,6 +54,10 @@ async function fill(label: string, value: string) {
   const element = textarea(label)
   const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value')!.set!
   await act(() => { setter.call(element, value); element.dispatchEvent(new dom.window.Event('input', { bubbles: true })) })
+}
+function completePromptEditor() {
+  const element = document.querySelector<HTMLElement & { editor: import('@tiptap/core').Editor }>('[contenteditable][aria-label="整理后的完整提示词"]')
+  assert.ok(element, 'protected full prompt editor'); return element.editor
 }
 async function choose(label: string, value: string) {
   const input = document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)
@@ -125,7 +130,7 @@ test('prompt refinement stays a draft, blocks stale application and applies only
     await act(() => document.querySelector<HTMLButtonElement>('[aria-label="使用技能整理提示词"]')!.click())
     await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
     assert.equal(applied.length, 0)
-    assert.deepEqual(requests[0], { stage: 'image_prompt', skill_ids: ['skill'], model_id: 'text', prompt: '人物信息图', adjustment_request: '', target_model_id: 'image', shot_id: 'shot', ratio: '9:16', duration: 5, mode: 'reference', reference_asset_ids: ['frame'] })
+    assert.deepEqual(requests[0], { stage: 'image_prompt', skill_ids: ['skill'], model_id: 'text', prompt: '人物信息图', prompt_body: '人物信息图', adjustment_request: '', target_model_id: 'image', shot_id: 'shot', ratio: '9:16', duration: 5, mode: 'reference', reference_asset_ids: ['frame'], excluded_visual_profile_ids: [] })
     await view.render(component('人物信息图', 'other-shot'))
     assert.equal(button('应用提示词').disabled, true)
     assert.equal(applied.length, 0)
@@ -188,12 +193,12 @@ test('successive adjustments use the edited candidate and preserve it through a 
     await fill('本次调整要求', '改成近景')
     await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
     assert.equal(button('应用提示词').disabled, false)
-    await fill('整理后的完整提示词', '雨中人物近景，红色围巾')
+    await fill('整理后的正文', '雨中人物近景，红色围巾')
     await fill('本次调整要求', ' 情绪克制，不改变围巾 ')
-    assert.equal(textarea('整理后的完整提示词').value, '雨中人物近景，红色围巾')
+    assert.equal(textarea('整理后的正文').value, '雨中人物近景，红色围巾')
     assert.equal(button('应用提示词').disabled, true, 'new instructions must be processed before applying the older candidate')
     await act(() => button('继续调整').click())
-    assert.equal(textarea('整理后的完整提示词').value, '雨中人物近景，红色围巾', 'a failed request retains the last editable candidate')
+    assert.equal(textarea('整理后的正文').value, '雨中人物近景，红色围巾', 'a failed request retains the last editable candidate')
     assert.match(document.querySelector('[role="dialog"]')!.textContent!, /模型暂时不可用/)
     assert.equal(applied.length, 0)
     await act(() => button('继续调整').click())
@@ -266,20 +271,20 @@ test('changing only the refinement model or skill retains manual candidate edits
   try {
     await openPromptAction()
     await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
-    await fill('整理后的完整提示词', '首轮候选，用户手动加入红色围巾')
+    await fill('整理后的正文', '首轮候选，用户手动加入红色围巾')
     await choose('整理提示词的文本模型', 'text-other')
-    assert.equal(textarea('整理后的完整提示词').value, '首轮候选，用户手动加入红色围巾')
+    assert.equal(textarea('整理后的正文').value, '首轮候选，用户手动加入红色围巾')
     assert.equal(button('应用提示词').disabled, true, 'an older policy result cannot be applied before the requested adjustment')
     await act(() => button('继续调整').click())
     assert.equal(requests[1]?.prompt, '首轮候选，用户手动加入红色围巾', 'changing a text model must retain the edited candidate instead of reverting to the node source')
     assert.equal(requests[1]?.model_id, 'text-other')
     assert.equal(button('应用提示词').disabled, false)
 
-    await fill('整理后的完整提示词', '更换模型后的候选，继续保留手动服装细节')
+    await fill('整理后的正文', '更换模型后的候选，继续保留手动服装细节')
     await act(() => button('更换').click())
     await choose('image_prompt主技能', 'alternate-skill')
     await act(() => button('更换').click())
-    assert.equal(textarea('整理后的完整提示词').value, '更换模型后的候选，继续保留手动服装细节')
+    assert.equal(textarea('整理后的正文').value, '更换模型后的候选，继续保留手动服装细节')
     assert.equal(button('应用提示词').disabled, true)
     await act(() => button('继续调整').click())
     assert.equal(requests[2]?.prompt, '更换模型后的候选，继续保留手动服装细节', 'changing a skill also retains all manual candidate edits')
@@ -288,5 +293,155 @@ test('changing only the refinement model or skill retains manual candidate edits
     assert.equal(applied.length, 0)
     await act(() => button('应用提示词').click())
     assert.deepEqual(applied, ['更换技能后的候选'])
+  } finally { await view.destroy() }
+})
+
+test('managed shot refinement edits only the creative body and keeps the assembled prompt in a read-only preview', async t => {
+  const requests: Array<Record<string, unknown>> = [], applied: Array<[string, string | undefined]> = []
+  const body = '人物在雨中回头，镜头保持近景。'
+  const system = '【镜头视觉设定】\n人物：林晚，蓝色校服\n【镜头视觉设定结束】\n\n【图片参考图用途】\n参考图 1：林晚\n【图片参考图用途结束】'
+  const template = `原始镜头正文\n\n${system}`
+  const assembled = (value: string) => `${value}\n\n${system}`
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (String(url).endsWith('/skills/defaults')) return defaults()
+    assert.equal(String(url), '/api/projects/project/skills/refine-prompt', 'refinement must never create a media generation task')
+    const request = JSON.parse(String(init!.body)) as Record<string, unknown>
+    requests.push(request)
+    const prompt_body = requests.length === 1 ? '林晚回头，近景突出眼神。' : '林晚回头，保持用户指定的红色雨伞。'
+    return reply({ prompt_body, prompt: assembled(prompt_body), skills: [] })
+  })
+  const view = await mount(promptAction({ prompt: assembled(body), promptBody: body, promptTemplate: template,
+    resolution: '4K', clarity: '4K', quality: 'high', background: 'auto',
+    promptReferenceOverrides: { old: 'frame', removed: null }, onApply: (prompt, promptBody) => applied.push([prompt, promptBody]) }))
+  try {
+    await openPromptAction()
+    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
+    assert.equal(requests[0]?.prompt, body)
+    assert.equal(requests[0]?.prompt_body, body)
+    assert.equal(requests[0]?.prompt_template, template)
+    assert.equal(requests[0]?.resolution, '4K')
+    assert.deepEqual(requests[0]?.prompt_reference_overrides, { old: 'frame', removed: null }, 'the backend must receive explicit replacement/removal decisions when assembling its system preview')
+    assert.doesNotMatch(String(requests[0]?.prompt), /镜头视觉设定|图片参考图用途/)
+    assert.equal(textarea('整理后的正文').value, '林晚回头，近景突出眼神。')
+    const preview = textarea('整理后的完整提示词预览')
+    assert.equal(preview.readOnly, true, 'system settings cannot be rewritten in the result preview')
+    assert.equal(preview.value, assembled('林晚回头，近景突出眼神。'))
+    assert.deepEqual(applied, [], 'a completed refinement remains a draft')
+
+    await fill('整理后的正文', '林晚回头，用户指定手持红色雨伞。')
+    await fill('本次调整要求', '保留红色雨伞，神情克制。')
+    await act(() => button('继续调整').click())
+    assert.equal(requests[1]?.prompt, '林晚回头，用户指定手持红色雨伞。')
+    assert.equal(requests[1]?.prompt_body, requests[1]?.prompt)
+    assert.equal(requests[1]?.prompt_template, template)
+    assert.deepEqual(requests[1]?.prompt_reference_overrides, requests[0]?.prompt_reference_overrides)
+    assert.doesNotMatch(String(requests[1]?.prompt_body), /镜头视觉设定|参考图 1/)
+    assert.equal((textarea('整理后的完整提示词预览').value.match(/【图片参考图用途】/g) || []).length, 1)
+    await act(() => button('应用提示词').click())
+    assert.deepEqual(applied, [[assembled('林晚回头，保持用户指定的红色雨伞。'), '林晚回头，保持用户指定的红色雨伞。']])
+  } finally { await view.destroy() }
+})
+
+test('visual-profile refinement accepts a legacy response and applies its body alongside the complete preview', async t => {
+  const requests: Array<Record<string, unknown>> = [], applied: Array<[string, string | undefined]> = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (String(url).endsWith('/skills/defaults')) return defaults()
+    assert.equal(String(url), '/api/projects/project/skills/refine-prompt')
+    requests.push(JSON.parse(String(init!.body)))
+    return reply({ prompt: '林晚设定图：正面与侧面，保持蓝色校服。', skills: [] })
+  })
+  const view = await mount(promptAction({ profileId: 'hero', shotId: null, prompt: '林晚人物信息图，三视图。',
+    onApply: (prompt, promptBody) => applied.push([prompt, promptBody]) }))
+  try {
+    await openPromptAction()
+    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
+    assert.equal(requests[0]?.profile_id, 'hero')
+    assert.equal(requests[0]?.prompt, '林晚人物信息图，三视图。')
+    assert.equal(requests[0]?.prompt_body, '林晚人物信息图，三视图。', 'profile refinement also sends its creative body separately')
+    await act(() => button('应用提示词').click())
+    assert.deepEqual(applied, [['林晚设定图：正面与侧面，保持蓝色校服。', '林晚设定图：正面与侧面，保持蓝色校服。']])
+  } finally { await view.destroy() }
+})
+
+test('complete-document refinement keeps one editable result and submits manually edited blocks on continuation', async t => {
+  const requests: Array<Record<string, unknown>> = [], applied: string[] = []
+  const system = '【镜头视觉设定】\n人物：林晚，蓝色校服，参考图 1 保持面部\n【镜头视觉设定结束】\n\n【项目画风约束】\n保留手绘线条\n【项目画风约束结束】'
+  const source = `人物回头。\n\n${system}`
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (String(url).endsWith('/skills/defaults')) return defaults()
+    assert.equal(String(url), '/api/projects/project/skills/refine-prompt')
+    const request = JSON.parse(String(init!.body)) as Record<string, unknown>
+    requests.push(request)
+    return reply({ prompt: String(request.prompt).replace('人物回头。', '人物缓慢回头。'), prompt_body: '人物缓慢回头。', skills: [] })
+  })
+  const view = await mount(promptAction({ prompt: source, promptDocument: true,
+    promptBody: '过期的单独正文不应使用', onApply: value => applied.push(value) }))
+  try {
+    await openPromptAction()
+    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
+    assert.equal(requests[0]?.prompt, source)
+    assert.equal(requests[0]?.prompt_document, true)
+    assert.equal(requests[0]?.prompt_body, '人物回头。')
+    const result = completePromptEditor()
+    assert.equal(result.isEditable, true)
+    assert.match(promptEditorText(result.getJSON()), /保留手绘线条/)
+    assert.equal(document.querySelectorAll('.prompt-skill-result .pc-prompt-managed-section-head[contenteditable="false"]').length, 2)
+    assert.equal(document.querySelector('textarea[aria-label="整理后的正文"]'), null)
+    assert.equal(document.querySelector('textarea[aria-label="整理后的完整提示词预览"]'), null)
+    const edited = promptEditorText(result.getJSON()).replace('蓝色校服', '深蓝外套').replace('保留手绘线条', '保留用户手动指定的水彩笔触')
+    await act(() => { result.chain().setMeta('promptDocumentReplace', true)
+      .setContent(promptEditorDocument(edited, [{ assetId: 'frame', label: '参考图', url: '' }]), { emitUpdate: true }).run() })
+    await act(() => button('继续调整').click())
+    assert.equal(requests[1]?.prompt, edited)
+    assert.equal(requests[1]?.prompt_body, '人物缓慢回头。')
+    assert.equal(requests[1]?.prompt_document, true)
+    await act(() => button('应用提示词').click())
+    assert.deepEqual(applied, [edited])
+  } finally { await view.destroy() }
+})
+
+test('a complete profile document over the former body limit remains applicable without truncating its fixed settings', async t => {
+  const fixed = `【设定图固定要求】\n${'保留已保存的服装与材质。'.repeat(1_500)}\n【设定图固定要求结束】`
+  const prompt = `人物信息图，保持主体一致。\n\n${fixed}`, applied: string[] = []
+  assert.ok(prompt.length > 16_000 && prompt.length < 80_000)
+  t.mock.method(globalThis, 'fetch', async url => {
+    if (String(url).endsWith('/skills/defaults')) return defaults()
+    return reply({ prompt, prompt_body: '人物信息图，保持主体一致。', skills: [] })
+  })
+  const view = await mount(promptAction({ prompt, promptDocument: true, profileId: 'hero', shotId: null,
+    onApply: value => applied.push(value) }))
+  try {
+    await openPromptAction()
+    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
+    assert.equal(promptEditorText(completePromptEditor().getJSON()), prompt)
+    assert.equal(button('应用提示词').disabled, false)
+    await act(() => button('应用提示词').click())
+    assert.deepEqual(applied, [prompt])
+  } finally { await view.destroy() }
+})
+
+test('changing a reference replacement invalidates the assembled refinement while preserving the current editable body', async t => {
+  const requests: Array<Record<string, unknown>> = [], applied: string[] = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (String(url).endsWith('/skills/defaults')) return defaults()
+    assert.equal(String(url), '/api/projects/project/skills/refine-prompt')
+    requests.push(JSON.parse(String(init!.body)))
+    return reply({ prompt_body: '人物回头，近景。', prompt: '人物回头，近景。', skills: [] })
+  })
+  const component = (replacement: string) => promptAction({ prompt: '人物回头。', promptBody: '人物回头。',
+    promptReferenceOverrides: { previous: replacement }, onApply: prompt => applied.push(prompt) })
+  const view = await mount(component('frame'))
+  try {
+    await openPromptAction()
+    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
+    await fill('整理后的正文', '人物回头，保留手工补充的抬手动作。')
+    await view.render(component('replacement'))
+    assert.equal(button('应用提示词').disabled, true, 'a preview built for another image cannot be applied')
+    assert.equal(textarea('整理后的正文').value, '人物回头，保留手工补充的抬手动作。')
+    assert.match(document.querySelector('[role="dialog"]')!.textContent!, /当前节点内容或生成配置已变化/)
+    await act(() => button('重新整理').click())
+    assert.equal(requests[1]?.prompt_body, '人物回头。', 'a changed node must use its current body instead of a candidate from obsolete references')
+    assert.deepEqual(requests[1]?.prompt_reference_overrides, { previous: 'replacement' })
+    assert.deepEqual(applied, [])
   } finally { await view.destroy() }
 })

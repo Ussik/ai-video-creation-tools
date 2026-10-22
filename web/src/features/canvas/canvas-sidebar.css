@@ -48,6 +48,7 @@
 .project-canvas aside.pc-canvas-sidebar .pc-sidebar-tools {
   flex: none; gap: 12px; padding: 14px 14px 12px; border-bottom: 1px solid var(--sidebar-border);
 }
+.project-canvas aside.pc-canvas-sidebar .pc-sidebar-scope-label { color: var(--sidebar-muted); font-size: 11px; }
 .project-canvas aside.pc-canvas-sidebar .pc-sidebar-tools .mantine-Input-input {
   height: 36px; min-height: 36px; border: 1px solid var(--sidebar-border); border-radius: 9px;
   background: var(--workspace-ink, var(--fc-surface)); color: var(--sidebar-text); font-size: 12px;

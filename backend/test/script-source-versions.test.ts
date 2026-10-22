@@ -4,18 +4,21 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { scriptStageArtifacts, scriptArtifactLabels } from '@video-studio/shared/script/script-stage-content'
-import type { ScriptSourceUpdate } from '@video-studio/shared/script/script-source-document'
-import { sourceAnalysisPipelineVersion } from '../src/modules/script/script-source-map.js'
+import type { ScriptSourceAnalysis, ScriptSourceUpdate } from '@video-studio/shared/script/script-source-document'
+import { scriptSourcePassages, sourceAnalysisPipelineVersion, sourceWorkPlan } from '../src/modules/script/script-source-map.js'
+import { sourceQualityInputHash } from '../src/modules/script/script-source-quality.js'
 import { sourceAnalysisFixture } from './fixtures/script-source-analysis.js'
 const testData = await mkdtemp(join(tmpdir(), 'studio-source-versions-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
 const { buildApp } = await import('../src/app.js')
 const { db, newId } = await import('../src/infrastructure/database/db.js')
-const { effectiveScriptSource, originalScriptSource, scriptDocumentVersion, commitScriptSourceUpdate } = await import('../src/modules/script/script-source-versions.js')
+const { effectiveScriptSource, originalScriptSource, scriptDocumentVersion, commitScriptSourceUpdate, onScriptSourceRevision } = await import('../src/modules/script/script-source-versions.js')
 const { repairScriptSource } = await import('../src/modules/script/script-draft-resolution.js')
 const { documentTools, getToolDraft, attachDraftSourceUpdate, editToolDraft } = await import('../src/modules/script/script-document-tools.js')
 const { directorStageContext, workflowGenerationDraftSchema } = await import('../src/modules/script/script-workflow.js')
-const { createScriptSourceAnalyzer, scriptSourceAnalysis } = await import('../src/modules/script/script-source-analysis.js')
+const { createScriptSourceAnalyzer, scriptSourceAnalysis, scriptSourceVersion } = await import('../src/modules/script/script-source-analysis.js')
+const { sourceAnalysisConfigurationHash, sourceRevisionMapReuse, sourceRevisionReuseNamespace } = await import('../src/modules/script/script-source-revision-reuse.js')
+const { clearGenerationCheckpoint } = await import('../src/modules/script/script-generation-checkpoints.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 const originalText = '全剧60集。\n龟和龙加入合作，原因尚未展开。\n结局伙伴重聚。'
@@ -35,6 +38,36 @@ function update(id: string, content = revisedText): ScriptSourceUpdate {
   const source = effectiveScriptSource(id)!
   return { id: newId(), base_version: scriptDocumentVersion(source), original_content: source.content, content,
     replacements: [{ find: '原因尚未展开。', replace: '因为龙救下受困的龟，两者约定合作守护河流。', reason: '补齐合作起因' }] }
+}
+const revisionConfiguration = ['isolated-revision-model', '{"temperature":0.4}', 'chat_completions', 'https://revision-fixture.invalid/v1']
+function saveReviewedAnalysis(projectId: string, configurationHash: string | undefined = sourceAnalysisConfigurationHash(revisionConfiguration)) {
+  const source = effectiveScriptSource(projectId)!, plan = sourceWorkPlan(scriptSourcePassages(source.content))
+  const sections = plan.map((work, id) => ({ offset: work.offset, length: work.length, title: `已核对目录${id}`, episode_number: null,
+    summary: '林舟沿河寻找伙伴，保留原文明示的调查记录。', characters: [],
+    events: [{ summary: '林舟依照原文继续寻找伙伴。', evidence: { offset: work.offset, quote: source.content.slice(work.offset, work.offset + Math.min(80, work.length)) } }] }))
+  const analysis: ScriptSourceAnalysis = { id: newId(), source_version: scriptSourceVersion(source), model_id: 'revision-fixture-model', configuration_hash: configurationHash,
+    status: 'ready', phase: 'ready', pipeline_version: sourceAnalysisPipelineVersion, completed_chunks: plan.length, total_chunks: plan.length,
+    completed_characters: source.content.length, sections, error: null, updated_at: source.updated_at,
+    story: { summary: '林舟寻找伙伴并最终返乡。', characters: [], timeline: sections.map((section, id) => ({ summary: section.events[0]!.summary, section_ids: [id] })),
+      threads: [], ending: { summary: '林舟最终返乡。', section_ids: [sections.length - 1] }, uncertainties: [] } }
+  analysis.quality = { input_hash: sourceQualityInputHash(analysis), status: 'passed', findings: [] }
+  db.prepare('INSERT OR REPLACE INTO script_source_analyses (project_id,id,source_version,status,snapshot,updated_at) VALUES (?,?,?,?,?,?)')
+    .run(projectId, analysis.id, analysis.source_version, analysis.status, JSON.stringify(analysis), source.updated_at)
+  return analysis
+}
+async function longRevisionFixture() {
+  const project = (await app.inject({ method: 'POST', url: '/api/projects', payload: { name: '增量分析版本隔离' } })).json()
+  const content = Array.from({ length: 32 }, (_, index) => `第${index + 1}集 河岸重逢\n${'林舟沿河寻找伙伴，伙伴点亮灯火等待他回家。'.repeat(80)}\n`).join('')
+  await upload(project.id, content)
+  const analysis = saveReviewedAnalysis(project.id)
+  const proposed = update(project.id, effectiveScriptSource(project.id)!.content.replace('第17集 河岸重逢', '第17集 河岸再会'))
+  // Deliberately keep update()'s unrelated replacement list: reuse must compare
+  // the actual before/after content rather than trust those descriptions.
+  return { project, analysis, proposed }
+}
+function revisionSeed(projectId: string) {
+  return db.prepare('SELECT cache_key,payload FROM script_step_checkpoints WHERE project_id=? AND namespace=?')
+    .get(projectId, sourceRevisionReuseNamespace) as { cache_key: string; payload: string } | undefined
 }
 async function nativeDraft(project: any, sourceUpdate?: ScriptSourceUpdate) {
   const snapshot = (await app.inject({ method: 'GET', url: `/api/projects/${project.id}` })).json().script
@@ -247,12 +280,13 @@ test('a model configuration removed before confirmation cannot escape the revisi
   const { analyzeSourceSnapshot } = await import('../src/modules/script/script-source-analysis.js')
   const project = await fixture(), proposed = update(project.id)
   const configuration = ['remote-model', '{"temperature":0.4}', 'openai-responses', 'https://fixture.invalid/v1']
-  let configurationRemoved = false, calls = 0
+  let configurationRemoved = false, calls = 0, configurationReads = 0
   const analyzer = createScriptSourceAnalyzer(async (_project, _model, prompt) => {
     calls++
     if (configurationRemoved) throw new Error('模型配置已移除')
     return sourceAnalysisFixture(prompt)!
   }, undefined, { configuration: () => {
+    configurationReads++
     if (configurationRemoved) throw new Error('模型配置已移除')
     return configuration
   } })
@@ -261,14 +295,124 @@ test('a model configuration removed before confirmation cannot escape the revisi
     for (let attempt = 0; attempt < 100 && scriptSourceAnalysis(project.id)?.status !== 'ready'; attempt++) await new Promise(resolve => setTimeout(resolve, 5))
     assert.equal(scriptSourceAnalysis(project.id)!.status, 'ready')
     await analyzeSourceSnapshot({ ...effectiveScriptSource(project.id)!, content: proposed.content }, 'mock', async prompt => sourceAnalysisFixture(prompt)!, new AbortController().signal, configuration)
-    const beforeConfirmation = calls
+    const beforeConfirmation = calls, beforeConfigurationReads = configurationReads
     configurationRemoved = true
     commitScriptSourceUpdate(project.id, proposed)
     for (let attempt = 0; attempt < 100 && scriptSourceAnalysis(project.id)?.status !== 'failed'; attempt++) await new Promise(resolve => setTimeout(resolve, 5))
     const result = scriptSourceAnalysis(project.id)!
     assert.equal(result.status, 'failed')
     assert.match(result.error || '', /模型配置已移除/)
-    assert.ok(calls > beforeConfirmation, 'the worker checks the unavailable provider rather than adopting a cache with an unknown identity')
+    assert.ok(configurationReads > beforeConfigurationReads, 'the worker rechecks live configuration instead of adopting the privately prepared result')
+    assert.equal(calls, beforeConfirmation, 'unavailable configuration is rejected before sending another model request')
+    assert.equal(result.story, undefined, 'the private proposal cannot be adopted under an unknown configuration')
     assert.equal(effectiveScriptSource(project.id)!.revision, 1, 'a source revision remains saved even when background analysis cannot run')
   } finally { await analyzer.close() }
+})
+
+test('revision-base capture is atomic with confirmation and an outer rollback leaves neither seed nor notification', async () => {
+  const { project, analysis, proposed } = await longRevisionFixture()
+  const notifications: string[] = []
+  const unsubscribe = onScriptSourceRevision(projectId => { if (projectId === project.id) notifications.push(projectId) })
+  try {
+    assert.throws(() => db.transaction(() => {
+      commitScriptSourceUpdate(project.id, proposed)
+      assert.ok(revisionSeed(project.id), 'the seed is created inside the revision transaction')
+      assert.equal(scriptSourceAnalysis(project.id), null)
+      throw new Error('外层保存事务回滚')
+    })(), /外层保存事务回滚/)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(revisionSeed(project.id), undefined)
+    assert.equal(effectiveScriptSource(project.id)!.content, proposed.original_content)
+    assert.equal(scriptSourceAnalysis(project.id)!.id, analysis.id)
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM script_source_revisions WHERE project_id=?').get(project.id)!.count, 0)
+    assert.deepEqual(notifications, [])
+  } finally { unsubscribe() }
+})
+
+test('committed revision candidates bind exact source, upload, model and configuration while repeated confirmation preserves the seed', async () => {
+  const { project, proposed } = await longRevisionFixture()
+  const revised = commitScriptSourceUpdate(project.id, proposed), seed = revisionSeed(project.id)!
+  assert.ok(seed)
+  const configurationHash = sourceAnalysisConfigurationHash(revisionConfiguration)
+  const plan = sourceRevisionMapReuse(revised, 'revision-fixture-model', configurationHash)
+  assert.equal(plan?.mode, 'incremental')
+  assert.ok(plan!.pages.some(page => page.reuse_sections?.length))
+  assert.ok(plan!.pages.some(page => !page.reuse_sections), 'the actual middle edit invalidates its affected pages')
+  assert.equal(sourceRevisionMapReuse(revised, 'different-model', configurationHash), null)
+  assert.equal(sourceRevisionMapReuse(revised, 'revision-fixture-model', sourceAnalysisConfigurationHash(['changed-settings'])), null)
+  assert.equal(sourceRevisionMapReuse(revised, 'revision-fixture-model'), null)
+  assert.equal(sourceRevisionMapReuse({ ...revised, updated_at: new Date(Date.parse(revised.updated_at) + 1).toISOString() }, 'revision-fixture-model', configurationHash), null)
+  assert.equal(sourceRevisionMapReuse({ ...revised, content: `${revised.content}另一修订。` }, 'revision-fixture-model', configurationHash), null)
+  assert.deepEqual(commitScriptSourceUpdate(project.id, proposed), revised)
+  assert.deepEqual(revisionSeed(project.id), seed)
+})
+
+test('unknown configuration, unreviewed analyses and damaged snapshots cannot become revision seeds or block confirmation', async t => {
+  for (const issue of ['unknown_configuration', 'quality_issues', 'partial', 'damaged_json', 'invalid_model'] as const) await t.test(issue, async () => {
+    const { project, analysis, proposed } = await longRevisionFixture()
+    const notifications: string[] = []
+    const unsubscribe = onScriptSourceRevision((projectId, modelId) => { if (projectId === project.id) notifications.push(modelId) })
+    try {
+      if (issue === 'unknown_configuration') delete analysis.configuration_hash
+      if (issue === 'quality_issues') analysis.quality!.status = 'issues'
+      if (issue === 'partial') { analysis.status = 'failed'; analysis.completed_chunks-- }
+      if (issue === 'invalid_model') analysis.model_id = ''
+      db.prepare('UPDATE script_source_analyses SET status=?,snapshot=? WHERE project_id=?')
+        .run(analysis.status, issue === 'damaged_json' ? '{invalid snapshot' : JSON.stringify(analysis), project.id)
+      const saved = commitScriptSourceUpdate(project.id, proposed)
+      assert.equal(saved.content, proposed.content)
+      assert.equal(revisionSeed(project.id), undefined)
+      await new Promise<void>(resolve => setImmediate(resolve))
+      if (issue === 'damaged_json' || issue === 'invalid_model') assert.deepEqual(notifications, [])
+    } finally { unsubscribe() }
+  })
+})
+
+test('a second revision without a reviewed intermediate map clears the prior base instead of chaining stale candidates', async () => {
+  const { project, proposed } = await longRevisionFixture()
+  const first = commitScriptSourceUpdate(project.id, proposed)
+  assert.ok(revisionSeed(project.id))
+  const second = update(project.id, first.content.replace('第18集 河岸重逢', '第18集 河岸守望'))
+  const revised = commitScriptSourceUpdate(project.id, second)
+  assert.equal(revised.revision, 2)
+  assert.equal(revisionSeed(project.id), undefined)
+  assert.equal(sourceRevisionMapReuse(revised, 'revision-fixture-model', sourceAnalysisConfigurationHash(revisionConfiguration)), null)
+})
+
+test('rolling back a later revision restores the previous seed and its exact target binding', async () => {
+  const { project, proposed } = await longRevisionFixture()
+  const first = commitScriptSourceUpdate(project.id, proposed), firstSeed = revisionSeed(project.id)!
+  const analysis = saveReviewedAnalysis(project.id)
+  const second = update(project.id, first.content.replace('第18集 河岸重逢', '第18集 河岸守望'))
+  assert.throws(() => db.transaction(() => {
+    commitScriptSourceUpdate(project.id, second)
+    assert.notDeepEqual(revisionSeed(project.id), firstSeed)
+    throw new Error('后续修订回滚')
+  })(), /后续修订回滚/)
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.deepEqual(revisionSeed(project.id), firstSeed)
+  assert.deepEqual(effectiveScriptSource(project.id), first)
+  assert.equal(scriptSourceAnalysis(project.id)!.id, analysis.id)
+  assert.equal(sourceRevisionMapReuse(first, 'revision-fixture-model', sourceAnalysisConfigurationHash(revisionConfiguration))?.mode, 'incremental')
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM script_source_revisions WHERE project_id=?').get(project.id)!.count, 1)
+})
+
+test('generation cleanup preserves source namespaces, and replacing or removing the upload deletes their candidates', async t => {
+  for (const action of ['replace', 'remove'] as const) await t.test(action, async () => {
+    const { project, proposed } = await longRevisionFixture()
+    commitScriptSourceUpdate(project.id, proposed)
+    const seed = revisionSeed(project.id)!
+    for (const namespace of ['source-proposal', 'unrelated-generation-step']) {
+      db.prepare('INSERT INTO script_step_checkpoints (project_id,namespace,cache_key,payload,updated_at) VALUES (?,?,?,?,?)')
+        .run(project.id, namespace, 'fixture-key', '{}', new Date().toISOString())
+    }
+    clearGenerationCheckpoint(project.id)
+    assert.deepEqual(revisionSeed(project.id), seed)
+    assert.ok(db.prepare("SELECT 1 FROM script_step_checkpoints WHERE project_id=? AND namespace='source-proposal'").get(project.id))
+    assert.equal(db.prepare("SELECT 1 FROM script_step_checkpoints WHERE project_id=? AND namespace='unrelated-generation-step'").get(project.id), undefined)
+    if (action === 'replace') await upload(project.id, proposed.original_content)
+    else assert.equal((await app.inject({ method: 'DELETE', url: `/api/projects/${project.id}/script/source` })).statusCode, 200)
+    assert.equal(revisionSeed(project.id), undefined)
+    assert.equal(db.prepare("SELECT 1 FROM script_step_checkpoints WHERE project_id=? AND namespace='source-proposal'").get(project.id), undefined)
+  })
 })

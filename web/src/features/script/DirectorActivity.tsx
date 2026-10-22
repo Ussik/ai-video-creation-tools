@@ -7,6 +7,7 @@ import { activityCalls, activityDuration, activityPresentation, activitySequence
 import { ActivityCallDetails, ActivityStatusIcon, ActivityTargets } from './DirectorActivityDetails'
 import type { ScriptActivityTarget } from '@video-studio/shared/script/script-activity-types'
 import { WorkspaceDisclosure } from '../../shared/ui/WorkspaceDisclosure'
+import { scriptDiagnosticDisplayText } from './script-display-text'
 import './director-activity.css'
 
 export default function DirectorActivity({ activity, execution, pending, failed, disabled, onOpenDraft, onOpenDocuments, onOpenSource, onRetry, onRecover, onStop, onContinue }: {
@@ -30,7 +31,7 @@ export default function DirectorActivity({ activity, execution, pending, failed,
   const activeMs = active ? Math.max(0, now - active.started_at) : 0
   const waiting = pending && active?.kind === 'model' && activeMs >= 45_000
   const interrupted = view.state === 'failed' || view.state === 'cancelled'
-  const summary = pending ? active?.summary || '正在准备项目资料和对话内容' : view.outcome?.summary || (interrupted ? '本轮没有返回完整结果，可先检查已有成果。' : '本轮回复已返回，可在下方查看。')
+  const summary = scriptDiagnosticDisplayText(pending ? active?.summary || '正在准备项目资料和对话内容' : view.outcome?.summary || (interrupted ? '本轮没有返回完整结果，可先检查已有成果。' : '本轮回复已返回，可在下方查看。'))
   const currentLabel = current?.label || active?.label || '准备创作请求'
   const currentCall = active && current?.id !== active.id ? active.label : undefined
   return <section className={`sd-activity is-${view.state}`} aria-label="本条回复的任务进度">
@@ -47,7 +48,7 @@ export default function DirectorActivity({ activity, execution, pending, failed,
     {!!sequence.tasks.length && <div className="sd-activity-tasks">{sequence.tasks.map(node => {
       const { status, label } = activityPresentation(node, pending)
       const duration = activityDuration(node.event, now, pending)
-      return <div className="sd-activity-task" key={node.event.id} data-activity-id={node.event.id} title={node.event.summary}>
+      return <div className="sd-activity-task" key={node.event.id} data-activity-id={node.event.id} title={scriptDiagnosticDisplayText(node.event.summary)}>
         <span className={`sd-activity-icon is-${status}`}><ActivityStatusIcon status={status} hasActiveChildren={node.waiting} /></span><span>{node.event.label}</span><span className="sd-activity-status">{label}</span>
         {typeof duration === 'number' && <time title="阶段总用时（包含内部步骤）">{formatProcessingDuration(duration)}</time>}
       </div>
@@ -66,7 +67,7 @@ export default function DirectorActivity({ activity, execution, pending, failed,
             <span className="sd-activity-status">{label}</span>
             {event.kind !== 'skill' && typeof duration === 'number' && <time>{formatProcessingDuration(duration)}</time>}
           </div>
-          <p className="sd-activity-summary">{status === 'unconfirmed' ? '本轮已结束，但未收到此步骤的完成记录。' : event.summary}</p>
+          <p className="sd-activity-summary">{status === 'unconfirmed' ? '本轮已结束，但未收到此步骤的完成记录。' : scriptDiagnosticDisplayText(event.summary)}</p>
           <ActivityTargets events={[event, ...activityCalls(node).map(call => call.node.event)]} onOpenSource={onOpenSource} />
           <ActivityCallDetails step={node} now={now} pending={pending} onOpenSource={onOpenSource} />
         </div>
@@ -74,7 +75,7 @@ export default function DirectorActivity({ activity, execution, pending, failed,
     })}</ol>}
       {!!sequence.notices.length && <WorkspaceDisclosure className="sd-activity-notices" label={<><span>过程提示</span><small>{sequence.notices.length} 条</small></>}>
         <ul className="sd-activity-notice-list" aria-label="过程提示">{sequence.notices.map(({ event }) => <li key={event.id} data-activity-id={event.id}>
-          <strong>{event.label}</strong><p>{event.summary}</p>
+          <strong>{event.label}</strong><p>{scriptDiagnosticDisplayText(event.summary)}</p>
         </li>)}</ul>
       </WorkspaceDisclosure>}
     </>}

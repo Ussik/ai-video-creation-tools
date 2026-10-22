@@ -11,6 +11,7 @@ import { draftCompletenessFixtureResponse } from './fixtures/script-draft-comple
 const testData = await mkdtemp(join(tmpdir(), 'studio-script-source-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
 const { extractScriptText, scriptSourceContext, scriptSourceIndex, readScriptSource, searchScriptSource } = await import('../src/modules/script/script-source-documents.js')
+const { commitScriptSourceUpdate } = await import('../src/modules/script/script-source-versions.js')
 const { buildApp } = await import('../src/app.js')
 const { db } = await import('../src/infrastructure/database/db.js')
 const app = buildApp()
@@ -107,6 +108,8 @@ test('upload returns before background analysis completes and the next conversat
     }
     assert.equal(ready.status, 'ready', JSON.stringify(ready))
     assert.equal(scriptSourceIndex(project.id)!.story_map![0]!.episode_number, 1)
+    assert.equal(scriptSourceIndex(project.id)!.analysis_source_version, ready.source_version)
+    assert.equal(scriptSourceIndex(project.id)!.source_version, readScriptSource(project.id, 0, 1).source_version)
     const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload: {
       model_id: model.id, mode: 'script', use_tools: true, messages: [{ role: 'user', text: 'INPUT_VISUAL_STYLE: 日漫二维画风' }] } })
     assert.equal(response.statusCode, 200, response.body); assert.equal(chatCalls, 2)
@@ -202,6 +205,102 @@ test('uploaded source index and reads retain late scenes without copying the who
   assert.equal(match.matches.length, 1)
   assert.match(readScriptSource(project.id, match.matches[0]!.offset, 1000).content, /林舟回到故乡/)
   assert.equal(readScriptSource(project.id, 0, content.length).content, content)
+})
+
+test('source reads bind an effective manuscript version before analysis and never read private proposed revisions', async () => {
+  const project = (await app.inject({ method: 'POST', url: '/api/projects', payload: { name: '原文检索版本' } })).json()
+  const original = '原稿：林舟没有回家。赵师傅在桥头等他。'
+  assert.equal((await upload(project.id, 'original.txt', Buffer.from(original))).statusCode, 200)
+  const index = scriptSourceIndex(project.id)!
+  assert.equal(index.analysis_status, 'not_started')
+  assert.equal(index.source_kind, 'effective')
+  assert.match(index.source_version, /^[a-f0-9]{64}$/)
+  db.prepare('INSERT INTO script_step_checkpoints (project_id, namespace, cache_key, payload, updated_at) VALUES (?, ?, ?, ?, ?)')
+    .run(project.id, 'source-proposal', 'private-draft', JSON.stringify({ content: 'PRIVATE_UNCONFIRMED：林舟已经回家。' }), 'now')
+  const read = readScriptSource(project.id, 0, 1000, { source_version: index.source_version })
+  assert.equal(read.content, original)
+  assert.equal(read.source_version, index.source_version)
+  assert.equal(searchScriptSource(project.id, 'PRIVATE_UNCONFIRMED', 8).total_matches, 0)
+  const revised = '已确认修订稿：林舟已经回家。赵师傅在门前等他。'
+  commitScriptSourceUpdate(project.id, { id: `revision-${project.id}`, base_version: index.source_version, original_content: original, content: revised, replacements: [] })
+  assert.throws(() => readScriptSource(project.id, 0, 100, { source_version: index.source_version }), { statusCode: 409 })
+  assert.throws(() => searchScriptSource(project.id, '赵师傅', 8, { source_version: index.source_version }), { statusCode: 409 })
+  const next = scriptSourceIndex(project.id)!
+  assert.notEqual(next.source_version, index.source_version)
+  assert.equal(next.revision, 1)
+  assert.equal(readScriptSource(project.id, 0, 1000, { source_version: next.source_version }).content, revised)
+  assert.equal((await app.inject({ method: 'GET', url: `/api/projects/${project.id}/script/source/original` })).json().content, original)
+  await app.inject({ method: 'DELETE', url: `/api/projects/${project.id}/script/source` })
+  assert.throws(() => readScriptSource(project.id, 0, 100, { source_version: next.source_version }), { statusCode: 409 })
+  assert.throws(() => searchScriptSource(project.id, '赵师傅', 8, { source_version: next.source_version }), { statusCode: 409 })
+})
+
+test('literal source search counts and pages every result with exact Unicode manuscript offsets', async () => {
+  const project = (await app.inject({ method: 'POST', url: '/api/projects', payload: { name: '字面搜索分页' } })).json()
+  const query = '赵师傅[A].*'
+  const content = `${'İ😀'.repeat(300)}\n${Array.from({ length: 25 }, (_, i) => `第${i + 1}集：${query}。`).join('\n')}\nAlpha与ALPHA`
+  assert.equal((await upload(project.id, 'literal.txt', Buffer.from(content))).statusCode, 200)
+  const sourceVersion = scriptSourceIndex(project.id)!.source_version
+  const found: number[] = []
+  let cursor: string | undefined
+  do {
+    const result = searchScriptSource(project.id, query, 8, { source_version: sourceVersion, ...(cursor ? { cursor } : {}) })
+    assert.equal(result.total_matches, 25)
+    assert.equal(result.source_version, sourceVersion)
+    for (const match of result.matches) {
+      assert.equal(content.slice(match.match_offset, match.match_offset + match.match_length), query)
+      assert.equal(content.slice(match.offset, match.offset + match.excerpt.length), match.excerpt)
+      assert.equal(readScriptSource(project.id, match.match_offset, match.match_length, { source_version: result.source_version }).content, query)
+      found.push(match.match_offset)
+    }
+    assert.equal(result.truncated, found.length < result.total_matches)
+    assert.equal(result.next_cursor === null, !result.truncated)
+    cursor = result.next_cursor || undefined
+  } while (cursor)
+  assert.equal(found.length, 25)
+  assert.equal(new Set(found).size, 25)
+  assert.deepEqual(found, [...content.matchAll(/赵师傅\[A\]\.\*/g)].map(match => match.index))
+  const english = searchScriptSource(project.id, 'alpha', 8)
+  assert.equal(english.total_matches, 2)
+  assert.equal(english.matches[0]!.match_offset, content.indexOf('Alpha'))
+  assert.equal(english.matches[1]!.match_offset, content.indexOf('ALPHA'))
+  const absent = searchScriptSource(project.id, '没有出现的人物', 8)
+  assert.equal(absent.total_matches, 0)
+  assert.equal(absent.truncated, false)
+  assert.equal(absent.next_cursor, null)
+})
+
+test('search cursors reject another query, project, malformed position and stale manuscript', async () => {
+  const project = (await app.inject({ method: 'POST', url: '/api/projects', payload: { name: '搜索游标作用域' } })).json()
+  const other = (await app.inject({ method: 'POST', url: '/api/projects', payload: { name: '另一项目' } })).json()
+  const original = '赵师傅到场。赵师傅离开。赵师傅回来。'
+  await upload(project.id, 'cursor.txt', Buffer.from(original))
+  await upload(other.id, 'cursor.txt', Buffer.from(original))
+  const first = searchScriptSource(project.id, '赵师傅', 1), cursor = first.next_cursor!
+  assert.throws(() => searchScriptSource(project.id, '离开', 1, { cursor }), { statusCode: 422 })
+  assert.throws(() => searchScriptSource(other.id, '赵师傅', 1, { cursor }), { statusCode: 422 })
+  for (const malformed of ['', 'not+a+cursor', Buffer.from('{}').toString('base64url')]) {
+    assert.throws(() => searchScriptSource(project.id, '赵师傅', 1, { cursor: malformed }), { statusCode: 422 })
+  }
+  const invalidPosition = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))
+  invalidPosition.next_match = 999
+  assert.throws(() => searchScriptSource(project.id, '赵师傅', 1, { cursor: Buffer.from(JSON.stringify(invalidPosition)).toString('base64url') }), { statusCode: 422 })
+  await upload(project.id, 'cursor.txt', Buffer.from(`新版前文。${original}`))
+  assert.throws(() => searchScriptSource(project.id, '赵师傅', 1, { cursor }), { statusCode: 409 })
+})
+
+test('source retrieval rejects unsafe ranges and empty or excessive search parameters', async () => {
+  const project = (await app.inject({ method: 'POST', url: '/api/projects', payload: { name: '原文检索参数校验' } })).json()
+  await upload(project.id, 'validation.txt', Buffer.from('赵师傅与林舟。'))
+  for (const [offset, length] of [[-1, 2], [0.5, 2], [NaN, 2], [0, 0], [0, -1], [0, Infinity], [0, 100001], [100, 1]]) {
+    assert.throws(() => readScriptSource(project.id, offset!, length!), { statusCode: 422 })
+  }
+  for (const query of ['', '  ', '人'.repeat(201)]) assert.throws(() => searchScriptSource(project.id, query, 8), { statusCode: 422 })
+  for (const limit of [0, -1, 1.5, 21, Infinity]) assert.throws(() => searchScriptSource(project.id, '赵师傅', limit), { statusCode: 422 })
+  assert.throws(() => readScriptSource(project.id, 0, 1, { source_version: '' }), { statusCode: 422 })
+  const length = scriptSourceIndex(project.id)!.total_length
+  assert.equal(readScriptSource(project.id, length, 1).complete, true)
+  assert.equal(readScriptSource(project.id, length, 1).content, '')
 })
 
 test('every stage writer and completeness check receive the original script independently of chat history', async t => {

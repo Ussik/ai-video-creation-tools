@@ -65,7 +65,12 @@ export function activityRecorder(onEvent: (event: Record<string, unknown>) => vo
       const current = entries.find(item => item.id === entry.id)
       if (current && current.status !== 'running') return current
       const ended_at = Date.now()
-      return emit({ ...entry, ...changes, status, ended_at, duration_ms: Math.max(0, ended_at - entry.started_at) })
+      return emit({ ...(current || entry), ...changes, status, ended_at, duration_ms: Math.max(0, ended_at - entry.started_at) })
+    },
+    update(entry: ScriptActivity, changes: Partial<ScriptActivity>) {
+      const current = entries.find(item => item.id === entry.id)
+      if (!current || current.status !== 'running') return current
+      return emit({ ...current, ...changes })
     },
     skills(stage: SkillStage, context: ReturnType<typeof skillContext>) {
       if (!context.skills.length) {

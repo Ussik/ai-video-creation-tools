@@ -61,7 +61,7 @@ test('simultaneous manual and automatic additions survive and a broad rewrite ke
 test('video requirements and visual context are explicit and keyframe mode does not number unused information boards', () => {
   const base = videoPreferencePrompt('缓慢坐起，镜头推近', 'first_frame', 6)
   const binding = { kind: 'character' as const, name: '林晚', variant: '常服', revision: 2, definition: '深蓝外套', view_requirements: '侧面', board_asset_id: 'board' }
-  const full = visualGenerationPrompt(base, [binding], ['frame'], 'keyframe')
+  const full = visualGenerationPrompt(base, [binding], ['frame'], 'keyframe', { mode: 'first_frame' })
   assert.match(full, /视频时长：6 秒/)
   assert.match(full, /首帧要求/)
   assert.match(full, /深蓝外套/)

@@ -71,13 +71,19 @@ async function mount(t: TestContext) {
       continuityReads.push(id!)
       return Response.json({ shots: [], summary: { status: 'ready', error_count: 0, warning_count: 0 }, signature: id })
     }
-    if (path.endsWith('/canvases')) return Response.json([{ id, project_id: id, name: '画布 1', is_default: true, node_count: 0, viewport: null }])
-    if (path.endsWith('/canvas')) return Response.json({ revision: 'test', nodes: [], edges: [] })
+    if (path.endsWith('/canvases')) return Response.json([{ id, project_id: id, name: '画布 1', is_default: true, node_count: 1, viewport: null }])
+    if (path.endsWith('/canvas')) return Response.json({ revision: 'test', nodes: [{
+      id: `project-script:${id}`, type: 'project_script_ref', x: 60, y: 80, width: 720, height: 480,
+      title: projects.find(item => item.id === id)!.name, text: '', prompt: '', asset_id: null, shot_id: null, model_id: null, job_id: null, settings: {},
+    }], edges: [] })
     const detail = projects.find(item => item.id === id)
     assert.ok(detail, `unexpected request: ${method} ${path}`)
     return Response.json(detail)
   })
   dom.window.localStorage.clear(); dom.window.sessionStorage.clear()
+  // These gallery tests start with initialized canvases. Restore their camera
+  // so opening one does not leave an unrelated first-visit animation running.
+  for (const item of projects) dom.window.localStorage.setItem(`project-canvas-viewport:${item.id}`, JSON.stringify({ x: 0, y: 0, zoom: 1 }))
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container)
   await act(async () => root.render(<MantineProvider env="test"><App /></MantineProvider>)); await settle()
@@ -134,8 +140,9 @@ test('confirmed batch deletion sends one request and switches away from a delete
     assert.deepEqual(view.mutations, [{ path: '/api/projects/batch-delete', ids: ['a', 'b'] }])
     assert.deepEqual([...document.querySelectorAll('.project-card-meta strong')].map(item => item.textContent), ['冬日归来'])
     assert.equal(document.querySelector('.project-batch-toolbar'), null)
-    assert.equal(view.continuityReads.at(-1), 'c', 'remaining project becomes active')
     assert.match(document.body.textContent!, /已删除 2 个项目/)
+    await click(view.container.querySelector<HTMLElement>('[aria-label="资产"]')!)
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="切换项目"]')!.value, '冬日归来', 'remaining project becomes active')
   } finally { await view.cleanup() }
 })
 
@@ -155,7 +162,8 @@ test('failed batch deletion shows the server reason, retains selection and suppo
     await click(button('删除所选项目')); await click(button('确认删除 1 个项目'))
     assert.equal(document.querySelectorAll('.project-card-main').length, 2)
     assert.equal(view.continuityReads.length, reads, 'deleting an inactive project must preserve the current detail')
-    assert.equal(view.continuityReads.at(-1), 'a')
+    await click(view.container.querySelector<HTMLElement>('[aria-label="资产"]')!)
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="切换项目"]')!.value, '春日序章', 'deleting another project preserves the active project')
   } finally { await view.cleanup() }
 })
 

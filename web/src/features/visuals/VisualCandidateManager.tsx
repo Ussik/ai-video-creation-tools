@@ -1,36 +1,54 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { UnstyledButton, Button, Modal } from '@mantine/core'
-import { Archive, ArchiveRestore, Check, ExternalLink, Save } from 'lucide-react'
+import { Archive, ArchiveRestore, Check, ExternalLink, Save, X } from 'lucide-react'
 import { api, json } from '../../shared/api/api'
 import type { Model, ProjectDetail, VisualProfile } from '../../shared/api/api'
 import { visualCandidateAssets, visualJobRequest } from '../canvas/canvas-visual-profiles'
 
 type Props = { profile: VisualProfile; detail: ProjectDetail; models: Model[]; displayedAssetId?: string | null;
-  generating: boolean; onConfirm: (assetId: string) => Promise<void>; onRefresh: () => Promise<void>; onClose: () => void }
+  generating: boolean; onConfirm: (assetId: string) => Promise<void>; onRefresh: () => Promise<void>; onClose: () => void;
+  onError?: (issue: unknown) => void }
 
-export default function VisualCandidateManager({ profile, detail, models, displayedAssetId, generating, onConfirm, onRefresh, onClose }: Props) {
+export default function VisualCandidateManager({ profile, detail, models, displayedAssetId, generating, onConfirm, onRefresh, onClose, onError }: Props) {
   const candidates = visualCandidateAssets(profile, detail, displayedAssetId)
   const archived = new Set(profile.archived_candidate_asset_ids || [])
   const [filter, setFilter] = useState<'active' | 'archived'>('active')
   const [selectedId, setSelectedId] = useState(displayedAssetId || profile.board_asset_id || candidates.find(asset => !archived.has(asset.id))?.id)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const actionLocked = useRef(false)
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
   const visible = candidates.filter(asset => archived.has(asset.id) === (filter === 'archived'))
   const selected = visible.find(asset => asset.id === selectedId) || visible[0]
   const job = detail.jobs.find(item => item.result_asset_id === selected?.id)
   const request = visualJobRequest(job)
   const needsStyleReview = profile.board_style_status === 'needs_review' || profile.board_style_status === 'unrecorded'
   async function action(run: () => Promise<void>) {
+    if (actionLocked.current) return
+    actionLocked.current = true
     setBusy(true); setError('')
-    try { await run() } catch (issue) { setError(issue instanceof Error ? issue.message : String(issue)) } finally { setBusy(false) }
+    try { await run() } catch (issue) {
+      if (mounted.current) setError(issue instanceof Error ? issue.message : String(issue))
+      else onError?.(issue)
+    } finally {
+      actionLocked.current = false
+      if (mounted.current) setBusy(false)
+    }
   }
-  return <Modal opened onClose={() => { if (!busy) onClose() }} centered size={960} radius={16} title={`设定图候选 · ${profile.name}`}
-    closeOnClickOutside={!busy} closeOnEscape={!busy} classNames={{ content: 'pc-confirm-modal pc-candidate-modal', header: 'pc-confirm-modal-header', body: 'pc-confirm-modal-body', close: 'pc-confirm-modal-close' }}>
+  // Dismissing this viewer does not cancel submitted changes or their refresh.
+  return <Modal opened onClose={onClose} centered size={960} radius={16} title={`设定图候选 · ${profile.name}`}
+    closeButtonProps={{ 'aria-label': '关闭设定图候选', size: 32, icon: <X size={18} /> }}
+    classNames={{ content: 'pc-confirm-modal pc-candidate-modal', header: 'pc-confirm-modal-header', body: 'pc-confirm-modal-body', close: 'pc-confirm-modal-close' }}>
     <div className="pc-candidate-manager">
       <div className="pc-candidate-filters" role="group" aria-label="候选图范围">
         <UnstyledButton type="button" aria-pressed={filter === 'active'} onClick={() => setFilter('active')}>候选图 · {candidates.filter(asset => !archived.has(asset.id)).length}</UnstyledButton>
         <UnstyledButton type="button" aria-pressed={filter === 'archived'} onClick={() => setFilter('archived')}>已归档 · {candidates.filter(asset => archived.has(asset.id)).length}</UnstyledButton>
       </div>
+      {busy && <p className="pc-candidate-help" role="status">正在处理，关闭窗口后仍会继续完成。</p>}
       {error && <p className="pc-candidate-error" role="alert">{error}</p>}
       {selected ? <div className="pc-candidate-workspace">
         <div className="pc-candidate-grid" aria-label="候选图列表">{visible.map((asset, index) => <UnstyledButton type="button" key={asset.id} aria-label={`查看候选图 ${index + 1}`} aria-pressed={selected.id === asset.id} onClick={() => setSelectedId(asset.id)}>

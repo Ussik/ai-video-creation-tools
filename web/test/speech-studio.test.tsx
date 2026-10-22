@@ -303,6 +303,42 @@ test('placement uses the shot context and preserves the measured audio range aft
   } finally { await view.destroy() }
 })
 
+test('speech reads and placement updates stay in the chosen final-cut canvas while audio remains shared', async t => {
+  const candidate = { ...take, status: 'succeeded', asset_id: 'audio', url: '/voice.mp3', duration_ms: 1800 }
+  const selected = { ...line, selected_asset_id: 'audio', takes: [candidate] }
+  const calls: Array<{ path: string; method: string; body?: any }> = []
+  let placement: any = null
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    const path = String(url), method = init?.method || 'GET'
+    calls.push({ path, method, ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}) })
+    if (path.endsWith('/config')) return Response.json(config)
+    if (method === 'PUT') {
+      placement = { ...JSON.parse(String(init!.body)), id: 'new-plan-placement', line_id: line.id, asset_id: 'audio', stale: false }
+      return Response.json(placement)
+    }
+    if (method === 'DELETE') { placement = null; return Response.json({ ok: true }) }
+    return Response.json({ voices: [voice], lines: [selected], placements: placement ? [placement] : [] })
+  })
+  const view = await mount(async () => {}, () => {}, {
+    shots: [{ id: 'new-shot', source_scene_id: 'scene', title: '重新规划的镜头' } as any],
+    initialShotId: 'new-shot', finalCutCanvasId: 'new-plan',
+  })
+  try {
+    assert.deepEqual(calls.map(item => item.path).sort(), ['/api/projects/project/speech?canvas_id=new-plan', '/api/speech/config'])
+    assert.match(document.querySelector('.speech-placement-heading')!.textContent!, /待设置播放位置/)
+    await act(async () => button('加入成片').click())
+    assert.match(document.querySelector('.speech-placement-heading')!.textContent!, /已入片/)
+    await act(async () => button('移出成片').click())
+    assert.match(document.querySelector('.speech-placement-heading')!.textContent!, /待设置播放位置/)
+    assert.deepEqual(calls.filter(item => item.method !== 'GET'), [
+      { path: '/api/projects/project/speech/lines/line/placement?canvas_id=new-plan', method: 'PUT', body: { shot_id: 'new-shot', offset_ms: 0, in_ms: 0, out_ms: 1800, gain: 1 } },
+      { path: '/api/projects/project/speech/lines/line/placement?canvas_id=new-plan', method: 'DELETE' },
+    ])
+    assert.ok(calls.filter(item => item.method === 'GET' && !item.path.endsWith('/config')).every(item => item.path === '/api/projects/project/speech?canvas_id=new-plan'))
+    assert.equal(document.querySelector('audio')?.getAttribute('src'), '/voice.mp3', 'the existing audio candidate is still available')
+  } finally { await view.destroy() }
+})
+
 test('stale selected audio is visible as history and cannot enter the cut', async t => {
   const selected = { ...line, text: '这是新的台词。', selected_asset_id: 'audio', selected_is_stale: true,
     takes: [{ ...take, status: 'succeeded', asset_id: 'audio', duration_ms: 1800, url: '/old.mp3' }] }

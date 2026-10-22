@@ -84,6 +84,38 @@ test('image visual context numbers all submitted independent references while ke
   assert.doesNotMatch(keyframe, /参考图 \d|【视频参考图用途】/)
 })
 
+test('bounded visual compilation rebuilds one current system layer without changing body, parameters or project style', () => {
+  const body = '  手改的新动作，固定机位。\t\n'
+  const parameters = '【图片生成要求】\n画面比例：16:9\n【图片生成要求结束】'
+  const style = '【项目画风约束】\n水墨\n【项目画风约束结束】'
+  const base = `${body}\n\n${parameters}\n\n${style}`
+  const first = visualGenerationPrompt(base, [hero], ['face'], 'profiles')
+  const current = binding('hero', [reference('side', 'side', 'costume', '当前服装')], { definition: '当前已绑定设定' })
+  const next = visualGenerationPrompt(first, [current], ['side'], 'profiles')
+  assert.ok(next.startsWith(base + '\n\n'))
+  assert.equal((next.match(/【镜头视觉设定】/g) || []).length, 1)
+  assert.equal((next.match(/【镜头视觉设定结束】/g) || []).length, 1)
+  assert.match(next, /当前已绑定设定|当前服装/)
+  assert.doesNotMatch(next, /深绿雨衣|锁定面部/)
+  assert.equal(visualGenerationPrompt(next, [current], ['side'], 'profiles'), next)
+})
+
+test('image exclusion removes only a shared image owner and its selected view while retaining its text definition', () => {
+  const optional = binding('optional', [reference('face', 'detail', 'structure', '钥匙齿纹')], {
+    kind: 'prop', name: '铜钥匙', variant: '旧铜', required: false, definition: '弯曲铜钥匙，保留正文文字约束',
+  })
+  const prompt = visualGenerationPrompt('保持手改动作。', [hero, optional], ['face'], 'profiles', { excluded_visual_profile_ids: ['optional'] })
+  const [body, mapping] = prompt.split('【图片参考图用途】')
+  assert.match(body!, /弯曲铜钥匙，保留正文文字约束/)
+  assert.match(body!, /林晚（雨衣，版本 1）；参考图 1/)
+  assert.doesNotMatch(body!, /铜钥匙（旧铜，版本 1）；参考图|钥匙齿纹|本次参考用途：局部细节/)
+  assert.match(mapping!, /参考图 1：林晚（雨衣）/)
+  assert.doesNotMatch(mapping!, /铜钥匙|旧铜|钥匙齿纹/)
+  assert.equal(visualGenerationPrompt(prompt, [hero, optional], ['face'], 'profiles', { excluded_visual_profile_ids: ['optional'] }), prompt)
+  const manual = visualGenerationPrompt('正文。', [optional], ['face'], 'profiles', { excluded_visual_profile_ids: ['optional'] })
+  assert.match(manual.split('【图片参考图用途】')[1]!, /参考图 1：补充参考/)
+})
+
 
 test('ending and scale overrides replace only managed image uses without rewriting creator actions', () => {
   const draft = '开场林晚站在右侧。随后走向站台，最后坐下。固定机位。'

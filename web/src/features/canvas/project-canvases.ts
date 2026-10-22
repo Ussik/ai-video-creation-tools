@@ -1,4 +1,4 @@
-export type ProjectCanvasInfo = { id: string; project_id: string; name: string; is_default: boolean; node_count: number; viewport: { x: number; y: number; zoom: number } | null }
+export type ProjectCanvasInfo = { id: string; project_id: string; name: string; is_default: boolean; design_id?: string | null; node_count: number; viewport: { x: number; y: number; zoom: number } | null }
 export function canvasGraphPath(projectId: string, canvasId?: string) {
   return `/projects/${projectId}/${canvasId ? `canvases/${canvasId}` : 'canvas'}`
 }

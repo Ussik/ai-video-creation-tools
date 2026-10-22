@@ -58,3 +58,24 @@ test('checkpoint rejects fabricated tool references instead of dropping the real
   await assert.rejects(compactToolHistory(history, 1, model('chat_completions'), provider, () => ''), /不得编造/)
   assert.equal(calls, 2); assert.equal(history.length, 4)
 })
+
+for (const protocol of ['chat_completions', 'responses'] as const) test(`${protocol} checkpoint reread references retain the pinned original version`, async t => {
+  const sourceVersion = 'a'.repeat(64)
+  const readArgs = JSON.stringify({ source_version: sourceVersion, offset: 120, length: 5000 })
+  const checkpoint = { completed: ['已读取当前版本的部分原文'], decisions: [],
+    references: [{ tool: 'read_source_document', arguments: readArgs, facts: ['逐字引用前须重新读取同版本原文'] }], pending: ['补读上下文'], errors: [] }
+  t.mock.method(globalThis, 'fetch', async () => reply(checkpoint))
+  const call = protocol === 'responses' ? { type: 'function_call', call_id: 'source', name: 'read_source_document', arguments: readArgs }
+    : { role: 'assistant', tool_calls: [{ id: 'source', function: { name: 'read_source_document', arguments: readArgs } }] }
+  const result = JSON.stringify({ ok: true, result: { source_version: sourceVersion, content: '相关原文。'.repeat(4000) } })
+  const output = protocol === 'responses' ? { type: 'function_call_output', call_id: 'source', output: result }
+    : { role: 'tool', tool_call_id: 'source', content: result }
+  const pending = protocol === 'responses' ? { type: 'function_call', call_id: 'pending', name: 'read_source_document', arguments: readArgs }
+    : { role: 'assistant', tool_calls: [{ id: 'pending', function: { name: 'read_source_document', arguments: readArgs } }] }
+  const compacted = await compactToolHistory([{ role: 'user', content: '只查询这个版本的原文' }, call, output, pending], 1, model(protocol), provider, () => '')
+  const record = compacted.find(item => typeof (item as { content?: unknown }).content === 'string' && (item as { content: string }).content.includes('references')) as { content: string }
+  assert.ok(record)
+  const saved = JSON.parse(record.content.slice(record.content.indexOf('\n') + 1))
+  assert.equal(saved.references[0].tool, 'read_source_document')
+  assert.deepEqual(JSON.parse(saved.references[0].arguments), { source_version: sourceVersion, offset: 120, length: 5000 })
+})

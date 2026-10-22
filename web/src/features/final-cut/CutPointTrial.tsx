@@ -4,6 +4,7 @@ import { RotateCcw, Save, TriangleAlert } from 'lucide-react'
 import { api, json } from '../../shared/api/api'
 import type { Asset, CutReview, ProjectDetail, TimelineClip } from '../../shared/api/api'
 import TimelinePreview from './TimelinePreview'
+import { finalCutPath } from './final-cut-scope'
 import './cut-point-trial.css'
 
 function seconds(ms: number) {
@@ -33,11 +34,12 @@ function TrialFrame({ url, timeMs, label, onLoaded, onFailed }: {
 interface CutPointTrialProps {
   cut: CutReview
   detail: ProjectDetail
+  finalCutCanvasId?: string | null
   noteDirty: boolean
   onSaved: () => Promise<void>
 }
 
-export default function CutPointTrial({ cut, detail, noteDirty, onSaved }: CutPointTrialProps) {
+export default function CutPointTrial({ cut, detail, finalCutCanvasId, noteDirty, onSaved }: CutPointTrialProps) {
   const fromClip = detail.timeline_clips.find((clip) => clip.shot_id === cut.from_shot_id)
   const toClip = detail.timeline_clips.find((clip) => clip.shot_id === cut.to_shot_id)
   const fromAsset = detail.assets.find((asset) => asset.id === fromClip?.asset_id)
@@ -105,7 +107,7 @@ export default function CutPointTrial({ cut, detail, noteDirty, onSaved }: CutPo
     setSaving(true)
     setError(null)
     try {
-      await api(`/projects/${detail.id}/cut-points`, json('PUT', {
+      await api(finalCutPath(`/projects/${detail.id}/cut-points`, finalCutCanvasId), json('PUT', {
         from_shot_id: cut.from_shot_id,
         to_shot_id: cut.to_shot_id,
         signature: cut.signature,
