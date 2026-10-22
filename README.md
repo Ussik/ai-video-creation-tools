@@ -15,7 +15,7 @@ npm run dev
 
 项目使用 npm workspaces，根目录统一安装前端、后端和共享包依赖。开发命令先编译共享规则，再同时启动前后端和共享包监听。需要分开启动时，先运行 `npm run build:shared`，再分别运行 `npm run dev --workspace=backend` 与 `npm run dev --workspace=web`。
 
-打开 [http://127.0.0.1:5173/](http://127.0.0.1:5173/)。后端默认监听 `127.0.0.1:8000`，前端开发服务器会代理 `/api`。生产构建在根目录执行 `npm run build`，然后执行 `npm start`；后端会托管已构建的前端。目录结构与模块边界见 [项目目录规范](docs/project-structure.md)。
+打开 [http://127.0.0.1:8888/](http://127.0.0.1:8888/)。前端开发端口固定为 `8888`，端口被占用时会提示错误。后端默认监听 `127.0.0.1:8000`，前端开发服务器会代理 `/api`。生产构建在根目录执行 `npm run build`，然后执行 `npm start`；后端会托管已构建的前端。目录结构与模块边界见 [项目目录规范](docs/project-structure.md)。
 
 项目、配置、任务和素材保存在根目录 `data/`。可用 `VIDEO_STUDIO_DATA_DIR` 指定其他目录。API Key 使用本机 `data/secret.key` 加密后保存到 SQLite；请一起备份数据库、素材和密钥文件。服务只监听本机，没有账号权限系统，不适合直接暴露到公网。
 
