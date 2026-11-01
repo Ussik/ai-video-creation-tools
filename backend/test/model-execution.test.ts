@@ -4,7 +4,8 @@ import { z } from 'zod'
 import { generateStructuredOutput } from '../src/modules/generation/model-output.js'
 import { retryReadOnlyGeneration } from '../src/modules/generation/read-only-retry.js'
 import { TextProviderError, textRetryAfter } from '../src/infrastructure/providers/text-errors.js'
-import { modelStepSignal } from '../src/modules/generation/model-execution.js'
+import { claimModelAttempt, isUnrestrictedScriptExecution, modelAttemptNumber, modelStepSignal, remainingModelAttempts,
+  remainingModelStepMs, runGenerationDeadline, runModelStep, withUnrestrictedScriptExecution } from '../src/modules/generation/model-execution.js'
 
 test('network retries and contract correction together never exceed three actual calls', async () => {
   let calls = 0
@@ -43,4 +44,27 @@ test('provider Retry-After is honored and authorization failures are never retri
   }, { wait: async ms => { waits.push(ms) }, random: () => 0 })
   assert.equal(await generate('test'), 'complete')
   assert.deepEqual(waits, [12000])
+})
+
+test('script execution removes cumulative attempt and business deadlines while preserving cancellation and isolation', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1000 })
+  const controller = new AbortController()
+  await withUnrestrictedScriptExecution(() => runGenerationDeadline(controller.signal, 1, () =>
+    runModelStep('script_review', controller.signal, async () => {
+      assert.equal(isUnrestrictedScriptExecution(), true)
+      for (let attempt = 0; attempt < 40; attempt++) claimModelAttempt()
+      assert.equal(modelAttemptNumber(), 40)
+      assert.equal(remainingModelAttempts(), Infinity)
+      assert.equal(remainingModelStepMs(), Infinity)
+      t.mock.timers.tick(181 * 60_000)
+      assert.equal(modelStepSignal()!.aborted, false)
+    }, 1)))
+  assert.equal(isUnrestrictedScriptExecution(), false)
+  await assert.rejects(runModelStep('ordinary_generation', undefined, async () => {
+    for (let attempt = 0; attempt < 4; attempt++) claimModelAttempt()
+  }), /模型请求上限/)
+  const stopped = withUnrestrictedScriptExecution(() => runModelStep('script_review', controller.signal,
+    () => new Promise<never>(() => {})))
+  controller.abort(new Error('creator stopped'))
+  await assert.rejects(stopped, /creator stopped/)
 })

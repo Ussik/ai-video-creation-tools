@@ -87,6 +87,35 @@ test('successful findings survive a later transport failure and resume only unfi
   await repairSourceQuality(document, state, async () => { throw new Error('completed finding was re-requested') }, () => {}, signal())
 })
 
+test('ending repair corrects string payloads into complete objects without losing the baseline or source', async () => {
+  const state = stateFor(), original = structuredClone(state), originalContent = document.content
+  const ending = { summary: '沈月归还信物，约定得到履行', section_ids: [1] }
+  let calls = 0
+  await repairSourceQuality(document, state, async prompt => {
+    calls++
+    assert.match(prompt, /story\.ending是包含summary和section_ids的完整对象，不是字符串/)
+    const example = JSON.parse(prompt.match(/结局修改结构示例[^\n]*：(\{[^\n]+\})。/)![1]!)
+    assert.equal(example.target, 'story.ending'); assert.equal(example.operation, 'replace')
+    assert.equal(example.section_id, null); assert.equal(example.index, null)
+    for (const item of [example.expected, example.value]) {
+      assert.equal(typeof item.summary, 'string'); assert.ok(Array.isArray(item.section_ids))
+    }
+    if (calls === 1) return body([{ target: 'story.ending', section_id: null, operation: 'replace', index: null,
+      expected: original.story!.ending.summary, value: ending.summary }])
+    assert.match(prompt, /\$\.changes\[0\]\.expected: 字段类型不合法，要求 object，当前为 string/)
+    assert.match(prompt, /\$\.changes\[0\]\.value: 字段类型不合法，要求 object，当前为 string/)
+    assert.deepEqual(state.story, original.story, 'the rejected patch cannot modify the analysis')
+    return body([{ target: 'story.ending', section_id: null, operation: 'replace', index: null,
+      expected: original.story!.ending, value: ending }])
+  }, () => {}, signal())
+  assert.equal(calls, 2)
+  assert.equal(sourceQualityRepairProgress(state), 1)
+  assert.deepEqual(state.story, { ...original.story, ending })
+  assert.deepEqual(state.sections, original.sections)
+  assert.deepEqual(state.quality, original.quality, 'an independent quality review is still required')
+  assert.equal(document.content, originalContent)
+})
+
 test('a rejected multi-edit finding commits neither the earlier edit nor its progress', async () => {
   const state = stateFor(), original = structuredClone(state)
   let calls = 0

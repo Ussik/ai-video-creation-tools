@@ -1,12 +1,12 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Badge, HoverCard, Popover, Portal, ScrollArea, TextInput, UnstyledButton } from '@mantine/core'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { ActionIcon, Badge, HoverCard, Popover, Portal, ScrollArea, TextInput, Tooltip, UnstyledButton } from '@mantine/core'
 import { EditorContent, NodeViewContent, NodeViewWrapper, ReactNodeViewRenderer, useEditor, type NodeViewProps } from '@tiptap/react'
 import { Node as TiptapNode, Extension, mergeAttributes, type Editor, type JSONContent } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
 import { Plugin } from '@tiptap/pm/state'
 import { Fragment, Slice, type Node as ProseMirrorNode } from '@tiptap/pm/model'
 import { closeHistory, isHistoryTransaction } from '@tiptap/pm/history'
-import { ArrowLeft, Check, ImageIcon, Plus, Search, TriangleAlert, X } from 'lucide-react'
+import { ArrowLeft, Check, ChevronDown, ImageIcon, Plus, Search, TriangleAlert, X } from 'lucide-react'
 import { tokenizePromptReferenceNumbers } from '@video-studio/shared/visuals/prompt-references'
 import { parsePromptSectionDocument, type PromptSectionBlock, type PromptSectionDocument } from '@video-studio/shared/visuals/prompt-section-document'
 import { promptPresentationPlugin } from './canvas-prompt-presentation'
@@ -36,12 +36,16 @@ export type CanvasPromptEditorProps = {
   disabled?: boolean
   readOnly?: boolean
   expanded?: boolean
+  compact?: boolean
   minRows?: number
+  maxLength?: number
 }
 type Picker = { from: number; to: number; query: string; index: number; manual?: boolean; scope?: 'active' | 'additional' }
 type Runtime = {
   references: CanvasPromptReference[]; choices: CanvasPromptReference[]; additionalChoices: CanvasPromptReference[]; disabled: boolean
   readOnly: boolean
+  maxLength: number
+  placeholder: string
   change: (assetId: string, replacementId: string | null) => boolean
   removeSection: (sectionId: string) => void
   keydown: (event: KeyboardEvent) => boolean
@@ -82,14 +86,19 @@ function promptParagraphs(value: string, references: CanvasPromptReference[], ch
 export function promptEditorDocument(value: string, references: CanvasPromptReference[], choices: CanvasPromptReference[] = [], sectionDocument?: PromptSectionDocument): JSONContent {
   const tokenized = tokenizePromptReferenceNumbers(value, references.map(reference => reference.assetId))
   const parsed = parsePromptSectionDocument(tokenized, { previousDocument: sectionDocument })
-  return { type: 'doc', content: parsed.blocks.flatMap(block => {
+  const content = parsed.blocks.flatMap(block => {
     if (block.kind === 'body') return promptParagraphs(block.text, references, choices, block.id)
     if (block.deleted) return []
     let inner = block.text.slice(`【${block.name}】`.length, -`【${block.name}结束】`.length)
     const leading = inner.startsWith('\n') ? '\n' : '', trailing = inner.endsWith('\n') && inner.length > leading.length ? '\n' : ''
     inner = inner.slice(leading.length, trailing ? -trailing.length : undefined)
     return [{ type: 'promptManagedSection', attrs: { section: block, leading, trailing }, content: promptParagraphs(inner, references, choices) }]
-  }) }
+  })
+  // A generated-only prompt still needs a visible place for the creator to
+  // write. This empty entry has no serialized text until they start typing.
+  if (content[0]?.type === 'promptManagedSection') content.unshift({ type: 'paragraph',
+    attrs: { promptBodySegment: 'prompt-body-entry', promptBodyEntry: true } })
+  return { type: 'doc', content }
 }
 
 export function promptEditorText(document: JSONContent): string {
@@ -97,11 +106,24 @@ export function promptEditorText(document: JSONContent): string {
     : node.type === 'hardBreak' ? '\n' : node.type === 'text' ? node.text || '' : node.type === 'promptManagedSection'
       ? `【${node.attrs!.section.name}】${node.attrs!.leading || ''}${(node.content || []).map(text).join('\n')}${node.attrs!.trailing || ''}【${node.attrs!.section.name}结束】`
       : (node.content || []).map(text).join('')
-  return (document.content || []).map((node, index, nodes) => {
-    const previous = nodes[index - 1], separateSegments = !!node.attrs?.promptBodySegment && !!previous?.attrs?.promptBodySegment
+  const nodes = document.content || []
+  let result = ''
+  for (let index = 0; index < nodes.length; index++) {
+    const node = nodes[index]
+    if (node.type === 'paragraph' && node.attrs?.promptBodyEntry) {
+      const entry = [text(node)]
+      while (nodes[index + 1]?.type === 'paragraph' && nodes[index + 1]?.attrs?.promptBodyEntry) entry.push(text(nodes[++index]))
+      // The entry itself contributes no blank lines. Existing prose after a
+      // removed section keeps its own original separators and segment identity.
+      if (entry.some(part => part.length > 0)) result += entry.join('\n') + (nodes[index + 1]?.type === 'promptManagedSection' ? '\n\n' : '')
+      continue
+    }
+    const previous = nodes[index - 1]
+    const separateSegments = node.attrs?.promptBodySegment && previous?.attrs?.promptBodySegment
       && node.attrs.promptBodySegment !== previous.attrs.promptBodySegment
-    return `${index && node.type === 'paragraph' && previous.type === 'paragraph' && !separateSegments ? '\n' : ''}${text(node)}`
-  }).join('')
+    result += `${index && node.type === 'paragraph' && previous.type === 'paragraph' && !previous.attrs?.promptBodyEntry && !separateSegments ? '\n' : ''}${text(node)}`
+  }
+  return result
 }
 export function promptEditorSectionDocument(document: JSONContent, previousDocument?: PromptSectionDocument): PromptSectionDocument {
   const parsed = parsePromptSectionDocument(promptEditorText(document), { previousDocument })
@@ -157,17 +179,44 @@ function freshSectionIds(node: ProseMirrorNode): ProseMirrorNode {
     : node.copy(content)
 }
 
-function PromptManagedSectionView({ node, extension }: NodeViewProps) {
+function PromptManagedSectionView({ node, extension, editor, getPos }: NodeViewProps) {
+  const [opened, setOpened] = useState(false)
+  const contentId = useId()
   const runtime = extension.options.runtime() as Runtime
   const { id, name } = node.attrs.section
-  return <NodeViewWrapper className="pc-prompt-managed-section" data-prompt-section-id={id} data-prompt-section-name={name}>
+  const changed = node.attrs.section.sourceStatus === 'source_changed'
+  // Arrow keys, search and programmatic selection must never leave the caret
+  // inside an invisible section. Folding itself stays outside document history.
+  useEffect(() => {
+    const revealSelection = () => {
+      const position = getPos()
+      if (!editor.isFocused || typeof position !== 'number') return
+      if (editor.state.selection.from > position && editor.state.selection.from < position + node.nodeSize) setOpened(true)
+    }
+    editor.on('selectionUpdate', revealSelection)
+    editor.on('focus', revealSelection)
+    return () => { editor.off('selectionUpdate', revealSelection); editor.off('focus', revealSelection) }
+  }, [editor, getPos, node.nodeSize])
+  function toggle() {
+    const position = getPos()
+    if (opened && typeof position === 'number' && editor.state.selection.from > position
+      && editor.state.selection.from < position + node.nodeSize) editor.commands.setTextSelection(1)
+    setOpened(value => !value)
+  }
+  return <NodeViewWrapper className={`pc-prompt-managed-section${opened ? ' is-open' : ''}`} data-prompt-section-id={id} data-prompt-section-name={name}>
     <div className="pc-prompt-managed-section-head" contentEditable={false}>
-      <span className="pc-prompt-managed-section-title">{name}</span>
-      <UnstyledButton type="button" aria-label={`移除区块：${name}`} disabled={runtime.disabled || runtime.readOnly}
-        title="移除此段内容，保留参考图片连接"
-        onMouseDown={event => event.preventDefault()} onClick={() => runtime.removeSection(id)}><X size={12} />移除区块</UnstyledButton>
+      <UnstyledButton type="button" className="pc-prompt-managed-toggle" aria-label={`${opened ? '收起设定' : '展开编辑'}：${name}`}
+        aria-expanded={opened} aria-controls={contentId} onMouseDown={event => event.preventDefault()} onClick={toggle}>
+        <ChevronDown size={14} className="pc-prompt-managed-chevron" />
+        <span className="pc-prompt-managed-section-title">{name}</span>
+        {changed && <span className="pc-prompt-managed-changed">来源有更新</span>}
+        <span className="pc-prompt-managed-edit-label">{opened ? '收起' : '展开编辑'}</span>
+      </UnstyledButton>
+      <Tooltip label="移除此段内容，保留参考图片连接"><ActionIcon type="button" size="sm" variant="subtle" color="gray"
+        aria-label={`移除区块：${name}`} disabled={runtime.disabled || runtime.readOnly}
+        onMouseDown={event => event.preventDefault()} onClick={() => runtime.removeSection(id)}><X size={13} /></ActionIcon></Tooltip>
     </div>
-    <NodeViewContent className="pc-prompt-managed-section-content" />
+    <div id={contentId} className="pc-prompt-managed-panel" hidden={!opened}><NodeViewContent className="pc-prompt-managed-section-content" /></div>
     <div className="pc-prompt-managed-section-end" contentEditable={false} aria-hidden="true">【{name}结束】</div>
   </NodeViewWrapper>
 }
@@ -242,13 +291,15 @@ function promptExtensions(runtime: () => Runtime) {
     }),
     Extension.create({
       name: 'promptReferenceProtection',
-      addGlobalAttributes: () => [{ types: ['paragraph'], attributes: { promptBodySegment: { default: null, keepOnSplit: true,
+      addGlobalAttributes: () => [{ types: ['paragraph'], attributes: { promptBodyEntry: { default: false, keepOnSplit: true,
+        parseHTML: element => element.hasAttribute('data-prompt-body-entry'),
+        renderHTML: attributes => attributes.promptBodyEntry ? { 'data-prompt-body-entry': '' } : {} }, promptBodySegment: { default: null, keepOnSplit: true,
         parseHTML: element => element.getAttribute('data-prompt-body-segment'),
         renderHTML: attributes => attributes.promptBodySegment ? { 'data-prompt-body-segment': attributes.promptBodySegment } : {} } } }],
-      addProseMirrorPlugins: () => [promptPresentationPlugin(), new Plugin({
+      addProseMirrorPlugins: () => [promptPresentationPlugin(() => runtime().placeholder), new Plugin({
         filterTransaction: (transaction, state) => {
           if (!transaction.docChanged || transaction.getMeta('promptReferenceSync') || transaction.getMeta('preventUpdate')) return true
-          if (promptEditorText(transaction.doc.toJSON()).length > 80_000) return false
+          if (promptEditorText(transaction.doc.toJSON()).length > runtime().maxLength) return false
           if (isHistoryTransaction(transaction) || transaction.getMeta('promptSectionRemove') || transaction.getMeta('promptDocumentReplace')) return true
           const oldSections = managedSections(state.doc.toJSON()), newSections = managedSections(transaction.doc.toJSON())
           if (oldSections.some(section => !newSections.some(next => next.attrs?.section.id === section.attrs?.section.id
@@ -297,7 +348,36 @@ function promptExtensions(runtime: () => Runtime) {
             const content = view.state.schema.nodeFromJSON(input).content
             return Slice.maxOpen(content, false)
           },
-          transformPasted: slice => new Slice(Fragment.fromArray(Array.from({ length: slice.content.childCount }, (_, index) => freshSectionIds(slice.content.child(index)))), slice.openStart, slice.openEnd),
+          transformPasted: (slice, view) => {
+            let nodes = Array.from({ length: slice.content.childCount }, (_, index) => freshSectionIds(slice.content.child(index)))
+            const target = view.state.selection.$from.parent
+            // Pasted prose belongs to the current body segment. Copying entry
+            // attributes into an unrelated body (or dropping them inside the
+            // entry) would otherwise merge paragraphs during serialization.
+            if (target.type.name === 'paragraph' && nodes.every(node => node.type.name === 'paragraph')) {
+              nodes = nodes.map(node => node.type.create({ ...node.attrs,
+                promptBodyEntry: target.attrs.promptBodyEntry, promptBodySegment: target.attrs.promptBodySegment }, node.content, node.marks))
+            } else {
+              const materialized: ProseMirrorNode[] = []
+              for (let index = 0; index < nodes.length; index++) {
+                const node = nodes[index]
+                if (node.type.name !== 'paragraph' || !node.attrs.promptBodyEntry) { materialized.push(node); continue }
+                const entry = [node]
+                while (nodes[index + 1]?.type.name === 'paragraph' && nodes[index + 1]?.attrs.promptBodyEntry) entry.push(nodes[++index])
+                const hasContent = entry.some(paragraph => paragraph.content.size > 0)
+                // A whole-prompt HTML paste can merge its opening paragraph
+                // into ordinary prose and lose entry attributes. Materialize
+                // the virtual body/setting separation before that merge.
+                materialized.push(...(hasContent ? entry : entry.slice(0, 1)).map(paragraph => paragraph.type.create({ ...paragraph.attrs,
+                  promptBodyEntry: false, promptBodySegment: null }, paragraph.content, paragraph.marks)))
+                if (hasContent && nodes[index + 1]?.type.name === 'promptManagedSection') {
+                  materialized.push(node.type.create(), node.type.create())
+                }
+              }
+              nodes = materialized
+            }
+            return new Slice(Fragment.fromArray(nodes), slice.openStart, slice.openEnd)
+          },
         },
       })],
     }),
@@ -373,6 +453,8 @@ export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
   }
   runtimeRef.current = {
     references: props.references, choices: props.choices, additionalChoices: props.additionalChoices || [], disabled: !!props.disabled, readOnly: !!props.readOnly,
+    maxLength: props.maxLength ?? 80_000,
+    placeholder: props.placeholder || '描述主体、场景与构图，输入 @ 引用图片',
     keydown: event => event.isComposing ? false : pickerKeydown(event),
     removeSection: sectionId => {
       const current = editorRef.current
@@ -547,8 +629,11 @@ export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
     pickerRef.current = { ...pickerRef.current, scope, query: '', index: 0, manual: true }
     setPicker(pickerRef.current)
   }
-  return <div className={`pc-prompt-editor${props.expanded ? ' is-expanded' : ''}${props.disabled ? ' is-disabled' : ''}${props.readOnly ? ' is-readonly' : ''}`} style={{ '--pc-prompt-min-rows': props.minRows || 6 } as React.CSSProperties}>
-    <div className="pc-prompt-editor-surface"><EditorContent editor={editor} /></div>
+  return <div className={`pc-prompt-editor${props.expanded ? ' is-expanded' : ''}${props.compact ? ' is-compact' : ''}${props.disabled ? ' is-disabled' : ''}${props.readOnly ? ' is-readonly' : ''}`} style={{ '--pc-prompt-min-rows': props.minRows || 6 } as React.CSSProperties}>
+    <div className="pc-prompt-editor-surface">
+      {!props.compact && <div className="pc-prompt-editor-heading"><span>提示词正文</span><span>输入 <kbd>@</kbd> 引用图片</span></div>}
+      <EditorContent editor={editor} />
+    </div>
     <Popover opened={!!picker && !!mentionAnchor} onDismiss={closePicker} position="bottom-start" offset={5} width="min(320px, calc(100vw - 16px))"
       floatingStrategy="fixed" preventPositionChangeWhenVisible={false} middlewares={{ flip: { padding: 8 }, shift: { padding: 8 } }}
       withinPortal zIndex={270} returnFocus={false} withRoles={false}>

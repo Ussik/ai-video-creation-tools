@@ -149,11 +149,12 @@ async function terminal(id: string) {
   throw new Error('analysis did not finish')
 }
 
-test('explicit retry repairs substantive omissions while reusing the completed map and story before independent review', async () => {
+test('substantive omissions are automatically repaired while reusing the completed map and story before independent review', async () => {
   const content = '开场林舟许下约定。\n尾声：沈月是林舟的妹妹，她归还信物。', projectId = newId(), stamp = now()
   run('INSERT INTO projects (id,name,created_at,updated_at) VALUES (?,?,?,?)', projectId, '独立核对测试', stamp, stamp)
   run('INSERT INTO script_source_documents (project_id,filename,content,updated_at) VALUES (?,?,?,?)', projectId, '剧本.txt', content, stamp)
   let maps = 0, stories = 0, reviews = 0, repairs = 0
+  let completed: ScriptSourceAnalysis | undefined
   const explanation = '全剧人物和目录遗漏尾声沈月是林舟妹妹的身份'
   const repairMarker = '【原稿分析定点修补资料】\n'
   const analyzer = createScriptSourceAnalyzer(async (_projectId, _model, prompt, contract) => {
@@ -165,6 +166,10 @@ test('explicit retry repairs substantive omissions while reusing the completed m
     }
     if (prompt.includes(repairMarker)) {
       repairs++
+      completed = scriptSourceAnalysis(projectId)!
+      assert.equal(completed.status, 'running', 'quality findings remain internal while automatic repair is in progress')
+      assert.equal(completed.quality!.status, 'issues')
+      assert.equal(scriptSourceIndex(projectId)!.story_map, undefined, 'analysis with unresolved quality findings cannot publish its story map')
       assert.equal(contract?.name, 'script_source_quality_repair')
       const input = JSON.parse(prompt.slice(prompt.lastIndexOf(repairMarker) + repairMarker.length))
       assert.equal(input.complete_source, true)
@@ -199,25 +204,16 @@ test('explicit retry repairs substantive omissions while reusing the completed m
   })
   try {
     analyzer.start(projectId, 'quality-model')
-    const failed = await terminal(projectId)
-    assert.equal(failed.status, 'failed'); assert.equal(failed.quality!.status, 'issues')
-    assert.match(failed.error!, /核对发现 1 项遗漏或误读/)
-    assert.ok(failed.error!.includes(explanation))
-    assert.equal(scriptSourceIndex(projectId)!.story_map, undefined)
-    await assert.rejects(analyzer.ensure(projectId, 'quality-model'), /请先重试/)
-    assert.deepEqual([maps, stories, repairs, reviews], [1, 1, 0, 1], 'no automatic generation follows a semantic finding')
-    const completed = structuredClone(failed)
-    analyzer.start(projectId, 'quality-model')
     const ready = await terminal(projectId)
     assert.equal(ready.status, 'ready', ready.error || '')
     assert.equal(ready.quality!.status, 'passed')
-    assert.deepEqual([maps, stories, repairs, reviews], [1, 1, 1, 2], 'retry repairs the finding and reruns review without regenerating completed stages')
-    assert.deepEqual(ready.sections[0], completed.sections[0], 'unrelated directory entries remain unchanged')
-    assert.deepEqual(ready.sections[1], { ...completed.sections[1], characters: [{ name: '沈月', description: '林舟的妹妹，尾声归还信物',
+    assert.deepEqual([maps, stories, repairs, reviews], [1, 1, 1, 2], 'one execution repairs the finding and reruns review without regenerating completed stages')
+    assert.deepEqual(ready.sections[0], completed!.sections[0], 'unrelated directory entries remain unchanged')
+    assert.deepEqual(ready.sections[1], { ...completed!.sections[1], characters: [{ name: '沈月', description: '林舟的妹妹，尾声归还信物',
       evidence: { offset: content.indexOf('尾声'), quote: content.slice(content.indexOf('尾声')) } }] })
-    assert.deepEqual(ready.story, { ...completed.story, characters: [...completed.story!.characters,
+    assert.deepEqual(ready.story, { ...completed!.story, characters: [...completed!.story!.characters,
       { name: '沈月', aliases: [], description: '林舟的妹妹，尾声归还信物', section_ids: [1] }] }, 'unrelated story facts remain unchanged')
-    assert.equal(ready.completed_chunks, completed.completed_chunks)
+    assert.equal(ready.completed_chunks, completed!.completed_chunks)
     assert.equal(ready.completed_characters, content.length)
     assert.equal(db.prepare('SELECT content FROM script_source_documents WHERE project_id=?').get(projectId)!.content, content)
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM script_artifacts WHERE project_id=?').get(projectId)!.count, 0)

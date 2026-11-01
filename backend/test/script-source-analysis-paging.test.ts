@@ -113,7 +113,7 @@ function assertReady(id: string, state: ScriptSourceAnalysis) {
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM script_artifacts WHERE project_id=?').get(id)!.count, 0)
 }
 
-test('65k/59-episode dense analysis keeps full context in every page and synthesis task while retrying only a timed-out second page', async () => {
+test('65k/59-episode dense analysis keeps full context and resumes only the second page after an actual upstream failure', async () => {
   const id = project('第二页超时续跑'), pages: number[] = []
   let unavailable = true
   const analyzer = createScriptSourceAnalyzer(async (_id, _model, prompt) => {
@@ -121,7 +121,7 @@ test('65k/59-episode dense analysis keeps full context in every page and synthes
     if (prompt.includes(mapMarker)) {
       const input = inputFor<MapInput>(prompt, mapMarker)
       pages.push(input.output_window.page)
-      if (input.output_window.page === 2 && unavailable) return new Promise<string>(() => {})
+      if (input.output_window.page === 2 && unavailable) throw new Error('上游第二页请求超时')
     }
     return reply(prompt)
   }, limits)
@@ -133,7 +133,7 @@ test('65k/59-episode dense analysis keeps full context in every page and synthes
     assert.equal(failed.completed_characters, plan[0]!.length)
     assert.equal(failed.story, undefined); assert.equal(failed.quality, undefined)
     assert.equal(scriptSourceIndex(id)!.story_map, undefined, 'partial pages cannot unlock a published source index')
-    assert.match(failed.error!, /目录第 2\/.*当前步骤处理超时/)
+    assert.match(failed.error!, /目录第 2\/.*上游第二页请求超时/)
     assert.deepEqual(pages, [1, 2])
     await assert.rejects(analyzer.ensure(id, 'model'), /请先重试/)
     const savedFirstPage = structuredClone(failed.sections)
@@ -247,13 +247,15 @@ test('v5 completed maps and stories retain validated progress while only unfinis
 })
 
 test('a page using an ID outside its output window cannot publish or discard the previous validated page', async () => {
-  const id = project('坏页范围隔离'), pages: number[] = []
-  let invalid = true
+  const id = project('坏页范围隔离'), pages: number[] = [], corrections: string[] = []
+  let invalid = true, invalidCalls = 0
   const analyzer = createScriptSourceAnalyzer(async (_id, _model, prompt) => {
     if (prompt.includes(mapMarker)) {
+      if (prompt.includes('【一次格式修正】')) corrections.push(prompt)
       const input = inputFor<MapInput>(prompt, mapMarker)
       pages.push(input.output_window.page)
       if (input.output_window.page === 2 && invalid) {
+        if (++invalidCalls === 7) throw new Error('上游目录服务中断')
         const value = denseMap(input)
         value.sections[0]!.start_unit = 0
         return JSON.stringify(value)
@@ -264,8 +266,11 @@ test('a page using an ID outside its output window cannot publish or discard the
   try {
     analyzer.start(id, 'model'); const failed = await terminal(id)
     assert.equal(failed.status, 'failed'); assert.equal(failed.completed_chunks, 1)
-    assert.match(failed.error!, /start_unit=0.*不属于当前原文范围/)
-    assert.deepEqual(pages, [1, 2, 2], 'only the invalid page receives its bounded format correction')
+    assert.match(failed.error!, /相同已保存结果上重复遇到同一问题/)
+    assert.match(failed.error!, /script_source_analysis_stalled|手动继续分析当前步骤/)
+    assert.equal(corrections.length, 2, 'each distinct recovery execution retains its single format correction')
+    assert.ok(corrections.every(prompt => /start_unit=0.*不属于当前原文范围/.test(prompt)), 'format recovery receives the exact out-of-window boundary error')
+    assert.deepEqual(pages, [1, 2, 2, 2, 2], 'the same failed page and diagnosis stop recovery without repeating the valid first page')
     assert.equal(scriptSourceIndex(id)!.story_map, undefined)
     const saved = structuredClone(failed.sections)
     assert.equal(failed.work![1]!.result, undefined, 'out-of-window map boundaries never become a checkpoint')
@@ -277,7 +282,7 @@ test('a page using an ID outside its output window cannot publish or discard the
   } finally { await analyzer.close() }
 })
 
-test('a legacy full-rebuild correction resumes its saved pages without clearing them after another timeout', async () => {
+test('a legacy full-rebuild correction resumes saved pages after an actual upstream interruption', async () => {
   const id = project('旧质量全重建检查点续跑'), pages: number[] = []
   const saved = legacyState(id), firstWork = plan[0]!, passages = scriptSourcePassages(content)
   const selected = workPassages(passages, firstWork), units = selected.flatMap(passage => passage.units)
@@ -302,7 +307,7 @@ test('a legacy full-rebuild correction resumes its saved pages without clearing 
       const page = inputFor<MapInput>(prompt, mapMarker).output_window.page
       pages.push(page)
       assert.ok(prompt.includes(saved.quality!.findings[0]!.explanation), 'legacy rebuild retains original quality evidence')
-      if (page === 2 && unavailable) return new Promise<string>(() => {})
+      if (page === 2 && unavailable) throw new Error('上游重建第二页连接中断')
     }
     return reply(prompt)
   }, limits)

@@ -16,7 +16,7 @@ export type DirectorTaskSnapshot = {
 type TaskRow = { id: string; project_id: string; conversation_id: string; message_id: string; request_hash: string; snapshot: string; status: Status; request_payload?: string; resume_key?: string }
 export type DirectorTaskInput = { id: string; conversation: { id: string; label?: string; messages: ConversationMessage[] }; execution: ScriptExecution }
 type Running = { snapshot: DirectorTaskSnapshot; controller: AbortController; listeners: Set<(event: Event) => void>; timer?: ReturnType<typeof setTimeout>; work?: Promise<void> }
-const readOnlyTools = new Set(['get_creation_state', 'get_project_visual_style', 'search_project_content', 'read_documents', 'find_related_content', 'get_document_review_context', 'read_visual_profiles', 'get_storyboard_context', 'read_source_document', 'search_source_document', 'read_episode_scenes', 'ask_creator'])
+const readOnlyTools = new Set(['get_creation_state', 'load_creation_skills', 'get_project_visual_style', 'search_project_content', 'read_documents', 'find_related_content', 'get_document_review_context', 'read_visual_profiles', 'get_storyboard_context', 'read_source_document', 'search_source_document', 'read_episode_scenes', 'get_repair_context', 'search_repair_context', 'submit_repair_patch', 'ask_creator'])
 function canReplayAfter(activity: ScriptActivity) {
   return readOnlyTools.has(activity.name || '') || activity.name === 'set_project_visual_style'
     && activity.step_id === 'confirmed_visual_style_sync' && activity.scope === 'step' && activity.round === undefined
@@ -87,11 +87,13 @@ export function createDirectorTasks() {
     event = { ...event, task_id: task.snapshot.id, sequence: task.snapshot.sequence = (task.snapshot.sequence || 0) + 1 }
     const events = task.snapshot.events
     const kind = String(event.type)
+    let durableUsage = false
     if (kind === 'activity') {
       let saved = events.find(item => item.type === kind)
       if (!saved) { saved = { type: kind, activity: [] }; events.push(saved) }
       const entries = saved.activity as ScriptActivity[]
       for (const entry of (Array.isArray(event.activity) ? event.activity : [event.activity]) as ScriptActivity[]) {
+        durableUsage ||= entry.usage !== undefined
         Object.assign(entry, { task_id: task.snapshot.id, sequence: event.sequence })
         const index = entries.findIndex(item => item.id === entry.id)
         if (index < 0) entries.push(entry); else entries[index] = entry
@@ -107,7 +109,13 @@ export function createDirectorTasks() {
       const index = events.findIndex(item => item.type === kind)
       if (index < 0) events.push(event); else events[index] = { ...events[index], ...event }
     }
-    if (!task.timer) {
+    if (durableUsage) {
+      // Generation reservations and accepted response IDs must reach disk
+      // before POST/poll dispatch. A debounced UI update can otherwise lose
+      // the execution budget during a process exit and charge a replay again.
+      if (task.timer) { clearTimeout(task.timer); task.timer = undefined }
+      persist(task.snapshot)
+    } else if (!task.timer) {
       task.timer = setTimeout(() => { task.timer = undefined; persist(task.snapshot) }, 250)
       task.timer.unref()
     }
@@ -145,7 +153,7 @@ export function createDirectorTasks() {
     progressTimer.unref()
     running.set(snapshot.id, task)
     task.work = (async () => {
-      const scope = createStreamScope(task.controller.signal, { totalMessage: '本次任务执行已达到 180 分钟，已保存完成步骤。请检查后继续未完成部分。' })
+      const scope = createStreamScope(task.controller.signal, { totalMs: null })
       const softTimer = setTimeout(() => emit(task, { type: 'progress', stage: 'long_running', text: '任务执行较久，已完成步骤持续保留；仍在处理，可继续等待或停止。' }), directorTaskSoftTimeoutMs)
       softTimer.unref()
       try {
@@ -209,6 +217,15 @@ export function createDirectorTasks() {
       if (read(projectId, id).status !== 'running') problem('只有正在运行的创作任务可以更新恢复版本')
       const updated = db.prepare("UPDATE script_director_tasks SET resume_key=?, updated_at=? WHERE id=? AND project_id=? AND status='running'").run(key, now(), id, projectId)
       if (!updated.changes) problem('创作任务状态已变化，不能更新恢复版本')
+    },
+    refreshRecoveryRequest(projectId: string, id: string, request: unknown, key: string) {
+      if (read(projectId, id).status !== 'running') problem('只有正在运行的创作任务可以更新恢复资料')
+      // Keep the original hash for duplicate-submission identity.
+      // Server-resolved skill choices and authorized repairs may advance this
+      // resumable request and key.
+      const updated = db.prepare("UPDATE script_director_tasks SET request_payload=?, resume_key=?, updated_at=? WHERE id=? AND project_id=? AND status='running'")
+        .run(JSON.stringify(request), key, now(), id, projectId)
+      if (!updated.changes) problem('创作任务状态已变化，不能更新恢复资料')
     },
     request(projectId: string, id: string) {
       read(projectId, id)

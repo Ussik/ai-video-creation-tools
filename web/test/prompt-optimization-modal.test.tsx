@@ -49,17 +49,40 @@ async function chooseModel(value: string) {
   assert.ok(option, value)
   await act(() => option.click())
 }
-async function mount() {
+async function mount(initialCatalog = models) {
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container), applied: string[] = []
   let closed = 0
-  const render = async (sourceKey = 'v1', catalog = models, prompt?: string) => act(() => root.render(<MantineProvider env="test">
+  const render = async (sourceKey = 'v1', catalog = initialCatalog, prompt?: string) => act(() => root.render(<MantineProvider env="test">
     <PromptOptimizationModal job={job} models={catalog} providers={providers} sourceKey={sourceKey} prompt={prompt} newDraft
       onClose={() => { closed++ }} onApply={value => { applied.push(value) }} />
   </MantineProvider>))
   await render()
   return { render, applied, closed: () => closed, async close() { globalThis.fetch = originalFetch; await act(() => root.unmount()); container.remove() } }
 }
+
+test('optimization starts with the default text model, retains a manual choice and replaces it only when unavailable', async () => {
+  const preferred = { ...models[0]!, id: 'preferred', name: '默认文本模型', is_default: true }
+  const catalog = [models[0]!, preferred]
+  const requests: Array<Record<string, unknown>> = []
+  globalThis.fetch = async (_url, options) => {
+    requests.push(JSON.parse(String(options?.body)))
+    return Response.json({ prompt: '优化建议', changes: [] })
+  }
+  const view = await mount(catalog)
+  try {
+    assert.equal(requests.length, 0)
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="优化提示词的文本模型"]')!.value, '默认文本模型')
+    await chooseModel('text')
+    await view.render('v1', [...catalog])
+    await act(async () => button('生成优化建议').click())
+    assert.equal(requests[0].model_id, 'text')
+    await view.render('v1', [{ ...models[0]!, enabled: false }, preferred])
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="优化提示词的文本模型"]')!.value, '默认文本模型')
+    await act(async () => button('继续调整').click())
+    assert.equal(requests[1].model_id, 'preferred')
+  } finally { await view.close() }
+})
 
 test('opening is free of model calls; explicit optimization returns an editable comparison and applying does not generate images', async () => {
   const requests: Array<{ url: string; body: unknown }> = []

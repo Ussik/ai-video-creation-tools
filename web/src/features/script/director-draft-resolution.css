@@ -1,6 +1,8 @@
 .sd-draft-resolution-notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: none; margin: 0 12px 10px; background: var(--fc-surface-muted); border-color: var(--fc-border); }
 .sd-draft-resolution-notice > .mantine-Stack-root { min-width: 0; }
 .sd-draft-resolution-notice > button { flex: none; }
+.sd-draft-resolution-notice > .mantine-Group-root { flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0; max-width: 45%; }
+.sd-candidate-preview-scroll .sd-document-page { margin: 0; padding: 16px; }
 .sd-draft-resolution-modal .mantine-Modal-content { background: var(--fc-surface-muted); color: var(--fc-text); }
 .sd-draft-resolution-modal .mantine-Modal-header { background: var(--fc-surface-muted); }
 .sd-draft-resolution-scroll { --resolution-scroll-height: min(55vh, calc(90dvh - 250px)); }
@@ -20,6 +22,8 @@
 .sd-resolution-actions .mantine-Button-root:disabled { color: var(--fc-text-subtle); background: var(--fc-surface-muted); border-color: var(--fc-border-soft); opacity: .65; }
 .sd-resolution-secondary .mantine-Button-root:disabled { background: transparent; border-color: transparent; }
 @media (max-width: 680px) {
+  .sd-draft-resolution-notice { flex-wrap: wrap; }
+  .sd-draft-resolution-notice > .mantine-Group-root { max-width: 100%; }
   .sd-resolution-actions { flex-direction: column; align-items: stretch; gap: 12px; }
   .sd-resolution-secondary { justify-content: space-between; }
   .sd-resolution-submit .mantine-Button-root { flex: 1; min-width: 0; }

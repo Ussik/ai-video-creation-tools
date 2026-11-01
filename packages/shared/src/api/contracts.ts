@@ -1,5 +1,6 @@
 import type { VisualReferenceAsset, VisualReferencePurpose, VisualReferenceSnapshot, VisualReferenceStatus, VisualReferenceView } from '../visuals/visual-reference-types.js'
 import type { StageArtifactType } from '../script/script-stage-content.js'
+import type { GenerationRecoveryAction, GenerationRecoveryModality } from '../jobs/generation-recovery.js'
 export type { VisualReferenceAsset, VisualReferencePurpose, VisualReferenceSnapshot, VisualReferenceStatus, VisualReferenceView } from '../visuals/visual-reference-types.js'
 
 export type Modality = 'text' | 'image' | 'video'
@@ -223,6 +224,8 @@ export interface Job {
   result_asset_id: string | null
   recovery_available: boolean
   task_resume_available?: boolean
+  recovery_action?: GenerationRecoveryAction
+  recovery_modality?: GenerationRecoveryModality
   error: string | null
   created_at: string
 }
@@ -252,6 +255,7 @@ export interface Model {
   protocol: Protocol
   settings: Record<string, unknown>
   enabled: boolean
+  is_default?: boolean
 }
 export interface ProjectDetail extends Project {
   final_cut_canvas_id?: string
@@ -320,6 +324,11 @@ export interface ShotVisualBinding extends Omit<VisualProfile, 'id' | 'project_i
   required: boolean
   reference_assets?: VisualReferenceSnapshot[]
   usage?: import('../visuals/visual-binding-usage.js').VisualBindingUsage
+  /** Follow confirmed updates by default; locked preserves this working snapshot. */
+  sync_mode?: 'follow' | 'locked'
+  /** Explicit selections retain their assets and ordering during automatic updates. */
+  reference_selection?: 'auto' | 'manual'
+  sync_status?: 'current' | 'waiting_confirmation' | 'manual_review'
 }
 export interface VisualReferenceContext {
   expected_revision: number

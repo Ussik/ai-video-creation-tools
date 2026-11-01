@@ -298,6 +298,34 @@ test('native interaction provenance and structured professional reviews survive 
   assert.deepEqual(restored.execution, execution); assert.deepEqual(restored.activity, activity)
 })
 
+test('director binding drafts preserve explicit locks and manual pictures even when refresh is requested', async () => {
+  for (const selection of ['locked', 'manual'] as const) {
+    const f = await fixture()
+    const visuals = await call('POST', `/api/projects/${f.project.id}/visual-profiles`, { profiles: [value] })
+    const profile = visuals.visual_profiles[0]
+    const side = await reference(f.project.id, profile.id, 'side')
+    const currentShot = await call('POST', `/api/projects/${f.project.id}/shots`, { ...shot, source_scene_id: f.scene.id })
+    await call('PUT', `/api/shots/${currentShot.id}/visual-bindings`, { bindings: [{
+      profile_id: profile.id, required: true, usage: 'both', sync_mode: selection === 'locked' ? 'locked' : 'follow',
+      ...(selection === 'manual' ? { reference_asset_ids: [side.id] } : {}),
+    }] })
+    const before = one<Record<string, unknown>>('SELECT * FROM shot_visual_bindings WHERE shot_id=?', currentShot.id)!
+    await call('PATCH', `/api/visual-profiles/${profile.id}`, { expected_revision: 1, definition: '蓝色雨衣，新版设定' })
+    const tool = f.tools()
+    await tool.execute('read_visual_profiles', { profile_ids: [profile.id] })
+    const context = await tool.execute('get_storyboard_context', { shot_ids: [currentShot.id] }) as any
+    const current = context.objects.find((object: any) => object.type === 'shot')
+    await tool.execute('propose_visual_binding_patch', { summary: '调整用途，保留锁定和手选参考', targets: [{
+      target_type: 'shot', target_id: currentShot.id, base_version: current.binding_version,
+      bindings: [{ profile_id: profile.id, required: false, usage: 'image' }], refresh_profile_ids: [profile.id],
+    }] })
+    const draft = getToolDraft(f.project.id)!
+    commitToolDraft(f.project.id, draft.id, draft.version, f.script)
+    const after = one<Record<string, unknown>>('SELECT * FROM shot_visual_bindings WHERE shot_id=?', currentShot.id)!
+    assert.deepEqual(after, { ...before, required: 0, usage: 'image' }, `${selection} remains intact through a director refresh`)
+  }
+})
+
 test('resource edits reject invalid indices and duplicate names and can remove a refreshed binding', async () => {
   const { editResourceValues } = await import('../src/modules/script/script-resource-tools.js')
   const change = { type: 'visual_binding' as const, id: 'shot', title: '镜头', target_type: 'shot' as const, base_version: 'v', original: [], value: [{ profile_id: 'profile', required: true }], refresh_profile_ids: ['profile'] }

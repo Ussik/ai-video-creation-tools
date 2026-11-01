@@ -24,6 +24,7 @@ export function finalCutCanvas(canvases: ProjectCanvasInfo[], canvasId: string |
 export function exportBelongsToFinalCut(job: Job, canvasId: string | null, canvases: ProjectCanvasInfo[]) {
   try {
     const request = JSON.parse(job.request)
+    if (request.editing_cut_id) return false
     const exportedCanvasId = typeof request.final_cut_canvas_id === 'string' ? request.final_cut_canvas_id : null
     if (!exportedCanvasId) return !canvases.find(canvas => canvas.id === canvasId)?.design_id
     const selected = canvases.find(canvas => canvas.id === canvasId)

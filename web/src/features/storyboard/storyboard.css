@@ -16,8 +16,8 @@
 .sb-detail-actions button:hover, .sb-document-actions button:hover { background: var(--fc-surface-muted); color: var(--fc-text); }
 .sb-content { display:flex; flex:1; gap:18px; min-height:0; min-width:0; }
 .sb-library { display:grid; grid-template-columns:clamp(240px, 22vw, 320px) repeat(2, minmax(0,1fr)); gap:18px; flex:1; min-width:0; min-height:0; }
-.sb-column { display:flex; flex-direction:column; min-height:0; min-width:0; border:1px solid var(--fc-border-soft); border-radius:14px; background:var(--fc-panel); overflow:hidden; }
-.sb-column > header { display:flex; flex:none; align-items:center; gap:11px; min-height:70px; padding:12px 16px; border-bottom:1px solid var(--fc-border-soft); background:var(--fc-panel); }
+.sb-column { display:flex; flex-direction:column; min-height:0; min-width:0; border:1px solid var(--fc-border-soft); border-radius:var(--fc-radius-lg); background:var(--fc-panel); overflow:hidden; }
+.sb-column > header { display:flex; flex:none; align-items:center; gap:11px; min-height:62px; padding:10px 14px; border-bottom:1px solid var(--fc-border-soft); background:var(--fc-panel); }
 .sb-column-icon, .sb-item-icon { display:grid; place-items:center; flex:none; color:var(--fc-text-secondary); background:var(--fc-surface-muted); border-radius:10px; }
 .sb-column-icon { width:34px; height:34px; }
 .sb-column-heading { min-width:0; }
@@ -33,7 +33,7 @@
 .sb-text-list { display:grid; align-content:start; gap:2px; }
 .sb-item { min-width:0; width:100%; padding:12px 10px; border:1px solid transparent; border-radius:9px; background:transparent; color:var(--fc-text-secondary); text-align:left; transition:background-color 150ms ease, border-color 150ms ease; }
 .sb-item:hover { background:var(--fc-surface-muted); color:var(--fc-text); }
-.sb-item.is-selected { border-color:var(--fc-border-strong); background:var(--fc-surface-muted); color:var(--fc-text); }
+.sb-item.is-selected { border-color:color-mix(in srgb, var(--fc-primary) 35%, var(--fc-border-soft)); background:var(--fc-primary-soft); color:var(--fc-primary); }
 .sb-item-caption { display:flex; align-items:center; gap:10px; min-width:0; }
 .sb-item-icon { width:32px; height:36px; border-radius:8px; color:var(--fc-text-muted); }
 .sb-item-copy { flex:1; min-width:0; display:grid; gap:7px; }
@@ -45,7 +45,7 @@
 .sb-media-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(220px,100%),1fr)); align-content:start; gap:14px; }
 .sb-media-card { display:block; overflow:hidden; padding:0; border-color:var(--fc-border-soft); background:var(--fc-panel); }
 .sb-media-card:hover { border-color:var(--fc-border-strong); background:var(--fc-panel); }
-.sb-media-card.is-selected { background:var(--fc-panel); outline:1px solid var(--fc-border-strong); }
+.sb-media-card.is-selected { border-color:var(--fc-primary); background:var(--fc-panel); outline:1px solid var(--fc-primary); }
 .sb-thumbnail { position:relative; aspect-ratio:16/9; overflow:hidden; background:var(--fc-surface-muted); }
 .sb-thumbnail img, .sb-thumbnail video { width:100%; height:100%; display:block; object-fit:contain; }
 .sb-shot-number { position:absolute; top:10px; left:10px; display:grid; place-items:center; min-width:27px; height:22px; padding:0 6px; border:1px solid var(--fc-border-soft); border-radius:5px; background:var(--fc-panel); color:var(--fc-text-secondary); font-size:10px; font-weight:600; font-variant-numeric:tabular-nums; }
@@ -77,7 +77,7 @@
 .sb-workspace.is-reading .sb-column-text { min-height:160px; }
 .sb-workspace.is-reading .sb-column-scroll { flex:none; overflow:visible; }
 .sb-workspace.is-reading .sb-media-list { grid-template-columns:1fr; }
-.sb-reader { display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; border:1px solid var(--fc-border-soft); border-radius:14px; background:var(--fc-panel); overflow:hidden; }
+.sb-reader { display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; border:1px solid var(--fc-border-soft); border-radius:var(--fc-radius-lg); background:var(--fc-panel); overflow:hidden; }
 .sb-reader > header { display:flex; align-items:center; gap:10px; min-height:54px; padding:8px 16px; border-bottom:1px solid var(--fc-border); }
 .sb-reader > header h1 { min-width:0; margin:0; overflow:hidden; color:var(--fc-text); font-size:16px; font-weight:600; text-overflow:ellipsis; white-space:nowrap; }
 .sb-reader > header > div { display:flex; gap:4px; margin-left:auto; }

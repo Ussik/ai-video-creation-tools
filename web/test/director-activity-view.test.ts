@@ -36,10 +36,26 @@ test('old histories, missing parents, self links and cycles retain all records w
     { ...base, id: 'empty-task' },
   ])
   const view = activitySequence(events)
-  const visible = view.steps.flatMap(node => [node.event.id, ...activityCalls(node).map(call => call.node.event.id)])
+  const visible = [...view.steps.flatMap(node => [node.event.id, ...activityCalls(node).map(call => call.node.event.id)]), ...view.tasks.map(node => node.event.id)]
   assert.deepEqual(visible, events.map(event => event.id))
   assert.equal(new Set(visible).size, events.length)
-  assert.equal(view.tasks.length, 0)
+  assert.deepEqual(view.tasks.map(node => node.event.id), ['empty-task'])
+  assert.equal(view.current?.event.id, 'empty-task')
+})
+
+test('independent deliverables are tasks even before their first call and keep the same order after calls arrive', () => {
+  const synopsis: ScriptActivity = { ...base, id: 'synopsis', parent_id: base.id, label: '故事简述', status: 'succeeded' }
+  const world: ScriptActivity = { ...synopsis, id: 'world', label: '背景设定', status: 'running' }
+  const original = [base, synopsis, world]
+  const initial = activitySequence(original)
+  assert.deepEqual(initial.tasks.map(node => node.event.id), ['task', 'synopsis', 'world'])
+  assert.equal(initial.current?.event.id, 'world')
+  const call = { ...request, parent_id: world.id }
+  const working = activitySequence([...original, call])
+  assert.deepEqual(working.tasks.map(node => node.event.id), ['task', 'synopsis', 'world'])
+  assert.equal(working.active?.event.id, call.id)
+  assert.equal(working.current?.event.id, call.id, 'a concrete work step remains visible within its task')
+  assert.equal(working.tasks[2]!.waiting, true)
 })
 
 test('completed, reused, notice and missing terminal states retain truthful labels and durations', () => {

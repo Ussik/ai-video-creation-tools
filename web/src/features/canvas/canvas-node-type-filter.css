@@ -1,10 +1,10 @@
 .pc-node-type-filter.mantine-Button-root { flex: none; height: 30px; padding: 0 8px; border: 1px solid transparent; border-radius: 7px; color: var(--canvas-chrome-icon, var(--fc-text-secondary)); font-size: 11px; font-weight: 500; }
 .pc-node-type-filter.mantine-Button-root:hover { background: var(--canvas-chrome-hover, var(--fc-surface-hover)); color: var(--fc-text); }
-.pc-node-type-filter.mantine-Button-root[data-active] { border-color: var(--canvas-chrome-border, var(--fc-border)); background: var(--canvas-chrome-hover, var(--fc-surface-hover)); color: var(--fc-text); }
+.pc-node-type-filter.mantine-Button-root[data-active] { border-color: transparent; background: var(--fc-primary-soft); color: var(--fc-primary); }
 .pc-node-type-filter .mantine-Button-section { margin-inline: 0; }
 .pc-node-type-filter .mantine-Button-inner { gap: 6px; }
-.pc-node-type-dropdown .mantine-Menu-item[data-active] { background: var(--canvas-chrome-hover, var(--fc-surface-hover)); color: var(--fc-text); }
+.pc-node-type-dropdown .mantine-Menu-item[data-active] { background: var(--fc-primary-soft); color: var(--fc-primary); }
 .pc-node-type-option-meta { display: inline-flex; align-items: center; gap: 10px; }
 .pc-node-type-option-count { min-width: 18px; color: var(--fc-text-muted); text-align: right; font-size: 11px; font-variant-numeric: tabular-nums; }
-.pc-node-type-option-check { display: inline-flex; align-items: center; justify-content: center; width: 13px; color: var(--fc-text); }
+.pc-node-type-option-check { display: inline-flex; align-items: center; justify-content: center; width: 13px; color: var(--fc-primary); }
 .pc-node-type-dropdown .pc-node-type-filter-note { padding-block: 5px 3px; color: var(--fc-text-muted); font-size: 10px; font-weight: 400; }

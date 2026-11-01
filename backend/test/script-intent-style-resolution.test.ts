@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import { scriptStageArtifacts, scriptArtifactLabels } from '@video-studio/shared/script/script-stage-content'
+import { scriptArtifactLabels } from '@video-studio/shared/script/script-stage-content'
 import type { Project } from '../src/infrastructure/database/db.js'
 import type { ScriptSnapshot } from '../src/modules/script/script-document-tools.js'
 
@@ -38,14 +38,14 @@ function modelReply(content: unknown) {
   return Response.json({ choices: [{ message: { content: JSON.stringify(content) }, finish_reason: 'stop' }] })
 }
 function intent() {
-  return { action: 'draft', operation: 'create', authorization: 'explicit', workflow: { stage: 'outline', scope: 'project', episode_number: 0 }, creative_brief: creatorText,
+  return { action: 'draft', operation: 'create', authorization: 'explicit', workflow: { stage: 'outline', scope: 'project', episode_number: 0, intent: 'stage_design', artifact_types: ['outline'] }, creative_brief: creatorText,
     settings_patch: { visual_style: '日漫二维画风' }, visual_style_source: { message_index: 0, quote: '采用日漫二维画风' } }
 }
 function draft() {
-  return { artifacts: scriptStageArtifacts.outline.map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: candidateText })), scenes: [] }
+  return { artifacts: [{ artifact_type: 'outline', title: scriptArtifactLabels.outline, content: candidateText }], scenes: [] }
 }
 function finding() {
-  return { checked_artifacts: scriptStageArtifacts.outline, findings: [{ source_key: 'outline', kind: 'missing_core_setting', quote: candidateText,
+  return { checked_artifacts: ['outline'], findings: [{ source_key: 'outline', kind: 'missing_core_setting', quote: candidateText,
     explanation: '作者视角尚无幕后真相。', suggestion: '确定幕后真相及回收。' }] }
 }
 async function resolutionVersion(projectId: string) {

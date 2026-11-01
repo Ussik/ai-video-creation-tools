@@ -1,7 +1,3 @@
-import { scriptDraftRepairRoundLimit } from '@video-studio/shared/script/script-draft-resolution'
-
-export { scriptDraftRepairRoundLimit }
-
 export type ScriptDraftRepairRoundState = {
   completed_rounds?: number
   run?: { completed_rounds?: number }
@@ -9,8 +5,8 @@ export type ScriptDraftRepairRoundState = {
 
 function normalizedRounds(value: number | undefined): number {
   if (value === undefined) return 0
-  // An invalid persisted value must not silently reopen an automatic loop.
-  return Number.isSafeInteger(value) && value >= 0 ? value : scriptDraftRepairRoundLimit
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error('候选稿修订轮次检查点无效，请检查已保存进度')
+  return value
 }
 
 /** The pending candidate retains the count even when a new finding invalidates
@@ -19,8 +15,8 @@ export function completedScriptDraftRepairRounds(state?: ScriptDraftRepairRoundS
   return Math.max(normalizedRounds(state?.completed_rounds), normalizedRounds(state?.run?.completed_rounds))
 }
 
-/** Only an explicit manual answer submission or AI delegation starts a new
- * allowance. Continuing an existing authorization preserves its completed rounds. */
+/** A new answer submission starts a new diagnostic count. Continuing an
+ * existing authorization preserves its completed rounds without a ceiling. */
 export function startScriptDraftRepairRounds(strategy: 'manual' | 'ai' | 'continue', previous?: ScriptDraftRepairRoundState): number {
   return strategy === 'continue' ? completedScriptDraftRepairRounds(previous) : 0
 }
@@ -32,7 +28,6 @@ export function completeScriptDraftRepairRound(previous?: ScriptDraftRepairRound
 }
 
 export function canContinueScriptDraftRepair(state?: ScriptDraftRepairRoundState): boolean {
-  return completedScriptDraftRepairRounds(state) < scriptDraftRepairRoundLimit
+  completedScriptDraftRepairRounds(state)
+  return true
 }
-
-export const scriptDraftRepairRoundLimitMessage = '已完成 4 轮修订但复核仍未通过，当前草稿和处理方案均已保留。请手动调整处理方案，或重新明确交给 AI 处理。'

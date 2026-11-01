@@ -5,7 +5,7 @@ import { generateStructuredOutput, type StructuredGenerator, type OutputContract
 import { generationStepBudgets, createStreamScope } from '@video-studio/shared/script/script-stream-policy'
 import type { ScriptSourceAnalysis, ScriptSourceDocument, ScriptSourceSection } from '@video-studio/shared/script/script-source-document'
 import { scriptSourceCharacterLimit } from '@video-studio/shared/script/script-source-document'
-import { modelStepSignal } from '../generation/model-execution.js'
+import { modelStepSignal, withUnrestrictedScriptExecution } from '../generation/model-execution.js'
 import { effectiveScriptSource, onScriptSourceRevision } from './script-source-versions.js'
 import { scriptSourceVersion } from './script-source-identity.js'
 import { sourceAnalysisConfigurationHash, sourceRevisionMapReuse } from './script-source-revision-reuse.js'
@@ -15,6 +15,7 @@ export { scriptSourceVersion } from './script-source-identity.js'
 import { synthesizeSourceStory, validateSourceStory } from './script-source-story.js'
 import { hasPassedSourceQuality, reviewSourceQuality } from './script-source-quality.js'
 import { repairSourceQuality } from './script-source-quality-repair.js'
+import { sourceAnalysisDiagnosisFingerprint, sourceAnalysisProgressFingerprint, sourceAnalysisRebuildFingerprint, sourceAnalysisStalledError, withSourceAnalysisRecovery } from './script-source-recovery.js'
 import { prepareSourceWork, sourceAnalysisResume, sourceAnalysisStepLabel } from './script-source-checkpoints.js'
 import { resolveSourceSections, scriptSourcePassages, sourceAnalysisPipelineVersion, sourceMapSchema, sourceSectionRanges,
   sourcePromptUnits, sourceWorkPlan, validateSourceCoverage, workPassages, type SourcePassage } from './script-source-map.js'
@@ -124,6 +125,7 @@ function sourceMapPrompt(document: Source, passages: SourcePassage[], state: Scr
     '本次提供完整剧本作为理解上下文。先通读全篇，兼顾前后因果、人物关系和伏笔回收，再仅产出output_window指定范围的目录。分页限制输出量，不是把原文分段摘要后归并；范围外原文仍用于理解，禁止在本页重复产出。\n' +
     'sections按语义划分。start_unit使用原文句段的真实ID，第一段必须为output_window.first_unit，之后递增且不超过last_unit，连续覆盖指定范围。标题和正文不可遗漏。同一单元不能分属两个章节。程序根据ID计算位置，禁止返回start_quote或手写offset。episode_number仅在原文明示集数时填写，否则null。\n' +
     'summary概括本段完整内容；characters只记本段原文明示的人物身份与关系；events只记本段关键事件，纯设定段可以为空。每个人物和事件必须附本段内支持该事实的evidence.unit_id。原文由程序从编号提取，不要复制quote，不要引用相邻资料或其他章节，不能用无关句子凑证据。\n' +
+    '尤其保留会约束后续创作的事实：数量总额与分配、容量是否已满、资源是否用尽、规则的前提与例外、人物动机中的否定和转折、事件先后及最终状态。数量相等不等于已经用尽，一个动作完成不等于后续动作也已发生，不因概括而删掉这些差别；只记录原文真实给出的条件。\n' +
     '每条人物或事件的evidence.unit_id必须属于本页对应章节，不能引用本页以外原文。同一连续剧情跨目录节点或跨页时用continues_previous=true，不同集数、地点或独立设定章节不合并。分页边界落在场戏中时标记真实延续关系。尚未结束的事件放入open_threads；结合全文判断是否有回收，不把悬念自动判成作者缺口。\n' +
     '目录密度按全文真实结构决定，逐集、逐场或逐设定章节保留重要事实和证据，不为减少节点而把长篇压成少量泛化章节。\n' +
     (state.quality?.status === 'issues' ? `上次独立核对发现以下遗漏或误读，须结合完整原文纠正，不补写故事：${JSON.stringify(state.quality.findings)}\n` : '') +
@@ -149,9 +151,20 @@ function appendSourceSections(state: ScriptSourceAnalysis, sections: ScriptSourc
   }
 }
 
+type SourceRecoveryState = { rebuilds: number; rebuilt?: Set<string> }
+function rebuildAfterQualityIssues(document: Source, state: ScriptSourceAnalysis, recovery: SourceRecoveryState) {
+  const signature = sourceAnalysisRebuildFingerprint(state)
+  const rebuilt = recovery.rebuilt ??= new Set<string>()
+  if (rebuilt.has(signature)) throw sourceAnalysisStalledError(new Error('完整重建后仍得到相同分析和相同核对问题：' +
+    state.quality?.findings.map(finding => finding.explanation).join('；')))
+  rebuilt.add(signature)
+  rebuildSourceQualityIssues(document, state)
+  recovery.rebuilds++
+}
+
 async function processSource(document: Source, state: ScriptSourceAnalysis, generate: SourceAnalyzer, persist: () => void,
   signal: AbortSignal, limits: SourceAnalysisBudgets, onProgress?: (state: ScriptSourceAnalysis) => void,
-  proposalReuse?: ReturnType<typeof planScriptSourceProposalReuse>) {
+  proposalReuse?: ReturnType<typeof planScriptSourceProposalReuse>, recovery: SourceRecoveryState = { rebuilds: state.quality_rebuild_for ? 1 : 0 }) {
   const reuse = proposalReuse || (state.revision_reuse?.status === 'pending'
     ? sourceRevisionMapReuse(document, state.model_id, state.configuration_hash) : null)
   if (state.revision_reuse?.status === 'pending' && (!reuse || !validScriptSourceMapReuseState(state, reuse))) {
@@ -163,8 +176,8 @@ async function processSource(document: Source, state: ScriptSourceAnalysis, gene
   const progress = (stage: NonNullable<ScriptSourceAnalysis['progress']>['stage'], message: string) => {
     state.progress = { stage, message }; persist(); onProgress?.(structuredClone(state))
   }
-  // The structured step owns a cumulative budget, including format fixes and
-  // transport backoff; the provider receives the remaining cancellation scope.
+  // Provider calls share the explicit cancellation scope; retained progress
+  // and semantic recovery, rather than elapsed time, govern this execution.
   const request = (_stage: keyof SourceAnalysisBudgets): StructuredGenerator => (prompt, contract) =>
     generate(document.project_id, state.model_id, prompt, contract, modelStepSignal(signal)!)
   state.phase = state.completed_chunks < state.work!.length ? 'reading' : 'synthesis'; persist()
@@ -253,9 +266,9 @@ async function processSource(document: Source, state: ScriptSourceAnalysis, gene
       if (!(error instanceof Error) || !('sourceQualityRepairNeedsRebuild' in error) || error.sourceQualityRepairNeedsRebuild !== true) throw error
       // The next pass retains the same review marker, skips local repairs and
       // performs a fresh independent review exactly once after reconstruction.
-      rebuildSourceQualityIssues(document, state)
-      progress('reading', `部分问题无法安全局部修补，正在依据核对证据重建目录；已完成的新目录页将继续保存。${error.message}`)
-      return processSource(document, state, generate, persist, signal, limits, onProgress)
+      rebuildAfterQualityIssues(document, state, recovery)
+      progress('reading', `部分问题无法安全局部修补，正在依据核对证据第 ${recovery.rebuilds} 次重建目录；已完成的新目录页将继续保存，可随时停止。${error.message}`)
+      return processSource(document, state, generate, persist, signal, limits, onProgress, undefined, recovery)
     }
   }
   progress('validating', '正在独立核对人物、事件、因果、伏笔与结局是否遗漏或误读')
@@ -264,11 +277,11 @@ async function processSource(document: Source, state: ScriptSourceAnalysis, gene
     signal.throwIfAborted()
     if (state.revision_reuse?.status !== 'pending' || !state.revision_reuse.reused_pages.length || state.quality?.status !== 'issues') throw error
     // A local text change may invalidate distant interpretations. One full
-    // reconstruction replaces all candidate semantics; later failures stop
-    // normally and remain available for explicit retry.
-    rebuildSourceQualityIssues(document, state)
-    progress('reading', '新稿全文核对发现目录理解已变化，正在依据核对证据完整重建')
-    return processSource(document, state, generate, persist, signal, limits, onProgress)
+    // reconstruction replaces all candidate semantics. Further quality issues
+    // keep their saved evidence and continue through normal recovery.
+    rebuildAfterQualityIssues(document, state, recovery)
+    progress('reading', `新稿全文核对发现目录理解已变化，正在依据核对证据第 ${recovery.rebuilds} 次完整重建；可随时停止`)
+    return processSource(document, state, generate, persist, signal, limits, onProgress, undefined, recovery)
   }
   if (state.revision_reuse?.status === 'pending') state.revision_reuse.status = 'verified'
   state.status = 'ready'; state.phase = 'ready'; state.error = null
@@ -348,8 +361,13 @@ export async function analyzeSourceSnapshot(document: Source, modelId: string,
       document.project_id, 'source-proposal', cacheKey, JSON.stringify(state), now())
   }
   options.onProgress?.(structuredClone(state))
-  await processSource(document, state, (_project, _model, prompt, contract, requestSignal) => generate(prompt, contract, requestSignal),
-    persist, signal, budgets, options.onProgress, proposalReuse)
+  const recovery = { rebuilds: state.quality_rebuild_for ? 1 : 0 }
+  await withUnrestrictedScriptExecution(() => withSourceAnalysisRecovery(() => processSource(document, state,
+    (_project, _model, prompt, contract, requestSignal) => generate(prompt, contract, requestSignal),
+    persist, signal, budgets, options.onProgress, proposalReuse, recovery), { signal,
+    progressFingerprint: () => sourceAnalysisProgressFingerprint(state), diagnosisFingerprint: issue => sourceAnalysisDiagnosisFingerprint(state, issue), onRecovery: ({ message }) => {
+      state.progress = { stage: 'repairing', message }; persist(); options.onProgress?.(structuredClone(state))
+    } }))
   persistScriptSourceProposalBase(document, state, configurationHash)
   rememberPreparedSnapshot(cacheKey, state)
   options.onProgress?.(structuredClone(state))
@@ -376,7 +394,7 @@ export function createScriptSourceAnalyzer(generate: SourceAnalyzer, limits: Sou
   async function analyze(projectId: string, state: ScriptSourceAnalysis, controller: AbortController) {
     const document = source(projectId)!
     state.status = 'running'; state.started_at = now(); persist(projectId, state)
-    const scope = createStreamScope(controller.signal, { totalMessage: '剧本分析本次执行已达到 180 分钟，已保留完成部分，请重试继续分析。' })
+    const scope = createStreamScope(controller.signal, { totalMs: null })
     try {
       const configurationHash = sourceAnalysisConfigurationHash(options.configuration?.(state.model_id))
       if (state.configuration_hash && state.configuration_hash !== configurationHash || state.revision_reuse?.status === 'pending' && !state.configuration_hash) {
@@ -394,7 +412,13 @@ export function createScriptSourceAnalyzer(generate: SourceAnalyzer, limits: Sou
         assertConfiguration()
         return result
       }
-      await scope.wait(processSource(document, state, checkedGenerate, () => persist(projectId, state), scope.signal, limits))
+      const recovery = { rebuilds: state.quality_rebuild_for ? 1 : 0 }
+      await scope.wait(withUnrestrictedScriptExecution(() => withSourceAnalysisRecovery(() => processSource(document, state, checkedGenerate,
+        () => persist(projectId, state), scope.signal, limits, undefined, undefined, recovery), {
+        signal: scope.signal, progressFingerprint: () => sourceAnalysisProgressFingerprint(state), diagnosisFingerprint: issue => sourceAnalysisDiagnosisFingerprint(state, issue), onRecovery: ({ message }) => {
+          state.progress = { stage: 'repairing', message }; persist(projectId, state)
+        },
+      })))
     }
     catch (issue) {
       if (current(projectId, state)) {

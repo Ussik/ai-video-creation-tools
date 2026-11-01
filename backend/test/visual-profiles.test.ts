@@ -169,7 +169,7 @@ test('RightAPI shot generation sends three confirmed boards and recovers persist
   } finally { stop?.() }
 })
 
-test('confirmed boards fill unresolved snapshots; definition/board revisions stay frozen until explicitly refreshed', async () => {
+test('confirmed boards fill unresolved snapshots and followers automatically advance after confirmation', async () => {
   const { project, scene, profile } = await setup()
   const shot = await call<{ id: string }>('POST', `/api/projects/${project.id}/shots`, { title: '阿宁近景', source_scene_id: scene.id })
   image(project.id, 'snapshot-old'); image(project.id, 'snapshot-new')
@@ -181,8 +181,8 @@ test('confirmed boards fill unresolved snapshots; definition/board revisions sta
   assert.equal((await app.inject({ method: 'POST', url: `/api/visual-profiles/${profile.id}/board-task`, payload: { expected_revision: 1 } })).statusCode, 409)
   await call('PATCH', `/api/visual-profiles/${profile.id}`, { expected_revision: 2, board_asset_id: 'snapshot-new' })
   let data = await call<Visuals>('PUT', `/api/shots/${shot.id}/visual-bindings`, { bindings: [{ profile_id: profile.id, required: false }] })
-  assert.equal(data.shot_visual_bindings[0]?.revision, 1)
-  assert.equal(data.shot_visual_bindings[0]?.board_asset_id, 'snapshot-old')
+  assert.equal(data.shot_visual_bindings[0]?.revision, 2)
+  assert.equal(data.shot_visual_bindings[0]?.board_asset_id, 'snapshot-new')
   data = await call<Visuals>('PUT', `/api/shots/${shot.id}/visual-bindings`, { bindings: [{ profile_id: profile.id, required: true }], refresh_profile_ids: [profile.id] })
   assert.equal(data.shot_visual_bindings[0]?.revision, 2)
   assert.equal(data.shot_visual_bindings[0]?.board_asset_id, 'snapshot-new')

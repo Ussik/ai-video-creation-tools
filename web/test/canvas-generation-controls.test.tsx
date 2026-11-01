@@ -57,6 +57,17 @@ function button(panel: HTMLElement, group: string, label: string) {
   return found
 }
 
+test('provider generation duration is displayed separately from the planned edit duration', async () => {
+  const view = await mount({ modality: 'video', duration: 4, editDuration: 2, minDuration: 4, maxDuration: 15, showDuration: true })
+  try {
+    const explanation = view.panel.querySelector('[aria-label="生成与剪辑时长"]')!
+    assert.match(explanation.textContent!, /计划入片 2 秒/)
+    assert.match(explanation.textContent!, /模型生成 4 秒/)
+    assert.match(explanation.textContent!, /分镜时长保持不变/)
+    assert.deepEqual(view.changes, [])
+  } finally { await view.destroy() }
+})
+
 test('fixed-size image popup shows only supported choices and maps every selectable ratio to real dimensions', async () => {
   const view = await mount()
   try {
@@ -149,6 +160,22 @@ test('video controls retain supported resolution, ratio and candidate selectors'
     assert.deepEqual(view.changes, [{ resolution: '720p' }, { ratio: '9:16' }])
     assert.equal(view.panel.querySelector('[aria-label="画质"]'), null)
     assert.equal(view.panel.querySelector('[aria-label="背景"]'), null)
+  } finally { await view.destroy() }
+})
+
+test('source-controlled video parameters explain fixed dimensions and keep draft mode explicitly selectable', async () => {
+  const view = await mount({ modality: 'video', ratios: ['adaptive', '16:9'], ratio: 'adaptive',
+    resolutions: ['480p'], resolution: '480p', duration: 5, showDuration: false,
+    ratioFollowsSource: true, durationFollowsSource: true, draftSupported: true, draft: true })
+  try {
+    assert.match(view.panel.textContent!, /跟随源画幅/)
+    assert.match(view.panel.textContent!, /跟随原视频/)
+    assert.equal(view.panel.querySelector('[aria-label="比例"]'), null)
+    assert.equal(view.panel.querySelector('[aria-label="输入视频时长"]'), null)
+    assert.match(view.trigger.textContent!, /源画幅 · 480p · 原视频时长 · 样片/)
+    assert.deepEqual([...view.panel.querySelectorAll('[aria-label="清晰度"] button')].map(node => node.textContent), ['480p'])
+    await act(() => view.panel.querySelector<HTMLInputElement>('[aria-label="样片模式"]')!.click())
+    assert.deepEqual(view.changes, [{ draft: false }])
   } finally { await view.destroy() }
 })
 

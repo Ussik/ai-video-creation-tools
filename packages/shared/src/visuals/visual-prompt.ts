@@ -11,6 +11,8 @@ export type PromptVisualBinding = {
   definition: string; view_requirements: string; board_asset_id: string | null
   profile_id?: string; required?: boolean | number
   reference_assets?: VisualReferenceSnapshot[]
+  /** Node-local ownership annotations; never used to select automatic inputs. */
+  selected_reference_asset_ids?: string[]
   usage?: VisualBindingUsage
 }
 export type VideoReferencePromptOptions = {
@@ -71,12 +73,14 @@ export function visualGenerationPrompt(prompt: string, bindings: PromptVisualBin
   if (!bindings.length) return mapReferences(base)
   const labels = { character: '人物', location: '场景', prop: '道具' }
   const context = bindings.map(binding => {
-    const usesImages = mode === 'profiles' && options.mode !== 'reference' && (!binding.profile_id || !excluded.has(binding.profile_id))
+    const usesImages = mode === 'profiles' && (!binding.profile_id || !excluded.has(binding.profile_id))
     const indexes = usesImages
-      ? visualBindingReferenceAssetIds(binding).map(id => references.indexOf(id) + 1).filter(index => index > 0) : []
+      ? [...new Set([...visualBindingReferenceAssetIds(binding), ...(binding.selected_reference_asset_ids || [])])]
+        .map(id => references.indexOf(id) + 1).filter(index => index > 0) : []
     const selected = usesImages ? binding.reference_assets?.filter(reference => references.includes(reference.asset_id)) : []
     const views = selected?.length ? `\n本次参考用途：${selected.map(reference => `${visualReferenceViewLabels[reference.view]}，用于${selectedPurposes[reference.purpose]}`).join('；')}` : ''
-    return `${labels[binding.kind]}：${binding.name}（${binding.variant}，版本 ${binding.revision}）${indexes.length ? `；参考图 ${indexes.join('、')}` : ''}\n${binding.definition}${views}`
+    const referenceLabel = options.mode === undefined ? '参考图' : '图片'
+    return `${labels[binding.kind]}：${binding.name}（${binding.variant}，版本 ${binding.revision}）${indexes.length ? `；${referenceLabel} ${indexes.join('、')}` : ''}\n${binding.definition}${views}`
   }).join('\n\n')
   return mapReferences(`${base}\n\n【镜头视觉设定】\n${context}\n保持上述对象的外观、比例、服装、材质与空间关系。只生成当前镜头的一幅完整画面或连续视频；不要复制设定板的多视角拼版、文字、标签或色板。\n【镜头视觉设定结束】`)
 }

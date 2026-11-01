@@ -36,6 +36,27 @@
   opacity: 1;
 }
 
+.timeline-preview-stage { container-type: size; }
+.timeline-preview-caption {
+  position: absolute;
+  z-index: 2;
+  bottom: 7.5%;
+  left: 3%;
+  width: 94%;
+  color: white;
+  font-family: "Heiti SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 5.83cqh;
+  line-height: 1.15;
+  font-weight: 400;
+  text-align: center;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-text-stroke: .055em #111;
+  paint-order: stroke fill;
+  text-shadow: 0 1px 2px #111;
+  pointer-events: none;
+}
+
 .timeline-preview-message {
   position: absolute;
   z-index: 1;

@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
-import { generationStepBudgets } from '@video-studio/shared/script/script-stream-policy'
-import { scriptArtifactLabels, scriptArtifactTypes, scriptStageArtifacts } from '@video-studio/shared/script/script-stage-content'
+import { createStreamScope } from '@video-studio/shared/script/script-stream-policy'
+import { scriptArtifactLabels, scriptArtifactTypes } from '@video-studio/shared/script/script-stage-content'
+import { scriptTaskArtifactTypes } from '@video-studio/shared/script/script-task-contract'
 import { TextOutputLimitError, TextProviderError } from '../../infrastructure/providers/text-errors.js'
 import { generateStructuredOutput, restoreOptionalNulls, type OutputContract } from '../generation/model-output.js'
 import { parseStructuredOutput } from '../generation/structured-output.js'
-import { modelStepSignal, runGenerationDeadline, runModelStep } from '../generation/model-execution.js'
+import { modelStepSignal, runModelStep } from '../generation/model-execution.js'
 import { pendingStageArtifact, repairableStageArtifact, repairStageArtifacts, stageArtifactType } from './script-stage-artifact-repair.js'
 import { createGenerationSteps, type GenerationSteps } from './script-generation-steps.js'
 import { createBlockStreamReader, createWorkflowStreamReader, recoverBlockStream, recoverWorkflowStream } from './script-streamed-units.js'
@@ -71,19 +72,26 @@ export async function generateStageDraftWithContinuation(request: z.infer<typeof
   const restored = saved?.input_hash === identityHash ? stateSchema.safeParse(saved.value) : undefined
   let state: State = restored?.success ? restored.data : { version: 1, round: 0, initialEnded: false,
     artifacts: [], scenes: [], target: null, mode: 'document', blocks: [], noProgress: 0, focused: false, pendingArtifacts: [], initialComplete: false, blockedArtifacts: [], blockedScenes: [] }
-  const allowed: readonly string[] = scriptStageArtifacts[request.stage]
+  const allowed = scriptTaskArtifactTypes(request)
   if (state.artifacts.some(item => !allowed.includes(item.artifact_type)) || new Set(state.artifacts.map(item => item.artifact_type)).size !== state.artifacts.length ||
     state.target && !allowed.includes(state.target) || request.stage !== 'episode' && state.scenes.length) {
     state = { version: 1, round: 0, initialEnded: false, artifacts: [], scenes: [], target: null, mode: 'document', blocks: [], noProgress: 0, focused: false, pendingArtifacts: [], initialComplete: false, blockedArtifacts: [], blockedScenes: [] }
   }
-  const maxRounds = Math.max(1, Math.min(32, Math.trunc(options.maxRounds ?? 16)))
+  const maxRounds = options.maxRounds === undefined ? Infinity : options.maxRounds
+  if (maxRounds !== Infinity && (!Number.isSafeInteger(maxRounds) || maxRounds < 1)) throw new Error('显式接续轮次必须是正整数')
   const roundCeiling = state.round + maxRounds
-  // A deliberate user resume gets a fresh bounded continuation run while
-  // retaining the lifetime round counter and all completed semantic units.
+  // Continuation has no default round ceiling. Explicit caller limits, when
+  // supplied, retain the lifetime counter and all completed semantic units.
   // Old v1 checkpoints did not record this adaptation. A resumed stalled
   // target must keep its completed prose and try a smaller complete unit.
   state.focused ||= state.noProgress > 0
   state.noProgress = 0
+  // A new explicit resume gets a fresh attempt. Within this execution, only
+  // retained prose or a real output strategy change can justify retrying.
+  const stalledStates = new Set<string>()
+  const semanticState = () => signature({ target: state.target, mode: state.mode, focused: state.focused,
+    artifacts: state.artifacts, scenes: state.scenes, blocks: state.blocks,
+    pendingArtifacts: state.pendingArtifacts, blockedArtifacts: state.blockedArtifacts, blockedScenes: state.blockedScenes })
   let previousSnapshot = ''
   function persist() {
     const current = signature(state)
@@ -130,7 +138,7 @@ export async function generateStageDraftWithContinuation(request: z.infer<typeof
     const seenTypes = new Set<string>()
     for (const [index, value] of recovered.artifacts.entries()) {
       const type = stageArtifactType(value)
-      if (type && !allowed.includes(type)) rejectInitialUnit('artifact', index, value, '模型返回了当前阶段以外的文档，不能作为缺失栏目接续；此前完整结果已保留。', 'stage_continuation_invalid_unit')
+      if (type && !(allowed as readonly string[]).includes(type)) rejectInitialUnit('artifact', index, value, '模型返回了当前任务以外的文档，不能作为缺失栏目接续；此前完整结果已保留。', 'stage_continuation_invalid_unit')
       if (type && seenTypes.has(type)) rejectInitialUnit('artifact', index, value, '同一响应重复输出了同类型文档，不能去重后采用；此前完整结果已保留。', 'stage_continuation_conflict')
       if (type) seenTypes.add(type)
       const parsed = artifactSchema.safeParse(value)
@@ -269,6 +277,7 @@ export async function generateStageDraftWithContinuation(request: z.infer<typeof
       `当前目标的完整单元边界：${unitRules[state.target!]}\n` +
       '每完成一个语义单元就闭合该block，再写下一个；不要在第一个content中连续堆入多个条目。不按固定字数切割，不为了塞入一条响应压缩正文、减少集数或省略细节。每个block使用稳定且唯一的id，相同文档的title保持一致，content仅写可编辑正文和小节标题。\n' +
       (state.focused ? '【本轮缩小输出范围】上一请求在首个新完整单元闭合前达到输出上限，或已连续未接收新单元。本轮至多返回一个尚未完成的最小完整语义单元；长条目继续按上述有完整含义的小节细分。完整写完该单元后立即闭合block并结束响应，当前目标仍有其他内容就complete=false。不要重试整份文档或整个长条目，不省略其余待续内容。\n' : '本轮可依次返回多个完整单元；每个单元独立闭合，剩余单元留待后续请求，未覆盖完整目标时complete=false。\n') +
+      (state.noProgress ? `【接续诊断】已连续 ${state.noProgress} 次未收到新的完整单元。请核对已完成单元，改写尚未完成部分的输出安排，直接给出下一个不同的完整小节；若当前目标确已全部完成，返回blocks:[]、complete:true。\n` : '') +
       (state.mode === 'scenes' ? '分集正文文档已完整，保持正文不变，仅继续其尚未覆盖的对应场次；每个block.content为空字符串，scenes恰好一个完整场次。顺序必须与完整正文一致，不重复已完成场次。\n' : request.stage === 'episode'
         ? '每个block同时写完整分场正文content和与该段严格对应的scenes，动作、对白和顺序一致；保留source_scene_id规则，不能遗漏已有场次。若已有完整scenes而正文尚未完成，正文单元必须逐场覆盖这些scenes且scenes字段原样对应，随后再写新场；不能跳过已有场次。\n'
         : '每个block.scenes必须为空数组。\n') +
@@ -311,7 +320,7 @@ export async function generateStageDraftWithContinuation(request: z.infer<typeof
       state.round++; persist()
       let terminalValidationFailure: { error: unknown } | undefined
       try {
-        const result = await generateStructuredOutput('workflow_draft', workflowStageEnvelope(request.stage),
+        const result = await generateStructuredOutput('workflow_draft', workflowStageEnvelope(request.stage, allowed),
           async (text, contract) => {
             const reader = createWorkflowStreamReader()
             const raw = await streamRequest(text, contract, raw => { const recovered = reader.read(raw); if (recovered.changed) readInitial(raw, recovered) })
@@ -320,7 +329,7 @@ export async function generateStageDraftWithContinuation(request: z.infer<typeof
             readInitial(raw, undefined, true)
             return raw
           }, prompt,
-          { signal: options.signal, correctionInstructions: workflowDraftFieldInstructions(request.stage), validate: value => {
+          { signal: options.signal, correctionInstructions: workflowDraftFieldInstructions(request.stage, allowed), validate: value => {
             let draft: WorkflowDraft
             try { draft = workflowGenerationDraftSchema.parse({ ...value, ...request }) }
             catch (error) {
@@ -367,24 +376,29 @@ export async function generateStageDraftWithContinuation(request: z.infer<typeof
       state.artifacts.push(...repaired); state.pendingArtifacts = []; persist()
     }
   }
-  return runGenerationDeadline(options.signal, options.budgetMs ?? generationStepBudgets.generation, async () => {
+  const scope = createStreamScope(options.signal, { totalMs: options.budgetMs ?? null })
+  try { return await scope.wait((async () => {
     const initialDraft = await runModelStep('workflow_draft', options.signal, initialStage)
     if (initialDraft) return initialDraft
-    if (!state.target && scriptStageArtifacts[request.stage].every(type => state.artifacts.some(item => item.artifact_type === type))
+    if (!state.target && allowed.every(type => state.artifacts.some(item => item.artifact_type === type))
       && (request.stage !== 'episode' || state.initialComplete && state.scenes.length > 0)) {
       return done(finalDraft({ artifacts: state.artifacts, scenes: state.scenes }))
     }
     while (state.round < roundCeiling) {
+      // Yield between independent model rounds so cancellation remains
+      // responsive even when a provider/fake generator resolves immediately.
+      await new Promise<void>(resolve => setImmediate(resolve))
       modelStepSignal(options.signal)?.throwIfAborted()
       if (!state.target) {
-        state.target = (scriptStageArtifacts[request.stage].find(type => !state.artifacts.some(item => item.artifact_type === type))) || (request.stage === 'episode' ? 'episode_script' : null)
+        state.target = (allowed.find(type => !state.artifacts.some(item => item.artifact_type === type))) || (request.stage === 'episode' ? 'episode_script' : null)
         state.mode = state.target && state.artifacts.some(item => item.artifact_type === state.target) ? 'scenes' : 'document'
         state.blocks = []
       }
       if (!state.target) return done(finalDraft({ artifacts: state.artifacts, scenes: state.scenes }))
+      const attemptedState = semanticState()
       state.round++; persist()
       const before = state.blocks.length
-      let complete = false, outputLimited = false
+      let complete = false
       try {
         const result = await generateStructuredOutput('script_stage_blocks', continuationSchema(),
           async (text, contract) => {
@@ -404,11 +418,11 @@ export async function generateStageDraftWithContinuation(request: z.infer<typeof
           if (error instanceof TextProviderError && !error.retryable) steps.forget(checkpointId)
           throw error
         }
-        if (error instanceof TextOutputLimitError) { outputLimited = true; readTerminalBlocks(error.partialText) }
+        if (error instanceof TextOutputLimitError) readTerminalBlocks(error.partialText)
       }
       const added = state.blocks.length - before
       if (added) state.focused = false
-      else if (outputLimited) state.focused = true
+      else state.focused = true
       if (complete && (state.blocks.length || state.mode === 'scenes' && state.scenes.length)) {
         if (state.mode === 'document') {
           const blocks = state.blocks
@@ -428,17 +442,19 @@ export async function generateStageDraftWithContinuation(request: z.infer<typeof
         const episodeComplete = request.stage === 'episode'
         state.target = null; state.blocks = []; state.noProgress = 0; state.focused = false; persist()
         if (episodeComplete) return done(finalDraft({ artifacts: state.artifacts, scenes: state.scenes }))
-        if (scriptStageArtifacts[request.stage].every(type => state.artifacts.some(item => item.artifact_type === type))) return done(finalDraft({ artifacts: state.artifacts, scenes: state.scenes }))
+        if (allowed.every(type => state.artifacts.some(item => item.artifact_type === type))) return done(finalDraft({ artifacts: state.artifacts, scenes: state.scenes }))
       } else {
         state.noProgress = added ? 0 : state.noProgress + 1; persist()
-        if (state.noProgress >= 2) {
-          options.onProgress?.(`已保留 ${state.artifacts.length} 份完整文档${state.blocks.length ? `及当前文档的 ${state.blocks.length} 段完整内容` : ''}，本轮接续已停止，可继续未完成内容。`)
-          throw failure('接续连续两次未收到新的完整单元，已停止重复请求并保留此前完整内容。可点击“重试本轮”从已保留内容继续，接续将按更小的完整单元处理。', 'stage_continuation_no_progress')
+        if (!added) {
+          options.onProgress?.(`连续 ${state.noProgress} 次未收到新的完整单元，已保留当前内容，正在核对重复结果并缩小到下一个完整小节继续；可随时停止。`)
+          modelStepSignal(options.signal)?.throwIfAborted()
+          if (stalledStates.has(attemptedState)) throw failure('当前目标在相同已保存内容和相同接续方式下仍未产生新的完整单元，已停止重复请求。全部已接收文档、场次和正文单元均已保留；可手动继续当前任务，或更换模型后重试。', 'stage_continuation_stalled')
+          stalledStates.add(attemptedState)
         }
       }
       options.onProgress?.(`已保留 ${state.artifacts.length} 份完整文档，当前目标已接收 ${state.blocks.length} 个完整语义单元，${state.focused ? '正缩小到一个完整小节继续' : '正从已保留内容继续补全其余内容'}。`)
     }
     options.onProgress?.(`已保留 ${state.artifacts.length} 份完整文档${state.blocks.length ? `及当前文档的 ${state.blocks.length} 段完整内容` : ''}，本轮接续已停止，可继续未完成内容。`)
     throw failure('阶段创作已达到本轮接续轮次上限，已保留全部完整单元。可点击“重试本轮”从已保留内容继续补全。', 'stage_continuation_exhausted')
-  })
+  })()) } finally { scope.close() }
 }

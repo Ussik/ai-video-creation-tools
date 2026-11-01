@@ -1,7 +1,5 @@
 import type { ScriptStage } from './script-stage-content.js'
 
-export const scriptDraftRepairRoundLimit = 4
-
 export type ScriptDraftFinding = {
   source_key: string; kind: 'unresolved_setting' | 'missing_core_setting' | 'contradiction';
   quote: string; explanation: string; suggestion: string;

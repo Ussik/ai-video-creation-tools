@@ -7,9 +7,10 @@ import sharp from 'sharp'
 import type { TextTool, ToolCall, ToolOutput, ToolTurn } from './text-tools.js'
 import { createStreamScope, textRequestTimeoutMs, textStreamIdleTimeoutMs, textReasoningIdleTimeoutMs, generationStepBudgets } from '@video-studio/shared/script/script-stream-policy'
 import { backgroundTextResponse, hasTextResponseRecovery } from './text-background.js'
-import { modelStepSignal } from '../../modules/generation/model-execution.js'
+import { isUnrestrictedScriptExecution, modelStepSignal } from '../../modules/generation/model-execution.js'
 import { applyOutputContract, strictJsonSchema, type OutputContract } from '../../modules/generation/model-output.js'
 import { videoReferenceConfigError, videoReferenceMediaError } from '@video-studio/shared/media/video-reference-config'
+import { normalizeSeedance25Request, seedance25RequestError, seedance25RequestVariables } from '@video-studio/shared/media/seedance25-request'
 import { defaultImageRequestTimeoutSeconds } from '@video-studio/shared/models/images-api-settings'
 import { documentedImageConfigError, documentedImageProfile, documentedImageSettings } from '@video-studio/shared/models/documented-images-api'
 import { imageMultipartBody, prepareImageReferences } from './image-references.js'
@@ -17,6 +18,9 @@ import { generateCompatibleStructuredText } from './text-output-capability.js'
 import { TextOutputLimitError, TextProviderError, transientTextStatus, transientTextNetworkError, textRetryAfter } from './text-errors.js'
 import { assertTextRequestCapacity } from './text-context.js'
 import { beginTextRequest, isTextRequestBudgetError } from './text-request-usage.js'
+import { withTextImageInput, textImageCapacityBody, type TextImageInput } from './text-image-input.js'
+import { withTextVideoInput, textVideoCapacityBody, type TextVideoInput } from './text-video-input.js'
+import { applyScriptReviewRequestPolicy } from './text-script-review-policy.js'
 export { TextOutputLimitError } from './text-errors.js'
 
 export type Modality = 'text' | 'image' | 'video'
@@ -73,6 +77,8 @@ export type TextStreamEvent =
 
 export interface TextStreamRequest {
   prompt: string
+  images?: TextImageInput[]
+  video?: TextVideoInput
   structured_output?: OutputContract
   /** Optional request fields used by configured templates. */
   mode?: 'text'
@@ -180,6 +186,7 @@ function textHttpError(response: Response, raw: string, url: string, startedAt: 
     .replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [已隐藏]')
     .replace(/([?&](?:api_key|key|token)=)[^&\s"'<>]+/gi, '$1[已隐藏]')
     .replace(/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+/gi, '[图片数据已隐藏]')
+    .replace(/data:video\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+/gi, '[视频数据已隐藏]')
   let message = raw.trim(), upstreamCode = ''
   try {
     const payload = JSON.parse(message) as Record<string, unknown>
@@ -417,7 +424,7 @@ function textResponseFailure(payload: Record<string, unknown>, partialText: stri
   const limit = incomplete?.reason === 'max_output_tokens' ? 'max_output_tokens' : finish === 'length' ? 'length' : undefined
   // Function-call arguments are never continued or executed after truncation.
   if (limit) return toolCall ? new TextProviderError('模型输出被截断，未执行工具调用：已达到模型输出长度上限', false, limit)
-    : new TextOutputLimitError(partialText, limit)
+    : new TextOutputLimitError(partialText, limit, usageMetrics(payload))
   const status = String(response.status || '')
   if (payload.error || payload.type === 'response.failed' || payload.type === 'response.incomplete' || ['failed', 'incomplete', 'cancelled'].includes(status)) {
     const detail = responseFailureDetail(payload)
@@ -481,8 +488,8 @@ export async function createTextToolTransport(model: GenerationModel, provider: 
   const key = resolveKey(provider)
   const requestUrl = apiUrl(settingString(settings, 'api_base_url', provider.base_url), settingString(settings, 'request_path'))
   const startedAt = Date.now()
-  const scope = createStreamScope(modelStepSignal(signal), { totalMs: generationStepBudgets.discussion,
-    idleMs: (body as Record<string, unknown>).stream === false || settings.stream === false || settings.reasoning_effort || (body as Record<string, unknown>).reasoning ? textReasoningIdleTimeoutMs : textStreamIdleTimeoutMs,
+  const scope = createStreamScope(modelStepSignal(signal), { totalMs: isUnrestrictedScriptExecution() ? null : generationStepBudgets.discussion,
+    idleMs: isUnrestrictedScriptExecution() ? undefined : (body as Record<string, unknown>).stream === false || settings.stream === false || settings.reasoning_effort || (body as Record<string, unknown>).reasoning ? textReasoningIdleTimeoutMs : textStreamIdleTimeoutMs,
     idleMessage: '模型接口长时间没有返回事件，当前步骤已停止，已完成结果保留。',
     totalMessage: '当前工具决策请求超时（5 分钟），已保留完成步骤，请检查后继续。' })
   let usageRequest: ReturnType<typeof beginTextRequest> | undefined
@@ -646,21 +653,24 @@ export async function streamText(
   // Most OpenAI-compatible providers opt into streaming with a top-level
   // `stream` flag. Add it when the configured template did not specify one;
   // an explicit template value (including false) always wins.
-  const body = applyOutputContract(renderedBody && typeof renderedBody === 'object' && !Array.isArray(renderedBody)
+  const requestUrl = apiUrl(settingString(settings, 'api_base_url', provider.base_url), settingString(settings, 'request_path'))
+  const body = applyScriptReviewRequestPolicy(withTextVideoInput(withTextImageInput(applyOutputContract(renderedBody && typeof renderedBody === 'object' && !Array.isArray(renderedBody)
     ? { ...(renderedBody as Record<string, unknown>),
       ...(('stream' in (renderedBody as Record<string, unknown>) || settings.stream === false)
         ? {} : { stream: true }) }
-    : renderedBody, model.protocol, settings, request.structured_output)
+    : renderedBody, model.protocol, settings, request.structured_output), request.images, model.protocol, settings), request.video, model.protocol, settings),
+    { url: requestUrl, remoteId: model.remote_id, protocol: model.protocol, policy: request.structured_output?.request_policy })
   const background = settings.background_responses === true && model.protocol === 'responses' && !!request.structured_output && hasTextResponseRecovery()
   const finalBody = background ? { ...body as Record<string, unknown>, stream: false, background: true } : body
   const requestBody = JSON.stringify(finalBody)
-  const capacity = assertTextRequestCapacity(settings, finalBody, model.protocol)
-  const metrics: TextRequestMetrics = { request_bytes: Buffer.byteLength(requestBody), ...outputLimitMetrics(body, model.protocol), ...capacity }
+  if (request.video && settings.video_input_format === 'doubao_ark' && Buffer.byteLength(requestBody) >= 64 * 1024 * 1024) throw new Error('豆包视频理解请求体需小于 64 MB，请缩小视频片段或降低分辨率')
+  const capacity = assertTextRequestCapacity(settings, (request.images?.length || request.video) ? textVideoCapacityBody(textImageCapacityBody(finalBody)) : finalBody,
+    model.protocol, (request.images?.length || 0) * 4096 + (request.video ? Math.ceil(request.video.duration_ms / 1000 * (request.video.fps ?? 1)) * 2048 : 0))
+  const metrics: TextRequestMetrics = { request_bytes: Buffer.byteLength(requestBody), ...outputLimitMetrics(finalBody, model.protocol), ...capacity }
   let response: Response
-  const requestUrl = apiUrl(settingString(settings, 'api_base_url', provider.base_url), settingString(settings, 'request_path'))
   const startedAt = Date.now()
-  const scope = createStreamScope(modelStepSignal(signal), { totalMs: request.structured_output ? textRequestTimeoutMs : generationStepBudgets.discussion,
-    idleMs: background || (body as Record<string, unknown>).stream === false || settings.stream === false || settings.reasoning_effort || (body as Record<string, unknown>).reasoning ? textReasoningIdleTimeoutMs : textStreamIdleTimeoutMs,
+  const scope = createStreamScope(modelStepSignal(signal), { totalMs: isUnrestrictedScriptExecution() ? null : request.structured_output ? textRequestTimeoutMs : generationStepBudgets.discussion,
+    idleMs: isUnrestrictedScriptExecution() ? undefined : background || (body as Record<string, unknown>).stream === false || settings.stream === false || settings.reasoning_effort || (body as Record<string, unknown>).reasoning ? textReasoningIdleTimeoutMs : textStreamIdleTimeoutMs,
     idleMessage: '模型接口长时间没有返回事件，当前步骤已停止，已完成结果保留。',
     totalMessage: `文本模型请求超时（最长等待 ${Math.round((request.structured_output ? textRequestTimeoutMs : generationStepBudgets.discussion) / 60_000)} 分钟）。请检查草稿后重试或切换文本模型。` })
   let usageRequest: ReturnType<typeof beginTextRequest> | undefined
@@ -851,7 +861,8 @@ async function download(projectId: string, url: string, suffix: '.mp4' | '.png')
 async function referenceImage(asset: MediaAsset, settings?: Settings): Promise<string> {
   if (asset.kind !== 'image') throw new Error('参考素材必须是图片')
   const image = await stat(asset.path)
-  const seedance = settings?.video_reference_profile === 'seedance_2_0'
+  const seedance = ['seedance_2_0', 'seedance_2_5'].includes(String(settings?.video_reference_profile))
+  const label = settings?.video_reference_profile === 'seedance_2_5' ? 'Seedance 2.5' : 'Seedance 2.0'
   if (seedance ? image.size >= 30 * 1024 * 1024 : image.size > 20 * 1024 * 1024) throw new Error(`参考图${seedance ? '必须小于 30 MB' : '超过 20 MB，请使用较小的图片'}`)
   if (seedance) {
     // Use the decoded format, not a filename extension that can be incorrect.
@@ -859,7 +870,7 @@ async function referenceImage(asset: MediaAsset, settings?: Settings): Promise<s
     const mimes: Record<string, string> = { jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif',
       tiff: 'image/tiff', heif: metadata.compression === 'av1' ? 'image/avif' : 'image/heic' }
     const mime = metadata.format ? mimes[metadata.format] : undefined
-    if (!mime || mime === 'image/avif') throw new Error('Seedance 2.0 参考图片格式不支持，请使用 JPEG、PNG、WebP、GIF、TIFF 或 HEIC 图片')
+    if (!mime || mime === 'image/avif') throw new Error(`${label} 参考图片格式不支持，请使用 JPEG、PNG、WebP、GIF、TIFF 或 HEIC 图片`)
     return `data:${mime};base64,${(await readFile(asset.path)).toString('base64')}`
   }
   const extension = extname(asset.path).toLowerCase()
@@ -869,7 +880,8 @@ async function referenceImage(asset: MediaAsset, settings?: Settings): Promise<s
 
 /** Called before queueing as well as before submission; no generation request is made here. */
 export async function validateVideoReferenceAssets(settings: Settings, references: MediaAsset[]): Promise<void> {
-  if (settings.video_reference_profile !== 'seedance_2_0') return
+  if (!['seedance_2_0', 'seedance_2_5'].includes(String(settings.video_reference_profile))) return
+  const label = settings.video_reference_profile === 'seedance_2_5' ? 'Seedance 2.5' : 'Seedance 2.0'
   const info = await Promise.all(references.map(async (asset, index) => {
     if (asset.kind !== 'image') throw new Error('视频参考素材必须是图片')
     try {
@@ -877,7 +889,7 @@ export async function validateVideoReferenceAssets(settings: Settings, reference
       if (file.size >= 30 * 1024 * 1024) throw new Error(`参考图 ${index + 1} 必须小于 30 MB`)
       const metadata = await sharp(asset.path).metadata()
       if (!['jpeg', 'png', 'webp', 'gif', 'tiff', 'heif'].includes(metadata.format ?? '') || metadata.format === 'heif' && metadata.compression === 'av1') {
-        throw new Error('图片格式不在 Seedance 2.0 支持范围，请改用 JPEG、PNG、WebP、GIF、TIFF 或 HEIC')
+        throw new Error(`图片格式不在 ${label} 支持范围，请改用 JPEG、PNG、WebP、GIF、TIFF 或 HEIC`)
       }
       const rotated = metadata.orientation !== undefined && metadata.orientation >= 5
       return { bytes: file.size, width: (rotated ? metadata.height : metadata.width) ?? 0, height: (rotated ? metadata.width : metadata.height) ?? 0 }
@@ -913,6 +925,17 @@ export async function recoverImage(projectId: string, url: string): Promise<Gene
   return { path: await downloadImage(projectId, httpUrl(url)), remoteUrl: url }
 }
 
+/** Download an already generated video without any model or provider access. */
+export async function recoverVideo(projectId: string, url: string): Promise<GenerationResult> {
+  const validatedUrl = httpUrl(url)
+  try { return { path: await download(projectId, validatedUrl, '.mp4'), remoteUrl: validatedUrl } }
+  catch (error) {
+    // A signed result URL can contain credentials. Keep the transport's raw
+    // message out of persisted/public job errors while retaining a safe code.
+    throw new Error(`视频已生成，但结果视频下载失败（错误码：${networkCode(error) ?? 'UNKNOWN'}）。可重试下载现有结果，不会再次请求厂商生成。`)
+  }
+}
+
 async function consumeImage(projectId: string, payload: Record<string, unknown>, settings: Settings,
   onImageUrl: (url: string) => void | Promise<void>): Promise<GenerationResult> {
   const result = imageResult(payload, settings)
@@ -935,6 +958,7 @@ function validatedVideoReference(value: string, settings: Settings): string {
   try { url = new URL(value) } catch { throw new Error('参考视频地址无效') }
   const extra = Array.isArray(settings.reference_video_schemes)
     ? settings.reference_video_schemes.filter((scheme): scheme is string => typeof scheme === 'string') : []
+  if (settings.video_reference_profile === 'seedance_2_5') extra.push('asset:')
   if (!['http:', 'https:', ...extra].includes(url.protocol)) throw new Error(`参考视频地址不支持 ${url.protocol} 协议`)
   if (!url.hostname && !url.pathname) throw new Error('参考视频地址无效')
   return url.toString()
@@ -946,6 +970,7 @@ async function pollTask(
   parseResult: (payload: Record<string, unknown>) => { status: string; videoUrl?: string },
   seconds: number,
   projectId: string,
+  onVideoUrl: (url: string) => void | Promise<void>,
 ): Promise<GenerationResult> {
   const interval = Math.max(1, Math.min(seconds, 60)) * 1000
   const deadline = Date.now() + 30 * 60_000
@@ -964,7 +989,9 @@ async function pollTask(
     if (status === 'succeeded' || status === 'completed') {
       if (!videoUrl) throw new Error('视频任务成功，但没有返回视频地址')
       const url = httpUrl(videoUrl)
-      return { path: await download(projectId, url, '.mp4'), remoteUrl: url }
+      try { await onVideoUrl(url) }
+      catch { throw new Error('视频已生成，但保存可恢复链接失败。厂商可能已计费，请先核对厂商记录，不要重复提交。') }
+      return recoverVideo(projectId, url)
     }
     if (status === 'failed' || status === 'expired' || status === 'cancelled' || status === 'canceled') {
       throw new Error(`视频任务 ${id} 失败: ${JSON.stringify(result.error ?? status).slice(0, 800)}`)
@@ -1007,6 +1034,7 @@ function configObject(value: unknown, key: string): Settings {
 }
 
 function modeVariables(settings: Settings, request: GenerationRequest): Variables {
+  request = normalizeSeedance25Request(settings, request)
   const mode = request.mode ?? 'text'
   const result: Variables = {
     model: null,
@@ -1033,6 +1061,7 @@ function modeVariables(settings: Settings, request: GenerationRequest): Variable
   if (request.draft && settings.draft_variables !== undefined) {
     Object.assign(result, configObject(settings.draft_variables, 'draft_variables'))
   }
+  Object.assign(result, seedance25RequestVariables(settings, request))
   return result
 }
 
@@ -1068,31 +1097,67 @@ function mediaVariables(settings: Settings, request: GenerationRequest, images: 
 }
 
 function videoPayload(settings: Settings, request: GenerationRequest, images: string[], remoteId: string): unknown {
-  const body = compactTemplate(renderTemplate(requestTemplate(settings, request, { model: '{{model}}', prompt: '{{prompt}}' }), mediaVariables(settings, request, images, remoteId)))
+  if (settings.video_reference_profile === 'seedance_2_5' && request.mode === 'reference' && !images.length && !request.reference_video_url) throw new Error('Seedance 2.5 参考模式需要至少一张参考图片或一个参考视频')
+  const variables = mediaVariables(settings, request, images, remoteId)
+  const body = compactTemplate(renderTemplate(requestTemplate(settings, request, { model: '{{model}}', prompt: '{{prompt}}' }), variables))
   // Check the rendered payload too: indirection must not lose a selected image.
   const sentImages = new Set<string>()
+  let sentVideo = false
   function collect(value: unknown): void {
-    if (typeof value === 'string' && images.includes(value)) sentImages.add(value)
+    if (typeof value === 'string') {
+      if (images.includes(value)) sentImages.add(value)
+      if (variables.reference_video_url && value === variables.reference_video_url) sentVideo = true
+    }
     else if (Array.isArray(value)) value.forEach(collect)
     else if (value && typeof value === 'object') Object.values(value).forEach(collect)
   }
   collect(body)
   if (images.some(image => !sentImages.has(image))) throw new Error('视频请求模板未传递全部参考图片，请检查当前模式的图片字段')
+  if (request.reference_video_url && !sentVideo) throw new Error('视频请求模板未传递参考视频，请检查当前模式的视频字段')
+  if (settings.video_reference_profile === 'seedance_2_5') {
+    const payload = configObject(body, 'request_template')
+    if (!Array.isArray(payload.content)) throw new Error('Seedance 2.5 请求模板必须使用 content 数组传递提示词与参考素材')
+    const imageContent = payload.content.filter(item => item && typeof item === 'object' && !Array.isArray(item) && (item as Settings).type === 'image_url') as Settings[]
+    const roles = request.mode === 'first_frame' ? ['first_frame'] : request.mode === 'first_last_frame' ? ['first_frame', 'last_frame'] : images.map(() => 'reference_image')
+    if (imageContent.length !== images.length || images.some((image, index) => imageContent[index]?.role !== roles[index]
+      || (imageContent[index]?.image_url as Settings | undefined)?.url !== image)) {
+      throw new Error('Seedance 2.5 必须在 content 中按顺序以 image_url 和当前模式的正确角色传递全部参考图片')
+    }
+    for (const key of ['ratio', 'duration', 'resolution', 'omni_reference_task_type', 'generate_audio', 'draft']) {
+      if (variables[key] != null && (key !== 'draft' || request.draft) && payload[key] !== variables[key]) throw new Error(`Seedance 2.5 请求模板必须正确传递 ${key}`)
+    }
+    if (variables.omni_reference_task_type === null && payload.omni_reference_task_type != null) throw new Error('Seedance 2.5 文生视频、首帧或首尾帧模式不能传递全模态任务类型')
+    if (variables.draft === null && payload.draft != null && payload.draft !== false) throw new Error('Seedance 2.5 请求模板不能在关闭样片时启用 draft')
+    if (request.reference_video_url && !payload.content.some(item => item && typeof item === 'object' && !Array.isArray(item)
+      && (item as Settings).type === 'video_url' && (item as Settings).role === 'reference_video'
+      && ((item as Settings).video_url as Settings | undefined)?.url === variables.reference_video_url)) {
+      throw new Error('Seedance 2.5 参考视频必须以 video_url 和 reference_video 角色传递到 content')
+    }
+  }
   const issue = videoReferenceMediaError(settings, [], Buffer.byteLength(JSON.stringify(body), 'utf8'))
   if (issue) throw new Error(issue)
   return body
 }
 
 /** Dry-run the exact Seedance payload before queueing, including Base64 and template duplication. */
-export async function validateVideoReferenceRequest(settings: Settings, references: MediaAsset[], request: GenerationRequest, remoteId: string): Promise<void> {
+export async function validateVideoReferenceRequest(settings: Settings, references: MediaAsset[], request: GenerationRequest, remoteId: string): Promise<Settings | undefined> {
   checkVideoReferenceRequestMode(settings, request)
+  const issue = videoReferenceConfigError(settings, references.length, request.mode ?? 'text')
+  if (issue) throw new Error(issue)
   await validateVideoReferenceAssets(settings, references)
-  if (settings.video_reference_profile !== 'seedance_2_0') return
+  if (!['seedance_2_0', 'seedance_2_5'].includes(String(settings.video_reference_profile)) && !request.reference_video_url) return
   const images = await Promise.all(references.map(asset => referenceImage(asset, settings)))
-  videoPayload(settings, request, images, remoteId)
+  const body = videoPayload(settings, request, images, remoteId)
+  if (settings.video_reference_profile === 'seedance_2_5') {
+    const payload = configObject(body, 'request_template')
+    return Object.fromEntries(['ratio', 'resolution', 'duration', 'generate_audio', 'draft', 'omni_reference_task_type']
+      .filter(key => payload[key] !== undefined).map(key => [key, payload[key]]))
+  }
 }
 
 function checkVideoReferenceRequestMode(settings: Settings, request: GenerationRequest): void {
+  const issue = seedance25RequestError(settings, request)
+  if (issue) throw new Error(issue)
   if (settings.video_reference_profile === 'seedance_2_0' && request.reference_video_url && ['first_frame', 'first_last_frame'].includes(request.mode ?? 'text')) {
     throw new Error('Seedance 2.0 首帧、首尾帧与全模态参考互斥，不能同时传入参考视频')
   }
@@ -1104,6 +1169,7 @@ function pollConfiguredVideo(
   provider: GenerationProvider,
   headers: Record<string, string>,
   projectId: string,
+  onVideoUrl: (url: string) => void | Promise<void>,
 ): Promise<GenerationResult> {
   const success = Array.isArray(settings.success_statuses) ? settings.success_statuses.map(String) : ['succeeded', 'completed']
   const failure = Array.isArray(settings.failure_statuses) ? settings.failure_statuses.map(String) : ['failed', 'cancelled']
@@ -1115,7 +1181,7 @@ function pollConfiguredVideo(
       const videoUrl = success.includes(status) ? String(nested(result, settingString(settings, 'result_path', 'output.url'))) : undefined
       return { status: success.includes(status) ? 'succeeded' : failure.includes(status) ? 'failed' : status, videoUrl }
     },
-    Number(settings.poll_seconds ?? 10), projectId)
+    Number(settings.poll_seconds ?? 10), projectId, onVideoUrl)
 }
 
 async function pollConfiguredImage(
@@ -1171,8 +1237,16 @@ async function configuredNetwork(
   onExternalId: (id: string) => void | Promise<void>,
   key: string,
   onImageUrl: (url: string) => void | Promise<void>,
+  onVideoUrl: (url: string) => void | Promise<void>,
 ): Promise<GenerationResult> {
   let settings = asSettings(model)
+  const hasExternalId = request._external_id !== undefined && request._external_id !== null
+  if (hasExternalId && model.modality !== 'video' && !(model.modality === 'image' && settings.async_image === true)) {
+    throw new Error('现有厂商任务编号与当前模型配置不兼容，无法安全继续查询。请先核对厂商记录，不要重复提交。')
+  }
+  if (hasExternalId && (typeof request._external_id !== 'string' || !request._external_id.trim() || ['undefined', 'null'].includes(request._external_id.trim()))) {
+    throw new Error(`现有${model.modality === 'video' ? '视频' : '图片'}任务编号无效，无法继续查询。请先核对厂商记录，不要重复提交。`)
+  }
   const documentedImages = model.modality === 'image' && settings.image_api_profile === documentedImageProfile
   if (documentedImages) {
     const issue = documentedImageConfigError(settings)
@@ -1183,8 +1257,8 @@ async function configuredNetwork(
   const authHeader = provider.auth_header || 'Authorization'
   const authPrefix = provider.auth_prefix ?? 'Bearer '
   const headers = key ? { [authHeader]: `${authPrefix}${key}` } : {}
-  if (model.modality === 'video' && request._external_id) {
-    return pollConfiguredVideo(request._external_id, settings, provider, headers, projectId)
+  if (model.modality === 'video' && request._external_id !== undefined && request._external_id !== null) {
+    return pollConfiguredVideo(request._external_id, settings, provider, headers, projectId, onVideoUrl)
   }
   if (model.modality === 'image' && settings.async_image === true && request._external_id) {
     return pollConfiguredImage(request._external_id, settings, provider, headers, projectId, onImageUrl)
@@ -1239,11 +1313,19 @@ async function configuredNetwork(
   if (!externalId) {
     const body = videoPayload(settings, request, images, model.remote_id)
     const created = await requestJson('POST', apiUrl(provider.base_url, settingString(settings, 'create_path')), headers, body)
-    externalId = String(nested(created, settingString(settings, 'id_path', 'id')))
-    if (!externalId || externalId === 'undefined' || externalId === 'null') throw new Error('视频模型没有返回任务 ID')
-    await onExternalId(externalId)
+    const rawId = optionalNested(created, settingString(settings, 'id_path', 'id'))
+    // Generic gateways may use numeric database IDs. Preserve exact safe
+    // integers, while never turning objects, booleans or imprecise numbers
+    // into a fabricated task identity.
+    const returnedId = typeof rawId === 'number' && Number.isSafeInteger(rawId) ? String(rawId) : rawId
+    if (typeof returnedId !== 'string' || !returnedId.trim() || ['undefined', 'null'].includes(returnedId.trim())) {
+      throw new Error('视频模型没有返回有效任务 ID，厂商可能已接受或计费。请先核对厂商记录，不要重复提交。')
+    }
+    externalId = returnedId
+    try { await onExternalId(externalId) }
+    catch { throw new Error(`视频任务 ${externalId} 已提交，但保存任务编号失败。厂商可能已计费，请凭此编号查询厂商结果，不要重复提交。`) }
   }
-  return pollConfiguredVideo(externalId, settings, provider, headers, projectId)
+  return pollConfiguredVideo(externalId, settings, provider, headers, projectId, onVideoUrl)
 }
 
 export async function generate(
@@ -1255,8 +1337,9 @@ export async function generate(
   onExternalId: (id: string) => void | Promise<void>,
   resolveApiKey?: (provider: GenerationProvider) => string | Promise<string>,
   onImageUrl: (url: string) => void | Promise<void> = () => {},
+  onVideoUrl: (url: string) => void | Promise<void> = () => {},
 ): Promise<GenerationResult> {
   if (provider.adapter === 'demo') throw new Error('演示模型已停用')
   const key = (resolveApiKey ? await resolveApiKey(provider) : '') || ''
-  return configuredNetwork(model, provider, request, references, projectId, onExternalId, key, onImageUrl)
+  return configuredNetwork(model, provider, request, references, projectId, onExternalId, key, onImageUrl, onVideoUrl)
 }

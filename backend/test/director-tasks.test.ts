@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { draftCompletenessFixtureResponse } from './fixtures/script-draft-completeness.js'
+import { workflowFixtureTypes } from './fixtures/script-workflow.js'
 import { scriptStageArtifacts, scriptArtifactLabels } from '@video-studio/shared/script/script-stage-content'
 
 const testData = await mkdtemp(join(tmpdir(), 'studio-director-tasks-'))
@@ -114,7 +115,7 @@ test('JSON-only stage drafts survive leaving and are resolved atomically with co
     const reviewed = draftCompletenessFixtureResponse(init); if (reviewed) return reviewed
     const prompt = JSON.parse(String(init?.body)).messages[0].content
     const content = prompt.includes('本次独立调用只理解创作者意图') ? { action: 'discuss', settings_patch: {} }
-      : { artifacts: scriptStageArtifacts.outline.map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '主角调查雨夜失踪事件，最终揭露骗局。' })), scenes: [] }
+      : { artifacts: workflowFixtureTypes(prompt).map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '主角调查雨夜失踪事件，最终揭露骗局。' })), scenes: [] }
     return Response.json({ choices: [{ message: { content: JSON.stringify(content) } }] })
   })
   const body = { ...f.body, focus_artifact: 'all', workflow: { stage: 'outline' }, task: { ...f.body.task, execution: { ...f.body.task.execution, focus_artifact: 'all' } } }

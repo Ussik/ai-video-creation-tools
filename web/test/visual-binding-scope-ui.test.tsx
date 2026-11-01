@@ -25,7 +25,8 @@ function fixture() {
   })) as VisualProfile[]
   const shot_visual_bindings = visual_profiles.slice(0, 4).map(profile => ({
     ...profile, shot_id: 'shot', profile_id: profile.id, usage: profile.id,
-    required: profile.id !== 'video', revision: 1, board_asset_id: `${profile.id}-old-board`,
+    required: profile.id !== 'video', revision: 1, sync_mode: ['image', 'none'].includes(profile.id) ? 'locked' : 'follow',
+    reference_selection: ['both', 'none'].includes(profile.id) ? 'manual' : 'auto', board_asset_id: `${profile.id}-old-board`,
     reference_assets: [{ id: `${profile.id}-ref`, asset_id: `${profile.id}-frozen`, revision: 1, view: 'face', purpose: 'identity', label: '已固定面部' }],
   })) as ShotVisualBinding[]
   return { id: 'project', name: '镜头引用用途', script: { scenes: [{ id: 'scene', heading: '站台' }] },
@@ -79,7 +80,7 @@ for (const scope of ['image', 'video'] as const) {
 
   test(`${scope} checkbox edits preserve the opposite usage and every frozen snapshot in the full shot payload`, async t => {
     let current = fixture()
-    const requests: Array<{ bindings: Array<{ profile_id: string; required: boolean; usage?: string; reference_asset_ids?: string[] }>; refresh_profile_ids: string[] }> = []
+    const requests: Array<{ bindings: Array<{ profile_id: string; required: boolean; usage?: string; sync_mode?: string; reference_selection?: string; reference_asset_ids?: string[] }>; refresh_profile_ids: string[] }> = []
     t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)); requests.push(body)
       current = { ...current, shot_visual_bindings: [
@@ -108,27 +109,28 @@ for (const scope of ['image', 'video'] as const) {
         assert.deepEqual(saved.reference_assets, binding.reference_assets)
         assert.equal(saved.board_asset_id, binding.board_asset_id)
         assert.equal(saved.required, binding.required)
+        assert.equal(saved.sync_mode, binding.sync_mode)
+        assert.equal(saved.reference_selection, binding.reference_selection)
       }
     } finally { await view.destroy() }
   })
 
-  test(`${scope} bulk refresh includes only active stale references and preserves hidden rows despite search`, async t => {
-    const detail = fixture()
-    let request: any
-    t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => { request = JSON.parse(String(init?.body)); return Response.json(detail) })
-    const view = await mount(detail, scope)
+  test(`${scope} drawer explains automatic updates without a manual refresh action`, async t => {
+    let writes = 0
+    t.mock.method(globalThis, 'fetch', async () => { writes++; return Response.json(fixture()) })
+    const view = await mount(fixture(), scope)
     try {
+      assert.equal(view.container.querySelector('[aria-label="引用更新"]'), null)
+      assert.equal(document.querySelector('[role="dialog"]'), null)
+      assert.ok(![...view.container.querySelectorAll('button')].some(node => node.textContent?.includes('更新引用')))
+      assert.match(view.container.textContent!, /保留手选参考图 · 需处理/)
+      if (scope === 'image') assert.match(view.container.textContent!, /已锁定 v1/)
+      else assert.match(view.container.textContent!, /新版待确认/)
       const input = document.querySelector<HTMLInputElement>('[aria-label="搜索引用设定"]')!
       const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!
       await act(() => { setter.call(input, '不存在'); input.dispatchEvent(new dom.window.Event('input', { bubbles: true })) })
       assert.equal(view.container.querySelectorAll('.pc-visual-binding').length, 0)
-      await act(() => button(`更新${scope === 'image' ? '图片' : '视频'}使用的引用（2）`).click())
-      assert.match(document.querySelector('[role="dialog"]')!.textContent!, /图片与视频共用的引用/)
-      await act(() => button('确认更新').click())
-      assert.deepEqual(request.refresh_profile_ids, ['both', scope])
-      assert.deepEqual(request.bindings.map((binding: any) => binding.profile_id), ['both', 'image', 'video', 'none'])
-      assert.deepEqual(request.bindings.map((binding: any) => binding.usage), ['both', 'image', 'video', 'none'])
-      assert.ok(request.bindings.every((binding: any) => !('reference_asset_ids' in binding)))
+      assert.equal(writes, 0, 'reading automatic update state and filtering never writes bindings')
     } finally { await view.destroy() }
   })
 }
@@ -145,6 +147,67 @@ test('an empty current scope stays empty until an explicit candidate is selected
     assert.match(view.container.querySelector('footer')!.textContent!, /使用 0 份设定/)
     await allProfiles()
     assert.ok([...view.container.querySelectorAll<HTMLInputElement>('.pc-binding-row-identity input[type="checkbox"]')].every(input => !input.checked))
+    assert.equal(writes, 0)
+  } finally { await view.destroy() }
+})
+
+
+test('turning follow on preserves manual references and every hidden binding', async t => {
+  const detail = fixture()
+  const original = detail.shot_visual_bindings!.find(binding => binding.profile_id === 'none')!
+  let request: any
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => { request = JSON.parse(String(init?.body)); return Response.json(detail) })
+  const view = await mount(detail, 'image')
+  try {
+    await allProfiles()
+    await act(() => button('参考与用途：none').click())
+    const toggle = document.querySelector<HTMLInputElement>('[aria-label="none 自动跟随最新设定"]')!
+    assert.equal(toggle.checked, false)
+    await act(() => toggle.click())
+    assert.deepEqual(request.bindings.find((binding: any) => binding.profile_id === 'none'), {
+      profile_id: 'none', required: true, usage: 'none', sync_mode: 'follow', reference_selection: 'manual',
+    })
+    assert.equal(request.bindings.length, 4)
+    assert.ok(request.bindings.every((binding: any) => !('reference_asset_ids' in binding)))
+    assert.deepEqual(request.refresh_profile_ids, [])
+    assert.deepEqual(detail.shot_visual_bindings!.find(binding => binding.profile_id === 'none'), original)
+  } finally { await view.destroy() }
+})
+
+test('restoring automatic matching explicitly releases manual selection without touching other usages', async t => {
+  const detail = fixture()
+  let request: any
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => { request = JSON.parse(String(init?.body)); return Response.json(detail) })
+  const view = await mount(detail, 'image')
+  try {
+    await act(() => button('参考与用途：both').click())
+    await act(() => button('恢复自动匹配').click())
+    assert.deepEqual(request.bindings.find((binding: any) => binding.profile_id === 'both'), {
+      profile_id: 'both', required: true, usage: 'both', sync_mode: 'follow', reference_selection: 'auto',
+    })
+    assert.deepEqual(request.refresh_profile_ids, ['both'])
+    assert.ok(request.bindings.every((binding: any) => !('reference_asset_ids' in binding)))
+    assert.equal(request.bindings.find((binding: any) => binding.profile_id === 'image').sync_mode, 'locked')
+    assert.equal(document.querySelector('[role="dialog"]'), null)
+  } finally { await view.destroy() }
+})
+
+test('historical shot references show a fixed version and stay read-only', async t => {
+  const detail = fixture()
+  detail.historical_shots = [{ ...detail.shots[0], superseded_by: 'replacement-shot' }]
+  detail.shots = detail.shots.slice(1)
+  let writes = 0
+  t.mock.method(globalThis, 'fetch', async () => { writes++; return Response.json(detail) })
+  const view = await mount(detail, 'image')
+  try {
+    assert.match(view.container.textContent!, /历史版本 · v1/)
+    await act(() => button('参考与用途：both').click())
+    const toggle = document.querySelector<HTMLInputElement>('[aria-label="both 自动跟随最新设定"]')!
+    assert.equal(toggle.checked, false)
+    assert.equal(toggle.disabled, true)
+    assert.match(view.container.textContent!, /历史版本已固定/)
+    assert.ok([...view.container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].every(input => input.disabled))
+    assert.ok(![...view.container.querySelectorAll('button')].some(node => node.textContent === '恢复自动匹配'))
     assert.equal(writes, 0)
   } finally { await view.destroy() }
 })

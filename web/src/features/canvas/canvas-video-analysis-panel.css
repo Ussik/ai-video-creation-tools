@@ -1,0 +1,39 @@
+.pc-video-analysis-panel { display: grid; gap: 16px; min-width: 0; color: var(--fc-text); }
+.pc-video-analysis-heading { display: flex; align-items: flex-start; gap: 9px; }
+.pc-video-analysis-heading > svg { flex: none; margin-top: 1px; color: var(--fc-text-secondary); }
+.pc-video-analysis-heading h2 { margin: 0; font-size: 14px; line-height: 1.4; font-weight: 600; }
+.pc-video-analysis-heading p, .pc-video-analysis-hint { margin: 5px 0 0; color: var(--fc-text-muted); font-size: 12px; line-height: 1.65; }
+.pc-video-analysis-source { display: grid; gap: 11px; min-width: 0; padding: 18px 12px; border: 1px dashed var(--fc-border); border-radius: var(--fc-radius-lg, 12px); background: var(--fc-surface); }
+.pc-video-analysis-source.has-video { padding: 10px; border-style: solid; }
+.pc-video-analysis-source .studio-media-player { width: 100%; overflow: hidden; border-radius: 6px; background: #111; }
+.pc-video-analysis-source video { display: block; width: 100%; max-height: 300px; object-fit: contain; }
+.pc-video-analysis-source-label { overflow: hidden; color: var(--fc-text-secondary); font-size: 12px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
+.pc-video-analysis-placeholder { display: grid; justify-items: center; gap: 7px; padding: 15px 8px; color: var(--fc-text-muted); font-size: 11px; }
+.pc-video-analysis-placeholder strong { color: var(--fc-text-secondary); font-size: 12px; font-weight: 550; }
+.pc-video-analysis-actions, .pc-video-analysis-shot-time { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.pc-video-analysis-source > .pc-video-analysis-actions { justify-content: center; }
+.pc-video-analysis-settings { display: grid; gap: 14px; min-width: 0; }
+.pc-video-analysis-model-notice { padding: 12px; border: 1px solid var(--fc-border-soft); background: var(--fc-surface-muted); }
+.pc-video-analysis-model-notice .mantine-Alert-icon { margin-inline-end: 9px; color: var(--fc-text-muted); }
+.pc-video-analysis-model-notice .mantine-Alert-title { color: var(--fc-text-secondary); font-size: 12px; line-height: 1.5; font-weight: 550; }
+.pc-video-analysis-model-guidance { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; color: var(--fc-text-muted); font-size: 12px; line-height: 1.65; }
+.pc-video-analysis-model-guidance > span { flex: 1 1 280px; }
+.pc-video-analysis-model-guidance > .mantine-Button-root { flex: none; }
+.pc-video-analysis-parameters { align-items: start; }
+.pc-video-analysis-panel .pc-video-analysis-parameters .mantine-InputWrapper-description { margin: 6px 0 0; line-height: 1.5; }
+.pc-video-analysis-parameters input { font-variant-numeric: tabular-nums; }
+.pc-video-analysis-settings > .pc-video-analysis-hint { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; font-size: 11px; }
+.pc-video-analysis-settings > .pc-video-analysis-hint > span:first-child { font-variant-numeric: tabular-nums; }
+.pc-video-analysis-run { justify-content: flex-end; }
+.pc-video-analysis-status { display: flex; align-items: center; gap: 8px; margin-top: -6px; color: var(--fc-text-secondary); font-size: 12px; line-height: 1.5; }
+.pc-video-analysis-status > svg { flex: none; }
+.pc-video-analysis-result { display: grid; gap: 12px; padding-top: 16px; border-top: 1px solid var(--fc-border); }
+.pc-video-analysis-observations { display: grid; gap: 9px; margin: 0; padding: 12px; border: 1px solid var(--fc-border); border-radius: 8px; background: var(--fc-surface-muted); }
+.pc-video-analysis-observations > div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 10px; }
+.pc-video-analysis-observations dt { color: var(--fc-text-muted); font-size: 11px; line-height: 1.7; }
+.pc-video-analysis-observations dd { margin: 0; color: var(--fc-text-secondary); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.pc-video-analysis-panel .mantine-Textarea-input { line-height: 1.65; }
+.pc-video-analysis-panel .mantine-InputWrapper-label { margin-bottom: 4px; font-size: 12px; font-weight: 600; }
+.pc-video-analysis-panel .mantine-InputWrapper-description { margin-bottom: 7px; color: var(--fc-text-muted); font-size: 11px; line-height: 1.5; }
+.pc-video-analysis-panel .mantine-Alert-body { overflow-wrap: anywhere; }
+.pc-video-analysis-panel .mantine-Alert-message p { margin: 0; line-height: 1.7; }

@@ -1,8 +1,12 @@
 import { chooseCombobox } from './component-controls'
+import { seedance25VideoSettings } from '@video-studio/shared/models/seedance-video-settings'
 import { videoReferenceUsageLabels, type VideoReferenceUsage } from '@video-studio/shared/media/video-reference-usage'
 import { withProjectStyle } from '@video-studio/shared/visuals/visual-style'
 import { resolvePromptReferences } from '@video-studio/shared/visuals/prompt-references'
 import { getManagedPromptBlocks, stripManagedPromptBlocks } from '@video-studio/shared/visuals/prompt-document'
+import { parsePromptSectionDocument, serializePromptSectionDocument } from '@video-studio/shared/visuals/prompt-section-document'
+import { visualGenerationPrompt } from '@video-studio/shared/visuals/visual-prompt'
+import { tokenizePromptReferenceNumbers } from '@video-studio/shared/visuals/prompt-references'
 import { visualBindingApplies } from '@video-studio/shared/visuals/visual-binding-usage'
 import assert from 'node:assert/strict'
 import { register } from 'node:module'
@@ -12,6 +16,9 @@ import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
 import type { Model, ProjectDetail, ShotVisualBinding, VisualProfile } from '../src/shared/api/api'
 import type { CanvasGraph, CanvasNode, ProjectCanvasProps } from '../src/features/canvas/ProjectCanvas'
+import type { CanvasNodeProposalActions } from '../src/features/canvas/ProjectCanvas'
+import type { CanvasNodeProposal, CanvasNodeProposalSource } from '@video-studio/shared/canvas/canvas-node-proposal'
+import { canvasGenerationSubmissionStorageKey, createCanvasGenerationSubmission, readCanvasGenerationSubmission } from '../src/features/canvas/canvas-generation-submission'
 
 // Render the actual canvas and composer; only CSS and HTTP transport are mocked.
 register(`data:text/javascript,${encodeURIComponent(`
@@ -28,6 +35,13 @@ for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLE
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, getComputedStyle: dom.window.getComputedStyle.bind(dom.window) })
 Object.defineProperty(dom.window, 'matchMedia', { value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) })
 Object.defineProperty(dom.window.document, 'fonts', { value: { addEventListener() {}, removeEventListener() {} } })
+const generationLocks = new Map<string, Promise<unknown>>()
+Object.defineProperty(dom.window.navigator, 'locks', { configurable: true, value: { request: async (name: string, action: () => Promise<unknown>) => {
+  const previous = generationLocks.get(name) || Promise.resolve()
+  const running = previous.catch(() => {}).then(action)
+  generationLocks.set(name, running)
+  try { return await running } finally { if (generationLocks.get(name) === running) generationLocks.delete(name) }
+} } })
 dom.window.HTMLElement.prototype.scrollIntoView = () => {}
 const caretRect = { left: 60, top: 40, right: 61, bottom: 60, width: 1, height: 20 }
 Object.defineProperty(dom.window.Range.prototype, 'getBoundingClientRect', { value: () => caretRect })
@@ -108,9 +122,9 @@ function initialGraph(mode: 'reference' | 'first_frame', extraManual = false): C
   ], edges: [{ id: 'storyboard-edge', source: 'storyboard-node', target: 'video-node', reference_asset_id: 'storyboard' },
     ...(extraManual ? [{ id: 'manual-edge', source: 'manual-node', target: 'video-node', reference_asset_id: 'manual' }] : [])] }
 }
-type PreviewInput = { video_reference_usages?: import('@video-studio/shared/media/video-reference-usage').VideoReferenceUsageSelection[]; mode: string; reference_asset_ids: string[]; prompt: string; visual_reference_mode: string; excluded_visual_profile_ids?: string[]; storyboard_reference_asset_id?: string | null }
-type ApiHandler = (path: string, method: string, body: Record<string, unknown>) => Response | Promise<Response> | undefined
-function mockApi(t: TestContext, graph: CanvasGraph, projectDetail = detail, handler?: ApiHandler, saveError = false) {
+type PreviewInput = { video_reference_usages?: import('@video-studio/shared/media/video-reference-usage').VideoReferenceUsageSelection[]; mode: string; reference_asset_ids: string[]; explicit_reference_asset_ids?: string[]; prompt: string; visual_reference_mode: string; excluded_visual_profile_ids?: string[]; storyboard_reference_asset_id?: string | null }
+type ApiHandler = (path: string, method: string, body: Record<string, unknown>, init?: RequestInit) => Response | Promise<Response> | undefined
+function mockApi(t: TestContext, graph: CanvasGraph, projectDetail = detail, handler?: ApiHandler, saveError: boolean | ((graph: CanvasGraph) => boolean) = false) {
   const previews: PreviewInput[] = [], resolvedPreviews: PreviewInput[] = [], saved: CanvasGraph[] = []
   t.after(() => dom.window.localStorage.removeItem('project-reference-batch:["video-reference-test","video-reference-test"]'))
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
@@ -121,15 +135,19 @@ function mockApi(t: TestContext, graph: CanvasGraph, projectDetail = detail, han
       return Response.json({ policies: [{ stage: 'video_prompt', label: '视频提示词', primary_id: 'video-a', auxiliary_ids: [], source: 'global', warning: '',
         skills: ['a', 'b', 'c'].map(id => ({ id: `video-${id}`, name: `视频技能${id}`, description: `技能${id}的说明`, revision: 'a'.repeat(40) })) }] })
     }
+    if (path === '/api/projects/video-reference-test' && method === 'GET') return Response.json(projectDetail)
     if (path === '/api/projects/video-reference-test/canvas') {
       if (method === 'GET') return Response.json(graph)
       assert.equal(method, 'PUT')
-      if (saveError) return Response.json({ message: '模拟画布保存失败' }, { status: 500 })
-      const value = JSON.parse(String(init?.body)); saved.push(value)
+      const value = JSON.parse(String(init?.body))
+      if (typeof saveError === 'function' ? saveError(value) : saveError) return Response.json({ message: '模拟画布保存失败' }, { status: 500 })
+      saved.push(value)
       return Response.json({ ...value, revision: `saved-${saved.length}` })
     }
-    const handled = await handler?.(path, method, init?.body ? JSON.parse(String(init.body)) : {})
+    const handled = await handler?.(path, method, init?.body ? JSON.parse(String(init.body)) : {}, init)
     if (handled) return handled
+    if (path.startsWith('/api/projects/video-reference-test/generation-submissions/')) return Response.json({ job: null })
+    if (path.startsWith('/api/projects/video-reference-test/shot-submissions/')) return Response.json({ shot: null })
     assert.equal(path, '/api/projects/video-reference-test/generate/preview', 'test must never create a paid generation job')
     assert.equal(method, 'POST')
     const request = JSON.parse(String(init?.body)) as PreviewInput
@@ -158,8 +176,9 @@ async function settle() {
     }
   })
 }
-async function mount(projectDetail = detail, portals = false, overrides: Partial<ProjectCanvasProps> = {}) {
-  dom.window.localStorage.clear(); dom.window.sessionStorage.clear(); frames.clear()
+async function mount(projectDetail = detail, portals = false, overrides: Partial<ProjectCanvasProps> = {}, preserveStorage = false) {
+  if (!preserveStorage) { dom.window.localStorage.clear(); dom.window.sessionStorage.clear() }
+  frames.clear()
   dom.window.localStorage.setItem('project-canvas-viewport:video-reference-test', JSON.stringify({ x: 0, y: 0, zoom: 0.8 }))
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container)
@@ -168,7 +187,7 @@ async function mount(projectDetail = detail, portals = false, overrides: Partial
   const render = () => root.render(<MantineProvider env={portals ? 'default' : 'test'} theme={portals ? { components: {
     Modal: { defaultProps: { transitionProps: { duration: 0 } } },
     Popover: { defaultProps: { transitionProps: { duration: 0 } } },
-  } } : undefined}><ProjectCanvas {...props} /></MantineProvider>)
+  } } : undefined}><ProjectCanvas key={`project-canvas-${props.detail.id}`} {...props} /></MantineProvider>)
   try {
     await act(render); await settle()
     const video = container.querySelector<HTMLElement>('[data-id="video-node"]')!
@@ -231,8 +250,70 @@ async function mount(projectDetail = detail, portals = false, overrides: Partial
   const preview = async () => { await act(() => button('查看生成信息').click()); await settle() }
   return { container, button, selectMode, prompt, bodyPrompt, systemPrompt, images, editPrompt, editBody, openMention, preview,
     renderDetail: async (next: ProjectDetail) => { props.detail = next; await act(render); await settle() },
-    destroy: async () => { await act(() => root.unmount()); await settle(); container.remove(); frames.clear() } }
+    destroy: async () => {
+      const animating = [...container.querySelectorAll('*')].some(element => '__transition' in element)
+      await act(() => root.unmount()); await settle()
+      // React Flow's D3 transition clock uses real time while RAF is mocked.
+      // Let an active viewport animation finish before discarding its frames.
+      if (animating) { await act(() => new Promise(resolve => setTimeout(resolve, 400))); await settle() }
+      container.remove(); frames.clear()
+    } }
 }
+
+test('Seedance 2.5 canvas submits source aspect and 480p draft while retaining the saved resolution preference', async t => {
+  const graph = initialGraph('first_frame'), target = graph.nodes.find(node => node.id === 'video-node')!
+  target.settings.resolution = '1080p'
+  const api = mockApi(t, graph)
+  const view = await mount(detail, false, { models: [{ ...videoModel, settings: seedance25VideoSettings() }] })
+  const trigger = () => view.container.querySelector<HTMLButtonElement>('.pc-generation-parameters-trigger')!
+  try {
+    assert.match(trigger().textContent!, /源画幅 · 1080p/)
+    await act(() => trigger().click()); await settle()
+    const panel = document.querySelector<HTMLElement>('[role="dialog"][aria-label="生成参数"]')!
+    assert.ok(panel)
+    assert.match(panel.textContent!, /跟随源画幅/)
+    assert.equal(panel.querySelector('[aria-label="比例"]'), null)
+    assert.deepEqual([...panel.querySelectorAll('[aria-label="清晰度"] button')].map(button => button.textContent), ['480p', '720p', '1080p'])
+    await act(() => panel.querySelector<HTMLInputElement>('[aria-label="样片模式"]')!.click()); await settle()
+    assert.match(trigger().textContent!, /源画幅 · 480p/)
+    await act(() => trigger().click()); await settle()
+    await view.preview()
+    assert.equal(api.previews.length, 1)
+    const submitted = api.previews[0] as unknown as { ratio: string; resolution: string; draft: boolean }
+    assert.deepEqual({ ratio: submitted.ratio, resolution: submitted.resolution, draft: submitted.draft },
+      { ratio: 'adaptive', resolution: '480p', draft: true })
+    await act(() => view.button('查看生成信息').click()); await settle()
+    await act(() => trigger().click()); await settle()
+    await act(() => document.querySelector<HTMLInputElement>('[aria-label="样片模式"]')!.click()); await settle()
+    assert.match(trigger().textContent!, /源画幅 · 1080p/)
+    assert.equal(target.settings.resolution, '1080p', 'sample output must not overwrite the saved full-quality preference')
+  } finally { await view.destroy() }
+})
+
+test('Seedance 2.5 edit canvas follows source timing while keeping a positive planning duration', async t => {
+  const graph = initialGraph('reference'), target = graph.nodes.find(node => node.id === 'video-node')!
+  target.settings = { ...target.settings, mode: 'edit', visual_reference_mode: 'text_only', duration: 8,
+    resolution: '720p', reference_video_url: 'asset://original-video' }
+  graph.edges = []
+  const api = mockApi(t, graph)
+  const view = await mount(detail, false, { models: [{ ...videoModel, settings: seedance25VideoSettings() }] })
+  try {
+    const trigger = view.container.querySelector<HTMLButtonElement>('.pc-generation-parameters-trigger')!
+    assert.match(trigger.textContent!, /源画幅 · 720p · 原视频时长/)
+    assert.match(view.prompt().value, /视频时长：跟随原视频/)
+    assert.equal(view.container.querySelector<HTMLInputElement>('[aria-label="参考视频地址"]')!.placeholder, '公网视频 URL 或 asset:// 素材 ID')
+    await view.editPrompt(view.prompt().value.replace('视频时长：跟随原视频，保留原视频的时间结构与镜头连续性。', '视频时长：20 秒，沿用原视频。'))
+    assert.equal(view.container.querySelector('.pc-prompt-parameter-conflicts'), null,
+      'the planning duration must not override an authored description of the original video length')
+    await view.preview()
+    assert.equal(api.previews.length, 1)
+    const submitted = api.previews[0] as unknown as { ratio: string; duration: number; reference_video_url: string }
+    assert.equal(submitted.ratio, 'adaptive')
+    assert.equal(submitted.duration, 8)
+    assert.equal(submitted.reference_video_url, 'asset://original-video')
+    assert.match(document.querySelector('[aria-label="生成任务信息"]')!.textContent!, /按原视频时长及厂商价格结算/)
+  } finally { await view.destroy() }
+})
 
 test('legacy final complete drafts keep authored bounded settings when opened in the structured editor', async t => {
   const graph = initialGraph('reference'), target = graph.nodes.find(node => node.id === 'video-node')!
@@ -706,6 +787,112 @@ const imageModel: Model = { ...videoModel, id: 'image-model', name: '图片模�
       clarity: '{{clarity}}', quality: '{{quality}}', background: '{{background}}' } } }
 const alternateImageModel = { ...imageModel, id: 'alternate-image-model', name: '备用图片模型' }
 
+function editedImageHandoffFixture() {
+  const peiyan: VisualProfile = { ...hero, id: 'peiyan', name: '裴砚', variant: '执卷官常态', board_asset_id: 'peiyan-board' }
+  const peiyanAsset = { ...detail.assets[0], id: 'peiyan-board', shot_id: null, filename: '裴砚.png', url: '/api/assets/peiyan-board/file' }
+  const projectDetail: ProjectDetail = { ...detail, visual_profiles: [hero, station, peiyan], assets: [...detail.assets, peiyanAsset],
+    shot_visual_bindings: [bind(hero, true), bind(station, false), { ...bind(peiyan, false), usage: 'none' }] }
+  const graph = initialGraph('reference'), source = graph.nodes.find(item => item.id === 'video-node')!
+  const body = '林晚面向来车，人物外观参考[[ref:manual]]。裴砚站在她左侧后方怀抱卷宗，人物外观参考[[ref:peiyan-board]]，保留低机位雨夜站台。'
+  source.asset_id = 'storyboard'; source.model_id = imageModel.id; source.title = '编辑后的分镜图'
+  source.prompt = '林晚在站台回头。'; source.text = body
+  source.settings = { modality: 'image', mode: 'reference', ratio: '9:16', resolution: '1K',
+    prompt_is_final: true, prompt_body: body, prompt_base: source.prompt, prompt_template: '',
+    prompt_reference_overrides: { 'hero-board': 'manual' }, excluded_visual_profile_ids: ['station'] }
+  graph.nodes.push({ ...node('peiyan-node', 'image', 1100, 'peiyan-board'), title: '裴砚 · 执卷官常态' })
+  graph.edges = [{ id: 'peiyan-edge', source: 'peiyan-node', target: source.id, reference_asset_id: 'peiyan-board' }]
+  return { graph, source, projectDetail, body }
+}
+
+for (const mode of ['reference', 'first_frame'] as const) test(`image-to-video ${mode} quick action carries the edited scene and its effective references into the real composer`, async t => {
+  const { graph, source, projectDetail, body: imageBody } = editedImageHandoffFixture()
+  const previews: PreviewInput[] = []
+  mockApi(t, graph, projectDetail, (path, method, body) => {
+    if (!path.endsWith('/generate/preview')) return
+    assert.equal(method, 'POST')
+    const request = body as PreviewInput
+    previews.push(request)
+    const resolved = resolvePromptReferences({ prompt: request.prompt, referenceAssetIds: request.reference_asset_ids,
+      overrides: body.prompt_reference_overrides as Record<string, string | null> | undefined, referenceLabel: '图片' })
+    return Response.json({ ...request, prompt: resolved.prompt, reference_asset_ids: resolved.referenceAssetIds,
+      visual_signature: 'edited-image-handoff' })
+  })
+  const view = await mount(projectDetail, false, { models: [imageModel, videoModel] })
+  try {
+    await act(() => view.button(mode === 'reference' ? '作为参考设计视频' : '以此图作为首帧生成').click()); await settle()
+    assert.ok(view.button(`视频生成模式：${mode === 'reference' ? '多图参考' : '首帧承接'}`))
+    assert.match(view.bodyPrompt(), /裴砚站在她左侧后方怀抱卷宗/)
+    assert.match(view.bodyPrompt(), /保留低机位雨夜站台/)
+    assert.doesNotMatch(view.bodyPrompt(), /林晚缓缓回头，镜头平移/, 'an old shot video draft cannot replace the edited image scene')
+    assert.equal(view.container.querySelector('.pc-prompt-reference.is-invalid'), null, 'handoff does not leave references that the selected video mode cannot use')
+    await view.preview()
+    assert.equal(previews.length, 1, view.container.textContent || '')
+    const request = previews[0]
+    assert.match(request.prompt, /裴砚站在她左侧后方怀抱卷宗/)
+    assert.equal(request.mode, mode)
+    if (mode === 'reference') {
+      assert.equal(request.storyboard_reference_asset_id, 'storyboard')
+      assert.deepEqual(request.reference_asset_ids, ['storyboard', 'peiyan-board', 'manual'])
+      assert.deepEqual(new Set(request.explicit_reference_asset_ids), new Set(['storyboard', 'peiyan-board', 'manual']))
+      assert.deepEqual(request.excluded_visual_profile_ids, ['station'])
+      assert.match(request.prompt, /\[\[ref:peiyan-board\]\]/)
+      assert.match(request.prompt, /\[\[ref:manual\]\]/)
+      assert.deepEqual([...document.querySelectorAll<HTMLImageElement>('.pc-generation-info-content .pc-visual-thumbnails img')].map(image => image.getAttribute('src')),
+        ['/api/assets/storyboard/file', '/api/assets/peiyan-board/file', '/api/assets/manual/file'])
+    } else {
+      assert.deepEqual(request.reference_asset_ids, ['storyboard'])
+      assert.deepEqual(request.explicit_reference_asset_ids, ['storyboard'])
+      assert.doesNotMatch(request.prompt, /\[\[ref:(?:peiyan-board|manual)\]\]/)
+      assert.doesNotMatch(request.prompt, /【图片参考图用途】|【图片生成参数】/)
+    }
+    assert.ok(!request.reference_asset_ids.includes('hero-board') && !request.reference_asset_ids.includes('station-board'), 'old shot references stay replaced or excluded')
+    await act(() => view.container.querySelector<HTMLElement>(`[data-id="${source.id}"]`)!.click()); await settle()
+    assert.equal(stripManagedPromptBlocks(promptEditorText(view.prompt().editor.getJSON())), imageBody, 'creating a video does not alter the authored image document')
+    assert.equal(projectDetail.shot_visual_bindings!.find(binding => binding.profile_id === 'peiyan')!.usage, 'none', 'handoff preserves the shot defaults')
+  } finally { await view.destroy() }
+})
+
+test('repeating image-to-video refreshes an untouched draft and preserves a hand-edited video as a separate node', async t => {
+  const { graph, source, projectDetail } = editedImageHandoffFixture()
+  const api = mockApi(t, graph, projectDetail)
+  let view = await mount(projectDetail, false, { models: [imageModel, videoModel] })
+  const selectedId = () => view.container.querySelector('.react-flow__node.selected')?.getAttribute('data-id')
+  const chooseSource = async () => { await act(() => view.container.querySelector<HTMLElement>(`[data-id="${source.id}"]`)!.click()); await settle() }
+  const handoff = async () => { await act(() => view.button('作为参考设计视频').click()); await settle(); return selectedId() }
+  try {
+    const originalVideoId = await handoff()
+    assert.ok(originalVideoId && originalVideoId !== source.id)
+    await chooseSource()
+    assert.equal(await handoff(), originalVideoId, 'an identical source reuses its existing video')
+    await chooseSource()
+    await view.editBody('林晚面向来车，裴砚已移至她右侧后方，双手抱紧卷宗，雨水从肩头滴落。')
+    assert.equal(await handoff(), originalVideoId, 'a changed source refreshes the untouched inherited video')
+    assert.match(view.bodyPrompt(), /裴砚已移至她右侧后方/)
+    const authoredVideoBody = '手工视频设计：裴砚先抬眼再迈出半步，镜头保持静止四秒后缓缓推近。'
+    await view.editBody(authoredVideoBody)
+    await chooseSource()
+    await view.editBody('林晚转向裴砚，裴砚站在她右侧前方展开卷宗，两人隔着一臂距离对视。')
+    const newVideoId = await handoff()
+    assert.ok(newVideoId && newVideoId !== originalVideoId, 'source changes create another video when the old video was authored')
+    assert.match(view.bodyPrompt(), /裴砚站在她右侧前方展开卷宗/)
+    await act(() => view.container.querySelector<HTMLElement>(`[data-id="${originalVideoId}"]`)!.click()); await settle()
+    assert.equal(view.bodyPrompt(), authoredVideoBody, 'the previous video keeps all manual motion and camera choices')
+    await chooseSource()
+    assert.equal(await handoff(), newVideoId, 'the matching refreshed source reuses the latest separate video')
+    assert.match(view.bodyPrompt(), /裴砚站在她右侧前方展开卷宗/)
+    await act(() => new Promise(resolve => setTimeout(resolve, 900))); await settle()
+    const saved = api.saved.at(-1)!
+    assert.ok(saved.nodes.find(item => item.id === newVideoId)!.settings.image_video_handoff, 'the inherited source identity is saved on the video node')
+    await view.destroy()
+    Object.assign(graph, saved)
+    view = await mount(projectDetail, false, { models: [imageModel, videoModel] })
+    assert.equal(await handoff(), newVideoId, 'reopening the saved canvas reuses the latest video version')
+    await act(() => view.container.querySelector<HTMLElement>(`[data-id="${originalVideoId}"]`)!.click()); await settle()
+    assert.equal(view.bodyPrompt(), authoredVideoBody, 'the protected video draft survives save and reload')
+    assert.equal(api.previews.length, 0, 'creating and refreshing drafts does not create generation tasks or invoke a model')
+  } finally { await view.destroy() }
+})
+
 test('switching a legacy composer from video to image preserves optional reference exclusions and the authored body', async t => {
   const graph = initialGraph('reference'), target = graph.nodes.find(node => node.id === 'video-node')!
   // Older generators derive their modality from the selected model until their
@@ -873,6 +1060,270 @@ test('refining a complete prompt preserves its bounded settings and keeps one ed
   } finally { await view.destroy() }
 })
 
+test('an explicitly connected character outside the shot defaults stays available to image refinement and preview until disconnected', async t => {
+  const ruler = { ...hero, id: 'ruler', kind: 'prop', name: '巡天尺', variant: '常态', board_asset_id: 'ruler-board' } as VisualProfile
+  const peiyan = { ...hero, id: 'peiyan', name: '裴砚', variant: '执卷官常态', definition: '乌发束冠，青色官袍，怀抱卷宗，神情沉静。', board_asset_id: 'peiyan-board' } as VisualProfile
+  const projectDetail: ProjectDetail = { ...detail, visual_profiles: [hero, station, ruler, peiyan],
+    shot_visual_bindings: [hero, station, ruler, peiyan].map(profile => ({ ...bind(profile, false), usage: profile === peiyan ? 'none' : 'image' })),
+    assets: [...detail.assets, ...[ruler, peiyan].map(profile => ({ ...detail.assets[0], id: profile.board_asset_id!, shot_id: null,
+      filename: `${profile.board_asset_id}.png`, url: `/api/assets/${profile.board_asset_id}/file` }))],
+  }
+  const graph = initialGraph('reference'), target = graph.nodes.find(node => node.id === 'video-node')!
+  const body = '林晚背对镜头位于右侧；保持低机位、雨夜站台与我手工调整的远景距离。'
+  target.model_id = imageModel.id; target.text = body
+  target.settings = { ...target.settings, modality: 'image', mode: 'reference', resolution: '1K',
+    prompt_is_final: true, prompt_base: body, prompt_template: '', prompt_body: body }
+  graph.nodes.push({ ...node('peiyan-node', 'generation', 900, 'peiyan-board'), title: '裴砚 · 执卷官常态', model_id: imageModel.id,
+    settings: { modality: 'image', visual_profile_id: peiyan.id, visual_profile_revision: peiyan.revision } })
+  graph.edges = [{ id: 'peiyan-edge', source: 'peiyan-node', target: target.id, reference_asset_id: 'peiyan-board' }]
+  const textModel: Model = { ...videoModel, id: 'text-model', name: '整理模型', modality: 'text', protocol: 'chat_completions', settings: {} }
+  const refinements: Array<Record<string, unknown>> = []
+  const api = mockApi(t, graph, projectDetail, (path, method, request) => {
+    if (!path.endsWith('/skills/refine-prompt')) return
+    assert.equal(method, 'POST')
+    refinements.push(request)
+    const nextBody = `${body}\n裴砚站在左侧后方，人物外观参考[[ref:peiyan-board]]。`
+    return Response.json({ prompt_body: nextBody, reference_asset_ids: request.reference_asset_ids,
+      prompt: `${nextBody}\n\n${getManagedPromptBlocks(String(request.prompt)).join('\n\n')}`, skills: [] })
+  })
+  const view = await mount(projectDetail, true, { models: [imageModel, textModel] })
+  const systemReferenceIds = () => [...new Set([...getManagedPromptBlocks(promptEditorText(view.prompt().editor.getJSON()))
+    .join('\n\n').matchAll(/\[\[ref:([^\]]+)\]\]/g)].map(match => match[1]))]
+  try {
+    assert.equal(view.bodyPrompt(), body, 'connecting an image preserves the authored body')
+    assert.deepEqual(new Set(systemReferenceIds()), new Set(['peiyan-board', 'hero-board', 'station-board', 'ruler-board']))
+    const visualContext = getManagedPromptBlocks(promptEditorText(view.prompt().editor.getJSON()), ['镜头视觉设定']).join('\n')
+    assert.match(visualContext, /人物：裴砚/)
+    assert.match(visualContext, /乌发束冠，青色官袍，怀抱卷宗，神情沉静/)
+    assert.match(getManagedPromptBlocks(view.prompt().value, ['图片参考图用途']).join('\n'), /参考图\s*1：裴砚/)
+    assert.match(getManagedPromptBlocks(view.prompt().value, ['图片参考图用途']).join('\n'), /人物身份、面部、发型、服装与身体比例/)
+    const thumbnail = view.container.querySelector<HTMLButtonElement>('.pc-composer-references button[aria-label="定位参考：裴砚 · 执卷官常态"]')!
+    assert.ok(thumbnail, 'the explicitly connected image remains visible despite the saved none usage')
+    assert.equal(thumbnail.querySelector('img')?.getAttribute('src'), '/api/assets/peiyan-board/file')
+    assert.equal(thumbnail.querySelector('span')?.textContent, '1', 'thumbnail numbering matches the complete prompt reference mapping')
+
+    await act(() => view.button('使用技能整理提示词').click()); await settle()
+    const adjustment = document.querySelector<HTMLElement & { editor: import('@tiptap/core').Editor }>('[contenteditable][aria-label="本次调整要求"]')!
+    assert.ok(adjustment)
+    await act(() => adjustment.editor.chain().setContent('将新加入的').insertContent('@').run()); await settle()
+    const choices = [...document.querySelectorAll<HTMLImageElement>('.pc-prompt-mention-menu .pc-prompt-reference-option img')].map(image => image.getAttribute('src'))
+    assert.deepEqual(new Set(choices), new Set(['/api/assets/peiyan-board/file', '/api/assets/hero-board/file', '/api/assets/station-board/file', '/api/assets/ruler-board/file']))
+    const peiyanChoice = document.querySelector<HTMLImageElement>('.pc-prompt-mention-menu .pc-prompt-reference-option img[src="/api/assets/peiyan-board/file"]')?.closest<HTMLButtonElement>('button')!
+    assert.ok(peiyanChoice)
+    await act(() => peiyanChoice.click()); await settle()
+    await act(() => adjustment.editor.chain().insertContent('作为裴砚的人物外观参考，将他加入画面左侧后方，保留已有镜头和人物。').run()); await settle()
+    const refine = [...document.querySelectorAll<HTMLButtonElement>('.prompt-skill-modal button')].find(button => button.textContent === '整理提示词')!
+    assert.ok(refine)
+    await act(() => refine.click()); await settle()
+    assert.equal(refinements.length, 1)
+    assert.deepEqual(refinements[0].reference_asset_ids, ['peiyan-board', 'hero-board', 'station-board', 'ruler-board'])
+    assert.deepEqual(refinements[0].explicit_reference_asset_ids, ['peiyan-board'])
+    assert.match(String(refinements[0].adjustment_request), /\[\[ref:peiyan-board\]\]/, 'the selected character is sent by stable asset identity')
+    assert.equal(refinements[0].prompt_body, body)
+    const result = document.querySelector<HTMLElement & { editor: import('@tiptap/core').Editor }>('[contenteditable][aria-label="整理后的完整提示词"]')!
+    assert.ok(result)
+    assert.match(promptEditorText(result.editor.getJSON()), /裴砚站在左侧后方，人物外观参考\[\[ref:peiyan-board\]\]/)
+    assert.equal(result.querySelector('.pc-prompt-reference.is-invalid'), null)
+    await act(() => view.button('关闭整理提示词').click()); await settle()
+    assert.equal(view.bodyPrompt(), body, 'reviewing a refinement does not overwrite the manual body')
+
+    await view.preview()
+    assert.deepEqual(api.previews.at(-1)!.reference_asset_ids, ['peiyan-board'], 'preview sends the fixed input while the server resolves automatic shot bindings')
+    assert.deepEqual(api.previews.at(-1)!.explicit_reference_asset_ids, ['peiyan-board'])
+    assert.deepEqual(new Set(api.resolvedPreviews.at(-1)!.reference_asset_ids), new Set(['peiyan-board', 'hero-board', 'station-board', 'ruler-board']))
+
+    await act(() => view.button('移除参考：裴砚 · 执卷官常态').click()); await settle()
+    assert.equal(view.bodyPrompt(), body)
+    assert.doesNotMatch(getManagedPromptBlocks(promptEditorText(view.prompt().editor.getJSON()), ['镜头视觉设定']).join('\n'), /人物：裴砚|乌发束冠，青色官袍/)
+    assert.deepEqual(new Set(systemReferenceIds()), new Set(['hero-board', 'station-board', 'ruler-board']), 'the none binding does not automatically reintroduce the disconnected image')
+    await view.preview()
+    assert.deepEqual(api.previews.at(-1)!.reference_asset_ids, [])
+    assert.deepEqual(api.previews.at(-1)!.explicit_reference_asset_ids || [], [])
+    assert.deepEqual(new Set(api.resolvedPreviews.at(-1)!.reference_asset_ids), new Set(['hero-board', 'station-board', 'ruler-board']))
+    assert.equal(projectDetail.shot_visual_bindings!.find(binding => binding.profile_id === peiyan.id)!.usage, 'none', 'the connection only overrides this node and does not mutate shot defaults')
+  } finally { await view.destroy() }
+})
+
+function explicitUnboundPropFixture(section: 'automatic' | 'custom' | 'deleted') {
+  const views = [
+    { id: 'ruler-detail-ref', asset_id: 'ruler-detail', view: 'detail' as const, purpose: 'detail' as const, label: '尺身刻纹与持握连接', revision: 3, style_version: '' },
+    { id: 'ruler-side-ref', asset_id: 'ruler-side', view: 'side' as const, purpose: 'structure' as const, label: '未选择侧面', revision: 3, style_version: '' },
+  ]
+  const ruler: VisualProfile = { ...hero, id: 'ruler', kind: 'prop', name: '巡天尺', variant: '青铜常态', revision: 3,
+    definition: '青铜直尺，尺身狭长，边缘有星轨刻纹，柄端连接一枚黑玉环。', board_asset_id: 'ruler-board',
+    reference_assets: views.map(reference => ({ ...reference, profile_id: 'ruler', status: 'confirmed' as const, is_default: true,
+      source_asset_id: null, source_job_id: null, created_at: timestamp, updated_at: timestamp })) }
+  const projectDetail: ProjectDetail = { ...detail, visual_profiles: [hero, station, ruler], assets: [...detail.assets,
+    ...['ruler-detail', 'ruler-side', 'ruler-board'].map(id => ({ ...detail.assets[0], id, shot_id: null, filename: `${id}.png`, url: `/api/assets/${id}/file` }))] }
+  const graph = initialGraph('reference'), target = graph.nodes.find(node => node.id === 'video-node')!
+  const body = '林晚握住巡天尺柄端，保持近景、手指握姿和她与站台立柱之间的距离。'
+  const ids = ['ruler-detail', 'hero-board', 'station-board']
+  const oldTemplate = tokenizePromptReferenceNumbers(visualGenerationPrompt(body,
+    [bind(hero, true), bind(station, false)], ids, 'profiles'), ids)
+  const sections = parsePromptSectionDocument(oldTemplate, { sourceText: oldTemplate })
+  const visual = sections.blocks.find(block => block.kind === 'managed' && block.name === '镜头视觉设定')!
+  if (section === 'custom') visual.text = visual.text.replace('短发，蓝色校服', '作者保留：林晚穿灰色斗篷，站台立柱间距固定为两米。')
+  if (section === 'deleted') { visual.text = ''; visual.deleted = true }
+  target.model_id = imageModel.id; target.text = serializePromptSectionDocument(sections)
+  target.settings = { modality: 'image', mode: 'reference', resolution: '1K', ratio: '9:16', prompt_is_final: true,
+    prompt_document: true, prompt_sections: sections, prompt_body: body, prompt_base: body, prompt_template: oldTemplate }
+  graph.nodes.push({ ...node('ruler-node', 'generation', 900, 'ruler-board'), title: '巡天尺 · 青铜常态', model_id: imageModel.id,
+    settings: { modality: 'image', visual_profile_id: ruler.id, visual_profile_revision: ruler.revision } })
+  graph.edges = [{ id: 'ruler-detail-pin', source: 'ruler-node', target: target.id, reference_asset_id: 'ruler-detail' }]
+  return { graph, target, projectDetail, body }
+}
+
+for (const section of ['automatic', 'custom', 'deleted'] as const) test(`an explicitly selected unbound prop enriches image semantics while preserving ${section} visual sections`, async t => {
+  const { graph, projectDetail, body } = explicitUnboundPropFixture(section)
+  const defaults = JSON.stringify(projectDetail.shot_visual_bindings)
+  const api = mockApi(t, graph, projectDetail)
+  const view = await mount(projectDetail, false, { models: [imageModel] })
+  const visualContext = () => getManagedPromptBlocks(promptEditorText(view.prompt().editor.getJSON()), ['镜头视觉设定']).join('\n')
+  try {
+    assert.equal(view.bodyPrompt().trim(), body)
+    const mapping = getManagedPromptBlocks(view.prompt().value, ['图片参考图用途']).join('\n')
+    assert.match(mapping, /参考图\s*1：巡天尺（青铜常态）/)
+    assert.match(mapping, /局部细节.*尺身刻纹与持握连接/)
+    assert.match(mapping, /对应对象的局部纹理、连接与持握等细节/)
+    if (section === 'deleted') {
+      assert.equal(visualContext(), '', 'creator-deleted sections stay deleted as new semantic context arrives')
+      assert.match(view.container.querySelector('.pc-prompt-document-status')!.textContent!, /1 项待确认/)
+      await act(() => view.button('保留本节点修改：镜头视觉设定').click()); await settle()
+      assert.equal(visualContext(), '', 'keeping the deletion only accepts the updated source baseline')
+    }
+    else {
+      assert.match(visualContext(), /道具：巡天尺/)
+      assert.match(visualContext(), /青铜直尺，尺身狭长，边缘有星轨刻纹，柄端连接一枚黑玉环/)
+      assert.match(visualContext(), /\[\[ref:ruler-detail\]\]/)
+      if (section === 'custom') assert.match(visualContext(), /作者保留：林晚穿灰色斗篷，站台立柱间距固定为两米/)
+    }
+    assert.doesNotMatch(promptEditorText(view.prompt().editor.getJSON()), /\[\[ref:ruler-(?:board|side)\]\]/, 'semantic enrichment must not add the board or a sibling view')
+    await view.preview()
+    assert.deepEqual(api.previews.at(-1)!.reference_asset_ids, ['ruler-detail', 'hero-board', 'station-board'])
+    assert.deepEqual(api.previews.at(-1)!.explicit_reference_asset_ids, ['ruler-detail'])
+    assert.deepEqual(new Set(api.resolvedPreviews.at(-1)!.reference_asset_ids), new Set(['ruler-detail', 'hero-board', 'station-board']))
+    if (section !== 'deleted') assert.match(api.previews.at(-1)!.prompt, /道具：巡天尺/)
+    await act(() => view.button('移除参考：巡天尺 · 青铜常态').click()); await settle()
+    assert.equal(view.bodyPrompt().trim(), body)
+    assert.doesNotMatch(visualContext(), /道具：巡天尺|青铜直尺，尺身狭长/)
+    if (section === 'custom') assert.match(visualContext(), /作者保留：林晚穿灰色斗篷，站台立柱间距固定为两米/)
+    assert.equal(JSON.stringify(projectDetail.shot_visual_bindings), defaults, 'explicit reference semantics remain node-local')
+  } finally { await view.destroy() }
+})
+
+for (const mode of ['reference', 'first_frame'] as const) test(`an unbound prop keeps its image semantics when handing off to ${mode} without a false source conflict`, async t => {
+  const { graph, target, projectDetail } = explicitUnboundPropFixture('automatic')
+  target.asset_id = 'storyboard'
+  const api = mockApi(t, graph, projectDetail)
+  const view = await mount(projectDetail, false, { models: [imageModel, videoModel] })
+  try {
+    await act(() => view.button(mode === 'reference' ? '作为参考设计视频' : '以此图作为首帧生成').click()); await settle()
+    const text = promptEditorText(view.prompt().editor.getJSON())
+    assert.match(view.bodyPrompt(), /林晚握住巡天尺柄端/)
+    assert.equal(view.container.querySelector('[aria-label="保留本节点修改：镜头视觉设定"]'), null, 'handoff and composer compile the same reference semantics')
+    assert.equal(view.container.querySelector('.pc-prompt-reference.is-invalid'), null)
+    if (mode === 'reference') {
+      const context = getManagedPromptBlocks(text, ['镜头视觉设定']).join('\n')
+      assert.match(context, /道具：巡天尺/)
+      assert.match(context, /青铜直尺，尺身狭长/)
+      assert.match(getManagedPromptBlocks(text, ['视频参考图用途']).join('\n'), /巡天尺/)
+    } else assert.doesNotMatch(text, /\[\[ref:ruler-(?:detail|side|board)\]\]/)
+    await view.preview()
+    assert.ok(api.previews.at(-1), view.container.textContent || '')
+    assert.deepEqual(api.previews.at(-1)!.reference_asset_ids,
+      mode === 'reference' ? ['storyboard', 'ruler-detail', 'hero-board', 'station-board'] : ['storyboard'])
+  } finally { await view.destroy() }
+})
+
+for (const entry of ['library', 'handles'] as const) test(`adding an inactive multi-view profile through ${entry} fixes both images for refinement and preview`, async t => {
+  const snapshots = [
+    { id: 'side-ref', asset_id: 'hero-side', view: 'side' as const, purpose: 'costume' as const, label: '校服侧面', revision: 2, style_version: '' },
+    { id: 'face-ref', asset_id: 'hero-face', view: 'face' as const, purpose: 'identity' as const, label: '林晚面部', revision: 2, style_version: '' },
+  ]
+  const projectDetail: ProjectDetail = { ...detail,
+    visual_profiles: [{ ...hero, reference_assets: snapshots.map(reference => ({ ...reference, profile_id: hero.id,
+      status: 'confirmed' as const, is_default: true, source_asset_id: null, source_job_id: null, created_at: timestamp, updated_at: timestamp })) }, station],
+    shot_visual_bindings: [{ ...bind(hero, false), usage: 'none', reference_assets: snapshots }, { ...bind(station, false), usage: 'image' }],
+    assets: [...detail.assets, ...snapshots.map(reference => ({ ...detail.assets[0], id: reference.asset_id, shot_id: null,
+      filename: `${reference.asset_id}.png`, url: `/api/assets/${reference.asset_id}/file` }))],
+  }
+  const graph = initialGraph('reference'), target = graph.nodes.find(node => node.id === 'video-node')!
+  const body = '人物居右，保留手工调整的低机位、远景距离和雨夜站台。'
+  target.model_id = imageModel.id; target.text = body
+  target.settings = { ...target.settings, modality: 'image', mode: 'reference', resolution: '1K',
+    prompt_is_final: true, prompt_base: body, prompt_template: '', prompt_body: body }
+  graph.edges = []
+  if (entry === 'handles') graph.nodes.push({ ...node('hero-node', 'generation', 900, 'hero-board'), title: '林晚 · 校服', model_id: imageModel.id,
+    settings: { modality: 'image', visual_profile_id: hero.id, visual_profile_revision: hero.revision } })
+  const textModel: Model = { ...videoModel, id: 'text-model', name: '整理模型', modality: 'text', protocol: 'chat_completions', settings: {} }
+  const refinements: Array<Record<string, unknown>> = []
+  const api = mockApi(t, graph, projectDetail, (path, method, request) => {
+    if (!path.endsWith('/skills/refine-prompt')) return
+    assert.equal(method, 'POST'); refinements.push(request)
+    return Response.json({ prompt_body: body, prompt: request.prompt, reference_asset_ids: request.reference_asset_ids, skills: [] })
+  })
+  const view = await mount(projectDetail, true, { models: [imageModel, textModel] })
+  try {
+    assert.doesNotMatch(promptEditorText(view.prompt().editor.getJSON()), /\[\[ref:hero-(?:side|face|board)\]\]/)
+    if (entry === 'library') {
+      const add = [...view.container.querySelectorAll<HTMLButtonElement>('.pc-prompt-composer button')].find(button => button.textContent === '添加参考')!
+      assert.ok(add)
+      await act(() => add.click()); await settle()
+      const library = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === '从设定库选择')!
+      assert.ok(library)
+      await act(() => library.click()); await settle()
+      await act(() => view.button('添加设定参考：林晚 · 校服').click()); await settle()
+    } else {
+      // React Flow's click-to-connect handles exercise the same onConnect as
+      // dragging, without inventing a canvas store or invoking internal props.
+      const descriptor = Object.getOwnPropertyDescriptor(document, 'elementFromPoint')
+      Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => null })
+      t.after(() => { if (descriptor) Object.defineProperty(document, 'elementFromPoint', descriptor); else Reflect.deleteProperty(document, 'elementFromPoint') })
+      const source = view.container.querySelector<HTMLElement>('[data-id="hero-node"] .react-flow__handle.source')!
+      const destination = view.container.querySelector<HTMLElement>('[data-id="video-node"] .react-flow__handle.target')!
+      assert.ok(source); assert.ok(destination)
+      await act(() => source.click()); await settle()
+      await act(() => destination.click()); await settle()
+      await act(() => view.container.querySelector<HTMLElement>('[data-id="video-node"]')!.click()); await settle()
+    }
+    assert.equal(view.bodyPrompt(), body)
+    const prompt = promptEditorText(view.prompt().editor.getJSON())
+    assert.match(prompt, /\[\[ref:hero-side\]\]/)
+    assert.match(prompt, /\[\[ref:hero-face\]\]/)
+    assert.doesNotMatch(prompt, /\[\[ref:hero-board\]\]/, 'approved independent snapshots take precedence over the legacy board')
+    await act(() => view.button('使用技能整理提示词').click()); await settle()
+    const refine = [...document.querySelectorAll<HTMLButtonElement>('.prompt-skill-modal button')].find(button => button.textContent === '整理提示词')!
+    assert.ok(refine)
+    await act(() => refine.click()); await settle()
+    assert.equal(refinements.length, 1)
+    assert.deepEqual(refinements[0].reference_asset_ids, ['hero-side', 'hero-face', 'station-board'])
+    assert.deepEqual(refinements[0].explicit_reference_asset_ids, ['hero-side', 'hero-face'])
+    await act(() => view.button('关闭整理提示词').click()); await settle()
+    await view.preview()
+    assert.deepEqual(api.previews.at(-1)!.reference_asset_ids, ['hero-side', 'hero-face'])
+    assert.deepEqual(api.previews.at(-1)!.explicit_reference_asset_ids, ['hero-side', 'hero-face'])
+    assert.deepEqual(new Set(api.resolvedPreviews.at(-1)!.reference_asset_ids), new Set(['hero-side', 'hero-face', 'station-board']))
+    assert.equal(view.bodyPrompt(), body)
+    assert.equal(projectDetail.shot_visual_bindings![0].usage, 'none')
+
+    const removeButtons = [...view.container.querySelectorAll<HTMLButtonElement>('.pc-composer-reference-remove')]
+    assert.equal(removeButtons.length, 2)
+    assert.equal(removeButtons[0].getAttribute('aria-label'), removeButtons[1].getAttribute('aria-label'), 'both fixed views share the same source profile node')
+    const removeSide = view.container.querySelector<HTMLImageElement>('.pc-composer-reference img[src="/api/assets/hero-side/file"]')
+      ?.closest('.pc-composer-reference')?.querySelector<HTMLButtonElement>('.pc-composer-reference-remove')
+    assert.ok(removeSide)
+    await act(() => removeSide.click()); await settle()
+    const remainingPrompt = promptEditorText(view.prompt().editor.getJSON())
+    assert.doesNotMatch(remainingPrompt, /\[\[ref:hero-side\]\]/)
+    assert.match(remainingPrompt, /\[\[ref:hero-face\]\]/, 'removing one fixed view keeps the other view connected')
+    assert.equal(view.bodyPrompt(), body)
+    await view.preview()
+    assert.deepEqual(api.previews.at(-1)!.reference_asset_ids, ['hero-face'])
+    assert.deepEqual(api.previews.at(-1)!.explicit_reference_asset_ids, ['hero-face'])
+    assert.deepEqual(new Set(api.resolvedPreviews.at(-1)!.reference_asset_ids), new Set(['hero-face', 'station-board']))
+  } finally { await view.destroy() }
+})
+
 test('the single complete prompt preserves a hand-edited visual block and a manual @ input through preview, save and reload', async t => {
   const graph = initialGraph('reference'), target = graph.nodes.find(node => node.id === 'video-node')!
   target.model_id = imageModel.id
@@ -956,7 +1407,7 @@ for (const model of [imageModel, videoModel]) test(`${model.modality} shot refer
     const checks = [...drawer.querySelectorAll<HTMLInputElement>('.pc-binding-row-identity input[type="checkbox"]')]
     assert.equal(checks.length, model.modality === 'image' ? 5 : 3)
     assert.ok(checks.every(checkbox => checkbox.checked), 'only current scope profiles are checked')
-    assert.match(drawer.textContent!, /引用待更新/)
+    assert.match(drawer.textContent!, /新版待确认/)
     assert.match(drawer.textContent!, /参考图待确认/)
     assert.equal(JSON.stringify(projectDetail.shot_visual_bindings), originalBindings)
     assert.equal(api.saved.length, writes, 'viewing counts must not rewrite the canvas')
@@ -1544,5 +1995,704 @@ test('video double-click transfers playback to the large preview, ignores player
     assert.ok(view.container.querySelector('[data-id="video-result-node"].selected'))
     assert.equal(api.saved.length, writes)
     assert.equal(api.previews.length, 0)
+  } finally { await view.destroy() }
+})
+
+for (const model of [imageModel, videoModel]) for (const sync_mode of ['locked', 'follow'] as const) test(`${model.modality} ${sync_mode} board snapshot overrides an unpinned profile source without mixing the newer board`, async t => {
+  const oldBoard = { ...detail.assets.find(asset => asset.id === 'hero-board')!, id: 'old-hero-board', filename: 'old-hero-board.png', url: '/old-hero-board.png' }
+  const binding = { ...bind(hero, true), revision: 1, board_asset_id: oldBoard.id, reference_assets: [], sync_mode, reference_selection: 'manual' as const }
+  const projectDetail = { ...detail, assets: [...detail.assets, oldBoard], shot_visual_bindings: [binding] }
+  const graph = initialGraph('reference')
+  const target = graph.nodes.find(node => node.id === 'video-node')!
+  target.model_id = model.id; target.settings = { ...target.settings, modality: model.modality, mode: model.modality === 'image' ? 'text' : 'reference' }
+  graph.nodes.push({ ...node('hero-profile-source', 'image', -300, 'hero-board'), settings: { visual_profile_id: hero.id } })
+  graph.edges.push({ id: 'dynamic-profile', source: 'hero-profile-source', target: target.id })
+  const api = mockApi(t, graph, projectDetail)
+  const view = await mount(projectDetail, false, { models: [model] })
+  try {
+    await view.preview()
+    assert.equal(api.previews.length, 1)
+    assert.ok(api.previews[0].reference_asset_ids.includes(oldBoard.id))
+    assert.ok(!api.previews[0].reference_asset_ids.includes('hero-board'))
+    assert.ok(!api.resolvedPreviews[0].reference_asset_ids.includes('hero-board'))
+  } finally { await view.destroy() }
+})
+
+test('a stale automatic reference document refreshes project data and requires a new preview', async t => {
+  const graph = initialGraph('reference')
+  let refreshes = 0, attempts = 0
+  mockApi(t, graph, detail, path => {
+    if (path.endsWith('/generate/preview')) { attempts++; return Response.json({ error: '镜头设定引用已更新，请刷新画布并重新检查生成参数' }, { status: 409 }) }
+  })
+  const view = await mount(detail, false, { onRefresh: async () => { refreshes++ } })
+  try {
+    await view.preview()
+    assert.equal(attempts, 1)
+    assert.equal(refreshes, 1)
+    assert.match(view.container.textContent!, /已刷新画布.*请检查提示词和生成参数后重新生成/)
+    assert.equal(document.querySelector('[aria-label="确认生成"]'), null)
+  } finally { await view.destroy() }
+})
+
+test('selected node director handoff and generation info share the actual preview without creating a job', async t => {
+  const graph = initialGraph('reference', true)
+  const api = mockApi(t, graph)
+  const contexts: string[] = []
+  const view = await mount(detail, false, { onOpenScriptDirector: (focus, context) => {
+    assert.equal(focus, 'all'); contexts.push(context!)
+  } })
+  try {
+    await view.preview()
+    assert.equal(api.previews.length, 1)
+    await act(() => view.button('添加到导演对话').click()); await settle()
+    assert.equal(api.previews.length, 2)
+    assert.deepEqual(api.previews[1], api.previews[0], 'both actions must prepare the same actual request')
+    assert.equal(contexts.length, 1)
+    assert.match(contexts[0], /^【画布节点配置快照｜只读｜/)
+    assert.match(contexts[0], /未读取图片或视频像素，未创建生成任务/)
+    const snapshot = JSON.parse(contexts[0].slice(contexts[0].indexOf('{')))
+    assert.equal(snapshot.node.id, 'video-node')
+    assert.equal(snapshot.model.id, videoModel.id)
+    assert.equal(snapshot.prompt, api.resolvedPreviews[1].prompt)
+    assert.deepEqual(snapshot.references.map((item: { assetId: string }) => item.assetId), api.resolvedPreviews[1].reference_asset_ids)
+    assert.equal(snapshot.parameters.mode, 'reference')
+    assert.equal(snapshot.completeness, 'complete')
+    assert.equal(snapshot.truncated, false)
+    assert.equal(snapshot.job, null)
+    assert.doesNotMatch(contexts[0], /request_template|provider_id|remote_id/)
+  } finally { await view.destroy() }
+})
+
+test('late selected-node previews cannot add another node to the director or display stale information', async t => {
+  const graph = initialGraph('reference')
+  let release!: (response: Response) => void
+  let body: Record<string, unknown> = {}
+  mockApi(t, graph, detail, (path, _method, request) => {
+    if (path.endsWith('/generate/preview')) {
+      body = request
+      return new Promise<Response>(resolve => { release = resolve })
+    }
+  })
+  const contexts: string[] = []
+  const view = await mount(detail, false, { onOpenScriptDirector: (_focus, context) => { contexts.push(context!) } })
+  try {
+    await act(() => view.button('添加到导演对话').click()); await settle()
+    assert.ok(release)
+    await act(() => view.container.querySelector<HTMLElement>('[data-id="storyboard-node"]')!.click()); await settle()
+    await act(() => release(Response.json(body))); await settle()
+    assert.deepEqual(contexts, [])
+    assert.equal(document.querySelector('[aria-label="生成任务信息"]'), null)
+  } finally { await view.destroy() }
+})
+
+test('late preview errors after input changes cannot refresh or hand off obsolete selected-node state', async t => {
+  const graph = initialGraph('reference')
+  let release!: (response: Response) => void
+  let refreshes = 0
+  mockApi(t, graph, detail, path => {
+    if (path.endsWith('/generate/preview')) return new Promise<Response>(resolve => { release = resolve })
+  })
+  const contexts: string[] = []
+  const view = await mount(detail, false, { onRefresh: async () => { refreshes++ }, onOpenScriptDirector: (_focus, context) => { contexts.push(context!) } })
+  try {
+    await act(() => view.button('添加到导演对话').click()); await settle()
+    assert.ok(release)
+    await view.editBody('林晚停步，镜头切向车门。')
+    await act(() => release(Response.json({ error: '镜头设定引用已更新，请刷新画布并重新检查生成参数' }, { status: 409 }))); await settle()
+    assert.equal(refreshes, 0)
+    assert.deepEqual(contexts, [])
+    assert.doesNotMatch(view.container.textContent!, /已刷新画布/)
+  } finally { await view.destroy() }
+})
+
+for (const unavailable of ['missing-model', 'disabled-model', 'disabled-provider'] as const) test(`selected-node preview and director handoff reject ${unavailable}`, async t => {
+  const graph = initialGraph('reference')
+  const api = mockApi(t, graph)
+  let handoffs = 0
+  const overrides: Partial<ProjectCanvasProps> = { onOpenScriptDirector: () => { handoffs++ } }
+  if (unavailable === 'missing-model') overrides.models = []
+  if (unavailable === 'disabled-model') overrides.models = [{ ...videoModel, enabled: false }]
+  if (unavailable === 'disabled-provider') overrides.providers = [{ id: 'provider', enabled: false, adapter: 'http', name: '已停用' } as ProjectCanvasProps['providers'][number]]
+  const view = await mount(detail, false, overrides)
+  try {
+    await view.preview()
+    await act(() => view.button('添加到导演对话').click()); await settle()
+    assert.equal(api.previews.length, 0)
+    assert.equal(handoffs, 0)
+    assert.match(view.container.textContent!, /请先选择已启用的模型/)
+  } finally { await view.destroy() }
+})
+
+test('selected-node generation retains persistent paid jobs after the shared preview', async t => {
+  const graph = initialGraph('reference')
+  graph.nodes.find(node => node.id === 'video-node')!.settings.candidate_count = 2
+  const generated: Record<string, unknown>[] = []
+  const api = mockApi(t, graph, detail, (path, method, body) => {
+    if (path !== '/api/projects/video-reference-test/generate') return
+    assert.equal(method, 'POST')
+    generated.push(body)
+    return Response.json({ id: `paid-job-${generated.length}`, status: 'queued', created_at: timestamp })
+  })
+  const view = await mount()
+  try {
+    await act(() => view.button('开始生成').click()); await settle()
+    await act(() => new Promise(resolve => setTimeout(resolve, 900))); await settle()
+    assert.equal(api.previews.length, 1)
+    assert.equal(generated.length, 2)
+    assert.equal(generated[0].prompt, api.resolvedPreviews[0].prompt)
+    assert.deepEqual(generated[0].reference_asset_ids, api.resolvedPreviews[0].reference_asset_ids)
+    assert.equal(api.saved.at(-1)!.nodes.find(node => node.id === 'video-node')!.job_id, 'paid-job-2')
+  } finally { await view.destroy() }
+})
+
+test('switching projects rejects an old preview even when both projects have the same selected node ID', async t => {
+  const graph = initialGraph('reference')
+  let release!: (response: Response) => void
+  let body: Record<string, unknown> = {}
+  mockApi(t, graph, detail, (path, _method, request) => {
+    if (path.endsWith('/generate/preview')) { body = request; return new Promise<Response>(resolve => { release = resolve }) }
+  })
+  const baseFetch = globalThis.fetch
+  t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
+    const path = String(url)
+    if (path === '/api/projects/other-project/canvases') return Response.json([{ id: 'other-project', project_id: 'other-project', name: '另一张画布', is_default: true, viewport: null, node_count: graph.nodes.length }])
+    if (path.startsWith('/api/projects/other-project/')) {
+      if (path.endsWith('/skills/defaults')) return Response.json({ policies: [] })
+      if (path.endsWith('/canvas') || /\/canvases\/[^/]+$/.test(path)) return Response.json(graph)
+    }
+    return baseFetch(url as RequestInfo, init)
+  })
+  const contexts: string[] = []
+  const view = await mount(detail, false, { onOpenScriptDirector: (_focus, context) => { contexts.push(context!) } })
+  try {
+    await act(() => view.button('添加到导演对话').click()); await settle()
+    assert.ok(release)
+    dom.window.localStorage.setItem('project-canvas-viewport:other-project', JSON.stringify({ x: 0, y: 0, zoom: 0.8 }))
+    await view.renderDetail({ ...detail, id: 'other-project', name: '另一个项目' })
+    await act(() => release(Response.json(body))); await settle()
+    assert.deepEqual(contexts, [])
+    assert.equal(document.querySelector('[aria-label="生成任务信息"]'), null)
+  } finally { await view.destroy() }
+})
+
+test('an old canvas preview cannot hand off after another canvas mounts with the same node IDs', async t => {
+  const graph = initialGraph('reference')
+  let release!: (response: Response) => void
+  let body: Record<string, unknown> = {}
+  mockApi(t, graph, detail, (path, _method, request) => {
+    if (path.endsWith('/generate/preview')) { body = request; return new Promise<Response>(resolve => { release = resolve }) }
+  })
+  const baseFetch = globalThis.fetch
+  let anotherCanvas = false
+  t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
+    const path = String(url)
+    if (anotherCanvas && path === '/api/projects/video-reference-test/canvases') return Response.json([{ id: 'another-canvas', project_id: detail.id, name: '另一张画布', is_default: true, viewport: null, node_count: graph.nodes.length }])
+    if (path === '/api/projects/video-reference-test/canvases/another-canvas') return Response.json(graph)
+    return baseFetch(url as RequestInfo, init)
+  })
+  const contexts: string[] = []
+  const onOpenScriptDirector: ProjectCanvasProps['onOpenScriptDirector'] = (_focus, context) => { contexts.push(context!) }
+  const oldView = await mount(detail, false, { onOpenScriptDirector })
+  await act(() => oldView.button('添加到导演对话').click()); await settle()
+  assert.ok(release)
+  await oldView.destroy()
+  anotherCanvas = true
+  const view = await mount(detail, false, { onOpenScriptDirector })
+  try {
+    await act(() => release(Response.json(body))); await settle()
+    assert.deepEqual(contexts, [])
+    assert.equal(document.querySelector('[aria-label="生成任务信息"]'), null)
+    assert.ok(view.button('添加到导演对话'))
+  } finally { await view.destroy() }
+})
+
+function nodeProposal(source: CanvasNodeProposalSource): CanvasNodeProposal {
+  return { id: 'director-proposal-1', created_node_id: 'director-draft-1', validation_fingerprint: 'validated-server-state', source,
+    before: { prompt: source.prompt, parameters: { ...source.parameters } },
+    after: { prompt: source.prompt.replace('缓缓回头', '停步回望'), parameters: { ...source.parameters } }, changes: ['人物动作调整'] }
+}
+
+test('confirmed director proposals create one editable generator with fixed references, preserve the reviewed preview and undo together', async t => {
+  const graph = initialGraph('reference')
+  const target = graph.nodes.find(node => node.id === 'video-node')!
+  target.settings.candidate_count = 3
+  let source!: CanvasNodeProposalSource, actions: CanvasNodeProposalActions | null = null, validations = 0
+  const api = mockApi(t, graph, detail, path => {
+    if (path.endsWith('/node-proposals/validate')) { validations++; return Response.json({ valid: true }) }
+  })
+  const view = await mount(detail, false, { onOpenScriptDirector: (_focus, _context, snapshot) => { source = snapshot! },
+    registerNodeProposalActions: value => { actions = value } })
+  try {
+    await act(() => view.button('添加到导演对话').click()); await settle()
+    assert.ok(source); assert.ok(actions)
+    assert.equal(source.canvas_revision, api.saved.length ? `saved-${api.saved.length}` : graph.revision)
+    const savedSource = structuredClone((api.saved.at(-1) || graph).nodes.find(node => node.id === 'video-node')!)
+    const proposal = nodeProposal(source)
+    let results!: Awaited<ReturnType<CanvasNodeProposalActions['apply']>>[]
+    await act(async () => { results = await Promise.all([actions!.apply(proposal), actions!.apply(proposal)]) }); await settle()
+    assert.equal(validations, 1)
+    assert.equal(results[0].referenceNodeCount, 2)
+    const saved = api.saved.at(-1)!, draft = saved.nodes.find(node => node.id === proposal.created_node_id)!
+    assert.equal(saved.nodes.filter(node => node.type === 'generation').length, 2)
+    assert.deepEqual(saved.nodes.find(node => node.id === 'video-node'), savedSource)
+    assert.equal(draft.settings.candidate_count, 3); assert.equal(draft.job_id, null); assert.equal(draft.asset_id, null)
+    assert.deepEqual(saved.edges.filter(edge => edge.target === draft.id).map(edge => edge.reference_asset_id), source.reference_assets.map(reference => reference.asset_id))
+    assert.equal(new Set(saved.edges.filter(edge => edge.target === draft.id).map(edge => edge.source)).size, source.reference_assets.length)
+    await view.preview()
+    const request = api.resolvedPreviews.at(-1)! as PreviewInput & { duration: number; resolution: string; ratio: string; generate_audio: boolean; draft: boolean }
+    assert.equal(request.prompt, proposal.after.prompt, 'new draft must retain the exact prompt accepted in the proposal preview')
+    assert.deepEqual(request.reference_asset_ids, source.reference_assets.map(reference => reference.asset_id))
+    assert.equal(request.mode, source.mode)
+    assert.equal(request.resolution, source.parameters.resolution)
+    assert.equal(request.ratio, source.parameters.ratio)
+    assert.equal(request.duration, source.parameters.duration)
+    assert.equal(request.generate_audio, source.parameters.generate_audio)
+    assert.equal(request.draft, source.parameters.draft)
+    await act(() => view.button('查看生成信息').click()); await settle()
+    await act(() => view.button('撤销画布操作').click()); await settle()
+    assert.equal(view.container.querySelector(`[data-id="${proposal.created_node_id}"]`), null)
+    assert.ok(view.container.querySelector('[data-id="video-node"]'))
+    assert.equal(view.container.querySelector('[data-id="director-draft-1-ref-1"]'), null)
+  } finally { await view.destroy() }
+})
+
+test('director proposal application rejects unsaved source edits and stale server validation without creating a job', async t => {
+  const graph = initialGraph('reference')
+  let source!: CanvasNodeProposalSource, actions: CanvasNodeProposalActions | null = null, validations = 0
+  const api = mockApi(t, graph, detail, path => {
+    if (path.endsWith('/node-proposals/validate')) { validations++; return Response.json({ error: '模型配置已变化，请重新提出方案' }, { status: 409 }) }
+  })
+  const view = await mount(detail, false, { onOpenScriptDirector: (_focus, _context, snapshot) => { source = snapshot! }, registerNodeProposalActions: value => { actions = value } })
+  try {
+    await act(() => view.button('添加到导演对话').click()); await settle()
+    const proposal = nodeProposal(source)
+    await act(async () => { await assert.rejects(actions!.apply(proposal), /模型配置已变化/) }); await settle()
+    assert.equal(validations, 1)
+    assert.ok(!(api.saved.at(-1) || graph).nodes.some(node => node.id === proposal.created_node_id))
+    await view.editBody('用户后续改为车门关闭。')
+    await act(async () => { await assert.rejects(actions!.apply(proposal), /来源节点或项目配置已变化/) }); await settle()
+    assert.equal(validations, 1, 'local source edits are rejected before server validation')
+    assert.equal(view.container.querySelector(`[data-id="${proposal.created_node_id}"]`), null)
+  } finally { await view.destroy() }
+})
+
+test('a late director proposal validation cannot append a draft after its canvas unmounts', async t => {
+  const graph = initialGraph('reference')
+  let source!: CanvasNodeProposalSource, actions: CanvasNodeProposalActions | null = null
+  let release!: (response: Response) => void
+  const api = mockApi(t, graph, detail, path => {
+    if (path.endsWith('/node-proposals/validate')) return new Promise<Response>(resolve => { release = resolve })
+  })
+  const view = await mount(detail, false, { onOpenScriptDirector: (_focus, _context, snapshot) => { source = snapshot! }, registerNodeProposalActions: value => { actions = value } })
+  await act(() => view.button('添加到导演对话').click()); await settle()
+  const proposal = nodeProposal(source)
+  let pending!: Promise<unknown>
+  await act(() => { pending = assert.rejects(actions!.apply(proposal), /来源或模型配置已更新/) }); await settle()
+  // Fingerprinting uses native crypto; let that asynchronous preparation reach
+  // the mock validation transport before switching the canvas.
+  for (let pass = 0; pass < 10 && !release; pass++) { await act(() => new Promise(resolve => setTimeout(resolve, 5))); await settle() }
+  assert.ok(release)
+  await view.destroy()
+  await act(async () => { release(Response.json({ valid: true })); await pending }); await settle()
+  assert.ok(api.saved.every(value => !value.nodes.some(node => node.id === proposal.created_node_id)))
+})
+
+test('image proposal drafts submit the reviewed native ratio with the original resolution, clarity and candidate count', async t => {
+  const graph = initialGraph('reference'), target = graph.nodes.find(node => node.id === 'video-node')!
+  target.model_id = imageModel.id
+  target.settings = { ...target.settings, modality: 'image', resolution: '2K', clarity: '2K', quality: 'high', background: 'preserve', candidate_count: 4 }
+  let source!: CanvasNodeProposalSource, actions: CanvasNodeProposalActions | null = null
+  const api = mockApi(t, graph, detail, path => {
+    if (path.endsWith('/node-proposals/validate')) return Response.json({ valid: true })
+  })
+  const view = await mount(detail, false, { models: [imageModel], onOpenScriptDirector: (_focus, _context, snapshot) => { source = snapshot! }, registerNodeProposalActions: value => { actions = value } })
+  try {
+    await act(() => view.button('添加到导演对话').click()); await settle()
+    assert.equal(source.modality, 'image')
+    const proposal = nodeProposal(source)
+    proposal.after.parameters.ratio = '16:9'
+    proposal.after.prompt = proposal.after.prompt.replaceAll('9:16', '16:9').replaceAll('竖版', '横版')
+    await act(async () => { await actions!.apply(proposal) }); await settle()
+    await view.preview()
+    const request = api.resolvedPreviews.at(-1)! as PreviewInput & { ratio: string; resolution: string; clarity: string; quality: string; background: string }
+    assert.equal(request.prompt, proposal.after.prompt)
+    assert.equal(request.ratio, '16:9')
+    assert.equal(request.resolution, source.parameters.resolution)
+    assert.equal(request.clarity, source.parameters.clarity)
+    assert.equal(request.quality, source.parameters.quality)
+    assert.equal(request.background, source.parameters.background)
+    assert.deepEqual(request.reference_asset_ids, source.reference_assets.map(reference => reference.asset_id))
+    assert.equal(api.saved.at(-1)!.nodes.find(node => node.id === proposal.created_node_id)!.settings.candidate_count, 4)
+    assert.match(document.querySelector('[aria-label="生成任务信息"]')!.textContent!, /4 个/)
+  } finally { await view.destroy() }
+})
+
+test('a supported video duration proposal reaches the new draft preview exactly as reviewed', async t => {
+  const graph = initialGraph('reference'), target = graph.nodes.find(node => node.id === 'video-node')!
+  target.settings.candidate_count = 2
+  const model: Model = { ...videoModel, settings: { ...videoModel.settings, min_duration: 1, max_duration: 15,
+    request_template: { prompt: '{{prompt}}', images: '{{images}}', duration: '{{duration}}', resolution: '{{resolution}}', ratio: '{{ratio}}' } } }
+  let source!: CanvasNodeProposalSource, actions: CanvasNodeProposalActions | null = null
+  const api = mockApi(t, graph, detail, path => {
+    if (path.endsWith('/node-proposals/validate')) return Response.json({ valid: true })
+  })
+  const view = await mount(detail, false, { models: [model], onOpenScriptDirector: (_focus, _context, snapshot) => { source = snapshot! }, registerNodeProposalActions: value => { actions = value } })
+  try {
+    await act(() => view.button('添加到导演对话').click()); await settle()
+    assert.equal(source.parameters.duration, 5)
+    const proposal = nodeProposal(source)
+    proposal.after.parameters.duration = 8
+    proposal.after.prompt = proposal.after.prompt.replaceAll('视频时长：5 秒', '视频时长：8 秒')
+    proposal.changes = ['时长从5秒调整为8秒']
+    await act(async () => { await actions!.apply(proposal) }); await settle()
+    await view.preview()
+    const request = api.resolvedPreviews.at(-1)! as PreviewInput & { duration: number; resolution: string; ratio: string; generate_audio: boolean; draft: boolean }
+    assert.equal(request.duration, 8)
+    assert.equal(request.prompt, proposal.after.prompt)
+    assert.deepEqual(request.reference_asset_ids, source.reference_assets.map(reference => reference.asset_id))
+    assert.equal(request.mode, source.mode)
+    assert.equal(request.resolution, proposal.after.parameters.resolution)
+    assert.equal(request.ratio, proposal.after.parameters.ratio)
+    assert.equal(request.generate_audio, proposal.after.parameters.generate_audio)
+    assert.equal(request.draft, proposal.after.parameters.draft)
+    assert.match(document.querySelector('[aria-label="生成任务信息"]')!.textContent!, /2 个/)
+  } finally { await view.destroy() }
+})
+
+test('a failed director draft save can retry or remount without duplicating its generator or fixed references', async t => {
+  const graph = initialGraph('reference')
+  let source!: CanvasNodeProposalSource, actions: CanvasNodeProposalActions | null = null
+  const api = mockApi(t, graph, detail, path => {
+    if (path.endsWith('/node-proposals/validate')) return Response.json({ valid: true })
+  })
+  let failDraftSave = true
+  const baseFetch = globalThis.fetch
+  t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
+    if (String(url) === '/api/projects/video-reference-test/canvas' && init?.method === 'PUT'
+      && failDraftSave && JSON.parse(String(init.body)).nodes.some((node: CanvasNode) => node.id === 'director-draft-1')) return Response.json({ message: '模拟草稿保存失败' }, { status: 500 })
+    return baseFetch(url as RequestInfo, init)
+  })
+  const props: Partial<ProjectCanvasProps> = { onOpenScriptDirector: (_focus, _context, snapshot) => { source = snapshot! }, registerNodeProposalActions: value => { actions = value } }
+  const view = await mount(detail, false, props)
+  let proposal!: CanvasNodeProposal
+  try {
+    await act(() => view.button('添加到导演对话').click()); await settle()
+    proposal = nodeProposal(source)
+    await act(async () => { await assert.rejects(actions!.apply(proposal), /模拟草稿保存失败/) }); await settle()
+    assert.ok(view.container.querySelector(`[data-id="${proposal.created_node_id}"]`), 'the unsaved draft remains editable and undoable')
+    failDraftSave = false
+    let result!: Awaited<ReturnType<CanvasNodeProposalActions['apply']>>
+    await act(async () => { result = await actions!.apply(proposal) }); await settle()
+    assert.equal(result.alreadyApplied, true)
+    const saved = api.saved.at(-1)!
+    assert.equal(saved.nodes.filter(node => node.id === proposal.created_node_id).length, 1)
+    graph.nodes = saved.nodes; graph.edges = saved.edges; graph.revision = `saved-${api.saved.length}`
+  } finally { await view.destroy() }
+  const restored = await mount(detail, false, props)
+  try {
+    await act(async () => { const result = await actions!.apply(proposal); assert.equal(result.alreadyApplied, true) }); await settle()
+    assert.equal(restored.container.querySelectorAll(`[data-id="${proposal.created_node_id}"]`).length, 1)
+  } finally { await restored.destroy() }
+})
+
+test('creating a director draft preserves an original legacy numbered-reference document verbatim', async t => {
+  const graph = initialGraph('reference'), original = graph.nodes.find(node => node.id === 'video-node')!
+  original.text = '林晚缓缓回头，图片1保持构图。'
+  original.settings = { ...original.settings, prompt_is_final: true, prompt_document: true,
+    prompt_body: original.text, prompt_base: original.prompt, prompt_template: '' }
+  let source!: CanvasNodeProposalSource, actions: CanvasNodeProposalActions | null = null
+  const api = mockApi(t, graph, detail, path => {
+    if (path.endsWith('/node-proposals/validate')) return Response.json({ valid: true })
+  })
+  const view = await mount(detail, false, { onOpenScriptDirector: (_focus, _context, snapshot) => { source = snapshot! }, registerNodeProposalActions: value => { actions = value } })
+  try {
+    await act(() => view.button('添加到导演对话').click()); await settle()
+    const before = structuredClone((api.saved.at(-1) || graph).nodes.find(node => node.id === original.id)!)
+    await act(async () => { await actions!.apply(nodeProposal(source)) }); await settle()
+    assert.deepEqual(api.saved.at(-1)!.nodes.find(node => node.id === original.id), before)
+  } finally { await view.destroy() }
+})
+
+const generationSubmissionScope = { projectId: detail.id, canvasId: detail.id, nodeId: 'video-node' }
+async function settleSubmission() {
+  await act(() => new Promise(resolve => setTimeout(resolve, 100))); await settle()
+}
+
+test('canvas recovers a lost accepted generation response, saves its job and refreshes live task status', async t => {
+  const graph = initialGraph('reference')
+  let accepted: ProjectDetail['jobs'][number] | null = null, posts = 0, refreshes = 0
+  const api = mockApi(t, graph, detail, (path, _method, body, init) => {
+    if (path.includes('/generation-submissions/')) return Response.json({ job: accepted })
+    if (!path.endsWith('/generate')) return
+    posts++
+    const key = new Headers(init?.headers).get('Idempotency-Key')
+    assert.ok(key)
+    accepted = { id: 'lost-response-job', status: 'queued', request: JSON.stringify(body), created_at: timestamp,
+      project_id: detail.id, shot_id: 'shot', idempotency_key: key } as ProjectDetail['jobs'][number]
+    throw new TypeError('模拟响应丢失')
+  })
+  const view = await mount(detail, false, { onRefresh: async () => { refreshes++ } })
+  try {
+    await act(() => view.button('开始生成').click()); await settleSubmission()
+    assert.equal(posts, 1)
+    assert.equal(readCanvasGenerationSubmission(generationSubmissionScope)?.candidates[0].jobId, 'lost-response-job')
+    assert.equal(api.saved.at(-1)!.nodes.find(node => node.id === 'video-node')!.job_id, 'lost-response-job')
+    assert.ok(refreshes >= 1, 'recovered task refreshes project jobs so active-task polling can resume')
+    await view.renderDetail({ ...detail, jobs: [accepted!] })
+    assert.equal(view.button('生成中，请等待').disabled, true)
+    const asset = { ...detail.assets[0], id: 'recovered-video', kind: 'video', filename: 'recovered.mp4', url: '/api/assets/recovered-video/file' } as ProjectDetail['assets'][number]
+    await view.renderDetail({ ...detail, jobs: [{ ...accepted!, status: 'succeeded', result_asset_id: asset.id }], assets: [...detail.assets, asset] })
+    await act(() => new Promise(resolve => setTimeout(resolve, 900))); await settle()
+    assert.equal(api.saved.at(-1)!.nodes.find(node => node.id === 'video-node')!.asset_id, asset.id)
+    assert.equal(posts, 1)
+  } finally { await view.destroy() }
+})
+
+test('canvas double clicks share one operation while a deliberate next generation uses a new key', async t => {
+  const graph = initialGraph('reference'), keys: string[] = []
+  mockApi(t, graph, detail, (path, _method, _body, init) => {
+    if (!path.endsWith('/generate')) return
+    keys.push(new Headers(init?.headers).get('Idempotency-Key')!)
+    return Response.json({ id: `explicit-job-${keys.length}`, status: 'queued', created_at: timestamp })
+  })
+  const view = await mount()
+  try {
+    await act(() => { view.button('开始生成').click(); view.button('开始生成').click() }); await settleSubmission()
+    assert.equal(keys.length, 1)
+    const first = readCanvasGenerationSubmission(generationSubmissionScope)!
+    await act(() => view.button('开始生成').click()); await settleSubmission()
+    assert.equal(keys.length, 2); assert.notEqual(keys[0], keys[1])
+    assert.notEqual(readCanvasGenerationSubmission(generationSubmissionScope)!.id, first.id)
+  } finally { await view.destroy() }
+})
+
+test('canvas refresh only finds accepted candidates and explicit continuation submits each missing candidate once', async t => {
+  const graph = initialGraph('reference')
+  graph.nodes.find(node => node.id === 'video-node')!.settings.candidate_count = 3
+  const accepted = new Map<string, { id: string; status: string; created_at: string }>(), keys: string[] = [], bodies: Record<string, unknown>[] = []
+  let lookupBlocked = false, loseFirstResponse = true, refreshes = 0
+  const api = mockApi(t, graph, detail, (path, _method, body, init) => {
+    if (path.includes('/generation-submissions/')) {
+      if (lookupBlocked) throw new TypeError('查回网络暂不可用')
+      return Response.json({ job: accepted.get(path.split('/').at(-1)!) || null })
+    }
+    if (!path.endsWith('/generate')) return
+    const key = new Headers(init?.headers).get('Idempotency-Key')!
+    keys.push(key); bodies.push(body)
+    const value = { id: `candidate-${accepted.size + 1}`, status: 'queued', created_at: timestamp }; accepted.set(key, value)
+    if (loseFirstResponse) { loseFirstResponse = false; lookupBlocked = true; throw new TypeError('接单后响应丢失') }
+    return Response.json(value)
+  })
+  const view = await mount()
+  await act(() => view.button('开始生成').click()); await settleSubmission()
+  const original = readCanvasGenerationSubmission(generationSubmissionScope)!
+  assert.equal(keys.length, 1)
+  assert.deepEqual(original.candidates.map(candidate => candidate.jobId), [null, null, null])
+  const frozen = structuredClone(original.request)
+  const remote = api.saved.at(-1)!
+  graph.nodes = remote.nodes; graph.edges = remote.edges; graph.revision = `saved-${api.saved.length}`
+  await view.destroy()
+  lookupBlocked = false
+  const restored = await mount(detail, false, { onRefresh: async () => { refreshes++ } }, true)
+  try {
+    await settleSubmission()
+    assert.equal(keys.length, 1, 'mount performs only read-only lookup')
+    assert.equal(readCanvasGenerationSubmission(generationSubmissionScope)!.candidates[0].jobId, 'candidate-1')
+    assert.match(restored.container.querySelector('[aria-label="原生成提交状态"]')!.textContent!, /1\/3/)
+    assert.ok(refreshes >= 1)
+    await act(() => restored.button('检查已有生成任务').click()); await settleSubmission()
+    assert.equal(keys.length, 1)
+    await act(() => restored.button('继续原生成提交').click()); await settleSubmission()
+    assert.deepEqual(keys, original.candidates.map(candidate => candidate.key))
+    assert.ok(bodies.every(body => JSON.stringify(body) === JSON.stringify(frozen)), 'continuation preserves the exact approved request')
+    assert.equal(api.saved.at(-1)!.nodes.find(node => node.id === 'video-node')!.job_id, 'candidate-3')
+    assert.equal(readCanvasGenerationSubmission(generationSubmissionScope)!.candidates.filter(candidate => candidate.jobId).length, 3)
+  } finally { await restored.destroy() }
+})
+
+test('canvas lost shot creation response keeps its fixed shot and starts no paid work until explicit continuation', async t => {
+  const graph = initialGraph('reference'), target = graph.nodes.find(node => node.id === 'video-node')!
+  target.shot_id = null; target.settings.visual_reference_mode = 'text_only'; delete target.settings.storyboard_reference_asset_id
+  let shot: { id: string; title: string } | null = null, shotPosts = 0, generationPosts = 0, shotKey = ''
+  const requests: Record<string, unknown>[] = []
+  const api = mockApi(t, graph, detail, (path, _method, body, init) => {
+    if (path.includes('/shot-submissions/')) return Response.json({ shot })
+    if (path.endsWith('/shots')) {
+      shotPosts++; shotKey = new Headers(init?.headers).get('Idempotency-Key')!
+      shot = { id: 'durable-new-shot', title: String(body.title) }; throw new TypeError('镜头响应丢失')
+    }
+    if (path.endsWith('/generate')) { generationPosts++; requests.push(body); return Response.json({ id: 'shot-recovered-job', status: 'queued', created_at: timestamp }) }
+  })
+  const view = await mount()
+  try {
+    await act(() => view.button('开始生成').click()); await settleSubmission()
+    assert.equal(shotPosts, 1); assert.equal(generationPosts, 0)
+    const item = readCanvasGenerationSubmission(generationSubmissionScope)!
+    assert.equal(item.shot?.key, shotKey); assert.equal(item.shot?.id, 'durable-new-shot')
+    assert.equal(api.saved.at(-1)!.nodes.find(node => node.id === 'video-node')!.shot_id, 'durable-new-shot')
+    await act(() => view.button('继续原生成提交').click()); await settleSubmission()
+    assert.equal(shotPosts, 1); assert.equal(generationPosts, 1)
+    assert.equal(requests[0].shot_id, 'durable-new-shot')
+    assert.equal(api.saved.at(-1)!.nodes.find(node => node.id === 'video-node')!.job_id, 'shot-recovered-job')
+  } finally { await view.destroy() }
+})
+
+test('canvas recovery preserves newly edited inputs instead of overwriting them with an old task association', async t => {
+  const graph = initialGraph('reference')
+  let found = false, posts = 0, originalKey = ''
+  const api = mockApi(t, graph, detail, path => {
+    if (path.includes('/generation-submissions/')) return Response.json({ job: found && path.endsWith(originalKey) ? { id: 'old-accepted', status: 'queued' } : null })
+    if (path.endsWith('/generate')) { posts++; throw new TypeError('unknown response') }
+  })
+  const view = await mount()
+  try {
+    await act(() => view.button('开始生成').click()); await settleSubmission()
+    const old = readCanvasGenerationSubmission(generationSubmissionScope)!
+    originalKey = old.candidates[0].key
+    await view.editBody('新的人物动作与镜头方向。')
+    found = true
+    await act(() => view.button('检查已有生成任务').click()); await settleSubmission()
+    assert.equal(readCanvasGenerationSubmission(generationSubmissionScope)!.candidates[0].jobId, 'old-accepted')
+    assert.equal(api.saved.at(-1)!.nodes.find(node => node.id === 'video-node')!.job_id, null)
+    assert.match(view.bodyPrompt(), /新的人物动作/)
+    await act(() => view.button('开始生成').click()); await settleSubmission()
+    assert.notEqual(readCanvasGenerationSubmission(generationSubmissionScope)!.id, old.id, 'changed inputs become a new deliberate operation')
+    assert.equal(posts, 2, 'the new deliberate intention submits with its new identity')
+  } finally { await view.destroy() }
+})
+
+test('canvas displays accepted candidate count and definitive API rejection without marking the batch complete', async t => {
+  const graph = initialGraph('reference'); graph.nodes.find(node => node.id === 'video-node')!.settings.candidate_count = 3
+  let posts = 0
+  mockApi(t, graph, detail, path => {
+    if (!path.endsWith('/generate')) return
+    if (++posts === 2) return Response.json({ detail: '所选分辨率不再可用' }, { status: 422 })
+    return Response.json({ id: 'first-accepted', status: 'queued', created_at: timestamp })
+  })
+  const view = await mount()
+  try {
+    await act(() => view.button('开始生成').click()); await settleSubmission()
+    const record = readCanvasGenerationSubmission(generationSubmissionScope)!
+    assert.equal(posts, 2); assert.equal(record.rejected, '所选分辨率不再可用', 'HTTP status metadata reaches real Canvas rejection handling')
+    assert.deepEqual(record.candidates.map(candidate => candidate.jobId), ['first-accepted', null, null])
+    const status = view.container.querySelector('[aria-label="原生成提交状态"]')!.textContent!
+    assert.match(status, /1\/3/); assert.match(status, /再次生成会创建全新一轮/); assert.match(status, /其余任务已被拒绝/)
+    assert.equal(document.querySelector('[aria-label="继续原生成提交"]'), null)
+  } finally { await view.destroy() }
+})
+
+test('canvas pending recovery remains read-only without Web Locks and prevents unsupported paid submission', async t => {
+  const graph = initialGraph('reference'), locks = dom.window.navigator.locks
+  let posts = 0
+  mockApi(t, graph, detail, path => {
+    if (!path.endsWith('/generate')) return
+    posts++; throw new TypeError('pending intent')
+  })
+  const view = await mount()
+  try {
+    await act(() => view.button('开始生成').click()); await settleSubmission()
+    Object.defineProperty(dom.window.navigator, 'locks', { configurable: true, value: undefined })
+    await act(() => view.button('检查已有生成任务').click()); await settleSubmission()
+    assert.equal(posts, 1)
+    await act(() => view.button('继续原生成提交').click()); await settleSubmission()
+    assert.equal(posts, 1); assert.match(view.container.textContent!, /localhost 或 HTTPS/)
+    assert.ok(dom.window.localStorage.getItem(canvasGenerationSubmissionStorageKey(generationSubmissionScope)))
+  } finally {
+    Object.defineProperty(dom.window.navigator, 'locks', { configurable: true, value: locks })
+    await view.destroy()
+  }
+})
+
+test('canvas preview racing another tab recovers that operation without implicitly continuing its frozen request', async t => {
+  const graph = initialGraph('reference')
+  let release!: (response: Response) => void, previewBody: Record<string, unknown> = {}, posts = 0
+  mockApi(t, graph, detail, (path, _method, body) => {
+    if (path.endsWith('/generate/preview')) { previewBody = body; return new Promise<Response>(resolve => { release = resolve }) }
+    if (path.endsWith('/generate')) { posts++; return Response.json({ id: 'forbidden-job' }) }
+  })
+  const view = await mount()
+  try {
+    await act(() => view.button('开始生成').click()); await settle()
+    assert.ok(release)
+    const otherTab = createCanvasGenerationSubmission({ ...generationSubmissionScope, sourceSignature: 'another tab source',
+      baselineJobId: null, request: { ...previewBody, prompt: '另一标签已确认的原参数' }, candidateCount: 2 })
+    await act(() => release(Response.json(previewBody))); await settleSubmission()
+    assert.equal(posts, 0)
+    assert.equal(readCanvasGenerationSubmission(generationSubmissionScope)!.id, otherTab.id)
+    assert.match(view.container.querySelector('[aria-label="原生成提交状态"]')!.textContent!, /0\/2/)
+  } finally { await view.destroy() }
+})
+
+test('canvas association save failure retains accepted work and reload restores it without another paid POST', async t => {
+  const graph = initialGraph('reference')
+  let rejectAssociation = true, posts = 0, refreshes = 0
+  const api = mockApi(t, graph, detail, path => {
+    if (path.includes('/generation-submissions/')) return Response.json({ job: posts ? { id: 'save-failed-job', status: 'queued' } : null })
+    if (path.endsWith('/generate')) { posts++; return Response.json({ id: 'save-failed-job', status: 'queued', created_at: timestamp }) }
+  }, value => rejectAssociation && value.nodes.some(node => node.id === 'video-node' && node.job_id === 'save-failed-job'))
+  const view = await mount()
+  await act(() => view.button('开始生成').click()); await settleSubmission()
+  assert.equal(posts, 1)
+  assert.equal(readCanvasGenerationSubmission(generationSubmissionScope)!.candidates[0].jobId, 'save-failed-job')
+  const remote = api.saved.at(-1)!
+  graph.nodes = remote.nodes; graph.edges = remote.edges; graph.revision = `saved-${api.saved.length}`
+  await view.destroy()
+  rejectAssociation = false
+  const restored = await mount(detail, false, { onRefresh: async () => { refreshes++ } }, true)
+  try {
+    await act(() => new Promise(resolve => setTimeout(resolve, 900))); await settle()
+    assert.equal(posts, 1)
+    assert.equal(api.saved.at(-1)!.nodes.find(node => node.id === 'video-node')!.job_id, 'save-failed-job')
+    assert.ok(refreshes >= 1, 'already-associated durable task still refreshes missing project job data')
+  } finally { await restored.destroy() }
+})
+
+test('canvas storage failure after acceptance stops later candidates and read-only recovery restores the accepted item', async t => {
+  const graph = initialGraph('reference'); graph.nodes.find(node => node.id === 'video-node')!.settings.candidate_count = 2
+  let rejectAcceptedWrite = false, posts = 0
+  const storagePrototype = Object.getPrototypeOf(dom.window.localStorage), originalSet = storagePrototype.setItem
+  t.mock.method(storagePrototype, 'setItem', function (this: Storage, key: string, value: string) {
+    if (rejectAcceptedWrite && key.startsWith('canvas-generation-submission:') && JSON.parse(value).candidates.some((item: { jobId: string | null }) => item.jobId)) throw new Error('quota exceeded')
+    return originalSet.call(this, key, value)
+  })
+  const api = mockApi(t, graph, detail, path => {
+    if (path.includes('/generation-submissions/')) {
+      const key = path.split('/').at(-1)!
+      return Response.json({ job: posts && key.endsWith('_0') ? { id: 'accepted-before-quota', status: 'queued' } : null })
+    }
+    if (path.endsWith('/generate')) { posts++; rejectAcceptedWrite = true; return Response.json({ id: 'accepted-before-quota', status: 'queued', created_at: timestamp }) }
+  })
+  const view = await mount()
+  try {
+    await act(() => view.button('开始生成').click()); await settleSubmission()
+    const pending = readCanvasGenerationSubmission(generationSubmissionScope)!
+    assert.equal(posts, 1); assert.equal(pending.candidates[0].jobId, null); assert.ok(pending.inFlightKey)
+    rejectAcceptedWrite = false
+    await act(() => view.button('检查已有生成任务').click()); await settleSubmission()
+    assert.equal(posts, 1)
+    assert.equal(readCanvasGenerationSubmission(generationSubmissionScope)!.candidates[0].jobId, 'accepted-before-quota')
+    assert.equal(api.saved.at(-1)!.nodes.find(node => node.id === 'video-node')!.job_id, 'accepted-before-quota')
+  } finally { rejectAcceptedWrite = false; await view.destroy() }
+})
+
+for (const action of ['verify', 'query', 'download'] as const) test(`canvas presents restarted video ${action} guidance without sending generation or recovery requests`, async t => {
+  const graph = initialGraph('reference'), target = graph.nodes.find(node => node.id === 'video-node')!
+  target.job_id = `restart-${action}`
+  const project = { ...detail, jobs: [{ id: target.job_id, project_id: detail.id, shot_id: 'shot', model_id: videoModel.id,
+    job_type: 'generation', status: 'failed', request: '{"prompt":"原视频提示词"}', external_id: action === 'query' ? 'vendor-existing-id' : null,
+    recovery_available: action === 'download', task_resume_available: action === 'query', recovery_action: action, recovery_modality: 'video',
+    created_at: timestamp, error: '服务重启后需要处理原任务' }] } as ProjectDetail
+  const api = mockApi(t, graph, project)
+  const view = await mount(project)
+  try {
+    const guidance = view.container.querySelector('[aria-label="原生成任务恢复提示"]')!
+    assert.ok(guidance)
+    if (action === 'verify') {
+      assert.match(guidance.textContent!, /可能已被接收或计费/)
+      assert.ok(view.container.querySelector('[aria-label="原任务待核对"]'))
+    } else if (action === 'query') assert.match(guidance.textContent!, /沿用原提示词和参数，不创建新的生成任务/)
+    else assert.match(guidance.textContent!, /继续下载已有结果/)
+    assert.equal(api.previews.length, 0, 'presenting recovery status cannot submit or preview a generation')
+    assert.ok(view.container.querySelector('[data-id="video-node"]')!.textContent!.includes('任务记录'))
   } finally { await view.destroy() }
 })

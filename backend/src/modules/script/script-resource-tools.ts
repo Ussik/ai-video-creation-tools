@@ -10,6 +10,7 @@ import { projectVisualStyle } from '../visuals/project-visual-style.js'
 import { normalizeVisualBinding, referenceSnapshot, visualReferenceAssets } from '../visuals/visual-reference-assets.js'
 import { visualBindingReferenceAssetIds } from '@video-studio/shared/media/video-reference-manifest'
 import type { VisualReferenceSnapshot } from '@video-studio/shared/visuals/visual-reference-types'
+import { resourceReadPage, resourceReadTracker } from './script-resource-read-page.js'
 
 const id = z.string().min(1).max(160), uniqueIds = z.array(id).max(100).refine(items => new Set(items).size === items.length, '对象 ID 不可重复')
 export const shotDraftValue = z.object({ title: z.string().trim().min(1).max(120), prompt: z.string().trim().min(1).max(16000),
@@ -42,8 +43,8 @@ export function editResourceValues(changes: ResourceChange[], edits: z.infer<typ
   }).map(change => change as ResourceChange)
 }
 export const resourceSchemas = {
-  read_visual_profiles: z.object({ profile_ids: uniqueIds.optional(), query: z.string().trim().min(1).max(200).optional(), kind: z.enum(['character', 'location', 'prop']).optional(), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(20).default(10) }).strict(),
-  get_storyboard_context: z.object({ scene_ids: uniqueIds.optional(), shot_ids: uniqueIds.optional(), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(10).default(3) }).strict(),
+  read_visual_profiles: z.object({ profile_ids: uniqueIds.optional(), query: z.string().trim().min(1).max(200).optional(), kind: z.enum(['character', 'location', 'prop']).optional(), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(20).default(10), cursor: z.string().min(1).max(4096).optional() }).strict(),
+  get_storyboard_context: z.object({ scene_ids: uniqueIds.optional(), shot_ids: uniqueIds.optional(), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(10).default(3), catalog_offset: z.number().int().min(0).default(0), cursor: z.string().min(1).max(4096).optional() }).strict(),
   propose_visual_profile_draft: z.object({ summary: z.string().trim().min(1).max(3000), profiles: z.array(z.object({ profile_id: id.optional(), base_version: id.optional(), profile: profileInput }).strict()).min(1).max(20) }).strict(),
   propose_visual_binding_patch: z.object({ summary: z.string().trim().min(1).max(3000), targets: z.array(z.object({ target_type: z.enum(['scene', 'shot']), target_id: id, base_version: id, bindings, refresh_profile_ids: uniqueIds.default([]) }).strict()).min(1).max(20) }).strict(),
   propose_shot_plan: z.object({ summary: z.string().trim().min(1).max(3000), scenes: z.array(z.object({ scene_id: id, base_version: id, shots: z.array(shotDraftValue).min(1).max(30) }).strict()).min(1).max(10) }).strict(),
@@ -58,10 +59,10 @@ export const modelResourceSchemas = {
   }),
 }
 export const resourceDescriptions: Record<keyof typeof resourceSchemas, string> = {
-  read_visual_profiles: '分页读取本项目视觉档案原文、版本、候选图ID、已确认独立参考图的角度/用途/版本/画风元数据、信息图与实际绑定。reference_status按当前可用参考判断；仅返回媒体状态及文字，不代表已经看过图片。缺图只能如实说明，不能伪造参考图。',
-  get_storyboard_context: '分页读取实际场次、已有镜头及图片/视频提示词、版本和冻结参考绑定；独立图按镜头已选快照读取，未选择时回退信息图，并返回图片存在状态，不代表已检查图片内容。scene_ids/shot_ids可限定范围。scene.version用于拆镜，shot.version用于镜头修改，binding_version用于绑定草稿；继续读next_offset直到complete。',
+  read_visual_profiles: '分页读取本项目视觉档案原文、版本、候选图ID、已确认独立参考图的角度/用途/版本/画风元数据、信息图与实际绑定。整页JSON最多48000字符；未complete时使用返回的continuation原样续读，将fragments按section/index/offset拼接serialized_fragment后JSON.parse还原对象，同source_version才可拼接。project_visual_style为null表示本页未重复风格或风格正分片；只有完整对象或全部片段实际读齐才可修改。reference_status按当前可用参考判断；仅返回媒体状态及文字，不代表已经看过图片。缺图只能如实说明，不能伪造参考图。',
+  get_storyboard_context: '分页读取实际场次、已有镜头及图片/视频提示词、版本和冻结参考绑定；独立图按镜头已选快照读取，未选择时回退信息图，并返回图片存在状态，不代表已检查图片内容。scene_ids/shot_ids可限定范围。scene.version用于拆镜，shot.version用于镜头修改，binding_version用于绑定草稿。整页JSON最多48000字符，目录也分页且不会在continuation中重复；使用返回的continuation原样续读直到complete，将fragments按section/index/offset拼接serialized_fragment后JSON.parse还原对象；仅同source_version可拼接，源变化须重读。project_visual_style为null表示未重复或正在分片；完整对象或全部片段读齐后才可修改；目录发现不等于已read_visual_profiles。',
   propose_visual_profile_draft: '提交视觉设定草稿。新对象不填profile_id/base_version；已有对象必须先read_visual_profiles并传读取的版本。写详细多视角信息图设定，scene_ids限定真实场次。已有绑定通过单独绑定草稿调整。仅准备草稿，确认后才保存，不生成图片。' + visualProfileTextInstructions,
-  propose_visual_binding_patch: '为已读取场次或镜头提出当前设计方案的完整绑定列表草稿，base_version使用binding_version；引用档案必须已读取且属于同一设计方案。镜头绑定的usage明确both=图片与视频、image=仅开镜图片、video=仅视频过程、none=本镜头不使用，省略时保留原用途；场次仅作候选资料池。列表之外的当前方案绑定会移除，其他方案的历史绑定保留；只有明确要求更新到新档案版本时才填refresh_profile_ids。确认后才执行，不会自动同步其他镜头。',
+  propose_visual_binding_patch: '为已读取场次或镜头提出当前设计方案的完整绑定列表草稿，base_version使用binding_version；引用档案必须已读取且属于同一设计方案。镜头绑定的usage明确both=图片与视频、image=仅开镜图片、video=仅视频过程、none=本镜头不使用，省略时保留原用途；场次仅作候选资料池。列表之外的当前方案绑定会移除，其他方案的历史绑定保留；普通镜头引用自动跟随已确认的新设定，无需填refresh_profile_ids；锁定版本及手选参考图保持原样，需要用户在引用面板恢复自动匹配后才能重新匹配。确认后才执行绑定草稿，不修改历史生成记录。',
   propose_shot_plan: '为已读取场次提交新增分镜草稿，base_version使用scene.version。每场新增镜头时长之和须等于场次秒数；同时提供独立图片首帧提示词和视频动作运镜提示词。已有镜头保留，新镜头确认后追加；修改已有镜头用propose_shot_patch。',
   propose_shot_patch: '对已读取的现存分镜提出局部字段修改，使用shot.version。保留镜头ID、素材与场次关联；图片和视频提示词各自明确，叙事变化时检查两者及开收镜状态。只准备草稿，确认后才保存。',
 }
@@ -152,6 +153,7 @@ function readableBinding(binding: ReturnType<typeof targetBindings>[number], con
 
 export function resourceTools(projectId: string) {
   const reads = new Map<string, string>()
+  const deliveredRead = resourceReadTracker()
   const requireRead = (key: string, version: string) => { if (reads.get(key) !== version) fail('操作前请读取目标当前版本和相关参考资料') }
   return {
     execute(name: string, args: unknown): unknown {
@@ -162,14 +164,19 @@ export function resourceTools(projectId: string) {
           if (data.profile_ids?.some(id => !allProfiles.some(profile => profile.id === id))) fail('档案不存在或不属于当前项目')
           const selected = allProfiles.filter(profile => (!data.profile_ids || data.profile_ids.includes(profile.id)) && (!data.kind || profile.kind === data.kind) && (!data.query || [profile.name, profile.variant, profile.definition].some(value => value.includes(data.query!))))
           if (data.offset > selected.length) fail('读取位置超过档案数量')
-          const found = selected.slice(data.offset, data.offset + data.limit).map(profile => {
-            const version = resourceVersion(profile); reads.set(`profile:${profile.id}`, version)
+          const found = selected.map(profile => {
+            const version = resourceVersion(profile)
             return { ...profile, version, candidates: all('SELECT asset_id, archived FROM visual_profile_candidates WHERE profile_id=?', profile.id),
               scene_ids: all<{ scene_id: string }>('SELECT scene_id FROM scene_visual_bindings WHERE profile_id=?', profile.id).map(item => item.scene_id),
               shot_ids: all<{ shot_id: string }>('SELECT shot_id FROM shot_visual_bindings WHERE profile_id=?', profile.id).map(item => item.shot_id),
               ...profileReferenceMetadata(profile, referenceContext) }
           })
-          return { profiles: found, project_visual_style: projectVisualStyle(projectId), next_offset: data.offset + found.length, complete: data.offset + found.length >= selected.length, total: selected.length }
+          const { cursor, ...query } = data
+          const page = resourceReadPage({ projectId, tool: name, query, cursor,
+            sections: [{ key: 'project_visual_style', values: [referenceContext.style], limit: 1, singleton: true }, { key: 'profiles', values: found, start: data.offset, limit: data.limit }],
+            metadata: positions => ({ next_offset: positions[1]!.index, total: selected.length }) })
+          for (const delivery of page.deliveries) if (delivery.section === 'profiles' && deliveredRead(page.source, delivery)) reads.set(`profile:${delivery.value.id}`, delivery.value.version as string)
+          return page.result
         }
         case 'get_storyboard_context': {
           const data = resourceSchemas.get_storyboard_context.parse(args), scenes = all<ScriptScene>('SELECT * FROM script_scenes WHERE project_id=? ORDER BY position, id', projectId), shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position, id', projectId)
@@ -184,16 +191,24 @@ export function resourceTools(projectId: string) {
           const selectedDesigns = new Set(objects.map(({ type, value }) => designFor(type, value)))
           if (!objects.length && !data.scene_ids && !data.shot_ids) selectedDesigns.add(null)
           if (data.offset > objects.length) fail('读取位置超过场次/镜头数量')
-          const found = objects.slice(data.offset, data.offset + data.limit).map(({ type, value }) => {
+          const found = objects.map(({ type, value }) => {
             const version = type === 'scene' ? sceneVersion(projectId, value as ScriptScene) : resourceVersion(value)
             const binding_version = bindingVersion(projectId, type, value.id)
-            reads.set(`${type}:${value.id}`, version); reads.set(`bindings:${type}:${value.id}`, binding_version)
             return { type, ...value, design_id: designFor(type, value), version, binding_version, bindings: targetBindings(type, value.id).map(binding => readableBinding(binding, referenceContext)) }
           })
-          return { objects: found, next_offset: data.offset + found.length, complete: data.offset + found.length >= objects.length, total: objects.length,
-            project_visual_style: projectVisualStyle(projectId),
-            visual_profile_catalog: profiles(projectId).filter(profile => selectedDesigns.has(profile.design_id || null)).map(profile => ({ id: profile.id, kind: profile.kind, name: profile.name,
-              design_id: profile.design_id || null, variant: profile.variant, revision: profile.revision, board_asset_id: profile.board_asset_id, ...profileReferenceMetadata(profile, referenceContext) })) }
+          const catalog = profiles(projectId).filter(profile => selectedDesigns.has(profile.design_id || null)).map(profile => ({ id: profile.id, kind: profile.kind, name: profile.name,
+            design_id: profile.design_id || null, variant: profile.variant, revision: profile.revision, board_asset_id: profile.board_asset_id, ...profileReferenceMetadata(profile, referenceContext) }))
+          if (data.catalog_offset > catalog.length) fail('读取位置超过视觉目录数量')
+          const { cursor, ...query } = data
+          const page = resourceReadPage({ projectId, tool: name, query, cursor,
+            sections: [{ key: 'project_visual_style', values: [referenceContext.style], limit: 1, singleton: true },
+              { key: 'objects', values: found, start: data.offset, limit: data.limit }, { key: 'visual_profile_catalog', values: catalog, start: data.catalog_offset, limit: 20 }],
+            metadata: positions => ({ next_offset: positions[1]!.index, total: objects.length, catalog_next_offset: positions[2]!.index, catalog_total: catalog.length, catalog_complete: positions[2]!.index === catalog.length }) })
+          for (const delivery of page.deliveries) if (delivery.section === 'objects' && deliveredRead(page.source, delivery)) {
+            reads.set(`${delivery.value.type}:${delivery.value.id}`, delivery.value.version as string)
+            reads.set(`bindings:${delivery.value.type}:${delivery.value.id}`, delivery.value.binding_version as string)
+          }
+          return page.result
         }
         case 'propose_visual_profile_draft': {
           const data = resourceSchemas.propose_visual_profile_draft.parse(args)
@@ -341,10 +356,19 @@ export function applyResourceChanges(projectId: string, changes: ResourceChange[
         for (const binding of selected) run('INSERT INTO scene_visual_bindings VALUES (?, ?, ?)', change.id, binding.profile.id, Number(binding.required))
       } else {
         const previous = targetBindings('shot', change.id)
-        for (const old of previous) if (!change.value.some(binding => binding.profile_id === old.profile_id) || change.refresh_profile_ids.includes(old.profile_id)) run('DELETE FROM shot_visual_bindings WHERE shot_id=? AND profile_id=?', change.id, old.profile_id)
+        for (const old of previous) {
+          const protectedSelection = 'sync_mode' in old && old.sync_mode === 'locked'
+            || 'reference_selection' in old && old.reference_selection === 'manual'
+          if (!change.value.some(binding => binding.profile_id === old.profile_id)
+            || change.refresh_profile_ids.includes(old.profile_id) && !protectedSelection) {
+            run('DELETE FROM shot_visual_bindings WHERE shot_id=? AND profile_id=?', change.id, old.profile_id)
+          }
+        }
         for (const binding of selected) {
           const old = previous.find(item => item.profile_id === binding.profile.id)
-          insertShotBinding(change.id, binding.profile, binding.required, binding.reference_asset_ids, binding.usage || (old && 'usage' in old ? old.usage : undefined) || 'both')
+          const settings = old && 'revision' in old ? { sync_mode: old.sync_mode, reference_selection: old.reference_selection } : {}
+          insertShotBinding(change.id, binding.profile, binding.required, binding.reference_asset_ids,
+            binding.usage || (old && 'usage' in old ? old.usage : undefined) || 'both', false, settings)
           run('UPDATE shot_visual_bindings SET required=?, usage=COALESCE(?, usage) WHERE shot_id=? AND profile_id=?', Number(binding.required), binding.usage || null, change.id, binding.profile.id)
         }
       }

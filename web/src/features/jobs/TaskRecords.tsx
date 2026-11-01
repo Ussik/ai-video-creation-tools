@@ -79,10 +79,10 @@ export default function TaskRecords({ detail, models, providers, busy, onRefresh
       {visible.length > 0 ? <Table className="job-table task-records-table" aria-label="任务列表">
         <Table.Thead><Table.Tr className="job-row job-header"><Table.Th>任务</Table.Th><Table.Th>状态</Table.Th><Table.Th className="job-date">提交时间</Table.Th><Table.Th>结果与操作</Table.Th></Table.Tr></Table.Thead>
         <Table.Tbody>{visible.map(record => {
-          const { job, result, model, provider, shot, kind: taskKind, needsBillingCheck } = record
+          const { job, result, model, provider, shot, kind: taskKind, needsBillingCheck, recovery } = record
           const canOptimize = canOptimizeImagePrompt(job, model?.modality)
           const Icon = kindIcons[taskKind]
-          const statusLabel = job.status === 'queued' ? '排队中' : job.status === 'failed' ? '失败' : job.status === 'succeeded' ? '已完成'
+          const statusLabel = recovery?.action === 'verify' && !canOptimize ? '待核对' : job.status === 'queued' ? '排队中' : job.status === 'failed' ? '失败' : job.status === 'succeeded' ? '已完成'
             : taskKind === 'export' ? '导出中' : taskKind === 'speech' ? '合成中' : '生成中'
           return <Table.Tr className="job-row" key={job.id}>
             <Table.Td><div className="job-name"><div className="job-icon"><Icon size={18} /></div><div>
@@ -90,7 +90,8 @@ export default function TaskRecords({ detail, models, providers, busy, onRefresh
               <small title={record.context}>{record.context}{provider && ` · ${provider.name}`}</small>
               {job.error && <small className="task-records-error" title={job.error}>{job.error}</small>}
               {canOptimize && <small className="task-records-guidance">内容审核拒绝，可调整提示词和参考图后重新生成。</small>}
-              {needsBillingCheck && !canOptimize && <small className="task-records-guidance">{taskKind === 'image' ? '请先核对提供商账单，再回到画布重新生成。' : '原模型不可用，请先核对提供商记录。'}</small>}
+              {recovery && !canOptimize && <small className="task-records-guidance">{recovery.guidance}</small>}
+              {needsBillingCheck && !recovery && !canOptimize && <small className="task-records-guidance">请先核对提供商任务记录与账单，再决定是否重新生成。</small>}
             </div></div></Table.Td>
             <Table.Td><Badge className={`job-status status-${job.status}`} variant="light" color={job.status === 'failed' ? 'red' : job.status === 'succeeded' ? 'teal' : 'gray'}
               leftSection={job.status === 'running' ? <LoaderCircle className="spin" size={12} /> : undefined}>{statusLabel}</Badge></Table.Td>
@@ -107,8 +108,8 @@ export default function TaskRecords({ detail, models, providers, busy, onRefresh
                 ? <Button variant="default" size="xs" onClick={onOpenSpeech} leftSection={<Mic2 size={14} />}>返回配音</Button>
                 : needsBillingCheck || canOptimize
                   ? <Button variant="default" size="xs" onClick={() => onOpenCanvas(job.shot_id || undefined)} leftSection={<ArrowRight size={14} />}>回到画布</Button>
-                  : <Button variant="default" size="xs" disabled={busy} onClick={() => onRetry(job)} leftSection={job.recovery_available ? <Download size={14} /> : <RefreshCcw size={14} />}>
-                    {job.recovery_available ? '恢复下载' : job.task_resume_available ? '继续查询' : '重试'}
+                  : <Button variant="default" size="xs" disabled={busy} onClick={() => onRetry(job)} leftSection={recovery?.action === 'download' ? <Download size={14} /> : <RefreshCcw size={14} />}>
+                    {recovery?.label || '重试'}
                   </Button>
                 : <span className="task-records-result-note">{job.status === 'succeeded' ? '结果不可用' : '等待结果'}</span>}
             </div></Table.Td>

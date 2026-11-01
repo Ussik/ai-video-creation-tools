@@ -24,7 +24,8 @@ export function withImageReferenceMapping(prompt: string, bindings: PromptVisual
   if (!references.length) return base
   const activeBindings = visualMode === 'profiles' ? bindings.filter(binding => visualBindingApplies(binding, 'image')) : []
   const lines = references.map((assetId, index) => {
-    const owners = activeBindings.filter(binding => visualBindingReferenceAssetIds(binding).includes(assetId))
+    const owners = activeBindings.filter(binding => visualBindingReferenceAssetIds(binding).includes(assetId)
+      || binding.selected_reference_asset_ids?.includes(assetId))
     if (!owners.length) return `参考图 ${index + 1}：补充参考；用途：以正文明确要求为准，不自动认定为某个人物身份或绑定设定。`
     const names = owners.map(binding => {
       const name = binding.name.trim() || `未命名${bindingLabels[binding.kind]}`

@@ -10,6 +10,7 @@ import { imagePreferencePrompt } from '../../web/src/features/canvas/canvas-mode
 import { rightApiImageSettings } from '../src/infrastructure/providers/rightapi-image-settings.js'
 import { textRequestTimeoutMs } from '@video-studio/shared/script/script-stream-policy'
 import { TextOutputLimitError, TextProviderError } from '../src/infrastructure/providers/text-errors.js'
+import { withUnrestrictedScriptExecution } from '../src/modules/generation/model-execution.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'video-studio-providers-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
@@ -21,6 +22,25 @@ after(async () => { await rm(testData, { recursive: true, force: true }) })
 const imageBytes = await sharp({
   create: { width: 16, height: 16, channels: 3, background: '#dc6250' },
 }).png().toBuffer()
+
+test('script text transport has no application total or idle deadline and still accepts cancellation', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1000 })
+  const model = { id: 'unrestricted', remote_id: 'fixture', modality: 'text' as const, protocol: 'responses', settings: {
+    request_path: 'responses', request_template: { input: '{{prompt}}' }, text_path: 'output_text',
+  } }
+  const provider = { adapter: 'http' as const, base_url: 'https://fixture.invalid' }
+  const controller = new AbortController()
+  let stop = false
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    if (stop) { controller.abort(new Error('creator stopped')); return new Promise<Response>(() => {}) }
+    t.mock.timers.tick(181 * 60_000)
+    assert.equal(init.signal!.aborted, false)
+    return Response.json({ status: 'completed', output_text: '完整答案' })
+  })
+  assert.equal(await withUnrestrictedScriptExecution(() => streamText(model, provider, { prompt: 'source' })), '完整答案')
+  stop = true
+  await assert.rejects(withUnrestrictedScriptExecution(() => streamText(model, provider, { prompt: 'source' }, undefined, () => {}, controller.signal)), /creator stopped/)
+})
 
 test('nonstream text generation rejects output limits with returned partial text before saving a result', async t => {
   for (const protocol of ['responses', 'chat_completions'] as const) await t.test(protocol, async t => {
@@ -39,6 +59,54 @@ test('nonstream text generation rejects output limits with returned partial text
     })
     assert.equal(calls, 1)
   })
+})
+
+test('text output-limit errors retain usage and distinguish reasoning exhaustion from visible or unknown output', async t => {
+  const fallbackMessage = '模型输出不完整：已达到模型输出长度上限'
+  const cases = [
+    { name: 'reasoning-only output', text: '', usage: { input_tokens: 66323, output_tokens: 65535, reasoning_tokens: 65535 },
+      message: '模型输出不完整：推理已耗尽输出预算，未返回答案' },
+    { name: 'visible partial output', text: '保留已输出的正文', usage: { input_tokens: 66323, output_tokens: 65535, reasoning_tokens: 65535 }, message: fallbackMessage },
+    { name: 'unknown usage', text: '', usage: undefined, message: fallbackMessage },
+  ]
+  for (const mode of ['generate', 'json', 'sse'] as const) for (const protocol of ['responses', 'chat_completions'] as const) {
+    for (const fixture of cases) await t.test(`${mode} ${protocol} ${fixture.name}`, async t => {
+      let calls = 0
+      const usage = fixture.usage && (protocol === 'responses'
+        ? { input_tokens: fixture.usage.input_tokens, output_tokens: fixture.usage.output_tokens, output_tokens_details: { reasoning_tokens: fixture.usage.reasoning_tokens } }
+        : { prompt_tokens: fixture.usage.input_tokens, completion_tokens: fixture.usage.output_tokens, completion_tokens_details: { reasoning_tokens: fixture.usage.reasoning_tokens } })
+      const payload = protocol === 'responses'
+        ? { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, usage,
+          output: [{ type: 'reasoning', content: [{ type: 'summary_text', text: 'private reasoning' }] },
+            ...(fixture.text ? [{ type: 'message', content: [{ type: 'output_text', text: fixture.text }] }] : [])] }
+        : { choices: [{ message: { content: fixture.text, reasoning_content: 'private reasoning' }, finish_reason: 'length' }], usage }
+      t.mock.method(globalThis, 'fetch', async () => {
+        calls++
+        if (mode !== 'sse') return Response.json(payload)
+        const event = protocol === 'responses' ? { type: 'response.incomplete', response: payload } : payload
+        return new Response(`data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`, { headers: { 'Content-Type': 'text/event-stream' } })
+      })
+      const model = { id: 'limited-text', remote_id: 'fixture', modality: 'text' as const, protocol, settings: {
+        request_path: 'generate', text_path: protocol === 'responses' ? 'output_text' : 'choices.0.message.content', request_template: { prompt: '{{prompt}}' },
+      } }
+      const provider = { adapter: 'http' as const, base_url: 'https://fixture.invalid' }
+      const visible: string[] = []
+      const result = mode === 'generate' ? generate(model, provider, { prompt: 'private source' }, [], 'limited-text', () => {})
+        : streamText(model, provider, { prompt: 'private source' }, undefined, event => { if (event.type === 'delta') visible.push(event.text) })
+      await assert.rejects(result, issue => {
+        assert.ok(issue instanceof TextOutputLimitError)
+        assert.equal(issue.partialText, fixture.text)
+        assert.deepEqual(issue.usage, fixture.usage || {})
+        assert.equal(issue.message, fixture.message)
+        assert.equal(issue.reason, protocol === 'responses' ? 'max_output_tokens' : 'length')
+        assert.equal(issue.retryable, false)
+        assert.ok(!issue.message.includes('private'))
+        return true
+      })
+      assert.equal(visible.join(''), mode === 'generate' ? '' : fixture.text)
+      assert.equal(calls, 1)
+    })
+  }
 })
 
 test('nonstream text generation keeps content filtering distinct from output-limit continuation', async t => {

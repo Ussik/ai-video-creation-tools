@@ -36,9 +36,27 @@ test('empty-project outline action cannot submit; entering a creative brief enab
     assert.equal(outline.disabled, false)
     assert.ok(Array.from(container.querySelectorAll<HTMLButtonElement>('button')).slice(1).every(button => button.disabled))
     await act(() => outline.click())
-    assert.deepEqual(actions, [{ stage: 'outline', episode_number: 0, operation: 'generate' }])
+    assert.deepEqual(actions, [], 'choosing a delivery scope does not call the model')
+    const ordinary = [...document.querySelectorAll<HTMLButtonElement>('button')].find(node => node.textContent === '生成初步大纲 · 仅概要设计')!
+    await act(() => ordinary.click())
+    assert.deepEqual(actions, [{ stage: 'outline', episode_number: 0, operation: 'generate', intent: 'stage_design', artifact_types: ['outline'] }])
     await render('退休侦探追查姐姐失踪的真相。', true)
     assert.equal(outline.disabled, true, 'model/task/draft restrictions still apply')
+  } finally { await act(() => root.unmount()); container.remove() }
+})
+
+test('source outline and complete design are explicit different menu actions', async () => {
+  const container = document.createElement('div'); document.body.append(container)
+  const root = createRoot(container), actions: Array<StageTarget & { intent?: string; artifact_types?: string[] }> = []
+  const menuItem = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('button')].find(node => node.textContent === label)!
+  try {
+    await act(() => root.render(<MantineProvider env="test"><ScriptStageActions script={{}} hasSource disabled={false} onAction={target => actions.push(target)} /></MantineProvider>))
+    await act(() => container.querySelector<HTMLButtonElement>('button')!.click())
+    await act(() => menuItem('整理原稿大纲 · 仅概要设计').click())
+    assert.deepEqual(actions[0], { stage: 'outline', episode_number: 0, operation: 'generate', intent: 'source_outline', artifact_types: ['outline'] })
+    await act(() => container.querySelector<HTMLButtonElement>('button')!.click())
+    await act(() => menuItem('完整大纲设计 · 9 栏').click())
+    assert.deepEqual(actions[1], { stage: 'outline', episode_number: 0, operation: 'generate', intent: 'stage_design' })
   } finally { await act(() => root.unmount()); container.remove() }
 })
 

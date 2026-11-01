@@ -1,0 +1,355 @@
+import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { test } from 'node:test'
+import { scriptArtifactLabels, scriptStageArtifacts } from '@video-studio/shared/script/script-stage-content'
+import { TextOutputLimitError } from '../src/infrastructure/providers/text-errors.js'
+import { beginTextRequest, createScriptRequestUsage, TextRequestBudgetError, withTextRequestUsage } from '../src/infrastructure/providers/text-request-usage.js'
+import type { StructuredGenerator } from '../src/modules/generation/model-output.js'
+import { reviewScriptDraftCompleteness, ScriptDraftNeedsResolution } from '../src/modules/script/script-draft-completeness.js'
+import { createGenerationSteps, type GenerationCheckpoint } from '../src/modules/script/script-generation-steps.js'
+import type { WorkflowDraft } from '../src/modules/script/script-workflow.js'
+
+type Finding = { source_key: string; kind: 'missing_core_setting' | 'contradiction' | 'unresolved_setting'; quote: string;
+  explanation: string; suggestion: string; topic?: string }
+type Fact = { source_key: string; quote: string; meaning: string }
+type Review = { checked_artifacts: string[]; facts: Fact[]; findings: Finding[] }
+type EvidenceIssue = { id: string; source_key: string; quote: string; explanation?: string; suggestion?: string; meaning?: string }
+type EvidenceSource = { key: string; title: string; units: Array<{ id: number; text: string }> }
+type EvidenceInput = { issues: EvidenceIssue[]; sources: EvidenceSource[] }
+type Repair = { id: string; first_unit: number | null; last_unit: number | null }
+const marker = '【待定位证据（资料）】\n'
+
+function fixture() {
+  const draft: WorkflowDraft = { stage: 'outline', scope: 'project', episode_number: 0,
+    artifacts: scriptStageArtifacts.outline.map((artifact_type, index) => ({ artifact_type, title: scriptArtifactLabels[artifact_type],
+      content: `文档${index}开篇：夜雨覆盖石桥。\n第${index}项规则：林晚使用铜钥匙后失去一天记忆。\n第${index}项回收：第八集归还铜钥匙。\n文档${index}收束：角色选择守护家人。` })), scenes: [] }
+  const context = { source_version: 'v1', uploaded_script: { content: '局部定位不得重复发送的完整原稿。林晚最终归还铜钥匙。' },
+    saved_documents: [{ title: '既有背景', content: '局部定位不得重复发送的既有文档。' }] }
+  let checkpoint: GenerationCheckpoint = { steps: {} }
+  const steps = (signal?: AbortSignal) => createGenerationSteps({ checkpoint, signal, save: value => { checkpoint = structuredClone(value) } })
+  const clear = (): Review => ({ checked_artifacts: [...scriptStageArtifacts.outline], findings: [], facts: [] })
+  const finding = (index: number, quote?: string): Finding => ({ source_key: draft.artifacts[index]!.artifact_type,
+    kind: 'missing_core_setting', quote: quote ?? `第${index}项规则：林晚使用铜钥匙后失去一天记忆。`,
+    explanation: `第${index}项规则尚缺恢复边界。`, suggestion: `明确第${index}项规则失去的记忆不可恢复。` })
+  return { draft, context, steps, clear, finding, checkpoint: () => checkpoint }
+}
+function evidence(prompt: string): EvidenceInput {
+  const start = prompt.lastIndexOf(marker)
+  assert.ok(start >= 0, 'the bounded locator request supplies the explicit evidence data marker')
+  return JSON.parse(prompt.slice(start + marker.length)) as EvidenceInput
+}
+function select(input: EvidenceInput, id: string, text?: string): Repair {
+  const issue = input.issues.find(issue => issue.id === id)
+  assert.ok(issue, `locator input contains ${id}`)
+  const source = input.sources.find(source => source.key === issue.source_key)
+  assert.ok(source, `locator input contains the source for ${id}`)
+  const unit = source.units.find(unit => text ? unit.text.includes(text) : unit.text.trim().length > 0)
+  assert.ok(unit, `the requested original evidence is addressable for ${id}`)
+  return { id, first_unit: unit.id, last_unit: unit.id }
+}
+function response(input: EvidenceInput) {
+  return JSON.stringify({ repairs: input.issues.map(issue => select(input, issue.id)) })
+}
+function provisional(checkpoint: GenerationCheckpoint) {
+  return Object.entries(checkpoint.steps).filter(([key]) => key.startsWith('review:response:'))
+}
+async function findings(work: Promise<void>) {
+  let result: ScriptDraftNeedsResolution | undefined
+  await assert.rejects(work, issue => { assert.ok(issue instanceof ScriptDraftNeedsResolution); result = issue; return true })
+  return result!.findings
+}
+function withoutId(value: Record<string, unknown>) {
+  const { id: _id, ...rest } = value
+  return rest
+}
+
+test('one inaccurate quote among six findings uses one whole review and one local locator, preserving all semantic fields', async () => {
+  const f = fixture(), names: string[] = [], original = Array.from({ length: 6 }, (_, index) => f.finding(index))
+  original[5] = { ...original[5]!, topic: '铜钥匙记忆恢复边界', quote: '第5项规则：使用铜钥匙会暂时遗忘。' }
+  let located = ''
+  const result = await findings(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+    names.push(contract!.name)
+    if (contract!.name === 'script_draft_completeness') {
+      assert.ok(prompt.includes(f.context.uploaded_script.content), 'the independent whole review still receives the complete manuscript')
+      return JSON.stringify({ ...f.clear(), findings: original })
+    }
+    assert.equal(contract!.name, 'script_draft_evidence_repair')
+    const input = evidence(prompt)
+    assert.deepEqual(input.issues.map(issue => issue.id), ['findings:5'])
+    assert.equal(input.issues[0]!.source_key, original[5]!.source_key)
+    assert.equal(input.issues[0]!.explanation, original[5]!.explanation)
+    assert.equal(input.issues[0]!.suggestion, original[5]!.suggestion)
+    assert.deepEqual(input.sources.map(source => source.key), ['foreshadowing'])
+    assert.ok(!prompt.includes(f.context.uploaded_script.content), 'local evidence lookup does not replay the full independent review context')
+    const repair = select(input, 'findings:5', '第5项规则')
+    located = input.sources[0]!.units.find(unit => unit.id === repair.first_unit)!.text.trim()
+    return JSON.stringify({ repairs: [repair] })
+  }, { context: f.context, steps: f.steps() }))
+  assert.deepEqual(names, ['script_draft_completeness', 'script_draft_evidence_repair'])
+  assert.deepEqual(result.map(item => withoutId(item)), original.map((item, index) => index === 5 ? { ...item, quote: located } : item))
+  assert.ok(f.draft.artifacts[5]!.content.includes(result[5]!.quote))
+  assert.equal(provisional(f.checkpoint()).length, 0, 'successful strict evidence validation clears the provisional response')
+  assert.ok(f.checkpoint().steps['review:whole'])
+})
+
+test('several invalid findings and facts are located in one batch with one copy of each affected source', async () => {
+  const f = fixture(), names: string[] = []
+  const original = [{ ...f.finding(0), quote: '错误的第一段引用。' },
+    { ...f.finding(0), quote: '错误的第二段引用。', explanation: '第八集回收集位与既有决定不一致。' }]
+  const facts: Fact[] = [{ source_key: 'outline', quote: '改写的事实引文。', meaning: '记忆代价既有事实保持不变。' }]
+  const result = await findings(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+    names.push(contract!.name)
+    if (contract!.name === 'script_draft_completeness') return JSON.stringify({ ...f.clear(), findings: original, facts })
+    const input = evidence(prompt)
+    assert.deepEqual(new Set(input.issues.map(issue => issue.id)), new Set(['findings:0', 'findings:1', 'facts:0']))
+    assert.equal(input.sources.length, 1)
+    assert.equal(input.sources[0]!.key, 'outline')
+    assert.equal(input.issues.find(issue => issue.id === 'facts:0')!.meaning, facts[0]!.meaning)
+    const repairs = input.issues.map(issue => select(input, issue.id, issue.id === 'findings:1' ? '第0项回收' : '第0项规则'))
+    return JSON.stringify({ repairs })
+  }, { context: f.context, steps: f.steps() }))
+  assert.deepEqual(names, ['script_draft_completeness', 'script_draft_evidence_repair'])
+  assert.equal(result.length, 2)
+  assert.equal(result[0]!.explanation, original[0]!.explanation)
+  assert.equal(result[1]!.explanation, original[1]!.explanation)
+  const saved = f.checkpoint().steps['review:whole']!.value as Review
+  assert.equal(saved.facts[0]!.meaning, facts[0]!.meaning)
+  assert.ok(f.draft.artifacts[0]!.content.includes(saved.facts[0]!.quote))
+  assert.ok(saved.findings[1]!.quote.includes('第0项回收'), 'facts and findings with index zero cannot overwrite each other')
+})
+
+test('a contiguous selected range is reconstructed from the exact original source with internal newlines and punctuation', async () => {
+  const f = fixture()
+  const result = await findings(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+    if (contract!.name === 'script_draft_completeness') return JSON.stringify({ ...f.clear(), findings: [f.finding(0, '拼接改写的证据。')] })
+    const input = evidence(prompt), source = input.sources[0]!
+    return JSON.stringify({ repairs: [{ id: 'findings:0', first_unit: source.units[0]!.id, last_unit: source.units.at(-1)!.id }] })
+  }))
+  assert.equal(result[0]!.quote, f.draft.artifacts[0]!.content.trim())
+})
+
+test('structural, coverage and unknown-source failures keep the strict whole-response contract and do not trigger quote lookup', async t => {
+  for (const invalid of ['coverage', 'unknown source', 'invalid kind'] as const) await t.test(invalid, async () => {
+    const f = fixture(), names: string[] = []
+    const value: Record<string, unknown> = { ...f.clear(), findings: [f.finding(0, '错误引文。')] }
+    if (invalid === 'coverage') value.checked_artifacts = ['outline']
+    if (invalid === 'unknown source') (value.findings as Finding[])[0]!.source_key = 'uploaded_script'
+    if (invalid === 'invalid kind') (value.findings as Array<Record<string, unknown>>)[0]!.kind = 'invented'
+    await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (_prompt, contract) => {
+      names.push(contract!.name); return JSON.stringify(value)
+    }, { steps: f.steps() }))
+    assert.deepEqual(names, ['script_draft_completeness', 'script_draft_completeness'])
+    assert.equal(f.checkpoint().steps['review:whole'], undefined)
+    assert.equal(provisional(f.checkpoint()).length, 0)
+  })
+})
+
+test('malformed locator identities and ranges fail closed after at most one local format correction', async t => {
+  const invalid: Record<string, (input: EvidenceInput) => unknown> = {
+    'missing issue': () => ({ repairs: [] }),
+    'unknown issue': input => ({ repairs: [{ ...select(input, 'findings:0'), id: 'findings:99' }] }),
+    'wrong field namespace': input => ({ repairs: [{ ...select(input, 'findings:0'), id: 'facts:0' }] }),
+    'duplicate issue': input => ({ repairs: [select(input, 'findings:0'), select(input, 'findings:0')] }),
+    'extra issue': input => ({ repairs: [select(input, 'findings:0'), { ...select(input, 'findings:0'), id: 'findings:1' }] }),
+    'source mutation': input => ({ repairs: [{ ...select(input, 'findings:0'), source_key: 'synopsis' }] }),
+    'negative unit': input => ({ repairs: [{ ...select(input, 'findings:0'), first_unit: -1 }] }),
+    'unit out of bounds': input => ({ repairs: [{ ...select(input, 'findings:0'), last_unit: 1_000_000 }] }),
+    'reverse range': input => ({ repairs: [{ id: 'findings:0', first_unit: input.sources[0]!.units.at(-1)!.id, last_unit: input.sources[0]!.units[0]!.id - 1 }] }),
+    'fractional unit': input => ({ repairs: [{ ...select(input, 'findings:0'), first_unit: 0.5 }] }),
+    'mixed null range': input => ({ repairs: [{ ...select(input, 'findings:0'), first_unit: null }] }),
+    'string unit': input => ({ repairs: [{ ...select(input, 'findings:0'), first_unit: '0' }] }),
+  }
+  for (const [label, value] of Object.entries(invalid)) await t.test(label, async () => {
+    const f = fixture(), names: string[] = []
+    await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+      names.push(contract!.name)
+      return JSON.stringify(contract!.name === 'script_draft_completeness'
+        ? { ...f.clear(), findings: [f.finding(0, '不存在的引文。')] } : value(evidence(prompt)))
+    }, { steps: f.steps() }))
+    assert.deepEqual(names, ['script_draft_completeness', 'script_draft_evidence_repair', 'script_draft_evidence_repair'])
+    assert.equal(f.checkpoint().steps['review:whole'], undefined)
+    assert.equal(provisional(f.checkpoint()).length, 1, 'invalid local output cannot discard the completed semantic review')
+  })
+})
+
+test('overlong findings and facts cannot be legitimized by selecting an otherwise valid original range', async t => {
+  for (const field of ['findings', 'facts'] as const) await t.test(field, async () => {
+    const f = fixture(), names: string[] = [], limit = field === 'findings' ? 4000 : 1000
+    const sentence = '原始证据文本，保留标点与换行。'
+    f.draft.artifacts[0]!.content = sentence.repeat(Math.ceil((limit + 100) / sentence.length))
+    assert.ok(f.draft.artifacts[0]!.content.length > limit)
+    await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+      names.push(contract!.name)
+      if (contract!.name === 'script_draft_completeness') return JSON.stringify({ ...f.clear(),
+        ...(field === 'findings' ? { findings: [f.finding(0, '错误的引文。')] } : { facts: [{ source_key: 'outline', quote: '错误的引文。', meaning: '原始事实。' }] }) })
+      const input = evidence(prompt), units = input.sources[0]!.units
+      return JSON.stringify({ repairs: [{ id: `${field}:0`, first_unit: units[0]!.id, last_unit: units.at(-1)!.id }] })
+    }, { steps: f.steps() }))
+    assert.deepEqual(names, ['script_draft_completeness', 'script_draft_evidence_repair', 'script_draft_evidence_repair'])
+    assert.equal(f.checkpoint().steps['review:whole'], undefined)
+  })
+})
+
+test('a locator cannot use an all-whitespace original range as valid evidence', async () => {
+  const f = fixture(), names: string[] = []
+  f.draft.artifacts[0]!.content = ' \n\t \n '
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+    names.push(contract!.name)
+    if (contract!.name === 'script_draft_completeness') return JSON.stringify({ ...f.clear(), findings: [f.finding(0, '正文中没有的证据。')] })
+    const units = evidence(prompt).sources[0]!.units
+    return JSON.stringify({ repairs: [{ id: 'findings:0', first_unit: units[0]!.id, last_unit: units.at(-1)!.id }] })
+  }, { steps: f.steps() }))
+  assert.deepEqual(names, ['script_draft_completeness', 'script_draft_evidence_repair', 'script_draft_evidence_repair'])
+  assert.equal(f.checkpoint().steps['review:whole'], undefined)
+})
+
+test('an unlocatable quote stays recoverable without another full review or a futile format correction', async () => {
+  const f = fixture(), names: string[] = []
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (_prompt, contract) => {
+    names.push(contract!.name)
+    return JSON.stringify(contract!.name === 'script_draft_completeness'
+      ? { ...f.clear(), findings: [f.finding(0, '原文中不存在的语义。')] }
+      : { repairs: [{ id: 'findings:0', first_unit: null, last_unit: null }] })
+  }, { steps: f.steps() }))
+  assert.deepEqual(names, ['script_draft_completeness', 'script_draft_evidence_repair'])
+  assert.equal(f.checkpoint().steps['review:whole'], undefined)
+  assert.equal(provisional(f.checkpoint()).length, 1)
+  const resumed: string[] = []
+  const result = await findings(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+    resumed.push(contract!.name)
+    assert.equal(contract!.name, 'script_draft_evidence_repair', 'continuation reuses the completed semantic assessment')
+    return response(evidence(prompt))
+  }, { steps: f.steps() }))
+  assert.deepEqual(resumed, ['script_draft_evidence_repair'])
+  assert.equal(result.length, 1, 'unlocatable findings are never silently dropped or turned into a passed audit')
+})
+
+test('partial locator success is retained and continuation requests only still-unlocated evidence', async () => {
+  const f = fixture()
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+    if (contract!.name === 'script_draft_completeness') return JSON.stringify({ ...f.clear(), findings: [f.finding(0, '第一项错误引文。'), f.finding(1, '第二项错误引文。')] })
+    const input = evidence(prompt)
+    return JSON.stringify({ repairs: [select(input, 'findings:0'), { id: 'findings:1', first_unit: null, last_unit: null }] })
+  }, { steps: f.steps() }))
+  const saved = provisional(f.checkpoint())
+  assert.equal(saved.length, 1)
+  assert.equal(f.checkpoint().steps['review:whole'], undefined)
+  const result = await findings(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+    assert.equal(contract!.name, 'script_draft_evidence_repair')
+    const input = evidence(prompt)
+    assert.deepEqual(input.issues.map(issue => issue.id), ['findings:1'])
+    assert.deepEqual(input.sources.map(source => source.key), ['synopsis'])
+    return response(input)
+  }, { steps: f.steps() }))
+  assert.equal(result.length, 2)
+})
+
+test('locator output exhaustion does not start three new full-work dimension reviews', async () => {
+  const f = fixture(), names: string[] = []
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (_prompt, contract) => {
+    names.push(contract!.name)
+    if (contract!.name === 'script_draft_completeness') return JSON.stringify({ ...f.clear(), findings: [f.finding(0, '错误引文。')] })
+    throw new TextOutputLimitError('', 'length', { input_tokens: 100, output_tokens: 100, reasoning_tokens: 100 })
+  }, { steps: f.steps() }))
+  assert.deepEqual(names, ['script_draft_completeness', 'script_draft_evidence_repair'])
+  assert.equal(f.checkpoint().steps['review:recovery'], undefined)
+  assert.equal(f.checkpoint().steps['review:whole'], undefined)
+  assert.equal(provisional(f.checkpoint()).length, 1)
+})
+
+test('provisional evidence is bound to the exact complete review prompt and invalidates on candidate or context changes', async t => {
+  for (const changed of ['candidate', 'context'] as const) await t.test(changed, async () => {
+    const f = fixture()
+    let semanticPrompt = ''
+    await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+      if (contract!.name === 'script_draft_completeness') {
+        semanticPrompt = prompt.slice(prompt.lastIndexOf('【原始任务与资料】\n') + '【原始任务与资料】\n'.length)
+        return JSON.stringify({ ...f.clear(), findings: [f.finding(0, '错误引文。')] })
+      }
+      return JSON.stringify({ repairs: [{ id: 'findings:0', first_unit: null, last_unit: null }] })
+    }, { context: f.context, steps: f.steps() }))
+    const [[key, saved]] = provisional(f.checkpoint())
+    assert.equal(key, `review:response:${createHash('sha256').update(semanticPrompt).digest('hex')}`)
+    assert.equal(saved.input_hash, createHash('sha256').update(JSON.stringify({ version: 1, prompt: semanticPrompt })).digest('hex'))
+    if (changed === 'candidate') f.draft.artifacts[0]!.content += '\n创作者新增：记忆不可恢复。'
+    else f.context.source_version = 'v2'
+    const names: string[] = []
+    await reviewScriptDraftCompleteness(f.draft, async (_prompt, contract) => { names.push(contract!.name); return JSON.stringify(f.clear()) },
+      { context: f.context, steps: f.steps() })
+    assert.deepEqual(names, ['script_draft_completeness'])
+  })
+})
+
+test('cancelled or budget-blocked evidence lookup never passes review and retains the original completed assessment', async t => {
+  await t.test('cancellation', async () => {
+    const f = fixture(), controller = new AbortController(), names: string[] = []
+    await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+      names.push(contract!.name)
+      if (contract!.name === 'script_draft_completeness') return JSON.stringify({ ...f.clear(), findings: [f.finding(0, '错误引文。')] })
+      const value = response(evidence(prompt))
+      controller.abort(new DOMException('cancelled during evidence lookup', 'AbortError'))
+      return value
+    }, { steps: f.steps(controller.signal), signal: controller.signal }), /cancelled|abort/i)
+    assert.deepEqual(names, ['script_draft_completeness', 'script_draft_evidence_repair'])
+    assert.equal(f.checkpoint().steps['review:whole'], undefined)
+    assert.equal(provisional(f.checkpoint()).length, 1)
+  })
+  await t.test('request budget', async () => {
+    const f = fixture(), usage = createScriptRequestUsage(), dispatched: string[] = []
+    const generate: StructuredGenerator = async (prompt, contract) => {
+      const request = beginTextRequest({ request_bytes: Buffer.byteLength(prompt), estimated_input_tokens: 100, reserved_output_tokens: 100 })
+      dispatched.push(contract!.name)
+      request.complete({ input_tokens: 100, output_tokens: 20 })
+      return JSON.stringify({ ...f.clear(), findings: [f.finding(0, '错误引文。')] })
+    }
+    await assert.rejects(withTextRequestUsage({ usage, limits: { max_requests: 1 } },
+      () => reviewScriptDraftCompleteness(f.draft, generate, { steps: f.steps() })), TextRequestBudgetError)
+    assert.deepEqual(dispatched, ['script_draft_completeness'])
+    assert.equal(f.checkpoint().steps['review:whole'], undefined)
+    assert.equal(provisional(f.checkpoint()).length, 1)
+    await findings(withTextRequestUsage({ usage, limits: { max_requests: 2 } }, () => reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+      assert.equal(contract!.name, 'script_draft_evidence_repair')
+      const request = beginTextRequest({ request_bytes: Buffer.byteLength(prompt), estimated_input_tokens: 100, reserved_output_tokens: 100 })
+      request.complete({ input_tokens: 100, output_tokens: 20 })
+      return response(evidence(prompt))
+    }, { steps: f.steps() })))
+    assert.equal(usage.requests, 2)
+  })
+})
+
+test('a dimension is not complete until its provisional evidence is located, and continuation skips prior full reviews', async () => {
+  const f = fixture(), seen: string[] = []
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+    if (contract!.name === 'script_draft_evidence_repair') {
+      seen.push('locate')
+      return JSON.stringify({ repairs: [{ id: 'findings:0', first_unit: null, last_unit: null }] })
+    }
+    const dimension = /本轮核查维度：([a-z]+)。/.exec(prompt)?.[1] || 'whole'
+    seen.push(dimension)
+    if (dimension === 'whole') throw new TextOutputLimitError('', 'length', { input_tokens: 100, output_tokens: 100, reasoning_tokens: 100 })
+    return JSON.stringify({ ...f.clear(), findings: [f.finding(0, '错误引文。')] })
+  }, { steps: f.steps() }))
+  assert.deepEqual(seen, ['whole', 'settings', 'locate'])
+  assert.equal(f.checkpoint().steps['review:dimension:settings'], undefined)
+  assert.equal(f.checkpoint().steps['review:whole'], undefined)
+  const resumed: string[] = []
+  await findings(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+    if (contract!.name === 'script_draft_evidence_repair') { resumed.push('locate'); return response(evidence(prompt)) }
+    resumed.push(/本轮核查维度：([a-z]+)。/.exec(prompt)![1]!)
+    return JSON.stringify(f.clear())
+  }, { steps: f.steps() }))
+  assert.deepEqual(resumed, ['locate', 'consistency', 'requirements'])
+  assert.ok(f.checkpoint().steps['review:dimension:settings'])
+  assert.ok(f.checkpoint().steps['review:whole'])
+})
+
+test('already exact evidence adds no locator calls or provisional checkpoints', async () => {
+  const f = fixture(), names: string[] = []
+  await reviewScriptDraftCompleteness(f.draft, async (_prompt, contract) => {
+    names.push(contract!.name)
+    return JSON.stringify({ ...f.clear(), facts: [{ source_key: 'outline', quote: '夜雨覆盖石桥。', meaning: '开场环境。' }] })
+  }, { steps: f.steps() })
+  assert.deepEqual(names, ['script_draft_completeness'])
+  assert.deepEqual(Object.keys(f.checkpoint().steps), ['review:whole'])
+  await reviewScriptDraftCompleteness(f.draft, async () => assert.fail('validated unchanged review is reused'), { steps: f.steps() })
+})

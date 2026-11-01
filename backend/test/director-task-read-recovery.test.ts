@@ -8,6 +8,7 @@ import { after, test } from 'node:test'
 const directory = await mkdtemp(join(tmpdir(), 'studio-director-read-recovery-'))
 process.env.VIDEO_STUDIO_DATA_DIR = directory
 const { all, db, initDb, newId, now, run } = await import('../src/infrastructure/database/db.js')
+assert.equal(db.name, join(directory, 'studio.db'), 'recovery tests must not open the workspace database')
 const { createDirectorTasks } = await import('../src/modules/script/director-tasks.js')
 initDb()
 const tasks = createDirectorTasks()
@@ -30,7 +31,7 @@ async function interruptedAfter(name: string) {
   return { projectId, taskId, conversationId, questionId, failed }
 }
 
-for (const name of ['read_source_document', 'search_source_document', 'read_episode_scenes']) {
+for (const name of ['read_source_document', 'search_source_document', 'read_episode_scenes', 'get_repair_context', 'search_repair_context', 'submit_repair_patch']) {
   test(`a task interrupted after ${name} resumes under its original task and conversation`, async () => {
     const f = await interruptedAfter(name)
     assert.equal(f.failed.can_resume, true)
@@ -45,6 +46,9 @@ for (const name of ['read_source_document', 'search_source_document', 'read_epis
     assert.equal(completed.id, f.taskId)
     assert.equal(completed.conversation_id, f.conversationId)
     assert.equal(completed.status, 'succeeded')
+    const activity = completed.events.find(event => event.type === 'activity')?.activity as Array<{ id: string; name: string; status: string }>
+    assert.equal(activity.find(event => event.id === 'completed-operation')?.name, name)
+    assert.equal(activity.find(event => event.id === 'completed-operation')?.status, 'succeeded')
     assert.deepEqual(all<{ id: string }>('SELECT id FROM script_messages WHERE conversation_id=? ORDER BY position', f.conversationId).map(row => row.id), [f.questionId, f.taskId])
   })
 }

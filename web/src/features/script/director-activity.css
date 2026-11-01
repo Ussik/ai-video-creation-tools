@@ -23,10 +23,14 @@
 .sd-activity-toggle { display: flex; align-items: center; gap: 5px; padding: 0; margin-top: 10px; border: 0; background: none; color: var(--fc-text-secondary); font: inherit; font-size: 11px; text-align: left; cursor: pointer; }
 .sd-activity-toggle:hover { color: var(--fc-text); }
 .sd-activity button:focus-visible, .sd-activity .workspace-disclosure-control:focus-visible { outline: 2px solid #aaa; outline-offset: 3px; border-radius: 5px; }
-.sd-activity-current .sd-activity-current-call { color: var(--fc-text-secondary); }
-.sd-activity-tasks { display: grid; gap: 5px; margin-top: 10px; }
-.sd-activity-task { display: flex; align-items: center; gap: 6px; color: var(--fc-text-muted); font-size: 10px; }
-.sd-activity-task > span:nth-child(2) { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.sd-activity-plan { margin-top: 13px; }
+.sd-activity-plan-heading { color: var(--fc-text-secondary); font-size: 11px; font-weight: 500; }
+.sd-activity-tasks { display: grid; gap: 7px; margin: 7px 0 0; padding: 0; list-style: none; }
+.sd-activity-task { min-width: 0; padding: 7px 8px 8px; border: 1px solid var(--fc-border-soft); border-radius: 9px; color: var(--fc-text-muted); font-size: 10px; }
+.sd-activity-task.is-child { margin-left: 12px; }
+.sd-activity-task.is-running { background: var(--fc-surface-muted); }
+.sd-activity-task .sd-activity-title { font-weight: 500; }
+.sd-activity-preview { display: inline-flex; gap: 4px; margin: 6px 0 0 24px; color: var(--fc-text-secondary); }
 .sd-activity-steps { display: grid; gap: 14px; max-height: 440px; overflow: auto; margin: 14px 0 0; padding: 0 3px 0 0; list-style: none; scrollbar-width: thin; scrollbar-color: #444 transparent; }
 .sd-activity-step { min-width: 0; display: flex; gap: 7px; }
 .sd-activity-step-number { flex: none; width: 17px; height: 17px; margin-top: 2px; border: 1px solid var(--fc-border-soft); border-radius: 50%; text-align: center; font-size: 9px; line-height: 15px; color: var(--fc-text-muted); font-variant-numeric: tabular-nums; }
@@ -66,7 +70,6 @@
 .sd-activity-detail-body p > span, .sd-activity-files > span { color: var(--fc-text-muted); margin-right: 8px; }
 .sd-activity-detail-body code { color: var(--fc-text-secondary); font-size: 10px; }
 .sd-activity-detail-body small { display: inline-block; margin-left: 8px; color: var(--fc-text-muted); font-size: 9px; }
-.sd-activity-metrics { display: flex; flex-wrap: wrap; gap: 3px 0; }
 .sd-activity-note { margin: 7px 0; color: var(--fc-text-muted); font-size: 10px; }
 .sd-activity-files { display: grid; gap: 3px; margin-bottom: 7px; }
 .sd-activity-payload + .sd-activity-payload { margin-top: 10px; }

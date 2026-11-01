@@ -2,6 +2,9 @@ import { useState } from 'react'
 import { ActionIcon, Popover } from '@mantine/core'
 import { Info } from 'lucide-react'
 import type { Asset, Job, Model, Provider, Shot } from '../../shared/api/api'
+import { generationRecoveryModality } from '@video-studio/shared/jobs/generation-recovery'
+import { canOptimizeImagePrompt } from '@video-studio/shared/jobs/prompt-optimization'
+import { jobRecoveryPresentation } from './job-recovery'
 import './job-information.css'
 
 const statusLabels = { queued: '排队中', running: '生成中', succeeded: '已完成', failed: '失败' }
@@ -42,7 +45,10 @@ type Props = {
 export default function JobInformationPopover({ job, model, provider, shot, projectName, assets }: Props) {
   const [opened, setOpened] = useState(false)
   const request = readRequest(job.request)
-  const image = model?.modality === 'image'
+  const modality = generationRecoveryModality(job, model?.modality)
+  const image = modality === 'image'
+  const recovery = jobRecoveryPresentation(job, model?.modality)
+  const knownImageRefusal = canOptimizeImagePrompt(job, modality || model?.modality)
   const exported = job.job_type === 'export'
   const speech = request?.tts && typeof request.tts === 'object' ? request.tts as Record<string, unknown> : null
   const mode = displayValue(request?.mode)
@@ -50,7 +56,7 @@ export default function JobInformationPopover({ job, model, provider, shot, proj
   const parameters: Array<[string, string | null]> = exported ? [] : speech ? [
     ['角色', displayValue(request?.voice_name)], ['音色 ID', displayValue(speech.speaker)], ['语速', displayValue(speech.speech_rate)],
   ] : [
-    ['生成模式', mode === 'text' ? (image ? '文生图' : model?.modality === 'video' ? '文生视频' : '文本生成') : mode ? modeLabels[mode] || mode : null],
+    ['生成模式', mode === 'text' ? (image ? '文生图' : modality === 'video' ? '文生视频' : '文本生成') : mode ? modeLabels[mode] || mode : null],
     ['比例', displayValue(request?.ratio)],
     ['分辨率', displayValue(request?.resolution)],
     ['清晰度', displayValue(request?.clarity)],
@@ -87,11 +93,12 @@ export default function JobInformationPopover({ job, model, provider, shot, proj
       </ActionIcon>
     </Popover.Target>
     <Popover.Dropdown role="dialog" aria-label="任务详情">
-      <div className="job-info-heading"><strong>任务详情</strong><span className={`job-status status-${job.status}`}>{exported && job.status === 'running' ? '导出中' : statusLabels[job.status]}</span></div>
+      <div className="job-info-heading"><strong>任务详情</strong><span className={`job-status status-${job.status}`}>{recovery?.action === 'verify' && !knownImageRefusal ? '待核对' : exported && job.status === 'running' ? '导出中' : statusLabels[job.status]}</span></div>
       <div className="job-info-content" tabIndex={0}>
+        {recovery && !knownImageRefusal && <section className="job-info-text"><h2>{recovery.label}</h2><p>{recovery.guidance}</p></section>}
         {job.error && <section className="job-info-text job-info-error"><h2>失败原因</h2><p>{job.error}</p></section>}
         <dl>
-          <div><dt>任务类型</dt><dd>{exported ? '成片导出' : speech ? '配音生成' : image ? '图片生成' : model?.modality === 'video' ? '视频生成' : '生成任务'}</dd></div>
+          <div><dt>任务类型</dt><dd>{exported ? '成片导出' : speech ? '配音生成' : image ? '图片生成' : modality === 'video' ? '视频生成' : '生成任务'}</dd></div>
           <div><dt>所属项目</dt><dd>{projectName}</dd></div>
           {job.shot_id && <div><dt>目标镜头</dt><dd>{shot?.title || `镜头不可用（${job.shot_id}）`}</dd></div>}
           {!exported && <div><dt>模型</dt><dd>{speech ? '豆包 TTS 2.0 · 标准音色' : model?.name || (job.model_id ? `模型不可用（${job.model_id}）` : '未记录')}</dd></div>}

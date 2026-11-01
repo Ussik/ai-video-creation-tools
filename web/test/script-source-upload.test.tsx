@@ -151,7 +151,10 @@ test('upload schedules analysis and unlocks stage generation only after it is re
     await act(() => button('生成故事大纲').click())
     await settle()
     assert.equal(api.calls.length, 1)
-    assert.deepEqual(api.calls[0]!.workflow, { stage: 'outline', scope: 'project', episode_number: 0 })
+    assert.deepEqual(api.calls[0]!.workflow, { stage: 'outline', scope: 'project', episode_number: 0, intent: 'source_outline', artifact_types: ['outline'] })
+    const instruction = JSON.stringify(api.calls[0]!.messages)
+    assert.match(instruction, /依据完整原稿整理故事大纲/)
+    assert.doesNotMatch(instruction, /已授权你在该范围内设计尚缺的虚构细节|本阶段完整包含/)
     assert.match(JSON.stringify(api.calls[0]!.messages), /基于项目中已上传的原剧本/)
   } finally { await view.destroy() }
   const reopened = await mount()

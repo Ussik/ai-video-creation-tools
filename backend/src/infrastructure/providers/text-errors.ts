@@ -9,12 +9,21 @@ export class TextProviderError extends Error {
   }
 }
 
+export type TextOutputLimitUsage = Readonly<{
+  input_tokens?: number
+  output_tokens?: number
+  reasoning_tokens?: number
+}>
+
 /** A complete transport response whose generated text exceeded the output
  * budget. Only the text-generation caller may decide whether to continue it;
  * retrying the same request would discard work and repeat the same failure. */
 export class TextOutputLimitError extends TextProviderError {
-  constructor(public readonly partialText: string, public readonly reason: 'max_output_tokens' | 'length') {
-    super('模型输出不完整：已达到模型输出长度上限', false, reason)
+  constructor(public readonly partialText: string, public readonly reason: 'max_output_tokens' | 'length',
+    public readonly usage?: TextOutputLimitUsage) {
+    const reasoningExhausted = partialText === '' && Number.isSafeInteger(usage?.output_tokens) &&
+      (usage?.output_tokens ?? 0) > 0 && usage?.reasoning_tokens === usage?.output_tokens
+    super(reasoningExhausted ? '模型输出不完整：推理已耗尽输出预算，未返回答案' : '模型输出不完整：已达到模型输出长度上限', false, reason)
     this.name = 'TextOutputLimitError'
   }
 }

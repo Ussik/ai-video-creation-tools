@@ -48,7 +48,9 @@ const fetcher: typeof fetch = async input => {
   return new Response(JSON.stringify(result), { headers: { 'content-type': 'application/json' } })
 }
 remoteApp.setErrorHandler((issue, _request, reply) => reply.code((issue as { statusCode?: number }).statusCode || 422).send({ detail: issue instanceof Error ? issue.message : String(issue) }))
-registerSkillRoutes(remoteApp, { fetcher, generateText: async (_projectId, _modelId, prompt) => { capturedPrompt = prompt; generated++; return JSON.stringify({ prompt: '9:16 人物从开镜位置转身，镜头缓慢推近。' }) } })
+registerSkillRoutes(remoteApp, { fetcher,
+  selectSkills: async (_projectId, _modelId, input) => ({ skill_ids: input.default_ids, reason: '模型根据任务选择适用的图片技能。' }),
+  generateText: async (_projectId, _modelId, prompt) => { capturedPrompt = prompt; generated++; return JSON.stringify({ prompt: '9:16 人物从开镜位置转身，镜头缓慢推近。' + (prompt.includes('我会回来。') ? '她说：“我会回来。”' : '') }) } })
 after(async () => { await remoteApp.close(); await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 async function call<T>(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, payload?: unknown, target = remoteApp): Promise<T> {
   const response = await target.inject({ method, url, ...(payload !== undefined ? { payload } : {}) })

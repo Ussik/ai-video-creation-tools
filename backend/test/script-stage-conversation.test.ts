@@ -21,7 +21,7 @@ async function call<T>(method: 'GET' | 'POST', url: string, payload?: unknown): 
 async function fixture() {
   const provider = await call<{ id: string }>('POST', '/api/providers', { name: '历史要求回归', base_url: 'https://stage-context.example.invalid/v1' })
   const model = await call<{ id: string }>('POST', '/api/models', { provider_id: provider.id, name: '文本', remote_id: 'test', modality: 'text', protocol: 'chat_completions',
-    settings: { request_path: 'chat/completions', request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] }, text_path: 'choices.0.message.content' } })
+    settings: { request_path: 'chat/completions', request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] }, structured_output_mode: 'json_schema', text_path: 'choices.0.message.content' } })
   const project = await call<{ id: string }>('POST', '/api/projects', { name: '保留原结局的悬疑剧' })
   return { project, model }
 }
@@ -40,7 +40,8 @@ test('stage generation keeps every supplied conversation message without promoti
     t.mock.method(globalThis, 'fetch', async (_url, init) => {
       const review = draftCompletenessFixtureResponse(init)
       if (review) return review
-      const prompt = JSON.parse(String(init?.body)).messages[0].content as string
+      const body = JSON.parse(String(init?.body))
+      const prompt = body.messages[0].content as string
       let output: unknown
       if (prompt.includes('本次独立调用只理解创作者意图')) {
         intentCalls++
@@ -56,21 +57,22 @@ test('stage generation keeps every supplied conversation message without promoti
         assert.match(prompt, /已被撤回或替代的旧要求不能恢复/)
         assert.match(prompt, /未被创作者明确接受、未提交的选项均不构成已确认设定/)
         assert.match(prompt, /不得将助手建议或某项设定的确认升级为生成其他阶段、修改原稿或保存文档的授权/)
-        output = { artifacts: scriptStageArtifacts.outline.map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '女主白天调查，姐姐存活，保留原稿结局。' })), scenes: [] }
+        const types = body.response_format.json_schema.schema.properties.artifacts.items.properties.artifact_type.enum as typeof scriptStageArtifacts.outline
+        output = { artifacts: types.map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '女主白天调查，姐姐存活，保留原稿结局。' })), scenes: [] }
       }
       return Response.json({ choices: [{ message: { content: JSON.stringify(output) } }] })
     })
     const before = await call<{ script: unknown }>('GET', `/api/projects/${project.id}`)
     const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat${streaming ? '/stream' : ''}`, payload: {
-      model_id: model.id, mode: 'script', use_tools: useTools, workflow: { stage: 'outline' }, messages,
+      model_id: model.id, mode: 'script', use_tools: useTools, workflow: { stage: 'outline', intent: 'stage_design', artifact_types: [...scriptStageArtifacts.outline] }, messages,
     } })
     assert.equal(response.statusCode, 200, response.body)
     const events = streaming ? response.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5))) : []
     assert.equal(events.some(event => event.type === 'error'), false, response.body)
     const result = streaming ? events.find(event => event.type === 'done') : response.json()
     assert.ok(useTools ? result.tool_draft : result.draft, 'the response is an editable draft only')
-    assert.equal(writerCalls, 1)
-    assert.equal(intentCalls, useTools ? 0 : 1, 'typed tool generation keeps its existing direct path without an extra brief/intent call')
+    assert.equal(writerCalls, 5, 'every dependency group receives the complete original conversation')
+    assert.equal(intentCalls, 0, 'an explicit workflow already authorizes and defines the task in both response modes')
     const decisions = db.prepare('SELECT count(*) AS total FROM script_story_decisions WHERE project_id=?').get(project.id) as { total: number }
     assert.equal(decisions.total, 0, 'the earlier user constraint was never persisted as a story decision')
     const afterGeneration = await call<{ script: unknown }>('GET', `/api/projects/${project.id}`)

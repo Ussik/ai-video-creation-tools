@@ -71,8 +71,8 @@ test('possible write attempts prevent automatic retry; recovery retains exact dr
   assert.equal(activityDraftId([{ ...entry, output: '{"draft_id":"unknown"}', output_truncated: true }]), undefined)
 })
 
-test('source and episode reads remain retryable after a later failure without allowing any write replay', () => {
-  const reads: ScriptActivity[] = ['read_source_document', 'search_source_document', 'read_episode_scenes'].map((name, index) => ({
+test('source, episode and repair reads remain retryable after a later failure without allowing any write replay', () => {
+  const reads: ScriptActivity[] = ['read_source_document', 'search_source_document', 'read_episode_scenes', 'get_repair_context', 'search_repair_context'].map((name, index) => ({
     ...entry, id: `read-${index}`, name, status: 'succeeded',
   }))
   const failedModel: ScriptActivity = { ...entry, id: 'interrupted-model', kind: 'model', status: 'failed' }
@@ -83,6 +83,14 @@ test('source and episode reads remain retryable after a later failure without al
   }
   for (const name of ['create_document_draft', 'propose_document_patch', 'record_story_decision', 'commit_document_draft', 'unknown_function']) {
     assert.equal(canRetryExecution([...reads, { ...entry, id: name, name, status: 'succeeded' }, failedModel]), false)
+  }
+})
+
+test('private candidate patch submission remains retryable and is displayed as a result', () => {
+  for (const status of ['running', 'succeeded', 'failed', 'cancelled'] as const) {
+    const submission: ScriptActivity = { ...entry, name: 'submit_repair_patch', status }
+    assert.equal(activityGroup(submission), 'results')
+    assert.equal(canRetryExecution([submission, { ...entry, id: 'later-model', kind: 'model', status: 'failed' }]), true)
   }
 })
 

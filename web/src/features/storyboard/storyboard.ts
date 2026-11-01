@@ -41,7 +41,7 @@ export function storyboardItems(detail: ProjectDetail, graph: CanvasGraph, model
     // A generated result node is also available through its generator card.
     // Keep older candidates and independently reused media, but avoid showing
     // the current result twice in the board and its preview gallery.
-    if (node.asset_id && node.type !== 'generation' && graph.edges.some(edge => {
+    if (node.asset_id && node.type !== 'generation' && node.type !== 'image_analysis' && graph.edges.some(edge => {
       if (edge.target !== node.id) return false
       const source = graph.nodes.find(item => item.id === edge.source && item.type === 'generation')
       return source && (source.asset_id || jobs.get(source.job_id || '')?.result_asset_id) === node.asset_id
@@ -49,8 +49,9 @@ export function storyboardItems(detail: ProjectDetail, graph: CanvasGraph, model
     const shot = shots.get(node.shot_id || '')
     const job = jobs.get(node.job_id || '')
     // Prefer the node's pinned asset; fall back to a newly completed job.
-    const asset = assets.get(node.asset_id || '') || assets.get(job?.result_asset_id || '')
-    const kind = node.type === 'generation'
+    // Analysis owns an input image; its board output is the editable prompt.
+    const asset = node.type === 'image_analysis' ? undefined : assets.get(node.asset_id || '') || assets.get(job?.result_asset_id || '')
+    const kind = node.type === 'image_analysis' ? 'text' : node.type === 'generation'
       ? asset?.kind || node.settings.modality || modelKinds.get(node.model_id || '') || 'image'
       : node.type
     if (kind !== 'text' && kind !== 'image' && kind !== 'video') continue

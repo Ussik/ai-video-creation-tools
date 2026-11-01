@@ -106,6 +106,7 @@ async function mount(t: import('node:test').TestContext, data = fixture(), befor
   const openStudio = async () => {
     await click(container.querySelector<HTMLButtonElement>('button[aria-label="切换创作页面"]')!)
     await click(button(document.body, '成片工作台'))
+    await click(button(container, '按分镜选片'))
     assert.ok(container.querySelector('.final-cut-scope-bar'))
   }
   beforeStudio?.()

@@ -1,4 +1,6 @@
 import type { Asset, Job, Model, ProjectDetail, Provider, Shot } from '../../shared/api/api'
+import { generationRecoveryModality } from '@video-studio/shared/jobs/generation-recovery'
+import { jobRecoveryPresentation } from './job-recovery'
 
 export type TaskKind = 'image' | 'video' | 'speech' | 'export' | 'text' | 'unknown'
 export type TaskStatusFilter = 'all' | 'active' | 'failed' | 'succeeded'
@@ -13,6 +15,7 @@ export type TaskRecord = {
   context: string
   search: string
   needsBillingCheck: boolean
+  recovery: ReturnType<typeof jobRecoveryPresentation>
 }
 
 export const taskKindLabels: Record<TaskKind, string> = {
@@ -39,16 +42,19 @@ export function projectTaskRecords(detail: ProjectDetail, models: Model[], provi
     const shot = shotsById.get(job.shot_id || '')
     const result = assetsById.get(job.result_asset_id || '')
     const speech = Boolean(request.tts)
+    const recoveryModality = generationRecoveryModality(job, model?.modality)
     const kind: TaskKind = job.job_type === 'export' ? 'export' : speech ? 'speech'
-      : model?.modality === 'image' || job.recovery_available || result?.kind === 'image' ? 'image'
-        : model?.modality === 'video' || result?.kind === 'video' ? 'video'
+      : recoveryModality === 'video' ? 'video' : recoveryModality === 'image' ? 'image'
+        : result?.kind === 'image' ? 'image' : result?.kind === 'video' ? 'video'
+          : job.recovery_available && job.recovery_action === undefined ? 'image'
           : model?.modality === 'text' || result?.kind === 'text' ? 'text' : 'unknown'
     const label = taskKindLabels[kind]
     const context = [typeof request.voice_name === 'string' ? request.voice_name : '', shot?.title || detail.name].filter(Boolean).join(' · ')
-    const needsBillingCheck = job.status === 'failed' && !job.recovery_available && !job.task_resume_available &&
-      (kind === 'image' || job.job_type === 'generation' && !model && !speech)
-    return { job, kind, label, model, provider, shot, result, context, needsBillingCheck,
-      search: [label, model?.name, provider?.name, context, job.id, job.external_id, job.error, result?.filename]
+    const recovery = jobRecoveryPresentation(job, model?.modality)
+    const needsBillingCheck = recovery?.action === 'verify' || job.status === 'failed' && !recovery
+      && job.job_type === 'generation' && (kind === 'image' || kind === 'video' || kind === 'unknown')
+    return { job, kind, label, model, provider, shot, result, context, needsBillingCheck, recovery,
+      search: [label, model?.name, provider?.name, context, job.id, job.external_id, job.error, result?.filename, recovery?.label]
         .filter(Boolean).join(' ').toLocaleLowerCase() }
   })
 }

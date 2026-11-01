@@ -333,14 +333,22 @@ test('an independent finding on reused directory candidates triggers one complet
   } finally { await analyzer.close() }
 })
 
-test('a second independent finding stops the revision instead of automatically rebuilding for a third time', async () => {
+test('a second independent finding is repaired automatically without rebuilding the completed revision a third time', async () => {
   const id = project(), original = effectiveScriptSource(id)!, revised = revisedContent(original.content), prompts: string[] = []
+  const repairMarker = '【原稿分析定点修补资料】\n'
+  let revisedReviews = 0, repairs = 0
   const analyzer = createScriptSourceAnalyzer(async (_id, _model, prompt) => {
     prompts.push(prompt)
+    if (prompt.includes(repairMarker)) {
+      repairs++
+      const input = inputFor<{ story: NonNullable<ScriptSourceAnalysis['story']>; finding: { explanation: string } }>(prompt, repairMarker)
+      return JSON.stringify({ status: 'patched', reason: '依据完整原文修正重建后发现的理解问题。', changes: [{ target: 'story.summary',
+        section_id: null, operation: 'replace', index: null, expected: input.story.summary, value: `${input.story.summary}；${input.finding.explanation}` }] })
+    }
     if (prompt.includes(reviewMarker)) {
       const input = inputFor<{ units: Unit[]; sections: Array<{ id: number }> }>(prompt, reviewMarker)
-      if (input.units.map(unit => unit.text).join('') === revised) return JSON.stringify({ checked_section_ids: input.sections.map(section => section.id), findings: [{ kind: 'omission',
-        explanation: '完整重建之后仍有待作者检查的实质理解问题。', unit_ids: [input.units.find(unit => unit.text.includes('新发现'))!.id] }] })
+      if (input.units.map(unit => unit.text).join('') === revised) return JSON.stringify({ checked_section_ids: input.sections.map(section => section.id), findings: ++revisedReviews <= 2 ? [{ kind: 'omission',
+        explanation: '完整重建之后仍需保留沈月保管两份完整副本的事实。', unit_ids: [input.units.find(unit => unit.text.includes('新发现'))!.id] }] : [] })
     }
     return reply(prompt)
   }, limits, { configuration })
@@ -349,14 +357,16 @@ test('a second independent finding stops the revision instead of automatically r
     assert.equal((await terminal(id)).status, 'ready')
     prompts.length = 0
     const committed = commit(id, revised)
-    const failed = await terminal(id, scriptSourceVersion(committed))
-    assert.equal(failed.status, 'failed')
-    assert.match(failed.error!, /实质理解问题/)
-    assert.equal(prompts.filter(prompt => prompt.includes(reviewMarker)).length, 2)
+    const ready = await terminal(id, scriptSourceVersion(committed))
+    assert.equal(ready.status, 'ready', ready.error || '')
+    assert.equal(prompts.filter(prompt => prompt.includes(reviewMarker)).length, 3)
     assert.equal(prompts.filter(prompt => prompt.includes(storyMarker)).length, 2)
     assert.equal(prompts.filter(prompt => prompt.includes(mapMarker)).length, sourceWorkPlan(scriptSourcePassages(revised)).length + 1)
+    assert.equal(repairs, 1)
     assert.equal(snapshot(id).revision_reuse!.status, 'discarded')
-    assert.equal(failed.quality!.status, 'issues')
+    assert.equal(ready.quality!.status, 'passed')
+    assert.match(ready.story!.summary, /保管两份完整副本/)
+    assertEvidence(revised, ready.sections)
     assert.equal(effectiveScriptSource(id)!.content, revised)
     assert.equal(originalScriptSource(id)!.content, original.content)
   } finally { await analyzer.close() }

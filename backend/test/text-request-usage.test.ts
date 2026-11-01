@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createScriptRequestUsage, scriptRequestUsageTokens } from '@video-studio/shared/script/script-request-usage'
-import { beginTextRequest, isTextRequestBudgetError, TextRequestBudgetError, withTextRequestUsage } from '../src/infrastructure/providers/text-request-usage.js'
+import { beginTextRequest, isTextRequestBudgetError, settlePendingTextRequest, TextRequestBudgetError, withTextRequestUsage } from '../src/infrastructure/providers/text-request-usage.js'
 import { retryReadOnlyRequest } from '../src/modules/generation/read-only-retry.js'
 import { withTextResponseRecovery, backgroundTextResponse, type BackgroundResponse } from '../src/infrastructure/providers/text-background.js'
 import type { GenerationModel, GenerationProvider } from '../src/infrastructure/providers/providers.js'
@@ -35,6 +35,96 @@ test('actual usage replaces estimates and reasoning remains an output subset', (
   assert.equal(usage.estimated_output_tokens, 0)
   assert.equal(usage.uncertain_requests, 0)
   assert.ok(updates.length >= 2)
+})
+
+test('nested execution and phase scopes both count requests, with detached progress snapshots', async () => {
+  const execution = createScriptRequestUsage(), phase = createScriptRequestUsage()
+  const updates: typeof execution[] = []
+  await withTextRequestUsage({ usage: execution, onUpdate: usage => updates.push(usage) }, async () => {
+    begin().complete({ input_tokens: 3, output_tokens: 2 })
+    await withTextRequestUsage({ usage: phase }, async () => {
+      await Promise.resolve()
+      begin().complete({ input_tokens: 11, output_tokens: 7, reasoning_tokens: 4 })
+    })
+    begin().complete({ input_tokens: 5, output_tokens: 3 })
+  })
+  assert.equal(execution.requests, 3)
+  assert.equal(execution.input_tokens, 19)
+  assert.equal(execution.output_tokens, 12)
+  assert.equal(execution.reasoning_tokens, 4)
+  assert.equal(phase.requests, 1)
+  assert.equal(phase.input_tokens, 11)
+  assert.equal(updates[0]!.requests, 1)
+  assert.equal(updates[0]!.input_tokens, 0)
+  assert.notEqual(updates[0], execution)
+  assert.notEqual(updates[0]!.pending_requests, execution.pending_requests)
+})
+
+test('all nested limits are checked before any scope consumes a reservation', () => {
+  const execution = createScriptRequestUsage(), phase = createScriptRequestUsage()
+  withTextRequestUsage({ usage: execution, limits: { max_requests: 1 } }, () => {
+    withTextRequestUsage({ usage: phase, limits: { max_tokens: 99 } }, () => {
+      assert.throws(() => begin(), error => isTextRequestBudgetError(error) && error.reason === 'tokens')
+    })
+    assert.equal(execution.requests, 0)
+    assert.equal(phase.requests, 0)
+    begin().complete({ input_tokens: 1, output_tokens: 1 })
+    withTextRequestUsage({ usage: phase }, () => {
+      assert.throws(() => begin(), error => isTextRequestBudgetError(error) && error.reason === 'requests')
+    })
+  })
+  assert.equal(execution.requests, 1)
+  assert.equal(phase.requests, 0)
+})
+
+test('re-entering one ledger charges once but enforces both scopes and notifies each callback once', () => {
+  const usage = createScriptRequestUsage()
+  let updates = 0
+  const onUpdate = () => { updates++ }
+  withTextRequestUsage({ usage, limits: { max_requests: 3 }, onUpdate }, () =>
+    withTextRequestUsage({ usage, limits: { max_requests: 1 }, onUpdate }, () => {
+      begin().complete({ input_tokens: 4, output_tokens: 6 })
+      assert.throws(() => begin(), isTextRequestBudgetError)
+    }))
+  assert.equal(usage.requests, 1)
+  assert.equal(usage.input_tokens, 4)
+  assert.equal(usage.output_tokens, 6)
+  assert.equal(updates, 2)
+})
+
+test('nested pending responses retain conservative estimates and settle once after serialized recovery', () => {
+  let execution = createScriptRequestUsage(), phase = createScriptRequestUsage()
+  withTextRequestUsage({ usage: execution }, () => withTextRequestUsage({ usage: phase }, () => {
+    const request = begin()
+    assert.equal(request.identify('resp_nested'), true)
+    request.complete({ input_tokens: 12, reasoning_tokens: 80, response_chars: 100 })
+  }))
+  for (const usage of [execution, phase]) {
+    assert.equal(usage.requests, 1)
+    assert.equal(usage.input_tokens, 12)
+    assert.equal(usage.estimated_input_tokens, 0)
+    assert.equal(usage.estimated_output_tokens, 200)
+    assert.equal(usage.reasoning_tokens, 80)
+  }
+  execution = JSON.parse(JSON.stringify(execution)) as typeof execution
+  phase = JSON.parse(JSON.stringify(phase)) as typeof phase
+  withTextRequestUsage({ usage: execution, limits: { max_requests: 1 } }, () =>
+    withTextRequestUsage({ usage: phase, limits: { max_requests: 1 } }, () => {
+      beginTextRequest({ kind: 'transport', request_bytes: 31, estimated_input_tokens: 0 }).complete({})
+      assert.equal(settlePendingTextRequest('resp_nested', { input_tokens: 12, output_tokens: 105, reasoning_tokens: 90 }), true)
+      assert.equal(settlePendingTextRequest('resp_nested', { input_tokens: 12, output_tokens: 105, reasoning_tokens: 90 }), false)
+    }))
+  for (const usage of [execution, phase]) {
+    assert.equal(usage.requests, 1)
+    assert.equal(usage.transport_requests, 1)
+    assert.equal(usage.transport_request_bytes, 31)
+    assert.equal(usage.input_tokens, 12)
+    assert.equal(usage.output_tokens, 105)
+    assert.equal(usage.reasoning_tokens, 90)
+    assert.equal(usage.estimated_output_tokens, 0)
+    assert.equal(usage.uncertain_requests, 0)
+    assert.deepEqual(usage.pending_requests, [])
+  }
 })
 
 test('a failed request stays conservatively estimated and restored scopes share cumulative state', () => {
@@ -171,6 +261,35 @@ test('background generation counts the POST, excludes polling from token limits,
   assert.equal(usage.uncertain_requests, 0)
 })
 
+test('nested provider background transport reconciles both execution and phase ledgers', async t => {
+  const execution = createScriptRequestUsage(), phase = createScriptRequestUsage()
+  let posts = 0, polls = 0
+  t.mock.method(globalThis, 'fetch', async (_input: string | URL | Request, init?: RequestInit) => {
+    if (init?.method === 'POST') { posts++; return Response.json({ id: 'resp_nested_provider', status: 'queued' }) }
+    polls++
+    return Response.json({ id: 'resp_nested_provider', status: 'completed', output_text: 'done',
+      usage: { input_tokens: 17, output_tokens: 13, output_tokens_details: { reasoning_tokens: 8 } } })
+  })
+  await withTextRequestUsage({ usage: execution, limits: { max_requests: 1 } }, () =>
+    withTextRequestUsage({ usage: phase, limits: { max_requests: 1 } }, () =>
+      withTextResponseRecovery({ read: () => undefined, save() {} }, () =>
+        backgroundTextResponse('https://fixture.invalid/responses', { model: 'fixture', input: 'source' }, {},
+          new AbortController().signal, promise => promise, () => {}))))
+  assert.equal(posts, 1)
+  assert.equal(polls, 1)
+  for (const usage of [execution, phase]) {
+    assert.equal(usage.requests, 1)
+    assert.equal(usage.transport_requests, 1)
+    assert.equal(usage.input_tokens, 17)
+    assert.equal(usage.output_tokens, 13)
+    assert.equal(usage.reasoning_tokens, 8)
+    assert.equal(usage.estimated_input_tokens, 0)
+    assert.equal(usage.estimated_output_tokens, 0)
+    assert.equal(usage.uncertain_requests, 0)
+    assert.deepEqual(usage.pending_requests, [])
+  }
+})
+
 test('a resumed background poll settles an existing estimate without consuming a generation request', async t => {
   const usage = createScriptRequestUsage()
   const responseId = 'resp_usage_resumed'
@@ -253,6 +372,34 @@ test('malformed restored pending counters cannot bypass budget checks', () => {
   usage.pending_requests = []
   usage.requests = Number.NaN
   assert.throws(() => withTextRequestUsage({ usage }, () => {}), /检查点无效/)
+})
+
+test('more than 128 sequential pending responses retain identifiers and settle after checkpoint restoration', () => {
+  const usage = createScriptRequestUsage()
+  withTextRequestUsage({ usage }, () => {
+    for (let index = 0; index < 160; index++) {
+      const request = begin()
+      assert.equal(request.identify(`resp_long_task_${index}`), true)
+      request.complete({})
+    }
+  })
+  assert.equal(usage.pending_requests.length, 160)
+  assert.equal(usage.uncertain_requests, 160)
+  const restored = JSON.parse(JSON.stringify(usage)) as typeof usage
+  withTextRequestUsage({ usage: restored }, () => {
+    for (let index = 0; index < 160; index++) assert.equal(settlePendingTextRequest(`resp_long_task_${index}`, {
+      input_tokens: 3, output_tokens: 2, reasoning_tokens: 1,
+    }), true)
+    begin().complete({ input_tokens: 5, output_tokens: 7 })
+  })
+  assert.equal(restored.requests, 161)
+  assert.equal(restored.input_tokens, 485)
+  assert.equal(restored.output_tokens, 327)
+  assert.equal(restored.reasoning_tokens, 160)
+  assert.equal(restored.uncertain_requests, 0)
+  assert.equal(restored.estimated_input_tokens, 0)
+  assert.equal(restored.estimated_output_tokens, 0)
+  assert.deepEqual(restored.pending_requests, [])
 })
 
 test('tool HTTP requests and explicit Chat usage footers contribute actual usage exactly once', async t => {

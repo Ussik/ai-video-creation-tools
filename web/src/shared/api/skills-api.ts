@@ -1,6 +1,10 @@
 export { MAX_AUXILIARY_SKILLS } from '@video-studio/shared/skills/skill-limits'
+export type { SkillSyncResult } from '@video-studio/shared/skills/skill-updates'
+export type { SkillTaskContext } from '@video-studio/shared/skills/skill-recommendation'
 export type SkillStage = 'script' | 'visual_assets' | 'image_prompt' | 'storyboard' | 'video_prompt'
 export type SkillSelections = Partial<Record<SkillStage, string[]>>
+export type CreativeSkillSelection = { ids: string[]; source: 'automatic' | 'default' | 'manual'; reason: string; task_label: string }
+export type SkillAssignment = Pick<CreativeSkillSelection, 'ids' | 'source' | 'reason'>
 export type SkillPolicy = { stage: SkillStage; label: string; primary_id: string | null; auxiliary_ids: string[]; source: 'global' | 'project'; warning: string;
   skills: Array<{ id: string; name: string; description: string; revision: string }> }
 export const skillStageOptions: Array<{ value: SkillStage; label: string }> = [

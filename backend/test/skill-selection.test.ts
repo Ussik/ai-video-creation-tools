@@ -122,12 +122,12 @@ test('actual generation replaces stale preview rules with the selected primary a
   assert.equal(all('SELECT * FROM jobs WHERE project_id=?', p.id).length, 0)
 })
 
-test('visual organization inherits its project primary and explicit switching excludes other available rules', async () => {
+test('visual organization accepts a model choice and explicit switching excludes other available rules', async () => {
   const p = await call('POST', '/api/projects', { name: '视觉主技能' }), scene = await call('POST', `/api/projects/${p.id}/script/scenes`, { heading: '车站', characters: '林晚' })
   const primary = policy('visual_assets').primary_id!, alternate = install('alternate-visual', ['visual_assets'])
   setSkillDefault('visual_assets', { primary_id: alternate, auxiliary_ids: [] }, p.id)
   let captured = ''
-  const context = { script: () => ({ outline: '车站救援', characters: '林晚', scenes: [scene] }), generateText: async (_id: string, _model: string, prompt: string) => {
+  const context = { selectSkills: async () => ({ skill_ids: [alternate], reason: '沿用项目默认中的合适视觉整理技能。' }), script: () => ({ outline: '车站救援', characters: '林晚', scenes: [scene] }), generateText: async (_id: string, _model: string, prompt: string) => {
     captured = prompt
     return JSON.stringify({ profiles: [{ kind: 'character', name: '林晚', variant: '默认', definition: '短发，雨衣', view_requirements: '正侧背三视图', scene_ids: [scene.id] }] })
   } }

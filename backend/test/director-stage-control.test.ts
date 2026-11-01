@@ -35,7 +35,15 @@ function mock(t: { after: (callback: () => void) => void }, reply: (prompt: stri
   globalThis.fetch = async (_url, init) => {
     const completenessReply = draftCompletenessFixtureResponse(init)
     if (completenessReply) return completenessReply
-    const output = reply(JSON.parse(String(init?.body)).messages[0].content)
+    const prompt = JSON.parse(String(init?.body)).messages[0].content as string
+    let output = reply(prompt)
+    if (output && typeof output === 'object' && 'artifacts' in output && Array.isArray(output.artifacts)) {
+      const schemaLine = prompt.split('\n').find(line => line.startsWith('{') && line.includes('"properties"'))
+      assert.ok(schemaLine, 'generated work declares its task-sized output contract')
+      const schema = JSON.parse(schemaLine), type = schema.properties.artifacts.items.properties.artifact_type
+      const selected = type.enum || [type.const]
+      output = { ...output, artifacts: output.artifacts.filter(artifact => selected.includes(artifact.artifact_type)) }
+    }
     return Response.json({ choices: [{ message: { content: typeof output === 'string' ? output : JSON.stringify(output) } }] })
   }
 }

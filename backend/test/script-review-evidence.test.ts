@@ -43,23 +43,34 @@ test('independent review sees complete candidate and full effective source toget
 test('unknown sources, copied original quotes and incomplete artifact coverage cannot pass whole-work review', async t => {
   for (const invalid of ['source', 'quote', 'coverage', 'facts'] as const) await t.test(invalid, async () => {
     const steps = createGenerationSteps(); let calls = 0
-    await assert.rejects(reviewScriptDraftCompleteness(candidate(), async () => {
+    await assert.rejects(reviewScriptDraftCompleteness(candidate(), async (_prompt, contract) => {
       calls++
+      if (contract?.name === 'script_draft_evidence_repair') return JSON.stringify({ repairs: [{
+        id: invalid === 'facts' ? 'facts:0' : 'findings:0', first_unit: null, last_unit: null }] })
       return JSON.stringify({ checked_artifacts: invalid === 'coverage' ? ['characters'] : complete.checked_artifacts,
         findings: invalid === 'facts' ? [] : [{ source_key: invalid === 'source' ? 'uploaded_script' : 'characters',
           quote: invalid === 'quote' ? '林舟是船夫。' : '林舟是记者。', kind: 'contradiction', explanation: '身份冲突', suggestion: '保留原稿身份' }],
         facts: invalid === 'facts' ? [{ source_key: 'characters', quote: '伪造证据', meaning: '错误引用' }] : [] })
-    }, { context: { uploaded_script: { content: '林舟是船夫。' } }, steps }), /模型结果不符合 script_draft_completeness 契约/)
+    }, { context: { uploaded_script: { content: '林舟是船夫。' } }, steps }), /模型结果不符合 script_draft_completeness 契约|证据尚未定位到候选稿原文/)
     assert.equal(calls, 2, 'one bounded contract correction, then stop')
-    assert.deepEqual(steps.checkpoint.steps, {})
+    assert.equal(steps.checkpoint.steps['review:whole'], undefined)
+    assert.equal(Object.keys(steps.checkpoint.steps).some(key => key.startsWith('review:response:')), invalid === 'quote' || invalid === 'facts')
   })
 })
 
-test('a rewritten quote receives field-specific correction before a valid exact quote is accepted', async () => {
+test('a rewritten quote is located against the exact original without another semantic review', async () => {
   let calls = 0
-  await reviewScriptDraftCompleteness(candidate(), async prompt => {
+  await reviewScriptDraftCompleteness(candidate(), async (prompt, contract) => {
     calls++
-    if (calls === 2) { assert.match(prompt, /facts\[0\]\.quote（characters）/); assert.match(prompt, /保留标点和换行/); assert.match(prompt, /不得改写、拼接/) }
+    if (calls === 2) {
+      assert.equal(contract?.name, 'script_draft_evidence_repair')
+      const marker = '【待定位证据（资料）】\n'
+      const input = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length))
+      assert.equal(input.issues[0].id, 'facts:0')
+      const unit = input.sources[0].units.find((unit: { text: string }) => unit.text === '林舟是记者。')
+      assert.ok(unit)
+      return JSON.stringify({ repairs: [{ id: 'facts:0', first_unit: unit.id, last_unit: unit.id }] })
+    }
     return JSON.stringify({ ...complete, facts: [{ source_key: 'characters', quote: calls === 1 ? '林舟是一名记者。' : '林舟是记者。', meaning: '人物身份' }] })
   })
   assert.equal(calls, 2)

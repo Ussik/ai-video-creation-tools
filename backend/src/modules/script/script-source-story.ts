@@ -71,6 +71,7 @@ export async function synthesizeSourceStory(state: ScriptSourceAnalysis, generat
     '各section_ids必须引用输入中真实章节ID。covered_section_ids必须完整列出全剧所有章节ID。ending记录全剧最终状态；未出现结局就明确说明。\n' +
     '目录已有证据的人名必须出现在characters的name或有证据的aliases中；已有关键事件的章节必须在timeline中有对应条目，不用covered_section_ids代替事实梳理。\n' +
     '按全文实际复杂度完整保留关键人物、事件、线索及来源，不为追求短摘要遗漏后半部或压缩成少量泛化事件。去重整理，不复制引文整段堆积。\n' +
+    '保留原文约束的完整语义：数量总额、分配及已满或用尽状态必须一起保留；人物“不相信”与“承认真实但不服从”等动机不可混同；先后动作与各自发生时点不可合并。规则前提、例外和结局已发生的事实不得降格成可能发生；没有依据的细节不推断补齐。\n' +
     `【全剧整合资料】\n${JSON.stringify({ final: true, source, materials: input })}`,
     { signal, budgetMs, validate: result => {
       const covered = [...new Set(result.covered_section_ids)].sort((a, b) => a - b)

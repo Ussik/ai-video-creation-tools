@@ -8,7 +8,7 @@
   --reference-ink: var(--workspace-ink, #0f1012);
   --reference-surface: var(--canvas-chrome-surface, #17191bf2);
   --reference-raised: var(--canvas-chrome-raised, #1b1d20);
-  --reference-selected: var(--canvas-chrome-selected, #2c3034);
+  --reference-selected: var(--fc-primary-soft);
   --reference-hover: var(--canvas-chrome-hover, #25282c);
   --reference-focus: var(--canvas-chrome-focus, #69727b);
 }
@@ -25,7 +25,7 @@
 .pc-reference-asset-copy { flex: 1; min-width: 0; display: grid; gap: 4px; }
 .pc-reference-asset-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--reference-text); }
 .pc-reference-asset-copy span, .pc-reference-asset-copy small { font-size: 10px; color: var(--reference-muted); line-height: 1.5; }
-.pc-reference-asset-copy .pc-reference-review-needed, .pc-reference-review-needed { color: #d8a99f; }
+.pc-reference-asset-copy .pc-reference-review-needed, .pc-reference-review-needed { color: var(--fc-warning); }
 .pc-reference-asset-actions { display: flex; flex-direction: column; flex: none; gap: 2px; }
 .pc-reference-asset-actions .mantine-ActionIcon-root { width: 24px; height: 24px; min-width: 24px; min-height: 24px; color: var(--reference-secondary); }
 .pc-reference-asset-actions .mantine-ActionIcon-root:disabled { color: var(--reference-subtle); background: transparent; }
@@ -40,7 +40,7 @@
 .pc-reference-modal .mantine-Modal-close:hover { color: var(--reference-text); background: var(--reference-hover); }
 .pc-reference-methods { display: flex; flex-wrap: wrap; gap: 7px; }
 .pc-reference-methods button { display: inline-flex; align-items: center; gap: 6px; background: var(--reference-raised); color: var(--reference-secondary); border: 1px solid var(--reference-border); border-radius: 7px; padding: 8px 11px; font-size: 12px; cursor: pointer; }
-.pc-reference-methods button[aria-pressed="true"] { color: var(--reference-text); background: var(--reference-selected); border-color: var(--reference-focus); }
+.pc-reference-methods button[aria-pressed="true"] { color: var(--fc-primary); background: var(--reference-selected); border-color: color-mix(in srgb, var(--fc-primary) 35%, var(--reference-border)); }
 .pc-reference-methods button:hover:not(:disabled) { background: var(--reference-hover); color: var(--reference-text); }
 .pc-reference-add button:disabled { cursor: default; opacity: .55; }
 .pc-reference-fields { display: grid; grid-template-columns: 1fr 1fr 1.3fr; align-items: end; gap: 10px; }
@@ -57,7 +57,7 @@
 .pc-reference-source-grid button:hover:not(:disabled) { background: var(--reference-hover); border-color: var(--reference-line-strong); }
 .pc-reference-source-grid img { display: block; width: 100%; height: 70px; object-fit: contain; }
 .pc-reference-source-grid span { display: block; padding: 4px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
-.pc-reference-source-grid svg { position: absolute; right: 5px; top: 5px; padding: 1px; color: var(--reference-text); background: var(--reference-selected); border-radius: 3px; }
+.pc-reference-source-grid svg { position: absolute; right: 5px; top: 5px; padding: 1px; color: var(--fc-on-primary); background: var(--fc-primary); border-radius: 3px; }
 .pc-reference-source-grid > p { grid-column: 1 / -1; color: var(--reference-muted); font-size: 12px; }
 .pc-reference-existing-preview { display: grid; justify-items: center; gap: 6px; background: var(--reference-ink); border: 1px solid var(--reference-border); border-radius: 8px; padding: 10px; }
 .pc-reference-existing-preview img { width: 100%; max-height: 360px; object-fit: contain; }
@@ -82,8 +82,8 @@
 .pc-reference-prompt-preview p { margin: 0; font-size: 11px; line-height: 1.6; }
 .pc-reference-add-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding-top: 10px; border-top: 1px solid var(--reference-border); }
 .pc-reference-add-footer > span { margin-right: auto; color: var(--reference-muted); font-size: 11px; }
-.pc-reference-add .pc-visual-error { margin: 0; color: #d8a99f; font-size: 12px; }
-.pc-reference-job-failures { margin: 8px 0; color: #d8a99f; font-size: 11px; }
+.pc-reference-add .pc-visual-error { margin: 0; color: var(--fc-danger); font-size: 12px; }
+.pc-reference-job-failures { margin: 8px 0; color: var(--fc-danger); font-size: 11px; }
 .pc-reference-job-failures .workspace-disclosure-control { cursor: pointer; line-height: 1.65; }
 .pc-reference-job-failures .workspace-disclosure-control:focus-visible { outline: 2px solid var(--reference-focus); outline-offset: 2px; }
 .pc-reference-job-failures ul { display: grid; gap: 12px; padding: 10px 12px; margin: 8px 0 0; list-style: none; border: 1px solid var(--reference-border); border-radius: 7px; background: var(--reference-raised); }

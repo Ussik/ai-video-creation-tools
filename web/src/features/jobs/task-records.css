@@ -8,12 +8,12 @@
 .task-records-tabs { flex-shrink: 0; }
 .task-records-tabs .mantine-Tabs-list { gap: 8px; }
 .task-records-tabs .mantine-Tabs-list::before { display: none; }
-.task-records-tabs .mantine-Tabs-tab { min-height: 30px; padding: 0 12px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--fc-text-muted); font-size: 13px; transition: background 160ms ease, color 160ms ease; }
+.task-records-tabs .mantine-Tabs-tab { min-height: 32px; padding: 0 12px; border: 1px solid transparent; border-radius: var(--fc-radius-md); background: transparent; color: var(--fc-text-muted); font-size: 13px; transition: background 160ms ease, color 160ms ease; }
 .task-records-tabs .mantine-Tabs-tab:hover { background: var(--fc-surface-muted); color: var(--fc-text); }
-.task-records-tabs .mantine-Tabs-tab[data-active] { background: var(--fc-surface-hover); color: var(--fc-text); }
+.task-records-tabs .mantine-Tabs-tab[data-active] { background: var(--fc-primary-soft); color: var(--fc-primary); }
 .task-records-tabs .mantine-Tabs-tabLabel { display: flex; align-items: center; gap: 7px; }
 .task-records-tabs .mantine-Tabs-tabLabel > span { color: var(--fc-text-muted); font-variant-numeric: tabular-nums; }
-.task-records-tabs .mantine-Tabs-tab[data-active] .mantine-Tabs-tabLabel > span { color: var(--fc-text-secondary); }
+.task-records-tabs .mantine-Tabs-tab[data-active] .mantine-Tabs-tabLabel > span { color: inherit; }
 .task-records-filters { display: flex; gap: 10px; min-width: 0; }
 .task-records-filters > .mantine-TextInput-root { width: 260px; }
 .task-records-filters > .mantine-Select-root { width: 144px; }
@@ -23,7 +23,8 @@
 .task-records-table th:nth-child(2) { width: 12%; }
 .task-records-table th:nth-child(3) { width: 17%; }
 .task-records-table th:nth-child(4) { width: 29%; }
-.task-records-table th, .task-records-table td { padding: 18px 12px; border-bottom: 1px solid var(--fc-border-soft); text-align: left; vertical-align: middle; }
+.task-records-table th, .task-records-table td { padding: 16px 12px; border-bottom: 1px solid var(--fc-border-soft); text-align: left; vertical-align: middle; }
+.task-records-table .job-row:hover { background: var(--fc-surface-muted); }
 .task-records-table th { padding-block: 13px; color: var(--fc-text-muted); font-size: 12px; font-weight: 500; }
 .task-records-table th:first-child, .task-records-table td:first-child { padding-left: 0; }
 .task-records-table th:last-child, .task-records-table td:last-child { padding-right: 0; text-align: right; }

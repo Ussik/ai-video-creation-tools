@@ -1,11 +1,13 @@
-import { workflowProgress, type WorkflowProgressInput, type StageOperation } from '@video-studio/shared/script/script-stage-access'
+import { workflowProgress, missingSavedStageArtifacts, type WorkflowProgressInput, type StageOperation } from '@video-studio/shared/script/script-stage-access'
 import type { ScriptArtifactType } from '../../shared/api/api'
-import { scriptStageDeliverables } from '@video-studio/shared/script/script-stage-content'
+import type { StageArtifactType } from '@video-studio/shared/script/script-stage-content'
 import { scriptCreativeAuthorityGuidance } from '@video-studio/shared/script/script-setting-completeness'
+import { initialScriptTaskContract, scriptTaskAcceptance, scriptTaskDeliverables, type ScriptTaskIntent } from '@video-studio/shared/script/script-task-contract'
 import type { CreationNextStep } from '@video-studio/shared/script/script-creation-state-types'
 
 export type WorkflowStage = 'outline' | 'characters' | 'locations' | 'props' | 'episode'
-export type WorkflowRequest = { operation?: StageOperation; stage: WorkflowStage; scope?: 'project' | 'episode'; episode_number: number; target_duration?: number }
+export type WorkflowRequest = { operation?: StageOperation; stage: WorkflowStage; scope?: 'project' | 'episode'; episode_number: number; target_duration?: number;
+  intent?: ScriptTaskIntent; artifact_types?: StageArtifactType[] }
 export type WorkflowScene = {
   source_scene_id?: string;
   heading: string; location: string; time_of_day: string; characters: string;
@@ -36,9 +38,21 @@ export function outlineGenerationIssue(script: WorkflowProgressInput, context: {
   return outlineGenerationPrerequisite
 }
 
-export function workflowRequestForStage(stage: WorkflowStage, episodeNumber: number, duration?: number, operation?: StageOperation): WorkflowRequest {
-  return stage === 'episode' ? { ...(operation ? { operation } : {}), stage, scope: 'episode', episode_number: episodeNumber, ...(duration !== undefined ? { target_duration: duration } : {}) }
-    : { ...(operation ? { operation } : {}), stage, scope: 'project', episode_number: 0 }
+/** Restore the actual task scope without applying defaults for a new task. */
+export function workflowRequestSnapshot(request: WorkflowRequest): WorkflowRequest {
+  return { stage: request.stage, ...(request.operation ? { operation: request.operation } : {}),
+    scope: request.stage === 'episode' ? 'episode' : 'project', episode_number: request.stage === 'episode' ? request.episode_number : 0,
+    ...(request.stage === 'episode' && request.target_duration !== undefined ? { target_duration: request.target_duration } : {}),
+    ...(request.intent ? { intent: request.intent } : {}), ...(request.artifact_types ? { artifact_types: [...request.artifact_types] } : {}) }
+}
+
+export function workflowRequestForStage(stage: WorkflowStage, episodeNumber: number, duration?: number, operation?: StageOperation,
+  contract: { hasSource?: boolean; intent?: ScriptTaskIntent; artifact_types?: StageArtifactType[]; script?: WorkflowProgressInput } = {}): WorkflowRequest {
+  const missing = operation === 'supplement' && contract.script ? missingSavedStageArtifacts(contract.script, { stage, episode_number: episodeNumber }) : null
+  const request = workflowRequestSnapshot({ stage, episode_number: episodeNumber, target_duration: duration, operation,
+    ...(missing ? { intent: 'stage_design', artifact_types: missing.filter(type => !contract.artifact_types || contract.artifact_types.includes(type)) }
+      : { ...(contract.intent ? { intent: contract.intent } : {}), ...(contract.artifact_types ? { artifact_types: contract.artifact_types } : {}) }) })
+  return initialScriptTaskContract(request, Boolean(contract.hasSource))
 }
 
 export function workflowInstruction(request: WorkflowRequest, label?: string): string {
@@ -48,7 +62,12 @@ export function workflowInstruction(request: WorkflowRequest, label?: string): s
     : '先读取所选阶段全部已保存文档，结合最新要求重新设计整阶段，输出所有栏目完整的新草稿；保留文档ID，其他阶段及分集只作参考。'
     : request.operation === 'supplement' ? '先读完所选阶段已有文档，原样保留其标题和正文，只补齐缺失栏目。'
     : request.operation === 'revise' ? '读取所选阶段原文，仅按本次要求提出局部修订草稿，保留未涉及内容和场次ID。' : ''
-  return `${action}。${behavior}本阶段完整包含：${scriptStageDeliverables(request.stage)}，各项提供具体完整的正文。${request.stage === 'episode' ? `仅处理第 ${request.episode_number} 集正文，承接全剧设定和前集，不改动其他集。` : '范围是整个故事的全剧资料，不是当前集或下一集；保留已确认各集内容，不生成或改写分集正文。'}基于当前对话已确认的信息整理，沿用我明确交给模型决定后已经作出的具体设定，不再将这些设定标为待定，生成草稿供我确认。\n${scriptCreativeAuthorityGuidance}`
+  const boundary = request.stage === 'episode' ? `仅处理第 ${request.episode_number} 集正文，承接全剧设定和前集，不改动其他集。`
+    : '范围是整个故事的全剧资料，不是当前集或下一集；保留已确认各集内容，不生成或改写分集正文。'
+  const task = `${action}。${behavior}本次只交付：${scriptTaskDeliverables(request)}，各项提供完整可读正文，未选择栏目不属于本次任务。${boundary}`
+  const acceptance = scriptTaskAcceptance(request).map(item => `- ${item}`).join('\n')
+  if (request.intent === 'source_outline') return `${task}依据完整原稿整理故事大纲，保留已有事实及明确确认的修订；原稿写到哪里就整理到哪里，允许开放结局和未揭示信息，不新增原稿未明确的谜底、能力代价或后续剧情。生成候选稿供我确认，不正式保存。\n${acceptance}`
+  return `${task}基于当前对话已确认的信息整理，沿用我明确交给模型决定后已经作出的具体设定，不再将这些设定标为待定，生成草稿供我确认。\n${acceptance}\n${scriptCreativeAuthorityGuidance}`
 }
 
 export function artifactKey(artifact: { artifact_type: string; episode_number?: number }): string {

@@ -2,10 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import { ActionIcon, Button, Loader, MultiSelect, Select } from '@mantine/core'
 import { Check, Trash2, WandSparkles, X } from 'lucide-react'
 import { api, json } from '../../shared/api/api'
-import type { Model, ProjectDetail, VisualProfileDraft } from '../../shared/api/api'
+import type { Model, ProjectDetail, Provider, VisualProfileDraft } from '../../shared/api/api'
+import { preferredModel } from '../models/model-defaults'
 import DirectorMessageTiming, { finishMessageTiming, type MessageTiming } from '../script/DirectorMessageTiming'
 import { useCreativeSkills } from '../skills/useCreativeSkills'
 import CreativeSkillSelector from '../skills/CreativeSkillSelector'
+import type { SkillAssignment } from '../../shared/api/skills-api'
 import VisualProfileFields, { validVisualProfile, visualDropdownProps } from './VisualProfileFields'
 import { newVisualProfileDrafts, visualProfileDraftIdentity, visualProfileDraftRelationError } from './visual-profile-inheritance'
 
@@ -16,10 +18,10 @@ function sourceVersion(detail: ProjectDetail, designId?: string | null) {
 type Props = {
   detail: ProjectDetail; models: Model[]; onRefresh: () => Promise<void>; onClose: () => void;
   onBusyChange: (busy: boolean) => void; onDirtyChange: (dirty: boolean) => void;
-  designId?: string | null;
+  designId?: string | null; providers?: Provider[];
 }
 
-export default function VisualProfileOrganizer({ detail, models, designId, onRefresh, onClose, onBusyChange, onDirtyChange }: Props) {
+export default function VisualProfileOrganizer({ detail, models, providers, designId, onRefresh, onClose, onBusyChange, onDirtyChange }: Props) {
   const scopedProfiles = (detail.visual_profiles || []).filter(profile => (profile.design_id || null) === (designId || null))
   const scenes = detail.script.scenes.filter(scene => {
     const currentShots = detail.shots.filter(shot => shot.source_scene_id === scene.id && !shot.superseded_by)
@@ -27,8 +29,11 @@ export default function VisualProfileOrganizer({ detail, models, designId, onRef
   })
   const skillControl = useCreativeSkills(detail.id)
   const [usedSkills, setUsedSkills] = useState<string[]>([])
+  const [usedAssignment, setUsedAssignment] = useState<SkillAssignment>()
   const [catalog, setCatalog] = useState(models)
-  const [modelId, setModelId] = useState(models.find(model => model.enabled && model.modality === 'text')?.id || '')
+  const availableModels = catalog.filter(model => model.enabled && model.modality === 'text'
+    && (!providers || providers.some(provider => provider.id === model.provider_id && provider.enabled && provider.adapter !== 'demo')))
+  const [modelId, setModelId] = useState(preferredModel(availableModels)?.id || '')
   const [sceneIds, setSceneIds] = useState(scenes.slice(0, 100).map(scene => scene.id))
   const [drafts, setDrafts] = useState<VisualProfileDraft[]>([])
   const [index, setIndex] = useState(0)
@@ -47,8 +52,8 @@ export default function VisualProfileOrganizer({ detail, models, designId, onRef
     return () => { controller.abort(); request.current?.abort() }
   }, [])
   useEffect(() => {
-    setModelId(current => catalog.some(model => model.id === current && model.enabled && model.modality === 'text') ? current : catalog.find(model => model.enabled && model.modality === 'text')?.id || '')
-  }, [catalog])
+    setModelId(current => availableModels.some(model => model.id === current) ? current : preferredModel(availableModels)?.id || '')
+  }, [catalog, providers])
   useEffect(() => { onBusyChange(busy); return () => onBusyChange(false) }, [busy, onBusyChange])
   useEffect(() => { onDirtyChange(!!drafts.length); return () => onDirtyChange(false) }, [drafts.length, onDirtyChange])
   async function analyze() {
@@ -58,14 +63,14 @@ export default function VisualProfileOrganizer({ detail, models, designId, onRef
     const startedAt = performance.now(), signature = sourceVersion(detail, designId)
     setBusy(true); setError(''); setStatus({ phase: 'running', processing_started_at: startedAt })
     try {
-      const result = await api<{ profiles: VisualProfileDraft[]; skills?: Array<{ name: string }> }>(`/projects/${detail.id}/visual-profiles/analyze`, { ...json('POST', { model_id: modelId, scene_ids: sceneIds, skill_ids: skillControl.ids('visual_assets'), ...(designId ? { design_id: designId } : {}) }), signal: controller.signal })
+      const result = await api<{ profiles: VisualProfileDraft[]; skills?: Array<{ name: string }>; skill_assignment?: SkillAssignment }>(`/projects/${detail.id}/visual-profiles/analyze`, { ...json('POST', { model_id: modelId, scene_ids: sceneIds, skill_ids: skillControl.requestIds('visual_assets'), ...(designId ? { design_id: designId } : {}) }), signal: controller.signal })
       if (controller.signal.aborted) return
       if (signature !== sourceVersion(currentDetail.current, designId)) throw new Error('剧本资料已发生变化，请重新整理，避免使用过期草稿。')
       const next = newVisualProfileDrafts(result.profiles, (currentDetail.current.visual_profiles || []).filter(profile => (profile.design_id || null) === (designId || null)))
         .map(draft => ({ ...draft, draft_key: draft.draft_key || crypto.randomUUID() }))
       if (!next.length) throw new Error('没有发现缺少的视觉设定。已有设定可从左侧列表选择后编辑。')
       version.current = signature
-      setUsedSkills(result.skills?.map(skill => skill.name) || []); setDrafts(next); setIndex(0); setStatus({ phase: 'complete', ...finishMessageTiming(startedAt) })
+      setUsedSkills(result.skills?.map(skill => skill.name) || []); setUsedAssignment(result.skill_assignment); setDrafts(next); setIndex(0); setStatus({ phase: 'complete', ...finishMessageTiming(startedAt) })
     } catch (issue) {
       if (!controller.signal.aborted) { setError(issue instanceof Error ? issue.message : String(issue)); setStatus({ phase: 'failed', ...finishMessageTiming(startedAt) }) }
     } finally { if (!controller.signal.aborted) setBusy(false) }
@@ -96,6 +101,7 @@ export default function VisualProfileOrganizer({ detail, models, designId, onRef
       {status && <div className="pc-visual-progress" role="status" aria-busy={status.phase === 'running'}><span>{status.phase === 'running' && <Loader size={14} color="gray" />}{status.phase === 'running' ? '正在整理设定' : status.phase === 'complete' ? '草稿已整理，等待检查' : '整理失败'}</span><DirectorMessageTiming {...status} pending={status.phase === 'running'} title="整理视觉设定的处理用时" /></div>}
       {drafts.length ? <>
         <p className="creative-skill-description">使用技能：{usedSkills.join(' · ') || '基础创作规则'}</p>
+        {usedAssignment?.reason && <p className="creative-skill-description">选择理由：{usedAssignment.reason}</p>}
         {stale && <p className="pc-visual-note" role="alert">剧本资料已变化，请放弃草稿后重新整理。</p>}
         {relationError && <p className="pc-visual-error" role="alert">{relationError}</p>}
         <div className="pc-visual-draft-select"><Select label={`检查草稿 · ${index + 1} / ${drafts.length}`} aria-label="选择设定草稿" value={String(index)} data={drafts.map((draft, i) => ({ value: String(i), label: `${draft.name} · ${draft.variant}` }))} allowDeselect={false} disabled={busy} comboboxProps={visualDropdownProps} onChange={value => { if (value !== null) setIndex(Number(value)) }} />
@@ -103,10 +109,11 @@ export default function VisualProfileOrganizer({ detail, models, designId, onRef
         <fieldset disabled={busy}><VisualProfileFields value={drafts[index]!} onChange={patch => setDrafts(current => current.map((draft, i) => i === index ? { ...draft, ...patch } : draft))}
           profiles={scopedProfiles} drafts={drafts} scenes={scenes} /></fieldset>
       </> : <fieldset disabled={busy}>
-        <Select label="文本模型" aria-label="整理设定的文本模型" value={modelId || null} placeholder="选择文本模型" allowDeselect={false} data={catalog.filter(model => model.enabled && model.modality === 'text').map(model => ({ value: model.id, label: model.name }))} comboboxProps={visualDropdownProps} onChange={value => value && setModelId(value)} />
+        <Select label="文本模型" aria-label="整理设定的文本模型" value={modelId || null} placeholder="选择文本模型" allowDeselect={false} data={availableModels.map(model => ({ value: model.id, label: model.name }))} comboboxProps={visualDropdownProps} onChange={value => value && setModelId(value)} />
         <MultiSelect label={`整理场次 · ${sceneIds.length} / ${scenes.length}`} aria-label="整理场次" searchable maxValues={100} value={sceneIds} data={scenes.map(scene => ({ value: scene.id, label: `${scene.episode_number ? `第 ${scene.episode_number} 集 · ` : ''}${scene.heading}` }))} comboboxProps={visualDropdownProps} onChange={setSceneIds} />
         {scenes.length > 100 && <p className="pc-visual-note">每批最多 100 个场次，请分批整理。</p>}
         <CreativeSkillSelector stage="visual_assets" policies={skillControl.policies} ids={skillControl.ids('visual_assets')} onChange={values => skillControl.change('visual_assets', values)}
+          selection={skillControl.selection('visual_assets')} onUseAutomatic={() => skillControl.useAutomatic('visual_assets')}
           projectId={detail.id} disabled={busy} loading={skillControl.loading} error={skillControl.error} onDefaultsChanged={() => skillControl.reload('visual_assets')} />
       </fieldset>}
     </div>

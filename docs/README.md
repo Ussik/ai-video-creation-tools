@@ -31,6 +31,12 @@
 | --- | --- |
 | [项目多画布](project-canvases.md) | 普通画布、独立方案、资源共享与成片范围 |
 | [多节点画布性能](canvas-performance.md) | 可视区渲染、媒体预览、选择和动画策略 |
+| [节点上下文与资源续读](canvas-node-context-and-resource-reads.md) | 节点配置加入导演草稿、超长快照及大型档案/分镜的有界续读 |
+| [导演节点修改方案](canvas-node-proposals.md) | 调整要求、完整差异预览、确认新建独立生成草稿与撤销 |
+| [生成提交与恢复](generation-submission-recovery.md) | 同次提交去重、网络中断后找回任务、多个候选逐项恢复 |
+| [生成任务重启恢复](generation-restart-recovery.md) | 原任务继续查询、结果下载恢复、配置核对与中断后防止重复生成 |
+| [图片反推提示词](image-prompt-analysis.md) | 看图文本模型、Gemini 图片模型反推配置及 GPT Image / 异步生图接口边界 |
+| [视频反推提示词](video-prompt-analysis.md) | 豆包视频理解配置、上传与逐镜头提示词编辑、单镜头生成草稿 |
 | [镜头引用](shot-reference-usage.md) | 设定版本、出镜范围、参考图用途和提示词引用 |
 | [多视角参考工作流](multi-angle-reference-workflow.md) | 参考图登记、裁切、生成、确认与继承 |
 | [Seedance 2.0 提示词](seedance-2-0-prompt-workflow.md) | 方言、技能、引用上限与生成前校验 |

@@ -22,6 +22,17 @@ function fixture() {
   return { source, graph, detail, models, fresh }
 }
 
+test('video handoff prefers the compatible default and preserves an explicit compatible selection', () => {
+  const f = fixture()
+  const preferred = { ...f.models[1], id: 'default-video', is_default: true } as Model
+  const models = [...f.models, preferred]
+  const create = (candidates: Model[], selectedId?: string) => createImageVideoHandoff(f.graph, f.source, f.detail,
+    candidates, { ...f.fresh, model_id: selectedId || null }, 'edge').graph.nodes[1]
+  assert.equal(create(models).model_id, preferred.id)
+  assert.equal(create(models, 'compatible').model_id, 'compatible')
+  assert.equal(create([{ ...f.models[0], is_default: true }, f.models[1]]).model_id, 'compatible')
+})
+
 test('handoff adds one same-shot video generator, selects a compatible model and pins the chosen candidate', () => {
   const f = fixture(), before = structuredClone(f)
   const result = createImageVideoHandoff(f.graph, f.source, f.detail, f.models, f.fresh, 'frame-edge')
@@ -34,7 +45,10 @@ test('handoff adds one same-shot video generator, selects a compatible model and
   assert.equal(video.prompt, '角色睁眼，缓慢坐起，镜头推近')
   assert.equal(video.asset_id, null)
   assert.equal(video.job_id, null)
-  assert.deepEqual(video.settings, { modality: 'video', mode: 'first_frame', visual_reference_mode: 'keyframe', candidate_count: 1, storyboard_reference_asset_id: 'chosen',
+  const { image_video_handoff, ...parameters } = video.settings
+  assert.equal(image_video_handoff?.source_node_id, f.source.id)
+  assert.equal(image_video_handoff?.source_asset_id, 'chosen')
+  assert.deepEqual(parameters, { modality: 'video', mode: 'first_frame', visual_reference_mode: 'keyframe', candidate_count: 1, storyboard_reference_asset_id: 'chosen',
     storyboard_revision: 0, duration: 10, ratio: 'adaptive', resolution: '480p' })
   assert.deepEqual(result.graph.edges, [{ id: 'frame-edge', source: 'image', target: 'video', reference_asset_id: 'chosen' }])
   assert.deepEqual(storyboardItems(f.detail, result.graph, f.models).map(item => item.kind), ['image', 'video'])
@@ -435,4 +449,125 @@ test('the permanent script card does not consume an ordinary node slot during vi
   assert.equal(created.graph.nodes.length, 501)
   assert.throws(() => createImageVideoHandoff(created.graph, { ...f.source, asset_id: 'new' }, f.detail, f.models,
     { ...f.fresh, id: 'overflow' }, 'overflow'), /上限/)
+})
+
+function editedImage(f: ReturnType<typeof fixture>, body = '裴砚站在林晚左后方，怀抱卷宗，保持低机位。') {
+  return { ...f.source, text: body, settings: { ...f.source.settings,
+    prompt_override: true, prompt_is_final: true, prompt_body: body, prompt_base: f.source.prompt } }
+}
+
+test('changed image updates an untouched video in place, preserving geometry, parameters and completed media history', () => {
+  const f = fixture(), source = editedImage(f)
+  const first = createImageVideoHandoff({ ...f.graph, nodes: [source] }, source, f.detail, f.models, f.fresh, 'frame')
+  const video = { ...first.graph.nodes[1], x: 950, width: 480, asset_id: 'saved-video', job_id: 'completed',
+    settings: { ...first.graph.nodes[1].settings, duration: 8, resolution: '1080p' } }
+  const nextSource = editedImage(f, '裴砚站在林晚右侧，举起卷宗。')
+  const graph = { ...first.graph, nodes: [nextSource, video] }
+  const detail = { ...f.detail, jobs: [...f.detail.jobs, { id: 'completed', status: 'succeeded' } as ProjectDetail['jobs'][number]] }
+  const next = createImageVideoHandoff(graph, nextSource, detail, f.models, { ...f.fresh, id: 'unused' }, 'unused')
+  assert.equal(next.updated, true)
+  assert.equal(next.created, false)
+  assert.equal(next.nodeId, video.id)
+  assert.equal(next.graph.nodes.length, 2)
+  const refreshed = next.graph.nodes[1]
+  assert.match(refreshed.text, /右侧，举起卷宗/)
+  assert.doesNotMatch(refreshed.text, /角色睁眼|林晚左后方|单幅首帧/)
+  assert.equal(refreshed.x, 950)
+  assert.equal(refreshed.width, 480)
+  assert.equal(refreshed.asset_id, 'saved-video')
+  assert.equal(refreshed.job_id, 'completed')
+  assert.equal(refreshed.settings.duration, 8)
+  assert.match(refreshed.text, /视频时长：8 秒/)
+  assert.match(refreshed.text, /1080p/)
+  assert.equal(createImageVideoHandoff(next.graph, nextSource, detail, f.models, f.fresh, 'unused').graph, next.graph)
+})
+
+test('changed sources create a new version when the prior video has manual prose, reference edits or an active job', () => {
+  for (const change of ['prose', 'reference', 'running', 'queued'] as const) {
+    const f = fixture(), source = editedImage(f)
+    const first = createImageVideoHandoff({ ...f.graph, nodes: [source] }, source, f.detail, f.models, f.fresh, 'frame')
+    const video = change === 'prose' ? { ...first.graph.nodes[1], text: '我的视频动作与运镜，完整保留' }
+      : ['running', 'queued'].includes(change) ? { ...first.graph.nodes[1], job_id: 'active' } : first.graph.nodes[1]
+    const detail = ['running', 'queued'].includes(change) ? { ...f.detail,
+      jobs: [...f.detail.jobs, { id: 'active', status: change } as ProjectDetail['jobs'][number]] } : f.detail
+    const nextSource = editedImage(f, '林晚向右走，裴砚停在原地。')
+    const graph = { ...first.graph, nodes: [nextSource, video], edges: change === 'reference'
+      ? first.graph.edges.map(edge => ({ ...edge, reference_asset_id: 'new' })) : first.graph.edges }
+    const before = structuredClone(graph)
+    const next = createImageVideoHandoff(graph, nextSource, detail, f.models, { ...f.fresh, id: 'next' }, 'new-frame')
+    assert.equal(next.created, true, change)
+    assert.equal(next.preserved, true, change)
+    assert.equal(next.nodeId, 'next')
+    assert.deepEqual(next.graph.nodes.find(node => node.id === video.id), video)
+    assert.deepEqual(graph, before)
+    assert.match(next.graph.nodes.at(-1)!.text, /裴砚停在原地/)
+  }
+})
+
+test('legacy automatic video prompts inherit latest image edits, while manual legacy video drafts are preserved', () => {
+  for (const manual of [false, true]) {
+    const f = connectionFixture(), source = editedImage(f)
+    const target = { ...f.target, shot_id: 'shot', prompt: manual ? '独立设计的运镜' : f.detail.shots[0].video_prompt! }
+    const graph = { ...f.graph, nodes: [source, target] }
+    const next = connectImageVideoHandoff(graph, imageVideoConnection(source, target, f.detail, f.models)!, f.detail, f.models, 'frame')
+    assert.equal(next.nodes[1].id, target.id)
+    if (manual) {
+      assert.equal(next.nodes[1].prompt, target.prompt)
+      assert.equal(next.nodes[1].text, target.text)
+    } else {
+      assert.match(next.nodes[1].text, /裴砚站在林晚左后方/)
+      assert.doesNotMatch(next.nodes[1].text, /角色睁眼/)
+      const nextSource = editedImage(f, '裴砚转身离开，林晚留在原地。')
+      const changed = { ...next, nodes: next.nodes.map(node => node.id === source.id ? nextSource : node) }
+      const refreshed = connectImageVideoHandoff(changed, imageVideoConnection(nextSource, next.nodes[1], f.detail, f.models)!, f.detail, f.models, 'unused')
+      assert.match(refreshed.nodes[1].text, /裴砚转身离开/)
+      assert.equal(refreshed.edges[0].id, 'frame')
+      assert.equal(connectImageVideoHandoff(refreshed, imageVideoConnection(nextSource, refreshed.nodes[1], f.detail, f.models)!, f.detail, f.models, 'unused'), refreshed)
+    }
+  }
+})
+
+test('multi-reference refresh removes obsolete inherited fixed images and uses only the current image references', () => {
+  const f = fixture(), model = multiReferenceVideoModel()
+  const input = { ...f.source, id: 'reference-image', type: 'image' as const, shot_id: null, asset_id: 'new', settings: {} }
+  const source = editedImage(f, '裴砚在左侧，[[ref:new]]用于裴砚的外形。')
+  const graph = { ...f.graph, nodes: [source, input], edges: [{ id: 'source-ref', source: input.id, target: source.id, reference_asset_id: 'new' }] }
+  const first = createImageVideoHandoff(graph, source, f.detail, [model], f.fresh, 'frame', 'reference')
+  assert.deepEqual(fixedReferenceAsset(first.graph, 'video', f.detail.assets).map(item => item.asset?.id), ['chosen', 'new'])
+  const nextSource = editedImage(f, '裴砚在右侧，不再使用之前的外形参考。')
+  const removed = { ...first.graph, nodes: first.graph.nodes.map(node => node.id === source.id ? nextSource : node),
+    edges: first.graph.edges.filter(edge => edge.id !== 'source-ref') }
+  const next = createImageVideoHandoff(removed, nextSource, f.detail, [model], { ...f.fresh, id: 'unused' }, 'unused', 'reference')
+  assert.equal(next.updated, true)
+  assert.deepEqual(fixedReferenceAsset(next.graph, 'video', f.detail.assets).map(item => item.asset?.id), ['chosen'])
+  assert.doesNotMatch(next.graph.nodes.find(node => node.id === 'video')!.text, /\[\[ref:new\]\]/)
+  assert.equal(next.graph.nodes.find(node => node.id === source.id), nextSource)
+})
+
+test('restoring the uncustomized source resets inherited prose without disturbing its historical video result', () => {
+  const f = fixture(), source = editedImage(f)
+  const first = createImageVideoHandoff({ ...f.graph, nodes: [source] }, source, f.detail, f.models, f.fresh, 'frame')
+  const graph = { ...first.graph, nodes: [f.source, { ...first.graph.nodes[1], asset_id: 'historical-video' }] }
+  const next = createImageVideoHandoff(graph, f.source, f.detail, f.models, { ...f.fresh, id: 'unused' }, 'unused')
+  assert.equal(next.updated, true)
+  assert.equal(next.graph.nodes[1].prompt, f.detail.shots[0].video_prompt)
+  assert.equal(next.graph.nodes[1].text, '')
+  assert.equal(next.graph.nodes[1].settings.prompt_body, undefined)
+  assert.equal(next.graph.nodes[1].asset_id, 'historical-video')
+})
+
+test('a second image added to an automatic reference video preserves its primary creative design and handoff source', () => {
+  const f = fixture(), model = multiReferenceVideoModel(), source = editedImage(f, '林晚在站台左侧等车。')
+  const first = createImageVideoHandoff({ ...f.graph, nodes: [source] }, source, f.detail, [model], f.fresh, 'primary', 'reference')
+  const video = first.graph.nodes[1]
+  const extra = { ...editedImage(f, '裴砚独自站在街头。'), id: 'extra-image', asset_id: 'new' }
+  const graph = { ...first.graph, nodes: [...first.graph.nodes, extra], edges: [...first.graph.edges,
+    { id: 'extra-old-input', source: source.id, target: extra.id, reference_asset_id: 'unavailable-old-input' }] }
+  const next = connectImageVideoHandoff(graph, imageVideoConnection(extra, video, f.detail, [model])!, f.detail, [model], 'supplement')
+  const connected = next.nodes.find(node => node.id === video.id)!
+  assert.equal(connected.prompt, video.prompt)
+  assert.equal(connected.text, video.text)
+  assert.equal(connected.settings.storyboard_reference_asset_id, 'chosen')
+  assert.deepEqual(connected.settings.image_video_handoff, video.settings.image_video_handoff)
+  assert.deepEqual(next.edges.filter(edge => edge.target === video.id).map(edge => edge.reference_asset_id), ['chosen', 'new'])
 })

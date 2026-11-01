@@ -89,7 +89,7 @@ test('manual batch confirmation supports legacy jobs without auto approval and p
   }
   const first = succeed(f.jobs[0]!)
   const frozen = succeed(f.jobs[1]!)
-  run('UPDATE shot_visual_bindings SET board_asset_id=? WHERE shot_id=? AND profile_id=?', frozen, f.shot.id, f.profile.id)
+  run("UPDATE shot_visual_bindings SET board_asset_id=?, sync_mode='locked' WHERE shot_id=? AND profile_id=?", frozen, f.shot.id, f.profile.id)
   ready(f.task.id)
   const result = await confirm(f)
   assert.equal(result.confirmed[0]?.board_asset_id, first)

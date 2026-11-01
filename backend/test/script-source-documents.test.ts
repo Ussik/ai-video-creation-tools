@@ -6,6 +6,7 @@ import { after, test } from 'node:test'
 import { ZipFile } from 'yazl'
 import { scriptStageArtifacts, scriptStageOrder, scriptArtifactLabels } from '@video-studio/shared/script/script-stage-content'
 import { sourceAnalysisFixture } from './fixtures/script-source-analysis.js'
+import { workflowFixtureTypes } from './fixtures/script-workflow.js'
 import { draftCompletenessFixtureResponse } from './fixtures/script-draft-completeness.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'studio-script-source-'))
@@ -118,7 +119,7 @@ test('upload returns before background analysis completes and the next conversat
   } finally { release() }
 })
 
-test('first chat prepares the source before generation and preserves the exact creator request', async t => {
+test('first chat reads the complete source directly and preserves the exact creator request', async t => {
   const project = (await app.inject({ method: 'POST', url: '/api/projects', payload: { name: '原话与原文兜底' } })).json()
   const provider = (await app.inject({ method: 'POST', url: '/api/providers', payload: { name: '原话', base_url: 'https://original-request.example/v1' } })).json()
   const model = (await app.inject({ method: 'POST', url: '/api/models', payload: { provider_id: provider.id, name: '文本', remote_id: 'test', modality: 'text', protocol: 'chat_completions', settings: {
@@ -137,7 +138,7 @@ test('first chat prepares the source before generation and preserves the exact c
     const intent = prompt.includes('本次独立调用只理解创作者意图')
     return Response.json({ choices: [{ message: { content: JSON.stringify(intent
       ? { action: 'draft', authorization: 'explicit', operation: 'create', workflow: { stage: 'outline', episode_number: 0 }, creative_brief: '仅整理故事大纲', settings_patch: {} }
-      : { artifacts: scriptStageArtifacts.outline.map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '林舟回家，保留原文故事。' })), scenes: [] }) }, finish_reason: 'stop' }] })
+      : { artifacts: workflowFixtureTypes(prompt).map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '林舟回家，保留原文故事。' })), scenes: [] }) }, finish_reason: 'stop' }] })
   })
   const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload: {
     model_id: model.id, mode: 'script', use_tools: true, messages: [{ role: 'user', text: request }] } })
@@ -324,14 +325,14 @@ test('every stage writer and completeness check receive the original script inde
       if (!intent) writerCalls++
       if (useTools && !intent) assert.equal(body.tools, undefined)
       const content = intent ? { action: 'draft', authorization: 'explicit', operation: 'create', workflow: { stage, episode_number: stage === 'episode' ? 1 : 0 }, creative_brief: '根据原剧本整理指定阶段', settings_patch: {} }
-        : { artifacts: scriptStageArtifacts[stage].map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '主角回家，保持原文事实。' })), scenes: stage === 'episode' ? [{ heading: '第1场 家中', action: '主角回家', dialogue: '我回来了。', duration: 10 }] : [] }
+        : { artifacts: workflowFixtureTypes(prompt, scriptStageArtifacts[stage]).map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '主角回家，保持原文事实。' })), scenes: stage === 'episode' ? [{ heading: '第1场 家中', action: '主角回家', dialogue: '我回来了。', duration: 10 }] : [] }
       return Response.json({ choices: [{ message: { content: JSON.stringify(content) }, finish_reason: 'stop' }] })
     })
     const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat${useTools ? '/stream' : ''}`, payload: { model_id: model.id, mode: 'script', use_tools: useTools, workflow: { stage, episode_number: stage === 'episode' ? 1 : 0 }, messages: [{ role: 'user', text: '基于已上传剧本生成本阶段草稿' }] } })
     assert.equal(response.statusCode, 200, `${stage}: ${response.body}`)
     const result = useTools ? response.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5))).find(event => event.type === 'done') : response.json()
     assert.ok(useTools ? result?.tool_draft : result?.draft, `${stage}: ${response.body}`)
-    assert.equal(writerCalls, 1, stage)
+    assert.equal(writerCalls, stage === 'locations' || stage === 'props' ? 2 : 1, stage)
   }
 })
 
@@ -352,7 +353,7 @@ test('replacing an uploaded script during stage generation rejects the stale dra
       replaced = true
       assert.equal((await upload(project.id, 'revised.txt', Buffer.from('新版事实：林舟离开故乡。'))).statusCode, 200)
     }
-    return Response.json({ choices: [{ message: { content: JSON.stringify({ artifacts: scriptStageArtifacts.outline.map(artifact_type => ({
+    return Response.json({ choices: [{ message: { content: JSON.stringify({ artifacts: workflowFixtureTypes(prompt).map(artifact_type => ({
       artifact_type, title: scriptArtifactLabels[artifact_type], content: '林舟留在故乡，完成主线。' })), scenes: [] }) }, finish_reason: 'stop' }] })
   })
   const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload: {
@@ -363,7 +364,7 @@ test('replacing an uploaded script during stage generation rejects the stale dra
   assert.equal((await app.inject({ method: 'GET', url: `/api/projects/${project.id}/script` })).json().artifacts?.length || 0, 0)
 })
 
-test('partial-stage tool generation can read the uploaded script without logging its text', async t => {
+test('scoped document review can read uploaded source through tools without logging its text', async t => {
   const project = (await app.inject({ method: 'POST', url: '/api/projects', payload: { name: '补齐阶段读取原文' } })).json()
   const provider = (await app.inject({ method: 'POST', url: '/api/providers', payload: { name: '工具测试', base_url: 'https://source-tools.example/v1' } })).json()
   const model = (await app.inject({ method: 'POST', url: '/api/models', payload: { provider_id: provider.id, name: '文本', remote_id: 'test', modality: 'text', protocol: 'chat_completions', settings: {
@@ -379,7 +380,7 @@ test('partial-stage tool generation can read the uploaded script without logging
     const names = body.tools.map((tool: { function: { name: string } }) => tool.function.name)
     assert.ok(names.includes('read_source_document'))
     assert.ok(names.includes('search_source_document'))
-    assert.ok(!names.includes('record_story_decision'))
+    assert.ok(names.includes('read_documents'))
     if (++calls === 1) return Response.json({ choices: [{ message: { tool_calls: [{ id: 'source-read', type: 'function', function: {
       name: 'read_source_document', arguments: JSON.stringify({ offset: content.length - 40, length: 40 }) } }] }, finish_reason: 'tool_calls' }] })
     const result = JSON.parse(body.messages.at(-1).content)
@@ -387,7 +388,7 @@ test('partial-stage tool generation can read the uploaded script without logging
     return Response.json({ choices: [{ message: { content: '已核对终场原文。' }, finish_reason: 'stop' }] })
   })
   const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload: {
-    model_id: model.id, mode: 'script', use_tools: true, workflow: { stage: 'outline', operation: 'supplement' }, messages: [{ role: 'user', text: '补齐大纲其他部分' }] } })
+    model_id: model.id, mode: 'script', use_tools: true, document_action: { operation: 'review', document_ids: [`${project.id}-outline`] }, messages: [{ role: 'user', text: '核对大纲与原稿终场是否一致' }] } })
   assert.equal(response.statusCode, 200, response.body)
   assert.equal(calls, 2)
   const sourceActivity = response.json().activity.find((entry: { name?: string }) => entry.name === 'read_source_document')
@@ -411,7 +412,7 @@ test('long upload-to-outline returns a complete unsaved preview for JSON and nat
       else if (prompt.includes('本次独立调用只理解创作者意图')) content = { action: 'draft', authorization: 'explicit', operation: 'create', workflow: { stage: 'outline', episode_number: 0 }, creative_brief: '原稿9集，水墨风格', settings_patch: {} }
       else if (contract?.name === 'workflow_draft') {
         writers++; assert.match(prompt, /STYLE_REQUIREMENT: 水墨/); assert.ok(prompt.includes(JSON.stringify(original)))
-        content = { artifacts: ['outline', 'synopsis', 'world', 'structure', 'hooks', 'foreshadowing', 'reversals', 'constraints', 'episode_outline']
+        content = { artifacts: workflowFixtureTypes(prompt)
           .map(type => ({ artifact_type: type, title: '剧情资料', content: type === 'episode_outline' ? Array.from({ length: 9 }, (_, i) => `第${i + 1}集：完整因果。`).join('\n') : '林舟得到钥匙，与伙伴共同经历冲突后交还钥匙。' })), scenes: [] }
       } else { const review = draftCompletenessFixtureResponse(init); assert.ok(review, 'unexpected model request'); reviews++; assert.ok(prompt.includes(JSON.stringify(original))); return review }
       return Response.json({ choices: [{ message: { content: JSON.stringify(content) }, finish_reason: 'stop' }] })
@@ -420,7 +421,7 @@ test('long upload-to-outline returns a complete unsaved preview for JSON and nat
       workflow: { stage: 'outline' }, messages: [{ role: 'user', text: '生成完整大纲，STYLE_REQUIREMENT: 水墨。' }] } })
     assert.equal(result.statusCode, 200, result.body)
     const preview = useTools ? result.json().tool_draft?.workflow : result.json().draft
-    assert.ok(preview, result.body); assert.equal(preview.artifacts.length, 9)
+    assert.ok(preview, result.body); assert.equal(preview.artifacts.length, 1)
     assert.equal(writers, 1); assert.equal(reviews, 1)
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM script_artifacts WHERE project_id=?').get(project.id)!.count, 0)
     assert.equal(readScriptSource(project.id, 0, original.length).content, original)

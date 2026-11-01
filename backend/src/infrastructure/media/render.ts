@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, statSync } from 'node:fs'
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
+import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs'
+import { copyFile, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import ffmpegPath from 'ffmpeg-static'
 import { mediaDir, type MediaAsset } from '../providers/providers.js'
 import { defaultAudioMix, speechIntervals, type AudioMixSettings, type SpeechAudioClip } from '@video-studio/shared/media/speech-timeline'
+import { wrapEditingCutCaption, type EditingCutCaption } from '@video-studio/shared/media/editing-cut'
 
 export interface RenderProject {
   id: string
@@ -31,9 +32,9 @@ function ffmpeg(): string {
   return binary
 }
 
-async function run(args: string[]): Promise<void> {
+async function run(args: string[], cwd?: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(ffmpeg(), ['-nostdin', '-hide_banner', '-loglevel', 'error', '-y', ...args], { stdio: ['ignore', 'ignore', 'pipe'] })
+    const child = spawn(ffmpeg(), ['-nostdin', '-hide_banner', '-loglevel', 'error', '-y', ...args], { cwd, stdio: ['ignore', 'ignore', 'pipe'] })
     let stderr = ''
     let timedOut = false
     const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL') }, 120000)
@@ -118,10 +119,17 @@ export async function render(
   assetsById: Record<string, MediaAsset>,
   speechAudio: SpeechAudioClip[] = [],
   audioSettings: AudioMixSettings = defaultAudioMix,
+  captions: EditingCutCaption[] = [],
 ): Promise<string> {
   if (!clips.length) throw new Error('请先为至少一个分镜选定图片或视频')
   if (!/^[a-zA-Z0-9_-]+$/.test(project.id)) throw new Error('无效的项目 ID')
   const totalMs = clips.reduce((sum, clip) => sum + clip.out_ms - clip.in_ms, 0)
+  for (const caption of captions) {
+    if (!Number.isSafeInteger(caption.start_ms) || !Number.isSafeInteger(caption.end_ms) ||
+      caption.start_ms < 0 || caption.end_ms <= caption.start_ms || caption.end_ms > totalMs ||
+      typeof caption.text !== 'string' || !caption.text.trim() || caption.text.length > 1000) throw new Error('字幕文本或显示区间无效')
+    if (wrapEditingCutCaption(caption.text, project.ratio).split('\n').length > 4) throw new Error('字幕过长，请拆分成多条字幕（每条最多4行）')
+  }
   if (!Number.isFinite(audioSettings.music_gain) || audioSettings.music_gain < 0 || audioSettings.music_gain > 1) throw new Error('配乐音量无效')
   for (const audio of speechAudio) {
     const asset = assetsById[audio.asset_id]
@@ -167,7 +175,7 @@ export async function render(
       const duration = (clip.out_ms - clip.in_ms) / 1000
       const start = clip.in_ms / 1000
       const end = clip.out_ms / 1000
-      const name = `${String(index).padStart(3, '0')}.mp4`
+      const name = `${String(index).padStart(3, '0')}.mov`
       const segment = join(tempDir, name)
       const inputs = asset.kind === 'image' ? ['-loop', '1', '-framerate', '24', '-i', asset.path] : ['-i', asset.path]
       const audioInput = asset.kind === 'video' && await hasAudio(asset.path) ? '0:a' : '1:a'
@@ -179,27 +187,36 @@ export async function render(
       if (fadeDuration > 0) {
         audioFilters.push(`afade=t=in:st=0:d=${fadeDuration}`, `afade=t=out:st=${duration - fadeDuration}:d=${fadeDuration}`)
       }
-      audioFilters.push('apad', `atrim=duration=${duration}`)
+      audioFilters.push('apad', `atrim=duration=${duration}`, 'alimiter=limit=0.891251:level=false:latency=true')
       const filters = `[0:v]${videoTrim},setpts=PTS-STARTPTS,${videoFilters}[v];` +
         `[${audioInput}]${audioFilters.join(',')}[a]`
       await run([
         ...inputs, '-filter_complex', filters, '-map', '[v]', '-map', '[a]',
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-pix_fmt', 'yuv420p',
-        '-c:a', 'aac', '-ar', '48000', '-t', String(duration), segment,
+        '-c:a', 'pcm_s16le', '-ar', '48000', '-ac', '2', '-video_track_timescale', '24000', '-movie_timescale', '24000',
+        '-t', String(duration), segment,
       ])
       segments.push(name)
     }
     const concatList = join(tempDir, 'segments.txt')
-    await writeFile(concatList, segments.map((name) => `file '${name}'\n`).join(''))
-    const joined = join(tempDir, 'joined.mp4')
-    await run(['-f', 'concat', '-safe', '0', '-i', concatList, '-c', 'copy', joined])
+    // Anchor each source to the document's exact cumulative boundary. PCM avoids
+    // per-segment AAC priming; one continuous fps pass prevents each short clip's
+    // partial video frame from accumulating into a longer exported timeline.
+    await writeFile(concatList, segments.map((name, index) =>
+      `file '${name}'\nduration ${(clips[index]!.out_ms - clips[index]!.in_ms) / 1000}\n`).join(''))
+    const joined = join(tempDir, 'joined.mov')
+    await run(['-f', 'concat', '-safe', '0', '-i', concatList,
+      '-vf', 'fps=24', '-af', `apad,atrim=duration=${totalMs / 1000}`,
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-pix_fmt', 'yuv420p',
+      '-c:a', 'pcm_s16le', '-ar', '48000', '-ac', '2', '-video_track_timescale', '24000', '-movie_timescale', '24000',
+      '-t', String(totalMs / 1000), joined])
     if (project.music_asset_id || speechAudio.length) {
       const totalDuration = totalMs / 1000
       const intervals = speechIntervals(speechAudio)
       const active = intervals.map(([start, end]) => `gte(t,${start / 1000})*lt(t,${end / 1000})`).join('+') || '0'
       const duck = `if(gt(${active},0),0.25,1)`
       const inputs = ['-i', joined]
-      const filters = [`[0:a]volume='${audioSettings.duck_source ? duck : '1'}':eval=frame[original]`]
+      const filters = [`[0:a]aformat=sample_rates=48000:channel_layouts=stereo,volume='${audioSettings.duck_source ? duck : '1'}':eval=frame[original]`]
       const mixed = ['[original]']
       for (const [index, audio] of speechAudio.entries()) {
         inputs.push('-i', assetsById[audio.asset_id]!.path)
@@ -216,21 +233,54 @@ export async function render(
         // Materialize a finite music stream before mixing; infinite looping inputs can
         // leave FFmpeg's multi-input filter graph waiting after the last video frame.
         const loopedMusic = join(tempDir, 'music.m4a')
-        await run(['-stream_loop', '-1', '-i', music.path, '-vn', '-t', String(totalDuration), '-c:a', 'aac', '-ar', '48000', loopedMusic])
+        await run(['-stream_loop', '-1', '-i', music.path, '-vn', '-t', String(totalDuration), '-c:a', 'aac', '-ar', '48000', '-ac', '2', loopedMusic])
         inputs.push('-i', loopedMusic)
         filters.push(`[${speechAudio.length + 1}:a]atrim=duration=${totalDuration},asetpts=PTS-STARTPTS,volume='${audioSettings.music_gain}*(${audioSettings.duck_music ? duck : '1'})':eval=frame[music]`)
         mixed.push('[music]')
       }
-      filters.push(`${mixed.join('')}amix=inputs=${mixed.length}:duration=first:dropout_transition=0:normalize=0[a]`)
+      filters.push(`${mixed.join('')}amix=inputs=${mixed.length}:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.891251:level=false:latency=true[a]`)
       const mixScript = join(tempDir, 'audio-mix.txt')
       await writeFile(mixScript, filters.join(';'))
       await run([
         ...inputs, '-filter_complex_script', mixScript,
-        '-map', '0:v', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac',
+        '-map', '0:v', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-ar', '48000', '-ac', '2',
         '-movflags', '+faststart', '-t', String(totalDuration), finalPath,
       ])
     } else {
-      await run(['-i', joined, '-c', 'copy', '-movflags', '+faststart', finalPath])
+      await run(['-i', joined, '-c:v', 'copy', '-c:a', 'aac', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', finalPath])
+    }
+    if (captions.length) {
+      // Read plain text from fixed filenames, with expansion disabled. User text
+      // never enters the filter expression or an ASS override/tag interpreter.
+      const font = [
+        '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
+        '/System/Library/Fonts/STHeiti Medium.ttc',
+        '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+        '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
+        'C:/Windows/Fonts/msyh.ttc',
+      ].find(path => existsSync(path))
+      if (font) await copyFile(font, join(tempDir, 'caption-font.ttf'))
+      const fontSize = Math.round(height * 0.0583)
+      const lineHeight = Math.round(fontSize * 1.18)
+      const filters: string[] = []
+      for (const [index, caption] of captions.entries()) {
+        const lines = wrapEditingCutCaption(caption.text, project.ratio).split('\n')
+        for (const [lineIndex, line] of lines.entries()) {
+          if (!line) continue
+          const name = `caption-${index}-${lineIndex}.txt`
+          await writeFile(join(tempDir, name), line, 'utf8')
+          filters.push(`drawtext=${font ? 'fontfile=caption-font.ttf' : 'font=Sans'}:textfile=${name}:expansion=none:` +
+            `fontsize=${fontSize}:fontcolor=white:borderw=2:bordercolor=black:shadowcolor=black@0.7:shadowx=0:shadowy=2:` +
+            `x=(w-text_w)/2:y=h-h*0.075-${(lines.length - lineIndex) * lineHeight}+(${lineHeight}-text_h)/2:` +
+            `enable='gte(t,${caption.start_ms / 1000})*lt(t,${caption.end_ms / 1000})'`)
+        }
+      }
+      await writeFile(join(tempDir, 'caption-filters.txt'), filters.join(','))
+      const captioned = join(tempDir, 'captioned.mp4')
+      await run(['-i', finalPath, '-filter_script:v', 'caption-filters.txt',
+        '-map', '0:v:0', '-map', '0:a:0', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21',
+        '-pix_fmt', 'yuv420p', '-c:a', 'copy', '-movflags', '+faststart', captioned], tempDir)
+      await copyFile(captioned, finalPath)
     }
     if (!(await stat(finalPath)).size) throw new Error('导出的视频文件为空')
     return finalPath

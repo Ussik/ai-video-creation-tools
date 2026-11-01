@@ -30,8 +30,8 @@ export function scriptSourceDocument(projectId: string, includeAnalysis = true):
   return source ? includeAnalysis ? { ...source, analysis: publicAnalysis(scriptSourceAnalysis(projectId), source.content) } : source : null
 }
 
-export function scriptSourceContext(projectId: string, includeOriginal = false, compactDirectory = false): string {
-  const source = scriptSourceDocument(projectId)
+export function scriptSourceContext(projectId: string, includeOriginal = false, compactDirectory = false, includeAnalysis = true): string {
+  const source = scriptSourceDocument(projectId, includeAnalysis)
   if (!source) return ''
   if (includeOriginal) completeSourceEvidence(source)
   const analysis = source.analysis
@@ -40,7 +40,7 @@ export function scriptSourceContext(projectId: string, includeOriginal = false, 
       ...(analysis?.status === 'ready' ? { analysis_source_version: analysis.source_version, story: analysis.story,
       ...(compactDirectory ? {} : { sections: analysis.sections.map((section, id) => ({ id, unit_id: section.unit_id ?? id, offset: section.offset, length: section.length,
         title: section.title, episode_number: section.episode_number, summary: section.summary.slice(0, 180) })) }) } : {}) }) +
-    (analysis?.status === 'ready' ? '' : '\n分析尚未完成，不能根据目录预览猜测。') +
+    (analysis?.status === 'ready' || !includeAnalysis ? '' : '\n分析尚未完成，不能根据目录预览猜测。') +
     (includeOriginal ? `\n当前有效稿完整原文：\n${JSON.stringify(source.content)}` : '\n正文通过原文位置按需读取；全剧信息用于定位，不能代替原文证据。') + '\n'
 }
 
@@ -70,7 +70,7 @@ export function scriptSourceIndex(projectId: string, compact = false) {
 export function scriptSourceFallbackContext(projectId: string): string {
   const source = scriptSourceDocument(projectId)
   return source && source.analysis?.status !== 'ready'
-    ? '\n剧本资料尚未准备。不能根据目录预览猜测全剧；需完整理解的生成或评审等待分析，局部讨论可使用原文读取工具。\n' : ''
+    ? '\n剧本分析尚未完成，不能声称已有核实完成的全剧分析，也不能根据目录预览猜测全文。原文仍可读取；本轮已提供完整原稿时可直接依据全文讨论或整理故事大纲，原稿未说明的信息如实保留未知。只提供局部原文时先补读任务所需内容，不把局部结论当作全剧结论。其他需要专门分析的任务由程序按实际依赖安排，不要求创作者等待无关分析。\n' : ''
 }
 
 export type ScriptSourceReadOptions = { source_version?: string }

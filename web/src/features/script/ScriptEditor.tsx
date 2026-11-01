@@ -10,8 +10,10 @@ import {
 import { api, json } from '../../shared/api/api'
 import type { Model, PlannedScene, PlannedShot, PlannedShotCreationResult, ProjectDetail, Provider, ScriptArtifactType, ScriptGenerationOptions, ShotPlanResult } from '../../shared/api/api'
 import { scriptArtifactLabels, scriptStageArtifacts, scriptStageForArtifact, type ScriptStage } from '@video-studio/shared/script/script-stage-content'
+import { workflowProgress } from '@video-studio/shared/script/script-stage-access'
 import './script-editor.css'
 import StoryboardPlanner from '../storyboard/StoryboardPlanner'
+import { preferredModel } from '../models/model-defaults'
 import { useAppDialog } from '../../shared/ui/AppDialog'
 import ThemeToggle from '../../shared/ui/ThemeToggle'
 import { applyTextFormat, type TextFormat } from '../../shared/lib/editor/text-editor'
@@ -163,20 +165,10 @@ function catalogForStage(stage: ScriptStage) {
 }
 
 function defaultArtifacts(script: { outline?: string; characters?: string; scenes?: SavedScene[]; generation_options?: ScriptGenerationOptions }): ScriptArtifact[] {
-  const sceneContent = (script.scenes || []).map((scene, index) => [
-    `第 ${index + 1} 场｜${scene.heading}`,
-    scene.location && `地点：${scene.location}`,
-    scene.time_of_day && `时间：${scene.time_of_day}`,
-    scene.characters && `人物：${scene.characters}`,
-    scene.action && `动作：${scene.action}`,
-    scene.dialogue && `对白：${scene.dialogue}`,
-    scene.narration && `旁白：${scene.narration}`,
-    `时长：${scene.duration} 秒`,
-  ].filter(Boolean).join('\n')).join('\n\n')
+  // Only these legacy fields contain actual saved document bodies. Generation
+  // settings and scenes must not masquerade as separately authored chapters.
   const values: Partial<Record<ScriptArtifactType, string>> = {
-    outline: script.outline || '', synopsis: script.outline || '', characters: script.characters || '', structure: sceneContent,
-    world: [script.generation_options?.era && `时代与地点：${script.generation_options.era}`, script.generation_options?.visual_style && `视觉风格：${script.generation_options.visual_style}`].filter(Boolean).join('\n'),
-    hooks: script.generation_options?.core_hook || '',
+    outline: script.outline || '', characters: script.characters || '',
   }
   return artifactCatalog.map((item, index) => ({
     id: `local-${item.type}`, artifact_type: item.type, title: item.title,
@@ -195,6 +187,7 @@ export interface ScriptEditorProps {
   onOpenCanvas: () => void
   onNotice: (message: string) => void
   onDirtyChange?: (dirty: boolean) => void
+  onSupplementStage?: (stage: Exclude<ScriptStage, 'episode'>) => void
 }
 
 function sceneFields(scene: Partial<SceneFields>): SceneFields {
@@ -261,10 +254,11 @@ function plannedSceneIssue(scene: PlannedScene): string | null {
   return null
 }
 
-function ScriptEditor({ detail, models, providers, busy = false, initialSection, onRefresh, onOpenModels, onOpenCanvas, onNotice, onDirtyChange }: ScriptEditorProps) {
+function ScriptEditor({ detail, models, providers, busy = false, initialSection, onRefresh, onOpenModels, onOpenCanvas, onNotice, onDirtyChange, onSupplementStage }: ScriptEditorProps) {
   const { confirm, dialog } = useAppDialog()
   const [draft, setDraft] = useState<ScriptDraft>(() => fromDetail(detail))
   const [saved, setSaved] = useState<ScriptDraft>(() => fromDetail(detail))
+  const [editingEmptySections, setEditingEmptySections] = useState<Set<ScriptArtifactType>>(() => new Set())
   const draftRef = useRef<ScriptDraft>(draft)
   const historyRef = useRef<{ past: ScriptDraft[]; future: ScriptDraft[] }>({ past: [], future: [] })
   const historyActionRef = useRef(false)
@@ -341,6 +335,10 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
   }, [detail.shots])
   const linkedSceneIds = useMemo(() => new Set(existingDurationByScene.keys()), [existingDurationByScene])
   const availableModels = models.filter((model) => model.modality === 'text' && model.enabled && providers.some((provider) => provider.id === model.provider_id && provider.enabled && provider.adapter !== 'demo'))
+  useEffect(() => {
+    setPlanModelId(current => availableModels.some(model => model.id === current)
+      ? current : preferredModel(availableModels)?.id || '')
+  }, [models, providers])
   const selectedScenes = draft.scenes.filter((scene) => scene.id && selectedSceneIds.includes(scene.id))
   const quickConvertScenes = selectedScenes.filter((scene) => !linkedSceneIds.has(scene.id!))
   const selectedPlanModelAvailable = availableModels.some((model) => model.id === planModelId)
@@ -531,7 +529,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
         characters: draft.characters,
         generation_options: draft.generation_options,
         scenes: draft.scenes.map(({ id, clientId: _clientId, ...fields }) => ({ ...(id ? { id } : {}), ...fields })),
-        artifacts: draft.artifacts.map(({ id, project_id: _projectId, created_at: _createdAt, updated_at: _updatedAt, document: _document, ...artifact }, index) => ({
+        artifacts: draft.artifacts.filter(artifact => !artifact.id.startsWith('local-') || artifact.content.trim()).map(({ id, project_id: _projectId, created_at: _createdAt, updated_at: _updatedAt, document: _document, ...artifact }, index) => ({
           ...artifact,
           ...(id.startsWith('local-') ? {} : { id }),
           position: index,
@@ -731,6 +729,9 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
   const sceneForDeletion = draft.scenes.find((scene) => scene.clientId === deleteSceneId)
   const activeGroup = editorDocumentGroups.find(group => group.stage === scriptStageForArtifact(activeDocumentSection)) || editorDocumentGroups[0]!
   const activeGroupCatalog = catalogForStage(activeGroup.stage)
+  const activeGroupFilled = activeGroupCatalog.filter(item => draft.artifacts.some(artifact => artifact.artifact_type === item.type && !artifact.episode_number && artifact.content.trim())).length
+  const activeGroupMissing = activeGroupCatalog.length - activeGroupFilled
+  const canSupplementGroup = !!onSupplementStage && workflowProgress(remoteScript || {}).completed[activeGroup.stage]
   const legacyScript = draft.artifacts.find(artifact => artifact.artifact_type === 'episode_script' && !artifact.episode_number && artifact.content.trim())
   const episodeDocuments = draft.artifacts.filter(item => item.artifact_type === 'episode_script' && (item.episode_number || 0) > 0).sort((a, b) => (a.episode_number || 0) - (b.episode_number || 0))
   const selectedEpisode = episodeDocuments.find(item => `episode-${item.episode_number}` === activeDocumentSection)
@@ -793,7 +794,10 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
           return <div key={group.stage} className={items.length > 1 ? 'script-document-nav-feature' : undefined} data-script-stage={group.stage}>
             <Button type="button" className={`script-document-nav-primary ${items.length === 1 ? 'script-document-nav-standalone' : ''} ${scriptStageForArtifact(activeDocumentSection) === group.stage ? 'is-active' : ''}`} onClick={() => selectDocumentSection(items[0]!.type, true)} data-workspace-control="" variant="subtle">{group.title}</Button>
             {items.length > 1 && <div className="script-document-nav-nested">
-              {items.map(item => <UnstyledButton type="button" key={item.type} className={`script-document-nav-item ${activeDocumentSection === item.type ? 'is-active' : ''}`} onClick={() => selectDocumentSection(item.type)}><span>{item.title}</span></UnstyledButton>)}
+              {items.map(item => {
+                const missing = !draft.artifacts.some(artifact => artifact.artifact_type === item.type && !artifact.episode_number && artifact.content.trim())
+                return <UnstyledButton type="button" key={item.type} className={`script-document-nav-item ${missing ? 'is-missing' : ''} ${activeDocumentSection === item.type ? 'is-active' : ''}`} title={missing ? `${item.title}（未生成）` : item.title} onClick={() => selectDocumentSection(item.type)}><span>{item.title}</span>{missing && <span className="script-document-missing-dot" aria-hidden="true" />}</UnstyledButton>
+              })}
             </div>}
           </div>
         })}
@@ -832,6 +836,10 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
             <span className="script-kicker">{activeGroup.title}</span>
             <h1>{activeGroup.title}</h1>
             <p>{activeGroup.stage === 'outline' ? [draft.generation_options.genre, draft.generation_options.genre_fusion].filter(Boolean).join(' × ') || draft.brief.trim() || activeGroup.description : activeGroup.description}</p>
+            <div className="script-stage-completeness">
+              <span>已填写 {activeGroupFilled}/{activeGroupCatalog.length} 项{activeGroupMissing > 0 ? `，${activeGroupMissing} 项未生成` : '，栏目已齐全'}</span>
+              {activeGroupMissing > 0 && canSupplementGroup && <Button size="xs" variant="light" leftSection={<Sparkles size={13} />} disabled={disabled || hasUnsavedWork} title={hasUnsavedWork ? '请先保存当前手动修改' : `选择模型后，只补齐${activeGroup.title}未生成的栏目`} onClick={() => onSupplementStage?.(activeGroup.stage)}>补齐{activeGroup.title}缺项</Button>}
+            </div>
           </header>
           {activeGroupCatalog.map((item, index) => {
             const artifact = draft.artifacts.find((entry) => entry.artifact_type === item.type && !entry.episode_number)
@@ -840,7 +848,10 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
               <header className="script-long-section-heading">
                 <div><span className="script-section-index">{String(index + 1).padStart(2, '0')}</span><div><span className="script-kicker">{item.group}</span><h2>{artifact.title === activeGroup.title && (activeGroup.stage === 'locations' || activeGroup.stage === 'props') ? item.title : artifact.title}</h2></div></div>
               </header>
-              <RichArtifactEditor
+              {!artifact.content.trim() && !editingEmptySections.has(item.type) ? <div className="script-section-empty">
+                <div><strong>未生成</strong><span>此栏目暂无正文，可手动填写{canSupplementGroup ? '，或通过上方入口补齐缺项' : ''}。</span></div>
+                <Button size="xs" variant="subtle" disabled={disabled} aria-label={`手动填写${item.title}`} onClick={() => setEditingEmptySections(current => new Set(current).add(item.type))}>手动填写</Button>
+              </div> : <RichArtifactEditor
                 key={artifact.id}
                 {...artifactSearchProps(artifact)}
                 label={artifact.title}
@@ -851,7 +862,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
                 onFocus={(editor) => { focusedEditorRef.current = editor; focusedArtifactRef.current = item.type }}
                 onSelectionChange={(editor) => { focusedEditorRef.current = editor; setSelectionRevision((value) => value + 1) }}
                 onChange={(content, document) => updateArtifact(artifact.artifact_type, content, document)}
-              />
+              />}
             </section>
           })}
           </>}

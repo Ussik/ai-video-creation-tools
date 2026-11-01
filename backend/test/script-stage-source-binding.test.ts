@@ -45,10 +45,12 @@ async function generate(projectId: string, modelId: string, useTools: boolean) {
 function mockWriter(t: any, beforeReturn?: () => Promise<void>) {
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
     const review = draftCompletenessFixtureResponse(init); if (review) return review
-    const prompt = JSON.parse(String(init?.body)).messages[0].content
+    const body = JSON.parse(String(init?.body)), prompt = body.messages[0].content
+    const wireType = body.response_format?.json_schema?.schema?.properties?.artifacts?.items?.properties?.artifact_type
+    const requestedTypes: string[] = wireType?.enum || (wireType?.const ? [wireType.const] : [])
     const content = prompt.includes('本次独立调用只理解创作者意图')
       ? { action: 'draft', operation: 'create', authorization: 'explicit', workflow: { stage: 'outline' }, creative_brief: '完整生成全剧大纲。' }
-      : (await beforeReturn?.(), { artifacts, scenes: [] })
+      : (await beforeReturn?.(), { artifacts: artifacts.filter(item => requestedTypes.includes(item.artifact_type)), scenes: [] })
     return Response.json({ choices: [{ message: { content: JSON.stringify(content) } }] })
   })
 }

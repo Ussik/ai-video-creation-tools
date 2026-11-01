@@ -14,7 +14,8 @@ import { withVisualProfilePrompt } from '@video-studio/shared/visuals/visual-pro
 import { scopedVisualReferenceAssetIds, videoReferenceManifest, visualBindingReferenceAssetIds } from '@video-studio/shared/media/video-reference-manifest'
 import { assertStyleVersion, projectVisualStyle, referenceStyleWarnings } from './project-visual-style.js'
 import { withProjectStyle, withoutProjectStyle, projectStyleInstructions, projectStyleTemplateError } from '@video-studio/shared/visuals/visual-style'
-import { skillIdsInput, skillContext } from '../skills/skills.js'
+import { skillIdsInput } from '../skills/skills.js'
+import { resolveCreationSkillContext, type CreationSkillSelector } from '../skills/model-skill-selection.js'
 import type { VisualReferenceSnapshot } from '@video-studio/shared/visuals/visual-reference-types'
 import { visualReferenceAssets, normalizeVisualBinding, referenceSnapshot, selectedVisualReferenceSnapshots, registerVisualReferenceRoutes } from './visual-reference-assets.js'
 import { recommendVisualReferences } from '@video-studio/shared/visuals/visual-reference-selection'
@@ -23,6 +24,10 @@ import type { VideoReferenceUsageSelection } from '@video-studio/shared/media/vi
 import { assertStoryboardReferenceBudget, storyboardReferenceBudgetInstructions } from '../storyboard/storyboard-reference-budget.js'
 import { extractPromptReferenceIds, resolvePromptReferences } from '@video-studio/shared/visuals/prompt-references'
 import { resolveVisualProfileDisplayText, visualProfileTextInstructions, type VisualTextContext } from '@video-studio/shared/visuals/visual-profile-display-text'
+import { enrichExplicitReferenceBindings } from '@video-studio/shared/visuals/explicit-reference-context'
+import { explicitReferenceProfiles } from './explicit-reference-context.js'
+import { persistResolvedVisualBindings, resolveShotVisualBindings, resolveVisualBinding, synchronizeProjectVisualBindings, synchronizeVisualProfileBindings,
+  type VisualBindingReferenceSelection, type VisualBindingSyncMode } from './visual-binding-sync.js'
 
 export type VisualKind = 'character' | 'location' | 'prop'
 export interface VisualProfile {
@@ -41,6 +46,8 @@ export interface VisualBinding extends Pick<VisualProfile, 'kind' | 'name' | 'va
   shot_id: string; profile_id: string; required: number
   reference_assets?: VisualReferenceSnapshot[]
   usage?: VisualBindingUsage
+  sync_mode?: VisualBindingSyncMode
+  reference_selection?: VisualBindingReferenceSelection
 }
 export const profileInput = z.object({
   kind: z.enum(['character', 'location', 'prop']), name: z.string().trim().min(1).max(100),
@@ -65,6 +72,8 @@ const bindingsInput = z.object({ bindings: z.array(z.object({
   profile_id: z.string().min(1), required: z.boolean().default(true),
   reference_asset_ids: z.array(z.string().min(1)).max(10).optional(),
   usage: z.enum(visualBindingUsages).optional(),
+  sync_mode: z.enum(['follow', 'locked']).optional(),
+  reference_selection: z.enum(['auto', 'manual']).optional(),
 }).strict()).max(50) }).strict()
 const profilePatch = profileInput.omit({ scene_ids: true, draft_key: true, base_draft_key: true, design_id: true }).partial().extend({
   variant: z.string().trim().min(1).max(100).optional(),
@@ -93,6 +102,9 @@ const boardInput = z.object({
 function invalid(message: string): never { throw Object.assign(new Error(message), { statusCode: 422 }) }
 function checkedPromptReferences(input: Parameters<typeof resolvePromptReferences>[0]) {
   try { return resolvePromptReferences(input) } catch (issue) { invalid(issue instanceof Error ? issue.message : String(issue)) }
+}
+function checkedPromptReferenceIds(prompt: string) {
+  try { return extractPromptReferenceIds(prompt) } catch (issue) { invalid(issue instanceof Error ? issue.message : String(issue)) }
 }
 function touch(projectId: string) { run('UPDATE projects SET updated_at=? WHERE id=?', now(), projectId) }
 
@@ -344,13 +356,15 @@ function boardTask(profile: VisualProfile, prompt: string) {
 }
 
 export function visualProjectData(projectId: string) {
+  synchronizeProjectVisualBindings(projectId)
   return {
     project_visual_style: projectVisualStyle(projectId),
     visual_profiles: all<VisualProfile>('SELECT * FROM visual_profiles WHERE project_id=? ORDER BY kind, name, variant', projectId).map(publicProfile),
     scene_visual_bindings: all<{ scene_id: string; profile_id: string; required: number }>(`SELECT b.* FROM scene_visual_bindings b
       JOIN script_scenes s ON s.id=b.scene_id WHERE s.project_id=?`, projectId).map(binding => ({ ...binding, required: !!binding.required })),
     shot_visual_bindings: all<VisualBinding>(`SELECT b.* FROM shot_visual_bindings b
-      JOIN shots s ON s.id=b.shot_id WHERE s.project_id=?`, projectId).map(binding => ({ ...normalizeVisualBinding(binding), required: !!binding.required })),
+      JOIN shots s ON s.id=b.shot_id WHERE s.project_id=?`, projectId).map(binding => ({
+        ...resolveVisualBinding(required<Shot>('shots', binding.shot_id), binding), required: !!binding.required })),
   }
 }
 
@@ -360,10 +374,12 @@ export function checkBindings(projectId: string, bindings: z.infer<typeof bindin
     const profile = required<VisualProfile>('visual_profiles', binding.profile_id)
     if (profile.project_id !== projectId) invalid('设定档案不属于当前项目')
     if (binding.reference_asset_ids && new Set(binding.reference_asset_ids).size !== binding.reference_asset_ids.length) invalid('参考资产不能重复选择')
-    return { profile, required: binding.required, reference_asset_ids: binding.reference_asset_ids, usage: binding.usage }
+    return { profile, required: binding.required, reference_asset_ids: binding.reference_asset_ids, usage: binding.usage,
+      sync_mode: binding.sync_mode, reference_selection: binding.reference_selection }
   })
 }
-export function insertShotBinding(shotId: string, profile: VisualProfile, isRequired: boolean, selectedIds?: string[], usage: VisualBindingUsage = 'both', refresh = false) {
+export function insertShotBinding(shotId: string, profile: VisualProfile, isRequired: boolean, selectedIds?: string[], usage: VisualBindingUsage = 'both', refresh = false,
+  settings: { sync_mode?: VisualBindingSyncMode; reference_selection?: VisualBindingReferenceSelection } = {}) {
   if (!refresh && one('SELECT 1 FROM shot_visual_bindings WHERE shot_id=? AND profile_id=?', shotId, profile.id)) return
   const shot = required<Shot>('shots', shotId), style = projectVisualStyle(profile.project_id)
   if ((shot.design_id || null) !== (profile.design_id || null)) invalid('镜头参考设定必须来自同一设计方案')
@@ -371,13 +387,15 @@ export function insertShotBinding(shotId: string, profile: VisualProfile, isRequ
     [usage === 'video' ? shot.video_prompt : shot.image_prompt, shot.start_state].filter(Boolean).join('\n'), style.version).map(referenceSnapshot)
     : selectedVisualReferenceSnapshots(profile, selectedIds)
   run(`INSERT INTO shot_visual_bindings
-    (shot_id, profile_id, required, revision, kind, name, variant, definition, view_requirements, board_asset_id, board_style_version, reference_assets, usage)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (shot_id, profile_id, required, revision, kind, name, variant, definition, view_requirements, board_asset_id, board_style_version, reference_assets, usage, sync_mode, reference_selection)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(shot_id, profile_id) DO UPDATE SET required=excluded.required, revision=excluded.revision,
       kind=excluded.kind, name=excluded.name, variant=excluded.variant, definition=excluded.definition,
       view_requirements=excluded.view_requirements, board_asset_id=excluded.board_asset_id,
-      board_style_version=excluded.board_style_version, reference_assets=excluded.reference_assets, usage=excluded.usage`, shotId, profile.id, Number(isRequired), profile.revision,
-    profile.kind, profile.name, profile.variant, profile.definition, profile.view_requirements, profile.board_asset_id, profile.board_style_version || null, JSON.stringify(references), usage)
+      board_style_version=excluded.board_style_version, reference_assets=excluded.reference_assets, usage=excluded.usage,
+      sync_mode=excluded.sync_mode, reference_selection=excluded.reference_selection`, shotId, profile.id, Number(isRequired), profile.revision,
+    profile.kind, profile.name, profile.variant, profile.definition, profile.view_requirements, profile.board_asset_id, profile.board_style_version || null, JSON.stringify(references), usage,
+    settings.sync_mode || 'follow', settings.reference_selection || (selectedIds === undefined ? 'auto' : 'manual'))
 }
 export function inheritSceneVisualBindings(shotId: string, sceneId: string | null) {
   if (!sceneId) return
@@ -404,10 +422,11 @@ export function applyProfileShotUsage(profile: VisualProfile, input: z.infer<typ
     const previous = one<VisualBinding>('SELECT * FROM shot_visual_bindings WHERE shot_id=? AND profile_id=?', item.shot_id, profile.id)
     const sceneRequired = one<{ required: number }>('SELECT required FROM scene_visual_bindings WHERE scene_id=(SELECT source_scene_id FROM shots WHERE id=?) AND profile_id=?', item.shot_id, profile.id)
     const shot = required<Shot>('shots', item.shot_id)
-    const refresh = refreshSceneIds.has(shot.source_scene_id || '') && !!previous &&
-      (previous.revision !== profile.revision || previous.definition !== profile.definition || previous.view_requirements !== profile.view_requirements)
-    insertShotBinding(item.shot_id, profile, !!(previous?.required ?? sceneRequired?.required ?? 1), undefined, item.usage, refresh)
+    const refresh = refreshSceneIds.has(shot.source_scene_id || '') && !!previous
+    insertShotBinding(item.shot_id, profile, !!(previous?.required ?? sceneRequired?.required ?? 1), undefined, item.usage, false,
+      { sync_mode: previous?.sync_mode, reference_selection: previous?.reference_selection })
     run('UPDATE shot_visual_bindings SET usage=? WHERE shot_id=? AND profile_id=?', item.usage, item.shot_id, profile.id)
+    if (refresh) resolveShotVisualBindings(item.shot_id, { persist: true })
   }
 }
 
@@ -450,6 +469,7 @@ function resolveVisualPromptReferences(data: PromptReferenceInput, references: s
 
 export function prepareVisualGeneration<T extends {
   shot_id?: string | null; prompt: string; reference_asset_ids: string[]; mode: string;
+  explicit_reference_asset_ids?: string[];
   visual_reference_mode?: VisualReferenceMode; visual_source_prompt?: string; visual_signature?: string; prompt_is_final?: boolean;
   prompt_body?: string; prompt_document?: boolean;
   storyboard_reference_asset_id?: string | null; excluded_visual_profile_ids?: string[];
@@ -457,6 +477,8 @@ export function prepareVisualGeneration<T extends {
   prompt_reference_overrides?: Record<string, string | null>;
 }>(data: T, model: Model, preview = false): T {
   if (new Set(data.reference_asset_ids).size !== data.reference_asset_ids.length) invalid('参考图片不能重复')
+  if (new Set(data.explicit_reference_asset_ids).size !== (data.explicit_reference_asset_ids?.length || 0)
+    || data.explicit_reference_asset_ids?.some(id => !data.reference_asset_ids.includes(id))) invalid('显式参考必须属于本次提交的图片且不能重复')
   if (data.prompt_document) {
     if (!data.prompt.trim()) invalid('请输入完整提示词')
     try { validateManagedPromptDocument(data.prompt) } catch (error) { invalid(error instanceof Error ? error.message : '提示词系统区标记无效') }
@@ -468,6 +490,8 @@ export function prepareVisualGeneration<T extends {
     const promptWithParameters = resolved.prompt + (!data.prompt_document && data.prompt_body !== undefined
       ? getManagedPromptBlocks(data.prompt, ['图片生成要求', '视频生成要求', '生成参数约束']).map(block => `\n\n${block}`).join('') : '')
     return { ...data, reference_asset_ids: resolved.referenceAssetIds, storyboard_reference_asset_id: resolved.storyboard_reference_asset_id,
+      ...(data.explicit_reference_asset_ids ? { explicit_reference_asset_ids: resolvePromptReferences({ prompt: '',
+        referenceAssetIds: data.explicit_reference_asset_ids, overrides: data.prompt_reference_overrides }).referenceAssetIds.filter(id => resolved.referenceAssetIds.includes(id)) } : {}),
       video_reference_usages: resolved.video_reference_usages,
       mode: model.modality === 'image' ? resolved.referenceAssetIds.length ? 'reference' : data.mode === 'reference' ? 'text' : data.mode : data.mode,
       prompt: data.prompt_document ? resolved.prompt : model.modality === 'video' ? withVideoReferenceMapping(promptWithParameters,
@@ -476,7 +500,8 @@ export function prepareVisualGeneration<T extends {
         : withImageReferenceMapping(promptWithParameters, [], resolved.referenceAssetIds, data.visual_reference_mode || 'profiles') }
   }
   const shotId = data.shot_id
-  const savedBindings = all<VisualBinding>('SELECT * FROM shot_visual_bindings WHERE shot_id=? ORDER BY kind, name, profile_id', data.shot_id).map(normalizeVisualBinding)
+  const previousBindings = all<VisualBinding>('SELECT * FROM shot_visual_bindings WHERE shot_id=? ORDER BY kind, name, profile_id', data.shot_id).map(normalizeVisualBinding)
+  const savedBindings = resolveShotVisualBindings(shotId)
   const allBindings = visualBindingsForModality(savedBindings, model.modality)
   const excluded = new Set(data.excluded_visual_profile_ids || [])
   if (excluded.size !== (data.excluded_visual_profile_ids?.length || 0)) invalid('排除的视觉设定不能重复')
@@ -486,9 +511,36 @@ export function prepareVisualGeneration<T extends {
     if (allBindings.includes(binding) && binding.required) invalid(`必需视觉设定不能排除：${binding.name}`)
   }
   const bindings = allBindings.filter(binding => !excluded.has(binding.profile_id))
-  data = { ...data, reference_asset_ids: scopedVisualReferenceAssetIds(data.reference_asset_ids,
-    savedBindings.map(binding => ({ ...binding, required: !!binding.required })), bindings.map(binding => ({ ...binding, required: !!binding.required }))) }
   const referenceMode = data.visual_reference_mode || 'profiles'
+  const promptSource = data.prompt_document ? data.prompt : data.prompt_body !== undefined ? extractPromptBody(data)
+    : data.prompt_is_final ? data.prompt : data.visual_source_prompt ?? data.prompt
+  const manualPromptReferences = checkedPromptReferenceIds(stripManagedPromptBlocks(promptSource))
+  if (manualPromptReferences.length) {
+    // A preview compiles identity tokens into image numbers. Carry their manual
+    // selection separately so submitting that compiled preview is idempotent.
+    data = { ...data, explicit_reference_asset_ids: [...new Set([...(data.explicit_reference_asset_ids || []), ...manualPromptReferences])] }
+  }
+  const protectedInputs = new Set([...(data.explicit_reference_asset_ids || []),
+    ...Object.entries(data.prompt_reference_overrides || {}).flatMap(([source, target]) => target ? [source, target] : []),
+    ...(data.storyboard_reference_asset_id ? [data.storyboard_reference_asset_id] : [])])
+  data = { ...data, reference_asset_ids: scopedVisualReferenceAssetIds(data.reference_asset_ids,
+    (referenceMode === 'profiles' ? [...previousBindings, ...savedBindings] : savedBindings).map(binding => ({ ...binding, required: !!binding.required })),
+    bindings.map(binding => ({ ...binding, required: !!binding.required })), [...protectedInputs]) }
+  if (referenceMode === 'profiles') {
+    const known = new Set(savedBindings.flatMap(binding => all<{ asset_id: string }>(`SELECT asset_id FROM visual_profile_candidates WHERE profile_id=?
+      UNION SELECT asset_id FROM visual_profile_reference_assets WHERE profile_id=?
+      UNION SELECT board_asset_id AS asset_id FROM visual_profiles WHERE id=? AND board_asset_id IS NOT NULL`,
+    binding.profile_id, binding.profile_id, binding.profile_id).map(item => item.asset_id)))
+    const used = new Set(bindings.flatMap(visualBindingReferenceAssetIds))
+    const obsolete = (id: string) => known.has(id) && !used.has(id) && !protectedInputs.has(id)
+    // A complete document may carry automatic tokens from an older canvas.
+    // Ask the caller to rebuild its system blocks instead of changing prose or
+    // silently adding old profile images beside their confirmed replacements.
+    if (data.prompt_document && checkedPromptReferenceIds(promptSource).some(obsolete)) {
+      throw Object.assign(new Error('镜头设定引用已更新，请刷新画布并重新检查生成参数'), { statusCode: 409 })
+    }
+    data = { ...data, reference_asset_ids: data.reference_asset_ids.filter(id => !obsolete(id)) }
+  }
   const shot = required<Shot>('shots', shotId)
   const style = projectVisualStyle(shot.project_id)
   const missing = bindings.filter(binding => binding.required && !visualBindingReferenceAssetIds(binding).length)
@@ -512,11 +564,19 @@ export function prepareVisualGeneration<T extends {
   // Excluding an optional image preserves its saved text constraints. Only the
   // ownership map below omits the excluded profile, including shared images.
   const resolved = resolveVisualPromptReferences(data, references, allBindings, model.modality)
-  const referenceBindings = resolved.bindings.filter(binding => !excluded.has(binding.profile_id))
+  const explicitReferences = resolvePromptReferences({ prompt: '', referenceAssetIds: data.explicit_reference_asset_ids || [],
+    overrides: data.prompt_reference_overrides }).referenceAssetIds.filter(id => resolved.referenceAssetIds.includes(id))
+  const promptBindings = enrichExplicitReferenceBindings(resolved.bindings, {
+    referenceAssetIds: resolved.referenceAssetIds, explicitReferenceAssetIds: explicitReferences,
+    savedBindings, profiles: explicitReferences.length ? explicitReferenceProfiles(shot.project_id) : [],
+    overrides: data.prompt_reference_overrides, excludedVisualProfileIds: data.excluded_visual_profile_ids,
+  })
+  const referenceBindings = promptBindings.filter(binding => !binding.profile_id || !excluded.has(binding.profile_id))
   const signature = createHash('sha256').update(JSON.stringify({ bindings: allBindings, modality: model.modality, referenceMode,
     excluded: [...excluded].sort(), storyboard: resolved.storyboard_reference_asset_id || null,
     ...(resolved.video_reference_usages?.length ? { usages: [...resolved.video_reference_usages].sort((a, b) => a.asset_id.localeCompare(b.asset_id)) } : {}),
-    overrides: Object.entries(data.prompt_reference_overrides || {}).sort(([left], [right]) => left.localeCompare(right)), style: style.version })).digest('hex')
+    overrides: Object.entries(data.prompt_reference_overrides || {}).sort(([left], [right]) => left.localeCompare(right)),
+    ...(explicitReferences.length ? { explicit: [...explicitReferences].sort(), explicit_context: promptBindings } : {}), style: style.version })).digest('hex')
   if (!preview && data.visual_signature && data.visual_signature !== signature) {
     throw Object.assign(new Error('镜头视觉设定已更新，请重新检查生成参数'), { statusCode: 409 })
   }
@@ -532,11 +592,13 @@ export function prepareVisualGeneration<T extends {
   }
   const promptWithParameters = resolved.prompt + (!data.prompt_document && data.prompt_body !== undefined
     ? getManagedPromptBlocks(data.prompt, ['图片生成要求', '视频生成要求', '生成参数约束']).map(block => `\n\n${block}`).join('') : '')
-  const prompt = data.prompt_document ? resolved.prompt : data.prompt_is_final && data.prompt_body === undefined || !allBindings.length
-    ? withVideoReferenceMapping(promptWithParameters, resolved.bindings, resolved.referenceAssetIds, referenceMode, promptOptions)
-    : visualGenerationPrompt(promptWithParameters, resolved.bindings, resolved.referenceAssetIds, referenceMode, promptOptions)
+  const prompt = data.prompt_document ? resolved.prompt : data.prompt_is_final && data.prompt_body === undefined || !promptBindings.length
+    ? withVideoReferenceMapping(promptWithParameters, promptBindings, resolved.referenceAssetIds, referenceMode, promptOptions)
+    : visualGenerationPrompt(promptWithParameters, promptBindings, resolved.referenceAssetIds, referenceMode, promptOptions)
+  if (!preview) persistResolvedVisualBindings(previousBindings, savedBindings)
   return { ...data, mode: model.modality === 'image' ? resolved.referenceAssetIds.length ? 'reference' : data.mode === 'reference' ? 'text' : data.mode : data.mode,
     reference_asset_ids: resolved.referenceAssetIds, visual_reference_mode: referenceMode, visual_signature: signature,
+    ...(data.explicit_reference_asset_ids ? { explicit_reference_asset_ids: explicitReferences } : {}),
     storyboard_reference_asset_id: resolved.storyboard_reference_asset_id, video_reference_usages: resolved.video_reference_usages,
     visual_source_prompt: data.visual_source_prompt ?? data.prompt,
     prompt: !data.prompt_document && model.modality === 'image' ? withImageReferenceMapping(prompt, referenceBindings, resolved.referenceAssetIds, referenceMode) : prompt }
@@ -593,13 +655,13 @@ export function updateVisualProfile(id: string, input: unknown, options: { refre
         // A draft placed on the canvas can be edited before its first board.
         // Keep unresolved shots on that draft; completed snapshots stay intact.
         run(`UPDATE shot_visual_bindings SET revision=?, kind=?, name=?, variant=?, definition=?, view_requirements=?
-          WHERE profile_id=? AND revision=? AND board_asset_id IS NULL AND reference_assets='[]'`, profile.revision + 1, next.kind, next.name, next.variant, next.definition, next.view_requirements, id, profile.revision)
+          WHERE profile_id=? AND revision=? AND board_asset_id IS NULL AND reference_assets='[]'
+            AND sync_mode='follow' AND reference_selection='auto'
+            AND shot_id IN (SELECT id FROM shots WHERE superseded_by IS NULL)`, profile.revision + 1, next.kind, next.name, next.variant, next.definition, next.view_requirements, id, profile.revision)
       }
-      // Fill only unresolved bindings to this exact definition version. Completed shots keep their selected board.
-      if (!newRevision && patch.board_asset_id) run("UPDATE shot_visual_bindings SET board_asset_id=?, board_style_version=? WHERE profile_id=? AND revision=? AND board_asset_id IS NULL AND reference_assets='[]'", patch.board_asset_id, style.version, id, profile.revision)
-      if (!newRevision && patch.board_asset_id) run("UPDATE shot_visual_bindings SET board_style_version=? WHERE profile_id=? AND revision=? AND board_asset_id=? AND board_style_version IS NULL AND reference_assets='[]'", style.version, id, profile.revision, patch.board_asset_id)
       touch(profile.project_id)
       if (patch.definition_status || patch.board_asset_id) run('UPDATE visual_profiles SET definition_status=? WHERE id=?', patch.definition_status || 'ready', id)
+      synchronizeVisualProfileBindings(id)
     })()
     return publicProfile(required<VisualProfile>('visual_profiles', id))
 }
@@ -650,6 +712,7 @@ export function autoConfirmGeneratedProfileBoard(job: Job): void {
 export async function analyzeVisualProfiles(id: string, data: { model_id: string; scene_ids: string[]; skill_ids?: string[]; inherit_scene_references?: boolean; refresh_scene_ids?: string[]; design_id?: string | null }, context: {
   script: (projectId: string) => { outline: string; characters: string; artifacts?: ScriptArtifact[]; scenes: ScriptScene[] };
   generateText: (projectId: string, modelId: string, prompt: string, contract?: OutputContract) => Promise<string>;
+  selectSkills?: CreationSkillSelector;
 }) {
   const project = required<Project>('projects', id)
   const script = context.script(id)
@@ -699,7 +762,10 @@ export async function analyzeVisualProfiles(id: string, data: { model_id: string
     `项目：${project.name}；故事：${script.outline}\n已有档案：${JSON.stringify(all<VisualProfile>('SELECT * FROM visual_profiles WHERE project_id=? AND design_id IS ? ORDER BY kind, name, variant', id, designId).map(publicProfile))}\n` +
     `剧本资料：${JSON.stringify(artifacts)}\n人物资料：${script.characters}\n选定场次：${JSON.stringify(scenes)}\n` +
     `选定场次已规划镜头：${JSON.stringify(plannedShots)}`
-  const rules = skillContext('visual_assets', prompt, data.skill_ids, id)
+  const rules = await resolveCreationSkillContext({ stage: 'visual_assets', task: prompt, selectedIds: data.skill_ids,
+    projectId: id, modelId: data.model_id, select: context.selectSkills,
+    generate: (text, contract) => context.generateText(id, data.model_id, text, contract),
+    assignmentTask: { purpose: 'create' } })
   const draft = await generateStructuredOutput('visual_profiles', profileAnalysisDraft,
     (text, contract) => context.generateText(id, data.model_id, text, contract), rules.text + '\n【本次任务】\n' + prompt, {
       validate: value => {
@@ -717,12 +783,13 @@ export async function analyzeVisualProfiles(id: string, data: { model_id: string
         })
       },
     })
-  return { ...draft, profiles: scopeVisualProfileDrafts(id, draft.profiles, sceneDesigns), skills: rules.skills, loaded_files: rules.files }
+  return { ...draft, profiles: scopeVisualProfileDrafts(id, draft.profiles, sceneDesigns), skills: rules.skills, loaded_files: rules.files, skill_assignment: rules.assignment }
 }
 
 export function registerVisualProfileRoutes(app: FastifyInstance, context: {
   script: (projectId: string) => { outline: string; characters: string; artifacts?: ScriptArtifact[]; scenes: ScriptScene[] };
   generateText: (projectId: string, modelId: string, prompt: string, contract?: OutputContract) => Promise<string>;
+  selectSkills?: CreationSkillSelector;
   generateBoard?: (taskId: string, input: Record<string, unknown>, profile: VisualProfile, candidateCount: number) => unknown;
   generateReference?: (profile: VisualProfile, input: Record<string, unknown>, metadata: Record<string, unknown>, candidateCount: number) => Promise<unknown> | unknown;
 }) {
@@ -899,20 +966,26 @@ export function registerVisualProfileRoutes(app: FastifyInstance, context: {
       const previousBindings = all<VisualBinding>('SELECT * FROM shot_visual_bindings WHERE shot_id=?', id)
       const retained = new Set(data.bindings.map(binding => binding.profile_id))
       for (const binding of previousBindings) {
-        if (!retained.has(binding.profile_id) || data.refresh_profile_ids.includes(binding.profile_id)) {
+        if (!retained.has(binding.profile_id)) {
           run('DELETE FROM shot_visual_bindings WHERE shot_id=? AND profile_id=?', id, binding.profile_id)
         }
       }
       for (const binding of bindings) {
         const previous = previousBindings.find(item => item.profile_id === binding.profile.id)
-        insertShotBinding(id, binding.profile, binding.required, binding.reference_asset_ids, binding.usage || previous?.usage || 'both')
+        const syncMode = binding.sync_mode || previous?.sync_mode || 'follow'
+        const selection = binding.reference_selection || (binding.reference_asset_ids === undefined ? previous?.reference_selection || 'auto' : 'manual')
+        if (selection === 'auto' && binding.reference_asset_ids !== undefined) invalid('自动匹配不能同时指定参考图片')
+        insertShotBinding(id, binding.profile, binding.required, binding.reference_asset_ids, binding.usage || previous?.usage || 'both', false,
+          { sync_mode: syncMode, reference_selection: selection })
         if (binding.reference_asset_ids !== undefined) {
           const saved = one<VisualBinding>('SELECT * FROM shot_visual_bindings WHERE shot_id=? AND profile_id=?', id, binding.profile.id)!
           const selected = selectedVisualReferenceSnapshots(binding.profile, binding.reference_asset_ids, saved.revision, normalizeVisualBinding(saved).reference_assets)
           run('UPDATE shot_visual_bindings SET reference_assets=? WHERE shot_id=? AND profile_id=?', JSON.stringify(selected), id, binding.profile.id)
         }
-        run('UPDATE shot_visual_bindings SET required=?, usage=COALESCE(?, usage) WHERE shot_id=? AND profile_id=?', Number(binding.required), binding.usage || null, id, binding.profile.id)
+        run('UPDATE shot_visual_bindings SET required=?, usage=COALESCE(?, usage), sync_mode=?, reference_selection=? WHERE shot_id=? AND profile_id=?',
+          Number(binding.required), binding.usage || null, syncMode, selection, id, binding.profile.id)
       }
+      resolveShotVisualBindings(id, { persist: true })
       touch(shot.project_id)
     })()
     return visualProjectData(shot.project_id)

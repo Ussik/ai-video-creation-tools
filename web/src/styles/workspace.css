@@ -149,6 +149,24 @@
 }
 
 @media (min-width: 701px) {
+  .sidebar {
+    position: sticky;
+    top: 0;
+    align-self: flex-start;
+    height: 100dvh;
+    min-height: 0;
+  }
+
+  .sidebar .brand,
+  .sidebar .sidebar-footer {
+    flex-shrink: 0;
+  }
+
+  .sidebar .main-nav {
+    min-height: 0;
+    overflow-y: auto;
+  }
+
   .canvas-workspace .sidebar.sidebar-collapsed {
     width: 64px;
     flex-basis: 64px;

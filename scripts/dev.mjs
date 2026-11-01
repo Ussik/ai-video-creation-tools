@@ -10,14 +10,31 @@ function stop(code) {
   if (stopping) return
   stopping = true
   process.exitCode = code
-  for (const child of children) {
-    try {
-      if (process.platform === 'win32') child.kill('SIGTERM')
-      else process.kill(-child.pid, 'SIGTERM')
-    } catch (error) {
-      if (error.code !== 'ESRCH') console.error(error)
+  // npm can exit before its watchers, so retain these groups until cleanup ends.
+  const targets = new Set(children)
+  function signalTargets(signal) {
+    for (const child of targets) {
+      try {
+        if (process.platform === 'win32') child.kill(signal)
+        else process.kill(-child.pid, signal)
+      } catch (error) {
+        if (error.code === 'ESRCH') targets.delete(child)
+        else console.error(error)
+      }
     }
   }
+  signalTargets('SIGTERM')
+  if (process.platform === 'win32' || !targets.size) return
+
+  const deadline = Date.now() + 5000
+  const timer = setInterval(() => {
+    signalTargets(0)
+    if (!targets.size) clearInterval(timer)
+    else if (Date.now() >= deadline) {
+      signalTargets('SIGKILL')
+      clearInterval(timer)
+    }
+  }, 100)
 }
 
 function run(args, onExit) {
@@ -29,13 +46,13 @@ function run(args, onExit) {
     stop(1)
   })
   child.once('exit', (code, signal) => {
-    children.delete(child)
     if (!stopping) onExit(code ?? (signal ? 1 : 0))
+    children.delete(child)
   })
   return child
 }
 
-for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => stop(signal === 'SIGINT' ? 130 : 143))
+for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => stop(signal === 'SIGINT' ? 130 : 143))
 
 run(['run', 'build:shared'], code => {
   if (code) return stop(code)

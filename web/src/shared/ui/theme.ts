@@ -29,8 +29,8 @@ const inputStyles = {
   label: {
     color: 'var(--fc-text-muted)',
     fontSize: '12px',
-    fontWeight: 650,
-    marginBottom: '6px',
+    fontWeight: 500,
+    marginBottom: '5px',
   },
   description: {
     color: 'var(--fc-text-subtle)',
@@ -72,7 +72,7 @@ export const theme = createTheme({
   fontFamily,
   headings: {
     fontFamily,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   fontSizes: {
     xs: '12px',
@@ -82,18 +82,18 @@ export const theme = createTheme({
     xl: '20px',
   },
   radius: {
-    xs: '3px',
+    xs: '4px',
     sm: '6px',
     md: '8px',
     lg: '12px',
-    xl: '16px',
+    xl: '20px',
   },
   defaultRadius: 'sm',
   autoContrast: true,
   primaryColor: 'studio',
-  primaryShade: { light: 9, dark: 6 },
+  primaryShade: { light: 7, dark: 5 },
   colors: {
-    studio: ['#fafaf8', '#f3f3f0', '#ededeb', '#e8e9e6', '#e4e6e3', '#e1e3df', '#e8e9e6', '#cbd0c9', '#a8b0a5', '#303943'],
+    studio: ['#edf6ff', '#d8ebff', '#b9dcff', '#93c8ff', '#6ab4ff', '#409eff', '#318ce7', '#337ecc', '#216bb6', '#18548f'],
     teal: [
       '#ecf8f5',
       '#d4eee7',
@@ -126,19 +126,19 @@ export const theme = createTheme({
     }),
     Badge: Badge.extend({
       defaultProps: { radius: 'xs', variant: 'light', size: 'sm' },
-      styles: { root: { fontWeight: 650, textTransform: 'none' } },
+      styles: { root: { fontWeight: 500, textTransform: 'none' } },
     }),
     Button: Button.extend({
       defaultProps: { radius: 'md', size: 'sm' },
       vars: (_theme, props) => !props.color || props.color === 'studio' ? {
         root: props.variant === 'filled' || !props.variant ? {
-          '--button-bg': 'var(--fc-primary)',
-          '--button-hover': 'var(--fc-primary-hover)',
-          '--button-color': 'var(--fc-on-primary)',
+          '--button-bg': 'var(--fc-action)',
+          '--button-hover': 'var(--fc-action-hover)',
+          '--button-color': 'var(--fc-on-action)',
         } : {},
       } : { root: {} },
       styles: {
-        root: { fontWeight: 650, transition: 'background-color 150ms, border-color 150ms, color 150ms' },
+        root: { fontWeight: 500, transition: 'background-color 150ms, border-color 150ms, color 150ms' },
         label: { whiteSpace: 'nowrap' },
       },
     }),
@@ -158,14 +158,14 @@ export const theme = createTheme({
     Modal: Modal.extend({
       defaultProps: {
         centered: true,
-        radius: 'md',
-        overlayProps: { backgroundOpacity: 0.65, blur: 3 },
+        radius: 'lg',
+        overlayProps: { backgroundOpacity: 0.45, blur: 4 },
         transitionProps: { transition: 'fade', duration: 140 },
       },
       styles: {
-        content: { border: '1px solid var(--fc-border)', boxShadow: '0 22px 70px rgba(0, 0, 0, 0.48)' },
-        header: { borderBottom: '1px solid var(--fc-border-soft)', paddingBottom: '14px' },
-        title: { color: 'var(--fc-text)', fontSize: '16px', fontWeight: 700 },
+        content: { border: '1px solid var(--fc-border-soft)', boxShadow: 'var(--fc-modal-shadow)' },
+        header: { borderBottom: '1px solid var(--fc-border-soft)', padding: '18px 20px' },
+        title: { color: 'var(--fc-text)', fontSize: '16px', fontWeight: 600 },
       },
     }),
     NumberInput: NumberInput.extend({ defaultProps: { radius: 'sm', size: 'sm' }, styles: inputStyles }),
@@ -173,9 +173,9 @@ export const theme = createTheme({
     SegmentedControl: SegmentedControl.extend({
       defaultProps: { radius: 'md', size: 'sm' },
       styles: {
-        root: { backgroundColor: 'var(--fc-surface-muted)', border: '1px solid var(--fc-border)' },
-        indicator: { boxShadow: '0 1px 3px rgba(0, 0, 0, 0.22)' },
-        label: { fontWeight: 620 },
+        root: { backgroundColor: 'var(--fc-surface-muted)', border: '1px solid var(--fc-border-soft)' },
+        indicator: { backgroundColor: 'var(--fc-primary-soft)', boxShadow: 'none' },
+        label: { fontWeight: 500 },
       },
     }),
     Select: Select.extend({
@@ -195,7 +195,7 @@ export const theme = createTheme({
       styles: selectStyles,
     }),
     Switch: Switch.extend({ defaultProps: { color: 'var(--fc-switch-on)', size: 'sm', withThumbIndicator: false } }),
-    Tabs: Tabs.extend({ defaultProps: { color: 'studio' }, styles: { tabLabel: { fontWeight: 630 } } }),
+    Tabs: Tabs.extend({ defaultProps: { color: 'studio' }, styles: { tabLabel: { fontWeight: 500 } } }),
     Textarea: Textarea.extend({ defaultProps: { radius: 'sm', size: 'sm', autosize: false }, styles: inputStyles }),
     TextInput: TextInput.extend({ defaultProps: { radius: 'sm', size: 'sm' }, styles: inputStyles }),
   },

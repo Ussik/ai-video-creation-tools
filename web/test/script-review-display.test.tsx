@@ -82,15 +82,17 @@ test('saved findings display Chinese document names while exact quotes, identity
 })
 
 test('continuing a saved plan translates its status without changing its authorization or previous answer', async () => {
-  const resolution = { ...savedResolution(), run: { strategy: 'manual' as const, status: 'interrupted' as const,
-    completed: 5, total: 5, message: failureReason } }
+  const resolution = { ...savedResolution(), completed_rounds: 12, run: { strategy: 'manual' as const, status: 'interrupted' as const,
+    completed_rounds: 12, completed: 5, total: 5, message: failureReason } }
   const before = structuredClone(resolution), submitted: ScriptDraftResolutionInput[] = []
   const view = await mount(<DirectorDraftResolution resolution={resolution} opened busy={false} onClose={() => {}} onOpen={() => {}}
     onResolve={input => submitted.push(input)} onDiscard={() => assert.fail('must preserve candidate')} />)
   try {
     assert.doesNotMatch(view.container.querySelector('[role="status"]')!.textContent!, rawIdentifiers)
     assert.ok(document.querySelector('[role="dialog"]')!.textContent!.includes(resolution.findings[0]!.previous_answer!))
-    await act(() => button(document.querySelector('[role="dialog"]')!, '沿用方案继续').click())
+    const resume = button(document.querySelector('[role="dialog"]')!, '沿用方案继续')
+    assert.equal(resume.disabled, false, 'historical rounds must never disable continuing the authorized plan')
+    await act(() => resume.click())
     assert.deepEqual(submitted, [{ id: resolution.id, version: resolution.version, strategy: 'continue' }])
     assert.deepEqual(resolution, before)
   } finally { await view.destroy() }
@@ -121,6 +123,7 @@ test('historical failures, activity summaries and source status are readable whi
     assert.doesNotMatch(view.container.querySelector('.sd-activity-result')!.textContent!, rawIdentifiers)
     assert.doesNotMatch(view.container.querySelector('.sd-activity-task')!.getAttribute('title')!, rawIdentifiers)
     assert.doesNotMatch(view.container.querySelector('.sd-source-analysis')!.textContent!, rawIdentifiers)
+    assert.match(view.container.querySelector('.sd-source-analysis')!.textContent!, /剧情目录已完成；全剧整合与质量核对仍以各步骤状态为准/)
     assert.equal(view.container.querySelector('.sd-source-preview-body')!.textContent, source.content)
     await act(() => button(view.container, '查看执行步骤').click())
     const summaries = [...view.container.querySelectorAll('.sd-activity-summary, .sd-activity-notice-list p')]

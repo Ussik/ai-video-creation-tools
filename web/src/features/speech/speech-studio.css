@@ -21,9 +21,9 @@
 .speech-tabs .mantine-Tabs-tab { border: 0; border-radius: 7px; background: transparent; color: var(--fc-text-muted); padding: 9px 12px; font-size: 12px; font-weight: 500; }
 .speech-tabs .mantine-Tabs-tabLabel { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
 .speech-tabs .mantine-Tabs-tab:hover { background: var(--fc-surface-muted); color: var(--fc-text); }
-.speech-tabs .mantine-Tabs-tab[aria-selected='true'] { background: var(--fc-surface-hover); color: var(--fc-text); }
+.speech-tabs .mantine-Tabs-tab[aria-selected='true'] { background: var(--fc-primary-soft); color: var(--fc-primary); }
 .speech-tab-count { display: inline-flex; align-items: center; justify-content: center; flex: none; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 5px; background: var(--fc-surface-muted); color: var(--fc-text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
-.speech-tabs .mantine-Tabs-tab[aria-selected='true'] .speech-tab-count { background: var(--fc-panel); color: var(--fc-text-secondary); }
+.speech-tabs .mantine-Tabs-tab[aria-selected='true'] .speech-tab-count { background: var(--fc-panel); color: var(--fc-primary); }
 .speech-toolbar-actions { display: flex; align-items: center; gap: 12px; }
 .speech-config-toggle { --button-color: var(--fc-text-muted); }
 .speech-connected { display: inline-flex; align-items: center; gap: 5px; color: var(--fc-success); font-size: 11px; }
@@ -60,7 +60,7 @@
 .speech-line-row > .mantine-Checkbox-root { margin-top: 16px; }
 .speech-line-item { display: flex; flex-direction: column; gap: 7px; width: 100%; min-width: 0; padding: 13px 10px; text-align: left; border: 1px solid transparent; border-radius: 8px; color: var(--fc-text-secondary); transition: background 160ms, border-color 160ms; }
 .speech-line-item:hover { background: var(--fc-surface-muted); }
-.speech-line-item.is-selected { background: var(--fc-panel); border-color: var(--fc-border-strong); }
+.speech-line-item.is-selected { background: var(--fc-primary-soft); border-color: color-mix(in srgb, var(--fc-primary) 35%, var(--fc-border-soft)); }
 .speech-line-meta { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 7px; font-size: 12px; }
 .speech-line-meta strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .speech-line-meta > small:first-child { font-variant-numeric: tabular-nums; color: var(--fc-text-subtle); }

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { textToolSession } from '../src/infrastructure/providers/text-tools.js'
 import type { GenerationModel } from '../src/infrastructure/providers/providers.js'
+import { TextOutputLimitError, TextProviderError } from '../src/infrastructure/providers/text-errors.js'
+import { withUnrestrictedScriptExecution } from '../src/modules/generation/model-execution.js'
 
 const functions = [{ name: 'read_documents', description: '读取', parameters: { type: 'object', properties: { document_ids: { type: 'array', items: { type: 'string' } } } } }]
 const provider = { adapter: 'http' as const, base_url: 'https://test.invalid/v1', auth_header: 'X-Key', auth_prefix: '' }
@@ -10,6 +12,17 @@ const model = (protocol: 'responses' | 'chat_completions', stream = true): Gener
   request_template: { model: '{{model}}', temperature: 0.3, ...(protocol === 'responses' ? { input: '{{prompt}}', reasoning: { effort: 'high' } } : { messages: [{ role: 'system', content: '保留配置' }, { role: 'user', content: '{{prompt}}' }] }) }
 } })
 const sse = (items: unknown[]) => new Response(items.map(item => `data: ${JSON.stringify(item)}\r\n\r\n`).join('') + 'data: [DONE]\n\n', { headers: { 'Content-Type': 'text/event-stream' } })
+
+test('script tool transport keeps waiting beyond former request and idle deadlines', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1000 })
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    t.mock.timers.tick(181 * 60_000)
+    assert.equal(init.signal!.aborted, false)
+    return Response.json({ status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '完成' }] }] })
+  })
+  const response = await withUnrestrictedScriptExecution(() => textToolSession(model('responses', false), provider, 'request', functions, () => '')())
+  assert.equal(response.text, '完成')
+})
 
 test('Chat Completions assembles fragmented calls and relays private reasoning, auth and template options', async t => {
   let requests = 0
@@ -95,6 +108,26 @@ test('Responses output-limit failures explain the upstream reason without exposi
   })
 })
 
+test('reasoning-only truncated tools remain nonretryable transport failures without continuation', async t => {
+  for (const protocol of ['responses', 'chat_completions'] as const) await t.test(protocol, async t => {
+    let requests = 0
+    const response = protocol === 'responses'
+      ? { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, output: [],
+        usage: { input_tokens: 5, output_tokens: 65535, output_tokens_details: { reasoning_tokens: 65535 } } }
+      : { choices: [{ message: { content: '', tool_calls: [{ id: 'truncated', type: 'function', function: { name: 'read_documents', arguments: '{' } }] }, finish_reason: 'length' }],
+        usage: { prompt_tokens: 5, completion_tokens: 65535, completion_tokens_details: { reasoning_tokens: 65535 } } }
+    t.mock.method(globalThis, 'fetch', async () => { requests++; return Response.json(response) })
+    await assert.rejects(textToolSession(model(protocol), provider, 'request', functions, () => '')(), (issue: unknown) => {
+      assert.ok(issue instanceof TextProviderError)
+      assert.ok(!(issue instanceof TextOutputLimitError))
+      assert.equal(issue.message, '模型输出被截断，未执行工具调用：已达到模型输出长度上限')
+      assert.equal(issue.retryable, false)
+      return true
+    })
+    assert.equal(requests, 1)
+  })
+})
+
 test('abort and provider errors stop the tool session without falling back to simulated tools', async t => {
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => { init.signal!.throwIfAborted(); return Response.json({ error: 'unsupported tools' }, { status: 400 }) })
   await assert.rejects(textToolSession(model('responses'), provider, 'request', functions, () => '')(), /400/)
@@ -112,4 +145,41 @@ test('partial and complete thought tags stay private during native streaming and
   const result = await textToolSession(model('chat_completions'), provider, 'request', functions, () => '', undefined, text => visible.push(text))()
   assert.deepEqual(visible, ['公开回复']); assert.equal(result.text, '公开回复')
   assert.match(JSON.stringify(result.history), /private-tagged-thought/, 'provider continuation retains its private history')
+})
+
+for (const protocol of ['chat_completions', 'responses'] as const) test(`${protocol} long tool sessions compact locally and deliver exact fresh results to the next decision`, async t => {
+  let requests = 0
+  const selectedModel = model(protocol, false)
+  selectedModel.settings = { ...selectedModel.settings as Record<string, unknown>, tool_history_chars: 16000 }
+  const results = [
+    { id: 'call-1', output: JSON.stringify({ ok: true, result: { id: 'doc-1', version: 'v1', offset: 0, next_offset: 5000, content: '较早的正文。'.repeat(4000) } }) },
+    { id: 'call-2', output: JSON.stringify({ ok: true, result: { id: 'doc-1', version: 'v1', offset: 5000, next_offset: 10000, content: '最新已完成正文。'.repeat(3000) } }) },
+    { id: 'call-3', output: JSON.stringify({ ok: false, error: '需要补读后再核对', diagnostic: { retryable: true } }) },
+  ]
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    const body = JSON.parse(String(init.body)), history = protocol === 'responses' ? body.input : body.messages
+    requests++
+    assert.equal(body.tools.length, 1, 'no additional structured summary request is sent')
+    if (requests === 4) {
+      const checkpoint = history.find((item: { role?: string; content?: string }) => item.role === 'user' && item.content?.startsWith('程序上下文检查点'))
+      assert.ok(checkpoint)
+      assert.ok(!JSON.stringify(history).includes('较早的正文。'))
+      for (const result of results.slice(1)) {
+        const item = history.find((item: { call_id?: string; tool_call_id?: string }) => (item.call_id || item.tool_call_id) === result.id &&
+          (protocol === 'responses' ? (item as { type?: string }).type === 'function_call_output' : (item as { role?: string }).role === 'tool'))
+        assert.equal(protocol === 'responses' ? item.output : item.content, result.output, 'recent and freshly supplied result text is exact')
+      }
+      return protocol === 'responses' ? Response.json({ status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '继续补读' }] }] })
+        : Response.json({ choices: [{ message: { content: '继续补读' }, finish_reason: 'stop' }] })
+    }
+    const id = `call-${requests}`, arguments_ = JSON.stringify({ document_ids: ['doc-1'], offset: (requests - 1) * 5000, length: 5000 })
+    return protocol === 'responses' ? Response.json({ status: 'completed', output: [{ type: 'function_call', call_id: id, name: 'read_documents', arguments: arguments_ }] })
+      : Response.json({ choices: [{ message: { content: '', tool_calls: [{ id, type: 'function', function: { name: 'read_documents', arguments: arguments_ } }] }, finish_reason: 'tool_calls' }] })
+  })
+  const session = textToolSession(selectedModel, provider, '只生成预览，不自动保存。', functions, () => '')
+  await session()
+  await session([results[0]!])
+  await session([results[1]!])
+  assert.equal((await session([results[2]!])).text, '继续补读')
+  assert.equal(requests, 4, 'each request is an actual task decision, with zero summary overhead')
 })

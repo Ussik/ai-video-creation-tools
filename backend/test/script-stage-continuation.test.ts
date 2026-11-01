@@ -360,16 +360,61 @@ test('episode script blocks carry synchronized scenes and final operation valida
   assert.equal(draft.scenes.length, 1); assert.equal(validations, 1)
 })
 
-test('repeated content and repeated ids cannot accumulate, and two rounds without progress stop automatically', async () => {
+test('repeated content is deduplicated and focused continuation can add a new complete unit', async () => {
   let calls = 0
-  const initial = body('outline').artifacts.slice(0, -1), steps = createGenerationSteps()
-  await assert.rejects(generateStageDraftWithContinuation(request, sourcePrompt, async () => {
+  const initial = body('outline').artifacts.slice(0, -1), steps = createGenerationSteps(), progress: string[] = []
+  const draft = await generateStageDraftWithContinuation(request, sourcePrompt, async (prompt) => {
     if (++calls === 1) throw new TextOutputLimitError(truncation(initial), 'length')
+    if (calls === 4) {
+      assert.match(prompt, /接续诊断.*连续 1 次/)
+      assert.match(prompt, /本轮至多返回一个/)
+      return JSON.stringify({ blocks: [block('finished', '最后一个完整单元。')], complete: true })
+    }
     return JSON.stringify({ blocks: [block(`id:${calls}`, '同一份完整正文。')], complete: false })
-  }, { steps }), (error: unknown) => (error as { code: string }).code === 'stage_continuation_no_progress')
+  }, { steps, onProgress: message => progress.push(message) })
   assert.equal(calls, 4)
-  const value = steps.checkpoint.steps['draft:stream:state']!.value as { blocks: unknown[] }
-  assert.equal(value.blocks.length, 1)
+  assert.equal(draft.artifacts.at(-1)!.content, '同一份完整正文。\n\n最后一个完整单元。')
+  assert.ok(progress.some(message => /连续 1 次.*可随时停止/.test(message)))
+  assert.deepEqual(steps.checkpoint.steps, {})
+})
+
+test('empty or duplicate continuation stops repeated semantic states and explicit resume keeps completed prose', async t => {
+  for (const duplicate of [false, true]) await t.test(duplicate ? 'duplicate_content' : 'empty_blocks', async () => {
+    const store = workspace(), original = body('outline').artifacts.slice(0, -1)
+    let calls = 0
+    await assert.rejects(generateStageDraftWithContinuation(request, sourcePrompt, async () => {
+      if (++calls === 1) throw new TextOutputLimitError(truncation(original), 'length')
+      return JSON.stringify({ blocks: duplicate ? [block(`changing-id:${calls}`, '已保留的唯一正文。')] : [], complete: false })
+    }, { steps: store.runner() }), error => {
+      assert.equal((error as { code: string }).code, 'stage_continuation_stalled')
+      assert.match((error as Error).message, /均已保留.*手动继续.*更换模型/)
+      return true
+    })
+    assert.equal(calls, duplicate ? 5 : 4, 'one real focus strategy is allowed, then repeating the same focused state stops')
+    const retained = store.get().steps['draft:stream:state']!.value as { artifacts: unknown[]; blocks: unknown[] }
+    assert.deepEqual(retained.artifacts, original)
+    assert.equal(retained.blocks.length, duplicate ? 1 : 0)
+    const draft = await generateStageDraftWithContinuation(request, sourcePrompt, async (prompt, contract) => {
+      assert.equal(contract!.name, 'script_stage_blocks')
+      assert.ok(prompt.includes(JSON.stringify(original)))
+      if (duplicate) assert.ok(prompt.includes('已保留的唯一正文'))
+      return JSON.stringify({ blocks: [block('final', '最后的完整剧情。')], complete: true })
+    }, { steps: store.runner() })
+    assert.deepEqual(draft.artifacts.slice(0, -1), original)
+    assert.equal(draft.artifacts.at(-1)!.content, duplicate ? '已保留的唯一正文。\n\n最后的完整剧情。' : '最后的完整剧情。')
+  })
+})
+
+test('alternating empty and truncated responses cannot evade the same focused-state detection', async () => {
+  let calls = 0
+  const steps = createGenerationSteps()
+  await assert.rejects(generateStageDraftWithContinuation(request, sourcePrompt, async () => {
+    if (++calls === 1) throw new TextOutputLimitError(truncation(body('outline').artifacts.slice(0, -1)), 'length')
+    if (calls % 2) throw new TextOutputLimitError('{"blocks":[{"id":"partial","content":"未闭合', 'length')
+    return JSON.stringify({ blocks: [], complete: false })
+  }, { steps }), (error: unknown) => (error as { code: string }).code === 'stage_continuation_stalled')
+  assert.equal(calls, 4)
+  assert.equal((steps.checkpoint.steps['draft:stream:state']!.value as { blocks: unknown[] }).blocks.length, 0)
 })
 
 test('a truncated oversized relationship unit focuses the next request and progress restores batching without rewriting complete characters', async () => {
@@ -416,13 +461,16 @@ test('legacy v1 stalled checkpoints resume in focused mode and keep the complete
   const req = workflowRequest.parse({ stage: 'characters' }), retained = artifact('characters'), store = workspace()
   let calls = 0
   const progress: string[] = []
+  const controller = new AbortController(), stopped = new DOMException('用户停止', 'AbortError')
   await assert.rejects(generateStageDraftWithContinuation(req, sourcePrompt, async () => {
     if (++calls === 1) throw new TextOutputLimitError(truncation([retained], '{"artifact_type":"relationships","title":"人物关系","content":"未完'), 'length')
     throw new TextOutputLimitError('{"blocks":[{"id":"all","title":"人物关系","content":"未闭合', 'length')
-  }, { steps: store.runner(), onProgress: message => progress.push(message) }), (error: unknown) => (error as { code: string }).code === 'stage_continuation_no_progress')
+  }, { steps: store.runner(), signal: controller.signal, onProgress: message => {
+    progress.push(message)
+    if (message.startsWith('连续 2 次')) controller.abort(stopped)
+  } }), issue => issue === stopped)
   assert.equal(calls, 3)
-  assert.match(progress.at(-1)!, /本轮接续已停止/)
-  assert.doesNotMatch(progress.at(-1)!, /正在|正从|正缩小/)
+  assert.ok(progress.some(message => /连续 2 次.*可随时停止/.test(message)))
   const checkpoint = store.get().steps['draft:stream:state']!.value as { version: number; noProgress: number; focused?: boolean; artifacts: unknown[] }
   assert.equal(checkpoint.version, 1); assert.equal(checkpoint.noProgress, 2)
   assert.deepEqual(checkpoint.artifacts, [retained])
@@ -503,7 +551,7 @@ test('conflicting content for an accepted semantic id fails instead of replacing
   assert.equal(calls, 3)
 })
 
-test('each automatic continuation is bounded and explicit resume keeps completed units with a fresh finite budget', async () => {
+test('only explicit caller round limits bound a run and resume keeps completed units', async () => {
   const store = workspace(); let calls = 0
   const generator: StageStreamGenerator = async () => {
     if (++calls === 1) throw new TextOutputLimitError(truncation(body('outline').artifacts.slice(0, -1)), 'length')
@@ -513,6 +561,36 @@ test('each automatic continuation is bounded and explicit resume keeps completed
   assert.equal(calls, 3)
   await assert.rejects(generateStageDraftWithContinuation(request, sourcePrompt, generator, { steps: store.runner(), maxRounds: 3 }), /轮次上限/)
   assert.equal(calls, 6)
+})
+
+test('default continuation completes after more than the former 16 and 32 round ceilings', async () => {
+  let calls = 0
+  const initial = body('outline').artifacts.slice(0, -1)
+  const draft = await generateStageDraftWithContinuation(request, sourcePrompt, async () => {
+    if (++calls === 1) throw new TextOutputLimitError(truncation(initial), 'length')
+    return JSON.stringify({ blocks: [block(`episode:${calls}`, `第${calls}个不同的完整剧情单元。`)], complete: calls === 36 })
+  })
+  assert.equal(calls, 36)
+  assert.equal(draft.artifacts.length, 9)
+  assert.ok(draft.artifacts.at(-1)!.content.includes('第36个不同的完整剧情单元。'))
+})
+
+test('user cancellation takes priority over a repeated no-progress continuation and retains complete units', async () => {
+  const controller = new AbortController(), reason = new DOMException('用户停止', 'AbortError')
+  const steps = createGenerationSteps(), notices: string[] = []
+  let calls = 0
+  await assert.rejects(generateStageDraftWithContinuation(request, sourcePrompt, async () => {
+    if (++calls === 1) throw new TextOutputLimitError(truncation(body('outline').artifacts.slice(0, -1)), 'length')
+    return JSON.stringify({ blocks: [], complete: false })
+  }, { signal: controller.signal, steps, onProgress: message => {
+    if (message.startsWith('连续')) {
+      notices.push(message)
+      if (notices.length === 3) controller.abort(reason)
+    }
+  } }), issue => issue === reason)
+  assert.equal(calls, 4)
+  assert.equal(notices.length, 3)
+  assert.equal((steps.checkpoint.steps['draft:stream:state']!.value as { artifacts: unknown[] }).artifacts.length, 8)
 })
 
 test('a changed creator prompt invalidates partial checkpoints and begins one new whole-stage request', async () => {

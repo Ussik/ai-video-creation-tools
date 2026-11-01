@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 import Fastify from 'fastify'
 import { mentionsSeedanceVersion, seedance2PromptGuidance } from '../src/modules/generation/seedance-prompt.js'
-import { seedance2VideoSettings } from '@video-studio/shared/models/seedance-video-settings'
+import { seedance2VideoSettings, seedance25VideoSettings } from '@video-studio/shared/models/seedance-video-settings'
 
 const testData = await mkdtemp(join(tmpdir(), 'seedance-prompt-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
@@ -16,7 +16,9 @@ const { installSkillBundle, configureSkill, skillContext } = await import('../sr
 const app = buildApp(), refineApp = Fastify()
 let captured = '', calls = 0
 refineApp.setErrorHandler((error, _request, reply) => reply.code((error as { statusCode?: number }).statusCode || 422).send({ detail: String(error) }))
-registerSkillRoutes(refineApp, { generateText: async (_project, _model, prompt) => {
+registerSkillRoutes(refineApp, {
+  selectSkills: async (_project, _model, input) => ({ skill_ids: input.default_ids, reason: '模型选择当前视频提示词技能。' }),
+  generateText: async (_project, _model, prompt) => {
   captured = prompt; calls++
   return JSON.stringify({ prompt: '林晚抬起右手，随后转身。固定机位。{林晚用中文说：“我会回来的。”}保持无字幕。' })
 } })
@@ -64,7 +66,31 @@ test('2.0 dialect references load for official Mini/Fast IDs and explicit labels
   assert.ok(!skillContext('video_prompt', '其他模型', [skill.id]).files.includes('skills/video/references/seedance-2.0.md'))
   const settings = { video_prompt_dialect: 'seedance-2.0' }
   assert.match(seedance2PromptGuidance({ name: '自定义', remote_id: 'custom', settings }), /Seedance 2.0 系列提示词要求/)
-  assert.equal(seedance2PromptGuidance({ name: 'Seedance 2.0', remote_id: 'seedance-2.5', settings: {} }), '')
+  assert.match(seedance2PromptGuidance({ name: 'Seedance 2.0', remote_id: 'seedance-2.5', settings: {} }), /Seedance 2.5 提示词要求/)
+})
+
+test('official 2.5 model ID loads the matching skill and integer-second guidance with thirty ordered references', async () => {
+  const { project, model, ids, input } = await setup('doubao-seedance-2-5-260628')
+  const updated = await app.inject({ method: 'PATCH', url: `/api/models/${model.id}`, payload: { settings: seedance25VideoSettings() } })
+  assert.equal(updated.statusCode, 200, updated.body)
+  const extra = Array.from({ length: 20 }, (_, index) => `${project.id}-extra-${index}`)
+  for (const id of extra) run("INSERT INTO assets (id,project_id,kind,filename,path,source,created_at) VALUES (?,?,'image',?,'/tmp/fixture.png','upload','2026-10-24')", id, project.id, `${id}.png`)
+  const references = [...ids, ...extra]
+  const response = await refineApp.inject({ method: 'POST', url: `/api/projects/${project.id}/skills/refine-prompt`, payload: {
+    ...input, reference_asset_ids: references, explicit_reference_asset_ids: references,
+    video_reference_usages: references.map(asset_id => ({ asset_id, usage: 'identity' })), duration: 30,
+  } })
+  assert.equal(response.statusCode, 200, response.body)
+  assert.ok(response.json().loaded_files.includes('skills/video/references/seedance-2.5.md'))
+  assert.ok(!response.json().loaded_files.includes('skills/video/references/seedance-2.0.md'))
+  assert.match(captured, /【Seedance 2.5 提示词要求】/)
+  assert.match(captured, /支持整数秒时间戳/)
+  assert.doesNotMatch(captured, /精确时间戳响应不稳定/)
+  assert.match(response.json().prompt, /图片30/)
+  const before = calls
+  const tooMany = await refineApp.inject({ method: 'POST', url: `/api/projects/${project.id}/skills/refine-prompt`, payload: { ...input, reference_asset_ids: [...references, 'over-limit'] } })
+  assert.equal(tooMany.statusCode, 422)
+  assert.equal(calls, before)
 })
 
 test('Mini refinement combines installed dialect with current-node guidance and preserves the draft contract', async () => {
@@ -88,6 +114,20 @@ test('Mini refinement combines installed dialect with current-node guidance and 
   assert.deepEqual(all('SELECT * FROM jobs'), before.jobs)
   assert.deepEqual(all('SELECT * FROM canvas_nodes'), before.nodes)
   assert.deepEqual(all('SELECT * FROM shots'), before.shots)
+})
+
+test('2.5 editing refinement follows source duration without comparing it against positive shot planning duration', async () => {
+  const { project, model, input } = await setup('doubao-seedance-2-5-260628')
+  const updated = await app.inject({ method: 'PATCH', url: `/api/models/${model.id}`, payload: { settings: seedance25VideoSettings() } })
+  assert.equal(updated.statusCode, 200, updated.body)
+  const response = await refineApp.inject({ method: 'POST', url: `/api/projects/${project.id}/skills/refine-prompt`, payload: {
+    ...input, skill_ids: [], mode: 'edit', duration: 5, reference_asset_ids: [],
+    prompt: '视频时长：20秒。\n编辑视频，保留人物转身，删除背景字幕。',
+  } })
+  assert.equal(response.statusCode, 200, response.body)
+  assert.match(captured, /"ratio":"adaptive","duration":null,"mode":"edit"/)
+  assert.match(captured, /"duration_follows_source":true/)
+  assert.match(captured, /原视频画幅和时长跟随输入/)
 })
 
 test('built-in 2.0 guidance applies without an external skill but not to other target models', async () => {

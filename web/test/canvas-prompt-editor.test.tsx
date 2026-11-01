@@ -5,6 +5,7 @@ import { JSDOM } from 'jsdom'
 import React, { act, useState } from 'react'
 import { MantineProvider } from '@mantine/core'
 import type { Editor } from '@tiptap/core'
+import { closeHistory } from '@tiptap/pm/history'
 import type { CanvasPromptEditorProps, CanvasPromptReference } from '../src/features/canvas/CanvasPromptEditor'
 import { isPromptSectionDocument, parsePromptSectionDocument, serializePromptSectionDocument, type PromptSectionDocument } from '@video-studio/shared/visuals/prompt-section-document'
 
@@ -640,7 +641,7 @@ test('compact section presentation preserves source separators, metadata and cli
     assert.ok(separators.length > 4, 'the original prompt contains several consecutive separator lines')
     assert.ok(separators.every(paragraph => paragraph.classList.contains('pc-prompt-section-spacer')))
     const blocks = [...view.container.querySelectorAll('.pc-prompt-managed-section')]
-    assert.deepEqual(blocks.map(block => block.querySelector('.pc-prompt-managed-section-head > span')?.textContent), ['设定图固定要求', '项目画风约束'])
+    assert.deepEqual(blocks.map(block => block.querySelector('.pc-prompt-managed-section-title')?.textContent), ['设定图固定要求', '项目画风约束'])
     assert.ok(blocks.every(block => block.querySelector('.pc-prompt-managed-section-end')?.getAttribute('aria-hidden') === 'true'))
     assert.equal(promptEditorText(view.editor.getJSON()), value)
     assert.deepEqual(promptEditorSectionDocument(view.editor.getJSON(), sections), originalSections)
@@ -711,4 +712,195 @@ test('ordinary prose spacing, section body spacing and reference-only paragraphs
     assert.deepEqual(view.changes, [])
     assert.deepEqual(view.referenceChanges, [])
   } finally { await view.destroy() }
+})
+
+test('a settings-only prompt exposes an empty body without saving and keeps first edits, caret and undo through parent echoes', async () => {
+  const sections = parsePromptSectionDocument(editableSection, { sourceText: editableSection })
+  const managed = sections.blocks.find(block => block.kind === 'managed')!
+  const view = await mount(editableSection, { sectionDocument: sections })
+  const body = '主角站在雨后的车站，低机位近景。'
+  try {
+    assert.equal(view.editor.state.doc.firstChild?.type.name, 'paragraph')
+    assert.equal(view.editor.state.doc.firstChild?.attrs.promptBodyEntry, true)
+    assert.equal(view.editor.state.doc.firstChild?.textContent, '')
+    assert.equal(promptEditorText(view.editor.getJSON()), editableSection)
+    assert.deepEqual(view.changes, [])
+    assert.deepEqual(view.sectionChanges, [])
+
+    await act(() => view.editor.chain().setTextSelection(1).insertContent(body).run()); await settle()
+    assert.equal(view.changes.at(-1), `${body}\n\n${editableSection}`)
+    assert.equal(view.editor.state.selection.from, body.length + 1, 'the parent echo keeps the authoring cursor')
+    assert.equal(view.editor.state.doc.firstChild?.attrs.promptBodyEntry, true, 'the parent echo preserves the live entry and its history')
+    assert.deepEqual(view.sectionChanges.at(-1)!.blocks.find(block => block.kind === 'managed'), managed)
+    assert.equal(serializePromptSectionDocument(view.sectionChanges.at(-1)!), view.changes.at(-1))
+
+    await act(() => view.editor.commands.undo()); await settle()
+    assert.equal(promptEditorText(view.editor.getJSON()), editableSection)
+    await act(() => view.editor.commands.redo()); await settle()
+    assert.equal(promptEditorText(view.editor.getJSON()), `${body}\n\n${editableSection}`)
+    await act(() => view.editor.view.dispatch(closeHistory(view.editor.state.tr)))
+    await act(() => view.editor.chain().setTextSelection({ from: 1, to: body.length + 1 }).deleteSelection().run()); await settle()
+    assert.equal(promptEditorText(view.editor.getJSON()), editableSection, 'deleting the body also removes its synthetic separator')
+    await act(() => view.editor.commands.undo()); await settle()
+    assert.equal(promptEditorText(view.editor.getJSON()), `${body}\n\n${editableSection}`)
+    assert.deepEqual(view.referenceChanges, [])
+  } finally { await view.destroy() }
+})
+
+test('synthetic body entry paragraphs preserve authored blank lines and omit an entirely empty entry run', () => {
+  const document = promptEditorDocument(editableSection, references, choices)
+  const entry = document.content![0]
+  assert.equal(entry.attrs?.promptBodyEntry, true)
+  const paragraph = (text = '') => ({ ...entry, ...(text ? { content: [{ type: 'text', text }] } : { content: [] }) })
+  document.content = [paragraph(), paragraph(), ...document.content!.slice(1)]
+  assert.equal(promptEditorText(document), editableSection)
+  document.content = [paragraph('第一行正文。'), paragraph(), paragraph('第三行正文。'), ...document.content.slice(2)]
+  assert.equal(promptEditorText(document), `第一行正文。\n\n第三行正文。\n\n${editableSection}`)
+})
+
+test('collapsing settings changes presentation only and copied text includes every folded section', async () => {
+  const sections = parsePromptSectionDocument(sectionText, { sourceText: sectionText })
+  const view = await mount(sectionText, { sectionDocument: sections })
+  try {
+    const toggle = button('展开编辑：镜头视觉设定')
+    assert.equal(toggle.getAttribute('aria-expanded'), 'false')
+    const contentId = toggle.getAttribute('aria-controls')
+    assert.ok(contentId)
+    const content = document.getElementById(contentId)
+    assert.ok(content)
+    assert.ok(content.querySelector('[data-node-view-content]') || content.matches('[data-node-view-content]'), 'folded settings retain their editable content')
+    await act(() => toggle.click()); await settle()
+    assert.equal(button('收起设定：镜头视觉设定').getAttribute('aria-expanded'), 'true')
+    await act(() => button('收起设定：镜头视觉设定').click()); await settle()
+    assert.equal(button('展开编辑：镜头视觉设定').getAttribute('aria-expanded'), 'false')
+    const copied = view.editor.view.someProp('clipboardTextSerializer', serialize => serialize(view.editor.state.doc.slice(0, view.editor.state.doc.content.size), view.editor.view))
+    assert.equal(copied, sectionText)
+    assert.equal(promptEditorText(view.editor.getJSON()), sectionText)
+    assert.deepEqual(promptEditorSectionDocument(view.editor.getJSON(), sections), sections)
+    assert.deepEqual(view.changes, [])
+    assert.deepEqual(view.sectionChanges, [])
+    assert.deepEqual(view.referenceChanges, [])
+  } finally { await view.destroy() }
+})
+
+test('expanded settings stay editable with source metadata and focusing a folded section reveals the caret', async () => {
+  const sections = parsePromptSectionDocument(editableSection, { sourceText: editableSection })
+  const managed = sections.blocks.find(block => block.kind === 'managed')!
+  managed.sourceStatus = 'source_changed'
+  managed.pendingSourceText = editableSection.replace('纹理', '褶皱')
+  const view = await mount(editableSection, { sectionDocument: sections })
+  try {
+    await act(() => button('展开编辑：镜头视觉设定').click()); await settle()
+    await act(() => view.editor.commands.insertContentAt(sectionPosition(view.editor) + 2, '本节点补充：')); await settle()
+    const edited = view.sectionChanges.at(-1)!.blocks.find(block => block.kind === 'managed')!
+    assert.equal(edited.id, managed.id)
+    assert.equal(edited.sourceText, managed.sourceText)
+    assert.equal(edited.pendingSourceText, managed.pendingSourceText)
+    assert.equal(edited.sourceStatus, 'source_changed')
+    assert.match(edited.text, /本节点补充：保留\[\[ref:look\]\]/)
+    assert.equal(serializePromptSectionDocument(view.sectionChanges.at(-1)!), view.changes.at(-1))
+    await act(() => view.editor.commands.undo()); await settle()
+    assert.equal(promptEditorText(view.editor.getJSON()), editableSection)
+
+    await act(() => view.editor.commands.setTextSelection(1))
+    await act(() => button('收起设定：镜头视觉设定').click()); await settle()
+    const savedChanges = view.changes.length
+    await act(() => view.editor.chain().focus().setTextSelection(sectionPosition(view.editor) + 2).run()); await settle()
+    assert.equal(button('收起设定：镜头视觉设定').getAttribute('aria-expanded'), 'true', 'keyboard focus cannot leave the caret in hidden settings')
+    assert.equal(view.changes.length, savedChanges, 'focusing a folded section never changes the authored text')
+    assert.deepEqual(view.referenceChanges, [])
+  } finally { await view.destroy() }
+})
+
+test('removing the final setting leaves the authored body and undo restores the folded source block', async () => {
+  const sections = parsePromptSectionDocument(editableSection, { sourceText: editableSection })
+  const managed = sections.blocks.find(block => block.kind === 'managed')!
+  const view = await mount(editableSection, { sectionDocument: sections })
+  const body = '保留我自己的完整画面描述。'
+  try {
+    await act(() => view.editor.chain().setTextSelection(1).insertContent(body).run()); await settle()
+    await act(() => button('移除区块：镜头视觉设定').click()); await settle()
+    assert.equal(promptEditorText(view.editor.getJSON()), body)
+    assert.equal(view.changes.at(-1), body)
+    assert.equal(view.container.querySelector('.pc-prompt-managed-section'), null)
+    const removed = view.sectionChanges.at(-1)!.blocks.find(block => block.id === managed.id)!
+    assert.equal(removed.deleted, true)
+    assert.equal(removed.sourceText, managed.sourceText)
+    const copied = view.editor.view.someProp('clipboardTextSerializer', serialize => serialize(view.editor.state.doc.slice(0, view.editor.state.doc.content.size), view.editor.view))
+    assert.equal(copied, body)
+    await act(() => view.editor.commands.undo()); await settle()
+    assert.equal(promptEditorText(view.editor.getJSON()), `${body}\n\n${editableSection}`)
+    assert.equal(view.container.querySelector('.pc-prompt-managed-section')?.getAttribute('data-prompt-section-id'), managed.id)
+    assert.deepEqual(view.referenceChanges, [])
+  } finally { await view.destroy() }
+})
+
+test('pasting authored entry paragraphs into ordinary prose preserves paragraph boundaries', async () => {
+  const source = await mount(editableSection)
+  let target: Awaited<ReturnType<typeof mount>> | undefined
+  try {
+    await act(() => source.editor.chain().setTextSelection(1).insertContent('复制第一段。').run()); await settle()
+    await act(() => source.editor.commands.splitBlock()); await settle()
+    await act(() => source.editor.commands.insertContent('复制第二段。')); await settle()
+    assert.equal(promptEditorText(source.editor.getJSON()), `复制第一段。\n复制第二段。\n\n${editableSection}`)
+    const entryHTML = source.editor.getHTML().split('<section')[0]
+    assert.match(entryHTML, /data-prompt-body-entry/)
+    target = await mount('开头保留。\n末尾保留。')
+    await act(() => target!.editor.commands.setTextSelection(1))
+    await act(() => target!.editor.view.pasteHTML(entryHTML, new dom.window.Event('paste') as ClipboardEvent)); await settle()
+    assert.equal(promptEditorText(target.editor.getJSON()), '复制第一段。\n复制第二段。开头保留。\n末尾保留。')
+    assert.equal(target.changes.at(-1), '复制第一段。\n复制第二段。开头保留。\n末尾保留。')
+    await act(() => target!.editor.commands.undo()); await settle()
+    assert.equal(promptEditorText(target.editor.getJSON()), '开头保留。\n末尾保留。')
+    assert.equal(promptEditorText(source.editor.getJSON()), `复制第一段。\n复制第二段。\n\n${editableSection}`)
+  } finally { if (target) await target.destroy(); await source.destroy() }
+})
+
+test('pasting several prose paragraphs into the empty body keeps their line breaks before folded settings', async () => {
+  const view = await mount(editableSection)
+  try {
+    await act(() => view.editor.commands.setTextSelection(1))
+    await act(() => view.editor.view.pasteText('第一段正文。\n第二段正文。', new dom.window.Event('paste') as ClipboardEvent)); await settle()
+    assert.equal(promptEditorText(view.editor.getJSON()), `第一段正文。\n第二段正文。\n\n${editableSection}`)
+    assert.equal(view.changes.at(-1), `第一段正文。\n第二段正文。\n\n${editableSection}`)
+    await act(() => view.editor.commands.undo()); await settle()
+    assert.equal(promptEditorText(view.editor.getJSON()), editableSection)
+  } finally { await view.destroy() }
+})
+
+test('removing a leading setting preserves its existing trailing prose and whitespace without serializing the empty entry', async () => {
+  const trailing = '\n\n末尾正文保持原有空行。\n'
+  const value = `${editableSection}${trailing}`
+  const view = await mount(value)
+  try {
+    assert.equal(promptEditorText(view.editor.getJSON()), value)
+    await act(() => button('移除区块：镜头视觉设定').click()); await settle()
+    assert.equal(promptEditorText(view.editor.getJSON()), trailing)
+    assert.equal(view.changes.at(-1), trailing)
+    await act(() => view.editor.commands.undo()); await settle()
+    assert.equal(promptEditorText(view.editor.getJSON()), value)
+    assert.deepEqual(view.referenceChanges, [])
+  } finally { await view.destroy() }
+})
+
+test('pasting an entire authored prompt preserves its body separation and copies the setting with a fresh identity', async () => {
+  const sections = parsePromptSectionDocument(editableSection, { sourceText: editableSection })
+  const source = await mount(editableSection, { sectionDocument: sections })
+  let target: Awaited<ReturnType<typeof mount>> | undefined
+  try {
+    await act(() => source.editor.chain().setTextSelection(1).insertContent('复制正文。').run()); await settle()
+    const copied = promptEditorText(source.editor.getJSON())
+    assert.equal(copied, `复制正文。\n\n${editableSection}`)
+    target = await mount('原有正文。')
+    await act(() => target!.editor.commands.setTextSelection(1))
+    await act(() => target!.editor.view.pasteHTML(source.editor.getHTML(), new dom.window.Event('paste') as ClipboardEvent)); await settle()
+    assert.equal(promptEditorText(target.editor.getJSON()), `${copied}原有正文。`)
+    const copiedSection = target.sectionChanges.at(-1)!.blocks.find(block => block.kind === 'managed')!
+    assert.notEqual(copiedSection.id, sections.blocks.find(block => block.kind === 'managed')!.id)
+    assert.equal(copiedSection.text, editableSection)
+    assert.equal(source.sectionChanges.at(-1)!.blocks.find(block => block.kind === 'managed')!.sourceText, editableSection)
+    await act(() => target!.editor.commands.undo()); await settle()
+    assert.equal(promptEditorText(target.editor.getJSON()), '原有正文。')
+    assert.equal(promptEditorText(source.editor.getJSON()), copied)
+  } finally { if (target) await target.destroy(); await source.destroy() }
 })

@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { scriptStageArtifacts, scriptArtifactLabels } from '@video-studio/shared/script/script-stage-content'
 import { draftCompletenessFixtureResponse } from './fixtures/script-draft-completeness.js'
+import { workflowFixtureTypes } from './fixtures/script-workflow.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'video-studio-script-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
@@ -412,7 +413,15 @@ test('workflow generation preserves complete documents while continuing missing 
         assert.doesNotMatch(submittedPrompt, /【一次格式修正】/, 'retained prose must not trigger a competing whole-stage rewrite')
         continuedTypes.push(artifact.artifact_type)
         reply = JSON.stringify({ blocks: [{ id: `artifact:${target}`, title: artifact.title, content: artifact.content, scenes: [] }], complete: true })
-      } else reply = generationReplies === 1 ? JSON.stringify({ artifacts: outlineArtifacts.slice(0, 1), scenes: [] }) : modelReply
+      } else {
+        const value = JSON.parse(modelReply)
+        if (workflowStage === 'outline' && workflowOperation === 'create') {
+          const types = workflowFixtureTypes(submittedPrompt)
+          value.artifacts = value.artifacts.filter((item: { artifact_type: string }) => types.includes(item.artifact_type as any))
+          if (types.includes('synopsis')) value.artifacts = value.artifacts.slice(0, 1)
+        }
+        reply = JSON.stringify(value)
+      }
     }
     return Response.json({ choices: [{ message: { content: reply } }] })
   }
@@ -424,11 +433,11 @@ test('workflow generation preserves complete documents while continuing missing 
     },
   })
   const project = await call<{ id: string }>('POST', '/api/projects', { name: '借光的人', brief: '改变未来就会失去记忆' })
-  const request = { model_id: model.id, mode: 'script', messages: [{ role: 'user', text: '总共3集，每集60秒，先整理大纲' }], generation_options: { episode_count: 3 }, workflow: { stage: 'outline' } }
+  const request = { model_id: model.id, mode: 'script', messages: [{ role: 'user', text: '总共3集，每集60秒，先整理大纲' }], generation_options: { episode_count: 3 }, workflow: { stage: 'outline', intent: 'stage_design' } }
   const draft = await call<{ reply: string; draft: { stage: string; scenes: Scene[]; artifacts: typeof outlineArtifacts } }>('POST', `/api/projects/${project.id}/script/director/chat`, request)
-  assert.equal(generationReplies, outlineArtifacts.length, 'one initial response and one complete response per missing document are sufficient')
-  assert.deepEqual(continuedTypes, outlineArtifacts.slice(1).map(item => item.artifact_type), 'continuation fills each missing document exactly once in stage order')
-  assert.match(generationPrompts[1], /输出截断后的创作接续任务[\s\S]*当前目标：synopsis/)
+  assert.equal(generationReplies, 6, 'five dependency groups plus one continuation of the partial narrative group')
+  assert.deepEqual(continuedTypes, ['structure'], 'only the unfinished document in the narrative group is continued')
+  assert.ok(generationPrompts.some(prompt => /输出截断后的创作接续任务[\s\S]*当前目标：structure/.test(prompt)))
   assert.equal(draft.draft.stage, 'outline')
   assert.deepEqual(draft.draft.artifacts, outlineArtifacts)
   assert.deepEqual(draft.draft.scenes, [])
@@ -489,7 +498,8 @@ test('design JSON continues missing subdocuments without rewriting retained text
     const body = JSON.parse(String(init?.body)), prompt: string = body.messages[0].content
     if (prompt.includes('本次独立调用只理解创作者意图')) return Response.json({ choices: [{ message: { content: JSON.stringify({ action: 'draft', operation, workflow: { stage }, creative_brief: '整理车站与怀表资料。' }) } }] })
     prompts.push(prompt)
-    const complete = whole ? [...artifactsFor('locations'), ...artifactsFor('props')] : artifactsFor(stage)
+    const all = whole ? [...artifactsFor('locations'), ...artifactsFor('props')] : artifactsFor(stage)
+    const complete = whole ? all : all.filter(item => workflowFixtureTypes(prompt, scriptStageArtifacts[stage]).includes(item.artifact_type))
     attempts++
     const contract = body.response_format.json_schema
     if (contract.name === 'script_stage_blocks') {
@@ -505,7 +515,7 @@ test('design JSON continues missing subdocuments without rewriting retained text
       return Response.json({ choices: [{ message: { content: JSON.stringify({ blocks: [{ id: `artifact:${target}`, title: artifact.title, content: artifact.content, scenes: [] }], complete: true }) } }] })
     }
     const schema = JSON.stringify(contract.schema)
-    for (const type of [...scriptStageArtifacts.locations, ...scriptStageArtifacts.props]) assert.ok(schema.includes(`"${type}"`), type)
+    for (const type of whole ? [...scriptStageArtifacts.locations, ...scriptStageArtifacts.props] : workflowFixtureTypes(prompt, scriptStageArtifacts[stage])) assert.ok(schema.includes(`"${type}"`), type)
     const artifacts = attempts === 1 ? complete.slice(0, whole ? 7 : 1) : complete
     const result = whole ? { outline: '车站主线', characters: '林：调查员', scenes: [{ heading: '车站', duration: 8 }], artifacts } : { artifacts, scenes: [] }
     return Response.json({ choices: [{ message: { content: JSON.stringify(result) } }] })
@@ -516,10 +526,10 @@ test('design JSON continues missing subdocuments without rewriting retained text
     const result = await call<{ draft: { stage: string; episode_number: number; artifacts: ReturnType<typeof artifactsFor>; scenes: Scene[] } }>('POST', `/api/projects/${project.id}/script/director/chat`, {
       model_id: model.id, mode: 'script', workflow: { stage, episode_number: 7 }, messages: [{ role: 'user', text: `整理${stage === 'locations' ? '场景' : '道具'}设计` }],
     })
-    assert.equal(attempts, scriptStageArtifacts[stage].length, 'each missing document is completed without regenerating the retained first document')
-    assert.deepEqual(continuedTypes, scriptStageArtifacts[stage].slice(1))
+    assert.equal(attempts, 3, 'two dependency groups plus one continuation preserve the first complete document')
+    assert.deepEqual(continuedTypes, [stage === 'locations' ? 'location_layouts' : 'prop_functions'])
     assert.match(prompts[1], /输出截断后的创作接续任务/)
-    for (const type of scriptStageArtifacts[stage]) assert.ok(prompts[0].includes(`${type}（${scriptArtifactLabels[type]}）`))
+    for (const type of workflowFixtureTypes(prompts[0], scriptStageArtifacts[stage])) assert.ok(prompts[0].includes(`${type}（${scriptArtifactLabels[type]}）`))
     assert.equal(result.draft.episode_number, 0)
     assert.deepEqual(result.draft.artifacts, artifactsFor(stage))
     assert.deepEqual((await call<{ script: Script }>('GET', `/api/projects/${project.id}`)).script, before)
@@ -532,7 +542,7 @@ test('design JSON continues missing subdocuments without rewriting retained text
   }
   stage = 'locations'; operation = 'regenerate'; attempts = 0; prompts.length = 0
   await call('POST', `/api/projects/${project.id}/script/director/chat`, { model_id: model.id, mode: 'script', workflow: { stage, operation }, messages: [{ role: 'user', text: '按全剧空间与道具一致性重新设计场景' }] })
-  assert.ok(prompts[0].includes('"type":"prop_continuity"'), 'the last of 19 global documents must remain in the writer context')
+  assert.ok(prompts[0].includes('"artifact_type":"prop_continuity"'), 'the last of 19 global documents must remain in the writer context')
   whole = true; attempts = 0; prompts.length = 0
   const preview = await call<{ prompt: string }>('POST', `/api/projects/${project.id}/script/generate/prompt`, {})
   for (const type of [...scriptStageArtifacts.locations, ...scriptStageArtifacts.props]) assert.ok(preview.prompt.includes(type))

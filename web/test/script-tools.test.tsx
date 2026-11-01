@@ -35,7 +35,7 @@ function revisionDraft(ready = false): ScriptToolDraft {
 }
 const stream = (value: object) => new Response(`data: ${JSON.stringify({ type: 'done', ...value })}\n\n`, { headers: { 'Content-Type': 'text/event-stream' } })
 function button(text: string) { const node = [...document.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === text || item.getAttribute('aria-label') === text); assert.ok(node, text); return node }
-async function mount(projectDetail = detail, preserveDraft = false, sourceDocument: unknown = null) {
+async function mount(projectDetail = detail, preserveDraft = false, sourceDocument: unknown = null, initialStageRequest?: import('../src/features/script/script-workflow').WorkflowRequest) {
   const mockedFetch = globalThis.fetch
   const fixtureFetch: typeof fetch = async (...args) => String(args[0]).endsWith('/skills/defaults')
     ? Response.json({ policies: skillStageOptions.map(({ value: stage, label }) => ({ stage, label, primary_id: null, auxiliary_ids: [], source: 'global', warning: '', skills: [] })) })
@@ -47,7 +47,7 @@ async function mount(projectDetail = detail, preserveDraft = false, sourceDocume
   }
   dom.window.localStorage.setItem('script-director-model:project-tools', model.id)
   const container = document.createElement('div'); document.body.append(container); const root = createRoot(container)
-  await act(async () => root.render(<MantineProvider env="test"><ScriptDirectorPanel detail={projectDetail} models={[model]} providers={[provider]} onRefresh={async () => {}} onClose={() => {}} onOpenModels={() => {}} onNotice={() => {}} /></MantineProvider>))
+  await act(async () => root.render(<MantineProvider env="test"><ScriptDirectorPanel detail={projectDetail} models={[model]} providers={[provider]} initialStageRequest={initialStageRequest} openRequestId={initialStageRequest ? 1 : undefined} onRefresh={async () => {}} onClose={() => {}} onOpenModels={() => {}} onNotice={() => {}} /></MantineProvider>))
   return { container, destroy: async () => { await act(() => root.unmount()); container.remove(); if (globalThis.fetch === fixtureFetch) globalThis.fetch = mockedFetch } }
 }
 function setInput(selector: string, value: string) { const field = document.querySelector<HTMLTextAreaElement>(selector)!; Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value')!.set!.call(field, value); field.dispatchEvent(new dom.window.Event('input', { bubbles: true })) }
@@ -76,6 +76,7 @@ test('partial task restores progress and proposed decisions, resumes the same sc
     assert.match(view.container.textContent!, /拟定的统一设定/); assert.match(view.container.textContent!, /推动调查主线/)
     await act(() => button('继续统一修订').click())
     assert.equal(submitted.use_tools, true); assert.equal(submitted.document_action, undefined); assert.equal(submitted.workflow, undefined)
+    assert.equal(submitted.revision_task_id, 'revision-task-1')
     assert.match(submitted.messages.at(-1).text, /revision-task-1/)
     assert.match(view.container.textContent!, /文档 1\/1/); assert.equal(button('确认保存').disabled, false)
     await act(async () => button('确认保存').click()); assert.equal(commits, 1); assert.match(view.container.textContent!, /已保存/)
@@ -108,8 +109,72 @@ test('manual changes to verified bulk draft update before/after preview, require
     assert.match(diff.textContent!, /身份待定/); assert.match(diff.textContent!, /独立调查记者/)
     await act(async () => button('继续统一修订').click())
     assert.deepEqual(order, ['sync', 'resume']); assert.match(edited.documents[0].content, /独立调查记者/); assert.match(submitted.messages.at(-1).text, /revision-task-1/)
+    assert.equal(submitted.revision_task_id, 'revision-task-1')
     assert.match(view.container.querySelector('.sd-activity-state')!.textContent!, /部分完成/)
     assert.match(view.container.querySelector('.sd-activity-result')!.textContent!, /仍有未完成项/)
+  } finally { await view.destroy() }
+})
+
+test('refreshing the same revision preserves its interruption reason until the draft version or status changes', async t => {
+  let pending = revisionDraft(), chats = 0
+  const reason = '本轮中断原因：相同读取已重复多次，任务没有产生新进展。'
+  t.mock.method(globalThis, 'fetch', async (url: unknown) => {
+    const path = String(url)
+    if (path.endsWith('/tools-state')) return Response.json({ draft: pending, decisions: [] })
+    if (path.endsWith('/conversations')) return Response.json({ conversations: [] })
+    if (path.endsWith('/chat/stream')) {
+      chats++
+      return stream({ reply: chats === 1 ? reason : '已取得当前草稿状态。', tool_draft: pending,
+        ...(chats === 1 ? { execution_outcome: { kind: 'partial', summary: `统一修订尚未完成。\n${reason}`, draft_id: pending.id, draft_version: pending.version } } : {}),
+        classification: { type: 'other' }, classification_version: replyClassificationVersion })
+    }
+    throw new Error(`Unexpected ${path}`)
+  })
+  const view = await mount()
+  const refreshStatus = async () => {
+    await act(() => button('稍后处理').click())
+    await act(() => setInput('textarea[aria-label="剧本创作对话"]', '只说明当前草稿状态。'))
+    await act(async () => button('发送消息').click())
+  }
+  try {
+    await act(async () => button('继续统一修订').click())
+    assert.match(view.container.querySelector('.sd-activity-result')!.textContent!, /相同读取已重复多次/)
+    await refreshStatus()
+    assert.match(view.container.querySelector('.sd-activity-result')!.textContent!, /相同读取已重复多次/)
+    pending = { ...pending, version: 'new-draft-version' }
+    await refreshStatus()
+    assert.doesNotMatch(view.container.querySelector('.sd-activity-result')!.textContent!, /相同读取已重复多次/)
+    assert.match(view.container.querySelector('.sd-activity-result')!.textContent!, /进度已保留/)
+    pending = { ...pending, status: 'saved' }
+    await refreshStatus()
+    assert.match(view.container.querySelector('.sd-activity-state')!.textContent!, /已保存/)
+    assert.match(view.container.querySelector('.sd-activity-result')!.textContent!, /已写入项目/)
+  } finally { await view.destroy() }
+})
+
+test('ordinary composer questions never authorize resuming a pending unified revision', async t => {
+  const pending = revisionDraft()
+  let submitted: any
+  t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
+    const path = String(url)
+    if (path.endsWith('/tools-state')) return Response.json({ draft: pending, decisions: [] })
+    if (path.endsWith('/conversations')) return Response.json({ conversations: [] })
+    if (path.endsWith('/chat/stream')) {
+      submitted = JSON.parse(String(init?.body))
+      return stream({ reply: '当前还有未核对文档。', tool_draft: pending, classification: { type: 'other' }, classification_version: replyClassificationVersion })
+    }
+    throw new Error(`Unexpected ${path}`)
+  })
+  const view = await mount()
+  try {
+    await act(() => button('稍后处理').click())
+    await act(() => setInput('textarea[aria-label="剧本创作对话"]', '现在只是看看任务进度，先别继续修订。'))
+    await act(async () => button('发送消息').click())
+    assert.equal(submitted.use_tools, true)
+    assert.equal(submitted.revision_task_id, undefined)
+    assert.equal(submitted.document_action, undefined)
+    assert.equal(submitted.workflow, undefined)
+    assert.match(submitted.messages.at(-1).text, /先别继续修订/)
   } finally { await view.destroy() }
 })
 
@@ -525,8 +590,8 @@ test('stopping a streamed operation settles its trace without turning completed 
     await act(() => setInput('textarea[aria-label="剧本创作对话"]', '讨论故事'))
     await act(async () => button('发送消息').click())
     assert.match(view.container.querySelector('.sd-activity')!.textContent!, /处理中/)
-    assert.match(view.container.querySelector('.sd-activity-wait')!.textContent!, /尚未返回结果/)
-    await act(async () => button('停止等待').click())
+    assert.match(view.container.querySelector('.sd-activity-wait')!.textContent!, /当前步骤仍在处理中/)
+    await act(async () => button('停止任务').click())
     await act(() => view.container.querySelector<HTMLButtonElement>('.sd-activity-toggle')!.click())
     assert.match(view.container.querySelector('.sd-activity')!.textContent!, /已停止/)
     assert.ok(!view.container.querySelector('.sd-activity-icon.is-running'))
@@ -572,7 +637,7 @@ test('workflow draft keeps the server source version through save conflicts and 
   for (const sourceVersion of ['generated-source-version', null]) await t.test(sourceVersion === null ? 'generated without a source' : 'generated from an earlier source', async t => {
     const content = '# 林晚\n调查记者，追踪失踪案件。\n候选原文与未涉及的设定须保留。'
     const result = { reply: '人物设定草稿已准备。', classification_version: replyClassificationVersion, classification: { type: 'other' },
-      draft: { stage: 'characters', scope: 'project', episode_number: 0, source_version: sourceVersion,
+      draft: { stage: 'characters', scope: 'project', episode_number: 0, source_version: sourceVersion, intent: 'stage_design', artifact_types: ['characters'],
         artifacts: [{ artifact_type: 'characters', title: '全剧人物设定', content }], scenes: [] } }
     const sourceDocument = { project_id: detail.id, filename: '已经替换的当前原稿.txt', content: '这是后来上传的新剧本，不能成为旧候选稿的保存基准。', updated_at: '2026-10-16T10:00:00.000Z',
       analysis: { id: 'current-analysis', source_version: 'current-analysis-source', model_id: model.id, status: 'ready', phase: 'ready', completed_chunks: 1, total_chunks: 1, sections: [], error: null, updated_at: '2026-10-16T10:00:01.000Z' } }
@@ -594,8 +659,11 @@ test('workflow draft keeps the server source version through save conflicts and 
       await act(() => setInput('textarea[aria-label="剧本创作对话"]', '生成全剧人物设定'))
       await act(async () => button('发送消息').click())
       assert.equal(JSON.parse(window.localStorage.getItem(draftKey)!).source_version, sourceVersion)
+      assert.deepEqual(JSON.parse(window.localStorage.getItem(draftKey)!).workflow.artifact_types, ['characters'])
+      assert.equal(JSON.parse(window.localStorage.getItem(draftKey)!).workflow.intent, 'stage_design')
       await act(async () => button('确认保存').click())
       assert.equal(submitted[0].source_version, sourceVersion)
+      assert.equal(submitted[0].intent, 'stage_design'); assert.deepEqual(submitted[0].artifact_types, ['characters'])
       assert.equal(submitted[0].artifacts[0].content, content)
       assert.match(view.container.textContent!, /文稿来源已变化/)
       assert.ok(view.container.querySelector('[aria-label="剧本草稿预览"]'), 'a rejected save leaves the preview open')
@@ -612,6 +680,7 @@ test('workflow draft keeps the server source version through save conflicts and 
       assert.match(reopened.container.querySelector('[aria-label="剧本草稿预览"]')!.textContent!, /候选原文与未涉及的设定须保留/)
       await act(async () => button('确认保存').click())
       assert.deepEqual(submitted.map(body => body.source_version), [sourceVersion, sourceVersion], 'a current upload never replaces the draft source version')
+      assert.equal(submitted[1].intent, 'stage_design'); assert.deepEqual(submitted[1].artifact_types, ['characters'], 'reopening never expands the retained task contract')
       assert.equal(submitted[1].artifacts[0].content, content)
       assert.match(reopened.container.textContent!, /文稿来源已变化/)
       assert.ok(reopened.container.querySelector('[aria-label="剧本草稿预览"]'))
@@ -710,7 +779,8 @@ test('execution sequence nests calls, keeps active ancestors in progress and ret
   const root = createRoot(container)
   try {
     await act(async () => root.render(<MantineProvider><DirectorActivity activity={activity} pending /></MantineProvider>))
-    assert.match(container.querySelector('.sd-activity-current')!.textContent!, /生成故事梗概.*当前调用：模型筛选剧情目录/)
+    assert.match(container.querySelector('.sd-activity-current')!.textContent!, /生成故事梗概.*按栏目生成/)
+    assert.doesNotMatch(container.querySelector('.sd-activity-current')!.textContent!, /当前调用/)
     assert.match(container.querySelector('.sd-activity-task')!.textContent!, /生成阶段草稿.*进行中/)
     assert.equal(container.querySelector('.sd-activity-task .script-director-spinner'), null)
     await act(() => container.querySelector<HTMLButtonElement>('.sd-activity-toggle')!.click())
@@ -739,27 +809,17 @@ test('execution sequence nests calls, keeps active ancestors in progress and ret
     assert.equal(container.querySelector('.sd-activity-icon.is-running'), null)
     assert.equal(requestCall.querySelector('.workspace-disclosure-control')!.getAttribute('aria-expanded'), 'true', 'live updates preserve expanded call details')
     assert.match(requestCall.querySelector('time')!.textContent!, /2.3 秒/)
-    assert.match(requestCall.textContent!, /发送 12,345 字节/)
-    assert.match(requestCall.textContent!, /输入 60,315/)
-    assert.match(requestCall.textContent!, /输出 28,391/)
-    assert.match(requestCall.textContent!, /其中推理 4,096/)
-    assert.match(requestCall.textContent!, /请求输出上限 32,768/)
-    const capacity = requestCall.querySelector('.sd-activity-capacity')!
-    assert.match(capacity.textContent!, /末次输入估算 72,000 tokens/)
-    assert.match(capacity.textContent!, /模型上下文容量 128,000 tokens/)
-    assert.match(capacity.textContent!, /末次输出预留 32,768 tokens/)
-    assert.doesNotMatch(capacity.textContent!, /60,315|28,391|其中推理/)
-    assert.match(requestCall.textContent!, /实际 Token 用量以供应商返回为准/)
+    assert.doesNotMatch(requestCall.textContent!, /字节|Token|tokens|容量预检|请求输出上限|60,315|28,391|4,096|32,768/)
+    assert.equal(requestCall.querySelector('.sd-activity-capacity'), null)
     assert.match(container.querySelector('.sd-activity-task time')!.textContent!, /2.3 秒/)
     await act(async () => root.render(<MantineProvider><DirectorActivity activity={activity.map(event => event.id === request.id
       ? { ...event, context_window_tokens: undefined, reserved_output_tokens: undefined } : event)} /></MantineProvider>))
-    assert.match(requestCall.querySelector('.sd-activity-capacity')!.textContent!, /末次输入估算 72,000 tokens/)
-    assert.doesNotMatch(requestCall.querySelector('.sd-activity-capacity')!.textContent!, /模型上下文容量|末次输出预留/)
+    assert.equal(requestCall.querySelector('.sd-activity-capacity'), null)
     await act(async () => root.render(<MantineProvider><DirectorActivity activity={activity.map(event => event.id === request.id
       ? { ...event, estimated_input_tokens: undefined, context_window_tokens: undefined, reserved_output_tokens: undefined } : event)} /></MantineProvider>))
     assert.equal(requestCall.querySelector('.sd-activity-capacity'), null, 'legacy requests without capacity metrics do not invent a checked window')
     assert.doesNotMatch(requestCall.textContent!, /实际 Token 用量以供应商返回为准/)
-    assert.match(requestCall.textContent!, /输入 60,315/)
+    assert.doesNotMatch(requestCall.textContent!, /输入 60,315/)
     await act(async () => root.render(<MantineProvider><DirectorActivity activity={activity} /></MantineProvider>))
     assert.equal(container.querySelector('.script-director-spinner'), null, 'terminal history cannot leave old running records spinning')
     assert.match(container.querySelector('.sd-activity-task')!.textContent!, /未记录完成/)
@@ -788,7 +848,7 @@ for (const noticeParent of ['task', 'draft']) {
     try {
       await act(async () => root.render(<MantineProvider><DirectorActivity activity={activity} pending /></MantineProvider>))
       assert.match(container.querySelector('.sd-activity-state')!.textContent!, /处理中/)
-      assert.match(container.querySelector('.sd-activity-current')!.textContent!, /编写阶段草稿.*当前调用：模型继续编写未完成内容.*正在补齐剩余文档/s)
+      assert.match(container.querySelector('.sd-activity-current')!.textContent!, /编写阶段草稿.*正在补齐剩余文档/s)
       await act(() => container.querySelector<HTMLButtonElement>('.sd-activity-toggle')!.click())
       const steps = container.querySelectorAll('.sd-activity-step')
       assert.equal(steps.length, 5, 'continuation notices must not create a sixth execution step')
@@ -880,9 +940,9 @@ const outlineStep: CreationNextStep = { id: 'ready-outline', stage: 'outline', e
 test('initial direction discussion leads to one native outline action, then saving advances to characters', async t => {
   let creation = stateFor(emptyProject), pending: ScriptToolDraft | null = null, chatCalls = 0
   const requests: any[] = []
-  const artifacts = scriptStageArtifacts.outline.map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: `${scriptArtifactLabels[artifact_type]}：林晚调查城市怪谈。` }))
+  const artifacts = (['outline'] as const).map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: `${scriptArtifactLabels[artifact_type]}：林晚调查城市怪谈。` }))
   const created: ScriptToolDraft = { id: 'outline-draft', version: 'outline-v1', kind: 'create', summary: '全剧大纲草稿', status: 'pending',
-    workflow: { stage: 'outline', scope: 'project', episode_number: 0, artifacts, scenes: [] },
+    workflow: { stage: 'outline', scope: 'project', episode_number: 0, intent: 'stage_design', artifact_types: ['outline'], artifacts, scenes: [] },
     documents: artifacts.map(doc => ({ ...doc, id: `${doc.artifact_type}:0`, episode_number: 0, version: '', original_content: '', replacements: [] })) }
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
     const path = String(url), body = init?.body ? JSON.parse(String(init.body)) : undefined
@@ -896,8 +956,8 @@ test('initial direction discussion leads to one native outline action, then savi
       return stream({ reply: '大纲草稿已准备，请检查后保存。', tool_draft: pending, classification_version: replyClassificationVersion, classification: { type: 'other' }, creation })
     }
     if (path.endsWith('/tool-drafts/outline-draft') && init?.method === 'PUT') {
-      assert.equal(body.documents.length, 9)
-      assert.equal(body.documents.find((doc: any) => doc.id === 'foreshadowing:0').content, '第1集埋设，第3集回收。')
+      assert.equal(body.documents.length, 1)
+      assert.equal(body.documents.find((doc: any) => doc.id === 'outline:0').content, '林晚沿线索追查城市怪谈。')
       pending = { ...created, version: 'outline-v2', documents: created.documents.map(doc => ({ ...doc, content: body.documents.find((item: any) => item.id === doc.id).content })) }
       return Response.json(pending)
     }
@@ -925,16 +985,16 @@ test('initial direction discussion leads to one native outline action, then savi
     assert.equal(view.container.querySelectorAll('.sd-creation-actions > button').length, 1)
     await act(async () => button('生成全剧故事大纲').click())
     assert.equal(requests[2].use_tools, true); assert.equal(requests[2].next_step_id, outlineStep.id)
-    assert.deepEqual(requests[2].workflow, { stage: 'outline', scope: 'project', episode_number: 0 })
+    assert.deepEqual(requests[2].workflow, { stage: 'outline', scope: 'project', episode_number: 0, intent: 'stage_design', artifact_types: ['outline'] })
     assert.match(view.container.querySelector('[aria-label="剧本草稿预览"]')!.textContent!, /林晚调查城市怪谈/)
     assert.equal(view.container.querySelector('.sd-creation-actions'), null)
-    assert.match(view.container.querySelector('.sd-document-meta')!.textContent!, /9 份文档/)
+    assert.match(view.container.querySelector('.sd-document-meta')!.textContent!, /1 份文档/)
     await act(() => (view.container.querySelector('[aria-label="选择草稿文档"]') as HTMLInputElement).click())
     const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
-    assert.equal(options.length, 9)
-    await act(() => options.find(option => option.textContent === '伏笔与回收')!.click())
+    assert.equal(options.length, 1)
+    await act(() => options.find(option => option.textContent === '概要设计')!.click())
     await act(() => button('编辑').click())
-    await act(() => setInput('textarea[aria-label="编辑草稿：伏笔与回收"]', '第1集埋设，第3集回收。'))
+    await act(() => setInput('textarea[aria-label="编辑草稿：概要设计"]', '林晚沿线索追查城市怪谈。'))
     await act(async () => button('确认保存').click())
     assert.ok(button('生成全剧人物设定'))
     assert.equal(view.container.querySelectorAll('.sd-creation-actions > button').length, 1)
@@ -1103,12 +1163,31 @@ test('stage redesign and missing-section completion send exact typed actions wit
       await act(() => button('处理已保存的场景设计').click())
       await act(async () => button(label).click())
       assert.equal(requests.length, 1)
-      assert.deepEqual(requests[0].workflow, { stage: 'locations', scope: 'project', episode_number: 0, operation })
+      assert.deepEqual(requests[0].workflow, { stage: 'locations', scope: 'project', episode_number: 0, operation,
+        ...(operation === 'supplement' ? { intent: 'stage_design', artifact_types: ['location_layouts', 'location_atmosphere', 'location_continuity'] } : {}) })
       assert.equal(requests[0].use_tools, true)
       assert.match(requests[0].messages.at(-1).text, /不生成或改写分集正文/)
       assert.equal(view.container.querySelector('.sd-creation-actions > button')?.textContent?.includes('第 2 集'), undefined)
     } finally { await view.destroy() }
   }
+})
+
+test('editor missing-section request opens an exact delivery preview and waits for the explicit generate click', async t => {
+  const project = savedStagesProject(), requests: any[] = []
+  mockStageChat(t, project, requests)
+  const view = await mount(project, false, null, { stage: 'outline', episode_number: 0, scope: 'project', operation: 'supplement', intent: 'stage_design' })
+  try {
+    const panel = view.container.querySelector('[aria-label="分阶段生成面板"]')!
+    assert.ok(panel)
+    assert.deepEqual(requests, [], 'opening from an empty editor section must never start paid generation')
+    assert.match(panel.textContent!, /本次交付：故事简述、背景设定、全剧分段、钩子预设、伏笔与回收、反转预设、创作禁区、分集大纲/)
+    assert.doesNotMatch(panel.textContent!, /本次交付：概要设计/)
+    assert.match(panel.textContent!, /已保存栏目的标题和正文保持原样/)
+    await act(async () => button('补齐故事大纲').click())
+    assert.equal(requests.length, 1)
+    assert.deepEqual(requests[0].workflow, { stage: 'outline', episode_number: 0, scope: 'project', operation: 'supplement', intent: 'stage_design', artifact_types: scriptStageArtifacts.outline.filter(type => type !== 'outline') })
+    assert.match(requests[0].messages.at(-1).text, /原样保留其标题和正文，只补齐缺失栏目/)
+  } finally { await view.destroy() }
 })
 
 test('outline-stage revision retains its typed scope and bypasses the eight-document action limit', async t => {

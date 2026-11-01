@@ -53,8 +53,8 @@ export function conversationMessage<T extends { id: string; role: 'assistant' | 
     ...(role === 'assistant' && Object.keys(reply_metadata).length ? { reply_metadata } : {}) }
 }
 
-const readTools = new Set(['get_creation_state', 'get_project_visual_style', 'search_project_content', 'read_documents', 'read_source_document', 'search_source_document', 'read_episode_scenes', 'find_related_content', 'get_document_review_context', 'read_visual_profiles', 'get_storyboard_context'])
-const nonMutatingTools = new Set([...readTools, 'ask_creator'])
+const readTools = new Set(['get_creation_state', 'get_project_visual_style', 'search_project_content', 'read_documents', 'read_source_document', 'search_source_document', 'read_episode_scenes', 'get_repair_context', 'search_repair_context', 'find_related_content', 'get_document_review_context', 'read_visual_profiles', 'get_storyboard_context'])
+const nonMutatingTools = new Set([...readTools, 'submit_repair_patch', 'ask_creator'])
 function readPayload(event: ScriptActivity) {
   if (event.output_truncated || !event.output) return null
   try { return record(JSON.parse(event.output)) } catch { return null }
@@ -118,7 +118,9 @@ export function activitySources(activity: ScriptActivity[]): ScriptActivityTarge
   return [...new Map(targets.filter(item => item?.id && item.title).map(item => [`${item.kind}:${item.id}`, item])).values()]
 }
 export function executionView(activity: ScriptActivity[] | undefined, execution: ScriptExecution | undefined, pending?: boolean, failed?: boolean) {
-  const events = readActivity(activity)
+  // Retain usage ledgers in saved traces, but keep the creative task view about
+  // work and results. This also covers histories created before usage UI ended.
+  const events = readActivity(activity).filter(event => !(event.kind === 'context' && event.label === '本轮模型用量'))
   const sources = activitySources(events)
   const skills = [...new Map(events.filter(event => event.kind === 'skill' && event.status === 'succeeded').map(event => [event.skill_id || event.name || event.label, event])).values()]
   const active = [...events].reverse().find(event => event.status === 'running')

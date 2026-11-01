@@ -38,6 +38,8 @@ export interface VideoReferenceBinding {
   board_asset_id: string | null
   required: boolean
   reference_assets?: VisualReferenceSnapshot[]
+  /** Annotate an already selected node-local input without appending it. */
+  selected_reference_asset_ids?: string[]
   usage?: VisualBindingUsage
 }
 
@@ -63,10 +65,13 @@ export function visualBindingReferenceAssetIds(binding: Pick<VideoReferenceBindi
 }
 
 /** Drop known inputs that are outside this output's scope; keep shared images and unrelated manual inputs. */
-export function scopedVisualReferenceAssetIds(ids: string[], saved: VideoReferenceBinding[], active: VideoReferenceBinding[]): string[] {
+export function scopedVisualReferenceAssetIds(ids: string[], saved: VideoReferenceBinding[], active: VideoReferenceBinding[], explicitIds: string[] = []): string[] {
   const known = new Set(saved.flatMap(visualBindingReferenceAssetIds))
   const used = new Set(active.flatMap(visualBindingReferenceAssetIds))
-  return ids.filter(id => !known.has(id) || used.has(id))
+  // A fixed connection is a node-local creator choice. Shot defaults still
+  // control automatic inputs, but must not silently discard that choice.
+  const explicit = new Set(explicitIds)
+  return ids.filter(id => explicit.has(id) || !known.has(id) || used.has(id))
 }
 
 /** Stable image order for previews, prompt numbering, and provider content. No images are silently truncated. */
@@ -105,10 +110,11 @@ export function videoReferenceManifest(
   for (const binding of ordered) {
     if (!visualBindingApplies(binding, 'video')) continue
     if (excluded.has(binding.profile_id) && !binding.required) continue
-    for (const assetId of visualBindingReferenceAssetIds(binding)) {
+    const defaults = visualBindingReferenceAssetIds(binding)
+    for (const assetId of [...new Set([...defaults, ...(binding.selected_reference_asset_ids || [])])]) {
       let entry = byAsset.get(assetId)
       if (!entry) {
-        if (options.append_profile_assets === false) continue
+        if (options.append_profile_assets === false || !defaults.includes(assetId)) continue
         entry = {
           asset_id: assetId, index: entries.length + 1,
           purpose: assetId === options.storyboard_reference_asset_id ? 'storyboard' : binding.kind,

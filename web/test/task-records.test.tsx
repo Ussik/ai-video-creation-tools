@@ -9,13 +9,14 @@ import { chooseCombobox } from './component-controls'
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
-for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLElement', 'Element', 'ShadowRoot', 'Event', 'MouseEvent', 'MutationObserver']) {
+for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLElement', 'HTMLAnchorElement', 'Element', 'ShadowRoot', 'Event', 'MouseEvent', 'MutationObserver']) {
   Object.defineProperty(globalThis, key, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[key] })
 }
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, getComputedStyle: dom.window.getComputedStyle.bind(dom.window),
   requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window), cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
   ResizeObserver: class { observe() {} unobserve() {} disconnect() {} } })
 Object.defineProperty(dom.window, 'matchMedia', { value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) })
+Object.defineProperty(dom.window.document, 'fonts', { value: { addEventListener() {}, removeEventListener() {} } })
 dom.window.HTMLElement.prototype.scrollIntoView = () => {}
 const { createRoot } = await import('react-dom/client')
 const { default: TaskRecords } = await import('../src/features/jobs/TaskRecords')
@@ -94,12 +95,13 @@ test('status, task type and search compose; clearing filters restores tasks incl
 test('failed tasks keep download recovery and query continuation separate from paid regeneration', async () => {
   const view = await mount()
   try {
-    for (const label of ['恢复下载', '继续查询', '回到画布', '返回配音', '重试']) await act(() => button(view.container, label).click())
+    for (const label of ['恢复下载', '继续查询', '回到画布', '返回配音']) await act(() => button(view.container, label).click())
     assert.deepEqual(view.events, [
       { type: 'retry', id: 'recover' }, { type: 'retry', id: 'resume' }, { type: 'canvas', id: 'shot' },
-      { type: 'speech' }, { type: 'retry', id: 'video-failed' },
+      { type: 'speech' },
     ])
-    assert.match(view.container.textContent!, /核对提供商账单/)
+    assert.match(view.container.textContent!, /核对提供商任务记录与账单/)
+    assert.equal([...view.container.querySelectorAll('button')].some(node => node.textContent === '重试'), false)
   } finally { await view.close() }
 })
 
@@ -159,4 +161,106 @@ test('only content-policy image failures offer optimization and never show conti
     assert.equal(document.querySelector<HTMLTextAreaElement>('textarea[aria-label="优化前的提示词"]')!.value, '原始画面描述')
     assert.equal(calls, 0); assert.deepEqual(view.events, [])
   } finally { globalThis.fetch = originalFetch; await view.close() }
+})
+
+test('uncertain restarted video tasks show verification and read-only original request details without retrying', async t => {
+  const task = job('video-unknown', 'failed', { model_id: 'video', recovery_action: 'verify', recovery_modality: 'video',
+    request: '{"prompt":"不可覆盖的原提示词","duration":8}', error: '服务重启，生成提交状态待核对' })
+  const requests: Array<{ path: string; method: string }> = []
+  t.mock.method(globalThis, 'fetch', async (path: unknown, init?: RequestInit) => {
+    requests.push({ path: String(path), method: init?.method || 'GET' })
+    return Response.json({ concurrency: 3, max_concurrency: 10, running: 0, queued: 0 })
+  })
+  const view = await mount({ ...detail, jobs: [task] })
+  try {
+    const row = view.container.querySelector('tbody tr')!
+    assert.match(row.textContent!, /视频生成/); assert.match(row.querySelector('.job-status')!.textContent!, /待核对/)
+    assert.match(row.textContent!, /可能已被接收或计费/)
+    assert.doesNotMatch(row.textContent!, /重试|继续查询|恢复下载|优化提示词/)
+    await act(() => row.querySelector<HTMLButtonElement>('[aria-label="查看任务信息"]')!.click())
+    const dialog = document.querySelector('[role="dialog"][aria-label="任务详情"]')!
+    assert.match(dialog.textContent!, /待核对/); assert.match(dialog.textContent!, /不可覆盖的原提示词/)
+    assert.equal(dialog.querySelector('textarea, input[contenteditable], [contenteditable="true"]'), null)
+    assert.ok(requests.every(request => request.method === 'GET'))
+    assert.deepEqual(view.events, [])
+  } finally { await view.close() }
+})
+
+test('video query continuation uses the existing job and exposes no prompt editing', async () => {
+  const task = job('video-query', 'failed', { model_id: 'video', external_id: 'vendor-task-existing',
+    recovery_action: 'query', recovery_modality: 'video', task_resume_available: true,
+    request: '{"prompt":"原提示词","reference_asset_ids":["fixed"]}' })
+  const before = JSON.stringify(task), view = await mount({ ...detail, jobs: [task] })
+  try {
+    assert.match(view.container.querySelector('tbody')!.textContent!, /沿用原提示词和参数，不创建新的生成任务/)
+    assert.doesNotMatch(view.container.querySelector('tbody')!.textContent!, /恢复下载|优化提示词|重试/)
+    await act(() => button(view.container, '继续查询').click())
+    assert.deepEqual(view.events, [{ type: 'retry', id: task.id }])
+    assert.equal(JSON.stringify(task), before)
+    assert.equal(view.container.querySelector('textarea'), null)
+  } finally { await view.close() }
+})
+
+test('video download checkpoints retain their video identity when the model is removed or edited', async () => {
+  for (const model_id of ['missing-model', 'image']) {
+    const task = job('video-checkpoint', 'failed', { model_id, recovery_action: 'download', recovery_modality: 'video',
+      recovery_available: true, task_resume_available: true, error: '下载失败' })
+    const view = await mount({ ...detail, jobs: [task] })
+    try {
+      assert.match(view.container.querySelector('tbody')!.textContent!, /视频生成/)
+      assert.doesNotMatch(view.container.querySelector('tbody')!.textContent!, /图片生成|继续查询|重试|优化提示词/)
+      await chooseCombobox(view.container.querySelector<HTMLInputElement>('input[aria-label="任务类型"]')!, '视频生成')
+      assert.equal(view.container.querySelectorAll('tbody tr').length, 1)
+      await act(() => button(view.container, '恢复下载').click())
+      assert.deepEqual(view.events, [{ type: 'retry', id: task.id }])
+      await act(() => view.container.querySelector<HTMLButtonElement>('[aria-label="查看任务信息"]')!.click())
+      const dialog = document.querySelector('[role="dialog"][aria-label="任务详情"]')!
+      assert.match(dialog.textContent!, /视频生成/); assert.match(dialog.textContent!, /继续下载已有结果/)
+    } finally { await view.close() }
+  }
+})
+
+test('legacy video recovery flags do not classify the task as an image or expose generic retry', async () => {
+  for (const flags of [{ recovery_available: true }, { task_resume_available: true, external_id: 'legacy-video-id' }]) {
+    const task = job('legacy-video', 'failed', { model_id: 'video', ...flags })
+    const view = await mount({ ...detail, jobs: [task] })
+    try {
+      assert.match(view.container.querySelector('tbody')!.textContent!, /视频生成/)
+      assert.doesNotMatch(view.container.querySelector('tbody')!.textContent!, /图片生成|重试/)
+      await act(() => button(view.container, flags.recovery_available ? '恢复下载' : '继续查询').click())
+      assert.deepEqual(view.events, [{ type: 'retry', id: task.id }])
+    } finally { await view.close() }
+  }
+})
+
+test('explicit unavailable video recovery never falls back to paid retry despite stale legacy flags', async () => {
+  const view = await mount({ ...detail, jobs: [job('blocked', 'failed', { model_id: 'video', recovery_action: null,
+    recovery_available: true, task_resume_available: true })] })
+  try {
+    assert.doesNotMatch(view.container.querySelector('tbody')!.textContent!, /恢复下载|继续查询|重试/)
+    assert.match(view.container.querySelector('tbody')!.textContent!, /核对提供商任务记录与账单/)
+  } finally { await view.close() }
+})
+
+test('download-only image recovery suppresses optimization even when old flags are absent and error mentions policy', async () => {
+  const view = await mount({ ...detail, jobs: [job('saved-image', 'failed', { recovery_action: 'download', recovery_modality: 'image',
+    recovery_available: false, error: 'content_policy_violation', request: '{"prompt":"旧提示词"}' })] })
+  try {
+    assert.doesNotMatch(view.container.querySelector('tbody')!.textContent!, /优化提示词|回到画布|继续查询/)
+    await act(() => button(view.container, '恢复下载').click())
+    assert.deepEqual(view.events, [{ type: 'retry', id: 'saved-image' }])
+  } finally { await view.close() }
+})
+
+test('unrelated export retries and active generation polling labels keep their existing behavior', async () => {
+  const view = await mount({ ...detail, jobs: [job('export-retry', 'failed', { job_type: 'export', model_id: null }),
+    job('running-video', 'running', { model_id: 'video', recovery_action: 'verify' })] })
+  try {
+    await act(() => button(view.container, '重试').click())
+    assert.deepEqual(view.events, [{ type: 'retry', id: 'export-retry' }])
+    assert.match(view.container.textContent!, /1 个任务进行中/)
+    await tab(view.container, '进行中')
+    assert.match(view.container.querySelector('tbody')!.textContent!, /生成中/)
+    assert.doesNotMatch(view.container.querySelector('tbody')!.textContent!, /待核对|重试/)
+  } finally { await view.close() }
 })

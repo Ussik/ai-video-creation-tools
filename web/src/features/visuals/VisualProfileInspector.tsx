@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { ActionIcon, Button, Tooltip } from '@mantine/core'
 import { ArrowUpRight, Save, Trash2, X } from 'lucide-react'
 import { api, json } from '../../shared/api/api'
-import type { Model, ProjectDetail, VisualProfile, VisualProfileDraft, VisualProjectData } from '../../shared/api/api'
+import type { Model, ProjectDetail, Provider, VisualProfile, VisualProfileDraft, VisualProjectData } from '../../shared/api/api'
 import VisualProfileFields, { emptyVisualProfile, validVisualProfile } from './VisualProfileFields'
 import VisualReferenceAssets from './VisualReferenceAssets'
 import { useAppDialog } from '../../shared/ui/AppDialog'
@@ -13,10 +13,10 @@ type Props = {
   onClose: () => void; onBindings: () => void; onDirtyChange: (dirty: boolean) => void;
   onBusyChange: (busy: boolean) => void; onSaved: (profile: VisualProfile) => void;
   onDeleted: (profile: VisualProfile) => void; onOpenCanvas: (profile: VisualProfile) => void;
-  models?: Model[]; designId?: string | null;
+  models?: Model[]; providers?: Provider[]; designId?: string | null;
 }
 
-export default function VisualProfileInspector({ profile, inCanvas, detail, models = [], designId, generating, onRefresh, onClose, onBindings, onDirtyChange, onBusyChange, onSaved, onDeleted, onOpenCanvas }: Props) {
+export default function VisualProfileInspector({ profile, inCanvas, detail, models = [], providers, designId, generating, onRefresh, onClose, onBindings, onDirtyChange, onBusyChange, onSaved, onDeleted, onOpenCanvas }: Props) {
   const scopeId = profile ? profile.design_id || null : designId || null
   const scopedProfiles = (detail.visual_profiles || []).filter(item => (item.design_id || null) === scopeId)
   const creationScenes = detail.script.scenes.filter(scene => {
@@ -101,7 +101,7 @@ export default function VisualProfileInspector({ profile, inCanvas, detail, mode
         {inheritance?.waitingProfile && <div className="pc-profile-inheritance is-waiting" role="status"><span>请先确认「{visualProfileLabel(inheritance.waitingProfile)}」的基础图，再生成当前状态。</span>
           <Button variant="default" size="xs" disabled={busy || dirty} onClick={() => onOpenCanvas(inheritance.waitingProfile!)}>前往基础图</Button></div>}
         {error && <p className="pc-visual-error" role="alert">{error}</p>}
-        {profile && <VisualReferenceAssets profile={profile} detail={detail} models={models} disabled={dirty || saving || generating}
+        {profile && <VisualReferenceAssets profile={profile} detail={detail} models={models} providers={providers} disabled={dirty || saving || generating}
           disabledReason={dirty ? '先保存设定，再添加或确认对应版本的参考图。' : generating ? '信息图生成完成后可管理独立参考。' : undefined}
           onRefresh={onRefresh} onBusyChange={setReferenceBusy} />}
         {profile && <div className="pc-profile-usage"><strong>使用范围 · {scenes.length} 场 / {shots.length} 镜头</strong>

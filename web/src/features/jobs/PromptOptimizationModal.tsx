@@ -4,6 +4,7 @@ import { Sparkles } from 'lucide-react'
 import { jobPromptRequest, type PromptOptimizationResult } from '@video-studio/shared/jobs/prompt-optimization'
 import type { Job, Model, Provider } from '../../shared/api/api'
 import { api, json } from '../../shared/api/api'
+import { preferredModel } from '../models/model-defaults'
 import './prompt-optimization.css'
 
 type Props = {
@@ -18,7 +19,7 @@ export default function PromptOptimizationModal(props: Props) {
     props.providers.some(provider => provider.id === model.provider_id && provider.enabled && provider.adapter !== 'demo'))
   const original = String(jobPromptRequest(props.job.request).prompt || '')
   const source = props.prompt ?? original
-  const [modelId, setModelId] = useState(available[0]?.id || '')
+  const [modelId, setModelId] = useState(preferredModel(available)?.id || '')
   const [result, setResult] = useState(''), [changes, setChanges] = useState<string[]>([])
   const [adjustment, setAdjustment] = useState(''), [resultAdjustment, setResultAdjustment] = useState('')
   const [pending, setPending] = useState(false), [applying, setApplying] = useState(false), [error, setError] = useState('')
@@ -29,6 +30,9 @@ export default function PromptOptimizationModal(props: Props) {
   const currentKey = JSON.stringify([sourceKey, modelId])
   const maxLength = props.maxLength || 80_000
   useEffect(() => () => { serial.current++; abort.current?.abort() }, [])
+  useEffect(() => {
+    if (!pending && !applying && !available.some(model => model.id === modelId)) setModelId(preferredModel(available)?.id || '')
+  }, [available, modelId, pending, applying])
   useEffect(() => {
     if (!pending) return
     const start = Date.now(), timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000)

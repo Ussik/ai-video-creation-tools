@@ -44,6 +44,7 @@ import { api, json } from '../../shared/api/api'
 import type { Asset, Job, Model, ProjectDetail, Provider, ScriptArtifact, ScriptArtifactType, ScriptGenerationOptions } from '../../shared/api/api'
 import type { ScriptAction } from '../canvas/ProjectCanvas'
 import CreativeSkillSelector from '../skills/CreativeSkillSelector'
+import { preferredModel } from '../models/model-defaults'
 import { useCreativeSkills } from '../skills/useCreativeSkills'
 import StoryboardPlanner from '../storyboard/StoryboardPlanner'
 import './script-director.css'
@@ -52,6 +53,7 @@ import './director-documents.css'
 import './script-source.css'
 import DirectorQuestionPanel from './DirectorQuestionPanel'
 import DirectorDraftResolution from './DirectorDraftResolution'
+import DirectorCandidatePreview from './DirectorCandidatePreview'
 import type { ScriptDraftResolution, ScriptDraftResolutionInput } from '@video-studio/shared/script/script-draft-resolution'
 import DirectorMessageTiming, { finishMessageTiming, type MessageTiming } from './DirectorMessageTiming'
 import DirectorActivity from './DirectorActivity'
@@ -62,7 +64,8 @@ import { activityDraftId, canRetryExecution, conversationMessage, readActivity, 
 import type { ScriptActivityTarget } from '@video-studio/shared/script/script-activity-types'
 import { createStreamScope, directorStreamIdleTimeoutMs, directorReconnectDelay } from '@video-studio/shared/script/script-stream-policy'
 import { directorModes, directorModeProfiles, type DirectorMode } from '@video-studio/shared/script/script-creation-mode'
-import { scriptArtifactLabels, scriptStageArtifacts, scriptStageDeliverables } from '@video-studio/shared/script/script-stage-content'
+import { scriptArtifactLabels, scriptStageArtifacts } from '@video-studio/shared/script/script-stage-content'
+import { scriptTaskDeliverables } from '@video-studio/shared/script/script-task-contract'
 import { scriptSourceExtensions, scriptSourceFileLimit, type ScriptSourceDocument, type ScriptSourceUpdate, type ScriptSourceAnalysis } from '@video-studio/shared/script/script-source-document'
 import { ScriptSourceAnalysisStatus, ScriptSourcePreview } from './ScriptSourceAnalysisView'
 import type { CreationNextStep, ScriptCreationState } from '@video-studio/shared/script/script-creation-state-types'
@@ -70,6 +73,8 @@ import type { ResourceChange } from '@video-studio/shared/script/script-resource
 import type { DocumentReview } from '@video-studio/shared/script/script-review-types'
 import DirectorReviewReport from './DirectorReviewReport'
 import DirectorReferences from './DirectorReferences'
+import DirectorCanvasNodeProposal, { type CanvasNodeProposalApplyResult } from './DirectorCanvasNodeProposal'
+import type { CanvasNodeProposal, CanvasNodeProposalSource } from '@video-studio/shared/canvas/canvas-node-proposal'
 import { addReference, readReferences, referenceMessages, type DirectorReference } from './director-references'
 import DirectorDraftReview, { DirectorDocumentBody, DirectorSceneList, RevisionProgress } from './DirectorDocuments'
 import { restoreChoiceAnswer, choiceAnswerText, type ChoiceAnswer } from './DirectorQuestionPanel'
@@ -78,7 +83,7 @@ import ScriptMessageContent from './ScriptMessageContent'
 import { clampDirectorWindow, defaultDirectorWindow, shouldSendDirectorMessage, type DirectorWindowRect } from './director-window'
 import { ScriptThemeWaterCanvas as WebGLScriptThemeWaterCanvas } from './ScriptThemeWaterCanvas'
 import { artifactKey, workflowLabels, workflowStages, workflowProgress, directorStageContext, type DirectorStageContext } from './script-workflow'
-import { workflowInstruction, workflowRequestForStage, outlineGenerationIssue, exploreStoryDirectionMessage, type WorkflowDraft, type WorkflowRequest, type WorkflowStage } from './script-workflow'
+import { workflowInstruction, workflowRequestForStage, workflowRequestSnapshot, outlineGenerationIssue, exploreStoryDirectionMessage, type WorkflowDraft, type WorkflowRequest, type WorkflowStage } from './script-workflow'
 import { canAdoptReply, classificationBatch, classificationKey, followingMessages, replyRecognitionState, activeReplyChoice, replyChoices, replyDisplayText, replyClassificationVersion, contextualReplyTypes, type ReplyClassification } from './script-reply'
 import { regenerationSource } from './director-regeneration'
 import { directorChatContext } from './director-chat-context'
@@ -241,6 +246,9 @@ export interface ScriptDirectorPanelProps {
   providers: Provider[]
   focusArtifact?: ScriptAction
   initialContext?: string
+  canvasNodeSource?: CanvasNodeProposalSource
+  onApplyCanvasNodeProposal?: (proposal: CanvasNodeProposal) => Promise<CanvasNodeProposalApplyResult>
+  initialStageRequest?: WorkflowRequest
   openRequestId?: number
   hidden?: boolean
   onRefresh: () => Promise<unknown>
@@ -300,7 +308,7 @@ function restoreWorkflowDraft(projectId: string): GeneratedScript | null {
     if (value.workflow?.stage === 'episode' && (!Number.isInteger(value.workflow.episode_number) || value.workflow.episode_number < 1 || value.workflow.episode_number > 200)) return null
     return {
       ...(value.source_version !== undefined ? { source_version: value.source_version } : {}),
-      ...(value.workflow ? { workflow: workflowRequestForStage(value.workflow.stage, value.workflow.episode_number, value.workflow.target_duration, value.workflow.operation) } : {}),
+      ...(value.workflow ? { workflow: workflowRequestSnapshot(value.workflow) } : {}),
       ...(value.tool_draft ? { tool_draft: value.tool_draft } : {}),
       ...(value.source_update ? { source_update: value.source_update } : value.tool_draft?.source_update ? { source_update: value.tool_draft.source_update } : {}),
       ...(Array.isArray(value.resource_changes) ? { resource_changes: value.resource_changes } : {}),
@@ -815,11 +823,11 @@ function restoreStageTask(detail: ProjectDetail): WorkflowRequest | null {
     const target = saved.request as WorkflowRequest | undefined
     if (!target || target.operation !== 'revise' || !workflowStages.includes(target.stage) || !Number.isInteger(target.episode_number) || target.episode_number < 0 || target.episode_number > 200) return null
     if (saved.progress !== JSON.stringify(workflowProgress(detail.script)) || stageOperationError(detail.script, target)) return null
-    return workflowRequestForStage(target.stage, target.episode_number, target.target_duration, 'revise')
+    return workflowRequestSnapshot({ ...target, operation: 'revise' })
   } catch { return null }
 }
 
-function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all', initialContext, openRequestId, hidden = false, onRefresh, onClose, onOpenModels, onOpenDocument, onNotice }: ScriptDirectorPanelProps) {
+function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all', initialContext, canvasNodeSource, onApplyCanvasNodeProposal, initialStageRequest, openRequestId, hidden = false, onRefresh, onClose, onOpenModels, onOpenDocument, onNotice }: ScriptDirectorPanelProps) {
   const [windowLayout, setWindowLayout] = useState(readWindowLayout)
   const [minimized, setMinimized] = useState(false)
   const [workflowOpen, setWorkflowOpen] = useState(false)
@@ -844,6 +852,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const [readerView, setReaderView] = useState<'body' | 'scenes'>('body')
   const [stageTask, setStageTask] = useState<WorkflowRequest | null>(() => restoreStageTask(detail))
   const [workflowOperation, setWorkflowOperation] = useState<StageOperation>('generate')
+  const [workflowContract, setWorkflowContract] = useState<Pick<WorkflowRequest, 'intent' | 'artifact_types'>>({})
   const [documentTask, setDocumentTask] = useState<DocumentAction & { title: string } | null>(null)
   const [recoveringMessageId, setRecoveringMessageId] = useState<string | null>(null)
   const executionDraftIds = useRef(new Map<string, string>())
@@ -879,20 +888,19 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const primaryThemeArtwork = (settingsPresetArtwork === directorTop8Artwork ? undefined : settingsPresetArtwork)
     || directorArtworkForTheme(themeVisuals.primary || '')
   const fusionThemeArtwork = directorArtworkForTheme(themeVisuals.fusion || '')
-  const [input, setInput] = useState(initialContext || readComposerDraft(detail.id))
+  const [input, setInput] = useState(() => readComposerDraft(detail.id))
+  const receivedContext = useRef('')
+  const [contextComposerActive, setContextComposerActive] = useState(false)
   const [adoptingMessageId, setAdoptingMessageId] = useState<string | null>(null)
   const [handoffEpisode, setHandoffEpisode] = useState(() => Math.max(0, ...(detail.script.artifacts || []).filter(item => item.artifact_type === 'episode_script').map(item => item.episode_number || 0)))
   const [working, setWorking] = useState<'chat' | 'prompt' | 'save' | 'shots' | null>(null)
-  const skillControl = useCreativeSkills(detail.id)
-  const currentSkillStage = activeFocus === 'all' ? 'script' : 'visual_assets'
-  const skillSelector = <CreativeSkillSelector stage={currentSkillStage} policies={skillControl.policies} ids={skillControl.ids(currentSkillStage)} onChange={values => skillControl.change(currentSkillStage, values)}
-    projectId={detail.id} appearance="chat" disabled={!!working || closing} loading={skillControl.loading} error={skillControl.error} onDefaultsChanged={() => skillControl.reload(currentSkillStage)} />
   const [storyboardOpen, setStoryboardOpen] = useState(false)
   const [planningSceneIds, setPlanningSceneIds] = useState<string[]>([])
   const [connectionStatus, setConnectionStatus] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [generated, setGenerated] = useState<GeneratedScript | null>(() => restoreWorkflowDraft(detail.id))
   const [draftResolution, setDraftResolution] = useState<ScriptDraftResolution | null>(null)
+  const [candidatePreviewOpen, setCandidatePreviewOpen] = useState(false)
   const [resolutionOpen, setResolutionOpen] = useState(false)
   const resolutionSeen = useRef('')
   const resolutionDiscardLock = useRef(false)
@@ -1005,8 +1013,15 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   }, [stageTask, detail.id, detail.script])
   const nextStep = stageTask || stageContext.mode === 'explicit' && (creation?.next_step?.stage !== stageContext.stage || stageContext.stage === 'episode' && creation?.next_step?.episode_number !== stageContext.episode_number) ? null : creation?.next_step
   const outlineIssue = outlineGenerationIssue(detail.script, { input, brief: detail.brief, referenceContents: [...references.map(reference => reference.content), ...(scriptSource ? [scriptSource.content] : [])], nextStep })
-  const workflowTarget = workflowRequestForStage(workflowStage, episodeNumber, episodeDuration, workflowOperation)
-  const workflowIssue = stageOperationError(detail.script, workflowTarget) || (workflowStage === 'outline' && workflowOperation === 'generate' ? outlineIssue : null)
+  const workflowTarget = workflowRequestForStage(workflowStage, episodeNumber, episodeDuration, workflowOperation, { hasSource: Boolean(scriptSource), script: detail.script, ...workflowContract })
+  const currentSkillStage = activeFocus === 'all' ? 'script' : 'visual_assets'
+  const skillControl = useCreativeSkills(detail.id)
+  const skillSelector = <CreativeSkillSelector stage={currentSkillStage} policies={skillControl.policies} ids={skillControl.ids(currentSkillStage)} onChange={values => skillControl.change(currentSkillStage, values)}
+    selection={skillControl.selection(currentSkillStage)} onUseAutomatic={() => skillControl.useAutomatic(currentSkillStage)}
+    projectId={detail.id} appearance="chat" disabled={!!working || closing} loading={skillControl.loading} error={skillControl.error} onDefaultsChanged={() => skillControl.reload(currentSkillStage)} />
+  const workflowIssue = stageOperationError(detail.script, workflowTarget)
+    || (workflowOperation === 'supplement' && workflowTarget.artifact_types?.length === 0 ? '所选栏目已保存，无需补齐' : null)
+    || (workflowStage === 'outline' && workflowOperation === 'generate' ? outlineIssue : null)
   const directionStart = !messages.some(message => message.role === 'user') && creation?.status === 'direction'
   const primaryArtifact = artifactCards.find(artifact => artifact.artifact_type === 'episode_script' && artifact.episode_number === handoffEpisode)
     || [...artifactCards].reverse().find(artifact => artifact.artifact_type === 'episode_script') || artifactCards.at(-1)
@@ -1092,8 +1107,28 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   }, [detail.id, choiceAnswers, choiceDismissed, answeringChoiceId])
 
   useEffect(() => {
-    if (initialContext) { setInput(initialContext); setComposerCollapsed(false) }
-  }, [initialContext])
+    const request = `${detail.id}:${openRequestId ?? ''}:${initialContext}`
+    if (!initialContext || receivedContext.current === request) return
+    receivedContext.current = request
+    setComposerCollapsed(false)
+    setContextComposerActive(true)
+    setPreviewOpen(false); setArtifactsOpen(false); setWorkflowOpen(false)
+    setReaderKey(null); setReaderReference(null)
+    if (input.includes(initialContext) || references.some(reference => reference.content === initialContext)) return
+    const combined = input ? `${input}\n\n${initialContext}` : initialContext
+    if (combined.length <= 8000) setInput(combined)
+    else {
+      try {
+        // Long context uses the existing reference transport so the composer
+        // and its persisted 8,000-character draft remain intact.
+        setReferences(addReference(references, {
+          key: `context:${crypto.randomUUID()}`,
+          title: initialContext.startsWith('【画布节点配置快照') ? '画布节点配置快照' : '补充创作上下文',
+          artifact_type: 'constraints', episode_number: 0, content: initialContext,
+        }))
+      } catch (issue) { setError(`未能添加上下文，原输入已保留：${readableError(issue)}`) }
+    }
+  }, [detail.id, initialContext, openRequestId])
 
   useEffect(() => {
     if (openRequestId === undefined) return
@@ -1103,8 +1138,14 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     setReaderKey(null)
     setReaderReference(null)
     setArtifactsOpen(false)
-    setWorkflowOpen(false)
-  }, [openRequestId])
+    if (initialStageRequest) {
+      setWorkflowStage(initialStageRequest.stage)
+      setWorkflowOperation(initialStageRequest.operation || 'generate')
+      setWorkflowContract({ ...(initialStageRequest.intent ? { intent: initialStageRequest.intent } : {}), ...(initialStageRequest.artifact_types ? { artifact_types: initialStageRequest.artifact_types } : {}) })
+      if (initialStageRequest.stage === 'episode') setEpisodeNumber(initialStageRequest.episode_number)
+      setWorkflowOpen(true)
+    } else { setWorkflowOpen(false); setWorkflowContract({}) }
+  }, [openRequestId, initialStageRequest])
 
   useEffect(() => {
     if (syncedOptionsKey.current === optionsSyncKey) return
@@ -1356,13 +1397,11 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   }, [detail.id, conversationId, history, messages])
 
   useEffect(() => {
-    if (!modelId && availableModels.length === 1) setModelId(availableModels[0]!.id)
-    if (modelId && !availableModels.some((model) => model.id === modelId)) setModelId('')
+    if (!availableModels.some(model => model.id === modelId)) setModelId(preferredModel(availableModels)?.id || '')
   }, [availableModels, modelId])
 
   useEffect(() => {
-    if (!assetImageModelId && imageModels.length === 1) setAssetImageModelId(imageModels[0]!.id)
-    if (assetImageModelId && !imageModels.some((model) => model.id === assetImageModelId)) setAssetImageModelId('')
+    if (!imageModels.some(model => model.id === assetImageModelId)) setAssetImageModelId(preferredModel(imageModels)?.id || '')
   }, [assetImageModelId, imageModels])
 
   useEffect(() => {
@@ -1843,13 +1882,14 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       source_version: draft.source_version,
       ...(sourceMessageId ? { source_message_id: sourceMessageId } : {}),
       source_update: sourceUpdate,
-      workflow: workflowRequestForStage(draft.stage, draft.episode_number, draft.target_duration, draft.operation),
+      workflow: workflowRequestSnapshot(draft),
       outline: draft.artifacts.find(item => item.artifact_type === 'outline')?.content || detail.script.outline,
       characters: draft.artifacts.find(item => item.artifact_type === 'characters')?.content || detail.script.characters,
       artifacts: draft.artifacts.map(item => ({ ...item, episode_number: draft.stage === 'episode' ? draft.episode_number : 0 })),
       scenes: draft.scenes.map(scene => ({ ...normaliseScene(scene), episode_number: draft.episode_number })),
     })
     setWorkflowStage(draft.stage)
+    setWorkflowContract({ ...(draft.intent ? { intent: draft.intent } : {}), ...(draft.artifact_types ? { artifact_types: draft.artifact_types } : {}) })
     if (draft.stage === 'episode') setEpisodeNumber(draft.episode_number)
     setScriptSaved(false)
     setPreviewOpen(true)
@@ -1857,9 +1897,17 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     setArtifactsOpen(false)
   }
 
+  function refreshedToolOutcome(draft: ScriptToolDraft, previous?: ScriptExecution['outcome']): NonNullable<ScriptExecution['outcome']> {
+    const current = toolDraftOutcome(draft)
+    // A state refresh is not a new execution result. Keep the real interruption
+    // reason until the candidate version or its pending/saved status changes.
+    return current.kind === 'partial' && previous?.kind === 'partial' && previous.draft_id === draft.id && previous.draft_version === draft.version
+      ? previous : current
+  }
+
   function receiveToolDraft(draft: ScriptToolDraft | null, showPreview = true) {
     if (draft) setMessages(current => current.map(message => message.execution?.outcome?.draft_id === draft.id ? { ...message,
-      execution: { ...message.execution, outcome: toolDraftOutcome(draft) } } : message))
+      execution: { ...message.execution, outcome: refreshedToolOutcome(draft, message.execution.outcome) } } : message))
     if (!draft || draft.status === 'discarded') { setGenerated(current => current?.tool_draft ? null : current); setPreviewOpen(false); return }
     const artifacts = toolDraftArtifacts(draft)
     setGenerated({ tool_draft: draft, source_update: draft.source_update, ...(draft.workflow ? { workflow: draft.workflow } : {}), resource_changes: draft.resource_changes,
@@ -1875,7 +1923,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     const task = generated?.tool_draft?.revision_task
     if (!task || sourceChatBlocked) return
     setPreviewOpen(false)
-    void sendChatMessage(`继续统一修订任务 ${task.id}，沿用原范围和拟定决定，处理未完成项，核对当前有效草稿、全部分场和关联内容，完成后给我统一预览。不重建任务，不重复确认授权，不自动保存。`, false, undefined, true)
+    void sendChatMessage(`继续统一修订任务 ${task.id}，沿用原范围和拟定决定，处理未完成项，核对当前有效草稿、全部分场和关联内容，完成后给我统一预览。不重建任务，不重复确认授权，不自动保存。`, false, undefined, true, undefined, undefined, undefined, undefined, undefined, undefined, task.id)
   }
 
   async function refreshToolState(restoreDraft = false, sourceMessageId?: string) {
@@ -1945,7 +1993,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
 
   function receiveDraftResolution(resolution: ScriptDraftResolution | null) {
     setDraftResolution(resolution)
-    if (!resolution) { resolutionSeen.current = ''; setResolutionOpen(false); return }
+    if (!resolution) { resolutionSeen.current = ''; setResolutionOpen(false); setCandidatePreviewOpen(false); return }
     const key = `${resolution.id}:${resolution.version}`
     if (key !== resolutionSeen.current) { resolutionSeen.current = key; setResolutionOpen(!resolution.run) }
   }
@@ -1979,7 +2027,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       if (draft) {
         targets = [...draft.documents.map(doc => doc.title), ...(draft.resource_changes || []).map(change => change.title)].slice(0, 50).map(title => title.slice(0, 200))
         if (!message.execution.document_action && !message.execution.workflow) title = draft.kind === 'resource' ? '视觉设定与分镜处理' : draft.kind === 'patch' ? '修订项目文档' : '整理创作草稿'
-        outcome = toolDraftOutcome(draft)
+        outcome = refreshedToolOutcome(draft, message.execution.outcome)
       } else if (event.draft) {
         targets = event.draft.artifacts.map(doc => doc.title).slice(0, 50).map(title => title.slice(0, 200))
         title = `生成${event.draft.stage === 'episode' ? `第 ${event.draft.episode_number} 集正文` : workflowLabels[event.draft.stage]}`
@@ -1989,7 +2037,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       else if (event.completion_kind === 'next_step') outcome = { kind: 'next_step', summary: '下一步建议已准备，请查看对话下方的当前创作操作。' }
       if (event.execution_outcome) outcome = { ...outcome, ...event.execution_outcome }
       return { ...message, execution: { ...message.execution, title, targets, outcome,
-        ...(event.workflow ? { workflow: event.workflow } : event.tool_draft?.workflow ? { workflow: event.tool_draft.workflow } : event.draft ? { workflow: workflowRequestForStage(event.draft.stage, event.draft.episode_number, event.draft.target_duration, event.draft.operation) } : {}) } }
+        ...(event.workflow ? { workflow: event.workflow } : event.tool_draft?.workflow ? { workflow: event.tool_draft.workflow } : event.draft ? { workflow: workflowRequestSnapshot(event.draft) } : {}) } }
     }))
   }
 
@@ -2096,36 +2144,41 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     finally { setSourceUploading(false); setSourceLoading(false) }
   }
 
-  function handleStageAction(target: StageTarget) {
+  function handleStageAction(target: StageTarget & Pick<WorkflowRequest, 'intent' | 'artifact_types'>) {
     if (sourceUploading) return
     if (draftResolution) { setResolutionOpen(true); return }
     const issue = stageOperationError(detail.script, target)
     if (issue) { setError(issue); return }
     setWorkflowStage(target.stage); setWorkflowOperation(target.operation || 'generate')
+    setWorkflowContract({ ...(target.intent ? { intent: target.intent } : {}), ...(target.artifact_types ? { artifact_types: target.artifact_types } : {}) })
     if (target.stage === 'episode') setEpisodeNumber(target.episode_number)
     setWorkflowOpen(false); setArtifactsOpen(false); setReaderKey(null); setDocumentTask(null)
     if (target.operation === 'revise') {
-      setStageTask(workflowRequestForStage(target.stage, target.episode_number, episodeDuration, 'revise'))
+      setStageTask(workflowRequestSnapshot({ ...target, target_duration: episodeDuration, operation: 'revise' }))
       setComposerCollapsed(false)
       setInput(input.trim() || `请读取${target.stage === 'episode' ? `第 ${target.episode_number} 集正文与分场` : stageLabels[target.stage]}原文，只修改这个阶段。我希望修改：`)
       window.requestAnimationFrame(() => composerRef.current?.focus())
     } else {
       setStageTask(null)
-      generateWorkflow(target.stage, undefined, target.episode_number, undefined, target.operation)
+      generateWorkflow(target.stage, undefined, target.episode_number, undefined, target.operation, target)
     }
   }
 
-  function generateWorkflow(stage: WorkflowStage = workflowStage, label?: string, targetEpisode = episodeNumber, step?: CreationNextStep, operation: StageOperation = step?.purpose === 'revise' ? 'revise' : 'generate') {
+  function generateWorkflow(stage: WorkflowStage = workflowStage, label?: string, targetEpisode = episodeNumber, step?: CreationNextStep, operation: StageOperation = step?.purpose === 'revise' ? 'revise' : 'generate', contract?: Pick<WorkflowRequest, 'intent' | 'artifact_types'>) {
     if (draftResolution) { setResolutionOpen(true); return }
     if (busy || generated && !scriptSaved) return
     setWorkflowStage(stage)
+    setWorkflowContract({ ...(contract?.intent ? { intent: contract.intent } : {}), ...(contract?.artifact_types ? { artifact_types: contract.artifact_types } : {}) })
     if (stage === 'episode') setEpisodeNumber(targetEpisode)
-    const request = workflowRequestForStage(stage, targetEpisode, episodeDuration, operation === 'generate' ? undefined : operation)
-    const issue = stageOperationError(detail.script, request) || (stage === 'outline' && operation === 'generate' ? outlineIssue : null)
+    const request = workflowRequestForStage(stage, targetEpisode, episodeDuration, operation === 'generate' ? undefined : operation,
+      { hasSource: Boolean(scriptSource), script: detail.script, ...contract })
+    const issue = stageOperationError(detail.script, request)
+      || (operation === 'supplement' && request.artifact_types?.length === 0 ? '所选栏目已保存，无需补齐' : null)
+      || (stage === 'outline' && operation === 'generate' ? outlineIssue : null)
     if (issue) { setError(issue); return }
     const prefix = operation === 'regenerate' ? '重新设计' : operation === 'supplement' ? '补齐' : operation === 'revise' ? '修订' : '生成'
     const instruction = workflowInstruction(request, label || `${prefix}${stage === 'episode' ? `第 ${targetEpisode} 集正文` : stageLabels[stage]}`)
-    const sourceInstruction = scriptSource ? `\n基于${scriptSource.revision ? '项目的当前有效稿（含已确认修订）' : '项目中已上传的原剧本'}整理本阶段，忠实保留原文的主线、人物、事件、对白与集数。原文已有内容以提取和整理为主，必要的缺失信息明确说明，不擅自另写故事。` : ''
+    const sourceInstruction = scriptSource ? `\n基于${scriptSource.revision ? '项目的当前有效稿（含已确认修订）' : '项目中已上传的原剧本'}整理本阶段，忠实保留原文的主线、人物、事件、对白与集数。${request.intent === 'stage_design' ? '新增设计限于本次约定的栏目及已授权范围，保持与原稿及已保存设定一致；不改写已有原稿。' : '原文已有内容以提取和整理为主，必要的缺失信息明确说明，不擅自另写故事。'}` : ''
     const message = (input.trim() ? `${input.trim()}\n\n${instruction}` : instruction) + sourceInstruction
     void sendChatMessage(message, false, request, false, undefined, undefined, undefined, undefined, step?.id)
   }
@@ -2171,7 +2224,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     await sendChatMessage(undefined, false, message.execution?.workflow, true, undefined, message.id, undefined, message.execution?.document_action)
   }
 
-  async function sendChatMessage(overrideInput?: string, skipAssetStatus = false, workflowOverride?: WorkflowRequest, preserveComposer = false, adoptSource?: { text: string; episode_number: number }, regenerateId?: string, questionResponse?: Message['question_response'], actionOverride?: DocumentAction, nextStepId?: string, resolutionInput?: ScriptDraftResolutionInput): Promise<string | null> {
+  async function sendChatMessage(overrideInput?: string, skipAssetStatus = false, workflowOverride?: WorkflowRequest, preserveComposer = false, adoptSource?: { text: string; episode_number: number }, regenerateId?: string, questionResponse?: Message['question_response'], actionOverride?: DocumentAction, nextStepId?: string, resolutionInput?: ScriptDraftResolutionInput, revisionTaskId?: string): Promise<string | null> {
     const retry = regenerateId ? regenerationSource(messages, regenerateId) : null
     if (regenerateId && !retry) return null
     const usesComposer = !preserveComposer && !adoptSource
@@ -2181,7 +2234,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     if (busy || sourceUploading || chatSubmitLock.current || skillControl.loading || !conversationLoaded) return null
     if (skillControl.error) { setError(`技能配置读取失败：${skillControl.error}`); return null }
     const previousExecution = regenerateId ? messages.find(item => item.id === regenerateId)?.execution : undefined
-    const requestFocus = previousExecution?.focus_artifact || activeFocus
+    const requestFocus = revisionTaskId ? 'all' : previousExecution?.focus_artifact || activeFocus
     if (draftResolution && requestFocus === 'all' && !resolutionInput) { setResolutionOpen(true); return null }
     // Candidate completion uses its saved source context and must remain recoverable.
     if (requestFocus === 'all' && sourceSendBlockReason && !(resolutionInput && draftResolution)) return null
@@ -2203,6 +2256,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     const pendingId = crypto.randomUUID()
     const startedAt = performance.now()
     const selectedAction = (actionOverride || usesComposer && documentTask) && !workflow && !adoptSource && !questionResponse ? actionOverride || documentTask! : undefined
+    const requestSkillSelections = skillControl.snapshot()
     const targets = selectedAction?.document_ids.map(id => detail.script.artifacts?.find(doc => doc.id === id)?.title || artifactCards.find(doc => id === `legacy:${doc.artifact_type}`)?.title || '指定文档')
     const execution: ScriptExecution = { title: resolutionInput ? '补齐候选草稿' : workflow ? `${workflow.operation === 'regenerate' ? '重新设计' : workflow.operation === 'supplement' ? '补齐' : workflow.operation === 'revise' ? '修订' : '生成'}${workflow.stage === 'episode' ? `第 ${workflow.episode_number} 集正文` : workflowLabels[workflow.stage]}` : selectedAction ? `${selectedAction.operation === 'review' ? '评审' : '修订'}项目文档` : requestFocus === 'all' ? '剧本创作对话' : `${assetTaskMeta[requestFocus].label}创作讨论`,
       request: message.slice(0, 8000), started_at: Date.now(), focus_artifact: requestFocus, mode: requestMode, ...(targets ? { targets: targets.map(title => title.slice(0, 200)) } : {}), ...(selectedAction ? { document_action: { operation: selectedAction.operation, document_ids: selectedAction.document_ids } } : {}), ...(workflow ? { workflow } : {}) }
@@ -2233,9 +2287,10 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         ...(resolutionInput ? { draft_resolution: resolutionInput } : {}),
         mode: requestMode,
         focus_artifact: requestFocus,
-        skill_selections: skillControl.selections,
+        skill_selections: requestSkillSelections,
         generation_options: generationOptions,
         use_tools: requestFocus === 'all' && !adoptSource,
+        ...(revisionTaskId ? { revision_task_id: revisionTaskId } : {}),
         ...(nextStepId ? { next_step_id: nextStepId } : {}),
         ...(selectedAction ? { document_action: { operation: selectedAction.operation, document_ids: selectedAction.document_ids } } : {}),
         ...(workflow ? { workflow } : {}),
@@ -2284,7 +2339,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         setConversationId(requestConversationId)
       }
       if (usesComposer) setInput(current => current || composerInput)
-      if (usesComposer) setReferences(attached)
+      if (usesComposer) setReferences(current => current.length ? current : attached)
       const timing = finishMessageTiming(startedAt)
       if (controller.signal.aborted || isAbortError(issue)) {
         flushQueuedStreamMessage()
@@ -2559,6 +2614,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
           execution: { ...message.execution, outcome: { ...message.execution.outcome, kind: 'saved', summary: '当前阶段草稿已写入项目，可以查看保存结果。' } } } : message))
         const next = workflowProgress(saved)
         setWorkflowStage(next.next_stage || 'episode')
+        setWorkflowContract({})
         if (next.next_episode) setEpisodeNumber(next.next_episode)
         if (completed === 'episode') {
           setHandoffEpisode(generated.workflow.episode_number)
@@ -2831,7 +2887,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         onClick={() => void sendChatMessage(exploreStoryDirectionMessage)} data-workspace-control="" variant="subtle">
         <Lightbulb size={14} aria-hidden="true" />探索故事方向
       </Button>}
-      <ScriptStageActions script={detail.script} outlineIssue={outlineIssue} disabled={busy || sourceUploading || sourceChatBlocked || closing || !selectedModel || Boolean(generated && !scriptSaved) || Boolean(draftResolution)} onAction={handleStageAction} />
+      <ScriptStageActions script={detail.script} hasSource={Boolean(scriptSource)} outlineIssue={outlineIssue} disabled={busy || sourceUploading || sourceChatBlocked || closing || !selectedModel || Boolean(generated && !scriptSaved) || Boolean(draftResolution)} onAction={handleStageAction} />
       {outlineIssue && !busy && !closing && progress.next_stage === 'outline' && !(generated && !scriptSaved) && <span className="sd-creation-progress" role="status">{outlineIssue}</span>}
     </nav>}
     </div>
@@ -2852,12 +2908,17 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         <p>{workflowStage === 'episode' ? `本次仅创作第 ${episodeNumber} 集正文，承接全剧资料，不修改其他集。` : '本次整理全剧资料，覆盖整个故事；不会生成下一集正文。'}生成后可编辑、确认保存。</p>
         <p>首次生成顺序：大纲 → 人物与关系 → 场景 → 道具 → 分集正文。{progress.next_stage ? `当前建议：${progress.next_stage === 'episode' ? `第 ${progress.next_episode} 集正文` : workflowLabels[progress.next_stage]}。` : '当前资料与正文已齐备。'}未保存阶段按顺序开放；已保存阶段可随时修改、补齐或重新设计。</p>
         {availableModels.length ? <>{modelSelector}{skillSelector}</> : <Button type="button" className="script-director-model-link" onClick={onOpenModels} data-workspace-control="" variant="subtle">配置可用文本模型</Button>}
-        <p>本阶段文档：{scriptStageDeliverables(workflowStage)}。</p>
+        <p>本次交付：{scriptTaskDeliverables(workflowTarget) || '没有需要补齐的栏目'}。</p>
+        {workflowStage === 'outline' && workflowOperation === 'generate' && <Select label="大纲交付范围" aria-label="大纲交付范围" allowDeselect={false}
+          value={workflowTarget.artifact_types?.length === 1 ? 'summary' : 'complete'} disabled={busy || Boolean(generated && !scriptSaved)}
+          data={[{ value: 'summary', label: scriptSource ? '整理原稿大纲 · 仅概要设计' : '生成初步大纲 · 仅概要设计' }, { value: 'complete', label: '完整大纲设计 · 9 栏' }]}
+          onChange={value => setWorkflowContract(value === 'complete' ? { intent: 'stage_design' } : { intent: scriptSource ? 'source_outline' : 'stage_design', artifact_types: ['outline'] })} />}
+        {workflowOperation === 'supplement' && <p>只生成以上缺失栏目，已保存栏目的标题和正文保持原样，生成后由你确认保存。</p>}
         <Select label="创作阶段" aria-label="创作阶段" value={workflowStage} allowDeselect={false}
           data={workflowStages.map(stage => ({ value: stage, label: `${workflowLabels[stage]}${stage !== 'episode' && progress.completed[stage] ? ' · 已保存' : ''}`, disabled: stage !== progress.next_stage && !(stage === 'episode' ? progress.episodes.length : progress.completed[stage]) }))}
-          disabled={busy || Boolean(generated && !scriptSaved)} onChange={value => { if (!value) return; const stage = value as WorkflowStage; setWorkflowStage(stage); setWorkflowOperation(stage === 'episode' ? progress.episodes.includes(episodeNumber) ? 'revise' : 'generate' : progress.completed[stage] ? 'revise' : 'generate') }} />
+          disabled={busy || Boolean(generated && !scriptSaved)} onChange={value => { if (!value) return; const stage = value as WorkflowStage; setWorkflowStage(stage); setWorkflowContract({}); setWorkflowOperation(stage === 'episode' ? progress.episodes.includes(episodeNumber) ? 'revise' : 'generate' : progress.completed[stage] ? 'revise' : 'generate') }} />
         {(workflowStage === 'episode' ? progress.episodes.includes(episodeNumber) : progress.completed[workflowStage]) && <Select label="处理方式" aria-label="阶段处理方式" value={workflowOperation} allowDeselect={false} disabled={busy || Boolean(generated && !scriptSaved)}
-          data={[{ value: 'revise', label: '局部修改' }, { value: 'regenerate', label: workflowStage === 'episode' ? '重新设计本集' : '重新设计整阶段' }, ...(workflowStage !== 'episode' && missingSavedStageArtifacts(detail.script, workflowTarget).length ? [{ value: 'supplement', label: '补齐缺失栏目' }] : [])]} onChange={value => value && setWorkflowOperation(value as StageOperation)} />}
+          data={[{ value: 'revise', label: '局部修改' }, { value: 'regenerate', label: workflowStage === 'episode' ? '重新设计本集' : workflowStage === 'outline' ? '完整大纲重新设计 · 9 栏' : '重新设计整阶段' }, ...(workflowStage !== 'episode' && missingSavedStageArtifacts(detail.script, workflowTarget).length ? [{ value: 'supplement', label: '补齐缺失栏目' }] : [])]} onChange={value => { if (value) { setWorkflowOperation(value as StageOperation); setWorkflowContract({}) } }} />}
         {workflowStage === 'episode' && <div className="script-director-episode-fields">
           <label>第 <NumberInput  min={1} max={200} value={episodeNumber} aria-label="生成第几集" disabled={busy} onChange={value => { const episode = Math.max(1, Math.min(200, Number(value) || 1)); setEpisodeNumber(episode); setWorkflowOperation(progress.episodes.includes(episode) ? 'revise' : 'generate') }} clampBehavior="none" /> 集</label>
           <label>单集 <NumberInput  min={5} max={600} value={episodeDuration ?? ''} placeholder="自动" aria-label="单集目标秒数" disabled={busy} onChange={value => { const duration = value ? Math.max(5, Math.min(600, Number(value) || 5)) : undefined; setEpisodeDuration(duration); setOptions(current => ({ ...current, episode_duration: duration })) }} clampBehavior="none" /> 秒</label>
@@ -2865,7 +2926,9 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         {generated && !scriptSaved ? <div className="script-director-workflow-actions">
           <Button type="button" onClick={() => { setWorkflowOpen(false); setPreviewOpen(true) }} data-workspace-control="" variant="subtle">查看待确认草稿</Button>
           <Button type="button" disabled={busy} onClick={() => void discardGenerated()} data-workspace-control="" variant="subtle">放弃草稿</Button>
-        </div> : <Button type="button" className="script-director-workflow-generate" disabled={busy || sourceUploading || sourceChatBlocked || Boolean(workflowIssue) || !selectedModel || !scriptSource && !references.length && !input.trim() && !idea.trim() && !messages.some(message => message.role === 'user')} title={sourceChatBlocked ? sourceSendBlockReason : undefined} onClick={() => handleStageAction(workflowTarget)} data-workspace-control="" variant="subtle"><FileText size={13} />{`${workflowOperation === 'regenerate' ? '重新设计' : workflowOperation === 'supplement' ? '补齐' : workflowOperation === 'revise' ? '填写修改要求' : '生成'}${workflowStage === 'episode' ? `第 ${episodeNumber} 集正文` : stageLabels[workflowStage]}`}</Button>}
+        </div> : <Button type="button" className="script-director-workflow-generate" disabled={busy || sourceUploading || sourceChatBlocked || Boolean(workflowIssue) || !selectedModel} title={sourceChatBlocked ? sourceSendBlockReason : undefined} onClick={() => handleStageAction(workflowTarget)} data-workspace-control="" variant="subtle"><FileText size={13} />{workflowStage === 'outline' && workflowOperation === 'generate'
+          ? workflowTarget.intent === 'source_outline' ? '整理原稿大纲' : workflowTarget.artifact_types?.length === 1 ? '生成初步大纲' : '生成完整大纲设计'
+          : `${workflowOperation === 'regenerate' ? '重新设计' : workflowOperation === 'supplement' ? '补齐' : workflowOperation === 'revise' ? '填写修改要求' : '生成'}${workflowStage === 'episode' ? `第 ${episodeNumber} 集正文` : stageLabels[workflowStage]}`}</Button>}
         {workflowIssue && <p className="sd-utility-empty" role="status">{workflowIssue}</p>}
       </div>
     </section>}
@@ -2875,7 +2938,10 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     {error && <div className="script-director-error" role="alert">{scriptDiagnosticDisplayText(error)}<ActionIcon type="button" onClick={() => setError(null)} aria-label="关闭错误" data-workspace-control=""><X size={14} /></ActionIcon></div>}
 
     {activeFocus === 'all' && <DirectorDraftResolution resolution={draftResolution} opened={resolutionOpen && !hidden && !minimized} busy={busy || closing}
-      onClose={() => setResolutionOpen(false)} onOpen={() => setResolutionOpen(true)} onResolve={value => void resolveDraft(value)} onDiscard={() => void discardDraftResolution()} />}
+      onClose={() => setResolutionOpen(false)} onOpen={() => setResolutionOpen(true)} onResolve={value => void resolveDraft(value)} onDiscard={() => void discardDraftResolution()}
+      onPreview={() => setCandidatePreviewOpen(true)} />}
+    <DirectorCandidatePreview projectId={detail.id} resolution={draftResolution} opened={candidatePreviewOpen && activeFocus === 'all' && !hidden && !minimized}
+      onClose={() => setCandidatePreviewOpen(false)} onRefresh={refreshToolState} />
     {liveRevision && <RevisionProgress task={liveRevision} working={working === 'chat'} />}
     {previewOpen && generated && <DirectorDraftReview draft={generated} busy={busy} saving={working === 'save'} saved={scriptSaved} onChange={setGenerated} onClose={() => setPreviewOpen(false)} onSave={() => void saveGenerated()} onDiscard={() => void discardGenerated()}
       onContinue={generated.tool_draft?.revision_task ? continueRevisionTask : undefined}
@@ -2893,6 +2959,9 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         {composerCollapsed && working === 'chat' && <UnstyledButton type="button" className="sd-composer-stop" aria-label="停止生成" title="停止生成" onClick={stopChatGeneration}><Square size={12} fill="currentColor" /><span>停止生成</span></UnstyledButton>}
       </div>
       <div id={composerBodyId} className="sd-composer-area-content" hidden={composerCollapsed}>
+      {canvasNodeSource?.project_id === detail.id && onApplyCanvasNodeProposal && <DirectorCanvasNodeProposal source={canvasNodeSource}
+        modelId={selectedModel?.id || ''} modelName={selectedModel?.name} composerInput={input} initialContext={initialContext}
+        disabled={busy || closing} hidden={hidden || minimized} onApply={onApplyCanvasNodeProposal} />}
       {activeFocus === 'all' && scriptSource && <div className="sd-script-source-container" aria-label="原剧本来源"><div className="sd-script-source">
           <UnstyledButton className="sd-script-source-open" onClick={() => setSourcePreviewOpen(true)} aria-label={`查看${scriptSource.revision ? '当前有效稿' : '原剧本'}：${scriptSource.filename}`}><FileText size={16} /><span><strong>{scriptSource.filename}</strong><small>{scriptSource.revision ? `当前有效稿 · 第 ${scriptSource.revision} 次修订` : '原剧本'} · {scriptSource.content.length.toLocaleString()} 字 · 用于各阶段生成</small></span></UnstyledButton>
           <FileButton onChange={chooseScriptFile} accept={scriptSourceExtensions.join(',')}>{fileProps => <Button {...fileProps} type="button" variant="subtle" size="xs" loading={sourceUploading} disabled={busy || sourceUploading}>替换</Button>}</FileButton>
@@ -2900,7 +2969,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       </div><ScriptSourceAnalysisStatus source={scriptSource} starting={sourceAnalysisStarting} unavailable={!selectedModel || sourceUploading} pollError={sourceAnalysisPollError}
         hasPreviousFailure={messages.some(message => message.role === 'assistant' && !message.pending && (message.failed || message.execution?.outcome?.kind === 'failed'))}
         onStart={() => void startSourceAnalysis()} onPause={() => void pauseSourceAnalysis()} /></div>}
-    {activeChoice && !previewOpen && !references.length ? <DirectorQuestionPanel key={activeChoice.messageId}
+    {activeChoice && !previewOpen && !references.length && !(contextComposerActive && input.trim()) ? <DirectorQuestionPanel key={activeChoice.messageId}
       choice={activeChoice.choice} answer={choiceAnswers[activeChoice.messageId] || { custom: false, text: '' }} busy={busy} unavailable={!selectedModel || sourceChatBlocked} controls={availableModels.length ? modelSelector : undefined} onConfigure={onOpenModels} onStop={working === 'chat' ? stopChatGeneration : undefined}
       onChange={answer => setChoiceAnswers(current => ({ ...current, [activeChoice.messageId]: answer }))}
       onSkip={() => skipQuestion(activeChoice.messageId, activeChoice.choice.question)}

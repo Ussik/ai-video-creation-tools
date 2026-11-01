@@ -27,6 +27,10 @@ test('video prompt assigns the actual angle and use of every frozen independent 
   assert.match(lines[2]!, /图片3：林晚（雨衣）.*面部特写.*锁定面部.*五官/)
   assert.match(lines[3]!, /图片4：站台（夜间）.*窗边反打.*位置关系/)
   assert.match(mapping, /空间参考保持位置与视线关系/)
+  const visual = prompt.split('【镜头视觉设定】')[1]!.split('【镜头视觉设定结束】')[0]!
+  assert.match(visual, /人物：林晚（雨衣，版本 1）；图片 3、2/)
+  assert.match(visual, /场景：站台（夜间，版本 1）；图片 4/)
+  assert.match(visual, /本次参考用途：面部特写.*侧面/)
   assert.doesNotMatch(mapping, /legacy-board|图片5/)
 })
 
@@ -37,6 +41,16 @@ test('mapping never adds omitted selected images or reverts an independent bindi
   assert.match(lines[0]!, /图片1：林晚.*侧面服装/)
   assert.match(lines[1]!, /图片2：手动参考/)
   assert.doesNotMatch(prompt, /锁定面部|图片3/)
+})
+
+test('explicit board ownership coexists with independent views and never selects absent images', () => {
+  const selected = { ...hero, selected_reference_asset_ids: ['legacy-board', 'side', 'unsubmitted'] }
+  const prompt = visualGenerationPrompt('林晚站在右侧。', [selected], ['legacy-board', 'side'], 'profiles', { mode: 'reference' })
+  const lines = prompt.split('\n').filter(line => /^图片\d+：/.test(line))
+  assert.equal(lines.length, 2)
+  assert.match(lines[0]!, /图片1：林晚.*人物身份、面部、发型、服装/)
+  assert.match(lines[1]!, /图片2：林晚.*侧面服装/)
+  assert.doesNotMatch(prompt, /unsubmitted|图片3/)
 })
 
 test('shared image mapping preserves different selected uses and strips only excluded ownership', () => {

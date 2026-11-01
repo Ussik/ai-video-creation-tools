@@ -5,7 +5,7 @@ import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
-import type { Model, ProjectDetail, VisualProfile, VisualReferenceAsset } from '../src/shared/api/api'
+import type { Model, ProjectDetail, Provider, VisualProfile, VisualReferenceAsset } from '../src/shared/api/api'
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
@@ -35,10 +35,10 @@ const reference = (id: string, patch: Partial<VisualReferenceAsset> = {}): Visua
   view: 'face', purpose: 'identity', label: id, revision: 2, style_version: styleVersion, status: 'candidate', is_default: false,
   source_asset_id: null, source_job_id: null, created_at: '', updated_at: '', ...patch })
 
-async function mount(nextProfile = profile, nextDetail = detail) {
+async function mount(nextProfile = profile, nextDetail = detail, nextModels = models, providers?: Provider[]) {
   const container = document.createElement('div'); document.body.append(container); const root = createRoot(container)
   let refreshes = 0
-  await act(async () => root.render(<MantineProvider env="test"><ReferenceAssets profile={nextProfile} detail={nextDetail} models={models} onRefresh={async () => { refreshes++ }} /></MantineProvider>))
+  await act(async () => root.render(<MantineProvider env="test"><ReferenceAssets profile={nextProfile} detail={nextDetail} models={nextModels} providers={providers} onRefresh={async () => { refreshes++ }} /></MantineProvider>))
   return { container, refreshes: () => refreshes, destroy: async () => { await act(() => root.unmount()); container.remove() } }
 }
 function button(label: string) {
@@ -129,6 +129,31 @@ test('angle generation uses enabled image models, previews without generating, i
     assert.equal(generation.body.view, 'side'); assert.equal(generation.body.candidate_count, 2)
     assert.equal(generation.body.reference_signature, 'signature')
     assert.equal(screen.refreshes(), 1)
+  } finally { await screen.destroy() }
+})
+
+test('reference generation prefers the default image model and excludes unavailable providers', async t => {
+  const requests: Array<Record<string, unknown>> = []
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    requests.push(JSON.parse(String(init?.body)))
+    return Response.json({ prompt: '单人单视角', reference_asset_ids: ['board'], reference_signature: 'signature', project_style_version: styleVersion, mode: 'reference' })
+  })
+  const image = { ...models[1]!, provider_id: 'provider' }
+  const preferred = { ...image, id: 'preferred', name: '默认图片模型', is_default: true }
+  const unavailable = { ...preferred, id: 'unavailable', name: '停用提供商模型', provider_id: 'offline' }
+  const screen = await mount(profile, detail, [unavailable, image, preferred], [
+    { id: 'provider', enabled: true, adapter: 'http' }, { id: 'offline', enabled: false, adapter: 'http' },
+  ] as Provider[])
+  try {
+    await act(() => button('添加参考图').click()); await act(() => button('按角度生成').click())
+    const field = document.querySelector<HTMLInputElement>('[aria-label="独立参考生成模型"]')!
+    assert.equal(field.value, '默认图片模型')
+    assert.equal(requests.length, 0)
+    await act(() => button('预览提示词').click())
+    assert.equal(requests[0].model_id, 'preferred')
+    await change('独立参考生成模型', '启用图片模型')
+    await act(() => button('重新预览提示词').click())
+    assert.equal(requests[1].model_id, 'image-model')
   } finally { await screen.destroy() }
 })
 

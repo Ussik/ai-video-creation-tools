@@ -14,8 +14,10 @@ import {
 import { api, json } from '../shared/api/api'
 import type { Asset, ContinuityReport, Model, ProductionRange, Project, ProjectDetail, Provider, Shot, TimelineClip } from '../shared/api/api'
 import ModelSettings from '../features/models/ModelSettings'
+import { preferredModel } from '../features/models/model-defaults'
 import SkillsCenter from '../features/skills/SkillsCenter'
 import SpeechStudio from '../features/speech/SpeechStudio'
+import BasicFinalCutStudio from '../features/final-cut/BasicFinalCutStudio'
 import TimelinePreview from '../features/final-cut/TimelinePreview'
 import FinalCutSpeechPanel from '../features/final-cut/FinalCutSpeechPanel'
 import FinalCutOutputSettings from '../features/final-cut/FinalCutOutputSettings'
@@ -27,11 +29,14 @@ import CutReviewPanel from '../features/final-cut/CutReviewPanel'
 import CandidateCompare from '../features/final-cut/CandidateCompare'
 import TaskRecords from '../features/jobs/TaskRecords'
 import { isTaskActive } from '../features/jobs/task-records'
+import { jobRecoveryPresentation } from '../features/jobs/job-recovery'
 import { canvasGraphPath, preferredCanvas, rememberCanvas, rememberedCanvas, type ProjectCanvasInfo } from '../features/canvas/project-canvases'
 import { findShotCanvasTarget, requestShotCanvas } from '../features/canvas/canvas-shot-navigation'
-import ProjectCanvas, { type CanvasLocation, type ScriptAction } from '../features/canvas/ProjectCanvas'
+import ProjectCanvas, { type CanvasLocation, type ScriptAction, type CanvasNodeProposalActions } from '../features/canvas/ProjectCanvas'
+import type { CanvasNodeProposalSource } from '@video-studio/shared/canvas/canvas-node-proposal'
 import { validateOptimizedPromptReferences, type OptimizedPromptDraft } from '../features/canvas/canvas-optimized-prompt'
 import ScriptDirectorPanel from '../features/script/ScriptDirectorPanel'
+import type { WorkflowRequest } from '../features/script/script-workflow'
 import StoryboardPlanner from '../features/storyboard/StoryboardPlanner'
 import ScriptEditor, { type DocumentSection } from '../features/script/ScriptEditor'
 import { useAppDialog } from '../shared/ui/AppDialog'
@@ -54,7 +59,7 @@ type CandidateReview = {
 
 type CanvasStoredNode = {
   id: string
-  type: 'text' | 'image' | 'video' | 'generation' | 'project_script_ref'
+  type: 'text' | 'image' | 'video' | 'generation' | 'image_analysis' | 'project_script_ref'
   x: number
   y: number
   width: number
@@ -146,9 +151,12 @@ function App() {
   activeProjectId.current = projectId
   const [shotId, setShotId] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('projects')
-  const finalCut = useFinalCutScope(projectId, tab === 'studio')
-  const detail = tab === 'studio' ? finalCut.detail : projectDetail
-  const finalCutCanvasId = tab === 'studio' ? finalCut.canvasId : null
+  const [finalCutMode, setFinalCutMode] = useState<'basic' | 'storyboard'>('basic')
+  const [basicCutDirty, setBasicCutDirty] = useState(false)
+  const storyboardCutOpen = tab === 'studio' && finalCutMode === 'storyboard'
+  const finalCut = useFinalCutScope(projectId, storyboardCutOpen)
+  const detail = storyboardCutOpen ? finalCut.detail : projectDetail
+  const finalCutCanvasId = storyboardCutOpen ? finalCut.canvasId : null
   const finalCutRefresh = useRef(finalCut.refresh)
   finalCutRefresh.current = finalCut.refresh
   const activeView = useRef('')
@@ -159,6 +167,9 @@ function App() {
   const [scriptDirectorOpenRequest, setScriptDirectorOpenRequest] = useState(0)
   const [scriptDirectorFocus, setScriptDirectorFocus] = useState<ScriptAction>('all')
   const [scriptDirectorContext, setScriptDirectorContext] = useState('')
+  const [scriptDirectorNodeSource, setScriptDirectorNodeSource] = useState<CanvasNodeProposalSource>()
+  const canvasNodeProposalActions = useRef<CanvasNodeProposalActions | null>(null)
+  const [scriptDirectorStageRequest, setScriptDirectorStageRequest] = useState<WorkflowRequest>()
   const [scriptEditorSection, setScriptEditorSection] = useState<DocumentSection>('outline')
   const canvasLocations = useRef(new Map<string, CanvasLocation>())
   const [optimizedPromptDraft, setOptimizedPromptDraft] = useState<OptimizedPromptDraft | null>(null)
@@ -248,6 +259,10 @@ function App() {
   const previousAsset = assetMap.get(previousClip?.asset_id || '')
   const shotAssets = detail?.assets.filter((asset) => ((asset.shot_id === shotId && asset.source !== 'export') || asset.id === currentShot?.selected_asset_id) && (asset.kind === 'image' || asset.kind === 'video')) || []
   const continuityModels = models.filter(model => model.modality === 'text' && model.enabled && providers.some(provider => provider.id === model.provider_id && provider.enabled))
+  useEffect(() => {
+    setContinuityModelId(current => continuityModels.some(model => model.id === current)
+      ? current : preferredModel(continuityModels)?.id || '')
+  }, [models, providers])
   const plannedDuration = productionShots.reduce((sum, shot) => sum + shot.duration, 0)
   const speechTimeline = resolveSpeechTimeline(productionShots, detail?.timeline_clips || [], detail?.speech?.placements || [])
   const timelinePreview = buildPartialTimelinePreview({ shots: productionShots, clips: detail?.timeline_clips || [],
@@ -811,7 +826,10 @@ function App() {
     setRangeDraft({ start_shot_id: detail.shots[start]!.id, end_shot_id: detail.shots[end]!.id })
   }
 
-  function openScriptDirector(focusArtifact: ScriptAction = 'all') {
+  function openScriptDirector(focusArtifact: ScriptAction = 'all', stageRequest?: WorkflowRequest, context = '', nodeSource?: CanvasNodeProposalSource) {
+    setScriptDirectorContext(context)
+    setScriptDirectorNodeSource(nodeSource)
+    setScriptDirectorStageRequest(stageRequest)
     setScriptDirectorOpenRequest(request => request + 1)
     setScriptDirectorFocus(focusArtifact)
     setScriptEditorOpen(false)
@@ -827,12 +845,25 @@ function App() {
     setTab('canvas')
   }
 
-  function returnToCanvas() {
+  async function canLeaveBasicCut() {
+    if (tab !== 'studio' || finalCutMode !== 'basic' || !basicCutDirty) return true
+    return confirm({ title: '离开当前剪辑？', message: '还有尚未保存的修改。离开后会保留本机草稿，返回时可恢复；也可以取消并先保存。', confirmLabel: '保留草稿并离开' })
+  }
+
+  async function changeFinalCutMode(mode: 'basic' | 'storyboard') {
+    if (mode === finalCutMode || !await canLeaveBasicCut()) return
+    setBasicCutDirty(false)
+    setFinalCutMode(mode)
+  }
+
+  async function returnToCanvas() {
+    if (!await canLeaveBasicCut()) return
     if (projectId && finalCutCanvasId) rememberCanvas(projectId, finalCutCanvasId)
     setTab('canvas')
   }
 
-  function selectedNav(id: Tab) {
+  async function selectedNav(id: Tab) {
+    if (id !== tab && !await canLeaveBasicCut()) return
     if (id !== 'canvas') {
       setScriptEditorOpen(false)
     }
@@ -852,14 +883,19 @@ function App() {
       setDetail(null)
       setAssetPreview(null)
       setScriptDirectorOpen(false)
+      setScriptDirectorContext('')
+      setScriptDirectorNodeSource(undefined)
+      setScriptDirectorStageRequest(undefined)
     }
     setProjectId(id)
     setTab('canvas')
     setMobileMenu(false)
   }
 
-  function switchProject(id: string | null) {
+  async function switchProject(id: string | null) {
     if (!id || id === projectId || busy || assetDownload.downloading || !projects.some(project => project.id === id)) return
+    if (!await canLeaveBasicCut()) return
+    setBasicCutDirty(false)
     setDetail(null)
     setAssetPreview(null)
     setSelectedAssetIds([])
@@ -870,6 +906,9 @@ function App() {
     setSpeechProjectId(null)
     setStoryboardOpen(false)
     setScriptDirectorOpen(false)
+    setScriptDirectorContext('')
+    setScriptDirectorNodeSource(undefined)
+    setScriptDirectorStageRequest(undefined)
     setScriptEditorOpen(false)
     clearAssetFilters()
     setNotice(null)
@@ -886,7 +925,7 @@ function App() {
         <ActionIcon className="sidebar-close" variant="subtle" aria-label="关闭导航" onClick={() => setMobileMenu(false)}><X size={19} /></ActionIcon>
       </div>
       <nav className="main-nav" aria-label="主导航">
-        {tabs.map(({ id, label, icon: Icon }) => <UnstyledButton key={id} className={tab === id ? 'active' : ''} onClick={() => selectedNav(id)} aria-label={label} title={label}><Icon size={17} /><span>{label}</span></UnstyledButton>)}
+        {tabs.map(({ id, label, icon: Icon }) => <UnstyledButton key={id} className={tab === id ? 'active' : ''} onClick={() => selectedNav(id)} aria-label={label} aria-current={tab === id ? 'page' : undefined} title={label}><Icon size={17} /><span>{label}</span></UnstyledButton>)}
       </nav>
       <div className="sidebar-footer">
         <span className="sidebar-status-label"><span className="status-dot" /><span className="sidebar-status-text">本地工作区</span></span>
@@ -899,19 +938,23 @@ function App() {
     </aside>
     <Drawer opened={mobileMenu} onClose={() => setMobileMenu(false)} title="视频创作台" size={260} zIndex={300} closeButtonProps={{ 'aria-label': '关闭导航' }} classNames={{ content: 'mobile-nav-panel', header: 'mobile-nav-header', body: 'mobile-nav-body' }}>
       <nav className="main-nav" aria-label="主导航">
-        {tabs.map(({ id, label, icon: Icon }) => <UnstyledButton key={id} className={tab === id ? 'active' : ''} onClick={() => selectedNav(id)} aria-label={label} title={label}><Icon size={17} /><span>{label}</span></UnstyledButton>)}
+        {tabs.map(({ id, label, icon: Icon }) => <UnstyledButton key={id} className={tab === id ? 'active' : ''} onClick={() => selectedNav(id)} aria-label={label} aria-current={tab === id ? 'page' : undefined} title={label}><Icon size={17} /><span>{label}</span></UnstyledButton>)}
       </nav>
     </Drawer>
 
-    <main className={`main-content ${canvasOpen ? 'is-canvas' : ''} ${tab === 'studio' ? 'is-final-cut' : ''}`}>
+    <main className={`main-content ${canvasOpen ? 'is-canvas' : ''} ${tab === 'studio' ? 'is-final-cut' : ''} ${tab === 'studio' && finalCutMode === 'basic' ? 'is-basic-final-cut' : ''}`}>
       {tab !== 'projects' && !scriptEditorOpen && <header className="topbar">
         <div className="topbar-start"><ActionIcon className="mobile-toggle" variant="subtle" aria-label="打开导航" onClick={() => setMobileMenu(!mobileMenu)}><Menu size={20} /></ActionIcon><Button className="breadcrumb-link" onClick={() => selectedNav('projects')} data-workspace-control="" variant="subtle">项目</Button><span className="breadcrumb-sep">/</span>{tab === 'skills' || tab === 'models' ? <strong>{tab === 'skills' ? '技能中心' : '模型设置'}</strong> : <Select className="header-project-switcher" aria-label="切换项目" placeholder="选择项目" value={projectId} onChange={switchProject} data={projects.map(project => ({ value: project.id, label: project.name }))} searchable allowDeselect={false} disabled={busy || assetDownload.downloading} rightSection={<ChevronDown size={14} />} comboboxProps={{ width: 340, position: 'bottom-start' }} />}{tab === 'studio' && <span className="topbar-meta">成片工作台</span>}</div>
         <div className="topbar-actions">
           {tab === 'studio' && detail && <Button variant="default" onClick={returnToCanvas} leftSection={<Layers3 size={16} />}>返回画布</Button>}
+          {tab === 'studio' && <Button.Group>
+            <Button variant={finalCutMode === 'basic' ? 'filled' : 'default'} aria-pressed={finalCutMode === 'basic'} onClick={() => void changeFinalCutMode('basic')}>基础剪辑</Button>
+            <Button variant={finalCutMode === 'storyboard' ? 'filled' : 'default'} aria-pressed={finalCutMode === 'storyboard'} onClick={() => void changeFinalCutMode('storyboard')}>按分镜选片</Button>
+          </Button.Group>}
           {detail && tab === 'studio' && <Button variant="default" onClick={() => openSpeech()} leftSection={<Mic2 size={16} />}>配音</Button>}
-          {detail && tab === 'studio' && <FinalCutOutputSettings detail={detail} onRefresh={() => refreshDetail(detail.id)} />}
-          {tab === 'studio' && latestExportAsset && <Button component="a" variant="default" href={latestExportAsset.url} download title="下载最近成片" leftSection={<Download size={16} />}>最近成片</Button>}
-          {tab === 'studio' && detail && <Button onClick={exportVideo} disabled={busy || !canExport} title={!canExport ? '请先为制作范围内的镜头选定有效片段' : '导出视频'} leftSection={<Download size={16} />}>导出视频</Button>}
+          {detail && storyboardCutOpen && <FinalCutOutputSettings detail={detail} onRefresh={() => refreshDetail(detail.id)} />}
+          {storyboardCutOpen && latestExportAsset && <Button component="a" variant="default" href={latestExportAsset.url} download title="下载最近成片" leftSection={<Download size={16} />}>最近成片</Button>}
+          {storyboardCutOpen && detail && <Button onClick={exportVideo} disabled={busy || !canExport} title={!canExport ? '请先为制作范围内的镜头选定有效片段' : '导出视频'} leftSection={<Download size={16} />}>导出视频</Button>}
           {tab !== 'canvas' && <ThemeToggle />}
         </div>
       </header>}
@@ -920,7 +963,7 @@ function App() {
 
       {tab === 'projects' && <section className="project-page" aria-label="项目">
         <div className="project-page-head">
-          <div className="project-page-title"><div><h1>全部项目</h1>{(projectQuery || projects.length > 0) && <p>{projectQuery ? `${visibleProjects.length} / ${projects.length} 个项目` : `${projects.length} 个项目`}</p>}</div><div className="project-page-actions">{!projectSelectionMode && <Button size="sm" variant="default" disabled={busy || !projects.length} onClick={() => setProjectSelectionMode(true)}>批量管理</Button>}<ActionIcon className="mobile-toggle" variant="subtle" aria-label="打开导航" onClick={() => setMobileMenu(true)}><Menu size={20} /></ActionIcon></div></div>
+          <div className="project-page-title"><div><h2>全部项目</h2>{(projectQuery || projects.length > 0) && <p>{projectQuery ? `${visibleProjects.length} / ${projects.length} 个项目` : `${projects.length} 个项目`}</p>}</div><div className="project-page-actions">{!projectSelectionMode && <Button size="sm" variant="default" disabled={busy || !projects.length} onClick={() => setProjectSelectionMode(true)}>批量管理</Button>}<ActionIcon className="mobile-toggle" variant="subtle" aria-label="打开导航" onClick={() => setMobileMenu(true)}><Menu size={20} /></ActionIcon></div></div>
           <div className="project-page-tools"><TextInput size="sm" aria-label="搜索项目" placeholder="搜索项目或简介" leftSection={<Search size={15} />} value={projectQuery} onChange={(event) => setProjectQuery(event.currentTarget.value)} /><Select size="sm" aria-label="项目排序" value={projectSort} onChange={(value) => { if (value) setProjectSort(value as typeof projectSort) }} data={[{ value: 'updated', label: '最近更新' }, { value: 'created', label: '最近创建' }, { value: 'name', label: '名称排序' }]} allowDeselect={false} /><ThemeToggle /></div>
         </div>
         {projectSelectionMode && <div className="project-batch-toolbar" role="region" aria-label="项目批量管理">
@@ -963,6 +1006,9 @@ function App() {
           onRefresh={() => refreshDetail(detail.id)}
           onOpenModels={() => { setScriptEditorOpen(false); setTab('models') }}
           onOpenCanvas={() => { setScriptEditorOpen(false); setTab('canvas') }}
+          onSupplementStage={stage => {
+            openScriptDirector('all', { stage, episode_number: 0, operation: 'supplement', intent: 'stage_design' })
+          }}
           onNotice={setNotice}
         />
       </div>}
@@ -978,9 +1024,9 @@ function App() {
         onOpenScriptCreator={() => openScriptEditor()}
         onOpenSpeech={() => { setSpeechFocus({}); setSpeechProjectId(detail.id) }}
         onOpenScriptDocument={artifact => openScriptEditor(artifact.episode_number ? `episode-${artifact.episode_number}` : artifact.artifact_type)}
-        onOpenScriptDirector={(focusArtifact = 'all', context) => {
-          setScriptDirectorContext(context || '')
-          openScriptDirector(focusArtifact)
+        registerNodeProposalActions={actions => { canvasNodeProposalActions.current = actions }}
+        onOpenScriptDirector={(focusArtifact = 'all', context, source) => {
+          openScriptDirector(focusArtifact, undefined, context, source)
         }}
         onNavigate={(destination) => { setScriptEditorOpen(false); setTab(destination) }} />}
 
@@ -998,14 +1044,31 @@ function App() {
         providers={providers}
         focusArtifact={scriptDirectorFocus}
         initialContext={scriptDirectorContext}
+        canvasNodeSource={scriptDirectorNodeSource}
+        onApplyCanvasNodeProposal={async proposal => {
+          const actions = canvasNodeProposalActions.current
+          if (!actions) throw new Error('对应画布尚未打开，请返回来源画布后再确认方案')
+          return actions.apply(proposal)
+        }}
+        initialStageRequest={scriptDirectorStageRequest}
         onRefresh={async () => { await refreshDetail(detail.id) }}
-        onClose={() => { setScriptDirectorOpen(false); setScriptDirectorContext(''); setTab('canvas') }}
+        onClose={() => { setScriptDirectorOpen(false); setScriptDirectorContext(''); setScriptDirectorNodeSource(undefined); setScriptDirectorStageRequest(undefined); setTab('canvas') }}
         onOpenModels={() => setTab('models')}
         onOpenDocument={artifact => openScriptEditor(artifact.episode_number ? `episode-${artifact.episode_number}` : artifact.artifact_type)}
         onNotice={setNotice}
       />}
 
-      {projectDetail && tab === 'studio' && <section className="final-cut-scope-bar" aria-label="成片制作方案">
+      {projectDetail && tab === 'studio' && finalCutMode === 'basic' && <BasicFinalCutStudio
+        key={`basic-final-cut-${projectDetail.id}`}
+        detail={projectDetail}
+        sourceCanvasId={rememberedCanvas(projectDetail.id)}
+        onRefresh={() => refreshDetail(projectDetail.id)}
+        onOpenSpeech={lineId => openSpeech(lineId)}
+        onNotice={setNotice}
+        onDirtyChange={setBasicCutDirty}
+      />}
+
+      {projectDetail && storyboardCutOpen && <section className="final-cut-scope-bar" aria-label="成片制作方案">
         <Select label="制作方案" aria-label="切换成片制作方案" placeholder={finalCut.loading ? '正在读取方案…' : '选择制作方案'}
           value={finalCutCanvasId} data={finalCut.choices.map(canvas => ({ value: canvas.id, label: canvas.design_id ? canvas.name : `${canvas.name} · 默认方案` }))}
           onChange={value => { setNotice(null); finalCut.choose(value) }} allowDeselect={false} searchable disabled={busy || !finalCut.choices.length} />
@@ -1016,7 +1079,7 @@ function App() {
         </div>}
       </section>}
 
-      {detail && tab === 'studio' && <div className="studio-layout final-cut-workspace" aria-label="成片工作台">
+      {detail && storyboardCutOpen && <div className="studio-layout final-cut-workspace" aria-label="成片工作台">
         <section className="shot-rail" aria-label="分镜列表">
           <div className="panel-heading"><div><span className="eyebrow">入片顺序</span><h2>镜头 <span className="panel-count">{detail.shots.length}</span></h2></div></div>
           <div className="shot-list">
@@ -1197,7 +1260,7 @@ function App() {
         onOpenCanvas={id => { if (id) void openShotInCanvas(id); else setTab('canvas') }}
         onOpenSpeech={() => { setSpeechFocus({}); setSpeechProjectId(detail.id) }}
         onRetry={job => { void action(async () => { await api(`/jobs/${job.id}/retry`, { method: 'POST' }); await refreshDetail() },
-          job.recovery_available ? '图片下载恢复任务已入队' : job.task_resume_available ? '图片任务继续查询已入队' : '任务已重新入队') }} />}
+          jobRecoveryPresentation(job, models.find(model => model.id === job.model_id)?.modality)?.notice || '任务已重新入队') }} />}
 
       {tab === 'models' && <ModelSettings providers={providers} models={models} refresh={refreshCatalog} action={action} busy={busy} />}
       {tab === 'skills' && <SkillsCenter projectId={detail?.id} projectName={detail?.name} />}

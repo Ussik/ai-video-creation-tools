@@ -100,3 +100,27 @@ test('media inspection and director context use the submitted prompt rather than
   assert.match(storyboardContext(item, detail), /实际提交运镜与对白/)
   assert.doesNotMatch(storyboardContext(item, detail), /旧分镜描述|待下次生成的草稿/)
 })
+
+test('image analysis projects its editable text and stays visible beside the source generator without exposing the source image as output', () => {
+  const detail = project({ assets: [{ id: 'source', kind: 'image', prompt: '来源图片的历史提示词', filename: '来源.png' }] as Asset[] })
+  const original = graph(node('generator', { asset_id: 'source', settings: { modality: 'image' } }),
+    node('result', { type: 'image', asset_id: 'source' }),
+    node('analysis', { type: 'image_analysis', asset_id: 'source', model_id: 'vision', text: '手改专业提示词：低机位中景，冷色轮廓光。' }))
+  original.edges = [{ id: 'result-edge', source: 'generator', target: 'result' },
+    { id: 'analysis-source', source: 'generator', target: 'analysis', reference_asset_id: 'source' }]
+  const before = JSON.stringify(original)
+  const items = storyboardItems(detail, original, [{ id: 'vision', modality: 'text' } as Model])
+  assert.deepEqual(items.map(item => item.id), ['generator', 'analysis'], 'ordinary duplicate result is hidden while image analysis remains discoverable')
+  const item = items[1]
+  assert.equal(item.kind, 'text')
+  assert.equal(item.asset, undefined)
+  assert.equal(item.content, '手改专业提示词：低机位中景，冷色轮廓光。')
+  assert.equal(storyboardStatus(item), '创作文本')
+  assert.match(storyboardContext(item, detail), /手改专业提示词：低机位中景，冷色轮廓光。/)
+  assert.doesNotMatch(storyboardContext(item, detail), /来源图片的历史提示词/)
+  assert.equal(JSON.stringify(original), before)
+  const empty = storyboardItems(detail, graph(node('empty', { type: 'image_analysis', asset_id: 'source' })), [])[0]
+  assert.equal(empty.kind, 'text')
+  assert.equal(empty.asset, undefined)
+  assert.equal(storyboardStatus(empty), '空白文本')
+})

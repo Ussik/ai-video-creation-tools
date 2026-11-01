@@ -22,7 +22,7 @@ export function syncCanvasStoryboardRevision(graph: CanvasGraph, shots: Shot[],
     affectedNodes.add(node.id); affectedShots.add(shot.id)
     if (node.asset_id) oldAssets.add(node.asset_id)
     const { prompt_override, prompt_is_final, prompt_document, prompt_sections, prompt_body, prompt_base, prompt_template, generation_completed_job_id,
-      storyboard_reference_asset_id, reference_video_url, ...settings } = node.settings
+      storyboard_reference_asset_id, image_video_handoff, reference_video_url, ...settings } = node.settings
     return { ...node, title: shot.title, prompt: modality === 'video' ? shotVideoPrompt(shot) : shotImagePrompt(shot),
       text: '', asset_id: null, job_id: null,
       settings: { ...settings, modality, duration: shot.duration, storyboard_revision: storyboardRevision(shot.storyboard_revision),
@@ -62,6 +62,10 @@ export function syncCanvasStoryboardRevision(graph: CanvasGraph, shots: Shot[],
     let changed = false
     if (settings.storyboard_reference_asset_id && oldAssets.has(settings.storyboard_reference_asset_id)) {
       delete settings.storyboard_reference_asset_id; changed = true
+    }
+    if (settings.image_video_handoff && (affectedNodes.has(settings.image_video_handoff.source_node_id)
+      || oldAssets.has(settings.image_video_handoff.source_asset_id))) {
+      delete settings.image_video_handoff; changed = true
     }
     if (settings.reference_video_url && oldVideoUrls.has(settings.reference_video_url)) {
       delete settings.reference_video_url; changed = true

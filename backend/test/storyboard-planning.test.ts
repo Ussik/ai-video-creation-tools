@@ -30,7 +30,7 @@ async function upstreamPlanning(protocol: 'responses' | 'chat_completions' = 're
       text_path: protocol === 'responses' ? 'output_text' : 'choices.0.message.content', ...settings } })
   const context = await call('POST', `/api/projects/${project.id}/script/storyboard/context`, { scene_ids: [scene.id] })
   const draft = { scenes: [{ scene_id: scene.id, scene_duration: 20, shots: [shot(null, 10), shot(null, 10, '反应镜头')] }] }
-  return { project, scene, context, draft, plan: () => app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/storyboard/plan`,
+  return { project, scene, model, context, draft, plan: () => app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/storyboard/plan`,
     payload: { signature: context.signature, scene_ids: [scene.id], model_id: model.id, skill_ids: [] } }) }
 }
 
@@ -63,6 +63,9 @@ test('storyboard planning requests streams and validates the collected result fo
       assert.match(headers.get('Accept') || '', /text\/event-stream/)
       const format = protocol === 'responses' ? body.text.format : body.response_format.json_schema
       assert.equal(format.name, 'controlled_storyboard'); assert.equal(format.strict, true)
+      const scenes = format.schema.properties.scenes
+      assert.equal(scenes.minItems, 1); assert.equal(scenes.maxItems, 1)
+      assert.deepEqual(scenes.items.properties.scene_id.enum || [scenes.items.properties.scene_id.const], [f.scene.id])
       assert.match(protocol === 'responses' ? body.input : body.messages[0].content, /本次结构化返回契约/)
       return planningStream(f.draft, protocol)
     })
@@ -117,6 +120,101 @@ test('storyboard planning still checks timing and requests one correction after 
   assert.equal(all('SELECT id FROM shots WHERE project_id=?', f.project.id).length, 0)
 })
 
+test('storyboard scope contracts retain only selected internal IDs even with a full episode reference', async t => {
+  const f = await upstreamPlanning('chat_completions', { structured_output_mode: 'json_schema' })
+  await call('PATCH', `/api/script-scenes/${f.scene.id}`, { heading: 'EP001-SC001 外 · 试灯街 · 夜', episode_number: 1 })
+  const other = await call('POST', `/api/projects/${f.project.id}/script/scenes`, { heading: 'EP001-SC002 外 · 照水门 · 夜', duration: 20, episode_number: 1 })
+  const unselected = await call('POST', `/api/projects/${f.project.id}/script/scenes`, { heading: 'EP001-SC003 内 · 灯台 · 夜', duration: 20, episode_number: 1 })
+  await call('PUT', `/api/projects/${f.project.id}/script/artifacts`, { artifacts: [{ artifact_type: 'episode_script', episode_number: 1,
+    title: '第一集正式正文', content: 'EP001-SC001 外 · 试灯街 · 夜\n举灯查验。\nEP001-SC002 外 · 照水门 · 夜\n追查灯印。\nEP001-SC003 内 · 灯台 · 夜\n未选场次仍在完整正文中。', status: 'ready' }] })
+  const selectedIds = [f.scene.id, other.id]
+  const context = await call('POST', `/api/projects/${f.project.id}/script/storyboard/context`, { scene_ids: selectedIds })
+  const before = storyboardFormalState(f.project.id)
+  let calls = 0
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    calls++
+    const body = JSON.parse(String(init.body)), schema = body.response_format.json_schema.schema.properties.scenes
+    assert.equal(schema.minItems, 2); assert.equal(schema.maxItems, 2)
+    assert.deepEqual(schema.items.properties.scene_id.enum, selectedIds)
+    assert.ok(!schema.items.properties.scene_id.enum.includes(unselected.id))
+    const prompt = body.messages[0].content
+    assert.match(prompt, /未选场次仍在完整正文中/)
+    assert.match(prompt, /scene_id[\s\S]*内部|内部[\s\S]*scene_id/)
+    assert.match(prompt, /逐字/)
+    const source = JSON.parse(prompt.split('选中场次：')[1].split('\n')[0])
+    assert.deepEqual(source.map((scene: { scene_id: string }) => scene.scene_id), selectedIds)
+    assert.deepEqual(source.map((scene: { heading: string }) => scene.heading), ['EP001-SC001 外 · 试灯街 · 夜', other.heading])
+    return planningStream({ scenes: [...selectedIds].reverse().map(scene_id => ({ scene_id, scene_duration: 20, shots: [shot(null, 20)] })) }, 'chat_completions')
+  })
+  const response = await app.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/plan`, payload: {
+    signature: context.signature, scene_ids: selectedIds, model_id: f.model.id, skill_ids: [],
+  } })
+  assert.equal(response.statusCode, 200, response.body)
+  assert.deepEqual(response.json().scenes.map((scene: { scene_id: string }) => scene.scene_id), selectedIds, 'valid model ordering is mapped by ID without changing scope')
+  assert.equal(calls, 1)
+  assert.deepEqual(storyboardFormalState(f.project.id), before, 'a validated preview never writes accepted scene, shot or canvas data')
+})
+
+function storyboardFormalState(projectId: string) {
+  return Object.fromEntries(['script_scenes', 'script_artifacts', 'shots', 'storyboard_designs', 'storyboard_scene_plans', 'shot_plan_requests', 'canvas_nodes', 'visual_profiles']
+    .map(table => [table, all(`SELECT * FROM ${table} WHERE project_id=? ORDER BY rowid`, projectId)]))
+}
+
+for (const problem of ['readable scene code', 'unselected extra scene', 'missing selected scene', 'duplicate selected scene'] as const) {
+  test(`storyboard planning repairs ${problem} against the selected scope without committing`, async t => {
+    const f = await upstreamPlanning('responses', { structured_output_mode: 'json_schema' })
+    await call('PATCH', `/api/script-scenes/${f.scene.id}`, { heading: 'EP001-SC001 外 · 试灯街 · 夜' })
+    const other = await call('POST', `/api/projects/${f.project.id}/script/scenes`, { heading: 'EP001-SC002 外 · 照水门 · 夜', duration: 20 })
+    const multiple = problem === 'missing selected scene' || problem === 'duplicate selected scene'
+    const selectedIds = multiple ? [f.scene.id, other.id] : [f.scene.id]
+    const context = await call('POST', `/api/projects/${f.project.id}/script/storyboard/context`, { scene_ids: selectedIds })
+    const before = storyboardFormalState(f.project.id)
+    const scene = (scene_id: string) => ({ scene_id, scene_duration: 20, shots: [shot(null, 20)] })
+    const invalid = { scenes: problem === 'readable scene code' ? [scene('EP001-SC001')]
+      : problem === 'unselected extra scene' ? [scene(f.scene.id), scene(other.id)]
+      : problem === 'missing selected scene' ? [scene(f.scene.id)] : [scene(f.scene.id), scene(f.scene.id)] }
+    let calls = 0
+    t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)); calls++
+      if (calls === 2) {
+        const correction = body.input.split('【一次格式修正】')[1]?.split('【原始任务与资料】')[0]
+        assert.ok(correction, 'invalid scene mapping triggers the one correction request')
+        assert.match(correction, /scene_id/)
+        assert.match(correction, /逐字|内部/)
+        for (const id of selectedIds) assert.ok(correction.includes(id), 'correction contains every selected internal scene ID')
+        assert.match(correction, /EP001-SC001/)
+        if (multiple) assert.match(correction, /EP001-SC002/)
+        if (problem === 'duplicate selected scene') assert.match(correction, /重复/)
+      }
+      return planningStream(calls === 1 ? invalid : { scenes: selectedIds.map(scene) })
+    })
+    const response = await app.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/plan`, payload: {
+      signature: context.signature, scene_ids: selectedIds, model_id: f.model.id, skill_ids: [],
+    } })
+    assert.equal(response.statusCode, 200, response.body)
+    assert.deepEqual(response.json().scenes.map((scene: { scene_id: string }) => scene.scene_id), selectedIds)
+    assert.equal(calls, 2)
+    assert.deepEqual(storyboardFormalState(f.project.id), before)
+  })
+}
+
+test('an uncorrected scene alias is rejected after one correction and cannot save a guessed mapping', async t => {
+  const f = await upstreamPlanning('responses')
+  const before = storyboardFormalState(f.project.id)
+  let calls = 0
+  t.mock.method(globalThis, 'fetch', async () => {
+    calls++
+    return planningStream({ scenes: [{ ...f.draft.scenes[0], scene_id: 'EP001-SC001' }] })
+  })
+  const response = await f.plan()
+  assert.equal(response.statusCode, 422, response.body)
+  assert.match(response.json().detail, /已修正一次/)
+  assert.match(response.json().detail, /scene_id/)
+  assert.match(response.json().raw_output, /EP001-SC001/)
+  assert.equal(calls, 2)
+  assert.deepEqual(storyboardFormalState(f.project.id), before)
+})
+
 test('storyboard upstream failures reach the client and diagnostic log without changing project shots', async t => {
   const project = await call('POST', '/api/projects', { name: '分镜网关失败测试' })
   const scene = await call('POST', `/api/projects/${project.id}/script/scenes`, { heading: '车站', duration: 20 })
@@ -151,6 +249,8 @@ async function setup(t: { after: (fn: () => Promise<unknown>) => void },
   run('INSERT INTO scripts (project_id, outline, characters, updated_at) VALUES (?, ?, ?, ?)', project.id, '大纲选中内容', '人物未选择内容', now())
   const routes = Fastify(); t.after(() => routes.close()); let calls = 0, visualCalls = 0
   const context = {
+    selectSkills: async (_id: string, _model: string, input: import('../src/modules/skills/model-skill-selection.js').CreationSkillSelectionInput) =>
+      ({ skill_ids: input.default_ids, reason: '模型根据当前分镜任务选择技能。' }),
     script: (id: string) => ({ ...one<{ outline: string; characters: string }>('SELECT * FROM scripts WHERE project_id=?', id)!, generation_options: {},
       scenes: all<ScriptScene>('SELECT * FROM script_scenes WHERE project_id=? ORDER BY position', id), artifacts: all<ScriptArtifact>('SELECT * FROM script_artifacts WHERE project_id=? ORDER BY position', id) }),
     scenePrompt: (scene: ScriptScene) => `${scene.heading}\n${scene.action}\n${scene.dialogue}`,
@@ -790,7 +890,9 @@ test('planning submits only selected documents, skills and scenes, supports no s
   assert.deepEqual(context.default_skill_ids, [selected])
   assert.equal(context.skill_policy.source, 'global')
   const { skill_ids: _selectedIds, ...inherited } = input
-  assert.deepEqual((await f.invoke('plan', inherited)).used_skills.map((item: { id: string }) => item.id), [selected])
+  const automatic = await f.invoke('plan', inherited)
+  assert.deepEqual(automatic.used_skills.map((item: { id: string }) => item.id), [selected])
+  assert.deepEqual(automatic.skill_assignment, { ids: [selected], source: 'automatic', reason: '模型根据当前分镜任务选择技能。' })
   selectedRules = false
   assert.deepEqual((await f.invoke('plan', { ...input, skill_ids: [] })).used_skills, [])
   await f.invoke('plan', { ...input, document_ids: ['foreign'] }, 422)

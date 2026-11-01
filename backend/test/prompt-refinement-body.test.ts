@@ -56,8 +56,79 @@ async function fixture() {
 async function refine(projectId: string, input: unknown) {
   const response = await refineApp.inject({ method: 'POST', url: `/api/projects/${projectId}/skills/refine-prompt`, payload: input })
   assert.equal(response.statusCode, 200, response.body)
-  return response.json() as { prompt: string; prompt_body: string; prompt_document?: boolean }
+  return response.json() as { prompt: string; prompt_body: string; prompt_document?: boolean; reference_asset_ids: string[] }
 }
+
+async function explicitProp(state: Awaited<ReturnType<typeof fixture>>) {
+  const sibling = `${state.project.id}-ruler-sibling`
+  run("INSERT INTO assets (id,project_id,kind,filename,path,source,created_at) VALUES (?,?,'image','sibling.png','/tmp/fixture.png','upload','2026-10-19')", sibling, state.project.id)
+  const result = await create(`/api/projects/${state.project.id}/visual-profiles`, { profiles: [
+    { kind: 'prop', name: '巡天尺', variant: '青铜常态', definition: '巡天尺为青铜长尺，尺端嵌一枚朱红晶石。', view_requirements: '正面结构与握柄细节' },
+  ] })
+  const prop = result.visual_profiles.find((profile: any) => profile.name === '巡天尺')
+  const references: string[] = []
+  for (const [asset_id, label] of [[state.assets[2], '握柄红晶'], [sibling, '未选尺身']]) {
+    const registered = await create(`/api/visual-profiles/${prop.id}/reference-assets`, { expected_revision: 1,
+      expected_style_version: result.project_visual_style.version, asset_id, view: 'detail', purpose: 'detail', label, status: 'confirmed' })
+    references.push(registered.reference_assets.find((reference: any) => reference.asset_id === asset_id).id)
+  }
+  await create(`/api/shots/${state.shot.id}/visual-bindings`, { bindings: [
+    { profile_id: state.jiang.id, required: true, usage: 'both' }, { profile_id: state.lu.id, required: false, usage: 'both' },
+    { profile_id: prop.id, required: false, usage: 'none', reference_asset_ids: references },
+  ] }, 'PUT')
+  return { prop, sibling }
+}
+
+test('non-document refinement annotates an explicitly selected inactive prop with identity, definition and view purpose', async () => {
+  const state = await fixture(), { prop, sibling } = await explicitProp(state)
+  modelBody = '姜望双手握住参考图 1所示巡天尺，尺端朝上。'
+  const result = await refine(state.project.id, { ...state.input, reference_asset_ids: [state.assets[2], state.assets[0]],
+    explicit_reference_asset_ids: [state.assets[2]], prompt: '姜望手握巡天尺。' })
+  assert.deepEqual(result.reference_asset_ids, [state.assets[2], state.assets[0]])
+  assert.match(result.prompt, /道具：巡天尺（青铜常态/)
+  assert.match(result.prompt, /青铜长尺，尺端嵌一枚朱红晶石/)
+  assert.match(result.prompt, /参考图 1：巡天尺.*握柄红晶.*局部纹理/)
+  assert.match(captured, /实际参考图（按输入顺序）：.*握柄红晶/)
+  assert.match(captured, /视觉设定：.*青铜长尺/)
+  assert.doesNotMatch(captured, /未选尺身/)
+  assert.ok(!result.reference_asset_ids.includes(sibling))
+  assert.equal(all<{ usage: string }>('SELECT usage FROM shot_visual_bindings WHERE shot_id=? AND profile_id=?', state.shot.id, prop.id)[0]!.usage, 'none')
+
+  modelBody = '姜望低头补网。'
+  const disconnected = await refine(state.project.id, { ...state.input, reference_asset_ids: [state.assets[0]], prompt: '姜望低头补网。' })
+  assert.deepEqual(disconnected.reference_asset_ids, [state.assets[0]])
+  assert.doesNotMatch(disconnected.prompt, /巡天尺|握柄红晶/)
+})
+
+test('explicit prop full-document refinement preserves creator sections and does not inject saved definitions into model context', async () => {
+  const state = await fixture()
+  await explicitProp(state)
+  const blocks = ['【镜头视觉设定】\n道具按创作者要求改为木质短尺。\n【镜头视觉设定结束】',
+    '【图片参考图用途】\n参考图 1仅用于握持方式。\n【图片参考图用途结束】']
+  modelBody = '姜望举起木质短尺。'
+  const result = await refine(state.project.id, { ...state.input, prompt_document: true,
+    reference_asset_ids: [state.assets[2]], explicit_reference_asset_ids: [state.assets[2]],
+    prompt: `姜望握住木质短尺。\n\n${blocks.join('\n\n')}` })
+  assert.deepEqual(getManagedPromptBlocks(result.prompt), blocks)
+  assert.match(captured, /已选图片身份标签.*巡天尺/)
+  assert.doesNotMatch(captured, /青铜长尺|握柄红晶|未选尺身/)
+  const absent = await refine(state.project.id, { ...state.input, prompt_document: true,
+    reference_asset_ids: [state.assets[2]], explicit_reference_asset_ids: [state.assets[2]], prompt: '只保留创作者正文。' })
+  assert.deepEqual(getManagedPromptBlocks(absent.prompt), [])
+})
+
+test('refinement rejects changes to explicitly inherited inactive definitions while the model is working', async () => {
+  const state = await fixture(), { prop } = await explicitProp(state)
+  const before = calls
+  duringModel = () => run('UPDATE shot_visual_bindings SET definition=? WHERE shot_id=? AND profile_id=?',
+    '已修改的黑铁巡天尺设定', state.shot.id, prop.id)
+  const response = await refineApp.inject({ method: 'POST', url: `/api/projects/${state.project.id}/skills/refine-prompt`, payload: {
+    ...state.input, reference_asset_ids: [state.assets[2]], explicit_reference_asset_ids: [state.assets[2]], prompt: '姜望手持巡天尺。',
+  } })
+  assert.equal(response.statusCode, 409, response.body)
+  assert.equal(calls, before + 1)
+  duringModel = undefined
+})
 
 test('complete documents use current edited blocks as readonly context without replacing them from saved settings', async () => {
   const { project, input } = await fixture()
@@ -431,4 +502,96 @@ test('current document reference purposes are readonly model context and saved d
   assert.deepEqual(Object.keys(references[0]).sort(), ['id', 'image_number', 'name'])
   assert.doesNotMatch(captured, /usage_instruction|短发、灰褐短褂|青衣、腰间佩剑|厚涂仙侠动画/)
   assert.deepEqual(getManagedPromptBlocks(result.prompt), [block])
+})
+
+test('an explicitly connected inactive character is retained without restoring removed settings or changing protected sections', async () => {
+  const { project, input, assets, shot, lu } = await fixture()
+  run('UPDATE shot_visual_bindings SET usage=? WHERE shot_id=? AND profile_id=?', 'none', shot.id, lu.id)
+  const block = '【镜头视觉设定】\n姜望保留创作者修改的赭红披肩。\n【镜头视觉设定结束】'
+  modelBody = '姜望仍坐在左侧补网。'
+  const excluded = await refine(project.id, { ...input, prompt_document: true, prompt: `姜望坐在左侧补网。\n\n${block}` })
+  assert.deepEqual(excluded.reference_asset_ids, [assets[0]])
+  const connected = await refine(project.id, { ...input, explicit_reference_asset_ids: [assets[1]],
+    prompt_document: true, prompt: `姜望坐在左侧补网。\n\n${block}` })
+  assert.deepEqual(connected.reference_asset_ids, assets.slice(0, 2))
+  const identities = JSON.parse(captured.split('已选图片身份标签（仅用于识别素材归属，不是恢复已删除设定或默认用途的依据）：')[1]!.split('\n')[0]!)
+  assert.equal(identities[0].profiles[0].name, '陆沉舟')
+  assert.equal(identities[0].asset_id, assets[1])
+  assert.deepEqual(Object.keys(identities[0].profiles[0]).sort(), ['kind', 'name', 'profile_id', 'variant'])
+  assert.doesNotMatch(captured, /青衣、腰间佩剑|短发、灰褐短褂/)
+  assert.deepEqual(getManagedPromptBlocks(connected.prompt), [block])
+  assert.doesNotMatch(connected.prompt, /【图片参考图用途】|【项目画风约束】/)
+})
+
+test('an explicit new-character request corrects purpose-only output into a visible character with the matching image', async () => {
+  const { project, input, assets, shot, lu } = await fixture(), before = calls
+  run('UPDATE shot_visual_bindings SET usage=? WHERE shot_id=? AND profile_id=?', 'none', shot.id, lu.id)
+  const block = '【生成参数约束】\n画面比例：16:9\n【生成参数约束结束】'
+  modelResults = ['姜望坐在船边补网；参考图1只用于陆沉舟的人物身份、面部和服装。', '姜望坐在船边补网。陆沉舟站在画面右侧准备登船，外观依据参考图1。']
+  const result = await refine(project.id, { ...input, reference_asset_ids: [assets[1], assets[0]], explicit_reference_asset_ids: [assets[1]],
+    prompt_document: true, prompt: `姜望坐在船边补网。\n\n${block}`,
+    adjustment_request: `将[[ref:${assets[1]}]]作为陆沉舟的人物参考，加入这个新角色。` })
+  assert.equal(calls, before + 2)
+  assert.match(captured, /未落实新增人物“陆沉舟”/)
+  assert.match(captured, /本次调整要求：\n将参考图 1作为陆沉舟的人物参考，加入这个新角色。/)
+  assert.match(result.prompt_body, /陆沉舟站在画面右侧.*参考图 1/)
+  assert.deepEqual(result.reference_asset_ids, [assets[1], assets[0]])
+  assert.deepEqual(getManagedPromptBlocks(result.prompt), [block])
+})
+
+test('unknown adjustment tokens, invalid explicit selections and mismatched character assignments fail before model calls', async () => {
+  const { project, input, assets } = await fixture(), before = calls
+  for (const options of [
+    { adjustment_request: '加入[[ref:unconnected-image]]中的人物。' },
+    { adjustment_request: `将[[ref:${assets[0]}]]作为陆沉舟的人物参考。` },
+    { explicit_reference_asset_ids: [assets[2]] },
+  ]) {
+    const response = await refineApp.inject({ method: 'POST', url: `/api/projects/${project.id}/skills/refine-prompt`, payload: { ...input, ...options } })
+    assert.equal(response.statusCode, 422, response.body)
+    assert.match(response.body, /参考已断开|图片身份对应错误|必须属于当前参考列表/)
+  }
+  assert.equal(calls, before)
+})
+
+test('continuing from a saved purpose-only draft still corrects the requested new character into the visible scene', async () => {
+  const { project, input, assets, shot, lu } = await fixture(), before = calls
+  run('UPDATE shot_visual_bindings SET usage=? WHERE shot_id=? AND profile_id=?', 'none', shot.id, lu.id)
+  const purposeOnly = '姜望坐在船边补网；参考图1只用于陆沉舟的人物身份、面部和服装。'
+  const block = '【生成参数约束】\n画面比例：16:9\n【生成参数约束结束】'
+  modelResults = [purposeOnly, '姜望坐在船边补网。陆沉舟站在右侧准备登船，人物外观参考图1。']
+  const result = await refine(project.id, { ...input, reference_asset_ids: [assets[1], assets[0]], explicit_reference_asset_ids: [assets[1]],
+    prompt_document: true, prompt: `${purposeOnly}\n\n${block}`,
+    adjustment_request: `将[[ref:${assets[1]}]]作为陆沉舟的人物参考，加入这个新角色，保留姜望。` })
+  assert.equal(calls, before + 2)
+  assert.match(captured, /未落实新增人物“陆沉舟”/)
+  const characters = JSON.parse(captured.split('本次明确新增的画面人物：')[1]!.split('。每个人物')[0]!)
+  assert.deepEqual(characters.map((character: { name: string }) => character.name), ['陆沉舟'])
+  assert.match(result.prompt_body, /陆沉舟站在右侧.*参考图 1/)
+  assert.deepEqual(getManagedPromptBlocks(result.prompt), [block])
+})
+
+test('wrong image identity in the model body receives bounded correction and valid bodies keep final image order', async () => {
+  const { project, input, assets } = await fixture(), before = calls
+  modelResults = ['姜望坐在左侧。陆沉舟站在右侧，将参考图1作为陆沉舟的人物参考。', '姜望坐在左侧。陆沉舟站在右侧，将参考图2作为陆沉舟的人物参考。']
+  const result = await refine(project.id, { ...input, prompt_document: true, prompt: '姜望坐在左侧。',
+    explicit_reference_asset_ids: [assets[1]], adjustment_request: `加入陆沉舟，人物外观使用[[ref:${assets[1]}]]。` })
+  assert.equal(calls, before + 2)
+  assert.match(captured, /图片身份对应错误/)
+  assert.match(result.prompt_body, /参考图 2/)
+  assert.deepEqual(result.reference_asset_ids, assets.slice(0, 2))
+})
+
+test('a model that repeatedly omits the explicitly added character fails rather than returning a misleading successful draft', async () => {
+  const { project, input, assets } = await fixture(), before = calls
+  const tables = ['shots', 'shot_visual_bindings', 'canvas_nodes', 'jobs']
+  const saved = tables.map(table => all(`SELECT * FROM ${table}`))
+  modelResults = ['姜望坐在船边；参考图2只用于陆沉舟人物外观。', '姜望坐在船边；参考图2只用于陆沉舟人物外观。']
+  const response = await refineApp.inject({ method: 'POST', url: `/api/projects/${project.id}/skills/refine-prompt`, payload: {
+    ...input, prompt_document: true, prompt: '姜望坐在船边。', explicit_reference_asset_ids: [assets[1]],
+    adjustment_request: `加入陆沉舟作为新角色，外观使用[[ref:${assets[1]}]]。`,
+  } })
+  assert.equal(response.statusCode, 422, response.body)
+  assert.match(response.body, /已修正一次.*未落实新增人物/)
+  assert.equal(calls, before + 2)
+  assert.deepEqual(tables.map(table => all(`SELECT * FROM ${table}`)), saved)
 })

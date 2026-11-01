@@ -2,15 +2,15 @@ import { useEffect, useState } from 'react'
 import { Badge, Blockquote, Button, Group, Modal, Paper, ScrollArea, Stack, Text, Textarea } from '@mantine/core'
 import { ListChecks, Sparkles } from 'lucide-react'
 import type { ScriptDraftResolution, ScriptDraftResolutionInput } from '@video-studio/shared/script/script-draft-resolution'
-import { scriptDraftRepairRoundLimit } from '@video-studio/shared/script/script-draft-resolution'
 import { workflowLabels } from './script-workflow'
 import { scriptDiagnosticDisplayText, scriptReviewDisplayText } from './script-display-text'
 import './director-draft-resolution.css'
 
-export default function DirectorDraftResolution({ resolution, opened, busy, onClose, onOpen, onResolve, onDiscard }: {
+export default function DirectorDraftResolution({ resolution, opened, busy, onClose, onOpen, onResolve, onDiscard, onPreview }: {
   resolution: ScriptDraftResolution | null; opened: boolean; busy: boolean;
   onClose: () => void; onOpen: () => void;
   onResolve: (input: ScriptDraftResolutionInput) => void; onDiscard: () => void;
+  onPreview?: () => void;
 }) {
   const [answers, setAnswers] = useState<string[]>([])
   const [editing, setEditing] = useState(false)
@@ -21,24 +21,26 @@ export default function DirectorDraftResolution({ resolution, opened, busy, onCl
   const submit = (strategy: 'manual' | 'ai') => onResolve({ id: resolution.id, version: resolution.version, strategy,
     ...(strategy === 'manual' ? { answers } : {}) })
   const continuing = Boolean(resolution.run) && !editing
-  const roundLimitReached = Math.max(resolution.completed_rounds || 0, resolution.run?.completed_rounds || 0) >= scriptDraftRepairRoundLimit
   return <>
     <Paper className="sd-draft-resolution-notice" withBorder p="sm" radius="md" role="status">
       <Stack gap={4}>
         <Text size="sm" fw={600}>{continuing ? busy ? '正在落实草稿处理方案' : '草稿处理尚未完成' : `草稿有 ${resolution.findings.length} 项待处理`}</Text>
         <Text size="xs" c="dimmed">{resolution.run ? `已保留方案和进度：${resolution.run.completed}/${resolution.run.total} 项修订补丁已完成；后续文稿分析与独立复核进度见执行记录。`
           : `已保留 ${resolution.document_count} 份候选文档，处理后继续校验。`}</Text>
+        {resolution.run && <Text size="xs" c="dimmed">修订完成不等于复核通过，最终复核通过后再确认保存。</Text>}
         {resolution.run?.message && <Text size="xs" c="dimmed" lineClamp={2}>{scriptDiagnosticDisplayText(resolution.run.message)}</Text>}
       </Stack>
       <Group gap="xs" wrap="nowrap">
+        {onPreview && <Button size="xs" variant="subtle" onClick={onPreview}>查看候选稿</Button>}
         {continuing && <Button size="xs" variant="subtle" onClick={onOpen} disabled={busy}>查看问题</Button>}
-        <Button size="xs" variant="light" onClick={continuing && !roundLimitReached ? () => onResolve({ id: resolution.id, version: resolution.version, strategy: 'continue' }) : () => { if (roundLimitReached) setEditing(true); onOpen() }} disabled={busy}>{roundLimitReached ? '调整方案' : continuing ? '继续处理' : '处理问题'}</Button>
+        <Button size="xs" variant="light" onClick={continuing ? () => onResolve({ id: resolution.id, version: resolution.version, strategy: 'continue' }) : onOpen} disabled={busy}>{continuing ? '继续处理' : '处理问题'}</Button>
       </Group>
     </Paper>
     <Modal opened={opened} onClose={onClose} title="处理草稿中的冲突与缺口" size="lg" centered zIndex={400}
       closeOnClickOutside={!busy} closeOnEscape={!busy} withCloseButton={!busy} className="sd-draft-resolution-modal">
       <Stack gap="md">
         <Text size="sm" c="dimmed">{resolution.stage === 'episode' ? `第 ${resolution.episode_number} 集正文` : workflowLabels[resolution.stage]} · 已保留 {resolution.document_count} 份候选文档。{continuing ? '已有方案和授权已保留。下方为本轮处理范围，已完成步骤会复用，最终以独立复核为准。' : '填写每项方案，或将这些问题全部交给 AI 决定。'}</Text>
+        {onPreview && <Button variant="subtle" size="xs" onClick={onPreview}>查看已保留的候选稿</Button>}
         <ScrollArea.Autosize className="sd-draft-resolution-scroll" mah="var(--resolution-scroll-height)" type="auto" offsetScrollbars>
           <Stack gap="sm">
             {resolution.findings.map((finding, index) => {
@@ -68,7 +70,7 @@ export default function DirectorDraftResolution({ resolution, opened, busy, onCl
               {resolution.run && <Button variant="subtle" color="gray" onClick={() => setEditing(!editing)} disabled={busy}>{editing ? '取消调整' : '调整方案'}</Button>}
             </Group>
             <Group className="sd-resolution-submit" gap="xs" wrap="nowrap">
-              {continuing && <Button onClick={() => onResolve({ id: resolution.id, version: resolution.version, strategy: 'continue' })} disabled={busy || roundLimitReached}>沿用方案继续</Button>}
+              {continuing && <Button onClick={() => onResolve({ id: resolution.id, version: resolution.version, strategy: 'continue' })} disabled={busy}>沿用方案继续</Button>}
               {!continuing && <Button className={`sd-resolution-ai${!manualReady ? ' is-primary' : ''}`} variant={manualReady ? 'default' : 'filled'}
                 leftSection={<Sparkles size={15} aria-hidden="true" />} onClick={() => submit('ai')} disabled={busy}>全部交给 AI 决定</Button>
               }

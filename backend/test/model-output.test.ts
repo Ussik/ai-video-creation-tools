@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { z } from 'zod'
-import { applyOutputContract, generateStructuredOutput, outputContract, restoreOptionalNulls, strictJsonSchema } from '../src/modules/generation/model-output.js'
+import { applyOutputContract, generateStructuredOutput, isStructuredOutputError, outputContract, restoreOptionalNulls, strictJsonSchema } from '../src/modules/generation/model-output.js'
 import { streamText, type GenerationModel } from '../src/infrastructure/providers/providers.js'
 import { textToolSession } from '../src/infrastructure/providers/text-tools.js'
 import { workflowEnvelope, workflowInstructions } from '../src/modules/script/script-workflow.js'
@@ -140,9 +140,65 @@ test('persistent workflow field errors stop after one correction without silentl
     assert.equal(failure.statusCode, 422)
     assert.equal(failure.raw_output, invalid)
     assert.match(failure.diagnostics, /\$\.artifacts\[0\]\.type: .*请删除该字段/)
+    assert.ok(isStructuredOutputError(failure))
+    assert.equal(failure.structuredOutputContract, 'workflow_draft')
     return true
   })
   assert.equal(calls, 2)
+})
+
+test('union corrections follow the actual target and operation and identify nested payload errors', async () => {
+  const ending = z.object({ summary: z.string(), section_ids: z.array(z.number().int()) }).strict()
+  const schema = z.object({ changes: z.array(z.union([
+    z.object({ target: z.literal('story.summary'), operation: z.literal('replace'), value: z.string() }).strict(),
+    z.object({ target: z.literal('story.ending'), operation: z.literal('remove'), value: z.null() }).strict(),
+    z.object({ target: z.literal('story.ending'), operation: z.literal('replace'), value: ending }).strict(),
+  ])) }).strict()
+  let calls = 0, diagnostics = ''
+  const result = await generateStructuredOutput('repair_union', schema, async () => {
+    calls++
+    return JSON.stringify({ changes: [{ target: 'story.ending', operation: 'replace',
+      value: calls === 1 ? { summary: '入匣之后转运', invented: true } : { summary: '入匣之后转运', section_ids: [1] } }] })
+  }, '修正结局时间，保留来源。', { onAttempt: (_attempt, value) => { if (value) diagnostics = value } })
+  assert.equal(calls, 2)
+  assert.match(diagnostics, /\$\.changes\[0\]\.value\.section_ids: 缺少必填字段/)
+  assert.match(diagnostics, /\$\.changes\[0\]\.value\.invented: .*请删除该字段/)
+  assert.doesNotMatch(diagnostics, /story.summary|remove|要求 string|要求 null|任一允许格式/)
+  assert.deepEqual(result.changes[0]!.value, { summary: '入匣之后转运', section_ids: [1] })
+})
+
+test('unknown union targets and operations report their own choices without unrelated payload errors', async t => {
+  const schema = z.object({ changes: z.array(z.union([
+    z.object({ target: z.literal('summary'), operation: z.literal('replace'), value: z.string() }).strict(),
+    z.object({ target: z.literal('ending'), operation: z.literal('replace'), value: z.object({ summary: z.string() }) }).strict(),
+    z.object({ target: z.literal('ending'), operation: z.literal('remove'), value: z.null() }).strict(),
+  ])) })
+  for (const [key, change, allowed] of [
+    ['target', { target: 'unknown', operation: 'replace', value: 7 }, /summary.*ending/],
+    ['operation', { target: 'ending', operation: 'append', value: 7 }, /replace.*remove/],
+  ] as const) await t.test(key, async () => {
+    await assert.rejects(generateStructuredOutput('unknown_union', schema, async () => JSON.stringify({ changes: [change] }), '修订'), error => {
+      assert.ok(isStructuredOutputError(error))
+      assert.match(error.message, new RegExp(`\\$\\.changes\\[0\\]\\.${key}: 字段取值不合法`))
+      assert.match(error.message, allowed)
+      assert.doesNotMatch(error.message, /\.value|要求 string|要求 object|要求 null/)
+      return true
+    })
+  })
+})
+
+test('enveloped union diagnostics resolve referenced branches and retain the wire prefix', async () => {
+  const schema = z.union([
+    z.object({ action: z.literal('count'), amount: z.number() }).strict().meta({ id: 'count_branch' }),
+    z.object({ action: z.literal('text'), content: z.string() }).strict().meta({ id: 'text_branch' }),
+  ])
+  let calls = 0, diagnostics = ''
+  const result = await generateStructuredOutput('referenced_union', schema, async () => JSON.stringify({ result:
+    ++calls === 1 ? { action: 'count', amount: 'wrong' } : { action: 'count', amount: 2 } }), '统计',
+  { onAttempt: (_attempt, value) => { if (value) diagnostics = value } })
+  assert.match(diagnostics, /\$\.result\.amount: 字段类型不合法，要求 number，当前为 string/)
+  assert.doesNotMatch(diagnostics, /content|text|任一允许格式/)
+  assert.deepEqual(result, { action: 'count', amount: 2 })
 })
 
 test('generic corrections keep their own schema field names and do not introduce workflow-specific aliases', async () => {
@@ -176,7 +232,12 @@ test('domain validation can correct IDs once; network failures and cancellation 
     validate: value => { if (value.id !== 'selected') throw new Error('场次不属于所选范围') },
   }), { id: 'selected' })
   attempts = 0
-  await assert.rejects(generateStructuredOutput('network', z.object({}), async () => { attempts++; throw new Error('网络断开') }, '分析'), /网络断开/)
+  await assert.rejects(generateStructuredOutput('network', z.object({}), async () => { attempts++; throw new Error('网络断开') }, '分析'), error => {
+    assert.ok(error instanceof Error)
+    assert.match(error.message, /网络断开/)
+    assert.equal(isStructuredOutputError(error), false)
+    return true
+  })
   assert.equal(attempts, 1)
   const controller = new AbortController(); controller.abort()
   await assert.rejects(generateStructuredOutput('cancelled', z.object({}), async () => { attempts++; return '{}' }, '分析', { signal: controller.signal }), /abort/i)

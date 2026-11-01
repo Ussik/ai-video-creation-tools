@@ -3,6 +3,7 @@ import { ActionIcon, Slider, Tooltip } from '@mantine/core'
 import { Film, Pause, Play, RotateCcw } from 'lucide-react'
 import type { Asset, Shot } from '../../shared/api/api'
 import { defaultAudioMix, speechDuckingLevel, speechIntervals, type AudioMixSettings, type SpeechAudioClip } from '@video-studio/shared/media/speech-timeline'
+import { wrapEditingCutCaption, type EditingCutCaption } from '@video-studio/shared/media/editing-cut'
 import './timeline-preview.css'
 
 export interface TimelineClip {
@@ -27,6 +28,7 @@ interface TimelinePreviewProps {
   audioSettings?: AudioMixSettings
   musicOffsetMs?: number
   active?: boolean
+  captions?: EditingCutCaption[]
 }
 
 interface PreviewClip {
@@ -60,7 +62,7 @@ function sourceAudioLevel(clip: PreviewClip, offsetMs: number): number {
   return clip.clip.source_audio_gain * Math.max(0, fadeLevel)
 }
 
-export default function TimelinePreview({ clips, assets, shots, ratio, musicAsset, speechAudio = [], audioSettings = defaultAudioMix, musicOffsetMs = 0, active = true }: TimelinePreviewProps) {
+export default function TimelinePreview({ clips, assets, shots, ratio, musicAsset, speechAudio = [], audioSettings = defaultAudioMix, musicOffsetMs = 0, active = true, captions = [] }: TimelinePreviewProps) {
   const orderedShots = useMemo(() => [...shots].sort((a, b) => a.position - b.position), [shots])
   const assetById = useMemo(() => new Map(assets.map((asset) => [asset.id, asset])), [assets])
   const shotById = useMemo(() => new Map(shots.map((shot) => [shot.id, shot])), [shots])
@@ -492,6 +494,8 @@ export default function TimelinePreview({ clips, assets, shots, ratio, musicAsse
       {!incomplete && !mediaError && !currentReady && <div className="timeline-preview-message"><span>正在准备画面…</span></div>}
       {!incomplete && mediaError && <div className="timeline-preview-message is-error"><strong>无法继续预览</strong><span>{mediaError}</span></div>}
       {!incomplete && !mediaError && buffering && cursor.playing && <span className="timeline-preview-buffering" role="status">正在缓冲音画…</span>}
+      {!incomplete && !mediaError && captions.filter(caption => absoluteMs >= caption.start_ms && absoluteMs < caption.end_ms)
+        .map(caption => <div className="timeline-preview-caption" key={caption.id}>{wrapEditingCutCaption(caption.text, ratio)}</div>)}
     </div>
     {musicKey && <audio
       ref={musicRef}

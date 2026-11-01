@@ -6,7 +6,7 @@ import { UnstyledButton,
 import {
   Braces, Check, ChevronDown, Film, HelpCircle, Image as ImageIcon, KeyRound,
   ListFilter, ListPlus, Minus, Pencil, Plus, RefreshCw, Save, Search, Server,
-  Settings2, Trash2, Type, X,
+  Settings2, Star, Trash2, Type, X,
 } from 'lucide-react'
 import { api, json } from '../../shared/api/api'
 import type { Model, Modality, Protocol, Provider } from '../../shared/api/api'
@@ -14,10 +14,14 @@ import { normalizeProviderBaseUrl } from './provider-url'
 import { imageRatios } from '../canvas/canvas-model-parameters'
 import { documentedImageConfigError, documentedImageProfile, documentedImageSettings } from '@video-studio/shared/models/documented-images-api'
 import { videoRatios, videoResolutions } from '@video-studio/shared/media/video-parameters'
-import { applySeedance2VideoSettings } from '@video-studio/shared/models/seedance-video-settings'
+import { applySeedance2VideoSettings, applySeedance25VideoSettings } from '@video-studio/shared/models/seedance-video-settings'
 import { textContextConfigError } from '@video-studio/shared/models/text-context-settings'
+import { imageAnalysisConfigError } from '@video-studio/shared/models/image-analysis-settings'
+import { videoInputConfigError } from '@video-studio/shared/models/video-analysis-settings'
 import ImageModelConfig from './ImageModelConfig'
+import ImageAnalysisModelSettings from './ImageAnalysisModelSettings'
 import TextModelContextSettings from './TextModelContextSettings'
+import DefaultModelSettings from './DefaultModelSettings'
 import './model-settings.css'
 
 type Props = {
@@ -545,11 +549,11 @@ export default function ModelSettings({ providers, models, refresh, action, busy
       return
     }
     if (modelDraft.modality === 'text') {
-      const issue = textContextConfigError(settings)
+      const issue = textContextConfigError(settings) || videoInputConfigError(settings)
       if (issue) { setFormError(issue); return }
     }
     if (modelDraft.modality === 'image') {
-      const issue = documentedImageConfigError(settings)
+      const issue = documentedImageConfigError(settings) || imageAnalysisConfigError(settings)
       if (issue) { setFormError(issue); return }
       if (settings.image_api_profile === documentedImageProfile) settings = documentedImageSettings(settings,
         configurableProviders.find(item => item.id === modelDraft.provider_id)?.base_url || '')
@@ -586,11 +590,11 @@ export default function ModelSettings({ providers, models, refresh, action, busy
     }
   }
 
-  function textCapability(key: 'structured_output_mode' | 'strict_tool_arguments') {
+  function textCapability(key: 'structured_output_mode' | 'strict_tool_arguments' | 'supports_vision' | 'supports_video' | 'video_input_format') {
     try { return (JSON.parse(modelDraft.settings) as Record<string, unknown>)[key] }
     catch { return undefined }
   }
-  function changeTextCapability(key: 'structured_output_mode' | 'strict_tool_arguments', value: string | boolean) {
+  function changeTextCapability(key: 'structured_output_mode' | 'strict_tool_arguments' | 'supports_vision' | 'supports_video' | 'video_input_format', value: string | boolean) {
     try {
       const settings = JSON.parse(modelDraft.settings)
       if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('请求配置必须为 JSON 对象')
@@ -689,6 +693,7 @@ export default function ModelSettings({ providers, models, refresh, action, busy
           </header>
 
           <div className="ms-content-inner">
+            <DefaultModelSettings providers={providers} models={models} busy={busy} refresh={refresh} action={action} />
             <section className="ms-connection" aria-labelledby="ms-connection-title">
               <div className="ms-section-heading">
                 <div><h2 id="ms-connection-title">连接配置</h2><p>密钥只在本机保存，当前值不会回传到页面。</p></div>
@@ -730,8 +735,9 @@ export default function ModelSettings({ providers, models, refresh, action, busy
                       const Icon = modalityIcons[model.modality]
                       return <div className={`ms-model-row ${model.enabled ? '' : 'is-disabled'}`} key={model.id}>
                         <span className={`ms-model-symbol ms-${model.modality}`}><Icon size={17} strokeWidth={1.8} /></span>
-                        <div className="ms-model-copy"><strong>{model.name}</strong><small>{model.remote_id} <span className="ms-separator">·</span> {protocolLabels[model.protocol] || model.protocol}</small></div>
+                        <div className="ms-model-copy"><div className="ms-model-name"><strong>{model.name}</strong>{model.is_default && <Badge size="xs" variant="light">默认</Badge>}</div><small>{model.remote_id} <span className="ms-separator">·</span> {protocolLabels[model.protocol] || model.protocol}</small></div>
                         <div className="ms-model-actions">
+                          <Tooltip label={model.is_default ? `取消默认${modalityLabels[model.modality]}模型` : !provider.enabled || !model.enabled ? '启用提供商和模型后可设为默认' : `设为默认${modalityLabels[model.modality]}模型`}><ActionIcon variant="subtle" className={model.is_default ? 'ms-default-active' : ''} aria-label={`${model.is_default ? '取消默认' : '设为默认'} ${model.name}`} aria-pressed={!!model.is_default} disabled={busy || !provider.enabled || !model.enabled} onClick={() => void action(async () => { await api(`/models/${model.id}/default`, { method: model.is_default ? 'DELETE' : 'PUT' }); await refresh() }, model.is_default ? '已取消默认模型' : `默认${modalityLabels[model.modality]}模型已设置`)}><Star size={16} fill={model.is_default ? 'currentColor' : 'none'} /></ActionIcon></Tooltip>
                           <Switch size="sm" checked={model.enabled} disabled={busy} aria-label={model.enabled ? `停用 ${model.name}` : `启用 ${model.name}`} onChange={(event) => {
                             const enabled = event.currentTarget.checked
                             void action(async () => { await api(`/models/${model.id}`, json('PATCH', { enabled })); await refresh() })
@@ -869,6 +875,9 @@ export default function ModelSettings({ providers, models, refresh, action, busy
           providerBaseUrl={configurableProviders.find(item => item.id === modelDraft.provider_id)?.base_url || ''}
           onChange={settings => { setModelDraft(current => ({ ...current, settings: formattedSettings(settings) })); setFormError('') }}
           onError={setFormError} onAdvanced={() => setAdvancedOpen(true)} />}
+        {modelDraft.modality === 'image' && <ImageAnalysisModelSettings value={modelDraft.settings} remoteId={modelDraft.remote_id}
+          providerBaseUrl={configurableProviders.find(item => item.id === modelDraft.provider_id)?.base_url || ''}
+          onChange={settings => { setModelDraft(current => ({ ...current, settings: formattedSettings(settings) })); setFormError('') }} />}
         <section className="ms-pricing" aria-labelledby="ms-pricing-title">
           <div className="ms-pricing-heading">
             <div><strong id="ms-pricing-title">费用估算</strong><p>填写模型实际价格，生成前可查看预计费用。</p></div>
@@ -903,15 +912,26 @@ export default function ModelSettings({ providers, models, refresh, action, busy
           <Select label="结构化输出" description="按厂商实际支持选择；未知时使用兼容模式" value={String(textCapability('structured_output_mode') || 'prompt')} allowDeselect={false}
             data={[{ value: 'prompt', label: '兼容模式 · 提示词与本地校验' }, { value: 'json_object', label: 'JSON 模式' }, { value: 'json_schema', label: 'JSON Schema · 严格结构' }]}
             onChange={value => value && changeTextCapability('structured_output_mode', value)} />
+          <Switch label="支持图片理解" description="仅为支持看图的文本模型开启，用于图片反推和画面抽样复核；需使用 Responses 或 Chat Completions 接口" checked={textCapability('supports_vision') === true} onChange={event => changeTextCapability('supports_vision', event.currentTarget.checked)} />
+          <Select label="视频输入格式" description="豆包视频反推请选择豆包格式，并确认当前服务商支持视频输入" value={String(textCapability('video_input_format') || 'chat_video_url')} allowDeselect={false}
+            data={[{ value: 'chat_video_url', label: '通用 Chat Completions · video_url' }, { value: 'doubao_ark', label: '豆包视频理解 · Chat / Responses' }]}
+            onChange={value => value && changeTextCapability('video_input_format', value)} />
+          <Switch label="支持视频理解" description="仅在当前服务商确认该模型支持所选视频输入格式时开启，用于视频反推与成片复核" disabled={modelDraft.protocol !== 'chat_completions' && !(modelDraft.protocol === 'responses' && textCapability('video_input_format') === 'doubao_ark')} checked={textCapability('supports_video') === true} onChange={event => changeTextCapability('supports_video', event.currentTarget.checked)} />
           <Switch label="严格函数参数" description="仅在接口支持严格工具 Schema 时开启；执行前仍会校验参数" checked={textCapability('strict_tool_arguments') === true} onChange={event => changeTextCapability('strict_tool_arguments', event.currentTarget.checked)} />
         </section>}
-        {modelDraft.modality === 'video' && <Button variant="light" size="sm" className="ms-video-preset" onClick={() => {
+        {modelDraft.modality === 'video' && <div className="ms-video-presets"><Button variant="light" size="sm" className="ms-video-preset" onClick={() => {
+            try {
+              const previous = parsedSettings(modelDraft.settings)
+              setModelDraft({ ...modelDraft, settings: formattedSettings(applySeedance25VideoSettings(previous)) })
+              setFormError('')
+            } catch (issue) { setFormError(issue instanceof Error ? issue.message : String(issue)) }
+          }}>应用 Seedance 2.5 配置</Button><Button variant="subtle" size="sm" className="ms-video-preset" onClick={() => {
             try {
               const previous = parsedSettings(modelDraft.settings)
               setModelDraft({ ...modelDraft, settings: formattedSettings(applySeedance2VideoSettings(previous)) })
               setFormError('')
             } catch (issue) { setFormError(issue instanceof Error ? issue.message : String(issue)) }
-          }}>应用 Seedance 2.0 配置</Button>}
+          }}>应用 Seedance 2.0 配置</Button></div>}
         <Accordion className="ms-advanced-config" variant="contained" value={advancedOpen ? 'json' : null} onChange={value => setAdvancedOpen(value === 'json')}>
           <Accordion.Item value="json">
             <Accordion.Control icon={<Braces size={16} />}>高级配置 · JSON</Accordion.Control>

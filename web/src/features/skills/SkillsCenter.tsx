@@ -5,9 +5,10 @@ import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api, json } from '../../shared/api/api'
 import { recommendedSkills, skillMatches, skillStageOptions } from '../../shared/api/skills-api'
-import type { DiscoverableSkill, InstalledSkill, SkillDetail, SkillStage } from '../../shared/api/skills-api'
+import type { DiscoverableSkill, InstalledSkill, SkillDetail, SkillStage, SkillSyncResult } from '../../shared/api/skills-api'
 import './skills-center.css'
 import SkillDefaultSettings from './SkillDefaultSettings'
+import { notifySkillsLibraryChanged } from './skills-library-events'
 
 const errorMessage = (issue: unknown) => issue instanceof Error ? issue.message : String(issue)
 const sourceKey = (skill: { repo: string; path: string }) => `${skill.repo}:${skill.path}`
@@ -23,7 +24,9 @@ function SkillsCenter({ projectId, projectName }: { projectId?: string; projectN
   const [busy, setBusy] = useState(''), [searching, setSearching] = useState(false), [loading, setLoading] = useState(true)
   const [error, setError] = useState(''), [notice, setNotice] = useState(''), [hasSearched, setHasSearched] = useState(false)
   const [total, setTotal] = useState(0), [offset, setOffset] = useState(0), [updates, setUpdates] = useState<Record<string, boolean>>({})
+  const [syncResult, setSyncResult] = useState<SkillSyncResult | null>(null)
   const requestSerial = useRef(0)
+  const busyRef = useRef(false)
   const documentRef = useRef<HTMLDivElement>(null)
 
   async function reload() {
@@ -37,9 +40,14 @@ function SkillsCenter({ projectId, projectName }: { projectId?: string; projectN
   useEffect(() => { if (documentRef.current) documentRef.current.scrollTop = 0 }, [file, documentMode])
 
   async function action(key: string, work: () => Promise<void>) {
-    if (busy) return
-    setBusy(key); setError('')
-    try { await work() } catch (issue) { setError(errorMessage(issue)) } finally { setBusy('') }
+    if (busyRef.current) return
+    busyRef.current = true
+    setBusy(key); setError(''); setNotice(''); setSyncResult(null)
+    try { await work() } catch (issue) { setError(errorMessage(issue)) } finally { busyRef.current = false; setBusy('') }
+  }
+  async function refreshLibrary() {
+    notifySkillsLibraryChanged()
+    return reload()
   }
   async function search(nextOffset = 0) {
     const serial = ++requestSerial.current
@@ -71,14 +79,14 @@ function SkillsCenter({ projectId, projectName }: { projectId?: string; projectN
   async function install(skill: Pick<DiscoverableSkill, 'repo' | 'path'>) {
     await action(`install:${sourceKey(skill)}`, async () => {
       const value = await api<InstalledSkill>('/skills/install', json('POST', { repo: skill.repo, path: skill.path }))
-      await reload(); displayDetail(await api<SkillDetail>(`/skills/${value.id}`))
+      await refreshLibrary(); displayDetail(await api<SkillDetail>(`/skills/${value.id}`))
       setNotice('已安装，选择适用环节并启用后即可使用')
     })
   }
   async function saveBinding() {
     if (!detail?.id) return
     await action('binding', async () => {
-      await api(`/skills/${detail.id}`, json('PATCH', { enabled, stages })); await reload(); setDetail(null); setNotice('应用配置已保存')
+      await api(`/skills/${detail.id}`, json('PATCH', { enabled, stages })); await refreshLibrary(); setDetail(null); setNotice('应用配置已保存')
     })
   }
   async function checkUpdates() {
@@ -91,6 +99,18 @@ function SkillsCenter({ projectId, projectName }: { projectId?: string; projectN
       else setNotice(Object.values(next).some(Boolean) ? '有来源仓库更新，可选择更新技能' : '已安装技能均为当前仓库版本')
     })
   }
+  async function syncSkills() {
+    await action('sync', async () => {
+      const result = await api<SkillSyncResult>('/skills/sync', json('POST', {}))
+      setSyncResult(result)
+      setUpdates(current => {
+        const next = { ...current }
+        for (const item of result.results) if (item.status !== 'failed') delete next[item.id]
+        return next
+      })
+      try { await refreshLibrary() } catch (issue) { setError(`同步结果已保存，但列表刷新失败：${errorMessage(issue)}`) }
+    })
+  }
   const installedFilter = installed.filter(skill => `${skill.name} ${skill.description} ${skill.repo}`.toLowerCase().includes(query.trim().toLowerCase()))
   const content = detail?.files.find(item => item.path === file)?.content || ''
   const body = file.endsWith('SKILL.md') ? content.replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n---\r?\n/, '').replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '') : content
@@ -99,7 +119,8 @@ function SkillsCenter({ projectId, projectName }: { projectId?: string; projectN
       <Button variant="default" leftSection={<GitBranch size={15} />} onClick={() => setRepositoryOpen(true)}>仓库管理</Button></header>
     <div className="skills-navigation"><SegmentedControl value={tab} onChange={value => { setTab(value); setQuery(''); setError('') }} data={[
       { value: 'discover', label: '发现技能' }, { value: 'installed', label: `已安装 · ${installed.length}` }, { value: 'defaults', label: '默认技能' },
-    ]} />{tab === 'installed' && <Button variant="subtle" leftSection={<RefreshCcw size={15} />} disabled={!!busy || !installed.length} onClick={() => void checkUpdates()}>检查更新</Button>}</div>
+    ]} />{tab === 'installed' && <div className="skills-library-actions"><Button variant="subtle" leftSection={<RefreshCcw size={15} />} disabled={loading || !!busy || !installed.length} onClick={() => void checkUpdates()}>检查更新</Button>
+      <Button leftSection={<RefreshCcw size={15} />} loading={busy === 'sync'} disabled={loading || !!busy || !installed.length} title="更新全部已安装技能和参考资料，包括未启用及搜索未显示的技能，并同步到创作环节" onClick={() => void syncSkills()}>一键更新并同步</Button></div>}</div>
     {tab !== 'defaults' && <form className="skills-search" onSubmit={event => { event.preventDefault(); if (tab === 'discover') void search() }}>
       {tab === 'discover' && <SegmentedControl aria-label="搜索来源" value={source} onChange={changeSource} data={[{ value: 'catalog', label: 'skills.sh' }, { value: 'repository', label: 'GitHub 仓库' }]} />}
       {tab === 'discover' && source === 'repository' ? <TextInput aria-label="GitHub 仓库" placeholder="owner/repo 或 GitHub 仓库地址" value={repo} onChange={event => setRepo(event.currentTarget.value)} leftSection={<GitBranch size={16} />} />
@@ -108,7 +129,15 @@ function SkillsCenter({ projectId, projectName }: { projectId?: string; projectN
     </form>}
     {error && <div className="skills-message is-error" role="alert"><span>{error}</span><ActionIcon variant="subtle" aria-label="关闭错误提示" onClick={() => setError('')}><X size={15} /></ActionIcon></div>}
     {notice && <div className="skills-message" role="status"><Check size={15} />{notice}</div>}
-    {(searching || busy || loading) && <div className="skills-progress" role="status"><LoaderCircle size={15} className="pc-spin" />{searching ? '正在搜索技能' : loading ? '正在读取技能库' : busy.startsWith('install:') ? '正在下载技能与参考资料' : busy.startsWith('detail:') ? '正在读取技能详情' : busy === 'updates' ? '正在检查来源仓库版本' : '正在处理'}</div>}
+    {syncResult && <section className={`skills-sync-result${syncResult.failed ? ' has-failures' : ''}`} aria-label="技能同步结果">
+      <div className="skills-sync-result-heading"><div role="status"><strong>{syncResult.failed ? syncResult.failed === syncResult.total ? '技能同步未完成' : '技能同步部分完成' : '技能同步完成'}</strong>
+        <p>共 {syncResult.total} 个技能：已更新 {syncResult.updated} 个，已是最新 {syncResult.unchanged} 个，失败 {syncResult.failed} 个。</p></div>
+        <ActionIcon variant="subtle" aria-label="关闭同步结果" onClick={() => setSyncResult(null)}><X size={15} /></ActionIcon></div>
+      {!!syncResult.failed && <><ul className="skills-sync-failures">{syncResult.results.filter(item => item.status === 'failed').map(item => <li key={item.id}><strong>{item.name}</strong><span>{item.error || '暂时无法同步，请重试'}</span></li>)}</ul>
+        <Button size="xs" variant="default" disabled={!!busy} onClick={() => void syncSkills()}>重试更新并同步</Button></>}
+      <p className="skills-sync-note">原有启用状态、适用环节和默认配置保留；后续创作使用成功同步的技能版本。</p>
+    </section>}
+    {(searching || busy || loading) && <div className="skills-progress" role="status"><LoaderCircle size={15} className="pc-spin" />{searching ? '正在搜索技能' : loading ? '正在读取技能库' : busy === 'sync' ? `正在检查并同步全部 ${installed.length} 个已安装技能，请稍候…` : busy.startsWith('install:') ? '正在下载技能与参考资料' : busy.startsWith('detail:') ? '正在读取技能详情' : busy === 'updates' ? '正在检查来源仓库版本' : '正在处理'}</div>}
     {tab === 'defaults' ? <SkillDefaultSettings projectId={projectId} projectName={projectName} /> : tab === 'discover' ? <>
       <div className="skills-results-heading"><h2>{hasSearched ? '搜索结果' : '适合当前项目'}</h2><span>{hasSearched ? `${results.length} 项${total > results.length ? ` / ${total}` : ''}` : '从视觉设定到分镜视频'}</span></div>
       <div className="skills-grid">{results.map(skill => {
@@ -126,10 +155,10 @@ function SkillsCenter({ projectId, projectName }: { projectId?: string; projectN
       <div className="skill-installed-icon"><Puzzle size={20} /></div><div className="skill-installed-summary"><h3>{skill.name}<span className={skill.enabled ? 'is-enabled' : ''}>{skill.enabled ? '已启用' : '未启用'}</span></h3><p>{skill.description}</p>
         <div className="skill-card-meta"><span>{skill.repo}</span><span>版本 {skill.revision.slice(0, 8)}</span><span>{skill.stages.length ? skill.stages.map(value => skillStageOptions.find(item => item.value === value)?.label).join(' · ') : '尚未绑定创作环节'}</span></div></div>
       <div className="skill-installed-actions">{updates[skill.id] && <Button size="xs" variant="default" disabled={!!busy} onClick={() => void action(`update:${skill.id}`, async () => {
-        await api(`/skills/${skill.id}/update`, json('POST', {})); await reload(); setUpdates(current => ({ ...current, [skill.id]: false })); setNotice('技能已更新，应用配置已保留')
+        await api(`/skills/${skill.id}/update`, json('POST', {})); await refreshLibrary(); setUpdates(current => ({ ...current, [skill.id]: false })); setNotice('技能已更新，应用配置已保留')
       })}>更新</Button>}<Button size="xs" variant="default" disabled={!!busy} onClick={() => void showDetail(skill)}>应用配置</Button>
         <ActionIcon variant="subtle" aria-label={`卸载 ${skill.name}`} disabled={!!busy} onClick={() => void action(`remove:${skill.id}`, async () => {
-          await api(`/skills/${skill.id}`, json('DELETE', {})); await reload(); setNotice('已卸载技能，已有创作内容保留')
+          await api(`/skills/${skill.id}`, json('DELETE', {})); await refreshLibrary(); setNotice('已卸载技能，已有创作内容保留')
         })}><Trash2 size={15} /></ActionIcon></div>
     </article>)}{!loading && !installedFilter.length && <div className="skills-empty"><Puzzle size={28} /><h3>{installed.length ? '未找到匹配的技能' : '还没有安装技能'}</h3><p>在发现技能中查看并安装，再选择适用创作环节。</p><Button variant="default" onClick={() => setTab('discover')}>发现技能</Button></div>}</div>}
 

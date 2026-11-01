@@ -31,6 +31,136 @@ async function fixture() {
   return { project, shot, model, profile, asset, url: `/api/projects/${project.id}/generate` }
 }
 
+async function propReferences(state: Awaited<ReturnType<typeof fixture>>, bound = true) {
+  const ids = ['board', 'detail', 'sibling'].map(name => `${state.project.id}-ruler-${name}`)
+  for (const id of ids) run("INSERT INTO assets (id, project_id, kind, filename, path, source, created_at) VALUES (?, ?, 'image', ?, '/tmp/ruler.png', 'upload', ?)",
+    id, state.project.id, `${id}.png`, now())
+  const result = await call('POST', `/api/projects/${state.project.id}/visual-profiles`, { profiles: [
+    { kind: 'prop', name: '巡天尺', variant: '青铜常态', definition: '巡天尺为青铜长尺，尺端嵌一枚朱红晶石。', view_requirements: '正面结构与握柄细节' },
+  ] })
+  const profile = result.visual_profiles.find((item: { name: string }) => item.name === '巡天尺')
+  await call('PATCH', `/api/visual-profiles/${profile.id}`, { expected_revision: 1, board_asset_id: ids[0] })
+  const references = []
+  for (const [index, assetId] of ids.slice(1).entries()) {
+    const data = await call('POST', `/api/visual-profiles/${profile.id}/reference-assets`, {
+      expected_revision: 1, expected_style_version: result.project_visual_style.version,
+      asset_id: assetId, view: 'detail', purpose: index ? 'structure' : 'detail', label: index ? '未选尺身' : '握柄红晶', status: 'confirmed',
+    })
+    references.push(data.reference_assets.find((reference: { asset_id: string }) => reference.asset_id === assetId))
+  }
+  if (bound) await call('PUT', `/api/shots/${state.shot.id}/visual-bindings`, { bindings: [
+    { profile_id: state.profile.id, required: true },
+    { profile_id: profile.id, required: false, usage: 'none', reference_asset_ids: references.map(reference => reference.id) },
+  ] })
+  return { ids, profile, references }
+}
+
+test('explicit inactive prop references carry frozen identity, definitions and selected view purposes without selecting sibling views', async () => {
+  const state = await fixture(), prop = await propReferences(state)
+  run("UPDATE shot_visual_bindings SET sync_mode='locked' WHERE shot_id=? AND profile_id=?", state.shot.id, prop.profile.id)
+  run('UPDATE visual_profiles SET definition=? WHERE id=?', '当前库中较新定义，不应覆盖冻结的镜头设定', prop.profile.id)
+  const preview = await call('POST', `${state.url}/preview`, { shot_id: state.shot.id, model_id: state.model.id,
+    prompt_body: '姜望双手握住巡天尺，尺端朝上。', prompt: '姜望双手握住巡天尺。',
+    reference_asset_ids: prop.ids.slice(0, 2), explicit_reference_asset_ids: prop.ids.slice(0, 2) })
+  assert.deepEqual(preview.reference_asset_ids, [...prop.ids.slice(0, 2), state.asset])
+  assert.match(preview.prompt, /道具：巡天尺（青铜常态/)
+  assert.match(preview.prompt, /青铜长尺，尺端嵌一枚朱红晶石/)
+  assert.match(preview.prompt, /参考图 1：巡天尺（青铜常态）/)
+  assert.match(preview.prompt, /参考图 2：巡天尺（青铜常态）.*握柄红晶.*局部纹理/)
+  assert.doesNotMatch(preview.prompt, /当前库中较新定义|未选尺身/)
+  assert.ok(!preview.reference_asset_ids.includes(prop.ids[2]))
+  const queued = await call('POST', state.url, preview)
+  assert.deepEqual(JSON.parse(queued.request).reference_asset_ids, preview.reference_asset_ids)
+  assert.equal(JSON.parse(queued.request).prompt, preview.prompt)
+  assert.equal(all<{ usage: string }>('SELECT usage FROM shot_visual_bindings WHERE shot_id=? AND profile_id=?', state.shot.id, prop.profile.id)[0]!.usage, 'none')
+  const removed = await call('POST', `${state.url}/preview`, { shot_id: state.shot.id, model_id: state.model.id,
+    prompt_body: '姜望低头补网。', prompt: '姜望低头补网。', reference_asset_ids: [] })
+  assert.deepEqual(removed.reference_asset_ids, [state.asset])
+  assert.doesNotMatch(removed.prompt, /巡天尺|握柄红晶/)
+})
+
+test('unbound confirmed prop views enrich only actual explicit inputs and semantic changes invalidate an approved preview', async () => {
+  const state = await fixture(), prop = await propReferences(state, false)
+  const preview = await call('POST', `${state.url}/preview`, { shot_id: state.shot.id, model_id: state.model.id,
+    prompt_body: '姜望手持巡天尺。', prompt: '姜望手持巡天尺。', reference_asset_ids: [prop.ids[1]], explicit_reference_asset_ids: [prop.ids[1]] })
+  assert.deepEqual(preview.reference_asset_ids, [prop.ids[1], state.asset])
+  assert.match(preview.prompt, /道具：巡天尺/)
+  assert.match(preview.prompt, /参考图 1：巡天尺.*握柄红晶/)
+  assert.doesNotMatch(preview.prompt, /未选尺身/)
+  run('UPDATE visual_profiles SET definition=? WHERE id=?', '巡天尺改为黑铁尺身。', prop.profile.id)
+  const queued = await app.inject({ method: 'POST', url: state.url, payload: preview })
+  assert.equal(queued.statusCode, 409, queued.body)
+  assert.equal(all('SELECT * FROM jobs WHERE project_id=?', state.project.id).length, 0)
+})
+
+test('explicit prop metadata does not rewrite edited or deliberately absent full-document sections', async () => {
+  const state = await fixture(), prop = await propReferences(state)
+  for (const block of ['', '【镜头视觉设定】\n巡天尺改为创作者指定的木质短尺。\n【镜头视觉设定结束】']) {
+    const prompt = `姜望握住[[ref:${prop.ids[1]}]]所示道具。${block ? `\n\n${block}` : ''}`
+    const preview = await call('POST', `${state.url}/preview`, { shot_id: state.shot.id, model_id: state.model.id,
+      prompt, prompt_document: true, reference_asset_ids: [prop.ids[1]], explicit_reference_asset_ids: [prop.ids[1]] })
+    assert.equal(preview.prompt, prompt.replace(`[[ref:${prop.ids[1]}]]`, '参考图 1'))
+    assert.doesNotMatch(preview.prompt, /青铜长尺|【图片参考图用途】/)
+    assert.deepEqual(preview.reference_asset_ids, [prop.ids[1], state.asset])
+  }
+})
+
+test('a fixed node reference survives inactive shot defaults through preview and queue without changing those defaults', async () => {
+  const { project, shot, model, profile, asset, url } = await fixture()
+  const extra = `${project.id}-new-character`
+  run("INSERT INTO assets (id, project_id, kind, filename, path, source, created_at) VALUES (?, ?, 'image', 'new-character.png', '/tmp/new-character.png', 'upload', ?)", extra, project.id, now())
+  const { visual_profiles } = await call('POST', `/api/projects/${project.id}/visual-profiles`, { profiles: [
+    { kind: 'character', name: '陆沉舟', variant: '登船装', definition: '青衣、腰间佩剑', view_requirements: '正侧背' },
+  ] })
+  const added = visual_profiles.find((item: { name: string }) => item.name === '陆沉舟')
+  await call('PATCH', `/api/visual-profiles/${added.id}`, { expected_revision: 1, board_asset_id: extra })
+  await call('PUT', `/api/shots/${shot.id}/visual-bindings`, { bindings: [
+    { profile_id: profile.id, required: true, usage: 'both' }, { profile_id: added.id, required: false, usage: 'none' },
+  ] })
+  const base = { shot_id: shot.id, model_id: model.id, prompt: '姜望低头补网。', reference_asset_ids: [extra] }
+  const automatic = await call('POST', `${url}/preview`, base)
+  assert.deepEqual(automatic.reference_asset_ids, [asset], 'inactive defaults still exclude automatic images')
+  const block = '【项目画风约束】\n保留创作者的木刻画风。\n【项目画风约束结束】'
+  const document = `姜望低头补网；陆沉舟站在其左后方，面部和服装参考[[ref:${extra}]]。\n\n${block}`
+  const preview = await call('POST', `${url}/preview`, { ...base, prompt: document, prompt_document: true,
+    explicit_reference_asset_ids: [extra] })
+  assert.deepEqual(preview.reference_asset_ids, [extra, asset])
+  assert.deepEqual(preview.explicit_reference_asset_ids, [extra])
+  assert.equal(preview.prompt, document.replace(`[[ref:${extra}]]`, '参考图 1'))
+  const queued = await call('POST', url, preview)
+  const request = JSON.parse(queued.request)
+  assert.deepEqual(request.reference_asset_ids, [extra, asset])
+  assert.deepEqual(request.explicit_reference_asset_ids, [extra])
+  assert.equal(request.prompt, preview.prompt)
+  assert.equal(all<{ usage: string }>('SELECT usage FROM shot_visual_bindings WHERE shot_id=? AND profile_id=?', shot.id, added.id)[0]!.usage, 'none')
+  const disconnected = await call('POST', `${url}/preview`, { ...base, reference_asset_ids: [] })
+  assert.deepEqual(disconnected.reference_asset_ids, [asset], 'removing the connection does not enable the new character globally')
+})
+
+test('explicit reference replacements remain canonical when an approved preview is queued', async () => {
+  const { project, shot, model, asset, url } = await fixture()
+  const replacement = `${project.id}-replacement`
+  run("INSERT INTO assets (id, project_id, kind, filename, path, source, created_at) VALUES (?, ?, 'image', 'replacement.png', '/tmp/replacement.png', 'upload', ?)", replacement, project.id, now())
+  const preview = await call('POST', `${url}/preview`, { shot_id: shot.id, model_id: model.id,
+    prompt: '姜望低头补网。', reference_asset_ids: [asset], explicit_reference_asset_ids: [asset],
+    prompt_reference_overrides: { [asset]: replacement } })
+  assert.deepEqual(preview.reference_asset_ids, [replacement])
+  assert.deepEqual(preview.explicit_reference_asset_ids, [replacement])
+  const queued = await call('POST', url, preview)
+  assert.deepEqual(JSON.parse(queued.request).explicit_reference_asset_ids, [replacement])
+})
+
+test('explicit references cannot add unsubmitted images or duplicate entries', async () => {
+  const { shot, model, asset, url } = await fixture()
+  for (const explicit_reference_asset_ids of [['unsubmitted'], [asset, asset]]) {
+    const response = await app.inject({ method: 'POST', url: `${url}/preview`, payload: {
+      shot_id: shot.id, model_id: model.id, prompt: '姜望低头补网。', reference_asset_ids: [asset], explicit_reference_asset_ids,
+    } })
+    assert.equal(response.statusCode, 422, response.body)
+    assert.match(response.body, /显式参考/)
+  }
+})
+
 test('explicit body is authoritative while current visuals, actual image mapping and bounded parameters are rebuilt through queue', async () => {
   const { shot, model, asset, url } = await fixture()
   const body = `姜望按[[ref:${asset}]]保持身份，在岸边补网。固定机位。`

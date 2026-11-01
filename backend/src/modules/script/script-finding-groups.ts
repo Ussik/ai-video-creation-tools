@@ -35,7 +35,8 @@ export async function groupDraftFindings(input: ScriptDraftFinding[], previous: 
     'resolution_id只有在本组确实是历史同一个已授权事项尚未落实或其直接同步后果时才能填写，沿用同一决定；新身份、新结局或其他独立创作选择必须为空。不能仅因引文、人物或文档相同就沿用授权。\n' +
     `历史事项：${JSON.stringify(previous.map(({ id, topic, source_key, problem, answer, decision }) => ({ id, topic, source_key, problem, answer, decision })))}\n` +
     `本轮问题：${JSON.stringify(findings.map((finding, index) => ({ index, ...finding })))}`
-  const work = () => generateStructuredOutput('script_finding_groups', schema, generate, prompt, { signal: options.signal, validate })
+  const work = () => generateStructuredOutput('script_finding_groups', schema,
+    (text, contract) => generate(text, contract && { ...contract, request_policy: 'script_evidence' }), prompt, { signal: options.signal, validate })
   const result = options.steps ? await options.steps.run('review:issue-groups', '归并共同冲突与既有决定', { findings, previous }, work, validate, options.parentId) : await work()
   return result.groups.map(group => {
     const first = findings[group.members[0]!]!

@@ -12,6 +12,8 @@ import { ScriptToolProblem } from '../src/modules/script/script-revision.js'
 import type { Project } from '../src/infrastructure/database/db.js'
 import type { ScriptSnapshot } from '../src/modules/script/script-document-tools.js'
 import { createGenerationSteps, type GenerationCheckpoint } from '../src/modules/script/script-generation-steps.js'
+import { scriptWorkPlan } from '../src/modules/script/script-task-execution.js'
+import { workflowRequest } from '../src/modules/script/script-workflow.js'
 
 const dataDir = await mkdtemp(join(tmpdir(), 'studio-setting-completeness-'))
 process.env.VIDEO_STUDIO_DATA_DIR = dataDir
@@ -81,17 +83,28 @@ test('viewer uncertainty and justified absence pass the semantic review without 
   assert.equal(calls, 1)
 })
 
-test('fabricated evidence and incomplete review coverage are rejected after one format repair', async () => {
+test('fabricated evidence uses bounded local recovery while invalid sources and coverage retain full format correction', async () => {
   for (const invalid of ['quote', 'source', 'coverage'] as const) {
-    let calls = 0
-    await assert.rejects(reviewScriptDraftCompleteness(candidate('characters'), async prompt => {
-      calls++
+    const phases: string[] = []
+    await assert.rejects(reviewScriptDraftCompleteness(candidate('characters'), async (prompt, contract) => {
+      if (contract?.name === 'script_draft_evidence_repair') {
+        phases.push('evidence')
+        const marker = '【待定位证据（资料）】\n'
+        const pending = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length)) as {
+          issues: Array<{ id: string; source_key: string; quote: string }>; sources: Array<{ key: string }>
+        }
+        assert.deepEqual(pending.issues.map(item => item.id), ['findings:0'])
+        assert.equal(pending.issues[0]!.quote, '原文不存在的证据')
+        assert.deepEqual(pending.sources.map(item => item.key), [pending.issues[0]!.source_key])
+        return JSON.stringify({ repairs: pending.issues.map(({ id }) => ({ id, first_unit: null, last_unit: null })) })
+      }
+      phases.push('review')
       const submitted = sources(prompt)
       return JSON.stringify({ checked_artifacts: invalid === 'coverage' ? ['characters'] : scriptStageArtifacts.characters,
         findings: [{ source_key: invalid === 'source' ? 'foreign-document' : submitted[0].key, kind: 'unresolved_setting',
           quote: invalid === 'quote' ? '原文不存在的证据' : submitted[0].content, explanation: '未完成', suggestion: '补齐' }] })
-    }), /证据必须逐字|核对必须覆盖/)
-    assert.equal(calls, 2)
+    }), invalid === 'quote' ? /证据/ : /证据必须逐字|核对必须覆盖/)
+    assert.deepEqual(phases, invalid === 'quote' ? ['review', 'evidence'] : ['review', 'review'])
   }
 })
 
@@ -196,14 +209,26 @@ async function api<T>(method: 'GET' | 'POST' | 'PUT' | 'PATCH', url: string, pay
   assert.equal(response.statusCode, 200, response.body)
   return response.json() as T
 }
-async function fixture() {
+async function fixture(toolCalling = true) {
   const project = await api<Project>('POST', '/api/projects', { name: '核心设定自动完善' })
   const provider = await api<{ id: string }>('POST', '/api/providers', { name: '核对测试', base_url: 'https://fixture.invalid/v1' })
   const model = await api<{ id: string }>('POST', '/api/models', { provider_id: provider.id, name: '创作模型', remote_id: 'text', modality: 'text', protocol: 'chat_completions', settings: {
+    tool_calling: toolCalling,
     request_path: 'chat/completions', request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] }, text_path: 'choices.0.message.content' } })
   return { project, model }
 }
 const response = (content: unknown) => Response.json({ choices: [{ message: { content: typeof content === 'string' ? content : JSON.stringify(content) }, finish_reason: 'stop' }] })
+// These regression cases intentionally exercise the complete design package,
+// whose generation is now split into task-sized wire contracts. The fixture
+// follows each declared subset rather than returning unrelated documents.
+const fullDesignTasks = scriptWorkPlan(workflowRequest.parse({ stage: 'outline', intent: 'stage_design' })).length
+function generationResponse(prompt: string, draft: WorkflowDraft) {
+  const schema = repairSchema(prompt)
+  const artifactType = schema.properties.artifacts.items.properties.artifact_type
+  const allowed = artifactType.enum || [artifactType.const]
+  assert.ok(allowed.length && allowed.every((type: unknown) => typeof type === 'string'), 'generation declares its exact artifact types')
+  return response({ artifacts: draft.artifacts.filter(artifact => allowed.includes(artifact.artifact_type)), scenes: draft.scenes })
+}
 const toolCall = (id: string, name: string, args: unknown) => Response.json({ choices: [{ message: { tool_calls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) } }] }, finish_reason: 'tool_calls' }] })
 
 function doneEvent(result: { body: string; json(): any }, streaming = false) {
@@ -242,7 +267,7 @@ test('native and JSON creation pause once, resume the retained candidate over bo
       const prompt = JSON.parse(String(init?.body)).messages[0].content as string
       const analyzedSource = sourceAnalysisFixture(prompt)
       if (analyzedSource) return response(analyzedSource)
-      if (prompt.includes('本次独立调用只理解创作者意图')) return response({ action: 'draft', operation: 'create', workflow: { stage: 'outline' }, creative_brief: '忠实整理60集原稿' })
+      if (prompt.includes('本次独立调用只理解创作者意图')) return response({ action: 'draft', operation: 'create', workflow: { stage: 'outline', intent: 'stage_design' }, creative_brief: '忠实整理60集原稿' })
       if (prompt.includes('待核对草稿原文（资料）：')) {
         audits++
         assert.equal(getToolDraft(project.id), null)
@@ -259,28 +284,28 @@ test('native and JSON creation pause once, resume the retained candidate over bo
       }
       generations++
       const draft = candidate('outline', originalText)
-      return response({ artifacts: draft.artifacts, scenes: [] })
+      return generationResponse(prompt, draft)
     })
     const url = `/api/projects/${project.id}/script/director/chat${streaming ? '/stream' : ''}`
-    const first = await app.inject({ method: 'POST', url, payload: chatBody(model.id, { use_tools: useTools, workflow: { stage: 'outline' }, generation_options: { episode_count: 20 } }) })
+    const first = await app.inject({ method: 'POST', url, payload: chatBody(model.id, { use_tools: useTools, workflow: { stage: 'outline', intent: 'stage_design' }, generation_options: { episode_count: 20 } }) })
     assert.equal(first.statusCode, 200, first.body)
     const paused = doneEvent(first, streaming)
-    assert.equal(generations, 1); assert.equal(audits, 1); assert.equal(repairs, 0)
+    assert.equal(generations, fullDesignTasks); assert.equal(audits, 1); assert.equal(repairs, 0)
     assert.equal(paused.execution_outcome.kind, 'question'); assert.equal(paused.draft_resolution.findings.length, 2)
     assert.equal(paused.draft, undefined); assert.equal(paused.tool_draft, undefined)
     assert.ok(paused.activity.every((step: any) => step.status === 'succeeded'))
     const state = await api<any>('GET', `/api/projects/${project.id}/script/director/tools-state`)
     assert.deepEqual(state.draft_resolution, paused.draft_resolution); assert.equal(state.draft, null)
-    const repeated = await app.inject({ method: 'POST', url, payload: chatBody(model.id, { use_tools: useTools, workflow: { stage: 'outline' } }) })
+    const repeated = await app.inject({ method: 'POST', url, payload: chatBody(model.id, { use_tools: useTools, workflow: { stage: 'outline', intent: 'stage_design' } }) })
     assert.deepEqual(doneEvent(repeated, streaming).draft_resolution, paused.draft_resolution)
-    assert.equal(generations, 1, 'another generate request cannot discard or regenerate a paused candidate')
+    assert.equal(generations, fullDesignTasks, 'another generate request cannot discard or regenerate a paused candidate')
     const { id, version } = paused.draft_resolution
     const resumed = await app.inject({ method: 'POST', url, payload: chatBody(model.id, { draft_resolution: { id, version,
       strategy: streaming ? 'ai' : 'manual', ...(streaming ? {} : { answers: ['损失一天记忆，不改60集', '同步相关规则'] }) } }) })
     assert.equal(resumed.statusCode, 200, resumed.body)
     const done = doneEvent(resumed, streaming)
     assert.ok(done, resumed.body)
-    assert.equal(generations, 1); assert.equal(repairs, 1); assert.equal(audits, 2)
+    assert.equal(generations, fullDesignTasks); assert.equal(repairs, 1); assert.equal(audits, 2)
     assert.equal(done.draft_resolution, null)
     const docs = useTools ? done.tool_draft.documents : done.draft.artifacts
     assert.equal(docs[0].content, originalText.replace('能力代价：待定。', repair.edits[0].replace))
@@ -311,8 +336,8 @@ test('native and JSON creation pause once, resume the retained candidate over bo
   })
 })
 
-async function pauseCandidate(t: any, useTools = false) {
-  const f = await fixture()
+async function pauseCandidate(t: any, useTools = false, toolCalling = true) {
+  const f = await fixture(toolCalling)
   await uploadSource(f.project.id)
   let calls = 0
   t.mock.method(globalThis, 'fetch', async (_url, init) => {
@@ -320,27 +345,62 @@ async function pauseCandidate(t: any, useTools = false) {
     const prompt = JSON.parse(String(init?.body)).messages[0].content as string
     const analyzedSource = sourceAnalysisFixture(prompt)
     if (analyzedSource) return response(analyzedSource)
-    if (prompt.includes('本次独立调用只理解创作者意图')) return response({ action: 'draft', operation: 'create', workflow: { stage: 'outline' }, creative_brief: '完整大纲' })
+    if (prompt.includes('本次独立调用只理解创作者意图')) return response({ action: 'draft', operation: 'create', workflow: { stage: 'outline', intent: 'stage_design' }, creative_brief: '完整大纲' })
     if (prompt.includes('待核对草稿原文（资料）：')) return response({ checked_artifacts: scriptStageArtifacts.outline, findings: [finding()] })
     const draft = candidate('outline', originalText)
-    return response({ artifacts: draft.artifacts, scenes: [] })
+    return generationResponse(prompt, draft)
   })
-  const paused = await api<any>('POST', `/api/projects/${f.project.id}/script/director/chat`, chatBody(f.model.id, { use_tools: useTools, workflow: { stage: 'outline' } }))
+  const paused = await api<any>('POST', `/api/projects/${f.project.id}/script/director/chat`, chatBody(f.model.id, { use_tools: useTools, workflow: { stage: 'outline', intent: 'stage_design' } }))
   return { ...f, resolution: paused.draft_resolution, calls: () => calls }
 }
 
+function repairSchema(prompt: string): any {
+  const schema = JSON.parse(prompt.split('\n').find(line => line.startsWith('{') && line.includes('"properties"'))!)
+  return schema.properties?.result || schema
+}
+function repairPhase(prompt: string): 'whole' | 'decisions' | 'edits' {
+  const properties = repairSchema(prompt).properties
+  if (properties.decisions) return properties.decisions.items.type === 'string' ? 'whole' : 'decisions'
+  assert.ok(properties.edits, 'the final recovery stage must use the exact-edit contract')
+  return 'edits'
+}
+function repairIssueIds(prompt: string): string[] {
+  const marker = '本次问题身份：'
+  return JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length).split('\n')[0]!)
+}
+async function pauseNineIssues(t: any) {
+  // These cases specifically exercise the full-JSON compatibility path and
+  // its decisions-then-edits recovery for models without native tools.
+  const f = await pauseCandidate(t, false, false)
+  const { pendingScriptDraft, retainScriptDraft } = await import('../src/modules/script/script-draft-resolution.js')
+  const before = pendingScriptDraft(f.project.id)!
+  const findings = Array.from({ length: 9 }, (_, index) => ({ source_key: 'outline', topic: `道具${index + 1}的独立代价`,
+    kind: 'unresolved_setting' as const, quote: `道具${index + 1}代价：尚未确定。`, explanation: `道具${index + 1}的使用后果不明。`, suggestion: '给出具体损失和恢复条件。' }))
+  const draft = structuredClone(before.draft)
+  draft.artifacts[0].content = findings.map(item => item.quote).join('\n')
+  const pending = retainScriptDraft(f.project.id, { ...before, draft, findings }, before)
+  const decisions = findings.map((_, index) => `道具${index + 1}使用后失去当天记忆，无法恢复。`)
+  const patch = { summary: '逐项落实九种道具的独立代价。', source_edits: [],
+    edits: findings.map((item, index) => ({ source_key: item.source_key, find: item.quote, replace: decisions[index], reason: '落实本项授权决定。' })) }
+  return { ...f, pending, decisions, patch }
+}
+const meteredResponse = (content: unknown) => Response.json({ choices: [{ message: { content: JSON.stringify(content) }, finish_reason: 'stop' }],
+  usage: { prompt_tokens: 120, completion_tokens: 80, total_tokens: 200 } })
+
 test('repair requires one concrete decision per issue and never substitutes the activity summary', async t => {
   for (const invalid of ['missing', 'empty', 'count'] as const) await t.test(invalid, async t => {
-    const f = await pauseCandidate(t)
+    const f = await pauseCandidate(t, false, false)
     const { pendingScriptDraft } = await import('../src/modules/script/script-draft-resolution.js')
     const before = structuredClone(pendingScriptDraft(f.project.id)!)
     const { decisions: _decisions, ...withoutDecisions } = repair
     let attempts = 0, audits = 0
+    const phases: string[] = []
     t.mock.method(globalThis, 'fetch', async (_url, init) => {
       const prompt = JSON.parse(String(init?.body)).messages[0].content as string
       assert.match(prompt, /继续已授权阶段的候选草稿/)
       assert.ok(prompt.includes('decisions'))
       attempts++
+      phases.push(repairPhase(prompt))
       return response(invalid === 'missing' ? withoutDecisions : { ...repair, decisions: invalid === 'empty' ? [] : [concreteDecision, '无对应问题的额外决定'] })
     })
     const url = `/api/projects/${f.project.id}/script/director/chat`
@@ -348,8 +408,9 @@ test('repair requires one concrete decision per issue and never substitutes the 
       draft_resolution: { id: before.id, version: before.version, strategy: 'ai' },
     }) })
     assert.equal(result.statusCode, 422, result.body)
-    assert.match(result.body, /script_draft_repair 契约/)
-    assert.equal(attempts, 2, 'invalid decision output receives only one bounded contract correction')
+    assert.match(result.body, /script_draft_repair_decisions 契约/)
+    assert.equal(attempts, 4, 'whole repair and focused decision recovery each receive only one bounded format correction')
+    assert.deepEqual(phases, ['whole', 'whole', 'decisions', 'decisions'])
     const retained = pendingScriptDraft(f.project.id)!
     assert.deepEqual(retained.draft, before.draft)
     assert.deepEqual(retained.source_update, before.source_update)
@@ -363,15 +424,173 @@ test('repair requires one concrete decision per issue and never substitutes the 
       if (analyzedSource) return response(analyzedSource)
       if (prompt.includes('待核对草稿原文（资料）：')) { audits++; return response({ checked_artifacts: scriptStageArtifacts.outline, findings: [] }) }
       attempts++
-      return response(repair)
+      if (repairPhase(prompt) === 'decisions') return response({ decisions: repairIssueIds(prompt).map(issue_id => ({ issue_id, decision: concreteDecision })) })
+      const { decisions: _ignoredDecisions, ...edits } = repair
+      return response(edits)
     })
     const completed = await api<any>('POST', url, chatBody(f.model.id, {
       draft_resolution: { id: retained.id, version: retained.version, strategy: 'continue' },
     }))
-    assert.equal(attempts, 3)
+    assert.equal(attempts, 6)
     assert.equal(audits, 1)
     assert.equal(completed.draft_resolution, null)
   })
+})
+
+test('nine authorized issues recover eight-decision whole outputs within one chat and reach an independently reviewed preview', async t => {
+  const f = await pauseNineIssues(t), phases: string[] = [], url = `/api/projects/${f.project.id}/script/director/chat`
+  const { pendingScriptDraft } = await import('../src/modules/script/script-draft-resolution.js')
+  let audits = 0
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const prompt = JSON.parse(String(init?.body)).messages[0].content as string
+    if (prompt.includes('待核对草稿原文（资料）：')) {
+      audits++
+      const marker = '既有事实与创作要求（资料）：'
+      const context = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length, prompt.lastIndexOf('\n待核对草稿原文（资料）：')))
+      assert.deepEqual(context.resolved_findings.decisions.map((item: any) => item.decision), f.decisions)
+      assert.deepEqual(sources(prompt)[0].content, f.decisions.join('\n'))
+      return meteredResponse({ checked_artifacts: scriptStageArtifacts.outline, findings: [] })
+    }
+    const phase = repairPhase(prompt); phases.push(phase)
+    assert.ok(prompt.includes(originalText), 'every recovery stage retains the entire effective manuscript')
+    for (const artifact of f.pending.draft.artifacts) assert.ok(prompt.includes(JSON.stringify(artifact.content).slice(1, -1)), 'every recovery stage retains all complete candidate documents')
+    if (phase === 'whole') {
+      assert.equal(repairSchema(prompt).properties.decisions.minItems, 9)
+      assert.equal(repairSchema(prompt).properties.decisions.maxItems, 9)
+      return meteredResponse({ ...f.patch, decisions: f.decisions.slice(0, 8) })
+    }
+    if (phase === 'decisions') {
+      const ids = repairIssueIds(prompt)
+      assert.equal(ids.length, 9); assert.equal(new Set(ids).size, 9)
+      return meteredResponse({ decisions: ids.map((issue_id, index) => ({ issue_id, decision: f.decisions[index] })).reverse() })
+    }
+    for (const decision of f.decisions) assert.ok(prompt.includes(decision), 'edits implement all nine already validated concrete decisions')
+    return meteredResponse(f.patch)
+  })
+  const result = await api<any>('POST', url, chatBody(f.model.id, {
+    draft_resolution: { id: f.pending.id, version: f.pending.version, strategy: 'ai' },
+  }))
+  assert.deepEqual(phases, ['whole', 'whole', 'decisions', 'edits'])
+  assert.equal(audits, 1)
+  assert.equal(result.draft_resolution, null)
+  assert.equal(result.draft.artifacts[0].content, f.decisions.join('\n'))
+  assert.equal(pendingScriptDraft(f.project.id), null)
+  assert.ok(result.activity.some((item: any) => /恢复|分步|具体决定/.test(item.summary || item.label || '')), 'technical recovery is visible in the same execution')
+  const repairActivities = result.activity.filter((item: any) => item.scope === 'step' && item.step_id === 'repair')
+  assert.equal(repairActivities.length, 1, 'the recovered repair remains one logical activity instead of leaving a failed duplicate')
+  assert.equal(repairActivities[0].status, 'succeeded')
+  assert.equal(repairActivities[0].summary, '当前步骤已校验并保留')
+  const decisionActivity = result.activity.find((item: any) => item.step_id === 'repair:decisions')
+  assert.ok(repairActivities[0].started_at <= decisionActivity.started_at, 'the logical step retains its original start through recovery')
+  assert.ok(repairActivities[0].ended_at >= decisionActivity.ended_at)
+  assert.equal(repairActivities[0].duration_ms, repairActivities[0].ended_at - repairActivities[0].started_at)
+  assert.equal((await api<any>('GET', `/api/projects/${f.project.id}/script/source`)).content, originalText)
+  assert.equal((await api<any>('GET', `/api/projects/${f.project.id}`)).script.outline, '', 'one chat produces only a reviewed preview; it does not save')
+})
+
+test('a failed edit stage resumes saved issue decisions without repeating whole repair or delegating decisions again', async t => {
+  const f = await pauseNineIssues(t), url = `/api/projects/${f.project.id}/script/director/chat`, phases: string[] = []
+  const { pendingScriptDraft } = await import('../src/modules/script/script-draft-resolution.js')
+  let failed = true
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const prompt = JSON.parse(String(init?.body)).messages[0].content as string
+    if (prompt.includes('待核对草稿原文（资料）：')) return meteredResponse({ checked_artifacts: scriptStageArtifacts.outline, findings: [] })
+    const phase = repairPhase(prompt); phases.push(phase)
+    if (phase === 'whole') return meteredResponse({ ...f.patch, decisions: f.decisions.slice(0, 8) })
+    if (phase === 'decisions') return meteredResponse({ decisions: repairIssueIds(prompt).map((issue_id, index) => ({ issue_id, decision: f.decisions[index] })) })
+    if (failed) return meteredResponse({ ...f.patch, edits: [{ ...f.patch.edits[0], find: '当前候选稿不存在的修订位置' }] })
+    for (const decision of f.decisions) assert.ok(prompt.includes(decision))
+    return meteredResponse(f.patch)
+  })
+  const first = await app.inject({ method: 'POST', url, payload: chatBody(f.model.id, {
+    draft_resolution: { id: f.pending.id, version: f.pending.version, strategy: 'ai' },
+  }) })
+  assert.equal(first.statusCode, 422, first.body)
+  assert.match(first.body, /script_draft_repair_edits 契约/)
+  assert.deepEqual(phases, ['whole', 'whole', 'decisions', 'edits', 'edits'])
+  const retained = pendingScriptDraft(f.project.id)!
+  assert.equal(retained.run?.status, 'interrupted')
+  assert.deepEqual(retained.draft, f.pending.draft, 'no invalid edit output can overwrite the last validated candidate')
+  const row = db.prepare("SELECT payload FROM script_step_checkpoints WHERE project_id=? AND namespace='repair'").get(f.project.id) as { payload: string }
+  const checkpoint = JSON.parse(row.payload)
+  assert.ok(checkpoint.steps['repair:decisions'])
+  assert.equal(Object.hasOwn(checkpoint.steps, 'repair:edits'), false)
+  failed = false
+  const result = await api<any>('POST', url, chatBody(f.model.id, {
+    draft_resolution: { id: retained.id, version: retained.version, strategy: 'continue' },
+  }))
+  assert.deepEqual(phases, ['whole', 'whole', 'decisions', 'edits', 'edits', 'edits'])
+  assert.equal(result.draft_resolution, null)
+  assert.equal(result.draft.artifacts[0].content, f.decisions.join('\n'))
+})
+
+test('an obsolete cumulative request cap does not stop automatic repair recovery or independent review', async t => {
+  const f = await pauseNineIssues(t), url = `/api/projects/${f.project.id}/script/director/chat`
+  const { sourceProposalBudget, scriptProposalBudgetScope } = await import('../src/modules/script/script-proposal-budget.js')
+  const { pendingScriptDraft } = await import('../src/modules/script/script-draft-resolution.js')
+  const initial = sourceProposalBudget(f.project.id, scriptProposalBudgetScope(f.pending.draft)).usage.requests
+  const previous = process.env.VIDEO_STUDIO_SCRIPT_ANALYSIS_MAX_REQUESTS
+  const phases: string[] = []
+  try {
+    process.env.VIDEO_STUDIO_SCRIPT_ANALYSIS_MAX_REQUESTS = String(initial + 2)
+    t.mock.method(globalThis, 'fetch', async (_url, init) => {
+      const prompt = JSON.parse(String(init?.body)).messages[0].content as string
+      if (prompt.includes('待核对草稿原文（资料）：')) return meteredResponse({ checked_artifacts: scriptStageArtifacts.outline, findings: [] })
+      const phase = repairPhase(prompt); phases.push(phase)
+      if (phase === 'whole') return meteredResponse({ ...f.patch, decisions: f.decisions.slice(0, 8) })
+      if (phase === 'decisions') return meteredResponse({ decisions: repairIssueIds(prompt).map((issue_id, index) => ({ issue_id, decision: f.decisions[index] })) })
+      return meteredResponse(f.patch)
+    })
+    const submit = (strategy: 'ai' | 'continue') => app.inject({ method: 'POST', url, payload: chatBody(f.model.id, {
+      draft_resolution: { id: f.pending.id, version: f.pending.version, strategy },
+    }) })
+    const first = await submit('ai')
+    assert.equal(first.statusCode, 200, first.body)
+    assert.equal(first.json().draft_resolution, null)
+    assert.deepEqual(phases, ['whole', 'whole', 'decisions', 'edits'])
+    assert.ok(sourceProposalBudget(f.project.id, scriptProposalBudgetScope(f.pending.draft)).usage.requests > initial + 2)
+    assert.equal(pendingScriptDraft(f.project.id), null)
+  } finally {
+    if (previous === undefined) delete process.env.VIDEO_STUDIO_SCRIPT_ANALYSIS_MAX_REQUESTS
+    else process.env.VIDEO_STUDIO_SCRIPT_ANALYSIS_MAX_REQUESTS = previous
+  }
+})
+
+test('cancelling during recovered edits preserves validated decisions and stops further automatic model dispatch', async t => {
+  const f = await pauseNineIssues(t), phases: string[] = []
+  const taskId = crypto.randomUUID(), task = { id: taskId,
+    conversation: { id: `recovery-cancel-${taskId}`, messages: [{ id: 'user', role: 'user', text: '将九项问题交给 AI 补齐并复核' }] },
+    execution: { title: '补齐九项问题', request: '将九项问题交给 AI 补齐并复核', started_at: Date.now(), mode: 'script', focus_artifact: 'all' } }
+  let entered!: () => void
+  const started = new Promise<void>(resolve => { entered = resolve })
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const prompt = JSON.parse(String(init?.body)).messages[0].content as string
+    const phase = repairPhase(prompt); phases.push(phase)
+    if (phase === 'whole') return meteredResponse({ ...f.patch, decisions: f.decisions.slice(0, 8) })
+    if (phase === 'decisions') return meteredResponse({ decisions: repairIssueIds(prompt).map((issue_id, index) => ({ issue_id, decision: f.decisions[index] })) })
+    entered()
+    return new Promise<Response>((_, reject) => {
+      const stop = () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+      if (init!.signal!.aborted) stop()
+      else init!.signal!.addEventListener('abort', stop, { once: true })
+    })
+  })
+  const repairing = app.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/director/chat/stream`, payload: chatBody(f.model.id, {
+    draft_resolution: { id: f.pending.id, version: f.pending.version, strategy: 'ai' }, task,
+  }) })
+  await started
+  await api('POST', `/api/projects/${f.project.id}/script/director/tasks/${taskId}/cancel`, {})
+  assert.match((await repairing).body, /cancelled/)
+  assert.deepEqual(phases, ['whole', 'whole', 'decisions', 'edits'])
+  const { pendingScriptDraft } = await import('../src/modules/script/script-draft-resolution.js')
+  const retained = pendingScriptDraft(f.project.id)!
+  assert.equal(retained.run!.status, 'interrupted')
+  assert.deepEqual(retained.draft, f.pending.draft)
+  const row = db.prepare("SELECT payload FROM script_step_checkpoints WHERE project_id=? AND namespace='repair'").get(f.project.id) as { payload: string }
+  const checkpoint = JSON.parse(row.payload)
+  assert.ok(checkpoint.steps['repair:decisions'])
+  assert.equal(Object.hasOwn(checkpoint.steps, 'repair:edits'), false)
+  assert.equal(getToolDraft(f.project.id), null)
 })
 
 test('forty-one manual plans and actual repair decisions remain complete and strictly aligned', async t => {
@@ -454,14 +673,64 @@ test('a recurring specific issue reuses the manual decision for one bounded corr
   assert.equal((await api<any>('GET', `/api/projects/${f.project.id}/script/source`)).content, originalText)
 })
 
-test('automatic correction is bounded and never extends the delegated scope to a new issue', async t => {
-  for (const scenario of ['still_open', 'new_issue', 'past_issue']) await t.test(scenario, async t => {
+test('native repair publishes read, search, submit and failed diagnostics without exposing manuscript bodies', async t => {
+  for (const suffix of ['', '/stream']) await t.test(suffix || '/chat', async t => {
+    const f = await pauseCandidate(t)
+    let rounds = 0, audits = 0
+    let identity: { candidate_version: string; source_version: string }, relatedKey = ''
+    t.mock.method(globalThis, 'fetch', async (_url, init) => {
+      const body = JSON.parse(String(init?.body)), prompt = body.messages[0].content as string
+      const analyzed = sourceAnalysisFixture(prompt)
+      if (analyzed) return response(analyzed)
+      if (prompt.includes('待核对草稿原文（资料）：')) {
+        audits++
+        return response({ checked_artifacts: scriptStageArtifacts.outline, findings: [] })
+      }
+      const marker = '只读候选工作区：'
+      assert.ok(prompt.includes(marker), 'the application must use the native candidate repair workspace')
+      const workspace = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length))
+      identity = { candidate_version: workspace.candidate_version, source_version: workspace.source_version }
+      relatedKey ||= workspace.directory.find((document: { source_key: string }) => document.source_key !== 'outline').source_key
+      rounds++
+      if (rounds === 1) return Response.json({ choices: [{ message: { tool_calls: [
+        { id: 'bad-read', type: 'function', function: { name: 'get_repair_context', arguments: JSON.stringify({ candidate_version: identity.candidate_version, source_keys: ['invented-source'] }) } },
+        { id: 'search-facts', type: 'function', function: { name: 'search_repair_context', arguments: JSON.stringify({ candidate_version: identity.candidate_version, query: '能力代价', source_keys: [] }) } },
+      ] }, finish_reason: 'tool_calls' }] })
+      if (rounds === 2) {
+        const failed = body.messages.find((message: any) => message.tool_call_id === 'bad-read')
+        assert.equal(JSON.parse(failed.content).diagnostic.code, 'unknown_repair_source')
+        return toolCall('read-related', 'get_repair_context', { candidate_version: identity.candidate_version, source_keys: [relatedKey] })
+      }
+      assert.equal(rounds, 3)
+      return toolCall('submit-fixed', 'submit_repair_patch', { ...identity, ...repair })
+    })
+    const completed = await app.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/director/chat${suffix}`,
+      payload: chatBody(f.model.id, { draft_resolution: { id: f.resolution.id, version: f.resolution.version, strategy: 'ai' } }) })
+    assert.equal(completed.statusCode, 200, completed.body)
+    const result = doneEvent(completed, Boolean(suffix))
+    assert.ok(result, completed.body)
+    assert.equal(result.draft_resolution, null); assert.equal(rounds, 3); assert.equal(audits, 1)
+    const operations = result.activity.filter((entry: any) => entry.kind === 'tool')
+    assert.deepEqual(operations.map((entry: any) => [entry.name, entry.status]), [
+      ['get_repair_context', 'failed'], ['search_repair_context', 'succeeded'], ['get_repair_context', 'succeeded'], ['submit_repair_patch', 'succeeded'],
+    ])
+    assert.match(operations[0].summary, /不属于当前候选草稿/)
+    const publicTrace = JSON.stringify(result.activity)
+    assert.ok(!publicTrace.includes(originalText))
+    assert.ok(!publicTrace.includes(repair.edits[0].replace))
+    assert.ok(operations.every((entry: any) => entry.input === undefined && entry.output === undefined))
+    assert.equal((await api<any>('GET', `/api/projects/${f.project.id}/script/source`)).content, originalText)
+    assert.equal((await api<any>('GET', `/api/projects/${f.project.id}`)).script.outline, '')
+  })
+})
+
+test('automatic correction continues beyond four rounds and never extends the delegated scope to a new issue', async t => {
+  for (const scenario of ['still_open', 'new_issue']) await t.test(scenario, async t => {
     const f = await pauseCandidate(t)
     const { pendingScriptDraft, retainScriptDraft } = await import('../src/modules/script/script-draft-resolution.js')
-    const { rememberFindingResolutions } = await import('../src/modules/script/script-finding-state.js')
     const previous = pendingScriptDraft(f.project.id)!
     const pending = retainScriptDraft(f.project.id, { ...previous, findings: previous.findings.map(item => ({ ...item, topic: '记忆代价' })),
-      resolutions: scenario === 'past_issue' ? rememberFindingResolutions([], previous.findings.map(item => ({ ...item, topic: '幕后人的真实身份' })), 'ai', [], '此前已补齐身份。') : [],
+      resolutions: [],
     }, previous)
     let repairs = 0
     t.mock.method(globalThis, 'fetch', async (_url, init) => {
@@ -474,37 +743,76 @@ test('automatic correction is bounded and never extends the delegated scope to a
       }
       if (prompt.includes('待核对草稿原文（资料）：')) {
         const content = sources(prompt).find(item => item.key === 'outline')!.content
-        return response({ checked_artifacts: scriptStageArtifacts.outline, findings: [{ ...finding('outline', content),
+        return response({ checked_artifacts: scriptStageArtifacts.outline, findings: scenario === 'still_open' && repairs >= 6 ? [] : [{ ...finding('outline', content),
           topic: scenario === 'still_open' ? '记忆代价' : '幕后人的真实身份', explanation: '当前正文仍有实质缺口。' }] })
       }
       repairs++
-      assert.ok(repairs <= 4)
       return response(repairs === 1 ? { ...repair, source_edits: [] } : { decisions: [concreteDecision], summary: '继续补齐记忆代价的触发后果。', source_edits: [],
         edits: [{ ...repair.edits[0], find: repair.edits[0].replace + '钥匙失效。'.repeat(repairs - 2), replace: repair.edits[0].replace + '钥匙失效。'.repeat(repairs - 1) }] })
     })
     const result = await api<any>('POST', `/api/projects/${f.project.id}/script/director/chat`, chatBody(f.model.id, {
       draft_resolution: { id: pending.id, version: pending.version, strategy: 'ai' },
     }))
-    assert.equal(repairs, scenario === 'still_open' ? 4 : 1)
-    assert.equal(result.draft_resolution.id, pending.id)
-    assert.equal(result.execution_outcome.kind, scenario === 'still_open' ? 'partial' : 'question')
+    assert.equal(repairs, scenario === 'still_open' ? 6 : 1)
     if (scenario === 'still_open') {
-      assert.equal(result.draft_resolution.findings[0].delegated, true)
-      assert.equal(result.draft_resolution.findings[0].repair_attempts, 4)
-      assert.equal(result.draft_resolution.run.status, 'interrupted')
-      assert.equal(result.draft_resolution.completed_rounds, 4)
-      assert.equal(result.draft_resolution.run.completed_rounds, 4)
-      assert.equal(pendingScriptDraft(f.project.id)!.resolutions?.[0].decision, concreteDecision)
-      assert.notEqual(pendingScriptDraft(f.project.id)!.resolutions?.[0].decision, pendingScriptDraft(f.project.id)!.resolutions?.[0].summary)
-      const stopped = pendingScriptDraft(f.project.id)!
-      t.mock.method(globalThis, 'fetch', async () => assert.fail('continuing a spent allowance must not dispatch any model request'))
-      const continued = await app.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/director/chat`,
-        payload: chatBody(f.model.id, { draft_resolution: { id: stopped.id, version: stopped.version, strategy: 'continue' } }) })
-      assert.equal(continued.statusCode, 409)
-      assert.match(continued.body, /4 轮/)
-      assert.deepEqual(pendingScriptDraft(f.project.id), stopped, 'rejection preserves the repaired candidate and its allowance')
-    } else assert.equal(result.draft_resolution.findings[0].delegated, scenario === 'past_issue' ? true : undefined)
-    assert.match(pendingScriptDraft(f.project.id)!.draft.artifacts.find(item => item.artifact_type === 'outline')!.content, /损失一天记忆/)
+      assert.equal(result.draft_resolution, null)
+      assert.equal(pendingScriptDraft(f.project.id), null)
+      assert.equal(result.activity.filter((item: any) => item.label === '继续落实已有处理方案').length, 5)
+      assert.ok(result.draft.artifacts.find((item: any) => item.artifact_type === 'outline').content.includes(repair.edits[0].replace + '钥匙失效。'.repeat(5)))
+    } else {
+      assert.equal(result.draft_resolution.id, pending.id)
+      assert.equal(result.execution_outcome.kind, 'question')
+      assert.equal(result.draft_resolution.findings[0].delegated, undefined)
+      assert.match(pendingScriptDraft(f.project.id)!.draft.artifacts.find(item => item.artifact_type === 'outline')!.content, /损失一天记忆/)
+    }
+    assert.equal((await api<any>('GET', `/api/projects/${f.project.id}/script/source`)).content, originalText)
+  })
+})
+
+test('a previously authorized issue reuses its retained decision without asking again', async t => {
+  for (const named of [true, false]) for (const strategy of ['manual', 'ai'] as const) await t.test(`${strategy} ${named ? 'named' : 'legacy exact evidence'}`, async t => {
+    const f = await pauseCandidate(t)
+    const { pendingScriptDraft, retainScriptDraft } = await import('../src/modules/script/script-draft-resolution.js')
+    const { rememberFindingResolutions } = await import('../src/modules/script/script-finding-state.js')
+    const previous = pendingScriptDraft(f.project.id)!
+    const historical = { source_key: 'outline', kind: 'unresolved_setting' as const, quote: '结局主角放弃能力，保留与家人的记忆。',
+      ...(named ? { topic: '幕后人的真实身份' } : {}),
+      explanation: '幕后人的真实身份尚未落实。', suggestion: '沿用此前确定的幕后人身份。' }
+    const decision = '幕后人为许衡，身份在第八集揭示，不改变结局。'
+    const resolutions = rememberFindingResolutions([], [historical], strategy,
+      strategy === 'manual' ? [decision] : [], '此前已确定幕后人身份。', [decision])
+      .map(record => ({ ...record, status: 'verified' as const }))
+    const pending = retainScriptDraft(f.project.id, { ...previous,
+      findings: previous.findings.map(item => ({ ...item, topic: '记忆代价' })), resolutions }, previous)
+    let repairs = 0, audits = 0
+    t.mock.method(globalThis, 'fetch', async (_url, init) => {
+      const prompt = JSON.parse(String(init?.body)).messages[0].content as string
+      const analyzedSource = sourceAnalysisFixture(prompt)
+      if (analyzedSource) return response(analyzedSource)
+      if (prompt.includes('待核对草稿原文（资料）：')) {
+        audits++
+        const content = sources(prompt).find(item => item.key === 'outline')!.content
+        return response({ checked_artifacts: scriptStageArtifacts.outline, findings: audits === 1
+          ? [named ? { ...historical, quote: content, explanation: '已有幕后人决定尚未同步到当前正文。' } : historical] : [] })
+      }
+      assert.match(prompt, /继续已授权阶段的候选草稿/)
+      repairs++
+      if (repairs === 1) return response(repair)
+      assert.equal(repairs, 2, 'the historical issue must converge within the existing repair allowance')
+      const answers = JSON.parse(prompt.split('问题与本次决定：')[1]!.split('\n已处理事项：')[0]!)
+      assert.equal(answers[0].decision, decision, 'reuse the actual historical decision')
+      return response({ decisions: [decision], summary: '落实此前已确定的幕后人身份。', source_edits: [],
+        edits: [{ source_key: 'outline', find: repair.edits[0].replace,
+          replace: repair.edits[0].replace + decision, reason: '同步同一已授权事项，不重新决定' }] })
+    })
+    const result = await api<any>('POST', `/api/projects/${f.project.id}/script/director/chat`, chatBody(f.model.id, {
+      draft_resolution: { id: pending.id, version: pending.version, strategy: 'ai' },
+    }))
+    assert.equal(repairs, 2); assert.equal(audits, 2)
+    assert.equal(result.draft_resolution, null)
+    assert.equal(pendingScriptDraft(f.project.id), null)
+    assert.ok(result.activity.some((item: any) => item.label === '继续落实已有处理方案'))
+    assert.match(result.draft.artifacts.find((item: any) => item.artifact_type === 'outline').content, /幕后人为许衡/)
     assert.equal((await api<any>('GET', `/api/projects/${f.project.id}/script/source`)).content, originalText)
   })
 })
@@ -660,7 +968,7 @@ test('a failed revised-source analysis is identified before independent review a
   assert.equal((await api<any>('GET', `/api/projects/${f.project.id}/script/source`)).content, originalText, 'successful review still requires the creator to confirm saving')
 })
 
-test('durable revision budget stops before dispatch and continue cannot reset consumed requests', async t => {
+test('an obsolete revision cap cannot stop revised-source analysis and final independent review', async t => {
   const f = await pauseCandidate(t)
   const url = `/api/projects/${f.project.id}/script/director/chat`
   const previous = process.env.VIDEO_STUDIO_SCRIPT_ANALYSIS_MAX_REQUESTS
@@ -677,22 +985,18 @@ test('durable revision budget stops before dispatch and continue cannot reset co
   try {
     const payload = (strategy: 'ai' | 'continue') => chatBody(f.model.id, { draft_resolution: { id: f.resolution.id, version: f.resolution.version, strategy } })
     const first = await app.inject({ method: 'POST', url, payload: payload('ai') })
-    assert.equal(first.statusCode, 422, first.body)
-    assert.match(first.body, /模型请求预算/)
-    assert.equal(repairs, 1)
-    assert.equal(analysis, 0, 'the repair reads the full manuscript directly; no pre-repair map is generated')
-    assert.equal(audits, 0)
-    const continued = await app.inject({ method: 'POST', url, payload: payload('continue') })
-    assert.equal(continued.statusCode, 422, continued.body)
-    assert.equal(repairs, 1)
-    assert.equal(analysis, 0)
-    process.env.VIDEO_STUDIO_SCRIPT_ANALYSIS_MAX_REQUESTS = '120'
-    const resumed = await api<any>('POST', url, payload('continue'))
+    assert.equal(first.statusCode, 200, first.body)
+    const resumed = first.json()
     assert.equal(resumed.draft_resolution, null)
-    assert.equal(repairs, 1, 'the saved patch is reused after a budget increase')
+    assert.equal(repairs, 1)
     assert.ok(analysis > 0)
     assert.equal(audits, 1)
-    assert.ok(resumed.activity.some((event: any) => /累计.*tokens（保守估算/.test(event.summary)))
+    const usage = resumed.activity.find((event: any) => event.usage)?.usage
+    assert.ok(usage?.current.requests > 0, 'resumed execution exposes its own request usage')
+    assert.ok(usage.cumulative.requests >= usage.current.requests, 'historical stage usage stays separate from this execution')
+    assert.ok(usage.current.estimated_input_tokens > 0 && usage.current.uncertain_requests > 0,
+      'responses without upstream usage retain explicit estimates instead of pretending to be actual tokens')
+    assert.ok(resumed.activity.every((event: any) => !event.summary.includes('undefined')), 'uncapped progress remains readable')
     assert.equal((await api<any>('GET', `/api/projects/${f.project.id}/script/source`)).content, originalText)
   } finally {
     if (previous === undefined) delete process.env.VIDEO_STUDIO_SCRIPT_ANALYSIS_MAX_REQUESTS
@@ -707,17 +1011,17 @@ test('review transport errors stop native and JSON requests before persistence w
     let generations = 0, audits = 0
     t.mock.method(globalThis, 'fetch', async (_url, init) => {
       const body = JSON.parse(String(init?.body)), prompt = body.messages[0].content as string
-      if (prompt.includes('本次独立调用只理解创作者意图')) return response({ action: 'draft', operation: 'create', workflow: { stage: 'outline' }, creative_brief: '完整大纲' })
+      if (prompt.includes('本次独立调用只理解创作者意图')) return response({ action: 'draft', operation: 'create', workflow: { stage: 'outline', intent: 'stage_design' }, creative_brief: '完整大纲' })
       if (prompt.includes('待核对草稿原文（资料）：')) {
         audits++
         return Response.json({ error: { message: '核对模型暂不可用' } }, { status: 502 })
       }
       generations++
       const draft = candidate('outline', '主角以公开证据结束追查，保留家人记忆。')
-      return response({ artifacts: draft.artifacts, scenes: [] })
+      return generationResponse(prompt, draft)
     })
     const result = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat${suffix}`, payload: {
-      model_id: model.id, mode: 'script', use_tools: useTools, workflow: { stage: 'outline' }, messages: [{ role: 'user', text: '生成完整大纲' }] } })
+      model_id: model.id, mode: 'script', use_tools: useTools, workflow: { stage: 'outline', intent: 'stage_design' }, messages: [{ role: 'user', text: '生成完整大纲' }] } })
     if (suffix) {
       const events = result.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)))
       assert.equal(events.some(event => event.type === 'done'), false)
@@ -726,7 +1030,7 @@ test('review transport errors stop native and JSON requests before persistence w
       assert.equal(result.statusCode, 502)
       assert.match(result.body, /阶段设定核对未完成/)
     }
-    assert.equal(generations, 1); assert.equal(audits, 2, 'one read-only audit retry cannot regenerate the candidate')
+    assert.equal(generations, fullDesignTasks); assert.ok(audits >= 2, 'failed read-only audit retries cannot regenerate the candidate')
     assert.equal(getToolDraft(project.id), null)
     assert.deepEqual((await api<{ script: ScriptSnapshot }>('GET', `/api/projects/${project.id}`)).script, before.script)
   })
@@ -786,13 +1090,13 @@ test('durable tasks complete as a question when paused and cancellation of a rep
     const analyzedSource = sourceAnalysisFixture(prompt)
     if (analyzedSource) return response(analyzedSource)
     if (prompt.includes('待核对草稿原文（资料）：')) return response({ checked_artifacts: scriptStageArtifacts.outline, findings: [finding()] })
-    const draft = candidate('outline', originalText); return response({ artifacts: draft.artifacts, scenes: [] })
+    const draft = candidate('outline', originalText); return generationResponse(prompt, draft)
   })
   const task = (id: string) => ({ id, conversation: { id: `conversation-${id}`, messages: [{ id: 'user', role: 'user', text: '生成大纲' }] },
     execution: { title: '生成大纲', request: '生成大纲', started_at: Date.now(), mode: 'script', focus_artifact: 'all' } })
   const taskId = crypto.randomUUID()
   const url = `/api/projects/${project.id}/script/director/chat/stream`
-  const first = await app.inject({ method: 'POST', url, payload: chatBody(model.id, { use_tools: true, workflow: { stage: 'outline' }, task: task(taskId) }) })
+  const first = await app.inject({ method: 'POST', url, payload: chatBody(model.id, { use_tools: true, workflow: { stage: 'outline', intent: 'stage_design' }, task: task(taskId) }) })
   const paused = doneEvent(first, true)
   assert.ok(paused, first.body)
   const finished = await api<any>('GET', `/api/projects/${project.id}/script/director/tasks/${taskId}`)
@@ -818,7 +1122,7 @@ test('durable tasks complete as a question when paused and cancellation of a rep
   assert.equal(calls, 1); assert.equal(restored.draft, null)
 })
 
-test('native supplementation pauses the tool loop immediately and resumes without rewriting preserved historical documents', async t => {
+test('native supplementation tasks pause for real findings and resume without rewriting preserved historical documents', async t => {
   const { project, model } = await fixture()
   await api('PUT', `/api/projects/${project.id}/script`, { outline: '历史大纲：全剧60集，林晚保留家人记忆。', characters: '' })
   const before = await api<any>('GET', `/api/projects/${project.id}`)
@@ -838,41 +1142,46 @@ test('native supplementation pauses the tool loop immediately and resumes withou
     }
     if (prompt.includes('继续已授权阶段的候选草稿')) return response({ ...repair, edits: repair.edits.map(edit => ({ ...edit, source_key: 'synopsis' })) })
     rounds++
-    return rounds === 1 ? toolCall('read-history', 'read_documents', { document_ids: [historical.id] }) : toolCall('submit-stage', 'create_document_draft', draft)
+    return generationResponse(prompt, draft)
   })
   const paused = await api<any>('POST', `/api/projects/${project.id}/script/director/chat`, chatBody(model.id, { use_tools: true, workflow: { stage: 'outline', operation: 'supplement' } }))
-  assert.equal(rounds, 2); assert.equal(audits, 1); assert.equal(paused.execution_outcome.kind, 'question')
+  assert.equal(rounds, fullDesignTasks - 1, 'the preserved outline is reused without a generation request'); assert.equal(audits, 1); assert.equal(paused.execution_outcome.kind, 'question')
   assert.ok(paused.activity.every((step: any) => step.status === 'succeeded'))
   const { id, version } = paused.draft_resolution
   const ready = await api<any>('POST', `/api/projects/${project.id}/script/director/chat`, chatBody(model.id, { draft_resolution: { id, version, strategy: 'ai' } }))
   assert.equal(ready.tool_draft.documents.find((doc: any) => doc.artifact_type === 'outline').content, historical.content)
   assert.equal(ready.workflow.operation, 'supplement'); assert.equal(ready.draft_resolution, null)
-  assert.equal(rounds, 2); assert.equal(audits, 2)
+  assert.equal(rounds, fullDesignTasks - 1); assert.equal(audits, 2)
   assert.deepEqual((await api<any>('GET', `/api/projects/${project.id}`)).script, before.script)
 })
 
 test('source synchronization findings can be repaired without rewriting the already completed stage draft', async t => {
-  const { project, model } = await fixture(); await uploadSource(project.id)
+  const sourceRule = '能力代价：每次使用损失三天记忆，无法恢复。'
+  const sourceText = originalText.replace('能力代价：待定。', sourceRule)
+  const { project, model } = await fixture(); await uploadSource(project.id, sourceText)
   let audits = 0, repairs = 0
   t.mock.method(globalThis, 'fetch', async (_url, init) => {
     const prompt = JSON.parse(String(init?.body)).messages[0].content as string
     const analyzedSource = sourceAnalysisFixture(prompt)
     if (analyzedSource) return response(analyzedSource)
-    if (prompt.includes('本次独立调用只理解创作者意图')) return response({ action: 'draft', operation: 'create', workflow: { stage: 'outline' }, creative_brief: '忠实整理60集' })
+    if (prompt.includes('本次独立调用只理解创作者意图')) return response({ action: 'draft', operation: 'create', workflow: { stage: 'outline', intent: 'stage_design' }, creative_brief: '忠实整理60集' })
     if (prompt.includes('待核对草稿原文（资料）：')) {
       audits++
-      if (audits > 1) assert.match(prompt, /不能只在阶段文档补齐/)
+      if (audits === 2) assert.ok(!prompt.includes('本轮同时预览文稿修订：'), 'candidate-only edits do not demand rewriting the source')
+      if (audits === 3) assert.match(prompt, /不能只在阶段文档补齐/)
       return response({ checked_artifacts: scriptStageArtifacts.outline, findings: audits === 1 ? [finding()] : audits === 2
-        ? [{ ...finding('outline', repair.edits[0].replace), explanation: '候选稿已补齐，但文稿来源仍保留旧缺口，需要同步。' }] : [] })
+        ? [{ ...finding('outline', repair.edits[0].replace), explanation: '候选稿已落实用户明确调整的一天记忆代价，但有效稿仍明确写三天，与本次决定直接冲突，需要同步。' }] : [] })
     }
     if (prompt.includes('继续已授权阶段的候选草稿')) {
       repairs++
-      return response(repairs === 1 ? repair : { decisions: [concreteDecision], summary: '将已补齐的能力代价同步到文稿，阶段稿不再改写。', edits: [], source_edits: repair.edits.map(({ source_key: _key, ...edit }) => edit) })
+      return response(repairs === 1 ? repair : { decisions: [concreteDecision], summary: '将已补齐的能力代价同步到文稿，阶段稿不再改写。', edits: [],
+        source_edits: [{ find: sourceRule, replace: repair.edits[0].replace, reason: '同步用户明确修改后与有效稿直接冲突的规则' }] })
     }
-    return response({ artifacts: candidate('outline', originalText).artifacts, scenes: [] })
+    return generationResponse(prompt, candidate('outline', originalText))
   })
   const url = `/api/projects/${project.id}/script/director/chat`
-  const first = await api<any>('POST', url, chatBody(model.id, { workflow: { stage: 'outline' }, use_tools: false }))
+  const first = await api<any>('POST', url, chatBody(model.id, { workflow: { stage: 'outline', intent: 'stage_design' }, use_tools: false,
+    messages: [{ role: 'user', text: '生成完整全剧大纲，沿用原稿60集和结局，将能力代价从损失三天记忆调整为一天，必要时同步直接冲突原文。' }] }))
   const second = await api<any>('POST', url, chatBody(model.id, { draft_resolution: { id: first.draft_resolution.id, version: first.draft_resolution.version, strategy: 'ai' } }))
   assert.ok(second.draft_resolution)
   const { pendingScriptDraft } = await import('../src/modules/script/script-draft-resolution.js')
@@ -881,7 +1190,7 @@ test('source synchronization findings can be repaired without rewriting the alre
   assert.equal(third.draft_resolution, null)
   assert.deepEqual(third.draft.artifacts, completedArtifacts)
   assert.equal(third.source_update.content, originalText.replace(repair.edits[0].find, repair.edits[0].replace))
-  assert.equal((await api<any>('GET', `/api/projects/${project.id}/script/source`)).content, originalText)
+  assert.equal((await api<any>('GET', `/api/projects/${project.id}/script/source`)).content, sourceText)
   assert.equal(repairs, 2); assert.equal(audits, 3)
 })
 
@@ -948,4 +1257,77 @@ test('whole-work audit retains cross-document contradictions and reads all origi
       kind: 'contradiction', explanation: '人物身份与人物小传不一致', suggestion: '沿用已确认记者身份' }] })
   }, { sourceBatches: [[{ id: 0, content: '开场林舟拿到钥匙。' }], [{ id: 1, content: '结局林舟归还钥匙。' }]] }), /人物身份与人物小传不一致/)
   assert.equal(calls, 1)
+})
+
+test('continuation control messages preserve authorized review context and resume only unfinished review dimensions', async t => {
+  const { pendingScriptDraft, retainScriptDraft } = await import('../src/modules/script/script-draft-resolution.js')
+  for (const strategy of ['ai', 'manual'] as const) await t.test(strategy, async t => {
+    const f = await pauseCandidate(t)
+    const url = `/api/projects/${f.project.id}/script/director/chat`
+    const originalReference = { key: 'original-setting', title: '原始完整设定引用', artifact_type: 'world' as const, episode_number: 0,
+      content: '引用开头：不得改变人物身份。\n' + '能力代价与既有因果必须保持一致。'.repeat(180) + '\n引用结尾：保留家人的记忆。' }
+    const authorizationReference = { key: 'authorized-setting', title: '本次授权的完整引用', artifact_type: 'world' as const, episode_number: 0,
+      content: '本次授权开头：每次能力使用只损失一天记忆。\n' + '保留60集与已定结局。'.repeat(140) + '\n本次授权结尾：不得改写其他设定。' }
+    const originalMessages = [{ ...chatBody(f.model.id).messages[0]!, reference_documents: [originalReference] }]
+    const previous = pendingScriptDraft(f.project.id)!
+    const { id: _id, version: _version, ...candidateState } = previous
+    const pending = retainScriptDraft(f.project.id, { ...candidateState,
+      request: { ...candidateState.request, messages: originalMessages } }, previous)
+    const authorization = { role: 'user', text: strategy === 'ai'
+      ? '请将候选稿问题交给 AI 具体决定，沿用完整引用并保留60集，完成独立复核后提供预览。'
+      : '按我填写的方案处理：只失去一天记忆，保留60集和完整引用中的结局。', reference_documents: [authorizationReference] }
+    const authorizedMessages = [...originalMessages, authorization]
+    const continueControl = '沿用候选稿已保存的处理方案和授权，从已完成进度继续修订并独立复核。'
+    const reviews: Array<{ stage: string; context: any }> = []
+    let repairs = 0, failConsistency = true
+    t.mock.method(globalThis, 'fetch', async (_url, init) => {
+      const prompt = JSON.parse(String(init?.body)).messages[0].content as string
+      const analyzedSource = sourceAnalysisFixture(prompt)
+      if (analyzedSource) return response(analyzedSource)
+      if (prompt.includes('待核对草稿原文（资料）：')) {
+        const stage = /本轮核查维度：([a-z]+)。/.exec(prompt)?.[1] || 'whole'
+        const marker = '既有事实与创作要求（资料）：'
+        const context = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length, prompt.lastIndexOf('\n待核对草稿原文（资料）：')))
+        reviews.push({ stage, context })
+        if (stage === 'whole') return Response.json({ choices: [{ message: { content: JSON.stringify({ checked_artifacts: scriptStageArtifacts.outline, findings: [] }) }, finish_reason: 'length' }] })
+        if (stage === 'consistency' && failConsistency) return Response.json({ error: { message: '一致性复核连接中断' } }, { status: 502 })
+        return response({ checked_artifacts: scriptStageArtifacts.outline, findings: [] })
+      }
+      repairs++
+      return response(repair)
+    })
+
+    const first = await app.inject({ method: 'POST', url, payload: chatBody(f.model.id, { messages: authorizedMessages,
+      draft_resolution: { id: pending.id, version: pending.version, strategy, ...(strategy === 'manual' ? { answers: ['只失去一天记忆，保留60集'] } : {}) },
+    }) })
+    assert.equal(first.statusCode, 502, first.body)
+    assert.match(first.body, /一致性复核连接中断/)
+    assert.deepEqual(reviews.slice(0, 2).map(item => item.stage), ['whole', 'settings'])
+    assert.ok(reviews.length >= 4 && reviews.slice(2).every(item => item.stage === 'consistency'), 'only the genuinely failed dimension is retried')
+    const saved = pendingScriptDraft(f.project.id)!
+    assert.equal(saved.run!.completed, 1)
+    assert.equal(saved.run!.status, 'interrupted')
+    const publicState = await api<any>('GET', `/api/projects/${f.project.id}/script/director/tools-state`)
+    assert.equal(publicState.draft_resolution.run.review_messages, undefined, 'frozen review context remains internal')
+
+    const completedRequests = reviews.length
+    failConsistency = false
+    const resumed = await api<any>('POST', url, chatBody(f.model.id, { messages: [...authorizedMessages,
+      { role: 'assistant', text: '一致性复核连接中断，已保留处理方案。' }, { role: 'user', text: continueControl }],
+      draft_resolution: { id: saved.id, version: saved.version, strategy: 'continue' },
+    }))
+    assert.deepEqual(reviews.slice(completedRequests).map(item => item.stage), ['consistency', 'requirements'],
+      'a new continuation control must not replay the exhausted whole review or the completed settings dimension')
+    assert.equal(repairs, 1, 'the validated repair remains reusable across continuation messages')
+    for (const { context } of reviews) {
+      assert.deepEqual(context.creator_messages, authorizedMessages, 'every review retains the original request, full references and actual authorization')
+      assert.equal(context.uploaded_script.content, originalText)
+      assert.equal(context.resolved_findings.decisions[0].decision, concreteDecision)
+      if (strategy === 'manual') assert.equal(context.resolved_findings.decisions[0].answer, '只失去一天记忆，保留60集')
+    }
+    assert.equal(resumed.draft_resolution, null)
+    assert.match(resumed.draft.artifacts.find((artifact: any) => artifact.artifact_type === 'outline').content, /每次使用损失一天记忆，无法恢复/)
+    assert.equal(pendingScriptDraft(f.project.id), null)
+    assert.equal((await api<any>('GET', `/api/projects/${f.project.id}/script/source`)).content, originalText, 'review still presents a private preview before saving')
+  })
 })

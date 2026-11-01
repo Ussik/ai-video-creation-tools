@@ -31,6 +31,7 @@ export function registerModelRoutes(app: FastifyInstance) {
     for (const [key, value] of Object.entries(data)) {
       run(`UPDATE providers SET ${key}=? WHERE id=?`, key === 'enabled' ? Number(value) : key === 'model_catalog' ? JSON.stringify(value) : value, id)
     }
+    if (data.enabled === false) run('UPDATE models SET is_default=0 WHERE provider_id=?', id)
     return providerPublic(required<Provider>('providers', id))
   })
   app.get('/api/providers/:id/model-catalog', async request => {
@@ -83,6 +84,26 @@ export function registerModelRoutes(app: FastifyInstance) {
     return { ok: true }
   })
   app.get('/api/models', async () => all<Model>("SELECT models.* FROM models JOIN providers ON providers.id=models.provider_id WHERE providers.adapter <> 'demo' AND providers.archived=0 AND models.archived=0 ORDER BY models.modality, models.name").map(modelPublic))
+  app.put('/api/models/:id/default', async request => {
+    const { id } = parse(idParams, request.params)
+    const model = required<Model>('models', id)
+    const provider = required<Provider>('providers', model.provider_id)
+    if (provider.adapter === 'demo' || provider.archived || model.archived) invalid('此模型已归档')
+    if (!provider.enabled || !model.enabled) invalid('请先启用提供商和模型再设为默认')
+    db.transaction(() => {
+      run('UPDATE models SET is_default=0 WHERE modality=? AND is_default=1', model.modality)
+      run('UPDATE models SET is_default=1 WHERE id=?', id)
+    })()
+    return modelPublic(required<Model>('models', id))
+  })
+  app.delete('/api/models/:id/default', async request => {
+    const { id } = parse(idParams, request.params)
+    const model = required<Model>('models', id)
+    const provider = required<Provider>('providers', model.provider_id)
+    if (provider.adapter === 'demo' || provider.archived || model.archived) invalid('此模型已归档')
+    run('UPDATE models SET is_default=0 WHERE id=?', id)
+    return modelPublic(required<Model>('models', id))
+  })
   app.post('/api/models', async request => {
     const data = parse(modelInput, request.body)
     const provider = required<Provider>('providers', data.provider_id)
@@ -105,6 +126,9 @@ export function registerModelRoutes(app: FastifyInstance) {
     checkProtocol(data.modality || existing.modality, data.protocol || existing.protocol)
     const settings = data.settings || JSON.parse(existing.settings) as Record<string, unknown>
     if (data.enabled ?? Boolean(existing.enabled)) validateSettings(data.modality || existing.modality, settings)
+    if (data.enabled === false || !targetProvider.enabled || (data.modality && data.modality !== existing.modality)) {
+      run('UPDATE models SET is_default=0 WHERE id=?', id)
+    }
     if (data.settings) {
       run('UPDATE models SET settings=? WHERE id=?', JSON.stringify(data.settings), id)
       delete data.settings

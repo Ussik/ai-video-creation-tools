@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import type { Project } from '../src/infrastructure/database/db.js'
-import { scriptStageArtifacts, scriptArtifactLabels } from '@video-studio/shared/script/script-stage-content'
+import { scriptArtifactLabels } from '@video-studio/shared/script/script-stage-content'
 import { draftCompletenessFixtureResponse } from './fixtures/script-draft-completeness.js'
+import { workflowFixtureTypes } from './fixtures/script-workflow.js'
 
 const directory = await mkdtemp(join(tmpdir(), 'script-intent-style-flow-'))
 process.env.VIDEO_STUDIO_DATA_DIR = directory
@@ -253,7 +254,7 @@ test('a new project saves a detailed first style or an accepted earlier proposal
   }
 })
 
-test('a mixed explicit style and outline request saves the style and still generates the complete reviewable stage draft', async t => {
+test('a mixed explicit style and outline request saves the style and still generates the complete reviewable outline', async t => {
   const { project, model } = await fixture(false)
   const text = '采用日漫二维动画画风，并生成全剧大纲：林舟追查失踪的姐姐，发现她为保护家人主动隐去身份。'
   let intentRequests = 0, writingRequests = 0, reviewRequests = 0
@@ -269,7 +270,7 @@ test('a mixed explicit style and outline request saves the style and still gener
     writingRequests++
     assert.equal(projectVisualStyle(project.id).label, '日漫二维动画', 'the explicit writer receives the persisted style')
     assert.match(prompt, /日漫二维动画/)
-    return modelReply({ artifacts: scriptStageArtifacts.outline.map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type],
+    return modelReply({ artifacts: workflowFixtureTypes(prompt).map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type],
       content: `${scriptArtifactLabels[artifact_type]}：林舟追查姐姐的行踪，发现她主动隐去身份以保护家人。兄妹最终合作揭开威胁。` })), scenes: [] })
   })
   const result = await chat(project.id, { model_id: model.id, mode: 'script', use_tools: true, messages: [{ role: 'user', text }] })
@@ -278,7 +279,7 @@ test('a mixed explicit style and outline request saves the style and still gener
   assert.ok(reviewRequests > 0, 'the generated document draft still goes through independent review')
   assert.equal(result.workflow.stage, 'outline')
   assert.equal(result.tool_draft.status, 'pending')
-  assert.deepEqual(new Set(result.tool_draft.documents.map((doc: any) => doc.artifact_type)), new Set(scriptStageArtifacts.outline))
+  assert.deepEqual(result.tool_draft.documents.map((doc: any) => doc.artifact_type), ['outline'])
   assert.equal(result.project_changed, true)
   assert.equal(savedSettings(project.id).visual_style, '日漫二维动画')
   const script = (await call('GET', `/api/projects/${project.id}`)).script
@@ -290,9 +291,10 @@ test('a mixed explicit style and outline request saves the style and still gener
   assert.equal(one<{ source_text: string }>('SELECT source_text FROM script_story_decisions WHERE project_id=? AND topic=?', project.id, '视觉风格')!.source_text, text)
 })
 
-test('a typed outline workflow is not short-circuited by a model that incorrectly marks its style as the only request', async t => {
+test('a typed outline workflow bypasses interpretation and retains its already confirmed style', async t => {
   const { project, model } = await fixture(false)
-  const text = '采用日漫二维动画，并按已选择的按钮生成全剧大纲，主线是林舟寻找姐姐。'
+  await call('PUT', `/api/projects/${project.id}/script`, { outline: '', characters: '', generation_options: { visual_style: '日漫二维动画' } })
+  const text = '沿用已确认的画风，按已选择的按钮生成全剧大纲，主线是林舟寻找姐姐。'
   let intentRequests = 0, writingRequests = 0
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
     const review = draftCompletenessFixtureResponse(init)
@@ -304,13 +306,13 @@ test('a typed outline workflow is not short-circuited by a model that incorrectl
     }
     writingRequests++
     assert.equal(projectVisualStyle(project.id).label, '日漫二维动画')
-    return modelReply({ artifacts: scriptStageArtifacts.outline.map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '林舟找到姐姐，兄妹合作保护家人。' })), scenes: [] })
+    return modelReply({ artifacts: workflowFixtureTypes(prompt).map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '林舟找到姐姐，兄妹合作保护家人。' })), scenes: [] })
   })
   const result = await chat(project.id, { model_id: model.id, mode: 'script', use_tools: false, workflow: { stage: 'outline' }, messages: [{ role: 'user', text }] })
-  assert.equal(intentRequests, 1)
+  assert.equal(intentRequests, 0)
   assert.equal(writingRequests, 1)
   assert.equal(result.draft.stage, 'outline')
-  assert.equal(result.draft.artifacts.length, scriptStageArtifacts.outline.length)
+  assert.deepEqual(result.draft.artifacts.map((artifact: any) => artifact.artifact_type), ['outline'])
   assert.equal(savedSettings(project.id).visual_style, '日漫二维动画')
   const script = (await call('GET', `/api/projects/${project.id}`)).script
   assert.equal(script.outline, '')
@@ -342,7 +344,7 @@ test('a persistent mixed style and outline task resumes its failed review withou
       }
       writingRequests++
       assert.equal(projectVisualStyle(project.id).label, '日漫二维动画')
-      return modelReply({ artifacts: scriptStageArtifacts.outline.map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type],
+      return modelReply({ artifacts: workflowFixtureTypes(prompt).map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type],
         content: `${scriptArtifactLabels[artifact_type]}：林舟追查姐姐的行踪，发现她主动隐去身份以保护家人。兄妹最终合作揭开威胁。` })), scenes: [] })
     })
     const first = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat/stream`, payload: body })
@@ -378,7 +380,7 @@ test('a persistent mixed style and outline task resumes its failed review withou
       assert.equal(finished.can_resume, false)
       const completion = finished.events.find((event: any) => event.type === 'done')
       assert.equal(completion.draft.stage, 'outline')
-      assert.equal(completion.draft.artifacts.length, scriptStageArtifacts.outline.length)
+      assert.deepEqual(completion.draft.artifacts.map((artifact: any) => artifact.artifact_type), ['outline'])
       assert.equal(writingRequests, 1, 'resume only reruns the failed review and reuses the completed writer checkpoint')
       assert.equal(projectVisualStyle(project.id).label, '日漫二维动画')
       assert.equal(one<{ updated_at: string }>('SELECT updated_at FROM script_story_decisions WHERE project_id=? AND topic=?', project.id, '视觉风格')!.updated_at,

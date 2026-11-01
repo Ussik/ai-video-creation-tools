@@ -75,3 +75,66 @@ test('invalid or oversized section documents fail without replacing the saved gr
     assert.deepEqual(await call('GET', url), saved)
   }
 })
+
+function imageVideoHandoff() {
+  return { source_node_id: 'image-source', source_asset_id: 'chosen-frame', source_signature: 'source-snapshot',
+    applied_signature: 'video-snapshot', inherited_reference_asset_ids: ['new-character', 'location-detail'] }
+}
+
+test('default and named canvases retain image to video handoff snapshots across save and reload', async () => {
+  const project = await call('POST', '/api/projects', { name: '图片到视频承接持久化' })
+  const canvas = await call('POST', `/api/projects/${project.id}/canvases`, { name: '视频方案' })
+  for (const [index, suffix] of ['canvas', `canvases/${canvas.id}`].entries()) {
+    const url = `/api/projects/${project.id}/${suffix}`, initial = await call('GET', url)
+    const handoff = imageVideoHandoff(), video = node(`video-handoff-${index}`, document())
+    const saved = await call('PUT', url, { ...initial, nodes: [{ ...video,
+      settings: { ...video.settings, modality: 'video', image_video_handoff: handoff },
+    }] })
+    assert.deepEqual(saved.nodes[0].settings.image_video_handoff, handoff)
+    assert.deepEqual(await call('GET', url), saved)
+    initDb()
+    assert.deepEqual(await call('GET', url), saved)
+    assert.deepEqual(await call('PUT', url, saved), saved, 'handoff provenance survives idempotent resaves')
+
+    const { inherited_reference_asset_ids: _references, ...withoutReferences } = handoff
+    const noReferences = await call('PUT', url, { ...saved, nodes: [{ ...saved.nodes[0],
+      settings: { ...saved.nodes[0].settings, image_video_handoff: withoutReferences },
+    }] })
+    assert.deepEqual(noReferences.nodes[0].settings.image_video_handoff, withoutReferences)
+    assert.deepEqual(await call('GET', url), noReferences)
+  }
+  assert.equal(all('SELECT * FROM jobs').length, 0)
+})
+
+test('malformed handoff metadata rejects both canvas routes without replacing the saved graph', async () => {
+  const project = await call('POST', '/api/projects', { name: '图片到视频承接验证' })
+  const canvas = await call('POST', `/api/projects/${project.id}/canvases`, { name: '视频方案' })
+  const handoff = imageVideoHandoff()
+  const invalid = [null, [], 'snapshot', {},
+    ...(['source_node_id', 'source_asset_id', 'source_signature', 'applied_signature'] as const).flatMap(field => [
+      { ...handoff, [field]: undefined }, { ...handoff, [field]: null }, { ...handoff, [field]: 1 },
+      { ...handoff, [field]: '' }, { ...handoff, [field]: 'x'.repeat(101) },
+    ]),
+    { ...handoff, inherited_reference_asset_ids: 'image' },
+    { ...handoff, inherited_reference_asset_ids: null },
+    { ...handoff, inherited_reference_asset_ids: [''] },
+    { ...handoff, inherited_reference_asset_ids: [null] },
+    { ...handoff, inherited_reference_asset_ids: ['x'.repeat(101)] },
+    { ...handoff, inherited_reference_asset_ids: Array.from({ length: 101 }, (_, index) => `image-${index}`) },
+    { ...handoff, extra: true },
+  ]
+  for (const [index, suffix] of ['canvas', `canvases/${canvas.id}`].entries()) {
+    const url = `/api/projects/${project.id}/${suffix}`, initial = await call('GET', url)
+    const video = node(`kept-video-${index}`, document())
+    const saved = await call('PUT', url, { ...initial, nodes: [{ ...video,
+      settings: { ...video.settings, modality: 'video', image_video_handoff: handoff },
+    }] })
+    for (const metadata of invalid) {
+      const response = await app.inject({ method: 'PUT', url, payload: { ...saved, nodes: [{ ...saved.nodes[0],
+        settings: { ...saved.nodes[0].settings, image_video_handoff: metadata },
+      }] } })
+      assert.equal(response.statusCode, 422, response.body)
+      assert.deepEqual(await call('GET', url), saved)
+    }
+  }
+})

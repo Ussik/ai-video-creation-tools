@@ -19,8 +19,8 @@
   min-height: 78px;
   padding: 13px 14px;
   border: 1px solid var(--fc-border);
-  border-radius: 12px;
-  background: var(--fc-surface-muted);
+  border-radius: var(--fc-radius-lg);
+  background: var(--fc-panel);
   color: var(--fc-text);
   transition: background-color 150ms ease, border-color 150ms ease;
 }
@@ -31,12 +31,12 @@
 }
 .script-director-settings-grid .is-open > .script-director-auto-card,
 .script-director-settings-grid .is-open > .script-director-structure-card {
-  border-color: var(--fc-border-strong);
-  background: var(--fc-surface-hover);
+  border-color: color-mix(in srgb, var(--fc-primary) 35%, var(--fc-border));
+  background: var(--fc-primary-soft);
 }
 .script-director-settings-grid .script-director-auto-card:focus-visible,
 .script-director-settings-grid .script-director-structure-card:focus-visible {
-  outline: 2px solid #a5a8ad;
+  outline: 2px solid var(--fc-focus);
   outline-offset: 3px;
 }
 .script-director-setting-heading {

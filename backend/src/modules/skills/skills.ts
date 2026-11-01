@@ -5,6 +5,8 @@ import { z } from 'zod'
 import { all, db, now, one, run, required } from '../../infrastructure/database/db.js'
 import { mentionsSeedanceVersion } from '../generation/seedance-prompt.js'
 import { MAX_AUXILIARY_SKILLS, MAX_CREATIVE_SKILLS } from '@video-studio/shared/skills/skill-limits'
+import type { SkillSyncItem, SkillSyncResult } from '@video-studio/shared/skills/skill-updates'
+import type { SkillTaskContext } from '@video-studio/shared/skills/skill-recommendation'
 
 export const skillStages = ['script', 'visual_assets', 'image_prompt', 'storyboard', 'video_prompt'] as const
 export type SkillStage = typeof skillStages[number]
@@ -32,9 +34,11 @@ type SkillRow = {
 }
 type TreeFile = { path: string; type: string; size?: number }
 type RepositorySnapshot = { repo: string; revision: string; license: string | null; tree: TreeFile[] }
+type SourceFileCache = Map<string, Promise<string>>
 const maxFileBytes = 150_000, maxBundleBytes = 1_000_000
 const requestCache = new Map<string, { at: number; value: unknown }>()
 const pendingRequests = new Map<string, Promise<unknown>>()
+const installationVersions = new Map<string, number>()
 
 export function initSkills(): void {
   db.exec(`CREATE TABLE IF NOT EXISTS installed_skills (
@@ -132,18 +136,26 @@ async function repositorySnapshot(repo: string, fetcher: Fetcher, refresh = fals
       tree: result.tree.filter(item => item.type === 'blob' && safePath(item.path) && !item.path.split('/').some(part => part.startsWith('.'))) }
   }, refresh)
 }
-async function sourceFile(snapshot: RepositorySnapshot, path: string, fetcher: Fetcher): Promise<string> {
+async function sourceFile(snapshot: RepositorySnapshot, path: string, fetcher: Fetcher, files?: SourceFileCache): Promise<string> {
   if (!safePath(path) || !snapshot.tree.some(item => item.path === path)) invalid('技能文件路径不属于当前仓库')
-  return remoteText(`https://raw.githubusercontent.com/${snapshot.repo}/${snapshot.revision}/${path.split('/').map(encodeURIComponent).join('/')}`, fetcher, maxFileBytes)
+  const url = `https://raw.githubusercontent.com/${snapshot.repo}/${snapshot.revision}/${path.split('/').map(encodeURIComponent).join('/')}`
+  if (!files) return remoteText(url, fetcher, maxFileBytes)
+  let request = files.get(url)
+  if (!request) { request = remoteText(url, fetcher, maxFileBytes); files.set(url, request) }
+  return request
 }
 export async function discoverRepository(input: string, fetcher: Fetcher = fetch): Promise<Array<{ repo: string; path: string; name: string; description: string; url: string; installs: number | null }>> {
   const repo = normalizeSkillRepo(input), snapshot = await repositorySnapshot(repo, fetcher)
+  return discoverSnapshot(snapshot, fetcher)
+}
+async function discoverSnapshot(snapshot: RepositorySnapshot, fetcher: Fetcher, files?: SourceFileCache) {
+  const { repo } = snapshot
   const paths = snapshot.tree.filter(item => /(^|\/)SKILL\.md$/.test(item.path))
   if (paths.length > 120) invalid('仓库包含过多技能，请通过技能目录搜索具体名称')
   const results = []
   for (let i = 0; i < paths.length; i += 6) {
     const batch = await Promise.all(paths.slice(i, i + 6).map(async item => {
-      const content = await sourceFile(snapshot, item.path, fetcher)
+      const content = await sourceFile(snapshot, item.path, fetcher, files)
       const meta = parseSkillDocument(content)
       return { repo, path: posix.dirname(item.path) === '.' ? '' : posix.dirname(item.path), name: meta.name,
         description: meta.description, url: `https://github.com/${repo}/blob/${snapshot.revision}/${item.path}`, installs: null }
@@ -173,17 +185,21 @@ export async function loadSkillBundle(inputRepo: string, requestedPath: string, 
   const repo = normalizeSkillRepo(inputRepo)
   if (requestedPath && !safePath(requestedPath)) invalid('技能目录路径无效')
   const snapshot = await repositorySnapshot(repo, fetcher, refresh)
+  return loadSnapshotBundle(snapshot, requestedPath, fetcher)
+}
+async function loadSnapshotBundle(snapshot: RepositorySnapshot, requestedPath: string, fetcher: Fetcher, sourceFiles?: SourceFileCache): Promise<SkillBundle> {
+  const { repo } = snapshot
   return cached(`bundle:${repo}:${snapshot.revision}:${requestedPath}`, async () => {
     const documents = snapshot.tree.filter(item => /(^|\/)SKILL\.md$/.test(item.path))
     let candidates = documents.filter(item => item.path === (requestedPath ? `${requestedPath}/SKILL.md` : 'SKILL.md'))
     if (!candidates.length) candidates = documents.filter(item => posix.basename(posix.dirname(item.path)) === requestedPath)
     if (!candidates.length) {
-      const scanned = await discoverRepository(repo, fetcher)
+      const scanned = await discoverSnapshot(snapshot, fetcher, sourceFiles)
       candidates = scanned.filter(item => item.name === requestedPath).map(item => ({ path: item.path ? `${item.path}/SKILL.md` : 'SKILL.md', type: 'blob' }))
     }
     if (candidates.length !== 1) invalid(candidates.length ? '仓库包含同名技能，请通过仓库搜索选择准确目录' : '仓库中未找到对应的 SKILL.md', 404)
     const documentPath = candidates[0]!.path, path = posix.dirname(documentPath) === '.' ? '' : posix.dirname(documentPath)
-    const content = await sourceFile(snapshot, documentPath, fetcher), meta = parseSkillDocument(content)
+    const content = await sourceFile(snapshot, documentPath, fetcher, sourceFiles), meta = parseSkillDocument(content)
     const selected = new Set([documentPath])
     const prefix = path ? `${path}/` : ''
     // Keep the skill's text resources, plus explicitly linked Markdown shared outside its directory.
@@ -199,7 +215,7 @@ export async function loadSkillBundle(inputRepo: string, requestedPath: string, 
     const paths = [...selected].filter(item => item !== documentPath)
     let total = bytes(content)
     for (let i = 0; i < paths.length; i += 6) {
-      const batch = await Promise.all(paths.slice(i, i + 6).map(async filePath => ({ path: filePath, content: await sourceFile(snapshot, filePath, fetcher) })))
+      const batch = await Promise.all(paths.slice(i, i + 6).map(async filePath => ({ path: filePath, content: await sourceFile(snapshot, filePath, fetcher, sourceFiles) })))
       total += batch.reduce((size, file) => size + bytes(file.content), 0)
       if (total > maxBundleBytes) invalid('技能文本资源总量超过 1 MB，无法安装')
       files.push(...batch)
@@ -245,10 +261,61 @@ export function configureSkill(id: string, enabled: boolean, stages: SkillStage[
   for (const stage of skillStages) ensureSkillDefault(stage)
   return publicSkill(skillRow(id))
 }
-export function removeInstalledSkill(id: string): void { skillRow(id); run('DELETE FROM installed_skills WHERE id=?', id); for (const stage of skillStages) ensureSkillDefault(stage) }
+export function removeInstalledSkill(id: string): void {
+  skillRow(id)
+  run('DELETE FROM installed_skills WHERE id=?', id)
+  installationVersions.set(id, (installationVersions.get(id) || 0) + 1)
+  for (const stage of skillStages) ensureSkillDefault(stage)
+}
 export async function skillUpdateStatus(id: string, fetcher: Fetcher = fetch) {
   const row = skillRow(id), snapshot = await repositorySnapshot(row.repo, fetcher, true)
   return { id, available: snapshot.revision !== row.revision, revision: snapshot.revision, current_revision: row.revision }
+}
+async function boundedMap<T, R>(items: T[], concurrency: number, action: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let next = 0
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next++
+      results[index] = await action(items[index]!)
+    }
+  }))
+  return results
+}
+/** Refresh each source once, then atomically replace each complete installed bundle. */
+export async function syncInstalledSkills(fetcher: Fetcher = fetch): Promise<SkillSyncResult> {
+  const installed = installedSkills().map(skill => ({ skill, version: installationVersions.get(skill.id) || 0 }))
+  const repos = [...new Set(installed.map(({ skill }) => skill.repo))]
+  const snapshots = new Map<string, RepositorySnapshot | Error>()
+  await boundedMap(repos, 3, async repo => {
+    try { snapshots.set(repo, await repositorySnapshot(repo, fetcher, true)) }
+    catch (issue) { snapshots.set(repo, issue instanceof Error ? issue : new Error('技能来源检查失败，请重试')) }
+  })
+  const files: SourceFileCache = new Map()
+  const results = await boundedMap(installed, 3, async ({ skill, version }): Promise<SkillSyncItem> => {
+    try {
+      const snapshot = snapshots.get(skill.repo)!
+      if (snapshot instanceof Error) throw snapshot
+      const current = () => {
+        const row = skillRow(skill.id)
+        if ((installationVersions.get(skill.id) || 0) !== version || row.installed_at !== skill.installed_at
+          || row.repo !== skill.repo || row.path !== skill.path) invalid('技能已卸载或重新安装，请刷新后重试', 409)
+        if (row.revision !== skill.revision && row.revision !== snapshot.revision) invalid('技能版本在同步期间发生变化，请重试', 409)
+        return row
+      }
+      if (current().revision === snapshot.revision) return { id: skill.id, name: skill.name, status: 'unchanged', revision: snapshot.revision }
+      const bundle = await loadSnapshotBundle(snapshot, skill.path, fetcher, files)
+      // No await between this guard and the write: uninstall/configuration changes
+      // made during downloads cannot recreate a deleted skill or reset its settings.
+      if (current().revision === snapshot.revision) return { id: skill.id, name: skill.name, status: 'unchanged', revision: snapshot.revision }
+      const updated = installSkillBundle(bundle, skill.id)
+      return { id: skill.id, name: updated.name, status: 'updated', revision: updated.revision }
+    } catch (issue) {
+      return { id: skill.id, name: skill.name, status: 'failed', error: issue instanceof Error ? issue.message : '技能更新失败，请重试' }
+    }
+  })
+  return { total: results.length, updated: results.filter(item => item.status === 'updated').length,
+    unchanged: results.filter(item => item.status === 'unchanged').length, failed: results.filter(item => item.status === 'failed').length, results }
 }
 function eligibleSkills(stage: SkillStage) { return installedSkills().filter(skill => skill.enabled && skill.stages.includes(stage)) }
 function ensureSkillDefault(stage: SkillStage) {
@@ -290,8 +357,10 @@ export function resetProjectSkillDefault(projectId: string, stage: SkillStage) {
 export function resolveSkillSelections(projectId?: string, overrides: SkillSelections = {}): SkillSelections {
   return Object.fromEntries(skillPolicy(projectId).map(policy => [policy.stage, overrides[policy.stage] ?? (policy.primary_id ? [policy.primary_id, ...policy.auxiliary_ids] : [])]))
 }
-export function skillContext(stage: SkillStage, task: string, selectedIds?: string[], projectId?: string): { text: string; skills: Array<{ id: string; name: string; revision: string; files: string[]; role: 'primary' | 'auxiliary' }>; files: string[] } {
+export function skillContext(stage: SkillStage, task: string, selectedIds?: string[], projectId?: string, _assignmentTask?: SkillTaskContext): { text: string; skills: Array<{ id: string; name: string; revision: string; files: string[]; role: 'primary' | 'auxiliary' }>; files: string[] } {
   const eligible = installedSkills().filter(skill => skill.enabled && skill.stages.includes(stage))
+  // Synchronous loading never infers intent. Execution paths resolve automatic
+  // choices through the model before calling this loader with explicit IDs.
   const ids = skillIdsInput.parse(selectedIds ?? resolveSkillSelections(projectId)[stage] ?? [])
   if (ids.some(id => !eligible.some(skill => skill.id === id))) {
     invalid('所选技能未启用或不适用于此创作环节，请重新选择')
@@ -302,7 +371,7 @@ export function skillContext(stage: SkillStage, task: string, selectedIds?: stri
   for (const [index, skill] of active.entries()) {
     const detail = installedSkillDetail(skill.id), main = detail.files.find(file => /(^|\/)SKILL\.md$/.test(file.path))!
     const body = parseSkillDocument(main.content).body
-    const selected = detail.files.filter(file => file !== main && /\.md$/i.test(file.path) && relevantReference(file.path, task))
+    const selected = detail.files.filter(file => file !== main && /\.md$/i.test(file.path) && relevantReference(file.path, task, stage))
     const text = [body, ...selected.map(file => `参考资料 ${file.path}：\n${file.content}`)].join('\n\n')
     if (text.length > 100_000) invalid(`技能 ${skill.name} 的规则资料过长，请调整技能后重试`)
     const role = index === 0 ? 'primary' : 'auxiliary'
@@ -315,21 +384,26 @@ export function skillContext(stage: SkillStage, task: string, selectedIds?: stri
     '\n【应用契约】沿用本次提供的模型能力、比例、时长、参考图顺序和已确认设定。技能中的 Markdown 模板不能替换本次要求的 JSON 格式；不得调用外部服务或提出工具安装操作。\n' : '',
     skills, files: loadedFiles }
 }
-function relevantReference(path: string, task: string): boolean {
+function relevantReference(path: string, task: string, stage?: SkillStage): boolean {
   const name = posix.basename(path).toLowerCase()
+  // Stage dependencies are explicit: these resources govern action readability
+  // and generability, regardless of incidental words in the user's prompt.
+  const videoDependencies = new Set(['motion-recipe.md', 'generability.md', 'production-prompt-grammar.md',
+    'rubric-visual-motion.md', 'production-quality-gates.md', 'qa-rubric.md', 'provider-capabilities.md'])
+  if (stage === 'video_prompt' && videoDependencies.has(name)) return true
   if (/stage-contract|common-recipe|target-model-profile|review|continuity|performance-action/.test(name)) return true
   if (/seedance-2\.0/.test(name)) return mentionsSeedanceVersion(task, '2.0')
+  if (/seedance-2\.5/.test(name)) return mentionsSeedanceVersion(task, '2.5')
   const mappings: Array<[RegExp, RegExp]> = [
     [/character|look-and-state|look-and-revision/, /人物|角色|服装|character/i],
     [/location|geography/, /场景|地点|空间|location/i], [/prop/, /道具|prop/i],
     [/production-sheet/, /信息图|多视图|三视图|production sheet/i],
-    [/seedance-2\.5/, /seedance[- ]?2\.5/i],
     [/minimax-h3/, /minimax[- ]?h3/i], [/wan-3\.0/, /wan[- ]?3\.0/i],
   ]
   return mappings.some(([file, context]) => file.test(name) && context.test(task))
 }
-export function withSkillRules(stage: SkillStage, prompt: string, onContext?: (context: ReturnType<typeof skillContext>) => void, options: { projectId?: string; selections?: SkillSelections } = {}): string {
-  const context = skillContext(stage, skillTaskPrompt(prompt), options.selections?.[stage], options.projectId)
+export function withSkillRules(stage: SkillStage, prompt: string, onContext?: (context: ReturnType<typeof skillContext>) => void, options: { projectId?: string; selections?: SkillSelections; task?: SkillTaskContext } = {}): string {
+  const context = skillContext(stage, skillTaskPrompt(prompt), options.selections?.[stage], options.projectId, options.task)
   onContext?.(context)
   return applySkillRules(prompt, context)
 }
@@ -340,5 +414,7 @@ export function applySkillRules(prompt: string, context: ReturnType<typeof skill
   return context.text ? context.text + '\n【本次任务、项目事实与输出格式】\n' + task : task
 }
 function skillTaskPrompt(prompt: string) {
-  return prompt.replace(/^\s*【已启用的(?:剧本创作|视觉设定|图片提示词|分镜规划|视频提示词)技能规则】[\s\S]*?\n【本次任务、项目事实与输出格式】\n/, '')
+  // A creator may prepend their own instruction to an editable preview. Remove
+  // the old managed rules wherever they appear, retaining those instructions.
+  return prompt.replace(/(?:^\s*)?【已启用的(?:剧本创作|视觉设定|图片提示词|分镜规划|视频提示词)技能规则】[\s\S]*?\r?\n【本次任务、项目事实与输出格式】\r?\n/g, '')
 }

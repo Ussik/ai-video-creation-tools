@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { probeVideoDurationMs } from '../media/render.js'
 import { dataDir } from '../paths.js'
+import { upgradeLegacySeedance25Settings } from '../../modules/models/legacy-seedance25-settings.js'
 import type { StageArtifactType } from '@video-studio/shared/script/script-stage-content'
 
 export { dataDir } from '../paths.js'
@@ -89,7 +90,7 @@ export interface Model {
   id: string; provider_id: string; name: string; remote_id: string;
   modality: 'text' | 'image' | 'video';
   protocol: 'responses' | 'chat_completions' | 'image_generations' | 'async_video';
-  settings: string; enabled: number; archived: number
+  settings: string; enabled: number; archived: number; is_default?: number
 }
 export interface Asset {
   id: string; project_id: string; shot_id: string | null;
@@ -131,7 +132,7 @@ export interface Job {
 }
 export interface CanvasNode {
   id: string; project_id: string; canvas_id?: string | null; position: number;
-  type: 'text' | 'image' | 'video' | 'generation' | 'project_script_ref';
+  type: 'text' | 'image' | 'video' | 'generation' | 'project_script_ref' | 'image_analysis' | 'video_analysis';
   x: number; y: number; width: number; height: number;
   title: string; text: string; asset_id: string | null;
   shot_id: string | null; model_id: string | null; job_id: string | null; prompt: string;
@@ -324,6 +325,13 @@ export function initDb(): void {
       project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
       start_shot_id TEXT, end_shot_id TEXT
     );
+    CREATE TABLE IF NOT EXISTS editing_cuts (
+      id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL, source_canvas_id TEXT REFERENCES project_canvases(id) ON DELETE SET NULL,
+      revision INTEGER NOT NULL DEFAULT 1, document TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_editing_cuts_project ON editing_cuts(project_id, updated_at);
     CREATE TABLE IF NOT EXISTS providers (
       id TEXT PRIMARY KEY, name TEXT NOT NULL, adapter TEXT NOT NULL,
       base_url TEXT NOT NULL, auth_header TEXT NOT NULL DEFAULT 'Authorization',
@@ -484,7 +492,7 @@ export function initDb(): void {
       id TEXT NOT NULL,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       position INTEGER NOT NULL,
-      type TEXT NOT NULL CHECK (type IN ('text', 'image', 'video', 'generation', 'project_script_ref')),
+      type TEXT NOT NULL CHECK (type IN ('text', 'image', 'video', 'generation', 'project_script_ref', 'image_analysis', 'video_analysis')),
       x REAL NOT NULL, y REAL NOT NULL, width REAL NOT NULL, height REAL NOT NULL,
       title TEXT NOT NULL DEFAULT '', text TEXT NOT NULL DEFAULT '',
       asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
@@ -506,6 +514,23 @@ export function initDb(): void {
     CREATE TABLE IF NOT EXISTS job_image_recovery (
       job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
       result_url_ciphertext TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS job_video_recovery (
+      job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+      result_url_ciphertext TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS job_generation_attempts (
+      job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+      modality TEXT NOT NULL CHECK (modality IN ('image','video')),
+      model_signature TEXT NOT NULL, provider_signature TEXT NOT NULL, started_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS resource_submissions (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      scope TEXT NOT NULL CHECK (scope IN ('generation', 'shot')),
+      submission_key TEXT NOT NULL, request_hash TEXT NOT NULL,
+      resource_id TEXT NOT NULL, created_at TEXT NOT NULL,
+      PRIMARY KEY (project_id, scope, submission_key),
+      UNIQUE (scope, resource_id)
     );
     CREATE INDEX IF NOT EXISTS idx_shots_project ON shots(project_id, position);
     CREATE INDEX IF NOT EXISTS idx_timeline_clips_project ON timeline_clips(project_id);
@@ -530,6 +555,9 @@ export function initDb(): void {
     const boardStyleColumn = bindingColumns.some(column => column.name === 'board_style_version') ? 'board_style_version' : 'NULL'
     const referenceAssetsColumn = bindingColumns.some(column => column.name === 'reference_assets') ? 'reference_assets' : "'[]'"
     const usageColumn = bindingColumns.some(column => column.name === 'usage') ? 'usage' : "'both'"
+    const syncModeColumn = bindingColumns.some(column => column.name === 'sync_mode') ? 'sync_mode' : "'follow'"
+    const referenceSelectionColumn = bindingColumns.some(column => column.name === 'reference_selection') ? 'reference_selection'
+      : `CASE WHEN ${referenceAssetsColumn} <> '[]' THEN 'manual' ELSE 'auto' END`
     db.transaction(() => db.exec(`
       CREATE TABLE shot_visual_bindings_cascade (
         shot_id TEXT NOT NULL REFERENCES shots(id) ON DELETE CASCADE,
@@ -541,11 +569,13 @@ export function initDb(): void {
         board_style_version TEXT,
         reference_assets TEXT NOT NULL DEFAULT '[]',
         usage TEXT NOT NULL DEFAULT 'both' CHECK (usage IN ('both', 'image', 'video', 'none')),
+        sync_mode TEXT NOT NULL DEFAULT 'follow' CHECK (sync_mode IN ('follow', 'locked')),
+        reference_selection TEXT NOT NULL DEFAULT 'auto' CHECK (reference_selection IN ('auto', 'manual')),
         PRIMARY KEY (shot_id, profile_id)
       );
       INSERT INTO shot_visual_bindings_cascade
-        (shot_id, profile_id, required, revision, kind, name, variant, definition, view_requirements, board_asset_id, board_style_version, reference_assets, usage)
-      SELECT shot_id, profile_id, required, revision, kind, name, variant, definition, view_requirements, board_asset_id, ${boardStyleColumn}, ${referenceAssetsColumn}, ${usageColumn}
+        (shot_id, profile_id, required, revision, kind, name, variant, definition, view_requirements, board_asset_id, board_style_version, reference_assets, usage, sync_mode, reference_selection)
+      SELECT shot_id, profile_id, required, revision, kind, name, variant, definition, view_requirements, board_asset_id, ${boardStyleColumn}, ${referenceAssetsColumn}, ${usageColumn}, ${syncModeColumn}, ${referenceSelectionColumn}
       FROM shot_visual_bindings;
       DROP TABLE shot_visual_bindings;
       ALTER TABLE shot_visual_bindings_cascade RENAME TO shot_visual_bindings;
@@ -571,6 +601,18 @@ export function initDb(): void {
   }
   if (!all<{ name: string }>('PRAGMA table_info(shot_visual_bindings)').some(column => column.name === 'usage')) {
     db.exec("ALTER TABLE shot_visual_bindings ADD COLUMN usage TEXT NOT NULL DEFAULT 'both' CHECK (usage IN ('both', 'image', 'video', 'none'))")
+  }
+  const visualBindingColumns = all<{ name: string }>('PRAGMA table_info(shot_visual_bindings)')
+  if (!visualBindingColumns.some(column => column.name === 'sync_mode')) {
+    db.exec("ALTER TABLE shot_visual_bindings ADD COLUMN sync_mode TEXT NOT NULL DEFAULT 'follow' CHECK (sync_mode IN ('follow', 'locked'))")
+  }
+  if (!visualBindingColumns.some(column => column.name === 'reference_selection')) {
+    db.transaction(() => {
+      db.exec("ALTER TABLE shot_visual_bindings ADD COLUMN reference_selection TEXT NOT NULL DEFAULT 'auto' CHECK (reference_selection IN ('auto', 'manual'))")
+      // Older records do not say whether individual images were hand picked.
+      // Preserve those selections instead of silently recommending replacements.
+      db.exec("UPDATE shot_visual_bindings SET reference_selection='manual' WHERE reference_assets <> '[]'")
+    })()
   }
   if (!scriptColumns.some(column => column.name === 'generation_options')) {
     db.exec("ALTER TABLE scripts ADD COLUMN generation_options TEXT NOT NULL DEFAULT '{}'")
@@ -651,7 +693,7 @@ export function initDb(): void {
           id TEXT NOT NULL,
           project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
           position INTEGER NOT NULL,
-          type TEXT NOT NULL CHECK (type IN ('text', 'image', 'video', 'generation', 'project_script_ref')),
+          type TEXT NOT NULL CHECK (type IN ('text', 'image', 'video', 'generation', 'project_script_ref', 'image_analysis', 'video_analysis')),
           x REAL NOT NULL, y REAL NOT NULL, width REAL NOT NULL, height REAL NOT NULL,
           title TEXT NOT NULL DEFAULT '', text TEXT NOT NULL DEFAULT '',
           asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
@@ -690,6 +732,25 @@ export function initDb(): void {
     } finally {
       db.pragma('foreign_keys = ON')
     }
+  }
+
+  const currentCanvasSchema = one<{ sql: string }>("SELECT sql FROM sqlite_master WHERE type='table' AND name='canvas_nodes'")?.sql ?? ''
+  if (!currentCanvasSchema.includes("'image_analysis'") || !currentCanvasSchema.includes("'video_analysis'")) {
+    // Extend the CHECK while retaining later additions such as canvas_id and
+    // every edge snapshot. Reusing the legacy fixed-column migration loses them.
+    const indexes = all<{ sql: string }>("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='canvas_nodes' AND sql IS NOT NULL")
+    const expandedSchema = currentCanvasSchema.replace(/CREATE TABLE\s+(?:"canvas_nodes"|canvas_nodes)/i, 'CREATE TABLE canvas_nodes_vision')
+      .replace(/'project_script_ref'/, `'project_script_ref'${currentCanvasSchema.includes("'image_analysis'") ? '' : ", 'image_analysis'"}${currentCanvasSchema.includes("'video_analysis'") ? '' : ", 'video_analysis'"}`)
+    db.pragma('foreign_keys = OFF')
+    try {
+      db.transaction(() => {
+        db.exec(expandedSchema)
+        db.exec('INSERT INTO canvas_nodes_vision SELECT * FROM canvas_nodes')
+        db.exec('DROP TABLE canvas_nodes')
+        db.exec('ALTER TABLE canvas_nodes_vision RENAME TO canvas_nodes')
+        for (const index of indexes) db.exec(index.sql)
+      })()
+    } finally { db.pragma('foreign_keys = ON') }
   }
 
   const edgeColumns = db.pragma('table_info(canvas_edges)') as Array<{ name: string }>
@@ -790,6 +851,10 @@ export function initDb(): void {
   if (!modelColumns.some(column => column.name === 'archived')) {
     db.exec('ALTER TABLE models ADD COLUMN archived INTEGER NOT NULL DEFAULT 0')
   }
+  if (!modelColumns.some(column => column.name === 'is_default')) {
+    db.exec('ALTER TABLE models ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0')
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS models_default_modality ON models(modality) WHERE is_default=1')
   if (!one('SELECT 1 FROM studio_migrations WHERE id=?', 'image-ratio-parameters-v1')) {
     const imageRatios = ['1:1', '1:2', '2:1', '9:16', '16:9', '3:4', '4:3', '3:2', '2:3', '5:4', '4:5', '21:9', '9:21']
     db.transaction(() => {
@@ -819,6 +884,15 @@ export function initDb(): void {
       db.pragma('user_version = 3')
     })()
   }
+  if (!one('SELECT 1 FROM studio_migrations WHERE id=?', 'seedance25-default-settings-v1')) {
+    db.transaction(() => {
+      for (const model of all<Model>("SELECT * FROM models WHERE remote_id='doubao-seedance-2-5-260628' AND modality='video' AND protocol='async_video'")) {
+        const settings = upgradeLegacySeedance25Settings(model)
+        if (settings !== null) run('UPDATE models SET settings=? WHERE id=?', settings, model.id)
+      }
+      run('INSERT INTO studio_migrations (id, applied_at) VALUES (?, ?)', 'seedance25-default-settings-v1', now())
+    })()
+  }
   if (!one('SELECT 1 FROM studio_migrations WHERE id=?', 'saved-assets-v1')) {
     db.transaction(() => {
       // Existing assets predate the explicit save action, so keep them visible
@@ -836,12 +910,22 @@ export function initDb(): void {
       '语音任务因服务重启中断，厂商可能已计费。请先核对调用记录，再在配音页手动生成新的候选。', timestamp)
     run(`UPDATE jobs SET status='failed', error=?, updated_at=?
       WHERE status='running' AND job_type='generation'
-        AND model_id IN (SELECT id FROM models WHERE modality='image')
+        AND (model_id IN (SELECT id FROM models WHERE modality='image')
+          OR id IN (SELECT job_id FROM job_generation_attempts WHERE modality='image'))
         AND NOT EXISTS (SELECT 1 FROM job_image_recovery WHERE job_id=jobs.id)
+        AND NOT EXISTS (SELECT 1 FROM job_video_recovery WHERE job_id=jobs.id)
         AND NOT (external_id IS NOT NULL AND external_id<>'' AND model_id IN (
           SELECT id FROM models WHERE json_extract(CASE WHEN json_valid(settings) THEN settings ELSE '{}' END, '$.async_image')=1
         ))`,
       '图片任务中断，未找到可恢复图片链接。厂商可能已计费，请先核对厂商记录，再手动创建新的生成任务。', timestamp)
+    run(`UPDATE jobs SET status='failed', error=?, updated_at=?
+      WHERE status='running' AND job_type='generation'
+        AND (model_id IN (SELECT id FROM models WHERE modality='video')
+          OR id IN (SELECT job_id FROM job_generation_attempts WHERE modality='video'))
+        AND NOT EXISTS (SELECT 1 FROM job_image_recovery WHERE job_id=jobs.id)
+        AND NOT EXISTS (SELECT 1 FROM job_video_recovery WHERE job_id=jobs.id)
+        AND (external_id IS NULL OR TRIM(external_id) IN ('','undefined','null'))`,
+      '视频任务因服务重启中断，未找到可确认的厂商任务编号或结果链接。厂商可能已计费，请先核对厂商记录；不会自动重新提交生成。', timestamp)
     run("UPDATE jobs SET status='queued', updated_at=? WHERE status='running'", timestamp)
   })()
 }

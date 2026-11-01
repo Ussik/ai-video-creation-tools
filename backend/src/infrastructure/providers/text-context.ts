@@ -31,11 +31,11 @@ export function estimateTextRequestTokens(body: unknown): number {
 /** Honor the actual outgoing output cap, including legacy max_tokens. An
  * explicit fallback reserve budgets an unknown server default; it never
  * changes the request's output limit or silently truncates input. */
-export function assertTextRequestCapacity(settings: Record<string, unknown>, body: unknown, protocol?: string): TextContextEstimate {
+export function assertTextRequestCapacity(settings: Record<string, unknown>, body: unknown, protocol?: string, visualInputTokens = 0): TextContextEstimate {
   let configured: ReturnType<typeof textContextSettings>
   try { configured = textContextSettings(settings) }
   catch (issue) { throw new TextContextCapacityError(`文本模型容量配置有误：${issue instanceof Error ? issue.message : String(issue)}`) }
-  const estimate: TextContextEstimate = { estimated_input_tokens: estimateTextRequestTokens(body),
+  const estimate: TextContextEstimate = { estimated_input_tokens: estimateTextRequestTokens(body) + visualInputTokens,
     ...(configured.context_window_tokens === undefined ? {} : { context_window_tokens: configured.context_window_tokens }) }
   const request = body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : {}
   const output = protocol === 'responses' ? request.max_output_tokens

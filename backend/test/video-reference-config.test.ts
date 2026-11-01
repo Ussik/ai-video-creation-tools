@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { supportsVideoMultiReference, videoReferenceConfigError, videoReferenceMediaError } from '@video-studio/shared/media/video-reference-config'
-import { applySeedance2VideoSettings, seedance2VideoSettings } from '@video-studio/shared/models/seedance-video-settings'
+import { supportsVideoMultiReference, videoReferenceConfigError, videoReferenceImageLimit, videoReferenceMediaError } from '@video-studio/shared/media/video-reference-config'
+import { applySeedance2VideoSettings, seedance2VideoSettings, seedance25VideoSettings } from '@video-studio/shared/models/seedance-video-settings'
 import { synchronizeVideoReferencePrompt, visualGenerationPrompt } from '@video-studio/shared/visuals/visual-prompt'
 
 test('multi-reference availability requires declared mode and consumed multi-image variables', () => {
@@ -62,6 +62,22 @@ test('Seedance media limits are explicitly configured and account for encoded re
   assert.match(videoReferenceMediaError(settings, [{ ...valid, width: 300, height: 1000 }])!, /宽高比/)
   assert.match(videoReferenceMediaError(settings, [valid], 64 * 1024 * 1024 + 1)!, /含 Base64/)
   assert.equal(videoReferenceMediaError({}, [{ ...valid, width: 1, bytes: 100 * 1024 * 1024 }], 200 * 1024 * 1024), null)
+})
+
+test('Seedance 2.5 permits thirty images with official roles and keeps earlier profile limits', () => {
+  const settings = seedance25VideoSettings(), image = { bytes: 1000, width: 300, height: 400 }
+  assert.equal(videoReferenceImageLimit(settings), 30)
+  assert.equal(videoReferenceImageLimit({}), 10)
+  assert.equal(videoReferenceImageLimit(seedance2VideoSettings()), 9)
+  assert.equal(supportsVideoMultiReference(settings), true)
+  for (const mode of ['reference', 'edit', 'extend']) assert.equal(videoReferenceConfigError(settings, 30, mode), null)
+  assert.match(videoReferenceConfigError(settings, 31)!, /30 张/)
+  assert.match(videoReferenceConfigError({ ...settings, max_reference_images: 31 }, 1)!, /1 到 30/)
+  assert.match(videoReferenceConfigError({ ...settings, reference_roles: { edit: ['first_frame'] } }, 1, 'edit')!, /只能使用 reference_image/)
+  assert.match(videoReferenceConfigError({ ...settings, image_reference_template: { image_url: '{{image}}' } }, 1)!, /每张参考图片/)
+  assert.equal(videoReferenceMediaError(settings, Array(30).fill(image), 64 * 1024 * 1024), null)
+  assert.match(videoReferenceMediaError(settings, Array(31).fill(image))!, /2.5 最多支持 30 张/)
+  assert.match(videoReferenceMediaError(settings, [image], 64 * 1024 * 1024 + 1)!, /2.5 请求超过 64 MB/)
 })
 
 test('video reference mapping keeps edited prose, actual image order and one managed block', () => {

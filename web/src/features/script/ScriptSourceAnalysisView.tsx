@@ -72,6 +72,7 @@ export function ScriptSourceAnalysisStatus({ source, starting, unavailable, poll
         </List.Item>
       })}
     </List>}
+    {(pending || interrupted) && mapReady && <small>剧情目录已完成；全剧整合与质量核对仍以各步骤状态为准。</small>}
     {analysis?.status === 'running' && !pollError && <SourceAnalysisElapsed key={analysis.id} startedAt={analysis.started_at} />}
     {pending && !pollError && analysis.progress && <small>{analysis.progress.stage === 'splitting' ? '将完整读取当前文稿，重新进行全文分析。' : scriptDiagnosticDisplayText(analysis.progress.message).replace(/；全文一次提交$/, '')}</small>}
     {pending && !pollError && <small>按实际处理步骤更新，单步耗时不代表剩余时间。</small>}

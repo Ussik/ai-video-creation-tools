@@ -205,6 +205,52 @@ test('header project switching retains asset workspace and clears prior selectio
   } finally { await act(() => root.unmount()); container.remove(); frames.clear() }
 })
 
+test('editor supplement opens the exact missing outline scope without generating or saving', async t => {
+  const requests: Array<{ path: string; method: string }> = []
+  t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
+    const path = String(url), method = init?.method || 'GET'; requests.push({ path, method })
+    assert.equal(method, 'GET', 'opening supplement configuration must not generate or save')
+    if (path === '/api/projects') return Response.json([detail])
+    if (path === '/api/providers' || path === '/api/models') return Response.json([])
+    if (path === '/api/projects/refresh/canvases') return Response.json([{ id: 'refresh', project_id: 'refresh', name: '画布 1', is_default: true, node_count: graph.nodes.length, viewport: null }])
+    if (path === '/api/projects/refresh/canvas') return Response.json(graph)
+    if (path === '/api/projects/refresh') return Response.json(detail)
+    if (path.endsWith('/continuity')) return Response.json({ shots: [], summary: { status: 'ready', error_count: 0, warning_count: 0 }, signature: 'supplement' })
+    if (path.endsWith('/script/source')) return Response.json(null)
+    if (path.endsWith('/conversations')) return Response.json({ conversations: [] })
+    if (path.endsWith('/tools-state')) return Response.json({ draft: null, decisions: [] })
+    if (path.endsWith('/skills/defaults')) return Response.json({ policies: [] })
+    throw new Error(`Unexpected request: ${method} ${path}`)
+  })
+  dom.window.localStorage.clear(); dom.window.sessionStorage.clear(); frames.clear()
+  const container = document.createElement('div'); document.body.append(container)
+  const root = createRoot(container)
+  try {
+    await act(() => root.render(<MantineProvider env="test"><App /></MantineProvider>)); await settle()
+    await act(() => container.querySelector<HTMLButtonElement>('.project-card-main')!.click()); await settle()
+    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="编辑剧本"]')!.click()); await settle()
+    assert.ok(container.querySelector('[aria-label="剧本创作"]'))
+    const supplement = [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '补齐故事大纲缺项')
+    assert.ok(supplement)
+    assert.equal(supplement.disabled, false)
+    await act(() => supplement.click()); await settle()
+    assert.equal(container.querySelector('[aria-label="剧本创作"]'), null)
+    const panel = container.querySelector('[aria-label="分阶段生成面板"]')!
+    assert.ok(panel, 'the editor opens the real director configuration')
+    assert.equal(panel.querySelector<HTMLInputElement>('input[aria-label="阶段处理方式"]')?.value, '补齐缺失栏目')
+    const deliverables = [...panel.querySelectorAll('p')].find(element => element.textContent?.startsWith('本次交付：'))!.textContent!
+    assert.doesNotMatch(deliverables, /概要设计/, 'the saved outline is excluded from the requested work')
+    assert.match(deliverables, /故事简述/)
+    assert.match(deliverables, /钩子预设/)
+    assert.match(deliverables, /分集大纲/)
+    assert.match(panel.textContent!, /已保存栏目的标题和正文保持原样/)
+    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="打开剧本对话"]')!.click()); await settle()
+    assert.equal(container.querySelector('[aria-label="分阶段生成面板"]'), null, 'a regular conversation opening clears the supplement request')
+    assert.ok(requests.every(request => request.method === 'GET'))
+    assert.equal(detail.script.outline, '# 故事大纲\n\n林晚在车站等候列车。')
+  } finally { await act(() => root.unmount()); container.remove(); frames.clear() }
+})
+
 test('task history pauses idle and hidden polling, refreshes on visibility, and resets filters when switching projects', async t => {
   const a = { ...structuredClone(detail), id: 'tasks-a', name: '任务项目甲' }
   const b = { ...structuredClone(detail), id: 'tasks-b', name: '任务项目乙' }
@@ -266,4 +312,57 @@ test('task history pauses idle and hidden polling, refreshes on visibility, and 
     await act(() => root.unmount()); container.remove(); frames.clear()
     Reflect.deleteProperty(document, 'visibilityState')
   }
+})
+
+test('real App resumes video query and download through their original jobs without changing prompts or creating paid requests', async t => {
+  const project = structuredClone(detail)
+  project.jobs = (['verify', 'query', 'download'] as const).map(action => ({ id: `restart-${action}`, project_id: project.id,
+    shot_id: null, model_id: 'video-model', job_type: 'generation', request: JSON.stringify({ prompt: `原提示词-${action}`, duration: 8 }),
+    status: 'failed', external_id: action === 'query' ? 'vendor-existing' : null, result_asset_id: null, error: '服务重启',
+    recovery_available: action === 'download', task_resume_available: action === 'query', recovery_action: action, recovery_modality: 'video', created_at: timestamp }))
+  const originalRequests = new Map(project.jobs.map(job => [job.id, job.request]))
+  const writes: Array<{ path: string; body: BodyInit | null | undefined }> = []
+  t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
+    const path = String(url), method = init?.method || 'GET'
+    if (method !== 'GET') {
+      writes.push({ path, body: init?.body })
+      assert.equal(method, 'POST')
+      const match = /^\/api\/jobs\/(restart-query|restart-download)\/retry$/.exec(path)
+      assert.ok(match, 'only existing-task query or download may be resumed')
+      assert.equal(init?.body, undefined, 'resuming cannot supply a modified prompt or generation payload')
+      const existing = project.jobs.find(job => job.id === match[1])!
+      existing.status = 'queued'; existing.recovery_action = null
+      return Response.json(existing)
+    }
+    if (path === '/api/projects') return Response.json([project])
+    if (path === '/api/providers') return Response.json([{ id: 'provider', name: '测试提供商', adapter: 'http', enabled: true }])
+    if (path === '/api/models') return Response.json([{ id: 'video-model', provider_id: 'provider', name: '视频模型', modality: 'video', enabled: true, settings: {} }])
+    if (path === '/api/projects/refresh') return Response.json(project)
+    if (path.endsWith('/canvases')) return Response.json([])
+    if (path.endsWith('/continuity')) return Response.json({ shots: [], summary: { status: 'ready', error_count: 0, warning_count: 0 }, signature: 'recovery' })
+    if (path === '/api/job-queue') return Response.json({ concurrency: 3, max_concurrency: 10, running: 0, queued: 0 })
+    throw new Error(`Unexpected request: ${method} ${path}`)
+  })
+  dom.window.localStorage.clear(); dom.window.sessionStorage.clear(); frames.clear()
+  const container = document.createElement('div'); document.body.append(container)
+  const root = createRoot(container)
+  try {
+    await act(() => root.render(<MantineProvider env="test"><App /></MantineProvider>)); await settle()
+    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="任务记录"]')!.click()); await settle()
+    assert.equal(writes.length, 0, 'mounting history never resumes or recreates generation work')
+    const unknown = [...container.querySelectorAll('tbody tr')].find(row => row.textContent?.includes('原任务可能已被接收'))!
+    assert.ok(unknown); assert.match(unknown.querySelector('.job-status')!.textContent!, /待核对/)
+    assert.doesNotMatch(unknown.textContent!, /重试|继续查询|恢复下载/)
+    const action = (label: string) => {
+      const found = [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === label)
+      assert.ok(found, label); return found
+    }
+    await act(() => action('继续查询').click()); await settle()
+    assert.match(container.textContent!, /原任务继续查询已入队/)
+    await act(() => action('恢复下载').click()); await settle()
+    assert.match(container.textContent!, /下载恢复任务已入队/)
+    assert.deepEqual(writes.map(value => value.path), ['/api/jobs/restart-query/retry', '/api/jobs/restart-download/retry'])
+    assert.ok(project.jobs.every(job => job.request === originalRequests.get(job.id)))
+    assert.equal(project.jobs.find(job => job.id === 'restart-verify')!.status, 'failed')
+  } finally { await act(() => root.unmount()); container.remove(); frames.clear() }
 })

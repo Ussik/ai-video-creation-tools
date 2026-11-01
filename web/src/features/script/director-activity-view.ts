@@ -32,7 +32,7 @@ export function activitySequence(events: ScriptActivity[]) {
   const promote = (node: ActivityNode) => {
     if (node.event.scope === 'notice') {
       node.children.forEach(promote)
-    } else if (node.event.scope === 'task' && node.children.length) {
+    } else if (node.event.scope === 'task') {
       tasks.push(node)
       node.children.forEach(promote)
     } else steps.push(node)
@@ -41,7 +41,7 @@ export function activitySequence(events: ScriptActivity[]) {
   const order = new Map(events.map((event, index) => [event.id, index]))
   steps.sort((a, b) => order.get(a.event.id)! - order.get(b.event.id)!)
   const active = [...events].reverse().map(event => nodes.get(event.id)!).find(node => node.event.scope !== 'notice' && node.event.status === 'running' && !node.waiting)
-  const current = active && steps.find(step => [step, ...activityCalls(step).map(call => call.node)].includes(active))
+  const current = active && [...steps, ...tasks.slice().reverse()].find(step => [step, ...activityCalls(step).map(call => call.node)].includes(active))
   return { steps, tasks, notices, active, current }
 }
 

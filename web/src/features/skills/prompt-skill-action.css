@@ -71,8 +71,9 @@
 .prompt-skill-source .workspace-disclosure-control:focus-visible { outline: 2px solid var(--fc-focus); outline-offset: 3px; }
 .prompt-skill-source > p { max-height: 130px; margin: 10px 0 0; padding: 10px 12px; overflow-y: auto; border-radius: 8px; background: var(--fc-surface); color: var(--fc-text-subtle); font-size: 12px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; scrollbar-width: thin; }
 .prompt-skill-adjustment { display: grid; gap: 10px; min-width: 0; }
-.prompt-skill-modal .prompt-skill-adjustment-input { padding: 10px 12px; border: 1px solid var(--fc-border); border-radius: 10px; background: var(--fc-surface); color: var(--fc-text); font-size: 13px; line-height: 1.75; }
-.prompt-skill-modal .prompt-skill-adjustment-input::placeholder { color: var(--fc-text-subtle); }
+.prompt-skill-adjustment .pc-prompt-editor-surface { border-color: var(--fc-border); border-radius: 10px; background: var(--fc-surface); }
+.prompt-skill-adjustment .pc-prompt-editor-content { max-height: 180px; padding: 10px 12px; color: var(--fc-text); font-size: 13px; line-height: 1.75; }
+.prompt-skill-adjustment .pc-prompt-editor-content:has(> p:first-child:last-child:empty)::before { color: var(--fc-text-subtle); }
 .prompt-skill-adjustment .mantine-InputWrapper-description { margin-top: 0; margin-bottom: 7px; color: var(--fc-text-subtle); font-size: 11px; line-height: 1.6; }
 .prompt-skill-directions { display: flex; flex-wrap: wrap; gap: 6px; }
 .prompt-skill-modal .prompt-skill-directions .mantine-Button-root { border: 1px solid var(--fc-border-soft); border-radius: 7px; background: transparent; color: var(--fc-text-muted); font-size: 11px; font-weight: 400; }
@@ -97,8 +98,8 @@
   scrollbar-color: var(--workspace-line-strong, #34383d) transparent;
   transition: border-color 150ms, box-shadow 150ms;
 }
-.prompt-skill-modal :is(.prompt-skill-model-input, .prompt-skill-editor, .prompt-skill-adjustment-input):hover:not(:disabled) { border-color: var(--workspace-line-strong, var(--fc-border)); }
-.prompt-skill-modal :is(.prompt-skill-model-input, .prompt-skill-editor, .prompt-skill-adjustment-input):is(:focus, :focus-visible, [data-expanded]) {
+.prompt-skill-modal :is(.prompt-skill-model-input, .prompt-skill-editor, .prompt-skill-adjustment .pc-prompt-editor-content):hover:not(:disabled) { border-color: var(--workspace-line-strong, var(--fc-border)); }
+.prompt-skill-modal :is(.prompt-skill-model-input, .prompt-skill-editor, .prompt-skill-adjustment .pc-prompt-editor-content):is(:focus, :focus-visible, [data-expanded]) {
   border-color: var(--fc-focus) !important;
   outline: none;
   box-shadow: 0 0 0 2px #ffffff0a;

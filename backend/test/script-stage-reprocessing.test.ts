@@ -214,7 +214,7 @@ test('typed and intent-selected episodes use structured redesign with full sourc
     assert.equal(done.tool_draft.workflow.operation, 'regenerate')
     assert.equal(done.tool_draft.workflow.episode_number, 1)
     assert.equal(done.tool_draft.documents[0].id, source.id)
-    assert.equal(intentCalls, useTools && typed ? 0 : 1)
+    assert.equal(intentCalls, typed ? 0 : 1, 'typed targets bypass reinterpretation in both transports')
     assert.equal(turns, 1, 'one controlled writing request replaces read/decide/write model rounds')
     assert.equal(reviews, 1, 'the complete redesigned episode still receives an independent audit')
     assert.equal(one('SELECT * FROM script_generation_checkpoints WHERE project_id=?', project.id), undefined)
@@ -352,8 +352,10 @@ test('intent-selected episode redesign resumes with an explicit workflow and ret
   assert.equal(writes, 1); assert.equal(reviews, 0)
   assert.equal(getToolDraft(project.id), null)
   const checkpoint = JSON.parse(one<{ payload: string }>('SELECT payload FROM script_generation_checkpoints WHERE project_id=?', project.id)!.payload)
-  assert.deepEqual(checkpoint.steps['draft:stream:state'].value.artifacts, request.artifacts)
-  assert.deepEqual(checkpoint.steps['draft:stream:state'].value.scenes, request.scenes.slice(0, 2))
+  const streamState = checkpoint.steps['work:episode:episode/draft:stream:state']
+  assert.ok(streamState, 'continuation belongs to the individual episode work item')
+  assert.deepEqual(streamState.value.artifacts, request.artifacts)
+  assert.deepEqual(streamState.value.scenes, request.scenes.slice(0, 2))
   assert.ok(!JSON.stringify(checkpoint).includes('DISCONNECTED_TAIL'))
   assert.deepEqual(script(), before); assert.deepEqual(references(), originalReferences)
   const second = await stream(true), done = second.find(event => event.type === 'done')
@@ -484,13 +486,20 @@ test('natural-language redesign resolves the old stage before tools over JSON an
         intentCalls++
         return Response.json({ choices: [{ message: { content: JSON.stringify({ action: 'draft', operation: 'regenerate', authorization: 'explicit', workflow: { stage: 'locations' }, creative_brief: '重新设计四份全剧场景资料，禁止分集正文', settings_patch: {} }) } }] })
       }
-      assert.match(prompt, /"stage":"locations","episode_number":null,"mode":"explicit"/)
-      assert.match(prompt, /"operation":"regenerate"/)
+      const contextMarker = '项目与剧本上下文：\n', contextStart = prompt.indexOf(contextMarker) + contextMarker.length
+      const context = JSON.parse(prompt.slice(contextStart, prompt.indexOf('\n本次创作要求与历史对话', contextStart)))
+      assert.equal(context.task_scope.stage, 'locations')
+      assert.equal(context.task_scope.operation, 'regenerate')
+      assert.equal(context.task_scope.scope, 'project')
+      assert.equal(context.task_scope.episode_number, 0)
+      assert.ok(prompt.includes(original.content), 'structured redesign still receives the current accepted scene design')
       assert.doesNotMatch(prompt, /以下是当前阶段的内容标准[^]*只写第 2 集/)
       turns++
-      const operation = turns === 1 ? { name: 'read_documents', arguments: { document_ids: [original.id] } }
-        : turns === 2 ? { name: 'create_document_draft', arguments: { stage: 'locations', artifacts: artifacts('locations', '全新车站设计').map(({ status, ...doc }) => doc), scenes: [] } } : null
-      return Response.json({ choices: [{ message: operation ? { tool_calls: [{ id: `turn-${turns}`, type: 'function', function: { name: operation.name, arguments: JSON.stringify(operation.arguments) } }] } : { content: '场景设计草稿已准备，尚未保存。' }, finish_reason: operation ? 'tool_calls' : 'stop' }] })
+      assert.equal(body.tools, undefined, 'typed subtasks use the structured runner instead of model-led read/write turns')
+      const wireType = body.response_format.json_schema.schema.properties.artifacts.items.properties.artifact_type
+      const selected: string[] = wireType.enum || [wireType.const]
+      const documents = artifacts('locations', '全新车站设计').filter(doc => selected.includes(doc.artifact_type)).map(({ status, ...doc }) => doc)
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ artifacts: documents, scenes: [] }) }, finish_reason: 'stop' }] })
     })
     const payload = { model_id: model.id, mode: 'script', use_tools: true, messages: [{ role: 'assistant', text: '下一步可生成第2集正文。' }, { role: 'user', text: '重新设计全剧场景，只要场景设计，别写第二集' }] }
     const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat${suffix}`, payload })
@@ -499,12 +508,14 @@ test('natural-language redesign resolves the old stage before tools over JSON an
     assert.equal(done.tool_draft.documents.length, 4)
     assert.equal(done.stage_context.stage, 'locations')
     assert.equal(intentCalls, 1)
+    assert.equal(turns, 2, 'the location design is split into spatial and continuity work items')
     assert.deepEqual(script(), before)
     discardToolDraft(project.id, done.tool_draft.id, done.tool_draft.version)
     turns = 0
     const typed = await call('POST', `/api/projects/${project.id}/script/director/chat`, { ...payload, workflow: { stage: 'locations', operation: 'regenerate' } })
     assert.equal(typed.tool_draft.workflow.operation, 'regenerate')
     assert.equal(intentCalls, 1, 'a typed target is not reinterpreted by the model')
+    assert.equal(turns, 2)
     t.mock.restoreAll()
   }
 })

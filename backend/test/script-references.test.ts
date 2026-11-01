@@ -6,6 +6,7 @@ import { after, test } from 'node:test'
 import { scriptStageArtifacts, scriptArtifactLabels } from '@video-studio/shared/script/script-stage-content'
 import { referenceDocuments, decodeReferenceDocuments, referenceContext } from '../src/modules/script/script-references.js'
 import { draftCompletenessFixtureResponse } from './fixtures/script-draft-completeness.js'
+import { workflowFixtureTypes } from './fixtures/script-workflow.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'studio-references-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
@@ -73,7 +74,7 @@ test('intent sees reference metadata while the writer receives the full snapshot
     const intent = prompt.includes('本次独立调用只理解创作者意图')
     if (!intent) assert.ok(prompt.includes('结尾的关键事实'), 'workflow writer must receive the full reference too')
     const content = intent ? { action: 'draft', operation: 'create', workflow: { stage: 'outline', episode_number: 1 }, creative_brief: '根据引用资料调整结尾', settings_patch: {} }
-      : { artifacts: scriptStageArtifacts.outline.map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '保留关键事实' })), scenes: [] }
+      : { artifacts: workflowFixtureTypes(prompt).map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '保留关键事实' })), scenes: [] }
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }), { headers: { 'Content-Type': 'application/json' } })
   }
   const draft = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload: { model_id: model.id, mode: 'script', workflow: { stage: 'outline', episode_number: 1 }, messages: [{ role: 'user', text: '根据引用资料调整结尾', reference_documents: [document] }] } })

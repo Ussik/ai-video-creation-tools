@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 import type { PendingScriptDraft } from '../src/modules/script/script-draft-resolution.js'
 import { canContinueScriptDraftRepair, completeScriptDraftRepairRound, completedScriptDraftRepairRounds,
-  scriptDraftRepairRoundLimit, startScriptDraftRepairRounds } from '../src/modules/script/script-draft-repair-rounds.js'
+  startScriptDraftRepairRounds } from '../src/modules/script/script-draft-repair-rounds.js'
 
 const directory = await mkdtemp(join(tmpdir(), 'draft-repair-rounds-'))
 process.env.VIDEO_STUDIO_DATA_DIR = directory
@@ -27,18 +27,18 @@ function fixture(rounds?: number) {
   return { projectId, pending }
 }
 
-test('transport interruption and continuation preserve allowance; only unsuccessful semantic reviews consume rounds', () => {
+test('transport interruption preserves diagnostic rounds and repair continues beyond the former four-round limit', () => {
   let state: { completed_rounds?: number } = {}
   assert.equal(completedScriptDraftRepairRounds(state), 0, 'legacy runs have no completed review rounds')
-  for (let round = 0; round < scriptDraftRepairRoundLimit; round++) {
+  for (let round = 0; round < 12; round++) {
     assert.equal(canContinueScriptDraftRepair(state), true)
     const resumed = startScriptDraftRepairRounds('continue', state)
     assert.equal(resumed, round, 'transport resume must not consume a round')
     assert.equal(startScriptDraftRepairRounds('continue', { completed_rounds: resumed }), round, 'repeated transport resumes have the same allowance')
     state = { completed_rounds: completeScriptDraftRepairRound(state) }
   }
-  assert.equal(completedScriptDraftRepairRounds(state), 4)
-  assert.equal(canContinueScriptDraftRepair(state), false)
+  assert.equal(completedScriptDraftRepairRounds(state), 12)
+  assert.equal(canContinueScriptDraftRepair(state), true)
   assert.equal(startScriptDraftRepairRounds('manual', state), 0, 'new manual answers authorize a new allowance')
   assert.equal(startScriptDraftRepairRounds('ai', state), 0, 'explicit AI delegation authorizes a new allowance')
 })
@@ -47,7 +47,7 @@ test('persisted candidate counters cover missing or stale runs and invalid count
   assert.equal(completedScriptDraftRepairRounds({ completed_rounds: 3, run: { completed_rounds: 1 } }), 3)
   assert.equal(completedScriptDraftRepairRounds({ run: { completed_rounds: 3 } }), 3)
   for (const value of [-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
-    assert.equal(canContinueScriptDraftRepair({ completed_rounds: value }), false)
+    assert.throws(() => canContinueScriptDraftRepair({ completed_rounds: value }), /检查点无效/)
   }
 })
 
@@ -63,11 +63,12 @@ test('changing candidate version preserves the completed rounds even when new fi
   assert.equal(publicDraftResolution(pendingScriptDraft(projectId))!.completed_rounds, 3)
 })
 
-test('four unsuccessful reviews block continue without changing the candidate, while a fresh delegation remains possible', () => {
-  const { projectId, pending } = fixture(4)
-  assert.throws(() => claimScriptDraft(projectId, { id: pending.id, version: pending.version, strategy: 'continue' }, pending.source_version),
-    (error: unknown) => error instanceof Error && (error as Error & { statusCode: number }).statusCode === 409 && error.message.includes('4 轮'))
-  assert.deepEqual(pendingScriptDraft(projectId), pending, 'rejection retains exact current draft and answers')
+test('completed reviews do not block continue or change the retained candidate and answers', () => {
+  const { projectId, pending } = fixture(12)
+  const continued = claimScriptDraft(projectId, { id: pending.id, version: pending.version, strategy: 'continue' }, pending.source_version)
+  assert.deepEqual(continued.pending, pending)
+  assert.equal(startScriptDraftRepairRounds('continue', continued.pending), 12)
+  continued.release()
   for (const strategy of ['manual', 'ai'] as const) {
     const claim = claimScriptDraft(projectId, { id: pending.id, version: pending.version, strategy, ...(strategy === 'manual' ? { answers: ['新的明确处理方案。'] } : {}) }, pending.source_version)
     assert.equal(startScriptDraftRepairRounds(strategy, claim.pending), 0)
@@ -75,11 +76,12 @@ test('four unsuccessful reviews block continue without changing the candidate, w
   }
 })
 
-test('the four-round guard still applies after the pending version changes and the resumable run disappears', () => {
-  const { projectId, pending } = fixture(4)
+test('high diagnostic round counts survive candidate version changes without imposing a limit', () => {
+  const { projectId, pending } = fixture(12)
   const { id: _id, version: _version, ...value } = pending
   const next = retainScriptDraft(projectId, { ...value, completed_rounds: undefined, run: undefined }, pending)
-  assert.throws(() => claimScriptDraft(projectId, { id: next.id, version: next.version, strategy: 'continue' }, next.source_version), /4 轮/)
+  assert.equal(next.completed_rounds, 12)
+  assert.equal(canContinueScriptDraftRepair(next), true)
 })
 
 test('publishing an explicitly reauthorized run resets persisted rounds, while subsequent failed review survives a new version', () => {

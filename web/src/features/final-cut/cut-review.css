@@ -100,7 +100,7 @@
 }
 
 .cut-review-item:hover { border-color: var(--fc-border-strong); background: var(--fc-surface-hover); }
-.cut-review-item.is-selected { border-color: var(--fc-border-strong); background: var(--fc-surface-hover); }
+.cut-review-item.is-selected { border-color: color-mix(in srgb, var(--fc-primary) 40%, var(--fc-border)); background: var(--fc-primary-soft); }
 .cut-review-item-index { color: var(--fc-text-secondary); font-size: 10px; font-weight: 700; }
 .cut-review-item-titles { display: flex; align-items: center; gap: 4px; min-width: 0; width: 100%; }
 .cut-review-item-titles strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 630; }

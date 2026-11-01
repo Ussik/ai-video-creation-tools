@@ -14,8 +14,9 @@ const testData = await mkdtemp(join(tmpdir(), 'studio-script-tools-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
 const { buildApp } = await import('../src/app.js')
 const { db, run, one, all } = await import('../src/infrastructure/database/db.js')
-const { documentTools, scriptFunctions, getToolDraft, commitToolDraft, discardToolDraft, editToolDraft, storyDecisions, replacePassages, toolConversationStage, creationState, acceptCreationStep } = await import('../src/modules/script/script-document-tools.js')
+const { documentTools, runScriptTools, scriptFunctions, getToolDraft, commitToolDraft, discardToolDraft, editToolDraft, storyDecisions, replacePassages, toolConversationStage, creationState, acceptCreationStep } = await import('../src/modules/script/script-document-tools.js')
 const { directorStageContext } = await import('../src/modules/script/script-workflow.js')
+const { withUnrestrictedScriptExecution } = await import('../src/modules/generation/model-execution.js')
 const { installSkillBundle, configureSkill } = await import('../src/modules/skills/skills.js')
 function stageArtifacts(stage: ScriptStage, content: string) {
   return scriptStageArtifacts[stage].map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: `${scriptArtifactLabels[artifact_type]}：${content}` }))
@@ -563,42 +564,258 @@ test('native recoverable failures are repaired after an early final text without
   })
 })
 
-test('unrepaired unified work and provider interruption return honest partial checkpoints', async t => {
-  for (const failure of ['early_final', 'network']) await t.test(failure, async t => {
-    const { project, script } = await fixture(); await artifact(project.id)
-    const model = await nativeModel(); let turn = 0
-    t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
-      const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
+test('provider interruption returns an honest partial checkpoint without losing unified work', async t => {
+  const { project, script } = await fixture(); await artifact(project.id)
+  const model = await nativeModel(); let turn = 0
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply;
-      turn++
-      if (turn === 1) return Response.json({ choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: 'start-task', type: 'function', function: { name: 'manage_revision_task', arguments: JSON.stringify({ operation: 'start', scope: 'all_documents', summary: '补齐所有设定', source_message_index: 0 }) } }] }, finish_reason: 'tool_calls' }] })
-      if (failure === 'network') throw new Error('mock provider interrupted')
-      return Response.json({ choices: [{ message: { role: 'assistant', content: '所有设定都已完成并保存。' }, finish_reason: 'stop' }] })
-    })
-    const result = await call<any>('POST', `/api/projects/${project.id}/script/director/chat`, { model_id: model.id, mode: 'script', use_tools: true, messages: [{ role: 'user', text: '所有设定的待定项都由你补齐' }] })
-    assert.equal(turn, failure === 'network' ? 2 : 4)
-    assert.equal(result.execution_outcome.kind, 'partial'); assert.match(result.reply, /任务尚未完成/); assert.doesNotMatch(result.reply, /所有设定都已完成并保存/)
-    assert.equal(getToolDraft(project.id)!.id, result.tool_draft.id); assert.equal(result.tool_draft.revision_task.documents[0].status, 'pending')
-    assert.match(script().artifacts![0].content, /身份待定/)
+    turn++
+    if (turn === 1) return Response.json({ choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: 'start-task', type: 'function', function: { name: 'manage_revision_task', arguments: JSON.stringify({ operation: 'start', scope: 'all_documents', summary: '补齐所有设定', source_message_index: 0 }) } }] }, finish_reason: 'tool_calls' }] })
+    throw new Error('mock provider interrupted')
   })
+  const result = await call<any>('POST', `/api/projects/${project.id}/script/director/chat`, { model_id: model.id, mode: 'script', use_tools: true, messages: [{ role: 'user', text: '所有设定的待定项都由你补齐' }] })
+  assert.equal(turn, 2)
+  assert.equal(result.execution_outcome.kind, 'partial'); assert.match(result.reply, /任务尚未完成/); assert.doesNotMatch(result.reply, /所有设定都已完成并保存/)
+  assert.equal(getToolDraft(project.id)!.id, result.tool_draft.id); assert.equal(result.tool_draft.revision_task.documents[0].status, 'pending')
+  assert.match(script().artifacts![0].content, /身份待定/)
 })
 
-test('argument count diagnostics identify actual count and repeated identical failures stop boundedly', async t => {
-  const { project } = await fixture(), model = await nativeModel(); let turn = 0
+test('argument count diagnostics survive repeated failures and more than two corrections can finish', async t => {
+  const { project, script } = await fixture(), model = await nativeModel(); let turn = 0
+  await artifact(project.id)
+  const document = script().artifacts![0]
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
     const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply;
     const body = JSON.parse(String(init.body)); turn++
-    if (turn === 2) {
-      const first = body.messages.filter((item: any) => item.role === 'tool').map((item: any) => JSON.parse(item.content))
+    if (turn <= 8 && turn % 2 === 0) {
+      const first = body.messages.filter((item: any) => item.role === 'tool').slice(-2).map((item: any) => JSON.parse(item.content))
       assert.equal(first[0].diagnostic.limit, 8); assert.equal(first[0].diagnostic.actual, 9); assert.equal(first[0].diagnostic.path, 'document_ids')
-      assert.equal(first[1].diagnostic.code, 'repeated_failed_call')
-      return Response.json({ choices: [{ message: { role: 'assistant', content: '已完成读取。' }, finish_reason: 'stop' }] })
+      assert.equal(first[1].diagnostic.code, 'limit_exceeded'); assert.equal(first[1].diagnostic.retryable, true)
+      assert.match(first[1].diagnostic.repair, /修正参数/)
+      return Response.json({ choices: [{ message: { role: 'assistant', content: '稍后重新定位。' }, finish_reason: 'stop' }] })
     }
-    return Response.json({ choices: [{ message: { role: 'assistant', content: '', tool_calls: [1, 2].map(index => ({ id: `too-many-${index}`, type: 'function', function: { name: 'read_documents', arguments: JSON.stringify({ document_ids: Array.from({ length: 9 }, (_, index) => `missing-${index}`) }) } })) }, finish_reason: 'tool_calls' }] })
+    if (turn === 10) return Response.json({ choices: [{ message: { role: 'assistant', content: '已完成读取。' }, finish_reason: 'stop' }] })
+    if (turn > 1) assert.match(body.messages.at(-1).content, /程序执行检查/)
+    const ids = turn === 9 ? [document.id] : Array.from({ length: 9 }, (_, index) => `missing-${index}`)
+    return Response.json({ choices: [{ message: { role: 'assistant', content: '', tool_calls: (turn === 9 ? [1] : [1, 2]).map(index => ({ id: `read-${turn}-${index}`, type: 'function', function: { name: 'read_documents', arguments: JSON.stringify({ document_ids: ids }) } })) }, finish_reason: 'tool_calls' }] })
   })
   const result = await call<any>('POST', `/api/projects/${project.id}/script/director/chat`, { model_id: model.id, mode: 'script', use_tools: true, messages: [{ role: 'user', text: '读取项目' }] })
-  assert.equal(turn, 2); assert.equal(result.execution_outcome.kind, 'failed'); assert.doesNotMatch(result.reply, /^已完成读取/)
+  assert.equal(turn, 10); assert.equal(result.execution_outcome, undefined); assert.equal(result.reply, '已完成读取。')
+  assert.equal(result.activity.filter((event: any) => event.label === '继续修复未完成项').length, 4)
+  assert.equal(result.activity.filter((event: any) => event.kind === 'tool' && event.status === 'failed').length, 8)
+})
+
+async function runToolLoop(current: Awaited<ReturnType<typeof fixture>>, signal?: AbortSignal, protocol: 'chat_completions' | 'responses' = 'chat_completions', onEvent: (event: Record<string, unknown>) => void = () => {}, revisionTaskId?: string) {
+  return withUnrestrictedScriptExecution(() => runScriptTools({
+    project: current.project, script: current.script, stage: directorStageContext(current.script()), signal, revisionTaskId,
+    messages: [{ role: 'user', text: '林晚是记者，修改她的待定设定' }], checkApproval: async () => false, onEvent,
+    prompt: '按真实工具结果完成当前任务，不自动保存。', resolveKey: () => '',
+    provider: { adapter: 'http', base_url: 'https://tool-loop.invalid/v1' },
+    model: { id: 'tool-loop-model', remote_id: 'tool-loop', modality: 'text', protocol, settings: {
+      request_path: protocol === 'responses' ? 'responses' : 'chat/completions', tool_history_chars: 120000,
+      request_template: { model: '{{model}}', ...(protocol === 'responses' ? { input: '{{prompt}}' } : { messages: [{ role: 'user', content: '{{prompt}}' }] }) },
+      text_path: protocol === 'responses' ? 'output_text' : 'choices.0.message.content',
+    } },
+  }))
+}
+
+test('native tools finish after more than sixteen rounds and sixty-four calls', async t => {
+  for (const protocol of ['chat_completions', 'responses'] as const) await t.test(protocol, async t => {
+    const current = await fixture(); let rounds = 0
+    const before = current.script()
+    t.mock.method(globalThis, 'fetch', async () => {
+      rounds++
+      const calls = rounds <= 18 ? Array.from({ length: 4 }, (_, index) => ({ id: `state-${rounds}-${index}`, name: 'get_creation_state', arguments: '{}' })) : []
+      return protocol === 'responses'
+        ? Response.json({ status: 'completed', output: calls.length ? calls.map(call => ({ type: 'function_call', call_id: call.id, name: call.name, arguments: call.arguments })) : [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '已核对创作进度。' }] }] })
+        : Response.json({ choices: [{ message: { role: 'assistant', content: calls.length ? '' : '已核对创作进度。', ...(calls.length ? { tool_calls: calls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } })) } : {}) }, finish_reason: calls.length ? 'tool_calls' : 'stop' }] })
+    })
+    const result = await runToolLoop(current, undefined, protocol)
+    assert.equal(rounds, 19); assert.equal(result.reply, '已核对创作进度。'); assert.equal(result.execution_outcome, undefined)
+    assert.equal(result.activity.filter(event => event.kind === 'tool' && event.status === 'succeeded').length, 72)
+    assert.equal(result.activity.filter(event => event.kind === 'model').length, 19)
+    assert.deepEqual(current.script(), before)
+  })
+})
+
+test('unproductive early finals stop with a real partial reason and retain the same pending revision checkpoint', { timeout: 5000 }, async t => {
+  const current = await fixture(); await artifact(current.project.id)
+  const before = current.script(), controller = new AbortController(); let rounds = 0
+  t.mock.method(globalThis, 'fetch', async () => {
+    rounds++
+    if (rounds === 1) return Response.json({ choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: 'start-task', type: 'function', function: { name: 'manage_revision_task', arguments: JSON.stringify({ operation: 'start', scope: 'all_documents', summary: '补齐所有设定', source_message_index: 0 }) } }] }, finish_reason: 'tool_calls' }] })
+    return Response.json({ choices: [{ message: { role: 'assistant', content: '所有设定都已完成并保存。' }, finish_reason: 'stop' }] })
+  })
+  const result = await runToolLoop(current, controller.signal)
+  assert.equal(rounds, 3)
+  assert.equal(result.execution_outcome?.kind, 'partial')
+  assert.match(result.reply, /中断原因.*模型重复结束回复/)
+  const saved = getToolDraft(current.project.id)!
+  assert.equal(saved.status, 'pending'); assert.equal(saved.revision_task!.documents[0].status, 'pending')
+  assert.deepEqual(current.script(), before)
+})
+
+test('revision read pages survive session restart without changing the draft version or pretending unread text was reviewed', async () => {
+  const current = await fixture(); await artifact(current.project.id, 'characters', '林晚：身份已经确定。\n\n陈默：外科医生。')
+  const doc = current.script().artifacts![0], first = current.makeTools(), started = await startRevision(first)
+  const before = one<{ updated_at: string }>('SELECT updated_at FROM script_tool_drafts WHERE id=?', started.draft_id)!
+  const page = await readEffective(first, doc.id, { length: 5 })
+  const resumed = current.makeTools(), progress = await resumed.execute('manage_revision_task', { operation: 'read', task_id: started.task.id }) as any
+  assert.equal(progress.version, started.version)
+  assert.equal(progress.reading_progress[0].next_offset, 5)
+  assert.equal(progress.reading_progress[0].complete, false)
+  const review = { task_id: started.task.id, version: started.version, documents: [{ document_id: doc.id, version: page.version, conclusion: 'unchanged', explanation: '当前人物设定完整', findings: [] }] }
+  await assert.rejects(resumed.execute('review_revision_batch', review), /读完有效草稿/)
+  await readEffective(resumed, doc.id, { offset: 5 })
+  assert.equal(one<{ updated_at: string }>('SELECT updated_at FROM script_tool_drafts WHERE id=?', started.draft_id)!.updated_at, before.updated_at)
+  await current.makeTools().execute('review_revision_batch', review)
+  assert.equal(getToolDraft(current.project.id)!.revision_task!.status, 'ready')
+  assert.equal(current.script().artifacts![0].content, doc.content)
+})
+
+test('editing another revision document invalidates semantic reviews but preserves exact text read receipts', async () => {
+  const current = await fixture(); await artifact(current.project.id, 'characters'); await artifact(current.project.id, 'relationships')
+  const [firstDoc, secondDoc] = current.script().artifacts!, tools = current.makeTools(), started = await startRevision(tools)
+  const first = await readEffective(tools, firstDoc.id), second = await readEffective(tools, secondDoc.id)
+  const assessment = { document_id: firstDoc.id, version: first.version, conclusion: 'unchanged', explanation: '依据统一决定核对当前人物资料', findings: [] }
+  await tools.execute('review_revision_batch', { task_id: started.task.id, version: started.version, documents: [assessment] })
+  const before = getToolDraft(current.project.id)!
+  await tools.execute('propose_document_patch', { task_id: started.task.id, draft_version: before.version, summary: '确定第二份设定',
+    changes: [{ document_id: secondDoc.id, base_version: second.version, replacements: [{ find: '身份待定', replace: '身份为记者', reason: '沿用创作者决定' }] }] })
+  const resumed = current.makeTools(), state = await resumed.execute('manage_revision_task', { operation: 'read' }) as any
+  assert.equal(state.task.documents.find((doc: any) => doc.id === firstDoc.id).status, 'pending')
+  assert.equal(state.reading_progress.find((doc: any) => doc.id === firstDoc.id).version, first.version)
+  assert.equal(state.reading_progress.find((doc: any) => doc.id === firstDoc.id).complete, true)
+  assert.equal(state.reading_progress.find((doc: any) => doc.id === secondDoc.id).next_offset, 0)
+  await resumed.execute('review_revision_batch', { task_id: started.task.id, version: state.version, documents: [assessment] })
+  assert.equal(getToolDraft(current.project.id)!.revision_task!.documents.find(doc => doc.id === firstDoc.id)!.status, 'unchanged')
+  run('UPDATE script_artifacts SET content=?, updated_at=? WHERE id=?', '并行修改后的正式原文。', new Date().toISOString(), firstDoc.id)
+  const changed = getToolDraft(current.project.id)!
+  await assert.rejects(current.makeTools().execute('review_revision_batch', { task_id: started.task.id, version: changed.version, documents: [assessment] }), /正式原文已变化/)
+})
+
+test('oversized combined revision reads automatically shrink and all text remains recoverable across fresh sessions', async () => {
+  const current = await fixture()
+  for (const type of ['characters', 'relationships']) await artifact(current.project.id, type, `${type}：` + '带定位的正文。\n\n'.repeat(2500))
+  const source = current.script(), tools = current.makeTools(); await startRevision(tools)
+  const queue: any[] = [{ source: 'draft', document_ids: source.artifacts!.map(doc => doc.id), length: 20000, scene_limit: 10 }]
+  const recovered = new Map(source.artifacts!.map(doc => [doc.id, '']))
+  let reads = 0
+  while (queue.length) {
+    assert.ok(++reads < 100, 'each continuation must make progress')
+    const result = await current.makeTools().execute('read_documents', queue.shift()) as any
+    assert.ok(JSON.stringify(result).length <= 48000)
+    for (const page of result.documents) {
+      assert.equal(page.offset, recovered.get(page.id)!.length)
+      recovered.set(page.id, recovered.get(page.id)! + page.content)
+    }
+    queue.push(...result.continuations)
+  }
+  for (const doc of source.artifacts!) assert.equal(recovered.get(doc.id), doc.content)
+  const state = await current.makeTools().execute('manage_revision_task', { operation: 'read' }) as any
+  assert.ok(state.reading_progress.every((doc: any) => doc.complete))
+  assert.deepEqual(current.script(), source)
+})
+
+test('fragmented oversized scene read receipts survive restart and require every fragment before review', async () => {
+  const current = await fixture()
+  await call('PUT', `/api/projects/${current.project.id}/script`, { outline: '', characters: '', scenes: [{ episode_number: 1, heading: '车站', action: '林晚等待。', duration: 8 }] })
+  await artifact(current.project.id, 'episode_script', '林晚在车站等待。')
+  const doc = current.script().artifacts![0], scene = current.script().scenes[0]
+  const escapedScene = '\n"'.repeat(5000)
+  run('UPDATE script_scenes SET action=?, dialogue=?, narration=? WHERE id=?', escapedScene, escapedScene, escapedScene, scene.id)
+  const tools = current.makeTools(), started = await startRevision(tools)
+  let result = await tools.execute('read_documents', { source: 'draft', document_ids: [doc.id] }) as any
+  assert.ok(result.documents[0].scene_fragments.length)
+  const review = { task_id: started.task.id, version: started.version, documents: [{ document_id: doc.id, version: result.documents[0].version, conclusion: 'unchanged', explanation: '完整核对正文和分场', findings: [] }] }
+  await assert.rejects(current.makeTools().execute('review_revision_batch', review), /全部有效分场/)
+  let pages = 1
+  while (result.continuations.length) {
+    assert.ok(++pages < 100)
+    result = await current.makeTools().execute('read_documents', result.continuations[0]) as any
+  }
+  await current.makeTools().execute('review_revision_batch', review)
+  assert.equal(getToolDraft(current.project.id)!.revision_task!.status, 'ready')
+})
+
+test('a saved scene change reopens episode verification while keeping unchanged body read coverage', async () => {
+  const current = await fixture()
+  await call('PUT', `/api/projects/${current.project.id}/script`, { outline: '', characters: '', scenes: [{ episode_number: 1, heading: '车站', action: '林晚等待。', duration: 8 }] })
+  await artifact(current.project.id, 'episode_script', '林晚在车站等待。')
+  const tools = current.makeTools(), started = await startRevision(tools), doc = current.script().artifacts![0]
+  const read = await readEffective(tools, doc.id)
+  const review = { task_id: started.task.id, version: started.version, documents: [{ document_id: doc.id, version: read.version, conclusion: 'unchanged', explanation: '当前正文与分场一致', findings: [] }] }
+  await tools.execute('review_revision_batch', review)
+  assert.equal(getToolDraft(current.project.id)!.revision_task!.status, 'ready')
+  run('UPDATE script_scenes SET action=? WHERE project_id=?', '林晚已经离开车站。', current.project.id)
+  const changed = getToolDraft(current.project.id)!
+  assert.equal(changed.revision_task!.status, 'in_progress')
+  const resumed = current.makeTools(), progress = await resumed.execute('manage_revision_task', { operation: 'read' }) as any
+  assert.equal(progress.reading_progress[0].complete, true)
+  assert.equal(progress.reading_progress[0].scenes_complete, false)
+  await assert.rejects(resumed.execute('review_revision_batch', { ...review, version: changed.version }), /全部有效分场/)
+})
+
+test('legacy full-snapshot non-episode assessments remain valid until a real input changes', async () => {
+  const current = await fixture(); await artifact(current.project.id)
+  const tools = current.makeTools(); await startRevision(tools); await verifyRevision(tools, current.project.id)
+  const draft = getToolDraft(current.project.id)!, task = draft.revision_task!, doc = current.script().artifacts![0]
+  const { revisionHash } = await import('../src/modules/script/script-revision.js')
+  const snapshot = revisionHash([draft.documents.map(doc => [doc.id, doc.content]), draft.scene_changes || [], task.decisions, task.documents.map(doc => [doc.id, doc.source_version]), task.context_version || ''])
+  const assessment = task.documents[0].assessment!
+  assessment.version = revisionHash([draft.id, doc.id, task.documents[0].source_version, doc.content, snapshot])
+  delete assessment.draft_snapshot
+  run('UPDATE script_tool_drafts SET payload=? WHERE id=?', JSON.stringify(draft), draft.id)
+  assert.equal(getToolDraft(current.project.id)!.revision_task!.status, 'ready')
+  run('UPDATE script_artifacts SET content=? WHERE id=?', '并行变更原文', doc.id)
+  assert.equal(getToolDraft(current.project.id)!.revision_task!.status, 'needs_attention')
+})
+
+test('resumed unified revision can finish after forty genuine read pages without a round cap', async t => {
+  const current = await fixture(); await artifact(current.project.id, 'characters', '证'.repeat(40))
+  const tools = current.makeTools(), started = await startRevision(tools), doc = current.script().artifacts![0]
+  let rounds = 0, readVersion = ''
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    rounds++
+    const body = JSON.parse(String(init.body)), lastTool = body.messages.filter((message: any) => message.role === 'tool').at(-1)
+    if (lastTool) readVersion = JSON.parse(lastTool.content).result?.documents?.[0]?.version || readVersion
+    const name = rounds <= 40 ? 'read_documents' : 'review_revision_batch'
+    const args = rounds <= 40 ? { source: 'draft', document_ids: [doc.id], offset: rounds - 1, length: 1 }
+      : { task_id: started.task.id, version: getToolDraft(current.project.id)!.version, documents: [{ document_id: doc.id, version: readVersion, conclusion: 'unchanged', explanation: '已完整核对', findings: [] }] }
+    return Response.json({ choices: [{ message: rounds <= 41 ? { role: 'assistant', content: '', tool_calls: [{ id: `progress-${rounds}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }] }
+      : { role: 'assistant', content: '整组核对完成，请预览。' }, finish_reason: rounds <= 41 ? 'tool_calls' : 'stop' }] })
+  })
+  const result = await runToolLoop(current, undefined, 'chat_completions', undefined, started.task.id)
+  assert.equal(rounds, 42)
+  assert.equal(result.tool_draft!.revision_task!.status, 'ready')
+  assert.equal(result.execution_outcome, undefined)
+})
+
+test('repeated failed operations stop a resumed revision and expose the reason instead of silently asking to continue', async t => {
+  const current = await fixture(); await artifact(current.project.id)
+  const started = await startRevision(current.makeTools()); let calls = 0
+  t.mock.method(globalThis, 'fetch', async () => {
+    calls++
+    return Response.json({ choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: `failed-${calls}`, type: 'function', function: { name: 'read_documents', arguments: JSON.stringify({ document_ids: ['missing'] }) } }] }, finish_reason: 'tool_calls' }] })
+  })
+  const before = current.script(), result = await runToolLoop(current, undefined, 'chat_completions', undefined, started.task.id)
+  assert.equal(calls, 3)
+  assert.equal(result.execution_outcome?.kind, 'partial')
+  assert.match(result.execution_outcome!.summary, /中断原因.*重复失败/)
+  assert.equal(result.tool_draft!.id, started.draft_id)
+  assert.deepEqual(current.script(), before)
+})
+
+test('transport failure while continuing a revision is visible in its persisted partial outcome', async t => {
+  const current = await fixture(); await artifact(current.project.id)
+  const started = await startRevision(current.makeTools())
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ error: { message: '工具服务明确拒绝本轮请求' } }, { status: 400 }))
+  const result = await runToolLoop(current, undefined, 'chat_completions', undefined, started.task.id)
+  assert.equal(result.execution_outcome?.kind, 'partial')
+  assert.match(result.reply, /中断原因.*工具服务明确拒绝/)
+  assert.equal(result.tool_draft!.id, started.draft_id)
 })
 
 test('new persistent tables cascade when project is deleted', async () => {
@@ -661,7 +878,7 @@ test('all creation modes send the same complete role guidance in native and comp
           assert.equal(JSON.parse(output.content || output.output).result.project.id, project.id)
           return textResponse(reply)
         })
-        const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat${stream ? '/stream' : ''}`, payload: { model_id: model.id, mode: profile.mode, use_tools: native, messages: [{ role: 'user', text: '讨论当前故事方向，暂不生成文档。' }] } })
+        const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat${stream ? '/stream' : ''}`, payload: { model_id: model.id, mode: profile.mode, use_tools: native, skill_selections: { script: [skill.id] }, messages: [{ role: 'user', text: '讨论当前故事方向，暂不生成文档。' }] } })
         assert.equal(response.statusCode, 200, response.body)
         const result = stream ? response.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5))).find(event => event.type === 'done') : response.json()
         assert.equal(result?.reply, reply, response.body)
@@ -677,6 +894,7 @@ test('native SSE read-patch loop preserves Skills, displays progress and returns
   const { project, script } = await fixture(); await artifact(project.id)
   const skill = installSkillBundle({ repo: 'test/script', path: 'SKILL.md', name: 'script-rule', description: '编剧规则', license: null, revision: 'a'.repeat(40), tool_requirements: [], suggested_stages: ['script'], url: 'https://github.com/test/script', files: [{ path: 'SKILL.md', content: '---\nname: script-rule\ndescription: 编剧规则\n---\n每段对白明确人物动机。' }] })
   configureSkill(skill.id, true, ['script'])
+  t.after(() => configureSkill(skill.id, false, ['script']))
   const model = await nativeModel(), doc = script().artifacts![0]; let calls = 0
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
     const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
@@ -689,7 +907,7 @@ test('native SSE read-patch loop preserves Skills, displays progress and returns
     else { assert.equal(JSON.parse(output.content).result.saved, false); return Response.json({ choices: [{ message: { content: '已提出修改，请确认保存。' }, finish_reason: 'stop' }] }) }
     return Response.json({ choices: [{ message: { content: null, tool_calls: [{ id: `native-${calls}`, type: 'function', function: { name: fn, arguments: JSON.stringify(args) } }] }, finish_reason: 'tool_calls' }] })
   })
-  const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat/stream`, payload: { model_id: model.id, mode: 'script', use_tools: true, document_action: { operation: 'revise', document_ids: [doc.id] }, messages: [{ role: 'user', text: '请把林晚设为调查记者' }] } })
+  const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat/stream`, payload: { model_id: model.id, mode: 'script', use_tools: true, skill_selections: { script: [skill.id] }, document_action: { operation: 'revise', document_ids: [doc.id] }, messages: [{ role: 'user', text: '请把林晚设为调查记者' }] } })
   assert.equal(response.statusCode, 200, response.body)
   const events = response.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5))), done = events.find(event => event.type === 'done')
   assert.equal(done.tool_draft.kind, 'patch'); assert.equal(done.stage_context.stage, 'characters'); assert.equal(done.stage_context.mode, 'review'); assert.equal(done.reply, '已提出修改，请确认保存。'); assert.equal(events.filter(event => event.type === 'process').length, 3)
@@ -767,14 +985,24 @@ test('draft status can be recovered after a lost response and remains bound to t
 
 test('execution traces retain repeated calls, native errors, public model text and complete lifecycle in SSE and JSON', async t => {
   const { project, script } = await fixture(); await artifact(project.id)
+  const configuredSkill = installSkillBundle({ repo: 'test/script', path: 'SKILL.md', name: 'script-rule', description: '编剧规则', license: null,
+    revision: 'a'.repeat(40), tool_requirements: [], suggested_stages: ['script'], url: 'https://github.com/test/script',
+    files: [{ path: 'SKILL.md', content: '---\nname: script-rule\ndescription: 编剧规则\n---\n每段对白明确人物动机。' }] })
+  configureSkill(configuredSkill.id, true, ['script'])
+  t.after(() => configureSkill(configuredSkill.id, configuredSkill.enabled, configuredSkill.stages))
   const model = await nativeModel(), doc = script().artifacts![0]
   run('UPDATE script_artifacts SET content=? WHERE id=?', '林晚：调查记者，追查失踪案件。'.repeat(500), doc.id)
+  // This fixture exercises a complete long trace, with settled provider usage.
+  // Separate budget tests cover absent usage and conservative stop conditions.
+  const tracedResponse = (message: Record<string, unknown>, finish_reason: 'stop' | 'tool_calls') => Response.json({
+    choices: [{ message, finish_reason }], usage: { prompt_tokens: 12000, completion_tokens: 300, total_tokens: 12300 },
+  })
   let turn = 0
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
     const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply;
     turn++
-    if (turn === 10) return Response.json({ choices: [{ message: { content: '<think>private chain of thought</think>已阅读人物资料。', reasoning_content: 'private field' }, finish_reason: 'stop' }] })
+    if (turn === 10) return tracedResponse({ content: '<think>private chain of thought</think>已阅读人物资料。', reasoning_content: 'private field' }, 'stop')
     const name = turn === 1 ? 'get_creation_state' : 'read_documents'
     const args = turn === 1 ? {} : { document_ids: [doc.id], offset: turn - 2, length: 1 }
     const tool_calls = [{ id: `trace-${turn}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }]
@@ -782,13 +1010,15 @@ test('execution traces retain repeated calls, native errors, public model text a
       { id: 'trace-failed-read', type: 'function', function: { name: 'read_documents', arguments: JSON.stringify({ document_ids: ['missing-document'] }) } },
       { id: 'trace-first-read', type: 'function', function: { name: 'read_documents', arguments: JSON.stringify({ document_ids: [doc.id], length: 5000 }) } },
     )
-    return Response.json({ choices: [{ message: { content: null, tool_calls }, finish_reason: 'tool_calls' }] })
+    return tracedResponse({ content: null, tool_calls }, 'tool_calls')
   })
-  const payload = { model_id: model.id, mode: 'script', use_tools: true, messages: [{ role: 'user', text: '请阅读人物资料' }] }
+  const payload = { model_id: model.id, mode: 'script', use_tools: true, skill_selections: { script: [configuredSkill.id] }, messages: [{ role: 'user', text: '请阅读人物资料' }] }
   const stream = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat/stream`, payload })
   const events = stream.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)))
   const updates = events.filter(event => event.type === 'activity').map(event => event.activity)
-  const done = events.find(event => event.type === 'done'), tools = done.activity.filter((item: any) => item.kind === 'tool')
+  const done = events.find(event => event.type === 'done')
+  assert.ok(done, JSON.stringify(events.filter(event => event.type === 'error')).slice(0, 1200))
+  const tools = done.activity.filter((item: any) => item.kind === 'tool')
   assert.equal(tools.length, 11, 'all repeated document reads survive beyond the former eight-entry limit')
   assert.equal(new Set(tools.map((item: any) => item.id)).size, 11)
   assert.equal(tools[1].status, 'failed'); assert.match(tools[1].output, /不存在|当前项目/)
@@ -800,7 +1030,14 @@ test('execution traces retain repeated calls, native errors, public model text a
   for (const event of done.activity) {
     assert.ok(event.status !== 'running'); assert.ok(event.duration_ms >= 0)
     const lifecycle = updates.filter(item => item.id === event.id)
-    assert.equal(lifecycle.length, 2); assert.equal(lifecycle[0].status, 'running'); assert.equal(lifecycle[1].status, event.status)
+    assert.equal(lifecycle[0].status, 'running'); assert.equal(lifecycle.at(-1).status, event.status)
+    if (event.usage) {
+      assert.ok(lifecycle.length > 2, 'the usage notice updates as real model requests settle')
+      assert.ok(lifecycle.slice(0, -1).every(item => item.status === 'running'))
+      assert.ok(event.usage.current.requests >= 10)
+      assert.equal(event.usage.current.input_tokens, 120000)
+      assert.equal(event.usage.current.output_tokens, 3000)
+    } else assert.equal(lifecycle.length, 2, 'ordinary operations retain one start and one completion')
   }
   assert.equal(done.reply, '已阅读人物资料。')
   assert.ok(!JSON.stringify(done.activity).includes('private chain'))
@@ -844,37 +1081,31 @@ test('server heartbeat keeps a slow director connection visibly alive without ch
   assert.equal(events.find(event => event.type === 'done').reply, '先确定故事方向。')
 })
 
-test('native decision timeout closes an active request while retaining completed tool reads', async t => {
-  const { project } = await fixture(), model = await nativeModel()
+test('native decisions have no application time cutoff and cancellation retains completed tool reads', async t => {
+  const current = await fixture(), controller = new AbortController()
+  const activities: any[] = []
   t.mock.timers.enable({ apis: ['setTimeout'] })
   let rounds = 0, entered!: () => void, requestSignal!: AbortSignal
   const waiting = new Promise<void>(resolve => { entered = resolve })
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
-    const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
-    const intentReply = discussionIntent(init); if (intentReply) return intentReply;
     if (rounds++ < 4) {
-      // Finished tool decisions fit their individual five-minute budgets.
       t.mock.timers.tick(60_000)
       return Response.json({ choices: [{ message: { tool_calls: [{ id: `state-${rounds}`, type: 'function', function: { name: 'get_creation_state', arguments: '{}' } }] }, finish_reason: 'tool_calls' }] })
     }
     requestSignal = init.signal!; entered()
     return new Promise<Response>(() => {})
   })
-  const pending = app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat/stream`, payload: { model_id: model.id, mode: 'script', use_tools: true, messages: [{ role: 'user', text: '检查创作进度然后继续讨论' }] } })
+  const pending = runToolLoop(current, controller.signal, 'chat_completions', event => { if (event.type === 'activity') activities.push(event.activity) })
   await waiting
-  t.mock.timers.tick(4 * 60_000)
+  t.mock.timers.tick(24 * 60 * 60_000)
   assert.equal(requestSignal.aborted, false)
-  t.mock.timers.tick(60_000)
-  const response = await pending
-  const events = response.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)))
+  controller.abort(new DOMException('创作者停止处理', 'AbortError'))
+  await assert.rejects(pending, issue => issue instanceof Error && issue.name === 'AbortError')
   assert.equal(requestSignal.aborted, true)
-  assert.match(events.find(event => event.type === 'error').message, /5 分钟/)
-  assert.equal(events.at(-1).type, 'close')
-  assert.ok(!events.some(event => event.type === 'done'))
-  const activity = events.filter(event => event.type === 'activity').map(event => event.activity)
-  assert.equal(activity.findLast(item => item.kind === 'model').status, 'failed')
-  assert.match(activity.findLast(item => item.kind === 'model').summary, /超时/)
-  assert.equal(activity.findLast(item => item.kind === 'tool').status, 'succeeded')
+  assert.equal(rounds, 5)
+  assert.equal(getToolDraft(current.project.id), null)
+  assert.equal(activities.filter(item => item.kind === 'tool' && item.status === 'succeeded').length, 4)
+  assert.equal(activities.findLast(item => item.kind === 'model').status, 'cancelled')
 })
 
 
@@ -914,6 +1145,7 @@ test('stage button directly drafts, waits for saving, and reuses characters save
   await makeTools().execute('propose_next_step', { stage: 'outline', summary: '方向明确', basis: '创作者已经提供主线', source_message_indexes: [0] })
   const ready = creationState(project.id, script()).next_step!
   let calls = 0
+  let requestedTypes: string[] = []
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
     const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply;
@@ -921,19 +1153,23 @@ test('stage button directly drafts, waits for saving, and reuses characters save
     assert.equal(body.tools, undefined, 'typed stage generation needs no function-call round trips')
     assert.match(body.messages[0].content, /本轮为“全剧故事大纲”文档生成/)
     assert.match(body.messages[0].content, /每段对白明确人物动机/, 'stage generation keeps enabled Skill rules')
-    return Response.json({ choices: [{ message: { content: JSON.stringify({ artifacts: stageArtifacts('outline', '林晚在城市中调查怪谈。'), scenes: [] }) }, finish_reason: 'stop' }] })
+    const type = body.response_format.json_schema.schema.properties.artifacts.items.properties.artifact_type
+    requestedTypes = type.enum || [type.const]
+    return Response.json({ choices: [{ message: { content: JSON.stringify({ artifacts: stageArtifacts('outline', '林晚在城市中调查怪谈。')
+      .filter(doc => requestedTypes.includes(doc.artifact_type)), scenes: [] }) }, finish_reason: 'stop' }] })
   })
   const done = await call<any>('POST', `/api/projects/${project.id}/script/director/chat`, { model_id: model.id, mode: 'script', use_tools: true, skill_selections: { script: [skill.id] }, next_step_id: ready.id, workflow: { stage: 'outline', scope: 'project', episode_number: 0 }, messages: [{ role: 'user', text: '生成全剧大纲，沿用已保存人物。' }] })
   assert.equal(calls, 1); assert.equal(done.tool_draft.status, 'pending'); assert.equal(done.creation.status, 'review'); assert.equal(done.creation.next_step, null)
   const generation = done.activity.find((step: { label: string }) => step.label === '生成阶段草稿')
   assert.ok(generation.request_bytes > 0); assert.ok(generation.response_chars > 0); assert.equal(generation.http_status, 200)
   assert.equal(script().outline, '')
-  assert.deepEqual(done.tool_draft.documents.map((doc: any) => doc.artifact_type), [...scriptStageArtifacts.outline])
+  assert.deepEqual(requestedTypes, ['outline'], 'the ordinary stage button delivers one initial story outline')
+  assert.deepEqual(done.tool_draft.documents.map((doc: any) => doc.artifact_type), requestedTypes)
   await call('POST', `/api/projects/${project.id}/script/director/tool-drafts/${done.tool_draft.id}/commit`, { version: done.tool_draft.version, approved: true })
   const state = creationState(project.id, script())
   assert.equal(state.next_step!.stage, 'locations'); assert.equal(script().characters, originalCharacters)
   assert.equal(state.stage_context.mode, 'default')
-  assert.equal(script().artifacts!.filter(doc => scriptStageArtifacts.outline.includes(doc.artifact_type as typeof scriptStageArtifacts.outline[number])).length, 9)
+  assert.equal(script().artifacts!.filter(doc => scriptStageArtifacts.outline.includes(doc.artifact_type as typeof scriptStageArtifacts.outline[number])).length, requestedTypes.length)
 })
 
 test('ordinary direction discussion cannot turn a model-generated draft into an authorized write', async t => {

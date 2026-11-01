@@ -59,7 +59,8 @@ export function canvasPromptIndex(graph: CanvasGraph, shots: Shot[]) {
 export function indexedCanvasPrompt(node: CanvasNode, index: ReturnType<typeof canvasPromptIndex>, scriptPrompt: () => string): string {
   if (node.settings.prompt_override) return node.text
   const connected = (index.incoming.get(node.id) || []).map(edge => index.nodes.get(edge.source))
-    .map(source => source?.type === 'project_script_ref' ? scriptPrompt() : source?.type === 'text' ? source.text.trim() : '')
+    .map(source => source?.type === 'project_script_ref' ? scriptPrompt()
+      : source?.type === 'text' || source?.type === 'image_analysis' || source?.type === 'video_analysis' ? source.text.trim() : '')
     .filter(Boolean)
   return [...connected, node.prompt.trim() || index.shots.get(node.shot_id || '')?.prompt.trim() || ''].filter(Boolean).join('\n\n')
 }

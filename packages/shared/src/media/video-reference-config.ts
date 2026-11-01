@@ -43,6 +43,9 @@ function activeRoles(settings: Settings, mode: string, count: number): unknown[]
   }
   return literalRoles(templates)
 }
+function seedanceProfile(settings: Settings): '2.0' | '2.5' | null {
+  return settings.video_reference_profile === 'seedance_2_0' ? '2.0' : settings.video_reference_profile === 'seedance_2_5' ? '2.5' : null
+}
 
 /** True only for an explicitly declared reference mode with a working multiple-image template. */
 export function supportsVideoMultiReference(settings?: Settings): boolean {
@@ -54,9 +57,10 @@ export function supportsVideoMultiReference(settings?: Settings): boolean {
 
 /** The composition image occupies a slot in the same budget as all other images. */
 export function videoReferenceImageLimit(settings: Settings = {}): number {
+  const ceiling = seedanceProfile(settings) === '2.5' ? 30 : 10
   const configured = settings.max_reference_images
-  const limit = typeof configured === 'number' && Number.isInteger(configured) && configured >= 1 && configured <= 10 ? configured : 10
-  return Math.min(limit, settings.video_reference_profile === 'seedance_2_0' ? 9 : 10)
+  const limit = typeof configured === 'number' && Number.isInteger(configured) && configured >= 1 && configured <= ceiling ? configured : ceiling
+  return Math.min(limit, settings.video_reference_profile === 'seedance_2_0' ? 9 : ceiling)
 }
 
 export function videoReferenceConfigError(settings: Settings | undefined, count: number, mode = 'reference'): string | null {
@@ -65,7 +69,8 @@ export function videoReferenceConfigError(settings: Settings | undefined, count:
   if (!modes.includes(mode)) return '该模型没有配置所选视频模式，请在模型设置中明确配置 supported_modes'
   if (!Number.isInteger(count) || count < 0) return '视频参考图片数量无效'
   const configuredLimit = settings.max_reference_images
-  if (configuredLimit !== undefined && (typeof configuredLimit !== 'number' || !Number.isInteger(configuredLimit) || configuredLimit < 1 || configuredLimit > 10)) return '视频模型的 max_reference_images 必须为 1 到 10 的整数'
+  const ceiling = seedanceProfile(settings) === '2.5' ? 30 : 10
+  if (configuredLimit !== undefined && (typeof configuredLimit !== 'number' || !Number.isInteger(configuredLimit) || configuredLimit < 1 || configuredLimit > ceiling)) return `视频模型的 max_reference_images 必须为 1 到 ${ceiling} 的整数`
   const limit = videoReferenceImageLimit(settings)
   if (count > limit) return `当前视频模型一次最多使用 ${limit} 张参考图片（包含分镜图）`
   if (mode === 'text' && count) return '文生视频模式不能传入图片，请切换到首帧或多图参考模式'
@@ -85,30 +90,33 @@ export function videoReferenceConfigError(settings: Settings | undefined, count:
     }
   }
   const roles = activeRoles(settings, mode, count)
-  const officialContract = settings.video_reference_profile === 'seedance_2_0' || roles.some(role => typeof role === 'string' && officialRoles.has(role))
+  const officialContract = seedanceProfile(settings) !== null || roles.some(role => typeof role === 'string' && officialRoles.has(role))
   if (roles.some(role => typeof role !== 'string' || !role || officialContract && !officialRoles.has(role))) return officialContract
     ? '当前官方视频参考图角色只能为 first_frame、last_frame 或 reference_image' : '视频参考图角色必须是非空字符串'
   if (officialContract) {
     if (roles.includes('reference_image') && (roles.includes('first_frame') || roles.includes('last_frame'))) return '首帧、首尾帧与多图参考模式互斥，不能混用 first_frame / last_frame 和 reference_image'
     if (roles.length && mode === 'first_frame' && (roles.length !== 1 || roles[0] !== 'first_frame')) return '首帧模式必须使用 first_frame 参考图角色'
     if (roles.length && mode === 'first_last_frame' && (roles.length !== 2 || roles[0] !== 'first_frame' || roles[1] !== 'last_frame')) return '首尾帧模式必须按顺序使用 first_frame、last_frame 参考图角色'
-    if (roles.length && mode === 'reference' && roles.some(role => role !== 'reference_image')) return '多图参考模式只能使用 reference_image 参考图角色'
+    if (roles.length && ['reference', 'edit', 'extend'].includes(mode) && roles.some(role => role !== 'reference_image')) return '多图参考、编辑和延长模式只能使用 reference_image 参考图角色'
   }
-  if (settings.video_reference_profile === 'seedance_2_0' && roles.length !== count) return 'Seedance 2.0 必须为每张参考图片配置对应的官方参考图角色'
+  const profile = seedanceProfile(settings)
+  if (profile && roles.length !== count) return `Seedance ${profile} 必须为每张参考图片配置对应的官方参考图角色`
   return null
 }
 
 export type VideoReferenceImageInfo = { bytes: number; width: number; height: number }
 /** Seedance media limits are enabled by the explicit profile setting only. */
 export function videoReferenceMediaError(settings: Settings, images: VideoReferenceImageInfo[], requestBytes?: number): string | null {
-  if (settings.video_reference_profile !== 'seedance_2_0') return null
-  if (images.length > 9) return 'Seedance 2.0 最多支持 9 张参考图片（包含分镜图）'
+  const profile = seedanceProfile(settings)
+  if (!profile) return null
+  const limit = profile === '2.5' ? 30 : 9
+  if (images.length > limit) return `Seedance ${profile} 最多支持 ${limit} 张参考图片（包含分镜图）`
   for (const [index, image] of images.entries()) {
     if (image.bytes >= 30 * 1024 * 1024) return `参考图 ${index + 1} 必须小于 30 MB`
     if (image.width < 300 || image.height < 300 || image.width > 6000 || image.height > 6000) return `参考图 ${index + 1} 的宽高必须在 300 到 6000 像素之间`
     const ratio = image.width / image.height
     if (ratio < 0.4 || ratio > 2.5) return `参考图 ${index + 1} 的宽高比必须在 0.4 到 2.5 之间`
   }
-  if (requestBytes !== undefined && requestBytes > 64 * 1024 * 1024) return 'Seedance 2.0 请求超过 64 MB（含 Base64 参考图片），请减少图片或压缩后重新提交'
+  if (requestBytes !== undefined && requestBytes > 64 * 1024 * 1024) return `Seedance ${profile} 请求超过 64 MB（含 Base64 参考图片），请减少图片或压缩后重新提交`
   return null
 }

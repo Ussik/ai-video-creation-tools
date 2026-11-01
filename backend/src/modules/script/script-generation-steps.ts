@@ -1,5 +1,5 @@
-import { runGenerationDeadline, modelStepSignal } from '../generation/model-execution.js'
-import { generationStepBudgets } from '@video-studio/shared/script/script-stream-policy'
+import { modelStepSignal } from '../generation/model-execution.js'
+import { createStreamScope } from '@video-studio/shared/script/script-stream-policy'
 import { createHash } from 'node:crypto'
 
 export type GenerationCheckpoint = { prompt?: string; steps: Record<string, { input_hash: string; value: unknown; duration_ms: number }> }
@@ -43,9 +43,9 @@ export function createGenerationSteps(options: {
       }
       const started = Date.now()
       options.onStep?.({ id, parent_id: parentId, label, status: 'running' })
+      const scope = createStreamScope(modelStepSignal(options.signal), { totalMs: null })
       try {
-        const budget = id.startsWith('review:') ? generationStepBudgets.review : id === 'plan' ? generationStepBudgets.synthesis : generationStepBudgets.generation
-        const result = validate(await runGenerationDeadline(options.signal, budget, work))
+        const result = validate(await scope.wait(work()))
         modelStepSignal(options.signal)?.throwIfAborted()
         const duration_ms = Math.max(0, Date.now() - started)
         checkpoint.steps[id] = { input_hash, value: structuredClone(result), duration_ms }
@@ -55,7 +55,7 @@ export function createGenerationSteps(options: {
       } catch (error) {
         options.onStep?.({ id, parent_id: parentId, label, status: options.signal?.aborted && options.signal.reason?.name === 'AbortError' ? 'cancelled' : 'failed', duration_ms: Math.max(0, Date.now() - started) })
         throw error
-      }
+      } finally { scope.close() }
     },
   }
 }

@@ -55,9 +55,12 @@ async function finished(projectId: string) {
 test('private proposed-source analysis retains its map/story and repairs known omissions before a new independent review', async () => {
   const document = source('私有修订稿恢复'), explanation = '目录遗漏沈月是林舟妹妹的身份'
   let maps = 0, stories = 0, reviews = 0, repairs = 0
+  let original: ScriptSourceAnalysis | undefined
   const generate = async (prompt: string) => {
     if (prompt.includes(repairMarker)) {
       repairs++
+      original = checkpoint(document.project_id)
+      assert.equal(original.quality!.status, 'issues', 'the review finding is durable before automatic repair')
       assert.ok(prompt.includes(explanation), 'targeted repair receives durable original findings and complete source')
       assert.ok(prompt.includes(document.content.split('\n')[1]!))
       return repairReply(prompt)
@@ -74,14 +77,11 @@ test('private proposed-source analysis retains its map/story and repairs known o
     if (prompt.includes('【全剧整合资料】')) stories++
     return sourceAnalysisFixture(prompt)!
   }
-  await assert.rejects(analyzeSourceSnapshot(document, 'model', generate, signal()), /核对发现 1 项遗漏或误读/)
-  assert.equal(checkpoint(document.project_id).quality!.status, 'issues')
-  const original = checkpoint(document.project_id)
   const result = await analyzeSourceSnapshot(document, 'model', generate, signal())
   assert.equal(result.status, 'ready'); assert.equal(result.quality!.status, 'passed')
-  assert.deepEqual([maps, stories, repairs, reviews], [1, 1, 1, 2], 'retry repairs the completed analysis rather than regenerating its map and story')
-  assert.deepEqual(result.sections, original.sections)
-  assert.deepEqual({ ...result.story, summary: original.story!.summary }, original.story)
+  assert.deepEqual([maps, stories, repairs, reviews], [1, 1, 1, 2], 'one call repairs the completed analysis rather than regenerating its map and story')
+  assert.deepEqual(result.sections, original!.sections)
+  assert.deepEqual({ ...result.story, summary: original!.story!.summary }, original!.story)
   assert.ok(result.story!.summary.includes(explanation))
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM script_source_documents WHERE project_id=?').get(document.project_id)!.count, 0, 'private source analysis never publishes the proposed manuscript')
 })

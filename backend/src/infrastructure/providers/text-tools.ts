@@ -13,12 +13,16 @@ export type ToolTurn = { text: string; calls: ToolCall[]; history: unknown[]; in
  * Chat Completions reasoning_content are relayed, never displayed to users. */
 export function textToolSession(model: GenerationModel, provider: GenerationProvider, prompt: string,
   tools: TextTool[], key: (provider: GenerationProvider) => string, signal?: AbortSignal, onText?: (text: string) => void,
-  onMetrics?: (metrics: TextRequestMetrics) => void) {
+  onMetrics?: (metrics: TextRequestMetrics) => void, options: { compactHistory?: boolean } = {}) {
   let history: unknown[] | undefined
   let initialLength = 0
   return async (outputs: ToolOutput[] = [], continuation?: string): Promise<ToolTurn> => {
     signal?.throwIfAborted()
-    const preparedHistory = history ? await compactToolHistory(deduplicateToolHistory(history, outputs), initialLength, model, provider, key, signal, onMetrics) : undefined
+    const uniqueHistory = history ? deduplicateToolHistory(history, outputs) : undefined
+    // Bounded precision-edit sessions retain exact read evidence. Summarizing
+    // their document bodies would invalidate their read/patch relationship.
+    const preparedHistory = uniqueHistory && options.compactHistory !== false
+      ? await compactToolHistory(uniqueHistory, initialLength, model, provider, key, signal, onMetrics) : uniqueHistory
     // Retry only the pending model decision. Tool execution is outside this
     // session, and neither partial calls nor failed histories are committed.
     const result = await runModelStep('tool_decision', signal, () => retryReadOnlyRequest(

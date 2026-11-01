@@ -1,4 +1,5 @@
 import { draftCompletenessFixtureResponse } from './fixtures/script-draft-completeness.js'
+import { workflowFixtureTypes } from './fixtures/script-workflow.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -57,9 +58,10 @@ test('project generation after episode one ignores stale episode state, reads al
     } else {
       assert.match(prompt, /任务范围：整个项目的全剧资料，不属于任何单集/)
       assert.ok(prompt.includes('远集标记：第五集已确认事实'), 'project tasks see saved episodes beyond the selected and previous episode')
-      assert.ok(prompt.includes(`"task_scope":{"stage":"${selectedStage}","scope":"project","episode_number":0}`))
+      assert.ok(prompt.includes(`"task_scope":{"stage":"${selectedStage}",`))
+      assert.match(prompt, /"scope":"project","episode_number":0/)
       assert.doesNotMatch(prompt, /只写第 2 集|本集总时长目标/)
-      content = { artifacts: scriptStageArtifacts[selectedStage as ScriptStage].map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '全剧确认资料' })), scenes: [] }
+      content = { artifacts: workflowFixtureTypes(prompt, scriptStageArtifacts[selectedStage as ScriptStage]).map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '全剧确认资料' })), scenes: [] }
     }
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }), { headers: { 'Content-Type': 'application/json' } })
   }
@@ -136,7 +138,7 @@ test('skip delegates a concrete decision in both chat transports without draftin
   assert.deepEqual((await call<{ script: unknown }>('GET', `/api/projects/${project.id}`)).script, before)
 })
 
-test('delegated decisions reach later outline and episode drafts with original dialogue and the intent brief over both transports', async t => {
+test('delegated decisions reach typed outline and episode drafts with the original dialogue over both transports', async t => {
   const { model, project } = await fixture()
   const question = '故事开场发生在哪里？'
   const decision = '我决定开场设在雨夜车站，因为封闭空间适合悬疑。'
@@ -159,12 +161,12 @@ test('delegated decisions reach later outline and episode drafts with original d
         creative_brief: '沿用授权模型决定的雨夜车站开场。' }
     } else if (prompt.includes('本轮为“')) {
       draftCalls++
-      assert.match(prompt, /沿用授权模型决定的雨夜车站开场/)
+      assert.ok(prompt.includes(decision))
       assert.match(prompt, /创作者明确授权模型决定后已经作出的具体设定应沿用，不标为待定/)
-      assert.match(prompt, /已授权你在该范围内设计尚缺的虚构细节/)
+      assert.match(prompt, /仅验收本次约定的/)
       assert.match(prompt, /未选方案：古代山寨/)
       assert.match(prompt, /未被创作者明确接受、未提交的选项均不构成已确认设定/)
-      content = stage === 'episode' ? episode : { artifacts: scriptStageArtifacts.outline.map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '雨夜车站开场。' })), scenes: [] }
+      content = stage === 'episode' ? episode : { artifacts: workflowFixtureTypes(prompt).map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: '雨夜车站开场。' })), scenes: [] }
     } else {
       assert.match(prompt, /明确授权你决定该项/)
       content = decision
@@ -185,13 +187,13 @@ test('delegated decisions reach later outline and episode drafts with original d
     for (stage of ['outline', 'episode']) {
       if (stage === 'episode') await saveProjectStages(project.id)
       before = (await call<{ script: unknown }>('GET', `/api/projects/${project.id}`)).script
-      const generated = await request({ model_id: model.id, mode: 'script', workflow: { stage, episode_number: stage === 'episode' ? 1 : 0, ...(stage === 'outline' && suffix ? { operation: 'regenerate' } : {}) },
+      const generated = await request({ model_id: model.id, mode: 'script', workflow: { stage, episode_number: stage === 'episode' ? 1 : 0, ...(stage === 'outline' ? { artifact_types: ['outline'], ...(suffix ? { operation: 'regenerate' } : {}) } : {}) },
         messages: [...messages, { role: 'assistant', text: delegated.reply }, { role: 'user', text: stage === 'episode' ? '开始写第一集' : '生成全剧大纲' }] })
       assert.equal(generated.draft.stage, stage)
       assert.deepEqual((await call<{ script: unknown }>('GET', `/api/projects/${project.id}`)).script, before)
     }
   }
-  assert.equal(intentCalls, 4)
+  assert.equal(intentCalls, 0, 'explicit workflow targets bypass intent interpretation')
   assert.equal(draftCalls, 4)
 })
 
@@ -421,16 +423,18 @@ test('natural-language adoption uses the model-selected assistant message and re
   assert.match(invalid.body, /已有助手消息/)
 })
 
-test('explicit workflow selections retain confirmed conversational context without trusting model target changes', async t => {
+test('explicit workflow selections retain confirmed conversational context without an intent interpretation call', async t => {
   const { model, project } = await fixture()
   await saveProjectStages(project.id)
   let draftingPrompt = ''
+  let intentCalls = 0
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (_url, init) => {
     const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const prompt = JSON.parse(String(init?.body)).messages[0].content as string
     let content: unknown
     if (prompt.includes('本次独立调用只理解创作者意图')) {
+      intentCalls++
       assert.match(prompt, /"explicit_workflow"/)
       assert.match(prompt, /只选择雨夜车站/)
       content = { action: 'draft', operation: 'create', workflow: { stage: 'episode', episode_number: 9 }, creative_brief: '只写雨夜车站，主人公林，第一集电话线索。' }
@@ -445,7 +449,8 @@ test('explicit workflow selections retain confirmed conversational context witho
     ],
   })
   assert.equal(result.draft.episode_number, 1)
-  assert.match(draftingPrompt, /只写雨夜车站/)
+  assert.equal(intentCalls, 0)
+  assert.match(draftingPrompt, /只选择雨夜车站，主人公林/)
   assert.match(draftingPrompt, /未选方案是古代山寨/)
   assert.match(draftingPrompt, /未被创作者明确接受、未提交的选项均不构成已确认设定/)
 })

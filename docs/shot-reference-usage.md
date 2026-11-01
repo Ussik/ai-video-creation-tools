@@ -1,6 +1,6 @@
 # 分镜参考的使用范围
 
-实现基线：2026-10-22，提交 `9ba5a25`。本轮核对绑定、提示词及请求构造源码，未生成新媒体。
+引用同步更新：2026-10-24。默认自动跟随已确认设定，可按镜头锁定版本；本轮使用隔离测试验证，未生成真实媒体。
 
 场次设定提供可选的人物、场景和道具资料。镜头引用另行保存每个对象的使用范围，决定开镜图片与视频过程各自需要的参考。
 
@@ -12,6 +12,12 @@
 | 本镜头不使用（none） | 不使用 | 不使用 |
 
 在画布的“镜头引用”中调整“使用范围”，会立即保存。对象的设定版本、已确认参考图和历史参考快照仍然保留。“必需”只在该对象适用于当前生成类型时要求先确认参考图。
+
+镜头引用默认开启“自动跟随最新设定”。确认新版信息图或独立参考后，同方案内的活动镜头自动同步；生成预览和提交时再次解析最新已确认输入。仅生成新候选、修改尚无对应确认图的文字或改变画风时，保留旧版完整快照并显示“新版待确认”。关闭开关可锁定当前版本，重新开启恢复跟随。
+
+手动选择、移除独立参考图或点击“使用信息图”会保留该选择。自动同步不会替换手选图片、改变顺序，也不会重置图片／视频用途、必需标记、节点排除项或手改提示词。新版无法与手选图片匹配时显示“保留手选参考图 · 需处理”；明确选择“恢复自动匹配”后才重新推荐。图片与视频仍共用引用版本和参考图。
+
+已提交任务的提示词和实际参考资产清单固定在任务记录中，自动同步只改变后续生成的工作引用。旧分镜方案的历史镜头不自动更新。升级时普通信息图引用默认跟随，旧数据中已有独立参考图的选择保守标记为手选，避免推测并覆盖创作者决定。
 
 图片与视频分别使用同一份用途筛选结果来生成文字设定、自动参考连线、实际参考图片列表和待补齐提示。只出现在视频后续动作中的人物不会阻塞开镜图片。背景中可见的对象也应保留；只有画外提及或仅提供光色的对象无需强制入画。
 
@@ -27,4 +33,4 @@
 
 旧接口省略用途时保留已保存用途，新绑定默认兼容原来的 `both`。数据库升级不猜测旧镜头的出镜内容；旧镜头可以在引用管理中调整，或重新规划并整理参考。历史记录曾手动修正本机《言灵》首场五镜的用途，并将修正前数据存到 `data/backups/`；这不是新项目默认数据，本轮未重新核实该项目或备份。
 
-实现入口：[visual-profiles.ts](../backend/src/modules/visuals/visual-profiles.ts)、[visual-binding-usage.ts](../packages/shared/src/visuals/visual-binding-usage.ts)、[video-reference-manifest.ts](../packages/shared/src/media/video-reference-manifest.ts)、[script-canvas-preparation.ts](../backend/src/modules/canvas/script-canvas-preparation.ts)。
+实现入口：[visual-binding-sync.ts](../backend/src/modules/visuals/visual-binding-sync.ts)、[visual-profiles.ts](../backend/src/modules/visuals/visual-profiles.ts)、[visual-binding-usage.ts](../packages/shared/src/visuals/visual-binding-usage.ts)、[video-reference-manifest.ts](../packages/shared/src/media/video-reference-manifest.ts)、[script-canvas-preparation.ts](../backend/src/modules/canvas/script-canvas-preparation.ts)。

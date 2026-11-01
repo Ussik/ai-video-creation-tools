@@ -100,7 +100,7 @@ test('the unified flow confirms a planned draft and retries refresh without anot
     assert.equal(dom.window.sessionStorage.getItem('script-canvas-open:canvas-ui'), null)
     await act(async () => button('确认加入画布').click())
     assert.match(document.body.textContent!, /刷新失败/); assert.equal(closed, 0)
-    await act(async () => button('确认加入画布').click())
+    await act(async () => button('继续加入画布').click())
     assert.equal(commits, 1); assert.equal(closed, 1)
     assert.equal(checks, 1); assert.equal(imports, 1); assert.equal(refreshes, 2)
     const queued = JSON.parse(dom.window.sessionStorage.getItem('script-canvas-open:canvas-ui')!)

@@ -1,8 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Model } from '../src/shared/api/api'
-import { generationCost, imageGenerationDefaults, imageParameterOptions, imageParameterValue, imagePreferencePrompt, imageRatioError, imageRatios, imageRequestResolution, imageResolutionClarity, imageSizeChoices, modelDefaultResolution, resolutionRatio, selectImageSize, usesModelParameter } from '../src/features/canvas/canvas-model-parameters'
-import { videoResolutionOptions } from '@video-studio/shared/media/video-parameters'
+import { generationCost, imageGenerationDefaults, imageParameterOptions, imageParameterValue, imagePreferencePrompt, imageRatioError, imageRatios, imageRequestResolution, imageResolutionClarity, imageSizeChoices, modelDefaultResolution, resolutionRatio, selectImageSize, usesModelParameter, videoParameterPolicy } from '../src/features/canvas/canvas-model-parameters'
+import { videoRatioOptions, videoResolutionOptions } from '@video-studio/shared/media/video-parameters'
+import { seedance25VideoSettings } from '@video-studio/shared/models/seedance-video-settings'
 import { imagesApiSettings } from '@video-studio/shared/models/images-api-settings'
 
 const model = (settings: Model['settings'], modality: Model['modality'] = 'image') => ({ settings, modality } as Model)
@@ -89,6 +90,21 @@ test('video node defaults prefer 480p while preserving image model defaults', ()
   assert.equal(modelDefaultResolution(model({ resolutions: ['480P'], default_resolution: '720p' }, 'video'), ['480P', '720p']), '480P')
 })
 
+test('explicit Seedance 2.5 controls use documented dimensions and source rules without guessing from model names', () => {
+  const video = model(seedance25VideoSettings(), 'video')
+  assert.deepEqual(videoResolutionOptions(video.settings), ['480p', '720p', '1080p'])
+  assert.equal(modelDefaultResolution(video, videoResolutionOptions(video.settings)), '720p')
+  assert.deepEqual(videoResolutionOptions({ ...video.settings, resolutions: ['720p', '4k', '8k'] }), ['720p'])
+  assert.deepEqual(videoRatioOptions({ ...video.settings, ratios: ['adaptive', '16:9', '32:9'] }), ['adaptive', '16:9'])
+  for (const mode of ['first_frame', 'first_last_frame', 'edit', 'extend']) assert.equal(videoParameterPolicy(video, mode).ratioFollowsSource, true)
+  for (const mode of ['text', 'reference']) assert.equal(videoParameterPolicy(video, mode).ratioFollowsSource, false)
+  assert.equal(videoParameterPolicy(video, 'edit').durationFollowsSource, true)
+  assert.equal(videoParameterPolicy(video, 'extend').durationFollowsSource, false)
+  assert.equal(videoParameterPolicy(video, 'reference', true).draftResolution, '480p')
+  assert.equal(videoParameterPolicy(video, 'reference', false).draftResolution, undefined)
+  assert.equal(videoParameterPolicy({ ...video, name: 'Seedance 2.5', settings: {} }, 'edit', true).ratioFollowsSource, false)
+})
+
 test('fixed-size providers never replace a requested ratio with a nearby ratio', () => {
   const image = model({ request_template: { prompt: '{{prompt}}', size: '{{size}}' }, resolutions: ['1024x1024', '1536x1024', '1024x1536'] })
   for (const ratio of imageRatios) for (const clarity of ['1K', '2K', '4K']) {
@@ -153,7 +169,7 @@ test('native parameters keep whole-image ratio instructions while other requirem
   }, resolutions: ['1K', '2K', '4K']})
   assert.equal(imageRequestResolution(image, '1K', {ratio: '16:9', clarity: '4K'}), '')
   const prompt = imagePreferencePrompt(image, '原始提示词', {ratio:'16:9', resolution:'4K', clarity:'4K', quality:'high', background:'preserve'})
-  assert.ok(prompt.startsWith('原始提示词\n\n图片生成要求：\n画面比例：16:9'))
+  assert.ok(prompt.startsWith('原始提示词\n\n【图片生成要求】\n画面比例：16:9'))
   assert.ok(prompt.includes('整张输出图片使用此比例'))
   assert.ok(!prompt.includes('清晰度要求：') && !prompt.includes('画质要求：') && !prompt.includes('背景要求：'))
   const otherMode = model({request_template:{prompt:'{{prompt}}', size:'{{size}}'}, request_templates: { reference: {quality:'{{quality}}'} }})

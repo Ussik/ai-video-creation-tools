@@ -10,9 +10,11 @@ export function jobPromptRequest(request: string): Record<string, unknown> {
   } catch { return {} }
 }
 
-export function canOptimizeImagePrompt(job: { status: string; job_type: string; error: string | null; request: string; recovery_available?: boolean }, modality?: string): boolean {
+export function canOptimizeImagePrompt(job: { status: string; job_type: string; error: string | null; request: string; recovery_available?: boolean;
+  recovery_action?: 'verify' | 'query' | 'download' | null }, modality?: string): boolean {
   const prompt = jobPromptRequest(job.request).prompt
-  return modality === 'image' && job.job_type === 'generation' && job.status === 'failed' && !job.recovery_available &&
+  return modality === 'image' && job.job_type === 'generation' && job.status === 'failed' && !job.recovery_available
+    && job.recovery_action !== 'query' && job.recovery_action !== 'download' &&
     isContentPolicyRejection(job.error) && typeof prompt === 'string' && !!prompt.trim() && prompt.length <= 80_000
 }
 

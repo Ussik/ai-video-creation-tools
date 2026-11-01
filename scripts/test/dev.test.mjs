@@ -11,11 +11,11 @@ import { test } from 'node:test'
 const entry = fileURLToPath(new URL('../dev.mjs', import.meta.url))
 const unsupported = process.platform === 'win32'
 
-async function fixture(t, buildCode = 0) {
+async function fixture(t, buildCode = 0, ignoreDescendantTerm = false) {
   const directory = await mkdtemp(path.join(tmpdir(), 'studio-dev-'))
   const events = path.join(directory, 'events.jsonl')
   const npm = path.join(directory, 'npm')
-  const descendantCode = `const fs=require('node:fs'); const log=()=>fs.appendFileSync(process.env.STUDIO_DEV_FIXTURE_EVENTS, JSON.stringify({event:'stopped',pid:process.pid})+'\\n'); process.on('SIGTERM',()=>{log();process.exit(0)}); setInterval(()=>{},1000)`
+  const descendantCode = `const fs=require('node:fs'); const log=event=>fs.appendFileSync(process.env.STUDIO_DEV_FIXTURE_EVENTS, JSON.stringify({event,pid:process.pid})+'\\n'); process.on('SIGTERM',()=>{if(process.env.STUDIO_DEV_FIXTURE_IGNORE_TERM==='1'){log('ignored');return}log('stopped');process.exit(0)}); log('ready'); setInterval(()=>{},1000)`
   await writeFile(npm, `#!${process.execPath}
 const fs=require('node:fs');
 const {spawn}=require('node:child_process');
@@ -29,7 +29,7 @@ setInterval(()=>{},1000);
 `)
   await chmod(npm, 0o755)
   const child = spawn(process.execPath, [entry], {
-    env: { ...process.env, PATH: directory + path.delimiter + process.env.PATH, STUDIO_DEV_FIXTURE_EVENTS: events, STUDIO_DEV_FIXTURE_BUILD_CODE: String(buildCode) },
+    env: { ...process.env, PATH: directory + path.delimiter + process.env.PATH, STUDIO_DEV_FIXTURE_EVENTS: events, STUDIO_DEV_FIXTURE_BUILD_CODE: String(buildCode), STUDIO_DEV_FIXTURE_IGNORE_TERM: ignoreDescendantTerm ? '1' : '0' },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let output = ''
@@ -40,7 +40,7 @@ setInterval(()=>{},1000);
   t.after(async () => {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM')
     for (const record of await records()) if (record.event === 'started') {
-      try { process.kill(-record.pid, 'SIGTERM') } catch (error) { if (error.code !== 'ESRCH') throw error }
+      try { process.kill(-record.pid, 'SIGKILL') } catch (error) { if (error.code !== 'ESRCH') throw error }
     }
     await exited
     await rm(directory, { recursive: true, force: true })
@@ -71,14 +71,32 @@ test('development starts all workspaces after building and stops watcher descend
   assert.equal(records[0].event, 'build')
   const started = records.filter(record => record.event === 'started')
   assert.deepEqual(started.map(record => record.workspace).sort(), ['--workspace=@video-studio/shared', '--workspace=backend', '--workspace=web'].sort())
-  // Give the real descendants time to install their signal handlers.
-  await delay(200)
+  await until(async () => (await f.records()).filter(record => record.event === 'ready').length === 3)
+  const stopStarted = Date.now()
   f.child.kill('SIGTERM')
   const [code] = await f.exited
   assert.equal(code, 143, f.output())
+  assert.ok(Date.now() - stopStarted < 3000, 'Cooperative watchers should stop without waiting for the force-kill deadline')
   const expected = started.flatMap(record => [record.pid, record.descendant])
   await until(async () => {
     const stopped = new Set((await f.records()).filter(record => record.event === 'stopped').map(record => record.pid))
     return expected.every(pid => stopped.has(pid))
   })
+})
+
+test('development kills remaining descendants after their npm wrappers have exited', { skip: unsupported, timeout: 15000 }, async t => {
+  const f = await fixture(t, 0, true)
+  await until(async () => (await f.records()).filter(record => record.event === 'ready').length === 3)
+  const started = (await f.records()).filter(record => record.event === 'started')
+  f.child.kill('SIGINT')
+  await until(async () => (await f.records()).filter(record => record.event === 'ignored').length === 3)
+  // npm and the terminal can forward the same signal while cleanup is pending.
+  f.child.kill('SIGINT')
+  f.child.kill('SIGTERM')
+  const [code] = await f.exited
+  assert.equal(code, 130, f.output())
+  await until(() => started.every(record => {
+    try { process.kill(record.descendant, 0); return false }
+    catch (error) { if (error.code !== 'ESRCH') throw error; return true }
+  }))
 })

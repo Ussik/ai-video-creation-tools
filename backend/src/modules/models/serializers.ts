@@ -12,5 +12,5 @@ export function providerPublic(provider: Provider): PublicProvider {
 
 export function modelPublic(model: Model): PublicModel {
   const { archived, ...publicFields } = model
-  return { ...publicFields, settings: JSON.parse(model.settings) as Record<string, unknown>, enabled: Boolean(model.enabled) }
+  return { ...publicFields, settings: JSON.parse(model.settings) as Record<string, unknown>, enabled: Boolean(model.enabled), is_default: Boolean(model.is_default) }
 }

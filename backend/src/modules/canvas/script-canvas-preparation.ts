@@ -5,12 +5,14 @@ import { all, db, newId, now, one, required, run } from '../../infrastructure/da
 import type { Project, ScriptArtifact, ScriptScene, Shot } from '../../infrastructure/database/db.js'
 import { analyzeVisualProfiles, applyProfileShotUsage, inheritSceneVisualBindings, profileDraft, resolveVisualProfileDrafts, sceneVisualDesignIds, scopeVisualProfileDrafts, updateVisualProfile, validateProfileShotUsage, visualProjectData, type VisualProfile } from '../visuals/visual-profiles.js'
 import type { OutputContract } from '../generation/model-output.js'
+import type { CreationSkillSelector } from '../skills/model-skill-selection.js'
 import { projectVisualStyle } from '../visuals/project-visual-style.js'
 import { shotImagePrompt, shotVideoPrompt } from '@video-studio/shared/storyboard/shot-prompts'
 import { assertStoryboardReferenceBudget, storyboardReferenceBudget, storyboardReferenceBudgetIssues } from '../storyboard/storyboard-reference-budget.js'
 import { skillIdsInput } from '../skills/skills.js'
 
 type Context = {
+  selectSkills?: CreationSkillSelector;
   script: (projectId: string) => { outline: string; characters: string; artifacts?: ScriptArtifact[]; scenes: ScriptScene[] };
   scenePrompt: (scene: ScriptScene) => string;
   generateText: (projectId: string, modelId: string, prompt: string, contract?: OutputContract) => Promise<string>;
@@ -99,6 +101,9 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
     if (scriptCanvasPreparationSnapshot(id, data.scene_ids, context).signature !== state.signature) conflict()
     return { signature: state.signature, scene_ids: data.scene_ids, profiles: drafts.flatMap(draft => draft.profiles),
       reference_usage_version: 1,
+      skill_assignment: { ids: [...new Set(drafts.flatMap(draft => draft.skill_assignment.ids))],
+        source: data.skill_ids !== undefined ? 'manual' as const : drafts.some(draft => draft.skill_assignment.source === 'automatic') ? 'automatic' as const : 'default' as const,
+        reason: [...new Set(drafts.map(draft => draft.skill_assignment.reason))].join('\n') || '所选场次无需补充视觉设定。' },
       used_skills: [...new Map(drafts.flatMap(draft => draft.skills).map(skill => [skill.id, skill])).values()],
       loaded_files: [...new Map(drafts.flatMap(draft => draft.loaded_files).map(file => [JSON.stringify(file), file])).values()] }
   })

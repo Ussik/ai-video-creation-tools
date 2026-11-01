@@ -5,6 +5,14 @@ import { visualGenerationPrompt } from '@video-studio/shared/visuals/visual-prom
 import { shotImagePrompt, shotVideoPrompt } from '@video-studio/shared/storyboard/shot-prompts'
 import { withProjectStyle } from '@video-studio/shared/visuals/visual-style'
 
+test('video editing source duration does not turn a positive planning duration into a new video length instruction', () => {
+  const prompt = videoPreferencePrompt('保留动作节奏，只修改衣服', 'edit', 5,
+    { ratio: 'adaptive', resolution: '720p', durationFollowsSource: true })
+  assert.match(prompt, /视频时长：跟随原视频/)
+  assert.doesNotMatch(prompt, /5 秒|-1 秒/)
+  assert.match(prompt, /保留动作节奏，只修改衣服/)
+})
+
 test('changing project style replaces stale final-prompt constraints while preserving manual creative edits and new parameters', () => {
   const oldStyle = { version: 'old', label: '日漫二维', source: 'settings' as const, details: { rendering: '赛璐璐' } }
   const nextStyle = { version: 'new', label: '水彩动画', source: 'settings' as const, details: { rendering: '水彩笔触' } }

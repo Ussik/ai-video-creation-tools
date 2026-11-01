@@ -62,38 +62,48 @@ test('three completed review rounds can continue and completed repair patches do
   } finally { await view.destroy() }
 })
 
-test('the four-round primary action opens editable answers instead of silently continuing, and explicit AI delegation remains available', async () => {
-  // The candidate counter remains authoritative if its resumable run is older.
-  const resolution = candidate(4, 3), view = await mount(resolution)
+test('completed review round counters never prevent an explicit continuation or editing the retained plan', async () => {
+  const resolution = candidate(40, 39), view = await mount(resolution)
   try {
-    assert.equal(button(view.container, '调整方案').disabled, false)
-    await act(() => button(view.container, '调整方案').click())
+    assert.equal(button(view.container, '继续处理').disabled, false)
+    assert.deepEqual(view.submitted, [], 'saved counters never trigger work without a user action')
+    await act(() => button(view.container, '继续处理').click())
+    assert.deepEqual(view.submitted, [{ id: resolution.id, version: resolution.version, strategy: 'continue' }])
+    await act(() => button(view.container, '查看问题').click())
     assert.equal(view.openings(), 1)
-    assert.deepEqual(view.submitted, [])
     const dialog = document.querySelector('[role="dialog"]')!
     assert.ok(dialog)
+    assert.equal(button(dialog, '沿用方案继续').disabled, false)
+    await act(() => button(dialog, '调整方案').click())
     assert.equal(dialog.querySelector('textarea')!.value, '保留原稿中的师兄身份。', 'existing answers remain editable')
     assert.equal([...dialog.querySelectorAll('button')].some(node => node.textContent === '沿用方案继续'), false)
     assert.equal(button(dialog, '全部交给 AI 决定').disabled, false)
     await act(() => button(dialog, '全部交给 AI 决定').click())
-    assert.deepEqual(view.submitted, [{ id: resolution.id, version: resolution.version, strategy: 'ai' }])
+    assert.deepEqual(view.submitted.at(-1), { id: resolution.id, version: resolution.version, strategy: 'ai' })
   } finally { await view.destroy() }
 })
 
-test('viewing issues at the round limit disables reuse until the user explicitly adjusts or delegates the plan', async () => {
-  const resolution = candidate(4), view = await mount(resolution)
+test('interrupted work displays the actual unresolved conflict and preserves explicit continue or adjustment actions', async () => {
+  const resolution = candidate(12)
+  resolution.run!.message = '人物身份仍有冲突：人物介绍写为师兄，分集大纲写为亲生兄长，需要明确统一。'
+  resolution.findings[0]!.repair_attempts = 3
+  const view = await mount(resolution)
   try {
+    assert.match(view.container.querySelector('[role="status"]')!.textContent!, /人物介绍写为师兄，分集大纲写为亲生兄长/)
+    assert.deepEqual(view.submitted, [], 'a concrete interruption is shown without silently restarting work')
     await act(() => button(view.container, '查看问题').click())
     const dialog = document.querySelector('[role="dialog"]')!
     assert.ok(dialog)
-    assert.equal(button(dialog, '沿用方案继续').disabled, true)
+    assert.match(dialog.textContent!, /同一人物被写成两种互斥身份/)
+    assert.match(dialog.textContent!, /已修订 3 次，当前仍有未落实的内容/)
+    assert.equal(button(dialog, '沿用方案继续').disabled, false)
     await act(() => button(dialog, '沿用方案继续').click())
-    assert.deepEqual(view.submitted, [], 'the disabled continuation cannot trigger another analysis round')
+    assert.deepEqual(view.submitted, [{ id: resolution.id, version: resolution.version, strategy: 'continue' }])
     assert.equal(dialog.querySelector('textarea'), null, 'viewing saved issues does not change the existing plan')
     await act(() => button(dialog, '调整方案').click())
     assert.equal(dialog.querySelector('textarea')!.value, '保留原稿中的师兄身份。')
     assert.equal(button(dialog, '全部交给 AI 决定').disabled, false)
     await act(() => button(dialog, '全部交给 AI 决定').click())
-    assert.deepEqual(view.submitted, [{ id: resolution.id, version: resolution.version, strategy: 'ai' }])
+    assert.deepEqual(view.submitted.at(-1), { id: resolution.id, version: resolution.version, strategy: 'ai' })
   } finally { await view.destroy() }
 })

@@ -11,14 +11,11 @@
 .pc-binding-reference-current img { width: 100%; height: 100%; object-fit: contain; }
 .pc-binding-reference-current small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--visual-panel-secondary, var(--fc-text-secondary)); font-size: 10px; }
 .pc-binding-reference-choices { display: grid; gap: 9px; }
-.pc-binding-update-bar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 12px 14px; border: 1px solid var(--fc-border-soft); border-radius: 10px; background: var(--fc-surface); }
-.pc-binding-update-bar > span, .pc-visual-context .pc-binding-stale { color: var(--fc-warning); font-size: 12px; }
+.pc-visual-context .pc-binding-stale { color: var(--fc-warning); font-size: 12px; }
 .pc-binding-update-success { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--fc-text-secondary); font-size: 12px; }
-.pc-binding-update-confirm { display: grid; gap: 12px; color: var(--fc-text-secondary); font-size: 13px; line-height: 1.7; }
-.pc-binding-update-confirm > strong { color: var(--fc-text); font-weight: 500; }
-.pc-binding-update-confirm p { margin: 0; }
-.pc-binding-update-confirm .pc-visual-error { color: var(--fc-danger); }
-.pc-binding-update-confirm-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
+.pc-binding-sync-controls { display: grid; justify-items: start; gap: 8px; }
+.pc-binding-sync-controls .mantine-Switch-label { color: var(--visual-panel-secondary, var(--fc-text-secondary)); font-size: 12px; }
+.pc-binding-sync-controls .pc-binding-stale { color: var(--fc-warning); }
 
 /* Shared reference controls retain scene/profile scope and persistence. */
 .pc-composer-workspace, .pc-composer-writing { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
@@ -42,7 +39,7 @@
 .pc-binding-inline .mantine-Input-input { background: var(--fc-surface); font-size: 12px; }
 .pc-binding-category-tabs .mantine-Tabs-list { gap: 3px; flex-wrap: wrap; }
 .pc-binding-category-tabs .mantine-Tabs-tab { padding: 5px 6px; color: var(--fc-text-muted); font-size: 11px; border-radius: 6px; }
-.pc-binding-category-tabs .mantine-Tabs-tab[data-active] { color: var(--fc-text); background: var(--fc-surface-hover); }
+.pc-binding-category-tabs .mantine-Tabs-tab[data-active] { color: var(--fc-primary); background: var(--fc-primary-soft); }
 .pc-binding-category-tabs .mantine-Tabs-tab span span { margin-left: 3px; font-size: 10px; font-variant-numeric: tabular-nums; opacity: .7; }
 .pc-binding-inline .pc-visual-bindings { gap: 0; max-height: 180px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .pc-binding-inline .pc-visual-binding { padding: 10px 0; }

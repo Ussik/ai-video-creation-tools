@@ -23,6 +23,7 @@ test('storyboard revisions keep legacy metadata at zero and reject invalid versi
 test('a newer storyboard resets image and video results while preserving geometry, models and generation choices', () => {
   const settings = { prompt_override: true, prompt_is_final: true, prompt_base: '旧稿', prompt_template: '旧完整稿', prompt_body: '旧整理正文',
     generation_completed_job_id: 'old-job', duration: 5, quality: 'extreme', resolution: '4K', candidate_count: 4,
+    image_video_handoff: { source_node_id: 'image', source_asset_id: 'old-frame', source_signature: 'source', applied_signature: 'applied' },
     group_id: shot.id, group_title: '旧镜头标题' }
   const image = node('image', settings)
   const video = { ...node('video', { ...settings, modality: 'video', mode: 'reference', ratio: '16:9',
@@ -38,7 +39,7 @@ test('a newer storyboard resets image and video results while preserving geometr
     assert.equal(current.title, shot.title); assert.equal(current.prompt, index ? shot.video_prompt : shot.image_prompt)
     assert.equal(current.text, ''); assert.equal(current.asset_id, null); assert.equal(current.job_id, null)
     for (const key of ['prompt_override', 'prompt_is_final', 'prompt_base', 'prompt_template', 'prompt_body', 'generation_completed_job_id',
-      'storyboard_reference_asset_id', 'reference_video_url'] as const) assert.equal(current.settings[key], undefined, key)
+      'storyboard_reference_asset_id', 'image_video_handoff', 'reference_video_url'] as const) assert.equal(current.settings[key], undefined, key)
     assert.equal(current.settings.storyboard_revision, 2); assert.equal(current.settings.duration, 8)
     assert.equal(current.settings.quality, 'extreme'); assert.equal(current.settings.resolution, '4K')
     assert.equal(current.settings.candidate_count, 4); assert.equal(current.settings.group_title, '镜头 03 · 新的站台')
@@ -81,6 +82,7 @@ test('same or older storyboard versions preserve explicit historical choices and
 test('downstream shots release fixed old inputs while dynamic connections and their own chosen results survive', () => {
   const source = node('source')
   const downstream = { ...node('downstream', { modality: 'video', storyboard_revision: 4,
+    image_video_handoff: { source_node_id: 'source', source_asset_id: 'old-frame', source_signature: 'source', applied_signature: 'applied' },
     storyboard_reference_asset_id: 'old-frame', reference_video_url: 'https://cdn.test/old-video.mp4',
     video_reference_usages: [{ asset_id: 'old-frame', usage: 'opening' }, { asset_id: 'manual-image', usage: 'detail' }] }),
     shot_id: 'other-shot', asset_id: 'chosen-result', job_id: 'current-other-job' }
@@ -98,6 +100,7 @@ test('downstream shots release fixed old inputs while dynamic connections and th
   assert.equal(released.asset_id, 'chosen-result'); assert.equal(released.job_id, 'current-other-job')
   assert.equal(released.prompt, downstream.prompt); assert.equal(released.settings.storyboard_revision, 4)
   assert.equal(released.settings.storyboard_reference_asset_id, undefined)
+  assert.equal(released.settings.image_video_handoff, undefined)
   assert.equal(released.settings.reference_video_url, undefined)
   assert.deepEqual(released.settings.video_reference_usages, [{ asset_id: 'manual-image', usage: 'detail' }])
   assert.equal(updated.nodes[2], dynamic)

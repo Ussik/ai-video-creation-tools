@@ -13,6 +13,7 @@
 .studio-layout.final-cut-workspace { grid-template-rows: minmax(0, 1fr) 236px; }
 .final-cut-preview-tabs { margin: -6px 0 14px; }
 .final-cut-preview-tabs .mantine-Tabs-tab { font-size: 12px; }
+.final-cut-preview-tabs .mantine-Tabs-tab[data-active] { color: var(--fc-primary); border-color: var(--fc-primary); }
 .final-cut-current-preview { width: 100%; max-width: 800px; margin: 0 auto 18px; }
 .final-cut-current-preview .timeline-preview-stage { max-width: calc(390px * 16 / 9); }
 .final-cut-current-preview .timeline-preview-stage.is-portrait { width: min(100%, calc(390px * 9 / 16)); }
@@ -41,14 +42,14 @@
 .final-cut-time-ruler > span:last-child { transform: translateX(-100%); }
 .final-cut-visual-track { position: relative; height: 78px; }
 .final-cut-visual-track .timeline-clip { position: absolute; height: 76px; min-width: 0; border-radius: 3px; margin: 0; padding: 3px; overflow: hidden; }
-.final-cut-visual-track .timeline-clip.current { outline: 1px solid var(--fc-text-secondary); outline-offset: -1px; }
+.final-cut-visual-track .timeline-clip.current { border-color: var(--fc-primary); outline: 1px solid var(--fc-primary); outline-offset: -1px; }
 .final-cut-visual-track .timeline-clip-preview { height: 45px; display: grid; place-items: center; }
 .final-cut-visual-track .timeline-clip-preview :is(img,video) { width: 100%; height: 100%; object-fit: cover; }
 .final-cut-visual-track .timeline-clip-label { align-items: center; }
 .final-cut-visual-track .timeline-clip-label b { white-space: nowrap; flex: none; font-size: 10px; }
 .final-cut-audio-tracks { padding-top: 5px; }
 .final-cut-audio-row { position: relative; height: 30px; margin-bottom: 3px; }
-.final-cut-audio-clip { position: absolute; height: 29px; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 0 8px; border: 1px solid var(--fc-border-strong); border-radius: 3px; background: var(--fc-surface-hover); color: var(--fc-text-secondary); overflow: hidden; font-size: 11px; }
+.final-cut-audio-clip { position: absolute; height: 29px; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 0 8px; border: 1px solid color-mix(in srgb, var(--fc-primary) 25%, var(--fc-border)); border-radius: var(--fc-radius-sm); background: var(--fc-primary-soft); color: var(--fc-text-secondary); overflow: hidden; font-size: 11px; }
 .final-cut-audio-clip strong { white-space: nowrap; flex: none; font-weight: 550; }
 .final-cut-audio-clip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .final-cut-audio-clip.needs-attention { border-color: var(--fc-danger, #b65e4f); }

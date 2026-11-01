@@ -69,6 +69,16 @@ test('video-only and inactive bindings never assign image ownership', () => {
   assert.doesNotMatch(result, /姜望|渡口补网装|面部特写/)
 })
 
+test('explicit board and view ownership annotates only submitted images without inventing view metadata', () => {
+  const selected = binding({ board_asset_id: 'legacy-board', selected_reference_asset_ids: ['legacy-board', 'side', 'unsubmitted'] })
+  const result = withImageReferenceMapping('保持手工构图。', [selected], ['legacy-board', 'side'], 'profiles')
+  assert.equal(rows(result).length, 2)
+  assert.match(rows(result)[0]!, /参考图 1：姜望.*人物身份、面部、发型、服装与身体比例/)
+  assert.doesNotMatch(rows(result)[0]!, /面部特写|侧面|服装侧面/)
+  assert.match(rows(result)[1]!, /参考图 2：姜望.*侧面（服装侧面）/)
+  assert.doesNotMatch(result, /unsubmitted|参考图 3/)
+})
+
 test('text-only and keyframe mode changes clear stale ownership while mapping each manual image', () => {
   const original = withImageReferenceMapping('保留我的动作和构图。', [binding()], ['face', 'side'], 'profiles')
   for (const mode of ['text_only', 'keyframe']) {

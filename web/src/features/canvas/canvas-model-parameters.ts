@@ -178,6 +178,11 @@ export function imagePreferencePrompt(model: Model, prompt: string, request: {
 }
 
 export function modelDefaultResolution(model: Model | undefined, resolutions: string[]): string {
+  if (model?.modality === 'video' && model.settings.video_reference_profile === 'seedance_2_5') {
+    const configured = model.settings.default_resolution
+    return typeof configured === 'string' && resolutions.includes(configured) ? configured
+      : resolutions.find(value => value.toLowerCase() === '720p') || resolutions[0] || ''
+  }
   if (model?.modality === 'video') {
     const defaultVideoResolution = resolutions.find(value => value.toLowerCase() === '480p')
     if (defaultVideoResolution) return defaultVideoResolution
@@ -192,6 +197,16 @@ export function modelDefaultResolution(model: Model | undefined, resolutions: st
   }
   const configured = model?.settings.default_resolution
   return typeof configured === 'string' && resolutions.includes(configured) ? configured : resolutions[0] || ''
+}
+
+/** These restrictions belong to the selected official preset, never a guessed model name. */
+export function videoParameterPolicy(model: Model | undefined, mode: string, draft = false) {
+  const seedance25 = model?.modality === 'video' && model.settings.video_reference_profile === 'seedance_2_5'
+  return {
+    ratioFollowsSource: seedance25 && ['first_frame', 'first_last_frame', 'edit', 'extend'].includes(mode),
+    durationFollowsSource: seedance25 && mode === 'edit',
+    draftResolution: seedance25 && draft ? '480p' : undefined,
+  }
 }
 
 export function generationCost(model: Model, request: { resolution?: string | null; duration: number }, count = 1): string | null {

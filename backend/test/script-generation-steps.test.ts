@@ -17,6 +17,21 @@ test('steps stay running until validated work finishes and persist their actual 
   assert.equal(events[1].duration_ms, 12_345); assert.equal(saved!.steps.a.value, 42)
 })
 
+test('business steps have no default elapsed-time cutoff and pending work can still be cancelled', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1000 })
+  const controller = new AbortController(), events: GenerationStepEvent[] = []
+  const steps = createGenerationSteps({ signal: controller.signal, onStep: event => events.push(event) })
+  const pending = steps.run('draft', '生成栏目', {}, () => new Promise<number>(() => {}), number)
+  t.mock.timers.tick(181 * 60_000)
+  await Promise.resolve()
+  assert.deepEqual(events.map(event => event.status), ['running'])
+  const reason = new DOMException('用户停止', 'AbortError')
+  controller.abort(reason)
+  await assert.rejects(pending, issue => issue === reason)
+  assert.equal(events.at(-1)!.status, 'cancelled')
+  assert.deepEqual(steps.checkpoint.steps, {})
+})
+
 test('restart reuses only exact inputs and revalidates saved results', async () => {
   let calls = 0, saved: GenerationCheckpoint = { steps: {} }
   const save = (state: GenerationCheckpoint) => { saved = structuredClone(state) }

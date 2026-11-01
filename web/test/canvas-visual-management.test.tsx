@@ -82,7 +82,7 @@ test('inline references stay scoped to the shot; filtering and disclosure are re
     assert.equal(requests.length, 0, 'opening and filtering must not write bindings')
     await choose('林晚 使用范围', 'video')
     assert.deepEqual(requests, [{ path: '/api/shots/shot/visual-bindings', body: {
-      bindings: [{ profile_id: 'lin', required: true, usage: 'video' }, { profile_id: 'station', required: false }], refresh_profile_ids: [],
+      bindings: [{ profile_id: 'lin', required: true, usage: 'video', sync_mode: 'follow' }, { profile_id: 'station', required: false, sync_mode: 'follow' }], refresh_profile_ids: [],
     } }])
   } finally { await view.destroy() }
 })
@@ -178,55 +178,49 @@ test('editing retains unsaved text and sends the original revision after a concu
   } finally { await view.destroy() }
 })
 
-test('same-revision board changes can refresh a shot snapshot without dropping other required references', async t => {
-  const extra = { ...detail.shot_visual_bindings![0], profile_id: other.id, kind: other.kind, name: other.name, required: 0 as unknown as boolean }
-  const base = { ...detail, shot_visual_bindings: [...detail.shot_visual_bindings!, extra] }
+test('following a confirmed board is automatic and locking preserves the selected snapshot and hidden bindings', async t => {
+  const extra = { ...detail.shot_visual_bindings![0], profile_id: other.id, kind: other.kind, name: other.name, required: false, sync_mode: 'locked' as const, reference_selection: 'manual' as const }
+  const base = { ...detail, shot_visual_bindings: [{ ...detail.shot_visual_bindings![0], sync_status: 'current' as const }, extra] }
   let requestBody: any
   t.mock.method(globalThis, 'fetch', async (_url, init) => { requestBody = JSON.parse(String(init?.body)); return Response.json(data(base)) })
   const view = await mount(<Bindings detail={base} context={{ target: 'shot:shot' }} onRefresh={async () => {}} onClose={noop} onBusyChange={noop} onLocate={noop} />)
   try {
     assert.equal(document.querySelector('[role="dialog"]'), null)
-    assert.match(view.container.textContent!, /图片缺失/)
-    await act(() => button('更新引用').click())
-    assert.deepEqual(requestBody.refresh_profile_ids, ['lin'])
-    assert.deepEqual(requestBody.bindings, [{ profile_id: 'lin', required: true }, { profile_id: 'station', required: false }])
+    assert.equal(view.container.querySelector('[aria-label="引用更新"]'), null)
+    assert.equal(requestBody, undefined, 'the UI does not send automatic synchronization writes')
+    await act(() => document.querySelector<HTMLInputElement>('[aria-label="林晚 自动跟随最新设定"]')!.click())
+    assert.deepEqual(requestBody.refresh_profile_ids, [])
+    assert.deepEqual(requestBody.bindings, [
+      { profile_id: 'lin', required: true, sync_mode: 'locked' },
+      { profile_id: 'station', required: false, sync_mode: 'locked', reference_selection: 'manual' },
+    ])
   } finally { await view.destroy() }
 })
 
-test('bulk shot reference updates require confirmation and cancellation leaves snapshots unchanged', async t => {
+test('unconfirmed updates explain automatic waiting while locked snapshots do not require refresh', async t => {
   const requests: string[] = []
   t.mock.method(globalThis, 'fetch', async url => { requests.push(String(url)); return Response.json(data()) })
-  const view = await mount(<Bindings presentation="drawer" detail={detail} context={{ target: 'shot:shot' }} onRefresh={async () => {}} onClose={noop} onBusyChange={noop} onLocate={noop} />)
+  const base = { ...detail, shot_visual_bindings: [{ ...detail.shot_visual_bindings![0], revision: 1, sync_status: 'waiting_confirmation' as const }] }
+  const view = await mount(<Bindings presentation="drawer" detail={base} context={{ target: 'shot:shot' }} onRefresh={async () => {}} onClose={noop} onBusyChange={noop} onLocate={noop} />)
   try {
-    assert.match(view.container.textContent!, /1 项引用待更新/)
-    await act(() => button('更新本镜头全部引用（1）').click())
-    const dialog = document.querySelector('[role="dialog"]')!
-    assert.ok(dialog)
-    assert.match(dialog.textContent!, /更新本镜头引用/)
-    assert.equal(requests.length, 0, 'opening the confirmation must not refresh snapshots')
-    await act(() => button('取消').click())
+    assert.match(view.container.textContent!, /新版待确认/)
+    assert.equal(view.container.querySelector('[aria-label="引用更新"]'), null)
+    await act(() => button('参考与用途：林晚').click())
+    assert.match(view.container.textContent!, /确认后会自动同步/)
     assert.equal(document.querySelector('[role="dialog"]'), null)
     assert.equal(requests.length, 0)
-    assert.equal(button('更新本镜头全部引用（1）').disabled, false)
-    assert.match(view.container.textContent!, /引用待更新/)
+    await view.render(<Bindings presentation="drawer" detail={{ ...base, shot_visual_bindings: [{ ...base.shot_visual_bindings[0], sync_mode: 'locked' }] }} context={{ target: 'shot:shot' }} onRefresh={async () => {}} onClose={noop} onBusyChange={noop} onLocate={noop} />)
+    assert.match(view.container.textContent!, /已锁定 v1/)
+    assert.doesNotMatch(view.container.querySelector('.pc-binding-row-identity')!.textContent!, /新版待确认/)
+    assert.equal(requests.length, 0)
   } finally { await view.destroy() }
 })
 
-test('bulk refresh includes every stale binding in the current shot despite filters and preserves fresh bindings and usage', async t => {
-  const station = { ...other, board_asset_id: 'station-new' }
-  const ticket = { ...profile, id: 'ticket', kind: 'prop', name: '车票', board_asset_id: null } as VisualProfile
-  const elder = { ...profile, id: 'elder', name: '老人' }
-  const bindings = [
-    { ...detail.shot_visual_bindings![0], revision: 1, usage: 'image' as const },
-    { ...detail.shot_visual_bindings![0], profile_id: station.id, kind: station.kind, name: station.name, board_asset_id: 'station-old', required: false, usage: 'none' as const },
-    { ...detail.shot_visual_bindings![0], profile_id: ticket.id, kind: ticket.kind, name: ticket.name, board_asset_id: null, required: false, usage: 'video' as const },
-    { ...detail.shot_visual_bindings![0], profile_id: elder.id, name: elder.name, shot_id: 'other-shot', revision: 1, usage: 'both' as const },
-  ]
-  const base = { ...detail, visual_profiles: [profile, station, ticket, elder], shots: [...detail.shots, { ...detail.shots[0], id: 'other-shot', title: '出站', position: 1 }], shot_visual_bindings: bindings } as ProjectDetail
-  const refreshed = { ...base, shot_visual_bindings: bindings.map(binding => {
-    const current = base.visual_profiles!.find(item => item.id === binding.profile_id)!
-    return binding.shot_id === 'shot' ? { ...binding, revision: current.revision, board_asset_id: current.board_asset_id } : binding
-  }) }
+test('explicit automatic matching recovery retains all other bindings and blocks duplicate saves', async t => {
+  const extra = { ...detail.shot_visual_bindings![0], profile_id: other.id, name: other.name, required: false, usage: 'none' as const, sync_mode: 'locked' as const }
+  const original = { ...detail.shot_visual_bindings![0], revision: 1, usage: 'image' as const, reference_selection: 'manual' as const, sync_status: 'manual_review' as const }
+  const base = { ...detail, shot_visual_bindings: [original, extra] }
+  const updated = { ...base, shot_visual_bindings: [{ ...original, revision: 2, reference_selection: 'auto' as const, sync_status: 'current' as const }, extra] }
   const requests: Array<{ path: string; body: any }> = []
   let release!: (response: Response) => void
   t.mock.method(globalThis, 'fetch', async (url, init) => {
@@ -235,51 +229,45 @@ test('bulk refresh includes every stale binding in the current shot despite filt
   })
   const view = await mount(<Bindings presentation="drawer" detail={base} context={{ target: 'shot:shot' }} onRefresh={async () => {}} onClose={noop} onBusyChange={noop} onLocate={noop} />)
   try {
-    assert.match(view.container.textContent!, /2 项引用待更新/)
-    const propTab = [...view.container.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(tab => tab.textContent?.startsWith('道具'))!
-    await act(() => propTab.click())
-    await fill('搜索引用设定', '不存在的设定')
-    assert.equal(view.container.querySelectorAll('.pc-visual-binding').length, 0)
-    await act(() => button('更新本镜头全部引用（2）').click())
-    const confirm = button('确认更新')
-    await act(() => { confirm.click(); confirm.click() })
+    assert.match(view.container.textContent!, /保留手选参考图 · 需处理/)
+    await fill('搜索引用设定', '林晚')
+    await act(() => button('参考与用途：林晚').click())
+    const restore = button('恢复自动匹配')
+    await act(() => { restore.click(); restore.click() })
     assert.deepEqual(requests, [{ path: '/api/shots/shot/visual-bindings', body: {
       bindings: [
-        { profile_id: 'lin', required: true, usage: 'image' },
-        { profile_id: 'station', required: false, usage: 'none' },
-        { profile_id: 'ticket', required: false, usage: 'video' },
-      ], refresh_profile_ids: ['lin', 'station'],
+        { profile_id: 'lin', required: true, usage: 'image', sync_mode: 'follow', reference_selection: 'auto' },
+        { profile_id: 'station', required: false, usage: 'none', sync_mode: 'locked' },
+      ], refresh_profile_ids: ['lin'],
     } }])
-    assert.equal(button('确认更新').disabled, true, 'a pending update blocks duplicate submissions')
-    assert.equal(button('取消').disabled, true)
-    await act(() => release(Response.json(data(refreshed))))
+    assert.equal(button('恢复自动匹配').disabled, true)
     assert.equal(document.querySelector('[role="dialog"]'), null)
-    assert.equal(view.container.querySelector('[aria-label="引用更新"]'), null, 'stale references belonging to other shots do not keep this action visible')
-    assert.match(view.container.textContent!, /已更新当前镜头的 2 个引用/)
+    await act(() => release(Response.json(data(updated))))
+    assert.equal(view.container.querySelector('[aria-label="引用更新"]'), null)
+    assert.match(view.container.textContent!, /已恢复自动匹配/)
   } finally { await view.destroy() }
 })
 
-test('failed bulk refresh preserves the shot snapshots and permits retrying the same confirmed update', async t => {
+test('failed automatic matching recovery preserves manual choices and permits the same explicit retry', async t => {
+  const base = { ...detail, shot_visual_bindings: [{ ...detail.shot_visual_bindings![0], reference_selection: 'manual' as const, sync_status: 'manual_review' as const }] }
   const requests: Array<{ path: string; body: any }> = []
-  const updated = { ...detail, shot_visual_bindings: [{ ...detail.shot_visual_bindings![0], board_asset_id: profile.board_asset_id }] }
+  const updated = { ...base, shot_visual_bindings: [{ ...base.shot_visual_bindings[0], board_asset_id: profile.board_asset_id, reference_selection: 'auto' as const, sync_status: 'current' as const }] }
   t.mock.method(globalThis, 'fetch', async (url, init) => {
     requests.push({ path: String(url), body: JSON.parse(String(init?.body)) })
     return requests.length === 1 ? Response.json({ error: '暂时无法更新' }, { status: 500 }) : Response.json(data(updated))
   })
-  const view = await mount(<Bindings presentation="drawer" detail={detail} context={{ target: 'shot:shot' }} onRefresh={async () => {}} onClose={noop} onBusyChange={noop} onLocate={noop} />)
+  const view = await mount(<Bindings presentation="drawer" detail={base} context={{ target: 'shot:shot' }} onRefresh={async () => {}} onClose={noop} onBusyChange={noop} onLocate={noop} />)
   try {
-    await act(() => button('更新本镜头全部引用（1）').click())
-    await act(() => button('确认更新').click())
-    assert.ok(document.querySelector('[role="dialog"]'), 'a failed update leaves the confirmation available to retry')
-    assert.match(document.querySelector('[role="dialog"] [role="alert"]')!.textContent!, /暂时无法更新/)
-    assert.equal(button('确认更新').disabled, false)
-    assert.match(view.container.textContent!, /1 项引用待更新/)
-    await act(() => button('确认更新').click())
+    await act(() => button('参考与用途：林晚').click())
+    await act(() => button('恢复自动匹配').click())
+    assert.match(view.container.querySelector('[role="alert"]')!.textContent!, /暂时无法更新/)
+    assert.equal(button('恢复自动匹配').disabled, false)
+    assert.match(view.container.textContent!, /保留手选参考图 · 需处理/)
+    await act(() => button('恢复自动匹配').click())
     assert.equal(requests.length, 2)
-    assert.deepEqual(requests[1], requests[0], 'retry retains the original usage, required flags and refresh scope')
+    assert.deepEqual(requests[1], requests[0])
     assert.equal(document.querySelector('[role="dialog"]'), null)
-    assert.equal(view.container.querySelector('[aria-label="引用更新"]'), null)
-    assert.match(view.container.textContent!, /已更新当前镜头的 1 个引用/)
+    assert.match(view.container.textContent!, /已恢复自动匹配/)
   } finally { await view.destroy() }
 })
 
@@ -293,7 +281,7 @@ test('shot usage can change independently while retaining other objects and froz
   const view = await mount(<Bindings detail={original} context={{ target: 'shot:shot' }} onRefresh={async () => {}} onClose={noop} onBusyChange={noop} onLocate={noop} />)
   try {
     await choose('林晚 使用范围', 'video')
-    assert.deepEqual(saved.bindings, [{ profile_id: 'lin', required: true, usage: 'video' }])
+    assert.deepEqual(saved.bindings, [{ profile_id: 'lin', required: true, usage: 'video', sync_mode: 'follow' }])
     assert.deepEqual(saved.refresh_profile_ids, [])
   } finally { await view.destroy() }
 })
@@ -321,7 +309,7 @@ test('shot reference choices recommend the camera angle, save explicit ordered I
     assert.equal(requests.length, 0, 'viewing recommendations does not generate or mutate assets')
     await act(() => button('按镜头推荐').click())
     assert.equal(requests[0].path, '/api/shots/shot/visual-bindings')
-    assert.deepEqual(requests[0].body.bindings, [{ profile_id: profile.id, required: true, reference_asset_ids: ['face-ref', 'side-ref'] }, { profile_id: other.id, required: false }])
+    assert.deepEqual(requests[0].body.bindings, [{ profile_id: profile.id, required: true, sync_mode: 'follow', reference_selection: 'manual', reference_asset_ids: ['face-ref', 'side-ref'] }, { profile_id: other.id, required: false, sync_mode: 'follow' }])
     assert.match(view.container.textContent!, /2 张独立参考图/)
     await check('面部 · 身份与外貌')
     assert.deepEqual(requests[1].body.bindings[0].reference_asset_ids, ['side-ref'])
@@ -356,7 +344,7 @@ test('frozen archived references can be individually removed while retaining oth
     assert.equal(button('移除镜头参考：归档正面').disabled, false)
     await act(() => button('移除镜头参考：归档正面').click())
     assert.deepEqual(requests, [{ path: '/api/shots/shot/visual-bindings', body: {
-      bindings: [{ profile_id: profile.id, required: true, reference_asset_ids: ['archived-side', 'current-face'] }, { profile_id: other.id, required: false }], refresh_profile_ids: [],
+      bindings: [{ profile_id: profile.id, required: true, sync_mode: 'follow', reference_selection: 'manual', reference_asset_ids: ['archived-side', 'current-face'] }, { profile_id: other.id, required: false, sync_mode: 'follow' }], refresh_profile_ids: [],
     } }])
     assert.equal(button('移除镜头参考：归档侧面').disabled, true, 'a pending save blocks another removal')
     const updated = { ...base, shot_visual_bindings: [{ ...base.shot_visual_bindings![0], reference_assets: refs.slice(1) }, extra] }

@@ -29,15 +29,15 @@ test('actual workflow retries upgrade empty legacy requests and preserve nonempt
   for (const useTools of [true, false]) for (const retained of [false, true]) await t.test(`${useTools ? 'tool button' : 'JSON workflow'} / ${retained ? 'keep accepted prose' : 'refresh empty failed attempt'}`, async t => {
     const provider = await call('POST', '/api/providers', { name: '格式回归', base_url: 'https://workflow-format.example.invalid/v1' })
     const model = await call('POST', '/api/models', { provider_id: provider.id, name: '文本', remote_id: 'test', modality: 'text', protocol: 'responses',
-      settings: { request_path: 'responses', request_template: { model: '{{model}}', input: '{{prompt}}' }, text_path: 'output_text' } })
+      settings: { request_path: 'responses', request_template: { model: '{{model}}', input: '{{prompt}}' }, structured_output_mode: 'json_schema', text_path: 'output_text' } })
     const project = await call('POST', '/api/projects', { name: '道具格式恢复回归' })
     await call('PUT', `/api/projects/${project.id}/script/artifacts`, { artifacts: [
       ...documents('outline'), ...documents('characters'), ...documents('locations'),
     ].map(artifact => ({ ...artifact, status: 'ready' })) })
     const before = await call('GET', `/api/projects/${project.id}`)
     const messages = [{ role: 'user', text: '生成完整全剧道具设计，保留原剧情，先提供草稿。' }]
-    const workflow = workflowRequest.parse({ stage: 'props' })
-    const payload = { model_id: model.id, mode: 'script', use_tools: useTools, workflow: { stage: 'props' }, messages }
+    const workflow = workflowRequest.parse({ stage: 'props', intent: 'stage_design', artifact_types: [...scriptStageArtifacts.props] })
+    const payload = { model_id: model.id, mode: 'script', use_tools: useTools, workflow, messages }
     const url = `/api/projects/${project.id}/script/director/chat`
     let succeed = false, calls = 0
     t.mock.method(globalThis, 'fetch', async (_url, init) => {
@@ -48,7 +48,11 @@ test('actual workflow retries upgrade empty legacy requests and preserve nonempt
         action: 'draft', operation: 'create', authorization: 'explicit', workflow: { stage: 'props' }, creative_brief: '保留既有故事，仅生成道具草稿。',
       }) })
       calls++
-      if (!succeed) return Response.json({ output_text: JSON.stringify({ artifacts: documents('props').map(({ artifact_type, ...artifact }) => ({ ...artifact, type: artifact_type, status: 'ready' })), scenes: [] }) })
+      if (!succeed) {
+        if (body.text.format.name === 'script_stage_artifact_repair') return Response.json({ output_text: JSON.stringify({ repairs: [] }) })
+        const types = body.text.format.schema.properties.artifacts.items.properties.artifact_type.enum as string[]
+        return Response.json({ output_text: JSON.stringify({ artifacts: documents('props').filter(document => types.includes(document.artifact_type)).map(({ artifact_type, ...artifact }) => ({ ...artifact, type: artifact_type, status: 'ready' })), scenes: [] }) })
+      }
       if (retained) {
         assert.equal(body.text.format.name, 'script_stage_blocks')
         assert.match(text, /旧版已接收外观正文/)
@@ -84,9 +88,9 @@ test('actual workflow retries upgrade empty legacy requests and preserve nonempt
     assert.equal(hash({ version: 1, identity }), row.cache_key, 'fixture reproduces the exact live checkpoint identity')
     checkpoint.prompt = legacyPrompt
     const completed = documents('props').filter(artifact => artifact.artifact_type !== 'prop_visuals')
-    checkpoint.steps['draft:stream:state'] = { input_hash: hash({ strategy: 'stage-semantic-stream-v1', request: workflow, prompt: legacyPrompt }), duration_ms: 0,
+    checkpoint.steps = { 'draft:stream:state': { input_hash: hash({ strategy: 'stage-semantic-stream-v1', request: workflow, prompt: legacyPrompt }), duration_ms: 0,
       value: { version: 1, round: 2, initialEnded: retained, artifacts: retained ? completed : [], scenes: [], target: retained ? 'prop_visuals' : null,
-        mode: 'document', blocks: retained ? [{ id: 'visual:old', title: '外观与辨识', content: '旧版已接收外观正文。', scenes: [] }] : [], noProgress: 0 } }
+        mode: 'document', blocks: retained ? [{ id: 'visual:old', title: '外观与辨识', content: '旧版已接收外观正文。', scenes: [] }] : [], noProgress: 0 } } }
     run('UPDATE script_generation_checkpoints SET cache_key=?,payload=? WHERE project_id=?', hash({ version: 1, identity: { ...identity, prompt: legacyPrompt } }), JSON.stringify(checkpoint), project.id)
     succeed = true; calls = 0
     const generated = await call('POST', url, payload)

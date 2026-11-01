@@ -47,6 +47,17 @@ async function choosePlanningMode(label: '重新设计新方案' | '沿用当前
   assert.ok(option, label)
   await act(() => option.click())
 }
+async function chooseSkill(stage: 'storyboard' | 'visual_assets', value: string) {
+  const trigger = stage === 'storyboard' ? '分镜规划技能选择' : '视觉设定技能选择'
+  await act(() => button(trigger).click())
+  const input = document.querySelector<HTMLInputElement>(`input[aria-label="${stage}主技能"]`)!
+  assert.ok(input)
+  await act(() => input.click())
+  const option = document.querySelector<HTMLElement>(`[role="option"][value="${value}"]`)
+  assert.ok(option, value)
+  await act(() => option.click())
+  await act(() => button(trigger).click())
+}
 async function fillTextarea(label: string, value: string) {
   const input = [...document.querySelectorAll<HTMLTextAreaElement>('textarea')].find(node => node.id === document.querySelector<HTMLLabelElement>(`label[for="${node.id}"]`)?.htmlFor && document.querySelector(`label[for="${node.id}"]`)?.textContent === label)!
   assert.ok(input, label)
@@ -103,6 +114,51 @@ test('blank count enables automatic planning, numeric suggestions are sent, and 
   } finally { await view.destroy() }
 })
 
+test('invalid planning preserves scene diagnostics and remains retryable without saving or opening the canvas', async t => {
+  const diagnostics = '分镜方案与所选场次不一致：本次选择 1 场，返回 2 场。\n缺少场次：车站（scene_id=scene）；重复 scene_id：other；未选中的 scene_id：other。'
+  const sourceError = `模型结果不符合 controlled_storyboard 契约（已修正一次）：${diagnostics}`
+  const unknownError = '上游模型连接暂时中断（request_id=req-2）'
+  const requests: string[] = []; let attempts = 0, opened = 0
+  t.mock.method(globalThis, 'fetch', async url => {
+    const path = String(url); requests.push(path)
+    if (path.endsWith('/context')) return Response.json(context)
+    if (path.endsWith('/plan')) {
+      attempts++
+      if (attempts === 1) return Response.json({ detail: sourceError }, { status: 422 })
+      if (attempts === 2) return Response.json({ detail: unknownError }, { status: 503 })
+      return Response.json(draft)
+    }
+    throw new Error(`Unexpected ${path}`)
+  })
+  const view = await mount({ openCanvas: () => opened++ })
+  const assertNoWrites = () => {
+    assert.equal(requests.some(path => /\/(commit|canvas)$/.test(path)), false)
+    assert.equal(opened, 0)
+    assert.equal(dom.window.sessionStorage.getItem('script-canvas-open:planner'), null)
+  }
+  try {
+    await act(async () => button('开始规划').click())
+    assert.equal(document.querySelector('[role="alert"] span')!.textContent, `分镜规划结果未通过校验（自动修正后仍未通过）：${diagnostics}`)
+    assert.equal(document.body.textContent!.includes('controlled_storyboard'), false)
+    assert.equal(button('开始规划').disabled, false)
+    assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '确认加入画布'), false)
+    assert.equal(document.querySelector('.storyboard-planner-preview'), null)
+    assertNoWrites()
+
+    await act(async () => button('开始规划').click())
+    assert.equal(document.querySelector('[role="alert"] span')!.textContent, unknownError)
+    assert.equal(button('开始规划').disabled, false)
+    assertNoWrites()
+
+    await act(async () => button('开始规划').click())
+    assert.equal(document.querySelector('[role="alert"]'), null)
+    assert.ok(document.querySelector('.storyboard-planner-preview'))
+    assert.equal(button('确认加入画布').disabled, false)
+    assert.deepEqual(requests.map(path => path.split('/').at(-1)), ['context', 'plan', 'plan', 'plan'])
+    assertNoWrites()
+  } finally { await view.destroy() }
+})
+
 test('metadata does not generate; selected skill/docs are explicit and edited draft only saves on confirmation', async t => {
   const requests: Array<{ path: string; body: any }> = []; let opened = 0, closed = 0
   t.mock.method(globalThis, 'fetch', async (url, init) => {
@@ -118,7 +174,8 @@ test('metadata does not generate; selected skill/docs are explicit and edited dr
   try {
     assert.equal(requests.length, 1); assert.ok(requests[0].path.endsWith('/context'))
     assert.ok([...document.querySelectorAll<HTMLInputElement>('.storyboard-planner-source-list input[type=checkbox]')].every(node => !node.checked))
-    await check('故事大纲 · 100 字'); assert.match(document.querySelector('.storyboard-planner-skill-card')!.textContent!, /分镜技能/)
+    await check('故事大纲 · 100 字'); assert.match(document.querySelector('.storyboard-planner-skill-card')!.textContent!, /模型自动选择/)
+    await chooseSkill('storyboard', 'storyboard-skill')
     await act(async () => button('开始规划').click())
     assert.deepEqual(requests[1].body.skill_ids, ['storyboard-skill']); assert.deepEqual(requests[1].body.document_ids, ['outline'])
     assert.equal(requests.length, 2); assert.equal(opened, 0)
@@ -143,6 +200,7 @@ test('empty skill selection uses base rules and changing configuration invalidat
   })
   const view = await mount()
   try {
+    await chooseSkill('storyboard', '__base__')
     await act(async () => button('开始规划').click())
     assert.deepEqual(planBody.skill_ids, []); assert.deepEqual(planBody.document_ids, [])
     assert.equal(planBody.target_duration, undefined)
@@ -150,6 +208,45 @@ test('empty skill selection uses base rules and changing configuration invalidat
     await act(() => button('规划设置').click())
     await check('指定本次总时长（源场次合计 30 秒）')
     assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '保存分镜'), false)
+  } finally { await view.destroy() }
+})
+
+test('storyboard automatic mode sends no selected ids and displays the model result while manual base rules override it', async t => {
+  const plans: Array<Record<string, unknown>> = []
+  const skills = [
+    { id: 'storyboard-skill', name: 'short-drama-storyboard', description: '通用分镜', revision: 'a'.repeat(40) },
+    { id: 'segmented-skill', name: 'novel-storyboard', description: '多镜分段规划', revision: 'a'.repeat(40) },
+  ]
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (String(url).endsWith('/context')) return Response.json({ ...context, skills, default_skill_ids: ['storyboard-skill'],
+      skill_policy: { stage: 'storyboard', label: '分镜规划', primary_id: 'storyboard-skill', auxiliary_ids: [], source: 'global', warning: '', skills } })
+    if (String(url).endsWith('/plan')) { plans.push(JSON.parse(String(init?.body))); return Response.json({ ...draft,
+      used_skills: [{ id: 'segmented-skill', name: 'novel-storyboard', revision: 'a'.repeat(40), files: ['SKILL.md'] }],
+      skill_assignment: { source: 'automatic', ids: ['segmented-skill'], reason: '多镜分段任务适合按段组织镜头。' } }) }
+    throw new Error(`Unexpected ${url}`)
+  })
+  const view = await mount()
+  try {
+    await fillTextarea('导演要求', '按 H3 做多镜分段，明确段内切镜和关键帧')
+    assert.match(document.querySelector('[aria-label="本次分镜技能"]')!.textContent!, /模型自动选择/)
+    assert.equal(plans.length, 0, 'typing instructions does not make a model request')
+    await act(() => button('开始规划').click())
+    assert.equal(Object.hasOwn(plans[0], 'skill_ids'), false)
+    assert.match(document.querySelector('.storyboard-planner-used-sources')!.textContent!, /novel-storyboard/)
+    await act(() => document.querySelector<HTMLElement>('.storyboard-planner-used-sources .workspace-disclosure-control')!.click())
+    assert.match(document.querySelector('.storyboard-planner-used-details')!.textContent!, /选择理由：多镜分段任务适合按段组织镜头/)
+    await act(() => button('规划设置').click())
+    await act(() => button('分镜规划技能选择').click())
+    const input = document.querySelector<HTMLInputElement>('input[aria-label="storyboard主技能"]')!
+    assert.ok(input)
+    await act(() => input.click())
+    const base = document.querySelector<HTMLElement>('[role="option"][value="__base__"]')
+    assert.ok(base)
+    await act(() => base.click())
+    await act(() => button('分镜规划技能选择').click())
+    await fillTextarea('导演要求', '按 H3 做多镜分段，调整每段的台词落点')
+    await act(() => button('开始规划').click())
+    assert.deepEqual(plans[1]?.skill_ids, [])
   } finally { await view.destroy() }
 })
 
@@ -540,7 +637,7 @@ test('confirmation uses a fresh source version to prepare references before impo
     assert.equal(requests.length, 1)
     await act(async () => button('开始规划').click())
     assert.equal(requests.length, 2); assert.equal(opened, 0)
-    assert.match(document.querySelector('.storyboard-planner-reference-preparation')!.textContent!, /信息图设定技能/)
+    assert.match(document.querySelector('.storyboard-planner-reference-preparation')!.textContent!, /模型自动选择/)
     assert.equal(document.querySelector('[role="dialog"][aria-label="参考设定说明"]'), null)
     await act(() => button('查看参考设定说明').click())
     assert.match(document.querySelector('[role="dialog"][aria-label="参考设定说明"]')!.textContent!, /未变化的设定与确认图会复用/)
@@ -551,7 +648,7 @@ test('confirmation uses a fresh source version to prepare references before impo
     assert.deepEqual(requests.map(request => request.path.split('/').slice(-2).join('/')), [
       'storyboard/context', 'storyboard/plan', 'storyboard/commit', 'canvas/check', 'canvas/prepare', 'canvas/commit', 'storyboard/canvas',
     ])
-    assert.deepEqual(requests[4].body, { signature: freshSignature, scene_ids: ['scene'], model_id: 'text', skill_ids: ['asset-skill'] })
+    assert.deepEqual(requests[4].body, { signature: freshSignature, scene_ids: ['scene'], model_id: 'text' })
     assert.deepEqual(requests[5].body, { signature: freshSignature, scene_ids: ['scene'], profiles: [profileDraft] })
     const handoff = JSON.parse(dom.window.sessionStorage.getItem('script-canvas-open:planner')!).result
     assert.equal(handoff.visual_profiles[0].id, 'profile'); assert.equal(handoff.shot_visual_bindings[0].required, true)
@@ -650,6 +747,7 @@ test('saved plans still prepare missing references and an explicit empty selecti
   const view = await mount()
   try {
     assert.equal(requests.length, 1)
+    await chooseSkill('visual_assets', '__base__')
     await act(async () => button('确认加入画布').click())
     assert.equal(requests.some(request => /\/storyboard\/(commit|plan)$/.test(request.path)), false)
     assert.deepEqual(requests.find(request => request.path.endsWith('/prepare'))!.body.skill_ids, [])
@@ -697,6 +795,7 @@ test('saving reference skill defaults reloads only that policy and preserves the
   try {
     await act(async () => button('开始规划').click())
     await fillTextarea('首帧图片提示词', '保留我编辑的首帧')
+    await chooseSkill('visual_assets', 'asset-skill')
     await act(() => button('视觉设定技能选择').click())
     await act(() => document.querySelector<HTMLElement>('.creative-skill-more-config .workspace-disclosure-control')!.click())
     await act(async () => button('设为项目默认').click())

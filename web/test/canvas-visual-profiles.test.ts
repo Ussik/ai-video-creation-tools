@@ -190,17 +190,65 @@ test('manual connections and duplicate image nodes do not produce duplicate refe
   assert.equal(automaticVisualReferenceEdges(fixture.graph, fixture.detail)[0].source, 'copy')
 })
 
-test('snapshot matching never substitutes a newer approved board, an unconfirmed candidate or a similarly named asset', () => {
+test('snapshot edges keep their saved image when the owning profile shows a newer board or has no confirmed board', () => {
   const fixture = referenceFixture()
   fixture.detail.shot_visual_bindings![0].board_asset_id = 'old-board'
-  assert.deepEqual(automaticVisualReferenceEdges(fixture.graph, fixture.detail).map(edge => edge.source), ['bedroom', 'mark'])
+  fixture.detail.shot_visual_bindings![0].sync_mode = 'locked'
+  const snapshot = automaticVisualReferenceEdges(fixture.graph, fixture.detail)[0]
+  assert.deepEqual([snapshot.source, snapshot.target, snapshot.reference_asset_id], ['linwan', 'shot-node', 'old-board'])
   fixture.graph.nodes.push({ ...node, type: 'image', id: 'old-copy', asset_id: 'old-board', settings: {} })
   assert.equal(automaticVisualReferenceEdges(fixture.graph, fixture.detail)[0].source, 'old-copy')
   fixture.detail.shot_visual_bindings![0].board_asset_id = 'candidate'
-  assert.deepEqual(automaticVisualReferenceEdges(fixture.graph, fixture.detail).map(edge => edge.source), ['bedroom', 'mark'])
+  assert.equal(automaticVisualReferenceEdges(fixture.graph, fixture.detail)[0].reference_asset_id, 'candidate')
   fixture.detail.visual_profiles![0].board_asset_id = null
   fixture.detail.shot_visual_bindings![0].board_asset_id = 'approved'
+  fixture.detail.shot_visual_bindings![0].sync_mode = 'follow'
+  fixture.detail.shot_visual_bindings![0].sync_status = 'waiting_confirmation'
+  assert.deepEqual(automaticVisualReferenceEdges(fixture.graph, fixture.detail)[0], {
+    id: `auto-visual:${JSON.stringify(['shot-node', 'approved'])}`, source: 'linwan', target: 'shot-node', reference_asset_id: 'approved',
+  })
+  fixture.graph.edges = [{ id: 'manual-profile', source: 'linwan', target: 'shot-node' }]
+  assert.deepEqual(automaticVisualReferenceEdges(fixture.graph, fixture.detail).map(edge => edge.source), ['bedroom', 'mark'],
+    'an existing dynamic profile input already resolves the bound snapshot')
+})
+
+test('snapshot source fallback requires the owning image profile and never borrows a similarly named node or replacement asset', () => {
+  const fixture = referenceFixture()
+  fixture.detail.shot_visual_bindings![0] = { ...fixture.detail.shot_visual_bindings![0], board_asset_id: 'old-board', sync_mode: 'locked' }
+  fixture.graph.nodes[0] = { ...fixture.graph.nodes[0], type: 'text' }
+  fixture.graph.nodes.push({ ...node, id: 'lookalike', title: '林晚 · 常服', asset_id: 'candidate',
+    settings: { modality: 'image', visual_profile_id: 'other-profile' } })
   assert.deepEqual(automaticVisualReferenceEdges(fixture.graph, fixture.detail).map(edge => edge.source), ['bedroom', 'mark'])
+  fixture.graph.nodes[0] = { ...fixture.graph.nodes[0], type: 'generation' }
+  fixture.target.settings.prompt_reference_overrides = { 'old-board': 'upload' }
+  assert.deepEqual(automaticVisualReferenceEdges(fixture.graph, fixture.detail).map(edge => edge.source), ['bedroom', 'mark'],
+    'an explicit replacement needs its own matching source instead of inheriting the original profile node')
+  fixture.graph.nodes.push({ ...node, type: 'image', id: 'replacement', asset_id: 'upload', settings: {} })
+  assert.equal(automaticVisualReferenceEdges(fixture.graph, fixture.detail)[0].source, 'replacement')
+  fixture.graph.edges = [{ id: 'dynamic-profile', source: 'linwan', target: 'shot-node' }]
+  assert.deepEqual(automaticVisualReferenceEdges(fixture.graph, fixture.detail).map(edge => edge.source), ['bedroom', 'mark'],
+    'a dynamic profile connection already supplies the explicitly replaced snapshot')
+})
+
+test('dynamic profile inputs validate their saved board while newer profile and base boards await confirmation', () => {
+  const fixture = referenceFixture()
+  fixture.detail.project_visual_style = { version: 'current-style' } as ProjectDetail['project_visual_style']
+  fixture.detail.visual_profiles![0] = { ...fixture.detail.visual_profiles![0], revision: 3,
+    board_asset_id: null, board_style_status: 'missing', base_profile_id: 'bedroom' }
+  fixture.detail.visual_profiles![1].board_asset_id = null
+  fixture.detail.shot_visual_bindings![0] = { ...fixture.detail.shot_visual_bindings![0], revision: 2,
+    board_asset_id: 'old-board', board_style_version: 'current-style', sync_mode: 'locked', reference_selection: 'manual' }
+  fixture.detail.shot_visual_bindings = [fixture.detail.shot_visual_bindings![0]]
+  fixture.graph.edges = [{ id: 'dynamic-profile', source: 'linwan', target: 'shot-node' }]
+  assert.deepEqual(missingVisualReferences(fixture.graph, fixture.target.id, fixture.detail), [],
+    'an available frozen board does not depend on the current profile or its newly selected base')
+  fixture.detail.shot_visual_bindings[0].board_style_version = 'old-style'
+  assert.equal(missingVisualReferences(fixture.graph, fixture.target.id, fixture.detail)[0]?.action, 'bindings')
+  fixture.detail.shot_visual_bindings[0].board_style_version = 'current-style'
+  fixture.detail.shot_visual_bindings[0].board_asset_id = null
+  fixture.detail.visual_profiles![0].board_asset_id = 'approved'
+  assert.ok(missingVisualReferences(fixture.graph, fixture.target.id, fixture.detail).length,
+    'an empty saved binding never borrows the latest profile board')
 })
 
 test('only image generation and reference-mode video display automatic profile boards', () => {

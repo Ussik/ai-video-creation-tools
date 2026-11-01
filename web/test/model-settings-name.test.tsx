@@ -37,7 +37,22 @@ async function fillName(value: string) {
     input.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
   })
 }
-async function mount(t: TestContext, fail = false, modelSettings = model.settings) {
+async function fillLabeledInput(label: string, value: string) {
+  const field = [...document.querySelectorAll<HTMLLabelElement>('label')].find(node => node.textContent === label)
+  assert.ok(field, label)
+  const input = document.getElementById(field.htmlFor) as HTMLInputElement
+  assert.ok(input)
+  await act(() => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(input, value)
+    input.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+  })
+}
+function imageAnalysisSwitch() {
+  const label = [...document.querySelectorAll<HTMLLabelElement>('label')].find(node => node.textContent?.startsWith('启用 Gemini 图片反推'))
+  assert.ok(label)
+  return document.getElementById(label.htmlFor) as HTMLInputElement
+}
+async function mount(t: TestContext, fail = false, modelSettings = model.settings, configuredModel = model) {
   let stored = { ...provider }
   const requests: Array<{ url: string; method?: string; body: Record<string, unknown> }> = [], errors: string[] = []
   t.mock.method(globalThis, 'fetch', async (url, init) => {
@@ -50,7 +65,7 @@ async function mount(t: TestContext, fail = false, modelSettings = model.setting
   })
   function Harness() {
     const [providers, setProviders] = useState([stored]), [busy, setBusy] = useState(false)
-    return <MantineProvider env="test"><ModelSettings providers={providers} models={[{ ...model, settings: modelSettings }]} busy={busy}
+    return <MantineProvider env="test"><ModelSettings providers={providers} models={[{ ...configuredModel, settings: modelSettings }]} busy={busy}
       refresh={async () => { setProviders([{ ...stored }]) }} action={async task => {
         setBusy(true)
         try { await task() } catch (error) { errors.push(error instanceof Error ? error.message : String(error)) }
@@ -107,6 +122,38 @@ test('failed provider renames retain the draft and leave the displayed name unch
   } finally { await view.destroy() }
 })
 
+test('Seedance 2.5 preset replaces obsolete video payloads while retaining model identity, connection and pricing', async t => {
+  const settings = {
+    api_base_url: 'https://video-provider.invalid/api/v3', headers: { 'X-Route': 'video' }, pricing: { per_second: 0.08, currency: '¥' },
+    request_templates: { reference: { prompt: '{{prompt}}' } },
+    mode_variables: { reference: { resolution: '4k' } }, draft_variables: { resolution: '720p' },
+    video_reference_profile: 'seedance_2_0', max_reference_images: 9,
+  }
+  const video = { ...model, name: '我的视频模型', remote_id: 'my-video-endpoint', modality: 'video' as const, protocol: 'async_video' as const }
+  const view = await mount(t, false, settings, video)
+  try {
+    await act(() => button('编辑 我的视频模型').click())
+    await act(() => button('应用 Seedance 2.5 配置').click())
+    await act(async () => button('保存模型').click())
+    assert.equal(view.requests.length, 1)
+    const body = view.requests[0].body
+    assert.equal(body.provider_id, video.provider_id)
+    assert.equal(body.remote_id, video.remote_id)
+    const saved = body.settings as Record<string, unknown>
+    assert.equal(saved.video_reference_profile, 'seedance_2_5')
+    assert.equal(saved.max_reference_images, 30)
+    assert.equal(saved.default_resolution, '720p')
+    assert.deepEqual(saved.resolutions, ['480p', '720p', '1080p'])
+    assert.deepEqual(saved.supported_modes, ['text', 'first_frame', 'first_last_frame', 'reference', 'edit', 'extend'])
+    assert.equal(saved.request_templates, undefined)
+    assert.deepEqual(saved.draft_variables, { resolution: '480p' })
+    assert.equal(saved.api_base_url, settings.api_base_url)
+    assert.deepEqual(saved.headers, settings.headers)
+    assert.deepEqual(saved.pricing, settings.pricing)
+    assert.deepEqual(view.errors, [])
+  } finally { await view.destroy() }
+})
+
 async function choose(label: string, option: string) {
   const node = [...document.querySelectorAll<HTMLLabelElement>('label')].find(item => item.textContent === label)
   assert.ok(node, label)
@@ -117,6 +164,37 @@ async function choose(label: string, option: string) {
   assert.ok(choice, option)
   await act(() => choice.click())
 }
+
+test('Doubao video format can be explicitly enabled for Responses while preserving unrelated model settings', async t => {
+  const settings = { request_path: 'responses', request_template: { model: '{{model}}', input: '{{prompt}}' },
+    text_path: 'output.0.content.0.text', supports_vision: true, pricing: { per_generation: 0.02, per_million_input_tokens: 3, currency: '¥' } }
+  const textModel = { ...model, name: '豆包文本模型', remote_id: 'my-text-endpoint', modality: 'text' as const, protocol: 'responses' as const }
+  const view = await mount(t, false, settings, textModel)
+  try {
+    await act(() => button('编辑 豆包文本模型').click())
+    const label = [...document.querySelectorAll<HTMLLabelElement>('label')].find(item => item.textContent?.startsWith('支持视频理解'))!
+    assert.ok(label)
+    let checkbox = document.getElementById(label.htmlFor) as HTMLInputElement
+    assert.equal(checkbox.disabled, true)
+    assert.equal(checkbox.checked, false)
+    await choose('视频输入格式', '豆包视频理解 · Chat / Responses')
+    checkbox = document.getElementById(label.htmlFor) as HTMLInputElement
+    assert.equal(checkbox.disabled, false)
+    await act(() => checkbox.click())
+    await act(async () => button('保存模型').click())
+    assert.equal(view.requests.length, 1)
+    const body = view.requests[0].body
+    assert.equal(body.protocol, 'responses')
+    assert.equal(body.remote_id, textModel.remote_id)
+    const saved = body.settings as Record<string, unknown>
+    assert.equal(saved.video_input_format, 'doubao_ark')
+    assert.equal(saved.supports_video, true)
+    assert.equal(saved.supports_vision, true)
+    assert.deepEqual(saved.request_template, settings.request_template)
+    assert.deepEqual(saved.pricing, settings.pricing)
+    assert.deepEqual(view.errors, [])
+  } finally { await view.destroy() }
+})
 
 test('image models apply the documented async form without changing model ID, provider or pricing', async t => {
   const settings = { request_path: 'images/generations', request_template: { model: '{{model}}', prompt: '{{prompt}}', ratio: '{{ratio}}' },
@@ -221,5 +299,93 @@ test('the form enables imageSize only explicitly and preserves an independent ta
     assert.equal(saved.image_task_base_url, 'https://task-proxy.invalid/v1')
     assert.equal(saved.api_base_url, 'https://example.invalid/draw/v1')
     assert.deepEqual(view.errors, [])
+  } finally { await view.destroy() }
+})
+
+test('native video understanding is an explicit Chat Completions capability and persists independently of vision', async t => {
+  const textModel = { ...model, name: '复核文本模型', modality: 'text', protocol: 'chat_completions' } as Model
+  const settings = { request_path: 'chat/completions', request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] }, text_path: 'choices.0.message.content' }
+  const view = await mount(t, false, settings, textModel)
+  try {
+    await act(() => button('编辑 复核文本模型').click())
+    const label = [...document.querySelectorAll<HTMLLabelElement>('label')].find(node => node.textContent?.startsWith('支持视频理解'))!
+    assert.ok(label)
+    const input = document.getElementById(label.htmlFor) as HTMLInputElement
+    assert.equal(input.checked, false)
+    assert.equal(input.disabled, false)
+    await act(() => label.click())
+    await act(async () => button('保存模型').click())
+    const saved = view.requests[0].body.settings as Record<string, unknown>
+    assert.equal(saved.supports_video, true)
+    assert.equal(saved.supports_vision, undefined)
+  } finally { await view.destroy() }
+})
+
+test('Responses models require an explicit Doubao format before enabling native video input', async t => {
+  const textModel = { ...model, name: '图片理解模型', modality: 'text', protocol: 'responses' } as Model
+  const view = await mount(t, false, { request_path: 'responses', request_template: { model: '{{model}}', input: '{{prompt}}' }, text_paths: ['output_text'] }, textModel)
+  try {
+    await act(() => button('编辑 图片理解模型').click())
+    const label = [...document.querySelectorAll<HTMLLabelElement>('label')].find(node => node.textContent?.startsWith('支持视频理解'))!
+    assert.equal((document.getElementById(label.htmlFor) as HTMLInputElement).disabled, true)
+  } finally { await view.destroy() }
+})
+
+test('Gemini analysis is explicitly enabled on image models while preserving generation settings and identity', async t => {
+  const settings = { request_path: 'custom/images', request_template: { model: '{{model}}', prompt: '{{prompt}}', size: '{{ratio}}' },
+    api_base_url: 'https://images.invalid/draw/v1', image_url_path: 'data.0.url',
+    headers: { 'X-Route': 'existing' }, pricing: { per_image: 0.5, currency: '¥' } }
+  const nano = { ...model, name: 'Nano Banana', remote_id: 'nano-banana-fast' }
+  const view = await mount(t, false, settings, nano)
+  try {
+    await act(() => button('编辑 Nano Banana').click())
+    assert.equal(imageAnalysisSwitch().checked, false, 'model name never enables analysis')
+    assert.ok(![...document.querySelectorAll('label')].some(label => label.textContent === '分析 API 地址'))
+    assert.match(document.querySelector('[role="dialog"]')!.textContent!, /GPT Image 生图接口只返回图片/)
+    await act(() => imageAnalysisSwitch().click())
+    assert.equal(imageAnalysisSwitch().checked, true)
+    await fillLabeledInput('分析 API 地址', 'https://gemini.invalid/v1beta')
+    await fillLabeledInput('分析模型 ID', 'gemini-2.5-flash-image')
+    await fillLabeledInput('分析请求路径', 'models/{model}:generateContent')
+    await act(async () => button('保存模型').click())
+    assert.equal(view.requests.length, 1)
+    assert.equal(view.requests[0].body.remote_id, nano.remote_id)
+    assert.equal(view.requests[0].body.provider_id, nano.provider_id)
+    assert.equal(view.requests[0].body.protocol, 'image_generations')
+    assert.deepEqual(view.requests[0].body.settings, { ...settings, image_analysis: { enabled: true,
+      protocol: 'gemini_generate_content', api_base_url: 'https://gemini.invalid/v1beta', remote_id: 'gemini-2.5-flash-image',
+      request_path: 'models/{model}:generateContent' } })
+    assert.deepEqual(view.errors, [])
+  } finally { await view.destroy() }
+})
+
+test('analysis overrides can be cleared or disabled without losing the image endpoint or saved analysis model', async t => {
+  const image_analysis = { enabled: true, protocol: 'gemini_generate_content',
+    remote_id: 'gemini-2.5-flash-image', api_base_url: 'https://gemini.invalid/v1beta', request_path: 'models/{model}:generateContent' }
+  const settings = { request_path: 'images/generations', request_template: { model: '{{model}}', prompt: '{{prompt}}' },
+    image_url_path: 'data.0.url', image_analysis }
+  const view = await mount(t, false, settings)
+  try {
+    await act(() => button('编辑 图片模型').click())
+    await fillLabeledInput('分析 API 地址', '')
+    await fillLabeledInput('分析请求路径', '')
+    await act(() => imageAnalysisSwitch().click())
+    assert.equal(imageAnalysisSwitch().checked, false)
+    await act(async () => button('保存模型').click())
+    assert.deepEqual(view.requests[0].body.settings, { ...settings,
+      image_analysis: { enabled: false, protocol: 'gemini_generate_content', remote_id: image_analysis.remote_id } })
+    assert.deepEqual(view.errors, [])
+  } finally { await view.destroy() }
+})
+
+test('invalid analysis addresses fail locally without submitting model changes', async t => {
+  const view = await mount(t, false, { request_path: 'images/generations', request_template: { model: '{{model}}', prompt: '{{prompt}}' }, image_url_path: 'data.0.url' })
+  try {
+    await act(() => button('编辑 图片模型').click())
+    await act(() => imageAnalysisSwitch().click())
+    await fillLabeledInput('分析 API 地址', 'file:///tmp/private')
+    await act(async () => button('保存模型').click())
+    assert.equal(view.requests.length, 0)
+    assert.match(document.querySelector('[role="dialog"]')!.textContent!, /图片反推 API 地址必须/)
   } finally { await view.destroy() }
 })

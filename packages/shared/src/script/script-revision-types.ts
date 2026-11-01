@@ -1,5 +1,5 @@
 /** Public persisted revision state. No server/runtime dependencies. */
-export type RevisionAssessment = { document_id: string; version: string; conclusion: 'resolved' | 'unchanged' | 'needs_change'; explanation: string;
+export type RevisionAssessment = { document_id: string; version: string; draft_snapshot?: string; scene_snapshot?: string; conclusion: 'resolved' | 'unchanged' | 'needs_change'; explanation: string;
   findings: Array<{ category: 'pending' | 'missing' | 'contradiction' | 'intentional_suspense'; quote: string; explanation: string }> }
 export type RevisionReferenceReview = { kind: 'document' | 'scene' | 'shot' | 'visual_profile'; id: string; version: string;
   conclusion: 'consistent' | 'needs_change'; explanation: string; draft_snapshot: string }

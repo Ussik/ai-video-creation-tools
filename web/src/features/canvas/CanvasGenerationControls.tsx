@@ -3,6 +3,7 @@ import { UnstyledButton, Menu, NumberInput, Popover, Slider, Switch } from '@man
 import { useClickOutside } from '@mantine/hooks'
 import { ArrowLeftRight, Check, ChevronDown, Film, Image, Images, Scan, SlidersHorizontal, SquarePen, Type, Volume2, VolumeX } from 'lucide-react'
 import { imageSizeChoices, selectImageSize } from './canvas-model-parameters'
+import { videoDurationPlan } from '@video-studio/shared/media/video-comparison'
 
 export type CanvasVideoMode = 'text' | 'first_frame' | 'first_last_frame' | 'reference' | 'edit' | 'extend'
 /** Parameters shared by the canvas generation popover and provider templates.
@@ -18,6 +19,7 @@ export type ParametersPatch = {
   clarity?: string
   duration?: number
   generate_audio?: boolean
+  draft?: boolean
   quality?: string
   background?: string
 }
@@ -39,10 +41,16 @@ export interface CanvasGenerationParametersProps {
   clarities?: string[]
   clarity?: string
   duration: number
+  /** Planned editing duration from the shot, independent of provider minimums. */
+  editDuration?: number
   minDuration: number
   maxDuration: number
   durationOptions?: number[]
   showDuration: boolean
+  ratioFollowsSource?: boolean
+  durationFollowsSource?: boolean
+  draftSupported?: boolean
+  draft?: boolean
   audioSupported: boolean
   generateAudio: boolean
   count: number
@@ -129,8 +137,9 @@ const imageQualityLabel = (value: string) => imageQualityLabels[value.toLowerCas
 const imageBackgroundLabel = (value: string) => imageBackgroundLabels[value.toLowerCase()] || value
 const videoResolutionLabel = (value: string) => /^4k$/i.test(value) ? '4K' : value
 
-export function CanvasGenerationParameters({ modality, ratios, ratio, resolutions, resolution, clarities = [], clarity = '', duration,
+export function CanvasGenerationParameters({ modality, ratios, ratio, resolutions, resolution, clarities = [], clarity = '', duration, editDuration,
   minDuration, maxDuration, durationOptions, showDuration, audioSupported, generateAudio, count,
+  ratioFollowsSource = false, durationFollowsSource = false, draftSupported = false, draft = false,
   qualities = [], quality = '', backgrounds = [], background = '', onChange, onCountChange }: CanvasGenerationParametersProps) {
   const [opened, setOpened] = useState(false)
   const [triggerNode, setTriggerNode] = useState<HTMLButtonElement | null>(null)
@@ -165,7 +174,10 @@ export function CanvasGenerationParameters({ modality, ratios, ratio, resolution
     const next = selectImageSize(resolutions, resolution, selection)
     if (next) onChange({ resolution: next.resolution, ratio: next.ratio })
   }
-  const ratioControls = displayRatios.length > 0 && <section className="pc-generation-parameter-section">
+  const ratioControls = ratioFollowsSource ? <section className="pc-generation-parameter-section">
+    <div className="pc-generation-parameter-heading"><span>比例</span><small>跟随源画幅</small></div>
+    <p role="status">输出画幅与首帧或原视频保持一致。</p>
+  </section> : displayRatios.length > 0 && <section className="pc-generation-parameter-section">
     <div className="pc-generation-parameter-heading"><span>比例</span>{modality === 'video' && <small>{ratio === 'adaptive' ? '自适应' : ratio}</small>}</div>
     <div className={`pc-generation-ratios ${modality === 'image' ? 'pc-generation-image-ratios' : 'pc-generation-video-ratios'}`} role="group" aria-label="比例"
       style={modality === 'image' ? { gridTemplateColumns: `repeat(${Math.min(5, displayRatios.length)}, minmax(0, 1fr))` } : undefined}>
@@ -177,8 +189,10 @@ export function CanvasGenerationParameters({ modality, ratios, ratio, resolution
       </UnstyledButton>)}
     </div>
   </section>
-  const summary = [ratio === 'adaptive' ? '自适应' : ratio, modality === 'image' ? imageClarity : videoResolutionLabel(resolution),
-    durationEnabled ? `${duration}s` : '', `${count}${modality === 'image' ? '张' : '个'}`].filter(Boolean).join(' · ')
+  const summary = [ratioFollowsSource ? '源画幅' : ratio === 'adaptive' ? '自适应' : ratio,
+    modality === 'image' ? imageClarity : videoResolutionLabel(resolution),
+    durationFollowsSource ? '原视频时长' : durationEnabled ? `${duration}s` : '',
+    draftSupported && draft ? '样片' : '', `${count}${modality === 'image' ? '张' : '个'}`].filter(Boolean).join(' · ')
   return <Popover opened={opened} onChange={setOpened} position="top-start" offset={8} width={modality === 'image' ? 'min(320px, calc(100vw - 24px))' : 360} withinPortal
     middlewares={floatingMiddlewares} zIndex={220} trapFocus returnFocus preventPositionChangeWhenVisible={false}
     classNames={{ dropdown: `pc-generation-parameters-popover${modality === 'image' ? ' pc-generation-image-parameters' : ' pc-generation-video-parameters'}` }}>
@@ -225,7 +239,7 @@ export function CanvasGenerationParameters({ modality, ratios, ratio, resolution
       </section>}
       {modality === 'image' && ratioControls}
       {durationEnabled && <section className="pc-generation-parameter-section">
-        <div className="pc-generation-parameter-heading"><span>视频时长</span><small>秒</small></div>
+        <div className="pc-generation-parameter-heading"><span>生成时长</span><small>秒</small></div>
         <div className="pc-generation-duration">
           <Slider aria-label="视频时长" min={min} max={max === min ? min + 1 : max} step={1} value={selectedDuration}
             disabled={min === max || options.length === 1} label={value => `${snapDuration(value)} 秒`}
@@ -250,6 +264,20 @@ export function CanvasGenerationParameters({ modality, ratios, ratio, resolution
             classNames={{ root: 'pc-generation-duration-input', input: 'pc-generation-number-input' }} />
         </div>
         <div className="pc-generation-duration-range"><span>{options[0] ?? min}s</span><span>{options[options.length - 1] ?? max}s</span></div>
+        {typeof editDuration === 'number' && editDuration > 0 && <div className="pc-generation-edit-duration" aria-label="生成与剪辑时长">
+          <span>计划入片 {editDuration} 秒</span>
+          {videoDurationPlan(selectedDuration, editDuration).needs_trim
+            ? <p>模型生成 {selectedDuration} 秒，剪辑时选取其中有效的 {editDuration} 秒；分镜时长保持不变。</p>
+            : selectedDuration < editDuration ? <p>生成素材短于计划入片时长，请检查剪辑安排。</p> : null}
+        </div>}
+      </section>}
+      {modality === 'video' && durationFollowsSource && <section className="pc-generation-parameter-section">
+        <div className="pc-generation-parameter-heading"><span>视频时长</span><small>跟随原视频</small></div>
+      </section>}
+      {modality === 'video' && draftSupported && <section className="pc-generation-parameter-section pc-generation-audio">
+        <div><Film size={17} /><span>样片模式 · 480p</span></div>
+        <Switch aria-label="样片模式" checked={draft} onChange={event => onChange({ draft: event.currentTarget.checked })}
+          color="gray" classNames={{ track: 'pc-generation-audio-track', thumb: 'pc-generation-audio-thumb' }} />
       </section>}
       {audioEnabled && <section className="pc-generation-parameter-section pc-generation-audio">
         <div><Volume2 size={17} /><span>生成声音</span></div>

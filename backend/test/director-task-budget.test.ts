@@ -11,7 +11,7 @@ const { createDirectorTasks } = await import('../src/modules/script/director-tas
 initDb()
 after(async () => { db.close(); await rm(dataDir, { recursive: true, force: true }) })
 
-test('soft task deadline keeps execution alive, hard deadline preserves progress and explicit continue starts a fresh active budget', async t => {
+test('long-running tasks keep executing beyond the former deadline and manual stop preserves resumable progress', async t => {
   run('INSERT INTO projects (id,name,created_at,updated_at) VALUES (?,?,?,?)', 'p', 'budget test', now(), now())
   t.mock.timers.enable({ apis: ['Date', 'setTimeout', 'setInterval'], now: 1000 })
   const tasks = createDirectorTasks()
@@ -26,10 +26,14 @@ test('soft task deadline keeps execution alive, hard deadline preserves progress
   assert.ok(tasks.read('p', 'task').events.some(event => event.stage === 'long_running'))
   t.mock.timers.tick(directorStreamTotalTimeoutMs - directorTaskSoftTimeoutMs)
   for (let i = 0; i < 8; i++) await Promise.resolve()
-  const paused = tasks.read('p', 'task')
-  assert.equal(paused.status, 'paused'); assert.equal(paused.execution.outcome!.kind, 'partial')
-  assert.equal(paused.can_resume, true); assert.equal(receivedSignal!.aborted, true)
-  assert.ok(paused.events.some(event => event.type === 'activity'))
+  const active = tasks.read('p', 'task')
+  assert.equal(active.status, 'running'); assert.equal(receivedSignal!.aborted, false)
+  tasks.cancel('p', 'task')
+  for (let i = 0; i < 8; i++) await Promise.resolve()
+  const stopped = tasks.read('p', 'task')
+  assert.equal(stopped.status, 'cancelled'); assert.equal(stopped.execution.outcome!.kind, 'cancelled')
+  assert.equal(stopped.can_resume, true); assert.equal(receivedSignal!.aborted, true)
+  assert.ok(stopped.events.some(event => event.type === 'activity'))
   tasks.continue('p', 'task', 'version-1', async () => ({ reply: '余下步骤与复核完成' }))
   for (let i = 0; i < 8; i++) await Promise.resolve()
   assert.equal(tasks.read('p', 'task').status, 'succeeded')

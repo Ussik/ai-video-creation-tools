@@ -15,6 +15,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, getComputedStyle: do
   requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window), cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
   ResizeObserver: class { observe() {} disconnect() {} unobserve() {} } })
 Object.defineProperty(dom.window, 'matchMedia', { value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) })
+Object.defineProperty(dom.window.document, 'fonts', { value: new dom.window.EventTarget() })
 Object.defineProperties(dom.window.HTMLElement.prototype, {
   clientWidth: { configurable: true, get() { return this.classList.contains('pc-image-preview-viewport') ? 1000 : 0 } },
   clientHeight: { configurable: true, get() { return this.classList.contains('pc-image-preview-viewport') ? 600 : 0 } },
@@ -135,6 +136,59 @@ test('full-screen video preview keeps the original player and has no image zoom 
     assert.equal(document.querySelector('video')?.getAttribute('src'), image.url)
     assert.equal(document.querySelector('[aria-label="图片缩放控制"]'), null)
   } finally { await view.destroy() }
+})
+
+test('video preview shows generation and edit durations before review, then jumps to a reported problem without submitting analysis', async t => {
+  const requests: Array<{ url: string; method?: string }> = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    requests.push({ url: String(url), method: init?.method })
+    return Response.json({ reviews: [{ id: 'report', project_id: 'project', asset_id: 'video', shot_id: 'shot', model_id: 'vision', model_name: '画面模型', created_at: '2026-10-26T10:00:00Z',
+      input_mode: 'sampled_frames', duration_ms: 4000, target_duration_ms: 2000, stale: false, summary: '抬手未完成', verdict: 'needs_work', checks: [], limitations: [], usable_ranges: [], evidence_frames: [], sample_times_ms: [1200],
+      findings: [{ id: 'issue', category: 'action', severity: 'warning', start_ms: 1200, end_ms: 2000, observation: '手停在原位', expected: '抬手', suggestion: '明确抬手终态', evidence_times_ms: [] }] }] })
+  })
+  const container = document.createElement('div'); document.body.append(container)
+  const root = createRoot(container)
+  try {
+    await act(() => root.render(<MantineProvider env="test"><CanvasMediaPreview asset={{ ...image, id: 'video', kind: 'video', project_id: 'project' }} title="反应镜头"
+      projectId="project" shotId="shot" generationDurationMs={4000} plannedDurationMs={2000}
+      reviewModels={[{ id: 'vision', label: '看图模型', inputMode: 'sampled_frames' }]} onClose={() => {}} /></MantineProvider>))
+    assert.match(document.querySelector('[aria-label="生成与入片时长"]')!.textContent!, /生成 4.0 秒.*计划入片 2.0 秒/)
+    assert.equal(requests.length, 0)
+    await click('成片复核')
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0].method, undefined)
+    await click('播放问题片段 0:01.2')
+    assert.equal(document.querySelector<HTMLVideoElement>('.pc-media-preview video')!.currentTime, 1.2)
+    assert.equal(requests.length, 1)
+  } finally { await act(() => root.unmount()); container.remove() }
+})
+
+test('reviewing a comparison candidate switches playback and review evidence to that actual asset while preserving the baseline', async t => {
+  const requests: Array<{ url: string; method?: string }> = []
+  const baseline = { ...image, id: 'baseline', project_id: 'project', shot_id: 'shot', kind: 'video', source: 'generated', url: '/baseline.mp4', filename: '原片.mp4' } as Asset
+  const candidate = { ...baseline, id: 'candidate', filename: '候选.mp4', url: '/candidate.mp4' }
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    requests.push({ url: String(url), method: init?.method })
+    if (String(url).includes('video-comparisons')) return Response.json({ comparisons: [{ id: 'comparison', created_at: '2026-10-26T10:00:00Z', model_name: 'Fast', status: 'succeeded',
+      baseline_prompt: '主角跑近', candidate_prompt: '主角跑近并停稳', parameters: { reference_asset_ids: [] }, generation_duration_ms: 4000, edit_duration_ms: 2000, trim_target_ms: 2000,
+      seed_locked: false, stale: false, stale_reasons: [], candidate_url: candidate.url, candidate_asset: candidate }] })
+    return Response.json({ reviews: [] })
+  })
+  const container = document.createElement('div'); document.body.append(container)
+  const root = createRoot(container)
+  try {
+    await act(() => root.render(<MantineProvider env="test"><CanvasMediaPreview asset={baseline} title="跑入镜头" projectId="project" initialPanel="comparison"
+      reviewModels={[{ id: 'vision', label: '看图模型', inputMode: 'sampled_frames' }]} onClose={() => {}} /></MantineProvider>))
+    const review = [...document.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === '复核对照候选')!
+    assert.ok(review)
+    await act(() => review.click())
+    assert.equal(document.querySelector('.pc-media-preview-stage video')?.getAttribute('src'), candidate.url)
+    assert.ok(requests.some(request => request.url.includes('/assets/candidate/video-reviews')))
+    await click('返回原片')
+    assert.equal(document.querySelector('.pc-media-preview-stage video')?.getAttribute('src'), baseline.url)
+    assert.ok(requests.some(request => request.url.includes('/assets/baseline/video-reviews')))
+    assert.ok(requests.every(request => !request.method || request.method === 'GET'), 'opening comparisons and reports must not submit generation or alter selected media')
+  } finally { await act(() => root.unmount()); container.remove() }
 })
 
 for (const modality of ['image', 'video'] as const) test(`Escape closes only a candidate ${modality} preview, preserving its manager and canvas composer; Tab reaches document`, async () => {

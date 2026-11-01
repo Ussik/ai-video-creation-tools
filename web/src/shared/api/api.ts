@@ -12,7 +12,8 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     const body = await response.json().catch(() => ({}))
     const detail = body.detail ?? body.message ?? body.error
     const message = typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : `请求失败 (${response.status})`
-    const error = new Error(message) as Error & { raw_output?: string }
+    const error = new Error(message) as Error & { raw_output?: string; status: number }
+    error.status = response.status
     if (typeof body.raw_output === 'string') error.raw_output = body.raw_output
     throw error
   }

@@ -98,7 +98,7 @@ test('shot selection uses the described angle, preserves explicit order and stay
   assert.equal((await app.inject({ method: 'PUT', url: `/api/shots/${shot.id}/visual-bindings`, payload: { bindings: [{ profile_id: state.profile.id, required: true, reference_asset_ids: [side.id] }], refresh_profile_ids: [state.profile.id] } })).statusCode, 409)
 })
 
-test('confirming references fills only unresolved exact-version bindings and never replaces an existing board', async () => {
+test('confirming references fills unresolved bindings and automatically matches existing followers', async () => {
   const state = await setup('character', false), legacy = await setup()
   const create = async (target: typeof state) => {
     const shot = await call('POST', `/api/projects/${target.project.id}/shots`, { title: '正面', image_prompt: '人物正面中景' })
@@ -110,8 +110,7 @@ test('confirming references fills only unresolved exact-version bindings and nev
   const data = await call<Visuals>('GET', `/api/projects/${state.project.id}`)
   assert.deepEqual(data.shot_visual_bindings.find(item => item.shot_id === unresolved.id)?.reference_assets.map(item => item.id), [reference.id])
   const oldData = await call<Visuals>('GET', `/api/projects/${legacy.project.id}`)
-  assert.deepEqual(oldData.shot_visual_bindings.find(item => item.shot_id === old.id)?.reference_assets, [])
-  assert.ok(legacyReference.id)
+  assert.deepEqual(oldData.shot_visual_bindings.find(item => item.shot_id === old.id)?.reference_assets.map(item => item.id), [legacyReference.id])
 })
 
 test('candidate/foreign selections reject atomically and changed snapshots or project styles invalidate submitted previews', async () => {
@@ -160,10 +159,10 @@ test('an archived reference already frozen on a shot can be retained while addin
   assert.equal(all('SELECT * FROM shot_visual_bindings WHERE shot_id=?', otherShot.id).length, 0)
 })
 
-test('confirming a later board leaves completed independent snapshots untouched and fills only unresolved shots', async () => {
+test('confirming a later board retains manual independent snapshots and updates board followers', async () => {
   const state = await setup('character', false), reference = await register(state, 'front', true)
   const frozenShot = await call('POST', `/api/projects/${state.project.id}/shots`, { title: '独立图镜头', image_prompt: '人物正面中景' })
-  const initial = await call<Visuals>('PUT', `/api/shots/${frozenShot.id}/visual-bindings`, { bindings: [{ profile_id: state.profile.id, required: true }] })
+  const initial = await call<Visuals>('PUT', `/api/shots/${frozenShot.id}/visual-bindings`, { bindings: [{ profile_id: state.profile.id, required: true, reference_asset_ids: [reference.id] }] })
   const frozen = initial.shot_visual_bindings.find(item => item.shot_id === frozenShot.id)!
   assert.equal(frozen.board_asset_id, null)
   assert.deepEqual(frozen.reference_assets.map(item => item.id), [reference.id])
@@ -172,12 +171,12 @@ test('confirming a later board leaves completed independent snapshots untouched 
   await call('PATCH', state.url, { ...state.base, definition_status: 'draft' })
   await call('PATCH', state.url, { expected_revision: 1, definition: '红色雨衣，修订后的草稿定义' })
   const edited = await call<Visuals>('GET', `/api/projects/${state.project.id}`)
-  assert.deepEqual(edited.shot_visual_bindings.find(item => item.shot_id === frozenShot.id), frozen)
-  assert.equal(edited.shot_visual_bindings.find(item => item.shot_id === unresolvedShot.id)?.revision, 2)
+  assert.deepEqual(edited.shot_visual_bindings.find(item => item.shot_id === frozenShot.id), { ...frozen, sync_status: 'waiting_confirmation' })
+  assert.equal(edited.shot_visual_bindings.find(item => item.shot_id === unresolvedShot.id)?.revision, 1)
   const boardId = await image(state.project.id)
   await call('PATCH', state.url, { ...state.base, expected_revision: 2, board_asset_id: boardId })
   const reloaded = await call<Visuals>('GET', `/api/projects/${state.project.id}`)
-  assert.deepEqual(reloaded.shot_visual_bindings.find(item => item.shot_id === frozenShot.id), frozen)
+  assert.deepEqual(reloaded.shot_visual_bindings.find(item => item.shot_id === frozenShot.id), { ...frozen, sync_status: 'manual_review' })
   const unresolved = reloaded.shot_visual_bindings.find(item => item.shot_id === unresolvedShot.id)!
   assert.equal(unresolved.board_asset_id, boardId)
   assert.equal(unresolved.board_style_version, state.style)

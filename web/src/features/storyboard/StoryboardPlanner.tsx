@@ -6,17 +6,24 @@ import { api, json } from '../../shared/api/api'
 import type { Model, ProjectDetail, ScriptCanvasCheck, ScriptCanvasPlan, ScriptCanvasResult } from '../../shared/api/api'
 import type { StoryboardPlanningContext, StoryboardPlanningResult, StoryboardShotDraft } from '@video-studio/shared/storyboard/storyboard-planning-types'
 import { requestScriptCanvas } from '../script/script-canvas-handoff'
+import { preferredModel } from '../models/model-defaults'
 import './storyboard-planner.css'
 import CreativeSkillSelector from '../skills/CreativeSkillSelector'
-import type { SkillPolicy } from '../../shared/api/skills-api'
+import type { SkillAssignment, SkillPolicy } from '../../shared/api/skills-api'
 
 type Props = {
   opened: boolean; onClose: () => void; detail: ProjectDetail; models: Model[]; initialSceneIds: string[];
   onRefresh: () => Promise<unknown>; onOpenCanvas: () => void; onNotice: (message: string) => void
 }
 const batchLimit = 10
+type PlanningResult = StoryboardPlanningResult & { skill_assignment?: SkillAssignment }
+const automaticAssignment = { ids: [], source: 'automatic' as const, task_label: '模型自动选择',
+  reason: '发送任务后，由模型根据任务和可用技能选择；实际使用的技能与选择理由会显示在执行结果中。' }
 const toggle = (values: string[], id: string, checked: boolean) => checked ? [...values, id] : values.filter(value => value !== id)
-const errorText = (issue: unknown) => issue instanceof Error ? issue.message : String(issue)
+const errorText = (issue: unknown) => {
+  const message = issue instanceof Error ? issue.message : String(issue)
+  return message.replace(/^模型结果不符合 controlled_storyboard 契约（已修正一次）：/, '分镜规划结果未通过校验（自动修正后仍未通过）：')
+}
 function planIssue(result: StoryboardPlanningResult): string {
   for (const scene of result.scenes) {
     if (!scene.shots.length || scene.shots.length > 30) return '每场需要 1 至 30 个镜头'
@@ -39,14 +46,17 @@ function episodeDocumentIds(context: StoryboardPlanningContext, sceneIds: string
     (!context.default_document_ids || context.default_document_ids.includes(document.id))).map(document => document.id)
 }
 export default function StoryboardPlanner({ opened, onClose, detail, models, initialSceneIds, onRefresh, onOpenCanvas, onNotice }: Props) {
-  const [sceneIds, setSceneIds] = useState<string[]>([]), [documentIds, setDocumentIds] = useState<string[]>([]), [skillIds, setSkillIds] = useState<string[]>([])
+  const [sceneIds, setSceneIds] = useState<string[]>([]), [documentIds, setDocumentIds] = useState<string[]>([]), [manualSkillIds, setSkillIds] = useState<string[]>([])
+  const [skillManual, setSkillManual] = useState(false)
   const [referenceSkillIds, setReferenceSkillIds] = useState<string[]>([])
+  const [referenceManual, setReferenceManual] = useState(false)
+  const [referenceUsed, setReferenceUsed] = useState<{ skills: string[]; assignment?: SkillAssignment }>()
   const [referenceReloading, setReferenceReloading] = useState(false)
   const [context, setContext] = useState<StoryboardPlanningContext | null>(null), [modelId, setModelId] = useState('')
   const [shotsPerScene, setShotsPerScene] = useState<number | string>(''), [useTarget, setUseTarget] = useState(false), [target, setTarget] = useState<number | string>(45)
   const [instructions, setInstructions] = useState(''), [pending, setPending] = useState<'context' | 'plan' | 'references' | 'save' | null>(null)
   const [saveLabel, setSaveLabel] = useState('正在加入画布')
-  const [error, setError] = useState(''), [result, setResult] = useState<StoryboardPlanningResult | null>(null), [elapsed, setElapsed] = useState(0)
+  const [error, setError] = useState(''), [result, setResult] = useState<PlanningResult | null>(null), [elapsed, setElapsed] = useState(0)
   const [refreshKey, setRefreshKey] = useState(0), [view, setView] = useState<'setup' | 'preview'>('setup')
   const [focusedSceneId, setFocusedSceneId] = useState(''), [replanExisting, setReplanExisting] = useState(false)
   const [planningMode, setPlanningMode] = useState<'redesign' | 'update'>('redesign')
@@ -61,11 +71,14 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
     if (!opened) { serial.current++; controller.current?.abort(); return }
     initialized.current = false; skillInitialized.current = false; referenceSkillInitialized.current = false
     documentChoices.current.clear()
-    setSceneIds(rangeIds.slice(0, batchLimit)); setDocumentIds([]); setSkillIds([]); setReferenceSkillIds([]); setReferenceReloading(false); setContext(null); setResult(null); setError(''); setInstructions('')
-    setUseTarget(false); setShotsPerScene(''); setReplanExisting(false); setPlanningMode('redesign'); setView('setup'); setFocusedSceneId(''); setModelId(eligibleModels[0]?.id || '')
+    setSceneIds(rangeIds.slice(0, batchLimit)); setDocumentIds([]); setSkillIds([]); setSkillManual(false); setReferenceSkillIds([]); setReferenceManual(false); setReferenceUsed(undefined); setReferenceReloading(false); setContext(null); setResult(null); setError(''); setInstructions('')
+    setUseTarget(false); setShotsPerScene(''); setReplanExisting(false); setPlanningMode('redesign'); setView('setup'); setFocusedSceneId(''); setModelId(preferredModel(eligibleModels)?.id || '')
     applied.current = null; prepared.current = null; imported.current = null
     // Opening loads metadata only; the creator explicitly starts any model work.
   }, [opened, detail.id])
+  useEffect(() => {
+    if (opened && !pending && !eligibleModels.some(model => model.id === modelId)) setModelId(preferredModel(eligibleModels)?.id || '')
+  }, [opened, pending, eligibleModels, modelId])
   useEffect(() => {
     if (!opened) return
     const turn = ++serial.current
@@ -133,15 +146,16 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
     stage: 'storyboard', label: '分镜规划', primary_id: context.default_skill_ids?.[0] || null,
     auxiliary_ids: context.default_skill_ids?.slice(1) || [], source: 'global', warning: '', skills: context.skills,
   } : null
+  const skillAssignment = skillManual ? { ids: manualSkillIds, source: 'manual' as const, reason: '沿用你为本次分镜规划选择的技能。', task_label: '手动选择' }
+    : automaticAssignment
+  const skillIds = skillAssignment.ids
   const primarySkill = skillPolicy?.skills.find(skill => skill.id === skillIds[0])
   const auxiliarySkills = skillIds.slice(1).map(id => skillPolicy?.skills.find(skill => skill.id === id)?.name || '技能需重新选择')
-  const defaultIds = skillPolicy ? [skillPolicy.primary_id, ...skillPolicy.auxiliary_ids].filter((id): id is string => !!id) : []
-  const usesDefaults = defaultIds.length === skillIds.length && defaultIds.every((id, index) => skillIds[index] === id)
-  const skillSource = usesDefaults ? skillPolicy?.source === 'project' ? '项目默认' : '全局默认' : '本次选择'
+  const skillSource = skillAssignment.source === 'automatic' ? '模型自动选择' : '本次选择'
   const referencePolicy = context?.reference_preparation?.skill_policy
-  const referencePrimary = referencePolicy?.skills.find(skill => skill.id === referenceSkillIds[0])
-  const referenceDefaults = referencePolicy?.primary_id ? [referencePolicy.primary_id, ...referencePolicy.auxiliary_ids] : []
-  const referenceUsesDefaults = referenceSkillIds.length === referenceDefaults.length && referenceSkillIds.every((id, index) => id === referenceDefaults[index])
+  const referenceIds = referenceManual ? referenceSkillIds : []
+  const referenceAssignment = referenceManual ? { ids: referenceIds, source: 'manual' as const, task_label: '手动选择', reason: '沿用你为本次参考设定整理选择的技能。' } : automaticAssignment
+  const referencePrimary = referencePolicy?.skills.find(skill => skill.id === referenceIds[0])
   const referenceNeedsAnalysis = selected.filter(scene => context?.reference_preparation?.needs_analysis.includes(scene.id))
   async function reloadReferencePolicy() {
     const turn = serial.current
@@ -153,6 +167,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
       if (!policy) throw new Error('参考设定技能配置未读取，请重试')
       const ids = policy.primary_id ? [policy.primary_id, ...policy.auxiliary_ids] : []
       setReferenceSkillIds(ids)
+      setReferenceManual(false)
       setContext(current => current?.reference_preparation ? { ...current, reference_preparation: {
         ...current.reference_preparation, skill_policy: policy, default_skill_ids: ids,
       } } : current)
@@ -178,8 +193,8 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
       const sameScope = context.scenes.length === planningIds.length && context.scenes.every(scene => planningIds.includes(scene.id))
       const scope = sameScope ? context : await api<StoryboardPlanningContext>(`/projects/${detail.id}/script/storyboard/context`, { ...json('POST', { scene_ids: planningIds }), signal: abort.signal })
       if (turn !== serial.current) return
-      const value = await api<StoryboardPlanningResult>(`/projects/${detail.id}/script/storyboard/plan`, { ...json('POST', {
-        signature: scope.signature, scene_ids: planningIds, document_ids: documentIds, skill_ids: skillIds, model_id: modelId, mode: effectivePlanningMode,
+      const value = await api<PlanningResult>(`/projects/${detail.id}/script/storyboard/plan`, { ...json('POST', {
+        signature: scope.signature, scene_ids: planningIds, document_ids: documentIds, ...(skillManual ? { skill_ids: skillIds } : {}), model_id: modelId, mode: effectivePlanningMode,
         ...(!automaticShotCount ? { shots_per_scene: Number(shotsPerScene) } : {}), ...(useTarget ? { target_duration: Number(target) } : {}), instructions,
       }), signal: abort.signal })
       if (turn !== serial.current) return
@@ -216,10 +231,11 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
         if (check.needs_analysis.length) {
           if (!eligibleModels.some(model => model.id === modelId)) throw new Error('请选择文本模型，先整理分镜所需的人物、场景与道具设定，再加入画布。')
           setPending('references')
-          const plan = await api<ScriptCanvasPlan>(`/projects/${detail.id}/script/canvas/prepare`, { ...json('POST', {
-            scene_ids: sceneIds, signature: check.signature, model_id: modelId, skill_ids: referenceSkillIds,
+          const plan = await api<ScriptCanvasPlan & { skill_assignment?: SkillAssignment }>(`/projects/${detail.id}/script/canvas/prepare`, { ...json('POST', {
+            scene_ids: sceneIds, signature: check.signature, model_id: modelId, ...(referenceManual ? { skill_ids: referenceSkillIds } : {}),
           }), signal: abort.signal })
           if (!active()) return
+          setReferenceUsed({ skills: plan.used_skills?.map(skill => skill.name) || [], assignment: plan.skill_assignment })
           setPending('save'); setSaveLabel('正在保存参考设定')
           const references = await api<ScriptCanvasResult>(`/projects/${detail.id}/script/canvas/commit`, { ...json('POST', {
             scene_ids: plan.scene_ids, signature: plan.signature, profiles: plan.profiles, reference_usage_version: plan.reference_usage_version,
@@ -295,12 +311,14 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
                 <p className="storyboard-planner-note">{planningMode === 'redesign' ? '所选场次的镜头与视觉设定会形成新方案并进入独立画布。旧方案和素材保留，不会自动参与新方案。' : '沿用当前镜头与视觉设定更新。未变化的设定和确认图会复用。'}</p></>}
               <section className="storyboard-planner-skill-card" aria-label="本次分镜技能">
                 <header><span>本次分镜规划</span><small>{skillSource}</small></header>
-                <div className="storyboard-planner-skill-choice"><span className="storyboard-planner-primary-skill"><Puzzle size={15} /><strong title={primarySkill?.name}>{skillIds.length && !primarySkill ? '技能需重新选择' : primarySkill?.name || '基础分镜规则'}</strong></span>
+                <div className="storyboard-planner-skill-choice"><span className="storyboard-planner-primary-skill"><Puzzle size={15} /><strong title={primarySkill?.name}>{!skillManual ? '模型自动选择' : skillIds.length && !primarySkill ? '技能需重新选择' : primarySkill?.name || '基础分镜规则'}</strong></span>
                   <CreativeSkillSelector stage="storyboard" projectId={detail.id} ids={skillIds} disabled={locked} appearance="planner" triggerLabel="更换" position="bottom-end"
+                    selection={skillAssignment} onUseAutomatic={() => { setSkillManual(false); resetDraft() }}
                     policies={skillPolicy ? [skillPolicy] : []}
-                    onDefaultsChanged={() => { skillInitialized.current = false; setRefreshKey(value => value + 1) }} onChange={values => { setSkillIds(values); resetDraft() }} />
+                    onDefaultsChanged={() => { skillInitialized.current = false; setSkillManual(false); setRefreshKey(value => value + 1) }} onChange={values => { setSkillIds(values); setSkillManual(true); resetDraft() }} />
                 </div>
-                <p>主技能<span>·</span>辅助技能 {auxiliarySkills.length} 个{auxiliarySkills.length > 0 && <span className="storyboard-planner-auxiliary-names">{auxiliarySkills.join(' · ')}</span>}</p>
+                {skillManual && <p>主技能<span>·</span>辅助技能 {auxiliarySkills.length} 个{auxiliarySkills.length > 0 && <span className="storyboard-planner-auxiliary-names">{auxiliarySkills.join(' · ')}</span>}</p>}
+                <p>{skillAssignment.reason}</p>
               </section>
               <div className="storyboard-planner-settings"><Select label="文本模型" aria-label="分镜规划文本模型" data={eligibleModels.map(model => ({ value: model.id, label: model.name }))} value={modelId || null} allowDeselect={false} disabled={locked}
                 onChange={value => { setModelId(value || ''); resetDraft() }} comboboxProps={{ zIndex: 350 }} />
@@ -327,12 +345,15 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
           </> : focusedScene && <>
             <div className="storyboard-planner-reference-preparation">
               <section className="storyboard-planner-skill-card" aria-label="本次参考设定技能">
-                <header><span>参考设定整理</span><small>{referenceUsesDefaults ? referencePolicy?.source === 'project' ? '项目默认' : '全局默认' : '本次选择'}</small></header>
-                <div className="storyboard-planner-skill-choice"><span className="storyboard-planner-primary-skill"><Puzzle size={15} /><strong>{referenceSkillIds.length && !referencePrimary ? '技能需重新选择' : referencePrimary?.name || '基础设定规则'}</strong></span>
-                  <CreativeSkillSelector stage="visual_assets" projectId={detail.id} ids={referenceSkillIds} disabled={!!pending || !!imported.current || referenceReloading} appearance="prompt" triggerLabel="更换" position="bottom-end" policies={referencePolicy ? [referencePolicy] : []}
-                    onDefaultsChanged={() => void reloadReferencePolicy()} onChange={values => { setReferenceSkillIds(values); setError('') }} />
+                <header><span>参考设定整理</span><small>{referenceManual ? '本次选择' : '模型自动选择'}</small></header>
+                <div className="storyboard-planner-skill-choice"><span className="storyboard-planner-primary-skill"><Puzzle size={15} /><strong>{!referenceManual ? '模型自动选择' : referenceIds.length && !referencePrimary ? '技能需重新选择' : referencePrimary?.name || '基础设定规则'}</strong></span>
+                  <CreativeSkillSelector stage="visual_assets" projectId={detail.id} ids={referenceIds} disabled={!!pending || !!imported.current || referenceReloading} appearance="prompt" triggerLabel="更换" position="bottom-end" policies={referencePolicy ? [referencePolicy] : []}
+                    selection={referenceAssignment} onUseAutomatic={() => { setReferenceManual(false); setError('') }}
+                    onDefaultsChanged={() => void reloadReferencePolicy()} onChange={values => { setReferenceSkillIds(values); setReferenceManual(true); setError('') }} />
                 </div>
-                <p>主技能<span>·</span>辅助技能 {Math.max(0, referenceSkillIds.length - 1)} 个</p>
+                {referenceManual && <p>主技能<span>·</span>辅助技能 {Math.max(0, referenceIds.length - 1)} 个</p>}
+                <p>{referenceAssignment.reason}</p>
+                {referenceUsed && <p>实际使用：{referenceUsed.skills.join(' · ') || '基础设定规则'}{referenceUsed.assignment?.reason && <>；选择理由：{referenceUsed.assignment.reason}</>}</p>}
               </section>
               <Select label="整理设定的文本模型" aria-label="整理参考设定文本模型" data={eligibleModels.map(model => ({ value: model.id, label: model.name }))} value={modelId || null} allowDeselect={false} disabled={!!pending || !!imported.current} onChange={value => setModelId(value || '')} comboboxProps={{ zIndex: 350 }} />
               {!eligibleModels.length && referenceNeedsAnalysis.length > 0 && <p className="storyboard-planner-error">这些场次还需要整理参考设定，请先启用一个文本模型。</p>}
@@ -340,7 +361,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
             <header className="storyboard-planner-section-title"><h3>{focusedScene.scene_heading}</h3><p>{focusedScene.shots.length} 个镜头 · {focusedScene.scene_duration} 秒 · {focusedIsDraft ? '未保存草稿，可修改后确认' : focusedHasResult && planIsSaved ? '已保存分镜' : '复用已保存分镜'}</p></header>
             {result && <WorkspaceDisclosure className="storyboard-planner-used-sources" label={<><Puzzle size={13} /><span>已使用：{result.used_skills[0]?.name || '基础分镜规则'}<small>辅助技能 {Math.max(0, result.used_skills.length - 1)} 个<span>·</span>参考资料 {result.source_documents.length} 份</small></span><ChevronRight size={13} /></>}>
 
-              <div className="storyboard-planner-used-details"><p>参考文档：{result.source_documents.map(document => document.title).join(' · ') || '未选择额外文档'}</p>{result.used_skills.map((skill, index) => <p key={skill.id}><strong>{index === 0 ? '主技能' : '辅助技能'} · {skill.name}</strong><small>版本 {skill.revision.slice(0, 8)} · {skill.files.join(' · ')}</small></p>)}</div>
+              <div className="storyboard-planner-used-details">{result.skill_assignment?.reason && <p>选择理由：{result.skill_assignment.reason}</p>}<p>参考文档：{result.source_documents.map(document => document.title).join(' · ') || '未选择额外文档'}</p>{result.used_skills.map((skill, index) => <p key={skill.id}><strong>{index === 0 ? '主技能' : '辅助技能'} · {skill.name}</strong><small>版本 {skill.revision.slice(0, 8)} · {skill.files.join(' · ')}</small></p>)}</div>
             </WorkspaceDisclosure>}
             {issue && <p className="storyboard-planner-error" role="status">{issue}</p>}
             <fieldset key={focusedScene.scene_id} disabled={locked} className="storyboard-planner-preview">

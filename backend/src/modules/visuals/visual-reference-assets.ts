@@ -5,14 +5,14 @@ import type { FastifyInstance } from 'fastify'
 import sharp from 'sharp'
 import { z } from 'zod'
 import { all, dataDir, db, mediaDir, newId, now, one, required, run } from '../../infrastructure/database/db.js'
-import type { Asset, Job, Model, Shot } from '../../infrastructure/database/db.js'
+import type { Asset, Job, Model } from '../../infrastructure/database/db.js'
 import type { VisualProfile } from './visual-profiles.js'
 import { assertStyleVersion, projectVisualStyle, referenceStyleWarnings } from './project-visual-style.js'
 import { withProjectStyle, projectStyleTemplateError } from '@video-studio/shared/visuals/visual-style'
 import { imageReferenceConfigError } from '@video-studio/shared/media/image-reference-config'
 import { visualReferenceViews, visualReferencePurposes, visualReferenceViewLabels, visualReferencePurposeLabels } from '@video-studio/shared/visuals/visual-reference-types'
 import type { VisualReferenceAsset, VisualReferenceSnapshot } from '@video-studio/shared/visuals/visual-reference-types'
-import { recommendVisualReferences } from '@video-studio/shared/visuals/visual-reference-selection'
+import { synchronizeVisualProfileBindings } from './visual-binding-sync.js'
 
 type ReferenceRow = Omit<VisualReferenceAsset, 'is_default'> & { is_default: number }
 const revisionInput = z.object({ expected_revision: z.number().int().min(1), expected_style_version: z.string().regex(/^[a-f0-9]{64}$/) })
@@ -113,19 +113,10 @@ function registerReference(profile: VisualProfile, input: {
     input.status, Number(!!input.is_default), input.source_asset_id || null, input.source_job_id || null, timestamp, timestamp)
   if (input.status === 'confirmed') {
     run("UPDATE visual_profiles SET definition_status='ready' WHERE id=?", profile.id)
-    fillUnresolvedReferenceBindings(profile)
+    synchronizeVisualProfileBindings(profile.id)
   }
   touch(profile)
   return id
-}
-function fillUnresolvedReferenceBindings(profile: VisualProfile) {
-  const style = projectVisualStyle(profile.project_id), references = visualReferenceAssets(profile.id)
-  const shots = all<Shot>(`SELECT s.* FROM shots s JOIN shot_visual_bindings b ON b.shot_id=s.id
-    WHERE b.profile_id=? AND b.revision=? AND b.board_asset_id IS NULL AND b.reference_assets='[]'`, profile.id, profile.revision)
-  for (const shot of shots) {
-    const selected = recommendVisualReferences(profile, references, [shot.image_prompt, shot.prompt, shot.start_state].filter(Boolean).join('\n'), style.version).map(referenceSnapshot)
-    if (selected.length) run("UPDATE shot_visual_bindings SET reference_assets=? WHERE shot_id=? AND profile_id=? AND revision=? AND board_asset_id IS NULL AND reference_assets='[]'", JSON.stringify(selected), shot.id, profile.id, profile.revision)
-  }
 }
 
 /** The worker registers the request's immutable version, including late results from old revisions. */
@@ -195,8 +186,8 @@ export function registerVisualReferenceRoutes(app: FastifyInstance, context: Ref
       run('UPDATE visual_profile_reference_assets SET status=?, is_default=?, label=?, updated_at=? WHERE id=?', status, Number(status === 'confirmed' && isDefault), input.label ?? reference.label, now(), reference.id)
       if (status === 'confirmed') {
         run("UPDATE visual_profiles SET definition_status='ready' WHERE id=?", id)
-        fillUnresolvedReferenceBindings(profile)
       }
+      synchronizeVisualProfileBindings(profile.id)
       touch(profile)
       return response(id)
     })()

@@ -4,15 +4,17 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 import { Select, UnstyledButton, NumberInput, ActionIcon, Button, Modal, Textarea, TextInput, Tooltip } from '@mantine/core'
 import { Archive, ArchiveRestore, Check, Crop, ImagePlus, Plus, Sparkles, Star } from 'lucide-react'
 import { visualReferenceAssetsApi } from '../../shared/api/api'
-import type { Model, ProjectDetail, VisualProfile, VisualReferenceAsset, VisualReferenceCrop, VisualReferencePreview, VisualReferencePreviewInput, VisualReferencePurpose, VisualReferenceView } from '../../shared/api/api'
+import type { Model, ProjectDetail, Provider, VisualProfile, VisualReferenceAsset, VisualReferenceCrop, VisualReferencePreview, VisualReferencePreviewInput, VisualReferencePurpose, VisualReferenceView } from '../../shared/api/api'
 import { visualReferencePurposeLabels, visualReferenceViewLabels } from '@video-studio/shared/visuals/visual-reference-types'
 import { generationCost, imageGenerationDefaults, imageRatioError, imageRatios, imageRequestResolution, modelDefaultResolution } from '../canvas/canvas-model-parameters'
+import { preferredModel } from '../models/model-defaults'
 import './visual-reference-assets.css'
 
 type Props = {
   profile: VisualProfile
   detail: ProjectDetail
   models: Model[]
+  providers?: Provider[]
   disabled?: boolean
   disabledReason?: string
   onRefresh: () => Promise<void>
@@ -53,7 +55,7 @@ function modelOptions(model: Model | undefined, key: string, fallback: string[] 
   return Array.isArray(value) && value.some(item => typeof item === 'string') ? value.filter((item): item is string => typeof item === 'string' && !!item.trim()) : fallback
 }
 
-export default function VisualReferenceAssets({ profile, detail, models, disabled, disabledReason, onRefresh, onBusyChange }: Props) {
+export default function VisualReferenceAssets({ profile, detail, models, providers, disabled, disabledReason, onRefresh, onBusyChange }: Props) {
   const [open, setOpen] = useState(false)
   const [mode, setMode] = useState<AddMode>('existing')
   const [showArchived, setShowArchived] = useState(false)
@@ -80,8 +82,9 @@ export default function VisualReferenceAssets({ profile, detail, models, disable
   const references = profile.reference_assets || []
   const archived = references.filter(item => item.status === 'archived')
   const visible = references.filter(item => (item.status === 'archived') === showArchived)
-  const imageModels = models.filter(model => model.enabled && model.modality === 'image')
-  const model = imageModels.find(item => item.id === modelId) || imageModels[0]
+  const imageModels = models.filter(model => model.enabled && model.modality === 'image'
+    && (!providers || providers.some(provider => provider.id === model.provider_id && provider.enabled && provider.adapter !== 'demo')))
+  const model = imageModels.find(item => item.id === modelId) || preferredModel(imageModels)
   const assets = detail.assets.filter(asset => asset.kind === 'image' && asset.project_id === detail.id)
     .sort((left, right) => Number(right.id === profile.board_asset_id) - Number(left.id === profile.board_asset_id) || right.created_at.localeCompare(left.created_at))
   const source = assets.find(asset => asset.id === sourceId)

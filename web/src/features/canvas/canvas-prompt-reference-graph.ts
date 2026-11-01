@@ -4,7 +4,7 @@ import { videoReferenceManifest, visualBindingReferenceAssetIds } from '@video-s
 import { visualBindingApplies } from '@video-studio/shared/visuals/visual-binding-usage'
 import { visualReferencePurposeLabels, visualReferenceViewLabels } from '@video-studio/shared/visuals/visual-reference-types'
 import { resolvePromptReferences, tokenizePromptReferenceNumbers } from '@video-studio/shared/visuals/prompt-references'
-import { pinnedCanvasReference } from './canvas-shot-workflow'
+import { pinnedCanvasReference } from './canvas-reference-snapshot'
 import { visualNodeAsset } from './canvas-visual-profiles'
 import { visualProfileBaseReadiness } from '../visuals/visual-profile-inheritance'
 import { promptReferenceBindings } from './canvas-prompt-references'
@@ -43,11 +43,11 @@ function activeBindings(target: CanvasNode, detail: ProjectDetail) {
 /** A pin always takes precedence over a profile's newer board or shot snapshots. */
 function edgeAssetIds(graph: CanvasGraph, edge: CanvasGraph['edges'][number], target: CanvasNode, detail: ProjectDetail): string[] {
   const source = graph.nodes.find(node => node.id === edge.source)
-  if (!source || source.id === target.id) return []
+  if (!source || source.id === target.id || source.type === 'image_analysis' || source.type === 'video_analysis') return []
   if (edge.reference_asset_id) return [edge.reference_asset_id]
   const binding = (target.settings.visual_reference_mode || 'profiles') === 'profiles' && source.settings.visual_profile_id
     ? activeBindings(target, detail).find(binding => binding.profile_id === source.settings.visual_profile_id) : undefined
-  const ids = binding?.reference_assets?.length ? visualBindingReferenceAssetIds(binding)
+  const ids = binding ? visualBindingReferenceAssetIds(binding)
     : [visualNodeAsset(pinnedCanvasReference(source), detail, true)?.id].filter((id): id is string => !!id)
   return [...new Set(ids)]
 }
@@ -197,7 +197,7 @@ export function promptReferenceSources(graph: CanvasGraph, targetId: string, ref
 export function freezeLegacyPromptReferenceDrafts(graph: CanvasGraph, detail: ProjectDetail,
   models: Pick<Model, 'id' | 'modality'>[] = []): CanvasGraph {
   const legacyNumber = /(?:参考图\s*|图片\s*|图\s*)\d/
-  const needsMigration = (node: CanvasNode) => node.type !== 'text' && [
+  const needsMigration = (node: CanvasNode) => node.type !== 'text' && node.type !== 'image_analysis' && node.type !== 'video_analysis' && [
     node.settings.prompt_is_final ? node.text : undefined,
     node.settings.prompt_body, node.settings.profile_prompt_override, node.settings.prompt_template,
     ...(node.settings.prompt_sections?.blocks || []).flatMap(block => [block.text, block.sourceText, block.pendingSourceText]),
@@ -228,7 +228,7 @@ export function freezeLegacyPromptReferenceDrafts(graph: CanvasGraph, detail: Pr
     const connectedIds = [...new Set(incoming.flatMap(source => {
       const binding = referenceMode === 'profiles' && source.settings.visual_profile_id
         ? bindings.find(binding => binding.profile_id === source.settings.visual_profile_id) : undefined
-      return binding?.reference_assets?.length ? visualBindingReferenceAssetIds(binding) : [visualNodeAsset(source, detail, true)?.id]
+      return binding ? visualBindingReferenceAssetIds(binding) : [visualNodeAsset(source, detail, true)?.id]
     }).filter((id): id is string => !!id && assets.get(id)?.kind === 'image'))]
     const inputIds = targetModality === 'video' && mode === 'first_frame' && node.settings.storyboard_reference_asset_id
       ? connectedIds.filter(id => id === node.settings.storyboard_reference_asset_id) : connectedIds

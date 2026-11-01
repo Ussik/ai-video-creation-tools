@@ -542,7 +542,7 @@ test('a missing-name attempt followed by a different terminal error does not ent
       }
       return JSON.stringify(value)
     }, () => {}, signal(), undefined, 1000, source), finalError === 'transport' ? /correction transport stopped/
-      : finalError === 'schema' ? /expected array/ : /没有所引章节.*证据/)
+      : finalError === 'schema' ? /\$\.characters: 字段类型不合法，要求 array/ : /没有所引章节.*证据/)
     assert.equal(calls.get('characters:1'), 2)
     assert.equal([...calls.keys()].some(key => key.includes('/coverage:')), false)
     const failed = state.story_work!.tasks.find(task => task.key === 'characters:1')!

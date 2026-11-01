@@ -36,7 +36,8 @@ test('long-script maps cover every source character and persist verified origina
   try {
     const queued = analyzer.start(id, 'model')
     assert.equal(queued.status, 'queued')
-    assert.match(scriptSourceFallbackContext(id), /等待/); assert.doesNotMatch(scriptSourceFallbackContext(id), /终场事实/)
+    assert.match(scriptSourceFallbackContext(id), /分析尚未完成/); assert.doesNotMatch(scriptSourceFallbackContext(id), /终场事实/)
+    assert.match(scriptSourceFallbackContext(id), /本轮已提供完整原稿时可直接依据全文讨论或整理故事大纲/)
     const state = await terminal(id)
     assert.equal(state.status, 'ready', state.error || '')
     assert.ok(prompts.length > 1)
@@ -93,7 +94,7 @@ test('synthesis failure preserves the full-source map and retry only repeats who
     assert.ok(failed.started_at)
     assert.match(failed.error!, /暂时不可用/)
     assert.equal(scriptSourceIndex(id)!.story_map, undefined)
-    assert.match(scriptSourceFallbackContext(id), /等待/)
+    assert.match(scriptSourceFallbackContext(id), /分析尚未完成/)
     fail = false
     const retryAt = Date.now(), retry = analyzer.start(id, 'model')
     assert.equal(retry.status, 'queued'); assert.equal(retry.started_at, undefined, 'retry must not expose the failed execution clock while queued')
@@ -130,9 +131,13 @@ test('replacing or deleting a source cancels analysis and late results cannot re
   } finally { release(); await analyzer.close() }
 })
 
-test('invented evidence IDs are rejected after bounded local correction instead of becoming a ready map', async () => {
-  const id = project('真实原文：林舟回家。'), analyzer = createScriptSourceAnalyzer(async (_id, _model, prompt) => {
-    if (prompt.includes('【局部证据修复】')) return JSON.stringify({ fixes: [{ kind: 'events', index: 0, summary: '林舟回家', unit_id: 999 }] })
+test('invented evidence IDs stop when exact local correction repeats without progress instead of becoming a ready map', async () => {
+  const id = project('真实原文：林舟回家。'), repairPrompts: string[] = []
+  const analyzer = createScriptSourceAnalyzer(async (_id, _model, prompt) => {
+    if (prompt.includes('【局部证据修复】')) {
+      repairPrompts.push(prompt)
+      return JSON.stringify({ fixes: [{ kind: 'events', index: 0, summary: '林舟回家', unit_id: 999 }] })
+    }
     const value = JSON.parse(mapReply(prompt)); value.sections[0].events[0].evidence.unit_id = 999
     return JSON.stringify(value)
   })
@@ -140,7 +145,11 @@ test('invented evidence IDs are rejected after bounded local correction instead 
     analyzer.start(id, 'model')
     const state = await terminal(id)
     assert.equal(state.status, 'failed'); assert.equal(state.completed_chunks, 0); assert.equal(state.sections.length, 0)
-    assert.match(state.error!, /unit_id=999.*正文范围/)
+    assert.match(state.error!, /相同已保存结果.*同一问题.*未取得新进展/)
+    assert.match(state.error!, /unit_id=999/)
+    assert.equal(repairPrompts.length, 4, 'two identical failed correction cycles stop without a global request ceiling')
+    assert.ok(state.work![0]!.result, 'the parsed map is retained for an explicit resume')
+    assert.ok(repairPrompts.some(prompt => /unit_id=999.*正文范围/.test(prompt)), 'the precise invalid ID is available to the automatic correction')
   } finally { await analyzer.close() }
 })
 
@@ -156,14 +165,25 @@ test('service restart resumes saved analysis progress instead of leaving running
   assert.equal(scriptSourceAnalysis(id)!.status, 'queued')
   assert.equal(scriptSourceAnalysis(id)!.started_at, undefined, 'service shutdown ends the current execution clock before requeueing')
   assert.equal(scriptSourceAnalysis(id)!.completed_chunks, 1)
+  const saved = scriptSourceAnalysis(id)!, resumedMapPages: number[] = []
   let resumedCalls = 0
-  const second = createScriptSourceAnalyzer(async (_id, _model, prompt) => { resumedCalls++; return mapReply(prompt) })
+  const second = createScriptSourceAnalyzer(async (_id, _model, prompt) => {
+    resumedCalls++
+    if (prompt.includes('【原文片段】')) {
+      const marker = '【原文片段】\n', input = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length))
+      resumedMapPages.push(input.output_window.page)
+    }
+    return mapReply(prompt)
+  })
   try {
     const restartedAt = Date.now()
     second.recover()
     const ready = await terminal(id)
     assert.ok(Date.parse(ready.started_at!) >= restartedAt)
-    assert.equal(ready.status, 'ready'); assert.equal(resumedCalls, 2, 'resumes synthesis and its separate content review without re-reading the source map')
+    assert.equal(ready.status, 'ready')
+    assert.equal(resumedCalls, ready.total_chunks - saved.completed_chunks + 2, 'only unfinished directory pages, story synthesis and independent review are requested')
+    assert.deepEqual(resumedMapPages, Array.from({ length: ready.total_chunks - saved.completed_chunks }, (_, index) => saved.completed_chunks + index + 1))
+    assert.deepEqual(ready.sections.slice(0, saved.sections.length), saved.sections, 'saved directory pages survive the restart unchanged')
   } finally { await second.close() }
 })
 
@@ -275,49 +295,106 @@ test('persistent evidence problems stop without splitting or re-reading any sour
   try {
     analyzer.start(id, 'model'); const failed = await terminal(id)
     assert.equal(failed.status, 'failed')
-    assert.equal(maps, 1); assert.equal(repairs, 2)
+    assert.equal(maps, 1); assert.equal(repairs, 4)
+    assert.match(failed.error!, /相同已保存结果.*未取得新进展/)
+    assert.match(failed.error!, /unit_id=999999/)
     assert.equal(failed.work!.length, 1); assert.equal(failed.work![0]!.depth, 0)
     assert.equal(failed.story, undefined)
   } finally { await analyzer.close() }
 })
 
-test('unusable model structure stops after one whole-source format correction without subdivisions', async () => {
+test('unusable model structure stops on repeated identical diagnosis without subdivisions', async () => {
   const id = project('连续剧情。'.repeat(800)); let calls = 0
   const analyzer = createScriptSourceAnalyzer(async () => { calls++; return '{"sections":[]}' })
   try {
     analyzer.start(id, 'model'); const failed = await terminal(id)
-    assert.equal(failed.status, 'failed'); assert.equal(calls, 2)
+    assert.equal(failed.status, 'failed'); assert.equal(calls, 4)
+    assert.match(failed.error!, /相同已保存结果.*未取得新进展/)
     assert.equal(failed.work!.length, 1); assert.equal(failed.work![0]!.depth, 0); assert.equal(failed.sections.length, 0)
     assert.equal(failed.story, undefined)
   } finally { await analyzer.close() }
 })
 
-test('format corrections share a cumulative batch budget, and timed-out transport is aborted', async () => {
+test('identical analysis after a full rebuild stops automatic looping and an explicit resume retains its checkpoint', async () => {
+  const id = project('林舟返乡。资源已经用尽。'), repairMarker = '【原稿分析定点修补资料】\n', reviewMarker = '【原稿分析核对资料】\n'
+  let maps = 0, stories = 0, repairs = 0, reviews = 0, resolved = false
+  const analyzer = createScriptSourceAnalyzer(async (_id, _model, prompt) => {
+    if (prompt.includes(repairMarker)) {
+      repairs++
+      return JSON.stringify({ status: 'requires_full_rebuild', reason: '问题涉及章节边界，需要重新核对目录。', changes: [] })
+    }
+    if (prompt.includes(reviewMarker)) {
+      reviews++
+      const input = JSON.parse(prompt.slice(prompt.lastIndexOf(reviewMarker) + reviewMarker.length))
+      return JSON.stringify({ checked_section_ids: input.sections.map((section: { id: number }) => section.id),
+        findings: resolved ? [] : [{ kind: 'omission', explanation: reviews === 1 ? '遗漏资源已经用尽的限制。' : '资源已经用尽的事实仍未保留。', unit_ids: [input.units.at(-1).id] }] })
+    }
+    if (prompt.includes('【原文片段】')) maps++
+    if (prompt.includes('【全剧整合资料】')) stories++
+    return mapReply(prompt)
+  })
+  try {
+    analyzer.start(id, 'model'); const failed = await terminal(id)
+    assert.equal(failed.status, 'failed')
+    assert.match(failed.error!, /相同已保存结果.*未取得新进展/)
+    assert.match(failed.error!, /资源已经用尽/)
+    assert.deepEqual([maps, stories, repairs, reviews], [2, 2, 1, 2], 'a full reconstruction that reproduces the same diagnosis cannot repeat indefinitely')
+    assert.equal(failed.completed_chunks, failed.total_chunks)
+    assert.ok(failed.story); assert.ok(failed.sections.length)
+    assert.equal(failed.quality!.status, 'issues')
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM script_artifacts WHERE project_id=?').get(id)!.count, 0)
+    const retained = structuredClone(failed.sections)
+    resolved = true
+    const continuing = analyzer.start(id, 'model')
+    assert.deepEqual(continuing.sections, retained, 'manual resume adopts the exact saved interpretation before continuing its unfinished step')
+    const ready = await terminal(id)
+    assert.equal(ready.status, 'ready', ready.error || '')
+    assert.equal(ready.quality!.status, 'passed')
+    assert.equal(db.prepare('SELECT content FROM script_source_documents WHERE project_id=?').get(id)!.content, '林舟返乡。资源已经用尽。')
+  } finally { await analyzer.close() }
+})
+
+test('format corrections can exceed legacy time budgets and pending transport stops only on explicit pause', async () => {
   const id = project('主角返乡。'); let mapCalls = 0; const signals: AbortSignal[] = []
   const analyzer = createScriptSourceAnalyzer(async (_id, _model, prompt, _contract, signal) => {
     signals.push(signal)
-    if (!prompt.includes('【全剧整合资料】')) {
-      mapCalls++; await new Promise(resolve => setTimeout(resolve, 70))
+    if (prompt.includes('【原文片段】')) {
+      mapCalls++; await new Promise(resolve => setTimeout(resolve, 30))
       signal.throwIfAborted()
       if (mapCalls === 1) return '{}'
     }
     return mapReply(prompt)
-  }, { reading: 100, repairing: 100, synthesis: 100 })
-  try {
-    analyzer.start(id, 'model'); const failed = await terminal(id)
-    assert.equal(failed.status, 'failed'); assert.equal(mapCalls, 2)
-    assert.ok(signals.every(signal => signal.aborted), 'the original attempt and its correction share the expired deadline')
-    assert.equal(failed.story, undefined, 'timed-out analysis cannot become a ready story index')
-  } finally { await analyzer.close() }
-  const timedId = project('短文无需继续细分。'); let timedSignal: AbortSignal | undefined, timedCalls = 0
-  const timed = createScriptSourceAnalyzer(async (_id, _model, _prompt, _contract, signal) => {
-    timedSignal = signal; timedCalls++; return new Promise<string>(() => {})
   }, { reading: 10, repairing: 10, synthesis: 10 })
   try {
-    timed.start(timedId, 'model'); const failed = await terminal(timedId)
-    assert.equal(failed.status, 'failed'); assert.equal(timedCalls, 1); assert.ok(timedSignal?.aborted)
-    assert.match(failed.error!, /当前步骤处理超时/)
-  } finally { await timed.close() }
+    analyzer.start(id, 'model'); const ready = await terminal(id)
+    assert.equal(ready.status, 'ready', ready.error || ''); assert.equal(mapCalls, 2)
+    assert.ok(signals.every(signal => !signal.aborted), 'elapsed legacy budgets cannot cancel useful source analysis')
+    assert.ok(ready.story)
+  } finally { await analyzer.close() }
+  const pendingId = project('短文无需继续细分。')
+  let pendingSignal: AbortSignal | undefined, pendingCalls = 0, entered!: () => void, release!: () => void
+  const started = new Promise<void>(resolve => { entered = resolve })
+  const pending = createScriptSourceAnalyzer(async (_id, _model, prompt, _contract, signal) => {
+    pendingCalls++
+    if (prompt.includes('【全剧整合资料】')) {
+      pendingSignal = signal; entered()
+      await new Promise<void>(resolve => { release = resolve })
+    }
+    return mapReply(prompt)
+  }, { reading: 10, repairing: 10, synthesis: 10 })
+  try {
+    const execution = pending.start(pendingId, 'model'); await started
+    await new Promise(resolve => setTimeout(resolve, 30))
+    const retained = scriptSourceAnalysis(pendingId)!
+    assert.equal(retained.status, 'running'); assert.equal(pendingCalls, 2); assert.equal(pendingSignal!.aborted, false)
+    assert.ok(retained.sections.length)
+    const paused = pending.pause(pendingId, execution.id)
+    assert.equal(paused.status, 'paused'); assert.equal(pendingSignal!.aborted, true)
+    assert.deepEqual(paused.sections, retained.sections, 'an explicit stop retains the completed map')
+    release(); await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(scriptSourceAnalysis(pendingId)!.status, 'paused', 'late cancelled output cannot publish a completed result')
+    assert.equal(pendingCalls, 2)
+  } finally { release?.(); await pending.close() }
 })
 
 test('legacy partial maps rebuild from the entire source rather than resuming old split checkpoints', async () => {
@@ -358,7 +435,8 @@ test('legacy ready and recovered running analyses cannot reuse segmented maps as
       else analyzer.recover()
       const ready = await terminal(id)
       assert.equal(ready.status, 'ready', ready.error || '')
-      assert.equal(reads, 1); assert.equal(ready.total_chunks, 1)
+      assert.equal(reads, ready.total_chunks)
+      assert.ok(reads >= 1)
       assert.doesNotMatch(JSON.stringify(ready), /旧分批目录/)
     } finally { await analyzer.close() }
   }

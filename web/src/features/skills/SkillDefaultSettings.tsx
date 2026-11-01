@@ -7,9 +7,9 @@ export default function SkillDefaultSettings({ projectId, projectName }: { proje
   const [scope, setScope] = useState('global')
   useEffect(() => { if (!projectId) setScope('global') }, [projectId])
   const selectedProject = scope === 'project' ? projectId : undefined
-  const skills = useCreativeSkills(selectedProject)
+  const skills = useCreativeSkills(selectedProject, true, { automatic: false })
   return <section className="creative-skill-defaults" aria-label="默认创作技能">
-    <header><div><h2>默认创作技能</h2><p>各环节选择一个主技能，其他同类技能保留为备选。项目可以覆盖全局默认。</p></div>
+    <header><div><h2>默认创作技能</h2><p>创作时由模型根据任务选择已启用的技能，这里的默认配置供模型参考。手动选择优先，项目可以覆盖全局默认。</p></div>
       {projectId && <SegmentedControl value={scope} onChange={setScope} data={[{ value: 'global', label: '全局默认' }, { value: 'project', label: '当前项目' }]} />}</header>
     {scope === 'project' && <p className="creative-skill-description">项目：{projectName}</p>}
     {skills.error && <p className="creative-skill-error" role="alert">{skills.error}<Button onClick={() => skills.reload()} data-workspace-control="" variant="subtle">重试</Button></p>}
