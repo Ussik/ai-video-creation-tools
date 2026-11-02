@@ -11,6 +11,7 @@ import { videoReferenceUsages, videoReferenceUsageIssue, videoReferenceUsageInst
 import { visualBindingsForModality, type VisualBindingUsage } from '@video-studio/shared/visuals/visual-binding-usage'
 import { visualGenerationPrompt } from '@video-studio/shared/visuals/visual-prompt'
 import { extractPromptBody, getManagedPromptBlocks, restoreManagedPromptBlocks, stripManagedPromptBlocks, validateManagedPromptDocument } from '@video-studio/shared/visuals/prompt-document'
+import { VISUAL_BOARD_PRIMARY_SECTION, replaceVisualBoardPromptContent, visualBoardPromptParts } from '@video-studio/shared/visuals/visual-board-document'
 import { promptParameterConflictMessage } from '@video-studio/shared/visuals/prompt-parameter-conflicts'
 import { resolveVisualProfileDisplayText } from '@video-studio/shared/visuals/visual-profile-display-text'
 import { withVisualProfilePrompt } from '@video-studio/shared/visuals/visual-profile-prompt'
@@ -234,6 +235,7 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
       if (issue) fail(issue)
     }
     let body: string, originalDocument = ''
+    let boardDocument = false
     try {
       const source = isDocument ? input.prompt : extractPromptBody(input)
       const positionsChanged = suppliedReferenceIds.length !== input.reference_asset_ids.length || suppliedReferenceIds.some((assetId, index) => input.reference_asset_ids[index] !== assetId)
@@ -242,6 +244,14 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
       if (resolvedBody.referenceAssetIds.some(assetId => !input.reference_asset_ids.includes(assetId))) fail('提示词中的参考已断开或未在当前模式生效，请重新连接、替换或移除')
       originalDocument = isDocument ? resolvedBody.prompt : ''
       body = isDocument ? stripManagedPromptBlocks(originalDocument) : resolvedBody.prompt
+      if (isDocument && input.stage === 'image_prompt') {
+        const parts = visualBoardPromptParts(originalDocument)
+        boardDocument = !!profile || parts.primary.length > 0
+        if (boardDocument) {
+          if (parts.primary.length > 1) fail('存在多个设定图内容区块，请先明确要整理的区块')
+          body = [...parts.primary, parts.supplement].filter(value => value.trim()).join('\n\n')
+        }
+      }
     } catch (issue) { fail(issue instanceof Error ? issue.message : '提示词图片引用无效') }
     if (!body.trim()) fail('请输入需要整理的提示词正文')
     let adjustmentRequest: string
@@ -266,7 +276,7 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
     if (parameterIssue) fail(parameterIssue)
     const relevantProfileIds = [...new Set([...(profile ? [profile.id, ...(profile.base_profile_id ? [profile.base_profile_id] : [])] : []),
       ...promptBindings.flatMap(binding => binding.profile_id || []), ...referenceProfiles.map(reference => reference.id)])].sort()
-    // A model result is a draft of the body. Freeze the structured context used
+    // A model result is a draft of the current creative content. Freeze the structured context used
     // to assemble its preview, and reject it if that context changes in flight.
     const contextVersion = () => JSON.stringify({ style: projectVisualStyle(id).version,
       replacements: resolvedReferences.replacements,
@@ -307,12 +317,13 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
     const profileContext = profile ? { kind: profile.kind, name: profile.name, variant: profile.variant,
       definition: profile.definition, view_requirements: profile.view_requirements, state_delta: profile.state_delta } : null
     const documentContext = isDocument ? { source: 'current_prompt_document', read_only: true,
-      sections: getManagedPromptBlocks(originalDocument).map(block => {
+      sections: getManagedPromptBlocks(originalDocument).filter(block => !boardDocument || !block.startsWith(`【${VISUAL_BOARD_PRIMARY_SECTION}】`)).map(block => {
         const name = /^【([^】]+)】/.exec(block)![1]!
         return { name, content: block.slice(name.length + 2, -(name.length + 4)).trim() }
       }) } : null
-    const task = `为当前${profile ? '视觉设定图' : input.stage === 'image_prompt' ? '图片' : '视频'}节点整理提示词正文。保留创作者原有意图，不增加其他镜头。` +
-      (isDocument ? '\n画风、视觉设定和参考用途以当前文档的只读结构上下文为准，未提供的区块表示创作者已移除，不得从旧项目设定补回。\n' : `\n${projectStyleInstructions(style)}\n`) +
+    const task = `为当前${profile || boardDocument ? '视觉设定图' : input.stage === 'image_prompt' ? '图片' : '视频'}节点整理${boardDocument ? '设定图内容' : '提示词正文'}。保留创作者原有意图，不增加其他镜头。` +
+      (isDocument ? `\n画风、${boardDocument ? '其他视觉约束' : '视觉设定'}和参考用途以当前文档的只读结构上下文为准，未提供的区块表示创作者已移除，不得从旧项目设定补回。\n` : `\n${projectStyleInstructions(style)}\n`) +
+      (boardDocument ? '原提示词包含创作者当前的设定图内容及可选补充要求，两者共同构成本次待整理的创作基稿。将补充要求落实进同一份完整设定图内容，只返回一份可编辑内容，不另写一份正文，不复制原文或重复设定；设定图内容中的定义、视图和版式允许按本次要求整理，其余只读区块必须保留。\n' : '') +
       '不要改变比例、时长、生成模式或参考图顺序。不得伪造已提供参考图的可见内容。' +
       (images.length ? `本次已附带前 ${images.length} 张实际参考图像素，按原编号诊断姿势、拼版和空间；其余图片只能依据设定文字，不得声称看过。` : '只根据设定文字和明确的参考用途写要求。') +
       '不生成媒体，不添加工作流说明、文件路径、Markdown 文档结构或第二次确认。输出中文；原有逐字对白保持原文。\n' +
@@ -322,7 +333,7 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
       `调整要求不能覆盖${isDocument ? '当前有效画风' : '项目画风'}、比例、时长、生成模式、实际参考图顺序及输出格式；未填写要求时，沿用原有整理规则。\n` +
       '以下配置、视觉设定和参考图对应关系是只读上下文，仅用于理解正文与检查一致性，不属于待改写文本。' +
       (isDocument ? '只读结构上下文来自创作者当前完整文档，仅供理解和一致性检查，不属于待改写的原提示词。系统会在整理完成后原样放回这些区块，不允许改写、复制或重新生成；空区块列表也不得以旧资料兜底。' : '系统会在整理完成后重新拼接这些固定要求；') +
-      '返回值仅包含正文，不输出镜头视觉设定、参考图用途表、参数约束、基础身份参考或项目画风区块，不重复抄写固定设定。\n' +
+      (boardDocument ? '返回值仅包含整理后的完整设定图内容，不输出任何系统区块标题或标记，不复制其他只读区块。\n' : '返回值仅包含正文，不输出镜头视觉设定、参考图用途表、参数约束、基础身份参考或项目画风区块，不重复抄写固定设定。\n') +
       (profile ? `当前为${{ character: '人物', location: '场景', prop: '道具' }[profile.kind]}设定图，依据该设定的定义与视图要求组织外观和各视图呈现，不套用剧情镜头或视频动作流程。\n` : '') +
       `项目：${project.name}${isDocument ? '' : `；创意：${project.brief}`}；配置：${JSON.stringify(configuration)}\n` +
       `目标模型：${JSON.stringify(target ? { name: target.name, remote_id: target.remote_id } : null)}\n当前镜头：${JSON.stringify(shotContext)}\n` +
@@ -344,7 +355,7 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
       (input.stage === 'video_prompt' && shot ? `生成时长与剪辑目标分别处理：当前生成时长 ${configuration.duration ?? '跟随源视频'} 秒，分镜剪辑目标 ${shot.duration} 秒；可以建议截取有效片段，不修改分镜和时间线。\n` : '') +
       `原提示词：\n${body}\n` +
       `本次调整要求：\n${adjustmentRequest || '未指定，按现有规则整理当前提示词。'}\n` +
-      '只输出合法 JSON 对象：{"prompt":"整理后的可编辑正文，不包含系统固定区块"}。'
+      `只输出合法 JSON 对象：{"prompt":"整理后的可编辑${boardDocument ? '完整设定图内容' : '正文'}，不包含系统固定区块"}。`
     const rules = await resolveCreationSkillContext({ stage: input.stage, task, selectedIds: input.skill_ids,
       projectId: id, modelId: input.model_id, select: context.selectSkills, signal: controller.signal, generate,
       assignmentTask: { text: adjustmentRequest, purpose: 'refine', profile_kind: profile?.kind,
@@ -389,9 +400,9 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
       adjustment: adjustmentRequest, generationDuration: configuration.duration, editDuration: shot?.duration,
       referenceIds: input.reference_asset_ids, inspectedIds, review: contentReview }) : undefined
     if (isDocument) {
-      const prompt = restoreManagedPromptBlocks(promptBody, originalDocument)
+      const prompt = boardDocument ? replaceVisualBoardPromptContent(originalDocument, promptBody) : restoreManagedPromptBlocks(promptBody, originalDocument)
       if (prompt.length > 80_000) fail('整理后的提示词过长，请缩短补充要求后重试')
-      return { prompt, prompt_body: promptBody, prompt_document: true, reference_asset_ids: input.reference_asset_ids, skills: rules.skills, loaded_files: rules.files, skill_assignment: rules.assignment, ...(diagnostics ? { diagnostics } : {}) }
+      return { prompt, prompt_body: boardDocument ? stripManagedPromptBlocks(prompt) : promptBody, prompt_document: true, reference_asset_ids: input.reference_asset_ids, skills: rules.skills, loaded_files: rules.files, skill_assignment: rules.assignment, ...(diagnostics ? { diagnostics } : {}) }
     }
     let refined: string
     if (profile) {

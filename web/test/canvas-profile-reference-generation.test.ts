@@ -135,9 +135,70 @@ test('an empty custom body cannot become a nonempty identity block or silently r
   for (const prompt of ['', '  \n\t', withVisualProfileBaseReference('', 'base-board')]) {
     const f = fixture()
     f.node.settings.profile_prompt_override = prompt
-    await assert.rejects(prepareCanvasVisualBoard(f.node, f.profile, f.graph, f.detail, f.model), /请输入信息图提示词/)
+    await assert.rejects(prepareCanvasVisualBoard(f.node, f.profile, f.graph, f.detail, f.model), /请输入设定图内容或本次补充要求/)
   }
   assert.equal(requests, 0)
+})
+
+test('primary-only board documents preview and enqueue without supplemental prose, including unopened batch nodes', async t => {
+  const f = fixture(), requests = mockBoardRequests(t, 'base-board')
+  const template = tokenizePromptReferenceNumbers(imagePreferencePrompt(f.model, withVisualProfilePrompt('', f.profile, [
+    { asset_id: 'base-board', name: f.base.name, variant: f.base.variant, definition: f.base.definition, role: 'base' },
+    { asset_id: 'lighting', name: 'light-node', role: 'manual' },
+  ]), { ratio: '9:16', resolution: null, clarity: null, quality: null, background: null }, 'reference'), ['base-board', 'lighting'])
+  f.node.settings = { ...f.node.settings, prompt_document: true, prompt_template: template,
+    prompt_sections: parsePromptSectionDocument(template, { sourceText: template }), prompt_body: '', ratio: '9:16' }
+  const prepared = await prepareCanvasVisualBoard(f.node, f.profile, f.graph, f.detail, f.model)
+  await enqueueCanvasVisualBoard(prepared.board, prepared.request, 1)
+  assert.equal(requests.length, 2)
+  for (const request of requests) {
+    assert.equal(request.body.prompt_document, true)
+    assert.match(request.body.prompt_override, /【设定图固定要求】/)
+    assert.match(request.body.prompt_override, /仅右手背少量湿泥/)
+    assert.doesNotMatch(request.body.prompt_override, /按照已保存的视觉设定/)
+  }
+})
+
+test('style and parameters alone cannot generate after all creative sections were removed', async t => {
+  const f = fixture()
+  let requests = 0
+  t.mock.method(globalThis, 'fetch', async () => { requests++; assert.fail('no creative task must not reach the API') })
+  const template = imagePreferencePrompt(f.model, withVisualProfilePrompt('', f.profile), { ratio: '9:16' }, 'reference')
+  const sections = parsePromptSectionDocument(template, { sourceText: template })
+  for (const block of sections.blocks) if (block.kind === 'managed' && block.name === '设定图固定要求') {
+    block.deleted = true; block.text = ''
+  }
+  f.node.settings = { ...f.node.settings, prompt_document: true, prompt_template: template, prompt_sections: sections, prompt_body: '', ratio: '9:16' }
+  await assert.rejects(prepareCanvasVisualBoard(f.node, f.profile, f.graph, f.detail, f.model), /请输入设定图内容或本次补充要求/)
+  assert.equal(requests, 0)
+})
+
+for (const hasTemplate of [true, false]) test(`legacy complete board without section metadata preserves missing primary (template=${hasTemplate})`, async t => {
+  const f = fixture(), requests = mockBoardRequests(t, 'base-board')
+  f.node.settings = { ...f.node.settings, prompt_document: true,
+    profile_prompt_override: '仅制作衣领特写。', ...(hasTemplate ? { prompt_template: withVisualProfilePrompt('', f.profile) } : {}) }
+  const prepared = await prepareCanvasVisualBoard(f.node, f.profile, f.graph, f.detail, f.model)
+  assert.match(requests[0].body.prompt_override, /仅制作衣领特写/)
+  assert.doesNotMatch(requests[0].body.prompt_override, /【设定图固定要求】/)
+  assert.doesNotMatch(prepared.request.prompt, /【设定图固定要求】/)
+})
+
+test('batch preparation keeps an authored primary identity alongside its deleted same-text source', async t => {
+  const f = fixture(), requests = mockBoardRequests(t, 'base-board')
+  const template = withVisualProfilePrompt('', f.profile)
+  const sections = parsePromptSectionDocument(template, { sourceText: template })
+  const old = sections.blocks.find(block => block.name === '设定图固定要求')!
+  const originalText = old.text
+  old.text = ''; old.deleted = true
+  const active = { id: 'pasted-primary-qa', kind: 'managed' as const, name: '设定图固定要求' as const, text: originalText }
+  sections.blocks.push(active)
+  f.node.settings = { ...f.node.settings, prompt_document: true, prompt_template: template, prompt_sections: sections }
+  const original = structuredClone(sections)
+  const prepared = await prepareCanvasVisualBoard(f.node, f.profile, f.graph, f.detail, f.model)
+  assert.equal(requests.length, 1)
+  assert.equal((String(prepared.board.input.prompt_override).match(/【设定图固定要求】/g) || []).length, 1)
+  assert.deepEqual(sections, original, 'preparing must not mutate saved block identities')
+  assert.equal(sections.blocks.find(block => block.id === active.id)?.sourceText, undefined)
 })
 
 test('complete board documents keep edited reference sections while batch preparation refreshes untouched parameter sections', async t => {
@@ -177,4 +238,24 @@ test('batch boards block unresolved source changes and explicit parameter confli
     profile_prompt_override: '保留手部湿泥。\n画面比例：4:3' }
   await assert.rejects(prepareCanvasVisualBoard(parameter.node, parameter.profile, parameter.graph, parameter.detail, parameter.model), /画面比例.*4:3.*9:16/)
   assert.equal(requests, 0)
+})
+
+test('batch boards accept new prose after a pending requirement was deliberately removed while retaining its recovery metadata', async t => {
+  const f = fixture(), requests = mockBoardRequests(t, 'base-board')
+  const source = '【设定图固定要求】\n服装蓝色\n【设定图固定要求结束】'
+  const sections = parsePromptSectionDocument(`使用新正文制作手部细节。\n\n${source}`, { sourceText: source })
+  const removed = sections.blocks.find(block => block.kind === 'managed')!
+  removed.text = ''; removed.deleted = true; removed.pendingSourceText = source.replace('蓝色', '白色')
+  removed.mergeBaseText = source; removed.sourceStatus = 'source_changed'
+  const original = structuredClone(sections)
+  f.node.settings = { ...f.node.settings, prompt_document: true, prompt_sections: sections }
+  const prepared = await prepareCanvasVisualBoard(f.node, f.profile, f.graph, f.detail, f.model)
+  await enqueueCanvasVisualBoard(prepared.board, prepared.request, 1)
+  assert.equal(requests.length, 2)
+  for (const request of requests) {
+    assert.match(request.body.prompt_override, /使用新正文制作手部细节/)
+    assert.doesNotMatch(request.body.prompt_override, /【设定图固定要求】|服装蓝色|服装白色/)
+  }
+  assert.deepEqual(prepared.request.reference_asset_ids, ['base-board', 'lighting'])
+  assert.deepEqual(sections, original, 'preparing a generation must keep metadata available for undo or source recovery')
 })

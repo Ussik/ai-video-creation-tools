@@ -34,7 +34,8 @@ function planIssue(result: StoryboardPlanningResult): string {
   }
   return ''
 }
-const planned = (scene: StoryboardPlanningContext['scenes'][number]) => scene.planned === true && !scene.needs_replan
+const planned = (scene: StoryboardPlanningContext['scenes'][number]) => scene.planned === true && !scene.needs_replan && !scene.requires_redesign
+const hasPreviousPlan = (scene: StoryboardPlanningContext['scenes'][number]) => !!scene.has_previous_plan || scene.shot_count > 0 || !!scene.requires_redesign
 const needsCanvasNodes = (scene: StoryboardPlanningContext['scenes'][number]) => planned(scene) &&
   typeof scene.canvas_shot_count === 'number' && scene.canvas_shot_count < scene.shot_count
 const replanLabel = (scene: StoryboardPlanningContext['scenes'][number]) =>
@@ -120,9 +121,12 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
   const savedScenes = context?.scenes.filter(planned) || []
   const unplannedScenes = context?.scenes.filter(scene => !planned(scene)) || []
   const pendingPlanningScenes = selected.filter(scene => replanExisting || !planned(scene))
-  const canChoosePlanningMode = pendingPlanningScenes.length > 0 && selected.some(scene => scene.shot_count > 0)
-  const effectivePlanningMode = canChoosePlanningMode ? planningMode : 'update'
+  const requiresRedesign = selected.some(scene => scene.requires_redesign)
+  const canChoosePlanningMode = selected.some(hasPreviousPlan)
+  const canReuseSavedPlan = selected.some(planned)
+  const effectivePlanningMode = requiresRedesign ? 'redesign' : canChoosePlanningMode && pendingPlanningScenes.length > 0 ? planningMode : 'update'
   const planningScenes = effectivePlanningMode === 'redesign' ? selected : pendingPlanningScenes
+  const reusingSavedPlan = canReuseSavedPlan && !requiresRedesign && !replanExisting && (planningMode === 'update' || !planningScenes.length)
   const staleScenes = selected.filter(scene => scene.needs_replan)
   const reusedScenes = selected.filter(scene => !planningScenes.some(item => item.id === scene.id))
   const planningIds = planningScenes.map(scene => scene.id)
@@ -285,7 +289,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
               <Checkbox aria-label={`选择场次：${sceneLabel(id)}`} checked={checked} disabled={locked || !checked && sceneIds.length >= batchLimit} onChange={event => chooseScene(id, event.currentTarget.checked)} />
               <UnstyledButton type="button" className="storyboard-planner-scene-button" disabled={locked || !checked && sceneIds.length >= batchLimit} title={!checked && sceneIds.length >= batchLimit ? '本批已选满，可清空选择或切换已规划场次' : undefined} onClick={() => { if (checked && hasPreview) { setFocusedSceneId(id); setView('preview') } else chooseScene(id, !checked) }}>
                 <span className="storyboard-planner-scene-number">{String(index + 1).padStart(2, '0')}</span>
-                <strong>{sceneLabel(id)}</strong><small>{draftScene?.scene_duration || meta?.duration || detail.script.scenes.find(scene => scene.id === id)?.duration || 0} 秒<span>{draftScene ? `${planIsSaved ? '已保存' : '草稿'} · ${count} 镜` : meta?.needs_replan ? replanLabel(meta) : meta && planned(meta) ? `${typeof meta.canvas_shot_count !== 'number' ? '已规划' : needsCanvasNodes(meta) ? meta.canvas_shot_count ? '待补齐' : '待加入' : '已加入'} · ${count} 镜` : '待规划'}</span></small>
+                <strong>{sceneLabel(id)}</strong><small>{draftScene?.scene_duration || meta?.duration || detail.script.scenes.find(scene => scene.id === id)?.duration || 0} 秒<span>{draftScene ? `${planIsSaved ? '已保存' : '草稿'} · ${count} 镜` : meta?.requires_redesign ? '画布已删除，需重新设计' : meta?.needs_replan ? replanLabel(meta) : meta && planned(meta) ? `${typeof meta.canvas_shot_count !== 'number' ? '已规划' : needsCanvasNodes(meta) ? meta.canvas_shot_count ? '待补齐' : '待加入' : '已加入'} · ${count} 镜` : '待规划'}</span></small>
               </UnstyledButton>
             </div>
           })}
@@ -304,11 +308,18 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
           : view === 'setup' ? <>
             <header className="storyboard-planner-section-title"><h3>{planIsSaved ? '分镜已保存' : result ? '调整规划设置' : planningScenes.length ? '规划所选场次' : '所选分镜已准备好'}</h3><p>{planIsSaved ? '本次镜头已保存，继续准备参考设定并加入画布。' : planningScenes.length ? `${planningScenes.length} 场待规划${reusedScenes.length ? `，另有 ${reusedScenes.length} 场复用已保存分镜` : ''}。生成后可以逐镜修改，再确认加入。` : '可以预览已保存镜头后直接加入，也可以重新规划。'}</p></header>
             {!!staleScenes.length && !planIsSaved && <p className="storyboard-planner-note" role="status">旧分镜和素材仍会保留，请先按最新资料重新规划后再加入画布。</p>}
+            {requiresRedesign && !planIsSaved && <p className="storyboard-planner-note" role="status">原方案的画布已删除，本次将重新设计，确认后自动创建新画布。历史方案及素材保留。</p>}
+            {canChoosePlanningMode && <><Select label="规划方式" aria-label="分镜规划方式" value={reusingSavedPlan ? 'existing' : effectivePlanningMode} allowDeselect={false} disabled={locked}
+              data={[...(canReuseSavedPlan ? [{ value: 'existing', label: '复用已保存分镜', disabled: requiresRedesign }] : []),
+                { value: 'redesign', label: '重新设计新方案' }, { value: 'update', label: '沿用当前方案更新', disabled: requiresRedesign }]} comboboxProps={{ zIndex: 350 }}
+              onChange={value => {
+                if (value === 'existing') { setReplanExisting(false); setPlanningMode('update') }
+                else if (value === 'redesign' || value === 'update') { setPlanningMode(value); setReplanExisting(true) }
+                else return
+                setUseTarget(false); resetDraft()
+              }} />
+              {!requiresRedesign && <p className="storyboard-planner-note">{reusingSavedPlan ? planningScenes.length ? '复用已保存分镜与视觉设定，仅规划尚未完成的场次。' : '复用已保存分镜与视觉设定，可以直接确认加入画布。' : effectivePlanningMode === 'redesign' ? '所选场次的镜头与视觉设定会形成新方案并进入独立画布。旧方案和素材保留，不会自动参与新方案。' : '沿用当前镜头与视觉设定更新。未变化的设定和确认图会复用。'}</p>}</>}
             {planningScenes.length > 0 && <>
-              {canChoosePlanningMode && <><Select label="规划方式" aria-label="分镜规划方式" value={planningMode} allowDeselect={false} disabled={locked}
-                data={[{ value: 'redesign', label: '重新设计新方案' }, { value: 'update', label: '沿用当前方案更新' }]} comboboxProps={{ zIndex: 350 }}
-                onChange={value => { if (value === 'redesign' || value === 'update') { setPlanningMode(value); setUseTarget(false); resetDraft() } }} />
-                <p className="storyboard-planner-note">{planningMode === 'redesign' ? '所选场次的镜头与视觉设定会形成新方案并进入独立画布。旧方案和素材保留，不会自动参与新方案。' : '沿用当前镜头与视觉设定更新。未变化的设定和确认图会复用。'}</p></>}
               <section className="storyboard-planner-skill-card" aria-label="本次分镜技能">
                 <header><span>本次分镜规划</span><small>{skillSource}</small></header>
                 <div className="storyboard-planner-skill-choice"><span className="storyboard-planner-primary-skill"><Puzzle size={15} /><strong title={primarySkill?.name}>{!skillManual ? '模型自动选择' : skillIds.length && !primarySkill ? '技能需重新选择' : primarySkill?.name || '基础分镜规则'}</strong></span>
@@ -334,13 +345,11 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
                 </div>
               </WorkspaceDisclosure>
             </>}
-            <WorkspaceDisclosure className="storyboard-planner-disclosure" label={<><span>时长与重新规划</span><small>{useTarget ? `${target} 秒` : '保留原时长'}</small></>}><div className="storyboard-planner-disclosure-body">
-              {selected.some(scene => planned(scene)) && <Checkbox label="重新规划已有分镜" checked={replanExisting} disabled={locked} onChange={event => { setReplanExisting(event.currentTarget.checked); setPlanningMode('redesign'); setUseTarget(false); resetDraft() }} />}
+            <WorkspaceDisclosure className="storyboard-planner-disclosure" label={<><span>时长设置</span><small>{useTarget ? `${target} 秒` : '保留原时长'}</small></>}><div className="storyboard-planner-disclosure-body">
               {!!planningScenes.length && <><Checkbox label={`指定本次总时长（源场次合计 ${total} 秒）`} checked={useTarget} disabled={locked} onChange={event => { setUseTarget(event.currentTarget.checked); resetDraft() }} />
                 {useTarget && <NumberInput label="本次目标时长" suffix=" 秒" min={minimum} max={planningScenes.length * 30} value={target} disabled={locked} onChange={value => { setTarget(value); resetDraft() }} />}
                 {invalidTarget && <p className="storyboard-planner-error">本次总时长应在 {minimum} 至 {planningScenes.length * 30} 秒之间。</p>}
                 <p className="storyboard-planner-note">默认保留剧本场次时长；调整后会在确认时同步场次时长。</p></>}
-              {selected.some(scene => scene.shot_count) && <p className="storyboard-planner-note">{effectivePlanningMode === 'redesign' ? '新方案从新的镜头与设定开始，原画布和历史素材不变。确认后仍需手动生成所需图片。' : '沿用更新会同步本次镜头与参考设定。设定变化后需重新制作对应参考图；已有镜头素材不会自动重新生成。'}</p>}
             </div></WorkspaceDisclosure>
           </> : focusedScene && <>
             <div className="storyboard-planner-reference-preparation">

@@ -141,6 +141,7 @@ export function imageVideoSourceContext(graph: CanvasGraph, source: CanvasNode, 
     .map(block => ({ ...block, text: tokenizePromptReferenceNumbers(block.text, preparedIds),
       ...(block.sourceText !== undefined ? { sourceText: tokenizePromptReferenceNumbers(block.sourceText, preparedIds) } : {}),
       ...(block.pendingSourceText !== undefined ? { pendingSourceText: tokenizePromptReferenceNumbers(block.pendingSourceText, preparedIds) } : {}),
+      ...(block.mergeBaseText !== undefined ? { mergeBaseText: tokenizePromptReferenceNumbers(block.mergeBaseText, preparedIds) } : {}),
     })) || []
   const customizedSections = compatibleSections.filter(block => block.deleted && block.deletionSource !== 'source'
     || !block.deleted && (block.sourceText === undefined || block.text !== block.sourceText))

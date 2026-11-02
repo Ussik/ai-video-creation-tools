@@ -70,7 +70,7 @@ export function registerImagePromptAnalysisRoutes(app: FastifyInstance, dependen
   app.post('/api/projects/:id/canvas/image-prompt-analysis', async (request, reply) => {
     const { id } = parse(z.object({ id: z.string().min(1).max(100) }), request.params), input = parse(inputSchema, request.body)
     required('projects', id)
-    const asset = one<Asset>("SELECT * FROM assets WHERE id=? AND project_id=? AND kind='image'", input.asset_id, id)
+    const asset = one<Asset>("SELECT * FROM assets WHERE id=? AND project_id=? AND deleted_at IS NULL AND kind='image'", input.asset_id, id)
     if (!asset) fail('请选择当前项目中的图片素材')
     const model = required<Model>('models', input.model_id), provider = required<Provider>('providers', model.provider_id)
     if (!model.enabled || model.archived) fail('请选择已启用的图片理解模型')

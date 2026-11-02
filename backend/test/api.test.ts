@@ -142,7 +142,7 @@ test('legacy demo entries stay in history but cannot be listed or used', async (
   const shot = await call<{ id: string }>('POST', `/api/projects/${project.id}/shots`, { title: '旧镜头' })
   const assetPath = join(testData, 'legacy.png')
   await writeFile(assetPath, await sharp({ create: { width: 8, height: 8, channels: 3, background: '#31786c' } }).png().toBuffer())
-  run("INSERT INTO assets VALUES (?, ?, ?, 'image', ?, ?, 'generated', ?, ?, NULL, ?)",
+  run("INSERT INTO assets (id,project_id,shot_id,kind,filename,path,source,model_id,prompt,remote_url,created_at) VALUES (?, ?, ?, 'image', ?, ?, 'generated', ?, ?, NULL, ?)",
     'legacy-asset', project.id, shot.id, 'legacy.png', assetPath, 'demo-image', '历史提示词', timestamp)
   run("INSERT INTO jobs VALUES (?, ?, ?, ?, 'generation', '{}', 'succeeded', NULL, ?, NULL, ?, ?)",
     'legacy-job', project.id, shot.id, 'demo-image', 'legacy-asset', timestamp, timestamp)

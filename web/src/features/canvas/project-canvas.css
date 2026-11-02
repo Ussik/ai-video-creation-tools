@@ -539,7 +539,7 @@
 .pc-empty p { max-width: 440px; margin: 9px auto 21px; color: var(--fc-text-secondary); font-size: 12px; line-height: 1.6; }
 .pc-empty > div:last-child,
 .pc-empty-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; pointer-events: auto; }
-.pc-import-prompt { position: absolute; z-index: 5; top: 76px; left: 18px; display: flex; align-items: center; gap: 10px; padding: 6px 7px 6px 11px; background: var(--fc-surface-hover); border: 1px solid var(--fc-border); border-radius: 5px; color: var(--fc-text-secondary); font-size: 11px; box-shadow: 0 8px 20px #0b0b0b66; }
+.pc-import-prompt { position: absolute; z-index: 5; top: 76px; left: 18px; display: flex; align-items: center; flex-wrap: wrap; max-width: calc(100% - 36px); gap: 8px; padding: 6px 7px 6px 11px; background: var(--fc-surface-hover); border: 1px solid var(--fc-border); border-radius: 5px; color: var(--fc-text-secondary); font-size: 11px; box-shadow: 0 8px 20px #0b0b0b66; }
 .pc-import-prompt.pc-script-canvas-error { position: fixed; z-index: 25; top: auto; bottom: calc(142px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); width: max-content; max-width: min(540px, calc(100vw - 32px)); background: var(--fc-surface); border-color: var(--fc-border); border-radius: 10px; color: var(--fc-text); font-size: 12px; }
 .pc-script-canvas-error span { min-width: 0; overflow-wrap: anywhere; }
 .pc-script-canvas-error .mantine-Button-root { flex: none; }

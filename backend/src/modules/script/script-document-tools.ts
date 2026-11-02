@@ -177,7 +177,7 @@ function revisionReference(projectId: string, draft: ScriptToolDraft, documents:
     const scene = one<ScriptScene>('SELECT * FROM script_scenes WHERE project_id=? AND id=?', projectId, ref.id)
     value = scene && effectiveScene(draft, scene)
   }
-  if (ref.kind === 'shot') value = one<Shot>('SELECT * FROM shots WHERE project_id=? AND id=?', projectId, ref.id)
+  if (ref.kind === 'shot') value = one<Shot>('SELECT * FROM shots WHERE project_id=? AND id=? AND deleted_at IS NULL', projectId, ref.id)
   if (ref.kind === 'visual_profile') value = one<Record<string, unknown>>('SELECT * FROM visual_profiles WHERE project_id=? AND id=?', projectId, ref.id)
   return value ? { kind: ref.kind, id: ref.id, title: draft.revision_task?.references.find(item => item.kind === ref.kind && item.id === ref.id)?.title || ref.id, version: version(value), content: JSON.stringify(value) } : null
 }
@@ -676,7 +676,7 @@ export function documentTools(context: ToolsContext) {
     for (const item of storyDecisions(projectId)) add('decision', item.id, item.topic, item.content)
     if (related) {
       for (const scene of context.script().scenes) add('scene', scene.id, scene.heading, JSON.stringify(scene))
-      for (const shot of all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position', projectId)) add('shot', shot.id, shot.title, JSON.stringify(shot))
+      for (const shot of all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position', projectId)) add('shot', shot.id, shot.title, JSON.stringify(shot))
       for (const profile of all<{ id: string; name: string; definition: string; variant: string }>('SELECT id, name, definition, variant FROM visual_profiles WHERE project_id=?', projectId)) add('visual_profile', profile.id, profile.name, profile.variant + '\n' + profile.definition)
     } else {
       for (const [index, message] of context.messages.entries()) add('current_conversation', String(index), message.role, message.text)

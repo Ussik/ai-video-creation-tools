@@ -9,10 +9,11 @@ import { videoReferenceConfigError } from '@video-studio/shared/media/video-refe
 import { visualGenerationPrompt, withVideoReferenceMapping } from '@video-studio/shared/visuals/visual-prompt'
 import { withImageReferenceMapping } from '@video-studio/shared/visuals/image-reference-prompt'
 import { extractPromptBody, getManagedPromptBlocks, stripManagedPromptBlocks, validateManagedPromptDocument } from '@video-studio/shared/visuals/prompt-document'
+import { hasVisualBoardPromptContent } from '@video-studio/shared/visuals/visual-board-document'
 import { promptParameterConflictMessage } from '@video-studio/shared/visuals/prompt-parameter-conflicts'
 import { withVisualProfilePrompt } from '@video-studio/shared/visuals/visual-profile-prompt'
 import { scopedVisualReferenceAssetIds, videoReferenceManifest, visualBindingReferenceAssetIds } from '@video-studio/shared/media/video-reference-manifest'
-import { assertStyleVersion, projectVisualStyle, referenceStyleWarnings } from './project-visual-style.js'
+import { assertStyleVersion, assetStyleNeedsReview, effectiveVisualStyleForPrompt, generationStyleNeedsReview, projectVisualStyle, recordAssetStyleReview, referenceStyleWarnings } from './project-visual-style.js'
 import { withProjectStyle, withoutProjectStyle, projectStyleInstructions, projectStyleTemplateError } from '@video-studio/shared/visuals/visual-style'
 import { skillIdsInput } from '../skills/skills.js'
 import { resolveCreationSkillContext, type CreationSkillSelector } from '../skills/model-skill-selection.js'
@@ -134,6 +135,7 @@ function baseReferenceStatus(profile: VisualProfile): 'none' | 'waiting' | 'read
   const ancestors = profileAncestors(profile), style = projectVisualStyle(profile.project_id)
   if (ancestors.some(base => !base.board_asset_id)) return 'waiting'
   if (ancestors.some(base => !!base.board_style_version && base.board_style_version !== style.version
+    || !!base.board_asset_id && assetStyleNeedsReview(base.project_id, base.board_asset_id, style.version, base.id)
     || !!base.base_profile_id && base.board_base_signature !== baseSignature(base))) return 'needs_review'
   return profile.board_asset_id && profile.board_base_signature !== baseSignature(profile) ? 'needs_review' : 'ready'
 }
@@ -141,7 +143,7 @@ function baseReferenceStatus(profile: VisualProfile): 'none' | 'waiting' | 'read
 type ProfileDraftInput = z.infer<typeof profileDraft>['profiles'][number]
 /** Scene candidates are historical; active shots determine the current design. */
 export function sceneVisualDesignIds(projectId: string, sceneIds: string[]) {
-  const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL', projectId)
+  const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL', projectId)
   const designs = new Map<string, string | null>()
   for (const sceneId of sceneIds) {
     const domains = new Set(shots.filter(shot => shot.source_scene_id === sceneId).map(shot => shot.design_id || null))
@@ -214,7 +216,7 @@ export function visualProfileTextContext(profile: Pick<VisualProfile, 'project_i
     references.push({ key: value.source_draft_key, label: label(value) })
     references.push({ key: value.source_draft_key.replace(/::[a-f0-9]{8}$/, ''), label: label(value) })
   }
-  for (const shot of all<Pick<Shot, 'id' | 'title'>>('SELECT id, title FROM shots WHERE project_id=?', profile.project_id)) {
+  for (const shot of all<Pick<Shot, 'id' | 'title'>>('SELECT id, title FROM shots WHERE project_id=? AND deleted_at IS NULL', profile.project_id)) {
     references.push({ key: shot.id, label: `镜头「${shot.title}」` })
   }
   const base = profiles.find(value => value.id === profile.base_profile_id && (value.design_id || null) === (profile.design_id || null))
@@ -243,16 +245,16 @@ function publicProfile(profile: VisualProfile) {
     base_reference_signature: profile.base_profile_id ? baseSignature(profile) : null,
     board_prompt: withProjectStyle(boardPrompt(profile, textContext), style),
     reference_assets: visualReferenceAssets(profile.id),
-    board_style_status: !profile.board_asset_id ? 'missing' : !profile.board_style_version ? 'unrecorded' : profile.board_style_version === style.version ? 'current' : 'needs_review',
+    board_style_status: !profile.board_asset_id ? 'missing' : !profile.board_style_version ? 'unrecorded'
+      : profile.board_style_version === style.version && !assetStyleNeedsReview(profile.project_id, profile.board_asset_id, style.version, profile.id) ? 'current' : 'needs_review',
     candidate_asset_ids: candidates.map(item => item.asset_id),
     archived_candidate_asset_ids: candidates.filter(item => item.archived).map(item => item.asset_id) }
 }
-const defaultBoardPromptBody = '按照已保存的视觉设定与视图要求制作当前对象的信息图。'
 export function boardPrompt(profile: Pick<VisualProfile, 'kind' | 'name' | 'variant' | 'definition' | 'view_requirements'> & Partial<Pick<VisualProfile, 'project_id' | 'design_id' | 'base_profile_id'>>,
   context: VisualTextContext = profile.project_id ? visualProfileTextContext({ ...profile, project_id: profile.project_id }) : { references: [] }): string {
   const definition = resolveVisualProfileDisplayText(profile.definition, context).text
   const views = resolveVisualProfileDisplayText(profile.view_requirements, context).text
-  return withVisualProfilePrompt(defaultBoardPromptBody, { ...profile, definition, view_requirements: views })
+  return withVisualProfilePrompt('', { ...profile, definition, view_requirements: views })
 }
 
 function prepareBoard(profile: VisualProfile, input: z.infer<typeof boardInput>) {
@@ -275,16 +277,18 @@ function prepareBoard(profile: VisualProfile, input: z.infer<typeof boardInput>)
     if (reference.project_id !== profile.project_id) invalid('参考设定必须来自当前项目')
     if (!reference.board_asset_id) invalid(`请先确认 ${reference.name}（${reference.variant}）的信息图`)
     if (reference.board_style_version && reference.board_style_version !== style.version) invalid(`项目画风已更新，请先核对并重新确认 ${reference.name}（${reference.variant}）的信息图`)
+    if (assetStyleNeedsReview(reference.project_id, reference.board_asset_id, style.version, reference.id)) invalid(`请先逐张核对并确认 ${reference.name}（${reference.variant}）的信息图画风`)
     if (profileAncestors(reference).some(ancestor => ancestor.id === profile.id)) invalid('不能使用派生状态反向生成基础设定')
   }
   const explicitIds = [...manualProfiles.map(reference => reference.board_asset_id!), ...input.reference_asset_ids]
   const textContext = visualProfileTextContext(profile)
-  const rawPrompt = resolveVisualProfileDisplayText((input.prompt_document ? input.prompt_override || defaultBoardPromptBody
-    : extractPromptBody({ prompt: input.prompt_override || defaultBoardPromptBody })) +
-    (!input.prompt_override && input.prompt_append ? `\n\n本次补充要求：\n${stripManagedPromptBlocks(input.prompt_append)}` : ''), textContext).text
-  if (!rawPrompt.trim()) invalid('请输入提示词正文')
+  const supplement = !input.prompt_document && !input.prompt_override && input.prompt_append ? stripManagedPromptBlocks(input.prompt_append) : ''
+  const rawPrompt = resolveVisualProfileDisplayText((input.prompt_document ? input.prompt_override ?? ''
+    : extractPromptBody({ prompt: input.prompt_override ?? '' })) +
+    (supplement.trim() ? `\n\n本次补充要求：\n${supplement}` : ''), textContext).text
   if (input.prompt_document) {
     try { validateManagedPromptDocument(rawPrompt) } catch (error) { invalid(error instanceof Error ? error.message : '提示词系统区标记无效') }
+    if (!hasVisualBoardPromptContent(rawPrompt)) invalid('请输入设定图内容或补充要求')
   }
   const resolvedPrompt = checkedPromptReferences({ prompt: rawPrompt, referenceAssetIds: [...new Set([...(base ? [base.board_asset_id!] : []), ...explicitIds])],
     overrides: input.prompt_reference_overrides, requiredAssetIds: base ? [base.board_asset_id!] : [] })
@@ -334,6 +338,7 @@ function prepareBoard(profile: VisualProfile, input: z.infer<typeof boardInput>)
   if (parameterIssue) invalid(parameterIssue)
   return { prompt: finalPrompt, prompt_document: input.prompt_document,
     project_style_version: style.version, project_visual_style: style,
+    effective_visual_style: effectiveVisualStyleForPrompt(finalPrompt, style),
     style_warnings: referenceStyleWarnings(profile.project_id, ids, style),
     reference_asset_ids: ids, reference_names: names, reference_signature: signature,
     base_profile_id: profile.base_profile_id || null, base_reference_signature,
@@ -363,7 +368,7 @@ export function visualProjectData(projectId: string) {
     scene_visual_bindings: all<{ scene_id: string; profile_id: string; required: number }>(`SELECT b.* FROM scene_visual_bindings b
       JOIN script_scenes s ON s.id=b.scene_id WHERE s.project_id=?`, projectId).map(binding => ({ ...binding, required: !!binding.required })),
     shot_visual_bindings: all<VisualBinding>(`SELECT b.* FROM shot_visual_bindings b
-      JOIN shots s ON s.id=b.shot_id WHERE s.project_id=?`, projectId).map(binding => ({
+      JOIN shots s ON s.id=b.shot_id WHERE s.project_id=? AND s.deleted_at IS NULL`, projectId).map(binding => ({
         ...resolveVisualBinding(required<Shot>('shots', binding.shot_id), binding), required: !!binding.required })),
   }
 }
@@ -546,8 +551,10 @@ export function prepareVisualGeneration<T extends {
   const missing = bindings.filter(binding => binding.required && !visualBindingReferenceAssetIds(binding).length)
   if (referenceMode === 'profiles' && missing.length) invalid(`缺少已确认的设定信息图或独立参考资产：${missing.map(binding => binding.name).join('、')}`)
   const outdated = bindings.filter(binding => binding.reference_assets.length
-    ? binding.reference_assets.some(reference => reference.revision !== binding.revision || reference.style_version && reference.style_version !== style.version)
-    : binding.board_asset_id && binding.board_style_version && binding.board_style_version !== style.version)
+    ? binding.reference_assets.some(reference => reference.revision !== binding.revision || reference.style_version && reference.style_version !== style.version
+      || assetStyleNeedsReview(shot.project_id, reference.asset_id, style.version, binding.profile_id))
+    : binding.board_asset_id && (binding.board_style_version && binding.board_style_version !== style.version
+      || assetStyleNeedsReview(shot.project_id, binding.board_asset_id, style.version, binding.profile_id)))
   if (referenceMode === 'profiles' && outdated.length) invalid(`项目画风已更新，请核对参考图并刷新镜头引用：${outdated.map(binding => binding.name).join('、')}`)
   if (referenceMode === 'keyframe' && (model.modality !== 'video' || !['first_frame', 'first_last_frame', 'edit', 'extend'].includes(data.mode))) {
     invalid('关键帧承接需使用首帧、首尾帧、编辑或延长视频模式')
@@ -604,7 +611,7 @@ export function prepareVisualGeneration<T extends {
     prompt: !data.prompt_document && model.modality === 'image' ? withImageReferenceMapping(prompt, referenceBindings, resolved.referenceAssetIds, referenceMode) : prompt }
 }
 
-export function updateVisualProfile(id: string, input: unknown, options: { refreshUnresolvedBindings?: boolean } = {}) {
+export function updateVisualProfile(id: string, input: unknown, options: { refreshUnresolvedBindings?: boolean; styleReview?: 'manual' | 'automatic' } = {}) {
     const profile = required<VisualProfile>('visual_profiles', id)
     const { expected_revision, expected_style_version, ...patch } = profilePatch.parse(input)
     if (expected_revision !== profile.revision) throw Object.assign(new Error('设定档案已更新，请刷新后重试'), { statusCode: 409 })
@@ -642,6 +649,7 @@ export function updateVisualProfile(id: string, input: unknown, options: { refre
     const newRevision = changed || profile.board_asset_id && patch.board_asset_id !== undefined && (patch.board_asset_id !== profile.board_asset_id || !!profile.board_style_version && profile.board_style_version !== style.version
       || !!profile.base_profile_id && profile.board_base_signature !== currentBaseSignature)
     db.transaction(() => {
+      if (patch.board_asset_id && options.styleReview !== 'automatic') recordAssetStyleReview(profile.project_id, patch.board_asset_id, style.version, profile.id)
       if (profile.board_asset_id) run('INSERT OR IGNORE INTO visual_profile_candidates (profile_id, asset_id, archived, updated_at) VALUES (?, ?, 0, ?)', id, profile.board_asset_id, now())
       run(`UPDATE visual_profiles SET kind=?, name=?, variant=?, definition=?, view_requirements=?, revision=?, board_asset_id=?, board_style_version=?, asset_task_id=?, updated_at=? WHERE id=?`,
         next.kind, next.name, next.variant, next.definition, next.view_requirements, profile.revision + Number(!!newRevision), changed ? null : next.board_asset_id,
@@ -657,7 +665,7 @@ export function updateVisualProfile(id: string, input: unknown, options: { refre
         run(`UPDATE shot_visual_bindings SET revision=?, kind=?, name=?, variant=?, definition=?, view_requirements=?
           WHERE profile_id=? AND revision=? AND board_asset_id IS NULL AND reference_assets='[]'
             AND sync_mode='follow' AND reference_selection='auto'
-            AND shot_id IN (SELECT id FROM shots WHERE superseded_by IS NULL)`, profile.revision + 1, next.kind, next.name, next.variant, next.definition, next.view_requirements, id, profile.revision)
+            AND shot_id IN (SELECT id FROM shots WHERE deleted_at IS NULL AND superseded_by IS NULL)`, profile.revision + 1, next.kind, next.name, next.variant, next.definition, next.view_requirements, id, profile.revision)
       }
       touch(profile.project_id)
       if (patch.definition_status || patch.board_asset_id) run('UPDATE visual_profiles SET definition_status=? WHERE id=?', patch.definition_status || 'ready', id)
@@ -667,6 +675,14 @@ export function updateVisualProfile(id: string, input: unknown, options: { refre
 }
 
 /** Select in submission order within the current batch, never by completion time. */
+function profileBoardRequestIssue(profile: VisualProfile, request: Record<string, unknown>, styleVersion: string): string | undefined {
+  if (request.visual_profile_id !== undefined && request.visual_profile_id !== profile.id
+    || request.visual_profile_revision !== undefined && request.visual_profile_revision !== profile.revision) return '候选图对应的设定已更新，请重新生成'
+  if (profile.base_profile_id && request.visual_base_signature !== baseSignature(profile)) return '基础版本已更新或尚未确认，请重新生成派生状态'
+  if (request.project_style_version && request.project_style_version !== styleVersion) return '候选图画风已过期，请先核对画风'
+  if (generationStyleNeedsReview(request)) return '候选图使用自定义画风或已移除项目画风，请逐张核对后确认使用'
+}
+
 function firstProfileBoard(profile: VisualProfile) {
   const task = profile.asset_task_id ? one<AssetTask>('SELECT * FROM asset_tasks WHERE id=?', profile.asset_task_id) : undefined
   if (task?.status === 'generating') return { message: '设定图仍在生成，完成后会自动确认' }
@@ -676,22 +692,26 @@ function firstProfileBoard(profile: VisualProfile) {
   const current = task?.generation_job_id ? jobs.find(job => job.id === task.generation_job_id) : jobs[0]
   if (!current) return { message: '尚无可确认的候选图' }
   const request = JSON.parse(current.request) as Record<string, unknown>
-  if (request.visual_profile_revision !== undefined && request.visual_profile_revision !== profile.revision) return { message: '候选图对应的设定已更新，请重新生成' }
-  if (profile.base_profile_id && (request.visual_base_signature !== baseSignature(profile)
-    || baseReferenceStatus({ ...profile, board_asset_id: null }) !== 'ready')) return { message: '基础版本已更新或尚未确认，请重新生成派生状态' }
+  if (profile.base_profile_id && baseReferenceStatus({ ...profile, board_asset_id: null }) !== 'ready') return { message: '基础版本已更新或尚未确认，请重新生成派生状态' }
   const style = projectVisualStyle(profile.project_id)
-  if (request.project_style_version && request.project_style_version !== style.version) return { message: '候选图画风已过期，请先核对画风' }
+  const currentIssue = profileBoardRequestIssue(profile, request, style.version)
+  if (currentIssue) return { message: currentIssue }
   const candidates = jobs.filter(job => request.asset_task_batch_id
     ? JSON.parse(job.request).asset_task_batch_id === request.asset_task_batch_id : job.id === current.id)
     .sort((a, b) => (JSON.parse(a.request).visual_candidate_index ?? a.candidate_order) - (JSON.parse(b.request).visual_candidate_index ?? b.candidate_order))
+  let skippedIssue: string | undefined
   for (const job of candidates) {
     if (job.status !== 'succeeded' || !job.result_asset_id) continue
-    const asset = one<Asset>('SELECT * FROM assets WHERE id=?', job.result_asset_id)
+    // Historical batches may contain differing requests. Each result must
+    // satisfy its own definition, base and effective style before selection.
+    const issue = profileBoardRequestIssue(profile, JSON.parse(job.request), style.version)
+    if (issue) { skippedIssue ||= issue; continue }
+    const asset = one<Asset>('SELECT * FROM assets WHERE id=? AND deleted_at IS NULL', job.result_asset_id)
     if (!asset || asset.project_id !== profile.project_id || asset.kind !== 'image') continue
     if (one('SELECT 1 FROM visual_profile_candidates WHERE profile_id=? AND asset_id=? AND archived=1', profile.id, asset.id)) continue
     return { job, asset, style }
   }
-  return { message: '本轮没有可用候选图，请重新生成' }
+  return { message: skippedIssue || '本轮没有可用候选图，请重新生成' }
 }
 
 export function autoConfirmGeneratedProfileBoard(job: Job): void {
@@ -706,7 +726,7 @@ export function autoConfirmGeneratedProfileBoard(job: Job): void {
   // A result from an older batch cannot approve the current batch.
   const selectedRequest = JSON.parse(first.job.request)
   if (selectedRequest.asset_task_batch_id ? selectedRequest.asset_task_batch_id !== request.asset_task_batch_id : first.job.id !== job.id) return
-  updateVisualProfile(profile.id, { board_asset_id: first.asset.id, expected_revision: profile.revision, expected_style_version: first.style.version })
+  updateVisualProfile(profile.id, { board_asset_id: first.asset.id, expected_revision: profile.revision, expected_style_version: first.style.version }, { styleReview: 'automatic' })
 }
 
 export async function analyzeVisualProfiles(id: string, data: { model_id: string; scene_ids: string[]; skill_ids?: string[]; inherit_scene_references?: boolean; refresh_scene_ids?: string[]; design_id?: string | null }, context: {
@@ -727,7 +747,7 @@ export async function analyzeVisualProfiles(id: string, data: { model_id: string
   if (designId && (!design || design.project_id !== id)) invalid('设计方案不属于当前项目')
   const episodes = new Set(scenes.map(scene => scene.episode_number))
   const artifacts = (script.artifacts || []).filter(item => !item.episode_number || episodes.has(item.episode_number))
-  const plannedShots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position, id', id)
+  const plannedShots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position, id', id)
     .filter(shot => data.scene_ids.includes(shot.source_scene_id || ''))
     .map(shot => ({ shot_id: shot.id, scene_id: shot.source_scene_id, title: shot.title, prompt: shot.prompt, image_prompt: shot.image_prompt,
       video_prompt: shot.video_prompt, start_state: shot.start_state, end_state: shot.end_state }))
@@ -817,7 +837,7 @@ export function registerVisualProfileRoutes(app: FastifyInstance, context: {
             : profile.revision !== data.profiles[index]!.expected_revision ? '设定已更新，请刷新后重试' : first?.message || '尚无可确认的候选图' })
           continue
         }
-        confirmed.push(updateVisualProfile(profile.id, { board_asset_id: first.asset.id, expected_revision: profile.revision, expected_style_version: first.style.version }))
+        confirmed.push(updateVisualProfile(profile.id, { board_asset_id: first.asset.id, expected_revision: profile.revision, expected_style_version: first.style.version }, { styleReview: 'automatic' }))
       }
       return { confirmed, skipped }
     })()
@@ -975,7 +995,7 @@ export function registerVisualProfileRoutes(app: FastifyInstance, context: {
         const syncMode = binding.sync_mode || previous?.sync_mode || 'follow'
         const selection = binding.reference_selection || (binding.reference_asset_ids === undefined ? previous?.reference_selection || 'auto' : 'manual')
         if (selection === 'auto' && binding.reference_asset_ids !== undefined) invalid('自动匹配不能同时指定参考图片')
-        insertShotBinding(id, binding.profile, binding.required, binding.reference_asset_ids, binding.usage || previous?.usage || 'both', false,
+        insertShotBinding(id, binding.profile, binding.required, binding.reference_asset_ids, binding.usage || previous?.usage || 'both', data.refresh_profile_ids.includes(binding.profile.id),
           { sync_mode: syncMode, reference_selection: selection })
         if (binding.reference_asset_ids !== undefined) {
           const saved = one<VisualBinding>('SELECT * FROM shot_visual_bindings WHERE shot_id=? AND profile_id=?', id, binding.profile.id)!
@@ -994,7 +1014,7 @@ export function registerVisualProfileRoutes(app: FastifyInstance, context: {
     const { id } = idParams.parse(request.params)
     const scene = required<ScriptScene>('script_scenes', id)
     db.transaction(() => {
-      for (const shot of all<Shot>('SELECT * FROM shots WHERE source_scene_id=? AND project_id=? AND superseded_by IS NULL', id, scene.project_id)) {
+      for (const shot of all<Shot>('SELECT * FROM shots WHERE source_scene_id=? AND project_id=? AND deleted_at IS NULL AND superseded_by IS NULL', id, scene.project_id)) {
         inheritSceneVisualBindings(shot.id, id)
       }
       touch(scene.project_id)

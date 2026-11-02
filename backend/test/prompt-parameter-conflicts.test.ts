@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { findPromptParameterConflicts, synchronizePromptParameters } from '@video-studio/shared/visuals/prompt-parameter-conflicts'
+import { findPromptParameterConflicts, synchronizePromptParameters } from '../../packages/shared/src/visuals/prompt-parameter-conflicts.js'
 
 test('only explicit known parameter declarations conflict with actual request fields', () => {
   const prompt = '人物看着16:9海报，谈到8秒前的事。\n画面比例：9:16（宽:高，竖版）。保留我的构图说明。\n视频时长：8 秒，动作完整。\n清晰度要求：720p\n生成模式：reference。'
@@ -41,4 +41,18 @@ test('an explicit orientation annotation cannot contradict the selected numeric 
   const actual = { modality: 'image' as const, ratio: '16:9' }
   assert.equal(findPromptParameterConflicts(prompt, actual).length, 1)
   assert.equal(synchronizePromptParameters(prompt, actual), '画面比例：16:9（宽:高，横版）。保留其他说明。')
+})
+
+test('video clarity accepts equivalent UHD tiers and pixel sizes but still rejects different resolutions', () => {
+  const equivalents = ['4K', '2160p', '3840x2160']
+  for (const declared of equivalents) for (const resolution of equivalents) {
+    for (const label of ['清晰度要求', '输出分辨率']) {
+      assert.deepEqual(findPromptParameterConflicts(`${label}：${declared}`, { modality: 'video', resolution }), [], `${label}: ${declared} vs ${resolution}`)
+    }
+  }
+  assert.deepEqual(findPromptParameterConflicts('清晰度要求：2160×3840', { modality: 'video', resolution: '4K' }), [])
+  for (const resolution of ['1080p', '1920x1080', '2K']) {
+    assert.equal(findPromptParameterConflicts('清晰度要求：4K', { modality: 'video', resolution }).length, 1)
+  }
+  assert.equal(findPromptParameterConflicts('输出分辨率：4096x2160', { modality: 'video', resolution: '3840x2160' }).length, 1)
 })

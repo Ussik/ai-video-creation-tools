@@ -28,6 +28,7 @@ export interface Shot {
   source_scene_id: string | null; start_state: string; end_state: string; cut_note: string
   image_prompt: string; video_prompt: string
   storyboard_revision?: number
+  deleted_at?: string | null
   design_id?: string | null
   superseded_by?: string | null
 }
@@ -95,7 +96,7 @@ export interface Model {
 export interface Asset {
   id: string; project_id: string; shot_id: string | null;
   kind: 'text' | 'image' | 'video' | 'audio'; filename: string;
-  path: string; source: 'upload' | 'generated' | 'export';
+  path: string; source: 'upload' | 'generated' | 'export'; deleted_at?: string | null
   model_id: string | null; prompt: string | null; remote_url: string | null; created_at: string
 }
 export type AssetTaskFocus = 'character' | 'location' | 'prop'
@@ -156,7 +157,7 @@ export function run(sql: string, ...params: unknown[]): void {
 }
 
 export function required<T>(table: 'projects' | 'shots' | 'timeline_clips' | 'script_scenes' | 'script_conversations' | 'script_artifacts' | 'providers' | 'models' | 'assets' | 'jobs' | 'asset_tasks' | 'visual_profiles', id: string): T {
-  const value = one<T>(`SELECT * FROM ${table} WHERE id=?`, id)
+  const value = one<T>(`SELECT * FROM ${table} WHERE id=?${table === 'shots' || table === 'assets' ? ' AND deleted_at IS NULL' : ''}`, id)
   if (!value) throw Object.assign(new Error('记录不存在'), { statusCode: 404 })
   return value
 }
@@ -811,6 +812,12 @@ export function initDb(): void {
   }
   if (!clipColumns.some(column => column.name === 'source_audio_fade_ms')) {
     db.exec('ALTER TABLE timeline_clips ADD COLUMN source_audio_fade_ms INTEGER NOT NULL DEFAULT 0')
+  }
+
+  // Recycling keeps media, task history and foreign-key identities intact.
+  for (const table of ['shots', 'assets']) {
+    const columns = db.pragma(`table_info(${table})`) as Array<{ name: string }>
+    if (!columns.some(column => column.name === 'deleted_at')) db.exec(`ALTER TABLE ${table} ADD COLUMN deleted_at TEXT`)
   }
 
   const previousSelections = all<Shot>(`SELECT shots.* FROM shots

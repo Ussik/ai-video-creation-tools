@@ -47,7 +47,7 @@ function clarityValue(value: string, modality?: PromptGenerationParameters['moda
   if (!normalized) return undefined
   if (['auto', 'adaptive', '自动', '自适应'].includes(normalized)) return undefined
   const dimensions = /^(\d+)x(\d+)$/.exec(normalized)
-  if (!dimensions) return normalized
+  if (!dimensions) return modality === 'video' && normalized === '4k' ? '2160p' : normalized
   if (modality === 'image') {
     const scale = Math.max(Number(dimensions[1]), Number(dimensions[2])) / 1024
     const closest = [1, 2, 4].reduce((best, level) => Math.abs(level - scale) < Math.abs(best - scale) ? level : best)
@@ -96,7 +96,8 @@ export function findPromptParameterConflicts(prompt: string, actual: PromptGener
         expected = field === 'resolution' ? resolutionValue(configured) : clarityValue(configured, actual.modality)
         if (expected && ['auto', 'adaptive', '自动', '自适应'].includes(expected)) expected = undefined
         // A pixel size and a clarity tier are comparable only as tiers.
-        if (field === 'resolution' && declared && expected && (declared.includes('x') !== expected.includes('x'))) {
+        if (field === 'resolution' && declared && expected && (declared.includes('x') !== expected.includes('x')
+          || actual.modality === 'video' && !declared.includes('x') && !expected.includes('x'))) {
           declared = clarityValue(token, actual.modality); expected = clarityValue(configured, actual.modality)
         }
         replacement = configured; length = token.length

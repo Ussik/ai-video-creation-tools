@@ -188,6 +188,80 @@ test('old definition or style candidates cannot be confirmed or set as default; 
   } finally { await screen.destroy() }
 })
 
+function styleReviewFixture(origin: 'custom' | 'removed' | 'unknown', status: VisualReferenceAsset['status'] = 'candidate', reviewed = false) {
+  const fingerprint = 'f'.repeat(64)
+  const item = reference(`${origin}视角`, { status, source_job_id: 'custom-reference-job',
+    style_version: status === 'confirmed' ? styleVersion : fingerprint })
+  const currentProfile = { ...profile, reference_assets: [item] }
+  const currentDetail = { ...detail, visual_profiles: [currentProfile], jobs: [{ id: item.source_job_id, status: 'succeeded',
+    result_asset_id: item.asset_id, request: JSON.stringify({ project_style_version: styleVersion,
+      effective_visual_style: { origin, fingerprint }, ...(reviewed ? { visual_style_reviews: [{ profile_id: profile.id, style_version: styleVersion }] } : {}) }),
+  }] } as unknown as ProjectDetail
+  return { item, currentProfile, currentDetail }
+}
+
+for (const origin of ['custom', 'removed', 'unknown'] as const) test(`a current ${origin} reference candidate can be explicitly reviewed despite its effective-style fingerprint`, async t => {
+  const fixture = styleReviewFixture(origin), requests: Array<{ url: string; body: unknown }> = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => { requests.push({ url: String(url), body: JSON.parse(String(init?.body)) }); return Response.json(fixture.currentProfile) })
+  const screen = await mount(fixture.currentProfile, fixture.currentDetail)
+  try {
+    assert.match(screen.container.textContent!, /画风待核对/)
+    assert.match(screen.container.textContent!, /确认不会重绘图片/)
+    const confirm = button(`确认参考图：${fixture.item.label}`)
+    assert.equal(confirm.disabled, false)
+    assert.deepEqual(requests, [], 'displaying a warning never approves the image')
+    await act(() => confirm.click())
+    assert.deepEqual(requests, [{ url: `/api/visual-profiles/profile/reference-assets/${encodeURIComponent(fixture.item.id)}`,
+      body: { expected_revision: profile.revision, expected_style_version: styleVersion, status: 'confirmed' } }])
+    assert.equal(screen.refreshes(), 1)
+  } finally { await screen.destroy() }
+})
+
+test('an old automatic confirmed stamp exposes per-image reconfirmation until its matching human review exists', async t => {
+  const fixture = styleReviewFixture('custom', 'confirmed'), requests: Array<Record<string, unknown>> = []
+  t.mock.method(globalThis, 'fetch', async (_url, init) => { requests.push(JSON.parse(String(init?.body))); return Response.json(fixture.currentProfile) })
+  const screen = await mount(fixture.currentProfile, fixture.currentDetail)
+  try {
+    assert.match(screen.container.textContent!, /画风待核对/)
+    assert.equal(button(`设为默认参考：${fixture.item.label}`).disabled, true)
+    const confirm = button(`重新确认参考图：${fixture.item.label}`)
+    assert.equal(confirm.disabled, false)
+    await act(() => confirm.click())
+    assert.deepEqual(requests, [{ expected_revision: profile.revision, expected_style_version: styleVersion, status: 'confirmed' }])
+  } finally { await screen.destroy() }
+  const reviewed = styleReviewFixture('custom', 'confirmed', true)
+  const reviewedScreen = await mount(reviewed.currentProfile, reviewed.currentDetail)
+  try {
+    assert.equal(document.querySelector(`[aria-label="重新确认参考图：${reviewed.item.label}"]`), null)
+    assert.equal(button(`设为默认参考：${reviewed.item.label}`).disabled, false)
+    assert.doesNotMatch(reviewedScreen.container.textContent!, /画风待核对/)
+    assert.equal(requests.length, 1, 'a reviewed image does not trigger any repeat confirmation')
+  } finally { await reviewedScreen.destroy() }
+})
+
+test('current custom archived views can be restored for review while genuinely old revisions remain blocked', async t => {
+  const fixture = styleReviewFixture('removed', 'archived'), old = { ...fixture.item, id: 'old-custom', label: '旧版自定义视角', revision: profile.revision - 1 }
+  const currentProfile = { ...fixture.currentProfile, reference_assets: [fixture.item, old] }
+  const requests: Array<Record<string, unknown>> = []
+  t.mock.method(globalThis, 'fetch', async (_url, init) => { requests.push(JSON.parse(String(init?.body))); return Response.json(currentProfile) })
+  const screen = await mount(currentProfile, { ...fixture.currentDetail, visual_profiles: [currentProfile] })
+  try {
+    await act(() => button('已归档 · 2').click())
+    assert.equal(button(`恢复参考图：${fixture.item.label}`).disabled, false)
+    assert.equal(button(`恢复参考图：${old.label}`).disabled, true)
+    await act(() => button(`恢复参考图：${fixture.item.label}`).click())
+    assert.deepEqual(requests, [{ expected_revision: profile.revision, expected_style_version: styleVersion, status: 'candidate' }])
+  } finally { await screen.destroy() }
+  const oldCandidate = { ...old, status: 'candidate' as const }
+  const oldProfile = { ...currentProfile, reference_assets: [oldCandidate] }
+  const oldScreen = await mount(oldProfile, { ...fixture.currentDetail, visual_profiles: [oldProfile] })
+  try {
+    assert.equal(button(`确认参考图：${old.label}`).disabled, true)
+    await act(() => button(`确认参考图：${old.label}`).click())
+    assert.equal(requests.length, 1)
+  } finally { await oldScreen.destroy() }
+})
+
 test('failed mutations retain the open review and show the server error', async t => {
   t.mock.method(globalThis, 'fetch', async () => Response.json({ detail: '设定版本已更新，请刷新' }, { status: 409 }))
   const screen = await mount()

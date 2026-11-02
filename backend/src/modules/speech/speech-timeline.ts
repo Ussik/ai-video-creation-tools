@@ -88,13 +88,13 @@ export function registerSpeechTimelineRoutes(app: FastifyInstance, touchProject:
     const input = placementInput.parse(request.body)
     const line = one<PlacementLine>('SELECT * FROM speech_lines WHERE project_id=? AND id=?', projectId, lineId) || fail('台词不存在', 404)
     if (['changed', 'removed'].includes(speechSourceStatus(line))) fail('请先同步剧本变化，或保留为手动台词')
-    if (!one('SELECT 1 FROM shots WHERE project_id=? AND id=?', projectId, input.shot_id)) fail('入片镜头不属于当前项目', 404)
+    if (!one('SELECT 1 FROM shots WHERE project_id=? AND id=? AND deleted_at IS NULL', projectId, input.shot_id)) fail('入片镜头不属于当前项目', 404)
     const shot = scope.shots.find(item => item.id === input.shot_id) || fail('入片镜头不属于当前成片方案', 422)
     const scopeKey = shot.design_id || ''
     const take = one<{ text: string; settings: string; duration_ms: number | null }>('SELECT text,settings,duration_ms FROM speech_takes WHERE project_id=? AND line_id=? AND asset_id=?', projectId, lineId, line.selected_asset_id) || fail('请先选用已完成的配音')
     const voice = line.voice_id ? one<SpeechVoice>('SELECT * FROM speech_voices WHERE id=?', line.voice_id) : undefined
     if (!take || !isSpeechTakeCurrent({ ...JSON.parse(take.settings), text: take.text }, line, voice)) fail('请先选用与当前台词和声音设置一致的配音')
-    const asset = one<{ path: string }>("SELECT path FROM assets WHERE id=? AND project_id=? AND kind='audio'", line.selected_asset_id, projectId) || fail('配音素材不存在', 404)
+    const asset = one<{ path: string }>("SELECT path FROM assets WHERE id=? AND project_id=? AND deleted_at IS NULL AND kind='audio'", line.selected_asset_id, projectId) || fail('配音素材不存在', 404)
     const duration = await probeSpeechDurationMs(asset.path).catch(() => fail('配音素材无法读取或解码，请重新生成可用音频'))
     const latest = one<PlacementLine>('SELECT * FROM speech_lines WHERE project_id=? AND id=?', projectId, lineId)
     const currentVoice = latest?.voice_id ? one<SpeechVoice>('SELECT * FROM speech_voices WHERE id=?', latest.voice_id) : undefined
@@ -129,7 +129,7 @@ export function registerSpeechTimelineRoutes(app: FastifyInstance, touchProject:
     required('projects', projectId)
     const value = z.object({ music_gain: z.number().min(0).max(1), duck_music: z.boolean(), duck_source: z.boolean(),
       ratio: z.enum(['16:9', '9:16']).optional(), music_asset_id: z.string().min(1).nullable().optional() }).strict().parse(request.body)
-    if (value.music_asset_id && !one("SELECT 1 FROM assets WHERE id=? AND project_id=? AND kind='audio'", value.music_asset_id, projectId)) fail('配乐素材不属于当前项目或不是音频')
+    if (value.music_asset_id && !one("SELECT 1 FROM assets WHERE id=? AND project_id=? AND deleted_at IS NULL AND kind='audio'", value.music_asset_id, projectId)) fail('配乐素材不属于当前项目或不是音频')
     db.transaction(() => {
       run(`INSERT INTO project_audio_settings (project_id,music_gain,duck_music,duck_source) VALUES (?,?,?,?)
         ON CONFLICT(project_id) DO UPDATE SET music_gain=excluded.music_gain,duck_music=excluded.duck_music,duck_source=excluded.duck_source`,

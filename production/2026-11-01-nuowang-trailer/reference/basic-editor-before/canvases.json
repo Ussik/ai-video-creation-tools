@@ -1,0 +1,50 @@
+[
+  {
+    "id": "fd9cde8183ef4fa7a678d19168d899a8",
+    "project_id": "fd9cde8183ef4fa7a678d19168d899a8",
+    "name": "画布 1",
+    "position": 0,
+    "is_default": true,
+    "viewport": {
+      "x": 214.5049721636707,
+      "y": -377.3839391675349,
+      "zoom": 0.7236350356064574
+    },
+    "created_at": "2026-10-31T12:20:59.907Z",
+    "updated_at": "2026-11-01T05:43:33.821Z",
+    "design_id": null,
+    "node_count": 1
+  },
+  {
+    "id": "9b464a86b3af4029bd10329695d4dc86",
+    "project_id": "fd9cde8183ef4fa7a678d19168d899a8",
+    "name": "分镜方案 3",
+    "position": 1,
+    "is_default": false,
+    "viewport": {
+      "x": 413.48757046370304,
+      "y": -123.03832335478847,
+      "zoom": 0.48507822836235787
+    },
+    "created_at": "2026-11-01T06:30:26.738Z",
+    "updated_at": "2026-11-01T06:39:07.984Z",
+    "design_id": "8fb61f75-80d8-473e-b349-35d083123756",
+    "node_count": 10
+  },
+  {
+    "id": "db7eb557033740d2aaca5014ed8cf025",
+    "project_id": "fd9cde8183ef4fa7a678d19168d899a8",
+    "name": "傩王｜90秒预告·鼓起人间",
+    "position": 2,
+    "is_default": false,
+    "viewport": {
+      "x": -489.89397450887986,
+      "y": 114.5167033339809,
+      "zoom": 0.6129144775026403
+    },
+    "created_at": "2026-11-01T06:45:20.819Z",
+    "updated_at": "2026-11-01T07:07:02.050Z",
+    "design_id": null,
+    "node_count": 12
+  }
+]

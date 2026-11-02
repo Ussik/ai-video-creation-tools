@@ -31,12 +31,12 @@ export function resolveFinalCutScope(projectId: string, canvasId?: string): Fina
   let designId: string | null | undefined
   let shots: Shot[]
   if (canvasId === undefined) {
-    shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position, created_at, id', projectId)
+    shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position, created_at, id', projectId)
   } else {
     canvasRecord(projectId, canvasId)
     designId = one<{ id: string }>('SELECT id FROM storyboard_designs WHERE project_id=? AND canvas_id=? ORDER BY created_at DESC, id DESC LIMIT 1', projectId, canvasId)?.id ?? null
-    shots = designId ? all<Shot>('SELECT * FROM shots WHERE project_id=? AND design_id=? ORDER BY position, created_at, id', projectId, designId)
-      : all<Shot>('SELECT * FROM shots WHERE project_id=? AND design_id IS NULL ORDER BY position, created_at, id', projectId)
+    shots = designId ? all<Shot>('SELECT * FROM shots WHERE project_id=? AND design_id=? AND deleted_at IS NULL ORDER BY position, created_at, id', projectId, designId)
+      : all<Shot>('SELECT * FROM shots WHERE project_id=? AND design_id IS NULL AND deleted_at IS NULL ORDER BY position, created_at, id', projectId)
   }
   const shotIds = new Set(shots.map(shot => shot.id))
   const clipsByShot = new Map(all<TimelineClip>('SELECT * FROM timeline_clips WHERE project_id=?', projectId)

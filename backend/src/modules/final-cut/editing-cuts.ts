@@ -68,7 +68,7 @@ async function audioDuration(asset: Asset): Promise<number> {
 /** Validate independent references without changing shots, speech selections or project settings. */
 async function validateCut(projectId: string, cut: EditingCutInput, exporting: boolean): Promise<RenderClip[]> {
   if (cut.source_canvas_id) canvasRecord(projectId, cut.source_canvas_id)
-  const assets = new Map(all<Asset>('SELECT * FROM assets WHERE project_id=?', projectId).map(asset => [asset.id, asset]))
+  const assets = new Map(all<Asset>('SELECT * FROM assets WHERE project_id=? AND deleted_at IS NULL', projectId).map(asset => [asset.id, asset]))
   function assetFor(assetId: string, kinds: Asset['kind'][], label: string): Asset {
     const asset = assets.get(assetId)
     if (!asset || !kinds.includes(asset.kind)) invalid(`${label}必须使用当前项目的${kinds.includes('video') ? '图片或视频' : '音频'}素材`)

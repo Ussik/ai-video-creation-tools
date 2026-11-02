@@ -1,0 +1,22 @@
+Input #0, png_pipe, from 'production/2026-11-01-nuowang-trailer/edit/title-card.png':
+  Duration: N/A, bitrate: N/A
+  Stream #0:0: Video: png, rgb24(pc), 1280x720, 24 fps, 24 tbr, 24 tbn
+Stream mapping:
+  Stream #0:0 -> #0:0 (png (native) -> png (native))
+Press [q] to stop, [?] for help
+[Parsed_ass_0 @ 0x122705e10] libass API version: 0x1700000
+[Parsed_ass_0 @ 0x122705e10] libass source: tarball: 0.17.0
+[Parsed_ass_0 @ 0x122705e10] Shaper: FriBidi 1.0.12 (SIMPLE) HarfBuzz-ng 6.0.0 (COMPLEX)
+[Parsed_ass_0 @ 0x122705e10] Using font provider coretext
+[Parsed_ass_0 @ 0x122705e10] Added subtitle file: 'production/2026-11-01-nuowang-trailer/edit/narration.ass' (2 styles, 6 events)
+[Parsed_ass_0 @ 0x122705e10] fontselect: (Heiti SC, 400, 0) -> /System/Library/Fonts/STHeiti Medium.ttc, -1, STHeitiSC-Medium
+Output #0, image2, to 'production/2026-11-01-nuowang-trailer/edit/caption-preview.png':
+  Metadata:
+    encoder         : Lavf60.3.100
+  Stream #0:0: Video: png, rgb24(pc, gbr/unknown/unknown, progressive), 1280x720, q=2-31, 200 kb/s, 24 fps, 24 tbn
+    Metadata:
+      encoder         : Lavc60.3.100 png
+frame=    0 fps=0.0 q=-0.0 size=       0kB time=00:00:00.00 bitrate=N/A speed=   0x    [image2 @ 0x123a042a0] The specified filename 'production/2026-11-01-nuowang-trailer/edit/caption-preview.png' does not contain an image sequence pattern or a pattern is invalid.
+[image2 @ 0x123a042a0] Use a pattern such as %03d for an image sequence or use the -update option (with -frames:v 1 if needed) to write a single image.
+frame=    1 fps=0.0 q=-0.0 Lsize=N/A time=00:00:00.00 bitrate=N/A speed=   0x
+video:453kB audio:0kB subtitle:0kB other streams:0kB global headers:0kB muxing overhead: unknown

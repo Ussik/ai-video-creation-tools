@@ -22,7 +22,8 @@ function document(): PromptSectionDocument {
   return { version: 1, blocks: [
     { id: 'body-1', kind: 'body', text: '保留本节点的动作。\n\n' },
     { id: 'managed-1', kind: 'managed', name: '镜头视觉设定', text: section('本节点红衣设定'),
-      sourceText: section('原项目蓝衣设定'), pendingSourceText: section('新项目绿衣设定'), sourceStatus: 'source_changed' },
+      sourceText: section('原项目蓝衣设定'), pendingSourceText: section('新项目绿衣设定'),
+      mergeBaseText: section('原项目蓝衣设定\n场景：已同步的新站台'), sourceStatus: 'source_changed' },
     { id: 'managed-2', kind: 'managed', name: '项目画风约束', text: '', deleted: true,
       sourceText: '【项目画风约束】\n本节点已主动移除的旧画风\n【项目画风约束结束】' },
     { id: 'managed-3', kind: 'managed', name: '图片参考图用途', text: '', deleted: true, deletionSource: 'source', sourceText: '' },
@@ -63,7 +64,7 @@ test('invalid or oversized section documents fail without replacing the saved gr
     { version: 1, blocks: [{ id: 'broken', kind: 'managed', name: '镜头视觉设定', text: section('保留'), deleted: true }] },
     { version: 1, blocks: Array.from({ length: 1_001 }, (_, index) => ({ ...body, id: `body-${index}` })) },
     { version: 1, blocks: [{ ...body, text: 'x'.repeat(80_001) }] },
-    ...(['text', 'sourceText', 'pendingSourceText'] as const).map(field => ({ version: 1, blocks: [
+    ...(['text', 'sourceText', 'pendingSourceText', 'mergeBaseText'] as const).map(field => ({ version: 1, blocks: [
       { ...body, id: 'first', [field]: 'x'.repeat(40_001) }, { ...body, id: 'second', [field]: 'x'.repeat(40_001) },
     ] })),
   ]

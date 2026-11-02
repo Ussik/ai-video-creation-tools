@@ -7,7 +7,7 @@ import { z } from 'zod'
 import { all, dataDir, db, mediaDir, newId, now, one, required, run } from '../../infrastructure/database/db.js'
 import type { Asset, Job, Model } from '../../infrastructure/database/db.js'
 import type { VisualProfile } from './visual-profiles.js'
-import { assertStyleVersion, projectVisualStyle, referenceStyleWarnings } from './project-visual-style.js'
+import { assertStyleVersion, assetStyleNeedsReview, effectiveVisualStyleForPrompt, generationEffectiveVisualStyle, generationStyleNeedsReview, projectVisualStyle, recordAssetStyleReview, referenceStyleWarnings } from './project-visual-style.js'
 import { withProjectStyle, projectStyleTemplateError } from '@video-studio/shared/visuals/visual-style'
 import { imageReferenceConfigError } from '@video-studio/shared/media/image-reference-config'
 import { visualReferenceViews, visualReferencePurposes, visualReferenceViewLabels, visualReferencePurposeLabels } from '@video-studio/shared/visuals/visual-reference-types'
@@ -87,6 +87,7 @@ export function selectedVisualReferenceSnapshots(profile: VisualProfile, ids: st
     if (reference.revision !== revision || revision !== profile.revision) invalid('参考资产与镜头设定版本不一致，请先刷新绑定', 409)
     if (reference.status !== 'confirmed') invalid('只能选择已确认的独立参考资产')
     if (reference.style_version !== style.version) invalid('项目画风已更新，请核对并重新生成独立参考资产', 409)
+    if (assetStyleNeedsReview(profile.project_id, reference.asset_id, style.version, profile.id)) invalid('此参考资产的画风尚未逐张核对，请先确认使用', 409)
     checkedImage(profile, reference.asset_id)
     return referenceSnapshot({ ...reference, is_default: !!reference.is_default })
   })
@@ -100,7 +101,13 @@ function registerReference(profile: VisualProfile, input: {
   const previous = one<ReferenceRow>('SELECT * FROM visual_profile_reference_assets WHERE profile_id=? AND revision=? AND asset_id=?', profile.id, input.revision, input.asset_id)
   if (previous) {
     if (previous.view !== input.view || previous.purpose !== input.purpose) invalid('同一图片已登记其他角度或用途，请使用对应条目')
-    if (previous.style_version !== input.style_version) invalid('此图片已登记于旧画风，请按当前画风重新制作参考图', 409)
+    if (previous.style_version !== input.style_version) {
+      // Retrying the same completed job must retain a later explicit review.
+      const reviewedRetry = input.source_job_id && previous.source_job_id === input.source_job_id && previous.status === 'confirmed'
+        && previous.style_version === projectVisualStyle(profile.project_id).version
+        && !assetStyleNeedsReview(profile.project_id, input.asset_id, previous.style_version, profile.id)
+      if (!reviewedRetry) invalid('此图片已登记于旧画风，请按当前画风重新制作参考图', 409)
+    }
     if (previous.status === 'archived') invalid('此参考图已归档，请先在已归档列表中恢复为候选', 409)
     return previous.id
   }
@@ -112,6 +119,7 @@ function registerReference(profile: VisualProfile, input: {
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, profile.id, input.asset_id, input.revision, input.style_version, input.view, input.purpose, input.label,
     input.status, Number(!!input.is_default), input.source_asset_id || null, input.source_job_id || null, timestamp, timestamp)
   if (input.status === 'confirmed') {
+    recordAssetStyleReview(profile.project_id, input.asset_id, input.style_version || '', profile.id)
     run("UPDATE visual_profiles SET definition_status='ready' WHERE id=?", profile.id)
     synchronizeVisualProfileBindings(profile.id)
   }
@@ -129,7 +137,10 @@ export function registerGeneratedVisualReference(job: Job, assetId: string) {
   const metadata = z.object({ visual_profile_revision: z.number().int().min(1), visual_reference_view: z.enum(visualReferenceViews),
     visual_reference_purpose: z.enum(visualReferencePurposes), visual_reference_label: z.string().max(120), project_style_version: z.string().regex(/^[a-f0-9]{64}$/) }).safeParse(request)
   if (!metadata.success) return
-  registerReference(profile, { asset_id: assetId, revision: metadata.data.visual_profile_revision, style_version: metadata.data.project_style_version,
+  const effective = generationEffectiveVisualStyle(request)
+  // A project baseline is not proof that a manually authored document inherited it.
+  const styleVersion = generationStyleNeedsReview(request) ? effective!.fingerprint : metadata.data.project_style_version
+  registerReference(profile, { asset_id: assetId, revision: metadata.data.visual_profile_revision, style_version: styleVersion,
     view: metadata.data.visual_reference_view, purpose: metadata.data.visual_reference_purpose, label: metadata.data.visual_reference_label,
     status: 'candidate', source_job_id: job.id })
 }
@@ -155,7 +166,8 @@ function prepareReference(profile: VisualProfile, input: z.infer<typeof previewI
     view: input.view, purpose: input.purpose, label: input.label, prompt_append: input.prompt_append || '',
     references: references.map(asset => [asset.id, asset.path, asset.created_at]), model: [model.id, model.settings], style: style.version })).digest('hex')
   const context = references.length ? `\n参考图片按提交顺序编号：${references.map((asset, index) => `图片${index + 1}：${asset.filename}`).join('；')}。\n参考仅用于保持对应对象的一致性，不复制原图拼版、文字、标签和其他视角。` : ''
-  return { prompt: withProjectStyle(singleReferencePrompt(profile, input) + context, style), mode,
+  const prompt = withProjectStyle(singleReferencePrompt(profile, input) + context, style)
+  return { prompt, mode, effective_visual_style: effectiveVisualStyleForPrompt(prompt, style),
     reference_asset_ids: input.reference_asset_ids, reference_signature: signature, project_style_version: style.version,
     project_visual_style: style, style_warnings: referenceStyleWarnings(profile.project_id, input.reference_asset_ids, style) }
 }
@@ -180,11 +192,19 @@ export function registerVisualReferenceRoutes(app: FastifyInstance, context: Ref
       const reference = one<ReferenceRow>('SELECT * FROM visual_profile_reference_assets WHERE id=?', referenceId)
       if (!reference || reference.profile_id !== profile.id) invalid('参考资产不属于此设定')
       const status = input.status || reference.status, isDefault = input.is_default ?? !!reference.is_default
-      if (status !== 'archived' && (reference.revision !== profile.revision || reference.style_version !== style.version)) invalid('此参考资产属于旧设定或旧画风，请生成当前版本参考', 409)
+      const sourceJob = reference.source_job_id ? one<{ request: string }>('SELECT request FROM jobs WHERE id=? AND project_id=?', reference.source_job_id, profile.project_id) : undefined
+      let customSource = false
+      try { customSource = !!sourceJob && generationStyleNeedsReview(JSON.parse(sourceJob.request)) } catch { /* Keep corrupt legacy records unconfirmed. */ }
+      // A deliberate per-image confirmation records the creator's visual review.
+      // Merely registering or finishing a custom generation cannot approve it.
+      const reviewedCustom = customSource && status === 'confirmed' && input.status === 'confirmed'
+      if (status !== 'archived' && (reference.revision !== profile.revision || reference.style_version !== style.version && !customSource)) invalid('此参考资产属于旧设定或旧画风，请生成当前版本参考', 409)
       if (input.is_default && status !== 'confirmed') invalid('只有已确认的参考资产可设为默认')
       if (isDefault && status === 'confirmed') run('UPDATE visual_profile_reference_assets SET is_default=0, updated_at=? WHERE profile_id=? AND revision=? AND view=? AND purpose=? AND id<>?', now(), id, reference.revision, reference.view, reference.purpose, reference.id)
-      run('UPDATE visual_profile_reference_assets SET status=?, is_default=?, label=?, updated_at=? WHERE id=?', status, Number(status === 'confirmed' && isDefault), input.label ?? reference.label, now(), reference.id)
+      run('UPDATE visual_profile_reference_assets SET status=?, is_default=?, label=?, style_version=?, updated_at=? WHERE id=?', status, Number(status === 'confirmed' && isDefault), input.label ?? reference.label,
+        reviewedCustom ? style.version : reference.style_version, now(), reference.id)
       if (status === 'confirmed') {
+        if (input.status === 'confirmed') recordAssetStyleReview(profile.project_id, reference.asset_id, style.version, profile.id)
         run("UPDATE visual_profiles SET definition_status='ready' WHERE id=?", id)
       }
       synchronizeVisualProfileBindings(profile.id)

@@ -28,7 +28,7 @@ import { imageReferenceConfigError } from '@video-studio/shared/media/image-refe
 import { videoRatioOptions, videoResolutionOptions } from '@video-studio/shared/media/video-parameters'
 import { videoReferenceConfigError } from '@video-studio/shared/media/video-reference-config'
 import { videoReferenceUsages, videoReferenceUsageIssue } from '@video-studio/shared/media/video-reference-usage'
-import { compileProjectStyle, projectVisualStyle, referenceStyleWarnings } from './modules/visuals/project-visual-style.js'
+import { compileProjectStyle, generationEffectiveVisualStyle, projectVisualStyle, referenceStyleWarnings } from './modules/visuals/project-visual-style.js'
 import { projectStyleInstructions, withProjectStyle, projectStyleTemplateError } from '@video-studio/shared/visuals/visual-style'
 import { promptParameterConflictMessage } from '@video-studio/shared/visuals/prompt-parameter-conflicts'
 import { managedPromptBlockNames } from '@video-studio/shared/visuals/prompt-document'
@@ -50,6 +50,7 @@ import { createStreamScope, directorStreamHeartbeatMs } from '@video-studio/shar
 import { autoConfirmGeneratedProfileBoard, inheritSceneVisualBindings, prepareVisualGeneration, registerVisualProfileRoutes, sceneVisualDesignIds, visualProjectData } from './modules/visuals/visual-profiles.js'
 import { registerGeneratedVisualReference } from './modules/visuals/visual-reference-assets.js'
 import { canvasRecord, defaultCanvas, registerProjectCanvasRoutes } from './modules/canvas/project-canvases.js'
+import { registerShotManagementRoutes } from './modules/storyboard/shot-management.js'
 import { registerCanvasNodeProposalRoutes } from './modules/canvas/canvas-node-proposals.js'
 import { registerScriptCanvasRoutes } from './modules/canvas/script-canvas-preparation.js'
 import { workflowRequest, workflowDraftInput, workflowGenerationDraftSchema, workflowEnvelope, normalizeWorkflowRequest, workflowContentInstructions, workflowInstructions, parseWorkflowDraft, workflowReply, workflowProgress, workflowGuidance, workflowLabels, directorStageContext, directorStageInstructions, type DirectorStageContext, type WorkflowDraft } from './modules/script/script-workflow.js'
@@ -422,12 +423,13 @@ const canvasPromptSections = z.object({
   blocks: z.array(z.object({
     id: z.string().min(1).max(100), kind: z.enum(['body', 'managed']), text: z.string().max(80_000),
     name: z.enum(managedPromptBlockNames).optional(), sourceText: z.string().max(80_000).optional(),
-    pendingSourceText: z.string().max(80_000).optional(), sourceStatus: z.literal('source_changed').optional(),
+    pendingSourceText: z.string().max(80_000).optional(), mergeBaseText: z.string().max(80_000).optional(),
+    sourceStatus: z.literal('source_changed').optional(),
     deleted: z.boolean().optional(), deletionSource: z.literal('source').optional(),
   }).strict()).max(1_000),
 }).strict().refine(isPromptSectionDocument, '提示词结构文档格式不正确，请重新打开节点后重试')
   .superRefine((document, context) => {
-    for (const field of ['text', 'sourceText', 'pendingSourceText'] as const) {
+    for (const field of ['text', 'sourceText', 'pendingSourceText', 'mergeBaseText'] as const) {
       if (document.blocks.reduce((length, block) => length + (block[field]?.length || 0), 0) > 80_000) {
         context.addIssue({ code: 'custom', message: '提示词结构文档的正文、来源快照或待确认内容各不能超过 80,000 字符' })
         return
@@ -578,7 +580,15 @@ function assetPublic(asset: Asset) {
 
 function jobPublic(job: Job) {
   const model = job.model_id ? one<Model>('SELECT * FROM models WHERE id=?', job.model_id) : undefined
-  return { ...job, idempotency_key: jobSubmissionKey(job), ...generationRecoveryInfo(job, model) }
+  let request = job.request
+  try {
+    const saved = JSON.parse(request)
+    const effective = generationEffectiveVisualStyle(saved)
+    if (effective && JSON.stringify(effective) !== JSON.stringify(saved.effective_visual_style)) {
+      request = JSON.stringify({ ...saved, effective_visual_style: effective })
+    }
+  } catch { /* Keep malformed legacy request records readable. */ }
+  return { ...job, request, idempotency_key: jobSubmissionKey(job), ...generationRecoveryInfo(job, model) }
 }
 
 function jsonIds(value: string): string[] {
@@ -594,7 +604,7 @@ function assetTaskPublic(task: AssetTask) {
     source_artifact_ids: jsonIds(task.source_artifact_ids),
     source_scene_ids: jsonIds(task.source_scene_ids),
     result_asset: task.result_asset_id
-      ? (() => { const asset = one<Asset>('SELECT * FROM assets WHERE id=?', task.result_asset_id); return asset ? assetPublic(asset) : null })()
+      ? (() => { const asset = one<Asset>('SELECT * FROM assets WHERE id=? AND deleted_at IS NULL', task.result_asset_id); return asset ? assetPublic(asset) : null })()
       : null,
     generation_job: task.generation_job_id
       ? (() => { const job = one<Job>('SELECT * FROM jobs WHERE id=?', task.generation_job_id); return job ? jobPublic(job) : null })()
@@ -750,7 +760,7 @@ function projectCutReviews(projectId: string, canvasId?: string): { production_r
   const range = scope.range
   const shots = selectedProductionShots(scope.shots, range)
   const clipsByShot = new Map(scope.clips.map(clip => [clip.shot_id, clip]))
-  const assetsById = new Map(all<Asset>('SELECT * FROM assets WHERE project_id=?', projectId).map(asset => [asset.id, asset]))
+  const assetsById = new Map(all<Asset>('SELECT * FROM assets WHERE project_id=? AND deleted_at IS NULL', projectId).map(asset => [asset.id, asset]))
   const reviewsByPair = new Map(all<CutReview>('SELECT * FROM cut_reviews WHERE project_id=?', projectId)
     .map(review => [`${review.from_shot_id}:${review.to_shot_id}`, review]))
   const cuts: CutReviewView[] = []
@@ -1917,7 +1927,7 @@ function buildShotPlanningPrompt(project: Project, scenes: ScriptScene[], shotsP
 }
 function baseShotPlanningPrompt(project: Project, scenes: ScriptScene[], shotsPerScene: number): string {
   const script = projectScript(project.id)
-  const existingShots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position', project.id)
+  const existingShots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position', project.id)
   return `你是一位分镜导演。把所列场次拆成可直接用于 AI 图片和视频生成的连续镜头。\n` +
     `${projectStyleInstructions(projectVisualStyle(project.id))}\n` +
     `项目：${project.name}；画幅：${project.ratio}；创意：${project.brief}\n` +
@@ -2325,7 +2335,7 @@ async function processJob(job: Job): Promise<void> {
   if (job.job_type === 'export') {
     const project = request.project as Project
     const clips = request.clips as RenderClip[]
-    const assets = all<Asset>('SELECT * FROM assets WHERE project_id=?', job.project_id)
+    const assets = all<Asset>('SELECT * FROM assets WHERE project_id=? AND deleted_at IS NULL', job.project_id)
     path = await render(project, clips, Object.fromEntries(assets.map(asset => [asset.id, asset])),
       (request.speech_audio || []) as SpeechAudioClip[], request.audio_settings as ReturnType<typeof projectAudioSettings> | undefined,
       (request.captions || []) as EditingCutCaption[])
@@ -2507,6 +2517,7 @@ export function buildApp(): FastifyInstance {
   registerStoryboardPlanningRoutes(app, { script: projectScript, scenePrompt, generateText: creativeText, selectSkills: selectCreativeSkills })
   registerSpeechRoutes(app, { touchProject, jobPublic })
   registerEditingCutRoutes(app)
+  registerShotManagementRoutes(app)
   registerAssetDownloadRoutes(app)
   registerImagePromptAnalysisRoutes(app)
   registerVideoPromptAnalysisRoutes(app)
@@ -2538,13 +2549,13 @@ export function buildApp(): FastifyInstance {
       ...project, ...(canvasId === undefined ? {} : { final_cut_canvas_id: canvasId }), production_range: scope.range,
       script: projectScript(id), shots: scope.shots
         .map(shot => ({ ...shot, archived_candidate_asset_ids: archivedByShot.get(shot.id) ?? [] })),
-      historical_shots: (canvasId === undefined ? all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NOT NULL ORDER BY created_at, position', id) : [])
+      historical_shots: (canvasId === undefined ? all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NOT NULL ORDER BY created_at, position', id) : [])
         .map(shot => ({ ...shot, archived_candidate_asset_ids: archivedByShot.get(shot.id) ?? [] })),
       timeline_clips: scope.clips,
       speech: projectSpeechData(id, canvasId), audio_settings: projectAudioSettings(id),
       asset_reviews: all<AssetReview>(`SELECT asset_reviews.* FROM asset_reviews
         JOIN shots ON shots.id=asset_reviews.shot_id WHERE shots.project_id=?`, id),
-      assets: all<Asset>('SELECT * FROM assets WHERE project_id=? ORDER BY created_at DESC', id).map(assetPublic),
+      assets: all<Asset>('SELECT * FROM assets WHERE project_id=? AND deleted_at IS NULL ORDER BY created_at DESC', id).map(assetPublic),
       jobs: all<Job>('SELECT * FROM jobs WHERE project_id=? ORDER BY created_at DESC', id).map(jobPublic),
       asset_tasks: all<AssetTask>('SELECT * FROM asset_tasks WHERE project_id=? ORDER BY updated_at DESC, rowid DESC', id).map(assetTaskPublic),
       ...visualProjectData(id),
@@ -2567,6 +2578,9 @@ export function buildApp(): FastifyInstance {
       if (current.revision !== data.revision) {
         throw Object.assign(new Error('画布已在其他位置修改，请刷新后重试'), { statusCode: 409 })
       }
+      const graphText = JSON.stringify({ nodes: data.nodes, edges: data.edges })
+      if (all<{ id: string }>('SELECT id FROM assets WHERE project_id=? AND deleted_at IS NOT NULL', id).some(asset => graphText.includes(asset.id))) invalid('画布引用了回收站素材，请先恢复素材')
+      if (all<{ id: string }>('SELECT id FROM shots WHERE project_id=? AND deleted_at IS NOT NULL', id).some(shot => graphText.includes(shot.id))) invalid('画布引用了回收站分镜，请先恢复分镜')
       const nodeIds = new Set<string>()
       const profileIds = new Set<string>()
       for (const node of data.nodes) {
@@ -2583,12 +2597,12 @@ export function buildApp(): FastifyInstance {
           if (node.model_id && one<Model>('SELECT * FROM models WHERE id=?', node.model_id)?.modality !== 'image') invalid('设定图节点只能使用图片模型')
         }
         if (node.asset_id) {
-          const asset = one<Asset>('SELECT * FROM assets WHERE id=?', node.asset_id)
+          const asset = one<Asset>('SELECT * FROM assets WHERE id=? AND deleted_at IS NULL', node.asset_id)
           if (!asset || asset.project_id !== id) invalid('画布素材不属于当前项目')
           if (node.type !== 'generation' && asset.kind !== (node.type === 'image_analysis' ? 'image' : node.type === 'video_analysis' ? 'video' : node.type)) invalid('画布节点类型与素材类型不匹配')
           if (node.type === 'generation' && asset.kind === 'audio') invalid('生成节点不能关联音频素材')
         }
-        if (node.shot_id && one<Shot>('SELECT * FROM shots WHERE id=? AND project_id=?', node.shot_id, id) === undefined) {
+        if (node.shot_id && one<Shot>('SELECT * FROM shots WHERE id=? AND project_id=? AND deleted_at IS NULL', node.shot_id, id) === undefined) {
           invalid('画布镜头不属于当前项目')
         }
         if (node.type === 'generation' && node.shot_id && !node.settings.visual_profile_id
@@ -2607,19 +2621,19 @@ export function buildApp(): FastifyInstance {
         if (node.type === 'video_analysis' && node.model_id && one<Model>('SELECT * FROM models WHERE id=?', node.model_id)?.modality !== 'text') invalid('视频反推节点只能使用文本模型')
         if (node.settings.video_analysis_result) {
           const result = node.settings.video_analysis_result
-          const source = one<Asset>('SELECT * FROM assets WHERE id=?', result.asset_id)
+          const source = one<Asset>('SELECT * FROM assets WHERE id=? AND deleted_at IS NULL', result.asset_id)
           const previousResult = current.nodes.find(item => item.id === node.id)?.settings.video_analysis_result
           if (node.type !== 'video_analysis' || (source ? source.project_id !== id || source.kind !== 'video'
             : previousResult?.asset_id !== result.asset_id)) invalid('视频反推结果来源必须是当前项目的视频')
           if (!one<Model>('SELECT * FROM models WHERE id=?', result.model_id) && previousResult?.model_id !== result.model_id) invalid('视频反推结果模型不存在')
         }
         if (node.settings.image_analysis_source_asset_id) {
-          const source = one<Asset>('SELECT * FROM assets WHERE id=?', node.settings.image_analysis_source_asset_id)
+          const source = one<Asset>('SELECT * FROM assets WHERE id=? AND deleted_at IS NULL', node.settings.image_analysis_source_asset_id)
           if (!source || source.project_id !== id || source.kind !== 'image') invalid('图片反推来源必须是当前项目的图片')
         }
         if (node.job_id) {
           const job = one<Job>('SELECT * FROM jobs WHERE id=?', node.job_id)
-          if (!job || job.project_id !== id || job.job_type !== 'generation') invalid('画布任务必须是当前项目的生成任务')
+          if (!job || job.project_id !== id || job.job_type !== 'generation' || job.result_asset_id && one('SELECT 1 FROM assets WHERE id=? AND deleted_at IS NOT NULL', job.result_asset_id)) invalid('画布任务必须是当前项目的生成任务')
           if (node.shot_id && job.shot_id !== node.shot_id) invalid('画布任务与镜头不匹配')
         }
       }
@@ -2636,7 +2650,7 @@ export function buildApp(): FastifyInstance {
         if (pairs.has(pair)) invalid('画布节点之间不能重复连接')
         pairs.add(pair)
         if (edge.reference_asset_id) {
-          const asset = one<Asset>('SELECT * FROM assets WHERE id=?', edge.reference_asset_id)
+          const asset = one<Asset>('SELECT * FROM assets WHERE id=? AND deleted_at IS NULL', edge.reference_asset_id)
           const previous = one<CanvasEdge>('SELECT * FROM canvas_edges WHERE project_id=? AND id=?', id, edge.id)
           const videoAnalysisTarget = data.nodes.find(node => node.id === edge.target)?.type === 'video_analysis'
           if (asset ? asset.project_id !== id || asset.kind !== (videoAnalysisTarget ? 'video' : 'image')
@@ -2674,7 +2688,7 @@ export function buildApp(): FastifyInstance {
     const range = scope.range
     const shots = selectedProductionShots(scope.shots, range)
     const clips = scope.clips
-    const assets = all<Asset>('SELECT * FROM assets WHERE project_id=?', id)
+    const assets = all<Asset>('SELECT * FROM assets WHERE project_id=? AND deleted_at IS NULL', id)
     const reviews = all<AssetReview>(`SELECT asset_reviews.* FROM asset_reviews
       JOIN shots ON shots.id=asset_reviews.shot_id WHERE shots.project_id=?`, id)
     const clipsByShot = new Map(clips.map(clip => [clip.shot_id, clip]))
@@ -3310,6 +3324,7 @@ export function buildApp(): FastifyInstance {
       ...(batchId ? { asset_task_batch_id: batchId } : {}),
       asset_task_id: task.id, prompt, prompt_document: data.prompt_document, mode: data.mode, reference_asset_ids: data.reference_asset_ids,
       project_style_version: styled.project_style_version, project_visual_style: styled.project_visual_style,
+      effective_visual_style: styled.effective_visual_style,
       reference_video_url: null, resolution: data.resolution ?? null, quality: data.quality ?? null,
       clarity: data.clarity ?? null, background: data.background ?? null, duration: 5, ratio: data.ratio,
       generate_audio: false, draft: false,
@@ -3459,11 +3474,11 @@ export function buildApp(): FastifyInstance {
     const { scene_ids } = parse(sceneConversionInput, request.body)
     const scenes = selectedScenes(id, scene_ids)
     const existing = new Set(all<{ source_scene_id: string }>(
-      'SELECT source_scene_id FROM shots WHERE project_id=? AND superseded_by IS NULL AND source_scene_id IS NOT NULL', id,
+      'SELECT source_scene_id FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL AND source_scene_id IS NOT NULL', id,
     ).map(item => item.source_scene_id))
     const shots: Shot[] = [], skipped_scene_ids: string[] = []
     db.transaction(() => {
-      let position = one<{ next: number }>('SELECT COALESCE(MAX(position), -1)+1 AS next FROM shots WHERE project_id=? AND superseded_by IS NULL', id)!.next
+      let position = one<{ next: number }>('SELECT COALESCE(MAX(position), -1)+1 AS next FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL', id)!.next
       for (const scene of scenes) {
         if (existing.has(scene.id)) { skipped_scene_ids.push(scene.id); continue }
         const shotId = newId()
@@ -3534,7 +3549,7 @@ export function buildApp(): FastifyInstance {
       if (previous.project_id !== id) invalid('该请求编号已用于其他项目')
       const ids = JSON.parse(previous.shot_ids) as string[]
       return {
-        shots: ids.map(shotId => one<Shot>('SELECT * FROM shots WHERE id=?', shotId)).filter((shot): shot is Shot => !!shot),
+        shots: ids.map(shotId => one<Shot>('SELECT * FROM shots WHERE id=? AND deleted_at IS NULL', shotId)).filter((shot): shot is Shot => !!shot),
         replayed: true, payload_changed: previous.payload_hash !== payloadHash,
       }
     }
@@ -3548,7 +3563,7 @@ export function buildApp(): FastifyInstance {
     }
     const scenePositions = new Map(all<ScriptScene>('SELECT * FROM script_scenes WHERE project_id=?', id)
       .map(scene => [scene.id, scene.position]))
-    const existing = all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position', id)
+    const existing = all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position', id)
     const ordered = existing.map(shot => ({ id: shot.id, source_scene_id: shot.source_scene_id }))
     const createdIds: string[] = []
     db.transaction(() => {
@@ -3748,7 +3763,7 @@ export function buildApp(): FastifyInstance {
       if (data.source_scene_id && required<ScriptScene>('script_scenes', data.source_scene_id).project_id !== id) {
         invalid('来源场次不属于当前项目')
       }
-      const position = one<{ next: number }>('SELECT COALESCE(MAX(position), -1)+1 AS next FROM shots WHERE project_id=? AND superseded_by IS NULL', id)!.next
+      const position = one<{ next: number }>('SELECT COALESCE(MAX(position), -1)+1 AS next FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL', id)!.next
       const shotId = newId()
       run(`INSERT INTO shots (id, project_id, position, title, prompt, duration, selected_asset_id, created_at, source_scene_id,
         start_state, end_state, cut_note, image_prompt, video_prompt, design_id)
@@ -3807,7 +3822,7 @@ export function buildApp(): FastifyInstance {
       invalid('该镜头是制作范围边界，请先调整制作范围')
     }
     run('DELETE FROM shots WHERE id=?', id)
-    all<{ id: string }>('SELECT id FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position', shot.project_id).forEach((item, index) => run('UPDATE shots SET position=? WHERE id=?', index, item.id))
+    all<{ id: string }>('SELECT id FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position', shot.project_id).forEach((item, index) => run('UPDATE shots SET position=? WHERE id=?', index, item.id))
     touchProject(shot.project_id)
     return { ok: true }
   })

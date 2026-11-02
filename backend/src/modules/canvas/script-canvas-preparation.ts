@@ -31,7 +31,7 @@ export function scriptCanvasPreparationSnapshot(id: string, sceneIds: string[], 
   const scenes = script.scenes.filter(scene => sceneIds.includes(scene.id))
   if (new Set(sceneIds).size !== sceneIds.length || scenes.length !== sceneIds.length) invalid('所选场次不属于当前项目或重复')
   const style = projectVisualStyle(id)
-  const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position, id', id)
+  const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position, id', id)
     .filter(shot => sceneIds.includes(shot.source_scene_id || ''))
   const sceneDesigns = sceneVisualDesignIds(id, sceneIds)
   const designIds = new Set(sceneDesigns.values())
@@ -174,7 +174,7 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
       let nextPosition = one<{ next: number }>('SELECT COALESCE(MAX(position), -1)+1 AS next FROM shots WHERE project_id=?', id)!.next
       let createdShots = 0
       for (const scene of state.scenes) {
-        let shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND source_scene_id=? AND superseded_by IS NULL ORDER BY position', id, scene.id)
+        let shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND source_scene_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position', id, scene.id)
         if (!shots.length) {
           const shotId = newId(), prompt = context.scenePrompt(scene)
           run(`INSERT INTO shots (id, project_id, position, title, prompt, duration, selected_asset_id, created_at, source_scene_id, image_prompt, video_prompt, design_id)
@@ -206,7 +206,7 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
       }
       run('UPDATE projects SET updated_at=? WHERE id=?', now(), id)
       const visuals = visualProjectData(id)
-      const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position', id).filter(shot => data.scene_ids.includes(shot.source_scene_id || ''))
+      const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position', id).filter(shot => data.scene_ids.includes(shot.source_scene_id || ''))
       const shotIds = new Set(shots.map(shot => shot.id))
       const bindings = visuals.shot_visual_bindings.filter(binding => shotIds.has(binding.shot_id))
       const profileIds = new Set(bindings.map(binding => binding.profile_id))

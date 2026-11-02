@@ -119,11 +119,11 @@ function bindingVersion(projectId: string, type: 'scene' | 'shot', id: string) {
   if (designId) value.push({ design_id: designId })
   return resourceVersion(value)
 }
-function sceneVersion(projectId: string, scene: ScriptScene) { return resourceVersion([scene, all<Shot>('SELECT * FROM shots WHERE source_scene_id=? AND superseded_by IS NULL ORDER BY position, id', scene.id), targetBindings('scene', scene.id), profiles(projectId)]) }
+function sceneVersion(projectId: string, scene: ScriptScene) { return resourceVersion([scene, all<Shot>('SELECT * FROM shots WHERE source_scene_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position, id', scene.id), targetBindings('scene', scene.id), profiles(projectId)]) }
 function fail(message: string, statusCode = 422): never { throw Object.assign(new Error(message), { statusCode }) }
 
 function referenceReadContext(projectId: string) {
-  return { style: projectVisualStyle(projectId), imageIds: new Set(all<{ id: string }>("SELECT id FROM assets WHERE project_id=? AND kind='image'", projectId).map(asset => asset.id)) }
+  return { style: projectVisualStyle(projectId), imageIds: new Set(all<{ id: string }>("SELECT id FROM assets WHERE project_id=? AND deleted_at IS NULL AND kind='image'", projectId).map(asset => asset.id)) }
 }
 function profileReferenceMetadata(profile: VisualProfile, context: ReturnType<typeof referenceReadContext>) {
   const reference_assets = visualReferenceAssets(profile.id).filter(reference => reference.status === 'confirmed').map(reference => ({
@@ -179,7 +179,7 @@ export function resourceTools(projectId: string) {
           return page.result
         }
         case 'get_storyboard_context': {
-          const data = resourceSchemas.get_storyboard_context.parse(args), scenes = all<ScriptScene>('SELECT * FROM script_scenes WHERE project_id=? ORDER BY position, id', projectId), shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position, id', projectId)
+          const data = resourceSchemas.get_storyboard_context.parse(args), scenes = all<ScriptScene>('SELECT * FROM script_scenes WHERE project_id=? ORDER BY position, id', projectId), shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position, id', projectId)
           const referenceContext = referenceReadContext(projectId)
           if (data.scene_ids?.some(id => !scenes.some(scene => scene.id === id)) || data.shot_ids?.some(id => !shots.some(shot => shot.id === id))) fail('场次或镜头不存在或不属于当前项目')
           const objects: Array<{ type: 'scene'; value: ScriptScene } | { type: 'shot'; value: Shot }> = [

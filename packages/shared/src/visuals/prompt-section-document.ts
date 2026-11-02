@@ -10,6 +10,8 @@ export type PromptSectionBlock = {
   sourceText?: string
   /** New source awaiting a creator's decision; empty means an upstream deletion. */
   pendingSourceText?: string
+  /** Effective baseline after applying nonconflicting source edits while a decision is pending. */
+  mergeBaseText?: string
   sourceStatus?: 'source_changed'
   /** A creator's deletion is retained even though it has no serialized text. */
   deleted?: boolean
@@ -38,6 +40,7 @@ export function isPromptSectionDocument(value: unknown): value is PromptSectionD
     }
     return (block.sourceText === undefined || typeof block.sourceText === 'string')
       && (block.pendingSourceText === undefined || typeof block.pendingSourceText === 'string')
+      && (block.mergeBaseText === undefined || typeof block.mergeBaseText === 'string')
       && (block.sourceStatus === undefined || block.sourceStatus === 'source_changed')
       && (block.deleted === undefined || typeof block.deleted === 'boolean')
       && (!block.deleted || block.kind === 'managed' && block.text === '')
@@ -71,13 +74,18 @@ function rawSections(text: string): Array<Omit<PromptSectionBlock, 'id'>> {
   return blocks
 }
 
-/** Prefer exact identity anchors before falling back to unchanged section order. */
+/** Prefer identity anchors; positional matches remain explicitly ambiguous. */
 type SectionPairs = Map<string, PromptSectionBlock> & { ambiguous: Set<string> }
 function pairSections(previous: PromptSectionBlock[], next: PromptSectionBlock[]): SectionPairs {
   const pairs: SectionPairs = Object.assign(new Map<string, PromptSectionBlock>(), { ambiguous: new Set<string>() })
   const used = new Set<string>()
+  const contentLines = (text: string) => new Set(text.split('\n').filter(line => line && !/^【.*】$/.test(line)))
+  const previousLines = new Map(previous.map(block => [block.id, contentLines(block.mergeBaseText || block.sourceText || block.text)]))
+  const nextLines = new Map(next.map(block => [block.id, contentLines(block.text)]))
   for (const before of previous) {
-    const match = [before.sourceText, before.pendingSourceText, before.text].filter(text => text !== undefined && text !== '')
+    // A proposed source can itself be an ambiguous positional match. It does
+    // not establish identity until the creator has accepted it.
+    const match = [before.sourceText, before.mergeBaseText, before.text].filter(text => text !== undefined && text !== '')
       .map(text => next.find(after => !used.has(after.id) && before.name === after.name && text === after.text)).find(Boolean)
     if (match) { pairs.set(before.id, match); used.add(match.id) }
   }
@@ -94,20 +102,25 @@ function pairSections(previous: PromptSectionBlock[], next: PromptSectionBlock[]
     const right = previous.slice(index + 1).find(block => block.name === before.name && pairs.has(block.id))
     const lower = left ? next.indexOf(pairs.get(left.id)!) : -1
     const upper = right ? next.indexOf(pairs.get(right.id)!) : next.length
-    const candidates = next.filter((after, position) => !used.has(after.id) && before.name === after.name && position > lower && position < upper)
+    const available = next.filter(after => !used.has(after.id) && before.name === after.name)
+    const candidates = available.filter(after => { const position = next.indexOf(after); return position > lower && position < upper })
     const remaining = previous.filter(block => block.name === before.name && !pairs.has(block.id)).length
-    const identity = (before.sourceText || before.text).split('\n').filter(line => line && !/^【.*】$/.test(line))
-    const scores = candidates.map(candidate => ({ candidate, score: candidate.text.split('\n').filter(line => identity.includes(line)).length }))
+    // Shared boilerplate cannot identify an object merely because other
+    // positional candidates have already been consumed.
+    const identity = [...previousLines.get(before.id)!].filter(line =>
+      previous.filter(other => other.name === before.name && previousLines.get(other.id)!.has(line)).length === 1
+      && next.filter(other => other.name === before.name && nextLines.get(other.id)!.has(line)).length === 1)
+    const scores = available.map(candidate => ({ candidate, score: identity.filter(line => nextLines.get(candidate.id)!.has(line)).length }))
       .sort((a, b) => b.score - a.score)
     const distinct = scores[0] && scores[0].score > 0 && scores[0].score > (scores[1]?.score ?? -1) ? scores[0].candidate : undefined
     const match = distinct || (!left && right ? candidates.at(-remaining) || candidates[0] : candidates[0])
     if (match) {
       pairs.set(before.id, match); used.add(match.id)
       if (distinct) pairs.ambiguous.delete(before.id)
-      // Multiple same-name sections with no identity anchor cannot safely be
-      // inferred from position alone after an insertion or deletion.
-      if (!left && !right && previous.filter(block => block.name === before.name).length > 1
-        && candidates.length !== remaining) pairs.ambiguous.add(before.id)
+      // Equal counts do not establish identity: every same-name object may
+      // have changed and moved. Positional fallback must await a decision.
+      if (!distinct && (previous.filter(block => block.name === before.name).length > 1
+        || next.filter(block => block.name === before.name).length > 1)) pairs.ambiguous.add(before.id)
     }
   }
   return pairs
@@ -199,29 +212,34 @@ function overlaps(left: LineEdit, right: LineEdit): boolean {
   return left.start < right.end && right.start < left.end
 }
 
-function mergeSection(baseText: string, customText: string, sourceText: string): { text: string; conflict: boolean } {
-  if (customText === baseText) return { text: sourceText, conflict: false }
-  if (sourceText === baseText || sourceText === customText) return { text: customText, conflict: false }
-  const base = lines(baseText), custom = lineEdits(base, lines(customText)), source = lineEdits(base, lines(sourceText))
-  let conflict = false
-  const combined = [...custom]
-  for (const edit of source) {
-    const collisions = custom.filter(other => overlaps(edit, other))
-    if (!collisions.length) combined.push(edit)
-    else if (!collisions.every(other => other.start === edit.start && other.end === edit.end && equalLines(other.lines, edit.lines))) conflict = true
-  }
+function applyLineEdits(base: string[], edits: LineEdit[]): string {
   let cursor = 0
   const result: string[] = []
-  for (const edit of combined.sort((left, right) => left.start - right.start || left.end - right.end)) {
+  for (const edit of edits.sort((left, right) => left.start - right.start || left.end - right.end)) {
     result.push(...base.slice(cursor, edit.start), ...edit.lines)
     cursor = edit.end
   }
   result.push(...base.slice(cursor))
-  return { text: result.join(''), conflict }
+  return result.join('')
+}
+
+function mergeSection(baseText: string, customText: string, sourceText: string): { text: string; conflict: boolean; mergeBaseText?: string } {
+  if (customText === baseText) return { text: sourceText, conflict: false }
+  if (sourceText === baseText || sourceText === customText) return { text: customText, conflict: false }
+  const base = lines(baseText), custom = lineEdits(base, lines(customText)), source = lineEdits(base, lines(sourceText))
+  let conflict = false
+  const combined = [...custom], acceptedSource: LineEdit[] = []
+  for (const edit of source) {
+    const collisions = custom.filter(other => overlaps(edit, other))
+    if (!collisions.length) { combined.push(edit); acceptedSource.push(edit) }
+    else if (collisions.every(other => other.start === edit.start && other.end === edit.end && equalLines(other.lines, edit.lines))) acceptedSource.push(edit)
+    else conflict = true
+  }
+  return { text: applyLineEdits(base, combined), conflict, mergeBaseText: applyLineEdits(base, acceptedSource) }
 }
 
 function clearPending(block: PromptSectionBlock): PromptSectionBlock {
-  const { pendingSourceText: _pending, sourceStatus: _status, ...rest } = block
+  const { pendingSourceText: _pending, mergeBaseText: _mergeBase, sourceStatus: _status, ...rest } = block
   return rest
 }
 
@@ -241,8 +259,9 @@ export function reconcilePromptSectionDocument(document: PromptSectionDocument, 
   for (let index = 0; index < blocks.length; index++) {
     const block = blocks[index]!
     if (block.kind !== 'managed') continue
-    const next = pairs.get(block.id)?.text || '', baseline = block.sourceText ?? next
-    if (pairs.has(block.id) && pairs.ambiguous.has(block.id) && block.sourceText !== undefined && next !== baseline) {
+    const next = pairs.get(block.id)?.text || ''
+    let baseline = block.mergeBaseText ?? block.sourceText ?? next
+    if (pairs.has(block.id) && pairs.ambiguous.has(block.id) && next !== block.sourceText) {
       blocks[index] = { ...block, pendingSourceText: next, sourceStatus: 'source_changed' }
       continue
     }
@@ -251,8 +270,15 @@ export function reconcilePromptSectionDocument(document: PromptSectionDocument, 
         : { ...clearPending(block), sourceText: next }
       continue
     }
+    if (block.mergeBaseText === undefined && block.sourceText !== undefined && block.pendingSourceText !== undefined && !block.deleted) {
+      // Version-1 documents saved before merge baselines existed can recover
+      // already absorbed source lines from their previous pending revision.
+      const previousMerge = mergeSection(block.sourceText, block.text, block.pendingSourceText)
+      baseline = previousMerge.mergeBaseText ?? block.pendingSourceText
+    }
     const merged = mergeSection(baseline, block.text, next)
-    blocks[index] = merged.conflict ? { ...block, text: merged.text, pendingSourceText: next, sourceStatus: 'source_changed' }
+    blocks[index] = merged.conflict ? { ...block, text: merged.text, mergeBaseText: merged.mergeBaseText,
+      pendingSourceText: next, sourceStatus: 'source_changed' }
       : sourceSection(block, merged.text, next)
   }
   for (const block of source) {

@@ -2,11 +2,12 @@ import assert from 'node:assert/strict'
 import { after, test } from 'node:test'
 import { register } from 'node:module'
 import { JSDOM } from 'jsdom'
-import React, { act, useState } from 'react'
+import React, { act, useRef, useState } from 'react'
 import { MantineProvider } from '@mantine/core'
 import type { Editor } from '@tiptap/core'
 import { closeHistory } from '@tiptap/pm/history'
-import type { CanvasPromptEditorProps, CanvasPromptReference } from '../src/features/canvas/CanvasPromptEditor'
+import type { CanvasPromptEditorHandle, CanvasPromptEditorProps, CanvasPromptReference } from '../src/features/canvas/CanvasPromptEditor'
+import { promptClipboardContent, writePromptClipboard } from '../src/features/canvas/canvas-prompt-clipboard'
 import { isPromptSectionDocument, parsePromptSectionDocument, serializePromptSectionDocument, type PromptSectionDocument } from '@video-studio/shared/visuals/prompt-section-document'
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
@@ -29,6 +30,7 @@ dom.window.HTMLElement.prototype.scrollIntoView = () => {}
 const { createRoot } = await import('react-dom/client')
 const { flushSync } = await import('react-dom')
 const { default: PromptEditor, promptEditorDocument, promptEditorText, promptEditorSectionDocument } = await import('../src/features/canvas/CanvasPromptEditor')
+const { default: PromptCopyMenu } = await import('../src/features/canvas/CanvasPromptCopyMenu')
 after(() => dom.window.close())
 const references: CanvasPromptReference[] = [
   { assetId: 'base', label: '角色基础', url: '/base.png', required: true },
@@ -40,17 +42,26 @@ function button(label: string, scope: ParentNode = document) {
   assert.ok(result, label); return result
 }
 async function settle() { await act(async () => { await new Promise<void>(resolve => setTimeout(resolve, 25)) }) }
+async function sectionMenuAction(name: string, action: '移除区块' | '查看区块差异' | '调整参数') {
+  await act(() => button(`区块操作：${name}`).click()); await settle()
+  return button(`${action}：${name}`)
+}
+async function adjustParameters(name: string) {
+  const action = await sectionMenuAction(name, '调整参数')
+  await act(() => action.click()); await settle()
+}
 async function openMention(editor: Editor) {
   await act(() => editor.chain().setTextSelection(editor.state.doc.content.size - 1).insertContent('@').run())
 }
-async function mount(value: string, extra: Partial<CanvasPromptEditorProps> = {}) {
+async function mount(value: string, extra: Partial<CanvasPromptEditorProps> = {}, withCopy = false) {
   const changes: string[] = [], sectionChanges: PromptSectionDocument[] = [], referenceChanges: Array<[string, string | null]> = [], referenceAdds: CanvasPromptReference[] = []
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container)
   function Harness() {
     const [text, setText] = useState(value)
     const [sections, setSections] = useState(extra.sectionDocument)
-    return <MantineProvider env="test"><PromptEditor value={text} references={references} choices={choices}
+    const editorHandle = useRef<CanvasPromptEditorHandle>(null)
+    return <MantineProvider env="test">{withCopy && <PromptCopyMenu visualBoard={extra.visualBoard} getContent={scope => editorHandle.current?.getClipboardContent(scope) || null} />}<PromptEditor ref={editorHandle} value={text} references={references} choices={choices}
       onChange={(next, document) => { changes.push(next); setText(next); if (document) { sectionChanges.push(document); setSections(document) } }} onReferenceChange={(id, replacement) => { referenceChanges.push([id, replacement]) }}
       onReferenceAdd={reference => { referenceAdds.push(reference) }} {...extra} sectionDocument={sections} /></MantineProvider>
   }
@@ -213,17 +224,26 @@ test('keyboard deletion and cut notify removals, and undo restores both token an
   } finally { await view.destroy() }
 })
 
-test('required references allow inspection and reject replacement, removal, or range deletion', async () => {
+test('required inputs protect direct chip removal while whole-prompt clearing keeps the input', async () => {
   const view = await mount('保持 [[ref:base]] 人物')
   try {
     await act(() => button('查看图片引用：角色基础').click())
     assert.match(document.querySelector('.pc-prompt-reference-menu')!.textContent!, /必需引用/)
     assert.equal(document.querySelector('[aria-label="搜索替换图片"]'), null)
     assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '移除此引用'), false)
-    await act(() => view.editor.chain().selectAll().deleteSelection().run())
+    const position = referencePosition(view.editor, 'base')
+    await act(() => view.editor.chain().setTextSelection({ from: position, to: position + 1 }).deleteSelection().run())
     assert.equal(promptEditorText(view.editor.getJSON()), '保持 [[ref:base]] 人物')
     assert.deepEqual(view.referenceChanges, [])
     assert.deepEqual(view.changes, [])
+    await act(() => view.editor.chain().selectAll().deleteSelection().run())
+    assert.equal(view.changes.at(-1), '')
+    assert.deepEqual(view.referenceChanges, [])
+    await act(() => view.editor.commands.undo())
+    assert.equal(view.changes.at(-1), '保持 [[ref:base]] 人物')
+    await act(() => view.editor.commands.redo())
+    assert.equal(view.changes.at(-1), '')
+    assert.deepEqual(view.referenceChanges, [])
   } finally { await view.destroy() }
 })
 
@@ -478,6 +498,7 @@ test('chip replacement and removal rewrite section source snapshots before emitt
   const managed = sections.blocks.find(block => block.kind === 'managed')!
   managed.sourceStatus = 'source_changed'
   managed.pendingSourceText = editableSection.replace('纹理', '褶皱')
+  managed.mergeBaseText = editableSection.replace('纹理', '已合并的纹理')
   const view = await mount(sectionText, { sectionDocument: sections })
   try {
     await act(() => button('编辑图片引用：雨衣状态').click())
@@ -485,6 +506,7 @@ test('chip replacement and removal rewrite section source snapshots before emitt
     const replaced = view.sectionChanges.at(-1)!.blocks.find(block => block.id === managed.id)!
     assert.equal(replaced.sourceText, managed.sourceText!.replaceAll('[[ref:look]]', '[[ref:night]]'))
     assert.equal(replaced.pendingSourceText, managed.pendingSourceText.replaceAll('[[ref:look]]', '[[ref:night]]'))
+    assert.equal(replaced.mergeBaseText, managed.mergeBaseText.replaceAll('[[ref:look]]', '[[ref:night]]'))
     assert.equal(replaced.sourceStatus, 'source_changed')
     assert.equal(serializePromptSectionDocument(view.sectionChanges.at(-1)!), view.changes.at(-1))
     await act(() => button('编辑图片引用：夜景车站').click())
@@ -492,6 +514,7 @@ test('chip replacement and removal rewrite section source snapshots before emitt
     const removed = view.sectionChanges.at(-1)!.blocks.find(block => block.id === managed.id)!
     assert.equal(removed.sourceText, managed.sourceText!.replaceAll('[[ref:look]]', ''))
     assert.equal(removed.pendingSourceText, managed.pendingSourceText.replaceAll('[[ref:look]]', ''))
+    assert.equal(removed.mergeBaseText, managed.mergeBaseText.replaceAll('[[ref:look]]', ''))
     assert.deepEqual(view.referenceChanges, [['look', 'night'], ['night', null]])
   } finally { await view.destroy() }
 })
@@ -520,7 +543,7 @@ test('keyboard chip deletion rewrites source snapshots and undo restores the sam
   } finally { await view.destroy() }
 })
 
-test('backspace, delete and cross-block range deletion cannot erase a structured section boundary', async () => {
+test('empty-caret boundary keys stay protected while a full selection can clear structured sections', async () => {
   const view = await mount(sectionText)
   try {
     const position = sectionPosition(view.editor), node = view.editor.state.doc.nodeAt(position)!
@@ -533,9 +556,11 @@ test('backspace, delete and cross-block range deletion cannot erase a structured
     await act(() => view.element.dispatchEvent(deleteKey))
     assert.equal(deleteKey.defaultPrevented, true)
     await act(() => view.editor.chain().selectAll().deleteSelection().run())
-    assert.equal(promptEditorText(view.editor.getJSON()), sectionText)
-    assert.deepEqual(view.changes, [])
+    assert.equal(promptEditorText(view.editor.getJSON()), '')
+    assert.equal(view.container.querySelector('.pc-prompt-managed-section'), null)
     assert.deepEqual(view.referenceChanges, [])
+    await act(() => view.editor.commands.undo())
+    assert.equal(promptEditorText(view.editor.getJSON()), sectionText)
   } finally { await view.destroy() }
 })
 
@@ -560,7 +585,8 @@ test('explicit section removal records a reversible tombstone while keeping all 
   const managed = sections.blocks.find(block => block.kind === 'managed')!
   const view = await mount(sectionText, { sectionDocument: sections })
   try {
-    await act(() => button('移除区块：镜头视觉设定').click()); await settle()
+    const remove = await sectionMenuAction('镜头视觉设定', '移除区块')
+    await act(() => remove.click()); await settle()
     assert.equal(view.container.querySelector('.pc-prompt-managed-section'), null)
     assert.equal(view.changes.at(-1), sectionText.replace(editableSection, ''))
     const deleted = view.sectionChanges.at(-1)!.blocks.find(block => block.id === managed.id)!
@@ -619,8 +645,9 @@ test('read-only sections retain their fixed boundaries and cannot use the explic
   const view = await mount(sectionText, { readOnly: true })
   try {
     assert.equal(view.editor.isEditable, false)
-    assert.equal(button('移除区块：镜头视觉设定').disabled, true)
-    await act(() => button('移除区块：镜头视觉设定').click())
+    const remove = await sectionMenuAction('镜头视觉设定', '移除区块')
+    assert.equal(remove.disabled, true)
+    await act(() => remove.click())
     assert.equal(promptEditorText(view.editor.getJSON()), sectionText)
     assert.deepEqual(view.changes, [])
   } finally { await view.destroy() }
@@ -819,7 +846,8 @@ test('removing the final setting leaves the authored body and undo restores the 
   const body = '保留我自己的完整画面描述。'
   try {
     await act(() => view.editor.chain().setTextSelection(1).insertContent(body).run()); await settle()
-    await act(() => button('移除区块：镜头视觉设定').click()); await settle()
+    const remove = await sectionMenuAction('镜头视觉设定', '移除区块')
+    await act(() => remove.click()); await settle()
     assert.equal(promptEditorText(view.editor.getJSON()), body)
     assert.equal(view.changes.at(-1), body)
     assert.equal(view.container.querySelector('.pc-prompt-managed-section'), null)
@@ -874,7 +902,8 @@ test('removing a leading setting preserves its existing trailing prose and white
   const view = await mount(value)
   try {
     assert.equal(promptEditorText(view.editor.getJSON()), value)
-    await act(() => button('移除区块：镜头视觉设定').click()); await settle()
+    const remove = await sectionMenuAction('镜头视觉设定', '移除区块')
+    await act(() => remove.click()); await settle()
     assert.equal(promptEditorText(view.editor.getJSON()), trailing)
     assert.equal(view.changes.at(-1), trailing)
     await act(() => view.editor.commands.undo()); await settle()
@@ -903,4 +932,791 @@ test('pasting an entire authored prompt preserves its body separation and copies
     assert.equal(promptEditorText(target.editor.getJSON()), '原有正文。')
     assert.equal(promptEditorText(source.editor.getJSON()), copied)
   } finally { if (target) await target.destroy(); await source.destroy() }
+})
+
+test('folded requirements keep a compact summary and visible conflict decisions with source details in their menu', async () => {
+  const source = '【图片生成要求】\n画面比例：16:9\n清晰度要求：2K\n【图片生成要求结束】'
+  const value = source.replace('2K', '手工描述')
+  const sections = parsePromptSectionDocument(value, { sourceText: source })
+  const managed = sections.blocks.find(block => block.kind === 'managed')!
+  managed.pendingSourceText = source.replace('2K', '4K')
+  managed.sourceStatus = 'source_changed'
+  const decisions: Array<[string, string]> = []
+  const view = await mount(value, { sectionDocument: sections, onResolveSource: (id, choice) => { decisions.push([id, choice]) } })
+  try {
+    const block = view.container.querySelector('.pc-prompt-managed-section')!
+    assert.equal(block.querySelector('.pc-prompt-managed-origin'), null)
+    assert.equal(block.querySelector('.pc-prompt-managed-edit-label'), null)
+    assert.equal(block.querySelector('.pc-prompt-managed-state')!.textContent, '待确认')
+    assert.match(block.querySelector('.pc-prompt-managed-summary')!.textContent!, /画面比例：16:9 清晰度要求：手工描述/)
+    assert.equal(promptEditorText(view.editor.getJSON()), value)
+    assert.deepEqual(view.changes, [])
+    await act(() => button('就地保留本节点修改：图片生成要求', view.container).click())
+    assert.deepEqual(decisions, [[managed.id, 'keep_custom']])
+    const compare = await sectionMenuAction('图片生成要求', '查看区块差异')
+    assert.match(document.querySelector('[role="menu"]')!.textContent!, /生成参数 · 来源：本节点图片参数/)
+    await act(() => compare.click()); await settle()
+    const dialog = document.querySelector('[role="dialog"]')!
+    assert.ok(dialog)
+    assert.match(dialog.textContent!, /上次接受的来源内容/)
+    assert.match(dialog.querySelector('[aria-label="本节点内容变化"] [data-change="added"]')!.textContent!, /手工描述/)
+    assert.match(dialog.querySelector('[aria-label="来源更新"] [data-change="added"]')!.textContent!, /4K/)
+    assert.match(dialog.textContent!, /以底部生成参数为准/)
+    assert.deepEqual(view.changes, [])
+  } finally { await view.destroy() }
+})
+
+test('read-only requirements allow comparison while local and modal conflict decisions stay disabled', async () => {
+  const source = '【项目画风约束】\n纸张纹理\n【项目画风约束结束】'
+  const sections = parsePromptSectionDocument(source, { sourceText: source })
+  const block = sections.blocks.find(block => block.kind === 'managed')!
+  block.pendingSourceText = source.replace('纸张', '水彩'); block.sourceStatus = 'source_changed'
+  const decisions: string[] = []
+  const view = await mount(source, { sectionDocument: sections, readOnly: true, onResolveSource: id => { decisions.push(id) } })
+  try {
+    const local = button('就地使用来源更新：项目画风约束', view.container)
+    assert.equal(local.disabled, true)
+    await act(() => local.click())
+    const compare = await sectionMenuAction('项目画风约束', '查看区块差异')
+    await act(() => compare.click()); await settle()
+    const dialog = document.querySelector('[role="dialog"]')!
+    assert.ok(dialog)
+    const resolve = [...dialog.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '使用来源更新')!
+    assert.equal(resolve.disabled, true)
+    await act(() => resolve.click())
+    assert.deepEqual(decisions, [])
+    assert.deepEqual(view.changes, [])
+    assert.equal(promptEditorText(view.editor.getJSON()), source)
+  } finally { await view.destroy() }
+})
+
+test('whole-prompt delete, typing, paste and cut work across folded sections and preserve inputs through undo', async t => {
+  const second = '【项目画风约束】\n水墨线条。\n【项目画风约束结束】'
+  const value = `前文[[ref:base]]。\n\n${editableSection}\n\n${second}\n\n尾文。`
+  const operations = ['Backspace', 'Delete', 'typing', 'plain paste', 'HTML paste', 'cut'] as const
+  for (const operation of operations) await t.test(operation, async () => {
+    const sections = parsePromptSectionDocument(value, { sourceText: value })
+    const original = sections.blocks.filter(block => block.kind === 'managed')
+    original[0]!.pendingSourceText = editableSection.replace('纹理', '褶皱')
+    original[0]!.mergeBaseText = editableSection.replace('纹理', '局部纹理')
+    original[0]!.sourceStatus = 'source_changed'
+    const view = await mount(value, { sectionDocument: sections })
+    let expected = ''
+    try {
+      assert.equal(view.container.querySelector('.pc-prompt-managed-section.is-open'), null)
+      await act(() => view.editor.commands.selectAll())
+      if (operation === 'Backspace' || operation === 'Delete') {
+        await act(() => view.element.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: operation, bubbles: true, cancelable: true })))
+      } else if (operation === 'typing') {
+        expected = '新的画面描述。'
+        await act(() => view.editor.view.dispatch(view.editor.state.tr.insertText(expected)))
+      } else if (operation === 'plain paste') {
+        expected = '新的第一行。\n新的第二行。'
+        await act(() => view.editor.view.pasteText(expected, new dom.window.Event('paste') as ClipboardEvent))
+      } else if (operation === 'HTML paste') {
+        expected = '新的第一行。\n新的第二行。'
+        await act(() => view.editor.view.pasteHTML('<p>新的第一行。</p><p>新的第二行。</p>', new dom.window.Event('paste') as ClipboardEvent))
+      } else {
+        const clipboard = new Map<string, string>()
+        const event = new dom.window.Event('cut', { bubbles: true, cancelable: true })
+        Object.defineProperty(event, 'clipboardData', { value: { clearData: () => clipboard.clear(), setData: (type: string, text: string) => clipboard.set(type, text) } })
+        await act(() => view.element.dispatchEvent(event))
+        assert.equal(clipboard.get('text/plain'), value, 'cut includes complete folded contents and stable reference tokens')
+      }
+      await settle()
+      assert.equal(promptEditorText(view.editor.getJSON()), expected)
+      assert.equal(view.changes.at(-1), expected)
+      assert.equal(view.container.querySelector('.pc-prompt-managed-section'), null)
+      const deleted = view.sectionChanges.at(-1)!.blocks.filter(block => block.kind === 'managed')
+      for (const block of original) assert.deepEqual(deleted.find(item => item.id === block.id), { ...block, text: '', deleted: true })
+      assert.equal(serializePromptSectionDocument(view.sectionChanges.at(-1)!), expected)
+      assert.deepEqual(view.referenceChanges, [], 'whole-prompt edits preserve real image inputs')
+      await act(() => view.editor.commands.undo()); await settle()
+      assert.equal(promptEditorText(view.editor.getJSON()), value)
+      for (const block of original) assert.deepEqual(view.sectionChanges.at(-1)!.blocks.find(item => item.id === block.id), block)
+      await act(() => view.editor.commands.redo()); await settle()
+      assert.equal(promptEditorText(view.editor.getJSON()), expected)
+      assert.deepEqual(view.referenceChanges, [])
+      if (!expected) {
+        await act(() => view.editor.view.dispatch(closeHistory(view.editor.state.tr.insertText('清空后继续输入。'))))
+        assert.equal(view.changes.at(-1), '清空后继续输入。')
+      }
+    } finally { await view.destroy() }
+  })
+})
+
+test('whole-body replacement without managed blocks retains optional and required image inputs on redo', async () => {
+  const value = '使用[[ref:look]]和[[ref:base]]。'
+  const view = await mount(value)
+  try {
+    await act(() => view.editor.chain().selectAll().insertContent('换成新的提示词。').run())
+    assert.equal(view.changes.at(-1), '换成新的提示词。')
+    await act(() => view.editor.commands.undo())
+    assert.equal(view.changes.at(-1), value)
+    await act(() => view.editor.commands.redo())
+    assert.equal(view.changes.at(-1), '换成新的提示词。')
+    assert.deepEqual(view.referenceChanges, [])
+  } finally { await view.destroy() }
+})
+
+test('a range spanning a whole section removes only the selected content and keeps connected images', async () => {
+  const value = sectionText.replace('[[ref:look]]', '[[ref:base]]')
+  const sections = parsePromptSectionDocument(value, { sourceText: value })
+  const original = sections.blocks.find(block => block.kind === 'managed')!
+  const view = await mount(value, { sectionDocument: sections })
+  try {
+    const position = sectionPosition(view.editor), size = view.editor.state.doc.nodeAt(position)!.nodeSize
+    await act(() => view.editor.chain().setTextSelection({ from: position - 1, to: position + size + 1 }).deleteSelection().run())
+    assert.equal(view.container.querySelector('.pc-prompt-managed-section'), null)
+    assert.match(view.changes.at(-1)!, /^前文保持空行。/)
+    assert.match(view.changes.at(-1)!, /末尾正文。\n$/)
+    assert.deepEqual(view.sectionChanges.at(-1)!.blocks.find(block => block.id === original.id), { ...original, text: '', deleted: true })
+    assert.deepEqual(view.referenceChanges, [])
+    await act(() => view.editor.commands.undo())
+    assert.equal(view.changes.at(-1), value)
+    await act(() => view.editor.commands.redo())
+    assert.equal(view.container.querySelector('.pc-prompt-managed-section'), null)
+    assert.deepEqual(view.referenceChanges, [])
+  } finally { await view.destroy() }
+})
+
+test('pasting a same-name section over the full prompt gets a fresh identity and keeps the deleted source separate', async () => {
+  const sections = parsePromptSectionDocument(sectionText, { sourceText: sectionText })
+  const original = sections.blocks.find(block => block.kind === 'managed')!
+  original.pendingSourceText = editableSection.replace('纹理', '褶皱')
+  original.mergeBaseText = editableSection.replace('纹理', '局部纹理')
+  original.sourceStatus = 'source_changed'
+  const view = await mount(sectionText, { sectionDocument: sections })
+  try {
+    const pasted = editableSection.replace('纹理', '新服装')
+    await act(() => view.editor.commands.selectAll())
+    await act(() => view.editor.view.pasteText(pasted, new dom.window.Event('paste') as ClipboardEvent)); await settle()
+    assert.equal(view.changes.at(-1), pasted)
+    const blocks = view.sectionChanges.at(-1)!.blocks.filter(block => block.kind === 'managed')
+    const active = blocks.find(block => !block.deleted)!
+    assert.notEqual(active.id, original.id)
+    assert.equal(active.sourceText, undefined)
+    assert.equal(active.pendingSourceText, undefined)
+    assert.equal(active.mergeBaseText, undefined)
+    assert.deepEqual(blocks.find(block => block.id === original.id), { ...original, text: '', deleted: true })
+    assert.equal(serializePromptSectionDocument(view.sectionChanges.at(-1)!), pasted)
+    assert.deepEqual(view.referenceChanges, [])
+    await act(() => view.editor.commands.undo()); await settle()
+    assert.equal(view.changes.at(-1), sectionText)
+    assert.deepEqual(view.sectionChanges.at(-1)!.blocks.find(block => block.id === original.id), original)
+    await act(() => view.editor.commands.redo()); await settle()
+    assert.equal(view.changes.at(-1), pasted)
+  } finally { await view.destroy() }
+})
+
+test('explicit actions on a prompt containing only one chip still restore actual inputs on undo and redo', async t => {
+  for (const replacement of [null, 'night'] as const) await t.test(replacement || 'remove', async () => {
+    const view = await mount('[[ref:look]]')
+    try {
+      await act(() => button('编辑图片引用：雨衣状态').click())
+      await act(() => button(replacement ? '夜景车站' : '移除此引用').click()); await settle()
+      assert.deepEqual(view.referenceChanges, [['look', replacement]])
+      assert.equal(view.changes.at(-1), replacement ? '[[ref:night]]' : '')
+      await act(() => view.editor.commands.undo()); await settle()
+      assert.equal(view.changes.at(-1), '[[ref:look]]')
+      assert.deepEqual(view.referenceChanges.at(-1), ['look', 'look'])
+      if (replacement) assert.ok(view.referenceChanges.some(([id, value]) => id === replacement && value === null))
+      await act(() => view.editor.commands.redo()); await settle()
+      assert.equal(view.changes.at(-1), replacement ? '[[ref:night]]' : '')
+      assert.ok(view.referenceChanges.slice(2).some(([id, value]) => id === 'look' && value === null))
+      if (replacement) assert.deepEqual(view.referenceChanges.at(-1), [replacement, replacement])
+    } finally { await view.destroy() }
+  })
+})
+
+test('consecutive cut and paste are separate undo steps with source identities restored by the cut undo', async () => {
+  const sections = parsePromptSectionDocument(sectionText, { sourceText: sectionText })
+  const original = sections.blocks.find(block => block.kind === 'managed')!
+  original.pendingSourceText = editableSection.replace('纹理', '褶皱')
+  original.sourceStatus = 'source_changed'
+  const view = await mount(sectionText, { sectionDocument: sections })
+  try {
+    const clipboard = new Map<string, string>()
+    const cut = new dom.window.Event('cut', { bubbles: true, cancelable: true })
+    Object.defineProperty(cut, 'clipboardData', { value: { clearData: () => clipboard.clear(), setData: (type: string, text: string) => clipboard.set(type, text) } })
+    await act(() => view.editor.commands.selectAll())
+    await act(() => view.element.dispatchEvent(cut))
+    assert.equal(view.changes.at(-1), '')
+    await act(() => view.editor.view.pasteText(clipboard.get('text/plain')!, new dom.window.Event('paste') as ClipboardEvent))
+    assert.equal(view.changes.at(-1), sectionText)
+    assert.notEqual(view.sectionChanges.at(-1)!.blocks.find(block => block.kind === 'managed' && !block.deleted)!.id, original.id)
+    await act(() => view.editor.commands.undo())
+    assert.equal(view.changes.at(-1), '', 'first undo reverses only paste')
+    await act(() => view.editor.commands.undo())
+    assert.equal(view.changes.at(-1), sectionText)
+    assert.deepEqual(view.sectionChanges.at(-1)!.blocks.find(block => block.id === original.id), original)
+    await act(() => view.editor.commands.redo())
+    assert.equal(view.changes.at(-1), '')
+    await act(() => view.editor.commands.redo())
+    assert.equal(view.changes.at(-1), sectionText)
+    assert.deepEqual(view.referenceChanges, [])
+  } finally { await view.destroy() }
+})
+
+test('pasting identical full prompt text still publishes its new section identities without stale source metadata', async () => {
+  const sections = parsePromptSectionDocument(sectionText, { sourceText: sectionText })
+  const original = sections.blocks.find(block => block.kind === 'managed')!
+  original.pendingSourceText = editableSection.replace('纹理', '褶皱')
+  original.sourceStatus = 'source_changed'
+  const view = await mount(sectionText, { sectionDocument: sections })
+  try {
+    await act(() => view.editor.commands.selectAll())
+    await act(() => view.editor.view.pasteText(sectionText, new dom.window.Event('paste') as ClipboardEvent)); await settle()
+    assert.equal(view.changes.at(-1), sectionText)
+    const active = view.sectionChanges.at(-1)!.blocks.find(block => block.kind === 'managed' && !block.deleted)!
+    assert.notEqual(active.id, original.id)
+    assert.equal(active.pendingSourceText, undefined)
+    assert.equal(active.sourceText, undefined)
+    await act(() => view.editor.commands.undo()); await settle()
+    assert.equal(view.changes.at(-1), sectionText)
+    assert.deepEqual(view.sectionChanges.at(-1)!.blocks.find(block => block.id === original.id), original)
+    await act(() => view.editor.commands.redo()); await settle()
+    assert.equal(view.sectionChanges.at(-1)!.blocks.find(block => block.kind === 'managed' && !block.deleted)!.id, active.id)
+  } finally { await view.destroy() }
+})
+
+test('whole-prompt paste preserves existing inputs and connects newly introduced project references', async () => {
+  const view = await mount('使用[[ref:look]]和[[ref:base]]。', { choices: references, additionalChoices: [choices[2]] })
+  try {
+    await act(() => view.editor.commands.selectAll())
+    await act(() => view.editor.view.pasteText('采用[[ref:night]]。', new dom.window.Event('paste') as ClipboardEvent)); await settle()
+    assert.equal(view.changes.at(-1), '采用[[ref:night]]。')
+    assert.deepEqual(view.referenceAdds.map(reference => reference.assetId), ['night'])
+    assert.deepEqual(view.referenceChanges, [], 'replacement text does not disconnect the previous inputs')
+    await act(() => view.editor.commands.undo())
+    assert.equal(view.changes.at(-1), '使用[[ref:look]]和[[ref:base]]。')
+    assert.deepEqual(view.referenceChanges, [], 'undoing a whole-prompt edit also leaves image inputs connected')
+  } finally { await view.destroy() }
+})
+
+test('visual-board presentation keeps one editable main task and preserves source metadata through edits and undo', async () => {
+  const primary = '【设定图固定要求】\n人物三视图，服装参考[[ref:base]]。\n【设定图固定要求结束】'
+  const style = '【项目画风约束】\n保留纸张纹理\n【项目画风约束结束】'
+  const value = `${primary}\n\n${style}`
+  const sections = parsePromptSectionDocument(value, { sourceText: value })
+  const original = sections.blocks.find(block => block.name === '设定图固定要求')!
+  const view = await mount(value, { visualBoard: true, sectionDocument: sections })
+  try {
+    const main = view.container.querySelector<HTMLElement>('.pc-prompt-managed-section.is-primary')!
+    assert.ok(main)
+    assert.match(main.querySelector('.pc-prompt-managed-section-title')!.textContent!, /^主要创作内容$/)
+    assert.equal(main.querySelector('.pc-prompt-content-scope')!.textContent, '整理对象')
+    assert.equal(main.querySelector<HTMLElement>('.pc-prompt-managed-panel')!.hidden, false)
+    assert.equal(view.container.querySelector<HTMLElement>('.pc-prompt-managed-section.is-secondary .pc-prompt-managed-panel')!.hidden, true)
+    assert.equal(view.container.querySelector('.pc-prompt-supplement-heading, .pc-prompt-supplement-line'), null)
+    assert.equal(view.editor.state.doc.child(1).attrs.promptBodyEntry, false, 'a board does not create a redundant empty prose field')
+    assert.match(view.container.querySelector('.pc-prompt-presets-heading')!.textContent!, /生成约束1 项 · 手动维护 · 整理时保留 · 生成时生效/)
+    assert.equal(main.querySelector('.pc-prompt-managed-origin'), null)
+    assert.equal(main.querySelector('.pc-prompt-managed-edit-label'), null)
+    assert.equal(main.querySelector('.pc-prompt-managed-state'), null)
+    assert.equal(main.querySelector('[aria-label="移除区块：主要创作内容"]'), null, 'section removal lives in the board actions menu')
+    assert.equal(main.dataset.promptSectionName, '设定图固定要求', 'the display label does not change the persisted marker')
+    assert.equal(promptEditorText(view.editor.getJSON()), value)
+    assert.deepEqual(view.changes, [])
+
+    let position = -1
+    view.editor.state.doc.descendants((node, offset) => { if (node.isText && node.text === '人物三视图，服装参考') position = offset })
+    assert.ok(position >= 0)
+    await act(() => view.editor.commands.insertContentAt(position, '完整展示'))
+    assert.match(view.changes.at(-1)!, /【设定图固定要求】\n完整展示人物三视图/)
+    assert.equal(view.sectionChanges.at(-1)!.blocks.find(block => block.id === original.id)!.sourceText, original.sourceText)
+    await act(() => view.editor.commands.undo())
+    assert.equal(view.changes.at(-1), value)
+    assert.deepEqual(view.sectionChanges.at(-1)!.blocks.find(block => block.id === original.id), original)
+
+    const savedChanges = view.changes.length
+    let mainPosition = -1
+    view.editor.state.doc.forEach((node, offset) => { if (node.type.name === 'promptManagedSection' && node.attrs.section.name === '设定图固定要求') mainPosition = offset })
+    assert.ok(mainPosition >= 0)
+    await act(() => view.editor.chain().focus().setTextSelection(mainPosition + 2).run()); await settle()
+    await act(() => button('收起设定：主要创作内容', view.container).click()); await settle()
+    assert.equal(view.container.querySelector<HTMLElement>('.pc-prompt-managed-section.is-primary .pc-prompt-managed-panel')!.hidden, true)
+    assert.equal(view.editor.state.selection.$from.depth, 1, 'folding the main section moves the caret into the visible editor body')
+    assert.equal(view.editor.state.selection.$from.parent.type.name, 'paragraph')
+    assert.equal(view.changes.length, savedChanges)
+    await act(() => button('展开编辑：主要创作内容', view.container).click()); await settle()
+
+    await act(() => button('区块操作：主要创作内容', view.container).click()); await settle()
+    await act(() => button('移除此段内容').click()); await settle()
+    assert.equal(view.container.querySelector('.pc-prompt-managed-section.is-primary'), null)
+    assert.deepEqual(view.sectionChanges.at(-1)!.blocks.find(block => block.id === original.id), { ...original, text: '', deleted: true })
+    assert.equal(promptEditorText(view.editor.getJSON()), `\n\n${style}`)
+    assert.deepEqual(view.referenceChanges, [], 'removing the board task keeps its image inputs')
+    await act(() => view.editor.commands.undo()); await settle()
+    assert.equal(promptEditorText(view.editor.getJSON()), value)
+    assert.deepEqual(view.sectionChanges.at(-1)!.blocks.find(block => block.id === original.id), original)
+
+    await act(() => view.editor.chain().selectAll().deleteSelection().run())
+    assert.equal(view.changes.at(-1), '')
+    assert.deepEqual(view.referenceChanges, [], 'clearing the visual task keeps its actual image inputs')
+    await act(() => view.editor.commands.undo())
+    assert.equal(view.changes.at(-1), value)
+    assert.deepEqual(view.sectionChanges.at(-1)!.blocks.find(block => block.id === original.id), original)
+    assert.deepEqual(view.referenceChanges, [])
+  } finally { await view.destroy() }
+})
+
+test('copy menu separates reusable board prose from the complete prompt and omits editor chrome', async () => {
+  const primary = '【设定图固定要求】\n人物三视图，服装参考[[ref:base]]。\n【设定图固定要求结束】'
+  const supplement = '补充细节，参考[[ref:look]]。'
+  const requirement = '【项目画风约束】\n保留纸张纹理\n【项目画风约束结束】'
+  const parameters = '【图片生成要求】\n画面比例：16:9\n【图片生成要求结束】'
+  const value = `${primary}\n\n${supplement}\n\n${requirement}\n\n${parameters}`
+  const sections = parsePromptSectionDocument(value, { sourceText: value })
+  const view = await mount(value, { visualBoard: true, sectionDocument: sections }, true)
+  const clipboardDescriptor = Object.getOwnPropertyDescriptor(dom.window.navigator, 'clipboard')
+  const written: string[] = []
+  Object.defineProperty(dom.window.navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { written.push(text) } } })
+  try {
+    const body = promptClipboardContent(view.editor, 'body')
+    assert.equal(body.text, `人物三视图，服装参考[[ref:base]]。\n\n${supplement}`)
+    assert.doesNotMatch(body.html, /data-prompt-section/)
+    assert.match(body.html, /data-prompt-reference="base"/)
+    assert.match(body.html, /data-prompt-reference="look"/)
+    assert.doesNotMatch(body.html, /纸张纹理|16:9|提示词正文|补充说明/)
+
+    const full = promptClipboardContent(view.editor, 'full')
+    assert.equal(full.text, value, 'plain clipboard text remains directly pasteable as a complete serialized prompt')
+    assert.match(full.html, /data-prompt-section=/)
+    assert.match(full.html, /data-prompt-reference="base"/)
+    assert.match(full.html, /纸张纹理/)
+    assert.match(full.html, /16:9/)
+    assert.doesNotMatch(full.html, /pc-prompt-managed-toggle|区块操作|data-placeholder/)
+    assert.equal(view.changes.length, 0, 'copy never edits or normalizes the document')
+    assert.equal(view.sectionChanges.length, 0)
+    await act(() => button('复制提示词', view.container).click()); await settle()
+    await act(() => button('复制正文').click()); await settle()
+    assert.deepEqual(written, [body.text])
+    assert.equal(button('复制提示词', view.container).textContent?.trim(), '已复制')
+    await act(() => button('复制提示词', view.container).click()); await settle()
+    await act(() => button('复制完整提示词').click()); await settle()
+    assert.deepEqual(written, [body.text, full.text])
+  } finally {
+    await view.destroy()
+    if (clipboardDescriptor) Object.defineProperty(dom.window.navigator, 'clipboard', clipboardDescriptor)
+    else Reflect.deleteProperty(dom.window.navigator, 'clipboard')
+  }
+})
+
+test('ordinary node body copy excludes managed requirements and full copy preserves them', async () => {
+  const requirement = '【图片生成要求】\n画面比例：4:3\n【图片生成要求结束】'
+  const value = `车站夜景，保持角色身份。\n\n${requirement}`
+  const view = await mount(value, {}, true)
+  try {
+    assert.equal(promptClipboardContent(view.editor, 'body').text, '车站夜景，保持角色身份。')
+    assert.equal(promptClipboardContent(view.editor, 'full').text, value)
+  } finally { await view.destroy() }
+})
+
+test('body clipboard HTML pastes into another node while retaining destination requirements and resolving reference chips', async () => {
+  const sourceText = '【设定图固定要求】\n人物参考[[ref:base]]\n【设定图固定要求结束】\n\n补充[[ref:look]]'
+  const source = await mount(sourceText, { visualBoard: true }, true)
+  const targetRequirement = '【图片生成要求】\n画面比例：4:3\n【图片生成要求结束】'
+  const destination = await mount(`旧正文\n\n${targetRequirement}`)
+  try {
+    const copied = promptClipboardContent(source.editor, 'body')
+    const clipboard = { 'text/html': copied.html, 'text/plain': copied.text }
+    const paste = new dom.window.Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(paste, 'clipboardData', { value: {
+      getData: (type: string) => clipboard[type as keyof typeof clipboard] || '',
+      types: Object.keys(clipboard),
+      files: [],
+    } })
+    await act(() => destination.element.dispatchEvent(paste)); await settle()
+    assert.match(destination.changes.at(-1) || '', /人物参考\[\[ref:base\]\]/)
+    assert.match(destination.changes.at(-1) || '', /补充\[\[ref:look\]\]/)
+    assert.match(destination.changes.at(-1) || '', /【图片生成要求】[\s\S]*4:3/)
+    referencePosition(destination.editor, 'base')
+    referencePosition(destination.editor, 'look')
+    assert.deepEqual(destination.referenceAdds, [], 'references already available to the destination do not create duplicate inputs')
+    assert.equal(destination.sectionChanges.at(-1)?.blocks.filter(block => block.kind === 'managed' && !block.deleted).length, 1,
+      'the source setting-image block was flattened and did not duplicate destination requirements')
+    await act(() => destination.editor.commands.undo()); await settle()
+    assert.equal(destination.changes.at(-1), `旧正文\n\n${targetRequirement}`)
+  } finally { await source.destroy(); await destination.destroy() }
+})
+
+test('full clipboard HTML pastes editable requirements with fresh identities and no source metadata', async () => {
+  const primary = '【设定图固定要求】\n人物三视图[[ref:base]]\n【设定图固定要求结束】'
+  const requirement = '【项目画风约束】\n保留纸张纹理\n【项目画风约束结束】'
+  const value = `${primary}\n\n${requirement}`
+  const sourceSections = parsePromptSectionDocument(value, { sourceText: value })
+  const sourceRequirement = sourceSections.blocks.find(block => block.kind === 'managed' && block.name === '项目画风约束')!
+  if (sourceRequirement.kind === 'managed') {
+    sourceRequirement.pendingSourceText = requirement.replace('纸张纹理', '绢本纹理')
+    sourceRequirement.sourceStatus = 'source_changed'
+  }
+  const source = await mount(value, { visualBoard: true, sectionDocument: sourceSections }, true)
+  const targetSections = parsePromptSectionDocument(value, { sourceText: value })
+  const oldRequirement = targetSections.blocks.find(block => block.kind === 'managed' && block.name === '项目画风约束')!
+  if (oldRequirement.kind === 'managed') {
+    oldRequirement.pendingSourceText = requirement.replace('纸张纹理', '绢本纹理')
+    oldRequirement.sourceStatus = 'source_changed'
+  }
+  const destination = await mount(value, { visualBoard: true, sectionDocument: targetSections })
+  try {
+    const copied = promptClipboardContent(source.editor, 'full')
+    await act(() => destination.editor.commands.selectAll())
+    const clipboard = { 'text/html': copied.html, 'text/plain': copied.text }
+    const paste = new dom.window.Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(paste, 'clipboardData', { value: {
+      getData: (type: string) => clipboard[type as keyof typeof clipboard] || '',
+      types: Object.keys(clipboard), files: [],
+    } })
+    await act(() => destination.element.dispatchEvent(paste)); await settle()
+    assert.equal(destination.changes.at(-1), value, copied.html)
+    const activeRequirement = destination.sectionChanges.at(-1)?.blocks.find(block => block.kind === 'managed' && !block.deleted && block.name === '项目画风约束')
+    assert.ok(activeRequirement && activeRequirement.id !== oldRequirement.id, 'pasted sections receive independent identities')
+    assert.equal(activeRequirement.kind, 'managed')
+    assert.equal(activeRequirement.pendingSourceText, undefined)
+    assert.equal(activeRequirement.sourceText, undefined)
+    assert.equal(activeRequirement.sourceStatus, undefined)
+    await act(() => destination.editor.commands.undo()); await settle()
+    assert.deepEqual(destination.sectionChanges.at(-1)?.blocks.find(block => block.id === oldRequirement.id), oldRequirement)
+  } finally { await source.destroy(); await destination.destroy() }
+})
+
+test('legacy board prose stays plain and editable without a separate supplement surface', async () => {
+  const primary = '【设定图固定要求】\n人物三视图，完整展示外套。\n【设定图固定要求结束】'
+  const style = '【项目画风约束】\n保留纸张纹理。\n【项目画风约束结束】'
+  const parameters = '【图片生成要求】\n画面比例：16:9\n清晰度要求：2K\n【图片生成要求结束】'
+  const prefix = '开头补充：衣领保留三道缝线，参考[[ref:look]]。\n\n'
+  const interleaved = '\n\n夹层补充：腰带保持窄版。\n \n'
+  const tail = '\n\n尾部补充：袖口保持平整，参考[[ref:base]]。\n\n'
+  const ending = '\n\n收尾补充：禁止额外文字。'
+  const value = `${prefix}${style}${interleaved}${primary}${tail}${parameters}${ending}`
+  const expected = `${primary}\n\n${prefix}${interleaved}${tail}${ending}\n\n${style}\n\n${parameters}`
+  const sections = parsePromptSectionDocument(value, { sourceText: value })
+  const original = structuredClone(sections)
+  const view = await mount(value, { visualBoard: true, sectionDocument: sections })
+  try {
+    assert.equal(view.editor.state.doc.firstChild?.type.name, 'promptManagedSection')
+    assert.equal(view.editor.state.doc.firstChild?.attrs.section.name, '设定图固定要求')
+    assert.equal(promptEditorText(view.editor.getJSON()), expected)
+    assert.deepEqual([...view.container.querySelectorAll('.pc-prompt-managed-section')].map(section => section.getAttribute('data-prompt-section-name')),
+      ['设定图固定要求', '项目画风约束', '图片生成要求'])
+    assert.equal(view.container.querySelectorAll('.pc-prompt-reference').length, 2)
+    assert.equal(view.container.querySelector('.pc-prompt-supplement-heading, .pc-prompt-supplement-line'), null)
+    assert.equal(view.container.querySelectorAll('.pc-prompt-editor-content > p:not(.pc-prompt-section-spacer)').length > 0, true,
+      'historical body text remains ordinary editable prose')
+    const copied = view.editor.view.someProp('clipboardTextSerializer', serialize => serialize(view.editor.state.doc.slice(0, view.editor.state.doc.content.size), view.editor.view))
+    assert.equal(copied, expected, 'copy uses the same main, supplement and setting order as the editor')
+    assert.deepEqual(promptEditorSectionDocument(view.editor.getJSON(), sections).blocks.filter(block => block.kind === 'managed'),
+      [original.blocks.find(block => block.name === '设定图固定要求'), original.blocks.find(block => block.name === '项目画风约束'), original.blocks.find(block => block.name === '图片生成要求')])
+    assert.deepEqual(sections, original, 'opening and copying never mutate the saved legacy document')
+    assert.deepEqual(view.changes, [])
+    assert.deepEqual(view.sectionChanges, [])
+    assert.deepEqual(view.referenceChanges, [])
+
+    let position = -1
+    view.editor.state.doc.descendants((node, offset) => { if (node.isText && node.text?.startsWith('夹层补充：')) position = offset + '夹层补充：'.length })
+    assert.ok(position >= 0)
+    await act(() => view.editor.chain().setTextSelection(position).insertContent('本次确认，').run()); await settle()
+    assert.equal(view.changes.at(-1), expected.replace('夹层补充：', '夹层补充：本次确认，'))
+    assert.equal(view.editor.state.selection.from, position + '本次确认，'.length, 'the main-first parent echo keeps the caret in the edited supplement')
+    assert.equal(view.editor.state.selection.to, view.editor.state.selection.from)
+    await act(() => view.editor.commands.undo()); await settle()
+    assert.equal(promptEditorText(view.editor.getJSON()), expected)
+    assert.deepEqual(view.sectionChanges.at(-1)!.blocks.filter(block => block.kind === 'managed'),
+      [original.blocks.find(block => block.name === '设定图固定要求'), original.blocks.find(block => block.name === '项目画风约束'), original.blocks.find(block => block.name === '图片生成要求')])
+    assert.deepEqual(view.referenceChanges, [])
+  } finally { await view.destroy() }
+})
+
+test('board content edits in place without a redundant supplement field and keeps references, caret and undo', async () => {
+  const primary = '【设定图固定要求】\n人物三视图，保持服装一致。\n【设定图固定要求结束】'
+  const style = '【项目画风约束】\n保留纸张纹理。\n【项目画风约束结束】'
+  const value = `${primary}\n\n${style}`
+  const sections = parsePromptSectionDocument(value, { sourceText: value })
+  const original = structuredClone(sections.blocks.filter(block => block.kind === 'managed'))
+  const view = await mount(value, { visualBoard: true, sectionDocument: sections })
+  try {
+    const first = view.editor.state.doc.firstChild!
+    assert.equal(first.type.name, 'promptManagedSection')
+    assert.equal(view.editor.state.doc.child(1).attrs.promptBodyEntry, false)
+    assert.equal(view.container.querySelector('.pc-prompt-supplement-heading, .pc-prompt-supplement-line'), null)
+    assert.equal(promptEditorText(view.editor.getJSON()), value)
+    assert.deepEqual(view.changes, [])
+
+    let position = -1
+    view.editor.state.doc.descendants((node, offset) => { if (node.isText && node.text === '人物三视图，保持服装一致。') position = offset + node.nodeSize })
+    assert.ok(position >= 0)
+    const addition = ' 本次重点：袖口保持平整。'
+    await act(() => view.editor.chain().setTextSelection(position).insertContent(addition).run()); await settle()
+    const editedPrimary = primary.replace('保持服装一致。', `保持服装一致。${addition}`)
+    assert.equal(view.changes.at(-1), `${editedPrimary}\n\n${style}`)
+    assert.equal(view.editor.state.selection.from, position + addition.length)
+    assert.equal(view.editor.state.selection.to, position + addition.length)
+    assert.equal(view.editor.state.doc.child(1).attrs.promptBodyEntry, false)
+    assert.equal(view.sectionChanges.at(-1)!.blocks.filter(block => block.kind === 'managed').length, original.length)
+    await act(() => view.editor.commands.undo()); await settle()
+    assert.equal(promptEditorText(view.editor.getJSON()), value)
+    await act(() => view.editor.commands.redo()); await settle()
+    assert.equal(promptEditorText(view.editor.getJSON()), `${editedPrimary}\n\n${style}`)
+
+    await act(() => view.editor.view.dispatch(closeHistory(view.editor.state.tr)))
+    await act(() => view.editor.chain().setTextSelection(position + addition.length).insertContent('@雨').run())
+    assert.match(document.querySelector('[role="option"]')!.textContent!, /雨衣状态/)
+    await act(() => view.element.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))); await settle()
+    const withReference = `${editedPrimary.replace('本次重点：袖口保持平整。', '本次重点：袖口保持平整。[[ref:look]] ')}\n\n${style}`
+    assert.equal(view.changes.at(-1), withReference)
+    assert.equal(view.editor.state.selection.from, position + addition.length + 2, 'the chip and following space do not move the caret on echo')
+    assert.equal(view.editor.state.selection.to, view.editor.state.selection.from)
+    const copied = view.editor.view.someProp('clipboardTextSerializer', serialize => serialize(view.editor.state.doc.slice(0, view.editor.state.doc.content.size), view.editor.view))
+    assert.equal(copied, withReference)
+    const editedManaged = view.sectionChanges.at(-1)!.blocks.filter(block => block.kind === 'managed')
+    assert.deepEqual(editedManaged.map(block => block.id), original.map(block => block.id))
+    assert.equal(editedManaged[0]!.sourceText, original[0]!.sourceText, 'in-place edits retain the source snapshot identity')
+    assert.equal(editedManaged[1]!.text, original[1]!.text)
+    assert.deepEqual(view.referenceChanges, [])
+  } finally { await view.destroy() }
+})
+
+test('immediately clearing a board after picking a reference has a separate undo step from the reference insertion', async () => {
+  const primary = '【设定图固定要求】\n人物三视图。\n【设定图固定要求结束】'
+  const style = '【项目画风约束】\n保留纸张纹理。\n【项目画风约束结束】'
+  const supplement = '本次补充：配饰参考'
+  const value = `${primary}\n\n${supplement}\n\n${style}`
+  const sections = parsePromptSectionDocument(value, { sourceText: value })
+  const view = await mount(value, { visualBoard: true, sectionDocument: sections })
+  try {
+    let position = -1
+    view.editor.state.doc.descendants((node, offset) => { if (node.isText && node.text === supplement) position = offset + node.nodeSize })
+    assert.ok(position >= 0)
+    await act(() => view.editor.chain().setTextSelection(position).insertContent('@雨').run())
+    await act(() => view.element.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })))
+    const withReference = `${primary}\n\n${supplement}[[ref:look]] \n\n${style}`
+    assert.equal(promptEditorText(view.editor.getJSON()), withReference)
+    await act(() => view.editor.chain().selectAll().deleteSelection().run())
+    assert.equal(view.changes.at(-1), '')
+    await act(() => view.editor.commands.undo())
+    assert.equal(view.changes.at(-1), withReference, 'one undo restores the entire board including the newly selected reference')
+    assert.deepEqual(view.sectionChanges.at(-1)!.blocks.filter(block => block.kind === 'managed'), sections.blocks.filter(block => block.kind === 'managed'))
+    assert.deepEqual(view.referenceChanges, [], 'clearing and restoring the whole document keep actual image inputs')
+    await act(() => view.editor.commands.undo())
+    assert.doesNotMatch(promptEditorText(view.editor.getJSON()), /\[\[ref:look\]\]/, 'only the second undo can remove the inserted reference')
+    assert.match(promptEditorText(view.editor.getJSON()), /【设定图固定要求】\n人物三视图。/)
+  } finally { await view.destroy() }
+})
+
+test('ordinary prompt requirements stay compact without changing source metadata or clipboard content', async () => {
+  const names = ['图片生成要求', '镜头视觉设定', '图片参考图用途', '项目画风约束']
+  const value = '香炉近景，低饱和青灰夜色。\n\n' + names.map((name, index) =>
+    `【${name}】\n${index === 0 ? '画面比例：16:9，清晰度要求：4K' : '保留场景和材质细节，参考[[ref:base]]。'}\n【${name}结束】`).join('\n\n')
+  const sections = parsePromptSectionDocument(value, { sourceText: value })
+  let adjustments = 0
+  const view = await mount(value, { sectionDocument: sections, onEditParameters: () => { adjustments++ }, parameterSummary: '16:9 · 4K' })
+  try {
+    assert.equal(view.container.querySelectorAll('.pc-prompt-managed-section.is-secondary').length, 4)
+    assert.equal(view.container.querySelectorAll('.pc-prompt-managed-summary.is-inline').length, 4)
+    assert.equal(view.container.querySelectorAll('.pc-prompt-managed-origin, .pc-prompt-managed-edit-label, .pc-prompt-managed-state').length, 0)
+    for (const name of names) {
+      const block = view.container.querySelector<HTMLElement>(`[data-prompt-section-name="${name}"]`)!
+      assert.equal(block.querySelector<HTMLElement>('.pc-prompt-managed-panel')!.hidden, true)
+      assert.ok(button(`区块操作：${name}`, block))
+    }
+    await act(() => button('展开编辑：镜头视觉设定').click()); await settle()
+    assert.equal(view.container.querySelector<HTMLElement>('[data-prompt-section-name="镜头视觉设定"] .pc-prompt-managed-panel')!.hidden, false)
+    await act(() => button('收起设定：镜头视觉设定').click()); await settle()
+    await adjustParameters('图片生成要求')
+    assert.equal(adjustments, 1)
+    await act(() => button('展开编辑：图片生成要求').click()); await settle()
+    assert.equal(view.container.querySelector<HTMLElement>('[data-prompt-section-name="图片生成要求"] .pc-prompt-managed-panel')!.hidden, false)
+    assert.equal(promptEditorText(view.editor.getJSON()), value)
+    assert.deepEqual(promptEditorSectionDocument(view.editor.getJSON(), sections), sections)
+    const copied: Record<string, string> = {}
+    await act(() => view.editor.commands.selectAll())
+    const event = new dom.window.Event('copy', { bubbles: true, cancelable: true })
+    Object.defineProperty(event, 'clipboardData', { value: { clearData: () => { for (const type of Object.keys(copied)) delete copied[type] }, setData: (type: string, text: string) => { copied[type] = text } } })
+    await act(() => view.element.dispatchEvent(event))
+    assert.equal(copied['text/plain'], value, 'copy includes folded requirements without UI labels')
+    assert.deepEqual(view.changes, [])
+    assert.deepEqual(view.sectionChanges, [])
+  } finally { await view.destroy() }
+})
+
+test('board parameter requirements use the same disclosure as other rows and keep controls in the menu', async () => {
+  const primary = '【设定图固定要求】\n人物三视图。\n【设定图固定要求结束】'
+  const parameters = '【图片生成要求】\n画面比例：16:9\n清晰度要求：2K\n【图片生成要求结束】'
+  const value = `${primary}\n\n${parameters}`
+  const sections = parsePromptSectionDocument(value, { sourceText: value })
+  let adjustments = 0
+  const view = await mount(value, { visualBoard: true, sectionDocument: sections, parameterSummary: '16:9 · 2K', onEditParameters: () => { adjustments++ } })
+  try {
+    const block = view.container.querySelector<HTMLElement>('[data-prompt-section-name="图片生成要求"]')!
+    assert.ok(block.querySelector('.pc-prompt-managed-toggle'))
+    assert.ok(block.querySelector('.pc-prompt-managed-chevron'))
+    assert.equal(block.querySelector('.pc-prompt-parameter-adjust'), null)
+    assert.equal(block.querySelector('.pc-prompt-parameter-values')!.textContent, '16:9 · 2K')
+    assert.equal(block.querySelector<HTMLElement>('.pc-prompt-managed-panel')!.hidden, true)
+    await adjustParameters('图片生成要求')
+    assert.equal(adjustments, 1)
+    assert.equal(block.querySelector<HTMLElement>('.pc-prompt-managed-panel')!.hidden, true, 'the regular shortcut opens parameter controls')
+    await act(() => button('展开编辑：图片生成要求', view.container).click()); await settle()
+    assert.equal(block.querySelector<HTMLElement>('.pc-prompt-managed-panel')!.hidden, false)
+    assert.match(block.querySelector('.pc-prompt-managed-panel')!.textContent!, /比例、清晰度等以底部生成参数为准/)
+    let parameterPosition = -1
+    view.editor.state.doc.forEach((node, offset) => { if (node.type.name === 'promptManagedSection' && node.attrs.section.name === '图片生成要求') parameterPosition = offset })
+    assert.ok(parameterPosition >= 0)
+    await act(() => view.editor.chain().focus().setTextSelection(parameterPosition + 2).run()); await settle()
+    await act(() => button('收起设定：图片生成要求', view.container).click()); await settle()
+    assert.equal(block.querySelector<HTMLElement>('.pc-prompt-managed-panel')!.hidden, true)
+    const parameterNode = view.editor.state.doc.nodeAt(parameterPosition)!
+    assert.ok(!view.editor.isFocused || view.editor.state.selection.from <= parameterPosition
+      || view.editor.state.selection.from >= parameterPosition + parameterNode.nodeSize,
+    'closing advanced text keeps a focused caret outside the folded parameter section')
+    assert.equal(promptEditorText(view.editor.getJSON()), value)
+    assert.deepEqual(promptEditorSectionDocument(view.editor.getJSON(), sections), sections)
+    assert.deepEqual(view.changes, [])
+    assert.deepEqual(view.sectionChanges, [])
+  } finally { await view.destroy() }
+})
+
+test('same-document parameter updates refresh the summary, callback and read-only controls without prompt edits', async () => {
+  const primary = '【设定图固定要求】\n人物三视图。\n【设定图固定要求结束】'
+  const parameters = '【图片生成要求】\n画面比例：16:9\n清晰度要求：1K\n【图片生成要求结束】'
+  const value = `${primary}\n\n${parameters}`
+  const sections = parsePromptSectionDocument(value, { sourceText: value })
+  const container = document.createElement('div'); document.body.append(container)
+  const root = createRoot(container)
+  const changes: string[] = [], adjustments: string[] = []
+  async function render(parameterSummary: string, callbackName: string, readOnly = false) {
+    await act(() => root.render(<MantineProvider env="test"><PromptEditor value={value} sectionDocument={sections}
+      references={references} choices={choices} visualBoard parameterSummary={parameterSummary} readOnly={readOnly}
+      onEditParameters={() => { adjustments.push(callbackName) }} onChange={next => { changes.push(next) }} /></MantineProvider>))
+    await settle()
+  }
+  try {
+    await render('16:9 · 1K', 'initial')
+    const element = container.querySelector('[contenteditable]') as HTMLElement & { editor: Editor }
+    const editor = element.editor
+    const original = editor.getJSON()
+    await adjustParameters('图片生成要求')
+    assert.deepEqual(adjustments, ['initial'])
+    await render('16:9 · 4K', 'updated')
+    assert.equal(container.querySelector('.pc-prompt-parameter-values')!.textContent, '16:9 · 4K')
+    await adjustParameters('图片生成要求')
+    assert.deepEqual(adjustments, ['initial', 'updated'], 'the node view uses the latest callback with the same prompt document')
+    assert.deepEqual(editor.getJSON(), original)
+    assert.deepEqual(changes, [])
+
+    await render('16:9 · 4K', 'read-only', true)
+    assert.equal(editor.isEditable, false)
+    const adjust = await sectionMenuAction('图片生成要求', '调整参数')
+    assert.equal(adjust.disabled, true)
+    await act(() => adjust.click())
+    assert.equal(button('移除此段内容').disabled, true)
+    await act(() => button('区块操作：图片生成要求', container).click()); await settle()
+    await act(() => button('展开编辑：图片生成要求', container).click()); await settle()
+    assert.equal(container.querySelector<HTMLElement>('[data-prompt-section-name="图片生成要求"] .pc-prompt-managed-panel')!.hidden, false)
+    assert.deepEqual(adjustments, ['initial', 'updated'])
+    assert.deepEqual(editor.getJSON(), original, 'runtime UI updates leave prompt text, source snapshots and identities intact')
+    assert.deepEqual(changes, [])
+  } finally { await act(() => root.unmount()); container.remove() }
+})
+
+test('read-only and disabled boards retain comparison and full text while blocking removal and parameter changes', async t => {
+  for (const mode of ['readOnly', 'disabled'] as const) await t.test(mode, async () => {
+    const primary = '【设定图固定要求】\n人物三视图。\n【设定图固定要求结束】'
+    const parameters = '【图片生成要求】\n画面比例：16:9\n清晰度要求：2K\n【图片生成要求结束】'
+    const value = `${primary}\n\n${parameters}`
+    const sections = parsePromptSectionDocument(value, { sourceText: value })
+    let adjustments = 0
+    const view = await mount(value, { visualBoard: true, sectionDocument: sections, [mode]: true, parameterSummary: '16:9 · 2K', onEditParameters: () => { adjustments++ } })
+    try {
+      assert.equal(view.editor.isEditable, false)
+      const adjust = await sectionMenuAction('图片生成要求', '调整参数')
+      assert.equal(adjust.disabled, true)
+      await act(() => adjust.click())
+      assert.equal(adjustments, 0)
+      const remove = button('移除此段内容')
+      assert.equal(remove.disabled, true)
+      await act(() => remove.click())
+      await act(() => button('区块操作：图片生成要求', view.container).click()); await settle()
+      await act(() => button('展开编辑：图片生成要求', view.container).click()); await settle()
+      const block = view.container.querySelector<HTMLElement>('[data-prompt-section-name="图片生成要求"]')!
+      assert.equal(block.querySelector<HTMLElement>('.pc-prompt-managed-panel')!.hidden, false)
+      await act(() => button('区块操作：图片生成要求', view.container).click()); await settle()
+      await act(() => button('查看与来源的差异').click()); await settle()
+      assert.match(document.querySelector('[role="dialog"]')!.textContent!, /图片生成要求 · 内容对比/)
+      assert.match(document.querySelector('[role="dialog"]')!.textContent!, /内容未变化/)
+      assert.equal(promptEditorText(view.editor.getJSON()), value)
+      assert.deepEqual(view.changes, [])
+      assert.deepEqual(view.sectionChanges, [])
+      assert.deepEqual(view.referenceChanges, [])
+    } finally { await view.destroy() }
+  })
+})
+
+test('rendering and syncing an authoritative same-text pasted primary never revives its deleted source identity', async () => {
+  const primary = '【设定图固定要求】\n人物三视图。\n【设定图固定要求结束】'
+  const source = parsePromptSectionDocument(primary, { sourceText: primary })
+  const original = source.blocks.find(block => block.kind === 'managed')!
+  original.pendingSourceText = primary.replace('人物', '来源人物')
+  original.sourceStatus = 'source_changed'
+  const removed = { ...original, text: '', deleted: true }
+  const pasted = { id: 'pasted-primary-saved', kind: 'managed' as const, name: '设定图固定要求' as const, text: primary }
+  const saved: PromptSectionDocument = { version: 1, blocks: [removed, pasted] }
+  const loaded = await mount(primary, { sectionDocument: saved, visualBoard: true })
+  try {
+    assert.equal(loaded.container.querySelector('.pc-prompt-managed-section')!.getAttribute('data-prompt-section-id'), pasted.id)
+    assert.equal(loaded.editor.getJSON().content!.find(node => node.type === 'promptManagedSection')!.attrs!.section.sourceText, undefined)
+    await act(() => loaded.editor.commands.insertContentAt(sectionPosition(loaded.editor) + 2, '本次补充：'))
+    const next = loaded.sectionChanges.at(-1)!
+    assert.deepEqual(next.blocks.find(block => block.id === original.id), removed)
+    const active = next.blocks.find(block => block.id === pasted.id)!
+    assert.match(active.text, /本次补充：人物三视图/)
+    assert.equal(active.sourceText, undefined)
+    assert.equal(active.pendingSourceText, undefined)
+  } finally { await loaded.destroy() }
+
+  const container = document.createElement('div'); document.body.append(container)
+  const root = createRoot(container)
+  const changes: PromptSectionDocument[] = []
+  let replaceDocument: (next: PromptSectionDocument) => void = () => {}
+  function Harness() {
+    const [document, setDocument] = useState(source)
+    replaceDocument = setDocument
+    return <MantineProvider env="test"><PromptEditor value={serializePromptSectionDocument(document)} sectionDocument={document}
+      references={references} choices={choices} visualBoard onChange={(_value, next) => { if (next) { changes.push(next); setDocument(next) } }} /></MantineProvider>
+  }
+  await act(() => root.render(<Harness />)); await settle()
+  const element = container.querySelector('[contenteditable]') as HTMLElement & { editor: Editor }
+  try {
+    assert.equal(container.querySelector('.pc-prompt-managed-section')!.getAttribute('data-prompt-section-id'), original.id)
+    await act(() => replaceDocument(saved)); await settle()
+    assert.equal(container.querySelector('.pc-prompt-managed-section')!.getAttribute('data-prompt-section-id'), pasted.id,
+      'external metadata changes are respected even when the serialized prompt is identical')
+    await act(() => element.editor.commands.insertContentAt(sectionPosition(element.editor) + 2, '手动编辑：'))
+    assert.deepEqual(changes.at(-1)!.blocks.find(block => block.id === original.id), removed)
+    const active = changes.at(-1)!.blocks.find(block => block.id === pasted.id)!
+    assert.equal(active.deleted, undefined)
+    assert.equal(active.sourceText, undefined)
+    assert.equal(active.pendingSourceText, undefined)
+    await act(() => element.editor.commands.undo())
+    assert.equal(promptEditorText(element.editor.getJSON()), primary)
+    assert.deepEqual(changes.at(-1)!.blocks.find(block => block.id === original.id), removed)
+    assert.equal(changes.at(-1)!.blocks.find(block => block.id === pasted.id)!.sourceText, undefined)
+  } finally { await act(() => root.unmount()); container.remove() }
+})
+
+test('programmatic text replacement retains source metadata for existing active identities', async () => {
+  const source = '【镜头视觉设定】\n人物：蓝色校服\n场景：旧站台\n【镜头视觉设定结束】'
+  const sections = parsePromptSectionDocument(source, { sourceText: source })
+  const original = sections.blocks.find(block => block.kind === 'managed')!
+  const view = await mount(source, { sectionDocument: sections })
+  try {
+    const changed = source.replace('蓝色校服', '用户指定的深蓝外套')
+    await act(() => view.editor.chain().setMeta('promptDocumentReplace', true)
+      .setContent(promptEditorDocument(changed, references), { emitUpdate: true }).run())
+    const current = view.sectionChanges.at(-1)!.blocks.find(block => block.id === original.id)!
+    assert.equal(current.text, changed)
+    assert.equal(current.sourceText, original.sourceText)
+    assert.equal(current.deleted, undefined)
+  } finally { await view.destroy() }
 })

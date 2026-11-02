@@ -54,7 +54,14 @@ function snapshot(projectId: string, sceneIds: string[], context: Context) {
   const project = required<Project>('projects', projectId), script = context.script(projectId)
   const scenes = script.scenes.filter(scene => sceneIds.includes(scene.id))
   if (scenes.length !== sceneIds.length) fail('所选场次不存在或不属于当前项目')
-  const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position, id', projectId).filter(shot => sceneIds.includes(shot.source_scene_id || ''))
+  const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position, id', projectId).filter(shot => sceneIds.includes(shot.source_scene_id || ''))
+  const previousScenes = new Set(all<{ source_scene_id: string }>('SELECT DISTINCT source_scene_id FROM shots WHERE project_id=? AND source_scene_id IS NOT NULL', projectId).map(shot => shot.source_scene_id))
+  const sceneDesigns = sceneVisualDesignIds(projectId, sceneIds)
+  const designs = new Map(all<StoryboardDesign>('SELECT * FROM storyboard_designs WHERE project_id=?', projectId).map(design => [design.id, design]))
+  const redesignScenes = new Set(scenes.filter(scene => {
+    const designId = sceneDesigns.get(scene.id)
+    return !!designId && !designs.get(designId)?.canvas_id
+  }).map(scene => scene.id))
   const documents = projectDocuments(projectId, script).filter(document => document.content.trim())
   const style = projectVisualStyle(projectId)
   const skills = installedSkills().filter(skill => skill.enabled && skill.stages.includes('storyboard'))
@@ -81,7 +88,11 @@ function snapshot(projectId: string, sceneIds: string[], context: Context) {
     }
     return true
   }).map(scene => scene.id))
-  return { project, scenes, shots, documents, style, skills, signature, plannedScenes, sourceFingerprints, staleScenes, replanReasons, referenceBudget }
+  return { project, scenes, shots, documents, style, skills, signature, plannedScenes, sourceFingerprints, staleScenes, replanReasons, referenceBudget,
+    previousScenes, sceneDesigns, redesignScenes }
+}
+function requireAvailableCanvas(state: ReturnType<typeof snapshot>, mode: DesignMode) {
+  if (mode === 'update' && state.redesignScenes.size) fail('此方案的专属画布已删除，请选择「重新设计新方案」重新规划，确认后自动创建新画布', 409)
 }
 function validatePlan(value: z.infer<typeof draft>, state: ReturnType<typeof snapshot>, target?: number, mode: DesignMode = 'update') {
   const counts = new Map<string, number>()
@@ -110,8 +121,8 @@ function validatePlan(value: z.infer<typeof draft>, state: ReturnType<typeof sna
 }
 function canvasResult(projectId: string, sceneIds: string[], counts = { created_shots: 0, updated_shot_ids: [] as string[] }, savedShotIds?: string[]) {
   const shots = (savedShotIds
-    ? all<Shot>('SELECT * FROM shots WHERE project_id=? ORDER BY position, id', projectId).filter(shot => savedShotIds.includes(shot.id))
-    : all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position, id', projectId).filter(shot => sceneIds.includes(shot.source_scene_id || '')))
+    ? all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL ORDER BY position, id', projectId).filter(shot => savedShotIds.includes(shot.id))
+    : all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position, id', projectId).filter(shot => sceneIds.includes(shot.source_scene_id || '')))
   const shotIds = new Set(shots.map(shot => shot.id)), visuals = visualProjectData(projectId)
   const bindings = visuals.shot_visual_bindings.filter(binding => shotIds.has(binding.shot_id))
   const profileById = new Map(visuals.visual_profiles.map(profile => [profile.id, profile]))
@@ -159,6 +170,8 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
     return { signature: state.signature, reference_budget: state.referenceBudget, scenes: state.scenes.map(scene => ({ id: scene.id, heading: scene.heading, duration: scene.duration, episode_number: scene.episode_number,
       planned: state.plannedScenes.has(scene.id),
       needs_replan: state.replanReasons.has(scene.id), replan_reason: state.replanReasons.get(scene.id) || '',
+      has_previous_plan: state.previousScenes.has(scene.id) || !!state.sceneDesigns.get(scene.id),
+      requires_redesign: state.redesignScenes.has(scene.id),
       shot_count: state.shots.filter(shot => shot.source_scene_id === scene.id).length,
       canvas_shot_count: state.shots.filter(shot => shot.source_scene_id === scene.id && covered.has(shot.id)).length,
       material_count: state.shots.filter(shot => shot.source_scene_id === scene.id && shot.selected_asset_id).length })),
@@ -180,6 +193,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
     if (input.scene_ids.length > 10) fail('一次最多规划 10 个场次，请缩小范围')
     const state = snapshot(id, input.scene_ids, context)
     if (state.signature !== input.signature) fail('资料、镜头或技能配置已更新，请刷新规划资料', 409)
+    requireAvailableCanvas(state, input.mode)
     if (input.document_ids.some(id => !state.documents.some(document => document.id === id))) fail('所选参考文档不存在或不属于当前项目')
     const episodes = new Set(state.scenes.map(scene => scene.episode_number))
     const sources = state.documents.filter(document => input.document_ids.includes(document.id) ||
@@ -240,8 +254,9 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       }
       const state = snapshot(id, sceneIds, context)
       if (planSignature(state.signature, input.mode, input.instructions) !== input.signature) fail('资料、方案模式或规划要求已更新，请重新规划后保存', 409)
+      requireAvailableCanvas(state, input.mode)
       validatePlan(input, state, input.scenes.reduce((sum, scene) => sum + scene.scene_duration, 0), input.mode)
-      const existing = all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position, id', id), ordered = existing.map(shot => shot.id)
+      const existing = all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position, id', id), ordered = existing.map(shot => shot.id)
       let design: StoryboardDesign | undefined
       if (input.mode === 'redesign') {
         // Freeze inherited ranges before replacing their active boundaries.
@@ -308,7 +323,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
           const replacement = (shotId: string | null, end: boolean) => {
             const old = state.shots.find(shot => shot.id === shotId)
             if (!old) return shotId
-            const candidates = all<{ id: string }>(`SELECT id FROM shots WHERE project_id=? AND source_scene_id=? AND design_id=? AND superseded_by IS NULL ORDER BY position ${end ? 'DESC' : 'ASC'}, id`, id, old.source_scene_id, design!.id)
+            const candidates = all<{ id: string }>(`SELECT id FROM shots WHERE project_id=? AND source_scene_id=? AND design_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position ${end ? 'DESC' : 'ASC'}, id`, id, old.source_scene_id, design!.id)
             return candidates[0]?.id || null
           }
           run('UPDATE production_ranges SET start_shot_id=?, end_shot_id=? WHERE project_id=?', replacement(range.start_shot_id, false), replacement(range.end_shot_id, true), id)

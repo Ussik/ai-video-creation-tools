@@ -8,7 +8,7 @@ const imageOptions = {
 }
 type ImageParameter = keyof typeof imageOptions
 
-export function usesModelParameter(model: Model | undefined, field: string, mode?: string): boolean {
+export function usesModelParameter(model: Pick<Model, 'settings'> | undefined, field: string, mode?: string): boolean {
   if (!model) return false
   const templates = mode
     ? [(model.settings.request_templates as Record<string, unknown> | undefined)?.[mode] ?? model.settings.request_template, model.settings.content_template]
@@ -156,7 +156,7 @@ const backgroundRequirements: Record<string, string> = {
   transparent: '透明背景，仅保留主体，不要绘制棋盘格或实色背景',
 }
 
-export function imagePreferencePrompt(model: Model, prompt: string, request: {
+export function imagePreferencePrompt(model: Pick<Model, 'modality' | 'settings'>, prompt: string, request: {
   ratio: string; resolution: string | null; quality: string | null; clarity: string | null; background: string | null
 }, mode = 'text'): string {
   if (model.modality !== 'image') return prompt

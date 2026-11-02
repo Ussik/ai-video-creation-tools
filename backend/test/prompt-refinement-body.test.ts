@@ -6,6 +6,7 @@ import { after, test } from 'node:test'
 import Fastify from 'fastify'
 import { withProjectStyle } from '@video-studio/shared/visuals/visual-style'
 import { getManagedPromptBlocks, stripManagedPromptBlocks } from '@video-studio/shared/visuals/prompt-document'
+import { visualBoardPromptParts } from '@video-studio/shared/visuals/visual-board-document'
 
 const directory = await mkdtemp(join(tmpdir(), 'studio-refine-body-'))
 process.env.VIDEO_STUDIO_DATA_DIR = directory
@@ -187,19 +188,73 @@ test('legacy complete previews with bounded blocks are preserved when no explici
   assert.doesNotMatch(result.prompt, /灰褐短褂|【项目画风约束】/)
 })
 
-test('complete setting-board documents keep edited profile, base and style blocks intact', async () => {
+test('setting-board refinement incorporates main content and supplements once while preserving other sections', async () => {
   const { project, input, jiang } = await fixture()
   const blocks = [
     '【设定图固定要求】\n保留创作者定制的四视图与额外的旧木网针细节。\n【设定图固定要求结束】',
     '【基础身份参考】\n保留创作者手调的眼角疤痕和眉形。\n【基础身份参考结束】',
+    '【项目画风约束】\n画风：创作者指定的木刻。\n【项目画风约束结束】',
   ]
+  const tables = ['visual_profiles', 'shot_visual_bindings', 'canvas_nodes', 'jobs']
+  const before = tables.map(table => all(`SELECT * FROM ${table}`))
+  modelBody = '创作者定制的四视图排列清楚，包含旧木网针细节。'
   const result = await refine(project.id, { ...input, shot_id: undefined, profile_id: jiang.id, prompt_document: true,
-    prompt: `把视图排列清楚。\n\n${blocks.join('\n\n')}` })
-  assert.deepEqual(getManagedPromptBlocks(result.prompt), blocks)
+    prompt: `把视图排列清楚。\n\n${blocks.join('\n\n')}`, prompt_body: '过期的正文缓存。' })
+  const parts = visualBoardPromptParts(result.prompt)
+  assert.deepEqual(parts.primary, [modelBody])
+  assert.equal(parts.supplement, '')
+  assert.deepEqual(parts.context, blocks.slice(1))
+  assert.equal(result.prompt_body, '')
+  assert.equal(result.prompt.split(modelBody).length - 1, 1)
+  assert.match(captured, /原提示词：\n保留创作者定制的四视图与额外的旧木网针细节。\n\n把视图排列清楚。/)
+  const readonlyContext = captured.split('当前文档只读结构上下文：')[1]!.split('\n实际参考图')[0]!
+  assert.doesNotMatch(readonlyContext, /四视图|旧木网针/)
   assert.match(captured, /四视图与额外的旧木网针细节/)
   assert.match(captured, /眼角疤痕和眉形/)
-  assert.doesNotMatch(captured, /短发、灰褐短褂|正侧背与面部细节|厚涂仙侠动画/)
-  assert.doesNotMatch(result.prompt, /【镜头视觉设定】|【项目画风约束】|正侧背与面部细节/)
+  assert.doesNotMatch(captured, /短发、灰褐短褂|正侧背与面部细节|厚涂仙侠动画|过期的正文缓存/)
+  assert.doesNotMatch(result.prompt, /【镜头视觉设定】|正侧背与面部细节/)
+  assert.deepEqual(tables.map(table => all(`SELECT * FROM ${table}`)), before, 'refinement only returns a reviewable draft')
+})
+
+test('primary-only setting documents can refine without profile context or supplemental prose', async () => {
+  const { project, input } = await fixture()
+  const block = '【设定图固定要求】\n木质网针正侧背三视图，保留打磨痕迹。\n【设定图固定要求结束】'
+  const context = '【图片生成要求】\n画面比例：16:9\n清晰度要求：4K\n【图片生成要求结束】'
+  modelBody = '木质网针按正侧背三视图整齐排列，打磨痕迹清晰可见。'
+  const result = await refine(project.id, { ...input, shot_id: undefined, reference_asset_ids: [], prompt_document: true,
+    prompt: `${block}\n\n${context}` })
+  assert.deepEqual(visualBoardPromptParts(result.prompt), { primary: [modelBody], supplement: '', context: [context] })
+  assert.match(captured, /原提示词：\n木质网针正侧背三视图，保留打磨痕迹。/)
+  assert.doesNotMatch(captured, /灰褐短褂|正侧背与面部细节|厚涂仙侠动画/)
+})
+
+test('a setting profile with a removed primary refines its remaining body without restoring saved facts', async () => {
+  const { project, input, jiang } = await fixture()
+  const context = '【项目画风约束】\n画风：保留创作者木刻。\n【项目画风约束结束】'
+  modelBody = '只画一把带缺口的蓝色短尺。'
+  const result = await refine(project.id, { ...input, shot_id: undefined, profile_id: jiang.id, prompt_document: true,
+    prompt: `只画蓝色短尺。\n\n${context}` })
+  assert.equal(result.prompt, `${modelBody}\n\n${context}`)
+  assert.deepEqual(visualBoardPromptParts(result.prompt).primary, [])
+  assert.doesNotMatch(captured, /灰褐短褂|正侧背与面部细节|厚涂仙侠动画/)
+})
+
+test('ambiguous primary sections and setting documents without creative content fail before a model call', async () => {
+  const { project, input, jiang } = await fixture()
+  const before = calls
+  const primary = '【设定图固定要求】\n一张蓝色短尺三视图。\n【设定图固定要求结束】'
+  for (const [prompt, error] of [
+    [`${primary}\n\n${primary}`, /多个设定图内容/],
+    ['【项目画风约束】\n画风：木刻。\n【项目画风约束结束】', /请输入/],
+    ['【设定图固定要求】\n\n【设定图固定要求结束】', /请输入/],
+  ] as const) {
+    const response = await refineApp.inject({ method: 'POST', url: `/api/projects/${project.id}/skills/refine-prompt`, payload: {
+      ...input, shot_id: undefined, profile_id: jiang.id, prompt_document: true, prompt,
+    } })
+    assert.equal(response.statusCode, 422, response.body)
+    assert.match(response.body, error)
+  }
+  assert.equal(calls, before)
 })
 
 test('reference tokens inside preserved blocks are validated and resolved without rewriting the remaining block text', async () => {

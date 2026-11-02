@@ -1,0 +1,18 @@
+{
+  "asset": {
+    "id": "5c4d7dd414704ffaa99f7a972a8e4c57",
+    "project_id": "fd9cde8183ef4fa7a678d19168d899a8",
+    "shot_id": null,
+    "kind": "video",
+    "filename": "export-6a75a952-7e9c-43ff-95c3-7ba731d0bb4d.mp4",
+    "source": "export",
+    "model_id": null,
+    "prompt": null,
+    "created_at": "2026-11-01T07:48:04.314Z",
+    "saved": true,
+    "remote_url": null,
+    "url": "/api/assets/5c4d7dd414704ffaa99f7a972a8e4c57/file"
+  },
+  "job_id": "f9dd8397c0204d15b93f785003c7ffcc",
+  "path": "/Users/caoyanzu/workspace/ai-video-creation-tools/production/2026-11-01-nuowang-trailer/傩王_90秒预告_工作台版_新版配音.mp4"
+}

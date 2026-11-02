@@ -1,0 +1,175 @@
+{
+  "ratio": "16:9",
+  "clips": [
+    {
+      "id": "nuowang-clip-01",
+      "asset_id": "1600b6e2c2954696a0c1e2668d337f07",
+      "title": "01｜旧面初鸣",
+      "in_ms": 0,
+      "out_ms": 15000,
+      "source_audio_gain": 0.55,
+      "source_audio_fade_ms": 25
+    },
+    {
+      "id": "nuowang-clip-02",
+      "asset_id": "00cc6505a8f045b4b3d473443eeb89ed",
+      "title": "02｜少年与将军",
+      "in_ms": 0,
+      "out_ms": 15000,
+      "source_audio_gain": 0.55,
+      "source_audio_fade_ms": 25
+    },
+    {
+      "id": "nuowang-clip-03",
+      "asset_id": "ea4cab12b38a40ebb28554da923501d0",
+      "title": "03｜六十年一会",
+      "in_ms": 0,
+      "out_ms": 15000,
+      "source_audio_gain": 0.55,
+      "source_audio_fade_ms": 25
+    },
+    {
+      "id": "nuowang-clip-04",
+      "asset_id": "8be4cada2051403f81b42dfda0ca6996",
+      "title": "04｜温柔与雷威",
+      "in_ms": 0,
+      "out_ms": 15000,
+      "source_audio_gain": 0.55,
+      "source_audio_fade_ms": 25
+    },
+    {
+      "id": "nuowang-clip-05",
+      "asset_id": "5f16d18f76034f1b888ef01437a2c6b7",
+      "title": "05｜每个愿望都有归处",
+      "in_ms": 0,
+      "out_ms": 15000,
+      "source_audio_gain": 0.55,
+      "source_audio_fade_ms": 25
+    },
+    {
+      "id": "nuowang-clip-06",
+      "asset_id": "1279220def2c47858abf09cbdc1422d2",
+      "title": "06｜追上最想留住的人",
+      "in_ms": 0,
+      "out_ms": 9000,
+      "source_audio_gain": 0.55,
+      "source_audio_fade_ms": 25
+    },
+    {
+      "id": "nuowang-title",
+      "asset_id": "50842f3abefd40f185fa7d5861bde32c",
+      "title": "片名｜傩王·鼓起人间",
+      "in_ms": 0,
+      "out_ms": 6000,
+      "source_audio_gain": 0,
+      "source_audio_fade_ms": 0
+    }
+  ],
+  "speech": [
+    {
+      "id": "nuowang-speech-v1",
+      "asset_id": "a1fedb62a30543cfa4588c57768013ce",
+      "label": "有些人，看得见另一个人间。",
+      "start_ms": 2000,
+      "in_ms": 0,
+      "out_ms": 2976,
+      "gain": 1.25
+    },
+    {
+      "id": "nuowang-speech-v2",
+      "asset_id": "c74cdd7c5c1d499da84b1d4be0ffef6b",
+      "label": "一个少年。一位七百年前的将军。",
+      "start_ms": 16200,
+      "in_ms": 0,
+      "out_ms": 3216,
+      "gain": 1.25
+    },
+    {
+      "id": "nuowang-speech-v3",
+      "asset_id": "4e840284eac14667adc75768b3438580",
+      "label": "六十年一会。每个人，都想赢回自己的愿望。",
+      "start_ms": 31500,
+      "in_ms": 0,
+      "out_ms": 4920,
+      "gain": 1.25
+    },
+    {
+      "id": "nuowang-speech-v4",
+      "asset_id": "2afa8411034b423792b36aab664b1be0",
+      "label": "他最信任的人，也是他必须追上的人。",
+      "start_ms": 46000,
+      "in_ms": 0,
+      "out_ms": 3408,
+      "gain": 1.25
+    },
+    {
+      "id": "nuowang-speech-v5",
+      "asset_id": "3da01ca0509f49d5920cc96f43d27d63",
+      "label": "若要守住人间，就不能放弃任何一个回家的愿望。",
+      "start_ms": 61000,
+      "in_ms": 0,
+      "out_ms": 4488,
+      "gain": 1.25
+    },
+    {
+      "id": "nuowang-speech-v6",
+      "asset_id": "70e13ebac59c4041bb82ed48fcfbb747",
+      "label": "师兄，我想带你回家。",
+      "start_ms": 77500,
+      "in_ms": 0,
+      "out_ms": 2136,
+      "gain": 1.25
+    }
+  ],
+  "music_asset_id": "5af8ddbddfa240b19c7e3567936e8596",
+  "audio_settings": {
+    "music_gain": 1,
+    "duck_music": true,
+    "duck_source": true
+  },
+  "captions": [
+    {
+      "id": "nuowang-caption-1",
+      "start_ms": 2000,
+      "end_ms": 5830,
+      "text": "有些人，看得见另一个人间。"
+    },
+    {
+      "id": "nuowang-caption-2",
+      "start_ms": 16200,
+      "end_ms": 20840,
+      "text": "一个少年。一位七百年前的将军。"
+    },
+    {
+      "id": "nuowang-caption-3",
+      "start_ms": 31500,
+      "end_ms": 37870,
+      "text": "六十年一会。每个人，都想赢回自己的愿望。"
+    },
+    {
+      "id": "nuowang-caption-4",
+      "start_ms": 46000,
+      "end_ms": 50400,
+      "text": "他最信任的人，也是他必须追上的人。"
+    },
+    {
+      "id": "nuowang-caption-5",
+      "start_ms": 61000,
+      "end_ms": 66680,
+      "text": "若要守住人间，就不能放弃任何一个回家的愿望。"
+    },
+    {
+      "id": "nuowang-caption-6",
+      "start_ms": 77500,
+      "end_ms": 81090,
+      "text": "师兄，我想带你回家。"
+    }
+  ],
+  "id": "8eb3a92c0afe4818963cab40ffa4f2da",
+  "project_id": "fd9cde8183ef4fa7a678d19168d899a8",
+  "name": "傩王｜鼓起人间·90秒可编辑版",
+  "source_canvas_id": "db7eb557033740d2aaca5014ed8cf025",
+  "revision": 3,
+  "created_at": "2026-11-01T07:35:03.391Z",
+  "updated_at": "2026-11-01T07:44:58.677Z"
+}

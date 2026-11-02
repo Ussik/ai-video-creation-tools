@@ -44,9 +44,9 @@ export function storyboardReferenceBudgetInstructions(budget = storyboardReferen
  * by shot usage, and estimate unresolved profiles as their future single board. */
 export function storyboardReferenceBudgetIssues(projectId: string, sceneIds: string[], drafts?: ProfileDraft[], options: DraftOptions = {}): Array<{ scene_id: string; message: string }> {
   const budget = storyboardReferenceBudget()
-  const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL ORDER BY position', projectId)
+  const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position', projectId)
     .filter(shot => sceneIds.includes(shot.source_scene_id || ''))
-  const saved = all<Binding>(`SELECT b.* FROM shot_visual_bindings b JOIN shots s ON s.id=b.shot_id WHERE s.project_id=?`, projectId)
+  const saved = all<Binding>(`SELECT b.* FROM shot_visual_bindings b JOIN shots s ON s.id=b.shot_id WHERE s.project_id=? AND s.deleted_at IS NULL`, projectId)
   const profiles = all<VisualProfile>('SELECT * FROM visual_profiles WHERE project_id=?', projectId)
   const sceneBindings = all<{ scene_id: string; profile_id: string }>(`SELECT b.* FROM scene_visual_bindings b
     JOIN script_scenes s ON s.id=b.scene_id WHERE s.project_id=?`, projectId)

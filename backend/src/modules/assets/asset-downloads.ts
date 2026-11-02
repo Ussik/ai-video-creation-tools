@@ -30,7 +30,7 @@ async function downloadFiles(projectId: string, assetIds: string[]): Promise<Dow
   required<Project>('projects', projectId)
   const files: DownloadFile[] = []
   for (const assetId of assetIds) {
-    const asset = one<Asset>('SELECT * FROM assets WHERE id=? AND project_id=?', assetId, projectId)
+    const asset = one<Asset>('SELECT * FROM assets WHERE id=? AND project_id=? AND deleted_at IS NULL', assetId, projectId)
     if (!asset) fail('选中的素材不存在或不属于当前项目，请刷新后重试', 404)
     try {
       const file = await open(asset.path, 'r')

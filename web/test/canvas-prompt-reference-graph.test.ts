@@ -16,6 +16,7 @@ function fixture() {
     visual_profiles: [{ id: 'profile', name: '角色', variant: '战损', revision: 2, board_asset_id: 'board', reference_assets: [
       { asset_id: 'face', status: 'confirmed' }, { asset_id: 'candidate', status: 'candidate' }] },
     { id: 'base-profile', name: '角色', variant: '基础', board_asset_id: 'base' }],
+    shots: [{ id: 'shot' }], historical_shots: [],
     shot_visual_bindings: [{ shot_id: 'shot', profile_id: 'profile', name: '角色', variant: '战损', revision: 2, required: true, board_asset_id: 'board',
       reference_assets: [{ asset_id: 'face', view: 'face', purpose: 'identity', label: '面部' }, { asset_id: 'side', view: 'side', purpose: 'costume', label: '衣服' },
         { asset_id: 'back', view: 'back', purpose: 'costume', label: '' }] }], jobs: [] } as unknown as ProjectDetail
@@ -52,6 +53,21 @@ test('selection snapshots use confirmed profile images but create fixed media fo
   assert.equal(fixed.settings.visual_profile_id, undefined)
   assert.ok(fixed.x < f.target.x)
   assert.equal(candidate.edges[0].source, fixed.id)
+})
+
+test('restored reference media retains its historical owner without attaching recycled shots to new nodes', () => {
+  const f = fixture()
+  f.detail.historical_shots = [{ ...f.detail.shots[0], id: 'historical-shot' }]
+  for (const shotId of ['shot', 'historical-shot', 'recycled-shot']) {
+    const asset = { ...f.detail.assets[0], id: `reference-${shotId}`, shot_id: shotId }
+    f.detail.assets.push(asset)
+    const before = structuredClone(f.detail)
+    const graph = materializePromptReference(f.graph, 'target', asset.id, f.detail, f.options)
+    const node = graph.nodes.at(-1)!
+    assert.equal(node.asset_id, asset.id)
+    assert.equal(node.shot_id, shotId === 'recycled-shot' ? null : shotId)
+    assert.deepEqual(f.detail, before, 'resource ownership and history stay unchanged')
+  }
 })
 
 test('an existing single-image unpinned edge becomes fixed; preferred valid source wins', () => {

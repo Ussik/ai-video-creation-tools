@@ -32,6 +32,8 @@ export interface CanvasVideoModeMenuProps {
 }
 
 export interface CanvasGenerationParametersProps {
+  opened?: boolean
+  onOpenedChange?: (opened: boolean) => void
   modality: 'image' | 'video'
   ratios: string[]
   ratio: string
@@ -140,8 +142,11 @@ const videoResolutionLabel = (value: string) => /^4k$/i.test(value) ? '4K' : val
 export function CanvasGenerationParameters({ modality, ratios, ratio, resolutions, resolution, clarities = [], clarity = '', duration, editDuration,
   minDuration, maxDuration, durationOptions, showDuration, audioSupported, generateAudio, count,
   ratioFollowsSource = false, durationFollowsSource = false, draftSupported = false, draft = false,
-  qualities = [], quality = '', backgrounds = [], background = '', onChange, onCountChange }: CanvasGenerationParametersProps) {
-  const [opened, setOpened] = useState(false)
+  qualities = [], quality = '', backgrounds = [], background = '', onChange, onCountChange,
+  opened: controlledOpened, onOpenedChange }: CanvasGenerationParametersProps) {
+  const [localOpened, setLocalOpened] = useState(false)
+  const opened = controlledOpened ?? localOpened
+  const setOpened = (next: boolean) => { setLocalOpened(next); onOpenedChange?.(next) }
   const [triggerNode, setTriggerNode] = useState<HTMLButtonElement | null>(null)
   const [dropdownNode, setDropdownNode] = useState<HTMLDivElement | null>(null)
   // Canvas controls stop event bubbling. Capture outside presses before those
@@ -199,7 +204,7 @@ export function CanvasGenerationParameters({ modality, ratios, ratio, resolution
     <Popover.Target>
       <UnstyledButton ref={setTriggerNode} type="button" className="pc-generation-control pc-generation-parameters-trigger nodrag nowheel" data-canvas-overlay
         aria-label={`生成参数：${summary}${audioEnabled ? generateAudio ? '，声音开启' : '，声音关闭' : ''}`}
-        aria-expanded={opened} aria-haspopup="dialog" {...overlayEvents} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') setOpened(false) }} onClick={event => { event.stopPropagation(); setOpened(value => !value) }}>
+        aria-expanded={opened} aria-haspopup="dialog" {...overlayEvents} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') setOpened(false) }} onClick={event => { event.stopPropagation(); setOpened(!opened) }}>
         <SlidersHorizontal size={15} /><span>{summary}</span>
         {audioEnabled && (generateAudio ? <Volume2 size={15} /> : <VolumeX size={15} />)}<ChevronDown size={13} />
       </UnstyledButton>

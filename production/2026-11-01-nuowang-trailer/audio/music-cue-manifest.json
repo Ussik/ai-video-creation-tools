@@ -1,0 +1,62 @@
+{
+  "duration_seconds": 90.0,
+  "sample_rate": 48000,
+  "channels": 2,
+  "bits": 16,
+  "original_composition": true,
+  "samples_used": false,
+  "integrated_loudness_lufs": -22,
+  "true_peak_dbfs": -6.67,
+  "loudness_range_lu": 7.2,
+  "sections": [
+    {
+      "start": 0,
+      "end": 15,
+      "description": "Low gong, distant wooden drums, airy tension"
+    },
+    {
+      "start": 15,
+      "end": 30,
+      "description": "Intimate original pentatonic plucked-string theme"
+    },
+    {
+      "start": 30,
+      "end": 55,
+      "description": "Ritual percussion and restrained low-string build"
+    },
+    {
+      "start": 55,
+      "end": 70,
+      "description": "Thunder pulses and widening harmonic tension"
+    },
+    {
+      "start": 70,
+      "end": 84,
+      "description": "Interlocking drums, returning motif, rising climax"
+    },
+    {
+      "start": 84,
+      "end": 90,
+      "description": "Title impact and resolving tail"
+    }
+  ],
+  "normalization": {
+    "input_i": "-24.20",
+    "input_tp": "-5.00",
+    "input_lra": "9.70",
+    "input_thresh": "-34.47",
+    "output_i": "-20.33",
+    "output_tp": "-5.00",
+    "output_lra": "7.20",
+    "output_thresh": "-30.47",
+    "normalization_type": "dynamic",
+    "target_offset": "-1.67"
+  },
+  "final_gain_correction_db": -1.67,
+  "independently_verified": {
+    "integrated_lufs": -22.0,
+    "true_peak_dbfs": -6.7,
+    "loudness_range_lu": 7.4,
+    "duration_seconds": 90.0
+  }
+}

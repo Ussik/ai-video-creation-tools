@@ -6,6 +6,7 @@ import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
 import type { Asset, Job, Model, ProjectDetail } from '../src/shared/api/api'
 import type { CanvasGraph, CanvasNode, ProjectCanvasProps } from '../src/features/canvas/ProjectCanvas'
+import type { ShotManagementSnapshot } from '@video-studio/shared/storyboard/shot-management'
 
 // Render the actual canvas and composer; only CSS and HTTP transport are mocked.
 register(`data:text/javascript,${encodeURIComponent(`
@@ -148,14 +149,16 @@ async function settle() {
     }
   })
 }
-async function mount(detail: ProjectDetail, nodeId = 'image-node') {
+async function mount(detail: ProjectDetail, nodeId = 'image-node', refresh?: () => Promise<ProjectDetail>) {
   dom.window.localStorage.clear(); dom.window.sessionStorage.clear(); frames.clear()
   dom.window.localStorage.setItem(`project-canvas-viewport:${projectId}`, JSON.stringify({ x: 0, y: 0, zoom: 0.8 }))
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container)
   const props: ProjectCanvasProps = { detail, models: [imageModel, videoModel],
     providers: [{ id: 'provider', name: '本地测试', adapter: 'http', enabled: true } as ProjectCanvasProps['providers'][number]],
-    initialLocation: { view: 'canvas', storyboardId: null }, onRefresh: async () => {}, onOpenModels() {}, onNavigate() {}, onOpenScriptCreator() {} }
+    initialLocation: { view: 'canvas', storyboardId: null }, onRefresh: async () => {
+      if (refresh) { props.detail = await refresh(); render() }
+    }, onOpenModels() {}, onNavigate() {}, onOpenScriptCreator() {} }
   const render = () => root.render(<MantineProvider env="test"><ProjectCanvas {...props} /></MantineProvider>)
   try {
     await act(render); await settle()
@@ -405,5 +408,99 @@ test('video candidate management and full-screen playback pause underlying playe
     await act(() => document.querySelector<HTMLButtonElement>('[aria-label="关闭视频候选"]')!.click()); await settle()
     assert.equal(selectedVideo(view.container), '/api/assets/final-video/file', 'closing the manager restores the selected node player')
     assert.ok(videoStrip(view.container))
+  } finally { await view.destroy() }
+})
+
+for (const field of ['prompt', 'title'] as const) test(`managed ${field} changes adopt the server canvas revision before later imports and canvas edits`, async t => {
+  const initial = fixture()
+  let serverDetail = structuredClone(initial.detail), serverGraph = structuredClone(initial.graph)
+  serverDetail.shots = serverDetail.shots.map(shot => ({ ...shot, image_prompt: '', video_prompt: '', storyboard_revision: 0 }))
+  let revision = 0, managementRevision = 0
+  const conflicts: string[] = [], saved: CanvasGraph[] = [], requests: string[] = []
+  const snapshot = (): ShotManagementSnapshot => ({ revision: String(managementRevision).padStart(64, '0'),
+    shots: serverDetail.shots.map(shot => ({ shot: structuredClone(shot), design_name: '默认方案',
+      canvas_refs: serverGraph.nodes.some(node => node.shot_id === shot.id) ? [{ id: projectId, name: '画布 1' }] : [],
+      asset_count: serverDetail.assets.filter(asset => asset.shot_id === shot.id).length, deleted_at: null, delete_blockers: [] })),
+    designs: [], canvases: [{ id: projectId, name: '画布 1' }], scenes: [], trashed_assets: [] })
+  t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
+    const path = String(url), method = init?.method || 'GET'
+    requests.push(`${method} ${path}`)
+    if (path === `/api/projects/${projectId}/canvases`) return Response.json([{ id: projectId, project_id: projectId,
+      name: '画布 1', is_default: true, node_count: serverGraph.nodes.length, viewport: null }])
+    if (path === `/api/projects/${projectId}/skills/defaults`) return Response.json({ policies: [] })
+    if (path === `/api/projects/${projectId}`) return Response.json(serverDetail)
+    if (path === `/api/projects/${projectId}/shot-management`) return Response.json(snapshot())
+    if (path === `/api/projects/${projectId}/shot-management/actions`) {
+      const input = JSON.parse(String(init?.body))
+      assert.equal(input.revision, snapshot().revision)
+      const shot = serverDetail.shots.find(shot => shot.id === input.shot_id)!
+      const prior = structuredClone(shot)
+      Object.assign(shot, input.patch)
+      if (field === 'prompt') {
+        shot.storyboard_revision = (prior.storyboard_revision || 0) + 1
+        shot.selected_asset_id = null
+        serverDetail.timeline_clips = serverDetail.timeline_clips.filter(clip => clip.shot_id !== shot.id)
+        serverGraph.nodes = serverGraph.nodes.map(node => node.type === 'generation' && node.shot_id === shot.id
+          ? { ...node, title: shot.title, prompt: shot.prompt, text: '', asset_id: null, job_id: null,
+            settings: { ...node.settings, storyboard_revision: shot.storyboard_revision, duration: shot.duration,
+              storyboard_reference_asset_id: undefined, generation_completed_job_id: undefined } } : node)
+        serverGraph.edges = []
+      } else serverGraph.nodes = serverGraph.nodes.map(node => node.type === 'generation' && node.shot_id === shot.id
+        ? { ...node, title: shot.title } : node)
+      serverGraph.revision = `management-${++managementRevision}`
+      return Response.json(snapshot())
+    }
+    assert.equal(path, `/api/projects/${projectId}/canvas`, 'management integration cannot submit generation')
+    if (method === 'PUT') {
+      const input = JSON.parse(String(init?.body)) as CanvasGraph
+      const badStoryboard = input.nodes.some(node => node.type === 'generation' && node.shot_id
+        && (node.settings.storyboard_revision || 0) !== (serverDetail.shots.find(shot => shot.id === node.shot_id)?.storyboard_revision || 0))
+      if (input.revision !== serverGraph.revision || badStoryboard) {
+        conflicts.push(`${input.revision} against ${serverGraph.revision}`)
+        return Response.json({ detail: '画布已在其他位置修改，请刷新后重试' }, { status: 409 })
+      }
+      serverGraph = { ...input, revision: `saved-${++revision}` }
+      saved.push(structuredClone(serverGraph))
+    }
+    return Response.json(serverGraph)
+  })
+  const view = await mount(serverDetail, 'image-node', async () => structuredClone(serverDetail))
+  const click = async (label: string) => {
+    const button = [...document.querySelectorAll<HTMLButtonElement>('button, [role="menuitem"]')]
+      .find(node => node.getAttribute('aria-label') === label || node.textContent === label)
+    assert.ok(button, label); await act(async () => { button.click() }); await settle()
+  }
+  try {
+    await click('切换创作页面'); await click('分镜管理')
+    await click('编辑镜头：站台回望')
+    const label = [...document.querySelectorAll<HTMLLabelElement>('.shot-manager-fields label')]
+      .find(node => node.textContent?.replace(' *', '') === (field === 'prompt' ? '镜头描述' : '镜头标题'))!
+    assert.ok(label)
+    const input = document.getElementById(label.htmlFor) as HTMLInputElement | HTMLTextAreaElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(field === 'prompt' ? dom.window.HTMLTextAreaElement.prototype : dom.window.HTMLInputElement.prototype, 'value')!
+        .set!.call(input, field === 'prompt' ? '镜头从站台推进到人物眼神' : '站台回望新版标题')
+      input.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+    })
+    await click('保存修改')
+    assert.equal(managementRevision, 1)
+    assert.ok(requests.filter(request => request === `GET /api/projects/${projectId}/canvas`).length >= 2,
+      'management changes read the saved graph before applying fresh shot props')
+    assert.deepEqual(conflicts, [])
+    assert.equal(document.querySelector('.pc-conflict'), null)
+    assert.equal(document.querySelector('.shot-manager-error'), null)
+    const select = document.querySelector<HTMLInputElement>('input[aria-label="选择镜头：另一镜头"]')!
+    await act(async () => { select.click() }); await settle(); await click('加入画布')
+    assert.ok(serverGraph.nodes.some(node => node.type === 'generation' && node.shot_id === 'other-shot'))
+    assert.deepEqual(conflicts, [], 'import uses the adopted revision')
+    await click('关闭分镜管理'); await click('添加文本')
+    await click('切换创作页面'); await click('分镜管理')
+    assert.ok(saved.at(-1)!.nodes.some(node => node.type === 'text'), 'later local edits persist through the normal leave/flush path')
+    assert.deepEqual(conflicts, [], 'continued editing cannot save the stale pre-management graph')
+    const image = serverGraph.nodes.find(node => node.id === 'image-node')!
+    assert.equal(image.title, serverDetail.shots[0].title)
+    assert.equal(image.settings.storyboard_revision || 0, field === 'prompt' ? 1 : 0)
+    assert.equal(image.asset_id, field === 'prompt' ? null : 'latest', 'metadata edits retain the existing output')
+    assert.equal(document.querySelectorAll('.project-canvas').length, 1)
   } finally { await view.destroy() }
 })

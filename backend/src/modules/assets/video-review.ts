@@ -37,14 +37,14 @@ function fail(message: string, statusCode = 422): never { throw Object.assign(ne
 
 function projectVideo(projectId: string, assetId: string): Asset {
   required('projects', projectId)
-  const asset = one<Asset>("SELECT * FROM assets WHERE id=? AND project_id=? AND kind='video'", assetId, projectId)
+  const asset = one<Asset>("SELECT * FROM assets WHERE id=? AND project_id=? AND deleted_at IS NULL AND kind='video'", assetId, projectId)
   return asset || fail('请选择当前项目的视频素材')
 }
 function associatedShot(projectId: string, asset: Asset, shotId?: string | null): Shot | undefined {
   if (shotId && asset.shot_id && asset.shot_id !== shotId) fail('该视频属于另一个分镜，请使用素材所属镜头复核')
   const id = shotId || asset.shot_id
   if (!id) return undefined
-  return one<Shot>('SELECT * FROM shots WHERE id=? AND project_id=?', id, projectId) || fail('分镜不属于当前项目')
+  return one<Shot>('SELECT * FROM shots WHERE id=? AND project_id=? AND deleted_at IS NULL', id, projectId) || fail('分镜不属于当前项目')
 }
 async function signature(asset: Asset, shot: Shot | undefined): Promise<string> {
   let media: unknown

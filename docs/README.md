@@ -30,6 +30,7 @@
 | 文档 | 用途 |
 | --- | --- |
 | [项目多画布](project-canvases.md) | 普通画布、独立方案、资源共享与成片范围 |
+| [分镜管理与画布清理](shot-management.md) | 分镜编辑、排序、复制、回收恢复、批量加入画布和删除保护 |
 | [多节点画布性能](canvas-performance.md) | 可视区渲染、媒体预览、选择和动画策略 |
 | [节点上下文与资源续读](canvas-node-context-and-resource-reads.md) | 节点配置加入导演草稿、超长快照及大型档案/分镜的有界续读 |
 | [导演节点修改方案](canvas-node-proposals.md) | 调整要求、完整差异预览、确认新建独立生成草稿与撤销 |

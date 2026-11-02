@@ -502,6 +502,55 @@ test('deleted design canvases cannot silently fall back on import or commit repl
   assert.equal(all('SELECT * FROM storyboard_designs WHERE project_id=?', f.project.id).length, 1)
   assert.equal(all('SELECT * FROM shots WHERE project_id=?', f.project.id).length, 1)
 })
+test('recycled shots retain replanning history and deleted design canvases recover through one new canvas', async t => {
+  for (const recycle of [false, true]) await t.test(recycle ? 'recycled current shots' : 'retained current shots', async t => {
+    let sceneId = ''
+    const f = await setup(t, async () => JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(null, 30)] }] }))
+    sceneId = f.scene.id
+    const initial = await f.context()
+    assert.equal(initial.scenes[0].has_previous_plan, false)
+    assert.equal(initial.scenes[0].requires_redesign, false)
+    const first = await f.invoke('plan', { scene_ids: [sceneId], signature: initial.signature, model_id: 'mock-text', mode: 'redesign' })
+    const original = await f.invoke('commit', { signature: first.signature, mode: first.mode, request_id: crypto.randomUUID(),
+      scenes: first.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene) })
+    if (recycle) run('UPDATE shots SET deleted_at=? WHERE id=?', now(), original.shots[0].id)
+    const beforeDeletion = await f.context()
+    assert.equal(beforeDeletion.scenes[0].has_previous_plan, true)
+    assert.equal(beforeDeletion.scenes[0].requires_redesign, false)
+    assert.equal(beforeDeletion.scenes[0].shot_count, recycle ? 0 : 1)
+    const unselectedBefore = one('SELECT * FROM script_scenes WHERE id=?', f.other.id)
+    run('DELETE FROM project_canvases WHERE id=?', original.target_canvas_id)
+    const context = await f.context()
+    assert.equal(context.scenes[0].has_previous_plan, true)
+    assert.equal(context.scenes[0].requires_redesign, true)
+    assert.equal(context.existing_shots.length, recycle ? 0 : 1)
+    const before = storyboardFormalState(f.project.id), calls = f.calls()
+    const rejected = await f.invoke('plan', { scene_ids: [sceneId], signature: context.signature, model_id: 'mock-text', mode: 'update' }, 409)
+    assert.match(rejected.message, /重新设计/)
+    assert.equal(f.calls(), calls, 'reject a deleted target before invoking the model')
+    await f.invoke('commit', { signature: beforeDeletion.signature, mode: 'update', request_id: crypto.randomUUID(),
+      scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(recycle ? null : original.shots[0].id, 30)] }] }, 409)
+    assert.deepEqual(storyboardFormalState(f.project.id), before, 'a stale update must not partially write shots or designs')
+    const fresh = await f.invoke('plan', { scene_ids: [sceneId], signature: context.signature, model_id: 'mock-text', mode: 'redesign' })
+    const request = { signature: fresh.signature, mode: fresh.mode, request_id: crypto.randomUUID(),
+      scenes: fresh.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene) }
+    const saved = await f.invoke('commit', request)
+    assert.notEqual(saved.design_id, original.design_id)
+    assert.notEqual(saved.target_canvas_id, original.target_canvas_id)
+    assert.ok(one('SELECT 1 FROM project_canvases WHERE id=?', saved.target_canvas_id))
+    assert.equal(!!one<any>('SELECT deleted_at FROM shots WHERE id=?', original.shots[0].id)!.deleted_at, recycle)
+    assert.deepEqual(one('SELECT * FROM script_scenes WHERE id=?', f.other.id), unselectedBefore)
+    await f.prepareReferences()
+    const imported = await f.invoke('canvas', { scene_ids: [sceneId], mode: 'existing' })
+    assert.equal(imported.target_canvas_id, saved.target_canvas_id)
+    const replay = await f.invoke('commit', request)
+    assert.equal(replay.replayed, true)
+    assert.equal(replay.target_canvas_id, saved.target_canvas_id)
+    assert.equal(all('SELECT id FROM storyboard_designs WHERE project_id=?', f.project.id).length, 2)
+    assert.equal((await f.context()).scenes[0].requires_redesign, false)
+  })
+})
+
 function skill(name: string, rule: string) {
   const installed = installSkillBundle({ repo: 'qa/storyboard', path: name, name, description: name, license: 'MIT', revision: 'a'.repeat(40),
     tool_requirements: [], suggested_stages: ['storyboard'], url: '', files: [{ path: `${name}/SKILL.md`, content: `---\nname: ${name}\ndescription: 分镜规则\n---\n${rule}` }] })

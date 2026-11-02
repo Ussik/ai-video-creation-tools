@@ -1,0 +1,14 @@
+.canvas-deletion-modal { max-height: calc(100dvh - 2rem); display: flex; flex-direction: column; }
+.canvas-deletion-modal .mantine-Modal-header { flex: none; }
+.canvas-deletion-body { min-height: 0; overflow: hidden; display: flex; flex-direction: column; padding-top: .5rem; }
+.canvas-deletion-content { min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: grid; gap: 1rem; }
+.canvas-deletion-summary { margin: 0; color: var(--fc-text-secondary); line-height: 1.7; }
+.canvas-deletion-summary strong { color: var(--fc-text); font-variant-numeric: tabular-nums; }
+.canvas-deletion-options { display: grid; gap: .8rem; padding: 1rem; border: 1px solid var(--fc-border); border-radius: .6rem; }
+.canvas-deletion-items { margin: -.3rem 0 .2rem 1.65rem; padding-left: 1rem; max-height: 7rem; overflow-y: auto; color: var(--fc-text-muted); font-size: .8rem; line-height: 1.65; overflow-wrap: anywhere; }
+.canvas-deletion-preserved { padding: .9rem 1rem; background: var(--fc-surface-hover); border-radius: .6rem; color: var(--fc-text-secondary); font-size: .85rem; line-height: 1.65; }
+.canvas-deletion-preserved strong { color: var(--fc-text); font-weight: 600; }
+.canvas-deletion-preserved p { margin: .35rem 0 0; }
+.canvas-deletion-loading { display: flex; align-items: center; justify-content: center; gap: .65rem; min-height: 8rem; color: var(--fc-text-muted); }
+.canvas-deletion-actions { flex: none; display: flex; justify-content: flex-end; flex-wrap: wrap; gap: .6rem; padding-top: 1.1rem; }
+@media (max-width: 520px) { .canvas-deletion-modal { max-height: calc(100dvh - 1rem); } .canvas-deletion-options, .canvas-deletion-preserved { padding: .8rem; } }

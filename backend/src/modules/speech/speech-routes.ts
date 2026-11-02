@@ -78,7 +78,7 @@ function project(id: string): void { required('projects', id) }
 function linePublic(line: Line) {
   const takes = all<Take>('SELECT * FROM speech_takes WHERE line_id=? ORDER BY created_at DESC, rowid DESC', line.id).map(take => {
     const job = take.job_id ? one<Job>('SELECT * FROM jobs WHERE id=?', take.job_id) : null
-    const asset = take.asset_id ? one<Asset>('SELECT * FROM assets WHERE id=?', take.asset_id) : null
+    const asset = take.asset_id ? one<Asset>('SELECT * FROM assets WHERE id=? AND deleted_at IS NULL', take.asset_id) : null
     const settings = JSON.parse(take.settings) as SpeechSnapshot
     return { id: take.id, line_id: take.line_id, job_id: take.job_id, asset_id: take.asset_id, text: take.text,
       speaker: settings.speaker, instructions: settings.instructions || '', context_text: settings.context_text || '', speech_rate: settings.speech_rate || 0,
@@ -233,7 +233,7 @@ export function registerSpeechRoutes(app: FastifyInstance, deps: {touchProject: 
     const {projectId,lineId} = request.params; scopedLine(projectId,lineId)
     const {asset_id} = z.object({asset_id:z.string().min(1)}).strict().parse(request.body)
     const take = one<Take>('SELECT * FROM speech_takes WHERE project_id=? AND line_id=? AND asset_id=?',projectId,lineId,asset_id)
-    const asset = one<Asset>('SELECT * FROM assets WHERE id=? AND project_id=? AND kind=\'audio\'',asset_id,projectId)
+    const asset = one<Asset>('SELECT * FROM assets WHERE id=? AND project_id=? AND deleted_at IS NULL AND kind=\'audio\'',asset_id,projectId)
     const job = take?.job_id ? one<Job>('SELECT * FROM jobs WHERE id=?',take.job_id) : null
     if (!take || !asset || (job && job.status !== 'succeeded')) fail('请选择当前台词已完成的音频候选')
     run('UPDATE speech_lines SET selected_asset_id=?,updated_at=? WHERE id=?',asset_id,now(),lineId)

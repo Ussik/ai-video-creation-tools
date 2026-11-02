@@ -6,8 +6,11 @@ import { Archive, ArchiveRestore, Check, Crop, ImagePlus, Plus, Sparkles, Star }
 import { visualReferenceAssetsApi } from '../../shared/api/api'
 import type { Model, ProjectDetail, Provider, VisualProfile, VisualReferenceAsset, VisualReferenceCrop, VisualReferencePreview, VisualReferencePreviewInput, VisualReferencePurpose, VisualReferenceView } from '../../shared/api/api'
 import { visualReferencePurposeLabels, visualReferenceViewLabels } from '@video-studio/shared/visuals/visual-reference-types'
+import { effectiveVisualStyleOrigin, isEffectiveVisualStyle, type ProjectVisualStyle } from '@video-studio/shared/visuals/visual-style'
 import { generationCost, imageGenerationDefaults, imageRatioError, imageRatios, imageRequestResolution, modelDefaultResolution } from '../canvas/canvas-model-parameters'
+import { visualJobRequest } from '../canvas/canvas-visual-profiles'
 import { preferredModel } from '../models/model-defaults'
+import { visualAssetStyleWarning } from './visual-asset-style'
 import './visual-reference-assets.css'
 
 type Props = {
@@ -34,6 +37,19 @@ export function referenceCropFromPoints(start: { x: number; y: number }, end: { 
 }
 export function referenceAssetNeedsReview(reference: VisualReferenceAsset, profile: VisualProfile, styleVersion?: string): boolean {
   return reference.revision !== profile.revision || !styleVersion || reference.style_version !== styleVersion
+}
+
+/** Match the server's exception for an explicit review of a generated override. */
+function referenceSourceAllowsStyleReview(reference: VisualReferenceAsset, detail: ProjectDetail): boolean {
+  const source = detail.jobs.find(job => job.id === reference.source_job_id)
+  if (!source) return false
+  const request = visualJobRequest(source), snapshot = request.project_visual_style as ProjectVisualStyle | undefined
+  const origin = typeof request.prompt === 'string' && snapshot && typeof snapshot.version === 'string'
+    && typeof snapshot.label === 'string' && ['settings', 'confirmed_context', 'unspecified'].includes(snapshot.source)
+    && snapshot.details && typeof snapshot.details === 'object' ? effectiveVisualStyleOrigin(request.prompt, snapshot)
+    : isEffectiveVisualStyle(request.effective_visual_style) ? request.effective_visual_style.origin
+      : request.prompt_document === true ? 'unknown' : undefined
+  return origin === 'custom' || origin === 'removed' || origin === 'unknown'
 }
 
 function viewLabel(view: VisualReferenceView, kind: VisualProfile['kind']) {
@@ -80,6 +96,7 @@ export default function VisualReferenceAssets({ profile, detail, models, provide
   const dragging = useRef<{ pointer: number; start: { x: number; y: number } } | null>(null)
   const styleVersion = detail.project_visual_style?.version
   const references = profile.reference_assets || []
+  const styleDetail = { ...detail, visual_profiles: [...(detail.visual_profiles || []).filter(item => item.id !== profile.id), profile] }
   const archived = references.filter(item => item.status === 'archived')
   const visible = references.filter(item => (item.status === 'archived') === showArchived)
   const imageModels = models.filter(model => model.enabled && model.modality === 'image'
@@ -175,21 +192,31 @@ export default function VisualReferenceAssets({ profile, detail, models, provide
         }}><img src={asset.url} alt={asset.filename} loading="lazy" /><span>{asset.id === profile.board_asset_id ? '已确认信息图' : asset.filename}</span>{selected && <Check size={13} />}</UnstyledButton>
     })}{!assets.length && <p>暂无项目图片。先生成或上传一张设定图，再添加独立参考。</p>}</div>
   }
-  function referenceRow(reference: VisualReferenceAsset) {
+  function referenceReview(reference: VisualReferenceAsset, index: number) {
+    const oldRevision = reference.revision !== profile.revision
+    const styleMismatch = !styleVersion || reference.style_version !== styleVersion
+    const blockedStyle = styleMismatch && !referenceSourceAllowsStyleReview(reference, detail)
+    const warning = visualAssetStyleWarning(styleDetail, reference.asset_id, index, [], profile.id)
+    return { oldRevision, styleMismatch, blockedStyle, warning }
+  }
+  function referenceRow(reference: VisualReferenceAsset, index: number) {
     const asset = detail.assets.find(item => item.id === reference.asset_id)
-    const stale = referenceAssetNeedsReview(reference, profile, styleVersion)
-    const usable = !stale && !!asset
+    const { oldRevision, styleMismatch, blockedStyle, warning } = referenceReview(reference, index)
+    const canConfirm = !oldRevision && !blockedStyle && !!asset
+    const usable = canConfirm && !styleMismatch && !warning
+    const needsConfirmation = reference.status === 'candidate' || reference.status === 'confirmed' && !!warning
     const caption = reference.label || viewLabel(reference.view, profile.kind)
     return <li className="pc-reference-asset" key={reference.id}>
       {asset ? <a className="pc-reference-asset-thumb" href={asset.url} target="_blank" rel="noreferrer" aria-label={`查看独立参考图：${caption}`}><img src={asset.url} alt={caption} loading="lazy" /></a>
         : <span className="pc-reference-asset-thumb">图片缺失</span>}
       <div className="pc-reference-asset-copy"><strong>{caption}</strong><span>{viewLabel(reference.view, profile.kind)} · {visualReferencePurposeLabels[reference.purpose]}</span>
-        <small className={stale ? 'pc-reference-review-needed' : ''}>v{reference.revision} · {stale ? reference.revision !== profile.revision ? '旧版设定 · 需复核' : '画风已变化 · 需复核' : !asset ? '图片缺失' : reference.status === 'confirmed' ? reference.is_default ? '已确认 · 默认参考' : '已确认' : reference.status === 'archived' ? '已归档' : '候选待确认'}</small>
+        <small className={oldRevision || blockedStyle || warning ? 'pc-reference-review-needed' : ''}>v{reference.revision} · {oldRevision ? '旧版设定 · 需重新制作' : blockedStyle ? '旧版画风 · 需重新制作' : !asset ? '图片缺失' : warning ? '画风待核对' : reference.status === 'confirmed' ? reference.is_default ? '已确认 · 默认参考' : '已确认' : reference.status === 'archived' ? '已归档' : '候选待确认'}</small>
+        {warning && !oldRevision && !blockedStyle && <small className="pc-reference-review-needed">{warning.replace(/^参考图 \d+/, '此参考图')}确认不会重绘图片。</small>}
       </div>
       <div className="pc-reference-asset-actions">
-        {reference.status === 'candidate' && <Tooltip label={usable ? '核对并确认参考图' : '版本或画风已变化，请重新制作'}><ActionIcon variant="subtle" aria-label={`确认参考图：${caption}`} disabled={locked || !usable} onClick={() => void update(reference, { status: 'confirmed' })}><Check size={14} /></ActionIcon></Tooltip>}
+        {needsConfirmation && <Tooltip label={canConfirm ? warning ? '核对当前图片画风后确认使用' : '核对并确认参考图' : '版本或画风已变化，请重新制作'}><ActionIcon variant="subtle" aria-label={`${reference.status === 'confirmed' ? '重新确认' : '确认'}参考图：${caption}`} disabled={locked || !canConfirm} onClick={() => void update(reference, { status: 'confirmed' })}><Check size={14} /></ActionIcon></Tooltip>}
         {reference.status === 'confirmed' && <Tooltip label={reference.is_default ? '取消默认参考' : '设为此视角的默认参考'}><ActionIcon variant="subtle" aria-label={`${reference.is_default ? '取消默认' : '设为默认'}参考：${caption}`} disabled={locked || !usable} onClick={() => void update(reference, { is_default: !reference.is_default })}><Star size={14} fill={reference.is_default ? 'currentColor' : 'none'} /></ActionIcon></Tooltip>}
-        <Tooltip label={reference.status === 'archived' ? stale ? '旧版本仅保留归档，重新制作后可使用' : '恢复为候选' : '归档参考图'}><ActionIcon variant="subtle" aria-label={`${reference.status === 'archived' ? '恢复' : '归档'}参考图：${caption}`} disabled={locked || reference.status === 'archived' && stale} onClick={() => void update(reference, { status: reference.status === 'archived' ? 'candidate' : 'archived' })}>{reference.status === 'archived' ? <ArchiveRestore size={14} /> : <Archive size={14} />}</ActionIcon></Tooltip>
+        <Tooltip label={reference.status === 'archived' ? oldRevision || blockedStyle ? '旧版本仅保留归档，重新制作后可使用' : '恢复为候选，核对后再确认' : '归档参考图'}><ActionIcon variant="subtle" aria-label={`${reference.status === 'archived' ? '恢复' : '归档'}参考图：${caption}`} disabled={locked || reference.status === 'archived' && (oldRevision || blockedStyle)} onClick={() => void update(reference, { status: reference.status === 'archived' ? 'candidate' : 'archived' })}>{reference.status === 'archived' ? <ArchiveRestore size={14} /> : <Archive size={14} />}</ActionIcon></Tooltip>
       </div>
     </li>
   }
@@ -211,7 +238,7 @@ export default function VisualReferenceAssets({ profile, detail, models, provide
     </WorkspaceDisclosure>}
     {!!archived.length && <UnstyledButton type="button" className="pc-reference-archive-toggle" aria-pressed={showArchived} disabled={busy} onClick={() => setShowArchived(value => !value)}>{showArchived ? '返回候选与已确认' : `已归档 · ${archived.length}`}</UnstyledButton>}
     {!!visible.length && <ul className="pc-reference-asset-list">{visible.map(referenceRow)}</ul>}
-    {visible.some(reference => referenceAssetNeedsReview(reference, profile, styleVersion)) && <p className="pc-reference-assets-help">旧设定或旧画风的参考图需依据当前设定重新制作，确认后才可用于当前版本。</p>}
+    {visible.some((reference, index) => { const review = referenceReview(reference, index); return review.oldRevision || review.blockedStyle || !!review.warning }) && <p className="pc-reference-assets-help">旧版设定或旧版项目画风需重新制作；自定义画风、移除画风约束或来源不明的图片，可逐张核对后确认使用。</p>}
     {!visible.length && <p className="pc-reference-assets-empty">{showArchived ? '暂无归档参考图' : '尚未添加独立参考图'}</p>}
     {notice && <p className="pc-reference-assets-help" role="status">{notice}</p>}
     {error && !open && <p className="pc-visual-error" role="alert">{error}</p>}

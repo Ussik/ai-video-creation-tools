@@ -39,7 +39,7 @@ async function check(label: string) {
   const element = [...document.querySelectorAll<HTMLLabelElement>('label')].find(node => node.textContent === label)
   assert.ok(element, label); await act(async () => element.click())
 }
-async function choosePlanningMode(label: '重新设计新方案' | '沿用当前方案更新') {
+async function choosePlanningMode(label: '复用已保存分镜' | '重新设计新方案' | '沿用当前方案更新') {
   const input = document.querySelector<HTMLInputElement>('input[aria-label="分镜规划方式"]')
   assert.ok(input)
   await act(() => input.click())
@@ -440,6 +440,15 @@ test('saved professional plans can be previewed and reused without a model or a 
     assert.equal(button('确认加入画布').disabled, false)
     const field = document.querySelector<HTMLTextAreaElement>('.storyboard-planner-preview textarea')!
     assert.ok(field.readOnly); assert.equal(field.value, savedShot.prompt)
+    await act(() => button('规划设置').click())
+    assert.equal(document.querySelectorAll('input[aria-label="分镜规划方式"]').length, 1)
+    assert.equal(document.querySelector<HTMLInputElement>('input[aria-label="分镜规划方式"]')!.value, '复用已保存分镜')
+    assert.equal([...document.querySelectorAll('label')].some(node => node.textContent === '重新规划已有分镜'), false)
+    await choosePlanningMode('重新设计新方案')
+    assert.equal(button('开始规划').disabled, true, 'redesign still requires a text model')
+    await choosePlanningMode('复用已保存分镜')
+    assert.equal(button('确认加入画布').disabled, false)
+    assert.equal(requests.length, 1, 'switching the single mode control never calls a model')
     await act(async () => button('确认加入画布').click())
     assert.equal(opened, 1)
     assert.deepEqual(requests.map(request => request.path.split('/').at(-1)), ['context', 'check', 'canvas'])
@@ -465,7 +474,7 @@ test('mixed scope only plans missing scenes and imports both new and saved plans
   try {
     assert.equal(document.querySelector<HTMLInputElement>('input[aria-label="选择场次：已有场次"]')!.checked, false)
     await act(() => document.querySelector<HTMLInputElement>('input[aria-label="选择场次：已有场次"]')!.click())
-    await choosePlanningMode('沿用当前方案更新')
+    await choosePlanningMode('复用已保存分镜')
     await act(async () => button('开始规划').click())
     const plannedRequest = requests.find(request => request.path.endsWith('/plan'))!
     assert.deepEqual(plannedRequest.body.scene_ids, ['scene']); assert.equal(plannedRequest.body.signature, subsetSignature)
@@ -493,7 +502,6 @@ test('replanning passes updated shot identities to the canvas even when refresh 
   const view = await mount({ project, initialSceneIds: [savedScene.id], refresh: async () => { if (++refreshes === 1) throw new Error('刷新失败') } })
   try {
     await act(() => button('规划设置').click())
-    await check('重新规划已有分镜')
     await choosePlanningMode('沿用当前方案更新')
     await act(async () => button('开始规划').click())
     await act(async () => button('确认加入画布').click())
@@ -526,7 +534,8 @@ test('redesign defaults to fresh shots and a dedicated canvas while retries keep
   const view = await mount({ project, initialSceneIds: [savedScene.id], refresh: async () => { if (++refreshes === 1) throw new Error('刷新失败') } })
   try {
     await act(() => button('规划设置').click())
-    await check('重新规划已有分镜')
+    assert.equal(document.querySelector<HTMLInputElement>('input[aria-label="分镜规划方式"]')!.value, '复用已保存分镜')
+    await choosePlanningMode('重新设计新方案')
     assert.equal(document.querySelector<HTMLInputElement>('input[aria-label="分镜规划方式"]')!.value, '重新设计新方案')
     await fillTextarea('导演要求', freshDraft.instructions)
     await check('指定本次总时长（源场次合计 30 秒）')
@@ -555,13 +564,62 @@ test('redesign defaults to fresh shots and a dedicated canvas while retries keep
   } finally { await view.destroy() }
 })
 
+test('recycled shots and deleted canvases keep redesign available and confirmation opens the newly created canvas', async t => {
+  for (const scenario of [
+    { shotCount: 0, missingCanvas: false, mixed: false },
+    { shotCount: 0, missingCanvas: true, mixed: false },
+    { shotCount: 1, missingCanvas: true, mixed: false },
+    { shotCount: 0, missingCanvas: true, mixed: true },
+  ]) await t.test(JSON.stringify(scenario), async t => {
+    const requests: Array<{ path: string; body: any }> = []
+    const sourceScenes = scenario.mixed ? [scene, savedScene] : [scene]
+    let opened = 0
+    t.mock.method(globalThis, 'fetch', async (url, init) => {
+      const path = String(url), body = JSON.parse(String(init?.body)); requests.push({ path, body })
+      if (path.endsWith('/context')) return Response.json({ ...context, scenes: [{ ...scene, planned: scenario.shotCount > 0,
+        shot_count: scenario.shotCount, material_count: 0, has_previous_plan: true, requires_redesign: scenario.missingCanvas },
+        ...(scenario.mixed ? [{ ...savedScene, planned: false, shot_count: 0, material_count: 0 }] : [])],
+        existing_shots: scenario.shotCount ? [{ ...draft.scenes[0].shots[0], shot_id: 'old-shot', scene_id: scene.id }] : [] })
+      if (path.endsWith('/plan')) return Response.json({ ...draft, mode: 'redesign', scenes: sourceScenes.map(source => ({ ...draft.scenes[0], scene_id: source.id, scene_heading: source.heading })) })
+      if (path.endsWith('/storyboard/commit')) return Response.json({ ...emptyCanvas, design_id: 'recovery-design', target_canvas_id: 'recovery-canvas' })
+      if (path.endsWith('/check')) return Response.json({ signature, scene_ids: [scene.id], needs_analysis: [] })
+      if (path.endsWith('/storyboard/canvas')) return Response.json({ ...emptyCanvas, design_id: 'recovery-design', target_canvas_id: 'recovery-canvas' })
+      throw new Error(`Unexpected ${path}`)
+    })
+    const view = await mount({ openCanvas: () => opened++, initialSceneIds: sourceScenes.map(source => source.id),
+      project: { ...detail, script: { ...detail.script, scenes: sourceScenes } } as ProjectDetail })
+    try {
+      assert.equal(requests.length, 1, 'opening recovery must not call a model or save')
+      assert.equal(button('规划设置').getAttribute('aria-current'), 'step')
+      assert.equal(document.querySelector<HTMLInputElement>('input[aria-label="分镜规划方式"]')?.value, '重新设计新方案')
+      const disclosure = document.querySelector<HTMLButtonElement>('.storyboard-planner-disclosure:last-child button.workspace-disclosure-control')
+      assert.ok(disclosure)
+      await act(() => disclosure.click())
+      assert.equal([...document.querySelectorAll('label')].some(node => node.textContent === '重新规划已有分镜'), false)
+      assert.match(disclosure.textContent!, /时长设置/)
+      if (scenario.missingCanvas) assert.match(document.body.textContent!, /画布已删除[\s\S]*确认后自动创建新画布/)
+      await act(async () => button('开始规划').click())
+      assert.equal(requests.find(request => request.path.endsWith('/plan'))!.body.mode, 'redesign')
+      assert.deepEqual(requests.find(request => request.path.endsWith('/plan'))!.body.scene_ids, sourceScenes.map(source => source.id))
+      assert.equal(requests.some(request => request.path.endsWith('/storyboard/commit')), false)
+      await act(async () => button('确认加入画布').click())
+      assert.equal(requests.find(request => request.path.endsWith('/storyboard/commit'))!.body.mode, 'redesign')
+      assert.equal(opened, 1)
+      const handoff = JSON.parse(dom.window.sessionStorage.getItem('script-canvas-open:planner')!)
+      assert.equal(handoff.canvas_id, 'recovery-canvas')
+      assert.equal(handoff.result.design_id, 'recovery-design')
+    } finally { await view.destroy() }
+  })
+})
+
 test('redesign covers the entire selected scope and changing its mode invalidates the preview', async t => {
   const requests: any[] = []
   t.mock.method(globalThis, 'fetch', async (url, init) => {
     if (String(url).endsWith('/context')) return Response.json({ ...context, scenes: [...context.scenes, { ...savedScene, shot_count: 2, material_count: 1, planned: true }], existing_shots: [savedShot] })
     if (String(url).endsWith('/plan')) {
       requests.push(JSON.parse(String(init?.body)))
-      return Response.json({ ...draft, mode: 'redesign', scenes: [draft.scenes[0], { ...draft.scenes[0], scene_id: savedScene.id }] })
+      return Response.json({ ...draft, mode: requests.at(-1).mode, scenes: [draft.scenes[0], { ...draft.scenes[0], scene_id: savedScene.id,
+        shots: requests.at(-1).mode === 'update' ? [savedShot] : draft.scenes[0].shots }] })
     }
     throw new Error(`Unexpected ${url}`)
   })
@@ -576,6 +634,9 @@ test('redesign covers the entire selected scope and changing its mode invalidate
     assert.equal(document.querySelector('.storyboard-planner-preview'), null)
     assert.ok(button('开始规划'))
     assert.equal(document.querySelector<HTMLButtonElement>('button[aria-label="分镜预览"]')!.disabled, true)
+    await act(async () => button('开始规划').click())
+    assert.equal(requests[1].mode, 'update')
+    assert.deepEqual(requests[1].scene_ids, [scene.id, savedScene.id], 'explicit update replans the full selection through the same control')
   } finally { await view.destroy() }
 })
 
@@ -714,7 +775,7 @@ test('a failed reference draft save resumes the saved new design without recreat
   const view = await mount({ openCanvas: () => opened++ })
   try {
     await act(() => button('规划设置').click())
-    await check('重新规划已有分镜')
+    await choosePlanningMode('重新设计新方案')
     await act(async () => button('开始规划').click())
     await act(async () => button('确认加入画布').click())
     assert.match(document.querySelector('[role="alert"]')!.textContent!, /分镜已保存.*视觉草稿的设计方案/)

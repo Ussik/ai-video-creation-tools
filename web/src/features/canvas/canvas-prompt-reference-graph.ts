@@ -10,6 +10,7 @@ import { visualProfileBaseReadiness } from '../visuals/visual-profile-inheritanc
 import { promptReferenceBindings } from './canvas-prompt-references'
 import { resolveCanvasVisualBoardReferences } from './canvas-visual-board-references'
 import { rewriteCanvasPromptSections } from './canvas-prompt-composition'
+import { allProjectShots } from './canvas-design-scope'
 
 export type PromptReferenceSource = {
   assetId: string
@@ -101,7 +102,8 @@ export function materializePromptReference(graph: CanvasGraph, targetId: string,
     sourceId = freshId(next, 'node', options)
     const node: CanvasNode = { id: sourceId, type: 'image', x: target.x - 380, y: target.y,
       width: 300, height: 240, title: asset.filename || '参考图片', text: '', prompt: '', asset_id: asset.id,
-      shot_id: asset.shot_id || null, model_id: null, job_id: null, settings: {} }
+      shot_id: allProjectShots(detail).some(shot => shot.id === asset.shot_id) ? asset.shot_id : null,
+      model_id: null, job_id: null, settings: {} }
     next = { ...next, nodes: [...next.nodes, node] }
   }
   const edge = { id: freshId(next, 'edge', options), source: sourceId, target: targetId, reference_asset_id: assetId }
@@ -200,7 +202,7 @@ export function freezeLegacyPromptReferenceDrafts(graph: CanvasGraph, detail: Pr
   const needsMigration = (node: CanvasNode) => node.type !== 'text' && node.type !== 'image_analysis' && node.type !== 'video_analysis' && [
     node.settings.prompt_is_final ? node.text : undefined,
     node.settings.prompt_body, node.settings.profile_prompt_override, node.settings.prompt_template,
-    ...(node.settings.prompt_sections?.blocks || []).flatMap(block => [block.text, block.sourceText, block.pendingSourceText]),
+    ...(node.settings.prompt_sections?.blocks || []).flatMap(block => [block.text, block.sourceText, block.pendingSourceText, block.mergeBaseText]),
   ].some(value => value && legacyNumber.test(value))
   if (!graph.nodes.some(needsMigration)) return graph
   const assets = new Map(detail.assets.map(asset => [asset.id, asset]))

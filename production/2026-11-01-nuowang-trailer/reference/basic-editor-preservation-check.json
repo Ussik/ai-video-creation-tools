@@ -1,0 +1,70 @@
+{
+  "checked_at": "2026-11-01T07:49:09.292Z",
+  "unchanged": {
+    "name": true,
+    "brief": true,
+    "ratio": true,
+    "music_asset_id": true,
+    "script": true,
+    "audio_settings": true,
+    "project_visual_style": true,
+    "visual_profiles": true,
+    "timeline_clips": true,
+    "production_range": true,
+    "speech": true,
+    "shots": true,
+    "assets": true,
+    "asset_reviews": true,
+    "asset_tasks": true,
+    "scene_visual_bindings": true,
+    "shot_visual_bindings": true
+  },
+  "canvases": [
+    {
+      "id": "fd9cde8183ef4fa7a678d19168d899a8",
+      "name": "画布 1",
+      "unchanged": true
+    },
+    {
+      "id": "9b464a86b3af4029bd10329695d4dc86",
+      "name": "分镜方案 3",
+      "unchanged": true
+    },
+    {
+      "id": "db7eb557033740d2aaca5014ed8cf025",
+      "name": "傩王｜90秒预告·鼓起人间",
+      "unchanged": true
+    }
+  ],
+  "baseline": {
+    "shots": 19,
+    "assets": 85
+  },
+  "new_assets": [
+    {
+      "id": "5c4d7dd414704ffaa99f7a972a8e4c57",
+      "kind": "video",
+      "source": "export"
+    },
+    {
+      "id": "5a7aebb9ae8a47528566366ee7bceff8",
+      "kind": "video",
+      "source": "export"
+    },
+    {
+      "id": "50842f3abefd40f185fa7d5861bde32c",
+      "kind": "image",
+      "source": "upload"
+    }
+  ],
+  "export_jobs": [
+    {
+      "id": "f9dd8397c0204d15b93f785003c7ffcc",
+      "status": "succeeded"
+    },
+    {
+      "id": "78898a332f4d498e897767762f28256d",
+      "status": "succeeded"
+    }
+  ]
+}

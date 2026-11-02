@@ -86,6 +86,38 @@ test('legacy media inherits its asset shot, no compatible model stays unselected
   assert.throws(() => createImageVideoHandoff(f.graph, { ...f.source, asset_id: 'missing' }, f.detail, f.models, f.fresh, 'edge'), /选择一张/)
 })
 
+test('restored media makes usable video handoffs while its owner remains recycled', () => {
+  const f = connectionFixture()
+  f.detail.shots = []
+  const source = { ...f.source, type: 'image' as const, shot_id: null, job_id: null }
+  const graph = { ...f.graph, nodes: [source, f.target] }
+  const before = structuredClone(f.detail)
+  const created = createImageVideoHandoff(graph, source, f.detail, f.models, f.fresh, 'created-edge')
+  assert.equal(created.graph.nodes.at(-1)!.shot_id, null)
+  assert.equal(created.graph.nodes.at(-1)!.settings.storyboard_reference_asset_id, 'chosen')
+  const connected = connectImageVideoHandoff(graph, imageVideoConnection(source, f.target, f.detail, f.models)!, f.detail, f.models, 'connected-edge')
+  assert.equal(connected.nodes[1].shot_id, null)
+  assert.equal(connected.edges[0].reference_asset_id, 'chosen')
+  assert.deepEqual(f.detail, before)
+})
+
+test('video handoffs retain live historical shot ownership, prompt and revision', () => {
+  const f = connectionFixture()
+  const historical = { ...f.detail.shots[0], storyboard_revision: 3 }
+  f.detail.shots = []
+  f.detail.historical_shots = [historical]
+  const source = { ...f.source, type: 'image' as const, shot_id: null, job_id: null }
+  const graph = { ...f.graph, nodes: [source, f.target] }
+  const created = createImageVideoHandoff(graph, source, f.detail, f.models, f.fresh, 'created-edge').graph.nodes.at(-1)!
+  assert.equal(created.shot_id, historical.id)
+  assert.equal(created.prompt, historical.video_prompt)
+  assert.equal(created.settings.storyboard_revision, 3)
+  const connected = connectImageVideoHandoff(graph, imageVideoConnection(source, f.target, f.detail, f.models)!, f.detail, f.models, 'connected-edge').nodes[1]
+  assert.equal(connected.shot_id, historical.id)
+  assert.equal(connected.prompt, historical.video_prompt)
+  assert.equal(connected.settings.storyboard_revision, 3)
+})
+
 function connectionFixture() {
   const f = fixture()
   const target = { ...f.fresh, title: '已有视频节点', shot_id: null, model_id: 'unsupported', prompt: '', text: '', asset_id: null, job_id: null,

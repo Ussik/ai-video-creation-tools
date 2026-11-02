@@ -31,7 +31,7 @@ export function findSubmission<S extends SubmissionScope>(projectId: string, sco
     throw Object.assign(new Error('此提交标识已用于不同内容，请找回原任务；主动重新生成须使用新的提交标识'), { statusCode: 409 })
   }
   const table = scope === 'generation' ? 'jobs' : 'shots'
-  const resource = one<SubmissionResource<S>>(`SELECT * FROM ${table} WHERE id=? AND project_id=?`, entry.resource_id, projectId)
+  const resource = one<SubmissionResource<S>>(`SELECT * FROM ${table} WHERE id=? AND project_id=?${scope === 'shot' ? ' AND deleted_at IS NULL' : ''}`, entry.resource_id, projectId)
   // Keep the key after a resource is deleted: it must never create another task.
   if (!resource) throw Object.assign(new Error('此提交已被接受，但对应记录已删除，无法再次提交；请刷新项目'), { statusCode: 409 })
   return resource

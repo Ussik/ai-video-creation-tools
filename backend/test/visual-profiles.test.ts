@@ -8,6 +8,8 @@ import sharp from 'sharp'
 import Fastify from 'fastify'
 import { rightApiImageSettings } from '../src/infrastructure/providers/rightapi-image-settings.js'
 import { visualGenerationPrompt, type PromptVisualBinding } from '@video-studio/shared/visuals/visual-prompt'
+import { stripManagedPromptBlocks } from '@video-studio/shared/visuals/prompt-document'
+import { visualBoardPromptParts } from '@video-studio/shared/visuals/visual-board-document'
 
 const testData = await mkdtemp(join(tmpdir(), 'visual-profiles-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
@@ -31,6 +33,56 @@ async function setup() {
   const data = await call<Visuals>('POST', `/api/projects/${project.id}/visual-profiles`, { profiles: [draft] })
   return { project, scene, draft, profile: data.visual_profiles[0]! }
 }
+
+test('source-backed setting boards need no boilerplate body and retain a primary-only document on submission', async () => {
+  const { project, profile } = await setup(), supported = await model()
+  assert.equal(stripManagedPromptBlocks(profile.board_prompt), '')
+  assert.equal(visualBoardPromptParts(profile.board_prompt).primary.length, 1)
+  assert.doesNotMatch(profile.board_prompt, /按照已保存的视觉设定与视图要求/)
+  const defaults = await call<{ prompt: string }>('POST', `/api/visual-profiles/${profile.id}/board-preview`, { model_id: supported.id })
+  assert.equal(stripManagedPromptBlocks(defaults.prompt), '')
+  assert.match(defaults.prompt, /黑色齐耳短发、深绿雨衣/)
+
+  const primary = '【设定图固定要求】\n只画创作者修改后的蓝色网针，正侧两视图。\n【设定图固定要求结束】'
+  const style = '【项目画风约束】\n画风：创作者水墨。\n【项目画风约束结束】'
+  const prompt = `${primary}\n\n${style}`
+  const input = { model_id: supported.id, expected_revision: profile.revision, prompt_override: prompt, prompt_document: true }
+  const preview = await call<{ prompt: string; reference_signature: string }>('POST', `/api/visual-profiles/${profile.id}/board-preview`, input)
+  assert.equal(preview.prompt, prompt)
+  assert.doesNotMatch(preview.prompt, /深绿雨衣/)
+  const generated = await call<{ job: { request: string } }>('POST', `/api/visual-profiles/${profile.id}/generate`, { ...input,
+    prompt, reference_signature: preview.reference_signature, ratio: '16:9', resolution: null, quality: null, clarity: null, background: null })
+  assert.equal(JSON.parse(generated.job.request).prompt, prompt)
+  assert.equal(one<{ definition: string }>('SELECT definition FROM visual_profiles WHERE id=?', profile.id)?.definition, profile.definition)
+  assert.equal(all('SELECT * FROM shots WHERE project_id=?', project.id).length, 0)
+})
+
+test('a full setting document without creative content is rejected without restoring saved profile requirements', async () => {
+  const { project, profile } = await setup(), supported = await model()
+  const url = `/api/visual-profiles/${profile.id}/board-preview`
+  for (const prompt of [undefined,
+    '【项目画风约束】\n画风：水墨。\n【项目画风约束结束】',
+    '【图片生成要求】\n画面比例：16:9\n【图片生成要求结束】',
+    '【设定图固定要求】\n\n【设定图固定要求结束】',
+    '【基础身份参考】\n只使用已选身份图。\n【基础身份参考结束】',
+  ]) {
+    const response = await app.inject({ method: 'POST', url, payload: { model_id: supported.id, prompt_document: true,
+      ...(prompt === undefined ? {} : { prompt_override: prompt }) } })
+    assert.equal(response.statusCode, 422, response.body)
+    assert.match(response.body, /请输入设定图内容或补充要求/)
+  }
+  const bodyOnly = await call<{ prompt: string }>('POST', url, { model_id: supported.id, prompt_document: true,
+    prompt_override: '只画创作者的蓝色网针，保持空白背景。' })
+  assert.equal(bodyOnly.prompt, '只画创作者的蓝色网针，保持空白背景。')
+  const sectionOnlyAppend = await app.inject({ method: 'POST', url, payload: { model_id: supported.id, prompt_document: true,
+    prompt_append: '【项目画风约束】\n画风：水墨。\n【项目画风约束结束】' } })
+  assert.equal(sectionOnlyAppend.statusCode, 422, sectionOnlyAppend.body)
+  const legacyAppend = await app.inject({ method: 'POST', url, payload: { model_id: supported.id, prompt_document: true,
+    prompt_append: '旧稿中缓存的三视图要求。' } })
+  assert.equal(legacyAppend.statusCode, 422, 'an absent full document cannot fall back to a legacy supplement')
+  assert.equal(all('SELECT * FROM jobs WHERE project_id=?', project.id).length, 0)
+  assert.equal(all('SELECT * FROM asset_tasks WHERE project_id=?', project.id).length, 0)
+})
 function image(projectId: string, id: string) {
   run(`INSERT INTO assets (id, project_id, kind, filename, path, source, created_at) VALUES (?, ?, 'image', 'board.png', '/tmp/board.png', 'upload', ?)`, id, projectId, now())
 }

@@ -1,0 +1,12 @@
+{
+  "path": "/Users/caoyanzu/workspace/ai-video-creation-tools/production/2026-11-01-nuowang-trailer/傩王_90秒预告_工作台版_新版配音.mp4",
+  "bytes": 24359331,
+  "duration": "00:01:30.00",
+  "streams": [
+    "Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1280x720 [SAR 1:1 DAR 16:9], 2032 kb/s, 24 fps, 24 tbr, 12288 tbn (default)",
+    "Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 127 kb/s (default)"
+  ],
+  "full_decode_ok": true,
+  "decode_errors": "",
+  "loudness": "Integrated loudness:\n    I:         -20.1 LUFS\n    Threshold: -30.5 LUFS\n\n  Loudness range:\n    LRA:         8.1 LU\n    Threshold: -40.4 LUFS\n    LRA low:   -25.7 LUFS\n    LRA high:  -17.6 LUFS\n\n  True peak:\n    Peak:       -3.9 dBFS"
+}

@@ -57,6 +57,32 @@ function button(panel: HTMLElement, group: string, label: string) {
   return found
 }
 
+test('an external parameter shortcut controls the same popover as its footer trigger', async () => {
+  const container = document.createElement('div'); document.body.append(container)
+  const root = createRoot(container)
+  const changes: unknown[] = []
+  function Harness() {
+    const [opened, setOpened] = useState(false), [ratio, setRatio] = useState('1:1')
+    return <MantineProvider env="test"><button onClick={() => setOpened(true)}>调整参数</button>
+      <CanvasGenerationParameters {...defaults} ratios={['1:1', '16:9']} ratio={ratio} opened={opened} onOpenedChange={setOpened}
+        onChange={patch => { changes.push(patch); if (patch.ratio) setRatio(patch.ratio) }} /></MantineProvider>
+  }
+  try {
+    await act(() => root.render(<Harness />))
+    await act(() => container.querySelector<HTMLButtonElement>('button')!.click())
+    assert.equal(document.querySelectorAll('[role="dialog"][aria-label="生成参数"]').length, 1)
+    const panel = document.querySelector<HTMLElement>('[role="dialog"]')!
+    await act(() => button(panel, '比例', '16:9').click())
+    assert.deepEqual(changes, [{ ratio: '16:9' }])
+    const footer = container.querySelector<HTMLButtonElement>('.pc-generation-parameters-trigger')!
+    assert.match(footer.textContent!, /16:9/)
+    await act(() => footer.click())
+    assert.equal(document.querySelector('[role="dialog"]'), null)
+    await act(() => footer.click())
+    assert.equal(document.querySelectorAll('[role="dialog"]').length, 1)
+  } finally { await act(() => root.unmount()); container.remove() }
+})
+
 test('provider generation duration is displayed separately from the planned edit duration', async () => {
   const view = await mount({ modality: 'video', duration: 4, editDuration: 2, minDuration: 4, maxDuration: 15, showDuration: true })
   try {

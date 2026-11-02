@@ -10,6 +10,7 @@ import { canvasJobMatchesStoryboard, storyboardRevision } from './canvas-storybo
 import { applyImageVideoContext, imageVideoContentSignature, imageVideoSourceContext,
   type ImageVideoSourceContext } from './canvas-image-video-context'
 import { materializePromptReference } from './canvas-prompt-reference-graph'
+import { allProjectShots } from './canvas-design-scope'
 export { pinnedCanvasReference } from './canvas-reference-snapshot'
 
 function imageAsset(source: CanvasNode, detail: ProjectDetail) {
@@ -31,11 +32,12 @@ function multiReferenceModel(models: Model[], selectedId?: string | null) {
   return compatible.find(model => model.id === selectedId) || preferredModel(compatible)
 }
 
-function sourceShotId(source: CanvasNode, asset: Asset) {
+function sourceShotId(source: CanvasNode, asset: Asset, detail: ProjectDetail) {
   if (source.shot_id && asset.shot_id && source.shot_id !== asset.shot_id) {
     throw new Error('分镜节点与所选图片属于不同镜头，请重新选择对应的分镜图')
   }
-  return source.shot_id || asset.shot_id || null
+  const shotId = source.shot_id || asset.shot_id || null
+  return allProjectShots(detail).some(shot => shot.id === shotId) ? shotId : null
 }
 
 function hasShotVisualBindings(detail: ProjectDetail, shotId: string | null) {
@@ -88,7 +90,7 @@ function automaticVideo(graph: CanvasGraph, node: CanvasNode, detail: ProjectDet
   if (settings.prompt_override || settings.prompt_is_final || settings.prompt_document || settings.prompt_sections
     || settings.prompt_body !== undefined || node.text.trim() || Object.keys(settings.prompt_reference_overrides || {}).length
     || settings.excluded_visual_profile_ids?.length || settings.video_reference_usages?.length) return false
-  const shot = detail.shots.find(shot => shot.id === node.shot_id)
+  const shot = allProjectShots(detail).find(shot => shot.id === node.shot_id)
   if (node.prompt.trim() && (!shot || node.prompt !== shotVideoPrompt(shot))) return false
   return !graph.edges.some(edge => edge.target === node.id && edge.source !== sourceId)
 }
@@ -106,7 +108,7 @@ function inheritImageContext(graph: CanvasGraph, node: CanvasNode, source: Canva
   if (!context.customized && node.settings.image_video_handoff) {
     const { prompt_override, prompt_is_final, prompt_document, prompt_sections, prompt_body, prompt_base, prompt_template,
       prompt_reference_overrides, excluded_visual_profile_ids, ...settings } = node.settings
-    const shot = detail.shots.find(shot => shot.id === node.shot_id)
+    const shot = allProjectShots(detail).find(shot => shot.id === node.shot_id)
     baseline = { ...node, text: '', prompt: shotVideoPrompt(shot || { prompt: source.prompt || asset.prompt || source.title }), settings }
   }
   const applied = applyImageVideoContext(baseline, context, detail, models)
@@ -122,12 +124,12 @@ export function connectImageVideoHandoff(graph: CanvasGraph, connection: NonNull
   detail: ProjectDetail, models: Model[], edgeId: string) {
   const { source, asset } = connection
   const target = graph.nodes.find(node => node.id === connection.target.id) || connection.target
-  const sourceId = sourceShotId(source, asset)
+  const sourceId = sourceShotId(source, asset, detail)
   if (target.shot_id && sourceId && target.shot_id !== sourceId) {
     throw new Error('视频节点与分镜图属于不同镜头，请连接对应镜头的视频节点')
   }
   const shotId = target.shot_id || sourceId
-  const shot = detail.shots.find(shot => shot.id === shotId)
+  const shot = allProjectShots(detail).find(shot => shot.id === shotId)
   const revision = storyboardRevision(shot?.storyboard_revision)
   const existing = graph.edges.find(edge => edge.source === source.id && edge.target === target.id)
   // Adding a second composition/reference is not a request to replace the
@@ -190,7 +192,7 @@ export function createImageVideoHandoff(graph: CanvasGraph, source: CanvasNode, 
   if (source.settings.visual_profile_id) throw new Error('设定信息图不能直接作为分镜首帧，请先生成分镜图')
   const asset = imageAsset(source, detail)
   if (!asset) throw new Error('请先生成或选择一张分镜图片')
-  const shotId = sourceShotId(source, asset)
+  const shotId = sourceShotId(source, asset, detail)
   const context = imageVideoSourceContext(graph, source, detail, models)
   const candidates = graph.nodes.filter(node => node.type === 'generation' && node.settings.modality === 'video'
     && node.settings.mode === mode && node.shot_id === shotId
@@ -219,7 +221,7 @@ export function createImageVideoHandoff(graph: CanvasGraph, source: CanvasNode, 
   }
   const nodeLimit = graph.nodes.filter(node => node.type === 'project_script_ref').length === 1 ? 501 : 500
   if (graph.nodes.length >= nodeLimit || graph.edges.length >= 1000) throw new Error('画布节点或连线已达到上限')
-  const shot = detail.shots.find(shot => shot.id === shotId)
+  const shot = allProjectShots(detail).find(shot => shot.id === shotId)
   const referenceModel = mode === 'reference' ? multiReferenceModel(models, freshNode.model_id) : undefined
   if (mode === 'reference' && !referenceModel) throw new Error('没有支持多图参考的可用视频模型，请先配置模型')
   const model = referenceModel || videoModel(models, 'first_frame', freshNode.model_id)

@@ -4,6 +4,8 @@ import { videoReferenceUsageLabels, type VideoReferenceUsage } from '@video-stud
 import { withProjectStyle } from '@video-studio/shared/visuals/visual-style'
 import { resolvePromptReferences } from '@video-studio/shared/visuals/prompt-references'
 import { getManagedPromptBlocks, stripManagedPromptBlocks } from '@video-studio/shared/visuals/prompt-document'
+import { replaceVisualBoardPromptContent } from '@video-studio/shared/visuals/visual-board-document'
+import { withVisualProfilePrompt } from '@video-studio/shared/visuals/visual-profile-prompt'
 import { parsePromptSectionDocument, serializePromptSectionDocument } from '@video-studio/shared/visuals/prompt-section-document'
 import { visualGenerationPrompt } from '@video-studio/shared/visuals/visual-prompt'
 import { tokenizePromptReferenceNumbers } from '@video-studio/shared/visuals/prompt-references'
@@ -268,7 +270,10 @@ test('Seedance 2.5 canvas submits source aspect and 480p draft while retaining t
   const trigger = () => view.container.querySelector<HTMLButtonElement>('.pc-generation-parameters-trigger')!
   try {
     assert.match(trigger().textContent!, /源画幅 · 1080p/)
-    await act(() => trigger().click()); await settle()
+    assert.match(view.container.querySelector('.pc-prompt-parameter-values')!.textContent!, /源画幅 · 1080p/)
+    await act(() => view.button('区块操作：视频生成要求').click()); await settle()
+    await act(() => view.button('调整参数：视频生成要求').click()); await settle()
+    assert.equal(trigger().getAttribute('aria-expanded'), 'true', 'ordinary video shortcut opens the shared footer controls')
     const panel = document.querySelector<HTMLElement>('[role="dialog"][aria-label="生成参数"]')!
     assert.ok(panel)
     assert.match(panel.textContent!, /跟随源画幅/)
@@ -276,6 +281,7 @@ test('Seedance 2.5 canvas submits source aspect and 480p draft while retaining t
     assert.deepEqual([...panel.querySelectorAll('[aria-label="清晰度"] button')].map(button => button.textContent), ['480p', '720p', '1080p'])
     await act(() => panel.querySelector<HTMLInputElement>('[aria-label="样片模式"]')!.click()); await settle()
     assert.match(trigger().textContent!, /源画幅 · 480p/)
+    assert.match(view.container.querySelector('.pc-prompt-parameter-values')!.textContent!, /源画幅 · 480p.*样片/)
     await act(() => trigger().click()); await settle()
     await view.preview()
     assert.equal(api.previews.length, 1)
@@ -300,6 +306,7 @@ test('Seedance 2.5 edit canvas follows source timing while keeping a positive pl
   try {
     const trigger = view.container.querySelector<HTMLButtonElement>('.pc-generation-parameters-trigger')!
     assert.match(trigger.textContent!, /源画幅 · 720p · 原视频时长/)
+    assert.equal(view.container.querySelector('.pc-prompt-parameter-values')!.textContent, '源画幅 · 720p · 原视频时长')
     assert.match(view.prompt().value, /视频时长：跟随原视频/)
     assert.equal(view.container.querySelector<HTMLInputElement>('[aria-label="参考视频地址"]')!.placeholder, '公网视频 URL 或 asset:// 素材 ID')
     await view.editPrompt(view.prompt().value.replace('视频时长：跟随原视频，保留原视频的时间结构与镜头连续性。', '视频时长：20 秒，沿用原视频。'))
@@ -366,7 +373,7 @@ test('node custom settings merge independent source changes and require a persis
     await view.destroy(); view = await mount(updated, false, { models: [imageModel] })
     assert.ok(rawPrompt().includes(local), 'explicit keep decision survives reload')
     assert.doesNotMatch(view.container.querySelector('.pc-prompt-document-status')!.textContent!, /项待确认/)
-    await act(() => view.button('跟随项目设定：镜头视觉设定').click()); await settle()
+    await act(() => view.button('沿用来源内容：镜头视觉设定').click()); await settle()
     assert.ok(rawPrompt().includes(nextHero.definition))
     assert.ok(!rawPrompt().includes(local))
     assert.ok(rawPrompt().includes(nextStation.definition))
@@ -502,7 +509,7 @@ test('pointer interactions with portaled prompt skills keep the selected node an
     modal()
     assert.deepEqual(api.previews, [], 'choosing skills cannot trigger paid work or even a generation preview')
     assert.deepEqual(api.saved, [], 'skill choices do not write the canvas or defaults')
-    await pointerClick(view.button('关闭整理提示词'))
+    await pointerClick(view.button('关闭整理主要内容'))
     assert.equal(document.querySelector('.prompt-skill-modal'), null, 'explicit close still works')
     assert.ok(view.prompt())
   } finally { await view.destroy() }
@@ -527,15 +534,18 @@ test('prompt primary and auxiliary choices carry into the next real canvas node 
     await act(() => option.click()); await settle()
   }
   try {
-    await act(() => view.button('使用技能整理提示词').click()); await settle()
+    const skillAction = view.container.querySelector<HTMLButtonElement>('.pc-composer-writing button[aria-label="使用技能整理提示词"]')
+    assert.ok(skillAction && !skillAction.disabled)
+    await act(() => skillAction.click()); await settle()
+    assert.ok(document.querySelector('.prompt-skill-modal'))
     await act(() => view.button('视频提示词技能选择').click()); await settle()
     await choose('video_prompt主技能', 'video-b')
     await choose('video_prompt辅助技能', 'video-a')
     skillSummary()
-    await act(() => view.button('关闭整理提示词').click()); await settle()
+    await act(() => view.button('关闭整理主要内容').click()); await settle()
     await act(() => view.button('使用技能整理提示词').click()); await settle()
     skillSummary()
-    await act(() => view.button('关闭整理提示词').click()); await settle()
+    await act(() => view.button('关闭整理主要内容').click()); await settle()
     await act(() => view.container.querySelector<HTMLElement>('[data-id="next-video-node"]')!.click()); await settle()
     assert.ok(view.container.querySelector('[data-id="next-video-node"].selected'))
     await act(() => view.button('使用技能整理提示词').click()); await settle()
@@ -1035,7 +1045,7 @@ test('refining a complete prompt preserves its bounded settings and keeps one ed
     assert.match(String(requests[0]?.prompt), /【镜头视觉设定】/)
     assert.match(String(requests[0]?.prompt), /【图片参考图用途】/)
     assert.equal(view.bodyPrompt(), originalBody, 'refinement has no effect before explicit application')
-    const result = document.querySelector<HTMLElement & { editor: import('@tiptap/core').Editor }>('[contenteditable][aria-label="整理后的完整提示词"]')!
+    const result = document.querySelector<HTMLElement & { editor: import('@tiptap/core').Editor }>('[contenteditable][aria-label="整理结果"]')!
     assert.ok(result)
     assert.equal(result.editor.isEditable, true)
     assert.match(promptEditorText(result.editor.getJSON()), /近景突出神情/)
@@ -1120,11 +1130,11 @@ test('an explicitly connected character outside the shot defaults stays availabl
     assert.deepEqual(refinements[0].explicit_reference_asset_ids, ['peiyan-board'])
     assert.match(String(refinements[0].adjustment_request), /\[\[ref:peiyan-board\]\]/, 'the selected character is sent by stable asset identity')
     assert.equal(refinements[0].prompt_body, body)
-    const result = document.querySelector<HTMLElement & { editor: import('@tiptap/core').Editor }>('[contenteditable][aria-label="整理后的完整提示词"]')!
+    const result = document.querySelector<HTMLElement & { editor: import('@tiptap/core').Editor }>('[contenteditable][aria-label="整理结果"]')!
     assert.ok(result)
     assert.match(promptEditorText(result.editor.getJSON()), /裴砚站在左侧后方，人物外观参考\[\[ref:peiyan-board\]\]/)
     assert.equal(result.querySelector('.pc-prompt-reference.is-invalid'), null)
-    await act(() => view.button('关闭整理提示词').click()); await settle()
+    await act(() => view.button('关闭整理主要内容').click()); await settle()
     assert.equal(view.bodyPrompt(), body, 'reviewing a refinement does not overwrite the manual body')
 
     await view.preview()
@@ -1187,9 +1197,9 @@ for (const section of ['automatic', 'custom', 'deleted'] as const) test(`an expl
     assert.match(mapping, /对应对象的局部纹理、连接与持握等细节/)
     if (section === 'deleted') {
       assert.equal(visualContext(), '', 'creator-deleted sections stay deleted as new semantic context arrives')
-      assert.match(view.container.querySelector('.pc-prompt-document-status')!.textContent!, /1 项待确认/)
-      await act(() => view.button('保留本节点修改：镜头视觉设定').click()); await settle()
-      assert.equal(visualContext(), '', 'keeping the deletion only accepts the updated source baseline')
+      assert.doesNotMatch(view.container.querySelector('.pc-prompt-document-status')!.textContent!, /项待确认/)
+      assert.equal(view.container.querySelector('[aria-label="保留本节点修改：镜头视觉设定"]'), null)
+      assert.match(view.container.querySelector('[aria-label="已移除的提示词区块"]')!.textContent!, /镜头视觉设定/)
     }
     else {
       assert.match(visualContext(), /道具：巡天尺/)
@@ -1203,6 +1213,18 @@ for (const section of ['automatic', 'custom', 'deleted'] as const) test(`an expl
     assert.deepEqual(api.previews.at(-1)!.explicit_reference_asset_ids, ['ruler-detail'])
     assert.deepEqual(new Set(api.resolvedPreviews.at(-1)!.reference_asset_ids), new Set(['ruler-detail', 'hero-board', 'station-board']))
     if (section !== 'deleted') assert.match(api.previews.at(-1)!.prompt, /道具：巡天尺/)
+    else {
+      assert.equal(api.previews.length, 1, 'a deleted pending requirement never blocks the direct preview')
+      assert.doesNotMatch(api.previews.at(-1)!.prompt, /【镜头视觉设定】/)
+      assert.equal(visualContext(), '', 'previewing does not restore the deleted source section')
+      await act(() => view.button('恢复来源内容：镜头视觉设定').click()); await settle()
+      assert.match(visualContext(), /道具：巡天尺/)
+      assert.match(visualContext(), /青铜直尺，尺身狭长，边缘有星轨刻纹，柄端连接一枚黑玉环/)
+      assert.equal(view.bodyPrompt().trim(), body)
+      assert.doesNotMatch(view.container.querySelector('.pc-prompt-document-status')!.textContent!, /项待确认/)
+      await view.preview()
+      assert.match(api.previews.at(-1)!.prompt, /道具：巡天尺/, 'source recovery uses the latest pending context, including the newly connected prop')
+    }
     await act(() => view.button('移除参考：巡天尺 · 青铜常态').click()); await settle()
     assert.equal(view.bodyPrompt().trim(), body)
     assert.doesNotMatch(visualContext(), /道具：巡天尺|青铜直尺，尺身狭长/)
@@ -1298,7 +1320,7 @@ for (const entry of ['library', 'handles'] as const) test(`adding an inactive mu
     assert.equal(refinements.length, 1)
     assert.deepEqual(refinements[0].reference_asset_ids, ['hero-side', 'hero-face', 'station-board'])
     assert.deepEqual(refinements[0].explicit_reference_asset_ids, ['hero-side', 'hero-face'])
-    await act(() => view.button('关闭整理提示词').click()); await settle()
+    await act(() => view.button('关闭整理主要内容').click()); await settle()
     await view.preview()
     assert.deepEqual(api.previews.at(-1)!.reference_asset_ids, ['hero-side', 'hero-face'])
     assert.deepEqual(api.previews.at(-1)!.explicit_reference_asset_ids, ['hero-side', 'hero-face'])
@@ -1462,6 +1484,227 @@ for (const model of [imageModel, videoModel]) test(`${model.modality} body delet
   } finally { await view.destroy() }
 })
 
+test('a primary-only setting board previews without a redundant supplement field', async t => {
+  const projectDetail: ProjectDetail = { ...detail, visual_profiles: [{ ...hero, board_prompt: '' }, station] }
+  const graph = initialGraph('reference'), target = graph.nodes.find(node => node.id === 'video-node')!
+  target.model_id = imageModel.id; target.shot_id = null
+  target.settings = { modality: 'image', visual_profile_id: hero.id, visual_profile_revision: hero.revision }
+  graph.edges = []
+  const previews: Array<Record<string, unknown>> = []
+  const api = mockApi(t, graph, projectDetail, (path, _method, request) => {
+    if (path.endsWith('/board-preview')) {
+      previews.push(request)
+      return Response.json({ prompt: request.prompt_override, mode: 'text', reference_asset_ids: [], reference_names: [], reference_sources: [], reference_signature: 'mock-board' })
+    }
+  })
+  const view = await mount(projectDetail, true, { models: [imageModel] })
+  try {
+    assert.equal(view.bodyPrompt(), '', 'new boards do not need dummy body prose')
+    assert.match(view.systemPrompt(), /短发，蓝色校服/)
+    assert.equal(view.button('开始生成').disabled, false)
+    assert.equal(view.button('使用技能整理提示词').disabled, false)
+    await view.preview()
+    assert.equal(previews.length, 1)
+    assert.equal(previews[0].prompt_document, true)
+    assert.equal(view.prompt().editor.state.doc.child(1).attrs.promptBodyEntry, false, 'a setting board has no extra blank prose field')
+    assert.equal(view.container.querySelector('.pc-prompt-supplement-heading, .pc-prompt-supplement-line'), null)
+    assert.equal(api.saved.length, 0, 'opening and previewing do not save or rewrite the setting')
+  } finally { await view.destroy() }
+})
+
+test('legacy body-first setting drafts open without prompt saves and keep one main-first order through preview and direct refinement application', async t => {
+  const projectDetail: ProjectDetail = { ...detail, visual_profiles: [{ ...hero, board_prompt: '' }, station] }
+  const graph = initialGraph('reference'), target = graph.nodes.find(node => node.id === 'video-node')!
+  target.model_id = imageModel.id; target.shot_id = null; target.text = ''; target.prompt = ''
+  graph.edges = []
+  const leading = '开头补充：衣领保留三道缝线。'
+  const trailing = '尾部补充：袖口保持平整。'
+  const template = withVisualProfilePrompt('', hero)
+  const legacy = `${leading}  \n\n${template}\n\n${trailing}\t\n`
+  const sections = parsePromptSectionDocument(legacy, { sourceText: template })
+  const originalPrimary = sections.blocks.find(block => block.name === '设定图固定要求')!
+  originalPrimary.id = 'legacy-setting-task'
+  target.settings = { modality: 'image', visual_profile_id: hero.id, visual_profile_revision: hero.revision,
+    prompt_document: true, profile_prompt_override: legacy, prompt_template: template,
+    prompt_body: stripManagedPromptBlocks(legacy), prompt_sections: sections }
+  const originalSettings = structuredClone(target.settings)
+  const textModel: Model = { ...videoModel, id: 'text-model', name: '整理模型', modality: 'text', protocol: 'chat_completions', settings: {} }
+  const previews: Array<Record<string, unknown>> = [], refinements: Array<Record<string, unknown>> = []
+  const candidateSupplement = '候选补充：配饰统一为哑光银。'
+  const api = mockApi(t, graph, projectDetail, (path, _method, request) => {
+    if (path.endsWith('/board-preview')) {
+      previews.push(request)
+      return Response.json({ prompt: request.prompt_override, mode: 'text', reference_asset_ids: [], reference_names: [], reference_sources: [], reference_signature: 'legacy-board-preview' })
+    }
+    if (path.endsWith('/skills/refine-prompt')) {
+      refinements.push(request)
+      const prompt = String(request.prompt)
+      const primary = getManagedPromptBlocks(prompt, ['设定图固定要求'])[0]!.replace('正面与侧面', '正面与侧面，配饰统一为哑光银')
+      const context = getManagedPromptBlocks(prompt).filter(block => !block.startsWith('【设定图固定要求】'))
+      // A legacy server may still send prose first. Applying this reviewed
+      // candidate must use the same order already shown in the editor.
+      return Response.json({ prompt: [candidateSupplement, stripManagedPromptBlocks(prompt), primary, ...context].join('\n\n'), skills: [] })
+    }
+  })
+  const view = await mount(projectDetail, true, { models: [imageModel, textModel] })
+  const modalButton = (label: string) => {
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>('.prompt-skill-modal button')]
+    const button = buttons.find(button => button.textContent === label)
+    assert.ok(button, label); return button
+  }
+  const assertProseOnce = (value: string, candidate = false) => {
+    for (const prose of [leading, trailing, ...(candidate ? [candidateSupplement] : [])]) {
+      assert.equal(value.split(prose).length - 1, 1, `preserve one copy of ${prose}`)
+    }
+  }
+  try {
+    const opened = promptEditorText(view.prompt().editor.getJSON())
+    assert.ok(opened.startsWith('【设定图固定要求】'))
+    assertProseOnce(opened)
+    const openedPrimary = view.prompt().editor.getJSON().content!.find(node => node.type === 'promptManagedSection'
+      && node.attrs?.section.name === '设定图固定要求')!.attrs!.section
+    assert.equal(openedPrimary.id, originalPrimary.id)
+    assert.equal(openedPrimary.sourceText, originalPrimary.sourceText)
+    await act(() => new Promise(resolve => setTimeout(resolve, 900))); await settle()
+    for (const saved of api.saved) {
+      const settings = saved.nodes.find(node => node.id === target.id)!.settings
+      assert.equal(settings.profile_prompt_override, originalSettings.profile_prompt_override, 'presentation order cannot save prompt changes on open')
+      assert.deepEqual(settings.prompt_sections, originalSettings.prompt_sections)
+    }
+    assert.deepEqual(target.settings, originalSettings)
+    await view.preview()
+    assert.equal(previews.length, 1)
+    assert.ok(String(previews[0].prompt_override).startsWith('【设定图固定要求】'))
+    assertProseOnce(String(previews[0].prompt_override))
+    await view.preview()
+    assert.equal(view.button('使用技能整理提示词').disabled, false)
+    await act(() => view.button('使用技能整理提示词').click()); await settle()
+    await act(() => modalButton('整理提示词').click()); await settle()
+    assert.equal(refinements.length, 1)
+    const candidate = document.querySelector<HTMLElement & { editor: import('@tiptap/core').Editor }>('[contenteditable][aria-label="整理结果"]')!
+    assert.ok(candidate)
+    const candidateText = promptEditorText(candidate.editor.getJSON())
+    assert.ok(candidateText.startsWith('【设定图固定要求】'))
+    assertProseOnce(candidateText, true)
+    assert.equal(promptEditorText(view.prompt().editor.getJSON()), opened, 'a candidate must not modify the canvas before application')
+    await act(() => modalButton('应用提示词').click()); await settle()
+    const applied = promptEditorText(view.prompt().editor.getJSON())
+    assert.ok(applied.startsWith('【设定图固定要求】'), 'direct application keeps the displayed main-first candidate order')
+    assertProseOnce(applied, true)
+    assert.match(applied, /正面与侧面，配饰统一为哑光银/)
+    await act(() => new Promise(resolve => setTimeout(resolve, 900))); await settle()
+    const saved = api.saved.at(-1)!, settings = saved.nodes.find(node => node.id === target.id)!.settings
+    assert.ok(settings.profile_prompt_override!.startsWith('【设定图固定要求】'))
+    const savedPrimary = settings.prompt_sections!.blocks.find(block => block.id === originalPrimary.id)!
+    assert.ok(savedPrimary)
+    assert.equal(savedPrimary.sourceText, originalPrimary.sourceText, 'the reviewed candidate changes the local task without rewriting its source')
+    assert.match(savedPrimary.text, /配饰统一为哑光银/)
+    assertProseOnce(serializePromptSectionDocument(settings.prompt_sections!), true)
+  } finally { await view.destroy() }
+})
+
+for (const board of [true, false]) test(`${board ? 'setting board' : 'ordinary image'} parameter shortcut shares the footer popover and persists its summary with the prompt`, async t => {
+  const graph = initialGraph('reference'), target = graph.nodes.find(node => node.id === 'video-node')!
+  target.model_id = imageModel.id; target.shot_id = null
+  target.settings = { modality: 'image', ...(board ? { visual_profile_id: hero.id, visual_profile_revision: hero.revision } : {}),
+    ratio: '9:16', resolution: '1K', clarity: '1K' }
+  graph.edges = []
+  const api = mockApi(t, graph)
+  let view = await mount(detail, true, { models: [imageModel] })
+  const shortcut = async () => {
+    await act(() => view.button('区块操作：图片生成要求').click()); await settle()
+    await act(() => view.button('调整参数：图片生成要求').click()); await settle()
+  }
+  const popover = () => document.querySelector<HTMLElement>('[role="dialog"][aria-label="生成参数"]')
+  const footer = () => view.container.querySelector<HTMLButtonElement>('.pc-generation-parameters-trigger')!
+  try {
+    assert.match(view.container.querySelector('.pc-prompt-editor')!.textContent!, /9:16 · 1K/)
+    await shortcut()
+    assert.equal(document.querySelectorAll('[role="dialog"][aria-label="生成参数"]').length, 1)
+    assert.equal(footer().getAttribute('aria-expanded'), 'true', 'shortcut opens the existing footer control')
+    const ratio = popover()!.querySelector<HTMLButtonElement>('[aria-label="比例"] button[title="16:9"]')!
+    assert.ok(ratio)
+    await act(() => ratio.click()); await settle()
+    const clarity = [...popover()!.querySelectorAll<HTMLButtonElement>('[aria-label="清晰度"] button')]
+      .find(button => button.textContent === '4K')!
+    assert.ok(clarity)
+    await act(() => clarity.click()); await settle()
+    assert.match(footer().textContent!, /16:9 · 4K/)
+    assert.match(view.container.querySelector('.pc-prompt-editor')!.textContent!, /16:9 · 4K/)
+    assert.match(view.systemPrompt(), /16:9/)
+    assert.equal(view.container.querySelector('.pc-prompt-parameter-conflicts'), null)
+    await act(() => footer().click()); await settle()
+    assert.equal(popover(), null)
+    await act(() => footer().click()); await settle()
+    assert.equal(document.querySelectorAll('[role="dialog"][aria-label="生成参数"]').length, 1)
+    await act(() => footer().click()); await settle()
+    await act(() => new Promise(resolve => setTimeout(resolve, 900))); await settle()
+    const saved = api.saved.at(-1)!, settings = saved.nodes.find(node => node.id === target.id)!.settings
+    assert.equal(settings.ratio, '16:9')
+    assert.equal(settings.clarity, '4K')
+    Object.assign(graph, saved)
+    await view.destroy(); view = await mount(detail, true, { models: [imageModel] })
+    assert.equal(popover(), null, 'parameter popover starts closed after reload')
+    assert.match(view.container.querySelector('.pc-prompt-editor')!.textContent!, /16:9 · 4K/)
+    assert.match(view.systemPrompt(), /16:9/)
+    assert.equal(view.container.querySelector('.pc-prompt-parameter-conflicts'), null)
+    await shortcut()
+    await act(() => view.container.querySelector<HTMLElement>('[data-id="storyboard-node"]')!.click()); await settle()
+    assert.equal(popover(), null, 'switching nodes closes the shared parameter popover')
+  } finally { await view.destroy() }
+})
+
+test('a legacy saved setting board keeps its deliberately omitted primary without section metadata', async t => {
+  const graph = initialGraph('reference'), target = graph.nodes.find(node => node.id === 'video-node')!
+  target.model_id = imageModel.id; target.shot_id = null
+  target.settings = { modality: 'image', visual_profile_id: hero.id, visual_profile_revision: hero.revision,
+    prompt_document: true, profile_prompt_override: '仅制作衣领局部特写。' }
+  graph.edges = []
+  const previews: Array<Record<string, unknown>> = []
+  mockApi(t, graph, detail, (path, _method, request) => {
+    if (!path.endsWith('/board-preview')) return
+    previews.push(request)
+    return Response.json({ prompt: request.prompt_override, mode: 'text', reference_asset_ids: [], reference_names: [], reference_sources: [], reference_signature: 'mock-board' })
+  })
+  const view = await mount(detail, false, { models: [imageModel] })
+  try {
+    assert.match(view.bodyPrompt(), /仅制作衣领局部特写/)
+    assert.doesNotMatch(view.systemPrompt(), /【设定图固定要求】|短发，蓝色校服/)
+    assert.equal(view.button('开始生成').disabled, false)
+    await view.preview()
+    assert.equal(previews.length, 1)
+    assert.doesNotMatch(String(previews[0].prompt_override), /【设定图固定要求】/)
+    assert.ok(document.querySelector('[aria-label="恢复来源内容：主要创作内容"]'), 'explicit recovery remains available')
+  } finally { await view.destroy() }
+})
+
+test('saved same-text pasted setting content retains its own identity beside a deleted original source', async t => {
+  const graph = initialGraph('reference'), target = graph.nodes.find(node => node.id === 'video-node')!
+  target.model_id = imageModel.id; target.shot_id = null; graph.edges = []
+  const template = withVisualProfilePrompt('', hero), sections = parsePromptSectionDocument(template, { sourceText: template })
+  const old = sections.blocks.find(block => block.name === '设定图固定要求')!, originalText = old.text
+  old.text = ''; old.deleted = true
+  sections.blocks.push({ id: 'pasted-primary-saved', kind: 'managed', name: '设定图固定要求', text: originalText })
+  target.settings = { modality: 'image', visual_profile_id: hero.id, visual_profile_revision: hero.revision,
+    prompt_document: true, prompt_template: template, prompt_sections: sections }
+  const api = mockApi(t, graph)
+  let view = await mount(detail, false, { models: [imageModel] })
+  const activePrimary = () => view.prompt().editor.getJSON().content?.find(node => node.type === 'promptManagedSection' && node.attrs?.section?.name === '设定图固定要求')?.attrs?.section
+  try {
+    assert.equal(activePrimary()?.id, 'pasted-primary-saved')
+    assert.notEqual(activePrimary()?.sourceText, originalText)
+    await act(() => view.prompt().editor.chain().setTextSelection(1).insertContent('配饰使用哑光银。').run()); await settle()
+    await act(() => new Promise(resolve => setTimeout(resolve, 900))); await settle()
+    const saved = api.saved.at(-1)!, savedSections = saved.nodes.find(node => node.id === target.id)!.settings.prompt_sections!
+    assert.ok(savedSections.blocks.some(block => block.id === old.id && block.deleted))
+    assert.equal(savedSections.blocks.find(block => block.name === '设定图固定要求' && !block.deleted)?.id, 'pasted-primary-saved')
+    Object.assign(graph, saved)
+    await view.destroy(); view = await mount(detail, false, { models: [imageModel] })
+    assert.equal(activePrimary()?.id, 'pasted-primary-saved')
+    assert.notEqual(activePrimary()?.sourceText, originalText)
+  } finally { await view.destroy() }
+})
+
 test('information-board prompt can be cleared and its empty override survives saved reload', async t => {
   const style: ProjectDetail['project_visual_style'] = { version: 'anime', label: '日漫', source: 'settings', details: {} }
   const projectDetail: ProjectDetail = { ...detail, project_visual_style: style,
@@ -1477,12 +1720,15 @@ test('information-board prompt can be cleared and its empty override survives sa
     await view.editBody(partial)
     assert.equal(view.bodyPrompt(), partial)
     assert.equal(view.systemPrompt(), system, 'profile view requirements and identity references remain managed')
-    await view.editPrompt('')
+    await act(() => view.prompt().editor.commands.selectAll())
+    await act(() => view.prompt().dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Backspace', bubbles: true, cancelable: true }))); await settle()
     assert.equal(view.bodyPrompt(), '')
+    assert.equal(view.systemPrompt(), '')
     assert.equal(view.button('开始生成').disabled, true)
     await act(() => new Promise(resolve => setTimeout(resolve, 900))); await settle()
     const saved = api.saved.at(-1)!
     assert.equal(saved.nodes.find(node => node.id === 'video-node')!.settings.profile_prompt_override, '')
+    assert.deepEqual(saved.edges, graph.edges, 'clearing text preserves the actual image connections')
     Object.assign(graph, saved)
     await view.destroy(); view = await mount(projectDetail, false, { models: [imageModel] })
     assert.equal(view.bodyPrompt(), '')

@@ -50,7 +50,7 @@ const SAMPLING_LIMITATION = '模型按采样画面理解视频，快速动作、
 function fail(message: string, statusCode = 422): never { throw Object.assign(new Error(message), { statusCode }) }
 
 function projectVideo(projectId: string, assetId: string): Asset {
-  return one<Asset>("SELECT * FROM assets WHERE id=? AND project_id=? AND kind='video'", assetId, projectId)
+  return one<Asset>("SELECT * FROM assets WHERE id=? AND project_id=? AND deleted_at IS NULL AND kind='video'", assetId, projectId)
     || fail('请选择当前项目中的视频素材')
 }
 

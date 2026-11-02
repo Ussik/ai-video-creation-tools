@@ -2,23 +2,24 @@ import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
 import { UnstyledButton, ActionIcon, Button, Menu, Modal, TextInput } from '@mantine/core'
 import { Check, ChevronDown, LoaderCircle, PenLine, Plus, Trash2, ArrowRight } from 'lucide-react'
 import { api, json } from '../../shared/api/api'
-import { useAppDialog } from '../../shared/ui/AppDialog'
 import { preferredCanvas, rememberCanvas, rememberedCanvas, type ProjectCanvasInfo } from './project-canvases'
 import type { CanvasSession } from './ProjectCanvas'
 import { readScriptCanvasRequest } from '../script/script-canvas-handoff'
+import CanvasDeletionDialog, { type CanvasDeletionResult } from './CanvasDeletionDialog'
 import './project-canvases.css'
 
 export type CanvasActions = { revision: () => string | undefined; leave: () => Promise<boolean>; move: (target: string) => Promise<boolean> }
-function ProjectCanvasSwitcher({ projectId, children }: {
+function ProjectCanvasSwitcher({ projectId, children, onResourcesChanged }: {
   projectId: string;
+  onResourcesChanged?: () => Promise<unknown>;
   children: (canvas: ProjectCanvasInfo, session: CanvasSession, menu: ReactNode, register: (actions: CanvasActions | null) => void, viewportChanged: (viewport: ProjectCanvasInfo['viewport']) => void) => ReactNode;
 }) {
-  const { confirm, dialog } = useAppDialog()
   const [canvases, setCanvases] = useState<ProjectCanvasInfo[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [editing, setEditing] = useState<ProjectCanvasInfo | null>(null)
+  const [deletingCanvas, setDeletingCanvas] = useState<ProjectCanvasInfo | null>(null)
   const [name, setName] = useState('')
   const actions = useRef<CanvasActions | null>(null)
   const sessions = useRef(new Map<string, CanvasSession>())
@@ -27,6 +28,8 @@ function ProjectCanvasSwitcher({ projectId, children }: {
   const operation = useRef(false)
   const activeIdRef = useRef(activeId)
   activeIdRef.current = activeId
+  const deletingRef = useRef(deletingCanvas)
+  deletingRef.current = deletingCanvas
   const resumeHandoff = useRef<(() => void) | null>(null)
   const register = useRef((next: CanvasActions | null) => { actions.current = next; if (next) resumeHandoff.current?.() }).current
   const reload = async () => {
@@ -47,6 +50,19 @@ function ProjectCanvasSwitcher({ projectId, children }: {
     }).catch(issue => { if (mounted.current) setError(issue instanceof Error ? issue.message : String(issue)) })
     return () => { mounted.current = false }
   }, [projectId])
+  useEffect(() => {
+    const resourcesChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ projectId?: string; canvasId?: string }>).detail
+      if (detail?.projectId !== projectId) return
+      if (detail.canvasId && detail.canvasId !== activeIdRef.current) {
+        const session = sessions.current.get(detail.canvasId)
+        if (session) { session.history = { past: [], future: [] }; session.selection = undefined; session.revision = undefined }
+      }
+      void reload().catch(issue => { if (mounted.current) setError(issue instanceof Error ? issue.message : String(issue)) })
+    }
+    window.addEventListener('project-canvas-resources-changed', resourcesChanged)
+    return () => { window.removeEventListener('project-canvas-resources-changed', resourcesChanged) }
+  }, [projectId])
   const active = canvases.find(canvas => canvas.id === activeId)
   const select = (canvas: ProjectCanvasInfo) => { activeIdRef.current = canvas.id; setActiveId(canvas.id); rememberCanvas(projectId, canvas.id) }
   const perform = async (work: () => Promise<void>) => {
@@ -58,7 +74,7 @@ function ProjectCanvasSwitcher({ projectId, children }: {
   useEffect(() => {
     let active = true
     const openRequestedCanvas = async () => {
-      if (!active || operation.current) return
+      if (!active || operation.current || deletingRef.current) return
       let request
       try { request = readScriptCanvasRequest(projectId) }
       catch (issue) { setError(issue instanceof Error ? issue.message : String(issue)); return }
@@ -92,29 +108,49 @@ function ProjectCanvasSwitcher({ projectId, children }: {
     return () => { active = false; resumeHandoff.current = null; window.removeEventListener('script-canvas-open', open) }
   }, [projectId])
   const switchTo = (canvas: ProjectCanvasInfo) => void perform(async () => {
+    if (deletingRef.current) return
     if (canvas.id === activeId) return
     if (!actions.current || !await actions.current.leave()) return
     select(canvas)
   })
   const create = () => void perform(async () => {
+    if (deletingRef.current) return
     if (!actions.current || !await actions.current.leave()) return
     const canvas = await api<ProjectCanvasInfo>(`/projects/${projectId}/canvases`, json('POST', {}))
     setCanvases(current => [...current, canvas]); select(canvas)
   })
   const remove = () => active && void perform(async () => {
+    if (deletingRef.current || canvases.length < 2) return
     if (!actions.current || !await actions.current.leave()) return
     const revision = actions.current.revision()
     if (!revision) throw new Error('画布尚未加载')
-    if (!await confirm({ title: `删除「${active.name}」`, message: '删除这张画布的节点和连线。项目中的镜头、素材、视觉设定和生成任务会保留。', confirmLabel: '删除画布', danger: true })) return
-    const result = await api<{ canvas_id: string }>(`/projects/${projectId}/canvases/${active.id}`, json('DELETE', { revision }))
-    sessions.current.delete(active.id)
-    for (const key of [`project-canvas-draft:${active.id === projectId ? projectId : `${projectId}:${active.id}`}`, `project-canvas-viewport:${active.id === projectId ? projectId : `${projectId}:${active.id}`}`]) {
-      try { window.localStorage.removeItem(key) } catch { /* Storage may be disabled. */ }
-    }
-    const next = await reload()
-    select(next.find(canvas => canvas.id === result.canvas_id) || next[0])
+    deletingRef.current = active
+    setDeletingCanvas(active)
   })
+  const deleted = (removed: ProjectCanvasInfo, result: CanvasDeletionResult) => {
+    deletingRef.current = null
+    setDeletingCanvas(null)
+    void perform(async () => {
+      sessions.current.delete(removed.id)
+      for (const key of [`project-canvas-draft:${removed.id === projectId ? projectId : `${projectId}:${removed.id}`}`, `project-canvas-viewport:${removed.id === projectId ? projectId : `${projectId}:${removed.id}`}`]) {
+        try { window.localStorage.removeItem(key) } catch { /* Storage may be disabled. */ }
+      }
+      // Stop rendering the deleted graph even if the follow-up read fails.
+      setCanvases(current => current.filter(canvas => canvas.id !== removed.id))
+      const fallback = canvases.find(canvas => canvas.id === result.canvas_id) || canvases.find(canvas => canvas.id !== removed.id)
+      if (fallback) select(fallback)
+      let next: ProjectCanvasInfo[]
+      try { next = await reload() }
+      catch (issue) { throw new Error(`画布已删除，画布列表刷新失败：${issue instanceof Error ? issue.message : String(issue)}`) }
+      select(next.find(canvas => canvas.id === result.canvas_id) || next[0])
+      if (onResourcesChanged) {
+        try { await onResourcesChanged() }
+        catch (issue) { throw new Error(`画布已删除，项目内容刷新失败：${issue instanceof Error ? issue.message : String(issue)}`) }
+      }
+    })
+  }
   const move = (target: ProjectCanvasInfo) => void perform(async () => {
+    if (deletingRef.current) return
     if (!actions.current || !await actions.current.move(target.id)) return
     const session = sessions.current.get(target.id)
     if (session) { session.history = { past: [], future: [] }; session.selection = undefined }
@@ -135,7 +171,7 @@ function ProjectCanvasSwitcher({ projectId, children }: {
   if (!session) { session = { history: { past: [], future: [] } }; sessions.current.set(active.id, session) }
   const menu = <div className="pc-canvas-switcher" data-canvas-overlay>
     <Menu position="bottom-start" width={280} shadow="md" withinPortal>
-      <Menu.Target><UnstyledButton type="button" className="pc-canvas-switch-button" aria-label="切换画布" disabled={busy}><span>{active.name}</span><ChevronDown size={15} /></UnstyledButton></Menu.Target>
+      <Menu.Target><UnstyledButton type="button" className="pc-canvas-switch-button" aria-label="切换画布" disabled={busy || !!deletingCanvas}><span>{active.name}</span><ChevronDown size={15} /></UnstyledButton></Menu.Target>
       <Menu.Dropdown data-canvas-overlay>
         <div className="pc-canvas-menu-heading"><span>画布</span><ActionIcon type="button" aria-label="新增画布" disabled={busy} onClick={create} data-workspace-control=""><Plus size={19} /></ActionIcon></div>
         {canvases.map(canvas => <Menu.Item key={canvas.id} onClick={() => switchTo(canvas)} disabled={busy} rightSection={canvas.id === active.id ? <Check size={17} /> : undefined}><span className="pc-canvas-menu-name">{canvas.name}</span></Menu.Item>)}
@@ -149,7 +185,8 @@ function ProjectCanvasSwitcher({ projectId, children }: {
   </div>
   return <>
     {children(active, session, menu, register, viewportChanged)}
-    {dialog}
+    {deletingCanvas && <CanvasDeletionDialog key={`delete-canvas-${deletingCanvas.id}`} projectId={projectId} canvas={deletingCanvas}
+      onClose={() => { deletingRef.current = null; setDeletingCanvas(null); resumeHandoff.current?.() }} onDeleted={result => deleted(deletingCanvas, result)} />}
     <Modal opened={!!editing} onClose={() => { if (!busy) setEditing(null) }} title="重命名画布" size="sm">
       <form onSubmit={event => { event.preventDefault(); void perform(async () => {
         if (!editing || !name.trim()) return

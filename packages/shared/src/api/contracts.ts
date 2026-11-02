@@ -21,6 +21,7 @@ export interface ProductionRange {
   end_shot_id: string | null
 }
 export interface Shot {
+  deleted_at?: string | null
   id: string
   project_id: string
   design_id?: string | null
@@ -165,6 +166,7 @@ export interface PlannedShotCreationResult {
   payload_changed?: boolean
 }
 export interface Asset {
+  deleted_at?: string | null
   id: string
   project_id: string
   shot_id: string | null
@@ -364,6 +366,7 @@ export interface VisualReferencePreview {
   reference_asset_ids: string[]
   reference_signature: string
   project_style_version: string
+  effective_visual_style?: import('../visuals/visual-style.js').EffectiveVisualStyle
   mode: 'text' | 'reference'
   style_warnings?: string[]
 }
@@ -407,6 +410,7 @@ export interface VisualBoardPreview {
   prompt_document?: boolean
   project_style_version?: string
   project_visual_style?: import('../visuals/visual-style.js').ProjectVisualStyle
+  effective_visual_style?: import('../visuals/visual-style.js').EffectiveVisualStyle
   style_warnings?: string[]
   prompt: string
   mode: 'text' | 'reference'

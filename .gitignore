@@ -5,6 +5,8 @@ packages/*/dist/
 data/
 *.tsbuildinfo
 .DS_Store
+__pycache__/
+*.py[cod]
 
 # Local agent plans and task artifacts; existing tracked records remain intact.
 .planning/

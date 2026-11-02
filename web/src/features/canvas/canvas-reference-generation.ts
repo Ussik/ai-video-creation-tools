@@ -10,7 +10,7 @@ import type { PromptReferenceOverrides } from '@video-studio/shared/visuals/prom
 import { disconnectedPromptReferenceIds } from './canvas-prompt-references'
 import { stripVisualProfileBaseReference, withVisualProfileBaseReference } from './canvas-profile-reference-prompt'
 import { resolveCanvasVisualBoardReferences } from './canvas-visual-board-references'
-import { extractPromptBody } from '@video-studio/shared/visuals/prompt-document'
+import { hasVisualBoardPromptContent, preserveAbsentVisualBoardPrimary } from '@video-studio/shared/visuals/visual-board-document'
 import { isPromptSectionDocument, parsePromptSectionDocument, reconcilePromptSectionDocument, serializePromptSectionDocument } from '@video-studio/shared/visuals/prompt-section-document'
 import { findPromptParameterConflicts } from '@video-studio/shared/visuals/prompt-parameter-conflicts'
 import { rewriteCanvasPromptSections } from './canvas-prompt-composition'
@@ -71,18 +71,18 @@ export async function prepareCanvasVisualBoard(node: CanvasNode, profile: Visual
         variant: owner?.variant, definition: owner ? resolveCanvasProfileDisplayText(owner.definition, owner, detail) : undefined, role: source?.role }
     })), { ratio, resolution, clarity, quality, background }, mode), detail.project_visual_style)
     const tokenize = (value: string) => tokenizePromptReferenceNumbers(value, references.assetIds)
-    const sections = reconcilePromptSectionDocument(parsePromptSectionDocument(tokenize(document), {
-      sourceText: tokenize(node.settings.prompt_template || ''), previousDocument: rewriteCanvasPromptSections(savedSections, tokenize),
-    }), tokenize(nextTemplate))
-    if (sections.blocks.some(block => block.pendingSourceText !== undefined)) {
-      throw new Error('设定来源已更新，请打开此节点，在「设定来源与同步」中确认保留本节点修改或跟随项目')
+    const current = rewriteCanvasPromptSections(savedSections, tokenize)
+      ?? parsePromptSectionDocument(tokenize(document), { sourceText: tokenize(node.settings.prompt_template || '') })
+    const sections = reconcilePromptSectionDocument(preserveAbsentVisualBoardPrimary(current, tokenize(nextTemplate)), tokenize(nextTemplate))
+    if (sections.blocks.some(block => !block.deleted && block.pendingSourceText !== undefined)) {
+      throw new Error('设定来源已更新，请打开此节点，在「来源与修改记录」中确认保留本节点修改或跟随项目')
     }
     document = serializePromptSectionDocument(sections)
   }
   const promptOverride = document ?? node.settings.prompt_body ?? node.settings.profile_prompt_override
   const parameterConflict = findPromptParameterConflicts(promptOverride || '', { modality: 'image', ratio, resolution, clarity, quality, background, mode })[0]
   if (parameterConflict) throw new Error(parameterConflict.message)
-  if (promptOverride !== undefined && !extractPromptBody({ prompt: stripVisualProfileBaseReference(promptOverride) }).trim()) throw new Error('请输入信息图提示词')
+  if (promptOverride !== undefined && !hasVisualBoardPromptContent(stripVisualProfileBaseReference(promptOverride))) throw new Error('请输入设定图内容或本次补充要求')
   const input: { reference_profile_ids: string[]; reference_asset_ids: string[]; prompt_append: string; prompt_override?: string; prompt_document?: boolean; prompt_reference_overrides?: PromptReferenceOverrides } = {
     reference_profile_ids: references.referenceProfileIds, reference_asset_ids: references.referenceAssetIds,
     prompt_append: withVisualProfileBaseReference([...inputTexts, node.text.trim()].filter(Boolean).join('\n\n'),

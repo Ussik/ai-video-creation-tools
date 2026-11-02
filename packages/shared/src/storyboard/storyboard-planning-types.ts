@@ -24,7 +24,7 @@ export interface StoryboardPlanningContext {
   signature: string
   reference_budget?: StoryboardReferenceBudget
   scenes: Array<{ id: string; heading: string; duration: number; episode_number: number; planned: boolean; needs_replan?: boolean; replan_reason?: string;
-    shot_count: number; canvas_shot_count?: number; material_count: number }>
+    shot_count: number; canvas_shot_count?: number; material_count: number; has_previous_plan?: boolean; requires_redesign?: boolean }>
   existing_shots: Array<StoryboardShotDraft & { shot_id: string; scene_id: string }>
   documents: Array<{ id: string; title: string; artifact_type: string; episode_number: number; characters: number }>
   default_document_ids?: string[]

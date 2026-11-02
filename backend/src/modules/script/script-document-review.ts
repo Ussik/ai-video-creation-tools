@@ -19,7 +19,7 @@ export function projectReferences(projectId: string, documents: ToolDocument[]):
   return [
     ...documents.map(doc => ({ kind: 'document' as const, id: doc.id, title: doc.title })),
     ...all<{ id: string; heading: string }>('SELECT id, heading FROM script_scenes WHERE project_id=?', projectId).map(item => ({ kind: 'scene' as const, id: item.id, title: item.heading })),
-    ...all<{ id: string; title: string }>('SELECT id, title FROM shots WHERE project_id=? AND superseded_by IS NULL', projectId).map(item => ({ kind: 'shot' as const, id: item.id, title: item.title })),
+    ...all<{ id: string; title: string }>('SELECT id, title FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL', projectId).map(item => ({ kind: 'shot' as const, id: item.id, title: item.title })),
     ...all<{ id: string; name: string }>('SELECT id, name FROM visual_profiles WHERE project_id=?', projectId).map(item => ({ kind: 'visual_profile' as const, id: item.id, title: item.name })),
   ]
 }
@@ -67,7 +67,7 @@ export function documentDraftImpacts(projectId: string, documents: ToolDocument[
   for (const doc of documents) if (!touched.has(doc.id) && order(doc.artifact_type) > earliest) impacts.push({ kind: 'document', id: doc.id, title: doc.title,
     basis: 'stage_dependency', explanation: '依赖本次修订的上游资料，建议核对；尚未自动修改' })
   const scenes = all<ScriptScene>('SELECT * FROM script_scenes WHERE project_id=?', projectId)
-  const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND superseded_by IS NULL', projectId)
+  const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL', projectId)
   for (const shot of shots) if (shot.source_scene_id && sceneIds.includes(shot.source_scene_id)) impacts.push({ kind: 'shot', id: shot.id, title: shot.title,
     basis: 'scene_link', explanation: '源场次在本次修订范围内，需核对镜头和提示词' })
   const profiles = all<{ id: string; name: string; definition: string }>('SELECT id, name, definition FROM visual_profiles WHERE project_id=?', projectId)

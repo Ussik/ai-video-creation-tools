@@ -15,13 +15,14 @@ type Job = import('../src/infrastructure/database/db.js').Job
 type Profile = import('../src/modules/visuals/visual-profiles.js').VisualProfile
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(directory, { recursive: true, force: true }) })
-async function call<T>(method: 'GET' | 'POST' | 'PATCH', url: string, payload?: unknown): Promise<T> {
+async function call<T>(method: 'GET' | 'POST' | 'PUT' | 'PATCH', url: string, payload?: unknown): Promise<T> {
   const response = await app.inject({ method, url, payload })
   assert.equal(response.statusCode, 200, response.body)
   return response.json() as T
 }
-async function fixture(count = 2) {
+async function fixture(count = 2, style?: string) {
   const project = await call<{ id: string }>('POST', '/api/projects', { name: '默认候选测试' })
+  if (style) await call('PUT', `/api/projects/${project.id}/script`, { outline: '故事', characters: '', generation_options: { visual_style: style } })
   const scene = await call<{ id: string }>('POST', `/api/projects/${project.id}/script/scenes`, { heading: '渡口' })
   const visuals = await call<{ visual_profiles: Profile[] }>('POST', `/api/projects/${project.id}/visual-profiles`, { profiles: [{
     kind: 'character', name: '船工', variant: '常服', definition: '蓝色粗布衣，短发', view_requirements: '正侧背视图', scene_ids: [scene.id],
@@ -30,13 +31,13 @@ async function fixture(count = 2) {
   const shot = await call<{ id: string }>('POST', `/api/projects/${project.id}/shots`, { title: '船工', source_scene_id: scene.id })
   const provider = await call<{ id: string }>('POST', '/api/providers', { name: '隔离测试', base_url: 'https://example.invalid' })
   const model = await call<{ id: string }>('POST', '/api/models', { provider_id: provider.id, name: '测试', remote_id: 'test', modality: 'image', protocol: 'image_generations',
-    settings: { request_path: '/image', image_base64_path: 'data.0.b64_json', request_template: { prompt: '{{prompt}}' } } })
+    settings: { request_path: '/image', image_base64_path: 'data.0.b64_json', request_template: { prompt: '{{prompt}}', images: '{{images}}' } } })
   const preview = await call<{ prompt: string; reference_signature: string }>('POST', `/api/visual-profiles/${profile.id}/board-preview`, { model_id: model.id, expected_revision: 1 })
   const batch = await call<{ jobs: Job[]; task: { id: string } }>('POST', `/api/visual-profiles/${profile.id}/generate`, {
     model_id: model.id, expected_revision: 1, prompt: preview.prompt, reference_signature: preview.reference_signature,
     ratio: '16:9', resolution: null, quality: null, clarity: null, background: null, candidate_count: count,
   })
-  return { project, profile, shot, ...batch }
+  return { project, profile, shot, model, ...batch }
 }
 function succeed(job: Job) {
   const assetId = newId()
@@ -119,6 +120,50 @@ test('old definition versions and old styles cannot be confirmed in bulk or auto
     autoConfirmGeneratedProfileBoard(f.jobs[1]!)
     assert.equal(selected(f.profile.id).board_asset_id, null)
     assert.equal((await confirm(f)).confirmed.length, 0)
+  }
+})
+
+test('historical mixed batches validate each selected candidate rather than inheriting the current sibling request', async () => {
+  for (const mode of ['automatic', 'bulk']) for (const changed of ['custom', 'removed', 'revision', 'style', 'base']) {
+    const f = await fixture(2, '项目水墨')
+    let baseSignature: string | undefined
+    if (changed === 'base') {
+      const { visual_profiles: [base] } = await call<{ visual_profiles: Profile[] }>('POST', `/api/projects/${f.project.id}/visual-profiles`, { profiles: [{
+        kind: 'character', name: '基础船工', variant: '常态', definition: '蓝色粗布衣，短发', view_requirements: '正侧背',
+      }] })
+      const baseAsset = succeed(f.jobs[0]!)
+      await call('PATCH', `/api/visual-profiles/${base!.id}`, { expected_revision: 1, board_asset_id: baseAsset })
+      ready(f.task.id)
+      f.profile = await call<Profile>('PATCH', `/api/visual-profiles/${f.profile.id}`, { expected_revision: 1, base_profile_id: base!.id, state_delta: '只添加左臂伤痕' })
+      const preview = await call<{ base_reference_signature: string }>('POST', `/api/visual-profiles/${f.profile.id}/board-preview`, {
+        model_id: f.model.id, expected_revision: f.profile.revision,
+      })
+      baseSignature = preview.base_reference_signature
+    }
+    // Normal enqueue gives every sibling the same immutable request. These
+    // differing legacy records exercise a defensive path, not an API bypass.
+    for (const [index, job] of f.jobs.entries()) {
+      const request = JSON.parse(job.request)
+      request.visual_profile_revision = f.profile.revision
+      if (baseSignature) request.visual_base_signature = baseSignature
+      if (!index) {
+        if (changed === 'custom' || changed === 'removed') {
+          request.prompt_document = true
+          request.prompt = changed === 'custom' ? '制作船工。\n【项目画风约束】真人摄影【项目画风约束结束】' : '制作船工。'
+        } else if (changed === 'revision') request.visual_profile_revision = f.profile.revision + 1
+        else if (changed === 'style') request.project_style_version = '0'.repeat(64)
+        else request.visual_base_signature = '0'.repeat(64)
+      }
+      run('UPDATE jobs SET request=? WHERE id=?', JSON.stringify(request), job.id)
+    }
+    const rejected = succeed(f.jobs[0]!), accepted = succeed(f.jobs[1]!)
+    ready(f.task.id)
+    if (mode === 'automatic') autoConfirmGeneratedProfileBoard(one<Job>('SELECT * FROM jobs WHERE id=?', f.jobs[1]!.id)!)
+    else assert.equal((await confirm(f)).confirmed[0]?.board_asset_id, accepted)
+    assert.equal(selected(f.profile.id).board_asset_id, accepted)
+    assert.notEqual(selected(f.profile.id).board_asset_id, rejected)
+    assert.equal(JSON.parse(one<Job>('SELECT * FROM jobs WHERE id=?', f.jobs[0]!.id)!.request).visual_style_reviews, undefined,
+      'batch selection must not create a per-image review for a rejected custom candidate')
   }
 })
 

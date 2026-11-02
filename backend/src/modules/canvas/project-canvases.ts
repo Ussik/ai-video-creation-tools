@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import { canvasDeletionPreview, recycleCanvasResources } from './canvas-cleanup.js'
 import { all, db, newId, now, one, required, run, type Project } from '../../infrastructure/database/db.js'
 
 export type ProjectCanvasRecord = { id: string; project_id: string; name: string; position: number; is_default: number; viewport: string | null; created_at: string; updated_at: string }
@@ -71,14 +72,24 @@ export function registerProjectCanvasRoutes(app: FastifyInstance, context: { gra
       return metadata(canvasRecord(projectId, canvasId))
     }).immediate()
   })
+  app.get('/api/projects/:id/canvases/:canvasId/deletion-preview', async request => {
+    const { id: projectId, canvasId } = params.parse(request.params)
+    return db.transaction(() => {
+      canvasRecord(projectId, canvasId)
+      return canvasDeletionPreview(projectId, canvasId, context.graph(projectId, canvasId))
+    })()
+  })
   app.delete('/api/projects/:id/canvases/:canvasId', async request => {
     const { id: projectId, canvasId } = params.parse(request.params)
-    const data = z.object({ revision: z.string().length(64) }).strict().parse(request.body)
+    const data = z.object({ revision: z.string().length(64), cleanup_revision: z.string().length(64).optional(), cleanup_shots: z.boolean().optional(), cleanup_assets: z.boolean().optional() }).strict().parse(request.body)
     return db.transaction(() => {
       const canvas = canvasRecord(projectId, canvasId)
       const others = all<ProjectCanvasRecord>('SELECT * FROM project_canvases WHERE project_id=? AND id<>? ORDER BY position', projectId, canvasId)
       if (!others.length) fail('项目至少保留一张画布')
       if (context.graph(projectId, canvasId).revision !== data.revision) fail('画布已更新，请刷新后再删除', 409)
+      const preview = canvasDeletionPreview(projectId, canvasId, context.graph(projectId, canvasId))
+      if ((data.cleanup_shots || data.cleanup_assets) && data.cleanup_revision !== preview.cleanup_revision) fail('相关分镜或素材引用已更新，请重新查看删除影响', 409)
+      recycleCanvasResources(preview, !!data.cleanup_shots, !!data.cleanup_assets)
       run('DELETE FROM canvas_edges WHERE project_id=? AND (canvas_id=? OR (canvas_id IS NULL AND ?=1))', projectId, canvasId, canvas.is_default)
       run('DELETE FROM canvas_nodes WHERE project_id=? AND (canvas_id=? OR (canvas_id IS NULL AND ?=1))', projectId, canvasId, canvas.is_default)
       run('DELETE FROM project_canvases WHERE id=?', canvasId)

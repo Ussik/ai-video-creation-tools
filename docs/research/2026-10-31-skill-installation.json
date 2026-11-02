@@ -1,0 +1,263 @@
+{
+  "verified_date": "2026-10-31",
+  "timezone": "Asia/Shanghai",
+  "scope": "Studio application skill library in data/studio.db; not global Codex or Claude skills",
+  "updated": 8,
+  "installed": 9,
+  "summary": {
+    "skills": 17,
+    "enabled": 13,
+    "global_defaults_unchanged": true,
+    "project_defaults_unchanged": true,
+    "original_config_preserved": true,
+    "api_matches_sqlite": true
+  },
+  "skills": [
+    {
+      "id": "fe5863a30bd4d84367feff800c9240df",
+      "name": "character-refs",
+      "repo": "eternityspring/shuohao-skills",
+      "path": "skills/character-refs",
+      "revision": "5612d2a0bd5f19d978c3ee19d1e42840335e3b4b",
+      "enabled": false,
+      "stages": [
+        "visual_assets",
+        "image_prompt"
+      ],
+      "file_count": 9,
+      "file_bytes": 54977,
+      "files_sha256": "b3fb125b84efab4fcc89fb3a7a22e81bdedb7baa2af8e2682b215123122e7bcb"
+    },
+    {
+      "id": "d92ba9cc0d8c35dfc0f1844f19d21b3b",
+      "name": "novel-art",
+      "repo": "eternityspring/shuohao-skills",
+      "path": "skills/novel-art",
+      "revision": "5612d2a0bd5f19d978c3ee19d1e42840335e3b4b",
+      "enabled": true,
+      "stages": [
+        "visual_assets",
+        "image_prompt"
+      ],
+      "file_count": 12,
+      "file_bytes": 110589,
+      "files_sha256": "5ce81b82a97a68604092f796eca44106bec0da7dcba7989a2d2032786fdc4f17"
+    },
+    {
+      "id": "90711b671fae2e864755f436b0ece881",
+      "name": "novel-characters",
+      "repo": "eternityspring/shuohao-skills",
+      "path": "skills/novel-characters",
+      "revision": "5612d2a0bd5f19d978c3ee19d1e42840335e3b4b",
+      "enabled": true,
+      "stages": [
+        "visual_assets"
+      ],
+      "file_count": 13,
+      "file_bytes": 168103,
+      "files_sha256": "e3530cf7c0110386f32bc8763286efcf9cde428e13f694d492637999c172696a"
+    },
+    {
+      "id": "86818aba7039c823d9e458c1eb379558",
+      "name": "novel-outline",
+      "repo": "eternityspring/shuohao-skills",
+      "path": "skills/novel-outline",
+      "revision": "5612d2a0bd5f19d978c3ee19d1e42840335e3b4b",
+      "enabled": true,
+      "stages": [
+        "script"
+      ],
+      "file_count": 9,
+      "file_bytes": 54417,
+      "files_sha256": "6d9d65ee9cab075437f5eb4941a4b4192dcb1c649d04d1c78cb598edd156cae3"
+    },
+    {
+      "id": "e97ceacebd59003a9274e116958ab458",
+      "name": "novel-script",
+      "repo": "eternityspring/shuohao-skills",
+      "path": "skills/novel-script",
+      "revision": "5612d2a0bd5f19d978c3ee19d1e42840335e3b4b",
+      "enabled": true,
+      "stages": [
+        "script"
+      ],
+      "file_count": 11,
+      "file_bytes": 144656,
+      "files_sha256": "e1a740b92fc890471c0a0ae3b1555fc8ee5a095149b23e174fbafc1bbff00bc5"
+    },
+    {
+      "id": "4681b51e87ffa6be0d6467b3a71cb7d8",
+      "name": "novel-staging",
+      "repo": "eternityspring/shuohao-skills",
+      "path": "skills/novel-staging",
+      "revision": "5612d2a0bd5f19d978c3ee19d1e42840335e3b4b",
+      "enabled": false,
+      "stages": [
+        "storyboard"
+      ],
+      "file_count": 12,
+      "file_bytes": 123939,
+      "files_sha256": "1402265d4577e9b96393d60126923020ae598395ad595935cb95fd9600a590a2"
+    },
+    {
+      "id": "dfef92db92f455143e6bf4d6d9aedc89",
+      "name": "novel-storyboard",
+      "repo": "eternityspring/shuohao-skills",
+      "path": "skills/novel-storyboard",
+      "revision": "5612d2a0bd5f19d978c3ee19d1e42840335e3b4b",
+      "enabled": true,
+      "stages": [
+        "storyboard",
+        "video_prompt"
+      ],
+      "file_count": 19,
+      "file_bytes": 239584,
+      "files_sha256": "fa110150fbf95749745cb3c1776a99d564664310371670b4e926c038ecf3f812"
+    },
+    {
+      "id": "a0afd161560cc35a78c6aa45a5a7a65c",
+      "name": "short-drama-assets",
+      "repo": "zenstory-ai/drama-skills",
+      "path": "skills/short-drama-assets",
+      "revision": "33eb7fece523fb705869dff3f4c95c58ce9b577d",
+      "enabled": true,
+      "stages": [
+        "visual_assets"
+      ],
+      "file_count": 13,
+      "file_bytes": 80889,
+      "files_sha256": "1343a4ea8366a500690e7e28da50a970239c2042bf7db52162d3d4749976623d"
+    },
+    {
+      "id": "ebdca3b2968e0f1a17933b952e82edb2",
+      "name": "short-drama-develop",
+      "repo": "zenstory-ai/drama-skills",
+      "path": "skills/short-drama-develop",
+      "revision": "33eb7fece523fb705869dff3f4c95c58ce9b577d",
+      "enabled": true,
+      "stages": [
+        "script"
+      ],
+      "file_count": 32,
+      "file_bytes": 272892,
+      "files_sha256": "537fd29f2007f1dc74bc32c94f8bc9ce59e2632c091dccfa7065661f190f743e"
+    },
+    {
+      "id": "8ed9f67161822c5e8acd96862a187684",
+      "name": "short-drama-edit",
+      "repo": "zenstory-ai/drama-skills",
+      "path": "skills/short-drama-edit",
+      "revision": "33eb7fece523fb705869dff3f4c95c58ce9b577d",
+      "enabled": false,
+      "stages": [],
+      "file_count": 12,
+      "file_bytes": 51407,
+      "files_sha256": "beb3505f61ba061073f8435a002d9bd0be991d0b28669295799dec40e2d8478e"
+    },
+    {
+      "id": "73a1919fc07cdcef4f14840c698cc77b",
+      "name": "short-drama-image-prompts",
+      "repo": "zenstory-ai/drama-skills",
+      "path": "skills/short-drama-image-prompts",
+      "revision": "33eb7fece523fb705869dff3f4c95c58ce9b577d",
+      "enabled": true,
+      "stages": [
+        "image_prompt"
+      ],
+      "file_count": 12,
+      "file_bytes": 79779,
+      "files_sha256": "677aaf9986251f18aa930aa09b431bcefb3ecd3e424a46e089e87841eee204bf"
+    },
+    {
+      "id": "48a01a484f463e38f776c03f11c2f91f",
+      "name": "short-drama-novel-analyze",
+      "repo": "zenstory-ai/drama-skills",
+      "path": "skills/short-drama-novel-analyze",
+      "revision": "33eb7fece523fb705869dff3f4c95c58ce9b577d",
+      "enabled": true,
+      "stages": [
+        "script"
+      ],
+      "file_count": 7,
+      "file_bytes": 50579,
+      "files_sha256": "7059a14bc685b72a86dacfa8bd4ce474b4058622f03290d6e1a5f1685f748351"
+    },
+    {
+      "id": "d81071a10104aade7d28a0c1ccbdd848",
+      "name": "short-drama-produce",
+      "repo": "zenstory-ai/drama-skills",
+      "path": "skills/short-drama-produce",
+      "revision": "33eb7fece523fb705869dff3f4c95c58ce9b577d",
+      "enabled": false,
+      "stages": [],
+      "file_count": 8,
+      "file_bytes": 44533,
+      "files_sha256": "8aa1e2b8c853d800c7885731a67d248e150a5473b68b4968689f18626a6fef6e"
+    },
+    {
+      "id": "0e24c5eeb6046b921faae5d2deccab05",
+      "name": "short-drama-review",
+      "repo": "zenstory-ai/drama-skills",
+      "path": "skills/short-drama-review",
+      "revision": "33eb7fece523fb705869dff3f4c95c58ce9b577d",
+      "enabled": true,
+      "stages": [
+        "script",
+        "storyboard",
+        "image_prompt",
+        "video_prompt"
+      ],
+      "file_count": 11,
+      "file_bytes": 91971,
+      "files_sha256": "54e1f4c171e7098a7a3f023ff1421f363983bb396d0d6d7ad06fe579d70adcce"
+    },
+    {
+      "id": "3dbf783e076b109a1f385c2f10006983",
+      "name": "short-drama-storyboard",
+      "repo": "zenstory-ai/drama-skills",
+      "path": "skills/short-drama-storyboard",
+      "revision": "33eb7fece523fb705869dff3f4c95c58ce9b577d",
+      "enabled": true,
+      "stages": [
+        "storyboard"
+      ],
+      "file_count": 15,
+      "file_bytes": 147451,
+      "files_sha256": "94e17c47368b8007aba5f4f7510f44824396fa8ce42ce1c81a79ea6815942531"
+    },
+    {
+      "id": "585767260b5a9dca14632f37c0ed69e0",
+      "name": "short-drama-video-prompts",
+      "repo": "zenstory-ai/drama-skills",
+      "path": "skills/short-drama-video-prompts",
+      "revision": "33eb7fece523fb705869dff3f4c95c58ce9b577d",
+      "enabled": true,
+      "stages": [
+        "video_prompt"
+      ],
+      "file_count": 15,
+      "file_bytes": 199014,
+      "files_sha256": "0e24a1666074343498c7a560334ac9e87a256769f44f68aa193a0ebeac7e311f"
+    },
+    {
+      "id": "5b4929915b40112723f1e983b75f008e",
+      "name": "short-drama-write",
+      "repo": "zenstory-ai/drama-skills",
+      "path": "skills/short-drama-write",
+      "revision": "33eb7fece523fb705869dff3f4c95c58ce9b577d",
+      "enabled": true,
+      "stages": [
+        "script"
+      ],
+      "file_count": 11,
+      "file_bytes": 134150,
+      "files_sha256": "8930e196d6150611deef3597eab09ad64934306870fd7b20ce4e8968a7d7581d"
+    }
+  ],
+  "execution_boundary": "Text bundles only; third-party scripts and external skill tools were not installed or run",
+  "verification": [
+    "Official application API",
+    "Read-only SQLite comparison",
+    "Browser installed-skills list"
+  ]
+}

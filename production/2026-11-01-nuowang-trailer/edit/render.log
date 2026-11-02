@@ -1,0 +1,239 @@
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from '/Users/caoyanzu/workspace/ai-video-creation-tools/production/2026-11-01-nuowang-trailer/media/01-bb941dd7-bdb1-4fa1-a403-a8e24d3179b2.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf58.76.100
+  Duration: 00:00:15.10, start: 0.000000, bitrate: 3241 kb/s
+  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1280x720, 3106 kb/s, 24 fps, 24 tbr, 12288 tbn (default)
+    Metadata:
+      handler_name    : VideoHandler
+      vendor_id       : [0][0][0][0]
+  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 32000 Hz, stereo, fltp, 129 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+      vendor_id       : [0][0][0][0]
+Input #1, mov,mp4,m4a,3gp,3g2,mj2, from '/Users/caoyanzu/workspace/ai-video-creation-tools/production/2026-11-01-nuowang-trailer/media/02-59063628-39fd-4a19-b26d-76dc906de869.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf58.76.100
+  Duration: 00:00:15.10, start: 0.000000, bitrate: 4186 kb/s
+  Stream #1:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1280x720, 4056 kb/s, 24 fps, 24 tbr, 12288 tbn (default)
+    Metadata:
+      handler_name    : VideoHandler
+      vendor_id       : [0][0][0][0]
+  Stream #1:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 32000 Hz, stereo, fltp, 128 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+      vendor_id       : [0][0][0][0]
+Input #2, mov,mp4,m4a,3gp,3g2,mj2, from '/Users/caoyanzu/workspace/ai-video-creation-tools/production/2026-11-01-nuowang-trailer/media/03-8f076775-f9d1-462a-a191-1cffd1b7e34f.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf58.76.100
+  Duration: 00:00:15.10, start: 0.000000, bitrate: 5506 kb/s
+  Stream #2:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1280x720, 5382 kb/s, 24 fps, 24 tbr, 12288 tbn (default)
+    Metadata:
+      handler_name    : VideoHandler
+      vendor_id       : [0][0][0][0]
+  Stream #2:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 32000 Hz, stereo, fltp, 128 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+      vendor_id       : [0][0][0][0]
+Input #3, mov,mp4,m4a,3gp,3g2,mj2, from '/Users/caoyanzu/workspace/ai-video-creation-tools/production/2026-11-01-nuowang-trailer/media/04-0fc441ca-5364-48ee-aeb9-895a5170f136.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf58.76.100
+  Duration: 00:00:15.10, start: 0.000000, bitrate: 3551 kb/s
+  Stream #3:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1280x720, 3419 kb/s, 24 fps, 24 tbr, 12288 tbn (default)
+    Metadata:
+      handler_name    : VideoHandler
+      vendor_id       : [0][0][0][0]
+  Stream #3:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 32000 Hz, stereo, fltp, 128 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+      vendor_id       : [0][0][0][0]
+Input #4, mov,mp4,m4a,3gp,3g2,mj2, from '/Users/caoyanzu/workspace/ai-video-creation-tools/production/2026-11-01-nuowang-trailer/media/05-1d280775-38ea-4521-a397-030266f8d3b5.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf58.76.100
+  Duration: 00:00:15.10, start: 0.000000, bitrate: 4629 kb/s
+  Stream #4:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1280x720, 4501 kb/s, 24 fps, 24 tbr, 12288 tbn (default)
+    Metadata:
+      handler_name    : VideoHandler
+      vendor_id       : [0][0][0][0]
+  Stream #4:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 32000 Hz, stereo, fltp, 128 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+      vendor_id       : [0][0][0][0]
+Input #5, mov,mp4,m4a,3gp,3g2,mj2, from '/Users/caoyanzu/workspace/ai-video-creation-tools/production/2026-11-01-nuowang-trailer/media/06-7b16a91b-362c-4df6-8421-38c033bd5a60.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf58.76.100
+  Duration: 00:00:15.10, start: 0.000000, bitrate: 4979 kb/s
+  Stream #5:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1280x720, 4852 kb/s, 24 fps, 24 tbr, 12288 tbn (default)
+    Metadata:
+      handler_name    : VideoHandler
+      vendor_id       : [0][0][0][0]
+  Stream #5:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 32000 Hz, stereo, fltp, 128 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+      vendor_id       : [0][0][0][0]
+Input #6, png_pipe, from '/Users/caoyanzu/workspace/ai-video-creation-tools/production/2026-11-01-nuowang-trailer/edit/title-card.png':
+  Duration: N/A, bitrate: N/A
+  Stream #6:0: Video: png, rgb24(pc), 1280x720, 24 fps, 24 tbr, 24 tbn
+Guessed Channel Layout for Input Stream #7.0 : stereo
+Input #7, wav, from '/Users/caoyanzu/workspace/ai-video-creation-tools/production/2026-11-01-nuowang-trailer/audio/nuowang_original_ritual_cue_90s.wav':
+  Metadata:
+    encoder         : Lavf60.3.100
+  Duration: 00:01:30.00, bitrate: 1536 kb/s
+  Stream #7:0: Audio: pcm_s16le ([1][0][0][0] / 0x0001), 48000 Hz, 2 channels, s16, 1536 kb/s
+[mp3 @ 0x136108830] Estimating duration from bitrate, this may be inaccurate
+Input #8, mp3, from '/Users/caoyanzu/workspace/ai-video-creation-tools/production/2026-11-01-nuowang-trailer/media/v1-speech-2621902d33fe44ce942aad6e31ab93b9.mp3':
+  Metadata:
+    encoder         : Lavf58.76.100
+  Duration: 00:00:03.65, start: 0.000000, bitrate: 64 kb/s
+  Stream #8:0: Audio: mp3, 24000 Hz, mono, fltp, 64 kb/s
+[mp3 @ 0x136109950] Estimating duration from bitrate, this may be inaccurate
+Input #9, mp3, from '/Users/caoyanzu/workspace/ai-video-creation-tools/production/2026-11-01-nuowang-trailer/media/v2-speech-9ea996e46f4b41749245b7277014a1d4.mp3':
+  Metadata:
+    encoder         : Lavf58.76.100
+  Duration: 00:00:04.46, start: 0.000000, bitrate: 64 kb/s
+  Stream #9:0: Audio: mp3, 24000 Hz, mono, fltp, 64 kb/s
+[mp3 @ 0x136110d70] Estimating duration from bitrate, this may be inaccurate
+Input #10, mp3, from '/Users/caoyanzu/workspace/ai-video-creation-tools/production/2026-11-01-nuowang-trailer/media/v3-speech-a5d4a9fc2d314da2a2e762d12c99e8ff.mp3':
+  Metadata:
+    encoder         : Lavf58.76.100
+  Duration: 00:00:06.19, start: 0.000000, bitrate: 64 kb/s
+  Stream #10:0: Audio: mp3, 24000 Hz, mono, fltp, 64 kb/s
+[mp3 @ 0x1361180f0] Estimating duration from bitrate, this may be inaccurate
+Input #11, mp3, from '/Users/caoyanzu/workspace/ai-video-creation-tools/production/2026-11-01-nuowang-trailer/media/v4-speech-25f42da4d37c4b0890071f4c0fb69b76.mp3':
+  Metadata:
+    encoder         : Lavf58.76.100
+  Duration: 00:00:04.22, start: 0.000000, bitrate: 64 kb/s
+  Stream #11:0: Audio: mp3, 24000 Hz, mono, fltp, 64 kb/s
+[mp3 @ 0x135710aa0] Estimating duration from bitrate, this may be inaccurate
+Input #12, mp3, from '/Users/caoyanzu/workspace/ai-video-creation-tools/production/2026-11-01-nuowang-trailer/media/v5-speech-06c8eab503434c91a48d853d05661075.mp3':
+  Metadata:
+    encoder         : Lavf58.76.100
+  Duration: 00:00:05.50, start: 0.000000, bitrate: 64 kb/s
+  Stream #12:0: Audio: mp3, 24000 Hz, mono, fltp, 64 kb/s
+[mp3 @ 0x135708610] Estimating duration from bitrate, this may be inaccurate
+Input #13, mp3, from '/Users/caoyanzu/workspace/ai-video-creation-tools/production/2026-11-01-nuowang-trailer/media/v6-speech-1e65336863aa404887434f4fef639b3e.mp3':
+  Metadata:
+    encoder         : Lavf58.76.100
+  Duration: 00:00:03.41, start: 0.000000, bitrate: 64 kb/s
+  Stream #13:0: Audio: mp3, 24000 Hz, mono, fltp, 64 kb/s
+[Parsed_ass_101 @ 0x136135800] libass API version: 0x1700000
+[Parsed_ass_101 @ 0x136135800] libass source: tarball: 0.17.0
+[Parsed_ass_101 @ 0x136135800] Shaper: FriBidi 1.0.12 (SIMPLE) HarfBuzz-ng 6.0.0 (COMPLEX)
+[Parsed_ass_101 @ 0x136135800] Using font provider coretext
+[Parsed_ass_101 @ 0x136135800] Added subtitle file: '/Users/caoyanzu/workspace/ai-video-creation-tools/production/2026-11-01-nuowang-trailer/edit/narration.ass' (2 styles, 6 events)
+Stream mapping:
+  Stream #0:0 (h264) -> trim:default
+  Stream #0:1 (aac) -> atrim:default
+  Stream #1:0 (h264) -> trim:default
+  Stream #1:1 (aac) -> atrim:default
+  Stream #2:0 (h264) -> trim:default
+  Stream #2:1 (aac) -> atrim:default
+  Stream #3:0 (h264) -> trim:default
+  Stream #3:1 (aac) -> atrim:default
+  Stream #4:0 (h264) -> trim:default
+  Stream #4:1 (aac) -> atrim:default
+  Stream #5:0 (h264) -> trim:default
+  Stream #5:1 (aac) -> atrim:default
+  Stream #6:0 (png) -> trim:default
+  Stream #7:0 (pcm_s16le) -> aresample:default
+  Stream #8:0 (mp3float) -> aresample:default
+  Stream #9:0 (mp3float) -> aresample:default
+  Stream #10:0 (mp3float) -> aresample:default
+  Stream #11:0 (mp3float) -> aresample:default
+  Stream #12:0 (mp3float) -> aresample:default
+  Stream #13:0 (mp3float) -> aresample:default
+  ass:default -> Stream #0:0 (libx264)
+  aresample:default -> Stream #0:1 (aac)
+[Parsed_ass_101 @ 0x136042ce0] libass API version: 0x1700000
+[Parsed_ass_101 @ 0x136042ce0] libass source: tarball: 0.17.0
+[Parsed_ass_101 @ 0x136042ce0] Shaper: FriBidi 1.0.12 (SIMPLE) HarfBuzz-ng 6.0.0 (COMPLEX)
+[Parsed_ass_101 @ 0x136042ce0] Using font provider coretext
+[Parsed_ass_101 @ 0x136042ce0] Added subtitle file: '/Users/caoyanzu/workspace/ai-video-creation-tools/production/2026-11-01-nuowang-trailer/edit/narration.ass' (2 styles, 6 events)
+[libx264 @ 0x13612a430] using SAR=1/1
+[libx264 @ 0x13612a430] using cpu capabilities: ARMv8 NEON
+[libx264 @ 0x13612a430] profile High, level 3.1, 4:2:0, 8-bit
+[libx264 @ 0x13612a430] 264 - core 164 r3075 66a5bc1 - H.264/MPEG-4 AVC codec - Copyleft 2003-2021 - http://www.videolan.org/x264.html - options: cabac=1 ref=3 deblock=1:0:0 analyse=0x3:0x113 me=hex subme=7 psy=1 psy_rd=1.00:0.00 mixed_ref=1 me_range=16 chroma_me=1 trellis=1 8x8dct=1 cqm=0 deadzone=21,11 fast_pskip=1 chroma_qp_offset=-2 threads=18 lookahead_threads=3 sliced_threads=0 nr=0 decimate=1 interlaced=0 bluray_compat=0 constrained_intra=0 bframes=3 b_pyramid=2 b_adapt=1 b_bias=0 direct=1 weightb=1 open_gop=0 weightp=2 keyint=250 keyint_min=24 scenecut=40 intra_refresh=0 rc_lookahead=40 rc=crf mbtree=1 crf=18.0 qcomp=0.60 qpmin=0 qpmax=69 qpstep=4 ip_ratio=1.40 aq=1:1.00
+Output #0, mp4, to '/Users/caoyanzu/workspace/ai-video-creation-tools/production/2026-11-01-nuowang-trailer/傩王_90秒预告_鼓起人间.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    comment         : 独立预告画布制作；依项目已有设定；无剧透终局。
+    title           : 傩王｜90秒预告·鼓起人间
+    encoder         : Lavf60.3.100
+  Stream #0:0: Video: h264 (avc1 / 0x31637661), yuv420p(progressive), 1280x720 [SAR 1:1 DAR 16:9], q=2-31, 24 fps, 12288 tbn
+    Metadata:
+      encoder         : Lavc60.3.100 libx264
+    Side data:
+      cpb: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+  Stream #0:1: Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 256 kb/s
+    Metadata:
+      encoder         : Lavc60.3.100 aac
+frame=    0 fps=0.0 q=0.0 size=       0kB time=-577014:32:22.77 bitrate=  -0.0kbits/s speed=N/A
+[Parsed_ass_101 @ 0x136042ce0] fontselect: (Heiti SC, 400, 0) -> /System/Library/Fonts/STHeiti Medium.ttc, -1, STHeitiSC-Medium
+frame=   39 fps=0.0 q=23.0 size=     512kB time=00:00:01.72 bitrate=2427.5kbits/s speed= 2.9x
+frame=  119 fps=108 q=23.0 size=    2048kB time=00:00:05.03 bitrate=3332.4kbits/s speed=4.56x
+frame=  263 fps=164 q=23.0 size=    3584kB time=00:00:11.11 bitrate=2641.6kbits/s speed=6.93x
+frame=  355 fps=166 q=23.0 size=    4352kB time=00:00:14.93 bitrate=2387.4kbits/s speed=   7x
+frame=  441 fps=167 q=23.0 size=    6144kB time=00:00:18.51 bitrate=2718.1kbits/s speed=7.02x
+frame=  532 fps=169 q=23.0 size=    7680kB time=00:00:22.22 bitrate=2830.3kbits/s speed=7.08x
+frame=  610 fps=167 q=23.0 size=    9216kB time=00:00:25.51 bitrate=2959.0kbits/s speed=7.01x
+frame=  656 fps=158 q=23.0 size=   10240kB time=00:00:29.93 bitrate=2802.7kbits/s speed=7.22x
+frame=  747 fps=161 q=23.0 size=   12288kB time=00:00:31.23 bitrate=3223.1kbits/s speed=6.72x
+frame=  804 fps=156 q=23.0 size=   14080kB time=00:00:33.51 bitrate=3441.6kbits/s speed=6.51x
+frame=  841 fps=148 q=23.0 size=   14848kB time=00:00:35.11 bitrate=3463.9kbits/s speed=6.18x
+frame=  887 fps=143 q=23.0 size=   16384kB time=00:00:37.03 bitrate=3624.1kbits/s speed=5.99x
+frame=  964 fps=144 q=23.0 size=   18176kB time=00:00:40.32 bitrate=3692.9kbits/s speed=6.03x
+frame= 1004 fps=140 q=23.0 size=   19456kB time=00:00:43.43 bitrate=3669.5kbits/s speed=6.04x
+frame= 1086 fps=141 q=23.0 size=   21504kB time=00:00:45.33 bitrate=3885.9kbits/s speed= 5.9x
+frame= 1173 fps=143 q=23.0 size=   23040kB time=00:00:49.02 bitrate=3850.0kbits/s speed=5.98x
+frame= 1288 fps=148 q=23.0 size=   24576kB time=00:00:53.71 bitrate=3747.9kbits/s speed=6.18x
+frame= 1364 fps=148 q=23.0 size=   26368kB time=00:00:57.92 bitrate=3729.4kbits/s speed=6.29x
+frame= 1445 fps=149 q=23.0 size=   27392kB time=00:01:00.33 bitrate=3719.4kbits/s speed=6.21x
+frame= 1519 fps=149 q=23.0 size=   29440kB time=00:01:03.42 bitrate=3802.5kbits/s speed= 6.2x
+frame= 1601 fps=149 q=23.0 size=   30976kB time=00:01:06.73 bitrate=3802.7kbits/s speed=6.21x
+frame= 1682 fps=150 q=23.0 size=   33024kB time=00:01:10.22 bitrate=3852.1kbits/s speed=6.25x
+frame= 1794 fps=152 q=23.0 size=   34560kB time=00:01:14.92 bitrate=3778.8kbits/s speed=6.33x
+frame= 1860 fps=151 q=23.0 size=   36352kB time=00:01:17.63 bitrate=3836.0kbits/s speed=6.29x
+frame= 1920 fps=149 q=23.0 size=   38400kB time=00:01:20.02 bitrate=3931.1kbits/s speed=6.22x
+frame= 1971 fps=147 q=23.0 size=   39936kB time=00:01:24.62 bitrate=3865.8kbits/s speed=6.33x
+frame= 2053 fps=148 q=23.0 size=   41472kB time=00:01:29.92 bitrate=3778.2kbits/s speed=6.48x
+[mp4 @ 0x13612f3f0] Starting second pass: moving the moov atom to the beginning of the file
+frame= 2160 fps=153 q=-1.0 Lsize=   41745kB time=00:01:29.98 bitrate=3800.4kbits/s speed=6.38x
+video:38882kB audio:2801kB subtitle:0kB other streams:0kB global headers:0kB muxing overhead: 0.147608%
+[libx264 @ 0x13612a430] frame I:38    Avg QP:14.95  size: 61082
+[libx264 @ 0x13612a430] frame P:843   Avg QP:17.05  size: 29045
+[libx264 @ 0x13612a430] frame B:1279  Avg QP:20.06  size: 10171
+[libx264 @ 0x13612a430] consecutive B-frames:  7.5% 38.0%  7.6% 46.9%
+[libx264 @ 0x13612a430] mb I  I16..4:  8.7% 56.2% 35.1%
+[libx264 @ 0x13612a430] mb P  I16..4:  4.1% 23.9%  6.2%  P16..4: 33.5% 11.6%  5.3%  0.0%  0.0%    skip:15.3%
+[libx264 @ 0x13612a430] mb B  I16..4:  1.0%  5.2%  1.3%  B16..8: 35.6%  5.0%  0.8%  direct: 4.8%  skip:46.3%  L0:37.0% L1:48.3% BI:14.7%
+[libx264 @ 0x13612a430] 8x8 transform intra:68.5% inter:58.8%
+[libx264 @ 0x13612a430] coded y,uvDC,uvAC intra: 60.9% 59.7% 26.0% inter: 18.2% 19.7% 1.3%
+[libx264 @ 0x13612a430] i16 v,h,dc,p: 21% 34% 12% 33%
+[libx264 @ 0x13612a430] i8 v,h,dc,ddl,ddr,vr,hd,vl,hu: 15% 24% 22%  6%  6%  5%  8%  6%  8%
+[libx264 @ 0x13612a430] i4 v,h,dc,ddl,ddr,vr,hd,vl,hu: 20% 23% 15%  6%  8%  7%  8%  6%  6%
+[libx264 @ 0x13612a430] i8c dc,h,v,p: 47% 25% 20%  8%
+[libx264 @ 0x13612a430] Weighted P-Frames: Y:3.4% UV:2.1%
+[libx264 @ 0x13612a430] ref P L0: 73.2% 11.4% 12.6%  2.7%  0.0%
+[libx264 @ 0x13612a430] ref B L0: 92.3%  6.9%  0.8%
+[libx264 @ 0x13612a430] ref B L1: 99.3%  0.7%
+[libx264 @ 0x13612a430] kb/s:3539.04
+[aac @ 0x13612aee0] Qavg: 1776.287

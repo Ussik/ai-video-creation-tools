@@ -1,15 +1,19 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
-import { ActionIcon, Badge, HoverCard, Popover, Portal, ScrollArea, TextInput, Tooltip, UnstyledButton } from '@mantine/core'
+import { useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState, useSyncExternalStore, type Ref } from 'react'
+import { ActionIcon, Badge, HoverCard, Menu, Popover, Portal, ScrollArea, TextInput, UnstyledButton } from '@mantine/core'
 import { EditorContent, NodeViewContent, NodeViewWrapper, ReactNodeViewRenderer, useEditor, type NodeViewProps } from '@tiptap/react'
 import { Node as TiptapNode, Extension, mergeAttributes, type Editor, type JSONContent } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
-import { Plugin } from '@tiptap/pm/state'
+import { Plugin, type Transaction } from '@tiptap/pm/state'
 import { Fragment, Slice, type Node as ProseMirrorNode } from '@tiptap/pm/model'
 import { closeHistory, isHistoryTransaction } from '@tiptap/pm/history'
-import { ArrowLeft, Check, ChevronDown, ImageIcon, Plus, Search, TriangleAlert, X } from 'lucide-react'
+import { ArrowLeft, Check, ChevronDown, ImageIcon, MoreHorizontal, Plus, Search, SlidersHorizontal, TriangleAlert, X } from 'lucide-react'
 import { tokenizePromptReferenceNumbers } from '@video-studio/shared/visuals/prompt-references'
 import { parsePromptSectionDocument, type PromptSectionBlock, type PromptSectionDocument } from '@video-studio/shared/visuals/prompt-section-document'
 import { promptPresentationPlugin } from './canvas-prompt-presentation'
+import CanvasPromptSectionDiff from './CanvasPromptSectionDiff'
+import { promptSectionDetails } from './canvas-prompt-section-details'
+import { canvasPromptSectionDocument, rewriteCanvasPromptSections, visualBoardEditorDocument } from './canvas-prompt-composition'
+import { promptClipboardContent, type PromptClipboardContent, type PromptCopyScope } from './canvas-prompt-clipboard'
 import './canvas-prompt-editor.css'
 
 export type CanvasPromptReference = {
@@ -22,7 +26,9 @@ export type CanvasPromptReference = {
   required?: boolean
   invalid?: boolean
 }
+export type CanvasPromptEditorHandle = { getClipboardContent: (scope: PromptCopyScope) => PromptClipboardContent | null }
 export type CanvasPromptEditorProps = {
+  ref?: Ref<CanvasPromptEditorHandle>
   value: string
   onChange: (value: string, document?: PromptSectionDocument) => void
   sectionDocument?: PromptSectionDocument
@@ -31,12 +37,16 @@ export type CanvasPromptEditorProps = {
   additionalChoices?: CanvasPromptReference[]
   onReferenceAdd?: (reference: CanvasPromptReference) => boolean | void
   onReferenceChange?: (sourceId: string, replacementId: string | null) => boolean | void
+  onResolveSource?: (id: string, choice: 'keep_custom' | 'follow_source') => void
+  onEditParameters?: () => void
+  parameterSummary?: string
   placeholder?: string
   'aria-label'?: string
   disabled?: boolean
   readOnly?: boolean
   expanded?: boolean
   compact?: boolean
+  visualBoard?: boolean
   minRows?: number
   maxLength?: number
 }
@@ -44,10 +54,16 @@ type Picker = { from: number; to: number; query: string; index: number; manual?:
 type Runtime = {
   references: CanvasPromptReference[]; choices: CanvasPromptReference[]; additionalChoices: CanvasPromptReference[]; disabled: boolean
   readOnly: boolean
+  visualBoard: boolean
   maxLength: number
   placeholder: string
   change: (assetId: string, replacementId: string | null) => boolean
   removeSection: (sectionId: string) => void
+  resolveSource?: CanvasPromptEditorProps['onResolveSource']
+  editParameters?: CanvasPromptEditorProps['onEditParameters']
+  parameterSummary?: string
+  subscribe: (listener: () => void) => () => void
+  snapshot: () => number
   keydown: (event: KeyboardEvent) => boolean
 }
 const referenceToken = (assetId: string) => `[[ref:${assetId}]]`
@@ -83,9 +99,14 @@ function promptParagraphs(value: string, references: CanvasPromptReference[], ch
     return { type: 'paragraph', ...(segmentId ? { attrs: { promptBodySegment: segmentId } } : {}), ...(content.length ? { content } : {}) }
   })
 }
-export function promptEditorDocument(value: string, references: CanvasPromptReference[], choices: CanvasPromptReference[] = [], sectionDocument?: PromptSectionDocument): JSONContent {
-  const tokenized = tokenizePromptReferenceNumbers(value, references.map(reference => reference.assetId))
-  const parsed = parsePromptSectionDocument(tokenized, { previousDocument: sectionDocument })
+function promptEditorSourceDocument(value: string, references: CanvasPromptReference[], sectionDocument?: PromptSectionDocument, visualBoard = false): PromptSectionDocument {
+  const referenceIds = references.map(reference => reference.assetId)
+  const tokenize = (text: string) => tokenizePromptReferenceNumbers(text, referenceIds)
+  const document = canvasPromptSectionDocument(tokenize(value), { previousDocument: rewriteCanvasPromptSections(sectionDocument, tokenize) })
+  return visualBoard ? visualBoardEditorDocument(document) : document
+}
+export function promptEditorDocument(value: string, references: CanvasPromptReference[], choices: CanvasPromptReference[] = [], sectionDocument?: PromptSectionDocument, visualBoard = false): JSONContent {
+  const parsed = promptEditorSourceDocument(value, references, sectionDocument, visualBoard)
   const content = parsed.blocks.flatMap(block => {
     if (block.kind === 'body') return promptParagraphs(block.text, references, choices, block.id)
     if (block.deleted) return []
@@ -94,9 +115,7 @@ export function promptEditorDocument(value: string, references: CanvasPromptRefe
     inner = inner.slice(leading.length, trailing ? -trailing.length : undefined)
     return [{ type: 'promptManagedSection', attrs: { section: block, leading, trailing }, content: promptParagraphs(inner, references, choices) }]
   })
-  // A generated-only prompt still needs a visible place for the creator to
-  // write. This empty entry has no serialized text until they start typing.
-  if (content[0]?.type === 'promptManagedSection') content.unshift({ type: 'paragraph',
+  if (!visualBoard && content[0]?.type === 'promptManagedSection') content.unshift({ type: 'paragraph',
     attrs: { promptBodySegment: 'prompt-body-entry', promptBodyEntry: true } })
   return { type: 'doc', content }
 }
@@ -111,11 +130,13 @@ export function promptEditorText(document: JSONContent): string {
   for (let index = 0; index < nodes.length; index++) {
     const node = nodes[index]
     if (node.type === 'paragraph' && node.attrs?.promptBodyEntry) {
+      const entryStart = index
       const entry = [text(node)]
       while (nodes[index + 1]?.type === 'paragraph' && nodes[index + 1]?.attrs?.promptBodyEntry) entry.push(text(nodes[++index]))
       // The entry itself contributes no blank lines. Existing prose after a
       // removed section keeps its own original separators and segment identity.
-      if (entry.some(part => part.length > 0)) result += entry.join('\n') + (nodes[index + 1]?.type === 'promptManagedSection' ? '\n\n' : '')
+      if (entry.some(part => part.length > 0)) result += (nodes[entryStart - 1]?.type === 'promptManagedSection' ? '\n\n' : '')
+        + entry.join('\n') + (nodes[index + 1]?.type === 'promptManagedSection' ? '\n\n' : '')
       continue
     }
     const previous = nodes[index - 1]
@@ -126,14 +147,31 @@ export function promptEditorText(document: JSONContent): string {
   return result
 }
 export function promptEditorSectionDocument(document: JSONContent, previousDocument?: PromptSectionDocument): PromptSectionDocument {
-  const parsed = parsePromptSectionDocument(promptEditorText(document), { previousDocument })
   const sections = (document.content || []).filter(node => node.type === 'promptManagedSection')
+  const activeIds = new Set(sections.map(node => node.attrs?.section.id))
+  // The editor already knows each block's identity. A same-name pasted block
+  // must not inherit a replaced block's source or pending conflict by position.
+  const parsed = parsePromptSectionDocument(promptEditorText(document), { previousDocument: previousDocument
+    ? { ...previousDocument, blocks: previousDocument.blocks.filter(block => block.kind !== 'managed' || activeIds.has(block.id)) } : undefined })
   let index = 0
-  return { ...parsed, blocks: parsed.blocks.map(block => {
+  const blocks = parsed.blocks.map(block => {
     if (block.kind !== 'managed' || block.deleted) return block
     const section = sections[index++]?.attrs?.section
-    return section ? { ...block, ...section, text: block.text } : block
-  }) }
+    // Programmatic text replacement can rebuild node attributes while retaining
+    // the same active ID. Its existing source still belongs to that identity;
+    // pasted sections receive fresh IDs and cannot inherit the old metadata.
+    const before = previousDocument?.blocks.find(previous => previous.kind === 'managed' && !previous.deleted && previous.id === section?.id)
+    return section ? { ...before, ...section, text: block.text } as PromptSectionBlock : block
+  })
+  const previous = previousDocument?.blocks || []
+  for (const before of previous) {
+    if (before.kind !== 'managed' || activeIds.has(before.id)) continue
+    const tombstone = before.deleted ? { ...before } : { ...before, text: '', deleted: true }
+    const following = previous.slice(previous.indexOf(before) + 1).find(block => block.kind === 'managed' && activeIds.has(block.id))
+    const position = following ? blocks.findIndex(block => block.id === following.id) : -1
+    blocks.splice(position < 0 ? blocks.length : position, 0, tombstone)
+  }
+  return { ...parsed, blocks }
 }
 function referenceCounts(document: JSONContent): Map<string, number> {
   const counts = new Map<string, number>()
@@ -147,6 +185,26 @@ function referenceCounts(document: JSONContent): Map<string, number> {
 function managedSections(document: JSONContent) {
   return (document.content || []).filter(node => node.type === 'promptManagedSection')
 }
+/** Removing a whole section or replacing all prompt content edits the document,
+ * not its image inputs. Derive this from steps so undo/redo keeps that meaning. */
+function promptContentEdit(transaction: Transaction): boolean {
+  if (!transaction.docChanged || transaction.getMeta('promptReferenceChange')) return false
+  const sections = (document: ProseMirrorNode) => {
+    const ids: string[] = []
+    document.forEach(node => { if (node.type.name === 'promptManagedSection') ids.push(node.attrs.section.id) })
+    return ids.join('\0')
+  }
+  if (sections(transaction.before) !== sections(transaction.doc)) return true
+  let wholePrompt = false
+  const size = transaction.before.content.size
+  transaction.mapping.maps[0]?.forEach((from, to) => {
+    // AllSelection includes outer boundaries. A selection of all paragraph
+    // text may omit them, but a lone chip's local history step is identical to
+    // that inner range and must retain its explicit input-change semantics.
+    if (from === 0 && to >= size || size > 3 && from <= 1 && to >= size - 1) wholePrompt = true
+  })
+  return wholePrompt
+}
 type ReferenceChange = { sourceId: string; replacementId: string | null }
 function rewriteSectionReference(section: PromptSectionBlock, { sourceId, replacementId }: ReferenceChange): PromptSectionBlock {
   const rewrite = (text: string) => text.replace(/\[\[ref:([^\]]+)\]\]/g, (token, id: string) =>
@@ -154,6 +212,7 @@ function rewriteSectionReference(section: PromptSectionBlock, { sourceId, replac
   return { ...section, text: rewrite(section.text),
     ...(section.sourceText !== undefined ? { sourceText: rewrite(section.sourceText) } : {}),
     ...(section.pendingSourceText !== undefined ? { pendingSourceText: rewrite(section.pendingSourceText) } : {}),
+    ...(section.mergeBaseText !== undefined ? { mergeBaseText: rewrite(section.mergeBaseText) } : {}),
   }
 }
 function changedReferences(before: JSONContent, after: JSONContent, explicit?: ReferenceChange): ReferenceChange[] {
@@ -180,44 +239,88 @@ function freshSectionIds(node: ProseMirrorNode): ProseMirrorNode {
 }
 
 function PromptManagedSectionView({ node, extension, editor, getPos }: NodeViewProps) {
-  const [opened, setOpened] = useState(false)
-  const contentId = useId()
   const runtime = extension.options.runtime() as Runtime
-  const { id, name } = node.attrs.section
-  const changed = node.attrs.section.sourceStatus === 'source_changed'
+  useSyncExternalStore(runtime.subscribe, runtime.snapshot, runtime.snapshot)
+  const primary = runtime.visualBoard && node.attrs.section.name === '设定图固定要求'
+  const [opened, setOpened] = useState(primary)
+  const [comparing, setComparing] = useState(false)
+  const [current, setCurrent] = useState(false)
+  const contentId = useId()
+  const section = node.attrs.section as PromptSectionBlock
+  const { id, name } = section
+  const displayName = primary ? '主要创作内容' : name
+  const details = promptSectionDetails(section, runtime.references)
+  const hasParameterControls = details.parameters && !!runtime.editParameters
+  const currentSection = () => ({ ...section,
+    text: promptEditorText({ type: 'doc', content: [node.toJSON()] }),
+  })
   // Arrow keys, search and programmatic selection must never leave the caret
   // inside an invisible section. Folding itself stays outside document history.
   useEffect(() => {
     const revealSelection = () => {
       const position = getPos()
-      if (!editor.isFocused || typeof position !== 'number') return
-      if (editor.state.selection.from > position && editor.state.selection.from < position + node.nodeSize) setOpened(true)
+      const selected = editor.isFocused && typeof position === 'number' && editor.state.selection.from > position && editor.state.selection.from < position + node.nodeSize
+      setCurrent(selected)
+      if (selected) setOpened(true)
     }
     editor.on('selectionUpdate', revealSelection)
     editor.on('focus', revealSelection)
-    return () => { editor.off('selectionUpdate', revealSelection); editor.off('focus', revealSelection) }
+    editor.on('blur', revealSelection)
+    return () => { editor.off('selectionUpdate', revealSelection); editor.off('focus', revealSelection); editor.off('blur', revealSelection) }
   }, [editor, getPos, node.nodeSize])
   function toggle() {
     const position = getPos()
     if (opened && typeof position === 'number' && editor.state.selection.from > position
-      && editor.state.selection.from < position + node.nodeSize) editor.commands.setTextSelection(1)
+      && editor.state.selection.from < position + node.nodeSize) {
+      let outside: number | undefined
+      editor.state.doc.forEach((candidate, offset) => {
+        if (outside === undefined && candidate.type.name === 'paragraph') outside = offset + 1
+      })
+      if (outside !== undefined) editor.commands.setTextSelection(outside)
+      else editor.commands.blur()
+    }
     setOpened(value => !value)
   }
-  return <NodeViewWrapper className={`pc-prompt-managed-section${opened ? ' is-open' : ''}`} data-prompt-section-id={id} data-prompt-section-name={name}>
+  const heading = <>
+    <ChevronDown size={14} className="pc-prompt-managed-chevron" />
+    <span className="pc-prompt-managed-heading-text"><span className="pc-prompt-managed-section-title">{displayName}</span>
+      {primary && <span className="pc-prompt-content-scope">整理对象</span>}</span>
+    {!opened && <span className={`pc-prompt-managed-summary is-inline${hasParameterControls ? ' pc-prompt-parameter-values' : ''}`}>
+      {hasParameterControls ? runtime.parameterSummary || details.summary : details.summary}</span>}
+    {(details.customized || details.pending) && <span className={`pc-prompt-managed-state${details.pending ? ' pc-prompt-managed-changed' : ' pc-prompt-managed-custom'}`}>{details.pending ? '待确认' : '已自定义'}</span>}
+  </>
+  return <NodeViewWrapper className={`pc-prompt-managed-section${opened ? ' is-open' : ''}${primary ? ' is-primary' : ' is-secondary'}${current ? ' is-current' : ''}`} data-prompt-section-id={id} data-prompt-section-name={name}>
     <div className="pc-prompt-managed-section-head" contentEditable={false}>
-      <UnstyledButton type="button" className="pc-prompt-managed-toggle" aria-label={`${opened ? '收起设定' : '展开编辑'}：${name}`}
+      <UnstyledButton type="button" className="pc-prompt-managed-toggle" aria-label={`${opened ? '收起设定' : '展开编辑'}：${displayName}`}
         aria-expanded={opened} aria-controls={contentId} onMouseDown={event => event.preventDefault()} onClick={toggle}>
-        <ChevronDown size={14} className="pc-prompt-managed-chevron" />
-        <span className="pc-prompt-managed-section-title">{name}</span>
-        {changed && <span className="pc-prompt-managed-changed">来源有更新</span>}
-        <span className="pc-prompt-managed-edit-label">{opened ? '收起' : '展开编辑'}</span>
+        {heading}
       </UnstyledButton>
-      <Tooltip label="移除此段内容，保留参考图片连接"><ActionIcon type="button" size="sm" variant="subtle" color="gray"
-        aria-label={`移除区块：${name}`} disabled={runtime.disabled || runtime.readOnly}
-        onMouseDown={event => event.preventDefault()} onClick={() => runtime.removeSection(id)}><X size={13} /></ActionIcon></Tooltip>
+      <Menu position="bottom-end" withinPortal zIndex={280} returnFocus>
+        <Menu.Target><ActionIcon type="button" size={26} variant="subtle" color="gray" aria-label={`区块操作：${displayName}`}
+          onMouseDown={event => event.preventDefault()}><MoreHorizontal size={15} /></ActionIcon></Menu.Target>
+        <Menu.Dropdown contentEditable={false} data-canvas-overlay className="nodrag nowheel" onPointerDown={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
+          <Menu.Label>{details.category} · 来源：{details.source}</Menu.Label>
+          <Menu.Item aria-label={`查看区块差异：${displayName}`} leftSection={<Search size={14} />} onClick={() => setComparing(true)}>查看与来源的差异</Menu.Item>
+          {hasParameterControls && <Menu.Item aria-label={`调整参数：${displayName}`} leftSection={<SlidersHorizontal size={14} />}
+            disabled={runtime.disabled || runtime.readOnly} onClick={() => runtime.editParameters?.()}>调整生成参数</Menu.Item>}
+          <Menu.Item aria-label={`移除区块：${displayName}`} color="red" leftSection={<X size={14} />} disabled={runtime.disabled || runtime.readOnly}
+            onClick={() => runtime.removeSection(id)}>移除此段内容</Menu.Item>
+        </Menu.Dropdown>
+      </Menu>
     </div>
-    <div id={contentId} className="pc-prompt-managed-panel" hidden={!opened}><NodeViewContent className="pc-prompt-managed-section-content" /></div>
+    {details.pending && runtime.resolveSource && <div className="pc-prompt-managed-source-actions" contentEditable={false}>
+      <span>来源有更新，请确认后生成。</span>
+      <UnstyledButton type="button" disabled={runtime.disabled || runtime.readOnly} aria-label={`就地保留本节点修改：${displayName}`}
+        onMouseDown={event => event.preventDefault()} onClick={() => runtime.resolveSource?.(id, 'keep_custom')}>保留本节点修改</UnstyledButton>
+      <UnstyledButton type="button" disabled={runtime.disabled || runtime.readOnly} aria-label={`就地使用来源更新：${displayName}`}
+        onMouseDown={event => event.preventDefault()} onClick={() => runtime.resolveSource?.(id, 'follow_source')}>使用来源更新</UnstyledButton>
+    </div>}
+    <div id={contentId} className="pc-prompt-managed-panel" hidden={!opened}>
+      {details.parameters && <p className="pc-prompt-managed-parameter-note" contentEditable={false}>比例、清晰度等以底部生成参数为准；修改这里的文字可能产生参数冲突。</p>}
+      <NodeViewContent className="pc-prompt-managed-section-content" /></div>
     <div className="pc-prompt-managed-section-end" contentEditable={false} aria-hidden="true">【{name}结束】</div>
+    <CanvasPromptSectionDiff block={comparing ? currentSection() : undefined} references={runtime.references} disabled={runtime.disabled || runtime.readOnly}
+      displayName={displayName} onClose={() => setComparing(false)} onResolve={runtime.resolveSource} />
   </NodeViewWrapper>
 }
 
@@ -226,6 +329,7 @@ function PromptReferenceView({ node, extension }: NodeViewProps) {
   const [query, setQuery] = useState('')
   const [scope, setScope] = useState<'active' | 'additional'>('active')
   const runtime = extension.options.runtime() as Runtime
+  useSyncExternalStore(runtime.subscribe, runtime.snapshot, runtime.snapshot)
   const { assetId, label, url, required, invalid, description, provenance } = node.attrs as ReturnType<typeof referenceAttributes>
   const activeIds = new Set(runtime.choices.filter(item => !item.invalid).map(item => item.assetId))
   const additionalChoices = runtime.additionalChoices.filter(item => !activeIds.has(item.assetId))
@@ -296,14 +400,14 @@ function promptExtensions(runtime: () => Runtime) {
         renderHTML: attributes => attributes.promptBodyEntry ? { 'data-prompt-body-entry': '' } : {} }, promptBodySegment: { default: null, keepOnSplit: true,
         parseHTML: element => element.getAttribute('data-prompt-body-segment'),
         renderHTML: attributes => attributes.promptBodySegment ? { 'data-prompt-body-segment': attributes.promptBodySegment } : {} } } }],
-      addProseMirrorPlugins: () => [promptPresentationPlugin(() => runtime().placeholder), new Plugin({
+      addProseMirrorPlugins: () => [promptPresentationPlugin(() => runtime().placeholder, () => runtime().visualBoard), new Plugin({
         filterTransaction: (transaction, state) => {
           if (!transaction.docChanged || transaction.getMeta('promptReferenceSync') || transaction.getMeta('preventUpdate')) return true
           if (promptEditorText(transaction.doc.toJSON()).length > runtime().maxLength) return false
-          if (isHistoryTransaction(transaction) || transaction.getMeta('promptSectionRemove') || transaction.getMeta('promptDocumentReplace')) return true
-          const oldSections = managedSections(state.doc.toJSON()), newSections = managedSections(transaction.doc.toJSON())
-          if (oldSections.some(section => !newSections.some(next => next.attrs?.section.id === section.attrs?.section.id
-            && next.attrs?.section.name === section.attrs?.section.name))) return false
+          if (!isHistoryTransaction(transaction) && (transaction.getMeta('uiEvent') === 'cut'
+            || transaction.getMeta('uiEvent') === 'paste' || promptContentEdit(transaction))) closeHistory(transaction)
+          if (isHistoryTransaction(transaction) || transaction.getMeta('promptSectionRemove')
+            || transaction.getMeta('promptDocumentReplace') || promptContentEdit(transaction)) return true
           const required = new Set(runtime().references.filter(item => item.required).map(item => item.assetId))
           if (!required.size) return true
           const before = referenceCounts(state.doc.toJSON()), after = referenceCounts(transaction.doc.toJSON())
@@ -316,7 +420,7 @@ function promptExtensions(runtime: () => Runtime) {
           if (transactions.every(transaction => !transaction.docChanged || transaction.getMeta('promptReferenceMetadata')
             || transaction.getMeta('promptReferenceSync') || transaction.getMeta('preventUpdate'))
             || transactions.some(transaction => isHistoryTransaction(transaction) || transaction.getMeta('promptSectionRemove')
-              || transaction.getMeta('promptDocumentReplace'))) return null
+              || transaction.getMeta('promptDocumentReplace') || promptContentEdit(transaction))) return null
           const explicit = transactions.map(transaction => transaction.getMeta('promptReferenceChange') as ReferenceChange | undefined).find(Boolean)
           const changes = changedReferences(before.doc.toJSON(), after.doc.toJSON(), explicit)
           if (!changes.length) return null
@@ -386,7 +490,7 @@ function promptExtensions(runtime: () => Runtime) {
 
 export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
   const latest = useRef(props); latest.current = props
-  const sectionDocumentRef = useRef(parsePromptSectionDocument(props.value, { previousDocument: props.sectionDocument }))
+  const sectionDocumentRef = useRef(promptEditorSourceDocument(props.value, props.references, props.sectionDocument, props.visualBoard))
   const previousPropValue = useRef(props.value)
   const localChangeDepth = useRef(0), deferredValueSync = useRef(false)
   const [valueSyncVersion, setValueSyncVersion] = useState(0)
@@ -397,6 +501,12 @@ export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
   const previous = useRef<Map<string, number>>(new Map())
   const removedReferences = useRef(new Set<string>())
   const runtimeRef = useRef<Runtime>(null!)
+  const runtimeListeners = useRef(new Set<() => void>())
+  const runtimeVersion = useRef(0)
+  const runtimeStore = useRef({
+    subscribe: (listener: () => void) => { runtimeListeners.current.add(listener); return () => { runtimeListeners.current.delete(listener) } },
+    snapshot: () => runtimeVersion.current,
+  })
   function runLocalChange<T>(operation: () => T): T {
     localChangeDepth.current++
     try { return operation() }
@@ -452,9 +562,14 @@ export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
     pickerRef.current = range; setPicker(range)
   }
   runtimeRef.current = {
+    ...runtimeStore.current,
     references: props.references, choices: props.choices, additionalChoices: props.additionalChoices || [], disabled: !!props.disabled, readOnly: !!props.readOnly,
+    visualBoard: !!props.visualBoard,
     maxLength: props.maxLength ?? 80_000,
-    placeholder: props.placeholder || '描述主体、场景与构图，输入 @ 引用图片',
+    placeholder: props.placeholder || (props.visualBoard ? '编辑设定图内容…' : '描述主体、场景与构图，输入 @ 引用图片'),
+    resolveSource: props.onResolveSource,
+    editParameters: props.onEditParameters,
+    parameterSummary: props.parameterSummary,
     keydown: event => event.isComposing ? false : pickerKeydown(event),
     removeSection: sectionId => {
       const current = editorRef.current
@@ -489,7 +604,7 @@ export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
   }
   const editor = useEditor({
     extensions: promptExtensions(() => runtimeRef.current),
-    content: promptEditorDocument(props.value, props.references, [...props.choices, ...(props.additionalChoices || [])], sectionDocumentRef.current),
+    content: promptEditorDocument(props.value, props.references, [...props.choices, ...(props.additionalChoices || [])], sectionDocumentRef.current, props.visualBoard),
     editable: !props.disabled && !props.readOnly,
     editorProps: { handleDOMEvents: { keydown: (_view, event) => event.isComposing }, attributes: { class: 'pc-prompt-editor-content nodrag nowheel', role: 'textbox', 'aria-multiline': 'true', 'aria-label': props['aria-label'] || '创作提示词', 'data-placeholder': props.placeholder || '描述画面，输入 @ 引用图片' } },
     onCreate: ({ editor: current }) => { previous.current = referenceCounts(current.getJSON()) },
@@ -499,12 +614,13 @@ export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
       const explicit = transaction.getMeta('promptReferenceChange') as { sourceId: string; replacementId: string | null; notified?: boolean } | undefined
       const insertion = transaction.getMeta('promptReferenceInsert') as { assetId: string; notified: boolean } | undefined
       const next = promptEditorText(document)
-      if (next === promptEditorText(transaction.before.toJSON())) return
       const sectionsBefore = managedSections(transaction.before.toJSON()).map(node => node.attrs?.section.id).join('\0')
       const sectionsAfter = managedSections(document).map(node => node.attrs?.section.id).join('\0')
       const sectionChange = sectionsBefore !== sectionsAfter
+      if (next === promptEditorText(transaction.before.toJSON()) && !sectionChange) return
+      const contentEdit = sectionChange || promptContentEdit(transaction)
       runLocalChange(() => {
-        if (!isHistoryTransaction(transaction)) {
+        if (!isHistoryTransaction(transaction) && !contentEdit) {
           const changes = changedReferences(transaction.before.toJSON(), document, explicit)
           if (changes.length) sectionDocumentRef.current = { ...sectionDocumentRef.current,
             blocks: sectionDocumentRef.current.blocks.map(block => changes.reduce(rewriteSectionReference, block)) }
@@ -514,15 +630,14 @@ export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
         // this document first so such effects cannot replay its old metadata.
         sectionDocumentRef.current = sections
         previous.current.forEach((_count, assetId) => {
-          if (!counts.has(assetId) && !sectionChange) {
+          if (!counts.has(assetId) && !contentEdit) {
             removedReferences.current.add(assetId)
             if (assetId !== explicit?.sourceId) latest.current.onReferenceChange?.(assetId, null)
           }
         })
         counts.forEach((_count, assetId) => {
-          if (sectionChange) return
           if (previous.current.has(assetId) || assetId === explicit?.replacementId || (insertion?.notified && insertion.assetId === assetId)) return
-          if (removedReferences.current.has(assetId)) {
+          if (!contentEdit && removedReferences.current.has(assetId)) {
             removedReferences.current.delete(assetId)
             latest.current.onReferenceChange?.(assetId, assetId)
           } else if (![...latest.current.references, ...latest.current.choices].some(item => item.assetId === assetId && !item.invalid)) {
@@ -539,6 +654,17 @@ export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
     onSelectionUpdate: ({ editor: current }) => syncMention(current),
   }, [])
   editorRef.current = editor
+  useImperativeHandle(props.ref, () => ({ getClipboardContent: scope => {
+    const current = editorRef.current
+    return current && !current.isDestroyed ? promptClipboardContent(current, scope) : null
+  } }), [])
+  useEffect(() => {
+    // Parameter controls and callbacks can change while serialized prompt text
+    // stays identical. Refresh node-view chrome without touching the document.
+    runtimeVersion.current++
+    runtimeListeners.current.forEach(listener => listener())
+  }, [props.disabled, props.readOnly, props.visualBoard, props.parameterSummary, props.onEditParameters, props.onResolveSource,
+    props.references, props.choices, props.additionalChoices])
   useEffect(() => {
     if (!editor) return
     editor.setEditable(!props.disabled && !props.readOnly)
@@ -554,20 +680,27 @@ export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
     // New chip views can synchronously flush a parent's rebuilt system blocks
     // before onChange echoes the inserted token. Wait for the local operation
     // to finish before applying a different parent value.
-    if (previousPropValue.current !== props.value && localChangeDepth.current) deferredValueSync.current = true
-    else if (previousPropValue.current !== props.value) {
-      previousPropValue.current = props.value
-      sectionDocumentRef.current = parsePromptSectionDocument(props.value, { previousDocument: props.sectionDocument || sectionDocumentRef.current })
-      const document = promptEditorDocument(props.value, props.references, [...props.choices, ...(props.additionalChoices || [])], sectionDocumentRef.current)
-      // Parent echoes must keep the editor's selection, composition and history.
-      if (promptEditorText(editor.getJSON()) !== promptEditorText(document)
-        || managedSections(editor.getJSON()).map(node => node.attrs?.section.id).join('\0') !== managedSections(document).map(node => node.attrs?.section.id).join('\0')) {
-        editor.commands.setContent(document, { emitUpdate: false })
-        previous.current = referenceCounts(document)
+    const sections = promptEditorSourceDocument(props.value, props.references, props.sectionDocument || sectionDocumentRef.current, props.visualBoard)
+    const document = promptEditorDocument(props.value, props.references, [...props.choices, ...(props.additionalChoices || [])], sections, props.visualBoard)
+    const identityChanged = managedSections(editor.getJSON()).map(node => node.attrs?.section.id).join('\0')
+      !== managedSections(document).map(node => node.attrs?.section.id).join('\0')
+    if (localChangeDepth.current) {
+      if (previousPropValue.current !== props.value || identityChanged) deferredValueSync.current = true
+    } else {
+      // Same-text external documents can replace a deleted source with a fresh
+      // pasted identity. Trust their metadata without reparsing the old source.
+      sectionDocumentRef.current = sections
+      if (previousPropValue.current !== props.value || identityChanged) {
+        previousPropValue.current = props.value
+        // Parent echoes must keep the editor's selection, composition and history.
+        if (promptEditorText(editor.getJSON()) !== promptEditorText(document) || identityChanged) {
+          editor.chain().command(({ tr }) => { closeHistory(tr); return true })
+            .setMeta('addToHistory', false).setContent(document, { emitUpdate: false }).run()
+          previous.current = referenceCounts(document)
+        }
       }
     }
     let transaction = editor.state.tr
-    if (!localChangeDepth.current && props.sectionDocument) sectionDocumentRef.current = props.sectionDocument
     editor.state.doc.descendants((node, position) => {
       if (node.type.name === 'promptManagedSection') {
         const section = sectionDocumentRef.current.blocks.find(block => block.kind === 'managed' && !block.deleted && block.id === node.attrs.section.id)
@@ -579,7 +712,7 @@ export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
       if (JSON.stringify(node.attrs) !== JSON.stringify(attrs)) transaction = transaction.setNodeMarkup(position, undefined, attrs)
     })
     if (transaction.docChanged) editor.view.dispatch(transaction.setMeta('promptReferenceSync', true).setMeta('addToHistory', false))
-  }, [editor, props.value, props.sectionDocument, props.references, props.choices, props.additionalChoices, valueSyncVersion])
+  }, [editor, props.value, props.sectionDocument, props.references, props.choices, props.additionalChoices, props.visualBoard, valueSyncVersion])
   useLayoutEffect(() => {
     if (!editor || !picker) { setMentionAnchor(null); return }
     const view = editor.view, element = view.dom, viewport = element.ownerDocument.defaultView!
@@ -629,9 +762,9 @@ export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
     pickerRef.current = { ...pickerRef.current, scope, query: '', index: 0, manual: true }
     setPicker(pickerRef.current)
   }
-  return <div className={`pc-prompt-editor${props.expanded ? ' is-expanded' : ''}${props.compact ? ' is-compact' : ''}${props.disabled ? ' is-disabled' : ''}${props.readOnly ? ' is-readonly' : ''}`} style={{ '--pc-prompt-min-rows': props.minRows || 6 } as React.CSSProperties}>
+  return <div className={`pc-prompt-editor${props.expanded ? ' is-expanded' : ''}${props.compact ? ' is-compact' : ''}${props.visualBoard ? ' is-visual-board' : ''}${props.disabled ? ' is-disabled' : ''}${props.readOnly ? ' is-readonly' : ''}`} style={{ '--pc-prompt-min-rows': props.minRows || 6 } as React.CSSProperties}>
     <div className="pc-prompt-editor-surface">
-      {!props.compact && <div className="pc-prompt-editor-heading"><span>提示词正文</span><span>输入 <kbd>@</kbd> 引用图片</span></div>}
+      {!props.compact && !props.visualBoard && <div className="pc-prompt-editor-heading"><span>主要创作内容</span><span className="pc-prompt-content-scope">整理对象</span></div>}
       <EditorContent editor={editor} />
     </div>
     <Popover opened={!!picker && !!mentionAnchor} onDismiss={closePicker} position="bottom-start" offset={5} width="min(320px, calc(100vw - 16px))"

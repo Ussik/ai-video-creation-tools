@@ -1,0 +1,22 @@
+{
+  "nodes": [
+    {
+      "id": "project-script:fd9cde8183ef4fa7a678d19168d899a8",
+      "type": "project_script_ref",
+      "x": 60,
+      "y": 80,
+      "width": 720,
+      "height": 480,
+      "title": "傩王",
+      "text": "",
+      "asset_id": null,
+      "shot_id": null,
+      "model_id": null,
+      "job_id": null,
+      "prompt": "",
+      "settings": {}
+    }
+  ],
+  "edges": [],
+  "revision": "5a6591989125d5232b1688f7e63da4c15dfa8bd4205d36b692ad7ea42080cc0c"
+}

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { all, db, one, required, run } from '../../infrastructure/database/db.js'
 import type { Shot } from '../../infrastructure/database/db.js'
 import type { VisualBinding, VisualProfile } from './visual-profiles.js'
-import { projectVisualStyle } from './project-visual-style.js'
+import { assetStyleNeedsReview, projectVisualStyle } from './project-visual-style.js'
 import { normalizeVisualBinding, referenceSnapshot, visualReferenceAssets } from './visual-reference-assets.js'
 import { recommendVisualReferences } from '@video-studio/shared/visuals/visual-reference-selection'
 
@@ -17,12 +17,13 @@ export type ResolvedVisualBinding = VisualBinding & {
 }
 
 function hasImage(projectId: string, assetId: string | null | undefined) {
-  return !!assetId && !!one('SELECT 1 FROM assets WHERE id=? AND project_id=? AND kind=\'image\'', assetId, projectId)
+  return !!assetId && !!one('SELECT 1 FROM assets WHERE id=? AND project_id=? AND deleted_at IS NULL AND kind=\'image\'', assetId, projectId)
 }
 
 /** A board is usable only after confirmation against this style and base chain. */
 export function currentVisualProfileBoard(profile: VisualProfile, styleVersion: string): string | null {
-  if (!hasImage(profile.project_id, profile.board_asset_id) || profile.board_style_version !== styleVersion) return null
+  if (!hasImage(profile.project_id, profile.board_asset_id) || profile.board_style_version !== styleVersion
+    || assetStyleNeedsReview(profile.project_id, profile.board_asset_id!, styleVersion, profile.id)) return null
   const ancestors: VisualProfile[] = [], seen = new Set([profile.id])
   let current = profile
   while (current.base_profile_id) {
@@ -31,7 +32,8 @@ export function currentVisualProfileBoard(profile: VisualProfile, styleVersion: 
     const base = one<VisualProfile>('SELECT * FROM visual_profiles WHERE id=?', current.base_profile_id)
     if (!base || base.project_id !== profile.project_id || base.kind !== profile.kind
       || (base.design_id || null) !== (profile.design_id || null)
-      || !hasImage(base.project_id, base.board_asset_id) || base.board_style_version !== styleVersion) return null
+      || !hasImage(base.project_id, base.board_asset_id) || base.board_style_version !== styleVersion
+      || assetStyleNeedsReview(base.project_id, base.board_asset_id!, styleVersion, base.id)) return null
     ancestors.push(base)
     current = base
   }
@@ -56,7 +58,8 @@ export function resolveVisualBinding(shot: Shot, value: VisualBinding): Resolved
   const board = currentVisualProfileBoard(profile, style.version)
   const recommended = recommendVisualReferences(profile, visualReferenceAssets(profile.id),
     [binding.usage === 'video' ? shot.video_prompt : shot.image_prompt, shot.start_state].filter(Boolean).join('\n'), style.version)
-    .filter(reference => hasImage(profile.project_id, reference.asset_id)).map(referenceSnapshot)
+    .filter(reference => hasImage(profile.project_id, reference.asset_id)
+      && !assetStyleNeedsReview(profile.project_id, reference.asset_id, style.version, profile.id)).map(referenceSnapshot)
   if (profile.definition_status !== 'ready' || (!board && !recommended.length) || profile.base_profile_id && !board) {
     return { ...binding, sync_status: 'waiting_confirmation' }
   }
@@ -64,7 +67,8 @@ export function resolveVisualBinding(shot: Shot, value: VisualBinding): Resolved
     // Keep the complete approved snapshot if newer text cannot describe the
     // creator's explicitly selected images. Never mix revisions in one binding.
     if (binding.reference_assets.some(reference => reference.revision !== profile.revision
-      || reference.style_version !== style.version || !hasImage(profile.project_id, reference.asset_id))) {
+      || reference.style_version !== style.version || !hasImage(profile.project_id, reference.asset_id)
+      || assetStyleNeedsReview(profile.project_id, reference.asset_id, style.version, profile.id))) {
       return { ...binding, sync_status: 'manual_review' }
     }
   } else if (binding.reference_selection === 'manual' && !board) {
@@ -102,7 +106,7 @@ export function resolveShotVisualBindings(shotId: string, options: { persist?: b
 export function synchronizeVisualProfileBindings(profileId: string) {
   db.transaction(() => {
     const shots = all<Shot>(`SELECT s.* FROM shots s JOIN shot_visual_bindings b ON b.shot_id=s.id
-      WHERE b.profile_id=? AND s.superseded_by IS NULL`, profileId)
+      WHERE b.profile_id=? AND s.deleted_at IS NULL AND s.superseded_by IS NULL`, profileId)
     for (const shot of shots) resolveShotVisualBindings(shot.id, { persist: true })
   })()
 }
@@ -110,7 +114,7 @@ export function synchronizeVisualProfileBindings(profileId: string) {
 export function synchronizeProjectVisualBindings(projectId: string) {
   db.transaction(() => {
     const shots = all<{ shot_id: string }>(`SELECT DISTINCT b.shot_id FROM shot_visual_bindings b JOIN shots s ON s.id=b.shot_id
-      WHERE s.project_id=? AND s.superseded_by IS NULL`, projectId)
+      WHERE s.project_id=? AND s.deleted_at IS NULL AND s.superseded_by IS NULL`, projectId)
     for (const shot of shots) resolveShotVisualBindings(shot.shot_id, { persist: true })
   })()
 }

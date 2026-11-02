@@ -133,22 +133,27 @@ test('images without bindings and first-frame videos cannot bypass style through
   assert.match(video.prompt, /水墨/); assert.equal(video.style_warnings.length, 1)
 })
 
-test('confirmed boards and frozen shot references require explicit review after a style change; history is retained', async () => {
+test('style changes require board review; followers adopt confirmed updates while locked shot references require refresh', async () => {
   const p = await project(), m = await model(), board = await profile(p.id), assetId = `board-${p.id}`
   run("INSERT INTO assets (id, project_id, kind, filename, path, source, created_at) VALUES (?, ?, 'image', 'board.png', '/tmp/board.png', 'upload', ?)", assetId, p.id, now())
   const approved = await call('PATCH', `/api/visual-profiles/${board.id}`, { expected_revision: board.revision, board_asset_id: assetId })
   const shot = await call('POST', `/api/projects/${p.id}/shots`, { title: '镜头' })
   await call('PUT', `/api/shots/${shot.id}/visual-bindings`, { bindings: [{ profile_id: board.id, required: true }] })
+  const lockedShot = await call('POST', `/api/projects/${p.id}/shots`, { title: '冻结镜头' })
+  await call('PUT', `/api/shots/${lockedShot.id}/visual-bindings`, { bindings: [{ profile_id: board.id, required: true, sync_mode: 'locked' }] })
   await settings(p.id, { visual_style: '水彩动画' }); initDb()
   const detail = await call('GET', `/api/projects/${p.id}`)
   assert.equal(detail.visual_profiles[0].board_style_status, 'needs_review')
   const input = { shot_id: shot.id, model_id: m.id, prompt: '铜表近景', mode: 'text' }
   assert.equal((await app.inject({ method: 'POST', url: `/api/projects/${p.id}/generate/preview`, payload: input })).statusCode, 422)
   await call('PATCH', `/api/visual-profiles/${board.id}`, { expected_revision: approved.revision, board_asset_id: assetId })
-  assert.equal((await app.inject({ method: 'POST', url: `/api/projects/${p.id}/generate/preview`, payload: input })).statusCode, 422)
-  await call('PUT', `/api/shots/${shot.id}/visual-bindings`, { bindings: [{ profile_id: board.id, required: true }], refresh_profile_ids: [board.id] })
   const preview = await call('POST', `/api/projects/${p.id}/generate/preview`, input)
   assert.match(preview.prompt, /水彩动画/); assert.deepEqual(preview.reference_asset_ids, [assetId])
+  const lockedInput = { ...input, shot_id: lockedShot.id }
+  assert.equal((await app.inject({ method: 'POST', url: `/api/projects/${p.id}/generate/preview`, payload: lockedInput })).statusCode, 422)
+  await call('PUT', `/api/shots/${lockedShot.id}/visual-bindings`, { bindings: [{ profile_id: board.id, required: true, sync_mode: 'locked' }], refresh_profile_ids: [board.id] })
+  const refreshed = await call('POST', `/api/projects/${p.id}/generate/preview`, lockedInput)
+  assert.match(refreshed.prompt, /水彩动画/); assert.deepEqual(refreshed.reference_asset_ids, [assetId])
   assert.equal(all('SELECT * FROM assets WHERE project_id=?', p.id).length, 1)
 })
 

@@ -1,0 +1,307 @@
+{
+  "checked_at": "2026-11-01T06:51:47.938Z",
+  "status": "preserved",
+  "project_id": "fd9cde8183ef4fa7a678d19168d899a8",
+  "baseline": {
+    "shots": 13,
+    "assets": 62,
+    "canvases": 2
+  },
+  "existing_shots": {
+    "unchanged": true,
+    "changes": []
+  },
+  "existing_assets": {
+    "unchanged": true,
+    "changes": []
+  },
+  "project_fields": {
+    "name": {
+      "unchanged": true,
+      "changes": []
+    },
+    "brief": {
+      "unchanged": true,
+      "changes": []
+    },
+    "ratio": {
+      "unchanged": true,
+      "changes": []
+    },
+    "music_asset_id": {
+      "unchanged": true,
+      "changes": []
+    },
+    "created_at": {
+      "unchanged": true,
+      "changes": []
+    },
+    "production_range": {
+      "unchanged": true,
+      "changes": []
+    },
+    "script": {
+      "unchanged": true,
+      "changes": []
+    },
+    "timeline_clips": {
+      "unchanged": true,
+      "changes": []
+    },
+    "audio_settings": {
+      "unchanged": true,
+      "changes": []
+    },
+    "asset_reviews": {
+      "unchanged": true,
+      "changes": []
+    },
+    "asset_tasks": {
+      "unchanged": true,
+      "changes": []
+    },
+    "project_visual_style": {
+      "unchanged": true,
+      "changes": []
+    },
+    "visual_profiles": {
+      "unchanged": true,
+      "changes": []
+    },
+    "scene_visual_bindings": {
+      "unchanged": true,
+      "changes": []
+    },
+    "shot_visual_bindings": {
+      "unchanged": true,
+      "changes": []
+    }
+  },
+  "original_canvases": [
+    {
+      "id": "fd9cde8183ef4fa7a678d19168d899a8",
+      "name": "画布 1",
+      "graph_unchanged": true,
+      "graph_changes": [],
+      "metadata_changes": []
+    },
+    {
+      "id": "9b464a86b3af4029bd10329695d4dc86",
+      "name": "分镜方案 3",
+      "graph_unchanged": true,
+      "graph_changes": [],
+      "metadata_changes": []
+    }
+  ],
+  "expected_additions": {
+    "shots": [
+      {
+        "id": "5db253d9de8c481cb2d550c0ab9c9c2e",
+        "title": "傩王90秒预告·01｜旧面初鸣",
+        "design_id": null
+      },
+      {
+        "id": "093b5506d80c4515ac6c8759923efe5d",
+        "title": "傩王90秒预告·02｜少年与将军",
+        "design_id": null
+      },
+      {
+        "id": "503c26b12b544e3fbf3b7a5a9ef1a75d",
+        "title": "傩王90秒预告·03｜六十年一会",
+        "design_id": null
+      },
+      {
+        "id": "abd6721e819d48e095500e8646d47c9e",
+        "title": "傩王90秒预告·04｜温柔与雷威",
+        "design_id": null
+      },
+      {
+        "id": "18983f4e82834a72878e5eda8778ac30",
+        "title": "傩王90秒预告·05｜每个愿望都有归处",
+        "design_id": null
+      },
+      {
+        "id": "9b1c34af086d44419f407e0d0a9fcdd6",
+        "title": "傩王90秒预告·06｜追上最想留住的人",
+        "design_id": null
+      }
+    ],
+    "assets": [
+      {
+        "id": "00cc6505a8f045b4b3d473443eeb89ed",
+        "kind": "video",
+        "filename": "59063628-39fd-4a19-b26d-76dc906de869.mp4"
+      },
+      {
+        "id": "af95b937ab24442182cb642f3d0b2063",
+        "kind": "image",
+        "filename": "6bff4f46-5889-41cf-9a7b-ed4e96d0ad42.png"
+      },
+      {
+        "id": "4b478b11be0e4128be5c0806a0b5a6f5",
+        "kind": "audio",
+        "filename": "speech-a5d4a9fc2d314da2a2e762d12c99e8ff.mp3"
+      },
+      {
+        "id": "78868fe8a4cb490c873c8be94f294b0a",
+        "kind": "audio",
+        "filename": "speech-06c8eab503434c91a48d853d05661075.mp3"
+      },
+      {
+        "id": "bb7e9b55eeca44d587f236513f5c1a7a",
+        "kind": "audio",
+        "filename": "speech-9ea996e46f4b41749245b7277014a1d4.mp3"
+      },
+      {
+        "id": "263c9598104c4ec3995c3731eb9b4afc",
+        "kind": "audio",
+        "filename": "speech-25f42da4d37c4b0890071f4c0fb69b76.mp3"
+      },
+      {
+        "id": "82a44863e7bf4a2cabc066bfccac2347",
+        "kind": "audio",
+        "filename": "speech-2621902d33fe44ce942aad6e31ab93b9.mp3"
+      },
+      {
+        "id": "0cd0b4edab1343e492a3b51b3592fc65",
+        "kind": "audio",
+        "filename": "speech-1e65336863aa404887434f4fef639b3e.mp3"
+      },
+      {
+        "id": "be9bde26e6f749178ee5d16920d8c9e0",
+        "kind": "image",
+        "filename": "fbd68539-65d9-4147-a169-38c5b4cf3a4a.png"
+      },
+      {
+        "id": "5cb8823293b94c13a21ba26a2b547ab3",
+        "kind": "image",
+        "filename": "c7243b05-9aea-4953-a6c2-8ffd49dfa15c.png"
+      }
+    ],
+    "canvases": [
+      {
+        "id": "db7eb557033740d2aaca5014ed8cf025",
+        "project_id": "fd9cde8183ef4fa7a678d19168d899a8",
+        "name": "傩王｜90秒预告·鼓起人间",
+        "position": 2,
+        "is_default": false,
+        "viewport": {
+          "x": 610.3125,
+          "y": 249.7159090909091,
+          "zoom": 0.42329545454545453
+        },
+        "created_at": "2026-11-01T06:45:20.819Z",
+        "updated_at": "2026-11-01T06:51:43.696Z",
+        "design_id": null,
+        "node_count": 11
+      }
+    ],
+    "jobs": [
+      {
+        "id": "1a9776ab0f8b4d2a8280d42c71911b5e",
+        "status": "running",
+        "error": null,
+        "result_asset_id": null
+      },
+      {
+        "id": "7fd32b43f67446ce8d597decc4ce70c7",
+        "status": "running",
+        "error": null,
+        "result_asset_id": null
+      },
+      {
+        "id": "b9dbf6e6bdbc4017af690ba3296aeb36",
+        "status": "running",
+        "error": null,
+        "result_asset_id": null
+      },
+      {
+        "id": "10983014ac5847e5961b81433f899de7",
+        "status": "succeeded",
+        "error": null,
+        "result_asset_id": "af95b937ab24442182cb642f3d0b2063"
+      },
+      {
+        "id": "3f8380e3b0c646d9bc6ca2e3dbe3908e",
+        "status": "running",
+        "error": null,
+        "result_asset_id": null
+      },
+      {
+        "id": "60916b9165a04da8bccd6a6e8e323a76",
+        "status": "succeeded",
+        "error": null,
+        "result_asset_id": "00cc6505a8f045b4b3d473443eeb89ed"
+      },
+      {
+        "id": "837a4dfee91946619e35e998791b355e",
+        "status": "running",
+        "error": null,
+        "result_asset_id": null
+      },
+      {
+        "id": "ee39ea90b5ce4fb281a917ca9daeb578",
+        "status": "succeeded",
+        "error": null,
+        "result_asset_id": "0cd0b4edab1343e492a3b51b3592fc65"
+      },
+      {
+        "id": "446901199e734920907723bbdf517522",
+        "status": "succeeded",
+        "error": null,
+        "result_asset_id": "78868fe8a4cb490c873c8be94f294b0a"
+      },
+      {
+        "id": "36af21dd0df34264a185ef3d5179adb7",
+        "status": "succeeded",
+        "error": null,
+        "result_asset_id": "263c9598104c4ec3995c3731eb9b4afc"
+      },
+      {
+        "id": "e960a41441f84efa80aa5a24ac2d6ee8",
+        "status": "succeeded",
+        "error": null,
+        "result_asset_id": "4b478b11be0e4128be5c0806a0b5a6f5"
+      },
+      {
+        "id": "8cf2da04cbf44e0c9ec5bd01f155b897",
+        "status": "succeeded",
+        "error": null,
+        "result_asset_id": "bb7e9b55eeca44d587f236513f5c1a7a"
+      },
+      {
+        "id": "b3c9901c433e45ad86de154cf687ea9f",
+        "status": "succeeded",
+        "error": null,
+        "result_asset_id": "82a44863e7bf4a2cabc066bfccac2347"
+      },
+      {
+        "id": "ba671005421d412d9f30fc18806de5c4",
+        "status": "failed",
+        "error": "图片任务 task_66159e2d12664399ac9df7b24abb72ec 失败：generate image failed",
+        "result_asset_id": null
+      },
+      {
+        "id": "26d03abd38c442dab5a511060d4b9cd4",
+        "status": "succeeded",
+        "error": null,
+        "result_asset_id": "5cb8823293b94c13a21ba26a2b547ab3"
+      },
+      {
+        "id": "dfd4cc6726ae4b469179f0339668b1cd",
+        "status": "succeeded",
+        "error": null,
+        "result_asset_id": "be9bde26e6f749178ee5d16920d8c9e0"
+      }
+    ],
+    "speech": {
+      "voices": 1,
+      "lines": 6,
+      "placements": 0
+    }
+  },
+  "expected_project_timestamp_change": {
+    "before": "2026-11-01T06:39:07.984Z",
+    "after": "2026-11-01T06:51:46.154Z"
+  }
+}

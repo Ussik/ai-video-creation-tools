@@ -1,0 +1,155 @@
+{
+  "configured_at": "2026-10-31T09:44:07.285968+00:00",
+  "scope": "global",
+  "backup_dir": "/tmp/studio-skill-defaults-20261031-174406",
+  "changes": [
+    {
+      "type": "global-default",
+      "stage": "script",
+      "before": {
+        "primary_id": "5b4929915b40112723f1e983b75f008e",
+        "auxiliary_ids": [
+          "ebdca3b2968e0f1a17933b952e82edb2",
+          "0e24c5eeb6046b921faae5d2deccab05"
+        ]
+      },
+      "after": {
+        "primary_id": "5b4929915b40112723f1e983b75f008e",
+        "auxiliary_ids": []
+      }
+    },
+    {
+      "type": "global-default",
+      "stage": "visual_assets",
+      "before": {
+        "primary_id": "a0afd161560cc35a78c6aa45a5a7a65c",
+        "auxiliary_ids": [
+          "0e24c5eeb6046b921faae5d2deccab05"
+        ]
+      },
+      "after": {
+        "primary_id": "a0afd161560cc35a78c6aa45a5a7a65c",
+        "auxiliary_ids": []
+      }
+    },
+    {
+      "type": "global-default",
+      "stage": "image_prompt",
+      "before": {
+        "primary_id": "73a1919fc07cdcef4f14840c698cc77b",
+        "auxiliary_ids": [
+          "0e24c5eeb6046b921faae5d2deccab05"
+        ]
+      },
+      "after": {
+        "primary_id": "73a1919fc07cdcef4f14840c698cc77b",
+        "auxiliary_ids": []
+      }
+    },
+    {
+      "type": "global-default",
+      "stage": "storyboard",
+      "before": {
+        "primary_id": "3dbf783e076b109a1f385c2f10006983",
+        "auxiliary_ids": [
+          "0e24c5eeb6046b921faae5d2deccab05"
+        ]
+      },
+      "after": {
+        "primary_id": "3dbf783e076b109a1f385c2f10006983",
+        "auxiliary_ids": []
+      }
+    },
+    {
+      "type": "global-default",
+      "stage": "video_prompt",
+      "before": {
+        "primary_id": "585767260b5a9dca14632f37c0ed69e0",
+        "auxiliary_ids": [
+          "0e24c5eeb6046b921faae5d2deccab05"
+        ]
+      },
+      "after": {
+        "primary_id": "585767260b5a9dca14632f37c0ed69e0",
+        "auxiliary_ids": []
+      }
+    }
+  ],
+  "recommendations": {
+    "script": [
+      "short-drama-write"
+    ],
+    "visual_assets": [
+      "short-drama-assets"
+    ],
+    "image_prompt": [
+      "short-drama-image-prompts"
+    ],
+    "storyboard": [
+      "short-drama-storyboard"
+    ],
+    "video_prompt": [
+      "short-drama-video-prompts"
+    ]
+  },
+  "selection_ids": {
+    "script": {
+      "primary_id": "5b4929915b40112723f1e983b75f008e",
+      "auxiliary_ids": []
+    },
+    "visual_assets": {
+      "primary_id": "a0afd161560cc35a78c6aa45a5a7a65c",
+      "auxiliary_ids": []
+    },
+    "image_prompt": {
+      "primary_id": "73a1919fc07cdcef4f14840c698cc77b",
+      "auxiliary_ids": []
+    },
+    "storyboard": {
+      "primary_id": "3dbf783e076b109a1f385c2f10006983",
+      "auxiliary_ids": []
+    },
+    "video_prompt": {
+      "primary_id": "585767260b5a9dca14632f37c0ed69e0",
+      "auxiliary_ids": []
+    }
+  },
+  "inheriting_projects": [
+    {
+      "id": "3cb79eb690cd46628dd123b358448dbb",
+      "name": "测试"
+    },
+    {
+      "id": "71310a8fbf9645f7b14fdf9105849c7c",
+      "name": "画风参考"
+    },
+    {
+      "id": "aef99639f6e84e4aada973f53d3a97a1",
+      "name": "天门烬｜仙侠国漫高燃预告（90秒）"
+    },
+    {
+      "id": "cd8a9b8c5ba94b9ab093b95d18a4e563",
+      "name": "逆潮关｜原创预告片（77.5秒）"
+    },
+    {
+      "id": "d2eda95f7d0c46d1905d47132e9dbd32",
+      "name": "剑骨人间"
+    }
+  ],
+  "project_override_rows": 0,
+  "verification": {
+    "api_global": "passed",
+    "api_effective_projects": 5,
+    "sqlite_read_only": "passed",
+    "skill_eligibility": "passed",
+    "preserved_installations": "passed",
+    "browser_default_settings": "passed: five dedicated primary skills, no auxiliary count shown"
+  },
+  "rationale": {
+    "default_auxiliaries": "none",
+    "review": "审查与修改分开；review只输出问题、结论和修订要求，保留为专项审查技能。",
+    "develop": "故事开发和分集规划按需作为主技能；write已支持只有想法或大纲的单集创作。",
+    "specialized_alternatives": "小说改编、资产美术及H3多镜分段规则按专项任务选择。",
+    "quality_evidence": "依据现装技能职责和输出目标；没有调用生成模型进行质量对比。"
+  }
+}
