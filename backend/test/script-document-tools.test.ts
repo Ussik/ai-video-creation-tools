@@ -581,30 +581,46 @@ test('provider interruption returns an honest partial checkpoint without losing 
   assert.match(script().artifacts![0].content, /身份待定/)
 })
 
-test('argument count diagnostics survive repeated failures and more than two corrections can finish', async t => {
+test('argument count diagnostics survive repeated failures; a changed approach finishes, and an unchanged one is stopped with a clear diagnosis', async t => {
   const { project, script } = await fixture(), model = await nativeModel(); let turn = 0
   await artifact(project.id)
   const document = script().artifacts![0]
+  // Phase A: the model corrects itself after two identical-class failures (changes the approach) and finishes.
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
     const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const intentReply = discussionIntent(init); if (intentReply) return intentReply;
     const body = JSON.parse(String(init.body)); turn++
-    if (turn <= 8 && turn % 2 === 0) {
+    if (turn === 2) {
       const first = body.messages.filter((item: any) => item.role === 'tool').slice(-2).map((item: any) => JSON.parse(item.content))
       assert.equal(first[0].diagnostic.limit, 8); assert.equal(first[0].diagnostic.actual, 9); assert.equal(first[0].diagnostic.path, 'document_ids')
       assert.equal(first[1].diagnostic.code, 'limit_exceeded'); assert.equal(first[1].diagnostic.retryable, true)
       assert.match(first[1].diagnostic.repair, /修正参数/)
       return Response.json({ choices: [{ message: { role: 'assistant', content: '稍后重新定位。' }, finish_reason: 'stop' }] })
     }
-    if (turn === 10) return Response.json({ choices: [{ message: { role: 'assistant', content: '已完成读取。' }, finish_reason: 'stop' }] })
+    if (turn === 4) return Response.json({ choices: [{ message: { role: 'assistant', content: '已完成读取。' }, finish_reason: 'stop' }] })
     if (turn > 1) assert.match(body.messages.at(-1).content, /程序执行检查/)
-    const ids = turn === 9 ? [document.id] : Array.from({ length: 9 }, (_, index) => `missing-${index}`)
-    return Response.json({ choices: [{ message: { role: 'assistant', content: '', tool_calls: (turn === 9 ? [1] : [1, 2]).map(index => ({ id: `read-${turn}-${index}`, type: 'function', function: { name: 'read_documents', arguments: JSON.stringify({ document_ids: ids }) } })) }, finish_reason: 'tool_calls' }] })
+    const ids = turn === 3 ? [document.id] : Array.from({ length: 9 }, (_, index) => `missing-${index}`)
+    return Response.json({ choices: [{ message: { role: 'assistant', content: '', tool_calls: (turn === 3 ? [1] : [1, 2]).map(index => ({ id: `read-${turn}-${index}`, type: 'function', function: { name: 'read_documents', arguments: JSON.stringify({ document_ids: ids }) } })) }, finish_reason: 'tool_calls' }] })
   })
   const result = await call<any>('POST', `/api/projects/${project.id}/script/director/chat`, { model_id: model.id, mode: 'script', use_tools: true, messages: [{ role: 'user', text: '读取项目' }] })
-  assert.equal(turn, 10); assert.equal(result.execution_outcome, undefined); assert.equal(result.reply, '已完成读取。')
-  assert.equal(result.activity.filter((event: any) => event.label === '继续修复未完成项').length, 4)
-  assert.equal(result.activity.filter((event: any) => event.kind === 'tool' && event.status === 'failed').length, 8)
+  assert.equal(turn, 4); assert.equal(result.execution_outcome, undefined); assert.equal(result.reply, '已完成读取。')
+  assert.equal(result.activity.filter((event: any) => event.label === '继续修复未完成项').length, 1)
+  assert.equal(result.activity.filter((event: any) => event.kind === 'tool' && event.status === 'failed').length, 2)
+})
+
+test('the same failing read repeated without any change is stopped with a diagnosis instead of dispatching forever', async t => {
+  const { project } = await fixture(), model = await nativeModel(); let turn = 0
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    const intentReply = discussionIntent(init); if (intentReply) return intentReply
+    turn++
+    if (turn > 30) return Response.json({ choices: [{ message: { role: 'assistant', content: '（保护：不应走到这里）' }, finish_reason: 'stop' }] })
+    return Response.json({ choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: `again-${turn}`, type: 'function', function: { name: 'read_documents',
+      arguments: JSON.stringify({ document_ids: Array.from({ length: 9 }, (_, index) => `missing-${index}`) }) } }] }, finish_reason: 'tool_calls' }] })
+  })
+  const result = await call<any>('POST', `/api/projects/${project.id}/script/director/chat`, { model_id: model.id, mode: 'script', use_tools: true, messages: [{ role: 'user', text: '读取项目' }] })
+  assert.ok(turn >= 3 && turn <= 8, `dispatch ended after a few identical failures (${turn} model turns), not at the safety fuse`)
+  assert.ok(result.activity.some((event: any) => event.label === '已停止重复处理'), 'the stop is recorded with its reason')
+  assert.match(result.reply, /重复|未获得新的有效结果|没有新增/)
 })
 
 async function runToolLoop(current: Awaited<ReturnType<typeof fixture>>, signal?: AbortSignal, protocol: 'chat_completions' | 'responses' = 'chat_completions', onEvent: (event: Record<string, unknown>) => void = () => {}, revisionTaskId?: string) {
@@ -624,10 +640,11 @@ async function runToolLoop(current: Awaited<ReturnType<typeof fixture>>, signal?
 test('native tools finish after more than sixteen rounds and sixty-four calls', async t => {
   for (const protocol of ['chat_completions', 'responses'] as const) await t.test(protocol, async t => {
     const current = await fixture(); let rounds = 0
+    await artifact(current.project.id, 'characters', '林晚。'.repeat(80))
     const before = current.script()
     t.mock.method(globalThis, 'fetch', async () => {
       rounds++
-      const calls = rounds <= 18 ? Array.from({ length: 4 }, (_, index) => ({ id: `state-${rounds}-${index}`, name: 'get_creation_state', arguments: '{}' })) : []
+      const calls = rounds <= 18 ? Array.from({ length: 4 }, (_, index) => ({ id: `state-${rounds}-${index}`, name: 'read_documents', arguments: JSON.stringify({ document_ids: [current.script().artifacts?.[0]?.id ?? 'none'], offset: ((rounds - 1) * 4 + index) * 3, length: 3 }) })) : []
       return protocol === 'responses'
         ? Response.json({ status: 'completed', output: calls.length ? calls.map(call => ({ type: 'function_call', call_id: call.id, name: call.name, arguments: call.arguments })) : [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '已核对创作进度。' }] }] })
         : Response.json({ choices: [{ message: { role: 'assistant', content: calls.length ? '' : '已核对创作进度。', ...(calls.length ? { tool_calls: calls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } })) } : {}) }, finish_reason: calls.length ? 'tool_calls' : 'stop' }] })
@@ -1004,7 +1021,7 @@ test('execution traces retain repeated calls, native errors, public model text a
     turn++
     if (turn === 10) return tracedResponse({ content: '<think>private chain of thought</think>已阅读人物资料。', reasoning_content: 'private field' }, 'stop')
     const name = turn === 1 ? 'get_creation_state' : 'read_documents'
-    const args = turn === 1 ? {} : { document_ids: [doc.id], offset: turn - 2, length: 1 }
+    const args = turn === 1 ? {} : { document_ids: [doc.id], offset: 5000 + (turn - 2) * 40, length: 40 }
     const tool_calls = [{ id: `trace-${turn}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }]
     if (turn === 1) tool_calls.push(
       { id: 'trace-failed-read', type: 'function', function: { name: 'read_documents', arguments: JSON.stringify({ document_ids: ['missing-document'] }) } },
@@ -1037,6 +1054,10 @@ test('execution traces retain repeated calls, native errors, public model text a
       assert.ok(event.usage.current.requests >= 10)
       assert.equal(event.usage.current.input_tokens, 120000)
       assert.equal(event.usage.current.output_tokens, 3000)
+    } else if (event.kind === 'model') {
+      // A model request additionally publishes its purpose and size once, before waiting on the network.
+      assert.ok(lifecycle.length === 2 || lifecycle.length === 3, 'a model operation has a start, at most one dispatch update, and a completion')
+      if (lifecycle.length === 3) assert.ok(lifecycle[1].request_bytes > 0 && lifecycle[1].request_purpose, 'the dispatch update carries purpose and size')
     } else assert.equal(lifecycle.length, 2, 'ordinary operations retain one start and one completion')
   }
   assert.equal(done.reply, '已阅读人物资料。')
@@ -1057,9 +1078,11 @@ test('provider failure is recorded as a failed model operation rather than a suc
   const result = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat/stream`, payload: { model_id: model.id, mode: 'script', use_tools: true, messages: [{ role: 'user', text: '讨论故事方向' }] } })
   const events = result.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)))
   const modelEvents = events.filter(event => event.type === 'activity' && event.activity.kind === 'model')
-  assert.equal(modelEvents[0].activity.status, 'running'); assert.equal(modelEvents[1].activity.status, 'failed')
-  assert.match(modelEvents[1].activity.summary, /provider unavailable/)
-  assert.ok(modelEvents[1].activity.request_bytes > 0)
+  const lastModel = modelEvents.at(-1)!
+  assert.equal(modelEvents[0].activity.status, 'running'); assert.equal(lastModel.activity.status, 'failed')
+  assert.match(lastModel.activity.summary, /provider unavailable/)
+  assert.ok(lastModel.activity.request_bytes > 0)
+  assert.equal(lastModel.activity.request_purpose, 'tool_decision')
   assert.equal(events.filter(event => event.type === 'activity' && event.activity.kind === 'tool').length, 0)
   assert.ok(events.some(event => event.type === 'error'))
 })

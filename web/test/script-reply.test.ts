@@ -195,3 +195,13 @@ test('stage suggestions wait for the current reply recognition while historical 
   assert.equal(latestReplyNeedsRecognition([{ ...unknown, failed: true }]), false)
   assert.equal(latestReplyNeedsRecognition([{ ...unknown, text: JSON.stringify({ kind: 'confirmation', question: '接受方案？' }) }]), false)
 })
+
+test('program-written saved, discarded and cancelled notices never request a model classification', () => {
+  const notice = (kind: string): ClassifiableMessage => ({ id: `n-${kind}`, role: 'assistant', text: '草稿已处理。', execution: { outcome: { kind } } })
+  for (const kind of ['saved', 'discarded', 'cancelled']) {
+    assert.deepEqual(classificationBatch([notice(kind)], new Set()), [])
+    assert.equal(latestReplyNeedsRecognition([notice(kind)]), false)
+  }
+  const reply: ClassifiableMessage = { id: 'r', role: 'assistant', text: '想先确认主角身份，是律师还是医生？', execution: { outcome: { kind: 'question' } } }
+  assert.deepEqual(classificationBatch([reply], new Set()).map(source => source.id), ['r'], 'model-written replies still need classification')
+})

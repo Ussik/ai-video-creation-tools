@@ -21,7 +21,13 @@ dom.window.HTMLElement.prototype.scrollTo = () => {}
 
 let frameId = 0
 const frames = new Map<number, FrameRequestCallback>()
-const requestFrame = (callback: FrameRequestCallback) => { frames.set(++frameId, callback); return frameId }
+// d3-timer (React Flow viewport transitions) schedules its `wake` on requestAnimationFrame and releases its
+// poll interval only when that callback runs. Per-test frames.clear() would drop it and keep the process alive,
+// so d3's own scheduler runs on a real timer, as d3-timer does without requestAnimationFrame.
+const requestFrame = (callback: FrameRequestCallback) => {
+  if (callback.name === 'wake') { setTimeout(() => callback(performance.now()), 17); return 0 }
+  frames.set(++frameId, callback); return frameId
+}
 const cancelFrame = (id: number) => frames.delete(id)
 Object.assign(globalThis, { requestAnimationFrame: requestFrame, cancelAnimationFrame: cancelFrame })
 Object.assign(dom.window, { requestAnimationFrame: requestFrame, cancelAnimationFrame: cancelFrame })
@@ -143,7 +149,9 @@ test('real App polling retains one canvas beside the hidden storyboard planner',
       const [id, poll] = [...polls.entries()][0]; polls.delete(id)
       await act(async () => { await poll() }); await settle()
       assert.equal(detailReads, initialDetailReads + tick, 'each tick refreshes the actual project detail')
-      assert.equal(continuityReads, initialContinuityReads + tick, 'each tick also updates parent continuity state')
+      // Continuity belongs to the storyboard final-cut view (finalCutMode='storyboard'); the default basic editor has no
+      // storyboard scope, so a background poll must not request it (and must not write anything).
+      assert.equal(continuityReads, initialContinuityReads, 'the basic editor does not poll storyboard continuity')
       assert.equal(container.querySelectorAll('.project-canvas').length, 1, `poll ${tick} cannot duplicate a canvas`)
       assert.equal(container.querySelectorAll('.pc-flow').length, 1, `poll ${tick} retains one flow host`)
       assert.equal(container.querySelector('.project-canvas'), canvas, `poll ${tick} preserves the canvas mount`)
@@ -205,10 +213,14 @@ test('header project switching retains asset workspace and clears prior selectio
   } finally { await act(() => root.unmount()); container.remove(); frames.clear() }
 })
 
+// Closing or switching the dialog persists chat history; that is not generation or a script save.
+const isConversationSnapshot = (request: { path: string; method: string }) => request.method === 'PUT' && request.path === '/api/projects/refresh/script/conversations'
+
 test('editor supplement opens the exact missing outline scope without generating or saving', async t => {
   const requests: Array<{ path: string; method: string }> = []
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
     const path = String(url), method = init?.method || 'GET'; requests.push({ path, method })
+    if (isConversationSnapshot({ path, method })) return Response.json({ id: 'snapshot' })
     assert.equal(method, 'GET', 'opening supplement configuration must not generate or save')
     if (path === '/api/projects') return Response.json([detail])
     if (path === '/api/providers' || path === '/api/models') return Response.json([])
@@ -246,7 +258,7 @@ test('editor supplement opens the exact missing outline scope without generating
     assert.match(panel.textContent!, /已保存栏目的标题和正文保持原样/)
     await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="打开剧本对话"]')!.click()); await settle()
     assert.equal(container.querySelector('[aria-label="分阶段生成面板"]'), null, 'a regular conversation opening clears the supplement request')
-    assert.ok(requests.every(request => request.method === 'GET'))
+    assert.ok(requests.every(request => request.method === 'GET' || isConversationSnapshot(request)), 'only chat-history snapshots may be written')
     assert.equal(detail.script.outline, '# 故事大纲\n\n林晚在车站等候列车。')
   } finally { await act(() => root.unmount()); container.remove(); frames.clear() }
 })

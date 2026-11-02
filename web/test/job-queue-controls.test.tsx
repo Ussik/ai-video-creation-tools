@@ -85,8 +85,14 @@ test('failed saves retain the draft and allow retry, while empty inputs cannot s
 
 test('a stale polling response cannot replace a successful save and pending requests are cancelled on unmount', async t => {
   let poll!: () => void
-  t.mock.method(globalThis, 'setInterval', (callback: () => void, delay: number) => { if (delay === 4000) poll = callback; return 99 })
-  t.mock.method(globalThis, 'clearInterval', () => {})
+  // Only the component's 4s poll is captured; every other interval (jsdom's animation-frame timer) stays real,
+  // otherwise a no-op clearInterval leaks jsdom's interval and keeps the test process alive.
+  const realSetInterval = globalThis.setInterval, realClearInterval = globalThis.clearInterval, pollTimer = 99 as unknown as ReturnType<typeof setInterval>
+  t.mock.method(globalThis, 'setInterval', ((callback: () => void, delay?: number, ...args: unknown[]) => {
+    if (delay === 4000) { poll = callback; return pollTimer }
+    return realSetInterval(callback, delay, ...args)
+  }) as typeof setInterval)
+  t.mock.method(globalThis, 'clearInterval', ((timer?: Parameters<typeof clearInterval>[0]) => { if (timer !== pollTimer) realClearInterval(timer) }) as typeof clearInterval)
   let getCalls = 0, resolveOld!: (response: Response) => void, oldSignal!: AbortSignal, finalSignal!: AbortSignal
   t.mock.method(globalThis, 'fetch', async (_path: string, init: RequestInit) => {
     if (init.method === 'PUT') return Response.json(queue(5))

@@ -127,7 +127,7 @@ function mockApi(t: TestContext, initialSource: ScriptSourceDocument | null = nu
     } }
 }
 
-test('upload schedules analysis and unlocks stage generation only after it is ready', async t => {
+test('upload schedules analysis, and a source outline starts without waiting for it', async t => {
   dom.window.localStorage.clear()
   const api = mockApi(t)
   const view = await mount()
@@ -136,18 +136,11 @@ test('upload schedules analysis and unlocks stage generation only after it is re
     await chooseFile('uploaded.txt')
     assert.equal(api.uploads, 1)
     assert.equal(api.calls.length, 0, 'upload itself must never start a creation chat or draft')
-    assert.equal(button('故事大纲').disabled, true)
     assert.match(view.container.textContent!, /已上传剧本.txt/)
     await act(() => view.container.querySelector<HTMLButtonElement>('button[aria-label="查看原剧本：已上传剧本.txt"]')!.click())
     assert.match(document.body.textContent!, /原文的最后一句/)
-    assert.equal(button('生成故事大纲').disabled, true)
-    await act(() => button('生成故事大纲').click())
-    assert.equal(api.calls.length, 0)
-    api.setAnalysis({ ...analysis, status: 'ready', completed_chunks: 1 })
-    await pollAnalysis()
-    assert.equal(button('故事大纲').disabled, false)
+    // Analysis is still queued/running, yet the outline task reads the persisted full text.
     assert.equal(button('生成故事大纲').disabled, false)
-    assert.equal(api.calls.length, 0, 'analysis completion must not start creation automatically')
     await act(() => button('生成故事大纲').click())
     await settle()
     assert.equal(api.calls.length, 1)

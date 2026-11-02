@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { maxStageArtifacts, scriptArtifactLabels, scriptArtifactTypes, type StageArtifactType } from '@video-studio/shared/script/script-stage-content'
 import { scriptCreativeAuthorityGuidance } from '@video-studio/shared/script/script-setting-completeness'
 import type { StructuredGenerator } from '../generation/model-output.js'
+import { reviewConcurrency, settleBounded } from './script-bounded-parallel.js'
 import { ScriptToolProblem } from './script-revision.js'
 import type { WorkflowDraft } from './script-workflow.js'
 import type { ScriptDraftFinding } from '@video-studio/shared/script/script-draft-resolution'
@@ -90,14 +91,23 @@ export async function reviewScriptDraftCompleteness(draft: WorkflowDraft, genera
   const tasks = planDraftReviewTasks(draft.stage, sources, options.review_scope)
   const results: z.infer<typeof draftCompletenessInput>[] = []
   if (!tasks.length) results.push(await reviewScriptDraftSources(draft, generate, sources, options))
-  else for (const task of tasks) {
+  else {
     // Scoped tasks do not see unrelated candidate bytes, so a change in one
     // deliverable does not invalidate the others. Full source and creator
-    // requirements remain available, and the final task sees every candidate.
-    const steps = draftReviewTaskSteps(options.steps, task.id)
-    results.push(await reviewScriptDraftSources(draft, generate, task.sources, {
-      ...options, steps, context: task.kind === 'consistency' ? options.context : draftReviewTaskContext(options.context, task.sources),
-    }, task))
+    // requirements remain available. Independent local groups run in a bounded
+    // pool; the final task sees every candidate and always runs after them.
+    const review = (task: DraftReviewTask) => reviewScriptDraftSources(draft, generate, task.sources, {
+      ...options, steps: draftReviewTaskSteps(options.steps, task.id),
+      context: task.kind === 'consistency' ? options.context : draftReviewTaskContext(options.context, task.sources),
+    }, task)
+    const local = tasks.filter(task => task.kind !== 'consistency'), global = tasks.filter(task => task.kind === 'consistency')
+    const settled = await settleBounded(local, reviewConcurrency(), options.signal, review)
+    // Surface the first failure in declared order only after every started
+    // group has finished and checkpointed its own result.
+    const failure = settled.find((item): item is PromiseRejectedResult => item.status === 'rejected')
+    if (failure) throw failure.reason
+    results.push(...settled.map(item => (item as PromiseFulfilledResult<z.infer<typeof draftCompletenessInput>>).value))
+    for (const task of global) results.push(await review(task))
   }
   const reports = results.flatMap(result => result.findings)
   const plainFinding = ({ severity: _severity, ...finding }: typeof reports[number]): ScriptDraftFinding => finding

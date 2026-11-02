@@ -108,7 +108,8 @@ async function fixture(t: TestContext, strategy: 'manual' | 'ai', requiredRounds
   const retainedRequest = JSON.parse(row.request_payload)
   assert.deepEqual(retainedRequest.draft_resolution, failRecoveryAdvance ? body.draft_resolution : { id: current.id, version: current.version, strategy: 'continue' })
   if (failRecoveryAdvance) assert.equal(row.resume_key, originalRecoveryKey, 'a rolled-back candidate retains its matching recovery key')
-  assert.deepEqual(retainedRequest.messages, body.messages, 'persist the actual authorized creator context')
+  // The server binds each message to its stored id (provenance); wording and order are what must stay exact.
+  assert.deepEqual(retainedRequest.messages.map(({ id: _id, ...rest }: { id?: string }) => rest), body.messages, 'persist the actual authorized creator context')
   const scope = scriptProposalBudgetScope(draft)
   return { project, model, url, body, current, row, observed,
     usage: () => sourceProposalBudget(project.id, scope).usage,

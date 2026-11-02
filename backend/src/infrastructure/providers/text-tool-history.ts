@@ -100,12 +100,15 @@ function retainedExchangeStart(history: unknown[], initialLength: number, pendin
 }
 
 export async function compactToolHistory(history: unknown[], initialLength: number, model: GenerationModel, _provider: GenerationProvider,
-  _key: (provider: GenerationProvider) => string, signal?: AbortSignal, _onMetrics?: (metrics: TextRequestMetrics) => void) {
+  _key: (provider: GenerationProvider) => string, signal?: AbortSignal, _onMetrics?: (metrics: TextRequestMetrics) => void,
+  /** Set when the complete next request is close to the model's stated context capacity: compact whatever can be
+   * compacted now, regardless of the character threshold. Still no model call. */
+  pressure = false) {
   signal?.throwIfAborted()
   const settings = typeof model.settings === 'string' ? JSON.parse(model.settings) as Record<string, unknown> : model.settings
   const requested = Number(settings.tool_history_chars)
   const limit = Number.isFinite(requested) && requested >= 16000 ? Math.min(requested, 120000) : 48000
-  if (JSON.stringify(history.slice(initialLength)).length < limit) return history
+  if (!pressure && JSON.stringify(history.slice(initialLength)).length < limit) return history
   let pending = history.length - 1
   if (model.protocol === 'responses') {
     while (pending > initialLength && (history[pending - 1] as Item)?.role !== 'user' && !isOutput(history[pending - 1] as Item)) pending--
@@ -170,3 +173,6 @@ export async function compactToolHistory(history: unknown[], initialLength: numb
   while (JSON.stringify(message()).length > checkpointLimit && state.references.length) { state.references.shift(); state.omitted_records++ }
   return [...history.slice(0, initialLength), ...instructions, message(), ...history.slice(retained)]
 }
+
+/** Share of the stated context window above which the complete next request counts as under pressure. */
+export const contextPressureShare = 0.8

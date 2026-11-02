@@ -12,7 +12,7 @@ export type ReplyClassification = { type: 'other' } | { type: 'workflow_action';
   type: 'choice_request'; interaction?: DirectorInteraction; status: 'pending' | 'answered' | 'superseded'; question: string;
   options: Array<{ id: string; title: string; text: string; requires_details?: boolean }>
 }
-export type ClassifiableMessage = { id: string; role: 'assistant' | 'user'; text: string; stage_context?: DirectorStageContext; pending?: boolean; failed?: boolean; classification?: ReplyClassification; classification_version?: number; classification_context?: string }
+export type ClassifiableMessage = { id: string; role: 'assistant' | 'user'; text: string; stage_context?: DirectorStageContext; pending?: boolean; failed?: boolean; classification?: ReplyClassification; classification_version?: number; classification_context?: string; execution?: { outcome?: { kind?: string } } }
 export function followingMessages(messages: ClassifiableMessage[], index: number) {
   let includedAnswer = false
   return messages.slice(index + 1).filter(message => !message.pending && !message.failed).slice(0, 8).map(message => {
@@ -29,9 +29,14 @@ function hasStageClassification(message: ClassifiableMessage): boolean {
   return classification.type === 'question_set' ? classification.questions.every(item => !!item.interaction) : !!classification.interaction
 }
 
+/** Saved, discarded and cancelled notices are program-written status text with no
+ * question or proposal, so a model call could only answer `other`. */
+const statusNoticeOutcomes = new Set(['saved', 'discarded', 'cancelled'])
+export const isStatusNotice = (message: ClassifiableMessage) => message.role === 'assistant' && statusNoticeOutcomes.has(message.execution?.outcome?.kind || '')
+
 export function latestReplyNeedsRecognition(messages: ClassifiableMessage[], controlled = false): boolean {
   const message = messages.at(-1)
-  if (!message || message.role !== 'assistant' || message.pending || message.failed || hasDirectInteraction(message, controlled)) return false
+  if (!message || message.role !== 'assistant' || isStatusNotice(message) || message.pending || message.failed || hasDirectInteraction(message, controlled)) return false
   return message.classification_version !== replyClassificationVersion || !message.classification || controlled && !hasStageClassification(message) ||
     contextualReplyTypes.includes(message.classification.type) && message.classification_context !== '[]'
 }
@@ -89,7 +94,7 @@ export function activeReplyChoice(messages: ClassifiableMessage[], dismissed: Re
 /** Background work never becomes a status or a lock on the current reply. */
 export function replyRecognitionState(messages: ClassifiableMessage[], messageId: string, pending: Record<string, string>, errors: Record<string, string>, controlled = false): 'processing' | 'error' | null {
   const message = messages.at(-1)
-  if (!message || message.id !== messageId || message.role !== 'assistant' || message.pending || message.failed || hasDirectInteraction(message, controlled)) return null
+  if (!message || message.id !== messageId || message.role !== 'assistant' || isStatusNotice(message) || message.pending || message.failed || hasDirectInteraction(message, controlled)) return null
   const following_messages = followingMessages(messages, messages.length - 1)
   if (message.classification_version === replyClassificationVersion && message.classification &&
     (!controlled || hasStageClassification(message)) &&
@@ -111,7 +116,7 @@ export function classificationBatch(messages: ClassifiableMessage[], excluded: S
     const classified = message.classification && message.classification_version === replyClassificationVersion &&
       (!controlled || hasStageClassification(message)) &&
       (!contextualReplyTypes.includes(message.classification.type) || message.classification_context === JSON.stringify(following_messages))
-    if (message.role !== 'assistant' || message.id === 'welcome' || message.pending || message.failed || classified || message.id !== priorityId && hasDirectInteraction(message, controlled) || excluded.has(classificationKey(source)) || !message.text.trim()) continue
+    if (message.role !== 'assistant' || message.id === 'welcome' || isStatusNotice(message) || message.pending || message.failed || classified || message.id !== priorityId && hasDirectInteraction(message, controlled) || excluded.has(classificationKey(source)) || !message.text.trim()) continue
     if (message.text.trim().length > 80_000) continue
     const next = [...batch, source]
     if (new TextEncoder().encode(JSON.stringify(next)).length > (batch.length ? 40_000 : 640_000)) continue

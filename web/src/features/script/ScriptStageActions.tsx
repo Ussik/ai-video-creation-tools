@@ -7,8 +7,8 @@ import type { ScriptTaskContract } from '@video-studio/shared/script/script-task
 
 type StageActionTarget = StageTarget & Pick<ScriptTaskContract, 'intent' | 'artifact_types'>
 
-export default function ScriptStageActions({ script, disabled, outlineIssue, hasSource = false, onAction }: {
-  script: WorkflowProgressInput; disabled: boolean; outlineIssue?: string | null; hasSource?: boolean; onAction: (target: StageActionTarget) => void;
+export default function ScriptStageActions({ script, disabled, outlineIssue, hasSource = false, analysisWait = '', onAction }: {
+  script: WorkflowProgressInput; disabled: boolean; outlineIssue?: string | null; hasSource?: boolean; analysisWait?: string; onAction: (target: StageActionTarget) => void;
 }) {
   const progress = workflowProgress(script)
   return <div className="sd-stage-actions" aria-label="阶段处理">
@@ -17,7 +17,7 @@ export default function ScriptStageActions({ script, disabled, outlineIssue, has
       const current = progress.next_stage === stage
       const target = { stage, episode_number: stage === 'episode' ? progress.next_episode || 1 : 0 }
       if (saved) return <Menu key={stage} position="bottom-start" withinPortal zIndex={400}>
-        <Menu.Target><Button variant="subtle" className="sd-stage-button is-saved" disabled={disabled}
+        <Menu.Target><Button variant="subtle" className="sd-stage-button is-saved" disabled={disabled || Boolean(analysisWait)} title={analysisWait || undefined}
           aria-label={`处理已保存的${stageLabels[stage]}`}>{stageLabels[stage]}<ChevronDown size={12} /></Button></Menu.Target>
         <Menu.Dropdown>
           <Menu.Label>{stage === 'episode' ? '已保存分集' : `${stageLabels[stage]} · 已保存`}</Menu.Label>
@@ -41,13 +41,13 @@ export default function ScriptStageActions({ script, disabled, outlineIssue, has
         <Menu.Dropdown>
           <Menu.Label>选择本次交付范围</Menu.Label>
           <Menu.Item onClick={() => onAction({ ...target, operation: 'generate', intent: hasSource ? 'source_outline' : 'stage_design', artifact_types: ['outline'] })}>{hasSource ? '整理原稿大纲 · 仅概要设计' : '生成初步大纲 · 仅概要设计'}</Menu.Item>
-          <Menu.Item onClick={() => onAction({ ...target, operation: 'generate', intent: 'stage_design' })}>完整大纲设计 · 9 栏</Menu.Item>
+          <Menu.Item disabled={Boolean(analysisWait && hasSource)} title={analysisWait && hasSource ? analysisWait : undefined} onClick={() => onAction({ ...target, operation: 'generate', intent: 'stage_design' })}>完整大纲设计 · 9 栏</Menu.Item>
         </Menu.Dropdown>
       </Menu>
       return <Tooltip key={stage} label={issue} disabled={!issue} withinPortal zIndex={400} withArrow>
         <Box component="span" w="100%" style={{ minWidth: 0 }}>
           <Button variant="subtle" className={`sd-stage-button${current ? ' is-current' : ''}`}
-            disabled={disabled || !current || Boolean(issue)} title={issue || (current ? '生成后确认保存，再继续下一阶段' : '完成并保存前面的阶段后开放')}
+            disabled={disabled || !current || Boolean(issue) || Boolean(analysisWait)} title={issue || analysisWait || (current ? '生成后确认保存，再继续下一阶段' : '完成并保存前面的阶段后开放')}
             onClick={() => onAction({ ...target, operation: 'generate' })}>{current ? <FileText size={13} /> : <Lock size={12} />}{stageLabels[stage]}</Button>
         </Box>
       </Tooltip>

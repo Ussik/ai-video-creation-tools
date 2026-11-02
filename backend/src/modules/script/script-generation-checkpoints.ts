@@ -41,10 +41,15 @@ export function generationCheckpointStore(projectId: string, identity: unknown, 
   }
 }
 
-export function clearGenerationCheckpoint(projectId: string) {
+export function clearGenerationCheckpoint(projectId: string, options: { keepReview?: boolean } = {}) {
   run('DELETE FROM script_generation_checkpoints WHERE project_id=?', projectId)
   // A reviewed source proposal remains private until its stage draft is saved.
   // Keep its validated analysis so publishing the candidate cannot force an
   // identical manuscript through another full read after confirmation.
-  run("DELETE FROM script_step_checkpoints WHERE project_id=? AND namespace NOT IN ('source-proposal','source-proposal-base','source-proposal-usage','source-revision-base')", projectId)
+  // When a candidate pauses for the creator's answer, its completed review groups
+  // stay: each step is keyed by the hash of its complete prompt, so a group whose
+  // candidate text, manuscript and creator context did not change is reused, and
+  // one whose input did change is simply reviewed again.
+  const kept = ['source-proposal', 'source-proposal-base', 'source-proposal-usage', 'source-revision-base', ...(options.keepReview ? ['draft-review'] : [])]
+  run(`DELETE FROM script_step_checkpoints WHERE project_id=? AND namespace NOT IN (${kept.map(() => '?').join(',')})`, projectId, ...kept)
 }

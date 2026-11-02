@@ -1174,11 +1174,20 @@ test('replanning with changed documents refreshes all setting types and only the
       assert.equal(profile.revision, previous.revision + Number(profile.kind === kind))
       assert.equal(profile.board_asset_id, profile.kind === kind ? null : previous.board_asset_id)
       const binding = refreshed.shot_visual_bindings.find((item: { profile_id: string }) => item.profile_id === profile.id)
-      assert.equal(binding.definition, profile.definition); assert.equal(binding.revision, profile.revision)
       assert.equal(binding.required, false)
-      if (profile.kind === kind) assert.deepEqual(binding.reference_assets, [])
-      else assert.deepEqual(one('SELECT * FROM shot_visual_bindings WHERE shot_id=? AND profile_id=?', shotId, profile.id),
-        beforeBindings.find(item => item.profile_id === profile.id))
+      const stored = beforeBindings.find(item => item.profile_id === profile.id)
+      if (profile.kind === kind) {
+        // The profile is updated at once and loses its confirmed board. A following binding keeps the complete previous
+        // snapshot (never a mix of revisions) and waits until the new board is confirmed
+        // (docs/multi-angle-reference-workflow.md, "未确认新版图 … 保留完整旧版并提示").
+        assert.equal(binding.sync_status, 'waiting_confirmation')
+        assert.equal(binding.revision, stored.revision); assert.equal(binding.definition, stored.definition)
+        assert.deepEqual(JSON.stringify(binding.reference_assets), stored.reference_assets)
+      } else {
+        // Untouched types are refreshed to their current profile and their stored snapshot is not otherwise disturbed.
+        assert.equal(binding.definition, profile.definition); assert.equal(binding.revision, profile.revision)
+        assert.deepEqual(one('SELECT * FROM shot_visual_bindings WHERE shot_id=? AND profile_id=?', shotId, profile.id), stored)
+      }
     }
     assert.deepEqual(all('SELECT * FROM shot_visual_bindings WHERE shot_id=? ORDER BY profile_id', historical.id), historicalBindings)
     assert.deepEqual((await f.context()).reference_preparation.needs_analysis, [])
@@ -1203,7 +1212,8 @@ test('replanning with changed documents refreshes all setting types and only the
       nextBindings.push({ profile_id: profile.id, required: false, usage: 'both',
         reference_asset_ids: [withView.reference_assets.find((reference: { asset_id: string }) => reference.asset_id === viewAssetId).id] })
     }
-    await call('PUT', `/api/shots/${shotId}/visual-bindings`, { bindings: nextBindings })
+    // Binding images of the new revision first moves the shot to that revision; this is the explicit refresh the API offers.
+    await call('PUT', `/api/shots/${shotId}/visual-bindings`, { bindings: nextBindings, refresh_profile_ids: nextBindings.map(binding => binding.profile_id) })
     for (const binding of beforeBindings.filter(binding => binding.kind === kind)) {
       for (const reference of JSON.parse(binding.reference_assets)) {
         assert.ok(one('SELECT 1 FROM visual_profile_reference_assets WHERE id=?', reference.id))

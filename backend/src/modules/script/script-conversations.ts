@@ -9,10 +9,20 @@ export function conversationTimestamp(projectId: string) {
   const previous = one<{ updated_at: string }>('SELECT updated_at FROM script_conversations WHERE project_id=? ORDER BY updated_at DESC LIMIT 1', projectId)
   return new Date(Math.max(Date.now(), Date.parse(previous?.updated_at || '') + 1 || 0)).toISOString()
 }
+/** Keep the first text ever seen for a message id, independent of the windowed conversation. */
+function archiveMessage(conversationId: string, id: string, role: 'assistant' | 'user', text: string, timestamp: string) {
+  const owner = one<{ project_id: string }>('SELECT project_id FROM script_conversations WHERE id=?', conversationId)
+  if (!owner) return
+  run('INSERT OR IGNORE INTO script_message_archive (conversation_id, id, project_id, role, text, first_seen_at) VALUES (?, ?, ?, ?, ?, ?)',
+    conversationId, id, owner.project_id, role, text, timestamp)
+}
 export function insertConversationMessage(conversationId: string, message: ConversationMessage, position: number, timestamp = now()) {
+  const messageId = message.id || newId()
+  // An in-progress assistant placeholder is not an original statement; only archive final text.
+  if (message.text !== '正在处理创作任务…') archiveMessage(conversationId, messageId, message.role, message.text, timestamp)
   run(`INSERT OR REPLACE INTO script_messages
     (id, conversation_id, position, role, text, reference_documents, processing_duration_ms, stage_context, activity, reply_metadata, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, message.id || newId(), conversationId, position, message.role, message.text,
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, messageId, conversationId, position, message.role, message.text,
   JSON.stringify(message.reference_documents || []), message.processing_duration_ms ?? null, message.stage_context ? JSON.stringify(message.stage_context) : null,
   JSON.stringify(message.activity || []), JSON.stringify(message.reply_metadata || {}), timestamp)
 }

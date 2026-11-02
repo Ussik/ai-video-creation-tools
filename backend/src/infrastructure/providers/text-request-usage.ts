@@ -93,6 +93,8 @@ export type TextRequestUsageMetrics = {
   input_tokens?: number
   output_tokens?: number
   reasoning_tokens?: number
+  cache_read_tokens?: number
+  cache_write_tokens?: number
   response_chars?: number
 }
 
@@ -167,6 +169,7 @@ export function beginTextRequest(details: TextRequestUsageDetails): {
         if (actualInput !== undefined) {
           usage.estimated_input_tokens -= details.estimated_input_tokens
           usage.input_tokens += actualInput
+          addCache(usage, metrics, actualInput)
         }
         if (actualOutput !== undefined) {
           usage.estimated_output_tokens -= reserve
@@ -192,6 +195,19 @@ export function settlePendingTextRequest(id: string, metrics: TextRequestUsageMe
   return settled
 }
 
+/** Called exactly once per request, when its input tokens are first settled,
+ * so retries and resumed responses cannot count cache usage twice. */
+function addCache(usage: ScriptRequestUsage, metrics: TextRequestUsageMetrics, input: number) {
+  if (integer(metrics.cache_read_tokens)) {
+    usage.cache_read_tokens += Math.min(metrics.cache_read_tokens, input)
+    usage.cache_read_reported_requests++
+  }
+  if (integer(metrics.cache_write_tokens)) {
+    usage.cache_write_tokens += metrics.cache_write_tokens
+    usage.cache_write_reported_requests++
+  }
+}
+
 function settlePending(target: UsageTarget, id: string, metrics: TextRequestUsageMetrics): boolean {
   const { usage } = target
   const pending = usage.pending_requests.find(item => item.id === id)
@@ -199,6 +215,7 @@ function settlePending(target: UsageTarget, id: string, metrics: TextRequestUsag
   if (integer(metrics.input_tokens) && !pending.input_settled) {
     usage.estimated_input_tokens -= pending.estimated_input_tokens
     usage.input_tokens += metrics.input_tokens
+    addCache(usage, metrics, metrics.input_tokens)
     pending.input_settled = true
   }
   if (integer(metrics.output_tokens) && !pending.output_settled) {
