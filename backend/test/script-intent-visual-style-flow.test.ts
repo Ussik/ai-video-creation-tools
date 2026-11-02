@@ -386,7 +386,10 @@ test('a persistent mixed style and outline task resumes its failed review withou
       assert.equal(one<{ updated_at: string }>('SELECT updated_at FROM script_story_decisions WHERE project_id=? AND topic=?', project.id, '视觉风格')!.updated_at,
         decision.updated_at, 'retrying the same style and creator source must not rewrite its decision timestamp')
       const syncs = finished.events.find((event: any) => event.type === 'activity')?.activity.filter((activity: any) => activity.step_id === 'confirmed_visual_style_sync')
-      assert.ok(syncs.some((activity: any) => activity.status === 'succeeded' && activity.reused), 'recovery identifies its already-saved style as reused')
+      // Recovery resumes the typed outline task, so it does not interpret the message again; the confirmed style is
+      // already saved. What must hold is that the style was written exactly once (the original run), never again.
+      assert.equal(syncs.filter((activity: any) => activity.status === 'succeeded' && !activity.reused).length, 1, 'the style is saved once')
+      assert.ok(!syncs.some((activity: any) => activity.status === 'failed'), 'recovery never re-attempts or fails a style write')
     }
     const script = (await call('GET', `/api/projects/${project.id}`)).script
     assert.equal(script.outline, '')

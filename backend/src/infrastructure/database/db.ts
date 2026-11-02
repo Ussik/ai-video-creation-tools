@@ -234,6 +234,14 @@ export function initDb(): void {
       text TEXT NOT NULL, created_at TEXT NOT NULL,
       PRIMARY KEY (conversation_id, id)
     );
+    -- Append-only copy of every conversation message ever stored. The visible conversation is windowed
+    -- (and trimmed) for the interface; this archive keeps the original wording readable by id.
+    CREATE TABLE IF NOT EXISTS script_message_archive (
+      conversation_id TEXT NOT NULL, id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      role TEXT NOT NULL CHECK (role IN ('assistant', 'user')), text TEXT NOT NULL, first_seen_at TEXT NOT NULL,
+      PRIMARY KEY (conversation_id, id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_script_message_archive_project ON script_message_archive(project_id, first_seen_at);
     CREATE TABLE IF NOT EXISTS script_director_tasks (
       id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       conversation_id TEXT NOT NULL REFERENCES script_conversations(id) ON DELETE CASCADE,
@@ -268,6 +276,14 @@ export function initDb(): void {
       source_text TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
       UNIQUE(project_id, topic)
     );
+    CREATE TABLE IF NOT EXISTS script_creator_requirements (
+      id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK (kind IN ('requirement', 'open_question')),
+      quote TEXT NOT NULL, source_text TEXT NOT NULL, message_id TEXT, conversation_id TEXT,
+      scope TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'superseded')),
+      supersedes_id TEXT, superseded_by TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_script_creator_requirements_project ON script_creator_requirements(project_id, status, created_at);
     CREATE TABLE IF NOT EXISTS script_draft_resolutions (
       project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
       payload TEXT NOT NULL, updated_at TEXT NOT NULL

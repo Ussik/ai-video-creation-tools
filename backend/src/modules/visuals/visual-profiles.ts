@@ -995,8 +995,10 @@ export function registerVisualProfileRoutes(app: FastifyInstance, context: {
         const syncMode = binding.sync_mode || previous?.sync_mode || 'follow'
         const selection = binding.reference_selection || (binding.reference_asset_ids === undefined ? previous?.reference_selection || 'auto' : 'manual')
         if (selection === 'auto' && binding.reference_asset_ids !== undefined) invalid('自动匹配不能同时指定参考图片')
-        insertShotBinding(id, binding.profile, binding.required, binding.reference_asset_ids, binding.usage || previous?.usage || 'both', data.refresh_profile_ids.includes(binding.profile.id),
-          { sync_mode: syncMode, reference_selection: selection })
+        // An explicit refresh re-snapshots the binding from the profile's current revision and confirmed board, for a locked
+        // shot as well; without it the request would validate and then change nothing.
+        insertShotBinding(id, binding.profile, binding.required, binding.reference_asset_ids, binding.usage || previous?.usage || 'both',
+          data.refresh_profile_ids.includes(binding.profile.id), { sync_mode: syncMode, reference_selection: selection })
         if (binding.reference_asset_ids !== undefined) {
           const saved = one<VisualBinding>('SELECT * FROM shot_visual_bindings WHERE shot_id=? AND profile_id=?', id, binding.profile.id)!
           const selected = selectedVisualReferenceSnapshots(binding.profile, binding.reference_asset_ids, saved.revision, normalizeVisualBinding(saved).reference_assets)

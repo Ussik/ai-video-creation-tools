@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import type { GenerationModel, GenerationProvider } from '../../infrastructure/providers/providers.js'
 import { textToolSession, type ToolOutput } from '../../infrastructure/providers/text-tools.js'
@@ -60,10 +61,23 @@ export async function chooseCreationSkills(model: GenerationModel, provider: Gen
   throw Object.assign(new Error('模型未完成有效的技能选择，本次创作尚未开始，请重试或手动选择技能'), { statusCode: 502 })
 }
 
+/** Automatic choices are reused only for a byte-identical complete input: the
+ * same project, model configuration, stage, task text and context, skill
+ * catalog with revisions, and defaults. Any change produces a new key, so a
+ * different task, an updated skill or another model setting selects afresh.
+ * Entries are process-local and bounded; manual selections never use this. */
+const selectionCache = new Map<string, CreationSkillChoice>()
+const selectionCacheLimit = 64
+export const clearCreationSkillSelectionCache = () => selectionCache.clear()
+const selectionKey = (projectId: string, modelId: string, configKey: string, input: CreationSkillSelectionInput) =>
+  createHash('sha256').update(JSON.stringify([projectId, modelId, configKey, input])).digest('hex')
+
 /** Explicit choices are locked. Automatic choices exist only for this execution. */
 export async function resolveCreationSkillContext(options: {
   stage: SkillStage; task: string; selectedIds?: string[]; projectId: string; modelId: string
   assignmentTask?: SkillTaskContext; select?: CreationSkillSelector; signal?: AbortSignal; generate: StructuredGenerator
+  /** Identifies the model/provider configuration; enables reuse of automatic choices when set. */
+  reuseKey?: string
 }) {
   const { stage, selectedIds, projectId, modelId, assignmentTask, signal } = options
   const task = applySkillRules(options.task, { text: '', skills: [], files: [] })
@@ -78,11 +92,22 @@ export async function resolveCreationSkillContext(options: {
     ids: [], source: 'default' as const, reason: '当前环节没有已启用的可用技能，使用基础创作规则。' } }
   const input: CreationSkillSelectionInput = { stage, task, task_context: assignmentTask, skills: policy.skills,
     default_ids: policy.primary_id ? [policy.primary_id, ...policy.auxiliary_ids] : [] }
-  const choice = validateChoice(input, options.select ? await options.select(projectId, modelId, input, signal)
-    : await generateStructuredOutput('creation_skill_selection', choiceSchema, options.generate, selectionPrompt(input), {
-      validate: value => { validateChoice(input, value) },
-    }))
+  const key = options.reuseKey && options.select ? selectionKey(projectId, modelId, options.reuseKey, input) : undefined
+  const remembered = key ? selectionCache.get(key) : undefined
+  let reused = false
+  let choice: CreationSkillChoice
+  if (remembered) { choice = validateChoice(input, remembered); reused = true }
+  else {
+    choice = validateChoice(input, options.select ? await options.select(projectId, modelId, input, signal)
+      : await generateStructuredOutput('creation_skill_selection', choiceSchema, options.generate, selectionPrompt(input), {
+        validate: value => { validateChoice(input, value) },
+      }))
+    if (key) {
+      selectionCache.set(key, choice)
+      if (selectionCache.size > selectionCacheLimit) selectionCache.delete(selectionCache.keys().next().value!)
+    }
+  }
   signal?.throwIfAborted()
   const context = skillContext(stage, task, choice.skill_ids, projectId)
-  return { ...context, assignment: { ids: choice.skill_ids, source: 'automatic' as const, reason: choice.reason } }
+  return { ...context, assignment: { ids: choice.skill_ids, source: 'automatic' as const, reason: choice.reason, ...(reused ? { reused: true } : {}) } }
 }

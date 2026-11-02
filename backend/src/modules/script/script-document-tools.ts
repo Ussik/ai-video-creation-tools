@@ -5,6 +5,8 @@ import { z } from 'zod'
 import { scriptStageArtifacts } from '@video-studio/shared/script/script-stage-content'
 import { all, one, run, db, newId, now, type Project, type ScriptArtifact, type ScriptScene, type Shot } from '../../infrastructure/database/db.js'
 import { workflowGenerationDraftInput, workflowGenerationDraftSchema, workflowContentInstructions, workflowDraftSchema, workflowScene, workflowProgress, directorStageContext, type DirectorStageContext, type WorkflowDraft, type WorkflowStage } from './script-workflow.js'
+import { archivedMessage, archivedMessages, activeCreatorRequirements, allCreatorRequirements, maxRequirementQuote, recordCreatorRequirement, withdrawCreatorRequirement } from './script-creator-requirements.js'
+import { batchableReadTools, deferredCallOutput, scriptToolProfile } from './script-tool-profile.js'
 import { replyClassification, replyClassificationVersion, inputFields, interactionQuestions } from './script-reply-classification.js'
 import { scriptSettingsSchema, visualStyleDetailsSchema, mergeConfirmedScriptSettings } from './script-intent.js'
 import { assertStyleVersion, projectVisualStyle } from '../visuals/project-visual-style.js'
@@ -72,7 +74,7 @@ type ToolsContext = {
   /** Persist only this execution's frozen choice for validation and recovery. */
   onSkillSelection?: (stage: SkillStage, ids: string[]) => void;
   project: Project; script: () => ScriptSnapshot; stage: DirectorStageContext;
-  messages: Array<{ role: 'user' | 'assistant'; text: string }>; workflow?: WorkflowDraft['stage']; operation?: StageOperation;
+  messages: Array<{ id?: string; role: 'user' | 'assistant'; text: string }>; conversationId?: string; workflow?: WorkflowDraft['stage']; operation?: StageOperation;
   /** Server-selected deliverables; a model cannot narrow its own acceptance. */
   taskContract?: Pick<WorkflowDraft, 'intent' | 'artifact_types'>;
   /** Supply the source snapshot captured before generation when presenting a generated draft. */
@@ -432,6 +434,17 @@ const schemas = {
   read_documents: z.object({ document_ids: ids, source: z.enum(['saved', 'draft']).default('saved'), offset: z.number().int().min(0).default(0), length: z.number().int().min(1).max(20000).default(20000), scene_offset: z.number().int().min(0).default(0), scene_limit: z.number().int().min(1).max(10).default(3), scene_content_offset: z.number().int().min(0).optional() }).strict(),
   read_episode_scenes: z.object({ episode_number: z.number().int().min(1).max(200), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(10).default(3) }).strict(),
   record_story_decision: z.object({ topic: z.string().trim().min(1).max(200), content: z.string().trim().min(1).max(4000), basis: z.enum(['creator_confirmed', 'delegated_model']), source_message_index: z.number().int().min(0).max(31), settings_patch: scriptSettingsSchema.optional() }).strict(),
+  record_creator_requirement: z.object({
+    kind: z.enum(['requirement', 'open_question']).default('requirement'),
+    quote: z.string().trim().min(1).max(maxRequirementQuote), source_message_index: z.number().int().min(0).max(31),
+    scope: z.string().trim().max(200).default(''), supersedes: z.array(z.string().min(1).max(100)).max(20).default([]),
+    withdraw: z.string().min(1).max(100).optional(),
+  }).strict(),
+  read_creator_requirements: z.object({ include_superseded: z.boolean().default(false), requirement_id: z.string().min(1).max(100).optional(),
+    /** Original wording of a stored message by id (default: the current conversation), including ones that left the request window. */
+    message_id: z.string().min(1).max(120).optional(), conversation_id: z.string().min(1).max(120).optional(),
+    /** With no message_id: page through this conversation's archived creator messages. */
+    archive_after: z.number().int().min(0).optional(), archive_limit: z.number().int().min(1).max(50).optional() }).strict(),
   ask_creator: z.object({ intro: z.string().max(8000).default(''), trailing: z.string().max(3000).default(''), request: creatorRequest }).strict(),
   propose_next_step: z.object({ stage: z.enum(['outline', 'characters', 'locations', 'props', 'episode']), episode_number: z.number().int().min(0).max(200).default(0),
     purpose: z.enum(['generate', 'revise']).default('generate'), summary: z.string().trim().min(1).max(1000), basis: z.string().trim().min(1).max(3000),
@@ -458,6 +471,8 @@ const descriptions: Record<keyof typeof schemas, string> = {
   read_full_source_document: '局部资料不足、发现跨集依赖或需要核实全文时，携带本轮source_version与reason补读同版本完整有效稿。返回complete_source:true与完整正文；不会生成、修改或保存。不得仅凭索引、别名命中或未查完的搜索结果作全局结论。',
   read_documents: '读取指定文档原文及版本和paragraphs段落定位。source默认saved；统一修订检查最新有效草稿用draft。程序按整个结果48000字符自动缩页，逐项使用返回的continuations读取，不假定请求length全部已读；deferred_document_ids尚未读取。仅完全读到的段落返回定位。分场用scene_next_offset分页；超大场次返回scene_fragments，按scene_content_offset拼接同版本完整JSON。任务读取进度会跨继续保留，manage_revision_task(read)的reading_progress给出下一未读位置；引用精确原文时仍须读取对应正文。',
   read_episode_scenes: '分页读取指定集的正式分场原文、ID和版本。只有场次尚无episode_script正文的历史分集，重新设计前使用此工具读完全部场次。offset/limit按场次数分页，next_offset继续，complete为真代表读到末尾。读取其他集只作参考。',
+  record_creator_requirement: '把创作者在对话中明确提出、需要长期遵守的要求原话记入台账（不是你的转述）。quote必须是source_message_index所指创作者消息里的一段连续原文；助手的建议、你的理解、未被创作者接受的方案不能记录，不确定时不要记。创作者修改或推翻某条旧要求时，用supersedes列出被替代条目的id；创作者只是撤回而无替代时用withdraw。kind=open_question用于创作者明确说“暂未决定”的事项，记录后不得当作已定设定。程序会保存原文并在以后每轮自动带入。',
+  read_creator_requirements: '读取创作者长期要求台账。默认返回当前有效条目（含逐字引文、来源消息、记录时间、替代关系）；include_superseded=true同时返回已被替代或撤回的历史；requirement_id返回某条及其完整来源消息，用于核对原话。message_id返回已存对话中那条消息的原话（含已滚出请求窗口的；conversation_id默认当前对话）；archive_after/archive_limit按顺序翻阅本对话已归档的消息。提示里“因篇幅未带入”的消息id就用这里读回。',
   record_story_decision: '记录创作者明确确认的设定或其明确授权你决定后作出的具体选择。topic稳定标识同一事项，更新它会替代旧决定；必须引用一条真实创作者消息，不能记录未经接受的建议。若决定涉及集数、单集秒数、题材、视觉画风等配置，用settings_patch同步；画风写visual_style，不能只塞进genre，或使用set_project_visual_style记录画风及细节。不要写默认值或未接受的建议。记录不会保存文档正文。',
   ask_creator: '直接显示选择、填写或确认界面，等待创作者回答。request使用choice_request/input_request/confirmation_request/question_set和status:pending。一次一个关键决定；只问未确定且未委托你决定的事项。',
   propose_next_step: '信息足以创作当前阶段时提出明确下一步，程序核验后显示生成或修订按钮。故事方向在首次对话中自然确定；引用真实创作者消息说明依据，不要求填写固定字段，不反复追问普通细节。首次大纲须已有创作者提供的创意、选择的方向或明确委托你决定方向；仅请求几个备选方向时，先用ask_creator展示选项，未选方案不能作为已确定故事依据或提出生成提议。generate只推荐最早缺失阶段；revise只针对创作者明确要求修改的已有文档并填写document_ids。不得将其他阶段操作放进ask_creator的设定选项。此函数不生成、不保存，等待创作者点击或明确要求生成。',
@@ -475,7 +490,7 @@ export const scriptFunctions: TextTool[] = (Object.keys(schemas) as Array<keyof 
 
 const localSourceReadTools = new Set(['get_creation_state', 'get_project_visual_style', 'search_project_content',
   'read_source_document', 'search_source_document', 'read_full_source_document', 'read_documents', 'read_episode_scenes',
-  'find_related_content', 'get_document_review_context', 'read_visual_profiles', 'get_storyboard_context'])
+  'find_related_content', 'get_document_review_context', 'read_visual_profiles', 'get_storyboard_context', 'read_creator_requirements'])
 
 export function documentTools(context: ToolsContext) {
   const projectId = context.project.id
@@ -888,6 +903,33 @@ export function documentTools(context: ToolsContext) {
           for (const scene of scenes) readScenes.set(scene.id, scene.version)
           return { episode_number: data.episode_number, scenes, next_offset: data.offset + scenes.length, complete: data.offset + scenes.length === sources.length, total_scenes: sources.length }
         }
+        case 'record_creator_requirement': {
+          if (context.action?.operation === 'review') problem('本轮只评审文档，不改动已记录的创作者要求')
+          const data = schemas.record_creator_requirement.parse(args), source = context.messages[data.source_message_index]
+          if (!source || source.role !== 'user') problem('要求来源必须是本轮上下文中的创作者消息；助手的说明不能作为要求记录')
+          if (data.withdraw) return { requirement: withdrawCreatorRequirement(projectId, data.withdraw, { text: source.text }, data.quote), withdrawn: true }
+          return { requirement: recordCreatorRequirement(projectId, { kind: data.kind, quote: data.quote, scope: data.scope, supersedes: data.supersedes,
+            source: { text: source.text, message_id: source.id ?? null, conversation_id: source.id ? context.conversationId ?? null : null } }), recorded: true }
+        }
+        case 'read_creator_requirements': {
+          const data = schemas.read_creator_requirements.parse(args)
+          if (data.message_id || data.archive_after !== undefined || data.archive_limit !== undefined) {
+            const conversationId = data.conversation_id ?? context.conversationId
+            if (!conversationId) problem('当前请求没有关联已存对话，请提供 conversation_id')
+            if (data.message_id) {
+              const message = archivedMessage(projectId, conversationId!, data.message_id)
+              if (!message) problem('没有这条归档消息')
+              return { message }
+            }
+            return archivedMessages(projectId, conversationId!, data.archive_after ?? 0, data.archive_limit ?? 20)
+          }
+          if (data.requirement_id) {
+            const entry = allCreatorRequirements(projectId).find(item => item.id === data.requirement_id)
+            if (!entry) problem('没有这条要求记录')
+            return { requirement: entry }
+          }
+          return { requirements: data.include_superseded ? allCreatorRequirements(projectId) : activeCreatorRequirements(projectId) }
+        }
         case 'record_story_decision': {
           if (getToolDraft(projectId)?.revision_task) revisionProblem('decision_requires_draft', '当前统一修订的拟定设定应保留在草稿中', '使用manage_revision_task(update)记录choice与reason，确认保存后才正式采用。', { retryable: false })
           const data = schemas.record_story_decision.parse(args), source = context.messages[data.source_message_index]
@@ -1142,7 +1184,7 @@ const operationLabels: Record<string, string> = {
   load_creation_skills: '加载本次创作技能',
   manage_revision_task: '管理统一修订任务', review_revision_batch: '核对修订结果与关联内容',
   get_project_visual_style: '读取项目画风', set_project_visual_style: '更新已确认画风',
-  get_creation_state: '读取创作进度', search_project_content: '查找相关设定', read_documents: '阅读项目文档', record_story_decision: '记录已确认设定', ask_creator: '整理待确认问题',
+  get_creation_state: '读取创作进度', search_project_content: '查找相关设定', read_documents: '阅读项目文档', record_story_decision: '记录已确认设定', record_creator_requirement: '记录创作者要求', read_creator_requirements: '读取创作者要求台账', ask_creator: '整理待确认问题',
   create_document_draft: '整理文档草稿', propose_document_patch: '准备局部修改', find_related_content: '检查关联内容', manage_document_draft: '处理已有草稿', commit_document_draft: '确认并保存文档',
   propose_next_step: '确认下一步创作',
   get_document_review_context: '检查文档完整性线索', submit_document_review: '整理专业评审报告',
@@ -1189,24 +1231,38 @@ export async function runScriptTools(context: ToolsContext & {
 }) {
   const activity = context.activity || activityRecorder(context.onEvent)
   const stageGeneration = Boolean(context.workflow && context.operation !== 'revise')
+  // A session that read (or was given) the manuscript is bound to that version: if it changes mid-run, whatever was
+  // compacted or planned from the old text must not be carried onto the new one.
+  const sourceBound = context.sourceContextMode === 'targeted' || context.sourceVersion !== null && context.sourceVersion !== undefined
   const stageToolNames = new Set(['get_creation_state', 'load_creation_skills', 'read_documents', 'read_source_document', 'search_source_document',
     'create_document_draft', 'propose_document_patch', 'find_related_content', 'manage_document_draft',
     ...(context.workflow === 'episode' && context.operation === 'regenerate' ? ['read_episode_scenes'] : [])])
+  const profile = scriptToolProfile({ discussionOnly: context.discussionOnly, reviewOnly: context.action?.operation === 'review' })
   const availableFunctions = context.sourceContextMode === 'targeted' ? scriptFunctions.filter(tool => localSourceReadTools.has(tool.name))
-    : stageGeneration ? scriptFunctions.filter(tool => stageToolNames.has(tool.name)) : scriptFunctions
+    : stageGeneration ? scriptFunctions.filter(tool => stageToolNames.has(tool.name))
+      : scriptFunctions.filter(tool => !profile.excluded.has(tool.name))
   const toolPrompt = stageGeneration ? `${context.prompt}\n本轮已明确授权生成当前阶段。按本轮creation_skills配置加载尚未加载的剧本技能，然后只使用为本阶段提供的函数完成生成。` : context.prompt
   const registry = activity.start({ kind: 'context', label: 'Function Calling', summary: `本轮已向模型提供 ${availableFunctions.length} 项函数，由模型按需选择调用`,
     ...activityPreview(availableFunctions.map(({ name, description }) => ({ name, description })), 'output') })
   activity.finish(registry, 'succeeded')
   let roundMetrics: TextRequestMetrics | undefined
+  let currentModelStep: ReturnType<typeof activity.start> | undefined
   const tools = documentTools(context), turn = textToolSession(context.model, context.provider, toolPrompt, availableFunctions, context.resolveKey, context.signal,
-    text => context.onEvent({ type: 'progress', text }), metrics => { roundMetrics = metrics })
+    text => context.onEvent({ type: 'progress', text }), metrics => { roundMetrics = metrics }, { parallelCalls: true,
+      onDispatch: sent => { if (currentModelStep) activity.update(currentModelStep, { request_bytes: sent.request_bytes, request_purpose: sent.request_purpose, ...(sent.estimated_input_tokens === undefined ? {} : { estimated_input_tokens: sent.estimated_input_tokens }) }) } })
   let outputs: ToolOutput[] = [], finalText = '', repairContinuations = 0
   let continuation: string | undefined, lastFailure: ToolDiagnostic | undefined, transportFailure: string | undefined, progressFailure: string | undefined
   const unresolved = new Map<string, ToolDiagnostic>()
+  // Ordinary conversations and reviews have no revision draft, so their progress is judged on reads alone: the same
+  // read of the same version and range, or the same failing call, returns nothing new. `reads` stays empty on purpose
+  // because coverage is tracked from the read results themselves; the version of the project keeps a real edit
+  // elsewhere from being mistaken for a stall.
+  function ordinaryProgressState() {
+    return { state: { ordinary: true, project: creationState(context.project.id, context.script()).version }, draftState: undefined as unknown }
+  }
   function revisionProgressState() {
     const draft = getToolDraft(context.project.id), task = draft?.revision_task
-    if (!draft || draft.status !== 'pending' || !task || context.discussionOnly || context.action?.operation === 'review') return undefined
+    if (!draft || draft.status !== 'pending' || !task || context.discussionOnly || context.action?.operation === 'review') return ordinaryProgressState()
     const draftState = {
       documents: draft.documents.map(doc => ({ id: doc.id, content: doc.content })),
       scenes: draft.scene_changes?.map(scene => ({ id: scene.id, scene: scene.scene })),
@@ -1231,10 +1287,11 @@ export async function runScriptTools(context: ToolsContext & {
     // and checkpoint I/O. Completion depends on real task state, never a count.
     await yieldToCancellation(undefined, { signal: context.signal })
     context.signal?.throwIfAborted()
-    if (context.sourceContextMode === 'targeted') tools.assertSourceUnchanged()
+    if (sourceBound) tools.assertSourceUnchanged()
     roundMetrics = undefined
     const modelStep = activity.start({ kind: 'model', label: round ? '模型继续处理' : '模型处理请求', name: context.model.name || context.model.remote_id,
       round: round + 1, summary: round ? '根据工具返回的真实结果继续处理' : '正在根据项目资料、对话与已加载的规则处理请求' })
+    currentModelStep = modelStep
     let response: Awaited<ReturnType<typeof turn>>
     try {
       response = await turn(outputs, continuation)
@@ -1247,7 +1304,7 @@ export async function runScriptTools(context: ToolsContext & {
       if (!context.signal?.aborted && tools.result().tool_draft) { transportFailure = issue instanceof Error ? issue.message : String(issue); break }
       throw issue
     }
-    if (context.sourceContextMode === 'targeted') tools.assertSourceUnchanged()
+    if (sourceBound) tools.assertSourceUnchanged()
     if (!response.calls.length) {
       finalText = response.text
       const current = tools.result(), task = current.tool_draft?.revision_task
@@ -1268,8 +1325,11 @@ export async function runScriptTools(context: ToolsContext & {
       break
     }
     outputs = []
+    let writeBarrier = false
     for (const call of response.calls) {
       context.signal?.throwIfAborted()
+      if (writeBarrier) { outputs.push({ id: call.id, output: deferredCallOutput(call.name) }); continue }
+      if (!batchableReadTools.has(call.name)) writeBarrier = true
       const label = operationLabels[call.name] || '处理创作资料'
       context.onEvent({ type: 'progress', text: `正在${label}…` })
       let args: unknown
@@ -1322,6 +1382,7 @@ export async function runScriptTools(context: ToolsContext & {
   const incomplete = result.tool_draft?.status === 'pending' && result.tool_draft.revision_task?.status !== 'ready' && !!result.tool_draft.revision_task
   const interruption = progressFailure || transportFailure
   const execution_outcome = incomplete ? { kind: 'partial' as const, summary: revisionSummary(result.tool_draft!) + (interruption ? `\n本轮中断原因：${interruption}` : ''), draft_id: result.tool_draft!.id, draft_version: result.tool_draft!.version }
+    : progressFailure && !result.tool_draft ? { kind: 'failed' as const, summary: `本轮已停止：${progressFailure.replace(/并保留当前草稿。?$/, '。').replace(/已保留当前草稿。?$/, '。')}没有写入或保存任何文档；请换一种问法或指定要读取的范围后再试。` }
     : transportFailure || lastFailure ? { kind: result.tool_draft ? 'partial' as const : 'failed' as const, summary: `本轮未完整完成：${transportFailure || lastFailure!.message}。${result.tool_draft ? '已保留草稿，请检查后继续。' : '没有成功提交草稿。'}` }
     : undefined
   if (execution_outcome) finalText = execution_outcome.summary + (lastFailure ? `\n处理建议：${lastFailure.repair}` : '')

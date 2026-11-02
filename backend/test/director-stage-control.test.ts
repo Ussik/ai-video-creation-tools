@@ -29,12 +29,27 @@ async function fixture() {
   const project = await call<{ id: string }>('POST', '/api/projects', { name: '阶段对话' })
   return { project, model }
 }
+/** The `select_creation_skills` tool request, answered from the real catalog in its own prompt. */
+function nativeSkillSelection(init?: RequestInit): Response | undefined {
+  const body = JSON.parse(String(init?.body || '{}'))
+  const tools = Array.isArray(body.tools) ? body.tools : []
+  if (!tools.some((tool: { name?: string; function?: { name?: string } }) => (tool.name || tool.function?.name) === 'select_creation_skills')) return
+  const prompt = String(body.messages?.[0]?.content ?? '')
+  const catalog = /"available_skills":(\[.*?\]),"current_task"/s.exec(prompt)
+  const skills = catalog ? JSON.parse(catalog[1]!) as Array<{ id: string }> : []
+  const args = JSON.stringify({ skill_ids: skills.slice(0, 1).map(skill => skill.id), reason: skills.length ? '测试目录中的唯一技能适用于本次任务。' : '没有可用的外部技能，使用基础规则。' })
+  return Response.json({ choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: 'skill-choice', type: 'function', function: { name: 'select_creation_skills', arguments: args } }] }, finish_reason: 'tool_calls' }] })
+}
 function mock(t: { after: (callback: () => void) => void }, reply: (prompt: string) => unknown) {
   const original = globalThis.fetch
   t.after(() => { globalThis.fetch = original })
   globalThis.fetch = async (_url, init) => {
     const completenessReply = draftCompletenessFixtureResponse(init)
     if (completenessReply) return completenessReply
+    // Automatic skill selection is a native Function Calling request (docs/task-skill-assignment.md). Answer it the way a
+    // model would: pick the first skill of the catalog it was shown, or none when the catalog is empty.
+    const selection = nativeSkillSelection(init)
+    if (selection) return selection
     const prompt = JSON.parse(String(init?.body)).messages[0].content as string
     let output = reply(prompt)
     if (output && typeof output === 'object' && 'artifacts' in output && Array.isArray(output.artifacts)) {

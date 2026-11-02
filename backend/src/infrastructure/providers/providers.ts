@@ -18,6 +18,7 @@ import { generateCompatibleStructuredText } from './text-output-capability.js'
 import { TextOutputLimitError, TextProviderError, transientTextStatus, transientTextNetworkError, textRetryAfter } from './text-errors.js'
 import { assertTextRequestCapacity } from './text-context.js'
 import { beginTextRequest, isTextRequestBudgetError } from './text-request-usage.js'
+import { parseTextUsage, requestPurpose, type ParsedTextUsage } from './text-usage-parse.js'
 import { withTextImageInput, textImageCapacityBody, type TextImageInput } from './text-image-input.js'
 import { withTextVideoInput, textVideoCapacityBody, type TextVideoInput } from './text-video-input.js'
 import { applyScriptReviewRequestPolicy } from './text-script-review-policy.js'
@@ -85,7 +86,8 @@ export interface TextStreamRequest {
 }
 
 export type TextRequestMetrics = { request_bytes: number; response_chars?: number; first_event_ms?: number;
-  input_tokens?: number; output_tokens?: number; reasoning_tokens?: number; output_limit?: number; upstream_request_id?: string; http_status?: number;
+  input_tokens?: number; output_tokens?: number; reasoning_tokens?: number; output_limit?: number;
+  cache_read_tokens?: number; cache_write_tokens?: number; cache_miss_tokens?: number; request_purpose?: string; upstream_request_id?: string; http_status?: number;
   estimated_input_tokens?: number; context_window_tokens?: number; reserved_output_tokens?: number }
 
 function requestId(response: Response) {
@@ -93,18 +95,12 @@ function requestId(response: Response) {
   return /^[a-zA-Z0-9_.:-]{1,160}$/.test(value) ? value : undefined
 }
 
-function usageMetrics(payload: Record<string, unknown>): Pick<TextRequestMetrics, 'input_tokens' | 'output_tokens' | 'reasoning_tokens'> {
+function usageMetrics(payload: Record<string, unknown>): ParsedTextUsage {
   const response = payload.response && typeof payload.response === 'object' ? payload.response as Record<string, unknown> : payload
-  const usage = response.usage && typeof response.usage === 'object' ? response.usage as Record<string, unknown> : {}
-  const input = usage.input_tokens ?? usage.prompt_tokens, output = usage.output_tokens ?? usage.completion_tokens
-  const details = (usage.output_tokens_details ?? usage.completion_tokens_details) as Record<string, unknown> | undefined
-  const reasoning = details?.reasoning_tokens
-  return { ...(typeof input === 'number' && Number.isSafeInteger(input) && input >= 0 ? { input_tokens: input } : {}),
-    ...(typeof output === 'number' && Number.isSafeInteger(output) && output >= 0 ? { output_tokens: output } : {}),
-    ...(typeof reasoning === 'number' && Number.isSafeInteger(reasoning) && reasoning >= 0 ? { reasoning_tokens: reasoning } : {}) }
+  return parseTextUsage(response.usage)
 }
 
-function rawUsageMetrics(raw: string): Pick<TextRequestMetrics, 'input_tokens' | 'output_tokens' | 'reasoning_tokens'> {
+function rawUsageMetrics(raw: string): ParsedTextUsage {
   try {
     const payload: unknown = JSON.parse(raw)
     return payload && typeof payload === 'object' && !Array.isArray(payload) ? usageMetrics(payload as Record<string, unknown>) : {}
@@ -459,7 +455,7 @@ export function publicToolText(raw: string): string {
 export async function createTextToolTransport(model: GenerationModel, provider: GenerationProvider, prompt: string,
   tools: TextTool[], previous: unknown[] | undefined, outputs: ToolOutput[],
   resolveKey: (provider: GenerationProvider) => string, signal?: AbortSignal, onText?: (text: string) => void, continuation?: string,
-  onMetrics?: (metrics: TextRequestMetrics) => void): Promise<ToolTurn> {
+  onMetrics?: (metrics: TextRequestMetrics) => void, options: { parallelCalls?: boolean; onDispatch?: (metrics: TextRequestMetrics) => void } = {}): Promise<ToolTurn> {
   if (provider.adapter === 'demo' || model.modality !== 'text') throw new Error('工具调用需要可用的文本模型')
   const protocol = model.protocol
   if (protocol !== 'responses' && protocol !== 'chat_completions') throw new Error('当前文本协议不支持工具调用')
@@ -479,12 +475,12 @@ export async function createTextToolTransport(model: GenerationModel, provider: 
   delete base.response_format
   if (base.text && typeof base.text === 'object') { base.text = { ...base.text as Record<string, unknown> }; delete (base.text as Record<string, unknown>).format }
   const strict = settings.strict_tool_arguments === true
-  const body = { ...base, stream: settings.stream !== false && base.stream !== false, tool_choice: 'auto', parallel_tool_calls: false,
+  const body = { ...base, stream: settings.stream !== false && base.stream !== false, tool_choice: 'auto', parallel_tool_calls: options.parallelCalls === true,
     tools: tools.map(tool => { const selected = { ...tool, parameters: strict ? strictJsonSchema(tool.parameters) : tool.parameters, strict }; return protocol === 'responses' ? { type: 'function', ...selected } : { type: 'function', function: selected } }),
     ...(protocol === 'responses' ? { input: history } : { messages: history, n: 1 }) }
   const requestBody = JSON.stringify(body)
   const capacity = assertTextRequestCapacity(settings, body, protocol)
-  const metrics: TextRequestMetrics = { request_bytes: Buffer.byteLength(requestBody), ...outputLimitMetrics(body, protocol), ...capacity }
+  const metrics: TextRequestMetrics = { request_bytes: Buffer.byteLength(requestBody), request_purpose: 'tool_decision', ...outputLimitMetrics(body, protocol), ...capacity }
   const key = resolveKey(provider)
   const requestUrl = apiUrl(settingString(settings, 'api_base_url', provider.base_url), settingString(settings, 'request_path'))
   const startedAt = Date.now()
@@ -497,6 +493,9 @@ export async function createTextToolTransport(model: GenerationModel, provider: 
     scope.signal.throwIfAborted()
     usageRequest = beginTextRequest({ request_bytes: metrics.request_bytes, estimated_input_tokens: capacity.estimated_input_tokens,
       reserved_output_tokens: metrics.output_limit ?? capacity.reserved_output_tokens })
+    // Record what is being sent before waiting on the network, so a cancelled or
+    // interrupted request still carries its purpose and size.
+    options.onDispatch?.({ ...metrics })
     const response = await scope.wait(fetch(requestUrl, {
       method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream, application/json',
         ...(key ? { [provider.auth_header || 'Authorization']: `${provider.auth_prefix ?? 'Bearer '}${key}` } : {}) },
@@ -628,6 +627,7 @@ export async function streamText(
   onEvent: (event: TextStreamEvent) => void | Promise<void> = () => {},
   signal?: AbortSignal,
   onMetrics?: (metrics: TextRequestMetrics) => void,
+  onDispatch?: (metrics: TextRequestMetrics) => void,
 ): Promise<string> {
   if (provider.adapter === 'demo') throw new Error('演示模型已停用')
   if (model.modality !== 'text') throw new Error('流式调用只支持文本模型')
@@ -636,7 +636,7 @@ export async function streamText(
   const screenplayContract = contractName.startsWith('script_') || ['workflow_draft', 'resource_authorization', 'generation_authorization', 'draft_approval', 'tool_context_checkpoint'].includes(contractName)
   if (screenplayContract && request.structured_output && !settings.structured_output_mode && ['responses', 'chat_completions'].includes(model.protocol || '')) {
     return generateCompatibleStructuredText(model, provider, request.prompt, request.structured_output, signal,
-      (configured, target, prompt, contract, requestSignal) => streamText(configured, target, { ...request, prompt, structured_output: contract }, resolveApiKey, onEvent, requestSignal, onMetrics))
+      (configured, target, prompt, contract, requestSignal) => streamText(configured, target, { ...request, prompt, structured_output: contract }, resolveApiKey, onEvent, requestSignal, onMetrics, onDispatch))
   }
   const key = (resolveApiKey ? await resolveApiKey(provider) : '') || ''
   const authHeader = provider.auth_header || 'Authorization'
@@ -666,7 +666,7 @@ export async function streamText(
   if (request.video && settings.video_input_format === 'doubao_ark' && Buffer.byteLength(requestBody) >= 64 * 1024 * 1024) throw new Error('豆包视频理解请求体需小于 64 MB，请缩小视频片段或降低分辨率')
   const capacity = assertTextRequestCapacity(settings, (request.images?.length || request.video) ? textVideoCapacityBody(textImageCapacityBody(finalBody)) : finalBody,
     model.protocol, (request.images?.length || 0) * 4096 + (request.video ? Math.ceil(request.video.duration_ms / 1000 * (request.video.fps ?? 1)) * 2048 : 0))
-  const metrics: TextRequestMetrics = { request_bytes: Buffer.byteLength(requestBody), ...outputLimitMetrics(finalBody, model.protocol), ...capacity }
+  const metrics: TextRequestMetrics = { request_bytes: Buffer.byteLength(requestBody), request_purpose: requestPurpose(request.structured_output?.name), ...outputLimitMetrics(finalBody, model.protocol), ...capacity }
   let response: Response
   const startedAt = Date.now()
   const scope = createStreamScope(modelStepSignal(signal), { totalMs: isUnrestrictedScriptExecution() ? null : request.structured_output ? textRequestTimeoutMs : generationStepBudgets.discussion,
@@ -679,6 +679,7 @@ export async function streamText(
       scope.signal.throwIfAborted()
       if (!background) usageRequest = beginTextRequest({ request_bytes: metrics.request_bytes, estimated_input_tokens: capacity.estimated_input_tokens,
         reserved_output_tokens: metrics.output_limit ?? capacity.reserved_output_tokens })
+      onDispatch?.({ ...metrics })
       response = background
         ? await backgroundTextResponse(requestUrl, body as Record<string, unknown>, { ...headers, 'Content-Type': 'application/json' }, scope.signal, scope.wait, scope.touch,
           capacity.reserved_output_tokens)

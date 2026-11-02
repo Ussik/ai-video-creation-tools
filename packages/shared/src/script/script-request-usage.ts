@@ -13,6 +13,14 @@ export type ScriptRequestUsage = {
   estimated_input_tokens: number
   estimated_output_tokens: number
   uncertain_requests: number
+  /** A subset of input_tokens served from the provider cache. Only meaningful
+   * for the requests counted by cache_read_reported_requests; a provider that
+   * returns no cache field leaves it unknown instead of adding zero. */
+  cache_read_tokens: number
+  cache_read_reported_requests: number
+  /** Tokens the provider reports as newly written to its cache. */
+  cache_write_tokens: number
+  cache_write_reported_requests: number
   /** Bounded IDs allow a resumed background response to replace its estimate. */
   pending_requests: Array<{ id: string; request_bytes: number; estimated_input_tokens: number;
     estimated_output_tokens: number; input_settled: boolean; output_settled: boolean; reasoning_tokens: number }>
@@ -28,6 +36,7 @@ export type ScriptRequestUsageLimits = {
 export function createScriptRequestUsage(): ScriptRequestUsage {
   return { requests: 0, request_bytes: 0, input_tokens: 0, output_tokens: 0, reasoning_tokens: 0,
     estimated_input_tokens: 0, estimated_output_tokens: 0, uncertain_requests: 0,
+    cache_read_tokens: 0, cache_read_reported_requests: 0, cache_write_tokens: 0, cache_write_reported_requests: 0,
     transport_requests: 0, transport_request_bytes: 0, pending_requests: [] }
 }
 

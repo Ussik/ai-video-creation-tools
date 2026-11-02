@@ -54,6 +54,7 @@ import { registerShotManagementRoutes } from './modules/storyboard/shot-manageme
 import { registerCanvasNodeProposalRoutes } from './modules/canvas/canvas-node-proposals.js'
 import { registerScriptCanvasRoutes } from './modules/canvas/script-canvas-preparation.js'
 import { workflowRequest, workflowDraftInput, workflowGenerationDraftSchema, workflowEnvelope, normalizeWorkflowRequest, workflowContentInstructions, workflowInstructions, parseWorkflowDraft, workflowReply, workflowProgress, workflowGuidance, workflowLabels, directorStageContext, directorStageInstructions, type DirectorStageContext, type WorkflowDraft } from './modules/script/script-workflow.js'
+import { activeCreatorRequirements, allCreatorRequirements, creatorRequirementsContext, earlierCreatorMessages, earlierCreatorMessageBudget, archivedMessage, archivedMessages, maxRequirementQuote, recordCreatorRequirement, storedCreatorMessage, withdrawCreatorRequirement } from './modules/script/script-creator-requirements.js'
 import { scriptToolGuidance } from './modules/script/script-tool-guidance.js'
 import { draftCompletenessSources, reviewScriptDraftCompleteness, ScriptDraftReviewError, ScriptDraftNeedsResolution } from './modules/script/script-draft-completeness.js'
 import { claimScriptDraft, clearScriptDraft, discardScriptDraft, draftResolutionInput, pendingScriptDraft, publicDraftResolution, repairScriptDraft, repairScriptSource, retainScriptDraft, updateScriptDraftRun, type PendingScriptDraft } from './modules/script/script-draft-resolution.js'
@@ -229,7 +230,10 @@ const scriptDirectorChatInput = z.object({
   intent_context: z.object({ pending_draft: workflowRequest.optional(), discussion: directorStageContextSchema.optional(), selected_episode: z.number().int().min(1).max(200).optional() }).strict().optional(),
   adopt_source: z.object({ text: z.string().trim().min(1).max(20000), episode_number: z.number().int().min(1).max(200) }).strict().optional(),
   question_response: z.object({ status: z.enum(['skipped', 'answered']), question: z.string().trim().min(1).max(1000) }).strict().optional(),
+  /** Stored conversation this request belongs to, so earlier creator wording can be read back. */
+  conversation_id: z.string().min(1).max(120).optional(),
   messages: z.array(directorMessageText.safeExtend({
+    id: z.string().min(1).max(120).optional(),
     reference_documents: referenceDocuments.optional(),
   }).strict()).min(1).max(32),
 }).strict().superRefine((value, context) => {
@@ -964,6 +968,7 @@ async function resolveDirectorSkills(project: Project, data: DirectorInput, task
   const stage = data.focus_artifact === 'all' ? 'script' : 'visual_assets'
   const rules = await resolveCreationSkillContext({ stage, task, selectedIds: data.skill_selections?.[stage], projectId: project.id,
     modelId: model.id, assignmentTask: directorSkillTask(data, stage), signal,
+    reuseKey: createHash('sha256').update(JSON.stringify([model.remote_id, model.protocol, model.settings, provider.id, provider.base_url, provider.adapter])).digest('hex'),
     select: (_projectId, _modelId, input, requestSignal) => chooseCreationSkills(model, provider, input, item => decryptKey(item.key_ciphertext || null), requestSignal),
     generate: (prompt, contract) => generateTextOutput(model, provider, prompt, contract, signal),
   })
@@ -972,7 +977,7 @@ async function resolveDirectorSkills(project: Project, data: DirectorInput, task
   onSelected?.(data)
   if (rules.assignment.source !== 'manual') {
     const choice = activity.start({ kind: 'context', label: '选择本次创作技能',
-      summary: `${rules.skills.map(skill => skill.name).join('、') || '基础创作规则'}：${rules.assignment.reason}`.slice(0, 3000),
+      summary: `${rules.skills.map(skill => skill.name).join('、') || '基础创作规则'}：${rules.assignment.reason}${'reused' in rules.assignment ? '（输入未变，沿用此前的选择，未再请求模型）' : ''}`.slice(0, 3000),
       ...activityPreview(rules.assignment, 'output') })
     activity.finish(choice, 'succeeded')
   }
@@ -1002,7 +1007,7 @@ function baseScriptDirectorChatPrompt(project: Project, data: z.infer<typeof scr
         : '当前为全能创作，按创作者的问题选择最相关的剧本产物，并在进入生成前确认范围和制作方式。'
   const context = {
     ...(data.workflow ? { task_scope: data.workflow } : {}),
-    confirmed_decisions: storyDecisions(project.id),
+    confirmed_decisions: storyDecisions(project.id), creator_requirements: creatorRequirementsContext(project.id),
     project: { name: project.name, brief: project.brief.slice(0, 4000), ratio: project.ratio },
     script: {
       outline: script.artifacts?.some(item => item.artifact_type === 'outline') ? undefined : script.outline,
@@ -1029,7 +1034,7 @@ function baseScriptDirectorChatPrompt(project: Project, data: z.infer<typeof scr
     `对话资料使用规则：下方完整对话按时间顺序保留 user（创作者）和 assistant（导演）原文，最后一项是本次创作要求。结合此前所有仍有效的创作者要求编写，即使尚未记录为已确认创作决定也不得遗漏。创作者最新明确修改优先于对应旧要求或旧决定，只调整其明确涉及的范围，未修改的约束继续有效；已被撤回或替代的旧要求不能恢复。\n` +
     `assistant 的说明、提议、备选方案和问题仅供理解上下文；未被创作者明确接受、未提交的选项均不构成已确认设定。创作者明确委托 AI 决定的具体事项可沿用该授权下的决定，但不得将助手建议或某项设定的确认升级为生成其他阶段、修改原稿或保存文档的授权。本轮只生成程序指定阶段的待确认草稿，保存仍需独立明确确认。\n` +
     workflowGuidance(script) +
-    `项目与剧本上下文：\n${JSON.stringify(context)}${scriptSourceContext(project.id, true, false, !data.workflow.artifact_types)}${referenceContext(data.messages)}\n本次创作要求与历史对话（完整原始消息，最后一项为本轮创作者要求）：\n${JSON.stringify(data.messages.map(({ role, text }) => ({ role, text })))}\n以上对话资料结束。\n` +
+    `项目与剧本上下文：\n${JSON.stringify(context)}${scriptSourceContext(project.id, true, false, !data.workflow.artifact_types)}${referenceContext(data.messages)}\n${earlierCreatorWording(project.id, data, true)}本次创作要求与历史对话（完整原始消息，最后一项为本轮创作者要求）：\n${JSON.stringify(data.messages.map(({ role, text }) => ({ role, text })))}\n以上对话资料结束。\n` +
     (task?.brief ? `整理后的创作说明（不能替代或遗漏原始要求）：\n${task.brief}\n` : '') + workflowInstructions(data.workflow) +
     (task?.sourceText ? `\n这是采用已有正文任务：不要重新创作或更改正文。只将以下原文拆成可制作的场次，保留人物、事件、对白和顺序；正文必须逐字保留。不要因制作片段预算缩短完整剧本。如果原文不是完整或部分剧本正文，不得虚构场次，返回空 scenes 表示无法采用。\n待采用正文：\n${task.sourceText}` : '')
   return `你是项目「${project.name}」的剧本导演，正在和创作者进行多轮剧本讨论。\n` +
@@ -1048,12 +1053,52 @@ function baseScriptDirectorChatPrompt(project: Project, data: z.infer<typeof scr
     `项目默认集数、时长是暂定值，不能把创作者尚未确认的默认值称为已确认；需要建议时说明理由并允许修改。\n` +
     (data.question_response?.status === 'skipped' ? `本轮创作者点击了“跳过”，对应问题：${JSON.stringify(data.question_response.question)}。这是明确授权你决定该项，不是暂不确定。有备选方案时选定最合适的一项，需要具体信息时自行补齐完整设定；遵守已确认事实和创作约束。先明确说明你的具体决定及简短理由，再推进下一个必要的不同事项。不要把这项保留待定，不要重复询问这个问题或要求创作者再次确认；不要把未提交的选择或填写内容当成创作者的确认。这次操作只继续讨论，不自动生成或保存文档。\n` : data.question_response?.status === 'answered' ? `本轮创作者统一提交了一组问题的回答。逐项遵守明确选择与填写；仅标明交给模型决定的事项由你作出具体决定并说明理由，不能委托其他事项。不得把跳过解释为待定或要求再次确认。本次只继续讨论，不生成或保存文档。\n` : '') +
     `项目与剧本上下文：\n${JSON.stringify(context)}\n` +
-    `${scriptSourceContext(project.id, true)}${referenceContext(data.messages)}对话记录：\n${conversation}\n` +
+    `${scriptSourceContext(project.id, true)}${referenceContext(data.messages)}${earlierCreatorWording(project.id, data, true)}对话记录：\n${conversation}\n` +
     `请直接给出导演的下一条回复。先确定故事方向，再推进大纲、人物、场景、道具和指定集正文。只追问尚未明确、未授权模型决定且会改变创作结果的信息；创作者已经给出集数、时长或选择，或模型已在授权下作出具体决定时，不要重复询问。` +
     (data.focus_artifact === 'all' ? directorStageInstructions(stageContext) : '')
 }
 
 type DirectorInput = z.infer<typeof scriptDirectorChatInput>
+
+/** The creator's own earlier words (outside the 32-message window), verbatim, as part of every prompt of this conversation. */
+function earlierCreatorWording(projectId: string, data: { conversation_id?: string; messages: Array<{ id?: string; text: string }> }, strict = false) {
+  const earlier = earlierCreatorMessages(projectId, data.conversation_id, data.messages)
+  if (earlier.omitted && strict) {
+    // A generation (or any request without a tool to read earlier wording back) must not go ahead while part of what
+    // the creator said earlier is left out. Say exactly what is missing and how to proceed instead of succeeding quietly.
+    throw Object.assign(new Error(`这次对话里你更早提出的内容太多（共 ${earlier.messages.length + earlier.omitted} 条），有 ${earlier.omitted} 条放不进本次生成。`
+      + '为了不遗漏你早先的要求，这次没有开始生成，也没有改动任何文档。'
+      + '请在对话中告诉助手把仍然有效的硬要求记为长期要求后再生成；或者开启新对话，把需要保留的要求重新说一遍。'), {
+      statusCode: 422, code: 'earlier_creator_wording_incomplete',
+      // For API users and support: what was left out and where to read it back. Not shown to creators.
+      diagnostic: { omitted: earlier.omitted, total: earlier.messages.length + earlier.omitted, budget_chars: earlierCreatorMessageBudget, omitted_message_ids: earlier.omitted_ids,
+        read_back: 'GET /api/projects/:id/script/conversations/:conversationId/archive/:messageId', record: 'POST /api/projects/:id/script/requirements' } })
+  }
+  if (!earlier.messages.length && !earlier.omitted) return ''
+  return `更早的创作者原话（已超出本次请求的对话窗口，逐字保留；只含创作者本人的消息，仍然有效，除非后文明确修改；backs_requirement 表示已记入长期要求台账）：${JSON.stringify(earlier.messages)}` +
+    (earlier.omitted ? `\n（另有 ${earlier.omitted} 条更早的创作者消息因篇幅未随本次请求带入，id：${earlier.omitted_ids.join('、')}${earlier.omitted > earlier.omitted_ids.length ? ' 等' : ''}；先用 read_creator_requirements 的 message_id 参数按 id 读回这些原话，再回答或修改，不要假设它们不存在。）` : '') + '\n'
+}
+
+/** The request carries at most the latest 32 messages; the task carries the stored conversation. Walk both from the
+ * newest end and bind each request message to the stored message it came from (same role and text), so provenance uses
+ * real message ids instead of a restatement. Unmatched messages simply keep no id. */
+function bindConversationIdentity<T extends { messages: Array<{ role: 'assistant' | 'user'; text: string; id?: string }>; conversation_id?: string }>(
+  input: T, conversation: { id: string; messages: Array<{ id?: string; role: 'assistant' | 'user'; text: string }> } | undefined): T {
+  if (!conversation) return input
+  const stored = conversation.messages.filter(message => message.id)
+  let cursor = stored.length - 1
+  const messages = [...input.messages]
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!
+    if (message.id) { continue }
+    for (let probe = cursor; probe >= 0; probe--) {
+      if (stored[probe]!.role === message.role && stored[probe]!.text.trim() === message.text.trim()) {
+        messages[index] = { ...message, id: stored[probe]!.id }; cursor = probe - 1; break
+      }
+    }
+  }
+  return { ...input, conversation_id: input.conversation_id ?? conversation.id, messages }
+}
 type StyleSyncHooks = { beforeSave: () => void; onSaved: () => void; onSkillsSelected?: (request: DirectorInput) => void }
 
 function validateRevisionContinuation(project: Project, data: DirectorInput): void {
@@ -1124,7 +1169,8 @@ async function toolDirectorChat(project: Project, data: DirectorInput, model: Mo
     activity.finish(contextStep, 'succeeded')
   }
   const initialState = { stage, project_visual_style: projectVisualStyle(project.id), documents: projectDocuments(project.id, script).map(({ content, ...doc }) => ({ ...doc, length: content.length })),
-    confirmed_decisions: storyDecisions(project.id).map(({ source_text: _source, ...decision }) => decision), uploaded_script: uploadedSource && {
+    confirmed_decisions: storyDecisions(project.id).map(({ source_text: _source, ...decision }) => decision),
+    creator_requirements: creatorRequirementsContext(project.id), uploaded_script: uploadedSource && {
       filename: uploadedSource.filename, revision: uploadedSource.revision || 0, total_length: uploadedSource.content.length,
       source_kind: 'effective', source_version: sourceContext.source_version, analysis_source_version: uploadedSource.analysis?.source_version },
     pending_draft: pending && { id: pending.id, version: pending.version, summary: pending.summary, revision_task: pending.revision_task } }
@@ -1138,19 +1184,22 @@ async function toolDirectorChat(project: Project, data: DirectorInput, model: Mo
   }))
   const prompt = applySkillRules(`你是项目「${project.name}」的影视创作协作者。你可以通过工具读取、搜索和操作本项目资料。\n` +
     `${directorModeInstructions(data.mode)}\n` +
+    // Version-bound manuscript first: identical across turns of one source
+    // version, so the provider can reuse this prefix when state changes below.
+    (sourceContext.mode === 'targeted' ? '' : scriptSourceContext(project.id, true, true)) +
     scriptToolGuidance({ workflow: data.workflow, action: data.document_action, revisionTask: pending?.revision_task }) +
     (settingsChanged ? '本轮明确确认的画风已由程序同步保存，已记录真实来源。直接沿用本轮开始时资料中的project_visual_style，不重复保存同一项画风决定，继续处理创作者的其他要求。\n' : '') +
     `程序阶段：${JSON.stringify(stage)}\n当前创作设置：${JSON.stringify(data.generation_options)}\n本轮creation_skills目录：${JSON.stringify(creationSkills)}\n本轮开始时的项目资料目录：${JSON.stringify(initialState)}\n` +
-    (sourceContext.mode === 'targeted' ? sourceContext.prompt : scriptSourceContext(project.id, true, true)) + scriptSourceFallbackContext(project.id) +
+    (sourceContext.mode === 'targeted' ? sourceContext.prompt : '') + scriptSourceFallbackContext(project.id) +
     (data.workflow ? `创作者本轮明确要求处理这个阶段：${JSON.stringify(data.workflow)}。operation=regenerate时先读完该阶段全部原文，再用create_document_draft提交完整的新设计草稿；operation=supplement时原样保留已有标题正文并补齐；operation=revise时读取并用propose_document_patch局部修订。未指定operation只生成尚未保存的当前阶段，仅处理指定阶段与集数。无需再建议点击生成，不自行保存。\n` : '') +
     (data.workflow ? workflowInstructions(data.workflow, 'tools') : '') +
     (!data.workflow && stage.stage ? `以下是当前阶段的内容标准，仅在创作者明确要求生成或修订时适用；普通讨论、设定回答和跳过不授权创建草稿。\n${workflowContentInstructions({ stage: stage.stage, scope: stage.stage === 'episode' ? 'episode' : 'project', episode_number: stage.episode_number || 0, target_duration: data.generation_options?.episode_duration })}` : '') +
     (data.document_action ? `本轮明确操作：${JSON.stringify(data.document_action)}。先读这些文档。review只评审；revise依据最新创作者要求提出修改，仅能修改这些文档。\n` : '') +
     (data.question_response ? `本轮为设定回答：${JSON.stringify(data.question_response)}。只讨论、记录具体决定和追问，不生成或保存文档。\n` : '') +
-    `${referenceContext(data.messages)}实际对话（index用于决定来源）：\n${JSON.stringify(messages)}`, skillRules.script || { text: '', skills: [], files: [] })
+    `${referenceContext(data.messages)}${earlierCreatorWording(project.id, data, Boolean(data.workflow))}实际对话（index用于决定来源）：\n${JSON.stringify(messages)}`, skillRules.script || { text: '', skills: [], files: [] })
   if (skillRules.script) activity.skills('script', skillRules.script)
   const result = await runScriptTools({ project, script: () => projectScript(project.id), stage,
-    model, provider, prompt, activity, skillRules, skillSelections: data.skill_selections || {}, messages: data.messages, action: data.document_action, workflow: data.workflow?.stage, operation: data.workflow?.operation, taskContract: data.workflow, currentSettings: data.generation_options,
+    model, provider, prompt, activity, skillRules, skillSelections: data.skill_selections || {}, messages: data.messages, conversationId: data.conversation_id, action: data.document_action, workflow: data.workflow?.stage, operation: data.workflow?.operation, taskContract: data.workflow, currentSettings: data.generation_options,
     onSkillSelection: (stage, ids) => {
       data.skill_selections = { ...data.skill_selections, [stage]: ids }
       styleSync?.onSkillsSelected?.(data)
@@ -1277,6 +1326,12 @@ function combineTextMetrics(values: TextRequestMetrics[]): Partial<TextRequestMe
     ...(values.some(item => item.input_tokens !== undefined) ? { input_tokens: values.reduce((sum, item) => sum + (item.input_tokens || 0), 0) } : {}),
     ...(values.some(item => item.output_tokens !== undefined) ? { output_tokens: values.reduce((sum, item) => sum + (item.output_tokens || 0), 0) } : {}),
     ...(values.some(item => item.reasoning_tokens !== undefined) ? { reasoning_tokens: values.reduce((sum, item) => sum + (item.reasoning_tokens || 0), 0) } : {}),
+    ...(['cache_read_tokens', 'cache_write_tokens', 'cache_miss_tokens'] as const).reduce<Record<string, number>>((sum, key) => {
+      // Aggregate only when every request in the group reported the field.
+      if (values.every(item => item[key] !== undefined)) sum[key] = values.reduce((total, item) => total + item[key]!, 0)
+      return sum
+    }, {}),
+    ...(last.request_purpose ? { request_purpose: values.every(item => item.request_purpose === last.request_purpose) ? last.request_purpose : 'mixed' } : {}),
     ...(values.length === 1 && last.output_limit !== undefined ? { output_limit: last.output_limit } : {}),
     ...(last.estimated_input_tokens !== undefined ? { estimated_input_tokens: last.estimated_input_tokens } : {}),
     ...(last.context_window_tokens !== undefined ? { context_window_tokens: last.context_window_tokens } : {}),
@@ -1688,6 +1743,7 @@ async function resumeScriptDraftOnce(project: Project, data: DirectorInput, mode
       result.tool_draft = attachDraftSourceUpdate(project.id, result.tool_draft.id, sourceUpdate)
     }
     clearScriptDraft(project.id, pending.id, pending.version)
+    clearGenerationCheckpoint(project.id)
     return { ...result, ...(sourceUpdate ? { source_update: sourceUpdate } : {}), draft_resolution: null }
   } catch (error) {
     const current = pendingScriptDraft(project.id)
@@ -1728,7 +1784,7 @@ async function executeDirectorChat(project: Project, data: DirectorInput, model:
     const pending = retainScriptDraft(project.id, { draft: error.draft, findings: error.findings,
       request: { ...request, ...(styleSaved ? { generation_options: mergeConfirmedScriptSettings(projectScript(project.id).generation_options, data.generation_options) } : {}),
         workflow: resolutionWorkflow(error.draft) }, source_version: sourceVersion })
-    clearGenerationCheckpoint(project.id)
+    clearGenerationCheckpoint(project.id, { keepReview: true })
     return { ...draftResolutionResult(project, pending, activity), ...(styleSaved ? { project_changed: true, generation_options: pending.request.generation_options } : {}) }
   }
 }
@@ -1756,13 +1812,19 @@ async function executeDirectorChatRequest(project: Project, data: DirectorInput,
   const savedContext = await preparedDirectorContext(project, resolved.data, model, provider, signal, redesign?.episodeNumber)
   await resolveDirectorSkills(project, resolved.data, baseScriptDirectorChatPrompt(project, resolved.data, { ...resolved, savedContext, redesignEpisode: redesign?.episodeNumber }), model, provider, signal, activity, styleSync?.onSkillsSelected)
   const prompt = buildScriptDirectorChatPrompt(project, resolved.data, { ...resolved, savedContext, redesignEpisode: redesign?.episodeNumber }, activity) + (redesign?.prompt || '')
+  // A typed resume carries the explicit workflow and no longer has the creative brief produced by intent recognition.
+  // Identify retained work by the prompt without it (as the tool path does), so recovery reuses the completed writer
+  // instead of treating the same task as a new one.
+  const checkpointContext = resolved.data.workflow && resolved.brief
+    ? buildScriptDirectorChatPrompt(project, resolved.data, { ...resolved, brief: undefined, savedContext, redesignEpisode: redesign?.episodeNumber }, undefined) + (redesign?.prompt || '')
+    : undefined
   const legacyCheckpointContext = resolved.data.workflow
-    ? buildScriptDirectorChatPrompt(project, resolved.data, { ...resolved, savedContext, redesignEpisode: redesign?.episodeNumber, legacyArtifactContext: true }) + (redesign?.prompt || '')
+    ? buildScriptDirectorChatPrompt(project, resolved.data, { ...resolved, brief: undefined, savedContext, redesignEpisode: redesign?.episodeNumber, legacyArtifactContext: true }) + (redesign?.prompt || '')
     : undefined
   const generation = activity.start({ kind: 'model', label: '模型处理请求', name: model.name, summary: resolved.data.workflow ? '正在编写当前阶段草稿' : '正在处理创作对话' })
   send({ type: 'progress', stage: 'analysis', text: resolved.data.workflow ? '正在编写当前阶段的可编辑文档…' : '正在分析故事结构、人物动机和当前问题…' })
   const preserved = preservedStageArtifacts(project.id, resolved.data.workflow)
-  const fullText = await directorTextOutput(project, model, provider, resolved.data, prompt, send, signal, activity, redesign?.validate, Boolean(resolved.sourceText), undefined, undefined, legacyCheckpointContext)
+  const fullText = await directorTextOutput(project, model, provider, resolved.data, prompt, send, signal, activity, redesign?.validate, Boolean(resolved.sourceText), undefined, checkpointContext, legacyCheckpointContext)
   signal.throwIfAborted()
   const generated = directorResult(fullText, resolved.data, resolved.sourceText, preserved)
   if (generated.draft && currentScriptSourceVersion(project.id) !== sourceVersion) {
@@ -1908,7 +1970,7 @@ function baseScriptArtifactPrompt(project: Project, data: z.infer<typeof scriptA
     project: { name: project.name, brief: project.brief, ratio: project.ratio },
     outline: script.outline, characters: script.characters,
     generation_options: script.generation_options,
-    confirmed_decisions: storyDecisions(project.id),
+    confirmed_decisions: storyDecisions(project.id), creator_requirements: creatorRequirementsContext(project.id),
     artifacts: (script.artifacts || []).map(artifact => ({ type: artifact.artifact_type, title: artifact.title, content: artifact.content.slice(0, 8000) })),
     scenes: script.scenes.slice(0, 40).map(scene => ({ heading: scene.heading, location: scene.location, characters: scene.characters, action: scene.action, dialogue: scene.dialogue, narration: scene.narration, duration: scene.duration })),
   })
@@ -2034,7 +2096,8 @@ async function tracedDirectorRequest(model: Model, provider: Provider, text: str
   let metrics: TextRequestMetrics | undefined
   try {
     const value = await streamText(model, provider, { prompt: text, structured_output: contract }, item => decryptKey(item.key_ciphertext || null), onEvent, signal,
-      value => { metrics = value; onMetrics?.(value) })
+      value => { metrics = value; onMetrics?.(value) },
+      sent => { if (entry) activity!.update(entry, { request_bytes: sent.request_bytes, ...(sent.request_purpose ? { request_purpose: sent.request_purpose } : {}), ...(sent.estimated_input_tokens === undefined ? {} : { estimated_input_tokens: sent.estimated_input_tokens }) }) })
     if (entry) activity!.finish(entry, 'succeeded', { summary: '模型请求已返回，正在校验当前步骤', ...metrics })
     return value
   } catch (error) {
@@ -2114,10 +2177,11 @@ async function reviewDirectorDraft(project: Project, data: DirectorInput, draft:
         },
         context: { project: { name: project.name, brief: project.brief },
         uploaded_script: draft.intent === 'source_outline' && source ? { ...source, analysis: undefined } : source,
-        confirmed_decisions: storyDecisions(project.id), ...(resolutions?.length ? { resolved_findings: resolutionContext(resolutions) } : {}), current_settings: current.generation_options,
+        confirmed_decisions: storyDecisions(project.id), creator_requirements: creatorRequirementsContext(project.id), ...(resolutions?.length ? { resolved_findings: resolutionContext(resolutions) } : {}), current_settings: current.generation_options,
         saved_documents: savedDocuments,
         requested_settings: data.generation_options,
-        creator_messages: data.messages, task_scope: data.workflow || { stage: draft.stage, scope: draft.scope, episode_number: draft.episode_number } } })
+        creator_messages: data.messages, earlier_creator_messages: earlierCreatorMessages(project.id, data.conversation_id, data.messages).messages,
+        task_scope: data.workflow || { stage: draft.stage, scope: draft.scope, episode_number: draft.episode_number } } })
     if (budget) await budget.run(review); else await review()
     if (step) activity!.finish(step, 'succeeded', { summary: budget
       ? proposalAnalysisSummary('新写设定已核对，草稿等待创作者预览确认', latestProgress)
@@ -2421,10 +2485,12 @@ export function buildApp(): FastifyInstance {
   registerJobQueueRoutes(app)
   void app.register(multipart, { limits: { fileSize: 300 * 1024 * 1024, files: 1, fields: 2 } })
   app.setErrorHandler((error, request, reply) => {
-    const issue = error as Error & { statusCode?: number; raw_output?: string; diagnostics?: string }
+    const issue = error as Error & { statusCode?: number; raw_output?: string; diagnostics?: string; code?: unknown; diagnostic?: unknown }
     const code = error instanceof ZodError ? 422 : Math.max(400, Math.min(Number(issue.statusCode) || 500, 599))
     reply.code(code).send({ detail: code === 500 ? '服务器处理失败' : issue.message,
-      ...(code !== 500 && issue.raw_output ? { raw_output: issue.raw_output } : {}), ...(code !== 500 && issue.diagnostics ? { diagnostics: issue.diagnostics } : {}) })
+      ...(code !== 500 && issue.raw_output ? { raw_output: issue.raw_output } : {}), ...(code !== 500 && issue.diagnostics ? { diagnostics: issue.diagnostics } : {}),
+      ...(code !== 500 && typeof issue.code === 'string' ? { code: issue.code } : {}),
+      ...(code !== 500 && issue.diagnostic ? { diagnostic: issue.diagnostic } : {}) })
     if (code === 500) console.error(error)
     else if (code >= 500 && issue.diagnostics) console.error('模型请求失败', {
       method: request.method, route: request.routeOptions.url, diagnostics: issue.diagnostics,
@@ -3080,6 +3146,7 @@ export function buildApp(): FastifyInstance {
     required<Project>('projects', id)
     const { version } = parse(z.object({ version: z.string().min(1) }).strict(), request.body)
     discardScriptDraft(id, resolutionId, version)
+    clearGenerationCheckpoint(id)
     return { discarded: true }
   })
   app.get('/api/projects/:id/script/director/tool-drafts/:draftId', async request => {
@@ -3343,6 +3410,59 @@ export function buildApp(): FastifyInstance {
   app.post('/api/asset-tasks/:id/generate', async request => {
     const { id } = parse(idParams, request.params)
     return enqueueAssetTask(id, request.body)
+  })
+  // Creator requirements ledger: verbatim quotes with their complete source message, outliving the chat window.
+  app.get('/api/projects/:id/script/requirements', async request => {
+    const { id } = parse(idParams, request.params)
+    required<Project>('projects', id)
+    const { include_superseded } = parse(z.object({ include_superseded: z.enum(['true', 'false']).default('false') }).strict(), request.query)
+    return { requirements: include_superseded === 'true' ? allCreatorRequirements(id) : activeCreatorRequirements(id) }
+  })
+  // Original wording of stored messages. The visible conversation is windowed; this record is not.
+  app.get('/api/projects/:id/script/conversations/:conversationId/archive', async request => {
+    const { id, conversationId } = parse(z.object({ id: z.string().min(1), conversationId: z.string().min(1) }), request.params)
+    required<Project>('projects', id)
+    const { after, limit } = parse(z.object({ after: z.coerce.number().int().min(0).default(0), limit: z.coerce.number().int().min(1).max(200).default(100) }).strict(), request.query)
+    return archivedMessages(id, conversationId, after, limit)
+  })
+  app.get('/api/projects/:id/script/conversations/:conversationId/archive/:messageId', async request => {
+    const { id, conversationId, messageId } = parse(z.object({ id: z.string().min(1), conversationId: z.string().min(1), messageId: z.string().min(1) }), request.params)
+    required<Project>('projects', id)
+    const message = archivedMessage(id, conversationId, messageId)
+    if (!message) throw Object.assign(new Error('没有这条归档消息'), { statusCode: 404 })
+    return message
+  })
+  app.get('/api/projects/:id/script/requirements/:requirementId', async request => {
+    const { id, requirementId } = parse(z.object({ id: z.string().min(1), requirementId: z.string().min(1) }), request.params)
+    required<Project>('projects', id)
+    const entry = allCreatorRequirements(id).find(item => item.id === requirementId)
+    if (!entry) throw Object.assign(new Error('没有这条要求记录'), { statusCode: 404 })
+    return entry
+  })
+  app.post('/api/projects/:id/script/requirements', async request => {
+    const { id } = parse(idParams, request.params)
+    required<Project>('projects', id)
+    const data = parse(z.object({
+      kind: z.enum(['requirement', 'open_question']).default('requirement'), quote: z.string().trim().min(1).max(maxRequirementQuote),
+      scope: z.string().trim().max(200).default(''), supersedes: z.array(z.string().min(1).max(100)).max(20).default([]),
+      // Either cite a stored creator message, or supply the creator's complete message text.
+      source: z.union([
+        z.object({ conversation_id: z.string().min(1).max(120), message_id: z.string().min(1).max(120) }).strict(),
+        z.object({ text: z.string().min(1).max(100_000), message_id: z.string().min(1).max(120).optional(), conversation_id: z.string().min(1).max(120).optional() }).strict(),
+      ]),
+    }).strict(), request.body)
+    const source = 'text' in data.source ? data.source : (() => {
+      const stored = storedCreatorMessage(id, data.source.conversation_id, data.source.message_id)
+      if (!stored) throw Object.assign(new Error('没有找到该条创作者消息；助手消息不能作为要求来源'), { statusCode: 404 })
+      return { text: stored.text, message_id: data.source.message_id, conversation_id: data.source.conversation_id }
+    })()
+    return recordCreatorRequirement(id, { kind: data.kind, quote: data.quote, scope: data.scope, supersedes: data.supersedes, source })
+  })
+  app.post('/api/projects/:id/script/requirements/:requirementId/withdraw', async request => {
+    const { id, requirementId } = parse(z.object({ id: z.string().min(1), requirementId: z.string().min(1) }), request.params)
+    required<Project>('projects', id)
+    const data = parse(z.object({ quote: z.string().trim().min(1).max(maxRequirementQuote), source: z.object({ text: z.string().min(1).max(100_000) }).strict() }).strict(), request.body)
+    return withdrawCreatorRequirement(id, requirementId, data.source, data.quote)
   })
   app.get('/api/projects/:id/script/conversations', async request => {
     const { id } = parse(idParams, request.params)
@@ -3663,8 +3783,9 @@ export function buildApp(): FastifyInstance {
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
 
     if (task) {
-      const prepared = resolveCreationAction(project, input)
-      const snapshot = directorTasks.start(id, task, input, async (signal, send) => {
+      const bound = bindConversationIdentity(input, task.conversation as { id: string; messages: Array<{ id?: string; role: 'assistant' | 'user'; text: string }> })
+      const prepared = resolveCreationAction(project, bound)
+      const snapshot = directorTasks.start(id, task, bound, async (signal, send) => {
         return executePreparedDirector(project, prepared, model, provider, send, signal, undefined,
           () => directorTasks.refreshRecoveryKey(id, task.id, directorRecoveryKey(project, model, provider, prepared)),
           next => directorTasks.refreshRecoveryRequest(id, task.id, next, directorRecoveryKey(project, model, provider, next)))

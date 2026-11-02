@@ -66,14 +66,14 @@ export function createDirectorTasks() {
       stage_context: final?.stage_context || intent?.stage_context, reply_metadata: metadata }, row.position)
     run('UPDATE script_conversations SET updated_at=? WHERE id=?', conversationTimestamp(snapshot.project_id), snapshot.conversation_id)
   }
-  function settle(snapshot: DirectorTaskSnapshot, status: Exclude<Status, 'running' | 'succeeded'>, message: string) {
+  function settle(snapshot: DirectorTaskSnapshot, status: Exclude<Status, 'running' | 'succeeded'>, message: string, diagnostic?: { code?: string; detail?: unknown }) {
     snapshot.status = status
     const event = snapshot.events.find(item => item.type === 'activity')
     if ((event?.activity as ScriptActivity[] | undefined)?.some(item => item.kind === 'tool' && item.status === 'succeeded' && !canReplayAfter(item))) snapshot.can_resume = false
     if (event) event.activity = (event.activity as ScriptActivity[]).map(item => item.status === 'running' ? { ...item,
       status: status === 'cancelled' ? 'cancelled' : 'failed', ended_at: Date.now(), duration_ms: Math.max(0, Date.now() - item.started_at), summary: message } : item)
     snapshot.execution = { ...snapshot.execution, outcome: { ...snapshot.execution.outcome, kind: status === 'cancelled' ? 'cancelled' : status === 'paused' ? 'partial' : 'failed', summary: message.slice(0, 3000) } }
-    snapshot.events = [...snapshot.events.filter(item => !['done', 'error'].includes(String(item.type))), { type: 'error', message, task_status: status, can_resume: snapshot.can_resume, sequence: snapshot.sequence = (snapshot.sequence || 0) + 1 }]
+    snapshot.events = [...snapshot.events.filter(item => !['done', 'error'].includes(String(item.type))), { type: 'error', message, ...(diagnostic?.code ? { code: diagnostic.code } : {}), ...(diagnostic?.detail ? { detail: diagnostic.detail } : {}), task_status: status, can_resume: snapshot.can_resume, sequence: snapshot.sequence = (snapshot.sequence || 0) + 1 }]
     db.transaction(() => { persist(snapshot); saveReply(snapshot) })()
   }
   // A process restart cannot reconnect to an old provider call. Do not charge
@@ -174,7 +174,10 @@ export function createDirectorTasks() {
         snapshot.active_duration_ms = previousDuration + Date.now() - sessionStarted
         const status = shuttingDown ? 'interrupted' : task.controller.signal.aborted ? 'cancelled' : scope.signal.aborted && error instanceof StreamWaitTimeoutError && error.kind === 'total' ? 'paused' : 'failed'
         settle(snapshot, status, status === 'interrupted' ? '后端服务已关闭，本轮任务已中断。已完成的草稿和操作仍保留。'
-          : status === 'cancelled' ? '已停止生成。已完成的草稿和操作仍保留。' : String(error instanceof Error ? error.message : error).slice(0, 3000))
+          : status === 'cancelled' ? '已停止生成。已完成的草稿和操作仍保留。' : String(error instanceof Error ? error.message : error).slice(0, 3000),
+          // A structured code and technical detail ride alongside the creator-facing message, never inside it.
+          error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
+            ? { code: (error as { code: string }).code, ...((error as { diagnostic?: unknown }).diagnostic ? { detail: (error as { diagnostic: unknown }).diagnostic } : {}) } : undefined)
         for (const listener of task.listeners) {
           const activity = snapshot.events.find(event => event.type === 'activity')
           if (activity) listener(activity)

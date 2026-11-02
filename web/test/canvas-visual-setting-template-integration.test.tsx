@@ -23,6 +23,15 @@ for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLE
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, getComputedStyle: dom.window.getComputedStyle.bind(dom.window) })
 Object.defineProperty(dom.window, 'matchMedia', { value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) })
 Object.defineProperty(dom.window.document, 'fonts', { value: { addEventListener() {}, removeEventListener() {} } })
+// A paid submission is refused without Web Locks (canvas-generation-submission.ts), so the test browser provides them,
+// serializing by name exactly as navigator.locks does.
+const generationLocks = new Map<string, Promise<unknown>>()
+Object.defineProperty(dom.window.navigator, 'locks', { configurable: true, value: { request: async (name: string, action: () => Promise<unknown>) => {
+  const previous = generationLocks.get(name) || Promise.resolve()
+  const running = previous.catch(() => {}).then(action)
+  generationLocks.set(name, running)
+  try { return await running } finally { if (generationLocks.get(name) === running) generationLocks.delete(name) }
+} } })
 dom.window.HTMLElement.prototype.scrollIntoView = () => {}
 dom.window.HTMLElement.prototype.scrollTo = () => {}
 const frames = new Map<number, FrameRequestCallback>()
@@ -90,6 +99,7 @@ type PreviewRequest = { prompt: string; reference_asset_ids: string[]; explicit_
   source_artifact_type?: string; shot_id: string | null }
 function mockApi(t: TestContext, allowMockGeneration = false, graph = initialGraph()) {
   let currentGraph = graph
+  const submittedKeys = new Set<string>()
   const saved: CanvasGraph[] = [], previews: PreviewRequest[] = [], generations: PreviewRequest[] = [], unexpectedRequests: string[] = []
   t.after(() => assert.deepEqual(unexpectedRequests, [], 'only graph persistence and explicitly requested previews may reach HTTP'))
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
@@ -102,9 +112,15 @@ function mockApi(t: TestContext, allowMockGeneration = false, graph = initialGra
       return Response.json(currentGraph)
     }
     if (path === `/api/projects/${projectId}/skills/defaults`) return Response.json({ policies: [] })
+    // A real submission first asks whether this idempotency key already has a job (no side effect), then posts it once.
+    if (allowMockGeneration && method === 'GET' && path.startsWith(`/api/projects/${projectId}/generation-submissions/`)) {
+      const key = decodeURIComponent(path.slice(`/api/projects/${projectId}/generation-submissions/`.length))
+      return Response.json({ job: submittedKeys.has(key) ? { id: 'mock-setting-job', project_id: projectId, status: 'queued', model_id: imageModel.id, shot_id: null, request: '{}', created_at: timestamp } : null })
+    }
     if (allowMockGeneration && path === `/api/projects/${projectId}/generate`) {
       assert.equal(method, 'POST')
       const request = JSON.parse(String(init?.body)) as PreviewRequest; generations.push(request)
+      for (const [name, value] of Object.entries((init?.headers || {}) as Record<string, string>)) if (/idempotency/i.test(name)) submittedKeys.add(String(value))
       return Response.json({ id: 'mock-setting-job', project_id: projectId, status: 'queued', model_id: imageModel.id,
         shot_id: null, request: JSON.stringify(request), created_at: timestamp })
     }
@@ -313,6 +329,7 @@ test('explicit generation queues the setting directly without creating a storybo
     await click('开始生成')
     const saved = await savedGraph(transport.saved)
     assert.equal(transport.previews.length, 1)
+    console.error('PROBE notice=', JSON.stringify(document.querySelector('.pc-notice')?.textContent), '| gens', transport.generations.length)
     assert.equal(transport.generations.length, 1, document.querySelector('.pc-notice')?.textContent || 'only a mocked queue request is allowed')
     const preview = transport.previews[0], queued = transport.generations[0]
     assert.equal(queued.shot_id, null)

@@ -14,6 +14,8 @@ const requestUsageSchema = z.object({
   transport_requests: usageCounter, transport_request_bytes: usageCounter,
   input_tokens: usageCounter, output_tokens: usageCounter, reasoning_tokens: usageCounter,
   estimated_input_tokens: usageCounter, estimated_output_tokens: usageCounter, uncertain_requests: usageCounter,
+  cache_read_tokens: usageCounter.optional(), cache_read_reported_requests: usageCounter.optional(),
+  cache_write_tokens: usageCounter.optional(), cache_write_reported_requests: usageCounter.optional(),
   pending_requests: z.array(z.object({
     id: z.string().min(1).max(160), request_bytes: usageCounter,
     estimated_input_tokens: usageCounter, estimated_output_tokens: usageCounter,
@@ -40,6 +42,8 @@ export const scriptActivitySchema = z.object({
   output_limit: z.number().int().min(1).optional(), upstream_request_id: z.string().max(160).optional(),
   estimated_input_tokens: z.number().int().min(0).optional(), context_window_tokens: z.number().int().min(1).optional(),
   reserved_output_tokens: z.number().int().min(1).optional(),
+  cache_read_tokens: z.number().int().min(0).optional(), cache_write_tokens: z.number().int().min(0).optional(),
+  cache_miss_tokens: z.number().int().min(0).optional(), request_purpose: z.string().max(60).optional(),
   http_status: z.number().int().min(100).max(599).optional(),
   usage: z.object({
     current: requestUsageSchema, cumulative: requestUsageSchema.optional(),

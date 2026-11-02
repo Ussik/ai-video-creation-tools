@@ -32,7 +32,17 @@ async function setup(t: { after: (fn: () => Promise<unknown>) => void }, generat
       artifacts: all<ScriptArtifact>('SELECT * FROM script_artifacts WHERE project_id=? ORDER BY position', id),
       scenes: all<ScriptScene>('SELECT * FROM script_scenes WHERE project_id=? ORDER BY position', id) }),
     scenePrompt: scene => `${scene.heading}\n${scene.characters}\n${scene.action}`,
-    generateText: async (_id, model, prompt, contract) => { assert.equal(model, 'mock-text'); assert.ok(contract); assert.equal(contract.name, 'visual_profiles'); calls++; return generator(prompt, contract) },
+    generateText: async (_id, model, prompt, contract) => {
+      assert.equal(model, 'mock-text'); assert.ok(contract)
+      // Without an injected native selector, automatic skill selection is its own structured request (not a profile
+      // analysis). It chooses nothing here, so the project/temporary skill settings under test decide what loads.
+      if (contract.name === 'creation_skill_selection') {
+        // A model that has no better idea adopts the project default shown to it (defaults are references, not locks).
+        const shown = /"default_ids":(\[[^\]]*\])/.exec(prompt)
+        return JSON.stringify({ skill_ids: shown ? JSON.parse(shown[1]!) : [], reason: '测试：沿用目录中给出的项目默认技能。' })
+      }
+      assert.equal(contract.name, 'visual_profiles'); calls++; return generator(prompt, contract)
+    },
   })
   const invoke = async (action: string, payload: object, status = 200) => {
     const response = await routes.inject({ method: 'POST', url: `/api/projects/${project.id}/script/canvas/${action}`, payload })

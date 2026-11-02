@@ -178,7 +178,8 @@ test('task-specific history keeps the complete reference chain for option-based 
   assert.equal(draftReviewTaskContext(f.context, [story]), f.context)
 })
 
-test('scoped output-limit recovery keeps successful sibling tasks and resumes only unfinished review dimensions', async () => {
+test('scoped output-limit recovery keeps successful sibling tasks and resumes only unfinished review dimensions (serial mode)', async t => {
+  process.env.VIDEO_STUDIO_SCRIPT_REVIEW_CONCURRENCY = '1'; t.after(() => { delete process.env.VIDEO_STUDIO_SCRIPT_REVIEW_CONCURRENCY })
   const f = fixture(), calls: string[] = []
   const dimension = (prompt: string) => /本轮核查维度：([a-z]+)。/.exec(prompt)?.[1] || 'whole'
   await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => {
@@ -197,7 +198,8 @@ test('scoped output-limit recovery keeps successful sibling tasks and resumes on
   assert.deepEqual(calls, ['world:consistency', 'world:requirements', 'payoffs:whole', 'consistency:whole'])
 })
 
-test('cancellation never dispatches remaining tasks and continuation reuses the completed task', async () => {
+test('cancellation never dispatches remaining tasks and continuation reuses the completed task (serial mode)', async t => {
+  process.env.VIDEO_STUDIO_SCRIPT_REVIEW_CONCURRENCY = '1'; t.after(() => { delete process.env.VIDEO_STUDIO_SCRIPT_REVIEW_CONCURRENCY })
   const f = fixture(), controller = new AbortController(), calls: string[] = [], reason = new Error('创作者停止任务')
   await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => {
     const task = phase(prompt); calls.push(task)
@@ -209,4 +211,66 @@ test('cancellation never dispatches remaining tasks and continuation reuses the 
   await reviewScriptDraftCompleteness(f.draft, async prompt => { calls.push(phase(prompt)); return JSON.stringify(clear(prompt)) },
     { context: f.context, steps: f.steps(), review_scope: 'adaptive' })
   assert.deepEqual(calls, ['world', 'payoffs', 'consistency'])
+})
+
+function concurrencyProbe() {
+  let inflight = 0, max = 0; const events: string[] = []
+  return {
+    events, get max() { return max },
+    async run(task: string, work: () => Promise<string>) {
+      events.push(`start:${task}`); inflight++; max = Math.max(max, inflight)
+      try { await new Promise(resolve => setTimeout(resolve, 15)); return await work() } finally { inflight--; events.push(`end:${task}`) }
+    },
+  }
+}
+
+test('independent local groups overlap within the configured ceiling and the global check always runs last', async t => {
+  const f = fixture(), probe = concurrencyProbe()
+  await reviewScriptDraftCompleteness(f.draft, prompt => probe.run(phase(prompt), async () => JSON.stringify(clear(prompt))),
+    { context: f.context, steps: f.steps(), review_scope: 'adaptive' })
+  assert.ok(probe.max >= 2 && probe.max <= 3, `groups overlapped without exceeding the default ceiling (saw ${probe.max})`)
+  const globalStart = probe.events.indexOf('start:consistency')
+  for (const group of ['story', 'world', 'payoffs']) assert.ok(probe.events.indexOf(`end:${group}`) < globalStart, `${group} finished before the global consistency check started`)
+  assert.equal(probe.events.filter(event => event === 'start:consistency').length, 1)
+
+  process.env.VIDEO_STUDIO_SCRIPT_REVIEW_CONCURRENCY = '2'; t.after(() => { delete process.env.VIDEO_STUDIO_SCRIPT_REVIEW_CONCURRENCY })
+  const capped = concurrencyProbe(), g = fixture()
+  await reviewScriptDraftCompleteness(g.draft, prompt => capped.run(phase(prompt), async () => JSON.stringify(clear(prompt))),
+    { context: g.context, steps: g.steps(), review_scope: 'adaptive' })
+  assert.equal(capped.max, 2, 'a lower ceiling is respected')
+})
+
+test('a failed group keeps its finished siblings and only the failed group plus the global check run again', async () => {
+  const f = fixture(), first: string[] = []
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => {
+    const task = phase(prompt); first.push(task)
+    if (task === 'world') throw new Error('世界观检查连接中断')
+    return JSON.stringify(clear(prompt))
+  }, { context: f.context, steps: f.steps(), review_scope: 'adaptive' }), /世界观检查连接中断/)
+  assert.ok(first.includes('story') && first.includes('payoffs'), 'siblings were not abandoned by the failure')
+  assert.ok(!first.includes('consistency'), 'the global check never runs on incomplete local results')
+  const second: string[] = []
+  await reviewScriptDraftCompleteness(f.draft, async prompt => { second.push(phase(prompt)); return JSON.stringify(clear(prompt)) },
+    { context: f.context, steps: f.steps(), review_scope: 'adaptive' })
+  assert.deepEqual([...new Set(second)].sort(), ['consistency', 'world'], 'completed groups are reused; no group is dispatched twice')
+  assert.equal(second.at(-1), 'consistency')
+})
+
+test('after cancellation no further group is dispatched, even while a sibling is still running', async t => {
+  process.env.VIDEO_STUDIO_SCRIPT_REVIEW_CONCURRENCY = '2'; t.after(() => { delete process.env.VIDEO_STUDIO_SCRIPT_REVIEW_CONCURRENCY })
+  const f = fixture(), controller = new AbortController(), calls: string[] = [], reason = new Error('创作者停止任务')
+  let aborted!: () => void; const abortedSignal = new Promise<void>(resolve => { aborted = resolve })
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => {
+    const task = phase(prompt); calls.push(task)
+    if (task === 'world') { controller.abort(reason); aborted(); throw reason }
+    await abortedSignal // story is still running when the abort happens
+    return JSON.stringify(clear(prompt))
+  }, { context: f.context, steps: f.steps(), signal: controller.signal, review_scope: 'adaptive' }), issue => issue === reason)
+  assert.deepEqual([...calls].sort(), ['story', 'world'], 'the third group and the global check were never started')
+  const resumed: string[] = []
+  await reviewScriptDraftCompleteness(f.draft, async prompt => { resumed.push(phase(prompt)); return JSON.stringify(clear(prompt)) },
+    { context: f.context, steps: f.steps(), review_scope: 'adaptive' })
+  // A result that finishes after cancellation is never checkpointed, so the group that was in flight is redone.
+  assert.deepEqual([...new Set(resumed)].sort(), ['consistency', 'payoffs', 'story', 'world'])
+  assert.equal(resumed.at(-1), 'consistency')
 })

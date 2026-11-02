@@ -19,6 +19,7 @@ export type ScriptActivity = {
   input?: string; output?: string; input_truncated?: boolean; output_truncated?: boolean;
   request_bytes?: number; response_chars?: number; first_event_ms?: number;
   input_tokens?: number; output_tokens?: number; reasoning_tokens?: number; output_limit?: number;
+  cache_read_tokens?: number; cache_write_tokens?: number; cache_miss_tokens?: number; request_purpose?: string;
   estimated_input_tokens?: number; context_window_tokens?: number; reserved_output_tokens?: number;
   upstream_request_id?: string; http_status?: number;
   usage?: { current: ScriptRequestUsage; cumulative?: ScriptRequestUsage; limits?: ScriptRequestUsageLimits };

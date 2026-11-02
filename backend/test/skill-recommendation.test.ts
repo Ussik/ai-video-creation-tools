@@ -117,3 +117,41 @@ test('invalid native choices receive tool errors and are corrected; text-only ou
   t.mock.method(globalThis, 'fetch', async () => Response.json({ status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '我建议使用默认技能' }] }] }))
   await assert.rejects(chooseCreationSkills(model('responses'), provider, input, () => ''), /未完成有效的技能选择/)
 })
+
+test('an automatic choice is reused only for an identical complete input and invalidates on any change', async () => {
+  const { clearCreationSkillSelectionCache } = await import('../src/modules/skills/model-skill-selection.js')
+  clearCreationSkillSelectionCache()
+  let asked = 0
+  const select = async (_p: string, _m: string, input: { skills: Array<{ id: string }> }) => { asked++; return { skill_ids: [input.skills.find(skill => skill.id === special)!.id], reason: '选择专用技能' } }
+  const base = { ...options, select, reuseKey: 'config-A' }
+  const first = await resolveCreationSkillContext(base)
+  const second = await resolveCreationSkillContext(base)
+  assert.equal(asked, 1, 'identical input does not ask the model again')
+  assert.deepEqual(second.assignment.ids, first.assignment.ids)
+  assert.equal((second.assignment as { reused?: boolean }).reused, true)
+  assert.equal((first.assignment as { reused?: boolean }).reused, undefined)
+
+  await resolveCreationSkillContext({ ...base, task: options.task + '（换了一个任务）' })
+  assert.equal(asked, 2, 'a different task selects again')
+  await resolveCreationSkillContext({ ...base, reuseKey: 'config-B' })
+  assert.equal(asked, 3, 'a different model configuration selects again')
+  await resolveCreationSkillContext(options.task ? { ...base, assignmentTask: { operation: 'revise' } as never } : base)
+  assert.equal(asked, 4, 'different task context selects again')
+
+  // A new skill revision changes the catalog the model chooses from.
+  const updated = installSkillBundle({ repo: 'test/model-skills', path: 'bespoke-story', name: 'bespoke-story', description: '说明 bespoke-story', license: null,
+    revision: 'b'.repeat(40), tool_requirements: [], suggested_stages: ['script'], url: '',
+    files: [{ path: 'SKILL.md', content: '---\nname: bespoke-story\ndescription: 说明 bespoke-story\n---\nRULE_NEW_REVISION' }] }, special)
+  assert.equal(updated.revision, 'b'.repeat(40))
+  configureSkill(updated.id, true, ['script'])
+  const afterUpdate = await resolveCreationSkillContext(base)
+  assert.equal(asked, 5, 'a changed skill revision invalidates the reused choice')
+  assert.match(afterUpdate.text, /RULE_NEW_REVISION/)
+
+  // Manual selections are locked and never consult or populate the cache.
+  const manual = await resolveCreationSkillContext({ ...base, selectedIds: [standard] })
+  assert.equal(asked, 5); assert.equal(manual.assignment.source, 'manual')
+  // Without a reuse key (other entry points) behaviour is unchanged.
+  await resolveCreationSkillContext({ ...options, select }); await resolveCreationSkillContext({ ...options, select })
+  assert.equal(asked, 7)
+})

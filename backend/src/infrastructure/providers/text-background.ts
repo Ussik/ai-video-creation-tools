@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { estimateTextRequestTokens } from './text-context.js'
+import { parseTextUsage } from './text-usage-parse.js'
 import { beginTextRequest, settlePendingTextRequest, type TextRequestUsageMetrics } from './text-request-usage.js'
 
 export type BackgroundResponse = { id?: string; state: 'creating' | 'accepted'; sequence?: number }
@@ -11,11 +12,7 @@ export function withTextResponseRecovery<T>(store: Recovery, work: () => T): T {
 export const hasTextResponseRecovery = () => !!recovery.getStore()
 
 function returnedUsage(payload: Record<string, unknown>): TextRequestUsageMetrics {
-  const usage = payload.usage && typeof payload.usage === 'object' ? payload.usage as Record<string, unknown> : {}
-  const details = (usage.output_tokens_details ?? usage.completion_tokens_details) as Record<string, unknown> | undefined
-  const metric = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
-  return { input_tokens: metric(usage.input_tokens ?? usage.prompt_tokens),
-    output_tokens: metric(usage.output_tokens ?? usage.completion_tokens), reasoning_tokens: metric(details?.reasoning_tokens) }
+  return parseTextUsage(payload.usage)
 }
 
 async function failedUsage(response: Response, wait: <T>(value: Promise<T>) => Promise<T>) {

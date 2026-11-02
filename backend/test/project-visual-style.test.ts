@@ -133,28 +133,34 @@ test('images without bindings and first-frame videos cannot bypass style through
   assert.match(video.prompt, /水墨/); assert.equal(video.style_warnings.length, 1)
 })
 
-test('style changes require board review; followers adopt confirmed updates while locked shot references require refresh', async () => {
+test('after a style change a confirmed board needs review; followers pick up the re-confirmed board, locked shots keep their frozen references until explicitly refreshed', async () => {
   const p = await project(), m = await model(), board = await profile(p.id), assetId = `board-${p.id}`
   run("INSERT INTO assets (id, project_id, kind, filename, path, source, created_at) VALUES (?, ?, 'image', 'board.png', '/tmp/board.png', 'upload', ?)", assetId, p.id, now())
   const approved = await call('PATCH', `/api/visual-profiles/${board.id}`, { expected_revision: board.revision, board_asset_id: assetId })
-  const shot = await call('POST', `/api/projects/${p.id}/shots`, { title: '镜头' })
-  await call('PUT', `/api/shots/${shot.id}/visual-bindings`, { bindings: [{ profile_id: board.id, required: true }] })
-  const lockedShot = await call('POST', `/api/projects/${p.id}/shots`, { title: '冻结镜头' })
-  await call('PUT', `/api/shots/${lockedShot.id}/visual-bindings`, { bindings: [{ profile_id: board.id, required: true, sync_mode: 'locked' }] })
+  // The default binding follows confirmed settings (docs/multi-angle-reference-workflow.md); a locked one freezes its snapshot.
+  const following = await call('POST', `/api/projects/${p.id}/shots`, { title: '跟随镜头' })
+  const locked = await call('POST', `/api/projects/${p.id}/shots`, { title: '锁定镜头' })
+  await call('PUT', `/api/shots/${following.id}/visual-bindings`, { bindings: [{ profile_id: board.id, required: true }] })
+  await call('PUT', `/api/shots/${locked.id}/visual-bindings`, { bindings: [{ profile_id: board.id, required: true, sync_mode: 'locked' }] })
   await settings(p.id, { visual_style: '水彩动画' }); initDb()
   const detail = await call('GET', `/api/projects/${p.id}`)
   assert.equal(detail.visual_profiles[0].board_style_status, 'needs_review')
-  const input = { shot_id: shot.id, model_id: m.id, prompt: '铜表近景', mode: 'text' }
-  assert.equal((await app.inject({ method: 'POST', url: `/api/projects/${p.id}/generate/preview`, payload: input })).statusCode, 422)
+  const preview = (shot: { id: string }) => app.inject({ method: 'POST', url: `/api/projects/${p.id}/generate/preview`, payload: { shot_id: shot.id, model_id: m.id, prompt: '铜表近景', mode: 'text' } })
+  // Until the board is confirmed against the new style, nothing may use the old image.
+  assert.equal((await preview(following)).statusCode, 422)
+  assert.equal((await preview(locked)).statusCode, 422)
   await call('PATCH', `/api/visual-profiles/${board.id}`, { expected_revision: approved.revision, board_asset_id: assetId })
-  const preview = await call('POST', `/api/projects/${p.id}/generate/preview`, input)
-  assert.match(preview.prompt, /水彩动画/); assert.deepEqual(preview.reference_asset_ids, [assetId])
-  const lockedInput = { ...input, shot_id: lockedShot.id }
-  assert.equal((await app.inject({ method: 'POST', url: `/api/projects/${p.id}/generate/preview`, payload: lockedInput })).statusCode, 422)
-  await call('PUT', `/api/shots/${lockedShot.id}/visual-bindings`, { bindings: [{ profile_id: board.id, required: true, sync_mode: 'locked' }], refresh_profile_ids: [board.id] })
-  const refreshed = await call('POST', `/api/projects/${p.id}/generate/preview`, lockedInput)
-  assert.match(refreshed.prompt, /水彩动画/); assert.deepEqual(refreshed.reference_asset_ids, [assetId])
-  assert.equal(all('SELECT * FROM assets WHERE project_id=?', p.id).length, 1)
+  // Re-confirmation is the review: a follower now uses the current board under the new style.
+  const followed = await preview(following)
+  assert.equal(followed.statusCode, 200, followed.body)
+  assert.match(followed.json().prompt, /水彩动画/); assert.deepEqual(followed.json().reference_asset_ids, [assetId])
+  // A locked shot keeps its frozen snapshot, so it still refuses until its references are refreshed on purpose.
+  assert.equal((await preview(locked)).statusCode, 422)
+  await call('PUT', `/api/shots/${locked.id}/visual-bindings`, { bindings: [{ profile_id: board.id, required: true, sync_mode: 'locked' }], refresh_profile_ids: [board.id] })
+  const refreshed = await preview(locked)
+  assert.equal(refreshed.statusCode, 200, refreshed.body)
+  assert.match(refreshed.json().prompt, /水彩动画/); assert.deepEqual(refreshed.json().reference_asset_ids, [assetId])
+  assert.equal(all('SELECT * FROM assets WHERE project_id=?', p.id).length, 1, 'history is retained and no asset was created')
 })
 
 test('templates that discard the prompt fail before charging or queueing, including mode-specific templates', async () => {

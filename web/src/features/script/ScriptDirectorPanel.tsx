@@ -976,11 +976,16 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const optionsSyncKey = `${detail.id}:${detail.brief}:${persistedOptionsKey}`
   const syncedOptionsKey = useRef(optionsSyncKey)
   const busy = working !== null
-  const sourceSendBlockReason = sourceLoading ? '正在读取剧本来源，可先填写要求'
-    : sourceAnalysisStarting || scriptSource?.analysis?.status === 'queued' || scriptSource?.analysis?.status === 'running' ? '剧本分析中，可先填写要求，完成后再发送'
+  // Reading the source decides which version a task binds to, so it blocks every
+  // task. Background analysis only blocks tasks that depend on its result: an
+  // original-manuscript outline reads the persisted full text directly.
+  const sourceLoadingReason = sourceLoading ? '正在读取剧本来源，可先填写要求' : ''
+  const sourceAnalysisReason = sourceAnalysisStarting || scriptSource?.analysis?.status === 'queued' || scriptSource?.analysis?.status === 'running' ? '剧本分析中，可先填写要求，完成后再发送'
       : scriptSource?.analysis?.status === 'paused' ? '剧本分析已暂停，请继续分析后再发送；输入已保留'
         : scriptSource?.analysis?.status === 'failed' ? '剧本分析未完成，请重试分析后再发送；输入已保留'
         : scriptSource && scriptSource.analysis?.status !== 'ready' ? '请先开始剧本分析，完成后再发送；可先填写要求' : ''
+  const sourceSendBlockReason = sourceLoadingReason || sourceAnalysisReason
+  const sourceOutlineBlocked = activeFocus === 'all' && Boolean(sourceLoadingReason)
   const sourceChatBlocked = activeFocus === 'all' && Boolean(sourceSendBlockReason)
   const generatedStructure = generated?.scenes.map((scene, index) => `第${index + 1}场｜${scene.heading || scene.location || '未命名场景'}\n${scene.action || scene.dialogue || scene.narration || ''}`).join('\n\n') || ''
   const artifactCards = useMemo(() => {
@@ -2237,7 +2242,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     const requestFocus = revisionTaskId ? 'all' : previousExecution?.focus_artifact || activeFocus
     if (draftResolution && requestFocus === 'all' && !resolutionInput) { setResolutionOpen(true); return null }
     // Candidate completion uses its saved source context and must remain recoverable.
-    if (requestFocus === 'all' && sourceSendBlockReason && !(resolutionInput && draftResolution)) return null
+    const directSourceOutline = workflowOverride?.intent === 'source_outline'
+    if (requestFocus === 'all' && (directSourceOutline ? sourceLoadingReason : sourceSendBlockReason) && !(resolutionInput && draftResolution)) return null
     const requestMode = previousExecution?.mode || mode
     const workflow = requestFocus === 'all' && !questionResponse ? workflowOverride || usesComposer && stageTask || undefined : undefined
     if ((workflow || adoptSource) && generated && !scriptSaved) { setPreviewOpen(true); setError('请先确认保存或放弃当前草稿'); return null }
@@ -2887,7 +2893,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         onClick={() => void sendChatMessage(exploreStoryDirectionMessage)} data-workspace-control="" variant="subtle">
         <Lightbulb size={14} aria-hidden="true" />探索故事方向
       </Button>}
-      <ScriptStageActions script={detail.script} hasSource={Boolean(scriptSource)} outlineIssue={outlineIssue} disabled={busy || sourceUploading || sourceChatBlocked || closing || !selectedModel || Boolean(generated && !scriptSaved) || Boolean(draftResolution)} onAction={handleStageAction} />
+      <ScriptStageActions script={detail.script} hasSource={Boolean(scriptSource)} outlineIssue={outlineIssue} analysisWait={activeFocus === 'all' ? sourceAnalysisReason : ''} disabled={busy || sourceUploading || sourceOutlineBlocked || closing || !selectedModel || Boolean(generated && !scriptSaved) || Boolean(draftResolution)} onAction={handleStageAction} />
       {outlineIssue && !busy && !closing && progress.next_stage === 'outline' && !(generated && !scriptSaved) && <span className="sd-creation-progress" role="status">{outlineIssue}</span>}
     </nav>}
     </div>
@@ -2926,7 +2932,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         {generated && !scriptSaved ? <div className="script-director-workflow-actions">
           <Button type="button" onClick={() => { setWorkflowOpen(false); setPreviewOpen(true) }} data-workspace-control="" variant="subtle">查看待确认草稿</Button>
           <Button type="button" disabled={busy} onClick={() => void discardGenerated()} data-workspace-control="" variant="subtle">放弃草稿</Button>
-        </div> : <Button type="button" className="script-director-workflow-generate" disabled={busy || sourceUploading || sourceChatBlocked || Boolean(workflowIssue) || !selectedModel} title={sourceChatBlocked ? sourceSendBlockReason : undefined} onClick={() => handleStageAction(workflowTarget)} data-workspace-control="" variant="subtle"><FileText size={13} />{workflowStage === 'outline' && workflowOperation === 'generate'
+        </div> : <Button type="button" className="script-director-workflow-generate" disabled={busy || sourceUploading || (workflowTarget.intent === 'source_outline' ? sourceOutlineBlocked : sourceChatBlocked) || Boolean(workflowIssue) || !selectedModel} title={(workflowTarget.intent === 'source_outline' ? sourceOutlineBlocked : sourceChatBlocked) ? sourceSendBlockReason : undefined} onClick={() => handleStageAction(workflowTarget)} data-workspace-control="" variant="subtle"><FileText size={13} />{workflowStage === 'outline' && workflowOperation === 'generate'
           ? workflowTarget.intent === 'source_outline' ? '整理原稿大纲' : workflowTarget.artifact_types?.length === 1 ? '生成初步大纲' : '生成完整大纲设计'
           : `${workflowOperation === 'regenerate' ? '重新设计' : workflowOperation === 'supplement' ? '补齐' : workflowOperation === 'revise' ? '填写修改要求' : '生成'}${workflowStage === 'episode' ? `第 ${episodeNumber} 集正文` : stageLabels[workflowStage]}`}</Button>}
         {workflowIssue && <p className="sd-utility-empty" role="status">{workflowIssue}</p>}
@@ -3045,7 +3051,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       <p className="sd-source-preview-hint">后续生成与工具读取使用当前有效稿；上传原稿保留供追溯。每个阶段仍需预览并确认保存。</p>
       {scriptSource && <ScriptSourcePreview source={scriptSource} />}
       <div className="sd-source-dialog-actions"><Button variant="default" onClick={() => setSourcePreviewOpen(false)}>关闭</Button>
-        {progress.next_stage && <Button disabled={busy || sourceUploading || sourceChatBlocked || !selectedModel || Boolean(generated && !scriptSaved)} title={sourceChatBlocked ? sourceSendBlockReason : undefined} onClick={() => { setSourcePreviewOpen(false); handleStageAction({ stage: progress.next_stage!, episode_number: progress.next_stage === 'episode' ? progress.next_episode || 1 : 0, operation: 'generate' }) }}>生成{progress.next_stage === 'episode' ? `第 ${progress.next_episode} 集正文` : stageLabels[progress.next_stage]}</Button>}
+        {progress.next_stage && <Button disabled={busy || sourceUploading || (progress.next_stage === 'outline' ? sourceOutlineBlocked : sourceChatBlocked) || !selectedModel || Boolean(generated && !scriptSaved)} title={(progress.next_stage === 'outline' ? sourceOutlineBlocked : sourceChatBlocked) ? sourceSendBlockReason : undefined} onClick={() => { setSourcePreviewOpen(false); handleStageAction({ stage: progress.next_stage!, episode_number: progress.next_stage === 'episode' ? progress.next_episode || 1 : 0, operation: 'generate' }) }}>生成{progress.next_stage === 'episode' ? `第 ${progress.next_episode} 集正文` : stageLabels[progress.next_stage]}</Button>}
       </div>
     </Modal>
     <Modal opened={!!pendingSourceFile && !hidden} onClose={() => setPendingSourceFile(null)} title="替换原剧本来源" centered zIndex={300}>

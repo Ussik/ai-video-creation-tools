@@ -107,5 +107,12 @@ export function draftReviewTaskContext(context: unknown, sources: DraftReviewSou
       referencesHistory.test((item as Record<string, unknown>)[key] as string)))) return context
   const summaryIds = new Set(decisions.flatMap(item => item && typeof item === 'object' && 'summary_id' in item ? [item.summary_id] : []))
   const summaries = resolution.summaries.filter(item => !item || typeof item !== 'object' || !('id' in item) || summaryIds.has(item.id))
+  // A group with no decision of its own sees exactly what it saw before any
+  // decision existed. Otherwise an unrelated document's repair would change this
+  // group's input and force it to be reviewed again.
+  if (!decisions.length && !summaries.length) {
+    const { resolved_findings: _unrelated, ...withoutHistory } = record
+    return withoutHistory
+  }
   return { ...record, resolved_findings: { ...resolution, decisions, summaries } }
 }
