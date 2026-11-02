@@ -40,8 +40,11 @@ test('default and named canvas routes persist complete prompt sections, source s
   for (const [suffix, id] of [['canvas', 'default-prompt'], [`canvases/${canvas.id}`, 'named-prompt']]) {
     const url = `/api/projects/${project.id}/${suffix}`
     const initial = await call('GET', url), sections = document()
-    const saved = await call('PUT', url, { ...initial, nodes: [node(id!, sections)] })
+    const copiedBoard = node(id!, sections)
+    const saved = await call('PUT', url, { ...initial, nodes: [{ ...copiedBoard, settings: { ...copiedBoard.settings,
+      visual_template_kind: 'character', visual_template_reference_required: false } }] })
     assert.deepEqual(saved.nodes[0].settings.prompt_sections, sections)
+    assert.equal(saved.nodes[0].settings.visual_template_reference_required, false, 'copied text-only boards remain usable after reload')
     assert.equal(saved.nodes[0].text, serializePromptSectionDocument(sections))
     assert.deepEqual(await call('GET', url), saved)
     initDb()

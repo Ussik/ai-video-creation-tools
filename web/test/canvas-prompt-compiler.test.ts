@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { compileCanvasPrompt, type CanvasPromptCompilerInput } from '../src/features/canvas/canvas-prompt-compiler'
+import { getManagedPromptBlocks } from '@video-studio/shared/visuals/prompt-document'
 
 const profile = {
   kind: 'character' as const, name: '林晚', variant: '雨衣', definition: '蓝色雨衣，保持人物身份。',
@@ -22,6 +23,24 @@ test('profile and reference-template boards retain multiple views without shot-o
     assert.match(prompt, /画面比例：16:9/)
     assert.match(prompt, /画风：水墨/)
   }
+})
+
+test('independent copied boards retain profile content and base-reference context while parameters and changed references can refresh', () => {
+  const source = { ...input(), profile, referenceIds: ['base', 'detail'], referenceNames: ['基础人物', '灯光细节'],
+    profileReferences: [{ asset_id: 'base', name: '林晚', variant: '基础服装', definition: '蓝色外套', role: 'base' as const },
+      { asset_id: 'detail', name: '灯光细节', role: 'manual' as const }] }
+  const template = compileCanvasPrompt('只增加右袖湿痕。', source)
+  const independent = { ...input(), templateKind: 'character' as const, boardTemplate: template,
+    referenceIds: source.referenceIds, referenceNames: source.referenceNames }
+  const copied = compileCanvasPrompt('只增加右袖湿痕。', independent)
+  for (const name of ['设定图固定要求', '基础版本与本次状态变化', '基础身份参考', '生成参考图'] as const) {
+    assert.deepEqual(getManagedPromptBlocks(copied, [name]), getManagedPromptBlocks(template, [name]))
+  }
+  const changed = compileCanvasPrompt('只增加右袖湿痕。', { ...independent, ratio: '9:16', referenceIds: ['detail'], referenceNames: ['新灯光'] })
+  assert.match(changed, /画面比例：9:16/)
+  assert.doesNotMatch(changed, /【基础身份参考】|【基础版本与本次状态变化】|\[\[ref:base\]\]/)
+  assert.match(changed, /新灯光/)
+  assert.deepEqual(getManagedPromptBlocks(changed, ['设定图固定要求']), getManagedPromptBlocks(template, ['设定图固定要求']))
 })
 
 test('base identity follows actual submitted reference order even when the base is not first', () => {

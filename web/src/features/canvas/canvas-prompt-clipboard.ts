@@ -5,6 +5,22 @@ import { VISUAL_BOARD_PRIMARY_SECTION } from '@video-studio/shared/visuals/visua
 export type PromptCopyScope = 'body' | 'full'
 export type PromptClipboardContent = { text: string; html: string }
 
+/** A board's primary section is creative prose in an ordinary image/video node.
+ * Keep other requirements structured and preserve partial-selection openness. */
+export function promptPasteSlice(slice: Slice, visualBoard: boolean): Slice {
+  const primary = (node: ProseMirrorNode | null) => node?.type.name === 'promptManagedSection'
+    && node.attrs.section.name === VISUAL_BOARD_PRIMARY_SECTION
+  if (visualBoard || !Array.from({ length: slice.content.childCount }, (_, index) => slice.content.child(index)).some(primary)) return slice
+  const nodes: ProseMirrorNode[] = []
+  slice.content.forEach(node => {
+    if (primary(node)) node.forEach(paragraph => nodes.push(paragraph.type.create(null, paragraph.content, paragraph.marks)))
+    else nodes.push(node)
+  })
+  return new Slice(Fragment.fromArray(nodes),
+    Math.max(0, slice.openStart - (primary(slice.content.firstChild) ? 1 : 0)),
+    Math.max(0, slice.openEnd - (primary(slice.content.lastChild) ? 1 : 0)))
+}
+
 /** Clipboard prose has no virtual body-entry attributes or source ownership.
  * Keep reference atoms intact so the destination resolves the same asset IDs. */
 function clipboardParagraphs(editor: Editor, scope: PromptCopyScope): ProseMirrorNode[] {

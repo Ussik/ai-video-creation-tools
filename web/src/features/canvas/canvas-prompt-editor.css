@@ -6,6 +6,13 @@
 .pc-prompt-editor-surface:focus-within { border-color: var(--mantine-primary-color-filled); box-shadow: 0 0 0 2px var(--mantine-primary-color-light); }
 .pc-prompt-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 13px 0; font-size: 11px; line-height: 1.5; color: var(--fc-text-muted); user-select: none; }
 .pc-prompt-editor-heading > span:first-child { color: var(--mantine-color-text); font-weight: 600; }
+.pc-prompt-body-toggle { justify-content: flex-start; width: 100%; gap: 8px; padding-bottom: 0; text-align: left; }
+.pc-prompt-body-toggle:hover { background: var(--mantine-color-default-hover); }
+.pc-prompt-body-toggle:focus-visible { outline: 2px solid var(--mantine-primary-color-filled); outline-offset: -2px; }
+.pc-prompt-body-title { flex: none; color: var(--mantine-color-text); font-weight: 600; }
+.pc-prompt-body-chevron { flex: none; color: var(--mantine-color-dimmed); transition: transform 150ms; }
+.pc-prompt-body-summary { min-width: 0; overflow: hidden; color: var(--fc-text-secondary); text-overflow: ellipsis; white-space: nowrap; }
+.pc-prompt-editor.is-body-collapsed .pc-prompt-body-chevron { transform: rotate(-90deg); }
 .pc-prompt-content-scope { flex: none; padding: 2px 6px; border: 1px solid var(--fc-border-soft); border-radius: 4px; background: var(--fc-surface-muted); color: var(--fc-text-secondary); font-size: 10px; font-weight: 500; line-height: 1.4; }
 .pc-prompt-editor-content { position: relative; min-height: calc(var(--pc-prompt-min-rows, 6) * 1.65em); max-height: 340px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 10px 13px 12px; outline: none; font-size: 13px; line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; }
 .pc-prompt-editor-content:has(.pc-prompt-presets-heading) { display: flex; flex-direction: column; min-height: calc(var(--pc-prompt-min-rows, 6) * 1.3em + 106px); }
@@ -18,6 +25,11 @@
 .pc-prompt-editor.is-expanded .pc-prompt-editor-heading { padding: 17px 22px 0; }
 .pc-prompt-editor.is-expanded .pc-prompt-editor-content { min-height: 280px; max-height: min(58vh, 620px); padding: 16px 22px 20px; font-size: 15px; line-height: 1.9; }
 .pc-prompt-editor.is-expanded .pc-prompt-editor-content > p.pc-prompt-body-entry { min-height: 200px; }
+.pc-prompt-editor.is-body-collapsed .pc-prompt-body-toggle { padding-bottom: 11px; }
+.pc-prompt-editor.is-body-collapsed .pc-prompt-editor-content > p { display: none; }
+.pc-prompt-editor.is-body-collapsed .pc-prompt-editor-content { min-height: 0; padding-top: 0; }
+.pc-prompt-editor.is-body-collapsed .pc-prompt-editor-content:not(:has(.pc-prompt-presets-heading)) { padding-bottom: 0; }
+.pc-prompt-editor.is-body-collapsed .pc-prompt-presets-heading { margin-top: 0; }
 /* The composer's body owns scrolling in both anchored and expanded layouts,
    including the prompt, opened sections, references and notes. */
 .pc-prompt-composer-body .pc-prompt-editor .pc-prompt-editor-content { max-height: none; overflow-y: visible; scrollbar-gutter: auto; }
@@ -91,6 +103,8 @@
 .pc-prompt-managed-section.is-secondary .pc-prompt-managed-parameter-note { margin: 0 48px 0 38px; padding: 0 0 10px; }
 .pc-prompt-managed-section.is-secondary .pc-prompt-managed-source-actions { padding-left: 38px; }
 @container (max-width: 520px) {
+  .pc-prompt-editor.is-body-collapsed .pc-prompt-body-toggle { flex-wrap: wrap; }
+  .pc-prompt-editor.is-body-collapsed .pc-prompt-body-summary { flex-basis: 100%; padding-left: 22px; }
   .pc-prompt-managed-section.is-primary:not(.is-open) .pc-prompt-managed-toggle { grid-template-columns: 14px minmax(0, 1fr) auto; row-gap: 5px; }
   .pc-prompt-managed-section.is-primary:not(.is-open) .pc-prompt-managed-summary.is-inline { grid-column: 2 / -1; grid-row: 2; }
   .pc-prompt-managed-section.is-secondary .pc-prompt-managed-toggle { grid-template-columns: 14px minmax(0, 1fr) auto; row-gap: 5px; }

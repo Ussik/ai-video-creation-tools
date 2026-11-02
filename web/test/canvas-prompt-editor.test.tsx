@@ -1194,6 +1194,99 @@ test('whole-prompt paste preserves existing inputs and connects newly introduced
   } finally { await view.destroy() }
 })
 
+test('ordinary main content folds without changing prose, constraints, source metadata or undo history', async () => {
+  const requirement = '【项目画风约束】\n保留纸张纹理\n【项目画风约束结束】'
+  const value = `完整人物，服装参考[[ref:base]]。\n第二段创作内容\n\n${requirement}\n\n末尾补充`
+  const sections = parsePromptSectionDocument(value, { sourceText: value })
+  const view = await mount(value, { sectionDocument: sections, expanded: true })
+  try {
+    const heading = button('收起设定：主要创作内容', view.container)
+    const before = view.editor.getJSON(), beforeHTML = view.editor.getHTML()
+    assert.equal(heading.getAttribute('aria-expanded'), 'true')
+    assert.ok(document.getElementById(heading.getAttribute('aria-controls')!))
+    assert.equal(view.container.querySelector('.is-body-collapsed'), null)
+    await act(() => view.editor.chain().focus().setTextSelection(1).run()); await settle()
+    await act(() => heading.click()); await settle()
+    assert.equal(button('展开编辑：主要创作内容', view.container).getAttribute('aria-expanded'), 'false')
+    assert.ok(view.container.querySelector('.is-body-collapsed'))
+    assert.match(view.container.querySelector('.pc-prompt-body-summary')!.textContent!, /完整人物，服装参考角色基础。 第二段创作内容 末尾补充/)
+    assert.doesNotMatch(view.container.querySelector('.pc-prompt-body-summary')!.textContent!, /保留纸张纹理/)
+    assert.equal(view.editor.isFocused, false, 'the caret does not remain focused inside folded prose')
+    assert.ok(view.container.querySelector('.pc-prompt-presets-heading'))
+    assert.ok(view.container.querySelector('.pc-prompt-managed-toggle'), 'constraint controls stay available')
+    assert.deepEqual(view.editor.getJSON(), before)
+    assert.equal(view.editor.getHTML(), beforeHTML, 'folded styling does not enter clipboard HTML')
+    assert.equal(promptEditorText(view.editor.getJSON()), value)
+    assert.deepEqual(view.changes, [])
+    assert.deepEqual(view.referenceChanges, [])
+
+    await act(() => button('展开编辑：主要创作内容', view.container).click()); await settle()
+    assert.equal(view.container.querySelector('.is-body-collapsed'), null)
+    await act(() => view.editor.commands.insertContentAt(1, '修改'))
+    assert.equal(view.changes.at(-1), `修改${value}`)
+    const managed = sections.blocks.find(block => block.kind === 'managed')!
+    assert.deepEqual(view.sectionChanges.at(-1)!.blocks.find(block => block.id === managed.id), managed)
+    await act(() => button('收起设定：主要创作内容', view.container).click()); await settle()
+    await act(() => view.editor.commands.undo()); await settle()
+    assert.equal(view.changes.at(-1), value, 'folding does not add an undo step')
+    await act(() => view.editor.commands.redo()); await settle()
+    assert.equal(view.changes.at(-1), `修改${value}`)
+
+    await act(() => view.editor.chain().focus().setTextSelection(2).run()); await settle()
+    assert.equal(view.container.querySelector('.is-body-collapsed'), null, 'focus entering prose reveals it')
+    assert.equal(button('收起设定：主要创作内容', view.container).getAttribute('aria-expanded'), 'true')
+  } finally { await view.destroy() }
+})
+
+test('ordinary empty and readonly main content fold while compact editors keep their inline presentation', async () => {
+  for (const extra of [{}, { readOnly: true }, { disabled: true }]) {
+    const view = await mount('', extra)
+    try {
+      await act(() => button('收起设定：主要创作内容', view.container).click()); await settle()
+      assert.equal(view.container.querySelector('.pc-prompt-body-summary')!.textContent, '暂无创作内容')
+      assert.equal(button('展开编辑：主要创作内容', view.container).getAttribute('aria-expanded'), 'false')
+      await act(() => button('展开编辑：主要创作内容', view.container).click()); await settle()
+      assert.equal(view.container.querySelector('.is-body-collapsed'), null)
+      assert.deepEqual(view.changes, [])
+    } finally { await view.destroy() }
+  }
+  const compact = await mount('调整正文', { compact: true })
+  try {
+    assert.equal(compact.container.querySelector('.pc-prompt-body-toggle'), null)
+    assert.equal(compact.container.querySelector('.is-body-collapsed'), null)
+  } finally { await compact.destroy() }
+})
+
+test('opening a generation constraint and focusing its controls keeps ordinary main content folded', async () => {
+  const requirement = '【视频生成要求】\n保留镜头运动，稳定人物外观。\n【视频生成要求结束】'
+  const value = `人物在夜色中走过车站。\n\n${requirement}`
+  const view = await mount(value)
+  try {
+    await act(() => view.editor.chain().focus().setTextSelection(2).run()); await settle()
+    await act(() => button('收起设定：主要创作内容', view.container).click()); await settle()
+    const controls = button('展开编辑：视频生成要求', view.container)
+    await act(() => {
+      controls.dispatchEvent(new dom.window.MouseEvent('pointerdown', { bubbles: true, cancelable: true }))
+      controls.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true }))
+      controls.focus()
+      // Node-view controls can leave Tiptap's focus signal true while DOM
+      // focus belongs to their button and the old prose selection is retained.
+      view.element.dispatchEvent(new dom.window.FocusEvent('focus', { relatedTarget: controls }))
+      controls.click()
+    }); await settle()
+    assert.equal(document.activeElement, controls)
+    assert.equal(view.container.querySelector<HTMLElement>('.pc-prompt-managed-panel')!.hidden, false)
+    assert.ok(view.container.querySelector('.is-body-collapsed'))
+    assert.equal(button('展开编辑：主要创作内容', view.container).getAttribute('aria-expanded'), 'false')
+    await act(() => button('区块操作：视频生成要求', view.container).focus()); await settle()
+    assert.ok(view.container.querySelector('.is-body-collapsed'), 'constraint action focus does not reveal prose')
+    assert.equal(promptEditorText(view.editor.getJSON()), value)
+    assert.deepEqual(view.changes, [])
+    await act(() => view.editor.chain().focus().setTextSelection(2).run()); await settle()
+    assert.equal(view.container.querySelector('.is-body-collapsed'), null, 'actual editor focus still reveals the body caret')
+  } finally { await view.destroy() }
+})
+
 test('visual-board presentation keeps one editable main task and preserves source metadata through edits and undo', async () => {
   const primary = '【设定图固定要求】\n人物三视图，服装参考[[ref:base]]。\n【设定图固定要求结束】'
   const style = '【项目画风约束】\n保留纸张纹理\n【项目画风约束结束】'
@@ -1339,6 +1432,61 @@ test('body clipboard HTML pastes into another node while retaining destination r
     await act(() => destination.editor.commands.undo()); await settle()
     assert.equal(destination.changes.at(-1), `旧正文\n\n${targetRequirement}`)
   } finally { await source.destroy(); await destination.destroy() }
+})
+
+test('board main content pastes as ordinary creative prose through full and native clipboard formats', async t => {
+  const main = '许门祠堂藏面阁，参考[[ref:base]]。\n入口低矮，石地面保留旧纹理。'
+  const primary = `【设定图固定要求】\n${main}\n【设定图固定要求结束】`
+  const style = '【项目画风约束】\n保留纸张纹理。\n【项目画风约束结束】'
+  const value = `${primary}\n\n${style}`
+  const targetRequirement = '【图片生成要求】\n画面比例：4:3\n【图片生成要求结束】'
+  for (const format of ['full HTML', 'full text', 'native all', 'native primary', 'native partial primary'] as const) await t.test(format, async () => {
+    const source = await mount(value, { visualBoard: true, sectionDocument: parsePromptSectionDocument(value, { sourceText: value }) })
+    const targetValue = targetRequirement
+    const destination = await mount(targetValue)
+    try {
+      const copied: Record<string, string> = {}
+      if (format === 'full HTML' || format === 'full text') {
+        const full = promptClipboardContent(source.editor, 'full')
+        copied['text/plain'] = full.text
+        if (format === 'full HTML') copied['text/html'] = full.html
+      } else {
+        const primaryNode = source.editor.state.doc.firstChild!
+        await act(() => format === 'native all' ? source.editor.commands.selectAll()
+          : source.editor.commands.setTextSelection(format === 'native primary'
+            ? { from: 0, to: primaryNode.nodeSize }
+            : { from: 2, to: primaryNode.nodeSize - 2 }))
+        const copy = new dom.window.Event('copy', { bubbles: true, cancelable: true })
+        Object.defineProperty(copy, 'clipboardData', { value: {
+          clearData: () => { for (const key of Object.keys(copied)) delete copied[key] },
+          setData: (type: string, text: string) => { copied[type] = text },
+        } })
+        await act(() => source.element.dispatchEvent(copy))
+      }
+      await act(() => destination.editor.commands.setTextSelection(1))
+      const paste = new dom.window.Event('paste', { bubbles: true, cancelable: true })
+      Object.defineProperty(paste, 'clipboardData', { value: { getData: (type: string) => copied[type] || '', types: Object.keys(copied), files: [] } })
+      await act(() => destination.element.dispatchEvent(paste)); await settle()
+      const saved = destination.sectionChanges.at(-1)!
+      assert.ok(saved)
+      assert.equal(saved.blocks.filter(block => block.kind === 'body').map(block => block.text).join('').trim(), main,
+        'the source main task belongs in the destination creative body')
+      assert.equal(saved.blocks.some(block => block.kind === 'managed' && !block.deleted && block.name === '设定图固定要求'), false)
+      assert.equal(saved.blocks.find(block => block.kind === 'managed' && block.name === '图片生成要求')!.text, targetRequirement)
+      if (format === 'full HTML' || format === 'full text' || format === 'native all') {
+        const pastedStyle = saved.blocks.find(block => block.kind === 'managed' && block.name === '项目画风约束')!
+        assert.equal(pastedStyle.text, style, 'full copy keeps actual generation constraints')
+        assert.equal(pastedStyle.sourceText, undefined, 'source ownership is not copied')
+      }
+      assert.equal(destination.element.querySelectorAll('.pc-prompt-reference').length, 1)
+      await act(() => destination.editor.commands.undo()); await settle()
+      assert.equal(promptEditorText(destination.editor.getJSON()), targetValue)
+      await act(() => destination.editor.commands.redo()); await settle()
+      assert.equal(destination.sectionChanges.at(-1)!.blocks.some(block => block.kind === 'managed' && !block.deleted && block.name === '设定图固定要求'), false)
+      assert.equal(promptEditorText(source.editor.getJSON()), value)
+      assert.deepEqual(source.changes, [])
+    } finally { await source.destroy(); await destination.destroy() }
+  })
 })
 
 test('full clipboard HTML pastes editable requirements with fresh identities and no source metadata', async () => {

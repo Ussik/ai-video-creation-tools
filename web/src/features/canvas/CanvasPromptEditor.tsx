@@ -13,7 +13,7 @@ import { promptPresentationPlugin } from './canvas-prompt-presentation'
 import CanvasPromptSectionDiff from './CanvasPromptSectionDiff'
 import { promptSectionDetails } from './canvas-prompt-section-details'
 import { canvasPromptSectionDocument, rewriteCanvasPromptSections, visualBoardEditorDocument } from './canvas-prompt-composition'
-import { promptClipboardContent, type PromptClipboardContent, type PromptCopyScope } from './canvas-prompt-clipboard'
+import { promptClipboardContent, promptPasteSlice, type PromptClipboardContent, type PromptCopyScope } from './canvas-prompt-clipboard'
 import './canvas-prompt-editor.css'
 
 export type CanvasPromptReference = {
@@ -453,6 +453,7 @@ function promptExtensions(runtime: () => Runtime) {
             return Slice.maxOpen(content, false)
           },
           transformPasted: (slice, view) => {
+            slice = promptPasteSlice(slice, runtime().visualBoard)
             let nodes = Array.from({ length: slice.content.childCount }, (_, index) => freshSectionIds(slice.content.child(index)))
             const target = view.state.selection.$from.parent
             // Pasted prose belongs to the current body segment. Copying entry
@@ -494,6 +495,8 @@ export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
   const previousPropValue = useRef(props.value)
   const localChangeDepth = useRef(0), deferredValueSync = useRef(false)
   const [valueSyncVersion, setValueSyncVersion] = useState(0)
+  const [bodyOpened, setBodyOpened] = useState(true)
+  const bodyContentId = useId()
   const [picker, setPicker] = useState<Picker | null>(null)
   const [mentionAnchor, setMentionAnchor] = useState<{ left: number; top: number; height: number } | null>(null)
   const pickerRef = useRef(picker); pickerRef.current = picker
@@ -654,6 +657,18 @@ export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
     onSelectionUpdate: ({ editor: current }) => syncMention(current),
   }, [])
   editorRef.current = editor
+  useEffect(() => {
+    if (!editor) return
+    // Folding only changes presentation. Reveal prose whenever navigation,
+    // search or programmatic focus moves the caret back into a body paragraph.
+    const revealBodySelection = () => {
+      if (editor.isFocused && editor.view.dom.ownerDocument.activeElement === editor.view.dom && editor.state.selection.$from.depth === 1
+        && editor.state.selection.$from.parent.type.name === 'paragraph') setBodyOpened(true)
+    }
+    editor.on('selectionUpdate', revealBodySelection)
+    editor.on('focus', revealBodySelection)
+    return () => { editor.off('selectionUpdate', revealBodySelection); editor.off('focus', revealBodySelection) }
+  }, [editor])
   useImperativeHandle(props.ref, () => ({ getClipboardContent: scope => {
     const current = editorRef.current
     return current && !current.isDestroyed ? promptClipboardContent(current, scope) : null
@@ -762,10 +777,25 @@ export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
     pickerRef.current = { ...pickerRef.current, scope, query: '', index: 0, manual: true }
     setPicker(pickerRef.current)
   }
-  return <div className={`pc-prompt-editor${props.expanded ? ' is-expanded' : ''}${props.compact ? ' is-compact' : ''}${props.visualBoard ? ' is-visual-board' : ''}${props.disabled ? ' is-disabled' : ''}${props.readOnly ? ' is-readonly' : ''}`} style={{ '--pc-prompt-min-rows': props.minRows || 6 } as React.CSSProperties}>
+  const ordinaryBody = !props.compact && !props.visualBoard
+  const bodySummary: string[] = []
+  if (ordinaryBody && !bodyOpened) editor?.state.doc.forEach(node => {
+    if (node.type.name === 'paragraph') bodySummary.push(node.textBetween(0, node.content.size, ' ',
+      leaf => leaf.type.name === 'promptReference' ? leaf.attrs.label || '引用图片' : ' '))
+  })
+  return <div className={`pc-prompt-editor${props.expanded ? ' is-expanded' : ''}${props.compact ? ' is-compact' : ''}${props.visualBoard ? ' is-visual-board' : ''}${ordinaryBody && !bodyOpened ? ' is-body-collapsed' : ''}${props.disabled ? ' is-disabled' : ''}${props.readOnly ? ' is-readonly' : ''}`} style={{ '--pc-prompt-min-rows': props.minRows || 6 } as React.CSSProperties}>
     <div className="pc-prompt-editor-surface">
-      {!props.compact && !props.visualBoard && <div className="pc-prompt-editor-heading"><span>主要创作内容</span><span className="pc-prompt-content-scope">整理对象</span></div>}
-      <EditorContent editor={editor} />
+      {ordinaryBody && <UnstyledButton type="button" className="pc-prompt-editor-heading pc-prompt-body-toggle"
+        aria-label={`${bodyOpened ? '收起设定' : '展开编辑'}：主要创作内容`} aria-expanded={bodyOpened} aria-controls={bodyContentId}
+        onMouseDown={event => event.preventDefault()} onClick={() => {
+          if (bodyOpened) { closePicker(); editor?.commands.blur() }
+          setBodyOpened(value => !value)
+        }}>
+        <ChevronDown size={14} className="pc-prompt-body-chevron" />
+        <span className="pc-prompt-body-title">主要创作内容</span><span className="pc-prompt-content-scope">整理对象</span>
+        {!bodyOpened && <span className="pc-prompt-body-summary">{bodySummary.join(' ').replace(/\s+/g, ' ').trim() || '暂无创作内容'}</span>}
+      </UnstyledButton>}
+      <EditorContent id={bodyContentId} editor={editor} />
     </div>
     <Popover opened={!!picker && !!mentionAnchor} onDismiss={closePicker} position="bottom-start" offset={5} width="min(320px, calc(100vw - 16px))"
       floatingStrategy="fixed" preventPositionChangeWhenVisible={false} middlewares={{ flip: { padding: 8 }, shift: { padding: 8 } }}

@@ -452,6 +452,7 @@ const canvasSettings = z.object({
   visual_profile_id: z.string().min(1).max(100).optional(),
   visual_profile_revision: z.number().int().min(1).optional(),
   visual_template_kind: z.enum(['character', 'location', 'prop']).optional(),
+  visual_template_reference_required: z.boolean().optional(),
   profile_prompt_override: z.string().max(80000).optional(),
   prompt_reference_overrides: promptReferenceOverridesInput.optional(),
   visual_completed_job_id: canvasId.optional(),

@@ -21,6 +21,7 @@ import type { CanvasGraph, CanvasNode, ProjectCanvasProps } from '../src/feature
 import type { CanvasNodeProposalActions } from '../src/features/canvas/ProjectCanvas'
 import type { CanvasNodeProposal, CanvasNodeProposalSource } from '@video-studio/shared/canvas/canvas-node-proposal'
 import { canvasGenerationSubmissionStorageKey, createCanvasGenerationSubmission, readCanvasGenerationSubmission } from '../src/features/canvas/canvas-generation-submission'
+import { parseCanvasNodeClipboard } from '../src/features/canvas/canvas-node-clipboard'
 
 // Render the actual canvas and composer; only CSS and HTTP transport are mocked.
 register(`data:text/javascript,${encodeURIComponent(`
@@ -126,12 +127,24 @@ function initialGraph(mode: 'reference' | 'first_frame', extraManual = false): C
 }
 type PreviewInput = { video_reference_usages?: import('@video-studio/shared/media/video-reference-usage').VideoReferenceUsageSelection[]; mode: string; reference_asset_ids: string[]; explicit_reference_asset_ids?: string[]; prompt: string; visual_reference_mode: string; excluded_visual_profile_ids?: string[]; storyboard_reference_asset_id?: string | null }
 type ApiHandler = (path: string, method: string, body: Record<string, unknown>, init?: RequestInit) => Response | Promise<Response> | undefined
-function mockApi(t: TestContext, graph: CanvasGraph, projectDetail = detail, handler?: ApiHandler, saveError: boolean | ((graph: CanvasGraph) => boolean) = false) {
+function mockApi(t: TestContext, graph: CanvasGraph, projectDetail = detail, handler?: ApiHandler, saveError: boolean | ((graph: CanvasGraph) => boolean) = false, canvasGraphs?: Record<string, CanvasGraph>) {
   const previews: PreviewInput[] = [], resolvedPreviews: PreviewInput[] = [], saved: CanvasGraph[] = []
   t.after(() => dom.window.localStorage.removeItem('project-reference-batch:["video-reference-test","video-reference-test"]'))
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
     const path = String(url), method = init?.method || 'GET'
-    if (path === '/api/projects/video-reference-test/canvases') return Response.json([{ id: 'video-reference-test', project_id: 'video-reference-test', name: '画布 1', is_default: true, node_count: graph.nodes.length, viewport: null }])
+    if (path === '/api/projects/video-reference-test/canvases') return Response.json(canvasGraphs
+      ? Object.entries(canvasGraphs).map(([id, value], index) => ({ id, project_id: projectDetail.id, name: `画布 ${index + 1}`, is_default: index === 0, node_count: value.nodes.length, viewport: null }))
+      : [{ id: 'video-reference-test', project_id: 'video-reference-test', name: '画布 1', is_default: true, node_count: graph.nodes.length, viewport: null }])
+    const targetCanvasId = path.split('/canvases/')[1]
+    if (canvasGraphs && targetCanvasId && canvasGraphs[targetCanvasId]) {
+      if (method === 'GET') return Response.json(canvasGraphs[targetCanvasId])
+      if (method === 'PATCH') return Response.json({ id: targetCanvasId, ...JSON.parse(String(init?.body)) })
+      assert.equal(method, 'PUT')
+      const value = JSON.parse(String(init?.body))
+      saved.push(value)
+      canvasGraphs[targetCanvasId] = { ...value, revision: `saved-${saved.length}` }
+      return Response.json(canvasGraphs[targetCanvasId])
+    }
     if (path === '/api/projects/video-reference-test/skills/defaults') {
       assert.equal(method, 'GET')
       return Response.json({ policies: [{ stage: 'video_prompt', label: '视频提示词', primary_id: 'video-a', auxiliary_ids: [], source: 'global', warning: '',
@@ -460,6 +473,126 @@ test('shot reference drawer preserves the composer and selection without canvas 
   } finally { await view.destroy() }
 })
 
+test('node copy pastes complete independent drafts across canvases, supports history and leaves editor text shortcuts alone', async t => {
+  const graph = initialGraph('reference', true), target = graph.nodes.find(node => node.id === 'video-node')!
+  target.asset_id = 'old-result'
+  target.job_id = 'old-job'
+  target.settings = { ...target.settings, ratio: '9:16', resolution: '720p', duration: 8,
+    generation_completed_job_id: 'old-job', candidate_count: 2,
+    video_reference_usages: [{ asset_id: 'manual', usage: 'composition' }] }
+  const projectDetail = { ...detail, assets: [...detail.assets, { ...detail.assets[0], id: 'old-result', kind: 'video', filename: 'old.mp4' }],
+    jobs: [{ id: 'old-job', project_id: detail.id, shot_id: 'shot', model_id: videoModel.id, status: 'failed', request: '{}' }] } as ProjectDetail
+  const canvasGraphs = { 'canvas-a': graph, 'canvas-b': { nodes: [], edges: [], revision: 'empty' } as CanvasGraph }
+  const api = mockApi(t, graph, projectDetail, undefined, false, canvasGraphs)
+  let clipboardText = ''
+  const oldClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+    writeText: async (text: string) => { clipboardText = text }, readText: async () => clipboardText,
+  } })
+  t.after(() => { if (oldClipboard) Object.defineProperty(navigator, 'clipboard', oldClipboard); else Reflect.deleteProperty(navigator, 'clipboard') })
+  const view = await mount(projectDetail)
+  const transfer = (initial = '') => {
+    const values = new Map([['text/plain', initial]])
+    return { files: [], types: ['text/plain'], getData: (type: string) => values.get(type) || '', setData: (type: string, text: string) => { values.set(type, text) }, clearData: () => values.clear() }
+  }
+  const dispatchClipboard = async (element: HTMLElement, type: 'copy' | 'paste', data: ReturnType<typeof transfer>) => {
+    const event = new dom.window.Event(type, { bubbles: true, cancelable: true })
+    Object.defineProperty(event, 'clipboardData', { value: data })
+    await act(() => element.dispatchEvent(event)); await settle()
+    return event
+  }
+  try {
+    await view.editBody('节点完整正文：保留人物动作与镜头构图。')
+    const fullPrompt = promptEditorText(view.prompt().editor.getJSON())
+    const sourceNodeCount = view.container.querySelectorAll('.react-flow__node').length
+    await act(() => view.button('复制节点').click()); await settle()
+    const copied = parseCanvasNodeClipboard(clipboardText)!
+    assert.ok(copied)
+    const copiedNode = copied.nodes.find(node => copied.nodeIds.includes(node.id))!
+    assert.equal(copiedNode.text, fullPrompt, 'copy freezes the complete displayed structured document')
+    assert.equal(copiedNode.asset_id, null)
+    assert.equal(copiedNode.job_id, null)
+    assert.equal(copiedNode.shot_id, null)
+    assert.deepEqual({ model: copiedNode.model_id, ratio: copiedNode.settings.ratio, resolution: copiedNode.settings.resolution,
+      duration: copiedNode.settings.duration, candidates: copiedNode.settings.candidate_count },
+    { model: videoModel.id, ratio: '9:16', resolution: '720p', duration: 8, candidates: 2 })
+    assert.equal(view.container.querySelectorAll('.react-flow__node').length, sourceNodeCount, 'copy does not create a node yet')
+    assert.ok(copied.nodes.some(node => node.asset_id === 'hero-board'), 'implicit profile reference becomes a fixed input')
+    assert.ok(copied.nodes.some(node => node.asset_id === 'manual'), 'manual reference is retained')
+    await act(() => view.button('切换画布').click()); await settle()
+    const destination = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === '画布 2')!
+    assert.ok(destination)
+    await act(() => destination.click()); await settle()
+    assert.equal(view.container.querySelector('[data-id="video-node"]'), null)
+    const flow = view.container.querySelector<HTMLElement>('.pc-flow')!
+    const beforePaste = view.container.querySelectorAll('.react-flow__node').length
+    const paste = await dispatchClipboard(flow, 'paste', transfer(clipboardText))
+    assert.equal(paste.defaultPrevented, true)
+    assert.equal(view.container.querySelectorAll('.react-flow__node').length, beforePaste + copied.nodes.length)
+    assert.equal(promptEditorText(view.prompt().editor.getJSON()), fullPrompt, 'structured prompt content survives A to B')
+    const pastedData = transfer()
+    await dispatchClipboard(flow, 'copy', pastedData)
+    const pasted = parseCanvasNodeClipboard(pastedData.getData('text/plain'))!
+    assert.ok(pasted)
+    assert.notEqual(pasted.nodeIds[0], copied.nodeIds[0])
+    assert.ok(pasted.nodes.every(node => !node.job_id && !node.shot_id && !node.settings.visual_profile_id))
+    await act(() => view.button('撤销画布操作').click()); await settle()
+    assert.equal(view.container.querySelectorAll('.react-flow__node').length, beforePaste, 'one undo removes the node and its new reference inputs')
+    await act(() => view.button('重做画布操作').click()); await settle()
+    assert.equal(view.container.querySelectorAll('.react-flow__node').length, beforePaste + copied.nodes.length)
+    const editor = view.prompt().editor
+    await act(() => editor.chain().focus().setTextSelection({ from: 1, to: 5 }).run()); await settle()
+    const plainText = transfer()
+    await dispatchClipboard(editor.view.dom, 'copy', plainText)
+    assert.equal(parseCanvasNodeClipboard(plainText.getData('text/plain')), null, 'copy in a text editor copies selected prose')
+    await dispatchClipboard(editor.view.dom, 'paste', transfer('文字粘贴正常'))
+    assert.match(promptEditorText(view.prompt().editor.getJSON()), /文字粘贴正常/)
+    assert.equal(view.container.querySelectorAll('.react-flow__node').length, beforePaste + copied.nodes.length, 'text paste creates no nodes')
+    assert.equal(canvasGraphs['canvas-a'].nodes.find(node => node.id === 'video-node')!.job_id, 'old-job', 'the source keeps its task/result identity')
+    assert.equal(canvasGraphs['canvas-a'].nodes.find(node => node.id === 'video-node')!.asset_id, 'old-result')
+    assert.deepEqual(api.previews, [], 'copy/paste never previews or submits generation')
+  } finally { await view.destroy() }
+})
+
+test('prompt toolbar keeps one refinement and copy action through refreshes, generation updates and node changes', async t => {
+  const graph = initialGraph('reference'), target = graph.nodes.find(node => node.id === 'video-node')!
+  target.job_id = 'toolbar-job'
+  graph.nodes.push({ ...target, id: 'next-video-node', title: '下一镜视频', x: 900, job_id: null })
+  const api = mockApi(t, graph)
+  const view = await mount(detail, true)
+  const actions = () => {
+    const toolbar = document.querySelector('.pc-prompt-composer-head')!
+    assert.ok(toolbar)
+    const refine = toolbar.querySelectorAll<HTMLButtonElement>('[aria-label="使用技能整理提示词"]')
+    const copy = toolbar.querySelectorAll<HTMLButtonElement>('[aria-label="复制节点"]')
+    assert.equal(refine.length, 1, 'refreshes must not leave old refinement buttons behind')
+    assert.equal(copy.length, 1, 'the copy menu has one stable trigger')
+    return { refine: refine[0], copy: copy[0] }
+  }
+  try {
+    actions()
+    for (let tick = 0; tick < 8; tick++) {
+      const running = tick % 2 === 0
+      await view.renderDetail({ ...detail, updated_at: `2026-11-02T00:00:0${tick}Z`, jobs: [{
+        id: 'toolbar-job', project_id: detail.id, shot_id: 'shot', model_id: videoModel.id,
+        status: running ? 'running' : 'failed', request: '{}',
+      } as ProjectDetail['jobs'][number]] })
+      assert.equal(actions().refine.disabled, running, 'the surviving trigger follows current generation state')
+    }
+    await act(() => actions().refine.click()); await settle()
+    assert.equal(document.querySelectorAll('.prompt-skill-modal').length, 1)
+    await act(() => view.button('关闭整理主要内容').click()); await settle()
+    assert.equal(document.querySelector('.prompt-skill-modal'), null)
+    actions()
+    for (const nodeId of ['next-video-node', 'video-node', 'next-video-node']) {
+      await act(() => view.container.querySelector<HTMLElement>(`[data-id="${nodeId}"]`)!.click()); await settle()
+      actions()
+    }
+    assert.deepEqual(api.saved, [], 'refreshing and switching nodes do not save the canvas')
+    assert.deepEqual(api.previews, [], 'toolbar lifecycle never requests generation')
+  } finally { await view.destroy() }
+})
+
 test('pointer interactions with portaled prompt skills keep the selected node and refinement modal open', async t => {
   const api = mockApi(t, initialGraph('reference'))
   // Mantine's test environment disables portals and hides this regression.
@@ -534,7 +667,7 @@ test('prompt primary and auxiliary choices carry into the next real canvas node 
     await act(() => option.click()); await settle()
   }
   try {
-    const skillAction = view.container.querySelector<HTMLButtonElement>('.pc-composer-writing button[aria-label="使用技能整理提示词"]')
+    const skillAction = view.container.querySelector<HTMLButtonElement>('.pc-prompt-composer-head button[aria-label="使用技能整理提示词"]')
     assert.ok(skillAction && !skillAction.disabled)
     await act(() => skillAction.click()); await settle()
     assert.ok(document.querySelector('.prompt-skill-modal'))
@@ -796,6 +929,99 @@ const imageModel: Model = { ...videoModel, id: 'image-model', name: '图片模�
     request_template: { prompt: '{{prompt}}', images: '{{images}}', ratio: '{{ratio}}', resolution: '{{resolution}}',
       clarity: '{{clarity}}', quality: '{{quality}}', background: '{{background}}' } } }
 const alternateImageModel = { ...imageModel, id: 'alternate-image-model', name: '备用图片模型' }
+
+test('copied text-only profile boards keep their primary content, detach candidate state and remain ready for preview without reference images', async t => {
+  const graph = initialGraph('reference'), source = graph.nodes.find(node => node.id === 'video-node')!
+  source.model_id = imageModel.id; source.shot_id = null; source.asset_id = 'hero-board'; source.job_id = 'old-profile-job'
+  source.settings = { modality: 'image', visual_profile_id: hero.id, visual_profile_revision: hero.revision,
+    visual_completed_job_id: 'old-profile-job', ratio: '9:16', resolution: '1K' }
+  graph.edges = []
+  const api = mockApi(t, graph)
+  const view = await mount(detail, false, { models: [imageModel] })
+  const values = new Map<string, string>()
+  const data = { getData: (type: string) => values.get(type) || '', setData: (type: string, value: string) => { values.set(type, value) } }
+  const event = (type: string) => {
+    const value = new dom.window.Event(type, { bubbles: true, cancelable: true })
+    Object.defineProperty(value, 'clipboardData', { value: data }); return value
+  }
+  try {
+    const fullPrompt = promptEditorText(view.prompt().editor.getJSON())
+    const flow = view.container.querySelector<HTMLElement>('.pc-flow')!
+    await act(() => flow.dispatchEvent(event('copy'))); await settle()
+    const copied = parseCanvasNodeClipboard(values.get('text/plain')!)!
+    assert.equal(copied.nodes[0].settings.visual_template_reference_required, false)
+    assert.equal(copied.nodes[0].settings.visual_template_kind, 'character')
+    await act(() => flow.dispatchEvent(event('paste'))); await settle()
+    assert.equal(promptEditorText(view.prompt().editor.getJSON()), fullPrompt)
+    assert.ok(view.container.querySelector('.pc-prompt-editor.is-visual-board'), 'primary board remains the main creative section')
+    assert.equal(document.querySelector('[aria-label="设定图候选"]'), null)
+    assert.equal(view.button('开始生成').disabled, false, 'text-only boards do not acquire an image requirement on copy')
+    await view.preview()
+    assert.equal(api.previews.length, 1, 'copying does not invent a pending source change that blocks a new preview')
+    assert.deepEqual(api.previews[0].reference_asset_ids, [])
+    assert.equal(api.previews[0].prompt, fullPrompt)
+    assert.equal(source.settings.visual_profile_id, hero.id)
+    assert.equal(source.asset_id, 'hero-board')
+  } finally { await view.destroy() }
+})
+
+test('copying an image draft does not turn an excluded profile connection into an active manual input', async t => {
+  const graph = initialGraph('reference'), target = graph.nodes.find(node => node.id === 'video-node')!
+  target.model_id = imageModel.id
+  target.settings = { modality: 'image', resolution: '1K', ratio: '9:16', excluded_visual_profile_ids: [station.id] }
+  graph.nodes.push({ ...node('excluded-station', 'generation', 1000, 'station-board'), settings: { modality: 'image', visual_profile_id: station.id } })
+  graph.edges.push({ id: 'excluded-station-edge', source: 'excluded-station', target: target.id })
+  const api = mockApi(t, graph)
+  const view = await mount(detail, false, { models: [imageModel] })
+  let value = ''
+  const data = { getData: () => value, setData: (_type: string, text: string) => { value = text } }
+  const transfer = async (type: 'copy' | 'paste') => {
+    const event = new dom.window.Event(type, { bubbles: true, cancelable: true })
+    Object.defineProperty(event, 'clipboardData', { value: data })
+    await act(() => view.container.querySelector('.pc-flow')!.dispatchEvent(event)); await settle()
+  }
+  try {
+    await transfer('copy')
+    const copied = parseCanvasNodeClipboard(value)!
+    assert.ok(copied.nodes.some(node => node.asset_id === 'hero-board'))
+    assert.ok(copied.nodes.every(node => node.asset_id !== 'station-board'), 'excluded unpinned inputs stay excluded after ownership is detached')
+    await transfer('paste')
+    await view.preview()
+    assert.equal(api.previews.length, 1)
+    assert.ok(!api.previews[0].reference_asset_ids.includes('station-board'))
+  } finally { await view.destroy() }
+})
+
+test('copying video-edit inputs keeps fixed video resources without treating their edges as image pins', async t => {
+  const graph = initialGraph('reference'), target = graph.nodes.find(node => node.id === 'video-node')!
+  target.shot_id = null; target.prompt = '保持动作和节奏，只把光线调暖。'
+  target.settings = { modality: 'video', mode: 'edit', visual_reference_mode: 'text_only', resolution: '720p', ratio: 'adaptive',
+    reference_video_url: 'asset://video-input', duration: 8 }
+  graph.nodes.push({ ...node('video-input-node', 'video', 1000, 'video-input') })
+  graph.edges = [{ id: 'video-input-edge', source: 'video-input-node', target: target.id }]
+  const projectDetail = { ...detail, assets: [...detail.assets, { ...detail.assets[0], id: 'video-input', kind: 'video', filename: 'input.mp4' }] } as ProjectDetail
+  const api = mockApi(t, graph, projectDetail)
+  const view = await mount(projectDetail, false, { models: [{ ...videoModel, settings: seedance25VideoSettings() }] })
+  let value = ''
+  const data = { getData: () => value, setData: (_type: string, text: string) => { value = text } }
+  const transfer = async (type: 'copy' | 'paste') => {
+    const event = new dom.window.Event(type, { bubbles: true, cancelable: true })
+    Object.defineProperty(event, 'clipboardData', { value: data })
+    await act(() => view.container.querySelector('.pc-flow')!.dispatchEvent(event)); await settle()
+  }
+  try {
+    await transfer('copy')
+    const copied = parseCanvasNodeClipboard(value)!
+    const videoInput = copied.nodes.find(node => node.asset_id === 'video-input')!
+    assert.ok(videoInput)
+    assert.equal(copied.edges.find(edge => edge.source === videoInput.id)!.reference_asset_id, undefined)
+    await transfer('paste')
+    await view.preview()
+    assert.equal(api.previews.length, 1, 'video inputs remain usable in the copied edit draft')
+    assert.deepEqual(api.previews[0].reference_asset_ids, [])
+    assert.equal((api.previews[0] as unknown as { reference_video_url: string }).reference_video_url, 'asset://video-input')
+  } finally { await view.destroy() }
+})
 
 function editedImageHandoffFixture() {
   const peiyan: VisualProfile = { ...hero, id: 'peiyan', name: '裴砚', variant: '执卷官常态', board_asset_id: 'peiyan-board' }

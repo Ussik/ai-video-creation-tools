@@ -5,7 +5,7 @@ import { Tabs, FileButton, UnstyledButton,
 } from '@mantine/core'
 import { useClickOutside } from '@mantine/hooks'
 import {
-  ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, CircleAlert, Clock3, FileText, Film, FolderOpen,
+  ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, CircleAlert, ClipboardPaste, Clock3, Copy, FileText, Film, FolderOpen,
   Image as ImageIcon, ScanEye, Info, LayoutGrid, Layers3, LoaderCircle, LocateFixed, Map as MapIcon, Maximize2, Minimize2, MoreHorizontal, MousePointer2,
   MessageSquare, Mic2, Music2, PanelLeftClose, PanelLeftOpen, PenLine, Plus, RefreshCcw, Save, ScrollText,
   Search, Settings2, SlidersHorizontal, Sparkles,
@@ -55,6 +55,7 @@ import { materializePromptReference, replaceConnectedPromptReference, promptRefe
 import { extractPromptReferenceIds, resolvePromptReferences, tokenizePromptReferenceNumbers } from '@video-studio/shared/visuals/prompt-references'
 import CanvasPromptEditor, { type CanvasPromptEditorHandle } from './CanvasPromptEditor'
 import CanvasPromptCopyMenu from './CanvasPromptCopyMenu'
+import { createCanvasNodeClipboard, parseCanvasNodeClipboard, pasteCanvasNodeClipboard, serializeCanvasNodeClipboard, type CanvasNodeClipboard } from './canvas-node-clipboard'
 import CanvasProfileInheritance from './CanvasProfileInheritance'
 import CanvasReferenceList, { type CanvasReferenceItem } from './CanvasReferenceList'
 import { activeProfileReferenceSnapshot, profileCandidateReferenceState, resolveCanvasVisualBoardReferences } from './canvas-visual-board-references'
@@ -149,6 +150,7 @@ export type CanvasNode = {
     visual_profile_id?: string
     visual_profile_revision?: number
     visual_template_kind?: VisualSettingKind
+    visual_template_reference_required?: boolean
     visual_dependencies?: boolean
     profile_prompt_override?: string
     prompt_reference_overrides?: Record<string, string | null>
@@ -1008,6 +1010,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   // suppressed by preventDefault().
   const magnetConnectionRef = useRef<{ pointerId: number } | null>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
+  const [pendingNodeCopyId, setPendingNodeCopyId] = useState<string | null>(null)
   const uploadInputRef = useRef<HTMLInputElement>(null)
   const referenceUploadInputRef = useRef<HTMLInputElement>(null)
   const profileUploadInputRef = useRef<HTMLInputElement>(null)
@@ -1869,6 +1872,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const selectedProfile = detail.visual_profiles?.find(item => item.id === selectedNode?.settings.visual_profile_id)
   const selectedTemplateKind = !selectedProfile && selectedNode?.type === 'generation' && selectedNode.settings.modality === 'image'
     ? selectedNode.settings.visual_template_kind : undefined
+  const templateRequiresReference = !!selectedTemplateKind && selectedNode?.settings.visual_template_reference_required !== false
   const inspectedProfile = detail.visual_profiles?.find(profile => profile.id === profileInspectorId)
   const inspectedProfileGenerating = !!inspectedProfile && (detail.asset_tasks.some(task => task.id === inspectedProfile.asset_task_id && task.status === 'generating')
     || visualBoardJobs(inspectedProfile, detail.jobs).some(job => job.status === 'queued' || job.status === 'running'))
@@ -2091,7 +2095,10 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       return { asset_id, name: profile?.name || source?.label || assetMap.get(asset_id)?.filename || '参考图片', variant: profile?.variant,
         definition: profile ? resolveCanvasProfileDisplayText(profile.definition, profile, detail) : undefined, role: source?.role }
     }),
-    templateKind: selectedTemplateKind, referenceIds: preparedReferenceIds,
+    templateKind: selectedTemplateKind,
+    boardTemplate: selectedNode?.settings.visual_template_reference_required === false
+      ? selectedNode.settings.prompt_template || selectedNode.text : undefined,
+    referenceIds: preparedReferenceIds,
     referenceNames: preparedReferenceIds.map(id => assetMap.get(id)?.filename || '参考图片'),
     model: composerModel ? { modality: composerModel.modality, settings: composerModel.settings } : undefined,
     ratio: composerRatio, resolution: composerModel?.modality === 'image' ? promptResolution : composerResolution,
@@ -3549,43 +3556,98 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     commitHistoryGraph(next)
   }
 
-  function duplicateSelection(sourceId = selectedNodeId) {
-    if (queueRef.current?.graph.nodes.find(node => node.id === sourceId)?.settings.visual_profile_id) {
-      setNotice('此设定已在画布中；不同服装或状态请新增设定版本'); setContextMenu(null); return
-    }
-    if (!sourceId) return
-    const source = graph?.nodes.find((node) => node.id === sourceId)
-    if (!source || source.type === 'project_script_ref') return
-    const duplicateId = crypto.randomUUID()
-    changeGraph((current) => {
-      const currentSource = current.nodes.find((node) => node.id === sourceId)
-      if (!currentSource) return current
-      const duplicate: CanvasNode = {
-        ...currentSource,
-        id: duplicateId,
-        x: currentSource.x + 48,
-        y: currentSource.y + 48,
-        title: `${currentSource.title || '节点'} 副本`,
-        settings: { ...currentSource.settings, group_id: null, group_title: null },
-      }
-      // A copied generator keeps its prompt and model but starts as a fresh
-      // candidate. Result assets and old task ids belong to the source node.
-      if (duplicate.type === 'generation') {
-        duplicate.job_id = null
-        duplicate.asset_id = null
-        duplicate.settings.generation_completed_job_id = undefined
-      }
-      const incoming = current.edges
-        .filter((edge) => edge.target === sourceId)
-        .map((edge) => ({ ...edge, id: crypto.randomUUID(), target: duplicateId }))
-      return { ...current, nodes: [...current.nodes, duplicate], edges: [...current.edges, ...incoming] }
-    })
-    setSelectedNodeId(duplicateId)
-    setSelectedNodeIds([duplicateId])
-    setSelectedEdgeId(null)
+  function nodeClipboardSnapshot(): CanvasNodeClipboard {
+    const current = queueRef.current?.graph
+    if (!current || !selectedNode || selectedNode.type === 'project_script_ref') throw new Error('请先选择要复制的节点')
+    if (selectedProfile && selectedNodeGenerating && !submittedProfileReferences) throw new Error('正在读取本次生成内容，请稍后再复制')
+    // Freeze the document shown in the composer, including legacy/template and
+    // shot-derived content that has never needed a save on the source node.
+    const editablePrompt = selectedNode.type === 'generation' || selectedNode.type === 'image' || selectedNode.type === 'video'
+    const source: CanvasNode = editablePrompt ? { ...selectedNode, text: composerPrompt, prompt: ownBasePrompt,
+      settings: { ...selectedNode.settings, modality: composerModality, mode: selectedMode,
+        ratio: composerRatio, resolution: composerResolution, clarity: composerClarity, quality: composerQuality,
+        background: composerBackground, duration: composerDuration, prompt_override: true, prompt_is_final: true,
+        prompt_document: true, prompt_sections: composerSections, prompt_body: composerBody,
+        prompt_base: ownBasePrompt, prompt_template: automaticPromptDraft,
+        ...(selectedProfile ? { profile_prompt_override: composerPrompt } : {}),
+        ...(composerModality === 'video' ? { video_reference_usages: mappedVideoUsages, storyboard_reference_asset_id: storyboardReferenceAssetId } : {}),
+      } } : selectedNode
+    const retainedInputs = editablePrompt ? resolvePromptReferences({ prompt: '', overrides: promptOverrides,
+      referenceAssetIds: scopedVisualReferenceAssetIds(connectedImages.map(asset => asset.id), allVisualBindings, activeImageBindings, pinnedReferenceIds) }).referenceAssetIds : []
+    const referenceIds = [...new Set([...preparedReferenceIds, ...retainedInputs, ...(inputVideo ? [inputVideo.id] : [])])]
+    const snapshotGraph = { ...current, nodes: current.nodes.map(node => node.id === source.id ? source
+      : node.type === 'project_script_ref' ? { ...node, text: scriptPrompt(detail.script) } : node),
+      edges: current.edges.filter(edge => {
+        if (!editablePrompt || edge.target !== source.id) return true
+        const input = composerReferences.find(node => node.id === edge.source)
+        if (!input) return false
+        const assetId = edge.reference_asset_id || visualNodeAsset(input, detail, true)?.id
+        if (!assetId) return true
+        return resolvePromptReferences({ prompt: '', referenceAssetIds: [assetId], overrides: promptOverrides })
+          .referenceAssetIds.some(id => referenceIds.includes(id))
+      }) }
+    return createCanvasNodeClipboard({ projectId: detail.id, canvasId: canvas.id, detail,
+      graph: snapshotGraph, nodeIds: [source.id], referenceAssetIds: editablePrompt ? { [source.id]: referenceIds } : undefined })
+  }
 
+  async function copyNodeToClipboard() {
+    const value = serializeCanvasNodeClipboard(nodeClipboardSnapshot())
+    await navigator.clipboard.writeText(value)
+    setNotice('节点已复制，可在本项目的其他画布粘贴为未生成节点')
+    viewportRef.current?.focus({ preventScroll: true })
+  }
 
+  function requestNodeCopy(sourceId: string) {
     setContextMenu(null)
+    if (sourceId === selectedNodeId) { void copyNodeToClipboard().catch(showError); return }
+    setSelectedNodeId(sourceId)
+    setSelectedNodeIds([sourceId])
+    setSelectedEdgeId(null)
+    setPendingNodeCopyId(sourceId)
+  }
+
+  useEffect(() => {
+    if (!pendingNodeCopyId || selectedNodeId !== pendingNodeCopyId) return
+    setPendingNodeCopyId(null)
+    void copyNodeToClipboard().catch(showError)
+  }, [pendingNodeCopyId, selectedNodeId])
+
+  function pasteCopiedNodes(payload: CanvasNodeClipboard, position = centerPosition()) {
+    let inserted: ReturnType<typeof pasteCanvasNodeClipboard> | undefined
+    changeGraph(current => {
+      inserted = pasteCanvasNodeClipboard({ projectId: detail.id, graph: current, payload, position, detail })
+      return inserted.graph
+    })
+    if (!inserted) return
+    const [nodeId] = inserted.nodeIds
+    setSelectedNodeId(nodeId)
+    setSelectedNodeIds(inserted.nodeIds)
+    setComposerNodeId(nodeId)
+    setSelectedEdgeId(null)
+    setContextMenu(null)
+    setNotice('已粘贴独立节点，生成内容为未生成状态')
+    const added = queueRef.current?.graph.nodes.find(node => node.id === nodeId)
+    if (added) void setCenter(added.x + added.width / 2, added.y + added.height / 2, { duration: 250 })
+    viewportRef.current?.focus({ preventScroll: true })
+  }
+
+  async function pasteNodeFromClipboard(position?: { x: number; y: number }) {
+    const queue = queueRef.current
+    try {
+      const payload = parseCanvasNodeClipboard(await navigator.clipboard.readText())
+      if (queueRef.current !== queue) return
+      if (!payload) throw new Error('请先复制节点，再在画布中粘贴')
+      pasteCopiedNodes(payload, position)
+    } catch (error) {
+      showError(error instanceof Error && error.name === 'NotAllowedError'
+        ? new Error('请在画布空白处按 Ctrl/Cmd+V 粘贴节点') : error)
+    }
+  }
+
+  function duplicateSelection() {
+    if (!selectedNode) return
+    try { pasteCopiedNodes(nodeClipboardSnapshot(), { x: selectedNode.x + 48, y: selectedNode.y + 48 }) }
+    catch (error) { showError(error) }
   }
 
   function openContextMenu(event: { clientX: number; clientY: number; preventDefault: () => void; stopPropagation: () => void }, target: { nodeId?: string; edgeId?: string; position?: { x: number; y: number } }) {
@@ -3663,7 +3725,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       setNotice('请先选择已启用的模型')
       return
     }
-    if (selectedTemplateKind && !preparedReferenceIds.length) { setNotice('请先连接图片或添加参考图，再生成设定图'); return }
+    if (templateRequiresReference && !preparedReferenceIds.length) { setNotice('请先连接图片或添加参考图，再生成设定图'); return }
     if (promptReferenceIssue) { setNotice(promptReferenceIssue); return }
     if (promptParameterConflicts.length) { setNotice(promptParameterConflicts[0].message); return }
     if (promptSourcePending) { setNotice('设定来源已更新，请在「来源与修改记录」中确认保留本节点修改或跟随项目'); return }
@@ -4277,6 +4339,26 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   }, [selectedNodeId, referenceTargetNodeId])
 
   return <div className="project-canvas"
+    onCopy={event => {
+      if (viewMode !== 'canvas' || isCanvasEditingTarget(event.target) || !selectedNode || selectedNode.type === 'project_script_ref'
+        || !(event.target instanceof Element) || !event.target.closest('.pc-flow')
+        || event.target.closest('.mantine-Modal-root, .mantine-Drawer-root')) return
+      try {
+        event.clipboardData.setData('text/plain', serializeCanvasNodeClipboard(nodeClipboardSnapshot()))
+        event.preventDefault()
+        event.stopPropagation()
+        setNotice('节点已复制，可在本项目的其他画布粘贴为未生成节点')
+      } catch (error) { showError(error) }
+    }}
+    onPaste={event => {
+      if (viewMode !== 'canvas' || isCanvasEditingTarget(event.target) || !(event.target instanceof Element)
+        || !event.target.closest('.pc-flow') || event.target.closest('.mantine-Modal-root, .mantine-Drawer-root')) return
+      const payload = parseCanvasNodeClipboard(event.clipboardData.getData('text/plain'))
+      if (!payload) return
+      event.preventDefault()
+      event.stopPropagation()
+      try { pasteCopiedNodes(payload) } catch (error) { showError(error) }
+    }}
     onKeyDown={(event) => {
       // A dialog owns its shortcuts. Closing a nested candidate/setting modal
       // must not also clear the canvas selection and its composer underneath.
@@ -4351,6 +4433,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           <Menu.Item leftSection={<Film size={15} />} onClick={() => onNavigate('studio')}>成片工作台</Menu.Item>
         </Menu.Dropdown></Menu>
         {canvasMenu}
+        {viewMode === 'canvas' && <Tooltip label="粘贴节点（Ctrl/Cmd+V）"><ActionIcon variant="subtle" aria-label="粘贴节点" disabled={!graph}
+          onClick={() => void pasteNodeFromClipboard()}><ClipboardPaste size={16} /></ActionIcon></Tooltip>}
       </div>
       <Tabs value={viewMode} activateTabWithKeyboard={false} className="pc-mode-switch-root"><Tabs.List className="pc-mode-switch" aria-label="创作视图">
         <Tabs.Tab type="button"   className={viewMode === 'canvas' ? 'is-active' : ''}
@@ -4407,7 +4491,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                   <Menu.Item leftSection={<LocateFixed size={14} />} onClick={() => focusSidebarNode(node.id)}>定位节点</Menu.Item>
                   <Menu.Item leftSection={<Settings2 size={14} />} onClick={() => selectNodeForView(node.id)}>选择节点</Menu.Item>
                   {node.type !== 'project_script_ref' && <>
-                    <Menu.Item leftSection={<Plus size={14} />} onClick={() => duplicateSelection(node.id)}>复制节点</Menu.Item>
+                    <Menu.Item leftSection={<Copy size={14} />} onClick={() => requestNodeCopy(node.id)}>复制节点</Menu.Item>
                     <Menu.Item color="red" leftSection={<Trash2 size={14} />} onClick={() => deleteSelection(node.id, null)}>删除节点</Menu.Item>
                   </>}
                 </Menu.Dropdown></Menu>
@@ -4626,7 +4710,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                   </Menu>
                   {selectedJob && canOptimizeImagePrompt(selectedJob, composerModality) && <Button type="button" className="pc-composer-chip" variant="light"
                     leftSection={<Sparkles size={14} />} disabled={busy || selectedNodeGenerating} onClick={() => setOptimizationNodeId(selectedNode.id)}>优化提示词</Button>}
-                  {(composerModality === 'image' || composerModality === 'video') && <PromptSkillAction key={selectedNode.id} projectId={detail.id} nodeId={selectedNode.id}
+                  {(composerModality === 'image' || composerModality === 'video') && <PromptSkillAction key={`prompt-skill:${selectedNode.id}`} projectId={detail.id} nodeId={selectedNode.id}
                     modality={composerModality} visualBoard={composerIsVisualBoard} prompt={composerPrompt} promptDocument promptSections={composerSections} promptReferences={promptEditorReferences} promptTemplate={legacyTemplate}
                     models={models.filter(model => model.modality === 'text' && model.enabled && providers.some(provider => provider.id === model.provider_id && provider.enabled && provider.adapter !== 'demo'))}
                     disabled={busy || selectedNodeGenerating || !!promptReferenceIssue || !!promptParameterConflicts.length || promptSourcePending || !!selectedProfile?.base_profile_id && !baseProfileReady} targetModelId={composerModelId} shotId={selectedNode.shot_id} profileId={selectedProfile?.id}
@@ -4643,7 +4727,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                         text => tokenizePromptReferenceNumbers(text, preparedReferenceIds)) : undefined)
                       setNotice('已应用整理后的提示词')
                     }} />}
-                  <CanvasPromptCopyMenu key={selectedNode.id} visualBoard={composerIsVisualBoard}
+                  <CanvasPromptCopyMenu key={`prompt-copy:${selectedNode.id}`} visualBoard={composerIsVisualBoard}
+                    onCopyNode={copyNodeToClipboard}
                     disabled={!!selectedProfile && selectedNodeGenerating && !submittedProfileReferences}
                     getContent={scope => composerPromptEditorRef.current?.getClipboardContent(scope) || null} />
                   {!selectedProfile && selectedBoardAsset?.kind === 'image' && <>
@@ -4805,7 +4890,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
               {!selectedProfile && <div className="pc-prompt-kind-label">{selectedTemplateKind ? `${visualSettingTemplates[selectedTemplateKind].label}提示词` : composerModality === 'video' ? '视频提示词' : '图片提示词'}</div>}
               {selectedTemplateKind && <p className="pc-prompt-system-note" role="status">{preparedReferenceIds.length
                 ? `已接入 ${preparedReferenceIds.length} 张参考图片，按${visualSettingTemplates[selectedTemplateKind].label}模板生成，第一张为主参考。`
-                : '连接图片节点，或从「添加参考」选择图片，即可组合设定图提示词。'}</p>}
+                : templateRequiresReference ? '连接图片节点，或从「添加参考」选择图片，即可组合设定图提示词。'
+                  : '已复制为独立设定图节点，可直接编辑内容并生成。'}</p>}
               {!(selectedProfile && selectedNodeGenerating && !submittedProfileReferences) && <CanvasPromptEditor key={selectedNode.id} ref={composerPromptEditorRef} aria-label={selectedProfile ? '信息图提示词' : '创作提示词'}
                   visualBoard={composerIsVisualBoard}
                   onEditParameters={composerModel && composerModel.modality !== 'text' ? () => setGenerationParametersNodeId(selectedNode.id) : undefined}
@@ -4933,7 +5019,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
                   <ActionIcon type="button" className="pc-composer-submit" aria-label={selectedNodeGenerating ? '生成中，请等待' : '开始生成'}
                     title={selectedNodeGenerating ? '生成中，请等待' : selectedProfile ? selectedBoardAsset ? '重新生成当前设定图' : '生成当前设定图' : '开始生成'}
                     disabled={busy || selectedNodeGenerating || !composerHasContent || (!selectedProfile && !selectedTemplateKind && !compiledPrompt.trim() && !selectedNode.settings.prompt_is_final) || !composerModelId
-                      || !!selectedTemplateKind && !preparedReferenceIds.length
+                      || templateRequiresReference && !preparedReferenceIds.length
                       || !!selectedProfile && (visualPanelBusy || !!promptReferenceIssue || !!missingReferences.length || !!selectedProfile.base_profile_id && !baseProfileReady)}
                     onClick={submitComposer} data-workspace-control="" variant="filled">{selectedNodeGenerating ? <LoaderCircle size={18} className="pc-spin" /> : <ArrowRight size={18} />}</ActionIcon>
                 </div>
@@ -4959,7 +5045,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
             </>}
             {contextNode.type !== 'image_analysis' && visualNodeAsset(contextNode, detail)?.kind === 'image' && <VisualSettingMenuItems fromImage onSelect={kind => addVisualSettingNode(kind, undefined, contextNode)} />}
             {contextNode.type === 'generation' && <Menu.Item role="menuitem" onClick={() => { setPendingRunNodeId(contextNode.id); setContextMenu(null) }} data-workspace-control=""><Sparkles size={16} />提交生成</Menu.Item>}
-            {contextNode.type !== 'project_script_ref' && <Menu.Item role="menuitem" onClick={() => duplicateSelection(contextNode.id)} data-workspace-control=""><Plus size={16} />复制节点</Menu.Item>}
+            {contextNode.type !== 'project_script_ref' && <Menu.Item role="menuitem" onClick={() => requestNodeCopy(contextNode.id)} data-workspace-control=""><Copy size={16} />复制节点</Menu.Item>}
             {contextNode.type !== 'project_script_ref' && <>
               <div className="pc-context-divider" />
               <Menu.Item className="is-danger" role="menuitem" onClick={() => deleteSelection(contextNode.id, null)} data-workspace-control=""><Trash2 size={16} />删除节点</Menu.Item>
@@ -4968,6 +5054,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
             <div className="pc-context-heading"><span>节点连接</span><strong>参考或结果关系</strong></div>
             <Menu.Item className="is-danger" role="menuitem" onClick={() => deleteSelection(null, contextEdge.id)} data-workspace-control=""><Trash2 size={16} />删除连接</Menu.Item>
           </> : <>
+            <Menu.Item role="menuitem" onClick={() => void pasteNodeFromClipboard(contextMenu.position)} data-workspace-control=""><ClipboardPaste size={16} />粘贴节点</Menu.Item>
+            <div className="pc-context-divider" />
             <div className="pc-context-heading"><span>画布操作</span><strong>在当前位置创建</strong></div>
             <Menu.Item role="menuitem" onClick={() => { addNode('text', undefined, contextMenu.position); setContextMenu(null) }} data-workspace-control=""><FileText size={16} />添加文本</Menu.Item>
             <Menu.Item role="menuitem" onClick={() => { addNode('image_analysis', undefined, contextMenu.position); setContextMenu(null) }} data-workspace-control=""><ScanEye size={16} />图片反推提示词</Menu.Item>
