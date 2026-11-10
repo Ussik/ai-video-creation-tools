@@ -51,7 +51,7 @@ FFmpeg 通过项目依赖提供，用于本地媒体处理和导出。
 
 参考图、分辨率、时长及视频生成模式等能力取决于实际模型和接口配置。模型目录可读取不代表所有生成能力都已验证，接入时应以所用服务的接口文档为准。
 
-配置与协议说明见[提供商接入文档](docs/model-provider-integration-research.md)。该文档包含带日期的调研和兼容记录。
+分步操作与常见问题见[模型配置指南](docs/model-setup.md)。
 
 ## 基本创作流程
 
@@ -69,20 +69,24 @@ FFmpeg 通过项目依赖提供，用于本地媒体处理和导出。
 - API Key 加密保存在本地数据库中；备份时请保留完整数据目录，包括数据库、素材和 `secret.key`。
 - 模型调用会将本次请求所需的提示词与参考素材发送到所配置的服务。
 - 服务默认监听本机地址，没有账号与权限系统，适用于本机使用。
-- 当前每镜支持一个入片片段；通用多轨剪辑、独立音效轨、字幕烧录、转场编辑和自动口型同步尚未接入。
+- 「按分镜选片」每镜选择一个入片片段；「基础剪辑」支持素材重复取段、配音、配乐和字幕编辑与烧录。两种方式的编排分别保存。
+- 当前基础剪辑以顺序画面片段为主，尚不提供通用多轨视频合成、转场编辑或自动口型同步。
 - 生成内容和镜头连续性需要人工审核；参考设定不能保证实际生成结果始终一致。
 
 ## 文档
 
-| 主题 | 文档 |
-| --- | --- |
-| 完整文档导航 | [文档索引](docs/README.md) |
-| 剧本与原稿 | [阶段创作流程](docs/model-intent-workflow.md)、[原文上下文](docs/script-source-context.md) |
-| 分镜与画布 | [分镜管理](docs/shot-management.md)、[项目多画布](docs/project-canvases.md) |
-| 视觉参考 | [多视角参考工作流](docs/multi-angle-reference-workflow.md) |
-| 任务恢复 | [生成任务重启恢复](docs/generation-restart-recovery.md) |
-| 配音与成片 | [配音流程](docs/tts-standard-voice-workflow.md)、[成片工作台](docs/basic-final-cut.md) |
-| 开发结构 | [项目目录规范](docs/project-structure.md) |
+第一次使用，先看 **[从打开项目到导出成片](docs/getting-started.md)**。更多入口与界面图见 **[使用指南](docs/README.md)**。
+
+| 我想做什么 | 指南 | 主要内容 |
+| --- | --- | --- |
+| 配置模型 | [接入模型服务](docs/model-setup.md) | 添加密钥、导入模型、启用与排错 |
+| 写作或改稿 | [阶段创作](docs/model-intent-workflow.md) · [上传原稿](docs/script-source-context.md) | 从讨论到草稿确认保存 |
+| 整理镜头与方案 | [分镜管理](docs/shot-management.md) · [多画布](docs/project-canvases.md) | 修改镜头、加入画布、比较方案 |
+| 统一角色与场景参考 | [多视角参考](docs/multi-angle-reference-workflow.md) | 添加、确认与绑定参考图 |
+| 制作声音与成片 | [配音](docs/tts-standard-voice-workflow.md) · [基础剪辑](docs/basic-final-cut.md) | 候选选用、片段编排、字幕与导出 |
+| 找回中断的生成 | [任务恢复](docs/generation-restart-recovery.md) | 查看原任务、恢复查询与下载 |
+
+开发者可从[项目目录规范](docs/project-structure.md)了解模块与工程命令。
 
 ## 开发与验证
 
