@@ -8,6 +8,9 @@ import { mediaDir, one, required, type Asset, type Model, type Provider } from '
 import { parse } from '../../infrastructure/http/request.js'
 import { decryptKey } from '../../infrastructure/security/secrets.js'
 import { streamText, type TextStreamRequest } from '../../infrastructure/providers/providers.js'
+import { modelStepSignal, runModelStep } from '../generation/model-execution.js'
+import { retryReadOnlyRequest } from '../generation/read-only-retry.js'
+import { currentModelRequestContext, modelTaskPolicies, withModelRequestContext } from '../generation/model-task-policy.js'
 import { analyzeGeminiImage } from '../../infrastructure/providers/gemini-image-analysis.js'
 
 const inputSchema = z.object({
@@ -90,11 +93,20 @@ export function registerImagePromptAnalysisRoutes(app: FastifyInstance, dependen
     try {
       const data_url = await localImagePixels(asset, controller.signal)
       const analyze = model.modality === 'image' ? generateGemini : generate
-      const output = await analyze(model, provider, { prompt: imagePromptAnalysisInstructions(input.instructions), images: [{ data_url, detail: 'high' }] }, controller.signal)
+      const output = await withModelRequestContext({ ...currentModelRequestContext(), policy: modelTaskPolicies.prompt, signal: controller.signal },
+        () => runModelStep('image_prompt_analysis', controller.signal, () => retryReadOnlyRequest(
+          () => analyze(model, provider, { prompt: imagePromptAnalysisInstructions(input.instructions), images: [{ data_url, detail: 'high' }] }, modelStepSignal(controller.signal)!),
+          { signal: controller.signal })))
       controller.signal.throwIfAborted()
       const prompt = output.trim().replace(/^```(?:text|markdown)?\s*\n([\s\S]*?)\n```$/i, '$1').trim()
       if (!prompt) fail('模型未返回可用提示词，请重试或更换图片理解模型', 502)
       if (prompt.length > 20_000) fail('模型返回的提示词超过 20,000 字符，请缩小分析范围后重试', 502)
+      const current = one<Asset>("SELECT * FROM assets WHERE id=? AND project_id=? AND deleted_at IS NULL AND kind='image'", input.asset_id, id)
+      if (!current || current.path !== asset.path) fail('来源图片在反推期间已变化，请重新反推', 409)
+      let currentPixels: string
+      try { currentPixels = await localImagePixels(current, controller.signal) }
+      catch { controller.signal.throwIfAborted(); return fail('来源图片在反推期间已变化，请重新反推', 409) }
+      if (currentPixels !== data_url) fail('来源图片在反推期间已变化，请重新反推', 409)
       return { prompt, asset_id: input.asset_id, model_id: input.model_id }
     } catch (error) {
       if (controller.signal.aborted) throw Object.assign(new Error('图片反推已取消'), { statusCode: 499 })

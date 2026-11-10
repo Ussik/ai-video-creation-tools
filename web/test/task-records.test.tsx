@@ -123,7 +123,7 @@ test('empty history hides table and filters and offers direct canvas navigation'
   try {
     assert.equal(view.container.querySelector('table'), null)
     assert.equal(view.container.querySelector('[aria-label="搜索任务"]'), null)
-    assert.match(view.container.textContent!, /还没有任务记录/)
+    assert.match(view.container.textContent!, /还没有素材生成任务记录/)
     await act(() => button(view.container, '进入画布').click())
     assert.deepEqual(view.events, [{ type: 'canvas', id: undefined }])
   } finally { await view.close() }

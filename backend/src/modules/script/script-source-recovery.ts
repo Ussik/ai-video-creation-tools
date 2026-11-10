@@ -28,9 +28,10 @@ export function sourceAnalysisProgressFingerprint(state: ScriptSourceAnalysis): 
     sections: state.sections, story: state.story,
     work: state.work?.map(({ offset, length, result }) => ({ offset, length, result })),
     story_work: state.story ? undefined : state.story_work && { input_hash: state.story_work.input_hash,
-      tasks: state.story_work.tasks.map(({ key, result, recovery, context }) => ({ key, result, recovery,
+      tasks: state.story_work.tasks.map(({ key, result, recovery, context, output_checkpoint }) => ({ key, result, recovery, output_checkpoint,
         context: context && { strategy: context.strategy, input_hash: context.input_hash, fallback_from_hash: context.fallback_from_hash } })) },
     synthesis: state.story ? undefined : state.synthesis,
+    quality_work: state.quality_work,
     quality: state.quality && { input_hash: state.quality.input_hash, status: state.quality.status, findings: orderedFindings(state) },
   })
 }

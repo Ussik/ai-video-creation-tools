@@ -10,7 +10,7 @@ export function withTextImageInput(body: unknown, images: readonly TextImageInpu
   protocol: GenerationModel['protocol'], settings: Record<string, unknown>): unknown {
   if (!images?.length) return body
   if (settings.supports_vision !== true) throw new Error('当前文本模型未启用图片理解，请选择支持图片理解的模型')
-  if (protocol !== 'responses' && protocol !== 'chat_completions') throw new Error('图片理解仅支持 Responses 或 Chat Completions 协议')
+  if (protocol !== 'responses' && protocol !== 'chat_completions' && protocol !== 'anthropic_messages') throw new Error('图片理解仅支持 Responses、Chat Completions 或 Anthropic Messages 协议')
   if (images.length > 8 || images.some(image => !/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(image.data_url)
     || image.data_url.length > 6 * 1024 * 1024)) throw new Error('图片理解输入必须是有效且不超过 4 MB 的本地图片')
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('图片理解请求模板必须为 JSON 对象')
@@ -24,7 +24,9 @@ export function withTextImageInput(body: unknown, images: readonly TextImageInpu
     const message = messages[index]
     if (message && typeof message === 'object' && (message as Record<string, unknown>).role === 'user') { selected = index; break }
   }
-  const parts = images.map(image => protocol === 'responses'
+  const parts = images.map(image => protocol === 'anthropic_messages'
+    ? { type: 'image', source: { type: 'base64', media_type: image.data_url.slice(5, image.data_url.indexOf(';')), data: image.data_url.slice(image.data_url.indexOf(',') + 1) } }
+    : protocol === 'responses'
     ? { type: 'input_image', image_url: image.data_url, detail: image.detail || 'high' }
     : { type: 'image_url', image_url: { url: image.data_url, detail: image.detail || 'high' } })
   if (selected < 0) messages.push({ role: 'user', content: parts })
@@ -45,6 +47,9 @@ export function textImageCapacityBody(body: unknown): unknown {
   if (Array.isArray(body)) return body.map(textImageCapacityBody)
   if (!body || typeof body !== 'object') return body
   const item = body as Record<string, unknown>
+  if (item.type === 'image' && item.source && typeof item.source === 'object' && (item.source as Record<string, unknown>).type === 'base64') {
+    return { ...item, source: { ...item.source as Record<string, unknown>, data: '[local image pixels]' } }
+  }
   if (item.type === 'input_image' && typeof item.image_url === 'string' && item.image_url.startsWith('data:image/')) {
     return { ...item, image_url: '[local image pixels]' }
   }

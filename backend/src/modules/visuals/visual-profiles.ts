@@ -4,6 +4,9 @@ import { z } from 'zod'
 import { all, db, newId, now, one, required, run } from '../../infrastructure/database/db.js'
 import type { Asset, AssetTask, Job, Model, Project, ScriptArtifact, ScriptScene, Shot } from '../../infrastructure/database/db.js'
 import { generateStructuredOutput, type OutputContract } from '../generation/model-output.js'
+import { executeGenerationUnits } from '../generation/generation-unit-execution.js'
+import { modelTaskPolicies } from '../generation/model-task-policy.js'
+import { creativeInputHash, creativeModelIdentity, creativeGenerationSteps, withCreativeRequest } from '../skills/creative-model-state.js'
 import { imageReferenceConfigError } from '@video-studio/shared/media/image-reference-config'
 import { videoReferenceConfigError } from '@video-studio/shared/media/video-reference-config'
 import { visualGenerationPrompt, withVideoReferenceMapping } from '@video-studio/shared/visuals/visual-prompt'
@@ -286,6 +289,7 @@ function prepareBoard(profile: VisualProfile, input: z.infer<typeof boardInput>)
   const rawPrompt = resolveVisualProfileDisplayText((input.prompt_document ? input.prompt_override ?? ''
     : extractPromptBody({ prompt: input.prompt_override ?? '' })) +
     (supplement.trim() ? `\n\n本次补充要求：\n${supplement}` : ''), textContext).text
+  if (!input.prompt_document && input.prompt_override !== undefined && !rawPrompt.trim()) invalid('请输入提示词正文')
   if (input.prompt_document) {
     try { validateManagedPromptDocument(rawPrompt) } catch (error) { invalid(error instanceof Error ? error.message : '提示词系统区标记无效') }
     if (!hasVisualBoardPromptContent(rawPrompt)) invalid('请输入设定图内容或补充要求')
@@ -729,11 +733,12 @@ export function autoConfirmGeneratedProfileBoard(job: Job): void {
   updateVisualProfile(profile.id, { board_asset_id: first.asset.id, expected_revision: profile.revision, expected_style_version: first.style.version }, { styleReview: 'automatic' })
 }
 
-export async function analyzeVisualProfiles(id: string, data: { model_id: string; scene_ids: string[]; skill_ids?: string[]; inherit_scene_references?: boolean; refresh_scene_ids?: string[]; design_id?: string | null }, context: {
+export async function analyzeVisualProfiles(id: string, data: { retain_checkpoint?: boolean; restart?: boolean; model_id: string; scene_ids: string[]; skill_ids?: string[]; inherit_scene_references?: boolean; refresh_scene_ids?: string[]; design_id?: string | null }, context: {
   script: (projectId: string) => { outline: string; characters: string; artifacts?: ScriptArtifact[]; scenes: ScriptScene[] };
-  generateText: (projectId: string, modelId: string, prompt: string, contract?: OutputContract) => Promise<string>;
+  generateText: (projectId: string, modelId: string, prompt: string, contract?: OutputContract, signal?: AbortSignal) => Promise<string>;
   selectSkills?: CreationSkillSelector;
-}) {
+}, signal?: AbortSignal) {
+  signal?.throwIfAborted()
   const project = required<Project>('projects', id)
   const script = context.script(id)
   const scenes = script.scenes.filter(scene => data.scene_ids.includes(scene.id))
@@ -749,8 +754,19 @@ export async function analyzeVisualProfiles(id: string, data: { model_id: string
   const artifacts = (script.artifacts || []).filter(item => !item.episode_number || episodes.has(item.episode_number))
   const plannedShots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position, id', id)
     .filter(shot => data.scene_ids.includes(shot.source_scene_id || ''))
-    .map(shot => ({ shot_id: shot.id, scene_id: shot.source_scene_id, title: shot.title, prompt: shot.prompt, image_prompt: shot.image_prompt,
+    .map(shot => ({ shot_id: shot.id, scene_id: shot.source_scene_id, title: shot.title, duration: shot.duration, prompt: shot.prompt, image_prompt: shot.image_prompt,
       video_prompt: shot.video_prompt, start_state: shot.start_state, end_state: shot.end_state }))
+  const sourceIdentity = () => {
+    const current = required<Project>('projects', id)
+    return creativeInputHash({ project: { name: current.name, brief: current.brief, ratio: current.ratio }, script: context.script(id),
+    style: projectVisualStyle(id), profiles: all('SELECT * FROM visual_profiles WHERE project_id=? AND design_id IS ? ORDER BY id', id, designId),
+    shots: all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position, id', id).filter(shot => data.scene_ids.includes(shot.source_scene_id || '')) })
+  }
+  const source = sourceIdentity()
+  const checkCurrent = () => {
+    signal?.throwIfAborted()
+    if (sourceIdentity() !== source) throw Object.assign(new Error('视觉整理期间剧本、镜头或设定已变化，请重新整理'), { statusCode: 409 })
+  }
   const prompt = `你是影视视觉设定总监。为选定场次整理可复用的人物、场景和关键道具视觉设定档案。\n` +
     `每个对象及服装/状态版本独立一份档案。同一对象同一版本跨场次复用；只绑定实际进入画面的对象，不为仅在对白中提及的人物或普通背景杂物创建档案。\n` +
     `definition 包含可执行的固定视觉特征、比例、颜色、材质与一致性约束，区别可变化的动作/表情/光线。view_requirements 写出需要的视图与局部细节：` +
@@ -783,12 +799,10 @@ export async function analyzeVisualProfiles(id: string, data: { model_id: string
     `剧本资料：${JSON.stringify(artifacts)}\n人物资料：${script.characters}\n选定场次：${JSON.stringify(scenes)}\n` +
     `选定场次已规划镜头：${JSON.stringify(plannedShots)}`
   const rules = await resolveCreationSkillContext({ stage: 'visual_assets', task: prompt, selectedIds: data.skill_ids,
-    projectId: id, modelId: data.model_id, select: context.selectSkills,
-    generate: (text, contract) => context.generateText(id, data.model_id, text, contract),
+    projectId: id, modelId: data.model_id, select: context.selectSkills, signal, reuseKey: creativeModelIdentity(data.model_id),
+    generate: (text, contract) => context.generateText(id, data.model_id, text, contract, signal),
     assignmentTask: { purpose: 'create' } })
-  const draft = await generateStructuredOutput('visual_profiles', profileAnalysisDraft,
-    (text, contract) => context.generateText(id, data.model_id, text, contract), rules.text + '\n【本次任务】\n' + prompt, {
-      validate: value => {
+  const validate = (value: z.infer<typeof profileAnalysisDraft>) => {
         if (value.profiles.some(profile => !profile.scene_ids.length || profile.scene_ids.some(sceneId => !data.scene_ids.includes(sceneId)))) invalid('每份视觉设定必须引用至少一个选定场次，不能引用范围外的场次')
         const scopedProfiles = scopeVisualProfileDrafts(id, value.profiles, sceneDesigns)
         for (const profile of scopedProfiles) {
@@ -801,14 +815,92 @@ export async function analyzeVisualProfiles(id: string, data: { model_id: string
           replaceSceneBindings: data.inherit_scene_references === true,
           inheritSceneReferences: data.inherit_scene_references,
         })
-      },
-    })
+  }
+  const identity = { version: 1, prompt, rules: rules.text, model: creativeModelIdentity(data.model_id) }
+  const steps = creativeGenerationSteps(id, `visual-profiles:${creativeInputHash([designId, data.scene_ids])}`, identity, signal, data.restart)
+  let draft: z.infer<typeof profileAnalysisDraft>
+  if (scenes.length < 10 && prompt.length < 60_000) {
+    draft = await steps.run('profiles', '整理视觉设定', identity,
+      () => generateStructuredOutput('visual_profiles', profileAnalysisDraft,
+        (text, contract) => context.generateText(id, data.model_id, text, contract, signal), rules.text + '\n【本次任务】\n' + prompt, { signal, validate }),
+      value => { const result = profileAnalysisDraft.parse(value); validate(result); return result })
+  } else {
+    // First lock shared object identities and base relationships. Definitions
+    // and per-shot usage are then generated in dependency order, never per
+    // scene independently (which would duplicate the same character).
+    const catalogItem = profileAnalysisDraft.shape.profiles.element.omit({ definition: true, view_requirements: true, shot_usage: true })
+      .extend({ draft_key: z.string().trim().min(1).max(160) })
+    const catalogSchema = z.object({ profiles: z.array(catalogItem).max(100) }).strict()
+    const validateCatalog = (raw: unknown) => {
+      const value = catalogSchema.parse(raw), byKey = new Map(value.profiles.map(profile => [profile.draft_key, profile]))
+      if (byKey.size !== value.profiles.length) invalid('视觉对象目录的草稿键不可重复')
+      for (const profile of value.profiles) {
+        if (!profile.scene_ids.length || profile.scene_ids.some(sceneId => !data.scene_ids.includes(sceneId))) invalid('视觉对象目录引用了范围外的场次')
+        if (profile.base_profile_id && profile.base_draft_key) invalid('视觉对象的基础关系只能选择一个')
+        const visiting = new Set<string>([profile.draft_key])
+        let base = profile.base_draft_key
+        while (base) {
+          if (visiting.has(base) || !byKey.has(base)) invalid('视觉对象目录的基础关系存在循环或缺失')
+          visiting.add(base); base = byKey.get(base)!.base_draft_key
+        }
+        if (profile.base_profile_id && !one('SELECT 1 FROM visual_profiles WHERE id=? AND project_id=? AND design_id IS ?', profile.base_profile_id, id, designId)) invalid('基础视觉设定不属于当前设计方案')
+      }
+      return value
+    }
+    const catalog = await steps.run('object-catalog', '确定共享对象与基础关系', identity, () => generateStructuredOutput('visual_profile_catalog', catalogSchema,
+      (text, contract) => context.generateText(id, data.model_id, text, contract, signal), rules.text + '\n' + prompt
+        + '\n【本步骤】只返回所需对象、版本、scene_ids和基础关系目录。不要生成definition、view_requirements或shot_usage。锁定跨场次共享身份，每个对象版本只一项。',
+      { signal, context: { policy: modelTaskPolicies.decision }, validate: validateCatalog }), validateCatalog)
+    checkCurrent()
+    const ordered: typeof catalog.profiles = [], pending = [...catalog.profiles]
+    while (pending.length) {
+      const index = pending.findIndex(profile => !profile.base_draft_key || ordered.some(base => base.draft_key === profile.base_draft_key))
+      if (index < 0) invalid('视觉对象目录无法按基础依赖执行')
+      ordered.push(pending.splice(index, 1)[0]!)
+    }
+    const byKey = new Map(ordered.map(profile => [profile.draft_key, profile]))
+    const completed = new Map<string, z.infer<typeof profileAnalysisDraft>['profiles'][number]>()
+    if (!ordered.length) draft = { profiles: [] }
+    else {
+      const values = await executeGenerationUnits<z.infer<typeof profileAnalysisDraft>['profiles'][number]>({
+        identity: { ...identity, catalog }, units: ordered.map(profile => profile.draft_key), steps, signal,
+        label: key => `整理${byKey.get(key)!.name} · ${byKey.get(key)!.variant}`,
+        generate: async key => {
+          checkCurrent()
+          const item = byKey.get(key)!, base = item.base_draft_key ? completed.get(item.base_draft_key) : undefined
+          const value = await generateStructuredOutput('visual_profiles', profileAnalysisDraft.extend({ profiles: z.array(profileAnalysisDraft.shape.profiles.element).length(1) }),
+            (text, contract) => context.generateText(id, data.model_id, text, contract, signal), rules.text + '\n' + prompt
+              + '\n【当前完整对象单元】仅生成以下目录项的完整档案与逐镜用途，不更改目录身份、场次或基础关系，不重新设计基础形象：' + JSON.stringify(item)
+              + '\n已完成基础版本（只读，派生项只改变state_delta所述状态）：' + JSON.stringify(base || null), { signal })
+          return value.profiles[0]
+        },
+        validate: (raw, key) => {
+          const item = byKey.get(key)!, value = profileAnalysisDraft.shape.profiles.element.parse(raw)
+          if (value.draft_key !== key || value.kind !== item.kind || value.name !== item.name || value.variant !== item.variant
+            || JSON.stringify([...value.scene_ids].sort()) !== JSON.stringify([...item.scene_ids].sort())
+            || (value.base_profile_id || null) !== (item.base_profile_id || null) || (value.base_draft_key || null) !== (item.base_draft_key || null)
+            || (value.state_delta || '') !== (item.state_delta || '')) invalid('完整视觉档案不能改变已锁定的对象目录或基础关系')
+          const scope = scopeVisualProfileDrafts(id, [value], sceneDesigns)[0]!
+          validateProfileShotUsage(id, scope)
+          const expected = plannedShots.filter(shot => value.scene_ids.includes(shot.scene_id || ''))
+          if (expected.some(shot => !value.shot_usage?.some(usage => usage.shot_id === shot.shot_id))) invalid('完整视觉档案缺少逐镜参考用途')
+          completed.set(key, value)
+          return value
+        },
+        validateAll: values => validate({ profiles: [...values.values()] }),
+      })
+      draft = { profiles: [...values.values()] }
+    }
+    validate(draft)
+  }
+  checkCurrent()
+  if (!data.retain_checkpoint) steps.clear()
   return { ...draft, profiles: scopeVisualProfileDrafts(id, draft.profiles, sceneDesigns), skills: rules.skills, loaded_files: rules.files, skill_assignment: rules.assignment }
 }
 
 export function registerVisualProfileRoutes(app: FastifyInstance, context: {
   script: (projectId: string) => { outline: string; characters: string; artifacts?: ScriptArtifact[]; scenes: ScriptScene[] };
-  generateText: (projectId: string, modelId: string, prompt: string, contract?: OutputContract) => Promise<string>;
+  generateText: (projectId: string, modelId: string, prompt: string, contract?: OutputContract, signal?: AbortSignal) => Promise<string>;
   selectSkills?: CreationSkillSelector;
   generateBoard?: (taskId: string, input: Record<string, unknown>, profile: VisualProfile, candidateCount: number) => unknown;
   generateReference?: (profile: VisualProfile, input: Record<string, unknown>, metadata: Record<string, unknown>, candidateCount: number) => Promise<unknown> | unknown;
@@ -842,12 +934,12 @@ export function registerVisualProfileRoutes(app: FastifyInstance, context: {
       return { confirmed, skipped }
     })()
   })
-  app.post('/api/projects/:id/visual-profiles/analyze', async request => {
+  app.post('/api/projects/:id/visual-profiles/analyze', async (request, reply) => withCreativeRequest(request, reply, '视觉设定整理', async signal => {
     const { id } = idParams.parse(request.params)
     const data = z.object({ model_id: z.string().min(1), scene_ids: z.array(z.string().min(1)).min(1).max(100), skill_ids: skillIdsInput.optional(),
-      design_id: z.string().min(1).nullable().optional() }).strict().parse(request.body)
-    return analyzeVisualProfiles(id, data, context)
-  })
+      design_id: z.string().min(1).nullable().optional(), restart: z.boolean().optional() }).strict().parse(request.body)
+    return analyzeVisualProfiles(id, data, context, signal)
+  }))
   app.post('/api/projects/:id/visual-profiles', async request => {
     const { id } = idParams.parse(request.params)
     required<Project>('projects', id)

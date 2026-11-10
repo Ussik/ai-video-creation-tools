@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { ScriptSourceAnalysis } from '@video-studio/shared/script/script-source-document'
+import { TextOutputLimitError, TextProviderError } from '../src/infrastructure/providers/text-errors.js'
 import { synthesizeSourceStory } from '../src/modules/script/script-source-story.js'
 function snapshot(): ScriptSourceAnalysis {
   return { id: 'map', source_version: 'v', model_id: 'text', status: 'running', phase: 'synthesis', completed_chunks: 3, total_chunks: 3, error: null, updated_at: 'now',
@@ -52,4 +53,34 @@ test('omitted coverage and invented provenance stop synthesis after one bounded 
     }, () => {}, new AbortController().signal), /覆盖全剧全部章节|不存在/)
     assert.equal(calls, 2); assert.equal(state.story, undefined)
   }
+})
+
+
+test('dense short-source output exhaustion switches to durable tasks and resumes after the completed overview', async () => {
+  const state = snapshot()
+  state.sections = [{ offset: 0, length: 12, title: '唯一章节', episode_number: null, summary: '林舟回家', characters: [], events: [] }]
+  const source = { filename: 'short.txt', content: '完整短篇原文，林舟回家。' }
+  const whole: string[] = [], parts: string[] = []
+  let interrupted = true
+  const generate = async (prompt: string, contract?: { name: string }) => {
+    assert.ok(prompt.includes(source.content) || prompt.includes(JSON.stringify(source.content).slice(1, -1)), 'every output task retains the full original source')
+    const name = contract?.name || ''
+    if (name === 'script_source_story') { whole.push(name); throw new TextOutputLimitError('{"story":{"summary":"partial', 'MAX_TOKENS') }
+    parts.push(name)
+    if (name === 'script_source_story_overview') return JSON.stringify({ summary: '林舟回家。', ending: { summary: '已回家', section_ids: [0] }, covered_section_ids: [0] })
+    if (name === 'script_source_story_characters' && interrupted) throw new TextProviderError('characters disconnected', false)
+    if (name === 'script_source_story_characters') return JSON.stringify({ characters: [] })
+    if (name === 'script_source_story_timeline') return JSON.stringify({ timeline: [{ summary: '林舟回家', section_ids: [0] }], covered_section_ids: [0] })
+    if (name === 'script_source_story_threads') return JSON.stringify({ threads: [] })
+    if (name === 'script_source_story_uncertainties') return JSON.stringify({ uncertainties: [] })
+    return assert.fail(`unexpected contract ${name}`)
+  }
+  await assert.rejects(synthesizeSourceStory(state, generate, () => {}, new AbortController().signal, undefined, undefined, source), /characters disconnected/)
+  assert.ok(state.story_work?.tasks[0]?.result, 'complete overview is saved even for a short source')
+  interrupted = false
+  const result = await synthesizeSourceStory(state, generate, () => {}, new AbortController().signal, undefined, undefined, source)
+  assert.equal(whole.length, 1)
+  assert.equal(parts.filter(name => name === 'script_source_story_overview').length, 1)
+  assert.equal(result.summary, '林舟回家。')
+  assert.equal(state.story_work, undefined)
 })

@@ -1,6 +1,14 @@
+import { acquireModelChannel, modelChannelIdentity, type ModelChannelLease } from './model-channel.js'
+import { readTextErrorBody } from './text-transport-boundary.js'
+import { modelStepSignal } from '../../modules/generation/model-execution.js'
+import { currentModelRequestContext } from '../../modules/generation/model-task-policy.js'
+import { beginTextRequest } from './text-request-usage.js'
+import { estimateTextRequestTokens } from './text-context.js'
+import { textRequestTrace, notifyTextRequest } from './text-request-plan.js'
+import { TextOutputLimitError, TextProviderError, annotateTextFailure, transientTextNetworkError, transientTextStatus, textRetryAfter } from './text-errors.js'
 import { geminiImageAnalysisConfig } from '@video-studio/shared/models/image-analysis-settings'
 import { createStreamScope, generationStepBudgets } from '@video-studio/shared/script/script-stream-policy'
-import type { GenerationModel, GenerationProvider, TextStreamRequest } from './providers.js'
+import type { GenerationModel, GenerationProvider, TextStreamRequest, TextRequestMetrics } from './providers.js'
 
 type ObjectValue = Record<string, unknown>
 const object = (value: unknown): ObjectValue => value && typeof value === 'object' && !Array.isArray(value) ? value as ObjectValue : {}
@@ -35,13 +43,20 @@ async function boundedResponse(response: Response): Promise<string> {
   } finally { reader.releaseLock() }
 }
 
-function visibleText(payload: ObjectValue): string {
+function visibleText(payload: ObjectValue, metrics: TextRequestMetrics): string {
   if (payload.task_id) throw new Error('当前接口返回了异步生图任务，图片反推需要支持同步 TEXT 输出的 Gemini 接口')
   const blocked = object(payload.promptFeedback).blockReason
-  if (blocked && blocked !== 'BLOCK_REASON_UNSPECIFIED') throw new Error('Gemini 未返回提示词：输入图片或要求被上游拦截')
+  if (blocked && blocked !== 'BLOCK_REASON_UNSPECIFIED') throw new TextProviderError('Gemini 未返回提示词：输入图片或要求被上游拦截', false, 'content_filter')
   const candidate = object(Array.isArray(payload.candidates) ? payload.candidates[0] : undefined)
-  if (candidate.finishReason === 'MAX_TOKENS') throw new Error('Gemini 反推输出不完整：已达到模型输出长度上限，请缩小分析范围')
-  if (candidate.finishReason && candidate.finishReason !== 'STOP') throw new Error('Gemini 未完整返回提示词，请调整图片或反推要求')
+  metrics.raw_reason = typeof candidate.finishReason === 'string' ? candidate.finishReason : undefined
+  if (candidate.finishReason === 'MAX_TOKENS') {
+    const parts = object(candidate.content).parts
+    const partial = Array.isArray(parts) ? parts.map(object).filter(part => part.thought !== true).map(part => typeof part.text === 'string' ? part.text : '').join('') : ''
+    const failure = new TextOutputLimitError(partial, 'max_output_tokens', metrics)
+    failure.rawReason = 'MAX_TOKENS'
+    throw failure
+  }
+  if (candidate.finishReason && candidate.finishReason !== 'STOP') throw new TextProviderError('Gemini 未完整返回提示词，请调整图片或反推要求', false, String(candidate.finishReason))
   const parts = object(candidate.content).parts
   if (!Array.isArray(parts)) throw new Error('Gemini 未返回提示词文字，请确认当前接口支持 TEXT 输出')
   const answer = parts.map(object).filter(part => part.thought !== true)
@@ -60,7 +75,9 @@ function visibleText(payload: ObjectValue): string {
 /** Native Gemini analysis only. Never request IMAGE, retry a paid request, or
  * fall back to the configured Images API when TEXT is unavailable. */
 export async function analyzeGeminiImage(model: GenerationModel, provider: GenerationProvider, request: TextStreamRequest,
-  decodeKey?: (provider: GenerationProvider) => string, signal?: AbortSignal): Promise<string> {
+  decodeKey?: (provider: GenerationProvider) => string, signal?: AbortSignal,
+  callbacks: { onDispatch?: (metrics: TextRequestMetrics) => void; onMetrics?: (metrics: TextRequestMetrics) => void } = {}): Promise<string> {
+  signal = modelStepSignal(signal)
   signal?.throwIfAborted()
   const settings: unknown = typeof model.settings === 'string' ? JSON.parse(model.settings) : model.settings
   const config = geminiImageAnalysisConfig(object(settings))
@@ -77,25 +94,55 @@ export async function analyzeGeminiImage(model: GenerationModel, provider: Gener
     ...(key ? { [provider.auth_header || 'Authorization']: `${provider.auth_prefix ?? 'Bearer '}${key}` } : {}) }
   const body = { contents: [{ role: 'user', parts: [{ text: request.prompt }, { inlineData: { mimeType: match[1], data: match[2] } }] }],
     generationConfig: { responseModalities: ['TEXT'] } }
+  const metrics: TextRequestMetrics = { ...textRequestTrace(), request_purpose: currentModelRequestContext()?.policy.purpose ?? 'image_analysis',
+    model_id: model.id, remote_id: config.remote_id || model.remote_id, endpoint: new URL(url).origin + new URL(url).pathname,
+    request_bytes: Buffer.byteLength(JSON.stringify(body)), estimated_input_tokens: estimateTextRequestTokens({ prompt: request.prompt }) + 4096, delivery: 'not_sent' }
+  let channel: ModelChannelLease | undefined
+  let usage: ReturnType<typeof beginTextRequest> | undefined
   const scope = createStreamScope(signal, { totalMs: generationStepBudgets.discussion, totalMessage: 'Gemini 图片反推请求超时，请重试或更换看图模型' })
   const clean = (value: string) => (key ? value.split(key).join('[已隐藏]') : value)
     .replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [已隐藏]')
     .replace(/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+/gi, '[图片数据已隐藏]')
     .replace(/("data"\s*:\s*")[A-Za-z0-9+/=]{64,}/g, '$1[图片数据已隐藏]')
   try {
+    channel = await acquireModelChannel(modelChannelIdentity(config.api_base_url || provider.base_url, 'gemini_generate_content',
+      provider.auth_header || 'Authorization', key ? `${provider.auth_prefix ?? 'Bearer '}${key}` : ''), scope.signal)
+    scope.signal.throwIfAborted()
+    usage = beginTextRequest({ request_bytes: metrics.request_bytes, estimated_input_tokens: metrics.estimated_input_tokens! })
+    notifyTextRequest('dispatch', { ...metrics }, callbacks.onDispatch)
+    metrics.delivery = 'unknown'
+    const started = Date.now()
     const response = await scope.wait(fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: scope.signal, redirect: 'error' }))
-    const raw = await scope.wait(boundedResponse(response))
+    channel.response(response); scope.touch(); metrics.first_event_ms = Date.now() - started; metrics.http_status = response.status; metrics.delivery = response.ok ? 'accepted' : 'rejected'
+    const requestId = response.headers.get('x-request-id') || response.headers.get('request-id')
+    if (requestId && /^[a-zA-Z0-9_.:-]{1,160}$/.test(requestId)) metrics.upstream_request_id = requestId
+    const raw = response.ok ? await scope.wait(boundedResponse(response)) : await readTextErrorBody(response, { wait: scope.wait })
     let payload: ObjectValue = {}
     try { payload = object(JSON.parse(raw)) } catch { /* Report a safe transport error below. */ }
     if (!response.ok || payload.error) {
       const detail = object(payload.error).message
-      throw new Error(`Gemini 反推接口返回 HTTP ${response.status}${typeof detail === 'string' ? `：${clean(detail).slice(0, 600)}` : '，请检查分析接口地址、模型 ID 和提供商认证'}`)
+      const rawCode = object(payload.error).status ?? object(payload.error).code
+      throw new TextProviderError(`Gemini 反推接口返回 HTTP ${response.status}${typeof detail === 'string' ? `：${clean(detail).slice(0, 600)}` : '，请检查分析接口地址、模型 ID 和提供商认证'}`, transientTextStatus(response.status, String(rawCode ?? '')), typeof rawCode === 'string' ? rawCode : undefined, response.status, undefined, textRetryAfter(response.headers.get('retry-after')))
     }
     scope.signal.throwIfAborted()
-    return visibleText(payload)
-  } catch (error) {
-    if (scope.signal.aborted) throw scope.signal.reason
-    if (error instanceof TypeError) throw new Error('Gemini 图片反推请求失败，请检查分析接口地址与网络连接')
-    throw error
-  } finally { scope.close() }
+    const tokens = object(payload.usageMetadata)
+    const integer = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    if (integer(tokens.promptTokenCount)) metrics.input_tokens = tokens.promptTokenCount
+    if (integer(tokens.thoughtsTokenCount)) metrics.reasoning_tokens = tokens.thoughtsTokenCount
+    if (integer(tokens.candidatesTokenCount)) metrics.output_tokens = tokens.candidatesTokenCount + (metrics.reasoning_tokens || 0)
+    if (integer(tokens.cachedContentTokenCount)) metrics.cache_read_tokens = tokens.cachedContentTokenCount
+    const text = visibleText(payload, metrics)
+    metrics.response_chars = text.length; metrics.output_started = !!text; metrics.delivery = 'completed'
+    return text
+  } catch (issue) {
+    channel?.failure(issue)
+    if (scope.signal.aborted) { metrics.failure_reason = 'cancelled'; throw scope.signal.reason }
+    const failure = !scope.signal.aborted && !(issue instanceof TextProviderError) && transientTextNetworkError(issue)
+      ? new TextProviderError('Gemini 反推连接中断，请核对当前任务后继续。', true, 'connection_error', undefined, { cause: issue }) : issue
+    if (failure instanceof TextOutputLimitError) metrics.response_chars = failure.partialText.length
+    annotateTextFailure(failure, { delivery: failure instanceof TextOutputLimitError ? 'completed' : metrics.delivery ?? 'unknown',
+      ...(failure instanceof TextOutputLimitError ? { partialText: failure.partialText } : {}) })
+    if (failure instanceof TextProviderError) Object.assign(metrics, { failure_reason: failure.failureReason, raw_reason: failure.rawReason, delivery: failure.delivery, output_started: failure.outputStarted })
+    throw failure
+  } finally { try { usage?.complete(metrics); notifyTextRequest('metrics', metrics, callbacks.onMetrics) } finally { channel?.release(); scope.close() } }
 }

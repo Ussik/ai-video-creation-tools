@@ -3,13 +3,14 @@ import { z } from 'zod'
 import { canOptimizeImagePrompt, jobPromptRequest } from '@video-studio/shared/jobs/prompt-optimization'
 import { required, type Job, type Model, type Provider } from '../../infrastructure/database/db.js'
 import { generateStructuredOutput, type OutputContract } from '../generation/model-output.js'
+import { withCreativeRequest } from '../skills/creative-model-state.js'
 
 function fail(message: string): never { throw Object.assign(new Error(message), { statusCode: 422 }) }
 
 export function registerPromptOptimizationRoutes(app: FastifyInstance, context: {
-  generateText: (projectId: string, modelId: string, prompt: string, contract?: OutputContract) => Promise<string>
+  generateText: (projectId: string, modelId: string, prompt: string, contract?: OutputContract, signal?: AbortSignal) => Promise<string>
 }) {
-  app.post('/api/projects/:id/jobs/:jobId/optimize-prompt', async request => {
+  app.post('/api/projects/:id/jobs/:jobId/optimize-prompt', async (request, reply) => withCreativeRequest(request, reply, '提示词优化', async signal => {
     const { id, jobId } = z.object({ id: z.string().min(1).max(100), jobId: z.string().min(1).max(100) }).parse(request.params)
     const input = z.object({
       model_id: z.string().min(1).max(100),
@@ -36,6 +37,6 @@ export function registerPromptOptimizationRoutes(app: FastifyInstance, context: 
         reference_count: Array.isArray(original.reference_asset_ids) ? original.reference_asset_ids.length : 0 })
     return generateStructuredOutput('image_prompt_optimization', z.object({
       prompt: z.string().trim().min(1).max(80_000), changes: z.array(z.string().trim().min(1).max(500)).min(1).max(8),
-    }).strict(), (text, contract) => context.generateText(id, model.id, text, contract), task)
-  })
+    }).strict(), (text, contract) => context.generateText(id, model.id, text, contract, signal), task, { signal })
+  }))
 }

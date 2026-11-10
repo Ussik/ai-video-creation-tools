@@ -37,7 +37,7 @@ test('custom genres use an isolated model call without editing project settings,
   }
   const provider = await inject('POST', '/api/providers', { name: '封面测试', base_url: 'https://theme.example/v1' })
   const model = await inject('POST', '/api/models', { provider_id: provider.id, name: '测试文本', remote_id: 'test', modality: 'text', protocol: 'chat_completions', settings: {
-    request_path: 'chat/completions', request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] }, text_path: 'choices.0.message.content',
+    text_api: { mode: 'standard', output_mode: 'fixed', max_output_tokens: 4096 },
   } })
   const project = await inject('POST', '/api/projects', { name: '自定义题材测试' })
   await inject('PUT', `/api/projects/${project.id}/script`, { outline: '已有故事', characters: '已有角色', generation_options: { genre: '悬疑恐怖', genre_fusion: '民俗恐怖' } })

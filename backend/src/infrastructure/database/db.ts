@@ -84,14 +84,14 @@ export interface ScriptArtifact {
 export interface Provider {
   id: string; name: string; adapter: 'http' | 'demo';
   base_url: string; auth_header: string; auth_prefix: string;
-  key_ciphertext: string | null; model_catalog: string;
+  key_ciphertext: string | null; model_catalog: string; protocol?: 'responses' | 'chat_completions' | 'anthropic_messages' | null;
   created_at: string; enabled: number; archived: number
 }
 export interface Model {
   id: string; provider_id: string; name: string; remote_id: string;
   modality: 'text' | 'image' | 'video';
-  protocol: 'responses' | 'chat_completions' | 'image_generations' | 'async_video';
-  settings: string; enabled: number; archived: number; is_default?: number
+  protocol: 'responses' | 'chat_completions' | 'anthropic_messages' | 'image_generations' | 'async_video';
+  settings: string; enabled: number; archived: number; is_default?: number; sort_order?: number
 }
 export interface Asset {
   id: string; project_id: string; shot_id: string | null;
@@ -867,7 +867,9 @@ export function initDb(): void {
   if (!providerColumns.some(column => column.name === 'model_catalog')) {
     db.exec("ALTER TABLE providers ADD COLUMN model_catalog TEXT NOT NULL DEFAULT '{}'")
   }
+  if (!providerColumns.some(column => column.name === 'protocol')) db.exec('ALTER TABLE providers ADD COLUMN protocol TEXT')
   const modelColumns = db.pragma('table_info(models)') as Array<{ name: string }>
+  if (!modelColumns.some(column => column.name === 'sort_order')) db.exec('ALTER TABLE models ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0')
   if (!modelColumns.some(column => column.name === 'protocol')) {
     db.exec("ALTER TABLE models ADD COLUMN protocol TEXT NOT NULL DEFAULT 'responses'")
   }

@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 import type { GenerationModel } from '../src/infrastructure/providers/providers.js'
 import type { ToolCall, ToolOutput, ToolTurn } from '../src/infrastructure/providers/text-tools.js'
-import { TextProviderError } from '../src/infrastructure/providers/text-errors.js'
+import { TextProviderError, TextToolOutputLimitError } from '../src/infrastructure/providers/text-errors.js'
 import type { WorkflowDraft } from '../src/modules/script/script-workflow.js'
 import { createGenerationSteps, type GenerationCheckpoint } from '../src/modules/script/script-generation-steps.js'
 
@@ -380,4 +380,59 @@ test('repair sessions preserve exact large tool evidence without spawning histor
   })
   const result = await runScriptDraftRepairTools({ ...common(), workspace: workspace({ draft: input }) })
   assert.deepEqual(result, patch()); assert.equal(requests, 3)
+})
+
+
+test('native complete repair batches survive a disconnect and resume without reselecting accepted decisions', async () => {
+  let checkpoint: GenerationCheckpoint = { steps: {} }, turns = 0
+  const steps = () => createGenerationSteps({ checkpoint, save: value => { checkpoint = structuredClone(value) } })
+  const accepted = patch()
+  const batch = (data: object) => call('submit_repair_batch', { candidate_version: 'candidate-v1', source_version: 'source-v1',
+    decisions: [], summary: '逐步落实已确认决定', edits: [], source_edits: [], complete: false, ...data })
+  await assert.rejects(runScriptDraftRepairTools({ ...common(), steps: steps(), turn: async () => {
+    if (++turns === 1) return response([batch({ decisions: [{ issue_id: 'issue-1', decision: accepted.decisions[0] }] })])
+    throw new Error('later model disconnected')
+  } }), /later model disconnected/)
+  assert.equal(checkpoint.steps['repair:tools'], undefined)
+  const saved = JSON.stringify(checkpoint.steps['repair:tools:batches'])
+  assert.ok(saved.includes(accepted.decisions[0]!))
+  let resumed = 0
+  const result = await runScriptDraftRepairTools({ ...common(), steps: steps(), turn: async () => {
+    resumed++
+    return response([batch({ edits: accepted.edits, complete: true })])
+  } })
+  assert.equal(resumed, 1)
+  assert.deepEqual(result.decisions, accepted.decisions)
+  assert.deepEqual(result.edits, accepted.edits)
+})
+
+test('a native truncated submission is never executed and retries only smaller complete batches', async () => {
+  let turns = 0
+  const accepted = patch(), observations: string[] = []
+  const result = await runScriptDraftRepairTools({ ...common(), turn: async (_outputs, continuation) => {
+    turns++
+    if (turns === 1) throw new TextToolOutputLimitError('length')
+    observations.push(continuation!)
+    return response([call('submit_repair_batch', { candidate_version: 'candidate-v1', source_version: 'source-v1',
+      decisions: [{ issue_id: 'issue-1', decision: accepted.decisions[0] }], summary: accepted.summary,
+      edits: accepted.edits, source_edits: [], complete: true })])
+  } })
+  assert.equal(turns, 2)
+  assert.match(observations[0]!, /未执行任何残缺工具/)
+  assert.deepEqual(result, accepted)
+})
+
+test('accepted batches reject cross-page overlapping edits before final submission', async () => {
+  const accepted = patch()
+  let turns = 0, rejected = false
+  await assert.rejects(runScriptDraftRepairTools({ ...common(), turn: async outputs => {
+    if (++turns === 1) return response([call('submit_repair_batch', { candidate_version: 'candidate-v1', source_version: 'source-v1',
+      decisions: [{ issue_id: 'issue-1', decision: accepted.decisions[0] }], summary: accepted.summary,
+      edits: accepted.edits, source_edits: [], complete: false })])
+    if (turns === 3) { rejected = JSON.parse(outputs![0]!.output).ok === false; throw new Error('overlap verified') }
+    return response([call('submit_repair_batch', { candidate_version: 'candidate-v1', source_version: 'source-v1',
+      decisions: [], summary: accepted.summary,
+      edits: [{ ...accepted.edits[0]!, find: '钥匙代价未定', replace: '另一个不兼容的决定' }], source_edits: [], complete: true })])
+  } }), /overlap verified/)
+  assert.equal(rejected, true)
 })

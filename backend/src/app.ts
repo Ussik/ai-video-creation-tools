@@ -1,3 +1,11 @@
+import { withScriptCheckpointModelMigration, migrateCompleteScriptDrafts } from './modules/script/script-checkpoint-model-migration.js'
+import { generateLongFormDocument, generateLongFormObject } from './modules/generation/long-form-output.js'
+import { creativeGenerationSteps, creativeInputHash, creativeModelIdentity, withCreativeRequest } from './modules/skills/creative-model-state.js'
+import { registerModelRequestObservation, observeModelTask } from './modules/generation/model-request-observation.js'
+import { currentModelRequestContext, modelTaskPolicies, withModelRequestContext } from './modules/generation/model-task-policy.js'
+import { withModelAdmission } from './modules/generation/model-admission.js'
+import { generationUnitStore } from './modules/generation/generation-unit-store.js'
+import { executeGenerationUnits } from './modules/generation/generation-unit-execution.js'
 import { stageOperationError, type StageOperation } from '@video-studio/shared/script/script-stage-access'
 import Fastify, { type FastifyInstance } from 'fastify'
 import multipart from '@fastify/multipart'
@@ -19,7 +27,7 @@ import type { TextImageInput } from './infrastructure/providers/text-image-input
 import { normalizeSeedance25Request } from '@video-studio/shared/media/seedance25-request'
 import { parseStructuredOutput } from './modules/generation/structured-output.js'
 import { generateStructuredOutput, type OutputContract } from './modules/generation/model-output.js'
-import { modelAttemptNumber, withUnrestrictedScriptExecution } from './modules/generation/model-execution.js'
+import { modelStepSignal, modelAttemptNumber, withUnrestrictedScriptExecution } from './modules/generation/model-execution.js'
 import { TextProviderError } from './infrastructure/providers/text-errors.js'
 import { isTextRequestBudgetError, type ScriptRequestUsage } from './infrastructure/providers/text-request-usage.js'
 import { supportsScriptReviewPolicy } from './infrastructure/providers/text-script-review-policy.js'
@@ -171,6 +179,7 @@ const scriptArtifactPatch = scriptArtifactInput.omit({ id: true, artifact_type: 
   status: scriptArtifactInput.shape.status.unwrap(),
 }).partial().strict()
 const scriptArtifactGenerationInput = z.object({
+  restart: z.boolean().optional(),
   skill_selections: skillSelectionsInput.optional(),
   model_id: z.string().min(1), artifact_type: scriptArtifactType,
   prompt_override: z.string().trim().min(1).max(200000).optional(),
@@ -206,6 +215,7 @@ const scriptConversationInput = z.object({
   messages: z.array(scriptConversationMessage).max(80).default([]),
 }).strict()
 const scriptGenerationInput = z.object({
+  restart: z.boolean().optional(),
   skill_selections: skillSelectionsInput.optional(),
   model_id: z.string().min(1), idea: z.string().max(20000).optional(),
   // Optional compatibility override for older callers. The creator UI leaves
@@ -1259,7 +1269,7 @@ async function directStageDirectorChat(project: Project, data: DirectorInput, mo
   activity: ReturnType<typeof activityRecorder>, creativeBrief?: string, styleSync?: StyleSyncHooks) {
   // Intent resolution and a later typed resume must serialize the same scope.
   const declared = workflowRequest.parse(data.workflow)
-  data = { ...data, workflow: { ...declared, intent: declared.intent || 'stage_design', artifact_types: scriptTaskArtifactTypes(declared) } }
+  data = { ...data, workflow: workflowRequest.parse({ ...declared, intent: declared.intent || 'stage_design', artifact_types: scriptTaskArtifactTypes(declared) }) }
   const workflow = data.workflow!
   if (getToolDraft(project.id)) invalid('已有待确认草稿，请先保存或放弃它')
   clearCreationProposal(project.id)
@@ -1670,7 +1680,7 @@ async function resumeScriptDraftOnce(project: Project, data: DirectorInput, mode
         resolveKey: item => decryptKey(item.key_ciphertext || null), signal, steps: repairSteps, validate: validateRepair,
         onProgress: message => activity.update(step, { summary: message }), fallback,
         onToolEvent: event => {
-          const label = event.name === 'submit_repair_patch' ? '提交修订补丁' : event.name.includes('search') ? '搜索修订依据' : '读取修订资料'
+          const label = event.name === 'submit_repair_batch' ? '提交修订批次' : event.name === 'submit_repair_patch' ? '提交修订补丁' : event.name.includes('search') ? '搜索修订依据' : '读取修订资料'
           if (event.status === 'running') {
             repairToolEntries.set(event.id, activity.start({ kind: 'tool', parent_id: step.id, name: event.name, label, summary: event.summary }))
           } else {
@@ -1801,8 +1811,8 @@ async function executeDirectorChatRequest(project: Project, data: DirectorInput,
   const resolved = await resolveDirectorIntent(project, data, model, provider, signal, false, send, activity, styleSync)
   if (resolved.data.workflow && !resolved.data.adopt_source) {
     const workflow = workflowRequest.parse(initialScriptTaskContract(resolved.data.workflow, Boolean(scriptSourceDocument(project.id, false))))
-    resolved.data.workflow = workflow.operation === 'revise' ? workflow : { ...workflow,
-      intent: workflow.intent || 'stage_design', artifact_types: scriptTaskArtifactTypes(workflow) }
+    resolved.data.workflow = workflowRequest.parse(workflow.operation === 'revise' ? workflow : { ...workflow,
+      intent: workflow.intent || 'stage_design', artifact_types: scriptTaskArtifactTypes(workflow) })
   }
   activity.finish(intent, 'succeeded', { summary: resolved.settingsChanged ? '已保存本轮确认的画风，并确定后续处理方式' : resolved.data.workflow ? '已确定当前文档阶段' : '本轮继续讨论与设定确认' })
   signal.throwIfAborted()
@@ -2055,6 +2065,8 @@ function distributeShotDurations(shots: z.infer<typeof plannedShot>[], duration:
 }
 
 async function generateTextOutput(model: Model, provider: Provider, prompt: string, contract?: OutputContract, signal?: AbortSignal, images?: TextImageInput[]): Promise<string> {
+  signal = modelStepSignal(signal)
+  signal?.throwIfAborted()
   try {
     // Collect the upstream stream before parsing or validating the full result.
     // Long planning requests use the same transport as script dialogue.
@@ -2073,8 +2085,8 @@ async function generateTextOutput(model: Model, provider: Provider, prompt: stri
   }
 }
 
-async function structuredTextOutput<T>(name: string, schema: z.ZodType<T>, model: Model, provider: Provider, prompt: string, validate?: (value: T) => void) {
-  return generateStructuredOutput(name, schema, (text, contract) => generateTextOutput(model, provider, text, contract), prompt, { validate })
+async function structuredTextOutput<T>(name: string, schema: z.ZodType<T>, model: Model, provider: Provider, prompt: string, validate?: (value: T) => void, signal?: AbortSignal) {
+  return generateStructuredOutput(name, schema, (text, contract) => generateTextOutput(model, provider, text, contract, signal), prompt, { validate, signal })
 }
 
 function relevantDirectorDocuments(project: Project, workflow: { stage: string; episode_number: number }) {
@@ -2270,7 +2282,7 @@ async function directorTextOutput(project: Project, model: Model, provider: Prov
   const value = legacyWork ?
     await steps!.run('draft', '编写阶段草稿', { prompt: generationPrompt, workflow: data.workflow }, async () => {
     const result = await generateStageDraftWithContinuation(data.workflow!, generationPrompt, request, {
-      signal, steps: steps!, validate, onRetry: directorRetryNotice(activity),
+      signal, steps: steps!, validate, contextRetrieval: true, contextSource: source ? { content: source.content, version: scriptDocumentVersion(source) } : undefined, onRetry: directorRetryNotice(activity),
       onProgress: message => {
         onEvent({ type: 'progress', stage: 'generating', text: message })
         if (activity) {
@@ -2286,7 +2298,7 @@ async function directorTextOutput(project: Project, model: Model, provider: Prov
     })
     return { artifacts: result.artifacts, scenes: result.scenes }
   }, value => { const result = workflowEnvelope.parse(value); validate?.(workflowGenerationDraftSchema.parse({ ...data.workflow!, ...result })); return result }) : await executeScriptWorkPlan({
-    request: data.workflow, steps: steps!, signal,
+    request: data.workflow, steps: steps!, signal, contextRetrieval: true, contextSource: source ? { content: source.content, version: scriptDocumentVersion(source) } : undefined,
     preserved,
     prompt: task => {
       const request = { ...data.workflow!, artifact_types: task.artifact_types }
@@ -2395,6 +2407,11 @@ function byteRange(header: string, size: number): { start: number; end: number }
 }
 
 async function processJob(job: Job): Promise<void> {
+  const modality = job.model_id ? required<Model>('models', job.model_id).modality : undefined
+  return observeModelTask({ taskId: `job:${job.id}`, projectId: job.project_id, modelId: job.model_id || undefined,
+    label: modality === 'text' ? '后台文本生成' : '素材任务', owner: 'job', policy: modality === 'text' ? modelTaskPolicies.generation : modelTaskPolicies.paid }, () => processObservedJob(job))
+}
+async function processObservedJob(job: Job): Promise<void> {
   const request = JSON.parse(job.request) as Record<string, unknown>
   let path: string
   let kind: Asset['kind']
@@ -2485,17 +2502,19 @@ export function startWorker(): () => Promise<void> {
 export function buildApp(): FastifyInstance {
   initDb()
   const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 })
+  registerModelRequestObservation(app)
   const directorTasks = createDirectorTasks()
   app.addHook('preClose', async () => { await directorTasks.close() })
   registerJobQueueRoutes(app)
   void app.register(multipart, { limits: { fileSize: 300 * 1024 * 1024, files: 1, fields: 2 } })
   app.setErrorHandler((error, request, reply) => {
-    const issue = error as Error & { statusCode?: number; raw_output?: string; diagnostics?: string; code?: unknown; diagnostic?: unknown }
-    const code = error instanceof ZodError ? 422 : Math.max(400, Math.min(Number(issue.statusCode) || 500, 599))
+    const issue = error as Error & { statusCode?: number; raw_output?: string; diagnostics?: string; code?: unknown; diagnostic?: unknown; retryAt?: number }
+    const code = currentModelRequestContext()?.signal?.aborted ? 499 : error instanceof ZodError ? 422 : Math.max(400, Math.min(Number(issue.statusCode) || 500, 599))
     reply.code(code).send({ detail: code === 500 ? '服务器处理失败' : issue.message,
       ...(code !== 500 && issue.raw_output ? { raw_output: issue.raw_output } : {}), ...(code !== 500 && issue.diagnostics ? { diagnostics: issue.diagnostics } : {}),
       ...(code !== 500 && typeof issue.code === 'string' ? { code: issue.code } : {}),
-      ...(code !== 500 && issue.diagnostic ? { diagnostic: issue.diagnostic } : {}) })
+      ...(code !== 500 && issue.diagnostic ? { diagnostic: issue.diagnostic } : {}),
+      ...(typeof issue.retryAt === 'number' ? { retry_at: issue.retryAt } : {}) })
     if (code === 500) console.error(error)
     else if (code >= 500 && issue.diagnostics) console.error('模型请求失败', {
       method: request.method, route: request.routeOptions.url, diagnostics: issue.diagnostics,
@@ -2506,8 +2525,8 @@ export function buildApp(): FastifyInstance {
     const model = required<Model>('models', modelId)
     if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
     checkProtocol(model.modality, model.protocol)
-    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>)
     const provider = required<Provider>('providers', model.provider_id)
+    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>, model.protocol, { base_url: provider.base_url, protocol: model.protocol, remote_id: model.remote_id })
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用')
     return generateTextOutput(model, provider, prompt, contract, signal, images)
   }
@@ -2515,8 +2534,8 @@ export function buildApp(): FastifyInstance {
     const model = required<Model>('models', modelId)
     if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
     checkProtocol(model.modality, model.protocol)
-    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>)
     const provider = required<Provider>('providers', model.provider_id)
+    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>, model.protocol, { base_url: provider.base_url, protocol: model.protocol, remote_id: model.remote_id })
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用')
     return chooseCreationSkills(model, provider, input, item => decryptKey(item.key_ciphertext || null), signal)
   }
@@ -2544,12 +2563,13 @@ export function buildApp(): FastifyInstance {
       summary: '记录本轮全部模型请求；实际用量与待结算估算分别展示，恢复任务继续累计。', usage: tracker.snapshot(latest?.usage?.cumulative) })
     directorUsageStates.set(activity, { tracker, entry, cumulative: latest?.usage?.cumulative })
     try {
-      const result = await withUnrestrictedScriptExecution(() => tracker.run(async () => {
+      const observe = <T>(work: () => Promise<T>) => currentModelRequestContext()?.taskId ? work() : observeModelTask({ projectId: project.id, modelId: model.id, label: '剧本创作', owner: 'director', signal, policy: modelTaskPolicies.generation }, work)
+      const result = await observe(() => withUnrestrictedScriptExecution(() => tracker.run(async () => {
         // Source indexing is a separate upload task, not a prerequisite for
         // every chat. Intent resolution and outline extraction can read the
         // full manuscript directly; design review prepares analysis if needed.
         return executeDirectorChat(project, data, model, provider, send, signal, activity, onStyleSaved, onRepairRequestAdvanced)
-      }))
+      })))
       activity.finish(entry, 'succeeded', { usage: tracker.snapshot(directorUsageStates.get(activity)?.cumulative) })
       return { ...result, activity: activity.entries }
     } catch (error) {
@@ -2876,14 +2896,25 @@ export function buildApp(): FastifyInstance {
     const model = required<Model>('models', data.model_id)
     if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
     checkProtocol(model.modality, model.protocol)
-    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>)
     const provider = required<Provider>('providers', model.provider_id)
+    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>, model.protocol, { base_url: provider.base_url, protocol: model.protocol, remote_id: model.remote_id })
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用')
     const snapshot = semanticContinuityContext(id, canvasId)
-    if (Buffer.byteLength(JSON.stringify(snapshot.context), 'utf8') > 200_000) invalid('制作范围过大，请缩小范围后进行语义检查')
-    const issues = snapshot.context.pairs.length ? parseSemanticContinuity(JSON.stringify(
-      await structuredTextOutput('continuity_report', semanticContinuitySchema, model, provider, semanticContinuityPrompt(snapshot.context),
-        value => { parseSemanticContinuity(JSON.stringify(value), snapshot.context.pairs) })), snapshot.context.pairs) : []
+    const identity = { version:1, signature:snapshot.signature, model:creativeModelIdentity(model.id) }
+    const store = generationUnitStore(id, `continuity:${canvasId || 'project'}`, identity)
+    const pairs = snapshot.context.pairs
+    const groups = pairs.length <= 4 ? [pairs] : Array.from({length:Math.ceil(pairs.length/4)},(_,index)=>pairs.slice(index*4,index*4+4))
+    const reports = pairs.length ? await withModelAdmission(`continuity:${id}:${canvasId || 'project'}`,modelStepSignal(),()=>executeGenerationUnits<ReturnType<typeof parseSemanticContinuity>>({
+      identity, units:groups.map((_,index)=>String(index)), steps:createGenerationSteps({checkpoint:store.checkpoint,save:store.save,signal:modelStepSignal()}), signal:modelStepSignal(),
+      label:index=>`相邻镜头检查 ${Number(index)+1}/${groups.length}`,
+      generate:async index=>{
+        const selected=groups[Number(index)]!
+        return parseSemanticContinuity(JSON.stringify(await structuredTextOutput('continuity_report',semanticContinuitySchema,model,provider,
+          semanticContinuityPrompt({...snapshot.context,pairs:selected}),value=>{parseSemanticContinuity(JSON.stringify(value),selected)})),selected)
+      }, validate:(value,index)=>parseSemanticContinuity(JSON.stringify({issues:(value as ReturnType<typeof parseSemanticContinuity>).map(({severity:_severity,field:_field,...issue})=>issue)}),groups[Number(index)]!)
+    })) : new Map<string,ReturnType<typeof parseSemanticContinuity>>()
+    const issues=[...reports.values()].flat()
+    modelStepSignal()?.throwIfAborted()
     if (semanticContinuityContext(id, canvasId).signature !== snapshot.signature) {
       throw Object.assign(new Error('检查期间镜头或剧本资料已变化，请重新检查'), { statusCode: 409 })
     }
@@ -2893,6 +2924,7 @@ export function buildApp(): FastifyInstance {
     else run(`INSERT INTO continuity_analyses (project_id, model_id, signature, issues, updated_at) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(project_id) DO UPDATE SET model_id=excluded.model_id, signature=excluded.signature,
       issues=excluded.issues, updated_at=excluded.updated_at`, id, model.id, snapshot.signature, JSON.stringify(issues), now())
+    store.clear()
     return { status: 'checked', issue_count: issues.length }
   })
   app.patch('/api/projects/:id', async request => {
@@ -3377,8 +3409,8 @@ export function buildApp(): FastifyInstance {
     const model = required<Model>('models', data.model_id)
     if (model.modality !== 'image' || !model.enabled || model.archived) invalid('请选择已启用的图片模型')
     checkProtocol(model.modality, model.protocol)
-    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>)
     const provider = required<Provider>('providers', model.provider_id)
+    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>, model.protocol, { base_url: provider.base_url, protocol: model.protocol, remote_id: model.remote_id })
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
     const references = data.reference_asset_ids.map((assetId) => required<Asset>('assets', assetId))
     if (new Set(data.reference_asset_ids).size !== data.reference_asset_ids.length) invalid('参考图片不能重复')
@@ -3496,8 +3528,8 @@ export function buildApp(): FastifyInstance {
     const model = required<Model>('models', data.model_id)
     if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
     checkProtocol(model.modality, model.protocol)
-    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>)
     const provider = required<Provider>('providers', model.provider_id)
+    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>, model.protocol, { base_url: provider.base_url, protocol: model.protocol, remote_id: model.remote_id })
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用')
     // A read-only, isolated classification; it never patches generation options
     // or advances the director's conversation/workflow.
@@ -3522,8 +3554,8 @@ export function buildApp(): FastifyInstance {
     const model = required<Model>('models', data.model_id)
     if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
     checkProtocol(model.modality, model.protocol)
-    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>)
     const provider = required<Provider>('providers', model.provider_id)
+    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>, model.protocol, { base_url: provider.base_url, protocol: model.protocol, remote_id: model.remote_id })
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用')
     const results: Array<{ id: string; classification: z.infer<typeof replyClassification> }> = []
     const missing = data.messages.filter(message => {
@@ -3638,17 +3670,39 @@ export function buildApp(): FastifyInstance {
     const model = required<Model>('models', data.model_id)
     if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
     checkProtocol(model.modality, model.protocol)
-    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>)
     const provider = required<Provider>('providers', model.provider_id)
+    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>, model.protocol, { base_url: provider.base_url, protocol: model.protocol, remote_id: model.remote_id })
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
     const base = data.prompt_override || baseShotPlanningPrompt(project, scenes, data.shots_per_scene)
     const rules = await creativeRules('storyboard', id, data.model_id, base, data.skill_selections, { purpose: 'create' })
     const prompt = withProjectStyle(applySkillRules(base, rules), projectVisualStyle(id))
-    const draft = await structuredTextOutput('shot_plan', shotPlanDraft, model, provider, prompt, value => {
+    const validatePlan = (value: z.infer<typeof shotPlanDraft>, expected: typeof scenes) => {
       const ids = new Set(value.scenes.map(scene => scene.scene_id))
-      if (ids.size !== scenes.length || value.scenes.length !== scenes.length || scenes.some(scene => !ids.has(scene.id))) invalid('文本模型返回的场次与所选场次不一致')
-      if (value.scenes.some(scene => scene.shots.length > scenes.find(item => item.id === scene.scene_id)!.duration)) invalid('文本模型生成的镜头数超过场次时长')
+      if (ids.size !== expected.length || value.scenes.length !== expected.length || expected.some(scene => !ids.has(scene.id))) invalid('文本模型返回的场次与所选场次不一致')
+      if (value.scenes.some(scene => scene.shots.length > expected.find(item => item.id === scene.scene_id)!.duration)) invalid('文本模型生成的镜头数超过场次时长')
+    }
+    const sourceHash = createHash('sha256').update(JSON.stringify(scenes)).digest('hex')
+    const identity = { version: 1, sourceHash, project: [project.brief, project.ratio], model: creativeModelIdentity(model.id), prompt }
+    const store = generationUnitStore(id, 'legacy-shot-plan', identity)
+    const draft = await withModelAdmission(`legacy-shot-plan:${id}`, modelStepSignal(), async () => {
+      if (scenes.length <= 2) return structuredTextOutput('shot_plan', shotPlanDraft, model, provider, prompt, value => validatePlan(value, scenes))
+      const steps = createGenerationSteps({ checkpoint: store.checkpoint, save: store.save, signal: modelStepSignal() })
+      const units = await executeGenerationUnits<z.infer<typeof shotPlanDraft>['scenes'][number]>({ identity, units: scenes.map(scene => scene.id), steps,
+        signal: modelStepSignal(), label: sceneId => `分镜：${scenes.find(scene => scene.id === sceneId)!.heading}`,
+        generate: async sceneId => {
+          const scene = scenes.find(scene => scene.id === sceneId)!
+          return (await structuredTextOutput('shot_plan', shotPlanDraft, model, provider,
+            prompt + '\n【当前完整单元】只返回场次 ' + sceneId + '；其它场次仅作衔接资料，禁止返回。', value => validatePlan(value, [scene]))).scenes[0]
+        },
+        validate: (value, sceneId) => {
+          const parsed = shotPlanDraft.shape.scenes.element.parse(value)
+          validatePlan({ scenes: [parsed] }, [scenes.find(scene => scene.id === sceneId)!])
+          return parsed
+        }, validateAll: values => validatePlan({ scenes: [...values.values()] }, scenes) })
+      return { scenes: [...units.values()] }
     })
+    modelStepSignal()?.throwIfAborted()
+    if (createHash('sha256').update(JSON.stringify(selectedScenes(id, data.scene_ids))).digest('hex') !== sourceHash) invalid('场次已变化，已保留生成结果，请基于当前场次重新生成')
     const raw = JSON.stringify(draft)
     if (!draft) return reply.code(422).send({
       detail: '文本模型未返回符合格式的分镜方案，请检查模型输出或重新生成', raw_output: raw.slice(0, 5000),
@@ -3660,6 +3714,7 @@ export function buildApp(): FastifyInstance {
     if (scenes.some(scene => byId.get(scene.id)!.shots.length > scene.duration)) {
       return reply.code(422).send({ detail: '文本模型生成的镜头数超过场次时长', raw_output: raw.slice(0, 5000) })
     }
+    store.clear()
     return { skill_assignment: rules.assignment, used_skills: rules.skills, scenes: scenes.map(scene => {
       const shots = byId.get(scene.id)!.shots
       const durations = distributeShotDurations(shots, scene.duration)
@@ -3743,8 +3798,8 @@ export function buildApp(): FastifyInstance {
     const model = required<Model>('models', data.model_id)
     if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
     checkProtocol(model.modality, model.protocol)
-    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>)
     const provider = required<Provider>('providers', model.provider_id)
+    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>, model.protocol, { base_url: provider.base_url, protocol: model.protocol, remote_id: model.remote_id })
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
     const scope = createStreamScope(undefined, { totalMs: null })
     try {
@@ -3766,16 +3821,47 @@ export function buildApp(): FastifyInstance {
   app.post('/api/projects/:id/script/director/tasks/:taskId/continue', async request => {
     const { id, taskId } = parse(z.object({ id: z.string().min(1), taskId: z.string().min(1) }), request.params)
     const project = required<Project>('projects', id)
-    const data = resolveCreationAction(project, parse(scriptDirectorChatInput, directorTasks.request(id, taskId)))
+    const originalRequest=directorTasks.request(id,taskId)
+    const original = resolveCreationAction(project, parse(scriptDirectorChatInput, originalRequest))
+    const choice = parse(z.object({ model_id:z.string().min(1).optional() }).strict(),request.body || {})
+    const oldModel=required<Model>('models',original.model_id),oldProvider=required<Provider>('providers',oldModel.provider_id)
+    if(choice.model_id === original.model_id) invalid('所选模型与原任务相同，请直接继续原任务或选择其他模型')
+    const switching=!!choice.model_id && choice.model_id !== original.model_id
+    const data = switching ? { ...original, model_id:choice.model_id! } : original
     const model = required<Model>('models', data.model_id), provider = required<Provider>('providers', model.provider_id)
-    if (model.modality !== 'text' || !model.enabled || model.archived || !provider.enabled || provider.archived || provider.adapter === 'demo') invalid('原任务使用的文本模型或提供商当前不可用')
+    if (model.modality !== 'text' || !model.enabled || model.archived || !provider.enabled || provider.archived || provider.adapter === 'demo') invalid('所选文本模型或提供商当前不可用')
     checkProtocol(model.modality, model.protocol)
-    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>)
-    const restoredActivities = directorTasks.read(id, taskId).events.find(event => event.type === 'activity')?.activity as ScriptActivity[] | undefined
-    return directorTasks.continue(id, taskId, directorRecoveryKey(project, model, provider, data),
-      (signal, send) => executePreparedDirector(project, data, model, provider, send, signal, undefined,
+    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>, model.protocol, { base_url: provider.base_url, protocol: model.protocol, remote_id: model.remote_id })
+    const snapshot=directorTasks.read(id,taskId)
+    const oldKey=directorRecoveryKey(project,oldModel,oldProvider,original)
+    const newKey=directorRecoveryKey(project,model,provider,data)
+    const runtime=(model:Model,provider:Provider)=>({model:{id:model.id,remote_id:model.remote_id,protocol:model.protocol,settings:model.settings},provider:{id:provider.id,adapter:provider.adapter,base_url:provider.base_url,auth_header:provider.auth_header,auth_prefix:provider.auth_prefix}})
+    const source=scriptSourceDocument(id)
+    const migration=switching?{from:runtime(oldModel,oldProvider),to:runtime(model,provider),sourceVersion:source?scriptDocumentVersion(source):null}:undefined
+    if(switching){
+      if(snapshot.status==='running' || !snapshot.can_resume || snapshot.status==='succeeded') invalid('请先停止任务，且仅能迁移可继续的未完成任务')
+      const row=one<{resume_key:string}>('SELECT resume_key FROM script_director_tasks WHERE id=? AND project_id=?',taskId,id)
+      if(row?.resume_key!==oldKey) invalid('资料、创作要求或原模型配置已变化，无法证明成果仍适用，请保留旧任务后重新发起')
+      if(!data.workflow) invalid('此任务没有可验证的剧本成果合同，不能换模型续用')
+      const checkpoint=one<{payload:string}>('SELECT payload FROM script_generation_checkpoints WHERE project_id=?',id)
+      if(!checkpoint) invalid('当前任务没有可迁移的完整成果')
+      // No model dispatch during preflight. The execution layer subsequently
+      // verifies the exact full identity before moving its complete draft units.
+      let retained:unknown
+      try { retained=JSON.parse(checkpoint.payload) } catch { throw Object.assign(new Error('原任务检查点已损坏，不能迁移；已有任务和正式文档均未修改'),{statusCode:409}) }
+      migrateCompleteScriptDrafts(retained,{workflow:data.workflow},migration!.sourceVersion)
+    }
+    const restoredActivities = snapshot.events.find(event => event.type === 'activity')?.activity as ScriptActivity[] | undefined
+    return directorTasks.continue(id, taskId, newKey, async (signal, send) => {
+      const execute=()=>executePreparedDirector(project, data, model, provider, send, signal, undefined,
         () => directorTasks.refreshRecoveryKey(id, taskId, directorRecoveryKey(project, model, provider, data)),
-        next => directorTasks.refreshRecoveryRequest(id, taskId, next, directorRecoveryKey(project, model, provider, next)), restoredActivities))
+        next => directorTasks.refreshRecoveryRequest(id, taskId, next, directorRecoveryKey(project, model, provider, next)), restoredActivities)
+      try { return await (migration?withScriptCheckpointModelMigration(migration,execute):execute()) }
+      catch(error){
+        if(migration) run('UPDATE script_director_tasks SET request_payload=?,resume_key=? WHERE id=? AND project_id=?',JSON.stringify(originalRequest),oldKey,taskId,id)
+        throw error
+      }
+    },switching?{previousKey:oldKey,request:data}:undefined)
   })
   app.post('/api/projects/:id/script/director/tasks/:taskId/cancel', async request => {
     const { id, taskId } = parse(z.object({ id: z.string().min(1), taskId: z.string().min(1) }), request.params)
@@ -3789,8 +3875,8 @@ export function buildApp(): FastifyInstance {
     const model = required<Model>('models', input.model_id)
     if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
     checkProtocol(model.modality, model.protocol)
-    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>)
     const provider = required<Provider>('providers', model.provider_id)
+    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>, model.protocol, { base_url: provider.base_url, protocol: model.protocol, remote_id: model.remote_id })
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
 
     if (task) {
@@ -3845,46 +3931,99 @@ export function buildApp(): FastifyInstance {
       reply.raw.end()
     }
   })
-  app.post('/api/projects/:id/script/artifacts/generate', async (request, reply) => {
-    const { id } = parse(idParams, request.params)
-    const project = required<Project>('projects', id)
-    const data = parse(scriptArtifactGenerationInput, request.body)
-    const model = required<Model>('models', data.model_id)
-    if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
-    checkProtocol(model.modality, model.protocol)
-    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>)
-    const provider = required<Provider>('providers', model.provider_id)
-    if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
-    const base = baseScriptArtifactPrompt(project, data)
-    const rules = await creativeRules('script', id, data.model_id, base, data.skill_selections,
-      { workflow_stage: scriptStageForArtifact(data.artifact_type), purpose: 'create' })
-    const raw = await generateTextOutput(model, provider, applySkillRules(base, rules))
-    const content = raw.trim()
-    if (!content) return reply.code(502).send({ detail: '文本模型未返回产物内容' })
-    return { artifact_type: data.artifact_type, title: defaultArtifactTitles[data.artifact_type], content, skill_assignment: rules.assignment }
-  })
-  app.post('/api/projects/:id/script/generate', async (request, reply) => {
-    const { id } = parse(idParams, request.params)
-    const project = required<Project>('projects', id)
-    const data = parse(scriptGenerationInput, request.body)
-    const model = required<Model>('models', data.model_id)
-    if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
-    checkProtocol(model.modality, model.protocol)
-    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>)
-    const provider = required<Provider>('providers', model.provider_id)
-    if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
-    const base = (data.prompt_override ? appendMissingScriptSettings(data.prompt_override, data.generation_options)
-      : baseScriptGenerationPrompt(project, data)) + referenceContext([{ role: 'user', text: data.idea || '生成完整剧本草稿', reference_documents: data.reference_documents }])
-    const rules = await creativeRules('script', id, data.model_id, base, data.skill_selections,
-      { text: data.idea, workflow_stage: 'episode', purpose: 'create' })
-    const prompt = applySkillRules(base, rules)
-    const draft = await structuredTextOutput('complete_script', scriptDraft, model, provider, prompt)
-    const raw = JSON.stringify(draft)
-    if (!draft) return reply.code(422).send({
-      detail: '文本模型未返回符合格式的剧本 JSON，请检查模型输出或重新生成', raw_output: raw.slice(0, 5000),
+  const legacyScriptSourceVersion = (id: string) => {
+    const project = required<Project>('projects', id), script = projectScript(id)
+    return creativeInputHash({
+      project: { name: project.name, brief: project.brief, ratio: project.ratio },
+      script: { ...script,
+        scenes: script.scenes.map(({ created_at: _created, updated_at: _updated, ...scene }) => scene),
+        artifacts: script.artifacts?.map(({ created_at: _created, updated_at: _updated, ...artifact }) => artifact),
+      },
+      decisions: storyDecisions(id).map(({ updated_at: _updated, ...decision }) => decision),
+      requirements: creatorRequirementsContext(id),
     })
-    return { ...draft, skill_assignment: rules.assignment, used_skills: rules.skills }
-  })
+  }
+  app.post('/api/projects/:id/script/artifacts/generate', (request, reply) => withCreativeRequest(request, reply, '剧本文档生成', signal =>
+    withModelRequestContext({ ...currentModelRequestContext(), policy: modelTaskPolicies.generation, signal: modelStepSignal(signal) }, async () => {
+      const { id } = parse(idParams, request.params)
+      const project = required<Project>('projects', id)
+      const data = parse(scriptArtifactGenerationInput, request.body)
+      const model = required<Model>('models', data.model_id)
+      if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
+      checkProtocol(model.modality, model.protocol)
+      const provider = required<Provider>('providers', model.provider_id)
+      validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>, model.protocol, { base_url: provider.base_url, protocol: model.protocol, remote_id: model.remote_id })
+      if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
+      const source = legacyScriptSourceVersion(id), modelVersion = creativeModelIdentity(model.id)
+      const base = baseScriptArtifactPrompt(project, data)
+      const rules = await creativeRules('script', id, data.model_id, base, data.skill_selections,
+        { workflow_stage: scriptStageForArtifact(data.artifact_type), purpose: 'create' })
+      const prompt = applySkillRules(base, rules)
+      return withModelAdmission(`legacy-artifact:${id}:${data.artifact_type}`, modelStepSignal(signal), async () => {
+        const steps = creativeGenerationSteps(id, `legacy-artifact:${data.artifact_type}`, { version: 2, prompt, source, model: modelVersion }, signal, data.restart)
+        const checkCurrent = () => {
+          modelStepSignal(signal)?.throwIfAborted()
+          if (legacyScriptSourceVersion(id) !== source || creativeModelIdentity(model.id) !== modelVersion) {
+            steps.clear()
+            throw Object.assign(new Error('项目资料或模型配置已更新，请按当前内容重新生成剧本文档'), { statusCode: 409 })
+          }
+        }
+        checkCurrent()
+        const raw = await generateLongFormDocument({ name: 'script_stage_draft', prompt,
+          generate: (text, contract) => { checkCurrent(); return generateTextOutput(model, provider, text, contract, signal) },
+          steps, maxLength: 100000, signal })
+        checkCurrent()
+        const content = raw.trim()
+        if (!content) return reply.code(502).send({ detail: '文本模型未返回产物内容' })
+        steps.clear()
+        return { artifact_type: data.artifact_type, title: defaultArtifactTitles[data.artifact_type], content, skill_assignment: rules.assignment }
+      })
+    })))
+  app.post('/api/projects/:id/script/generate', (request, reply) => withCreativeRequest(request, reply, '剧本生成', signal =>
+    withModelRequestContext({ ...currentModelRequestContext(), policy: modelTaskPolicies.generation, signal: modelStepSignal(signal) }, async () => {
+      const { id } = parse(idParams, request.params)
+      const project = required<Project>('projects', id)
+      const data = parse(scriptGenerationInput, request.body)
+      const model = required<Model>('models', data.model_id)
+      if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
+      checkProtocol(model.modality, model.protocol)
+      const provider = required<Provider>('providers', model.provider_id)
+      validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>, model.protocol, { base_url: provider.base_url, protocol: model.protocol, remote_id: model.remote_id })
+      if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
+      const source = legacyScriptSourceVersion(id), modelVersion = creativeModelIdentity(model.id)
+      const base = (data.prompt_override ? appendMissingScriptSettings(data.prompt_override, data.generation_options)
+        : baseScriptGenerationPrompt(project, data)) + referenceContext([{ role: 'user', text: data.idea || '生成完整剧本草稿', reference_documents: data.reference_documents }])
+      const rules = await creativeRules('script', id, data.model_id, base, data.skill_selections,
+        { text: data.idea, workflow_stage: 'episode', purpose: 'create' })
+      const prompt = applySkillRules(base, rules)
+      return withModelAdmission(`legacy-script:${id}`, modelStepSignal(signal), async () => {
+        const steps = creativeGenerationSteps(id, 'legacy-complete-script', { version: 2, prompt, source, model: modelVersion }, signal, data.restart)
+        const checkCurrent = () => {
+          modelStepSignal(signal)?.throwIfAborted()
+          if (legacyScriptSourceVersion(id) !== source || creativeModelIdentity(model.id) !== modelVersion) {
+            steps.clear()
+            throw Object.assign(new Error('项目资料或模型配置已更新，请按当前内容重新生成剧本'), { statusCode: 409 })
+          }
+        }
+        checkCurrent()
+        // A refined Zod object cannot use omit(); the final scriptDraft parse
+        // below still enforces unique types and complete design deliverables.
+        const metadata = z.object({ outline: scriptDraft.shape.outline, characters: scriptDraft.shape.characters, artifacts: scriptDraft.shape.artifacts })
+        const catalog = z.object({ artifacts: z.array(scriptDraftArtifact.omit({ content: true })).max(scriptArtifactTypes.length).optional() })
+          .superRefine((value, context) => {
+            const types = value.artifacts?.map(item => item.artifact_type) || []
+            if (new Set(types).size !== types.length) context.addIssue({ code: 'custom', message: '剧本文档类型不可重复', path: ['artifacts'] })
+          })
+        const draft = await generateLongFormObject({ name: 'complete_script', prompt, schema: scriptDraft, metadata,
+          itemSchema: scriptDraft.shape.scenes.element, itemKey: 'scenes', maxItems: 100,
+          metadataUnits: { documents: [{ key: 'outline', label: '故事大纲', maxLength: 20000 }, { key: 'characters', label: '人物设定', maxLength: 20000 }],
+            collections: [{ key: 'artifacts', label: '剧本文档', catalog, identityKey: 'artifact_type', contentKey: 'content', maxLength: 100000 }] },
+          generate: (text, contract) => { checkCurrent(); return generateTextOutput(model, provider, text, contract, signal) }, steps, signal })
+        checkCurrent()
+        steps.clear()
+        return { ...draft, skill_assignment: rules.assignment, used_skills: rules.skills }
+      })
+    })))
   app.post('/api/projects/:id/shots', async request => {
     const { id } = parse(idParams, request.params)
     required<Project>('projects', id)
@@ -4277,7 +4416,7 @@ export function buildApp(): FastifyInstance {
       || !model.enabled || model.archived || provider.adapter !== 'http' || !provider.enabled || provider.archived) invalid('对照镜头、模型或提供商不可用')
     checkProtocol(model.modality, model.protocol)
     const settings = JSON.parse(model.settings) as Record<string, unknown>
-    validateSettings(model.modality, settings)
+    validateSettings(model.modality, settings, model.protocol, { base_url: provider.base_url, protocol: model.protocol, remote_id: model.remote_id })
     const references = validateGeneration(data, model, projectId)
     await validateVideoReferenceRequest(settings, references, data, model.remote_id)
     // Do not recompile style, reference scope or the prompt: this comparison

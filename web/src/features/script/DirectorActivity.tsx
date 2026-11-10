@@ -11,9 +11,10 @@ import { scriptDiagnosticDisplayText } from './script-display-text'
 import DirectorTaskPreview from './DirectorTaskPreview'
 import './director-activity.css'
 
-export default function DirectorActivity({ activity, execution, pending, failed, disabled, onOpenDraft, onOpenDocuments, onOpenSource, onRetry, onRecover, onStop, onContinue }: {
+export default function DirectorActivity({ activity, execution, pending, failed, disabled, onOpenDraft, onOpenDocuments, onOpenSource, onRetry, onRecover, onStop, onContinue, onContinueWithModel, continueModelName }: {
   activity?: ScriptActivity[]; execution?: ScriptExecution; pending?: boolean; failed?: boolean; disabled?: boolean;
   onOpenDraft?: () => void; onOpenDocuments?: () => void; onOpenSource?: (source: ScriptActivityTarget) => void;
+  onContinueWithModel?: () => void; continueModelName?: string;
   onContinue?: () => void; onRetry?: () => void; onRecover?: () => void; onStop?: () => void;
 }) {
   const view = executionView(activity, execution, pending, failed)
@@ -46,6 +47,7 @@ export default function DirectorActivity({ activity, execution, pending, failed,
     </div> : <p className="sd-activity-result">{summary}</p>}
     {pending && onStop && <div className="sd-activity-wait">{waiting && <span>当前步骤仍在处理中，已等待 {formatProcessingDuration(activeMs)}。</span>}<Button type="button" onClick={onStop} data-workspace-control="" variant="subtle">停止任务</Button></div>}
     {!pending && onContinue && <Button type="button" disabled={disabled} onClick={onContinue} variant="light" size="xs">继续未完成步骤</Button>}
+    {!pending && onContinueWithModel && <Button type="button" disabled={disabled} onClick={onContinueWithModel} variant="subtle" size="xs">换用{continueModelName || '所选模型'}继续</Button>}
     {!!view.stats.length && <p className="sd-activity-stats">{view.stats.join(' · ')}</p>}
     {!!sequence.tasks.length && <div className="sd-activity-plan"><strong className="sd-activity-plan-heading">任务与成果</strong><ol className="sd-activity-tasks" aria-label="本轮任务清单">{sequence.tasks.map(node => {
       const { status, label } = activityPresentation(node, pending)

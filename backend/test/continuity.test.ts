@@ -191,3 +191,27 @@ test('model continuity analysis is explicit, cached, scoped and invalidated when
   assert.equal(invalid.statusCode, 422)
   assert.equal((await call<ContinuityResponse & { semantic_review: { status: string } }>('GET', url)).semantic_review.status, 'stale')
 })
+
+
+test('long semantic continuity preserves complete adjacent-pair groups, resumes only remaining and reruns after success', async t => {
+  const project = await call<{id:string}>('POST', '/api/projects', {name:'长接镜恢复'})
+  for (let index=0;index<7;index++) await call('POST', `/api/projects/${project.id}/shots`, {title:`镜头${index+1}`,start_state:`起点${index}`,end_state:`落点${index}`})
+  const provider = await call<{id:string}>('POST','/api/providers',{name:'恢复模型',base_url:'https://continuity-resume.invalid/v1'})
+  const model = await call<{id:string}>('POST','/api/models',{provider_id:provider.id,name:'接镜模型',remote_id:'test',modality:'text',protocol:'chat_completions',settings:{request_path:'chat/completions',request_template:{model:'{{model}}',messages:[{role:'user',content:'{{prompt}}'}]},text_path:'choices.0.message.content'}})
+  let requests=0, fail=true
+  t.mock.method(globalThis,'fetch',async()=>{
+    requests++
+    if (requests===2 && fail) return Response.json({error:{code:'invalid_api_key',message:'offline failure'}},{status:401})
+    return Response.json({choices:[{message:{content:JSON.stringify({issues:[]})},finish_reason:'stop'}]})
+  })
+  const url=`/api/projects/${project.id}/continuity/analyze`
+  assert.equal((await app.inject({method:'POST',url,payload:{model_id:model.id}})).statusCode,502)
+  assert.equal(requests,2)
+  assert.equal((await call<any>('GET',`/api/projects/${project.id}/continuity`)).semantic_review.status,'not_checked','a partial report must not become checked')
+  fail=false
+  await call('POST',url,{model_id:model.id});assert.equal(requests,3,'completed first group is reused')
+  assert.equal((await call<any>('GET',`/api/projects/${project.id}/continuity`)).semantic_review.status,'checked')
+  await call('POST',url,{model_id:model.id});assert.equal(requests,5,'explicit recheck after success dispatches again')
+  const rows=await call<Array<any>>('GET',`/api/projects/${project.id}/model-requests`)
+  assert.ok(rows.some(row=>row.progress?.some((phase:any)=>phase.total_units===2&&phase.completed_units===2)))
+})

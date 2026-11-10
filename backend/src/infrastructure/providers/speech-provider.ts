@@ -1,3 +1,5 @@
+import { modelStepSignal } from '../../modules/generation/model-execution.js'
+import { observeProviderFetch } from './text-request-plan.js'
 import { randomUUID } from 'node:crypto'
 
 export interface SpeechSynthesisInput {
@@ -78,12 +80,16 @@ export async function synthesizeSpeech(rawInput: SpeechSynthesisInput, fetchImpl
     ? `情境参考（不要朗读）：\n${input.context_text.trim()}` : ''].filter(Boolean).join('\n')
   const requestId = randomUUID()
   const controller = new AbortController()
+  const parent = modelStepSignal()
+  const abortParent = () => controller.abort(parent!.reason)
+  if (parent?.aborted) abortParent()
+  else parent?.addEventListener('abort', abortParent, { once: true })
   const timer = setTimeout(() => controller.abort(), speechRequestTimeoutMs)
   timer.unref()
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
   let completed = false
   try {
-    const response = await withAbort(fetchImpl(endpoint, {
+    const response = await withAbort(observeProviderFetch(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -102,7 +108,7 @@ export async function synthesizeSpeech(rawInput: SpeechSynthesisInput, fetchImpl
         },
       }),
       signal: controller.signal,
-    }), controller.signal)
+    }, 'speech_create', fetchImpl, { remote_id: 'seed-tts-2.0' }), controller.signal)
     if (!response.ok) {
       void response.body?.cancel().catch(() => {})
       throw httpError(response.status)
@@ -183,13 +189,16 @@ export async function synthesizeSpeech(rawInput: SpeechSynthesisInput, fetchImpl
     return { audio: Buffer.concat(audioChunks, audioBytes), duration_ms: null,
       subtitles, usage_characters: usageCharacters, request_id: requestId }
   } catch (error) {
+    if (parent?.aborted) throw parent.reason
     if (controller.signal.aborted) throw timeoutError()
     if (error instanceof SpeechProviderError) throw error
     throw new Error('语音服务连接失败，请检查网络与调用记录后再手动重试。')
   } finally {
+    parent?.removeEventListener('abort', abortParent)
     clearTimeout(timer)
-    controller.abort()
-    // A malformed/error/terminal message ends the stream immediately; never wait for untrusted trailing data.
+    // An intentional terminal-frame stop precedes internal controller cleanup,
+    // so transport diagnostics do not misclassify a successful stop as user cancellation.
     if (reader) void reader.cancel().catch(() => {})
+    controller.abort()
   }
 }

@@ -22,10 +22,16 @@ export async function retryReadOnlyRequest<T>(request: () => Promise<T>, options
     try { return await request() }
     catch (issue) {
       signal?.throwIfAborted()
+      if (issue instanceof TextProviderError && (issue.outputStarted || issue.partialText || ['context_overflow', 'output_limit', 'refusal', 'invalid_tool', 'invalid_response', 'cancelled'].includes(issue.failureReason))) throw issue
       if (attempt >= 2 || !remainingModelAttempts() || (!Number.isFinite(remainingModelStepMs()) && Date.now() - started > 10 * 60_000) || !(issue instanceof TextProviderError) || !issue.retryable) throw issue
       const jitter = 0.75 + (options.random || Math.random)() * 0.5
       const delayMs = Math.max(issue.retryAfterMs || 0, Math.round(2000 * jitter))
-      if (delayMs >= remainingModelStepMs()) throw issue
+      if (delayMs >= remainingModelStepMs() || delayMs > 60_000) {
+        // Keep the provider's requested wait intact; the next explicit continue
+        // may retry after this instant rather than spinning a hidden timer.
+        Object.assign(issue, { retryAt: Date.now() + delayMs, code: 'model_retry_wait' })
+        throw issue
+      }
       options.onRetry?.(attempt + 1, delayMs)
       await wait(delayMs, signal)
     }
@@ -34,7 +40,7 @@ export async function retryReadOnlyRequest<T>(request: () => Promise<T>, options
 
 export function retryReadOnlyGeneration(generate: StructuredGenerator, options: RetryOptions = {}): StructuredGenerator {
   if ((generate as StructuredGenerator & { [managedRetry]?: boolean })[managedRetry]) return generate
-  const wrapped: StructuredGenerator = (prompt, contract) => retryReadOnlyRequest(() => generate(prompt, contract), options)
+  const wrapped: StructuredGenerator = (prompt, contract, context) => retryReadOnlyRequest(() => generate(prompt, contract, context), options)
   Object.assign(wrapped, { [managedRetry]: true })
   return wrapped
 }

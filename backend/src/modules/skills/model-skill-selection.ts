@@ -100,7 +100,7 @@ export async function resolveCreationSkillContext(options: {
   else {
     choice = validateChoice(input, options.select ? await options.select(projectId, modelId, input, signal)
       : await generateStructuredOutput('creation_skill_selection', choiceSchema, options.generate, selectionPrompt(input), {
-        validate: value => { validateChoice(input, value) },
+        signal, validate: value => { validateChoice(input, value) },
       }))
     if (key) {
       selectionCache.set(key, choice)

@@ -224,3 +224,19 @@ test('application exposes the endpoint and persists an independent image analysi
     }
   } finally { await integrated.close() }
 })
+
+test('image analysis retains prompt policy and rejects a source change before returning a candidate', async t => {
+  const { currentModelRequestContext } = await import('../src/modules/generation/model-task-policy.js')
+  const isolated = Fastify(); t.after(() => isolated.close())
+  isolated.setErrorHandler((error, _request, reply) => reply.code((error as { statusCode?: number }).statusCode || 500).send({ detail: String(error) }))
+  registerImagePromptAnalysisRoutes(isolated, { generate: async () => {
+    assert.equal(currentModelRequestContext()?.policy.purpose, 'prompt')
+    run("UPDATE assets SET path=? WHERE id='image'", outside)
+    return '蓝色衣装，电影侧光。'
+  } })
+  try {
+    const response = await isolated.inject({ method: 'POST', url, payload: { model_id: 'vision', asset_id: 'image' } })
+    assert.equal(response.statusCode, 409, response.body); assert.match(response.body, /来源图片/)
+    assert.equal(all('SELECT id FROM jobs').length, 0)
+  } finally { run("UPDATE assets SET path=? WHERE id='image'", imagePath) }
+})

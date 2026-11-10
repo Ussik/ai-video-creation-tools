@@ -593,17 +593,18 @@ test('argument count diagnostics survive repeated failures; a changed approach f
     if (turn === 2) {
       const first = body.messages.filter((item: any) => item.role === 'tool').slice(-2).map((item: any) => JSON.parse(item.content))
       assert.equal(first[0].diagnostic.limit, 8); assert.equal(first[0].diagnostic.actual, 9); assert.equal(first[0].diagnostic.path, 'document_ids')
-      assert.equal(first[1].diagnostic.code, 'limit_exceeded'); assert.equal(first[1].diagnostic.retryable, true)
-      assert.match(first[1].diagnostic.repair, /修正参数/)
-      return Response.json({ choices: [{ message: { role: 'assistant', content: '稍后重新定位。' }, finish_reason: 'stop' }] })
+      assert.equal(first[0].diagnostic.code, 'limit_exceeded'); assert.equal(first[0].diagnostic.retryable, true)
+      assert.match(first[0].diagnostic.repair, /修正参数/)
+      assert.equal(first[1].deferred, true); assert.equal(first[1].reason, 'read_prerequisite_failed')
     }
-    if (turn === 4) return Response.json({ choices: [{ message: { role: 'assistant', content: '已完成读取。' }, finish_reason: 'stop' }] })
-    if (turn > 1) assert.match(body.messages.at(-1).content, /程序执行检查/)
-    const ids = turn === 3 ? [document.id] : Array.from({ length: 9 }, (_, index) => `missing-${index}`)
-    return Response.json({ choices: [{ message: { role: 'assistant', content: '', tool_calls: (turn === 3 ? [1] : [1, 2]).map(index => ({ id: `read-${turn}-${index}`, type: 'function', function: { name: 'read_documents', arguments: JSON.stringify({ document_ids: ids }) } })) }, finish_reason: 'tool_calls' }] })
+    if (turn === 3) return Response.json({ choices: [{ message: { role: 'assistant', content: '稍后重新定位。' }, finish_reason: 'stop' }] })
+    if (turn === 5) return Response.json({ choices: [{ message: { role: 'assistant', content: '已完成读取。' }, finish_reason: 'stop' }] })
+    if (turn === 4) assert.match(body.messages.at(-1).content, /程序执行检查/)
+    const ids = turn === 4 ? [document.id] : Array.from({ length: 9 }, (_, index) => `missing-${index}`)
+    return Response.json({ choices: [{ message: { role: 'assistant', content: '', tool_calls: (turn === 1 ? [1, 2] : [1]).map(index => ({ id: `read-${turn}-${index}`, type: 'function', function: { name: 'read_documents', arguments: JSON.stringify({ document_ids: ids }) } })) }, finish_reason: 'tool_calls' }] })
   })
   const result = await call<any>('POST', `/api/projects/${project.id}/script/director/chat`, { model_id: model.id, mode: 'script', use_tools: true, messages: [{ role: 'user', text: '读取项目' }] })
-  assert.equal(turn, 4); assert.equal(result.execution_outcome, undefined); assert.equal(result.reply, '已完成读取。')
+  assert.equal(turn, 5); assert.equal(result.execution_outcome, undefined); assert.equal(result.reply, '已完成读取。')
   assert.equal(result.activity.filter((event: any) => event.label === '继续修复未完成项').length, 1)
   assert.equal(result.activity.filter((event: any) => event.kind === 'tool' && event.status === 'failed').length, 2)
 })
@@ -1115,8 +1116,11 @@ test('native decisions have no application time cutoff and cancellation retains 
       t.mock.timers.tick(60_000)
       return Response.json({ choices: [{ message: { tool_calls: [{ id: `state-${rounds}`, type: 'function', function: { name: 'get_creation_state', arguments: '{}' } }] }, finish_reason: 'tool_calls' }] })
     }
-    requestSignal = init.signal!; entered()
-    return new Promise<Response>(() => {})
+    requestSignal = init.signal!
+    return new Response(new ReadableStream({ start(stream) {
+      stream.enqueue(new TextEncoder().encode('data: {\"choices\":[{\"delta\":{\"content\":\"正在处理\"}}]}\n\n'))
+      setImmediate(entered)
+    } }), { headers: { 'content-type': 'text/event-stream' } })
   })
   const pending = runToolLoop(current, controller.signal, 'chat_completions', event => { if (event.type === 'activity') activities.push(event.activity) })
   await waiting

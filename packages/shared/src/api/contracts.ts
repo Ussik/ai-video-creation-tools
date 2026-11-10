@@ -5,7 +5,7 @@ export type { VisualReferenceAsset, VisualReferencePurpose, VisualReferenceSnaps
 
 export type Modality = 'text' | 'image' | 'video'
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed'
-export type Protocol = 'responses' | 'chat_completions' | 'image_generations' | 'async_video'
+export type Protocol = 'anthropic_messages' | 'responses' | 'chat_completions' | 'image_generations' | 'async_video'
 
 export interface Project {
   id: string
@@ -245,6 +245,7 @@ export interface Provider {
     name_path?: string
     modality_path?: string
   }
+  protocol?: 'responses' | 'chat_completions' | 'anthropic_messages' | null
   has_key: boolean
   enabled: boolean
 }
@@ -258,6 +259,7 @@ export interface Model {
   settings: Record<string, unknown>
   enabled: boolean
   is_default?: boolean
+  sort_order?: number
 }
 export interface ProjectDetail extends Project {
   final_cut_canvas_id?: string
@@ -351,10 +353,12 @@ export interface VisualReferenceAssetInput extends VisualReferenceContext {
   label?: string
   status?: 'candidate' | 'confirmed'
   is_default?: boolean
+  sort_order?: number
 }
 export interface VisualReferenceAssetPatch extends VisualReferenceContext {
   status?: VisualReferenceStatus
   is_default?: boolean
+  sort_order?: number
   label?: string
 }
 export interface VisualReferenceCrop { x: number; y: number; width: number; height: number }
@@ -499,4 +503,13 @@ export interface CutReview {
 export interface CutReviewReport {
   production_range: ProductionRange
   cuts: CutReview[]
+}
+
+/** Provider diagnostics contain no prompt, API key or private reasoning. */
+export type ModelRequestTask = {
+  id: string; model_id: string|null; label: string; owner: 'request'|'job'|'director';
+  state: 'running'|'succeeded'|'failed'|'cancelled'|'interrupted'; can_cancel: boolean;
+  created_at: string; updated_at: string; usage: import('../script/script-request-usage.js').ScriptRequestUsage;
+  progress?: Array<{ phase_id: string; label: string; completed_units: number; total_units: number|null }>;
+  attempts: Array<{ id: string; state: string; metrics: Record<string,unknown> }>;
 }

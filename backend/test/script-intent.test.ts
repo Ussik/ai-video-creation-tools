@@ -147,7 +147,7 @@ test('delegated decisions reach typed outline and episode drafts with the origin
   t.after(() => { globalThis.fetch = originalFetch })
   let stage = 'outline'
   let intentCalls = 0
-  let draftCalls = 0
+  const draftCalls: Record<string, number> = { outline: 0, episode: 0 }
   globalThis.fetch = async (_url, init) => {
     const completenessReply = draftCompletenessFixtureResponse(init); if (completenessReply) return completenessReply
     const prompt = JSON.parse(String(init?.body)).messages[0].content as string
@@ -160,7 +160,7 @@ test('delegated decisions reach typed outline and episode drafts with the origin
       content = { action: 'draft', operation: 'create', workflow: { stage, episode_number: stage === 'episode' ? 1 : 0 },
         creative_brief: '沿用授权模型决定的雨夜车站开场。' }
     } else if (prompt.includes('本轮为“')) {
-      draftCalls++
+      draftCalls[stage]++
       assert.ok(prompt.includes(decision))
       assert.match(prompt, /创作者明确授权模型决定后已经作出的具体设定应沿用，不标为待定/)
       assert.match(prompt, /仅验收本次约定的/)
@@ -190,11 +190,12 @@ test('delegated decisions reach typed outline and episode drafts with the origin
       const generated = await request({ model_id: model.id, mode: 'script', workflow: { stage, episode_number: stage === 'episode' ? 1 : 0, ...(stage === 'outline' ? { artifact_types: ['outline'], ...(suffix ? { operation: 'regenerate' } : {}) } : {}) },
         messages: [...messages, { role: 'assistant', text: delegated.reply }, { role: 'user', text: stage === 'episode' ? '开始写第一集' : '生成全剧大纲' }] })
       assert.equal(generated.draft.stage, stage)
+      if (stage === 'episode') assert.deepEqual(generated.draft.artifacts, episode.artifacts, 'both transports retain the complete draft made from the delegated decision')
       assert.deepEqual((await call<{ script: unknown }>('GET', `/api/projects/${project.id}`)).script, before)
     }
   }
   assert.equal(intentCalls, 0, 'explicit workflow targets bypass intent interpretation')
-  assert.equal(draftCalls, 4)
+  assert.deepEqual(draftCalls, { outline: 2, episode: 1 }, 'explicit outline regeneration runs again; the identical unsaved episode reuses its complete checkpoint across transports')
 })
 
 test('skip cannot be combined with document operations or visual-asset routing', async () => {

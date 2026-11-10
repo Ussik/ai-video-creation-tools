@@ -1,7 +1,9 @@
+import { readTextErrorBody } from './text-transport-boundary.js'
+import { observeProviderFetch, type ProviderRequestIdentity } from './text-request-plan.js'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
-import { estimateTextRequestTokens } from './text-context.js'
+import { estimateTextRequestTokens, textRequestInput } from './text-context.js'
 import { parseTextUsage } from './text-usage-parse.js'
 import { beginTextRequest, settlePendingTextRequest, type TextRequestUsageMetrics } from './text-request-usage.js'
 
@@ -16,7 +18,7 @@ function returnedUsage(payload: Record<string, unknown>): TextRequestUsageMetric
 }
 
 async function failedUsage(response: Response, wait: <T>(value: Promise<T>) => Promise<T>) {
-  try { return returnedUsage(await wait(response.clone().json()) as Record<string, unknown>) }
+  try { return returnedUsage(JSON.parse(await readTextErrorBody(response.clone(), { wait })) as Record<string, unknown>) }
   catch { return {} }
 }
 
@@ -25,7 +27,7 @@ async function failedUsage(response: Response, wait: <T>(value: Promise<T>) => P
  * Polling deliberately avoids depending on a provider's stream cursor support. */
 export async function backgroundTextResponse(url: string, body: Record<string, unknown>, headers: Record<string, string>,
   signal: AbortSignal, wait: <T>(value: Promise<T>) => Promise<T>, touch: () => void,
-  reservedOutputTokens?: number): Promise<Response> {
+  reservedOutputTokens?: number, plannedInputTokens?: number, identity: ProviderRequestIdentity = {}): Promise<Response> {
   const store = recovery.getStore()!
   const requestBody: Record<string, unknown> = { ...body, stream: false, background: true }
   const key = createHash('sha256').update(JSON.stringify([url, requestBody])).digest('hex')
@@ -34,13 +36,13 @@ export async function backgroundTextResponse(url: string, body: Record<string, u
   if (!saved) {
     signal.throwIfAborted()
     const serialized = JSON.stringify(requestBody)
-    const inputTokens = estimateTextRequestTokens(requestBody)
+    const inputTokens = plannedInputTokens ?? estimateTextRequestTokens(textRequestInput(requestBody))
     const limit = requestBody.max_output_tokens ?? requestBody.max_completion_tokens ?? requestBody.max_tokens ?? reservedOutputTokens
     const generation = beginTextRequest({ request_bytes: Buffer.byteLength(serialized), estimated_input_tokens: inputTokens,
       ...(typeof limit === 'number' && Number.isSafeInteger(limit) && limit > 0 ? { reserved_output_tokens: limit } : {}) })
     store.save(key, { state: 'creating' })
     let response: Response
-    try { response = await wait(fetch(url, { method: 'POST', headers, body: serialized, signal })) }
+    try { response = await wait(observeProviderFetch(url, { method: 'POST', headers, body: serialized, signal }, 'background_create', fetch, identity)) }
     catch (error) { generation.complete({}); throw error }
     touch()
     if (!response.ok) { store.save(key); generation.complete(await failedUsage(response, wait)); return response }
@@ -61,14 +63,14 @@ export async function backgroundTextResponse(url: string, body: Record<string, u
     }
   }
   const responseUrl = `${url.replace(/\/$/, '')}/${encodeURIComponent(saved.id!)}`
-  const cancel = AsyncLocalStorage.bind(() => { if (signal.reason?.name === 'AbortError') void cancelBackgroundTextResponses(url, saved!.id!, headers).catch(() => {}) })
+  const cancel = AsyncLocalStorage.bind(() => { if (signal.reason?.name === 'AbortError') void cancelBackgroundTextResponses(url, saved!.id!, headers, identity).then(response => readTextErrorBody(response)).catch(() => {}) })
   signal.addEventListener('abort', cancel, { once: true })
   try {
   for (;;) {
     signal.throwIfAborted()
     const poll = beginTextRequest({ kind: 'transport', request_bytes: Buffer.byteLength(responseUrl), estimated_input_tokens: 0 })
     let response: Response
-    try { response = await wait(fetch(responseUrl, { headers, signal })) }
+    try { response = await wait(observeProviderFetch(responseUrl, { headers, signal }, 'background_poll', fetch, identity)) }
     catch (error) { poll.complete({}); throw error }
     touch()
     if (!response.ok) {
@@ -92,9 +94,9 @@ export async function backgroundTextResponse(url: string, body: Record<string, u
   } finally { signal.removeEventListener('abort', cancel) }
 }
 
-export async function cancelBackgroundTextResponses(url: string, id: string, headers: Record<string, string>) {
+export async function cancelBackgroundTextResponses(url: string, id: string, headers: Record<string, string>, identity: ProviderRequestIdentity = {}) {
   const cancelUrl = `${url.replace(/\/$/, '')}/${encodeURIComponent(id)}/cancel`
   const request = beginTextRequest({ kind: 'transport', request_bytes: Buffer.byteLength(cancelUrl), estimated_input_tokens: 0 })
-  try { return await fetch(cancelUrl, { method: 'POST', headers, signal: AbortSignal.timeout(10_000) }) }
+  try { return await observeProviderFetch(cancelUrl, { method: 'POST', headers, signal: AbortSignal.timeout(10_000) }, 'background_cancel', fetch, identity) }
   finally { request.complete({}) }
 }

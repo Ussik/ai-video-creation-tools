@@ -21,6 +21,17 @@ export type ScriptActivity = {
   input_tokens?: number; output_tokens?: number; reasoning_tokens?: number; output_limit?: number;
   cache_read_tokens?: number; cache_write_tokens?: number; cache_miss_tokens?: number; request_purpose?: string;
   estimated_input_tokens?: number; context_window_tokens?: number; reserved_output_tokens?: number;
+  input_limit_tokens?: number; output_limit_tokens?: number;
+  budget_mode?: 'shared' | 'separate' | 'unknown';
+  input_count_method?: 'estimate' | 'provider' | 'estimated_fallback';
+  capacity_status?: 'validated' | 'estimated' | 'partial' | 'unknown';
+  output_source?: 'auto' | 'fixed' | 'upstream' | 'template' | 'reserve';
+  capability_source?: 'override' | 'provider' | 'legacy' | 'unknown';
+  attempt_id?: string; request_id?: string; model_id?: string; remote_id?: string; endpoint?: string;
+  failure_reason?: 'output_limit'|'context_overflow'|'disconnected'|'refusal'|'invalid_tool'|'invalid_response'|'upstream_error'|'cancelled';
+  output_parameter?: 'max_output_tokens'|'max_completion_tokens'|'max_tokens'; framing_reserve_tokens?: number;
+  raw_reason?: string; delivery?: 'not_sent'|'rejected'|'accepted'|'output_started'|'completed'|'unknown'; output_started?: boolean;
+  output_limit_reason?: 'max_output_tokens'|'length'; output_limit_kind?: 'text'|'reasoning'|'tool_arguments';
   upstream_request_id?: string; http_status?: number;
   usage?: { current: ScriptRequestUsage; cumulative?: ScriptRequestUsage; limits?: ScriptRequestUsageLimits };
   targets?: ScriptActivityTarget[];

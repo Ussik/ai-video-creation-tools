@@ -15,12 +15,13 @@ const sse = (items: unknown[]) => new Response(items.map(item => `data: ${JSON.s
 
 test('script tool transport keeps waiting beyond former request and idle deadlines', async t => {
   t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1000 })
-  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+  t.mock.method(globalThis, 'fetch', async () => sse([
+    { type: 'response.output_text.delta', delta: '完成' },
+    { type: 'response.completed', response: { status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '完成' }] }] } },
+  ]))
+  const response = await withUnrestrictedScriptExecution(() => textToolSession(model('responses'), provider, 'request', functions, () => '', undefined, () => {
     t.mock.timers.tick(181 * 60_000)
-    assert.equal(init.signal!.aborted, false)
-    return Response.json({ status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '完成' }] }] })
-  })
-  const response = await withUnrestrictedScriptExecution(() => textToolSession(model('responses', false), provider, 'request', functions, () => '')())
+  })())
   assert.equal(response.text, '完成')
 })
 
@@ -120,7 +121,7 @@ test('reasoning-only truncated tools remain nonretryable transport failures with
     await assert.rejects(textToolSession(model(protocol), provider, 'request', functions, () => '')(), (issue: unknown) => {
       assert.ok(issue instanceof TextProviderError)
       assert.ok(!(issue instanceof TextOutputLimitError))
-      assert.equal(issue.message, '模型输出被截断，未执行工具调用：已达到模型输出长度上限')
+      assert.equal(issue.message, '模型输出被截断，未执行工具调用：推理已耗尽输出预算，未返回完整工具调用')
       assert.equal(issue.retryable, false)
       return true
     })
@@ -182,4 +183,34 @@ for (const protocol of ['chat_completions', 'responses'] as const) test(`${proto
   await session([results[1]!])
   assert.equal((await session([results[2]!])).text, '继续补读')
   assert.equal(requests, 4, 'each request is an actual task decision, with zero summary overhead')
+})
+
+for (const compactHistory of [true, false]) test(`confirmed context rejection retries only after proven reduction (compact=${compactHistory})`, async t => {
+  let requests = 0, rejectedBytes = 0
+  const lengths: number[] = []
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)); lengths.push(Buffer.byteLength(String(init?.body))); requests++
+    if (requests === 4) { rejectedBytes = lengths.at(-1)!; return Response.json({ error: { code: 'context_length_exceeded', message: 'maximum context length' } }, { status: 400 }) }
+    if (requests === 5) {
+      assert.ok(lengths.at(-1)! < rejectedBytes, 'actual serialized wire request must be smaller')
+      assert.ok(JSON.stringify(body).includes('最新正文'), 'latest completed result stays exact')
+      assert.ok(!JSON.stringify(body).includes('最早正文'), 'only old rereadable results can be removed')
+      return Response.json({ choices: [{ message: { content: '继续' }, finish_reason: 'stop' }] })
+    }
+    return Response.json({ choices: [{ message: { content: '', tool_calls: [{ id: `call-${requests}`, type: 'function', function: { name: 'read_documents', arguments: '{}' } }] }, finish_reason: 'tool_calls' }] })
+  })
+  const session = textToolSession(model('chat_completions', false), provider, '保留原授权。', functions, () => '', undefined, undefined, undefined, { compactHistory })
+  await session()
+  await session([{ id: 'call-1', output: JSON.stringify({ ok: true, result: { id: 'old', version: 'v1', content: '最早正文'.repeat(1000) } }) }])
+  await session([{ id: 'call-2', output: JSON.stringify({ ok: true, result: { id: 'latest', version: 'v1', content: '最新正文'.repeat(1000) } }) }])
+  const run = session([{ id: 'call-3', output: '{"ok":true,"result":{"complete":true}}' }])
+  if (compactHistory) { assert.equal((await run).text, '继续'); assert.equal(requests, 5) }
+  else { await assert.rejects(run, (error: unknown) => error instanceof TextProviderError && error.failureReason === 'context_overflow'); assert.equal(requests, 4) }
+})
+
+test('an unreducible context rejection is never replayed unchanged', async t => {
+  let requests = 0
+  t.mock.method(globalThis, 'fetch', async () => { requests++; return Response.json({ error: { code: 'context_length_exceeded', message: 'maximum context length' } }, { status: 400 }) })
+  await assert.rejects(textToolSession(model('chat_completions', false), provider, 'full creator requirements', functions, () => '')(), (error: unknown) => error instanceof TextProviderError && error.failureReason === 'context_overflow')
+  assert.equal(requests, 1)
 })

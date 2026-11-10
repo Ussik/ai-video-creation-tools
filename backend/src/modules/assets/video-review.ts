@@ -9,6 +9,9 @@ import { parse } from '../../infrastructure/http/request.js'
 import { streamText, type TextStreamRequest } from '../../infrastructure/providers/providers.js'
 import { decryptKey } from '../../infrastructure/security/secrets.js'
 import { generateStructuredOutput } from '../generation/model-output.js'
+import { creativeInputHash, creativeModelIdentity } from '../skills/creative-model-state.js'
+import { generationUnitStore } from '../generation/generation-unit-store.js'
+import { createGenerationSteps } from '../script/script-generation-steps.js'
 import { reviewContactSheets, reviewFrame, reviewMediaLocation, reviewNativeVideo, reviewVideoDuration } from './video-review-media.js'
 
 export const VIDEO_REVIEW_SCHEMA_SQL = `CREATE TABLE IF NOT EXISTS video_reviews (
@@ -148,19 +151,50 @@ export function registerVideoReviewRoutes(app: FastifyInstance, dependencies: De
       const expected = { shot: shot ? { title: shot.title, start_state: shot.start_state, end_state: shot.end_state,
         video_prompt: shot.video_prompt, cut_note: shot.cut_note, edit_duration_seconds: shot.duration } : null,
         generation, actual_generation_prompt: asset.prompt }
-      const result = await generateStructuredOutput('video_review', resultSchema,
-        (prompt, contract) => generate(model, provider, { prompt, structured_output: contract,
-          ...('video' in media ? { video: media.video } : { images: media.images }) }, controller.signal),
-        videoReviewInstructions(expected, input_mode, media.sample_times_ms, duration, body.instructions),
-        { signal: controller.signal, validate: value => {
-          validateVideoReview(value, duration)
-          if (!native && value.findings.some(finding => finding.evidence_times_ms.some(time => !media.sample_times_ms.includes(time)))) {
-            fail('抽帧复核的证据时间必须选择实际提供的 sample_times_ms，不能编造未提供的画面')
+      const identity = { version: 1, source: startSignature, expected, duration, input_mode, samples: media.sample_times_ms,
+        instructions: body.instructions, model: creativeModelIdentity(model.id) }
+      const store = generationUnitStore(id, `video-review:${assetId}:${shot?.id || 'asset'}`, identity)
+      const steps = createGenerationSteps({ checkpoint: store.checkpoint, save: store.save, signal: controller.signal })
+      const requestModel = (prompt: string, contract?: import('../generation/model-output.js').OutputContract) => generate(model, provider, { prompt, structured_output: contract,
+        ...('video' in media ? { video: media.video } : { images: media.images }) }, controller.signal)
+      const validate = (value: ReviewResult) => {
+        validateVideoReview(value, duration)
+        if (!native && value.findings.some(finding => finding.evidence_times_ms.some(time => !media.sample_times_ms.includes(time)))) fail('抽帧复核的证据时间必须选择实际提供的 sample_times_ms，不能编造未提供的画面')
+      }
+      const prompt = videoReviewInstructions(expected, input_mode, media.sample_times_ms, duration, body.instructions)
+      const result = await steps.run('report', '复核视频画面', identity, () => generateStructuredOutput('video_review', resultSchema,
+        requestModel, prompt, { signal: controller.signal, validate }), raw => { const value = resultSchema.parse(raw); validate(value); return value })
+      // Reaching one page's limit does not prove all findings were returned.
+      // Keep complete pages and require an explicit end marker. A repeated page
+      // is no progress and cannot silently become an exhaustive report.
+      if (result.findings.length === 20) {
+        const pageSchema = z.object({ findings: resultSchema.shape.findings, has_more: z.boolean() }).strict()
+        const seen = new Set(result.findings.map(finding => creativeInputHash(finding)))
+        let complete = false
+        for (let page = 1; page <= 10; page++) {
+          controller.signal.throwIfAborted()
+          const accepted = structuredClone(result.findings)
+          const validatePage = (raw: unknown) => {
+            const value = pageSchema.parse(raw)
+            validate({ ...result, findings: value.findings })
+            if (value.has_more && !value.findings.some(finding => !seen.has(creativeInputHash(finding)))) fail('复核分页没有新增问题，已保留现有结果，请缩小范围后继续')
+            return value
           }
-        } })
+          const next = await steps.run(`findings:${page}`, `补充复核问题第${page + 1}页`, { identity, accepted },
+            () => generateStructuredOutput('video_review_page', pageSchema, requestModel, prompt
+              + '\n【问题接续页】不要重复已保存问题，仅返回尚未返回的具体问题；本页最多20条。has_more明确说明是否还有未返回问题。没有更多时返回空findings、has_more=false。'
+              + '\n已保存问题：' + JSON.stringify(accepted), { signal: controller.signal, validate: validatePage }), validatePage)
+          for (const finding of next.findings) if (!seen.has(creativeInputHash(finding))) { seen.add(creativeInputHash(finding)); result.findings.push(finding) }
+          if (!next.has_more) { complete = true; break }
+        }
+        if (!complete) fail('复核问题尚未全部返回，已保存完整问题页；请缩小复核范围后重试', 422)
+      }
       controller.signal.throwIfAborted()
       const currentAsset = projectVideo(id, assetId), currentShot = associatedShot(id, currentAsset, body.shot_id)
-      if (startSignature !== await signature(currentAsset, currentShot)) fail('视频或分镜在复核期间已变化，请重新复核', 409)
+      if (startSignature !== await signature(currentAsset, currentShot)) {
+        store.clear()
+        fail('视频或分镜在复核期间已变化，请重新复核', 409)
+      }
       // Neither media path currently promises audio understanding. Preserve this
       // boundary even if a model overstates what the supplied input proves.
       result.checks = result.checks.map(check => check.category === 'dialogue_audio'
@@ -184,6 +218,7 @@ export function registerVideoReviewRoutes(app: FastifyInstance, dependencies: De
           supports_video: settings.supports_video === true, supports_vision: settings.supports_vision === true } })
       run('INSERT INTO video_reviews (id,project_id,asset_id,shot_id,signature,report,input_context,created_at) VALUES (?,?,?,?,?,?,?,?)',
         report.id, id, assetId, report.shot_id, startSignature, JSON.stringify(report), inputContext, report.created_at)
+      store.clear() // The durable report now owns the completed result.
       return report
     } catch (error) {
       if (controller.signal.aborted) throw Object.assign(new Error(controller.signal.reason instanceof Error ? controller.signal.reason.message : '成片复核已取消'), { statusCode: 499 })

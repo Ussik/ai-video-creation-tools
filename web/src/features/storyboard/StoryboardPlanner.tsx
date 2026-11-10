@@ -189,8 +189,9 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
     resetDraft(); setSceneIds(ids); setUseTarget(false); setReplanExisting(false); setPlanningMode('redesign'); setFocusedSceneId(ids[0] || '')
     setView(batch.length && batch.every(planned) ? 'preview' : 'setup')
   }
-  async function startPlanning() {
+  async function startPlanning(forceRestart = false) {
     if (!context || pending || !planningIds.length || invalidTarget || invalidShotCount || !eligibleModels.some(model => model.id === modelId)) return
+    const restart = forceRestart || !!result
     const turn = ++serial.current, abort = new AbortController(); controller.current = abort
     setPending('plan'); resetDraft()
     try {
@@ -198,7 +199,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
       const scope = sameScope ? context : await api<StoryboardPlanningContext>(`/projects/${detail.id}/script/storyboard/context`, { ...json('POST', { scene_ids: planningIds }), signal: abort.signal })
       if (turn !== serial.current) return
       const value = await api<PlanningResult>(`/projects/${detail.id}/script/storyboard/plan`, { ...json('POST', {
-        signature: scope.signature, scene_ids: planningIds, document_ids: documentIds, ...(skillManual ? { skill_ids: skillIds } : {}), model_id: modelId, mode: effectivePlanningMode,
+        signature: scope.signature, scene_ids: planningIds, document_ids: documentIds, restart, ...(skillManual ? { skill_ids: skillIds } : {}), model_id: modelId, mode: effectivePlanningMode,
         ...(!automaticShotCount ? { shots_per_scene: Number(shotsPerScene) } : {}), ...(useTarget ? { target_duration: Number(target) } : {}), instructions,
       }), signal: abort.signal })
       if (turn !== serial.current) return
@@ -302,7 +303,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
           <small>{planIsSaved ? '分镜已保存，继续准备参考设定并加入画布' : '确认后准备参考设定并加入画布'}</small>
         </nav>
         <div className="storyboard-planner-scroll">
-          {error && <div className="storyboard-planner-error" role="alert"><span>{error}</span>{!applied.current && <Button variant="subtle" size="compact-xs" disabled={!!pending} onClick={() => setRefreshKey(key => key + 1)}>刷新资料</Button>}</div>}
+          {error && <div className="storyboard-planner-error" role="alert"><span>{error}</span>{!applied.current && <Button variant="subtle" size="compact-xs" disabled={!!pending} onClick={() => setRefreshKey(key => key + 1)}>刷新资料</Button>}{!hasPreview && <Button variant="subtle" size="compact-xs" disabled={!!pending} onClick={() => void startPlanning(true)}>重新规划</Button>}</div>}
           {!context ? <div className="storyboard-planner-empty">{pending === 'context' ? <><LoaderCircle size={22} /><strong>正在读取剧本与分镜</strong></> : <><Clapperboard size={24} /><strong>没有可用场次</strong></>}</div>
           : !sceneIds.length ? <div className="storyboard-planner-empty"><Clapperboard size={24} /><strong>选择要加入画布的场次</strong><p>从左侧勾选场次，再规划镜头。</p></div>
           : view === 'setup' ? <>
@@ -403,7 +404,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
       </>}</div>
       {pending === 'plan' || pending === 'references' ? <Button variant="default" onClick={cancelPlanning}>{pending === 'references' ? '取消整理' : '取消规划'}</Button> : <Button variant="subtle" disabled={pending === 'save'} onClick={onClose}>取消</Button>}
       {hasPreview ? <Button className="storyboard-planner-primary" leftSection={<Plus size={14} />} disabled={!!pending || referenceReloading || !!issue} onClick={() => void addToCanvas()}>{planIsSaved ? '继续加入画布' : '确认加入画布'}</Button>
-        : <Button className="storyboard-planner-primary" leftSection={<Clapperboard size={14} />} disabled={locked || !context || !planningIds.length || invalidTarget || invalidShotCount || !eligibleModels.some(model => model.id === modelId)} onClick={() => void startPlanning()}>开始规划</Button>}
+        : <Button className="storyboard-planner-primary" leftSection={<Clapperboard size={14} />} disabled={locked || !context || !planningIds.length || invalidTarget || invalidShotCount || !eligibleModels.some(model => model.id === modelId)} onClick={() => void startPlanning()}>{error ? '继续规划' : '开始规划'}</Button>}
     </footer>
   </Modal>
 }

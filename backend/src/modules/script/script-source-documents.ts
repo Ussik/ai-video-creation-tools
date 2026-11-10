@@ -15,7 +15,7 @@ const maxFileBytes = scriptSourceFileLimit
 const maxCharacters = scriptSourceCharacterLimit
 const publicAnalysis = (analysis: ReturnType<typeof scriptSourceAnalysis>, content: string) => {
   if (!analysis) return null
-  const { synthesis: _checkpoint, work: _work, story_work: _storyWork, quality_rebuild_for: _correction, quality_repair: _qualityRepair,
+  const { synthesis: _checkpoint, work: _work, story_work: _storyWork, quality_rebuild_for: _correction, quality_repair: _qualityRepair, quality_work: _qualityWork,
     configuration_hash: _configuration, revision_reuse: _revisionReuse, ...snapshot } = analysis
   // Describe what an explicit retry can reuse, without mutating a task in GET.
   const checked = structuredClone(analysis)

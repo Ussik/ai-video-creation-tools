@@ -17,7 +17,7 @@ export function prepareSourceWork(content: string, state: ScriptSourceAnalysis):
         validateSourceCoverage(content, state.sections)
         if (state.story) {
           try { validateSourceStory(state, state.story) }
-          catch { state.story = undefined; state.story_work = undefined; state.quality = undefined; state.quality_repair = undefined }
+          catch { state.story = undefined; state.story_work = undefined; state.quality = undefined; state.quality_work = undefined; state.quality_repair = undefined }
         }
         state.work = plan
         state.completed_chunks = plan.length; state.total_chunks = plan.length
@@ -52,7 +52,7 @@ export function prepareSourceWork(content: string, state: ScriptSourceAnalysis):
     } catch { /* Invalid intermediate results are rebuilt, never published. */ }
   }
   if (state.revision_reuse?.status === 'pending') state.revision_reuse.status = 'discarded'
-  state.sections = []; state.story = undefined; state.story_work = undefined; state.synthesis = undefined; state.quality = undefined; state.quality_rebuild_for = undefined; state.quality_repair = undefined
+  state.sections = []; state.story = undefined; state.story_work = undefined; state.synthesis = undefined; state.quality = undefined; state.quality_work = undefined; state.quality_rebuild_for = undefined; state.quality_repair = undefined
   state.work = plan; state.completed_chunks = 0; state.completed_characters = 0
   state.total_chunks = plan.length; state.pipeline_version = sourceAnalysisPipelineVersion; state.phase = 'reading'
   return passages
@@ -65,8 +65,17 @@ export function sourceAnalysisResume(state: ScriptSourceAnalysis): NonNullable<S
       ? '目录、全剧信息及问题修补结果已保存；继续后完成全文独立质量核对。'
       : `目录和全剧信息已保存${completed ? `，已修补 ${completed}/${total} 项问题` : ''}；继续后逐项修补未完成的问题，再做全文独立核对。` }
   }
-  if (state.story) return { available: true, message: '目录和全剧信息已保存；继续后完成独立质量核对。' }
+  const pageCount = (checkpoint: { steps: Record<string, { value: unknown }> } | undefined) => Object.values(checkpoint?.steps || {}).reduce((count, step) => {
+    const value = step.value as { items?: unknown[] } | null
+    return count + (Array.isArray(value?.items) ? value.items.length : 0)
+  }, 0)
+  const qualityItems = pageCount(state.quality_work?.checkpoint)
+  if (state.story) return { available: true, message: qualityItems
+    ? `目录、全剧信息及 ${qualityItems} 项完整核对结果已保存；继续后只处理剩余核对结果。`
+    : '目录和全剧信息已保存；继续后完成独立质量核对。' }
   const tasks = state.story_work?.tasks || [], completed = tasks.filter(task => task.result !== undefined).length
+  const partialItems = tasks.reduce((count, task) => count + pageCount(task.output_checkpoint), 0)
+  if (partialItems) return { available: true, message: `目录、${completed} 项全剧整合任务及 ${partialItems} 个完整条目已保存；继续后处理未完成条目，再独立核对。` }
   if (completed) return { available: true,
     message: `目录及 ${completed}/${tasks.length} 项全剧整合结果已保存；继续后处理未完成项，再独立核对。` }
   if (state.total_chunks > 0 && state.completed_chunks === state.total_chunks) return { available: true,

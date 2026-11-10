@@ -54,7 +54,7 @@ test('the reported props field mismatch is corrected once against the stage sche
     assert.match(text, /artifact_type是必填文档类型，不得用type代替/)
     assert.match(text, /artifact:1/)
     assert.match(text, /status/)
-    return JSON.stringify({ repairs: result.artifacts.map((artifact, index) => ({ candidate_id: `artifact:${index}`, ...artifact })) })
+    return JSON.stringify({ repairs: result.artifacts.map(({ content: _content, ...artifact }, index) => ({ candidate_id: `artifact:${index}`, ...artifact, removed_fields: index ? ['type', 'status'] : ['status'] })) })
   })
   assert.equal(calls, 2)
   assert.deepEqual(draft.artifacts, result.artifacts)

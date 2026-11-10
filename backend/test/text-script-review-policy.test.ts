@@ -3,7 +3,7 @@ import { test, type TestContext } from 'node:test'
 import { streamText, createTextToolTransport, type GenerationModel, type GenerationProvider, type TextRequestMetrics } from '../src/infrastructure/providers/providers.js'
 import type { OutputContract } from '../src/modules/generation/model-output.js'
 import { supportsScriptReviewPolicy } from '../src/infrastructure/providers/text-script-review-policy.js'
-import { estimateTextRequestTokens } from '../src/infrastructure/providers/text-context.js'
+import { estimateTextRequestTokens, textRequestInput } from '../src/infrastructure/providers/text-context.js'
 import { createScriptRequestUsage, withTextRequestUsage } from '../src/infrastructure/providers/text-request-usage.js'
 import { withTextResponseRecovery, type BackgroundResponse } from '../src/infrastructure/providers/text-background.js'
 
@@ -85,7 +85,7 @@ for (const protocol of ['responses', 'chat_completions'] as const) {
     let metrics: TextRequestMetrics | undefined
     const requests = capture(t, protocol, (body, _url, init) => {
       assert.equal(usage.requests, 1); assert.equal(usage.estimated_output_tokens, 65_536)
-      assert.equal(usage.estimated_input_tokens, estimateTextRequestTokens(body))
+      assert.equal(usage.estimated_input_tokens, estimateTextRequestTokens(textRequestInput(body)))
       assert.equal(usage.request_bytes, Buffer.byteLength(String(init.body)))
     })
     await withTextRequestUsage({ usage, limits: { max_requests: 1, max_tokens: 70_000 } }, () =>
@@ -93,7 +93,7 @@ for (const protocol of ['responses', 'chat_completions'] as const) {
         { context_window_tokens: 75_000, output_reserve_tokens: 100 }), provider,
         { prompt: '完整复核', structured_output: contract() }, undefined, undefined, undefined, value => { metrics = value }))
     assert.equal(metrics?.output_limit, 65_536); assert.equal(metrics?.reserved_output_tokens, 65_536)
-    assert.equal(metrics?.estimated_input_tokens, estimateTextRequestTokens(requests[0]))
+    assert.equal(metrics?.estimated_input_tokens, estimateTextRequestTokens(textRequestInput(requests[0])))
     assert.equal(metrics?.request_bytes, Buffer.byteLength(JSON.stringify(requests[0])))
     assert.equal(usage.input_tokens, 7); assert.equal(usage.output_tokens, 4); assert.equal(usage.estimated_output_tokens, 0)
   })
@@ -157,7 +157,7 @@ test('background answer recovery sends and reserves the full configured allowanc
     assert.equal(body.stream, false); assert.equal(body.background, true)
     assert.equal(body.reasoning.effort, 'none'); assert.equal(body.max_output_tokens, 65_536)
     assert.equal(usage.requests, 1); assert.equal(usage.estimated_output_tokens, 65_536)
-    assert.equal(usage.estimated_input_tokens, estimateTextRequestTokens(body))
+    assert.equal(usage.estimated_input_tokens, estimateTextRequestTokens(textRequestInput(body)))
     assert.equal(usage.request_bytes, Buffer.byteLength(String(init.body)))
   })
   await withTextRequestUsage({ usage, limits: { max_requests: 1, max_tokens: 70_000 } }, () =>

@@ -33,11 +33,11 @@ test('script text transport has no application total or idle deadline and still 
   let stop = false
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
     if (stop) { controller.abort(new Error('creator stopped')); return new Promise<Response>(() => {}) }
-    t.mock.timers.tick(181 * 60_000)
-    assert.equal(init.signal!.aborted, false)
-    return Response.json({ status: 'completed', output_text: '完整答案' })
+    return new Response('data: {"type":"response.output_text.delta","delta":"完整答案"}\n\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n', { headers: { 'Content-Type': 'text/event-stream' } })
   })
-  assert.equal(await withUnrestrictedScriptExecution(() => streamText(model, provider, { prompt: 'source' })), '完整答案')
+  assert.equal(await withUnrestrictedScriptExecution(() => streamText(model, provider, { prompt: 'source' }, undefined, event => {
+    if (event.type === 'delta') { t.mock.timers.tick(181 * 60_000); assert.equal(controller.signal.aborted, false) }
+  })), '完整答案')
   stop = true
   await assert.rejects(withUnrestrictedScriptExecution(() => streamText(model, provider, { prompt: 'source' }, undefined, () => {}, controller.signal)), /creator stopped/)
 })

@@ -5,6 +5,8 @@ import { modelStepSignal } from '../generation/model-execution.js'
 import { generateStructuredOutput, isStructuredOutputError, type StructuredGenerator } from '../generation/model-output.js'
 import { draftRepairOutput } from './script-draft-resolution.js'
 import { scriptDraftFindingLimit } from './script-finding-state.js'
+import { generatePagedReviewItems } from './script-review-pagination.js'
+import { recoverArrayStream } from './script-streamed-units.js'
 import type { GenerationSteps } from './script-generation-steps.js'
 
 export type DraftRepairOutput = z.infer<typeof draftRepairOutput>
@@ -100,8 +102,26 @@ export async function generateScriptDraftRepairOutput(prompt: string, issueIds: 
     '沿用用户方案、原稿明确事实与已确认决定；只有尚未确定的 AI 委托事项才作出实际具体决定，不再次询问。' +
     '结合下方完整有效稿、全部候选文档、原始创作要求和所有关联问题，确保各项决定相互一致。' +
     '此阶段返回契约优先于原任务中的补丁格式要求，原任务全文仅作为决定所需的范围、规则与资料。\n' + prompt
-  const decide = () => generateStructuredOutput('script_draft_repair_decisions', decisionsSchema, generate, decisionsPrompt,
-    { signal: options.signal })
+  const decide = async () => {
+    const itemSchema = createScriptDraftRepairDecisionsSchema(ids).shape.decisions.element
+    const pagingInput = { prompt: decisionsPrompt }, pagingId = 'repair:decisions:paging'
+    let seed: z.infer<typeof itemSchema>[] = []
+    const pages = () => generatePagedReviewItems({ id: 'repair:decisions:pages', name: 'script_draft_repair_decisions',
+      itemSchema, prompt: decisionsPrompt, generate, steps, signal: options.signal, parentId, initialItems: seed, maxItems: ids.length,
+      validateItems: (items, complete) => {
+        if (new Set(items.map(item => item.issue_id)).size !== items.length || complete && items.length !== ids.length) throw new Error('决定分页必须逐项覆盖全部问题且不能重复或重选')
+      } }).then(decisions => validateDecisions({ decisions }))
+    const pagingHash = createHash('sha256').update(JSON.stringify(pagingInput)).digest('hex')
+    if (steps?.checkpoint.steps[pagingId]?.input_hash === pagingHash) return pages()
+    try { return await generateStructuredOutput('script_draft_repair_decisions', decisionsSchema, generate, decisionsPrompt, { signal: options.signal }) }
+    catch (issue) {
+      modelStepSignal(options.signal)?.throwIfAborted()
+      if (!(issue instanceof TextOutputLimitError)) throw issue
+      seed = recoverArrayStream(issue.partialText, 'decisions').map(item => itemSchema.parse(item))
+      steps?.retain(pagingId, '决定输出超限，保留完整决定后分批继续', pagingInput, true, z.literal(true).parse, parentId)
+      return pages()
+    }
+  }
   const ledger = steps ? await steps.run('repair:decisions', '逐项确定全部具体决定', { prompt: decisionsPrompt }, decide,
     validateDecisions, parentId) : validateDecisions(await decide())
   modelStepSignal(options.signal)?.throwIfAborted()
@@ -117,8 +137,35 @@ export async function generateScriptDraftRepairOutput(prompt: string, issueIds: 
     '本步骤只返回 edits、source_edits 和简短 summary，不返回 decisions。' +
     '仍按下方完整原任务的精确唯一引文、禁止重叠、保留无关正文与不保存等规则生成修订，不能使用上次未通过验证的补丁。' +
     '此阶段返回契约优先于原任务中的返回字段说明。\n' + prompt
-  const edit = () => generateStructuredOutput('script_draft_repair_edits', scriptDraftRepairEditsSchema, generate, editsPrompt,
-    { signal: options.signal, validate: validateEdits })
+  const edit = async () => {
+    const itemSchema = z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('candidate'), edit: draftRepairOutput.shape.edits.element }).strict(),
+      z.object({ kind: z.literal('source'), edit: draftRepairOutput.shape.source_edits.element }).strict(),
+    ])
+    const pagingInput = { prompt: editsPrompt }, pagingId = 'repair:edits:paging'
+    let seed: z.infer<typeof itemSchema>[] = []
+    const envelope = (items: z.infer<typeof itemSchema>[]) => ({ summary: `已按已确认决定完成 ${items.length} 处精确修订。`,
+      edits: items.flatMap(item => item.kind === 'candidate' ? [item.edit] : []),
+      source_edits: items.flatMap(item => item.kind === 'source' ? [item.edit] : []) })
+    const pages = () => generatePagedReviewItems({ id: 'repair:edits:pages', name: 'script_draft_repair_edits', itemSchema,
+      prompt: editsPrompt + '\n【完整操作分页】items每项kind=candidate或source，edit是完整精确操作。find始终定位上方不可变原文，不对照前批修改后的正文。全部决定均须落实后才可complete=true。',
+      generate, steps, signal: options.signal, parentId, initialItems: seed, maxItems: 400,
+      validateItems: (items, complete) => {
+        if (items.length) validateEdits(envelope(items))
+        else if (complete) throw new Error('精确修订分页未返回任何有效操作')
+      } }).then(items => validateEdits(envelope(items)))
+    const pagingHash = createHash('sha256').update(JSON.stringify(pagingInput)).digest('hex')
+    if (steps?.checkpoint.steps[pagingId]?.input_hash === pagingHash) return pages()
+    try { return await generateStructuredOutput('script_draft_repair_edits', scriptDraftRepairEditsSchema, generate, editsPrompt, { signal: options.signal, validate: validateEdits }) }
+    catch (issue) {
+      modelStepSignal(options.signal)?.throwIfAborted()
+      if (!(issue instanceof TextOutputLimitError)) throw issue
+      seed = [...recoverArrayStream(issue.partialText, 'edits').map(edit => itemSchema.parse({ kind: 'candidate', edit })),
+        ...recoverArrayStream(issue.partialText, 'source_edits').map(edit => itemSchema.parse({ kind: 'source', edit }))]
+      steps?.retain(pagingId, '编辑输出超限，保留完整操作后分批继续', pagingInput, true, z.literal(true).parse, parentId)
+      return pages()
+    }
+  }
   const edits = steps ? await steps.run('repair:edits', '按全部已确定决定精确修订', { prompt: editsPrompt }, edit,
     validateEdits, parentId) : validateEdits(await edit())
   modelStepSignal(options.signal)?.throwIfAborted()

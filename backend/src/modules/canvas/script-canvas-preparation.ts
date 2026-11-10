@@ -6,6 +6,7 @@ import type { Project, ScriptArtifact, ScriptScene, Shot } from '../../infrastru
 import { analyzeVisualProfiles, applyProfileShotUsage, inheritSceneVisualBindings, profileDraft, resolveVisualProfileDrafts, sceneVisualDesignIds, scopeVisualProfileDrafts, updateVisualProfile, validateProfileShotUsage, visualProjectData, type VisualProfile } from '../visuals/visual-profiles.js'
 import type { OutputContract } from '../generation/model-output.js'
 import type { CreationSkillSelector } from '../skills/model-skill-selection.js'
+import { withCreativeRequest } from '../skills/creative-model-state.js'
 import { projectVisualStyle } from '../visuals/project-visual-style.js'
 import { shotImagePrompt, shotVideoPrompt } from '@video-studio/shared/storyboard/shot-prompts'
 import { assertStoryboardReferenceBudget, storyboardReferenceBudget, storyboardReferenceBudgetIssues } from '../storyboard/storyboard-reference-budget.js'
@@ -15,7 +16,7 @@ type Context = {
   selectSkills?: CreationSkillSelector;
   script: (projectId: string) => { outline: string; characters: string; artifacts?: ScriptArtifact[]; scenes: ScriptScene[] };
   scenePrompt: (scene: ScriptScene) => string;
-  generateText: (projectId: string, modelId: string, prompt: string, contract?: OutputContract) => Promise<string>;
+  generateText: (projectId: string, modelId: string, prompt: string, contract?: OutputContract, signal?: AbortSignal) => Promise<string>;
 }
 const scopeInput = z.object({ scene_ids: z.array(z.string().min(1)).min(1).max(100) }).strict()
 const planInput = scopeInput.extend({ signature: z.string().length(64), model_id: z.string().min(1).optional(), skill_ids: skillIdsInput.optional() })
@@ -83,7 +84,7 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
     const data = scopeInput.parse(request.body)
     return checkScriptCanvasPreparation(id, data.scene_ids, context)
   })
-  app.post('/api/projects/:id/script/canvas/prepare', async request => {
+  app.post('/api/projects/:id/script/canvas/prepare', async (request, reply) => withCreativeRequest(request, reply, '画布准备', async signal => {
     const { id } = z.object({ id: z.string().min(1) }).parse(request.params)
     const data = planInput.parse(request.body)
     const state = scriptCanvasPreparationSnapshot(id, data.scene_ids, context)
@@ -93,11 +94,18 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
       const designId = state.sceneDesigns.get(scene.id) || null
       groups.set(designId, [...(groups.get(designId) || []), scene.id])
     }
-    const drafts = await Promise.all([...groups].map(([design_id, scene_ids]) => analyzeVisualProfiles(id, {
-      model_id: data.model_id || invalid('请选择文本模型，以整理缺少的视觉设定'),
+    const drafts: Awaited<ReturnType<typeof analyzeVisualProfiles>>[] = []
+    // Each validated design group is persisted by analyzeVisualProfiles. Keep
+    // bounded dispatch so cancellation cannot start every remaining group.
+    for (const [design_id, scene_ids] of groups) {
+      signal.throwIfAborted()
+      if (scriptCanvasPreparationSnapshot(id, data.scene_ids, context).signature !== state.signature) conflict()
+      drafts.push(await analyzeVisualProfiles(id, {
+      retain_checkpoint: true, model_id: data.model_id || invalid('请选择文本模型，以整理缺少的视觉设定'),
       scene_ids, design_id, skill_ids: data.skill_ids, inherit_scene_references: true,
       refresh_scene_ids: [...state.refreshSceneIds].filter(sceneId => scene_ids.includes(sceneId)),
-    }, context)))
+    }, context, signal))
+    }
     if (scriptCanvasPreparationSnapshot(id, data.scene_ids, context).signature !== state.signature) conflict()
     return { signature: state.signature, scene_ids: data.scene_ids, profiles: drafts.flatMap(draft => draft.profiles),
       reference_usage_version: 1,
@@ -106,7 +114,7 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
         reason: [...new Set(drafts.map(draft => draft.skill_assignment.reason))].join('\n') || '所选场次无需补充视觉设定。' },
       used_skills: [...new Map(drafts.flatMap(draft => draft.skills).map(skill => [skill.id, skill])).values()],
       loaded_files: [...new Map(drafts.flatMap(draft => draft.loaded_files).map(file => [JSON.stringify(file), file])).values()] }
-  })
+  }))
   app.post('/api/projects/:id/script/canvas/commit', async request => {
     const { id } = z.object({ id: z.string().min(1) }).parse(request.params)
     const data = commitInput.parse(request.body)

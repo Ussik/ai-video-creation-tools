@@ -235,6 +235,8 @@ test('editor supplement opens the exact missing outline scope without generating
     throw new Error(`Unexpected request: ${method} ${path}`)
   })
   dom.window.localStorage.clear(); dom.window.sessionStorage.clear(); frames.clear()
+  // Use an existing viewport so this editor test does not include the first-entry canvas framing write.
+  dom.window.localStorage.setItem('project-canvas-viewport:refresh', JSON.stringify({ x: 22, y: 33, zoom: 0.8 }))
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container)
   try {
@@ -258,7 +260,8 @@ test('editor supplement opens the exact missing outline scope without generating
     assert.match(panel.textContent!, /已保存栏目的标题和正文保持原样/)
     await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="打开剧本对话"]')!.click()); await settle()
     assert.equal(container.querySelector('[aria-label="分阶段生成面板"]'), null, 'a regular conversation opening clears the supplement request')
-    assert.ok(requests.every(request => request.method === 'GET' || isConversationSnapshot(request)), 'only chat-history snapshots may be written')
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 800)) }); await settle()
+    assert.ok(requests.every(request => request.method === 'GET' || isConversationSnapshot(request)), `only chat-history snapshots may be written: ${JSON.stringify(requests.filter(request => request.method !== 'GET' && !isConversationSnapshot(request)))}`)
     assert.equal(detail.script.outline, '# 故事大纲\n\n林晚在车站等候列车。')
   } finally { await act(() => root.unmount()); container.remove(); frames.clear() }
 })
@@ -316,7 +319,7 @@ test('task history pauses idle and hidden polling, refreshes on visibility, and 
     await act(() => failedTab.click())
     assert.match(container.querySelector('.task-records')!.textContent!, /没有符合条件的任务/)
     await chooseCombobox(container.querySelector<HTMLInputElement>('input[aria-label="切换项目"]')!, '任务项目乙'); await settle()
-    assert.match(container.querySelector('.task-records')!.textContent!, /还没有任务记录/)
+    assert.match(container.querySelector('.task-records')!.textContent!, /还没有素材生成任务记录/)
     await chooseCombobox(container.querySelector<HTMLInputElement>('input[aria-label="切换项目"]')!, '任务项目甲'); await settle()
     assert.equal(container.querySelectorAll('.task-records tbody tr').length, 1, 'new project scope resets old filters')
     assert.equal(container.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]')?.textContent, '全部1')

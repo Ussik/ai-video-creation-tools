@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { test } from 'node:test'
 import { scriptArtifactLabels, scriptStageArtifacts } from '@video-studio/shared/script/script-stage-content'
-import { TextOutputLimitError } from '../src/infrastructure/providers/text-errors.js'
+import { TextOutputLimitError, TextProviderError } from '../src/infrastructure/providers/text-errors.js'
 import { beginTextRequest, createScriptRequestUsage, TextRequestBudgetError, withTextRequestUsage } from '../src/infrastructure/providers/text-request-usage.js'
 import type { StructuredGenerator } from '../src/modules/generation/model-output.js'
 import { reviewScriptDraftCompleteness, ScriptDraftNeedsResolution } from '../src/modules/script/script-draft-completeness.js'
@@ -36,7 +36,7 @@ function fixture() {
 function evidence(prompt: string): EvidenceInput {
   const start = prompt.lastIndexOf(marker)
   assert.ok(start >= 0, 'the bounded locator request supplies the explicit evidence data marker')
-  return JSON.parse(prompt.slice(start + marker.length)) as EvidenceInput
+  return JSON.parse(prompt.slice(start + marker.length).split('\n【审读结果分页协议】')[0]!) as EvidenceInput
 }
 function select(input: EvidenceInput, id: string, text?: string): Repair {
   const issue = input.issues.find(issue => issue.id === id)
@@ -51,7 +51,7 @@ function response(input: EvidenceInput) {
   return JSON.stringify({ repairs: input.issues.map(issue => select(input, issue.id)) })
 }
 function provisional(checkpoint: GenerationCheckpoint) {
-  return Object.entries(checkpoint.steps).filter(([key]) => key.startsWith('review:response:'))
+  return Object.entries(checkpoint.steps).filter(([key]) => /^review:response:[a-f0-9]{64}$/.test(key))
 }
 async function findings(work: Promise<void>) {
   let result: ScriptDraftNeedsResolution | undefined
@@ -251,10 +251,79 @@ test('locator output exhaustion does not start three new full-work dimension rev
     if (contract!.name === 'script_draft_completeness') return JSON.stringify({ ...f.clear(), findings: [f.finding(0, '错误引文。')] })
     throw new TextOutputLimitError('', 'length', { input_tokens: 100, output_tokens: 100, reasoning_tokens: 100 })
   }, { steps: f.steps() }))
-  assert.deepEqual(names, ['script_draft_completeness', 'script_draft_evidence_repair'])
+  assert.deepEqual(names, ['script_draft_completeness', 'script_draft_evidence_repair', 'script_draft_evidence_repair_page'])
   assert.equal(f.checkpoint().steps['review:recovery'], undefined)
   assert.equal(f.checkpoint().steps['review:whole'], undefined)
   assert.equal(provisional(f.checkpoint()).length, 1)
+})
+
+test('truncated locator keeps closed repairs and resumes pages without repeating the semantic audit or completed repairs', async () => {
+  const f = fixture(), names: string[] = [], interrupted = new TextProviderError('locator interrupted', false)
+  let first: Repair | undefined
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+    names.push(contract!.name)
+    if (contract!.name === 'script_draft_completeness') return JSON.stringify({ ...f.clear(), findings: [f.finding(0, '错误引文一'), f.finding(1, '错误引文二')] })
+    if (contract!.name === 'script_draft_evidence_repair') {
+      first = select(evidence(prompt), 'findings:0')
+      throw new TextOutputLimitError('{"repairs":[' + JSON.stringify(first) + ',{"id":"findings:1', 'length')
+    }
+    assert.ok(prompt.includes(JSON.stringify([first]))); throw interrupted
+  }, { steps: f.steps() }), issue => issue === interrupted)
+  assert.deepEqual(names, ['script_draft_completeness', 'script_draft_evidence_repair', 'script_draft_evidence_repair_page'])
+  const resumed: string[] = []
+  const result = await findings(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+    resumed.push(contract!.name)
+    const input = evidence(prompt); assert.deepEqual(input.issues.map(item => item.id), ['findings:1'])
+    return response(input)
+  }, { steps: f.steps() }))
+  assert.deepEqual(resumed, ['script_draft_evidence_repair'])
+  assert.equal(result.length, 2)
+  assert.equal(result[0]!.explanation, f.finding(0).explanation)
+  assert.equal(result[1]!.explanation, f.finding(1).explanation)
+})
+
+test('a completed locator page containing null remains unfinished and an explicit continuation can locate it', async () => {
+  const f = fixture(), names: string[] = []
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (_prompt, contract) => {
+    names.push(contract!.name)
+    if (contract!.name === 'script_draft_completeness') return JSON.stringify({ ...f.clear(), findings: [f.finding(0, '错误引文。')] })
+    if (contract!.name === 'script_draft_evidence_repair') throw new TextOutputLimitError('', 'length')
+    return JSON.stringify({ items: [{ id: 'findings:0', first_unit: null, last_unit: null }], complete: true })
+  }, { steps: f.steps() }), issue => (issue as { code?: string }).code === 'script_draft_evidence_unresolved')
+  assert.deepEqual(names, ['script_draft_completeness', 'script_draft_evidence_repair', 'script_draft_evidence_repair_page'])
+  const pages = Object.entries(f.checkpoint().steps).filter(([key]) => key.endsWith(':evidence:pages'))
+  assert.equal(pages.length, 1)
+  assert.deepEqual((pages[0]![1].value as { items: unknown[] }).items, [], 'null coordinates are not completed repair items')
+  assert.equal((pages[0]![1].value as { complete: boolean }).complete, false)
+  const resumed: string[] = []
+  const result = await findings(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+    resumed.push(contract!.name)
+    return JSON.stringify({ items: [select(evidence(prompt), 'findings:0')], complete: true })
+  }, { steps: f.steps() }))
+  assert.deepEqual(resumed, ['script_draft_evidence_repair_page'])
+  assert.equal(result.length, 1); assert.equal(result[0]!.explanation, f.finding(0).explanation)
+})
+
+test('null repairs in an interrupted partial page never block a later real location and successful quotes stay retained', async () => {
+  const f = fixture(), interrupted = new TextProviderError('page interrupted', false)
+  let pageCalls = 0
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+    if (contract!.name === 'script_draft_completeness') return JSON.stringify({ ...f.clear(), findings: [f.finding(0, '错误一'), f.finding(1, '错误二')] })
+    if (contract!.name === 'script_draft_evidence_repair') throw new TextOutputLimitError('', 'length')
+    if (++pageCalls === 1) throw new TextOutputLimitError('{"items":[' + JSON.stringify(select(evidence(prompt), 'findings:0')) +
+      ',{"id":"findings:1","first_unit":null,"last_unit":null},', 'length')
+    throw interrupted
+  }, { steps: f.steps() }), issue => issue === interrupted)
+  const pages = Object.entries(f.checkpoint().steps).find(([key]) => key.endsWith(':evidence:pages'))!
+  const retained = (pages[1].value as { items: Repair[] }).items
+  assert.equal(retained.length, 1); assert.equal(retained[0]!.id, 'findings:0')
+  assert.notEqual(retained[0]!.first_unit, null)
+  const result = await findings(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+    assert.equal(contract!.name, 'script_draft_evidence_repair')
+    const input = evidence(prompt); assert.deepEqual(input.issues.map(item => item.id), ['findings:1'])
+    return response(input)
+  }, { steps: f.steps() }))
+  assert.equal(result.length, 2)
 })
 
 test('provisional evidence is bound to the exact complete review prompt and invalidates on candidate or context changes', async t => {

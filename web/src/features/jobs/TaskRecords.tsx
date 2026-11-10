@@ -8,6 +8,7 @@ import PromptOptimizationModal from './PromptOptimizationModal'
 import { canOptimizeImagePrompt } from '@video-studio/shared/jobs/prompt-optimization'
 import { filterTaskRecords, isTaskActive, projectTaskRecords, taskKindLabels, type TaskKind, type TaskStatusFilter } from './task-records'
 import './task-records.css'
+import ModelTaskProgress from './ModelTaskProgress'
 
 type Props = {
   detail: ProjectDetail
@@ -64,6 +65,7 @@ export default function TaskRecords({ detail, models, providers, busy, onRefresh
       </div>
     </div>
     {refreshError && <Alert color="red" className="task-records-refresh-error" title="任务刷新失败" role="alert">{refreshError}</Alert>}
+    <ModelTaskProgress projectId={detail.id} />
     {records.length > 0 ? <>
       <div className="task-records-toolbar">
         <Tabs value={status} onChange={value => { if (value) setStatus(value as TaskStatusFilter) }} variant="pills" radius="xl" className="task-records-tabs">
@@ -116,7 +118,7 @@ export default function TaskRecords({ detail, models, providers, busy, onRefresh
           </Table.Tr>
         })}</Table.Tbody>
       </Table> : <div className="task-records-empty" role="status"><Search size={28} strokeWidth={1.4} /><strong>没有符合条件的任务</strong><p>试试其他关键词，或清除筛选查看全部记录。</p><Button variant="default" onClick={clearFilters}>清除筛选</Button></div>}
-    </> : <div className="task-records-empty" role="status"><Clock3 size={34} strokeWidth={1.3} /><strong>还没有任务记录</strong><p>在项目画布中生成素材后，可以在这里查看进度和结果。</p><Button variant="default" leftSection={<ArrowRight size={15} />} onClick={() => onOpenCanvas()}>进入画布</Button></div>}
+    </> : <div className="task-records-empty" role="status"><Clock3 size={34} strokeWidth={1.3} /><strong>还没有素材生成任务记录</strong><p>在项目画布中生成素材后，可以在这里查看进度和结果。</p><Button variant="default" leftSection={<ArrowRight size={15} />} onClick={() => onOpenCanvas()}>进入画布</Button></div>}
     {optimizationJob && onPromptOptimized && canOptimizeImagePrompt(optimizationJob, models.find(model => model.id === optimizationJob.model_id)?.modality) &&
       <PromptOptimizationModal key={optimizationJob.id} job={optimizationJob} models={models} providers={providers} newDraft disabled={busy}
         onClose={() => setOptimizationJobId(null)} onApply={prompt => onPromptOptimized(optimizationJob, prompt)} />}

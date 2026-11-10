@@ -10,9 +10,13 @@ export type GenerationSteps = ReturnType<typeof createGenerationSteps>
  * separate checkpoint; each step additionally checks its precise input. */
 export function createGenerationSteps(options: {
   checkpoint?: GenerationCheckpoint; save?: (state: GenerationCheckpoint) => void;
-  onStep?: (event: GenerationStepEvent) => void; signal?: AbortSignal
+  onStep?: (event: GenerationStepEvent) => void; signal?: AbortSignal;
+  /** Complete business steps whose outer identity was proved equivalent by an
+   * explicit model migration or exact historical serialization hash. */
+  migratedStepIds?: readonly string[]
 } = {}) {
   const checkpoint = structuredClone(options.checkpoint || { steps: {} })
+  const migratedInputs = new Set(options.migratedStepIds || [])
   return {
     checkpoint,
     /** Streaming checkpoints contain only complete, validated semantic units.
@@ -34,10 +38,15 @@ export function createGenerationSteps(options: {
       modelStepSignal(options.signal)?.throwIfAborted()
       const input_hash = createHash('sha256').update(JSON.stringify(input)).digest('hex')
       const previous = checkpoint.steps[id]
-      if (previous?.input_hash === input_hash) {
+      const rebindInput = migratedInputs.delete(id)
+      if (previous && (previous.input_hash === input_hash || rebindInput)) {
         let value: T
         try { value = validate(structuredClone(previous.value)) }
         catch { delete checkpoint.steps[id]; return this.run(id, label, input, work, validate, parentId) }
+        if (previous.input_hash !== input_hash) {
+          checkpoint.steps[id] = { ...previous, input_hash }
+          options.save?.(checkpoint)
+        }
         options.onStep?.({ id, parent_id: parentId, label, status: 'succeeded', reused: true, duration_ms: previous.duration_ms })
         return value
       }

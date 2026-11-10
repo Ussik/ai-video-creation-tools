@@ -89,3 +89,23 @@ test('documented image models reject sync, auto sizes, incorrect task addresses 
     assert.deepEqual(JSON.parse(one<{ settings: string }>('SELECT settings FROM models WHERE id=?', created.id)!.settings), settings)
   }
 })
+
+
+test('standard model settings reach shared creative entrypoints and ignore discovery from another channel', async t => {
+  const provider = await call('POST', '/api/providers', { name: '标准创作渠道', base_url: 'https://standard-creative.invalid/v1' })
+  const project = await call('POST', '/api/projects', { name: '标准接口真实入口' })
+  const settings = { text_api: { mode: 'standard', output_mode: 'fixed', max_output_tokens: 4096 },
+    text_capabilities: { version: 1, discovered: { source: 'provider', scope: { base_url: 'https://old-channel.invalid/v1', protocol: 'chat_completions', remote_id: 'actual' },
+      fetched_at: new Date().toISOString(), limits: { budget_mode: 'separate', output_tokens: 1000 } } } }
+  const model = await call('POST', '/api/models', { provider_id: provider.id, name: '标准创作', remote_id: 'actual', modality: 'text', protocol: 'chat_completions', settings })
+  let calls = 0
+  t.mock.method(globalThis, 'fetch', async (url: unknown, init: RequestInit) => {
+    calls++; assert.equal(String(url), 'https://standard-creative.invalid/v1/chat/completions')
+    const body = JSON.parse(String(init.body))
+    assert.equal(body.model, 'actual'); assert.equal(body.max_completion_tokens, 4096)
+    return Response.json({ choices: [{ message: { content: JSON.stringify({ prompt: '主角在雨后的走廊等待门开。' }) }, finish_reason: 'stop' }] })
+  })
+  const result = await call('POST', `/api/projects/${project.id}/skills/refine-prompt`, { model_id: model.id,
+    stage: 'image_prompt', prompt: '主角在走廊等待门开。', adjustment_request: '补充雨后环境', skill_ids: [] })
+  assert.equal(calls, 1); assert.match(result.prompt, /雨后/)
+})

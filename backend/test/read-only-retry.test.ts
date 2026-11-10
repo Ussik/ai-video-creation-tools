@@ -11,7 +11,7 @@ const model = { id: 'test', remote_id: 'test', modality: 'text' as const, protoc
 const provider = { adapter: 'http' as const, base_url: 'https://fixture.invalid/v1' }
 const sse = (events: unknown[]) => new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'Content-Type': 'text/event-stream' } })
 
-test('transient stream failure retries only the current read-only request and discards its partial JSON', async t => {
+test('partial stream failure preserves diagnostics for business recovery and never replays the same request', async t => {
   const bodies: string[] = [], retries: number[] = [], waits: number[] = []
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
     bodies.push(String(init?.body))
@@ -23,9 +23,10 @@ test('transient stream failure retries only the current read-only request and di
   const generate = retryReadOnlyGeneration((prompt, contract) => streamText(model, provider, { prompt, structured_output: contract }), {
     random: () => 0.5, onRetry: attempt => retries.push(attempt), wait: async ms => { waits.push(ms) },
   })
-  const result = await generateStructuredOutput('test', z.object({ answer: z.string() }).strict(), generate, 'unchanged creative requirements')
-  assert.deepEqual(result, { answer: 'complete' })
-  assert.deepEqual(retries, [2]); assert.deepEqual(waits, [2000]); assert.equal(bodies[0], bodies[1])
+  await assert.rejects(generateStructuredOutput('test', z.object({ answer: z.string() }).strict(), generate, 'unchanged creative requirements'), issue => {
+    assert.ok(issue instanceof TextProviderError); assert.equal(issue.partialText, '{"answer":"discarded'); return true
+  })
+  assert.deepEqual(retries, []); assert.deepEqual(waits, []); assert.equal(bodies.length,1)
 })
 
 test('HTTP gateway, rate limit and dropped connections recover, but never beyond one local retry', async t => {
@@ -41,9 +42,10 @@ test('HTTP gateway, rate limit and dropped connections recover, but never beyond
       return Response.json({ status: 'completed', output_text: 'complete' })
     })
     const generate = retryReadOnlyGeneration(prompt => streamText(model, provider, { prompt }), { wait: async () => {} })
-    if (failure === 'persistent') await assert.rejects(generate('test'), issue => issue instanceof TextProviderError && issue.retryable)
+    if (failure === 'eof') await assert.rejects(generate('test'), issue => issue instanceof TextProviderError && issue.partialText === 'partial')
+    else if (failure === 'persistent') await assert.rejects(generate('test'), issue => issue instanceof TextProviderError && issue.retryable)
     else assert.equal(await generate('test'), 'complete')
-    assert.equal(calls, 2)
+    assert.equal(calls, failure === 'eof' ? 1 : 2)
   })
 })
 

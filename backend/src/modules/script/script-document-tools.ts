@@ -1,3 +1,6 @@
+import { executeModelToolBatch } from '../generation/model-tool-batch.js'
+import { createModelResultResources } from '../generation/model-source-workset.js'
+import { withModelAdmission } from '../generation/model-admission.js'
 import { stageOperationError, type StageOperation } from '@video-studio/shared/script/script-stage-access'
 import { createHash } from 'node:crypto'
 import { setImmediate as yieldToCancellation } from 'node:timers/promises'
@@ -419,6 +422,7 @@ const schemas = {
   load_creation_skills: z.object({ stage: z.enum(skillStages), skill_ids: skillIdsInput.optional(), reason: z.string().trim().min(1).max(1000).optional() }).strict(),
   ...modelResourceSchemas,
   ...revisionSchemas,
+  read_model_resource: z.object({ resource_id: z.string().regex(/^[a-f0-9]{64}$/), version: z.string().regex(/^[a-f0-9]{64}$/), offset: z.number().int().min(0), length: z.number().int().min(1).max(16000).default(8000) }).strict(),
   get_creation_state: z.object({}).strict(),
   get_project_visual_style: z.object({}).strict(),
   set_project_visual_style: z.object({
@@ -462,6 +466,7 @@ const descriptions: Record<keyof typeof schemas, string> = {
   ...resourceDescriptions,
   manage_revision_task: '管理跨文档统一修订任务。start在创作者明确要求补齐/统一时，全部已有文档用scope:all_documents（程序取得完整目录）；选定范围用document_ids，填写summary和真实user来源索引，保存任务范围；不写正式文档。read返回持久进度、拟定决定、草稿version及分页关联对象原文/版本，使用reference_next_offset读完。update携带task_id/version记录decisions（topic、choice、reason），决定仅留在草稿，保存后才采用。继续已有任务不再次start或重复授权，不擅自扩大范围。',
   review_revision_batch: '对统一修订任务最终有效草稿进行专业核对。先read_documents(source:draft)分段读完文档与所有分场，用返回的文档version；检查待定、缺失、跨文档一致性和正文/分场同步，结论resolved/unchanged/needs_change。仍有问题必须findings逐字引用证据；刻意保留悬念标intentional_suspense并说明理由。references先通过manage_revision_task(read)读到当前对象，核对与整组草稿/拟定决定一致性；needs_change阻止整组完成。分批至多8份文档/10项引用累积报告，不靠关键词或模型一句已完成判定成功。',
+  read_model_resource: '分页读取当前会话外置的完整工具结果。使用返回的resource_id/version和next_offset；只读句柄不表示已读正文，逐页读取后才可使用完整资料。',
   get_creation_state: '读取本项目创作设置、文档目录、已确认决定、当前阶段及待确认草稿。开始操作前调用。目录不是正文。',
   get_project_visual_style: '读取项目统一画风、版本、结构化表现要求及旧项目的已确认来源。没有专用画风字段时，按语义从明确确认的来源整理，不能把题材、作品借鉴、默认值或否定项当成画风。',
   set_project_visual_style: '将创作者明确给出/接受或明确授权决定的画风规范化为项目统一设置，并记录真实来源。先读取当前version作为expected_version。新决定引用source_message_index；仅规范化已有确认决定时引用get_project_visual_style返回的source_decision_id。两种来源只能选一种。name写画风，details仅填写已确认的媒介/渲染/线条/配色/排除表现，不补造细节；替换旧规范而非混用。仅修改画风，不改文档或付费生成。',
@@ -486,14 +491,15 @@ const descriptions: Record<keyof typeof schemas, string> = {
   manage_document_draft: '读取、继续修改或放弃当前草稿。update用changes定位草稿中的片段，base_version传草稿version；discard仅在创作者要求放弃时使用。',
   commit_document_draft: '保存本轮开始前已存在、且创作者明确批准保存的指定版本草稿。只说继续、接受设定或要求生成并非批准保存。程序会验证批准和原文版本；不能同轮创建后自行保存。',
 }
-export const scriptFunctions: TextTool[] = (Object.keys(schemas) as Array<keyof typeof schemas>).map(name => ({ name, description: descriptions[name], parameters: z.toJSONSchema(schemas[name], { io: 'input', unrepresentable: 'any' }) }))
+export const scriptFunctions: TextTool[] = (Object.keys(schemas) as Array<keyof typeof schemas>).map(name => ({ name, description: descriptions[name], access: batchableReadTools.has(name) ? 'read' : 'write', parallelSafe:batchableReadTools.has(name), parameters: z.toJSONSchema(schemas[name], { io: 'input', unrepresentable: 'any' }) }))
 
-const localSourceReadTools = new Set(['get_creation_state', 'get_project_visual_style', 'search_project_content',
+const localSourceReadTools = new Set(['read_model_resource', 'get_creation_state', 'get_project_visual_style', 'search_project_content',
   'read_source_document', 'search_source_document', 'read_full_source_document', 'read_documents', 'read_episode_scenes',
   'find_related_content', 'get_document_review_context', 'read_visual_profiles', 'get_storyboard_context', 'read_creator_requirements'])
 
 export function documentTools(context: ToolsContext) {
   const projectId = context.project.id
+  const modelResources = createModelResultResources()
   const source = effectiveScriptSource(projectId)
   // Capture once for the entire tool session; edits to an existing draft must
   // retain its original binding instead of silently adopting the newest source.
@@ -701,10 +707,18 @@ export function documentTools(context: ToolsContext) {
   }
   return {
     assertSourceUnchanged,
+    // Exact document/source reads retain their existing bounded pages and
+    // coverage receipts. Only oversized state catalogs use this resource path.
+    modelResult: (name: string, value: unknown) => name === 'get_creation_state' ? modelResources.externalize(value) : value,
     result: () => ({ tool_draft: resultDraft?.revision_task && resultDraft.status === 'pending' ? getToolDraft(projectId, resultDraft.id) : resultDraft, revision_worked: revisionWorked, review: resultReview, classification: interaction, reply: interactionText, project_changed: mutated,
       ...(settingsChanged ? { generation_options: context.script().generation_options } : {}) }),
     async execute(name: string, args: unknown): Promise<unknown> {
       context.signal?.throwIfAborted()
+      if (name === 'read_model_resource') {
+        const data = schemas.read_model_resource.parse(args)
+        assertSourceUnchanged()
+        return modelResources.read(data.resource_id, data.version, data.offset, data.length)
+      }
       if (context.sourceContextMode === 'targeted') {
         assertSourceUnchanged()
         if (!localSourceReadTools.has(name)) problem('本轮仅查询剧本原文，不执行创作修改；请另行明确提出修改要求')
@@ -1184,6 +1198,7 @@ const operationLabels: Record<string, string> = {
   load_creation_skills: '加载本次创作技能',
   manage_revision_task: '管理统一修订任务', review_revision_batch: '核对修订结果与关联内容',
   get_project_visual_style: '读取项目画风', set_project_visual_style: '更新已确认画风',
+  read_model_resource: '分页读取当前会话外置的完整工具结果。使用返回的resource_id/version和next_offset；只读句柄不表示已读正文，逐页读取后才可使用完整资料。',
   get_creation_state: '读取创作进度', search_project_content: '查找相关设定', read_documents: '阅读项目文档', record_story_decision: '记录已确认设定', record_creator_requirement: '记录创作者要求', read_creator_requirements: '读取创作者要求台账', ask_creator: '整理待确认问题',
   create_document_draft: '整理文档草稿', propose_document_patch: '准备局部修改', find_related_content: '检查关联内容', manage_document_draft: '处理已有草稿', commit_document_draft: '确认并保存文档',
   propose_next_step: '确认下一步创作',
@@ -1234,7 +1249,7 @@ export async function runScriptTools(context: ToolsContext & {
   // A session that read (or was given) the manuscript is bound to that version: if it changes mid-run, whatever was
   // compacted or planned from the old text must not be carried onto the new one.
   const sourceBound = context.sourceContextMode === 'targeted' || context.sourceVersion !== null && context.sourceVersion !== undefined
-  const stageToolNames = new Set(['get_creation_state', 'load_creation_skills', 'read_documents', 'read_source_document', 'search_source_document',
+  const stageToolNames = new Set(['read_model_resource', 'get_creation_state', 'load_creation_skills', 'read_documents', 'read_source_document', 'search_source_document',
     'create_document_draft', 'propose_document_patch', 'find_related_content', 'manage_document_draft',
     ...(context.workflow === 'episode' && context.operation === 'regenerate' ? ['read_episode_scenes'] : [])])
   const profile = scriptToolProfile({ discussionOnly: context.discussionOnly, reviewOnly: context.action?.operation === 'review' })
@@ -1325,18 +1340,17 @@ export async function runScriptTools(context: ToolsContext & {
       break
     }
     outputs = []
-    let writeBarrier = false
-    for (const call of response.calls) {
+    let batchReadFailed = false
+    const executeCall = async (call: typeof response.calls[number]) => {
       context.signal?.throwIfAborted()
-      if (writeBarrier) { outputs.push({ id: call.id, output: deferredCallOutput(call.name) }); continue }
-      if (!batchableReadTools.has(call.name)) writeBarrier = true
       const label = operationLabels[call.name] || '处理创作资料'
       context.onEvent({ type: 'progress', text: `正在${label}…` })
       let args: unknown
       try { args = JSON.parse(call.arguments) } catch { args = call.arguments }
       const operation = activity.start({ kind: 'tool', name: call.name, label, round: round + 1, summary: `正在${label}`, ...activityPreview(args, 'input') })
       try {
-        let result = await tools.execute(call.name, JSON.parse(call.arguments))
+        const work = () => tools.execute(call.name, JSON.parse(call.arguments))
+        let result = await (batchableReadTools.has(call.name) ? work() : withModelAdmission(`script-tools:${context.project.id}`, context.signal, work))
         unresolved.delete(call.name)
         if (call.name === 'manage_document_draft' && (args as { operation?: string })?.operation === 'update') {
           const failure = unresolved.get('propose_document_patch'), changes = (args as { changes?: Array<{ document_id: string }> }).changes
@@ -1353,7 +1367,7 @@ export async function runScriptTools(context: ToolsContext & {
           : call.name === 'search_source_document' ? { matches: searchResult.matches.length, total_matches: searchResult.total_matches,
             truncated: searchResult.truncated, next_cursor: searchResult.next_cursor, source_version: searchResult.source_version } : result
         activity.finish(operation, 'succeeded', { summary: operationSummary(call.name, result).slice(0, 3000), targets: activityTargets(call.name, result), ...activityPreview(publicResult, 'output') })
-        outputs.push({ id: call.id, output: JSON.stringify({ ok: true, result }) })
+        outputs.push({ id: call.id, output: JSON.stringify({ ok: true, result: tools.modelResult(call.name, result) }) })
         const state = revisionProgressState()
         if (state && !tools.result().classification) recordProgress(progress.observe({ name: call.name, arguments: args, ok: true, result, ...state }))
       } catch (issue) {
@@ -1368,13 +1382,28 @@ export async function runScriptTools(context: ToolsContext & {
         const cancelled = context.signal?.aborted && context.signal.reason?.name === 'AbortError'
         activity.finish(operation, cancelled ? 'cancelled' : 'failed', { summary: (cancelled ? '已停止此项操作' : `操作未执行：${error}`).slice(0, 3000), ...activityPreview({ error, diagnostic }, 'output') })
         if (context.signal?.aborted || issue instanceof ScriptDraftReviewError || context.sourceContextMode === 'targeted' && (issue as { statusCode?: number })?.statusCode === 409) throw issue
+        if (batchableReadTools.has(call.name)) batchReadFailed = true
         outputs.push({ id: call.id, output: JSON.stringify({ ok: false, error, diagnostic }) })
         context.onEvent({ type: 'process', label, summary: `操作未执行：${error}` })
         const state = revisionProgressState()
         if (state) recordProgress(progress.observe({ name: call.name, arguments: args, ok: false, error: diagnostic, ...state }))
       }
-      if (progressFailure || tools.result().classification) break
     }
+    await executeModelToolBatch(response.calls, { signal:context.signal,
+      read:call=>batchableReadTools.has(call.name),
+      resources: call => {
+        try {
+          const args = JSON.parse(call.arguments)
+          if (call.name === 'read_documents' || call.name === 'get_document_review_context') return (args.document_ids ?? [args.document_id ?? 'all']).map((id: string) => `document:${id}`)
+          if (['read_source_document', 'read_full_source_document', 'search_source_document'].includes(call.name)) return ['source']
+          if (call.name === 'read_model_resource') return [`resource:${args.resource_id}`]
+          if (call.name === 'read_episode_scenes') return [`episode:${args.episode_number}`]
+          return [call.name]
+        } catch { return [call.name] }
+      }, execute:executeCall, defer:(call,reason)=>outputs.push({id:call.id,output:deferredCallOutput(call.name,reason)}),
+      readFailed:()=>batchReadFailed, stopped:()=>!!progressFailure||!!tools.result().classification })
+    const order=new Map(response.calls.map((call,index)=>[call.id,index]))
+    outputs.sort((left,right)=>(order.get(left.id)??0)-(order.get(right.id)??0))
     if (progressFailure || tools.result().classification) break
   }
   const result = tools.result()

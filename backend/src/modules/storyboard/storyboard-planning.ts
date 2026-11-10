@@ -4,6 +4,9 @@ import { z } from 'zod'
 import { all, db, newId, now, one, required, run } from '../../infrastructure/database/db.js'
 import type { Project, ScriptScene, Shot, StoryboardDesign } from '../../infrastructure/database/db.js'
 import { generateStructuredOutput, type OutputContract } from '../generation/model-output.js'
+import { executeGenerationUnits } from '../generation/generation-unit-execution.js'
+import { modelTaskPolicies } from '../generation/model-task-policy.js'
+import { creativeGenerationSteps, creativeInputHash, creativeModelIdentity, withCreativeRequest } from '../skills/creative-model-state.js'
 import { projectDocuments } from '../script/script-document-tools.js'
 import { projectVisualStyle } from '../visuals/project-visual-style.js'
 import { projectStyleInstructions } from '@video-studio/shared/visuals/visual-style'
@@ -19,7 +22,7 @@ import { resolveFinalCutScope } from '../final-cut/final-cut-scope.js'
 type Context = {
   script: (id: string) => Parameters<typeof projectDocuments>[1]
   scenePrompt: (scene: ScriptScene) => string
-  generateText: (projectId: string, modelId: string, prompt: string, contract?: OutputContract) => Promise<string>
+  generateText: (projectId: string, modelId: string, prompt: string, contract?: OutputContract, signal?: AbortSignal) => Promise<string>
   selectSkills?: CreationSkillSelector
 }
 const ids = z.array(z.string().min(1)).max(100).refine(value => new Set(value).size === value.length, '选择项不可重复')
@@ -29,7 +32,7 @@ type DesignMode = z.infer<typeof designMode>
 const designInstructions = z.string().max(4000).default('')
 const planning = scope.extend({ signature: z.string().length(64), model_id: z.string().min(1), document_ids: ids.default([]), mode: designMode,
   skill_ids: skillIdsInput.optional(), shots_per_scene: z.number().int().min(2).max(8).nullish(),
-  target_duration: z.number().int().min(1).max(600).optional(), instructions: designInstructions })
+  target_duration: z.number().int().min(1).max(600).optional(), instructions: designInstructions, restart: z.boolean().optional() })
 const shotDraft = z.object({ shot_id: z.string().min(1).nullable().optional(), title: z.string().trim().min(1).max(120),
   prompt: z.string().trim().min(1).max(10000), image_prompt: z.string().trim().min(1).max(20000), video_prompt: z.string().trim().min(1).max(20000),
   duration: z.number().int().min(1).max(30), start_state: z.string().max(2000), end_state: z.string().max(2000), cut_note: z.string().max(2000) }).strict()
@@ -188,7 +191,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
         skill_policy: skillPolicy(id).find(policy => policy.stage === 'visual_assets') },
       project: { name: state.project.name, brief: state.project.brief, ratio: state.project.ratio, style: projectStyleInstructions(state.style) } }
   })
-  app.post('/api/projects/:id/script/storyboard/plan', async request => {
+  app.post('/api/projects/:id/script/storyboard/plan', async (request, reply) => withCreativeRequest(request, reply, '分镜规划', async signal => {
     const { id } = z.object({ id: z.string().min(1) }).parse(request.params), input = planning.parse(request.body)
     if (input.scene_ids.length > 10) fail('一次最多规划 10 个场次，请缩小范围')
     const state = snapshot(id, input.scene_ids, context)
@@ -228,17 +231,59 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       `选中参考文档：${JSON.stringify(sources.map(({ id, title, content }) => ({ id, title, content })))}\n` +
       `选中场次：${JSON.stringify(state.scenes.map(scene => ({ ...scene, scene_id: scene.id, existing_shots: input.mode === 'redesign' ? [] : state.shots.filter(shot => shot.source_scene_id === scene.id) })))}\n`
     const rules = await resolveCreationSkillContext({ stage: 'storyboard', task: base, selectedIds: input.skill_ids,
-      projectId: id, modelId: input.model_id, select: context.selectSkills,
-      generate: (prompt, contract) => context.generateText(id, input.model_id, prompt, contract),
+      projectId: id, modelId: input.model_id, select: context.selectSkills, signal, reuseKey: creativeModelIdentity(input.model_id),
+      generate: (prompt, contract) => context.generateText(id, input.model_id, prompt, contract, signal),
       assignmentTask: { text: input.instructions, purpose: 'create' } })
-    const value = await generateStructuredOutput('controlled_storyboard', selectedPlanSchema(state.scenes),
-      (prompt, contract) => context.generateText(id, input.model_id, prompt, contract), rules.text + '\n【本次任务】\n' + base,
-      { validate: value => validatePlan(value, state, input.target_duration, input.mode), correctionInstructions: sceneScopeInstruction })
+    const identity = { version: 1, source: state.signature, base, rules: rules.text, model: creativeModelIdentity(input.model_id) }
+    const steps = creativeGenerationSteps(id, `storyboard:${creativeInputHash(input.scene_ids)}`, identity, signal, input.restart)
+    // A small preview stays a single request. Larger batches use complete scenes
+    // so a late failure does not regenerate already validated scenes.
+    const groups = state.scenes.length > 2 ? state.scenes.map(scene => [scene]) : [state.scenes]
+    const durations = new Map(state.scenes.map(scene => [scene.id, scene.duration]))
+    if (input.target_duration !== undefined && groups.length > 1) {
+      const durationSchema = z.object({ scenes: z.array(z.object({ scene_id: z.string().min(1), duration: z.number().int().min(1).max(30) }).strict()).length(state.scenes.length) }).strict()
+      const validateDurations = (raw: unknown) => {
+        const value = durationSchema.parse(raw)
+        if (new Set(value.scenes.map(scene => scene.scene_id)).size !== state.scenes.length || value.scenes.some(scene => !durations.has(scene.scene_id))
+          || value.scenes.reduce((sum, scene) => sum + scene.duration, 0) !== input.target_duration
+          || value.scenes.some(scene => scene.duration < (input.mode === 'redesign' ? 1 : Math.max(1, state.shots.filter(shot => shot.source_scene_id === scene.scene_id).length)))) fail('场次时长分配与所选范围、已有镜头或目标总时长不一致')
+        return value
+      }
+      const allocation = await steps.run('durations', '分配所选场次时长', identity, () => generateStructuredOutput('storyboard_duration_plan', durationSchema,
+        (prompt, contract) => context.generateText(id, input.model_id, prompt, contract, signal),
+        base + '\n本步骤只分配上述所选场次时长，不生成镜头或改写剧情。每场返回scene_id和duration，合计严格等于目标总时长。',
+        { signal, context: { policy: modelTaskPolicies.decision }, validate: validateDurations }), validateDurations)
+      for (const scene of allocation.scenes) durations.set(scene.scene_id, scene.duration)
+    }
+    const byUnit = new Map(groups.map(scenes => [scenes.map(scene => scene.id).join(':'), scenes]))
+    const values = await executeGenerationUnits<z.infer<typeof draft>>({ identity, units: [...byUnit.keys()], steps, signal,
+      label: key => `规划${byUnit.get(key)!.map(scene => scene.heading).join('、')}`,
+      generate: async (key, completed) => {
+        signal.throwIfAborted()
+        if (snapshot(id, input.scene_ids, context).signature !== state.signature) fail('规划期间资料或镜头已更新，请重新规划', 409)
+        const scenes = byUnit.get(key)!, selected = { ...state, scenes }
+        const target = input.target_duration === undefined ? undefined : groups.length === 1 ? input.target_duration : scenes.reduce((sum, scene) => sum + durations.get(scene.id)!, 0)
+        const instruction = groups.length > 1 ? '\n【当前完整生成单元】仅返回以下场次，其他选中场次只是上下文，不得加入scenes：'
+          + JSON.stringify(scenes.map(scene => ({ scene_id: scene.id, scene_duration: durations.get(scene.id) })))
+          + '\n已完成的相邻场次（只读，用于空间、动作和接镜连续性，不重新输出）：' + JSON.stringify([...completed.values()].at(-1)?.scenes || []) : ''
+        return generateStructuredOutput('controlled_storyboard', selectedPlanSchema(scenes),
+          (prompt, contract) => context.generateText(id, input.model_id, prompt, contract, signal), rules.text + '\n【本次任务】\n' + base + instruction,
+          { signal, validate: value => validatePlan(value, selected, target, input.mode), correctionInstructions: groups.length > 1 ? instruction : sceneScopeInstruction })
+      },
+      validate: (raw, key) => {
+        const scenes = byUnit.get(key)!, value = selectedPlanSchema(scenes).parse(raw)
+        validatePlan(value, { ...state, scenes }, input.target_duration === undefined ? undefined : groups.length === 1 ? input.target_duration : scenes.reduce((sum, scene) => sum + durations.get(scene.id)!, 0), input.mode)
+        return value
+      },
+      validateAll: values => validatePlan({ scenes: [...values.values()].flatMap(value => value.scenes) }, state, input.target_duration, input.mode),
+    })
+    const value = { scenes: [...values.values()].flatMap(value => value.scenes) }
     if (snapshot(id, input.scene_ids, context).signature !== state.signature) fail('规划期间资料或镜头已更新，请重新规划', 409)
+    steps.clear() // Completed previews are owned by the caller; only interrupted work resumes.
     return { signature: planSignature(state.signature, input.mode, input.instructions), mode: input.mode, instructions: input.instructions,
       scenes: state.scenes.map(scene => ({ ...value.scenes.find(item => item.scene_id === scene.id)!, scene_heading: scene.heading })),
       used_skills: rules.skills, skill_assignment: rules.assignment, source_documents: sources.map(({ id, title }) => ({ id, title })) }
-  })
+  }))
   app.post('/api/projects/:id/script/storyboard/commit', async request => {
     const { id } = z.object({ id: z.string().min(1) }).parse(request.params), input = commit.parse(request.body)
     required<Project>('projects', id)

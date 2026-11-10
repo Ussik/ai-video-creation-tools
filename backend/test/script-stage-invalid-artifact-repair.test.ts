@@ -20,7 +20,7 @@ const invalid = {
 const repaired = { artifact_type: 'prop_visuals', title: '道具外观与辨识', content: invalid.content.trim() }
 const mixed = (item: unknown = invalid) => JSON.stringify({ artifacts: [retained[0], item, ...retained.slice(1)], scenes: [] })
 const repairOutput = (repairs: unknown[] = [repaired]) => JSON.stringify({
-  repairs: repairs.map(item => ({ candidate_id: 'artifact:1', ...(item as object) })),
+  repairs: repairs.map(item => { const { content: _body, ...metadata } = item as Record<string, unknown>; return { candidate_id: 'artifact:1', removed_fields: ['prop_visuals', 'episode_script'].includes(String(metadata.artifact_type)) ? ['type', 'status'] : ['status'], ...metadata } }),
 })
 const is422 = (error: unknown) => {
   assert.ok(error instanceof Error)
@@ -141,17 +141,17 @@ test('duplicate repair candidate ids cannot overwrite or stand in for another ma
   assertRetained(store.get())
 })
 
-test('a field repair cannot rewrite an already valid content string from the malformed artifact', async () => {
+test('unexpected prose in a metadata repair never replaces the server retained original body', async () => {
   const store = workspace()
   let calls = 0
-  await assert.rejects(generateStageDraftWithContinuation(request, prompt, async (_text, contract) => {
+  const result = await generateStageDraftWithContinuation(request, prompt, async (_text, contract) => {
     calls++
     if (calls === 1) return mixed()
     assert.equal(contract?.name, 'script_stage_artifact_repair')
-    return repairOutput([{ ...repaired, content: '替换成完整无缺角的白玉圆印，并改写剧情。' }])
-  }, { steps: store.runner() }), is422)
+    return JSON.stringify({ repairs: [{ candidate_id: 'artifact:1', ...repaired, removed_fields: ['type', 'status'], content: '替换成完整无缺角的白玉圆印，并改写剧情。' }] })
+  }, { steps: store.runner() })
   assert.equal(calls, 2)
-  assertRetained(store.get())
+  assert.equal(result.artifacts.find(item => item.artifact_type === 'prop_visuals')!.content, repaired.content)
   assert.doesNotMatch(JSON.stringify(store.get()), /白玉圆印/)
 })
 

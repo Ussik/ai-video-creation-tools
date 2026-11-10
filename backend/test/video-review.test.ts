@@ -124,3 +124,30 @@ test('real FFmpeg extraction produces chronological labeled sheets and playable 
   assert.equal(frame.statusCode, 200); assert.match(frame.headers['content-type']!, /image\/jpeg/)
   assert.equal((await app.inject({ method: 'GET', url: '/api/projects/project/assets/video/video-review-frame?time_ms=2500' })).statusCode, 422)
 })
+
+test('full review pages resume after a later failure and never save a partial report', async t => {
+  const isolated = Fastify(); t.after(() => isolated.close())
+  isolated.setErrorHandler((error, _request, reply) => reply.code((error as { statusCode?: number }).statusCode || 500).send({ detail: String(error) }))
+  const makeFinding = (index: number) => ({ ...result().findings[0]!, observation: `实际画面问题${index}` })
+  let initialCalls = 0, pageOneCalls = 0, pageTwoCalls = 0, fail = true
+  registerVideoReviewRoutes(isolated, { probe: async () => 2000,
+    prepareFrames: async () => ({ images: [image], sample_times_ms: [0, 500, 1000, 1500] }),
+    generate: async (_model, _provider, request) => {
+      if (request.structured_output?.name === 'video_review') {
+        initialCalls++; return JSON.stringify({ ...result(), findings: Array.from({ length: 20 }, (_, index) => makeFinding(index)) })
+      }
+      assert.equal(request.structured_output?.name, 'video_review_page')
+      if (!request.prompt.includes('实际画面问题20')) { pageOneCalls++; return JSON.stringify({ findings: [makeFinding(20)], has_more: true }) }
+      pageTwoCalls++
+      if (fail) throw Object.assign(new Error('later page interrupted'), { statusCode: 422 })
+      return JSON.stringify({ findings: [makeFinding(21)], has_more: false })
+    } })
+  const invoke = () => isolated.inject({ method: 'POST', url: base, payload: { model_id: 'reader', instructions: '分页断点恢复测试' } })
+  const before = count(), mediaBefore = all('SELECT * FROM assets'), jobsBefore = all('SELECT * FROM jobs')
+  assert.equal((await invoke()).statusCode, 422); assert.equal(count(), before)
+  fail = false
+  const response = await invoke(); assert.equal(response.statusCode, 200, response.body)
+  assert.equal(initialCalls, 1); assert.equal(pageOneCalls, 1); assert.equal(pageTwoCalls, 2)
+  assert.equal(response.json().findings.length, 22); assert.equal(count(), before + 1)
+  assert.deepEqual(all('SELECT * FROM assets'), mediaBefore); assert.deepEqual(all('SELECT * FROM jobs'), jobsBefore)
+})

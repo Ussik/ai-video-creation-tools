@@ -1767,10 +1767,10 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     }
   }
 
-  async function continueDirectorTask(message: Message) {
+  async function continueDirectorTask(message: Message, switchModel = false) {
     if (!message.task_id || busy || chatSubmitLock.current) return
     try {
-      const task = await api<RunningDirectorTask>(`/projects/${detail.id}/script/director/tasks/${message.task_id}/continue`, json('POST', {}))
+      const task = await api<RunningDirectorTask>(`/projects/${detail.id}/script/director/tasks/${message.task_id}/continue`, json('POST', switchModel && selectedModel ? {model_id:selectedModel.id} : {}))
       setError(null)
       await resumeDirectorTask(task)
     } catch (issue) { setError(readableError(issue)) }
@@ -2453,6 +2453,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     const interrupted = message.failed || execution?.outcome?.kind === 'failed' || execution?.outcome?.kind === 'cancelled'
     return <DirectorActivity activity={message.activity} execution={execution} pending={message.pending} failed={message.failed}
       disabled={busy || closing || Boolean(recoveringMessageId)} onOpenDraft={openDraft} onOpenDocuments={openExecutionDocuments} onOpenSource={openExecutionSource}
+      onContinueWithModel={message.task_can_resume && interrupted && !sourceChatBlocked && selectedModel ? () => void continueDirectorTask(message,true) : undefined} continueModelName={selectedModel?.name}
       onContinue={message.task_can_resume && interrupted && !sourceChatBlocked ? () => void continueDirectorTask(message) : undefined}
       onRetry={!sourceChatBlocked && interrupted && regenerationSource(messages, message.id) && selectedModel ? () => void regenerateReply(message) : undefined}
       onRecover={() => void recoverExecution(message)} onStop={message.pending ? stopChatGeneration : undefined} />

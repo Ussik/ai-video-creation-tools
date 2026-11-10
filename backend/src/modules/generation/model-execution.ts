@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createStreamScope, generationStepBudgets, maxModelStepAttempts } from '@video-studio/shared/script/script-stream-policy'
 
+import { currentModelRequestContext } from './model-task-policy.js'
+
 type Step = { signal: AbortSignal; attempts: number; deadline: number; name: string }
 const executionDeadline = new AsyncLocalStorage<AbortSignal>()
 const currentStep = new AsyncLocalStorage<Step>()
@@ -20,7 +22,7 @@ export function modelStepBudget(name: string) {
   return generationStepBudgets.generation
 }
 export const modelStepSignal = (fallback?: AbortSignal) => {
-  const signals = [...new Set([currentStep.getStore()?.signal, executionDeadline.getStore(), fallback].filter((item): item is AbortSignal => !!item))]
+  const signals = [...new Set([currentStep.getStore()?.signal, executionDeadline.getStore(), currentModelRequestContext()?.signal, fallback].filter((item): item is AbortSignal => !!item))]
   return signals.length > 1 ? AbortSignal.any(signals) : signals[0]
 }
 export function claimModelAttempt() {

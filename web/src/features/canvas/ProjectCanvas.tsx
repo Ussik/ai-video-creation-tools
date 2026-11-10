@@ -2156,7 +2156,9 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     const document = resolvePromptSectionSource(composerSections, id, choice)
     saveComposerDocument(serializePromptSectionDocument(document), document)
   }
-  const composerHasContent = composerIsVisualBoard ? hasVisualBoardPromptContent(composerPrompt) : !!composerBody.trim()
+  const explicitlyEmptyProfileBody = !!selectedProfile && savedDocument === undefined
+    && (selectedNode?.settings.prompt_body !== undefined || selectedNode?.settings.profile_prompt_override !== undefined) && !composerBody.trim()
+  const composerHasContent = composerIsVisualBoard ? !explicitlyEmptyProfileBody && hasVisualBoardPromptContent(composerPrompt) : !!composerBody.trim()
   const promptSourcePending = composerSections.blocks.some(block => !block.deleted && block.pendingSourceText !== undefined)
   // A saved document can contain authored mentions inside marked blocks too.
   // Every mention still needs an active graph/binding input.

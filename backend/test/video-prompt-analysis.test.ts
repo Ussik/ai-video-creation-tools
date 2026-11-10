@@ -264,3 +264,32 @@ test('default route transcodes local video and sends bounded video bytes through
     assert.equal(snapshot(), before)
   } finally { await integrated.close() }
 })
+
+test('long analysis preserves actual cuts and resumes only the unfinished shot after failure', async t => {
+  const isolated = Fastify(); t.after(() => isolated.close())
+  isolated.setErrorHandler((error, _request, reply) => reply.code((error as { statusCode?: number }).statusCode || 500).send({ detail: String(error) }))
+  let mapCalls = 0, fail = true
+  const detailCalls: number[] = []
+  const map = { global_style: content.global_style, uncertainties: [], shots: [
+    { title: '连续长镜头', start_ms: 0, end_ms: 37_000 }, { title: '真实反打', start_ms: 37_000, end_ms: 120_000 },
+  ] }
+  registerVideoPromptAnalysisRoutes(isolated, { probe: async () => 120_000,
+    prepare: async (_path, start, end, fps) => ({ data_url: 'data:video/mp4;base64,YWJjZA==', duration_ms: end - start, fps }),
+    generate: async (_model, _provider, request) => {
+      assert.equal(request.video?.duration_ms, 120_000, 'every unit can inspect the full real video for continuity')
+      if (request.structured_output?.name === 'video_prompt_analysis_map') { mapCalls++; return JSON.stringify(map) }
+      assert.equal(request.structured_output?.name, 'video_prompt_analysis')
+      const source = JSON.parse(request.prompt.split('【当前完整镜头单元】')[1]!.split('：')[1]!.split('\n')[0]!)
+      detailCalls.push(source.start_ms)
+      if (source.start_ms === 37_000 && fail) throw Object.assign(new Error('second shot interrupted'), { statusCode: 422 })
+      return JSON.stringify({ ...content, shots: [{ ...shot, ...source }] })
+    } })
+  const invoke = () => isolated.inject({ method: 'POST', url, payload: { model_id: 'doubao', asset_id: 'video', instructions: '恢复真实镜头测试' } })
+  const before = snapshot()
+  assert.equal((await invoke()).statusCode, 422)
+  fail = false
+  const response = await invoke(); assert.equal(response.statusCode, 200, response.body)
+  assert.equal(mapCalls, 1); assert.deepEqual(detailCalls, [0, 37_000, 37_000])
+  assert.deepEqual(response.json().shots.map((value: any) => [value.start_ms, value.end_ms]), [[0, 37_000], [37_000, 120_000]])
+  assert.equal(snapshot(), before)
+})

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { TextOutputLimitError, TextProviderError } from '../src/infrastructure/providers/text-errors.js'
 import { beginTextRequest, createScriptRequestUsage, TextRequestBudgetError, withTextRequestUsage } from '../src/infrastructure/providers/text-request-usage.js'
+import { ReviewPaginationStalledError } from '../src/modules/script/script-review-pagination.js'
 import { modelAttemptNumber } from '../src/modules/generation/model-execution.js'
 import type { OutputContract } from '../src/modules/generation/model-output.js'
 import { createGenerationSteps, type GenerationCheckpoint, type GenerationStepEvent } from '../src/modules/script/script-generation-steps.js'
@@ -41,7 +42,7 @@ function fixture() {
 }
 const has = (checkpoint: GenerationCheckpoint, id: string) => Object.hasOwn(checkpoint.steps, id)
 function assertFullContext(sent: string) {
-  assert.ok(sent.endsWith(prompt), 'every request retains the original complete source and all candidate documents')
+  assert.ok(sent.includes(prompt), 'every request retains the original complete source and all candidate documents')
   assert.ok(sent.includes(`本次问题身份：${JSON.stringify(ids)}`))
 }
 
@@ -95,8 +96,8 @@ test('output-limit partial JSON is discarded and a patch failure retains the com
     if (stage(contract) === 'whole') throw outputLimit(text(whole()))
     if (stage(contract) === '_decisions') return text({ decisions })
     throw failure
-  }, { steps: f.steps() }), issue => issue === failure)
-  assert.deepEqual(calls, ['whole', '_decisions', '_edits'])
+  }, { steps: f.steps() }), issue => issue === failure || issue instanceof ReviewPaginationStalledError && issue.cause === failure)
+  assert.deepEqual(calls, ['whole', '_decisions', '_edits', '_edits_page', '_edits_page', '_edits_page', '_edits_page'])
   assert.equal(has(f.checkpoint(), 'repair:decisions'), true)
   assert.equal(has(f.checkpoint(), 'repair:edits'), false)
   assert.equal(has(f.checkpoint(), 'repair'), false)
@@ -104,9 +105,9 @@ test('output-limit partial JSON is discarded and a patch failure retains the com
   const result = await generateScriptDraftRepairOutput(prompt, ids, async (sent, contract) => {
     resumed.push(stage(contract)); assertFullContext(sent)
     assert.ok(sent.includes(`本次已确定具体决定：${JSON.stringify(decisions)}`))
-    return text(edits())
+    return text({ items: [], complete: true })
   }, { steps: f.steps() })
-  assert.deepEqual(resumed, ['_edits']); assert.deepEqual(result, whole())
+  assert.deepEqual(resumed, ['_edits_page']); assert.deepEqual(result.edits, whole().edits); assert.deepEqual(result.decisions, whole().decisions)
 })
 
 test('duplicate, foreign, omitted and empty decisions never become a ledger or allow patch generation', async t => {
@@ -168,7 +169,7 @@ test('other structured contracts, provider/configuration failures and ordinary e
     const f = fixture(), calls: string[] = []
     await assert.rejects(generateScriptDraftRepairOutput(prompt, ids, async (_sent, contract) => {
       calls.push(stage(contract)); throw failure
-    }, { steps: f.steps() }), issue => issue === failure)
+    }, { steps: f.steps() }), issue => issue === failure || issue instanceof ReviewPaginationStalledError && issue.cause === failure)
     assert.deepEqual(calls, ['whole'])
     assert.deepEqual(f.checkpoint().steps, {})
   })
@@ -252,8 +253,9 @@ test('a failed replacement of a damaged recovery child removes the obsolete comp
       calls.push(stage(contract))
       assert.equal(has(f.checkpoint(), 'repair'), false, 'false complete progress is removed durably before replacing the child')
       throw failure
-    }, { steps: f.steps() }), issue => issue === failure)
-    assert.deepEqual(calls, [child === 'repair:decisions' ? '_decisions' : '_edits'])
+    }, { steps: f.steps() }), issue => issue === failure || issue instanceof ReviewPaginationStalledError && issue.cause === failure)
+    const name = child === 'repair:decisions' ? '_decisions' : '_edits'
+    assert.deepEqual(calls, [name, ...Array(4).fill(name + '_page')])
     assert.equal(has(f.checkpoint(), 'repair'), false)
     assert.equal(has(f.checkpoint(), 'repair:recovery'), true)
   })
@@ -265,7 +267,7 @@ test('changing the full prompt invalidates the former strategy and starts a whol
     if (stage(contract) === 'whole') throw outputLimit()
     if (stage(contract) === '_decisions') return text({ decisions })
     throw outputLimit()
-  }, { steps: f.steps() }), TextOutputLimitError)
+  }, { steps: f.steps() }), ReviewPaginationStalledError)
   const calls: string[] = []
   await generateScriptDraftRepairOutput(prompt + '\n新的已授权资料', ids, async (_sent, contract) => {
     calls.push(stage(contract)); return text(whole())

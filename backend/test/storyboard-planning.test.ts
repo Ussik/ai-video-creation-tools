@@ -235,7 +235,7 @@ test('storyboard upstream failures reach the client and diagnostic log without c
   assert.match(response.json().detail, /storyboard-upstream-502/)
   assert.match(response.json().diagnostics, /gpt-6-astra/)
   assert.match(JSON.stringify(logs), /storyboard-upstream-502/)
-  assert.equal(calls, 1)
+  assert.equal(calls, 2, 'read-only transient upstream errors have one bounded retry')
   assert.equal(all('SELECT id FROM shots WHERE project_id=?', project.id).length, 0)
   assert.equal((await call('POST', `/api/projects/${project.id}/script/storyboard/context`, { scene_ids: [scene.id] })).signature, context.signature)
 })

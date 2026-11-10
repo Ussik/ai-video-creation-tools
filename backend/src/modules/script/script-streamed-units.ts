@@ -116,6 +116,14 @@ export function recoverBlockStream(raw: string): { blocks: unknown[] } {
   return units
 }
 
+/** Recover only closed object members of one direct array, using the same
+ * grammatical-prefix rules as stage continuation. Never repairs partial JSON. */
+export function recoverArrayStream(raw: string, key: string): unknown[] {
+  const units = { [key]: [] as unknown[] }
+  new StreamedUnitsReader(raw, units).read()
+  return units[key]!
+}
+
 type StreamSnapshot<T> = T & { changed: boolean; reset: boolean }
 
 /** A lexical gate avoids reparsing the whole response on every text delta.

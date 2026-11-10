@@ -112,6 +112,16 @@
 .ms-connection-status { min-height: 15px; margin-top: -11px; color: var(--fc-success); font-size: 11px; text-align: right; }
 
 .ms-field-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.ms-context-settings { display: grid; gap: 8px; min-width: 0; }
+.ms-context-fields { align-items: start; }
+.ms-context-field { min-width: 0; }
+.ms-context-field .mantine-InputWrapper-label { margin-bottom: 7px; }
+.ms-context-field .mantine-Input-input { height: 42px; font-size: 15px; font-variant-numeric: tabular-nums; }
+.ms-context-field .mantine-InputWrapper-description { margin-top: 7px; margin-bottom: 0; font-size: 11px; line-height: 1.5; text-wrap: pretty; }
+.ms-context-unit { color: var(--fc-text-subtle); font-size: 11px; }
+.ms-context-help, .ms-context-status { font-size: 11px; line-height: 1.6; }
+.ms-context-help { color: var(--fc-text-secondary); }
+.ms-context-status { margin-top: 1px; }
 
 .ms-models { padding-top: 31px; }
 .ms-models-heading { margin-bottom: 17px; }
@@ -151,7 +161,7 @@
 .ms-modal-header { border-bottom: 1px solid var(--ms-line); }
 .ms-modal-body { display: grid; gap: 18px; padding-top: 19px; }
 .ms-modal-actions { display: flex; align-items: center; justify-content: flex-end; gap: 9px; padding-top: 10px; }
-.ms-modal .ms-primary-action { color: var(--fc-on-primary); }
+.ms-modal .ms-primary-action { color: var(--fc-on-action); }
 .ms-modal .mantine-Button-root:disabled,
 .ms-modal .mantine-Button-root[data-disabled] {
   opacity: 1;
@@ -322,3 +332,6 @@
   .ms-catalog-footer > span { max-width: 230px; line-height: 1.4; }
 }
 .ms-text-capabilities { display: grid; gap: 14px; padding: 16px 0; }
+.ms-text-api-settings { display: grid; gap: 14px; padding-block: 8px; }
+.ms-text-api-summary { display: grid; gap: 5px; padding: 12px 14px; background: var(--fc-surface-raised, var(--mantine-color-default-hover)); border-radius: 8px; }
+.ms-text-api-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }

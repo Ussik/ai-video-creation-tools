@@ -37,8 +37,8 @@ function outlineForContract(contract: { schema: any }, full: ReturnType<typeof o
   return { artifacts: full.artifacts.filter(document => types.includes(document.artifact_type)), scenes: [] }
 }
 function assertCompletedOutlineGroups(steps: Record<string, { value: { artifacts: unknown[] } }>, full: ReturnType<typeof outlineEnvelope>) {
-  assert.deepEqual(Object.keys(steps).sort(), [...outlineWorkKeys].sort(), 'all completed work groups survive an independent review failure')
-  const documents = Object.values(steps).flatMap(step => step.value.artifacts)
+  assert.deepEqual(Object.keys(steps).filter(key => key !== 'progress:source').sort(), [...outlineWorkKeys].sort(), 'all completed work groups survive an independent review failure')
+  const documents = Object.entries(steps).filter(([key]) => key !== 'progress:source').flatMap(([, step]) => step.value.artifacts)
   assert.deepEqual(full.artifacts.map(document => documents.find(item => (item as { artifact_type: string }).artifact_type === document.artifact_type)), full.artifacts)
 }
 
@@ -402,7 +402,7 @@ test('Responses disconnected streams checkpoint complete documents through onPar
   assert.equal(continuationTargets.length, 0); assert.equal(reviews, 0)
   assert.equal(getToolDraft(project.id), null)
   const checkpoint = JSON.parse(one<{ payload: string }>('SELECT payload FROM script_generation_checkpoints WHERE project_id=?', project.id)!.payload)
-  assert.deepEqual(Object.keys(checkpoint.steps).sort(), ['work:outline:story/draft', 'work:outline:world/draft', 'work:outline:narrative/draft:stream:state'].sort(),
+  assert.deepEqual(Object.keys(checkpoint.steps).filter(key => key !== 'progress:source').sort(), ['work:outline:story/draft', 'work:outline:world/draft', 'work:outline:narrative/draft:stream:state'].sort(),
     'independent successful world work is saved even when its concurrent narrative sibling disconnects')
   assert.deepEqual(checkpoint.steps['work:outline:narrative/draft:stream:state'].value.artifacts, [full.artifacts[1]], 'SSE progress must be synchronously checkpointed before EOF rejects')
   assert.deepEqual(checkpoint.steps['work:outline:story/draft'].value.artifacts, [full.artifacts[0]])

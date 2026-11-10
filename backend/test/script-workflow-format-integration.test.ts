@@ -91,6 +91,10 @@ test('actual workflow retries upgrade empty legacy requests and preserve nonempt
     checkpoint.steps = { 'draft:stream:state': { input_hash: hash({ strategy: 'stage-semantic-stream-v1', request: workflow, prompt: legacyPrompt }), duration_ms: 0,
       value: { version: 1, round: 2, initialEnded: retained, artifacts: retained ? completed : [], scenes: [], target: retained ? 'prop_visuals' : null,
         mode: 'document', blocks: retained ? [{ id: 'visual:old', title: '外观与辨识', content: '旧版已接收外观正文。', scenes: [] }] : [], noProgress: 0 } } }
+    // Reproduce a database that only has this historical serialization. The
+    // failed setup request also archives its current exact identity now; keep
+    // that artificial setup snapshot from masking the legacy row under test.
+    run('DELETE FROM script_checkpoint_versions WHERE project_id=? AND namespace=?', project.id, 'generation')
     run('UPDATE script_generation_checkpoints SET cache_key=?,payload=? WHERE project_id=?', hash({ version: 1, identity: { ...identity, prompt: legacyPrompt } }), JSON.stringify(checkpoint), project.id)
     succeed = true; calls = 0
     const generated = await call('POST', url, payload)

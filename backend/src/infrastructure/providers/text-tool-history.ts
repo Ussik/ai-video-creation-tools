@@ -176,3 +176,40 @@ export async function compactToolHistory(history: unknown[], initialLength: numb
 
 /** Share of the stated context window above which the complete next request counts as under pressure. */
 export const contextPressureShare = 0.8
+
+/** Native Messages compaction removes only complete old call/result exchanges.
+ * Retained signed thinking blocks and the latest pending call stay byte-for-byte
+ * intact. An unpaired or mixed result is kept verbatim instead of guessed. */
+export function compactNativeToolHistory(history: unknown[], initialLength: number, pressure = false): unknown[] {
+  if (!pressure && JSON.stringify(history.slice(initialLength)).length < 48000) return history
+  // Channel binding rules for signed/opaque reasoning are unknown. Do not
+  // rewrite even its prefix until a native compaction contract is available.
+  if (history.some(raw => {
+    const content = (raw as Item)?.content
+    return Array.isArray(content) && content.some(block => { const item = block as Item; return item.type === 'thinking' || item.type === 'redacted_thinking' || item.signature !== undefined || item.type === 'reasoning' })
+  })) return history
+  const pairs: Array<{ start: number; end: number; references: Reference[] }> = []
+  for (let index = initialLength; index < history.length - 1; index++) {
+    const assistant = history[index] as Item | undefined, user = history[index + 1] as Item | undefined
+    if (assistant?.role !== 'assistant' || !Array.isArray(assistant.content) || user?.role !== 'user' || !Array.isArray(user.content)) continue
+    const calls = (assistant.content as Item[]).filter(item => item.type === 'tool_use')
+    const results = (user.content as Item[]).filter(item => item.type === 'tool_result')
+    if ((assistant.content as Item[]).some(item => item.type !== 'tool_use') || !calls.length || results.length !== calls.length || new Set(calls.map(call => call.id)).size !== calls.length ||
+      new Set(results.map(result => result.tool_use_id)).size !== calls.length ||
+      calls.some(call => !results.some(result => result.tool_use_id === call.id)) ||
+      (user.content as Item[]).some(item => item.type !== 'tool_result')) continue
+    pairs.push({ start: index, end: index + 2, references: calls.map(call => ({ tool: String(call.name), call_id: String(call.id),
+      arguments_metadata: resultMetadata(call.input), result: resultMetadata(results.find(result => result.tool_use_id === call.id)?.content) })) })
+    index++
+  }
+  // Keep a whole latest exchange plus the pending assistant response. No lone
+  // result can survive after its signed assistant block has been removed.
+  const removing = pairs.slice(0, -1)
+  if (!removing.length) return history
+  const removed = new Set(removing.flatMap(pair => [pair.start, pair.start + 1]))
+  const state: Checkpoint = { format: 'tool_history_metadata_v1', references: removing.flatMap(pair => pair.references), omitted_records: 0 }
+  const message = () => ({ role: 'user', content: checkpointPrefix + checkpointDescription + JSON.stringify(state) })
+  while (JSON.stringify(message()).length > checkpointLimit && state.references.length) { state.references.shift(); state.omitted_records++ }
+  const first = removing[0]!.start
+  return history.flatMap((item, index) => index === first ? [message()] : removed.has(index) ? [] : [item])
+}

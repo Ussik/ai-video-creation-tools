@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { streamText, type GenerationModel, type TextRequestMetrics } from '../src/infrastructure/providers/providers.js'
+import { streamText, createTextToolTransport, type GenerationModel, type TextRequestMetrics } from '../src/infrastructure/providers/providers.js'
 import { TextOutputLimitError, TextProviderError } from '../src/infrastructure/providers/text-errors.js'
 import { textToolSession } from '../src/infrastructure/providers/text-tools.js'
+import { textHeadersTimeoutMs } from '../src/infrastructure/providers/text-transport-boundary.js'
 import { createStreamScope, StreamWaitTimeoutError, generationStepBudgets } from '@video-studio/shared/script/script-stream-policy'
 import { scriptStageArtifacts } from '@video-studio/shared/script/script-stage-content'
 import { generateStageDraftWithContinuation } from '../src/modules/script/script-stage-continuation.js'
@@ -45,22 +46,57 @@ test('native tool responses complete and cancel open bodies before executing fur
 })
 
 test('provider deadlines bound both header and body waits even if the upstream ignores abort', async t => {
+  // A transport's header deadline is shorter than its discussion-wide budget.
+  // Exercise transports directly so a session retry is not confused with one
+  // connection's lifecycle; session-wide deadlines are checked separately.
   for (const native of [false, true]) for (const phase of ['headers', 'body']) await t.test(`${native ? 'native' : 'text'} ${phase}`, async t => {
     t.mock.timers.enable({ apis: ['setTimeout'] })
-    let entered!: () => void, requestSignal!: AbortSignal
+    let entered!: () => void, requestSignal!: AbortSignal, bodyCancelled = false, metrics: TextRequestMetrics | undefined
     const started = new Promise<void>(resolve => { entered = resolve })
     t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
       requestSignal = init.signal!; entered()
-      return phase === 'headers' ? new Promise<Response>(() => {}) : new Response(new ReadableStream(), { headers: { 'Content-Type': 'text/event-stream' } })
+      return phase === 'headers' ? new Promise<Response>(() => {}) : new Response(new ReadableStream({ cancel() { bodyCancelled = true } }), { headers: { 'Content-Type': 'text/event-stream' } })
     })
-    const result = native ? textToolSession(model, provider, '请求', [], () => '')() : streamText(model, provider, { prompt: '请求' })
-    const rejected = assert.rejects(result, /5 分钟/)
-    await started; await Promise.resolve(); await Promise.resolve()
-    t.mock.timers.tick(generationStepBudgets.discussion - 1)
+    const onMetrics = (value: TextRequestMetrics) => { metrics = value }
+    const result = native ? createTextToolTransport(model, provider, '请求', [], undefined, [], () => '', undefined, undefined, undefined, onMetrics)
+      : streamText(model, provider, { prompt: '请求' }, undefined, undefined, undefined, onMetrics)
+    const rejected = assert.rejects(result, issue => phase === 'headers'
+      ? issue instanceof TextProviderError && issue.upstreamCode === 'headers_timeout' && issue.rawReason === 'headers_timeout' && issue.failureReason === 'disconnected'
+      : issue instanceof StreamWaitTimeoutError && issue.kind === 'total' && /5 分钟/.test(issue.message))
+    await started
+    // The channel admission and transport.wait layers must finish processing
+    // response headers before advancing a mocked body clock.
+    await new Promise<void>(resolve => setImmediate(resolve))
+    const deadline = phase === 'headers' ? textHeadersTimeoutMs : generationStepBudgets.discussion
+    t.mock.timers.tick(deadline - 1)
     assert.equal(requestSignal.aborted, false)
     t.mock.timers.tick(1)
     await rejected; assert.equal(requestSignal.aborted, true)
+    assert.equal(metrics?.failure_reason, 'disconnected')
+    assert.equal(metrics?.raw_reason, phase === 'headers' ? 'headers_timeout' : 'total')
+    if (phase === 'body') assert.equal(bodyCancelled, true)
   })
+})
+
+test('tool-session activity cannot extend its whole discussion deadline', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let writer!: ReadableStreamDefaultController<Uint8Array>, requestSignal!: AbortSignal, cancelled = false, calls = 0
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    calls++; requestSignal = init.signal!
+    return new Response(new ReadableStream<Uint8Array>({ start(controller) { writer = controller }, cancel() { cancelled = true } }), { headers: { 'Content-Type': 'text/event-stream' } })
+  })
+  const result = textToolSession(model, provider, '请求', [], () => '')()
+  const rejected = assert.rejects(result, issue => issue instanceof StreamWaitTimeoutError && issue.kind === 'total' && /5 分钟/.test(issue.message))
+  await new Promise<void>(resolve => setImmediate(resolve))
+  for (let index = 0; index < 4; index++) {
+    t.mock.timers.tick(60_000)
+    writer.enqueue(encode.encode('data: {"type":"response.created","response":{"status":"in_progress"}}\n\n'))
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(requestSignal.aborted, false)
+  }
+  t.mock.timers.tick(60_000)
+  await rejected; assert.equal(requestSignal.aborted, true); assert.equal(cancelled, true)
+  assert.equal(calls, 1, 'a session deadline never dispatches a replacement request')
 })
 
 test('heartbeat activity extends idle time but cannot extend the whole-dialogue deadline', async t => {

@@ -21,7 +21,7 @@ async function call<T>(method: 'GET' | 'POST' | 'PUT', url: string, payload?: un
 async function fixture() {
   const provider = await call<{ id: string }>('POST', '/api/providers', { name: '回复识别', base_url: 'https://classification.example/v1' })
   const model = await call<{ id: string }>('POST', '/api/models', { provider_id: provider.id, name: '文本识别', remote_id: 'test', modality: 'text', protocol: 'chat_completions', settings: {
-    request_path: 'chat/completions', request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] }, text_path: 'choices.0.message.content',
+    text_api: { mode: 'standard', output_mode: 'fixed', max_output_tokens: 4096 },
   } })
   const project = await call<{ id: string }>('POST', '/api/projects', { name: '识别测试' })
   return { project, model }

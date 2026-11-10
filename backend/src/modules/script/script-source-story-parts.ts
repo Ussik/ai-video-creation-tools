@@ -2,6 +2,10 @@ import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import type { ScriptSourceAnalysis, ScriptSourceStory, ScriptSourceCharacterEvidenceIssue } from '@video-studio/shared/script/script-source-document'
 import { generateStructuredOutput, type StructuredGenerator } from '../generation/model-output.js'
+import { TextOutputLimitError } from '../../infrastructure/providers/text-errors.js'
+import { createGenerationSteps } from './script-generation-steps.js'
+import { generatePagedReviewItems } from './script-review-pagination.js'
+import { recoverArrayStream } from './script-streamed-units.js'
 import { modelStepSignal, runModelStep } from '../generation/model-execution.js'
 import { createSourceCharacterEvidence } from './script-source-character-evidence.js'
 import { buildScriptCharacterSourceContext, type ScriptCharacterSourceContext } from './script-character-source-context.js'
@@ -297,7 +301,27 @@ export async function synthesizeSourceStoryParts(state: ScriptSourceAnalysis, ge
       try {
         value = saved.recovery === 'character-coverage-v1' ? await recoverCoverage() : await runModelStep(`script_source_story_${task.kind}`, signal, async () => {
           const stepSignal = modelStepSignal(signal)!
+          const pageList = async (partialText = ''): Promise<Result> => {
+            if (task.kind === 'overview') throw new Error('全剧概览不能当作列表分页')
+            const listKey = task.kind === 'characters' || task.kind === 'characters_merge' ? 'characters' : task.kind
+            const itemSchema: z.ZodType = listKey === 'characters' ? sourceStorySchema.shape.characters.element : listKey === 'timeline'
+              ? sourceStorySchema.shape.timeline.element : listKey === 'threads' ? sourceStorySchema.shape.threads.element : sourceStorySchema.shape.uncertainties.element
+            const maxItems = listKey === 'characters' ? 200 : listKey === 'timeline' ? 400 : listKey === 'threads' ? 300 : 200
+            const steps = createGenerationSteps({ checkpoint: saved!.output_checkpoint, signal: stepSignal, save: checkpoint => {
+              saved!.output_checkpoint = checkpoint; persist()
+            } })
+            const envelope = (items: unknown[]) => ({ [listKey]: items, ...(task.kind === 'timeline' ? { covered_section_ids: task.section_ids } : {}) })
+            const items = await generatePagedReviewItems({ id: `source-story:${task.key}:pages`, name: `script_source_story_${task.kind}`, itemSchema,
+              prompt: partPrompt(task, source, materials, undefined) + '\n【列表输出分页】只将本任务的完整条目分批返回；完整原稿和跨章规则仍有效，最终覆盖校验保持不变。',
+              generate, signal: stepSignal, steps, maxItems,
+              initialItems: recoverArrayStream(partialText, listKey).map(item => itemSchema.parse(item)),
+              validateItem: item => assertIds(state, [item as { section_ids: number[] }]),
+              validateItems: (items, complete) => { if (complete) validatePart(task, envelope(items), state, evidence) },
+            })
+            return validatePart(task, envelope(items), state, evidence)
+          }
           const request = async (local: boolean): Promise<Result> => {
+            if (!local && saved!.output_checkpoint && task.kind !== 'overview') return pageList()
             let scopeRequired: CharacterScopeRequired | undefined
             const output = await generateStructuredOutput(`script_source_story_${task.kind}`,
               (local ? scopedCharactersSchema : schema) as z.ZodType<Result>, generate,
@@ -320,10 +344,14 @@ export async function synthesizeSourceStoryParts(state: ScriptSourceAnalysis, ge
                     throw error
                   }
                 },
-              }).catch(error => {
+              }).catch(async error => {
                 // The final format correction has no next onAttempt hook to
                 // surface the original context-insufficiency sentinel.
                 if (scopeRequired) throw scopeRequired
+                if (error instanceof TextOutputLimitError && task.kind !== 'overview') {
+                  if (local) throw new CharacterScopeRequired('人物列表输出需要分批，扩读完整原文后继续同一任务')
+                  return pageList(error.partialText)
+                }
                 throw error
               })
             stepSignal.throwIfAborted()
@@ -356,6 +384,7 @@ export async function synthesizeSourceStoryParts(state: ScriptSourceAnalysis, ge
       }
       signal.throwIfAborted()
       saved.result = value
+      delete saved.output_checkpoint
       delete saved.failure
       persist()
     } else if (saved.failure) {

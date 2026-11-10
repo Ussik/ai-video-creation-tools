@@ -58,7 +58,8 @@ test('an exact compatible identity loads preserved content without writing, then
   const reopened = generationCheckpointStore('compatible', newIdentity)
   assert.equal(reopened.reusedCompatibleIdentity, false)
   assert.deepEqual(reopened.checkpoint, checkpoint)
-  assert.deepEqual(generationCheckpointStore('compatible', oldIdentity).checkpoint.steps, {})
+  assert.deepEqual(generationCheckpointStore('compatible', oldIdentity).checkpoint, checkpoint, 'exact historical identities keep their original validated work privately resumable')
+  assert.deepEqual(one<{ cache_key: string; payload: string }>('SELECT cache_key,payload FROM script_generation_checkpoints WHERE project_id=?', 'compatible'), migrated, 'reading archived work does not replace the current display slot')
 })
 
 test('compatible formatting identities do not match changed source or model inputs', () => {

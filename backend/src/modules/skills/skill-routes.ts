@@ -1,3 +1,4 @@
+import { generateExactPromptEdits } from './prompt-exact-edit.js'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { projectVisualStyle } from '../visuals/project-visual-style.js'
@@ -6,6 +7,8 @@ import { all, db, now, required, run } from '../../infrastructure/database/db.js
 import type { Asset, Model, Project, Shot } from '../../infrastructure/database/db.js'
 import { visualProfileTextContext, type VisualProfile } from '../visuals/visual-profiles.js'
 import { generateStructuredOutput, type OutputContract } from '../generation/model-output.js'
+import { currentModelRequestContext, modelTaskPolicies } from '../generation/model-task-policy.js'
+import { creativeGenerationSteps, creativeInputHash, creativeModelIdentity } from './creative-model-state.js'
 import { scopedVisualReferenceAssetIds, videoReferenceManifest } from '@video-studio/shared/media/video-reference-manifest'
 import { videoReferenceUsages, videoReferenceUsageIssue, videoReferenceUsageInstructions, videoReferenceShotGuidance } from '@video-studio/shared/media/video-reference-usage'
 import { visualBindingsForModality, type VisualBindingUsage } from '@video-studio/shared/visuals/visual-binding-usage'
@@ -110,7 +113,7 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
     const { id } = idParams.parse(request.params), project = required<Project>('projects', id)
     const input = z.object({
       model_id: z.string().min(1), stage: z.enum(['image_prompt', 'video_prompt']), prompt: z.string().trim().min(1).max(80_000),
-      prompt_document: z.boolean().optional(),
+      prompt_document: z.boolean().optional(), restart: z.boolean().optional(),
       prompt_body: z.string().max(80_000).optional(), prompt_template: z.string().max(80_000).optional(),
       adjustment_request: z.string().trim().max(4000).default(''),
       check_video_content: z.boolean().default(false), analyze_reference_images: z.boolean().default(false),
@@ -357,42 +360,52 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
       `本次调整要求：\n${adjustmentRequest || '未指定，按现有规则整理当前提示词。'}\n` +
       `只输出合法 JSON 对象：{"prompt":"整理后的可编辑${boardDocument ? '完整设定图内容' : '正文'}，不包含系统固定区块"}。`
     const rules = await resolveCreationSkillContext({ stage: input.stage, task, selectedIds: input.skill_ids,
-      projectId: id, modelId: input.model_id, select: context.selectSkills, signal: controller.signal, generate,
+      projectId: id, modelId: input.model_id, select: context.selectSkills, signal: controller.signal, generate, reuseKey: creativeModelIdentity(input.model_id),
       assignmentTask: { text: adjustmentRequest, purpose: 'refine', profile_kind: profile?.kind,
         target_model: target ? `${target.name} ${target.remote_id}` : undefined },
     })
-    const result = await generateStructuredOutput('refined_prompt', z.object({ prompt: z.string().trim().min(1).max(80_000) }).strict(),
-      generate, rules.text + '\n【本次任务与输出格式】\n' + task, {
-        signal: controller.signal,
-        validate: value => {
-          const prose = stripManagedPromptBlocks(value.prompt)
-          if (!prose.trim()) fail('整理结果缺少提示词正文，只能返回正文，不能只返回系统固定区块')
-          if (/【(?:镜头视觉设定|图片参考图用途|视频参考图用途|项目画风约束|设定图固定要求|基础身份参考|基础版本与本次状态变化|生成参考图|生成参数约束|图片生成要求|视频生成要求)(?:结束)?】/.test(prose)) {
-            fail('整理结果包含未闭合的系统固定区块，请仅返回正文，不要输出系统区块或标题')
-          }
-          const parameterIssue = promptParameterConflictMessage(prose, actualParameters)
-          if (parameterIssue) fail(parameterIssue)
-          const compiled = compileRefinementReferences(prose, input.reference_asset_ids, { referenceLabel: input.stage === 'video_prompt' ? '图片' : '参考图' })
-          const referenceIssue = referenceIdentityAssignmentIssue(compiled, identities) || addedReferenceCharacterIssue(compiled, addedCharacters)
-          if (referenceIssue) fail(referenceIssue)
-          if (input.stage === 'video_prompt') {
-            const dialogue = dialoguePreservation(body, prose, adjustmentRequest)
-            if (dialogue.missing.length) fail(`整理结果丢失当前基稿的逐字对白：${dialogue.missing.join('；')}。请恢复原话。`)
-          }
-        },
-      })
+    const candidateSchema = z.object({ prompt: z.string().trim().min(1).max(80_000) }).strict()
+    const candidateIdentity = { version: 2, context: version, model: creativeModelIdentity(input.model_id), task, rules: rules.text }
+    const steps = creativeGenerationSteps(id, `prompt-refinement:${creativeInputHash([input.shot_id, input.profile_id, input.stage, body, adjustmentRequest])}`, candidateIdentity, controller.signal, input.restart)
+    const validateCandidate = (value: { prompt: string }) => {
+      const prose = stripManagedPromptBlocks(value.prompt)
+      if (!prose.trim()) fail('整理结果缺少提示词正文，只能返回正文，不能只返回系统固定区块')
+      if (/【(?:镜头视觉设定|图片参考图用途|视频参考图用途|项目画风约束|设定图固定要求|基础身份参考|基础版本与本次状态变化|生成参考图|生成参数约束|图片生成要求|视频生成要求)(?:结束)?】/.test(prose)) {
+        fail('整理结果包含未闭合的系统固定区块，请仅返回正文，不要输出系统区块或标题')
+      }
+      const parameterIssue = promptParameterConflictMessage(prose, actualParameters)
+      if (parameterIssue) fail(parameterIssue)
+      const compiled = compileRefinementReferences(prose, input.reference_asset_ids, { referenceLabel: input.stage === 'video_prompt' ? '图片' : '参考图' })
+      const referenceIssue = referenceIdentityAssignmentIssue(compiled, identities) || addedReferenceCharacterIssue(compiled, addedCharacters)
+      if (referenceIssue) fail(referenceIssue)
+      if (input.stage === 'video_prompt') {
+        const dialogue = dialoguePreservation(body, prose, adjustmentRequest)
+        if (dialogue.missing.length) fail(`整理结果丢失当前基稿的逐字对白：${dialogue.missing.join('；')}。请恢复原话。`)
+      }
+    }
+    const candidateTask = rules.text + '\n【本次任务与输出格式】\n' + task
+    const result = await steps.run('candidate', '整理提示词候选', candidateIdentity, () => body.length > 12_000
+      ? generateExactPromptEdits({ source: body, prompt: candidateTask, generate, steps, signal: controller.signal,
+        validate: prompt => validateCandidate({ prompt }) })
+      : generateStructuredOutput('refined_prompt', candidateSchema, generate, candidateTask, {
+        signal: controller.signal, validate: validateCandidate,
+      }), value => { const candidate = candidateSchema.parse(value); validateCandidate(candidate); return candidate })
     if (contextVersion() !== version) throw Object.assign(new Error('镜头、视觉设定、参考图或生成配置已更新，请重新整理提示词'), { statusCode: 409 })
     const promptBody = compileRefinementReferences(stripManagedPromptBlocks(result.prompt).trim(), input.reference_asset_ids, { referenceLabel: input.stage === 'video_prompt' ? '图片' : '参考图' })
     if (!promptBody) fail('整理结果缺少提示词正文，请重新整理')
     const contentReview = input.stage === 'video_prompt' && input.check_video_content
-      ? await generateStructuredOutput('video_prompt_content_review', videoContentReviewSchema, generate,
+      ? await steps.run('content-review', '核对视频提示词候选', { candidate: promptBody, context: candidateIdentity }, () => generateStructuredOutput('video_prompt_content_review', videoContentReviewSchema, generate,
         videoContentReviewInstructions({ source: body, candidate: promptBody, adjustment: adjustmentRequest, shot: shotContext,
           generation_duration: configuration.duration, edit_duration: shot?.duration, inspected_asset_ids: inspectedIds, reference_asset_ids: input.reference_asset_ids }), {
-          signal: controller.signal, validate: value => {
+          signal: controller.signal, context: { ...currentModelRequestContext(), policy: modelTaskPolicies.review }, validate: value => {
             if (value.reference_findings.some(finding => !inspectedIds.includes(input.reference_asset_ids[finding.image_number - 1] || ''))) {
               fail('参考图诊断引用了没有提供实际像素的图片')
             }
           },
+        }), value => {
+          const review = videoContentReviewSchema.parse(value)
+          if (review.reference_findings.some(finding => !inspectedIds.includes(input.reference_asset_ids[finding.image_number - 1] || ''))) fail('参考图诊断引用了没有提供实际像素的图片')
+          return review
         }) : undefined
     controller.signal.throwIfAborted()
     if (contextVersion() !== version) throw Object.assign(new Error('镜头、视觉设定、参考图或生成配置已更新，请重新整理提示词'), { statusCode: 409 })
@@ -402,6 +415,7 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
     if (isDocument) {
       const prompt = boardDocument ? replaceVisualBoardPromptContent(originalDocument, promptBody) : restoreManagedPromptBlocks(promptBody, originalDocument)
       if (prompt.length > 80_000) fail('整理后的提示词过长，请缩短补充要求后重试')
+      steps.clear()
       return { prompt, prompt_body: boardDocument ? stripManagedPromptBlocks(prompt) : promptBody, prompt_document: true, reference_asset_ids: input.reference_asset_ids, skills: rules.skills, loaded_files: rules.files, skill_assignment: rules.assignment, ...(diagnostics ? { diagnostics } : {}) }
     }
     let refined: string
@@ -433,6 +447,7 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
       configuration.background && `背景要求：${configuration.background}。`].filter(Boolean).join('\n')
     const prompt = withProjectStyle(`${refined}\n\n【生成参数约束】\n${parameters}\n【生成参数约束结束】`, style)
     if (prompt.length > 80_000) fail('整理后的提示词过长，请缩短补充要求后重试')
+    steps.clear()
     return { prompt, prompt_body: promptBody, reference_asset_ids: input.reference_asset_ids, skills: rules.skills, loaded_files: rules.files, skill_assignment: rules.assignment, ...(diagnostics ? { diagnostics } : {}) }
     } catch (error) {
       if (controller.signal.aborted) throw Object.assign(new Error('提示词整理已取消'), { statusCode: 499 })

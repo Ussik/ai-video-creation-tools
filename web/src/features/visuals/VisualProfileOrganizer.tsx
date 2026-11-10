@@ -39,7 +39,7 @@ export default function VisualProfileOrganizer({ detail, models, providers, desi
   const [index, setIndex] = useState(0)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [status, setStatus] = useState<(MessageTiming & { phase: 'running' | 'complete' | 'failed' }) | null>(null)
+  const [status, setStatus] = useState<(MessageTiming & { phase: 'running' | 'complete' | 'failed' | 'cancelled' }) | null>(null)
   const request = useRef<AbortController | null>(null)
   const version = useRef('')
   const currentDetail = useRef(detail)
@@ -56,14 +56,14 @@ export default function VisualProfileOrganizer({ detail, models, providers, desi
   }, [catalog, providers])
   useEffect(() => { onBusyChange(busy); return () => onBusyChange(false) }, [busy, onBusyChange])
   useEffect(() => { onDirtyChange(!!drafts.length); return () => onDirtyChange(false) }, [drafts.length, onDirtyChange])
-  async function analyze() {
+  async function analyze(restart = false) {
     if (busy || !sceneIds.length || !modelId || skillControl.loading || !!skillControl.error) return
     const controller = new AbortController()
     request.current = controller
     const startedAt = performance.now(), signature = sourceVersion(detail, designId)
     setBusy(true); setError(''); setStatus({ phase: 'running', processing_started_at: startedAt })
     try {
-      const result = await api<{ profiles: VisualProfileDraft[]; skills?: Array<{ name: string }>; skill_assignment?: SkillAssignment }>(`/projects/${detail.id}/visual-profiles/analyze`, { ...json('POST', { model_id: modelId, scene_ids: sceneIds, skill_ids: skillControl.requestIds('visual_assets'), ...(designId ? { design_id: designId } : {}) }), signal: controller.signal })
+      const result = await api<{ profiles: VisualProfileDraft[]; skills?: Array<{ name: string }>; skill_assignment?: SkillAssignment }>(`/projects/${detail.id}/visual-profiles/analyze`, { ...json('POST', { ...(restart ? { restart: true } : {}), model_id: modelId, scene_ids: sceneIds, skill_ids: skillControl.requestIds('visual_assets'), ...(designId ? { design_id: designId } : {}) }), signal: controller.signal })
       if (controller.signal.aborted) return
       if (signature !== sourceVersion(currentDetail.current, designId)) throw new Error('剧本资料已发生变化，请重新整理，避免使用过期草稿。')
       const next = newVisualProfileDrafts(result.profiles, (currentDetail.current.visual_profiles || []).filter(profile => (profile.design_id || null) === (designId || null)))
@@ -73,7 +73,7 @@ export default function VisualProfileOrganizer({ detail, models, providers, desi
       setUsedSkills(result.skills?.map(skill => skill.name) || []); setUsedAssignment(result.skill_assignment); setDrafts(next); setIndex(0); setStatus({ phase: 'complete', ...finishMessageTiming(startedAt) })
     } catch (issue) {
       if (!controller.signal.aborted) { setError(issue instanceof Error ? issue.message : String(issue)); setStatus({ phase: 'failed', ...finishMessageTiming(startedAt) }) }
-    } finally { if (!controller.signal.aborted) setBusy(false) }
+    } finally { if (request.current === controller) { request.current = null; setBusy(false) } }
   }
   async function save() {
     if (busy || stale || !drafts.length || relationError || drafts.some(draft => !validVisualProfile(draft))) return
@@ -98,7 +98,7 @@ export default function VisualProfileOrganizer({ detail, models, providers, desi
     <div className="pc-profile-inspector-fields">
       <p className="pc-visual-note">从剧本补充缺少的人物、场景与道具设定。检查后保存到左侧列表，再用加号加入画布。</p>
       {error && <p className="pc-visual-error" role="alert">{error}</p>}
-      {status && <div className="pc-visual-progress" role="status" aria-busy={status.phase === 'running'}><span>{status.phase === 'running' && <Loader size={14} color="gray" />}{status.phase === 'running' ? '正在整理设定' : status.phase === 'complete' ? '草稿已整理，等待检查' : '整理失败'}</span><DirectorMessageTiming {...status} pending={status.phase === 'running'} title="整理视觉设定的处理用时" /></div>}
+      {status && <div className="pc-visual-progress" role="status" aria-busy={status.phase === 'running'}><span>{status.phase === 'running' && <Loader size={14} color="gray" />}{status.phase === 'running' ? '正在整理设定' : status.phase === 'complete' ? '草稿已整理，等待检查' : status.phase === 'cancelled' ? '已停止，已完成结果可在重试时复用' : '整理失败，可重试继续'}</span><DirectorMessageTiming {...status} pending={status.phase === 'running'} title="整理视觉设定的处理用时" /></div>}
       {drafts.length ? <>
         <p className="creative-skill-description">使用技能：{usedSkills.join(' · ') || '基础创作规则'}</p>
         {usedAssignment?.reason && <p className="creative-skill-description">选择理由：{usedAssignment.reason}</p>}
@@ -117,8 +117,8 @@ export default function VisualProfileOrganizer({ detail, models, providers, desi
           projectId={detail.id} disabled={busy} loading={skillControl.loading} error={skillControl.error} onDefaultsChanged={() => skillControl.reload('visual_assets')} />
       </fieldset>}
     </div>
-    <footer>{drafts.length ? <><Button variant="default" disabled={busy} onClick={() => { setDrafts([]); setStatus(null); setError('') }}>放弃草稿</Button><Button variant="default" leftSection={<Check size={14} />} disabled={busy || stale || !!relationError || drafts.some(draft => !validVisualProfile(draft))} onClick={() => void save()}>确认保存 {drafts.length} 份设定</Button></>
-      : <Button variant="default" leftSection={<WandSparkles size={14} />} disabled={busy || !sceneIds.length || !modelId || skillControl.loading || !!skillControl.error} onClick={() => void analyze()}>整理设定草稿</Button>}
+    <footer>{busy && request.current && <Button variant="default" onClick={() => { request.current?.abort(); setStatus(current => current ? { ...current, phase: 'cancelled' } : null) }}>停止整理</Button>}{drafts.length ? <><Button variant="default" disabled={busy} onClick={() => { setDrafts([]); setStatus(null); setError('') }}>放弃草稿</Button><Button variant="default" leftSection={<Check size={14} />} disabled={busy || stale || !!relationError || drafts.some(draft => !validVisualProfile(draft))} onClick={() => void save()}>确认保存 {drafts.length} 份设定</Button></>
+      : <>{(status?.phase === 'failed' || status?.phase === 'cancelled') && <Button variant="subtle" disabled={busy || !sceneIds.length || !modelId || skillControl.loading || !!skillControl.error} onClick={() => void analyze(true)}>重新整理</Button>}<Button variant="default" leftSection={<WandSparkles size={14} />} disabled={busy || !sceneIds.length || !modelId || skillControl.loading || !!skillControl.error} onClick={() => void analyze()}>{status?.phase === 'failed' || status?.phase === 'cancelled' ? '继续整理' : '整理设定草稿'}</Button></>}
     </footer>
   </aside>
 }

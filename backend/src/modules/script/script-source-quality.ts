@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import type { ScriptSourceAnalysis } from '@video-studio/shared/script/script-source-document'
+import { TextOutputLimitError } from '../../infrastructure/providers/text-errors.js'
+import { createGenerationSteps } from './script-generation-steps.js'
+import { generatePagedReviewItems } from './script-review-pagination.js'
+import { recoverArrayStream } from './script-streamed-units.js'
 import { generateStructuredOutput, type StructuredGenerator } from '../generation/model-output.js'
 import { sourcePromptUnits, scriptSourcePassages } from './script-source-map.js'
 
@@ -28,7 +32,7 @@ export async function reviewSourceQuality(document: { filename: string; content:
   const units = scriptSourcePassages(document.content).flatMap(passage => passage.units)
   const validUnits = new Set(units.filter(unit => unit.text.trim()).map(unit => unit.id))
   const expected = state.sections.map((_, id) => id)
-  const result = await generateStructuredOutput('script_source_quality', reviewSchema, generate,
+  const prompt =
     '你是原稿分析结果的独立核对员。只核对资料理解，不创作、不补写、不评审正式阶段文档、不决定画风或保存设定。\n' +
     '面向创作者的 explanation 使用简体中文，按“全剧概要”“人物”“时间线”“伏笔与线索”“结局”“待核实事项”等中文栏目名说明问题，不以 story、summary、characters、timeline、threads、ending、uncertainties 等内部字段名代称。必要的专有名词和原文英文名称保留；结构化字段名、章节 ID、原文句段 ID 和证据内容保持原值，不翻译或改写。\n' +
     '一次通读下方完整原文、完整目录和全剧信息。目录坐标覆盖与引用合法不代表理解正确，必须另查主次人物、身份别名、关键事件、因果、世界规则、跨章伏笔及结局是否遗漏或误读，尤其检查后半部。\n' +
@@ -39,8 +43,8 @@ export async function reviewSourceQuality(document: { filename: string; content:
     `【原稿分析核对资料】\n${JSON.stringify({ filename: document.filename, complete_source: true, units: sourcePromptUnits(units),
       sections: state.sections.map((section, id) => ({ ...section, id })), story: state.story,
       ...(state.revision_reuse?.status === 'pending' ? { revision_reuse: { interpretation_requires_review: true,
-        reused_section_ids: state.revision_reuse.reused_section_ids } } : {}) })}`,
-    { signal, budgetMs, validate: value => {
+        reused_section_ids: state.revision_reuse.reused_section_ids } } : {}) })}`
+  const validate = (value: z.infer<typeof reviewSchema>) => {
       const checked = [...value.checked_section_ids].sort((a, b) => a - b)
       if (JSON.stringify(checked) !== JSON.stringify(expected)) throw new Error('原稿分析核对必须覆盖全部真实章节，不能遗漏、重复或编造ID')
       for (const finding of value.findings) {
@@ -48,8 +52,47 @@ export async function reviewSourceQuality(document: { filename: string; content:
           throw new Error('原稿分析问题必须引用真实且非空的原文句段，不能重复或编造证据ID')
         }
       }
-    } })
+
+  }
+  const work = state.quality_work?.input_hash === inputHash ? state.quality_work : { input_hash: inputHash, checkpoint: { steps: {} } }
+  const steps = createGenerationSteps({ checkpoint: work.checkpoint, signal, save: checkpoint => {
+    work.checkpoint = checkpoint; state.quality_work = work; persist()
+  } })
+  const itemSchema = z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('coverage'), checked_section_ids: reviewSchema.shape.checked_section_ids }).strict(),
+    z.object({ kind: z.literal('finding'), finding: reviewSchema.shape.findings.element }).strict(),
+  ])
+  type Item = z.infer<typeof itemSchema>
+  let seed: Item[] = []
+  const pages = async () => {
+    const envelope = (items: Item[]) => ({ checked_section_ids: items.flatMap(item => item.kind === 'coverage' ? item.checked_section_ids : []),
+      findings: items.flatMap(item => item.kind === 'finding' ? [item.finding] : []) })
+    const items = await generatePagedReviewItems({ id: 'source-quality:pages', name: 'script_source_quality', itemSchema,
+      prompt: prompt + '\n【核对输出分页】items中kind=finding携带一项完整finding；kind=coverage携带完整checked_section_ids，恰好提交一次覆盖声明。所有原文和分析仍须完整核对，全部完成后才complete=true。',
+      generate, signal, steps, initialItems: seed, maxItems: 33,
+      validateItem: item => {
+        if (item.kind === 'coverage') validate({ checked_section_ids: item.checked_section_ids, findings: [] })
+        else if (new Set(item.finding.unit_ids).size !== item.finding.unit_ids.length || item.finding.unit_ids.some(id => !validUnits.has(id))) throw new Error('原稿核对分页引用了非法原文句段')
+      }, validateItems: (items, complete) => {
+        if (items.filter(item => item.kind === 'coverage').length > 1) throw new Error('原稿核对分页不能重复声明全篇覆盖')
+        if (complete) { const value = reviewSchema.parse(envelope(items)); validate(value) }
+      } })
+    return reviewSchema.parse(envelope(items))
+  }
+  let result: z.infer<typeof reviewSchema>
+  if (work.checkpoint.steps['source-quality:pages']) result = await pages()
+  else {
+    try { result = await generateStructuredOutput('script_source_quality', reviewSchema, generate, prompt, { signal, budgetMs, validate }) }
+    catch (issue) {
+      signal.throwIfAborted()
+      if (!(issue instanceof TextOutputLimitError)) throw issue
+      seed = recoverArrayStream(issue.partialText, 'findings').map(finding => itemSchema.parse({ kind: 'finding', finding }))
+      result = await pages()
+    }
+  }
+  validate(result)
   signal.throwIfAborted()
+  delete state.quality_work
   delete state.quality_rebuild_for
   delete state.quality_repair
   state.quality = { input_hash: inputHash, status: result.findings.length ? 'issues' : 'passed', findings: result.findings }

@@ -226,6 +226,8 @@ test('configured model catalog previews and imports without overwriting existing
   const catalogApi = createServer((request, response) => {
     requests.push({ url: request.url, auth: request.headers['x-api-key'] as string | undefined })
     response.setHeader('Content-Type', 'application/json')
+    response.setHeader('ETag', 'catalog-v1')
+    if (request.headers['if-none-match'] === 'catalog-v1') { response.writeHead(304); response.end(); return }
     response.end(JSON.stringify({ result: { entries: [
       { key: 'manual-text', label: '远端新名称', kind: 'text' },
       { key: 'image-v1', label: '图片模型', kind: 'image' },
@@ -252,7 +254,7 @@ test('configured model catalog previews and imports without overwriting existing
     provider_id: provider.id, remote_id: 'manual-text', name: '手动模型', modality: 'text',
     protocol: 'chat_completions', settings: originalSettings,
   })
-  const preview = await call<{ models: Array<{ remote_id: string; name: string; modality_hint: string | null; existing: boolean }>; total: number }>('GET', `/api/providers/${provider.id}/model-catalog`)
+  const preview = await call<{ models: Array<{ remote_id: string; name: string; modality_hint: string | null; existing: boolean }>; total: number; freshness: { source: string; fetched_at: string; validated_at: string; expires_at: string } }>('GET', `/api/providers/${provider.id}/model-catalog`)
   assert.equal(preview.total, 4)
   assert.deepEqual(preview.models.map(model => [model.remote_id, model.modality_hint, model.existing]), [
     ['manual-text', 'text', true], ['image-v1', 'image', false], ['video-v1', 'video', false], ['unknown-v1', null, false],
@@ -299,6 +301,18 @@ test('configured model catalog previews and imports without overwriting existing
   await call('PATCH', `/api/providers/${provider.id}`, { model_catalog: { path: '../models' } })
   assert.equal((await app.inject({ method: 'GET', url: `/api/providers/${provider.id}/model-catalog` })).statusCode, 422)
   assert.equal(requests.length, 1)
+  assert.equal(preview.freshness.source, 'network')
+  // A changed path is invalid above; restore it before the freshness API checks.
+  await call('PATCH', `/api/providers/${provider.id}`, { model_catalog: { path: 'catalog/list', list_path: 'result.entries', id_path: 'key', name_path: 'label', modality_path: 'kind' } })
+  const cached = await call<{ freshness: { source: string } }>('GET', `/api/providers/${provider.id}/model-catalog`)
+  assert.equal(cached.freshness.source, 'cache'); assert.equal(requests.length, 1)
+  const refreshed = await call<{ freshness: { source: string; fetched_at: string } }>('GET', `/api/providers/${provider.id}/model-catalog?refresh=true`)
+  assert.equal(refreshed.freshness.source, 'revalidated'); assert.equal(requests.length, 2)
+  assert.equal(refreshed.freshness.fetched_at, preview.freshness.fetched_at)
+  const draft = await call<{ freshness: { source: string } }>('POST', '/api/providers/model-catalog/preview', {
+    provider_id: provider.id, base_url: `http://127.0.0.1:${address.port}/v1`, refresh: true,
+  })
+  assert.equal(draft.freshness.source, 'revalidated'); assert.equal(requests.length, 3)
 })
 
 test('model catalog errors identify website pages, redirects, and wrong API paths', async t => {

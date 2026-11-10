@@ -112,7 +112,7 @@ export default function PromptSkillAction(props: Props) {
   const nodeChanged = hasResult && sourceNodeKey !== nodeKey
   const adjustmentChanged = hasResult && adjustment.trim() !== resultAdjustment
   const continueFromResult = hasResult && !nodeChanged
-  const refineLabel = hasResult ? nodeChanged ? '重新整理' : '继续调整' : '整理提示词'
+  const refineLabel = hasResult ? nodeChanged ? '重新整理' : '继续调整' : error ? '继续整理' : '整理提示词'
   function open() {
     setDiagnostics(undefined); setLoadedFiles([]); setCheckedResult('')
     setOpened(true); setError(''); setResult(''); setHasResult(false); setResultSections(undefined); setResultSystemPrompt(''); setAdjustment(''); setResultAdjustment(''); setUsedSkills([]); setUsedAssignment(undefined)
@@ -127,18 +127,18 @@ export default function PromptSkillAction(props: Props) {
       return next.length <= maxAdjustmentLength ? next : current
     })
   }
-  async function refine() {
+  async function refine(restart = false) {
     if (refining.current || props.disabled || !modelId || skillControl.loading || skillControl.error || adjustmentReferenceError) return
     const prompt = continueFromResult ? result.trim() : (promptDocument ? props.prompt : sourceBody).trim()
     const body = promptDocument ? extractPromptBody({ prompt }) : prompt
     if (!prompt || visualBoard && !hasVisualBoardPromptContent(prompt) || prompt.length > 80_000 || adjustment.length > maxAdjustmentLength) return
     refining.current = true
     const turn = ++serial.current, capturedKey = currentKey, capturedNodeKey = nodeKey, capturedAdjustment = adjustment.trim()
-    setRequestLabel(refineLabel); setElapsed(0)
+    setRequestLabel(restart ? '重新生成' : refineLabel); setElapsed(0)
     setPending(true); setError(''); abort.current = new AbortController()
     try {
       const response = await api<{ prompt: string; prompt_body?: string; reference_asset_ids?: string[]; skills: Array<{ name: string }>; skill_assignment?: SkillAssignment; loaded_files?: string[]; diagnostics?: VideoPromptDiagnostics }>(`/projects/${props.projectId}/skills/refine-prompt`, {
-        ...json('POST', { stage, skill_ids: skillControl.requestIds(stage), model_id: modelId, prompt, prompt_body: body,
+        ...json('POST', { ...(restart ? { restart: true } : {}), stage, skill_ids: skillControl.requestIds(stage), model_id: modelId, prompt, prompt_body: body,
           ...(promptDocument ? { prompt_document: true } : {}),
           prompt_template: props.promptTemplate, adjustment_request: capturedAdjustment, target_model_id: props.targetModelId || null, shot_id: props.shotId,
           profile_id: props.profileId, ratio: props.ratio, duration: props.duration, mode: props.mode, reference_asset_ids: props.referenceAssetIds,
@@ -235,7 +235,7 @@ export default function PromptSkillAction(props: Props) {
       <div className="prompt-skill-footer">
         {pending ? <div className="prompt-skill-progress" role="status"><LoaderCircle size={14} /><span>正在整理 · {elapsed} 秒</span></div>
           : <span className="prompt-skill-status">{hasResult ? `已整理 · ${result.length.toLocaleString()} 字` : '确认应用后更新节点'}</span>}
-        <div className="prompt-skill-actions"><Button variant="default" disabled={pending || props.disabled || !modelId || skillControl.loading || !!skillControl.error || !!adjustmentReferenceError || !(continueFromResult ? hasResultContent : sourceHasContent) || adjustment.length > maxAdjustmentLength} onClick={() => void refine()}>{pending ? requestLabel : refineLabel}</Button>
+        <div className="prompt-skill-actions">{error && <Button variant="subtle" disabled={pending || props.disabled || !modelId || skillControl.loading || !!skillControl.error || !!adjustmentReferenceError} onClick={() => void refine(true)}>重新生成</Button>}<Button variant="default" disabled={pending || props.disabled || !modelId || skillControl.loading || !!skillControl.error || !!adjustmentReferenceError || !(continueFromResult ? hasResultContent : sourceHasContent) || adjustment.length > maxAdjustmentLength} onClick={() => void refine()}>{pending ? requestLabel : refineLabel}</Button>
         {hasResult && <Button className="prompt-skill-apply" disabled={pending || props.disabled || stale || adjustmentChanged || !hasResultContent || result.length > maxPromptLength} onClick={() => { props.onApply(resultPreview.trim(), promptDocument ? extractPromptBody({ prompt: result }) : result.trim(), resultSections); close() }}>应用提示词</Button>}</div>
       </div>
     </Modal>

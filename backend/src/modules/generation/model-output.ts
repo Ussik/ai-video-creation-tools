@@ -2,11 +2,12 @@ import { z } from 'zod'
 import { parseStructuredOutput } from './structured-output.js'
 import { runModelStep, modelStepSignal } from './model-execution.js'
 import { retryReadOnlyGeneration } from './read-only-retry.js'
+import { modelContextFor, withModelRequestContext, type ModelRequestContext } from './model-task-policy.js'
 
 export type OutputContract = { name: string; schema: Record<string, unknown>; wrapped?: boolean;
   /** Internal read-only request policy, never part of the output Schema. */
   request_policy?: 'script_review' | 'script_review_answer' | 'script_evidence' }
-export type StructuredGenerator = (prompt: string, contract?: OutputContract) => Promise<string>
+export type StructuredGenerator = (prompt: string, contract?: OutputContract, context?: ModelRequestContext) => Promise<string>
 type JsonSchema = Record<string, unknown>
 export type StructuredOutputError = Error & { structuredOutputContract: string }
 export const isStructuredOutputError = (issue: unknown): issue is StructuredOutputError => issue instanceof Error &&
@@ -204,9 +205,11 @@ export function applyOutputContract(body: unknown, protocol: string | undefined,
 /** Fixed read-only model tasks get one bounded format correction and at most
  * one transport retry, sharing a deadline and three-attempt budget. */
 export async function generateStructuredOutput<T>(name: string, schema: z.ZodType<T>, generate: StructuredGenerator, prompt: string,
-  options: { signal?: AbortSignal; validate?: (value: T) => void; onAttempt?: (attempt: number, diagnostics?: string) => void; onRetry?: (attempt: number, delayMs: number) => void; budgetMs?: number; correctionInstructions?: string } = {}): Promise<T> {
-  const request = name.startsWith('script_') || name === 'workflow_draft' ? retryReadOnlyGeneration(generate, { signal: options.signal, onRetry: options.onRetry }) : generate
-  return runModelStep(name, options.signal, () => structuredOutput(name, schema, request, prompt, options), options.budgetMs)
+  options: { context?: ModelRequestContext; signal?: AbortSignal; validate?: (value: T) => void; onAttempt?: (attempt: number, diagnostics?: string) => void; onRetry?: (attempt: number, delayMs: number) => void; budgetMs?: number; correctionInstructions?: string } = {}): Promise<T> {
+  const context = modelContextFor(name, options.context)
+  const request = context.policy.readOnly ? retryReadOnlyGeneration(generate, { signal: options.signal, onRetry: options.onRetry }) : generate
+  const scoped: StructuredGenerator = (text, contract) => request(text, contract, context)
+  return withModelRequestContext(context, () => runModelStep(name, options.signal, () => structuredOutput(name, schema, scoped, prompt, options), options.budgetMs))
 }
 async function structuredOutput<T>(name: string, schema: z.ZodType<T>, generate: StructuredGenerator, prompt: string,
   options: { signal?: AbortSignal; validate?: (value: T) => void; onAttempt?: (attempt: number, diagnostics?: string) => void; correctionInstructions?: string }): Promise<T> {

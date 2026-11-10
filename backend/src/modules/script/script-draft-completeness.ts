@@ -11,7 +11,7 @@ import { consolidateFindings, scriptDraftFindingLimit, type FindingResolutionRec
 import { groupDraftFindings } from './script-finding-groups.js'
 import { scriptDraftReviewContext } from './script-draft-review-context.js'
 import { recoverScriptDraftReview, scriptDraftReviewPassLimit } from './script-draft-review-recovery.js'
-import { generateDraftReviewWithEvidence } from './script-draft-review-evidence.js'
+import { generateDraftReviewWithEvidence, retainedDraftReviewFindings } from './script-draft-review-evidence.js'
 import { scriptDraftReviewHistory, scriptDraftReviewHistoryGuidance } from './script-draft-review-history.js'
 import { draftReviewAcceptance, draftReviewTaskContext, draftReviewTaskSteps, planDraftReviewTasks, type DraftReviewTask,
   type ScriptDraftReviewIntent, type ScriptDraftReviewScope } from './script-draft-review-plan.js'
@@ -55,7 +55,7 @@ export const draftCompletenessInput = z.object({
 // Focused passes can report the same issue with different evidence. Keep every
 // report until semantic grouping; the final creative-issue limit stays intact.
 const combinedCompletenessInput = draftCompletenessInput.extend({
-  findings: z.array(draftCompletenessInput.shape.findings.element).max(scriptDraftFindingLimit * scriptDraftReviewPassLimit),
+  findings: z.array(draftCompletenessInput.shape.findings.element).max(scriptDraftFindingLimit * (scriptDraftReviewPassLimit + 1)),
 })
 
 /** Sources are the proposed text, never an instruction to change saved facts.
@@ -191,6 +191,7 @@ async function reviewScriptDraftSources(draft: WorkflowDraft, generate: Structur
     return result
   }
   const validate = (value: unknown) => validateReview(value)
+  let retainedWhole: unknown[] | undefined
   const review = () => recoverScriptDraftReview(prompt,
     (text, mode) => generateDraftReviewWithEvidence(text, draftCompletenessInput,
       (request, contract) => {
@@ -200,10 +201,16 @@ async function reviewScriptDraftSources(draft: WorkflowDraft, generate: Structur
         const sent = wirePrompt !== prompt && request.endsWith(text) && text.endsWith(prompt)
           ? request.slice(0, -text.length) + text.slice(0, -prompt.length) + wirePrompt : request
         return generate(sent, contract)
-      }, sources, value => validateReview(value, false, false), validate, { ...options, answerMode: mode === 'answer' }),
+      }, sources, value => validateReview(value, false, false), validate, { ...options, answerMode: mode === 'answer' || mode === 'paged_answer',
+        paged: mode === 'paged' || mode === 'paged_answer', findingSchema: draftCompletenessInput.shape.findings.element, checkedArtifacts: expected, onRetainedFindings: findings => { if (text === prompt) retainedWhole = findings } }),
     validate, results => ({ facts: [], checked_artifacts: expected,
       findings: [...new Map(results.flatMap(result => result.findings).map(finding => [JSON.stringify(finding), finding])).values()] }),
-    { ...options, validateCombined: value => validateReview(value, true) })
+    { ...options, pagedReviewSupported: true, validateCombined: value => validateReview(value, true),
+      retainedReview: async () => {
+        const findings = retainedWhole || retainedDraftReviewFindings(prompt, options.steps)
+        if (!findings?.length) return undefined
+        return generateDraftReviewWithEvidence(prompt, draftCompletenessInput, generate, sources, value => validateReview(value, false, false), validate, { ...options, retainedFindings: findings, checkedArtifacts: expected })
+      } })
   return task && options.steps ? options.steps.run('result', task.label, { version: 1, prompt }, review,
     value => validateTaskResult(value, sources), options.parentId) : review()
 }

@@ -1,3 +1,4 @@
+import type { StageContextSource } from './script-stage-context-workset.js'
 import { scriptArtifactLabels, type StageArtifactType } from '@video-studio/shared/script/script-stage-content'
 import { scriptTaskAcceptance, scriptTaskArtifactTypes } from '@video-studio/shared/script/script-task-contract'
 import { generateStageDraftWithContinuation, type StageStreamGenerator } from './script-stage-continuation.js'
@@ -58,7 +59,7 @@ export function restorePreservedScriptDraft(draft: WorkflowDraft, preserved: rea
 }
 
 export async function executeScriptWorkPlan(options: {
-  request: Request; steps: GenerationSteps; signal?: AbortSignal;
+  request: Request; steps: GenerationSteps; signal?: AbortSignal; contextRetrieval?: boolean; contextSource?: StageContextSource;
   preserved?: WorkflowDraft['artifacts'];
   prompt: (task: ScriptWorkTask, dependencies: WorkflowDraft[]) => string;
   generate: (task: ScriptWorkTask) => StageStreamGenerator;
@@ -94,7 +95,7 @@ export async function executeScriptWorkPlan(options: {
         }
         const draft = await steps.run('draft', task.label, { version: 1, request, prompt, dependencies }, async () => {
           const value = await generateStageDraftWithContinuation(generationRequest, prompt, options.generate({ ...task, artifact_types: missing }), {
-            steps, signal: options.signal, onProgress: message => options.onProgress?.(task, message),
+            steps, signal: options.signal, contextRetrieval: options.contextRetrieval, contextSource: options.contextSource, onProgress: message => options.onProgress?.(task, message),
             onRetry: (attempt, delayMs) => options.onRetry?.(task, attempt, delayMs),
           })
           return restorePreservedScriptDraft(workflowGenerationDraftSchema.parse({ ...value, ...request, artifacts: [...preserved, ...value.artifacts] }), preserved)

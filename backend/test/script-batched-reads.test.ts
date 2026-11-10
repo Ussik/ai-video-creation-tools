@@ -116,3 +116,48 @@ test('independent reads can be batched in one model turn and a write defers the 
   assert.equal(observed[3]!.deferred, true, 'a call after a write is not executed in the same turn')
   assert.notEqual(observed[2]!.deferred, true)
 })
+
+for (const protocol of ['chat_completions', 'responses'] as const) test(`${protocol}: a failed read and an independent successful read are relayed before all remaining calls defer`, async t => {
+  process.env.VIDEO_STUDIO_SCRIPT_TARGETED_CONTEXT = '0'
+  t.after(() => { delete process.env.VIDEO_STUDIO_SCRIPT_TARGETED_CONTEXT })
+  const { project, model } = await fixture(protocol)
+  let turns = 0
+  const ids = ['failed-read', 'independent-read', 'queued-read', 'blocked-write', 'late-read']
+  const expected = [
+    { id: ids[0]!, name: 'read_documents', args: { document_ids: ['missing-document'] } },
+    { id: ids[1]!, name: 'get_project_visual_style', args: {} },
+    { id: ids[2]!, name: 'read_documents', args: { document_ids: ['missing-document'] } },
+    { id: ids[3]!, name: 'record_story_decision', args: { topic: '不能越过失败读取', content: '林晚是调查记者', basis: 'creator_confirmed', source_message_index: 0 } },
+    { id: ids[4]!, name: 'get_creation_state', args: {} },
+  ]
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as NativeBody
+    if (prompt(body).includes('本次独立调用只理解创作者意图')) return intentResponse(protocol)
+    turns++
+    if (turns === 1) return protocol === 'chat_completions' ? multiToolResponse(expected)
+      : Response.json({ status: 'completed', output: expected.map(call => ({ type: 'function_call', call_id: call.id, name: call.name, arguments: JSON.stringify(call.args) })) })
+    const outputs = history(body).filter(item => item.role === 'tool' || item.type === 'function_call_output')
+    if (turns === 2) {
+      assert.deepEqual(outputs.map(item => item.tool_call_id || item.call_id), ids, 'each declared call must get exactly one output in declared order')
+      const values = outputs.map(item => JSON.parse(item.content || item.output!))
+      assert.equal(values[0].ok, false); assert.equal(values[0].deferred, undefined); assert.match(values[0].error, /文档/)
+      assert.equal(values[1].ok, true); assert.ok(values[1].result, 'independent successful read remains the actual original result')
+      for (const value of values.slice(2)) {
+        assert.equal(value.ok, false); assert.equal(value.deferred, true)
+        assert.equal(value.reason, 'read_prerequisite_failed')
+        assert.match(value.error, /读取未成功/); assert.doesNotMatch(value.error, /写入类操作已执行/)
+      }
+      assert.equal(db.prepare('SELECT id FROM script_story_decisions WHERE project_id=? AND topic=?').get(project.id, '不能越过失败读取'), undefined)
+      return toolResponse(protocol, 'get_creation_state', {})
+    }
+    assert.equal(turns, 3)
+    const repaired = outputs.find(item => (item.tool_call_id || item.call_id) === 'source-query')
+    assert.ok(repaired)
+    assert.equal(JSON.parse(repaired.content || repaired.output!).ok, true, 'the next model round can recover from the real failure')
+    return textResponse(protocol, '已改为读取有效目录，没有写入决定。')
+  })
+  const result = await chat(project.id, model.id, '先读取文档，并记录林晚是调查记者。')
+  assert.equal(result.statusCode, 200, result.body)
+  assert.equal(turns, 3)
+  assert.equal(db.prepare('SELECT id FROM script_story_decisions WHERE project_id=? AND topic=?').get(project.id, '不能越过失败读取'), undefined)
+})
