@@ -267,20 +267,29 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
   const { activeSection: activeDocumentSection, editorRef: documentEditorRef, selectSection } = useScriptDocumentNavigation<DocumentSection>({
     documentId: detail.id, initialSection, defaultSection: 'outline',
   })
+  // Keep generated candidates out of the editable draft and the commit payload.
+  // This projection can refresh even while the user has unsaved manual edits.
+  const pendingArtifacts = useMemo<ScriptArtifact[]>(() => (detail.script_generation_progress?.documents || [])
+    .filter(item => item.content.trim() && !detail.script.artifacts?.some(saved => saved.artifact_type === item.artifact_type
+      && (saved.episode_number || 0) === item.episode_number && saved.title === item.title && saved.content === item.content))
+    .map((item, position) => ({ ...item, id: `generation-draft:${item.artifact_type}:${item.episode_number}`, position, status: 'draft' })),
+  [detail.script_generation_progress, detail.script.artifacts])
   const searchableDocuments = useMemo(() => {
+    const artifacts = [...pendingArtifacts, ...draft.artifacts]
     const projectDocuments = editorDocumentGroups.flatMap(group => catalogForStage(group.stage).flatMap(item => {
-      const artifact = draft.artifacts.find(entry => entry.artifact_type === item.type && !entry.episode_number)
-      return artifact ? [{ artifact, section: item.type, title: group.title === artifact.title ? artifact.title : `${group.title} · ${artifact.title}` }] : []
+      return artifacts.filter(entry => entry.artifact_type === item.type && !entry.episode_number)
+        .map(artifact => ({ artifact, section: item.type, title: group.title === artifact.title ? artifact.title : `${group.title} · ${artifact.title}` }))
     }))
-    const legacyScript = draft.artifacts.filter(artifact => artifact.artifact_type === 'episode_script' && !artifact.episode_number && artifact.content.trim())
+    const legacyScript = artifacts.filter(artifact => artifact.artifact_type === 'episode_script' && !artifact.episode_number && artifact.content.trim())
       .map(artifact => ({ artifact, section: 'episode_script', title: artifact.title }))
-    const episodes = draft.artifacts.filter(item => item.artifact_type === 'episode_script' && (item.episode_number || 0) > 0)
+    const episodes = artifacts.filter(item => item.artifact_type === 'episode_script' && (item.episode_number || 0) > 0)
       .sort((a, b) => a.episode_number! - b.episode_number!)
       .map(artifact => ({ artifact, section: `episode-${artifact.episode_number}`, title: artifact.title }))
     return [...projectDocuments, ...legacyScript, ...episodes].map(({ artifact, section, title }) => ({
-      id: artifact.id, section, title, document: resolveScriptArtifactDocument(artifact.content, artifact.document, artifact.title),
+      id: artifact.id, section, title: artifact.id?.startsWith('generation-draft:') ? `${title} · 待确认草稿` : title,
+      document: resolveScriptArtifactDocument(artifact.content, artifact.document, artifact.title),
     }))
-  }, [draft.artifacts])
+  }, [draft.artifacts, pendingArtifacts])
   const search = useScriptDocumentSearch(searchableDocuments, match => {
     selectSection(match.section as DocumentSection, false, '[data-script-search-active]')
   })
@@ -473,7 +482,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
   function formatFocusedText(kind: TextFormat) {
     const editor = focusedEditorRef.current
     const artifactType = focusedArtifactRef.current
-    if (!editor || !artifactType) {
+    if (!editor || !artifactType || !editor.isEditable) {
       setError('先点击一个剧本正文输入区域')
       return
     }
@@ -493,6 +502,20 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
     if (section === 'scenes') {
       setActiveSceneId((current) => current || draft.scenes[0]?.clientId || null)
     }
+  }
+
+  function clearFormattingFocus() {
+    focusedEditorRef.current = null
+    focusedArtifactRef.current = null
+    setSelectionRevision(value => value + 1)
+  }
+
+  function renderGenerationDraft(artifact: ScriptArtifact) {
+    return <div className="script-generation-draft" aria-label={`${artifact.title}待确认草稿`}>
+      <div className="script-generation-draft-status"><strong>已保存草稿 · 待确认</strong><span>确认后可编辑</span></div>
+      <RichArtifactEditor key={artifact.id} {...artifactSearchProps(artifact)} label={artifact.title} placeholder=""
+        value={artifact.content} disabled onFocus={clearFormattingFocus} onSelectionChange={clearFormattingFocus} onChange={() => {}} />
+    </div>
   }
 
   function removeScene(clientId: string) {
@@ -729,11 +752,15 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
   const sceneForDeletion = draft.scenes.find((scene) => scene.clientId === deleteSceneId)
   const activeGroup = editorDocumentGroups.find(group => group.stage === scriptStageForArtifact(activeDocumentSection)) || editorDocumentGroups[0]!
   const activeGroupCatalog = catalogForStage(activeGroup.stage)
-  const activeGroupFilled = activeGroupCatalog.filter(item => draft.artifacts.some(artifact => artifact.artifact_type === item.type && !artifact.episode_number && artifact.content.trim())).length
+  const activeGroupDrafts = activeGroupCatalog.filter(item => pendingArtifacts.some(artifact => artifact.artifact_type === item.type && !artifact.episode_number)).length
+  const activeGroupFilled = activeGroupCatalog.filter(item => [...draft.artifacts, ...pendingArtifacts].some(artifact => artifact.artifact_type === item.type && !artifact.episode_number && artifact.content.trim())).length
   const activeGroupMissing = activeGroupCatalog.length - activeGroupFilled
   const canSupplementGroup = !!onSupplementStage && workflowProgress(remoteScript || {}).completed[activeGroup.stage]
-  const legacyScript = draft.artifacts.find(artifact => artifact.artifact_type === 'episode_script' && !artifact.episode_number && artifact.content.trim())
-  const episodeDocuments = draft.artifacts.filter(item => item.artifact_type === 'episode_script' && (item.episode_number || 0) > 0).sort((a, b) => (a.episode_number || 0) - (b.episode_number || 0))
+  const legacyScript = [...draft.artifacts, ...pendingArtifacts].find(artifact => artifact.artifact_type === 'episode_script' && !artifact.episode_number && artifact.content.trim())
+  const episodeDocuments = [...draft.artifacts, ...pendingArtifacts]
+    .filter(item => item.artifact_type === 'episode_script' && (item.episode_number || 0) > 0)
+    .filter((item, index, items) => items.findIndex(other => other.episode_number === item.episode_number) === index)
+    .sort((a, b) => (a.episode_number || 0) - (b.episode_number || 0))
   const selectedEpisode = episodeDocuments.find(item => `episode-${item.episode_number}` === activeDocumentSection)
   const productionSceneCandidates = selectedEpisode
     ? draft.scenes.filter(scene => scene.episode_number === selectedEpisode.episode_number)
@@ -795,7 +822,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
             <Button type="button" className={`script-document-nav-primary ${items.length === 1 ? 'script-document-nav-standalone' : ''} ${scriptStageForArtifact(activeDocumentSection) === group.stage ? 'is-active' : ''}`} onClick={() => selectDocumentSection(items[0]!.type, true)} data-workspace-control="" variant="subtle">{group.title}</Button>
             {items.length > 1 && <div className="script-document-nav-nested">
               {items.map(item => {
-                const missing = !draft.artifacts.some(artifact => artifact.artifact_type === item.type && !artifact.episode_number && artifact.content.trim())
+                const missing = ![...draft.artifacts, ...pendingArtifacts].some(artifact => artifact.artifact_type === item.type && !artifact.episode_number && artifact.content.trim())
                 return <UnstyledButton type="button" key={item.type} className={`script-document-nav-item ${missing ? 'is-missing' : ''} ${activeDocumentSection === item.type ? 'is-active' : ''}`} title={missing ? `${item.title}（未生成）` : item.title} onClick={() => selectDocumentSection(item.type)}><span>{item.title}</span>{missing && <span className="script-document-missing-dot" aria-hidden="true" />}</UnstyledButton>
               })}
             </div>}
@@ -812,23 +839,28 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
         <div className="script-long-document">
           {selectedEpisode || activeDocumentSection === 'episode_script' && legacyScript ? (() => {
             const artifact = selectedEpisode || legacyScript!
+            const pending = pendingArtifacts.find(item => item.artifact_type === 'episode_script' && (item.episode_number || 0) === (artifact.episode_number || 0))
+            const accepted = draft.artifacts.find(item => item.artifact_type === 'episode_script' && (item.episode_number || 0) === (artifact.episode_number || 0)
+              && ((item.episode_number || 0) > 0 || item.content.trim()))
             const section: DocumentSection = selectedEpisode ? `episode-${selectedEpisode.episode_number!}` : 'episode_script'
             return <>
-            <header className="script-long-document-cover script-standalone-cover"><span className="script-kicker">分集剧本</span><h1>分集剧本</h1><p>{selectedEpisode ? '只修改当前集，其他集和已保存资料保留。' : '已保存的剧本正文，支持手动修改。'}</p></header>
+            <header className="script-long-document-cover script-standalone-cover"><span className="script-kicker">分集剧本</span><h1>分集剧本</h1><p>{pending && !accepted ? '本集草稿已保存，确认后可编辑和制作分镜。' : selectedEpisode ? '只修改当前集，其他集和已保存资料保留。' : '已保存的剧本正文，支持手动修改。'}</p></header>
             <section id={`script-section-${section}`} data-script-section={section} className="script-long-section script-standalone-section">
               <header className="script-long-section-heading"><div><h2>{artifact.title}</h2></div></header>
-              <RichArtifactEditor
-                key={artifact.id}
-                {...artifactSearchProps(artifact)}
-                label={artifact.title}
+              {pending && renderGenerationDraft(pending)}
+              {pending && accepted && <div className="script-confirmed-version-label">已确认版本</div>}
+              {accepted && <RichArtifactEditor
+                key={accepted.id}
+                {...artifactSearchProps(accepted)}
+                label={accepted.title}
                 placeholder="填写本集分场正文"
-                value={artifact.content}
-                document={artifact.document}
+                value={accepted.content}
+                document={accepted.document}
                 disabled={disabled}
                 onFocus={editor => { focusedEditorRef.current = editor; focusedArtifactRef.current = 'episode_script' }}
                 onSelectionChange={editor => { focusedEditorRef.current = editor; setSelectionRevision(value => value + 1) }}
                 onChange={(content, document) => updateArtifact('episode_script', content, document, artifact.episode_number || 0)}
-              />
+              />}
             </section>
           </>
           })() : <>
@@ -837,18 +869,22 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
             <h1>{activeGroup.title}</h1>
             <p>{activeGroup.stage === 'outline' ? [draft.generation_options.genre, draft.generation_options.genre_fusion].filter(Boolean).join(' × ') || draft.brief.trim() || activeGroup.description : activeGroup.description}</p>
             <div className="script-stage-completeness">
-              <span>已填写 {activeGroupFilled}/{activeGroupCatalog.length} 项{activeGroupMissing > 0 ? `，${activeGroupMissing} 项未生成` : '，栏目已齐全'}</span>
+              <span>{activeGroupDrafts ? '已生成' : '已填写'} {activeGroupFilled}/{activeGroupCatalog.length} 项{activeGroupDrafts > 0 ? `，${activeGroupDrafts} 项待确认` : ''}{activeGroupMissing > 0 ? `，${activeGroupMissing} 项未生成` : '，栏目已齐全'}</span>
               {activeGroupMissing > 0 && canSupplementGroup && <Button size="xs" variant="light" leftSection={<Sparkles size={13} />} disabled={disabled || hasUnsavedWork} title={hasUnsavedWork ? '请先保存当前手动修改' : `选择模型后，只补齐${activeGroup.title}未生成的栏目`} onClick={() => onSupplementStage?.(activeGroup.stage)}>补齐{activeGroup.title}缺项</Button>}
             </div>
           </header>
           {activeGroupCatalog.map((item, index) => {
             const artifact = draft.artifacts.find((entry) => entry.artifact_type === item.type && !entry.episode_number)
             if (!artifact) return null
-            return <section id={`script-section-${item.type}`} data-script-section={item.type} className={`script-long-section ${artifact.content.trim() ? '' : 'is-empty'} ${activeDocumentSection === item.type ? 'is-active' : ''}`} key={item.type}>
+            const pending = pendingArtifacts.find(entry => entry.artifact_type === item.type && !entry.episode_number)
+            const heading = !artifact.content.trim() && pending ? pending : artifact
+            return <section id={`script-section-${item.type}`} data-script-section={item.type} className={`script-long-section ${artifact.content.trim() || pending ? '' : 'is-empty'} ${activeDocumentSection === item.type ? 'is-active' : ''}`} key={item.type}>
               <header className="script-long-section-heading">
-                <div><span className="script-section-index">{String(index + 1).padStart(2, '0')}</span><div><span className="script-kicker">{item.group}</span><h2>{artifact.title === activeGroup.title && (activeGroup.stage === 'locations' || activeGroup.stage === 'props') ? item.title : artifact.title}</h2></div></div>
+                <div><span className="script-section-index">{String(index + 1).padStart(2, '0')}</span><div><span className="script-kicker">{item.group}</span><h2>{heading.title === activeGroup.title && (activeGroup.stage === 'locations' || activeGroup.stage === 'props') ? item.title : heading.title}</h2></div></div>
               </header>
-              {!artifact.content.trim() && !editingEmptySections.has(item.type) ? <div className="script-section-empty">
+              {pending && renderGenerationDraft(pending)}
+              {pending && artifact.content.trim() && <div className="script-confirmed-version-label">已确认版本</div>}
+              {!artifact.content.trim() && !editingEmptySections.has(item.type) ? !pending && <div className="script-section-empty">
                 <div><strong>未生成</strong><span>此栏目暂无正文，可手动填写{canSupplementGroup ? '，或通过上方入口补齐缺项' : ''}。</span></div>
                 <Button size="xs" variant="subtle" disabled={disabled} aria-label={`手动填写${item.title}`} onClick={() => setEditingEmptySections(current => new Set(current).add(item.type))}>手动填写</Button>
               </div> : <RichArtifactEditor

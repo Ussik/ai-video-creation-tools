@@ -69,6 +69,7 @@ import { visualAssetStyleWarning } from '../visuals/visual-asset-style'
 import type { MissingVisualReference } from './canvas-visual-profiles'
 import { imageReferenceConfigError } from '@video-studio/shared/media/image-reference-config'
 import CanvasTextEditor, { CanvasTextPreview } from './CanvasTextEditor'
+import CanvasScriptDocuments from './CanvasScriptDocuments'
 import NodeMedia from './CanvasNodeMedia'
 import CanvasImageAnalysisPanel from './CanvasImageAnalysisPanel'
 import { resolveCanvasImageAnalysisSource } from './canvas-image-analysis'
@@ -102,8 +103,6 @@ import { addCanvasNodeProposalDraft, assertCanvasNodeProposalCurrent, assertCanv
 export type { CanvasNodeProposalActions } from './canvas-node-proposal'
 import type { JSONContent } from '@tiptap/core'
 import { generationCost, imageGenerationDefaults, imageParameterOptions, imageParameterValue, imageRatioError, imageRatios, imageRequestResolution, imageResolutionClarity, modelDefaultResolution, usesModelParameter, videoParameterPolicy } from './canvas-model-parameters'
-import { parseScriptDocument } from '../script/script-rich-document'
-import { textDocumentText } from '../../shared/lib/editor/text-document'
 import { fitImageNode, imageNodeMinimum } from './canvas-image-layout'
 import { placeNewCanvasNodes } from './canvas-node-placement'
 import { canvasPromptIndex, canvasReferenceKey, compactCanvasZoom, indexedCanvasPrompt, reuseFlowEdge, reuseFlowNode, sameCanvasContent, shallowEqual, shouldVirtualizeCanvas, updateCanvasGeometry } from './canvas-performance'
@@ -248,7 +247,9 @@ type FlowData = Record<string, unknown> & {
   scriptSceneCount?: number
   scriptDuration?: number
   scriptOutline?: string
+  scriptCharacters?: string
   scriptArtifacts?: ScriptArtifact[]
+  scriptGenerationProgress?: ProjectDetail['script_generation_progress']
   scriptTitle?: string
   scriptUpdatedAt?: string
   scriptExists?: boolean
@@ -762,9 +763,9 @@ function StudioNode({ data, selected }: NodeProps<FlowNode>) {
         <Button type="button" className="pc-project-script-edit" aria-label="打开剧本对话" onClick={(event) => { event.stopPropagation(); data.onOpenScriptDirector('all') }} data-workspace-control="" variant="subtle">
           <MessageSquare size={14} />{data.scriptExists ? '剧本对话' : '开始创作'}
         </Button>
-        {data.scriptExists && <Button type="button" className="pc-project-script-edit" aria-label="编辑剧本" onClick={(event) => { event.stopPropagation(); data.onOpenScriptCreator() }} data-workspace-control="" variant="subtle">
-          <PenLine size={14} />编辑
-        </Button>}
+        <Button type="button" className="pc-project-script-edit" aria-label="编辑剧本" onClick={(event) => { event.stopPropagation(); data.onOpenScriptCreator() }} data-workspace-control="" variant="subtle">
+          <PenLine size={14} />编辑器
+        </Button>
       </div>
       <div className="pc-project-script-heading">
         <strong>{data.scriptTitle || node.title || '项目剧本'}</strong>
@@ -777,21 +778,8 @@ function StudioNode({ data, selected }: NodeProps<FlowNode>) {
           className={scriptSection === value ? 'is-active' : ''} onClick={(event) => { event.stopPropagation(); setScriptSection(value) }} value={value}>{label}</Tabs.Tab>)}
       </Tabs.List></Tabs>
       <div className="pc-project-script-empty nowheel nodrag nopan">
-        {(() => {
-          if (scriptSection === 'episodes') {
-            const episodes = (data.scriptArtifacts || []).filter(item => item.artifact_type === 'episode_script' && (item.episode_number || 0) > 0).sort((a, b) => (a.episode_number || 0) - (b.episode_number || 0))
-            return episodes.length ? <div className="pc-script-episodes">{episodes.map(artifact => <UnstyledButton key={artifact.id} type="button" onClick={event => { event.stopPropagation(); data.onOpenScriptDocument?.(artifact) }}><FileText size={16} /><span><strong>{artifact.title}</strong><small>已保存 · 点击编辑本集</small></span><ChevronDown size={14} /></UnstyledButton>)}</div> : <div className="pc-script-empty-state">
-              <strong>还没有分集剧本</strong>
-              <p>在对话中创作本集，确认保存后即可制作分镜。</p>
-              <Button type="button" className="pc-project-script-edit" aria-label="打开分集创作对话" onClick={event => { event.stopPropagation(); data.onOpenScriptDirector('all') }} data-workspace-control="" variant="subtle"><MessageSquare size={14} />打开剧本对话</Button>
-            </div>
-          }
-          const artifact = data.scriptArtifacts?.find((item) => item.artifact_type === scriptSection)
-          const content = artifact?.content?.trim() || (scriptSection === 'outline' ? data.scriptOutline?.trim() : '')
-          if (!content) return `暂无${scriptSection === 'outline' ? '故事大纲' : scriptSection === 'characters' ? '人物小传' : scriptSection === 'locations' ? '场景设计' : '道具设计'}，可在导演对话中生成`
-          const document = parseScriptDocument(content)
-          return <CanvasTextPreview text={textDocumentText(document)} document={document} />
-        })()}
+        <CanvasScriptDocuments section={scriptSection} artifacts={data.scriptArtifacts} outline={data.scriptOutline} characters={data.scriptCharacters}
+          progress={data.scriptGenerationProgress} onOpenDocument={data.onOpenScriptDocument} onOpenDirector={() => data.onOpenScriptDirector('all')} />
       </div>
     </div> : node.type === 'generation' ? <>
       <div className="pc-node-content pc-node-preview-content pc-node-idle-content">
@@ -1788,10 +1776,11 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const scriptNodeData = useMemo(() => ({
     scriptSceneCount: detail.script?.scenes?.length || 0,
     scriptDuration: detail.script?.scenes?.reduce((sum, scene) => sum + (scene.duration || 0), 0) || 0,
-    scriptOutline: detail.script?.outline || '', scriptArtifacts: detail.script?.artifacts || [],
+    scriptOutline: detail.script?.outline || '', scriptCharacters: detail.script?.characters || '', scriptArtifacts: detail.script?.artifacts || [],
+    scriptGenerationProgress: detail.script_generation_progress,
     scriptTitle: detail.name || '项目剧本', scriptUpdatedAt: scriptUpdatedLabel(detail),
     scriptExists: !!(detail.brief?.trim() || detail.script?.outline?.trim() || detail.script?.characters?.trim() || detail.script?.scenes?.length),
-  }), [detail.script, detail.name, detail.brief, detail.updated_at])
+  }), [detail.script, detail.script_generation_progress, detail.name, detail.brief, detail.updated_at])
   const flowNodesRef = useRef<FlowNode[]>([])
   const flowNodes = useMemo<FlowNode[]>(() => {
     const previousNodes = flowNodesRef.current

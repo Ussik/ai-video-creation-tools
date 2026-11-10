@@ -266,6 +266,7 @@ export interface ProjectDetail extends Project {
   project_visual_style?: import('../visuals/visual-style.js').ProjectVisualStyle
   production_range: ProductionRange
   script: Script
+  script_generation_progress?: ScriptGenerationProgress | null
   shots: Shot[]
   historical_shots?: Shot[]
   timeline_clips: TimelineClip[]
@@ -276,6 +277,13 @@ export interface ProjectDetail extends Project {
   visual_profiles?: VisualProfile[]
   scene_visual_bindings?: SceneVisualBinding[]
   shot_visual_bindings?: ShotVisualBinding[]
+}
+
+/** Persisted generation drafts remain separate from accepted project documents. */
+export interface ScriptGenerationProgress {
+  updated_at: string
+  checkpoint_key?: string
+  documents: Array<{ artifact_type: StageArtifactType; title: string; content: string; episode_number: number }>
 }
 
 export type VisualKind = 'character' | 'location' | 'prop'

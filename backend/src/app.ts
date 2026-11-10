@@ -81,6 +81,7 @@ import { createGenerationSteps, type GenerationSteps } from './modules/script/sc
 import { generateStageDraftWithContinuation } from './modules/script/script-stage-continuation.js'
 import { hasRetainedGenerationWork, workflowDocumentContext } from './modules/script/script-workflow-context.js'
 import { generationCheckpointStore, clearGenerationCheckpoint } from './modules/script/script-generation-checkpoints.js'
+import { bindScriptGenerationProgressSource, discardScriptGenerationProgress, scriptGenerationProgress, scriptGenerationProgressCheckpoint } from './modules/script/script-generation-progress.js'
 import { completeSourceEvidence } from './modules/script/script-source-material.js'
 import { analyzeSourceSnapshot, scriptSourceVersion, sourceAnalysisConfiguration } from './modules/script/script-source-analysis.js'
 import { sourceProposalBudget, scriptProposalBudgetScope } from './modules/script/script-proposal-budget.js'
@@ -1835,6 +1836,7 @@ async function executeDirectorChatRequest(project: Project, data: DirectorInput,
     ? { ...generated, draft: { ...generated.draft, source_version: sourceVersion } } : generated
   activity.finish(generation, 'succeeded', { summary: '模型已返回本轮结果' })
   return { ...result, stage_context, activity: activity.entries, generation_options: resolved.data.generation_options,
+    ...('draft' in result && result.draft ? { generation_checkpoint: scriptGenerationProgressCheckpoint(project.id) } : {}),
     ...(resolved.settingsChanged ? { project_changed: true } : {}) }
 }
 
@@ -2256,6 +2258,8 @@ async function directorTextOutput(project: Project, model: Model, provider: Prov
     ? prompt : store.checkpoint.prompt || prompt
   if (store) store.checkpoint.prompt = generationPrompt
   const steps = store ? directorGenerationSteps(store, signal, activity, parent) : undefined
+  bindScriptGenerationProgressSource(steps!, source ? scriptDocumentVersion(source) : null,
+    activity?.entries.find(entry => entry.task_id)?.task_id)
   const legacyWork = Boolean(store.checkpoint.steps.draft || store.checkpoint.steps['draft:stream:state'])
   const taskEntries = new Map<string, ScriptActivity>()
   const taskPlan = scriptWorkPlan(data.workflow)
@@ -2614,7 +2618,7 @@ export function buildApp(): FastifyInstance {
     }
     return {
       ...project, ...(canvasId === undefined ? {} : { final_cut_canvas_id: canvasId }), production_range: scope.range,
-      script: projectScript(id), shots: scope.shots
+      script: projectScript(id), script_generation_progress: scriptGenerationProgress(id, resolutionSourceVersion(project)), shots: scope.shots
         .map(shot => ({ ...shot, archived_candidate_asset_ids: archivedByShot.get(shot.id) ?? [] })),
       historical_shots: (canvasId === undefined ? all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NOT NULL ORDER BY created_at, position', id) : [])
         .map(shot => ({ ...shot, archived_candidate_asset_ids: archivedByShot.get(shot.id) ?? [] })),
@@ -3131,6 +3135,12 @@ export function buildApp(): FastifyInstance {
     const { id } = parse(idParams, request.params); required<Project>('projects', id)
     const script = projectScript(id)
     return { draft_resolution: publicDraftResolution(pendingScriptDraft(id)), draft: getToolDraft(id), decisions: storyDecisions(id), creation: creationState(id, script), document_health: documentHealth(id, projectDocuments(id, script)) }
+  })
+  app.post('/api/projects/:id/script/director/generation-progress/discard', async request => {
+    const { id } = parse(idParams, request.params); required<Project>('projects', id)
+    const data = parse(z.object({ checkpoint_key: z.string().min(1), updated_at: z.string().min(1) }).strict(), request.body)
+    discardScriptGenerationProgress(id, data.checkpoint_key, data.updated_at)
+    return { discarded: true }
   })
   app.get('/api/projects/:id/script/director/resolutions/:resolutionId', async request => {
     const { id, resolutionId } = parse(z.object({ id: z.string().min(1), resolutionId: z.string().min(1) }), request.params)

@@ -2742,6 +2742,11 @@
 .project-canvas .pc-node.pc-node-media-result .pc-node-foot { display: none; }
 .project-canvas .pc-project-script-empty { white-space: normal; }
 .project-canvas .pc-project-script-empty .pc-text-preview { height: auto; overflow: visible; }
+.pc-script-documents { display: flex; flex-direction: column; gap: 14px; }
+.pc-script-document-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.pc-script-document-heading > strong { color: var(--fc-text); overflow-wrap: anywhere; }
+.pc-script-document-heading .mantine-Badge-root { flex-shrink: 0; }
+.pc-script-document-reader { min-width: 0; }
 
 .pc-script-episodes { display: flex; flex-direction: column; gap: 8px; }
 .pc-script-episodes button { display: flex; gap: 12px; align-items: center; width: 100%; padding: 12px; border: 1px solid var(--fc-border); border-radius: 8px; background: var(--fc-surface-muted); color: var(--fc-text); text-align: left; cursor: pointer; }

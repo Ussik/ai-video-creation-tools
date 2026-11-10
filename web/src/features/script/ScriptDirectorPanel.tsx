@@ -114,10 +114,12 @@ type GeneratedArtifact = {
   content: string
 }
 
+type GenerationCheckpointReference = { checkpoint_key: string; updated_at: string }
 type GeneratedScript = {
   source_version?: string | null
   source_update?: ScriptSourceUpdate
   source_message_id?: string
+  generation_checkpoint?: GenerationCheckpointReference
   workflow?: WorkflowRequest
   tool_draft?: ScriptToolDraft
   resource_changes?: ResourceChange[]
@@ -155,6 +157,7 @@ function isStructuredChoiceStream(text: string): boolean {
 }
 
 type StreamEvent = {
+  generation_checkpoint?: GenerationCheckpointReference
   source_update?: ScriptSourceUpdate
   draft_resolution?: ScriptDraftResolution | null
   task_id?: string
@@ -313,6 +316,8 @@ function restoreWorkflowDraft(projectId: string): GeneratedScript | null {
       ...(value.source_update ? { source_update: value.source_update } : value.tool_draft?.source_update ? { source_update: value.tool_draft.source_update } : {}),
       ...(Array.isArray(value.resource_changes) ? { resource_changes: value.resource_changes } : {}),
       ...(typeof value.source_message_id === 'string' ? { source_message_id: value.source_message_id } : {}),
+      ...(typeof value.generation_checkpoint?.checkpoint_key === 'string' && typeof value.generation_checkpoint.updated_at === 'string'
+        ? { generation_checkpoint: value.generation_checkpoint } : {}),
       ...(value.generation_options && typeof value.generation_options === 'object' ? { generation_options: value.generation_options } : {}),
       outline: typeof value.outline === 'string' ? value.outline : '',
       characters: typeof value.characters === 'string' ? value.characters : '',
@@ -1302,7 +1307,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         else {
           const recoverable = result.draft_results?.find(task => task.conversation_id === remote[0]?.id)
           const completion = recoverable?.events.find(event => event.type === 'done')
-          if (completion?.draft && !generated?.tool_draft) receiveWorkflowDraft(completion.draft, recoverable!.message_id, completion.source_update)
+          if (completion?.draft && !generated?.tool_draft) receiveWorkflowDraft(completion.draft, recoverable!.message_id, completion.source_update, completion.generation_checkpoint)
         }
       })
       .catch(() => { /* Keep the local fallback when the service is temporarily unavailable. */ })
@@ -1672,7 +1677,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
           receiveToolResult(event, pendingId)
           if (typeof event.reply === 'string') reply = event.reply
           if (event.draft) {
-            receiveWorkflowDraft(event.draft, pendingId, event.source_update)
+            receiveWorkflowDraft(event.draft, pendingId, event.source_update, event.generation_checkpoint)
             setMessages(current => current.map(message => message.id === pendingId ? { ...message, classification_version: replyClassificationVersion, classification: { type: 'other' } } : message))
           }
           return
@@ -1882,9 +1887,10 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     void refreshToolState(true).catch(() => {})
   }
 
-  function receiveWorkflowDraft(draft: WorkflowDraft, sourceMessageId?: string, sourceUpdate?: ScriptSourceUpdate) {
+  function receiveWorkflowDraft(draft: WorkflowDraft, sourceMessageId?: string, sourceUpdate?: ScriptSourceUpdate, generationCheckpoint?: GenerationCheckpointReference) {
     setGenerated({
       source_version: draft.source_version,
+      ...(generationCheckpoint ? { generation_checkpoint: generationCheckpoint } : {}),
       ...(sourceMessageId ? { source_message_id: sourceMessageId } : {}),
       source_update: sourceUpdate,
       workflow: workflowRequestSnapshot(draft),
@@ -2018,6 +2024,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     try {
       await api(`/projects/${detail.id}/script/director/resolutions/${draftResolution.id}/discard`, json('POST', { version: draftResolution.version }))
       receiveDraftResolution(null)
+      void onRefresh().catch(() => onNotice('草稿状态已更新，项目刷新失败，请稍后重试'))
       onNotice('已放弃候选稿，可以重新生成')
     } catch (issue) { setError(readableError(issue)); void refreshToolState().catch(() => {}) }
     finally { resolutionDiscardLock.current = false; setWorking(null) }
@@ -2067,12 +2074,22 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       try { await api(`/projects/${detail.id}/script/director/tasks/${generated.source_message_id}/discard-draft`, json('POST', {})) }
       catch (issue) { setError(readableError(issue)); return }
     }
+    if (!taskPersistence.current && generated?.workflow && !generated.tool_draft && generated.generation_checkpoint) {
+      try {
+        await api(`/projects/${detail.id}/script/director/generation-progress/discard`, json('POST', generated.generation_checkpoint))
+      } catch (issue) {
+        // A newer generation may have replaced this exact checkpoint. Dropping
+        // the old local preview must not hide that newer draft.
+        if ((issue as { status?: number }).status !== 409) { setError(readableError(issue)); return }
+      }
+    }
     if (generated?.source_message_id) setMessages(current => current.map(message => message.id === generated.source_message_id && message.execution ? { ...message,
       execution: { ...message.execution, outcome: { kind: 'discarded', summary: '草稿已放弃，正式资料保持原状。' } } } : message))
     if (generated?.tool_draft) setMessages(current => current.map(message => message.execution?.outcome?.draft_id === generated.tool_draft!.id ? { ...message,
       execution: { ...message.execution, outcome: { ...message.execution.outcome!, kind: 'discarded', summary: '草稿已放弃，正式资料保持原状。' } } } : message))
     setGenerated(null); setPreviewOpen(false); setError(null)
     setCreation(null)
+    void onRefresh().catch(() => onNotice('草稿状态已更新，项目刷新失败，请稍后重试'))
     void refreshToolState().catch(() => {})
   }
 
@@ -2319,7 +2336,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         if (result.generation_options) setOptions(result.generation_options)
         if (result.generation_options?.episode_duration) setEpisodeDuration(result.generation_options.episode_duration)
         if (result.draft) {
-          receiveWorkflowDraft(result.draft, pendingId, result.source_update)
+          receiveWorkflowDraft(result.draft, pendingId, result.source_update, result.generation_checkpoint)
           setMessages(current => current.map(message => message.id === pendingId ? { ...message, classification_version: replyClassificationVersion, classification: { type: 'other' } } : message))
         }
       }
@@ -2406,7 +2423,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       if (message.task_id && message.execution?.outcome?.kind === 'draft' && (!generated || scriptSaved)) {
         const task = await api<{ events: StreamEvent[] }>(`/projects/${detail.id}/script/director/tasks/${message.task_id}`)
         const completed = task.events.find(event => event.type === 'done')
-        if (completed?.draft) { receiveWorkflowDraft(completed.draft, message.id, completed.source_update); return }
+        if (completed?.draft) { receiveWorkflowDraft(completed.draft, message.id, completed.source_update, completed.generation_checkpoint); return }
       }
       const result = await refreshToolState(message.id === messages.at(-1)?.id, message.id === messages.at(-1)?.id ? message.id : undefined)
       await onRefresh()

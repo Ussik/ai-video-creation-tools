@@ -48,11 +48,163 @@ async function mount(t: TestContext, detail = project, extraProps: Partial<Pick<
   })
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container)
-  await act(() => root.render(<MantineProvider env="test"><ScriptEditor detail={detail} models={[model]} providers={[provider]}
-    onRefresh={async () => detail} onOpenModels={() => {}} onOpenCanvas={() => { openedCanvas++ }} onNotice={() => {}} {...extraProps} /></MantineProvider>))
-  await settle()
-  return { container, requests, openedCanvas: () => openedCanvas, destroy: async () => { await act(() => root.unmount()); container.remove() } }
+  let currentDetail = detail
+  async function rerender(nextDetail: ProjectDetail) {
+    currentDetail = nextDetail
+    await act(() => root.render(<MantineProvider env="test"><ScriptEditor detail={currentDetail} models={[model]} providers={[provider]}
+      onRefresh={async () => currentDetail} onOpenModels={() => {}} onOpenCanvas={() => { openedCanvas++ }} onNotice={() => {}} {...extraProps} /></MantineProvider>))
+    await settle()
+  }
+  await rerender(detail)
+  return { container, requests, rerender, openedCanvas: () => openedCanvas, destroy: async () => { await act(() => root.unmount()); container.remove() } }
 }
+
+function withProgress(documents: NonNullable<ProjectDetail['script_generation_progress']>['documents'], detail = project): ProjectDetail {
+  return { ...detail, script_generation_progress: { updated_at: '2026-11-10T04:00:00Z', documents } }
+}
+
+test('persisted generation drafts appear read-only beside accepted documents without becoming manual edits', async t => {
+  const detail = withProgress([
+    { artifact_type: 'outline', title: '新概要设计', content: '铜锣草稿中的新主线。', episode_number: 0 },
+    { artifact_type: 'synopsis', title: '故事简述', content: '巡夜草稿中的故事简述。', episode_number: 0 },
+  ])
+  const before = structuredClone(detail), view = await mount(t, detail)
+  try {
+    const outline = view.container.querySelector('[data-script-section="outline"]')!
+    assert.match(outline.textContent!, /铜锣草稿中的新主线。/)
+    assert.match(outline.textContent!, /保留已确认的大纲/)
+    assert.match(outline.textContent!, /已保存草稿 · 待确认/)
+    assert.equal(outline.querySelector('[contenteditable="false"]')?.textContent, '铜锣草稿中的新主线。')
+    assert.equal(outline.querySelector('[contenteditable="true"]')?.textContent, project.script.outline)
+    const synopsis = view.container.querySelector('[data-script-section="synopsis"]')!
+    assert.match(synopsis.textContent!, /巡夜草稿中的故事简述。/)
+    assert.equal(synopsis.querySelector('.script-section-empty'), null, 'an available draft must not claim this chapter is ungenerated')
+    assert.equal(synopsis.querySelector('[contenteditable="true"]'), null, 'pending content cannot be edited as accepted project data')
+    assert.equal(view.container.querySelector('[data-script-stage="outline"] button[title="故事简述（未生成）"]'), null)
+    assert.equal(button('保存').disabled, true)
+    assert.deepEqual(detail, before)
+    assert.deepEqual(view.requests, [], 'reading a retained draft neither generates nor commits it')
+  } finally { await view.destroy() }
+})
+
+test('a first generation opens its retained outline even before any accepted script exists', async t => {
+  const detail = withProgress([
+    { artifact_type: 'outline', title: '夜巡概要设计', content: '第一份已经保留的完整大纲。', episode_number: 0 },
+  ], { ...project, brief: '', script: { ...project.script, outline: '', characters: '', artifacts: [], scenes: [] } })
+  const view = await mount(t, detail)
+  try {
+    const section = view.container.querySelector('[data-script-section="outline"]')!
+    assert.match(section.textContent!, /第一份已经保留的完整大纲。/)
+    assert.equal(section.querySelector('.script-section-empty'), null)
+    assert.equal(section.querySelector('[contenteditable="false"]')?.textContent, '第一份已经保留的完整大纲。')
+    assert.match(view.container.querySelector('.script-stage-completeness')!.textContent!, /已生成 1\/9 项，1 项待确认/)
+    assert.equal(button('保存').disabled, true)
+    assert.equal(button('加入画布').disabled, true)
+    assert.deepEqual(view.requests, [])
+  } finally { await view.destroy() }
+})
+
+test('selecting read-only candidate text clears formatting focus without modifying either version', async t => {
+  const detail = withProgress([
+    { artifact_type: 'outline', title: '概要设计', content: '只读候选稿的巡夜主线。', episode_number: 0 },
+  ])
+  const view = await mount(t, detail)
+  try {
+    const section = view.container.querySelector('[data-script-section="outline"]')!
+    const accepted = section.querySelector('[contenteditable="true"]') as HTMLElement & { editor: Editor }
+    const candidate = section.querySelector('[contenteditable="false"]') as HTMLElement & { editor: Editor }
+    await act(() => { accepted.focus(); accepted.editor.commands.setTextSelection({ from: 1, to: 5 }) })
+    await act(() => candidate.editor.commands.setTextSelection({ from: 1, to: 5 }))
+    const acceptedBefore = accepted.editor.getJSON(), candidateBefore = candidate.editor.getJSON()
+    await act(() => button('粗体').click())
+    assert.deepEqual(accepted.editor.getJSON(), acceptedBefore)
+    assert.deepEqual(candidate.editor.getJSON(), candidateBefore)
+    assert.equal(button('保存').disabled, true)
+    assert.deepEqual(view.requests, [])
+  } finally { await view.destroy() }
+})
+
+test('generation refreshes and withdrawals update visible drafts while preserving unsaved manual changes', async t => {
+  const initial = withProgress([{ artifact_type: 'synopsis', title: '故事简述', content: '初版巡夜草稿。', episode_number: 0 }])
+  const view = await mount(t, initial)
+  try {
+    const outline = view.container.querySelector('[data-script-section="outline"] [contenteditable="true"]') as HTMLElement & { editor: Editor }
+    await act(() => outline.editor.commands.setContent('<p>尚未保存的人工改稿。</p>'))
+    await view.rerender(withProgress([
+      { artifact_type: 'synopsis', title: '故事简述', content: '续写后的巡夜草稿。', episode_number: 0 },
+      { artifact_type: 'world', title: '背景设定', content: '铜锣镇的新背景。', episode_number: 0 },
+    ]))
+    assert.match(view.container.querySelector('[data-script-section="synopsis"]')!.textContent!, /续写后的巡夜草稿。/)
+    assert.doesNotMatch(view.container.querySelector('[data-script-section="synopsis"]')!.textContent!, /初版巡夜草稿。/)
+    assert.match(view.container.querySelector('[data-script-section="world"]')!.textContent!, /铜锣镇的新背景。/)
+    assert.equal(view.container.querySelector('[data-script-section="outline"] [contenteditable="true"]')?.textContent, '尚未保存的人工改稿。')
+    await view.rerender({ ...project, script_generation_progress: null })
+    assert.doesNotMatch(view.container.textContent!, /续写后的巡夜草稿。|铜锣镇的新背景。/)
+    assert.ok(view.container.querySelector('[data-script-section="synopsis"] .script-section-empty'))
+    assert.equal(view.container.querySelector('[data-script-section="outline"] [contenteditable="true"]')?.textContent, '尚未保存的人工改稿。')
+    assert.equal(button('保存').disabled, false)
+    assert.deepEqual(view.requests, [])
+  } finally { await view.destroy() }
+})
+
+test('saving another chapter excludes retained generation drafts from accepted script commits', async t => {
+  const detail = withProgress([{ artifact_type: 'synopsis', title: '故事简述', content: '只可预览的巡夜草稿。', episode_number: 0 }])
+  const view = await mount(t, detail)
+  try {
+    assert.match(view.container.querySelector('[data-script-section="synopsis"]')!.textContent!, /只可预览的巡夜草稿。/)
+    const outline = view.container.querySelector('[data-script-section="outline"] [contenteditable="true"]') as HTMLElement & { editor: Editor }
+    await act(() => outline.editor.commands.setContent('<p>人工确认的大纲修改。</p>'))
+    await act(async () => button('保存').click()); await settle()
+    assert.equal(view.requests.length, 1)
+    const body = view.requests[0].body
+    assert.equal(body.outline, '人工确认的大纲修改。')
+    assert.doesNotMatch(JSON.stringify(body), /只可预览的巡夜草稿。/)
+    assert.ok(!(body.artifacts as Array<{ artifact_type: string }>).some(item => item.artifact_type === 'synopsis'))
+    assert.match(view.container.querySelector('[data-script-section="synopsis"]')!.textContent!, /只可预览的巡夜草稿。/)
+  } finally { await view.destroy() }
+})
+
+test('an accepted document supersedes an identical retained draft without duplicate prose or dirty state', async t => {
+  const candidate = { artifact_type: 'synopsis' as const, title: '故事简述', content: '已核对完成的巡夜故事。', episode_number: 0 }
+  const detail = withProgress([candidate]), view = await mount(t, detail)
+  try {
+    assert.match(view.container.querySelector('[data-script-section="synopsis"]')!.textContent!, /已核对完成的巡夜故事。/)
+    await view.rerender(withProgress([candidate], { ...project, script: { ...project.script, artifacts: [
+      { ...candidate, id: 'accepted-synopsis', project_id: project.id, position: 0, status: 'ready', created_at: '2026-11-10T04:01:00Z', updated_at: '2026-11-10T04:01:00Z' },
+    ] } }))
+    const section = view.container.querySelector('[data-script-section="synopsis"]')!
+    assert.equal(section.textContent!.split(candidate.content).length - 1, 1)
+    assert.equal(section.querySelector('[contenteditable="true"]')?.textContent, candidate.content)
+    assert.doesNotMatch(section.textContent!, /已保存草稿 · 待确认/)
+    assert.equal(button('保存').disabled, true)
+    assert.deepEqual(view.requests, [])
+  } finally { await view.destroy() }
+})
+
+test('pending episode drafts have document navigation and participate in global body search', async t => {
+  const view = await mount(t, withProgress([
+    { artifact_type: 'episode_script', title: '第2集：铜锣夜响', content: '独属于待确认分集的巡夜暗号。', episode_number: 2 },
+  ]))
+  try {
+    await act(() => button('第2集：铜锣夜响').click()); await settle()
+    const episode = view.container.querySelector('[data-script-section="episode-2"]')!
+    assert.ok(episode, 'a pending episode can be opened before accepted scenes exist')
+    assert.match(episode.textContent!, /独属于待确认分集的巡夜暗号。/)
+    assert.match(episode.textContent!, /已保存草稿 · 待确认/)
+    assert.equal(episode.querySelector('[contenteditable="true"]'), null)
+    await act(() => button('故事大纲').click())
+    await act(() => button('全文搜索').click())
+    const input = view.container.querySelector<HTMLInputElement>('input[aria-label="搜索全部剧本文档"]')!
+    await act(() => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(input, '巡夜暗号')
+      input.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+    }); await settle()
+    assert.equal(view.container.querySelector('[role="status"]')?.textContent, '1 / 1')
+    assert.equal(view.container.querySelector('[data-script-section="episode-2"] [data-script-search-active]')?.textContent, '巡夜暗号')
+    assert.equal(button('保存').disabled, true)
+    assert.deepEqual(view.requests, [])
+  } finally { await view.destroy() }
+})
 
 test('editor keeps saved documents and canvas navigation without a complete-script generation entry', async t => {
   const view = await mount(t)
