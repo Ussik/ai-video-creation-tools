@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { after, test, type TestContext } from 'node:test'
+import { after, beforeEach, test, type TestContext } from 'node:test'
 import React, { act } from 'react'
 import { JSDOM } from 'jsdom'
 import { createRoot } from 'react-dom/client'
@@ -12,6 +12,7 @@ const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http:
 for (const key of ['window', 'document', 'navigator', 'Node', 'HTMLElement']) Object.defineProperty(globalThis, key, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[key] })
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 after(() => dom.window.close())
+beforeEach(() => dom.window.localStorage.clear())
 
 const result: VideoPromptAnalysisResult = { asset_id: 'video', model_id: 'doubao', duration_ms: 90_000, start_ms: 0, end_ms: 90_000, fps: 2,
   global_style: '山海国漫画风', uncertainties: ['声音未分析'], shots: [{ title: '踏步出剑', start_ms: 0, end_ms: 6000,
@@ -43,7 +44,7 @@ async function mount(t: TestContext, initial: Partial<CanvasNode> = {}) {
   await render()
   return {
     get hook() { return hook! }, get graph() { return graph }, writes, notices, requests,
-    begin: async () => { let pending!: Promise<void>; await act(() => { pending = hook!.analyze('analysis') }); return { pending } },
+    begin: async () => { const count = requests.length; let pending!: Promise<void>; await act(() => { pending = hook!.analyze('analysis') }); for (let index = 0; requests.length === count && index < 100; index++) await act(() => new Promise(resolve => setTimeout(resolve, 1))); return { pending } },
     rerender: async (options: { canvasId?: string; visibleGraph?: CanvasGraph | null; graph?: CanvasGraph } = {}) => {
       if (options.canvasId !== undefined) canvasId = options.canvasId
       if (options.graph !== undefined) graph = options.graph
@@ -52,7 +53,7 @@ async function mount(t: TestContext, initial: Partial<CanvasNode> = {}) {
       await render()
     },
     resolve: async (index: number, pending: Promise<void>, output = result) => {
-      await act(async () => { requests[index].resolve(Response.json(output)); await pending })
+      await act(async () => { requests[index].resolve(Response.json(requests[index].url.includes('/ai-operations/') ? { id: requests[index].url.split('/').at(-1), state: 'completed', status_code: 200, result: output } : output)); await pending })
     },
     destroy: async () => { await act(() => root.unmount()); container.remove() },
   }
@@ -128,6 +129,8 @@ test('cancel followed by a new request cannot let the old response overwrite or 
     assert.equal(view.requests[0].init.signal?.aborted, true)
     const second = await view.begin()
     assert.equal(view.requests.length, 2)
+    assert.ok(view.requests[1].url.includes('/ai-operations/'), 'explicit continuation observes the original request')
+    assert.equal(view.requests[1].init.method, undefined)
     await view.resolve(0, first.pending)
     assert.equal(view.writes.length, 0)
     assert.equal(view.hook.run?.phase, 'analyzing')

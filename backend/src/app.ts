@@ -1,3 +1,7 @@
+import { registerAiOperations } from './modules/generation/ai-operations.js'
+import { aiErrorFields } from './modules/generation/ai-operation-errors.js'
+import { withMediaExecution, mediaExecutionSignal, localMediaWriting, localMediaReady, expiredMediaDownload } from './infrastructure/providers/media-execution.js'
+import { prepareMediaJob, claimMediaJob, assertMediaJobOwner, markMediaJobDispatch, stageLocalJobWriting, stageLocalJobReady, recoverLocalJobResult, clearLocalJobResult, hasLocalJobResult, mediaJobExecution } from './modules/jobs/job-local-results.js'
 import { withScriptCheckpointModelMigration, migrateCompleteScriptDrafts } from './modules/script/script-checkpoint-model-migration.js'
 import { generateLongFormDocument, generateLongFormObject } from './modules/generation/long-form-output.js'
 import { creativeGenerationSteps, creativeInputHash, creativeModelIdentity, withCreativeRequest } from './modules/skills/creative-model-state.js'
@@ -46,7 +50,7 @@ import { registerSkillRoutes } from './modules/skills/skill-routes.js'
 import { chooseCreationSkills, chooseCreationSkillReferences, resolveCreationSkillContext, type CreationSkillSelector } from './modules/skills/model-skill-selection.js'
 import { registerPromptOptimizationRoutes } from './modules/jobs/prompt-optimization.js'
 import { createSubmission, findSubmission, jobSubmissionKey, submissionKey, submissionKeyInput, submissionRequestHash } from './modules/jobs/resource-submissions.js'
-import { generationRecoveryInfo, prepareGenerationExecution, validExternalTaskId } from './modules/jobs/job-generation-recovery.js'
+import { generationRecoveryInfo, prepareGenerationExecution, validExternalTaskId, canRefreshGenerationResult } from './modules/jobs/job-generation-recovery.js'
 import { isContentPolicyRejection } from '@video-studio/shared/jobs/prompt-optimization'
 import { withSkillRules, applySkillRules, fixedSkillContext, skillIdsInput, skillSelectionsInput, skillContext, skillPolicy, skillTaskPolicies } from './modules/skills/skills.js'
 import type { SkillStage } from './modules/skills/skills.js'
@@ -2507,75 +2511,115 @@ function byteRange(header: string, size: number): { start: number; end: number }
 }
 
 async function processJob(job: Job): Promise<void> {
-  const modality = job.model_id ? required<Model>('models', job.model_id).modality : undefined
-  return observeModelTask({ taskId: `job:${job.id}`, projectId: job.project_id, modelId: job.model_id || undefined,
-    label: modality === 'text' ? '后台文本生成' : '素材任务', owner: 'job', policy: modality === 'text' ? modelTaskPolicies.generation : modelTaskPolicies.paid }, () => processObservedJob(job))
+  const model = job.model_id ? one<Model>('SELECT * FROM models WHERE id=?', job.model_id) : undefined
+  const media = job.job_type === 'generation' && (!!JSON.parse(job.request).tts || model?.modality === 'image' || model?.modality === 'video' || hasLocalJobResult(job)
+    || !!one('SELECT 1 FROM job_image_recovery WHERE job_id=? UNION ALL SELECT 1 FROM job_video_recovery WHERE job_id=?', job.id, job.id))
+  if (media) prepareMediaJob(job.id)
+  const token = media ? claimMediaJob(job) : undefined
+  try {
+    return await observeModelTask({ taskId: `job:${job.id}`, projectId: job.project_id, modelId: job.model_id || undefined,
+      label: model?.modality === 'text' ? '后台文本生成' : '素材任务', owner: 'job', policy: model?.modality === 'text' ? modelTaskPolicies.generation : modelTaskPolicies.paid },
+      () => media ? withMediaExecution({
+        beforeDispatch: requestId => markMediaJobDispatch(job, token!, requestId),
+        onLocalWriting: result => stageLocalJobWriting(job, token!, result),
+        onLocalResult: result => stageLocalJobReady(job, token!, result),
+      }, () => processObservedJob(job, token)) : processObservedJob(job))
+  } catch (error) {
+    if (!token) throw error
+    // Carry the worker's ownership to the queue callback after the ALS scope ends.
+    throw Object.assign(new Error(error instanceof Error ? error.message : String(error), { cause: error }), {
+      job_execution_owner: token,
+      code: error && typeof error === 'object' && 'code' in error ? error.code : undefined,
+    })
+  }
 }
-async function processObservedJob(job: Job): Promise<void> {
+async function processObservedJob(job: Job, token?: string): Promise<void> {
   const request = JSON.parse(job.request) as Record<string, unknown>
   let path: string
   let kind: Asset['kind']
   let source: Asset['source']
   let remoteUrl: string | null = null
   let speechResult: SpeechSynthesisResult | undefined
-  if (job.job_type === 'export') {
+  let local
+  if (token) {
+    try { local = await recoverLocalJobResult(job, token) }
+    catch (error) {
+      // A damaged local copy never authorizes another paid submission. Only
+      // an already retained URL or original remote task can recover it.
+      if (!validExternalTaskId(job.external_id) && !one('SELECT 1 FROM job_image_recovery WHERE job_id=? UNION ALL SELECT 1 FROM job_video_recovery WHERE job_id=?', job.id, job.id)) throw error
+    }
+  }
+  if (local) {
+    path = local.path; kind = local.kind; source = 'generated'
+    if (kind === 'audio') speechResult = { audio: Buffer.alloc(0), ...(local.metadata || {}) } as unknown as SpeechSynthesisResult
+  } else if (job.job_type === 'export') {
     const project = request.project as Project
     const clips = request.clips as RenderClip[]
     const assets = all<Asset>('SELECT * FROM assets WHERE project_id=? AND deleted_at IS NULL', job.project_id)
     path = await render(project, clips, Object.fromEntries(assets.map(asset => [asset.id, asset])),
       (request.speech_audio || []) as SpeechAudioClip[], request.audio_settings as ReturnType<typeof projectAudioSettings> | undefined,
       (request.captions || []) as EditingCutCaption[])
-    kind = 'video'
-    source = 'export'
+    kind = 'video'; source = 'export'
   } else if (request.tts) {
     const snapshot = request.tts as SpeechSnapshot
-    speechResult = await synthesizeSpeech({ ...snapshot, api_key: speechCredentials() })
+    const execution = mediaJobExecution(job.id)!
+    if (execution.phase === 'dispatched') throw new Error('语音任务可能已派发但未保存完整成果，请凭原请求编号核对记录，不会自动重新合成。')
+    speechResult = await synthesizeSpeech({ ...snapshot, api_key: speechCredentials(), request_id: execution.request_id })
     const outputDir = join(mediaDir, job.project_id)
     await mkdir(outputDir, { recursive: true })
     path = join(outputDir, `speech-${snapshot.take_id}.mp3`)
+    const metadata = { subtitles: speechResult.subtitles, usage_characters: speechResult.usage_characters, request_id: speechResult.request_id }
+    localMediaWriting({ path, kind: 'audio', metadata })
     await writeFile(path, speechResult.audio)
     try { speechResult.duration_ms = await probeSpeechDurationMs(path) }
     catch (error) { await rm(path, { force: true }); throw error }
-    kind = 'audio'
-    source = 'generated'
+    await localMediaReady({ path, kind: 'audio', metadata: { ...metadata, duration_ms: speechResult.duration_ms } })
+    kind = 'audio'; source = 'generated'
   } else {
     const recovery = one<{ result_url_ciphertext: string }>('SELECT result_url_ciphertext FROM job_image_recovery WHERE job_id=?', job.id)
     const videoRecovery = one<{ result_url_ciphertext: string }>('SELECT result_url_ciphertext FROM job_video_recovery WHERE job_id=?', job.id)
-    let result
-    if (videoRecovery) {
-      result = await recoverVideo(job.project_id, decryptKey(videoRecovery.result_url_ciphertext))
-      kind = 'video'
-    } else if (recovery) {
-      result = await recoverImage(job.project_id, decryptKey(recovery.result_url_ciphertext))
-      kind = 'image'
-    } else {
+    const runOriginalTask = async () => {
       const model = required<Model>('models', job.model_id!)
       const provider = required<Provider>('providers', model.provider_id)
       if (provider.adapter === 'demo' || provider.archived || model.archived || !provider.enabled || !model.enabled) throw new Error('模型或提供商已停用')
       prepareGenerationExecution(job, model, provider)
-      // Existing provider tasks are queried independently of original input files.
       const references = validExternalTaskId(job.external_id) ? [] : (request.reference_asset_ids as string[] || []).map(id => required<Asset>('assets', id))
-      result = await generate(model, provider, { ...request, prompt: String(request.prompt), _external_id: job.external_id }, references, job.project_id,
-        id => run('UPDATE jobs SET external_id=?, updated_at=? WHERE id=?', id, now(), job.id),
+      const result = await generate(model, provider, { ...request, prompt: String(request.prompt), _external_id: job.external_id }, references, job.project_id,
+        id => { if (token) assertMediaJobOwner(job, token); run('UPDATE jobs SET external_id=?, updated_at=? WHERE id=?', id, now(), job.id) },
         item => decryptKey(item.key_ciphertext || null),
-        url => run(`INSERT INTO job_image_recovery (job_id, result_url_ciphertext, created_at) VALUES (?, ?, ?)
-          ON CONFLICT(job_id) DO UPDATE SET result_url_ciphertext=excluded.result_url_ciphertext`, job.id, encryptKey(url), now()),
-        url => run(`INSERT INTO job_video_recovery (job_id, result_url_ciphertext, created_at) VALUES (?, ?, ?)
-          ON CONFLICT(job_id) DO UPDATE SET result_url_ciphertext=excluded.result_url_ciphertext`, job.id, encryptKey(url), now()))
-      kind = model.modality
+        url => { if (token) assertMediaJobOwner(job, token); run(`INSERT INTO job_image_recovery (job_id, result_url_ciphertext, created_at) VALUES (?, ?, ?)
+          ON CONFLICT(job_id) DO UPDATE SET result_url_ciphertext=excluded.result_url_ciphertext`, job.id, encryptKey(url), now()) },
+        url => { if (token) assertMediaJobOwner(job, token); run(`INSERT INTO job_video_recovery (job_id, result_url_ciphertext, created_at) VALUES (?, ?, ?)
+          ON CONFLICT(job_id) DO UPDATE SET result_url_ciphertext=excluded.result_url_ciphertext`, job.id, encryptKey(url), now()) })
+      return { ...result, kind: model.modality }
     }
-    path = result.path
-    remoteUrl = result.remoteUrl
-    source = 'generated'
+    let result
+    if (videoRecovery || recovery) {
+      try {
+        result = videoRecovery
+          ? { ...await recoverVideo(job.project_id, decryptKey(videoRecovery.result_url_ciphertext)), kind: 'video' as const }
+          : { ...await recoverImage(job.project_id, decryptKey(recovery!.result_url_ciphertext)), kind: 'image' as const }
+      } catch (error) {
+        mediaExecutionSignal()?.throwIfAborted()
+        const model = job.model_id ? one<Model>('SELECT * FROM models WHERE id=?', job.model_id) : undefined
+        const provider = model ? one<Provider>('SELECT * FROM providers WHERE id=?', model.provider_id) : undefined
+        if (!expiredMediaDownload(error) || !model || !provider || !canRefreshGenerationResult(job, model, provider)) throw error
+        // Exactly one query-only refresh per execution. The retained original
+        // external ID makes paid creation unreachable, even if the new URL fails.
+        result = await runOriginalTask()
+      }
+    } else result = await runOriginalTask()
+    path = result.path; remoteUrl = result.remoteUrl; kind = result.kind; source = 'generated'
   }
+  mediaExecutionSignal()?.throwIfAborted()
   const assetId = newId()
   db.transaction(() => {
+    if (token) assertMediaJobOwner(job, token)
+    else if (one<{ status: string }>('SELECT status FROM jobs WHERE id=?', job.id)?.status !== 'running') throw new Error('任务状态已变化，已停止写入。')
     run(`INSERT INTO assets (id, project_id, shot_id, kind, filename, path, source, model_id, prompt, remote_url, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, assetId, job.project_id, job.shot_id, kind, basename(path), path, source, job.model_id, job.job_type === 'generation' ? String(request.prompt) : null, kind === 'image' ? null : remoteUrl, now())
-    if (source === 'export') {
-      run('INSERT OR IGNORE INTO saved_assets (asset_id, project_id, created_at) VALUES (?, ?, ?)', assetId, job.project_id, now())
-    }
-    run("UPDATE jobs SET status='succeeded', result_asset_id=?, error=NULL, updated_at=? WHERE id=?", assetId, now(), job.id)
+    if (source === 'export') run('INSERT OR IGNORE INTO saved_assets (asset_id, project_id, created_at) VALUES (?, ?, ?)', assetId, job.project_id, now())
+    run("UPDATE jobs SET status='succeeded', result_asset_id=?, error=NULL, updated_at=? WHERE id=? AND status='running'", assetId, now(), job.id)
     if (speechResult) completeSpeechJob(job, assetId, speechResult.duration_ms, {
       subtitles: speechResult.subtitles, usage_characters: speechResult.usage_characters, request_id: speechResult.request_id,
     })
@@ -2584,6 +2628,7 @@ async function processObservedJob(job: Job): Promise<void> {
     autoConfirmGeneratedProfileBoard(job)
     run('DELETE FROM job_image_recovery WHERE job_id=?', job.id)
     run('DELETE FROM job_video_recovery WHERE job_id=?', job.id)
+    if (token) clearLocalJobResult(job.id)
     touchProject(job.project_id)
   })()
 }
@@ -2592,7 +2637,12 @@ export function startWorker(): () => Promise<void> {
   return startJobQueue(processJob, (job, error) => {
     const message = String(error instanceof Error ? error.message : error).slice(0, 2000)
     db.transaction(() => {
-      run("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?", message, now(), job.id)
+      // A cancelled/deleted/reclaimed job is not owned by this callback.
+      const current = one<{ status: string; request: string }>('SELECT status,request FROM jobs WHERE id=?', job.id)
+      if (current?.status !== 'running' || current.request !== job.request) return
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'job_execution_changed') return
+      if (error && typeof error === 'object' && 'job_execution_owner' in error && mediaJobExecution(job.id)?.owner !== error.job_execution_owner) return
+      run("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=? AND status='running'", message, now(), job.id)
       completeAssetTaskJob(job, null, message)
       autoConfirmGeneratedProfileBoard(job)
     })()
@@ -2603,6 +2653,7 @@ export function buildApp(): FastifyInstance {
   initDb()
   const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 })
   registerModelRequestObservation(app)
+  registerAiOperations(app)
   const directorTasks = createDirectorTasks()
   app.addHook('preClose', async () => { await directorTasks.close() })
   registerJobQueueRoutes(app)
@@ -2610,9 +2661,8 @@ export function buildApp(): FastifyInstance {
   app.setErrorHandler((error, request, reply) => {
     const issue = error as Error & { statusCode?: number; raw_output?: string; diagnostics?: string; code?: unknown; diagnostic?: unknown; retryAt?: number }
     const code = currentModelRequestContext()?.signal?.aborted ? 499 : error instanceof ZodError ? 422 : Math.max(400, Math.min(Number(issue.statusCode) || 500, 599))
-    reply.code(code).send({ detail: code === 500 ? '服务器处理失败' : issue.message,
+    reply.code(code).send({ ...aiErrorFields(issue, code), detail: code === 500 ? '服务器处理失败' : issue.message,
       ...(code !== 500 && issue.raw_output ? { raw_output: issue.raw_output } : {}), ...(code !== 500 && issue.diagnostics ? { diagnostics: issue.diagnostics } : {}),
-      ...(code !== 500 && typeof issue.code === 'string' ? { code: issue.code } : {}),
       ...(code !== 500 && issue.diagnostic ? { diagnostic: issue.diagnostic } : {}),
       ...(typeof issue.retryAt === 'number' ? { retry_at: issue.retryAt } : {}) })
     if (code === 500) console.error(error)
@@ -4649,17 +4699,17 @@ export function buildApp(): FastifyInstance {
     try { parsedRequest = JSON.parse(job.request) as Record<string, unknown> }
     catch { invalid('任务请求记录损坏，无法恢复，请先核对厂商记录') }
     if (!parsedRequest || typeof parsedRequest !== 'object' || Array.isArray(parsedRequest)) invalid('任务请求记录损坏，无法恢复，请先核对厂商记录')
-    if (parsedRequest.tts) invalid('语音合成可能已计费，请先核对调用记录，再在配音页手动生成新的候选。')
+    if (parsedRequest.tts && !hasLocalJobResult(job) && mediaJobExecution(job.id)?.phase !== 'prepared') invalid('语音合成可能已计费，请先核对调用记录，再在配音页手动生成新的候选。')
     if (job.job_type === 'generation') {
       const model = job.model_id ? one<Model>('SELECT * FROM models WHERE id=?', job.model_id) : undefined
       const recovery = generationRecoveryInfo(job, model)
       if (recovery.recovery_modality === 'image' && !recovery.recovery_available && isContentPolicyRejection(job.error)) invalid('图片任务已被内容审核拒绝，请先调整提示词和参考图，再创建新的生成任务。')
       if (recovery.recovery_action === 'verify') invalid('任务没有可安全恢复的结果链接或查询配置；厂商可能已计费。请先核对厂商记录，或还原原模型和提供商配置；不会重新提交生成。')
-      if (data.prompt !== undefined && (recovery.recovery_action === 'query' || recovery.recovery_action === 'download')) {
+      if (data.prompt !== undefined && (recovery.recovery_action === 'query' || recovery.recovery_action === 'download' || recovery.recovery_action === 'local' || recovery.recovery_action === 'prepare')) {
         invalid('继续查询或下载现有任务不能修改提示词；如需改动，请新建生成任务')
       }
       const provider = model ? one<Provider>('SELECT * FROM providers WHERE id=?', model.provider_id) : undefined
-      if (recovery.recovery_action !== 'download' && (!model?.enabled || model.archived || !provider?.enabled || provider.archived || provider.adapter === 'demo')) invalid('模型或提供商已停用，无法重试')
+      if (recovery.recovery_action !== 'download' && recovery.recovery_action !== 'local' && !parsedRequest.tts && (!model?.enabled || model.archived || !provider?.enabled || provider.archived || provider.adapter === 'demo')) invalid('模型或提供商已停用，无法重试')
     }
     let jobRequest = job.request
     if (data.prompt && job.job_type === 'generation') {

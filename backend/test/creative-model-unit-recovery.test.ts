@@ -1,3 +1,4 @@
+import { candidateQualityAccepted } from '@video-studio/shared/api/ai-candidate-quality'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -123,12 +124,25 @@ test('prompt review failures preserve the validated candidate and explicit resta
     return JSON.stringify({ ...semanticReviewFixture(), content_review: { primary_action: '抬头', secondary_actions: [], start_state: '站立', end_state: '抬头', visible_result: '看向门口', facts: [], issues: [], reference_findings: [] } })
   } })
   const invoke = (restart = false) => isolated.inject({ method: 'POST', url: `/api/projects/${f.id}/skills/refine-prompt`, payload: { model_id: 'mock', stage: 'video_prompt', prompt: '林晚站在门边，抬头等待。', skill_ids: [], check_video_content: true, restart } })
-  assert.equal((await invoke()).statusCode, 422)
+  const interrupted = await invoke()
+  assert.equal(interrupted.statusCode, 200)
+  assert.equal(interrupted.json().quality.status, 'inconclusive')
+  assert.equal(candidateQualityAccepted(interrupted.json().quality), false)
+  assert.equal(interrupted.json().prompt_body, '林晚站在门边，抬头等待。')
   fail = false
-  assert.equal((await invoke()).statusCode, 200)
+  const resumed = await invoke()
+  assert.equal(resumed.statusCode, 200)
+  assert.equal(candidateQualityAccepted(resumed.json().quality), true)
   assert.equal(candidates, 1); assert.equal(reviews, 2)
-  fail = true; assert.equal((await invoke()).statusCode, 422)
-  fail = false; assert.equal((await invoke(true)).statusCode, 200)
+  fail = true
+  const next = await invoke()
+  assert.equal(next.statusCode, 200)
+  assert.equal(next.json().quality.status, 'inconclusive')
+  assert.equal(candidateQualityAccepted(next.json().quality), false)
+  fail = false
+  const restarted = await invoke(true)
+  assert.equal(restarted.statusCode, 200)
+  assert.equal(candidateQualityAccepted(restarted.json().quality), true)
   assert.equal(candidates, 3, 'restart deliberately discards the interrupted candidate')
   assert.equal(all('SELECT id FROM jobs WHERE project_id=?', f.id).length, 0)
 })

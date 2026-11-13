@@ -9,6 +9,7 @@ import { canOptimizeImagePrompt } from '@video-studio/shared/jobs/prompt-optimiz
 import { filterTaskRecords, isTaskActive, projectTaskRecords, taskKindLabels, type TaskKind, type TaskStatusFilter } from './task-records'
 import './task-records.css'
 import ModelTaskProgress from './ModelTaskProgress'
+import AiOperationRecords from './AiOperationRecords'
 
 type Props = {
   detail: ProjectDetail
@@ -28,6 +29,7 @@ const statuses: Array<{ value: TaskStatusFilter; label: string }> = [
 const kindIcons = { image: ImageIcon, video: Film, speech: Mic2, export: Clapperboard, text: FileText, unknown: Sparkles }
 
 export default function TaskRecords({ detail, models, providers, busy, onRefresh, onPreview, onOpenCanvas, onOpenSpeech, onRetry, onPromptOptimized }: Props) {
+  const [operationRefresh, setOperationRefresh] = useState(0)
   const [optimizationJobId, setOptimizationJobId] = useState<string | null>(null)
   const optimizationJob = detail.jobs.find(job => job.id === optimizationJobId)
   const [status, setStatus] = useState<TaskStatusFilter>('all')
@@ -48,7 +50,7 @@ export default function TaskRecords({ detail, models, providers, busy, onRefresh
     refreshPending.current = true
     setRefreshing(true)
     setRefreshError(null)
-    try { await onRefresh() }
+    try { await onRefresh(); setOperationRefresh(value => value + 1) }
     catch (error) { setRefreshError(error instanceof Error ? error.message : '刷新失败，请稍后重试') }
     finally { refreshPending.current = false; setRefreshing(false) }
   }
@@ -65,6 +67,7 @@ export default function TaskRecords({ detail, models, providers, busy, onRefresh
       </div>
     </div>
     {refreshError && <Alert color="red" className="task-records-refresh-error" title="任务刷新失败" role="alert">{refreshError}</Alert>}
+    <AiOperationRecords projectId={detail.id} refreshKey={operationRefresh} />
     <ModelTaskProgress projectId={detail.id} />
     {records.length > 0 ? <>
       <div className="task-records-toolbar">
@@ -106,7 +109,7 @@ export default function TaskRecords({ detail, models, providers, busy, onRefresh
               {result ? <>
                 <Button variant="default" size="xs" leftSection={<Eye size={14} />} onClick={() => onPreview(result)}>查看结果</Button>
                 {taskKind === 'export' && <Button component="a" variant="subtle" size="xs" href={result.url} download leftSection={<Download size={14} />}>下载成片</Button>}
-              </> : job.status === 'failed' ? taskKind === 'speech'
+              </> : job.status === 'failed' ? taskKind === 'speech' && recovery?.action !== 'local' && recovery?.action !== 'prepare'
                 ? <Button variant="default" size="xs" onClick={onOpenSpeech} leftSection={<Mic2 size={14} />}>返回配音</Button>
                 : needsBillingCheck || canOptimize
                   ? <Button variant="default" size="xs" onClick={() => onOpenCanvas(job.shot_id || undefined)} leftSection={<ArrowRight size={14} />}>回到画布</Button>

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -15,6 +15,7 @@ process.env.VIDEO_STUDIO_DATA_DIR = testData
 const { buildApp } = await import('../src/app.js')
 const { all, db, now, one, run } = await import('../src/infrastructure/database/db.js')
 const { registerClipStoryboardRoutes } = await import('../src/modules/storyboard/clip-storyboard.js')
+const { registerAiOperations } = await import('../src/modules/generation/ai-operations.js')
 const { recordCreatorRequirement } = await import('../src/modules/script/script-creator-requirements.js')
 const { installSkillBundle, configureSkill, removeInstalledSkill, setSkillDefault, resetSkillTaskDefault } = await import('../src/modules/skills/skills.js')
 const app = buildApp()
@@ -34,19 +35,36 @@ function resources(projectId: string) {
   return Object.fromEntries(['script_scenes', 'script_artifacts', 'shots', 'storyboard_designs', 'storyboard_clip_plans', 'project_canvases', 'canvas_nodes', 'visual_profiles', 'jobs']
     .map(table => [table, all(`SELECT * FROM ${table} WHERE project_id=? ORDER BY rowid`, projectId)]))
 }
-async function fixture(t: TestContext, options: { generate?: (prompt: string, call: number) => Promise<string>; review?: (prompt: string, call: number) => unknown; select?: CreationSkillSelector } = {}) {
+async function fixture(t: TestContext, options: {
+  generate?: (prompt: string, call: number, signal?: AbortSignal) => Promise<string>
+  review?: (prompt: string, call: number, signal?: AbortSignal) => unknown | Promise<unknown>
+  repair?: (data: any, prompt: string, call: number, signal?: AbortSignal) => unknown | Promise<unknown>
+  modelId?: string; operations?: boolean; select?: CreationSkillSelector
+} = {}) {
   const project = await api('POST', '/api/projects', { name: '无剧本片段测试', brief: '雨夜的一个动作' })
-  const routes = Fastify(), prompts: string[] = [], reviewPrompts: string[] = [], selections: unknown[] = []
+  const routes = Fastify(), prompts: string[] = [], reviewPrompts: string[] = [], repairPrompts: string[] = [], selections: unknown[] = []
+  const modelId = options.modelId || 'mock-text'
+  let activeRequest: import('fastify').FastifyRequest | undefined
+  routes.addHook('onRequest', (request, _reply, done) => { activeRequest = request; done() })
   routes.setErrorHandler((issue, _request, reply) => reply.code(issue instanceof ZodError ? 422 : (issue as Error & { statusCode?: number }).statusCode || 500)
     .send({ detail: issue.message }))
+  if (options.operations) registerAiOperations(routes)
   registerClipStoryboardRoutes(routes, {
-    generateText: async (projectId, modelId, prompt, contract) => {
-      assert.equal(projectId, project.id); assert.equal(modelId, 'mock-text')
-      if (contract?.name === 'storyboard_directing_review') { reviewPrompts.push(prompt); return JSON.stringify(options.review?.(prompt, reviewPrompts.length) || { issues: [] }) }
+    generateText: async (projectId, requestedModelId, prompt, contract, signal) => {
+      assert.equal(projectId, project.id); assert.equal(requestedModelId, modelId)
+      if (contract?.name === 'storyboard_directing_review') { reviewPrompts.push(prompt); return JSON.stringify(await options.review?.(prompt, reviewPrompts.length, signal) || { issues: [] }) }
+      if (contract?.name === 'storyboard_targeted_repair') {
+        repairPrompts.push(prompt)
+        const data = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1))
+        const result = options.repair ? await options.repair(data, prompt, repairPrompts.length, signal) : {
+          patches: data.targets.map((target: any) => ({ ...target, shot: data.readonly_plan.scenes.find((scene: any) => scene.scene_id === target.scene_id).shots[target.shot_index] })),
+        }
+        return JSON.stringify(result)
+      }
       assert.equal(contract?.name, 'clip_storyboard')
       prompts.push(prompt)
-      const response = options.generate ? await options.generate(prompt, prompts.length) : JSON.stringify(draft())
-      try { const value = JSON.parse(response); return value.shots ? JSON.stringify(withClipDirecting(value)) : response } catch { return response }
+      const response = options.generate ? await options.generate(prompt, prompts.length, signal) : JSON.stringify(draft())
+      try { const value = JSON.parse(response); return value.shots && !value.groups ? JSON.stringify(withClipDirecting(value)) : response } catch { return response }
     },
     selectSkills: async (...args) => { selections.push(args[2]); return options.select ? options.select(...args) : { skill_ids: [], reason: '本次仅需基础规则' } },
   })
@@ -57,11 +75,11 @@ async function fixture(t: TestContext, options: { generate?: (prompt: string, ca
     assert.equal(response.statusCode, status, response.body); return response.json()
   }
   const context = () => invoke('context')
-  const plan = async (extra: object = {}) => invoke('plan', { signature: (await context()).signature, ...source, model_id: 'mock-text', skill_ids: [], ...extra })
+  const plan = async (extra: object = {}) => invoke('plan', { signature: (await context()).signature, ...source, model_id: modelId, skill_ids: [], ...extra })
   const commitPayload = (result: any) => ({ request_id: randomUUID(), signature: result.signature, source_text: result.source_text,
-    total_duration: result.total_duration, instructions: result.instructions, shots: result.shots })
+    total_duration: result.total_duration, instructions: result.instructions, shots: result.shots, review_id: result.directing_review.review_id, ...(result.target_video_model_id ? { target_video_model_id: result.target_video_model_id } : {}) })
   const save = async () => { const planned = await plan(), payload = commitPayload(planned); return { planned, payload, saved: await invoke('commit', payload) } }
-  return { project, invoke, context, plan, save, commitPayload, prompts, reviewPrompts, selections }
+  return { project, invoke, context, plan, save, commitPayload, prompts, reviewPrompts, repairPrompts, selections, modelId, activeRequest: () => activeRequest }
 }
 function installSkill(t: TestContext, name: string, sentinel: string) {
   const bundle = { repo: 'qa/clip-storyboard', path: name, name, description: '片段分镜技能', license: 'MIT', revision: 'a'.repeat(40),
@@ -116,7 +134,7 @@ test('independent clips inherit explicit project constraints and art defaults wi
   run(`INSERT INTO script_story_decisions (id,project_id,topic,content,basis,source_text,created_at,updated_at)
     VALUES (?,?,?,?,'creator_confirmed',?,?,?)`, randomUUID(), f.project.id, '结局', 'FORMAL_PLOT_DECISION', 'FORMAL_DECISION_SOURCE', now(), now())
   const planned = await f.plan({ instructions: '当前片段保留静默长镜头' }), payload = f.commitPayload(planned)
-  const { request_id: _request, ...review } = payload
+  const { request_id: _request, review_id: _review, ...review } = payload
   await f.invoke('review', { ...review, model_id: 'mock-text' })
   for (const prompt of [...f.prompts, ...f.reviewPrompts]) {
     for (const marker of ['ACTIVE_PROJECT_RULE', 'CLIP_ONLY_RULE', 'PROJECT_MUSIC_OPEN_QUESTION', 'PROJECT_GENRE', 'PROJECT_AUDIENCE', '当前片段保留静默长镜头']) assert.ok(prompt.includes(marker), marker)
@@ -176,9 +194,10 @@ test('clip planning reviews adjacent shots, repairs once, and preserves the acce
       evidence: '旅人缓慢抬头', repair: '开镜保持低头状态' }] : [] }
   } })
   const planned = await f.plan()
-  assert.equal(f.prompts.length, 2)
+  assert.equal(f.prompts.length, 1)
+  assert.equal(f.repairPrompts.length, 1)
   assert.equal(f.reviewPrompts.length, 2)
-  assert.match(f.prompts[1]!, /唯一一次内容修订/)
+  assert.match(f.repairPrompts[0]!, /只修复有证据的镜头/)
   assert.equal(planned.directing_review.repaired, true)
   assert.equal(planned.shots[0].continuity_plan.group_id, 'clip-main')
   assert.equal(planned.shots[0].continuity_plan.scene.sound.music_policy, 'timeline')
@@ -190,7 +209,7 @@ test('clip planning reviews adjacent shots, repairs once, and preserves the acce
 test('explicit clip draft review preserves manual text and returns a new content snapshot without saving', async t => {
   const f = await fixture(t), planned = await f.plan(), payload = f.commitPayload(planned)
   payload.shots[0].image_prompt = '手工更改的开镜画面，不自动重写'
-  const { request_id: _id, ...review } = payload
+  const { request_id: _id, review_id: _review, ...review } = payload
   const report = await f.invoke('review', { ...review, model_id: 'mock-text' })
   assert.equal(report.status, 'passed')
   assert.notEqual(report.content_signature, planned.directing_review.content_signature)
@@ -343,12 +362,15 @@ test('saving is strictly idempotent and a changed replay cannot overwrite its so
   assert.deepEqual(resources(f.project.id), before)
 })
 
-test('preview edits can be saved with the original source while a changed duration sum is rejected', async t => {
+test('preview edits require a current review while a changed duration sum is rejected', async t => {
   const f = await fixture(t), planned = await f.plan(), payload = f.commitPayload(planned)
   const edited = { ...payload, shots: payload.shots.map((item: any, index: number) => ({ ...item,
     title: index === 0 ? '手动调整的镜头' : item.title, duration: index === 0 ? 3 : index === 1 ? 5 : 4 })) }
   await f.invoke('commit', { ...edited, shots: [shot(11)] }, 422)
-  const saved = await f.invoke('commit', edited)
+  await f.invoke('commit', edited, 409)
+  const { request_id: _id, review_id: _oldReview, ...review } = edited
+  const reviewed = await f.invoke('review', { ...review, model_id: 'mock-text' })
+  const saved = await f.invoke('commit', { ...edited, review_id: reviewed.review_id })
   assert.equal(saved.shots[0].title, '手动调整的镜头')
   assert.deepEqual(saved.shots.map((item: Shot) => item.duration), [3, 5, 4])
 })
@@ -412,4 +434,238 @@ test('a deleted dedicated canvas is not recreated by a repeated handoff', async 
   const before = resources(f.project.id)
   await f.invoke('canvas', input, 409)
   assert.deepEqual(resources(f.project.id), before)
+})
+
+const localIssue = { code: 'first_frame_conflict', scene_id: 'clip-main', shot_index: 0,
+  related_scene_id: null, related_shot_index: null, severity: 'error', message: '首帧提前呈现抬头结果',
+  evidence: '旅人缓慢抬头', repair: '开镜保持低头状态' }
+function reviewPayload(payload: any, modelId = 'mock-text') {
+  const { request_id: _request, review_id: _review, ...review } = payload
+  return { ...review, model_id: modelId }
+}
+
+test('review outages retain a complete clip and review-only recovery never regenerates it', async t => {
+  let unavailable = true
+  const f = await fixture(t, { review: () => { if (unavailable) throw new Error('temporary review outage'); return { issues: [] } } })
+  const before = resources(f.project.id), planned = await f.plan(), payload = f.commitPayload(planned)
+  assert.equal(planned.shots.length, 3)
+  assert.equal(planned.directing_review.status, 'inconclusive')
+  assert.equal(planned.directing_review.error.retryable, true)
+  assert.ok(planned.directing_review.review_id)
+  assert.equal(f.prompts.length, 1); assert.equal(f.repairPrompts.length, 0)
+  await f.invoke('commit', payload, 409)
+  const retry = await f.invoke('review', reviewPayload(payload))
+  assert.equal(retry.status, 'inconclusive'); assert.notEqual(retry.review_id, payload.review_id)
+  assert.deepEqual(resources(f.project.id), before)
+  unavailable = false
+  const accepted = await f.invoke('review', reviewPayload(payload))
+  assert.equal(accepted.status, 'passed')
+  assert.equal(accepted.content_signature, planned.directing_review.content_signature)
+  assert.equal(f.prompts.length, 1); assert.equal(f.repairPrompts.length, 0)
+  assert.equal((await f.invoke('commit', { ...payload, review_id: accepted.review_id })).created_shots, 3)
+})
+
+test('targeted repair copies untouched shots and retains a needs-work candidate after the second review', async t => {
+  let originalTargets: any
+  const f = await fixture(t, {
+    review: () => ({ issues: [localIssue] }),
+    repair: data => {
+      originalTargets = structuredClone(data.readonly_plan.scenes[0].shots)
+      const target = data.targets[0]
+      return { patches: [{ ...target, shot: { ...originalTargets[0], image_prompt: '低头的开镜画面已局部修复' } }] }
+    },
+  })
+  const planned = await f.plan()
+  assert.equal(planned.directing_review.status, 'needs_work')
+  assert.equal(planned.directing_review.repaired, true)
+  assert.equal(f.prompts.length, 1); assert.equal(f.reviewPrompts.length, 2); assert.equal(f.repairPrompts.length, 1)
+  assert.match(planned.shots[0].image_prompt, /已局部修复/)
+  assert.equal(planned.shots[1].title, originalTargets[1].title)
+  assert.equal(planned.shots[2].title, originalTargets[2].title)
+  const baseline = await fixture(t)
+  const original = await baseline.plan()
+  assert.deepEqual(planned.shots.slice(1), original.shots.slice(1))
+  assert.deepEqual(planned.shots.map((s: any) => s.audio_plan), original.shots.map((s: any) => s.audio_plan))
+  assert.deepEqual(planned.shots.map((s: any) => s.duration), [4, 4, 4])
+  await f.invoke('commit', f.commitPayload(planned), 409)
+  assert.equal(all('SELECT id FROM shots WHERE project_id=?', f.project.id).length, 0)
+})
+
+test('failed local patches keep the original clip without broad regeneration or lost review evidence', async t => {
+  for (const mode of ['transport', 'duration', 'audio', 'unrelated']) {
+    const f = await fixture(t, { review: () => ({ issues: [localIssue] }), repair: data => {
+      if (mode === 'transport') throw new Error('patch provider unavailable')
+      const target = data.targets[0], original = data.readonly_plan.scenes[0].shots[0]
+      return { patches: [{ ...target, ...(mode === 'unrelated' ? { shot_index: 1 } : {}),
+        shot: { ...original, ...(mode === 'duration' ? { duration: 5 } : {}), ...(mode === 'audio' ? { audio_plan: { ...original.audio_plan, sound_effects: ['新增音乐'] } } : {}) } }] }
+    } })
+    const planned = await f.plan()
+    assert.equal(planned.directing_review.status, 'inconclusive', mode)
+    assert.equal(planned.directing_review.repaired, false, mode)
+    assert.deepEqual(planned.directing_review.issues, [localIssue], mode)
+    assert.equal(planned.shots.length, 3); assert.equal(planned.shots[0].duration, 4)
+    assert.doesNotMatch(planned.shots[0].audio_plan.sound_effects.join(','), /新增/)
+    assert.equal(f.prompts.length, 1); assert.equal(f.reviewPrompts.length, 1)
+    assert.equal(f.repairPrompts.length, mode === 'transport' ? 1 : 2)
+  }
+})
+
+test('fresh clip saves require a matching receipt and replay ignores review-only metadata', async t => {
+  const f = await fixture(t), planned = await f.plan(), payload = f.commitPayload(planned), before = resources(f.project.id)
+  const { review_id: _id, ...missing } = payload
+  await f.invoke('commit', missing, 409)
+  await f.invoke('commit', { ...payload, review_id: randomUUID() }, 409)
+  await f.invoke('commit', { ...payload, shots: payload.shots.map((s: any, i: number) => ({ ...s, title: i ? s.title : 'receipt tamper' })) }, 409)
+  assert.deepEqual(resources(f.project.id), before)
+  const saved = await f.invoke('commit', payload)
+  const replay = await f.invoke('commit', { ...payload, review_id: randomUUID() })
+  assert.equal(replay.replayed, true)
+  assert.deepEqual(replay.shots.map((s: any) => s.id), saved.shots.map((s: any) => s.id))
+  // Historical hashes used the original schema property order, without review_id.
+  const legacy = { source_text: payload.source_text, total_duration: payload.total_duration, instructions: payload.instructions,
+    request_id: payload.request_id, signature: payload.signature, shots: payload.shots }
+  run('UPDATE storyboard_clip_plans SET payload_hash=? WHERE design_id=?', createHash('sha256').update(JSON.stringify(legacy)).digest('hex'), payload.request_id)
+  run('UPDATE projects SET ratio=? WHERE id=?', '9:16', f.project.id)
+  assert.equal((await f.invoke('commit', missing)).replayed, true)
+})
+
+test('clip model and provider drift reject generation, review correction and fresh commit', async t => {
+  for (const phase of ['generation', 'review', 'correction', 'commit']) {
+    const provider = await api('POST', '/api/providers', { name: `clip-${phase}`, base_url: 'https://clip-config.invalid/v1', api_key: 'isolated' })
+    const model = await api('POST', '/api/models', { provider_id: provider.id, name: 'clip model', remote_id: 'clip', modality: 'text', protocol: 'responses', settings: { request_path: 'responses', request_template: { model: '{{model}}', input: '{{prompt}}' }, text_path: 'output_text' } })
+    let drifted = false
+    const drift = () => { if (!drifted) { run('UPDATE providers SET base_url=? WHERE id=?', 'https://changed.invalid/v1', provider.id); drifted = true } }
+    const f = await fixture(t, { modelId: model.id,
+      generate: async () => { if (phase === 'generation') drift(); return JSON.stringify(draft()) },
+      review: () => { if (phase === 'review' || phase === 'correction') drift(); return phase === 'correction' ? {} : { issues: [] } },
+    })
+    if (phase !== 'commit') {
+      await f.invoke('plan', { signature: (await f.context()).signature, ...source, model_id: model.id, skill_ids: [] }, 409)
+      assert.equal(f.prompts.length, 1)
+      assert.equal(f.reviewPrompts.length, phase === 'generation' ? 0 : 1, 'config guard must stop format retry dispatch')
+    } else {
+      const planned = await f.plan(), payload = f.commitPayload(planned)
+      run('UPDATE models SET remote_id=? WHERE id=?', 'changed-model', model.id)
+      await f.invoke('commit', payload, 409)
+    }
+    assert.equal(all('SELECT id FROM shots WHERE project_id=?', f.project.id).length, 0)
+  }
+})
+
+test('review-only source and model changes reject late judgments instead of recording inconclusive quality', async t => {
+  let mutate = false
+  const f = await fixture(t, { review: () => { if (mutate) run('UPDATE projects SET ratio=? WHERE id=?', '9:16', f.project.id); return { issues: [] } } })
+  const planned = await f.plan(), payload = f.commitPayload(planned)
+  mutate = true
+  await f.invoke('review', reviewPayload(payload), 409)
+  assert.equal(f.prompts.length, 1)
+  assert.equal(all('SELECT id FROM shots WHERE project_id=?', f.project.id).length, 0)
+})
+
+test('clip cancellation stops before any further review, repair or receipt', async t => {
+  for (const phase of ['generation', 'review', 'repair', 'review-only']) {
+    let cancel = phase !== 'review-only'
+    const abort = (signal?: AbortSignal) => { f.activeRequest()!.raw.emit('aborted'); assert.equal(signal?.aborted, true) }
+    const f = await fixture(t, {
+      generate: async (_prompt, _call, signal) => { if (phase === 'generation') abort(signal); return JSON.stringify(draft()) },
+      review: (_prompt, _call, signal) => { if (cancel && (phase === 'review' || phase === 'review-only')) abort(signal); return { issues: phase === 'repair' ? [localIssue] : [] } },
+      repair: (_data, _prompt, _call, signal) => { abort(signal); throw new Error('aborted patch') },
+    })
+    if (phase === 'review-only') {
+      const planned = await f.plan()
+      cancel = true
+      await f.invoke('review', reviewPayload(f.commitPayload(planned)), 499)
+    } else await f.invoke('plan', { signature: (await f.context()).signature, ...source, model_id: 'mock-text', skill_ids: [] }, 499)
+    assert.equal(f.prompts.length, 1)
+    assert.equal(f.repairPrompts.length, phase === 'repair' ? 1 : 0)
+    assert.equal(f.reviewPrompts.length, phase === 'generation' ? 0 : phase === 'review-only' ? 2 : 1)
+    assert.equal(all('SELECT id FROM shots WHERE project_id=?', f.project.id).length, 0)
+  }
+})
+
+test('clip target-video changes during planning and review stop before any later dispatch', async t => {
+  for (const phase of ['generation', 'review-only']) {
+    const providerId = randomUUID(), videoId = randomUUID()
+    run("INSERT INTO providers (id,name,adapter,base_url,created_at) VALUES (?,?,'http','https://video.invalid',?)", providerId, 'clip video', now())
+    run("INSERT INTO models (id,provider_id,name,remote_id,modality,settings) VALUES (?,?,?,?,'video','{}')", videoId, providerId, 'clip video', 'clip-video')
+    let mutate = phase === 'generation'
+    const f = await fixture(t, {
+      generate: async () => { if (mutate) run('UPDATE models SET enabled=0 WHERE id=?', videoId); return JSON.stringify(draft()) },
+      review: () => { if (mutate) run('UPDATE models SET enabled=0 WHERE id=?', videoId); return { issues: [] } },
+    })
+    if (phase === 'generation') await f.invoke('plan', { signature: (await f.context()).signature, ...source, model_id: 'mock-text', skill_ids: [], target_video_model_id: videoId }, 409)
+    else {
+      const planned = await f.plan({ target_video_model_id: videoId })
+      mutate = true
+      await f.invoke('review', reviewPayload(f.commitPayload(planned)), 409)
+    }
+    assert.equal(f.prompts.length, 1)
+    assert.equal(f.reviewPrompts.length, phase === 'generation' ? 0 : 2)
+    assert.equal(f.repairPrompts.length, 0)
+    assert.equal(all('SELECT id FROM shots WHERE project_id=?', f.project.id).length, 0)
+  }
+})
+
+test('local clip repair preserves actual shot order when group definitions list a different order', async t => {
+  const raw = withClipDirecting(draft())
+  raw.groups.push({ ...raw.groups[0]!, group_id: 'later-group' })
+  raw.shots[2]!.group_id = 'later-group'
+  raw.groups.reverse()
+  const f = await fixture(t, { generate: async () => JSON.stringify(raw), review: (_prompt, call) => ({ issues: call === 1 ? [localIssue] : [] }) })
+  const planned = await f.plan()
+  assert.deepEqual(planned.shots.map((s: any) => s.title), draft().shots.map(s => s.title))
+  assert.deepEqual(planned.shots.map((s: any) => s.continuity_plan.group_id), ['clip-main', 'clip-main', 'later-group'])
+  assert.equal(planned.directing_review.status, 'passed')
+  assert.equal(f.prompts.length, 1); assert.equal(f.repairPrompts.length, 1)
+  assert.equal((await f.invoke('commit', f.commitPayload(planned))).created_shots, 3)
+})
+
+test('complete original and locally repaired clips are checkpointed before their independent reviews', async t => {
+  const snapshots: any[] = []
+  const f = await fixture(t, { operations: true,
+    review: (_prompt, call) => {
+      const row = one<{ candidate: string }>('SELECT candidate FROM ai_operations WHERE project_id=? ORDER BY rowid DESC LIMIT 1', f.project.id)!
+      const retained = JSON.parse(row.candidate)
+      snapshots.push(retained)
+      assert.equal(retained.shots.length, 3)
+      assert.equal(retained.source_text, source.source_text)
+      assert.equal(retained.directing_review.status, 'inconclusive')
+      assert.equal(retained.directing_review.review_id, undefined)
+      assert.equal(retained.directing_review.error.message, '处理中断，草稿已保留，请复查后保存')
+      return { issues: call === 1 ? [localIssue] : [] }
+    },
+    repair: data => ({ patches: data.targets.map((target: any) => ({ ...target,
+      shot: { ...data.readonly_plan.scenes[0].shots[target.shot_index], image_prompt: 'CHECKPOINT_REPAIRED_FRAME' } })) }),
+  })
+  const planned = await f.plan()
+  assert.equal(planned.directing_review.status, 'passed')
+  assert.equal(snapshots.length, 2)
+  assert.doesNotMatch(snapshots[0].shots[0].image_prompt, /CHECKPOINT_REPAIRED_FRAME/)
+  assert.match(snapshots[1].shots[0].image_prompt, /CHECKPOINT_REPAIRED_FRAME/)
+  assert.deepEqual(snapshots[0].shots.slice(1), snapshots[1].shots.slice(1))
+  assert.equal(all('SELECT id FROM shots WHERE project_id=?', f.project.id).length, 0)
+})
+
+test('clip candidate checkpoint failures stop before review and cannot become quality success', async t => {
+  for (const phase of ['first', 'repaired']) {
+    const f = await fixture(t, { operations: true, review: () => ({ issues: [localIssue] }),
+      repair: data => ({ patches: data.targets.map((target: any) => ({ ...target,
+        shot: { ...data.readonly_plan.scenes[0].shots[target.shot_index], image_prompt: 'CHECKPOINT_REPAIRED_FRAME' } })) }),
+    })
+    const trigger = `clip_candidate_${randomUUID().replaceAll('-', '')}`
+    db.exec(`CREATE TRIGGER ${trigger} BEFORE UPDATE OF candidate ON ai_operations
+      WHEN NEW.project_id='${f.project.id}' ${phase === 'repaired' ? "AND OLD.candidate IS NOT NULL" : ''}
+      BEGIN SELECT RAISE(ABORT,'isolated candidate persistence failure'); END`)
+    try {
+      await f.invoke('plan', { signature: (await f.context()).signature, ...source, model_id: 'mock-text', skill_ids: [] }, 503)
+      assert.equal(f.prompts.length, 1)
+      assert.equal(f.reviewPrompts.length, phase === 'first' ? 0 : 1)
+      assert.equal(f.repairPrompts.length, phase === 'first' ? 0 : 1)
+      assert.equal(all('SELECT id FROM shots WHERE project_id=?', f.project.id).length, 0)
+      if (phase === 'repaired') {
+        const row = one<{ candidate: string }>('SELECT candidate FROM ai_operations WHERE project_id=? ORDER BY rowid DESC LIMIT 1', f.project.id)!
+        assert.doesNotMatch(JSON.parse(row.candidate).shots[0].image_prompt, /CHECKPOINT_REPAIRED_FRAME/)
+      }
+    } finally { db.exec(`DROP TRIGGER ${trigger}`) }
+  }
 })

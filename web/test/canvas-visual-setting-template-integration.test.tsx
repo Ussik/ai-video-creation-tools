@@ -29,9 +29,13 @@ Object.defineProperty(dom.window.document, 'fonts', { value: { addEventListener(
 // A paid submission is refused without Web Locks (canvas-generation-submission.ts), so the test browser provides them,
 // serializing by name exactly as navigator.locks does.
 const generationLocks = new Map<string, Promise<unknown>>()
-Object.defineProperty(dom.window.navigator, 'locks', { configurable: true, value: { request: async (name: string, action: () => Promise<unknown>) => {
+Object.defineProperty(dom.window.navigator, 'locks', { configurable: true, value: { request: async (name: string, optionsOrAction: { ifAvailable?: boolean; signal?: AbortSignal } | ((lock: unknown) => Promise<unknown>), maybeAction?: (lock: unknown) => Promise<unknown>) => {
+  const options = typeof optionsOrAction === 'function' ? {} : optionsOrAction
+  if (options.ifAvailable && options.signal) throw new DOMException('ifAvailable and signal cannot be combined', 'NotSupportedError')
+  const action = maybeAction || optionsOrAction as (lock: unknown) => Promise<unknown>
+  if (options.ifAvailable && generationLocks.has(name)) return action(null)
   const previous = generationLocks.get(name) || Promise.resolve()
-  const running = previous.catch(() => {}).then(action)
+  const running = previous.catch(() => {}).then(() => { options.signal?.throwIfAborted(); return action({ name }) })
   generationLocks.set(name, running)
   try { return await running } finally { if (generationLocks.get(name) === running) generationLocks.delete(name) }
 } } })

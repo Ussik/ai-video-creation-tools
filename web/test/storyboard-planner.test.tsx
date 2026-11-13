@@ -25,14 +25,15 @@ const models = [{ id: 'text', modality: 'text', enabled: true, name: '文本模�
 const signature = 'a'.repeat(64)
 const context = { signature, scenes: [{ ...scene, shot_count: 0, material_count: 0, planned: false }], documents: [{ id: 'outline', title: '故事大纲', characters: 100 }],
   skills: [{ id: 'storyboard-skill', name: '分镜技能', description: '镜头规则', revision: 'a'.repeat(40) }], project: { name: '分镜规划', style: '日漫风格' } }
-const draft = { signature, scenes: [{ scene_id: 'scene', scene_heading: '车站', scene_duration: 30, shots: [{ shot_id: null, title: '人物反应', prompt: '人物转身',
+const acceptedReview = { status: 'passed', review_id: 'current-review', repaired: false, issues: [], content_signature: 'b'.repeat(64) }
+const draft = { signature, directing_review: acceptedReview, scenes: [{ scene_id: 'scene', scene_heading: '车站', scene_duration: 30, shots: [{ shot_id: null, title: '人物反应', prompt: '人物转身',
   image_prompt: '人物站在车站', video_prompt: '人物转身，镜头推近', duration: 30, start_state: '', end_state: '', cut_note: '' }] }],
   used_skills: [{ id: 'storyboard-skill', name: '分镜技能', revision: 'a'.repeat(40), files: ['SKILL.md'] }], source_documents: [{ id: 'outline', title: '故事大纲' }] }
 function button(text: string) { const node = [...document.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === text || item.getAttribute('aria-label') === text); assert.ok(node, text); return node }
 // Existing scenarios have no cached preview; cache-specific tests supply their own transport.
-function mockPlanningFetch(t: TestContext, handler: typeof fetch) {
+function mockPlanningFetch(t: TestContext, handler: typeof fetch, explicitReview = false) {
   return t.mock.method(globalThis, 'fetch', async (url, init) => String(url).endsWith('/storyboard/preview')
-    ? Response.json({ preview: null }) : handler(url, init))
+    ? Response.json({ preview: null }) : !explicitReview && String(url).endsWith('/storyboard/review') ? Response.json(acceptedReview) : handler(url, init))
 }
 async function mount(options: { refresh?: () => Promise<unknown>; openCanvas?: () => void; close?: () => void; project?: ProjectDetail; initialSceneIds?: string[]; models?: Model[]; intent?: 'plan' | 'canvas'; notice?: (message: string) => void; saved?: (result: ScriptCanvasResult) => void | Promise<void> } = {}) {
   dom.window.sessionStorage.clear()
@@ -161,6 +162,7 @@ test('a recovered preview can be edited and saved without another generation req
   t.mock.method(globalThis, 'fetch', async (url, init) => {
     const path = String(url), body = JSON.parse(String(init?.body)); requests.push({ path, body })
     if (path.endsWith('/context')) return Response.json(context)
+    if (path.endsWith('/review')) return Response.json(acceptedReview)
     if (path.endsWith('/preview')) return Response.json({ preview: draft })
     if (path.endsWith('/commit')) return Response.json({ scene_ids: ['scene'], shots: [], visual_profiles: [], shot_visual_bindings: [], created_profiles: 0, created_shots: 1 })
     throw new Error(`Unexpected ${path}`)
@@ -169,12 +171,13 @@ test('a recovered preview can be edited and saved without another generation req
   try {
     await act(async () => button('开始规划').click())
     await fillTextarea('镜头描述', '恢复后补充人物回头的动作')
+    await act(async () => button('复查当前草稿').click())
     await act(async () => button('保存分镜方案').click())
-    assert.deepEqual(requests.map(request => request.path.split('/').at(-1)), ['context', 'preview', 'commit'])
-    assert.equal(requests[2].body.save_only, true)
-    assert.equal(requests[2].body.signature, signature)
-    assert.equal(requests[2].body.scenes[0].shots[0].prompt, '恢复后补充人物回头的动作')
-    assert.equal(typeof requests[2].body.request_id, 'string')
+    assert.deepEqual(requests.map(request => request.path.split('/').at(-1)), ['context', 'preview', 'review', 'commit'])
+    assert.equal(requests[3].body.save_only, true)
+    assert.equal(requests[3].body.signature, signature)
+    assert.equal(requests[3].body.scenes[0].shots[0].prompt, '恢复后补充人物回头的动作')
+    assert.equal(typeof requests[3].body.request_id, 'string')
     assert.equal(saved, 1)
   } finally { await view.destroy() }
 })
@@ -216,15 +219,15 @@ test('planning failures retain expandable raw output and diagnostics in a downlo
 test('directing review and motion skill provenance are visible and manual edits invalidate that review', async t => {
   const reviewed = { ...draft,
     motion_skills: [{ id: 'motion-skill', name: '专业视频运镜', revision: 'b'.repeat(40), files: ['camera-audio-continuity.md'] }],
-    directing_review: { status: 'passed', repaired: true, issues: [] },
+    directing_review: { status: 'passed', review_id: 'current-review', repaired: true, issues: [] },
   }
   let reviewBody: any
   mockPlanningFetch(t, async (url, init) => {
     if (String(url).endsWith('/context')) return Response.json(context)
     if (String(url).endsWith('/plan')) return Response.json(reviewed)
-    if (String(url).endsWith('/review')) { reviewBody = JSON.parse(String(init?.body)); return Response.json({ status: 'passed', repaired: false, issues: [], content_signature: 'b'.repeat(64) }) }
+    if (String(url).endsWith('/review')) { reviewBody = JSON.parse(String(init?.body)); return Response.json({ status: 'passed', review_id: 'current-review', repaired: false, issues: [], content_signature: 'b'.repeat(64) }) }
     throw new Error(`Unexpected ${url}`)
-  })
+  }, true)
   const view = await mount({ intent: 'plan' })
   try {
     await act(async () => button('开始规划').click())
@@ -344,16 +347,16 @@ test('duration choices preserve the source by default and fixed totals start fro
 
 test('re-estimated scene durations over thirty seconds retain their mode through edits, review and save', async t => {
   const requests: Array<{ path: string; body: any }> = []
-  const reestimated = { ...draft, duration_mode: 'reestimate', directing_review: { status: 'passed', repaired: false, issues: [] },
+  const reestimated = { ...draft, duration_mode: 'reestimate', directing_review: { status: 'passed', review_id: 'current-review', repaired: false, issues: [] },
     scenes: [{ ...draft.scenes[0], scene_duration: 60, shots: [draft.scenes[0].shots[0], { ...draft.scenes[0].shots[0], title: '人物回应' }] }] }
   mockPlanningFetch(t, async (url, init) => {
     const path = String(url), body = JSON.parse(String(init?.body)); requests.push({ path, body })
     if (path.endsWith('/context')) return Response.json({ ...context, scenes: [{ ...context.scenes[0], duration: 2 }] })
     if (path.endsWith('/plan')) return Response.json(reestimated)
-    if (path.endsWith('/review')) return Response.json({ status: 'passed', repaired: false, issues: [], content_signature: 'b'.repeat(64) })
+    if (path.endsWith('/review')) return Response.json({ status: 'passed', review_id: 'current-review', repaired: false, issues: [], content_signature: 'b'.repeat(64) })
     if (path.endsWith('/commit')) return Response.json({ scene_ids: ['scene'], shots: [], visual_profiles: [], shot_visual_bindings: [], created_profiles: 0, created_shots: 2 })
     throw new Error(`Unexpected ${path}`)
-  })
+  }, true)
   const view = await mount({ intent: 'plan' })
   try {
     await chooseDurationMode('按剧情重新估时')
@@ -458,6 +461,7 @@ test('metadata does not generate; selected skill/docs are explicit and edited dr
     assert.equal(requests.length, 2); assert.equal(opened, 0)
     assert.match(document.querySelector('.storyboard-planner-used-sources .workspace-disclosure-control')!.textContent!, /已使用：分镜技能辅助技能 0 个·参考资料 1 份/)
     await fillTextarea('首帧图片提示词', '修改后的首帧')
+    await act(async () => button('复查当前草稿').click())
     await act(async () => button('确认加入画布').click())
     assert.equal(requests[2].body.scenes[0].shots[0].image_prompt, '修改后的首帧')
     assert.ok(requests[3].path.endsWith('/script/canvas/check')); assert.deepEqual(requests[3].body.scene_ids, ['scene'])
@@ -827,6 +831,7 @@ test('redesign defaults to fresh shots and a dedicated canvas while retries keep
     assert.equal(document.querySelector<HTMLTextAreaElement>('.storyboard-planner-preview textarea')!.readOnly, false)
     assert.ok(button('移除新增镜头'), 'fresh shots remain independently removable')
     await fillTextarea('首帧图片提示词', '只属于新方案的首帧')
+    await act(async () => button('复查当前草稿').click())
     await act(async () => button('确认加入画布').click())
     assert.equal(dom.window.sessionStorage.getItem('script-canvas-open:planner'), null)
     await act(async () => button('继续加入画布').click())
@@ -1141,7 +1146,7 @@ test('saving reference skill defaults reloads only that policy and preserves the
     assert.equal(requests.filter(path => path.endsWith('/context')).length, 1)
     assert.ok(requests.some(path => path.endsWith('/skills/defaults')))
     assert.ok([...document.querySelectorAll<HTMLTextAreaElement>('textarea')].some(field => field.value === '保留我编辑的首帧'))
-    assert.equal(button('确认加入画布').disabled, false)
+    assert.equal(button('确认加入画布').disabled, true, 'changing reference defaults preserves the edited candidate and its pending review')
   } finally { await view.destroy() }
 })
 
@@ -1164,6 +1169,7 @@ test('independent planning saves the edited scheme without references, canvas cr
     assert.equal(document.querySelector('.storyboard-planner-reference-preparation'), null)
     assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '确认加入画布'), false)
     await fillTextarea('首帧图片提示词', '独立方案的首帧')
+    await act(async () => button('复查当前草稿').click())
     await act(async () => button('保存分镜方案').click())
     assert.deepEqual(requests.map(request => request.path.split('/').at(-1)), ['context', 'plan', 'commit'])
     assert.equal(requests[2].body.save_only, true)
@@ -1294,7 +1300,7 @@ test('an interrupted generation shows preserved batch progress without enabling 
   } finally { await view.destroy() }
 })
 
-test('a saved candidate stays read-only after a review failure and continues only the remaining task', async t => {
+test('a saved candidate is editable after a review failure and can continue only the remaining task', async t => {
   const requests: string[] = []
   t.mock.method(globalThis, 'fetch', async (url, options) => {
     const path = String(url); requests.push(`${options?.method || 'GET'} ${path}`)
@@ -1304,7 +1310,7 @@ test('a saved candidate stays read-only after a review failure and continues onl
     if (path.endsWith('/tasks')) return Response.json({ ...taskSnapshot, status: 'failed', can_resume: true,
       error: { stage: 'reviewing', message: '上游连接中断', code: 'stream_read_error' } })
     if (path.endsWith('/task-id/resume')) return Response.json({ ...taskSnapshot, status: 'succeeded', stage: 'completed',
-      can_resume: false, result: { ...draft, directing_review: { status: 'passed', repaired: false, issues: [] } } })
+      can_resume: false, result: { ...draft, directing_review: { status: 'passed', review_id: 'current-review', repaired: false, issues: [] } } })
     throw new Error(`Unexpected ${path}`)
   })
   const view = await mount({ intent: 'plan' })
@@ -1312,7 +1318,7 @@ test('a saved candidate stays read-only after a review failure and continues onl
     await act(async () => button('开始规划').click())
     assert.match(document.querySelector('[role="alert"]')!.textContent!, /分镜草稿已保存/)
     assert.match(document.querySelector('[aria-label="分镜规划进度"]')!.textContent!, /本阶段 2 秒 · 累计 12 秒/)
-    assert.equal((document.querySelector('fieldset.storyboard-planner-preview') as HTMLFieldSetElement).disabled, true)
+    assert.equal((document.querySelector('fieldset.storyboard-planner-preview') as HTMLFieldSetElement).disabled, false)
     assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '保存分镜方案'), false)
     await act(async () => button('继续规划').click())
     assert.equal((document.querySelector('fieldset.storyboard-planner-preview') as HTMLFieldSetElement).disabled, false)
@@ -1332,7 +1338,7 @@ test('leaving a running task preserves its identity and reopening observes it wi
     if (path.endsWith('/tasks/lookup')) return Response.json({ task: null })
     if (path.endsWith('/tasks')) return Response.json(taskSnapshot)
     if (path.endsWith('/task-id')) return Response.json({ ...taskSnapshot, status: 'succeeded', stage: 'completed',
-      result: { ...draft, directing_review: { status: 'passed', repaired: false, issues: [] } } })
+      result: { ...draft, directing_review: { status: 'passed', review_id: 'current-review', repaired: false, issues: [] } } })
     throw new Error(`Unexpected ${path}`)
   })
   const view = await mount({ intent: 'plan', close: () => { closes++ } })
@@ -1365,7 +1371,7 @@ test('reopening waits for fresh context before restoring a remembered task', asy
     if (path.endsWith('/tasks')) return Response.json({ ...taskSnapshot, status: 'failed', can_resume: true,
       error: { message: '复核连接中断', stage: 'reviewing' } })
     if (path.endsWith('/task-id')) { queries++; return Response.json({ ...taskSnapshot, status: 'succeeded', stage: 'completed',
-      result: { ...draft, directing_review: { status: 'passed', repaired: false, issues: [] } } }) }
+      result: { ...draft, directing_review: { status: 'passed', review_id: 'current-review', repaired: false, issues: [] } } }) }
     throw new Error(`Unexpected ${path}`)
   })
   const view = await mount({ intent: 'plan' })
@@ -1400,7 +1406,7 @@ test('cancelling durable planning requests server cancellation and keeps its val
     assert.equal(requests.filter(path => path.endsWith('/task-id/cancel')).length, 1)
     assert.equal(button('继续规划').disabled, false)
     assert.match(document.querySelector('.storyboard-planner-preview')!.textContent!, /人物反应/)
-    assert.equal((document.querySelector('fieldset.storyboard-planner-preview') as HTMLFieldSetElement).disabled, true)
+    assert.equal((document.querySelector('fieldset.storyboard-planner-preview') as HTMLFieldSetElement).disabled, false)
   } finally { await view.destroy() }
 })
 
@@ -1445,7 +1451,7 @@ test('a lost fresh acceptance resumes its own task before considering an older c
     if (path.endsWith('/preview')) { previews++; return Response.json({ preview: previews === 1 ? null : draft }) }
     if (path.endsWith('/tasks')) {
       if (++starts === 1) return Response.json({ ...taskSnapshot, status: 'succeeded', stage: 'completed',
-        result: { ...draft, directing_review: { status: 'passed', repaired: false, issues: [] } } })
+        result: { ...draft, directing_review: { status: 'passed', review_id: 'current-review', repaired: false, issues: [] } } })
       freshRequestId = JSON.parse(String(options?.body)).request_id
       throw new TypeError('acceptance response lost')
     }
@@ -1507,5 +1513,54 @@ test('reopening before acceptance only queries the remembered request and keeps 
     assert.equal(starts, 2)
     assert.equal(lookups, 1); assert.equal(previews, 1)
     assert.equal(button('继续规划').disabled, false)
+  } finally { await view.destroy() }
+})
+
+
+test('complete inconclusive candidates stay editable and require a fresh receipt', async t => {
+  let reviews = 0
+  mockPlanningFetch(t, async url => {
+    if (String(url).endsWith('/context')) return Response.json(context)
+    if (String(url).endsWith('/plan')) return Response.json({ ...draft, directing_review: { status: 'inconclusive', repaired: false, issues: [], error: { code: 'review_unavailable', message: '复查连接中断' } } })
+    if (String(url).endsWith('/review')) { reviews++; return Response.json(acceptedReview) }
+    throw new Error(`Unexpected ${url}`)
+  }, true)
+  const view = await mount({ intent: 'plan' })
+  try {
+    await act(async () => button('开始规划').click())
+    assert.match(document.body.textContent!, /草稿已保留，本次复查未能得出结论/)
+    assert.equal((document.querySelector('fieldset.storyboard-planner-preview') as HTMLFieldSetElement).disabled, false)
+    assert.equal(button('保存分镜方案').disabled, true)
+    await fillTextarea('镜头描述', '完整候选人工修改'); assert.equal(button('保存分镜方案').disabled, true)
+    await act(async () => button('复查当前草稿').click()); assert.equal(reviews, 1)
+    assert.equal(button('保存分镜方案').disabled, false)
+  } finally { await view.destroy() }
+})
+
+test('confirmed storyboard issues retain evidence after edits and targeted repair uses the current receipt', async t => {
+  const issue = { code: 'state_conflict', scene_id: 'scene', shot_index: 0, related_scene_id: null, related_shot_index: null,
+    severity: 'error', message: '起止状态不一致', evidence: '首帧站立，动作却从坐下开始', repair: '统一开始状态' }
+  const report = { status: 'needs_work', repaired: false, review_id: 'confirmed-review', issues: [issue] }
+  const requests: Array<{ path: string; body: any }> = []
+  mockPlanningFetch(t, async (url, init) => {
+    const path = String(url), body = JSON.parse(String(init?.body)); requests.push({ path, body })
+    if (path.endsWith('/context')) return Response.json(context)
+    if (path.endsWith('/plan')) return Response.json({ ...draft, directing_review: report })
+    if (path.endsWith('/review')) return Response.json(report)
+    if (path.endsWith('/repair')) return Response.json({ scenes: draft.scenes, directing_review: acceptedReview })
+    throw new Error(`Unexpected ${path}`)
+  }, true)
+  const view = await mount({ intent: 'plan' })
+  try {
+    await act(async () => button('开始规划').click()); assert.equal(button('保存分镜方案').disabled, true)
+    assert.match(document.body.textContent!, /首帧站立，动作却从坐下开始/)
+    await fillTextarea('镜头描述', '先站立，再转身')
+    assert.match(document.body.textContent!, /首帧站立，动作却从坐下开始/)
+    assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '仅修复已确认问题'), false, 'an edited candidate cannot reuse the previous repair approval')
+    await act(async () => button('复查当前草稿').click()); await act(async () => button('仅修复已确认问题').click())
+    const repair = requests.find(request => request.path.endsWith('/repair'))!
+    assert.equal(repair.body.review_id, 'confirmed-review'); assert.equal(repair.body.scenes[0].shots[0].prompt, '先站立，再转身')
+    assert.equal(requests.filter(request => request.path.endsWith('/plan')).length, 1)
+    assert.equal(button('保存分镜方案').disabled, false)
   } finally { await view.destroy() }
 })

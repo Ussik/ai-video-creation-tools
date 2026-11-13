@@ -53,7 +53,9 @@ function ClipStoryboardPlannerContent({ opened, onClose, detail, models, onRefre
   const validDuration = Number.isInteger(Number(duration)) && Number(duration) >= 1 && Number(duration) <= 120
   const validCount = automaticCount || Number.isInteger(Number(shotsCount)) && Number(shotsCount) >= 1 && Number(shotsCount) <= 30
   const validSetup = !!sourceText.trim() && sourceText.trim().length <= 20_000 && instructions.length <= 4_000 && validDuration && validCount
-  const issue = result && !savedResult && resultModelId !== currentModel ? '文本模型已切换，当前分镜预览仍保留，请重新规划后保存。' : result ? planIssue(result) : ''
+  const contentIssue = result && !savedResult && resultModelId !== currentModel ? '文本模型已切换，当前分镜预览仍保留，请重新规划后保存。' : result ? planIssue(result) : ''
+  const issue = contentIssue || (result && !savedResult && (!result.directing_review?.review_id || !['passed', 'warnings'].includes(result.directing_review.status))
+    ? '当前分镜尚未通过复查，请修改或复查当前草稿后保存。' : '')
   const skillIds = manualSkills ?? (context?.skill_policy.primary_id ? [context.skill_policy.primary_id, ...context.skill_policy.auxiliary_ids] : [])
   const primarySkill = context?.skills.find(skill => skill.id === skillIds[0])
 
@@ -137,10 +139,10 @@ function ClipStoryboardPlannerContent({ opened, onClose, detail, models, onRefre
     if (operation.current || applied.current) return
     setResult(current => current && { ...current, shots: current.shots.map((shot, i) => i === index ? { ...shot, ...patch,
       ...(shot.continuity_plan ? { continuity_plan: { ...shot.continuity_plan, status: 'edited' as const } } : {}) } : shot),
-      directing_review: current.directing_review ? { ...current.directing_review, status: 'edited', content_signature: undefined, issues: [] } : undefined })
+      directing_review: current.directing_review ? { ...current.directing_review, status: 'edited', review_id: undefined } : undefined })
   }
   async function reviewDraft() {
-    if (!result || issue || operation.current || applied.current) return
+    if (!result || contentIssue || contextStale || operation.current || applied.current) return
     const candidate = result, turn = ++serial.current, abort = new AbortController(); controller.current = abort
     operation.current = true; setPhase('review'); setError('')
     try {
@@ -160,7 +162,7 @@ function ClipStoryboardPlannerContent({ opened, onClose, detail, models, onRefre
     setPhase('save'); setError('')
     try {
       if (!applied.current && result) {
-        const input: ClipStoryboardCommitInput = { request_id: requestId.current, signature: result.signature, source_text: result.source_text,
+        const input: ClipStoryboardCommitInput = { request_id: requestId.current, review_id: result.directing_review?.review_id, signature: result.signature, source_text: result.source_text,
           total_duration: result.total_duration, instructions: result.instructions, shots: result.shots,
           ...(result.target_video_model_id ? { target_video_model_id: result.target_video_model_id } : {}) }
         const saved = await api<ScriptCanvasResult>(`/projects/${detail.id}/storyboard/clip/commit`, { ...json('POST', input), signal: abort.signal })
@@ -215,10 +217,16 @@ function ClipStoryboardPlannerContent({ opened, onClose, detail, models, onRefre
         </section> : result && <section className="clip-storyboard-preview" aria-label="片段分镜预览">
           <header><div><strong>{result.shots.length} 个镜头</strong><span>合计 {result.shots.reduce((sum, shot) => sum + shot.duration, 0)} / {result.total_duration} 秒</span></div><p>{savedResult ? '方案已保存，可返回分镜管理继续制作。' : '检查并修改镜头内容，确认后保存。'}</p></header>
           {result.directing_review && <section className="clip-storyboard-help" role="status">
-            <p>{result.directing_review.status === 'edited' ? '草稿已修改，当前版本尚未复核。' : result.directing_review.status === 'needs_work' ? '当前草稿有需修复的首帧或接镜冲突。' : '首帧、运镜、声音设计与接镜文字复核已完成。实际素材仍需播放检查。'}</p>
+            <p>{result.directing_review.status === 'pending_review' ? '片段草稿已保留，等待完成首帧与接镜复核。'
+              : result.directing_review.status === 'edited' ? '草稿已修改，当前版本尚未复核；以下保留上次问题供修改参考。'
+                : result.directing_review.status === 'inconclusive' ? `草稿已保留，本次复查未能得出结论。${result.directing_review.error?.message || '可修改或重新复查。'}`
+                  : result.directing_review.status === 'needs_work' ? '当前草稿有需修复的首帧或接镜冲突，请查看依据并修改。'
+                    : result.directing_review.status === 'warnings' ? '首帧、运镜、声音设计与接镜文字复核已完成，以下问题需要你判断。实际素材仍需播放检查。'
+                      : '首帧、运镜、声音设计与接镜文字复核已完成。实际素材仍需播放检查。'}</p>
             {result.directing_review.issues.map((item, index) => <p key={index}>第{item.shot_index + 1}镜：{item.message} 依据：{item.evidence} 建议：{item.repair}</p>)}
-            {!savedResult && <Button variant="default" size="xs" loading={phase === 'review'} disabled={locked || !!issue} onClick={() => void reviewDraft()}>复查当前草稿</Button>}
+            {!savedResult && <Button variant="default" size="xs" loading={phase === 'review'} disabled={locked || contextStale || !!contentIssue} onClick={() => void reviewDraft()}>复查当前草稿</Button>}
           </section>}
+          {!result.directing_review && !savedResult && <Button variant="default" size="xs" loading={phase === 'review'} disabled={locked || contextStale || !!contentIssue} onClick={() => void reviewDraft()}>复查当前草稿</Button>}
           <section className="clip-storyboard-used-skills" aria-label="实际使用的分镜技能"><strong>实际使用{!result.used_skills.length && '：基础分镜规则'}</strong>
             {result.used_skills.map((skill, index) => <p key={skill.id}><span>{skill.role === 'auxiliary' || !skill.role && index > 0 ? '辅助技能' : '主技能'} · {skill.name}</span><small>版本 {skill.revision.slice(0, 8)}</small></p>)}
             {result.skill_assignment?.reason && <p className="clip-storyboard-assignment">选择理由：{result.skill_assignment.reason}</p>}</section>
@@ -237,7 +245,7 @@ function ClipStoryboardPlannerContent({ opened, onClose, detail, models, onRefre
           })}
         </section>}
         {(error || contextStale || view === 'preview' && issue) && <Alert color="red" icon={<AlertCircle size={16} />} role="alert">{error || (contextStale ? '配置已更新，请重新读取配置后继续规划。' : issue)}{(!context || contextStale) && phase !== 'context' && <Button size="compact-xs" variant="subtle" onClick={reloadContext}>重新读取配置</Button>}</Alert>}
-        {phase && <div className="clip-storyboard-progress" role="status"><Loader size="xs" /><span>{phase === 'context' ? '正在读取项目与技能配置' : phase === 'plan' ? '正在规划镜头' : savedResult ? '正在返回分镜管理' : '正在保存分镜方案'}</span></div>}
+        {phase && <div className="clip-storyboard-progress" role="status"><Loader size="xs" /><span>{phase === 'context' ? '正在读取项目与技能配置' : phase === 'plan' ? '正在规划镜头' : phase === 'review' ? '正在复查当前草稿' : savedResult ? '正在返回分镜管理' : '正在保存分镜方案'}</span></div>}
       </div>
       <footer className="clip-storyboard-footer"><p>{savedResult ? '方案已保存' : result ? '保存后可在分镜管理继续编辑' : `${context?.project.ratio || detail.ratio} · 按项目画风规划`}</p><Button variant="default" disabled={phase === 'save' || guarding} onClick={() => void requestClose()}>{phase === 'plan' ? '取消规划' : '取消'}</Button>
         {view === 'setup' && !savedResult ? <Button leftSection={<Clapperboard size={15} />} loading={phase === 'plan'} disabled={locked || !context || contextStale || !validSetup || !currentModel} onClick={() => void startPlan()}>开始规划</Button>

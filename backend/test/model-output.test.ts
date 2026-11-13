@@ -368,3 +368,12 @@ test('streaming sends task schemas and native tools discard conflicting text for
     t.mock.restoreAll()
   }
 })
+
+
+test('source conflict, cancellation and execution faults never become paid format corrections', async () => {
+  for (const issue of [Object.assign(new Error('来源变化'), { statusCode: 409 }), new DOMException('已停止', 'AbortError'), Object.assign(new Error('本地保存失败'), { statusCode: 500 })]) {
+    let calls = 0
+    await assert.rejects(generateStructuredOutput('contract', z.object({ value: z.string() }), async () => { calls++; return '{"value":"完整候选"}' }, '资料', { validate: () => { throw issue } }), error => error === issue)
+    assert.equal(calls, 1)
+  }
+})

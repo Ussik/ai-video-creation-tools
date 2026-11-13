@@ -264,3 +264,73 @@ test('unrelated export retries and active generation polling labels keep their e
     assert.doesNotMatch(view.container.querySelector('tbody')!.textContent!, /待核对|重试/)
   } finally { await view.close() }
 })
+
+
+test('explicit speech local-result and proven-undispatched preparation actions resume the original task', async () => {
+  const data = { ...detail, jobs: [job('speech-local', 'failed', { model_id: null, request: JSON.stringify({ tts: {} }), recovery_action: 'local', recovery_modality: 'audio' }),
+    job('speech-prepare', 'failed', { model_id: null, request: JSON.stringify({ tts: {} }), recovery_action: 'prepare', recovery_modality: 'audio' })] }
+  const view = await mount(data)
+  try {
+    await act(() => button(view.container, '接管已保存成果').click()); await act(() => button(view.container, '继续未派发任务').click())
+    assert.deepEqual(view.events, [{ type: 'retry', id: 'speech-local' }, { type: 'retry', id: 'speech-prepare' }])
+    assert.match(view.container.textContent!, /不请求模型重新生成/); assert.match(view.container.textContent!, /已确认未派发/)
+  } finally { await view.close() }
+})
+
+
+test('AI operation history separates completed execution from candidate quality and only stops local processing', async () => {
+  const original = globalThis.fetch, calls: string[] = []
+  globalThis.fetch = async (url, init) => {
+    calls.push(`${init?.method || 'GET'} ${url}`)
+    if (String(url).endsWith('/ai-operations/running/stop')) return Response.json({ detail: '已请求停止本地处理，上游状态以提供商记录为准。' })
+    if (String(url).endsWith('/ai-operations')) return Response.json([
+      { id: 'complete', project_id: 'project', route: '/api/projects/project/skills/refine-prompt', state: 'completed', status_code: 200,
+        result: { prompt_body: '需要继续修改的完整草稿', quality: { status: 'needs_work' } }, created_at: timestamp, updated_at: timestamp },
+      { id: 'running', project_id: 'project', route: '/api/projects/project/script/storyboard/review', state: 'running', created_at: timestamp, updated_at: timestamp },
+    ])
+    return Response.json([])
+  }
+  const view = await mount({ ...detail, jobs: [] })
+  try {
+    const history = view.container.querySelector('[aria-label="AI 创作处理记录"]')!
+    assert.ok(history)
+    for (const name of ['提示词整理与复查', '分镜规划与复查']) {
+      const trigger = [...history.querySelectorAll<HTMLButtonElement>('button')].find(node => node.textContent?.includes(name))!
+      assert.ok(trigger); await act(() => trigger.click())
+    }
+    assert.match(history.textContent!, /处理完成/); assert.match(history.textContent!, /完整候选已保留，仍需修改并复查/)
+    assert.equal(history.querySelector<HTMLTextAreaElement>('textarea')!.value, '需要继续修改的完整草稿')
+    await act(async () => button(history, '停止本地处理').click())
+    assert.match(history.textContent!, /上游状态以提供商记录为准/)
+    assert.deepEqual(calls.filter(call => call.startsWith('POST')), ['POST /api/ai-operations/running/stop'])
+  } finally { await view.close(); globalThis.fetch = original }
+})
+
+test('interrupted clip operation history exposes retained shots for review without resubmitting generation', async () => {
+  const original = globalThis.fetch, calls: string[] = []
+  globalThis.fetch = async (url, init) => {
+    calls.push(`${init?.method || 'GET'} ${url}`)
+    return Response.json(String(url).endsWith('/ai-operations') ? [{ id: 'interrupted-clip', project_id: 'project', route: '/api/projects/project/storyboard/clip/plan',
+      state: 'interrupted', status_code: null, created_at: timestamp, updated_at: timestamp,
+      candidate: { shots: [{ title: '进站', prompt: '少女进入车站', image_prompt: '少女站在门口', video_prompt: '少女推门，镜头跟随', start_state: '门外', end_state: '月台', cut_note: '接空月台' }],
+        directing_review: { status: 'inconclusive', issues: [], repaired: false } },
+    }] : [])
+  }
+  const view = await mount({ ...detail, jobs: [] })
+  try {
+    const history = view.container.querySelector('[aria-label="AI 创作处理记录"]')!
+    assert.ok(history)
+    const trigger = [...history.querySelectorAll<HTMLButtonElement>('button')].find(node => node.textContent?.includes('分镜规划与复查'))!
+    assert.ok(trigger); await act(() => trigger.click())
+    assert.match(history.textContent!, /结果待核对/)
+    assert.match(history.textContent!, /完整候选已保留，复查尚无结论/)
+    assert.match(history.textContent!, /完整草稿已保留，请回到原功能编辑与复查后应用/)
+    const candidate = history.querySelector<HTMLTextAreaElement>('textarea')!
+    assert.equal(candidate.readOnly, true)
+    for (const expected of ['第 1 镜 · 进站', '少女进入车站', '少女站在门口', '少女推门，镜头跟随', '门外', '月台', '接空月台']) assert.ok(candidate.value.includes(expected), expected)
+    assert.equal(history.querySelectorAll('textarea').length, 1)
+    assert.equal([...history.querySelectorAll('button')].some(node => /重试|生成|停止本地/.test(node.textContent || '')), false)
+    assert.ok(calls.every(call => call.startsWith('GET ')))
+    assert.deepEqual(view.events, [])
+  } finally { await view.close(); globalThis.fetch = original }
+})

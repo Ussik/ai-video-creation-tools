@@ -417,7 +417,7 @@ test('legacy partial maps rebuild from the entire source rather than resuming ol
 })
 
 test('legacy ready and recovered running analyses cannot reuse segmented maps as current full-source understanding', async () => {
-  for (const status of ['ready', 'running']) {
+  for (const status of ['ready', 'running', 'queued']) {
     const content = '开场明确人物关系。\n第2集\n全剧结尾完成回收。', id = project(content)
     const state = { id: newId(), source_version: scriptSourceVersion({ project_id: id, filename: '剧本.txt', content, updated_at: '' }), model_id: 'model',
       pipeline_version: 3, status, completed_chunks: 1, total_chunks: 2, error: null, updated_at: now(),
@@ -432,7 +432,15 @@ test('legacy ready and recovered running analyses cannot reuse segmented maps as
     })
     try {
       if (status === 'ready') analyzer.start(id, 'model')
-      else analyzer.recover()
+      else {
+        analyzer.recover()
+        const interrupted = await terminal(id)
+        assert.equal(interrupted.status, 'failed')
+        assert.match(interrupted.error || '', /受理状态未知/)
+        assert.equal(reads, 0, 'legacy in-flight work cannot be automatically submitted again')
+        assert.equal(interrupted.sections[0]!.title, '旧分批目录', 'old partial work remains available for diagnosis')
+        analyzer.start(id, 'model')
+      }
       const ready = await terminal(id)
       assert.equal(ready.status, 'ready', ready.error || '')
       assert.equal(reads, ready.total_chunks)

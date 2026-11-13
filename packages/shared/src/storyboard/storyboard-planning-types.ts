@@ -63,11 +63,15 @@ export interface StoryboardPlanningResult {
   motion_skill_assignment?: unknown
   /** Text design review only; manual preview edits invalidate this snapshot. */
   directing_review?: {
-    status: 'passed' | 'warnings' | 'edited' | 'needs_work' | 'pending_review'
+    status: 'passed' | 'warnings' | 'edited' | 'needs_work' | 'pending_review' | 'inconclusive'
+    review_id?: string
+    source_signature?: string
+    reviewed_at?: string
+    error?: { code: string; message: string; retryable?: boolean }
     repaired: boolean
     content_signature?: string
     issues: Array<{ code: string; scene_id: string; shot_index: number; related_scene_id: string | null;
-      related_shot_index: number | null; severity: 'error' | 'warning'; message: string; evidence: string; repair: string }>
+      related_shot_index: number | null; timing_change?: boolean; severity: 'error' | 'warning'; message: string; evidence: string; repair: string }>
   }
   source_documents: Array<{ id: string; title: string }>
 }
@@ -92,7 +96,7 @@ export interface StoryboardPlanningTask {
   can_resume: boolean
   /** Complete validated generation batches; not a saveable candidate. */
   progress?: StoryboardPlanningProgress
-  /** Validated text awaiting review; always read-only and never ready to save. */
+  /** Complete retained text awaiting review; editable after execution stops, but not ready to save. */
   candidate?: StoryboardPlanningResult
   result?: StoryboardPlanningResult
   error?: { message: string; stage: StoryboardPlanningStage; code?: string; retryable?: boolean;

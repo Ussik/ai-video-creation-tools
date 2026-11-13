@@ -110,7 +110,13 @@ function fixture(): { detail: ProjectDetail; graph: CanvasGraph } {
   const base: CanvasNode = { id: 'image-node', type: 'generation', x: 50, y: 100, width: 440, height: 420,
     title: '站台回望', text: '', prompt: '林晚站在月台。', asset_id: 'latest', shot_id: 'shot', model_id: imageModel.id,
     job_id: 'latest-job', settings: { modality: 'image', mode: 'text', resolution: '4K', ratio: '16:9' } }
-  const graph: CanvasGraph = { revision: 'initial', nodes: [base, { ...base, id: 'video-node', x: 650, title: '分镜视频',
+  // Candidate tests start from a current saved canvas. A missing script card
+  // schedules the independent 650 ms legacy migration on mount, which can
+  // otherwise overlap a library-save assertion under parallel test load.
+  const script: CanvasNode = { id: `project-script:${projectId}`, type: 'project_script_ref', x: -790, y: 100,
+    width: 720, height: 480, title: detail.name, text: '', prompt: '', asset_id: null, shot_id: null,
+    model_id: null, job_id: null, settings: {} }
+  const graph: CanvasGraph = { revision: 'initial', nodes: [script, base, { ...base, id: 'video-node', x: 650, title: '分镜视频',
     model_id: videoModel.id, job_id: 'video-job', asset_id: 'final-video',
     settings: { modality: 'video', mode: 'first_frame', visual_reference_mode: 'keyframe',
       storyboard_reference_asset_id: 'latest', resolution: '480p', ratio: '16:9' } }],

@@ -9,10 +9,17 @@ const dataDir = await mkdtemp(join(tmpdir(), 'storyboard-generation-revision-'))
 process.env.VIDEO_STUDIO_DATA_DIR = dataDir
 const { buildApp } = await import('../src/app.js')
 const { db, now, run } = await import('../src/infrastructure/database/db.js')
+const { retainCandidateReview } = await import('../src/modules/generation/candidate-review-evidence.js')
+const { storyboardCandidateScenes } = await import('../src/modules/storyboard/storyboard-planning.js')
 const { invalidateStoryboardShot } = await import('../src/modules/storyboard/storyboard-invalidation.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(dataDir, { recursive: true, force: true }) })
 async function call(method: 'POST' | 'GET' | 'PUT' | 'PATCH', url: string, payload?: unknown) {
+  if (url.endsWith('/storyboard/commit')) {
+    const body = payload as { signature: string; scenes: unknown }
+    const projectId = url.split('/')[3]!
+    payload = { ...body, review_id: retainCandidateReview({ projectId, family: 'storyboard', candidate: storyboardCandidateScenes(body.scenes), source: body.signature, modelId: 'fixture-review', status: 'passed', report: { issues: [] } }).review_id }
+  }
   const response = await app.inject({ method, url, ...(payload === undefined ? {} : { payload }) })
   assert.equal(response.statusCode, 200, response.body)
   return response.json()

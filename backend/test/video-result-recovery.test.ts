@@ -1,3 +1,4 @@
+import { validVideo } from './fixtures/valid-video.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -32,7 +33,7 @@ test('generic and Seedance save the task ID and result URL in order before downl
         if (String(url) === resultUrl) {
           events.push('download')
           assert.deepEqual(events, ['create', 'save ID', 'poll', 'save URL', 'download'])
-          return new Response('mock video bytes')
+          return new Response(validVideo)
         }
         events.push('poll')
         return complete()
@@ -41,7 +42,7 @@ test('generic and Seedance save the task ID and result URL in order before downl
         async id => { assert.equal(id, 'accepted-task'); events.push('save ID') }, undefined,
         () => assert.fail('video must not invoke the image URL callback'),
         async url => { assert.equal(url, resultUrl); events.push('save URL') })
-      assert.equal(await readFile(result.path, 'utf8'), 'mock video bytes')
+      assert.deepEqual(await readFile(result.path), validVideo)
       assert.equal(result.remoteUrl, resultUrl)
     })
   }
@@ -53,7 +54,7 @@ test('a persisted task ID only polls and downloads, skipping missing references 
   t.mock.method(globalThis, 'fetch', async (url: unknown, options?: RequestInit) => {
     assert.notEqual(options?.method, 'POST', 'restoring a known ID never creates a task')
     requests.push(String(url))
-    return String(url) === resultUrl ? new Response('restored video bytes') : complete()
+    return String(url) === resultUrl ? new Response(validVideo) : complete()
   })
   const result = await generate(model({ ...seedance25VideoSettings(), create_path: undefined, request_template: undefined }), provider,
     { prompt: '', _external_id: 'task /known', mode: 'first_frame', resolution: 'unsupported' },
@@ -61,7 +62,7 @@ test('a persisted task ID only polls and downloads, skipping missing references 
     () => assert.fail('existing ID must not be persisted as a new submission'), undefined, undefined,
     url => { assert.equal(url, resultUrl) })
   assert.deepEqual(requests, ['https://provider.invalid/v1/contents/generations/tasks/task%20%2Fknown', resultUrl])
-  assert.equal(await readFile(result.path, 'utf8'), 'restored video bytes')
+  assert.deepEqual(await readFile(result.path), validVideo)
 })
 
 test('invalid persisted task IDs stop before network access instead of falling through to creation', async t => {
@@ -104,7 +105,7 @@ test('generic providers can return exact numeric task IDs which are saved as str
   const events: string[] = []
   t.mock.method(globalThis, 'fetch', async (url: unknown, options?: RequestInit) => {
     if (options?.method === 'POST') { events.push('create'); return Response.json({ id: 123 }) }
-    if (String(url) === resultUrl) return new Response('numeric task result')
+    if (String(url) === resultUrl) return new Response(validVideo)
     assert.equal(String(url), 'https://provider.invalid/v1/tasks/123')
     assert.deepEqual(events, ['create', 'save ID'])
     return complete()
@@ -113,7 +114,7 @@ test('generic providers can return exact numeric task IDs which are saved as str
     assert.equal(id, '123')
     events.push('save ID')
   })
-  assert.equal(await readFile(result.path, 'utf8'), 'numeric task result')
+  assert.deepEqual(await readFile(result.path), validVideo)
 })
 
 test('saving the task ID must finish successfully before any poll or download', async t => {
@@ -139,7 +140,7 @@ test('download waits for an asynchronous URL checkpoint and cannot start while i
   let release: (() => void) | undefined, downloads = 0
   t.mock.method(globalThis, 'fetch', async (url: unknown, options?: RequestInit) => {
     assert.notEqual(options?.method, 'POST')
-    if (String(url) === resultUrl) { downloads++; return new Response('mock video') }
+    if (String(url) === resultUrl) { downloads++; return new Response(validVideo) }
     return complete()
   })
   const pending = generate(model(), provider, { prompt: '动作', _external_id: 'known-id' }, [], 'url-checkpoint-gate', () => {}, undefined, undefined,
@@ -193,7 +194,7 @@ test('a failed video download retains its URL checkpoint; recoverVideo then down
     if (String(url) === resultUrl) {
       downloads++
       if (downloads === 1) throw new Error(`mock connection failure: ${resultUrl}`)
-      return new Response('recovered download')
+      return new Response(validVideo)
     }
     return complete()
   })
@@ -206,7 +207,7 @@ test('a failed video download retains its URL checkpoint; recoverVideo then down
   assert.equal(savedUrl, resultUrl)
   assert.deepEqual(await readdir(join(directory, 'media', 'download-recovery')), [], 'failed download removes partial files')
   const recovered = await recoverVideo('download-recovery', savedUrl)
-  assert.equal(await readFile(recovered.path, 'utf8'), 'recovered download')
+  assert.deepEqual(await readFile(recovered.path), validVideo)
   assert.deepEqual(requests, ['https://provider.invalid/v1/tasks/known-id', resultUrl, resultUrl])
 })
 
@@ -217,10 +218,10 @@ test('URL-only recovery needs no model, API key or provider, and rejects non-HTT
     assert.equal(String(url), resultUrl)
     assert.equal(options?.method, undefined)
     assert.equal(options?.headers, undefined)
-    return new Response('already generated video')
+    return new Response(validVideo)
   })
   const result = await recoverVideo('download-only', resultUrl)
-  assert.equal(await readFile(result.path, 'utf8'), 'already generated video')
+  assert.deepEqual(await readFile(result.path), validVideo)
   for (const url of ['file:///tmp/private.mp4', 'data:video/mp4;base64,AAAA', 'not-a-url']) {
     await assert.rejects(recoverVideo('download-only', url))
   }

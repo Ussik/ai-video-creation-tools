@@ -25,6 +25,8 @@ import { storyboardCreativeAuthority, storyboardCreativeContext, storyboardCreat
 import { readStoryboardPlanningPreview, saveStoryboardPlanningPreview, storyboardPlanningPreviewKey } from './storyboard-planning-preview.js'
 import { createStoryboardPlanningTasks, type StoryboardPlanningControl } from './storyboard-planning-tasks.js'
 import { runStoryboardPlanningWorkflow } from './storyboard-planning-workflow.js'
+import { retainCandidateReview, readCandidateReview, reviewModelSignature } from '../generation/candidate-review-evidence.js'
+import { repairStoryboardTargets } from './storyboard-targeted-repair.js'
 import { generateStoryboardPlanningBatches } from './storyboard-planning-batches.js'
 import type { StoryboardPlanningResult } from '@video-studio/shared/storyboard/storyboard-planning-types'
 
@@ -55,18 +57,21 @@ const shotDraft = z.object({ shot_id: z.string().min(1).nullable().optional(), t
   duration: z.number().int().min(1).max(30), start_state: z.string().max(2000), end_state: z.string().max(2000), cut_note: z.string().max(2000) }).strict()
 const sceneDraft = z.object({ scene_id: z.string().min(1), scene_duration: z.number().int().min(1).max(maxScriptSceneDuration), shots: z.array(shotDraft).min(1).max(30) }).strict()
 const draft = z.object({ scenes: z.array(sceneDraft).min(1).max(10) }).strict()
+export const storyboardCandidateScenes = (value: unknown) => draft.shape.scenes.parse(value)
 const previewSkill = z.object({ id: z.string(), name: z.string(), revision: z.string(), files: z.array(z.string()) }).passthrough()
 const preview = draft.extend({ signature: z.string().length(64), mode: z.enum(['update', 'redesign']), instructions: z.string(),
   duration_mode: z.enum(['preserve', 'reestimate']).optional(), target_video_model_id: z.string().optional(),
   scenes: z.array(sceneDraft.extend({ scene_heading: z.string() })).min(1).max(10),
   used_skills: z.array(previewSkill), skill_assignment: z.unknown().optional(),
   motion_skills: z.array(previewSkill).optional(), motion_skill_assignment: z.unknown().optional(),
-  directing_review: z.object({ status: z.enum(['passed', 'warnings']), repaired: z.boolean(),
+  directing_review: z.object({ status: z.enum(['passed', 'warnings', 'needs_work', 'inconclusive', 'pending_review', 'edited']), repaired: z.boolean(),
+    review_id: z.string().optional(), source_signature: z.string().optional(), reviewed_at: z.string().optional(),
+    error: z.object({ code: z.string(), message: z.string(), retryable: z.boolean().optional() }).optional(),
     content_signature: z.string().length(64), issues: storyboardDirectingReviewSchema.shape.issues }),
   source_documents: z.array(z.object({ id: z.string(), title: z.string() })),
 }).strict()
 const commit = draft.extend({ signature: z.string().length(64), request_id: z.uuid(), mode: designMode, instructions: designInstructions,
-  save_only: z.boolean().default(false), target_video_model_id: z.string().min(1).optional(), duration_mode: durationMode }).strict()
+  review_id: z.string().optional(), save_only: z.boolean().default(false), target_video_model_id: z.string().min(1).optional(), duration_mode: durationMode }).strict()
 function selectedPlanSchema(scenes: ScriptScene[]) {
   const selectedScene = sceneDraft.extend({ scene_id: z.enum(scenes.map(scene => scene.id))
     .describe('逐字复制所选场次的 scene_id，不使用标题中的 EP/SC 场号，不生成新 ID'),
@@ -150,6 +155,13 @@ function snapshot(projectId: string, sceneIds: string[], context: Context, desig
 }
 function requireAvailableCanvas(state: ReturnType<typeof snapshot>, mode: DesignMode) {
   if (mode === 'update' && state.redesignScenes.size) fail('此方案的专属画布已删除，请选择「重新设计新方案」重新规划，确认后自动创建新画布', 409)
+}
+const storyboardSourcePolicy = '创作者本次明确要求优先；所选参考文档中的最新明确设定及本次自动提供的最新正式分集正文优先于旧场次和已有镜头。' +
+  'source_scenes用于定位本次场次与约束范围，正文与旧场次内容冲突时，按最新正式正文的对应场次判断，不将正确更新报为来源漂移。' +
+  '已有镜头仅用于保留ID和必要连续性，不作为旧剧情事实的权威。参考资料中的其他场次不得扩展本次范围。'
+function storyboardSources(state: ReturnType<typeof snapshot>, documentIds: string[]) {
+  const episodes = new Set(state.scenes.map(scene => scene.episode_number))
+  return state.documents.filter(document => documentIds.includes(document.id) || document.artifact_type === 'episode_script' && episodes.has(document.episode_number))
 }
 function audioSources(state: ReturnType<typeof snapshot>, instructions: string) {
   return [...state.scenes.flatMap(scene => [scene.action, scene.dialogue, scene.narration]),
@@ -303,9 +315,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
     if (state.signature !== input.signature) fail('资料、镜头或技能配置已更新，请刷新规划资料', 409)
     requireAvailableCanvas(state, input.mode)
     if (input.document_ids.some(id => !state.documents.some(document => document.id === id))) fail('所选参考文档不存在或不属于当前项目')
-    const episodes = new Set(state.scenes.map(scene => scene.episode_number))
-    const sources = state.documents.filter(document => input.document_ids.includes(document.id) ||
-      document.artifact_type === 'episode_script' && episodes.has(document.episode_number))
+    const sources = storyboardSources(state, input.document_ids)
     const minimum = input.mode === 'redesign' ? state.scenes.length
       : state.scenes.reduce((sum, scene) => sum + Math.max(1, state.shots.filter(shot => shot.source_scene_id === scene.id).length), 0)
     if (input.target_duration !== undefined && input.target_duration < minimum) fail(`本次总时长应在 ${minimum} 至 600 秒之间`)
@@ -447,9 +457,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
         storyboardDirectingReviewPrompt({ project: { name: state.project.name, brief: state.project.brief, ratio: state.project.ratio },
           creative_context: state.creativeContext, creative_authority: storyboardCreativeAuthority,
           creator_instructions: input.instructions, timing_policy: timingInstruction, source_scenes: state.scenes,
-          source_policy: '创作者本次明确要求优先；所选参考文档中的最新明确设定及本次自动提供的最新正式分集正文优先于旧场次和已有镜头。' +
-            'source_scenes用于定位本次场次与约束范围，正文与旧场次内容冲突时，按最新正式正文的对应场次判断，不将正确更新报为来源漂移。' +
-            '已有镜头仅用于保留ID和必要连续性，不作为旧剧情事实的权威。参考资料中的其他场次不得扩展本次范围。',
+          source_policy: storyboardSourcePolicy,
           source_documents: sources.map(({ id, title, content, artifact_type, episode_number, version }) => ({ id, title, content, artifact_type, episode_number, version })),
           // Keep direction metadata separate from one complete compiled text
           // sequence, rather than sending every prompt twice.
@@ -463,15 +471,20 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       return report
     }
     const projectCandidate = (prepared: Preparation, candidate: ReturnType<typeof compilePlan>, repaired: boolean,
-      report?: z.infer<typeof storyboardDirectingReviewSchema>): StoryboardPlanningResult => {
+      report?: z.infer<typeof storyboardDirectingReviewSchema>, error?: unknown): StoryboardPlanningResult => {
       const { value } = candidate
+      const source = planSignature(state.signature, input.mode, input.instructions, target?.signature, input.duration_mode)
+      const status = error ? 'inconclusive' : report ? report.issues.some(issue => issue.severity === 'error') ? 'needs_work' : report.issues.length ? 'warnings' : 'passed' : 'pending_review'
+      const diagnostic = error ? { code: String((error as { code?: string })?.code || 'candidate_review_inconclusive'), message: error instanceof Error ? error.message : String(error) } : undefined
+      const evidence = report || error ? retainCandidateReview({ projectId: id, family: 'storyboard', candidate: value.scenes, source,
+        modelId: input.model_id, status, report: { report, error: diagnostic } }) : undefined
       return { signature: planSignature(state.signature, input.mode, input.instructions, target?.signature, input.duration_mode), mode: input.mode, instructions: input.instructions,
       ...(input.duration_mode === 'reestimate' ? { duration_mode: input.duration_mode } : {}),
       ...(target ? { target_video_model_id: target.id } : {}),
       scenes: state.scenes.map(scene => ({ ...value.scenes.find(item => item.scene_id === scene.id)!, scene_heading: scene.heading })),
       used_skills: prepared.rules.skills, skill_assignment: prepared.rules.assignment,
       motion_skills: prepared.motionRules.skills, motion_skill_assignment: prepared.motionRules.assignment,
-      directing_review: { status: report ? report.issues.length ? 'warnings' : 'passed' : 'pending_review', repaired, issues: report?.issues || [], content_signature: hash(value.scenes) },
+      directing_review: { ...evidence, status, repaired, issues: report?.issues || [], content_signature: hash(value.scenes), ...(diagnostic ? { error: diagnostic } : {}) },
       source_documents: sources.map(({ id, title }) => ({ id, title })) }
     }
     const completed = await runStoryboardPlanningWorkflow(control, {
@@ -482,20 +495,15 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       review: reviewPlan,
       restoreReport: (value, candidate) => validateStoryboardDirectingReview(storyboardDirectingReviewSchema.parse(value), candidate.planned.scenes),
       hasErrors: report => report.issues.some(issue => issue.severity === 'error'),
-      repair: (prepared, candidate, report) => {
-        const revision = '\n【导演复核后的唯一一次内容修订】\n' +
-        '按下列有证据的问题修订完整方案，并同步场面调度、摄影、起止、首帧、视频和接镜说明。保持本次场次、镜头身份及有来源的台词约束；时长继续服从本次时长方式，按剧情重新估时允许同步修正场次与镜头时长，指定总时长或保留原时长时不得擅自改变相应约束；' +
-        '不通过删除事实、改写台词或添加无关镜头回避问题。仍按原JSON契约返回完整方案。\n' +
-        JSON.stringify({ previous_plan: candidate.planned, issues: report.issues.filter(issue => issue.severity === 'error') })
-        return makePlan(taskText(prepared) + revision, 'repair', taskText(prepared, false) + revision)
+      repair: async (prepared, candidate, report) => {
+        const planned = await repairStoryboardTargets({ candidate: candidate.planned, report, shotSchema: fullShotSchema,
+          generate, prompt: taskText(prepared), signal: controller.signal, allowTimingChange: input.duration_mode === 'reestimate' && !input.target_duration })
+        checkCurrent(); validateSchedule(planned)
+        return compilePlan(schema.parse(planned))
       },
+      inconclusive: (prepared, candidate, repaired, error, report) => projectCandidate(prepared, candidate, repaired, report, error),
       projection: projectCandidate,
-      finish: (prepared, candidate, report, repaired) => {
-        const remaining = report.issues.filter(issue => issue.severity === 'error')
-        if (remaining.length) fail('分镜在一次内容修订后仍未通过运镜与接镜复核：' + remaining.slice(0, 6)
-          .map(issue => `${state.scenes.find(scene => scene.id === issue.scene_id)!.heading} · 第${issue.shot_index + 1}镜：${issue.message}；建议：${issue.repair}`).join('\n'))
-        return projectCandidate(prepared, candidate, repaired, report)
-      },
+      finish: (prepared, candidate, report, repaired) => projectCandidate(prepared, candidate, repaired, report),
     })
     checkCurrent()
     const defaults = state.policy.primary_id ? [state.policy.primary_id, ...state.policy.auxiliary_ids] : []
@@ -539,9 +547,9 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
   })
   app.post('/api/projects/:id/script/storyboard/review', async (request, reply) => {
     const { id } = z.object({ id: z.string().min(1) }).parse(request.params)
-    const input = commit.omit({ request_id: true, save_only: true }).extend({ model_id: z.string().min(1), document_ids: ids.default([]) }).parse(request.body)
+    const input = commit.omit({ request_id: true, save_only: true, review_id: true }).extend({ model_id: z.string().min(1), document_ids: ids.default([]) }).parse(request.body)
     const sceneIds = input.scenes.map(scene => scene.scene_id), state = snapshot(id, sceneIds, context)
-    const target = storyboardTargetModel(input.target_video_model_id)
+    const target = storyboardTargetModel(input.target_video_model_id), reviewRuntime = reviewModelSignature(input.model_id)
     if (planSignature(state.signature, input.mode, input.instructions, target?.signature, input.duration_mode) !== input.signature) fail('资料、时长方式或目标视频模型已更新，请重新规划后复核', 409)
     validatePlan(input, state, input.scenes.reduce((sum, scene) => sum + scene.scene_duration, 0), input.mode, input.instructions)
     if (input.document_ids.some(id => !state.documents.some(document => document.id === id))) fail('所选参考文档已不可用')
@@ -554,18 +562,82 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
         storyboardDirectingReviewPrompt({ creator_instructions: input.instructions,
           timing_policy: input.duration_mode === 'reestimate' ? '当前草稿已按剧情重新估时，以当前场次和逐镜时长判断可执行性；源场次duration是历史估计，不能用它覆盖当前时长。仍须尊重创作者明确要求，不删改台词或遗漏必要动作。' : '复核创作者当前草稿的时长与完整内容是否相容，不重写当前时长。',
           creative_context: state.creativeContext, creative_authority: storyboardCreativeAuthority,
-          source_policy: '创作者当前明确要求优先；最新正式分集正文优先于旧场次摘要。当前草稿是待审设计，不把附带continuity_plan中的旧摘要当成覆盖手改内容的权威。',
+          source_policy: storyboardSourcePolicy + '当前草稿是待审设计，不把附带continuity_plan中的旧摘要当成覆盖手改内容的权威。',
           source_scenes: state.scenes,
-          source_documents: state.documents.filter(document => input.document_ids.includes(document.id) || document.artifact_type === 'episode_script' && state.scenes.some(scene => scene.episode_number === document.episode_number)),
+          source_documents: storyboardSources(state, input.document_ids),
           ...buildStoryboardDirectingReviewContext(input.scenes), production_scenes: input.scenes }),
         { signal: controller.signal, validate: value => { validateStoryboardDirectingReview(value, input.scenes) } })
-      if (snapshot(id, sceneIds, context).signature !== state.signature || target && storyboardTargetModel(target.id)?.signature !== target.signature) fail('复核期间资料或目标视频模型已更新，请重新复核', 409)
-      return { status: report.issues.some(issue => issue.severity === 'error') ? 'needs_work' : report.issues.length ? 'warnings' : 'passed',
-        repaired: false, issues: report.issues, content_signature: hash(input.scenes) }
+      if (snapshot(id, sceneIds, context).signature !== state.signature || reviewModelSignature(input.model_id) !== reviewRuntime || target && storyboardTargetModel(target.id)?.signature !== target.signature) fail('复核期间资料或目标视频模型已更新，请重新复核', 409)
+      const status = report.issues.some(issue => issue.severity === 'error') ? 'needs_work' : report.issues.length ? 'warnings' : 'passed'
+      return { ...retainCandidateReview({ projectId: id, family: 'storyboard', candidate: input.scenes, source: input.signature,
+        modelId: input.model_id, status, report }), repaired: false, issues: report.issues }
     } catch (error) {
       if (controller.signal.aborted) fail('分镜复核已取消', 499)
-      throw error
+      if ((error as { statusCode?: number })?.statusCode === 409) throw error
+      if (snapshot(id, sceneIds, context).signature !== state.signature || reviewModelSignature(input.model_id) !== reviewRuntime || target && storyboardTargetModel(target.id)?.signature !== target.signature) fail('复核期间资料或模型已更新，请重新复核', 409)
+      const diagnostic = { code: String((error as { code?: string })?.code || 'candidate_review_inconclusive'), message: error instanceof Error ? error.message : String(error) }
+      return { ...retainCandidateReview({ projectId: id, family: 'storyboard', candidate: input.scenes, source: input.signature,
+        modelId: input.model_id, status: 'inconclusive', report: { error: diagnostic } }), repaired: false, issues: [], error: diagnostic }
     } finally { request.raw.off('aborted', abort); reply.raw.off('close', abort) }
+  })
+  app.post('/api/projects/:id/script/storyboard/repair', async (request, reply) => {
+    const { id } = z.object({ id: z.string().min(1) }).parse(request.params)
+    const input = commit.omit({ request_id: true, save_only: true }).extend({ model_id: z.string().min(1), review_id: z.string().min(1), document_ids: ids.default([]) }).parse(request.body)
+    const sceneIds = input.scenes.map(scene => scene.scene_id), state = snapshot(id, sceneIds, context), target = storyboardTargetModel(input.target_video_model_id), reviewRuntime = reviewModelSignature(input.model_id)
+    if (planSignature(state.signature, input.mode, input.instructions, target?.signature, input.duration_mode) !== input.signature) fail('资料或模型已变化，请重新复查当前草稿', 409)
+    validatePlan(input, state, input.scenes.reduce((sum, scene) => sum + scene.scene_duration, 0), input.mode, input.instructions, input.duration_mode)
+    const saved = readCandidateReview({ projectId: id, family: 'storyboard', reviewId: input.review_id, candidate: input.scenes, source: input.signature })
+    if (saved.status !== 'needs_work') fail('当前草稿没有可用于修复的已核实问题，请先独立复查当前候选', 409)
+    if (input.document_ids.some(id => !state.documents.some(document => document.id === id))) fail('所选参考文档已不可用')
+    const sources = storyboardSources(state, input.document_ids)
+    const stored = saved.report as { report?: unknown }
+    const report = storyboardDirectingReviewSchema.parse(stored?.report || saved.report)
+    if (!report.issues.some(issue => issue.severity === 'error')) fail('当前复查没有已核实的错误，请先独立复查当前候选', 409)
+    const schema = selectedPlanSchema(state.scenes)
+    const controller = new AbortController(), abort = () => { if (!reply.raw.writableEnded) controller.abort(new DOMException('局部修复已取消', 'AbortError')) }
+    request.raw.once('aborted', abort); reply.raw.once('close', abort)
+    let scenes = input.scenes
+    try {
+      const raw = schema.parse({ scenes: input.scenes.map(scene => ({ ...scene,
+        scene_direction: scene.shots[0]?.continuity_plan?.scene,
+        shots: scene.shots.map(({ continuity_plan, ...shot }) => ({ ...shot, directing: continuity_plan?.shot })),
+      })) })
+      const planned = await repairStoryboardTargets({ candidate: raw, report, shotSchema: schema.shape.scenes.element.shape.shots.element,
+        generate: (prompt, contract) => context.generateText(id, input.model_id, prompt, contract, controller.signal), signal: controller.signal, allowTimingChange: input.duration_mode === 'reestimate',
+        prompt: storyboardCreativeContextPrompt(state.creativeContext) + '\n本次创作者要求：' + input.instructions + '\n' + JSON.stringify({
+          project: { name: state.project.name, brief: state.project.brief, ratio: state.project.ratio },
+          source_scenes: state.scenes, source_documents: sources, source_policy: storyboardSourcePolicy, creative_authority: storyboardCreativeAuthority,
+        }) })
+      scenes = draft.parse({ scenes: planned.scenes.map(({ scene_direction, ...scene }) => ({ ...scene,
+        shots: scene.shots.map((shot, index) => {
+          const original = input.scenes.find(item => item.scene_id === scene.scene_id)!.shots[index]!
+          const targeted = report.issues.some(issue => issue.severity === 'error' && (issue.scene_id === scene.scene_id && issue.shot_index === index || issue.related_scene_id === scene.scene_id && issue.related_shot_index === index))
+          return targeted ? composeDirectedShot(shot, scene_direction) : structuredClone(original)
+        }),
+      })) }).scenes
+      validatePlan({ scenes }, state, input.duration_mode === 'reestimate' ? undefined : input.scenes.reduce((sum, scene) => sum + scene.scene_duration, 0), input.mode, input.instructions, input.duration_mode)
+      const checked = await generateStructuredOutput('storyboard_directing_review', storyboardDirectingReviewSchema,
+        (prompt, contract) => context.generateText(id, input.model_id, prompt, contract, controller.signal),
+        storyboardDirectingReviewPrompt({ creator_instructions: input.instructions, source_scenes: state.scenes,
+          source_documents: sources, source_policy: storyboardSourcePolicy, creative_authority: storyboardCreativeAuthority,
+          timing_policy: input.duration_mode === 'reestimate' ? '当前候选按剧情重新估时，按修复后的场次与逐镜时长核对，不以修复前总时长或历史时长覆盖当前结果。' : '保留当前草稿时长。',
+          creative_context: state.creativeContext, ...buildStoryboardDirectingReviewContext(scenes), production_scenes: scenes }),
+        { signal: controller.signal, validate: value => { validateStoryboardDirectingReview(value, scenes) } })
+      controller.signal.throwIfAborted()
+      if (snapshot(id, sceneIds, context).signature !== state.signature || reviewModelSignature(input.model_id) !== reviewRuntime || target && storyboardTargetModel(target.id)?.signature !== target.signature) fail('修复期间资料或目标模型已更新，请重新复查', 409)
+      const status = checked.issues.some(issue => issue.severity === 'error') ? 'needs_work' : checked.issues.length ? 'warnings' : 'passed'
+      return { scenes: scenes.map(scene => ({ ...scene, scene_heading: state.scenes.find(source => source.id === scene.scene_id)!.heading })),
+        directing_review: { ...retainCandidateReview({ projectId: id, family: 'storyboard', candidate: scenes, source: input.signature,
+          modelId: input.model_id, status, report: checked }), repaired: true, issues: checked.issues } }
+    } catch (error) {
+      if (controller.signal.aborted) fail('局部修复已取消，原草稿仍保留', 499)
+      if ((error as { statusCode?: number })?.statusCode === 409) throw error
+      if (snapshot(id, sceneIds, context).signature !== state.signature || reviewModelSignature(input.model_id) !== reviewRuntime || target && storyboardTargetModel(target.id)?.signature !== target.signature) fail('修复期间资料或模型已更新，请重新复查', 409)
+      const diagnostic = { code: String((error as { code?: string })?.code || 'candidate_repair_inconclusive'), message: error instanceof Error ? error.message : String(error) }
+      return { scenes: scenes.map(scene => ({ ...scene, scene_heading: state.scenes.find(source => source.id === scene.scene_id)!.heading })),
+        directing_review: { ...retainCandidateReview({ projectId: id, family: 'storyboard', candidate: scenes, source: input.signature,
+          modelId: input.model_id, status: 'inconclusive', report: { report, error: diagnostic } }), repaired: true, issues: report.issues, error: diagnostic } }
+    } finally { request.raw.removeListener('aborted', abort); reply.raw.removeListener('close', abort) }
   })
   app.post('/api/projects/:id/script/storyboard/commit', async request => {
     const { id } = z.object({ id: z.string().min(1) }).parse(request.params), input = commit.parse(request.body)
@@ -587,6 +659,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       if (planSignature(state.signature, input.mode, input.instructions, target?.signature, input.duration_mode) !== input.signature) fail('资料、方案模式、时长方式、目标视频模型或规划要求已更新，请重新规划后保存', 409)
       requireAvailableCanvas(state, input.mode)
       validatePlan(input, state, input.scenes.reduce((sum, scene) => sum + scene.scene_duration, 0), input.mode, input.instructions)
+      readCandidateReview({ projectId: id, family: 'storyboard', reviewId: input.review_id, candidate: input.scenes, source: input.signature, accepted: true })
       const existing = all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position, id', id), ordered = existing.map(shot => shot.id)
       let design: StoryboardDesign | undefined
       if (input.mode === 'redesign') {

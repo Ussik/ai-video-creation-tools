@@ -1,3 +1,4 @@
+import { validVideo } from './fixtures/valid-video.js'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
@@ -482,7 +483,7 @@ test('async video config saves external task ID and resumes without creating a d
       response.end(JSON.stringify({ status: 'succeeded', content: { video_url: `http://127.0.0.1:${address.port}/result.mp4` } }))
     } else if (request.url === '/result.mp4') {
       response.setHeader('Content-Type', 'video/mp4')
-      response.end(Buffer.from('mock video result'))
+      response.end(validVideo)
     } else {
       response.writeHead(404).end()
     }
@@ -512,7 +513,7 @@ test('async video config saves external task ID and resumes without creating a d
     assert.equal(requests[0]?.ratio, '16:9')
     assert.equal('unused' in (requests[0] ?? {}), false)
     assert.equal((requests[0]?.content as unknown[]).length, 2)
-    assert.equal(await readFile(result.path, 'utf8'), 'mock video result')
+    assert.deepEqual(await readFile(result.path), validVideo)
 
     await rm(reference)
     await generate(model, provider, { prompt: '海边日落', _external_id: savedId }, [{ kind: 'image', path: reference }], 'testproject', () => {
@@ -533,7 +534,7 @@ test('video mode dimension defaults preserve explicit ratio and resolution while
       return Response.json({ id: `video-${submissions.length}` })
     }
     if (String(url).includes('/tasks/')) return Response.json({ status: 'succeeded', output: { url: 'https://video.invalid/result.mp4' } })
-    return new Response('mock video result', { headers: { 'Content-Type': 'video/mp4' } })
+    return new Response(validVideo, { headers: { 'Content-Type': 'video/mp4' } })
   })
   const provider = { adapter: 'http' as const, base_url: 'https://provider.invalid/v1' }
   const model = { id: 'mode-dimensions', remote_id: 'configured-video', modality: 'video' as const, settings: {

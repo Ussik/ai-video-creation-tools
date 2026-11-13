@@ -74,7 +74,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
   const [referenceReloading, setReferenceReloading] = useState(false)
   const [context, setContext] = useState<StoryboardPlanningContext | null>(null)
   const [shotsPerScene, setShotsPerScene] = useState<number | string>(''), [durationChoice, setDurationChoice] = useState<'preserve' | 'reestimate' | 'fixed'>('preserve'), [target, setTarget] = useState<number | string>(30)
-  const [instructions, setInstructions] = useState(''), [pending, setPending] = useState<'context' | 'preview' | 'plan' | 'review' | 'references' | 'save' | null>(null)
+  const [instructions, setInstructions] = useState(''), [pending, setPending] = useState<'context' | 'preview' | 'plan' | 'review' | 'repair' | 'references' | 'save' | null>(null)
   const [targetVideoModelId, setTargetVideoModelId] = useState('')
   const [saveLabel, setSaveLabel] = useState('正在加入画布')
   const [error, setError] = useState<PlanningError | null>(null), [result, setResult] = useState<PlanningResult | null>(null), [elapsed, setElapsed] = useState(0)
@@ -149,7 +149,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
     return () => window.clearInterval(timer)
   }, [pending])
   useEffect(() => {
-    if (!opened || !planningOnly || !result || applied.current || result.directing_review?.status === 'pending_review') return
+    if (!opened || !planningOnly || !result || applied.current) return
     const guardUnload = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
     window.addEventListener('beforeunload', guardUnload)
     return () => window.removeEventListener('beforeunload', guardUnload)
@@ -175,7 +175,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
   const invalidShotCount = !automaticShotCount && (!Number.isInteger(Number(shotsPerScene)) || Number(shotsPerScene) < 2 || Number(shotsPerScene) > 8)
   const awaitingReview = result?.directing_review?.status === 'pending_review'
   const issue = result && !applied.current && resultModelId !== modelId ? '文本模型已切换，当前分镜预览仍保留，请重新规划后保存。'
-    : awaitingReview ? '分镜草稿已保存，完成复核后可保存方案。' : result ? planIssue(result) : ''
+    : result ? planIssue(result) || (!applied.current && (!result.directing_review?.review_id || !['passed', 'warnings'].includes(result.directing_review.status)) ? '当前分镜尚未通过复查，请修改或复查当前草稿后保存。' : '') : ''
   const previewScenes = selected.map(scene => result?.scenes.find(item => item.scene_id === scene.id) || {
     scene_id: scene.id, scene_heading: scene.heading, scene_duration: scene.duration,
     shots: (context?.existing_shots || []).filter(shot => shot.scene_id === scene.id),
@@ -219,7 +219,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
     finally { if (turn === serial.current) setReferenceReloading(false) }
   }
   async function confirmDiscard() {
-    if (!planningOnly || !result || applied.current || result.directing_review?.status === 'pending_review') return true
+    if (!planningOnly || !result || applied.current) return true
     if (guardLock.current) return false
     const turn = serial.current, projectId = detail.id
     guardLock.current = true; setGuarding(true)
@@ -412,28 +412,33 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
       ...(shot.continuity_plan ? { continuity_plan: { ...shot.continuity_plan, status: 'edited' as const } } : {}) } : shot) }) }))
   }
   function editResult(edit: (current: PlanningResult) => PlanningResult) {
+    setPlanningTask(current => current && { ...current, can_resume: false })
     setResult(current => current && { ...edit(current), directing_review: current.directing_review
-      ? { ...current.directing_review, status: 'edited', content_signature: undefined, issues: [] } : undefined })
+      ? { ...current.directing_review, status: 'edited', review_id: undefined } : undefined })
   }
-  async function reviewDraft() {
+  async function reviewDraft(repair = false) {
     if (!result || pending || guarding || applied.current || planIssue(result)) return
     const candidate = result, turn = ++serial.current, abort = new AbortController(); controller.current = abort
-    setPending('review'); setError(null)
+    setPending(repair ? 'repair' : 'review'); setError(null)
     try {
-      const report = await api<NonNullable<PlanningResult['directing_review']>>(`/projects/${detail.id}/script/storyboard/review`, { ...json('POST', {
+      const response = await api<NonNullable<PlanningResult['directing_review']> | Pick<PlanningResult, 'scenes' | 'directing_review'>>(`/projects/${detail.id}/script/storyboard/${repair ? 'repair' : 'review'}`, { ...json('POST', {
+        ...(repair ? { review_id: candidate.directing_review?.review_id } : {}),
         signature: candidate.signature, model_id: modelId, mode: candidate.mode || 'update', instructions: candidate.instructions || '',
         ...(candidate.duration_mode ? { duration_mode: candidate.duration_mode } : {}),
         document_ids: documentIds, ...(candidate.target_video_model_id ? { target_video_model_id: candidate.target_video_model_id } : {}),
         scenes: candidate.scenes.map(({ scene_id, scene_duration, shots }) => ({ scene_id, scene_duration, shots })),
       }), signal: abort.signal })
-      if (turn === serial.current && !abort.signal.aborted) setResult(current => current === candidate ? { ...current, directing_review: report } : current)
+      if (turn === serial.current && !abort.signal.aborted) {
+        setResult(current => current === candidate ? { ...current, ...('scenes' in response ? response : { directing_review: response }) } : current)
+        setPlanningTask(current => current && { ...current, can_resume: false })
+      }
     } catch (issue) { if (turn === serial.current && !abort.signal.aborted) setError(planningError(issue)) }
     finally { if (turn === serial.current) setPending(null) }
   }
   async function commitPlan(abort: AbortController, active: () => boolean, saveOnly = false) {
     if (!result || applied.current) return applied.current
     const saved = await api<ScriptCanvasResult>(`/projects/${detail.id}/script/storyboard/commit`, { ...json('POST', {
-      signature: result.signature, request_id: requestId.current, mode: result.mode || 'update', instructions: result.instructions || '',
+      signature: result.signature, request_id: requestId.current, review_id: result.directing_review?.review_id, mode: result.mode || 'update', instructions: result.instructions || '',
       ...(result.duration_mode ? { duration_mode: result.duration_mode } : {}),
       ...(saveOnly ? { save_only: true } : {}),
       ...(result.target_video_model_id ? { target_video_model_id: result.target_video_model_id } : {}),
@@ -571,7 +576,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
           {planningTask && !planIsSaved && <div className="storyboard-planner-task-progress" role="status" aria-label="分镜规划进度">
             <strong>{taskLabel}</strong><span>本阶段 {stageSeconds} 秒 · 累计 {taskSeconds} 秒</span>
             {planningTask.progress && <p>{planningTaskProgressLabel(planningTask)}</p>}
-            {awaitingReview && <p>分镜草稿已保存，当前仅供预览；完成复核后可编辑和保存方案。</p>}
+            {awaitingReview && <p>完整分镜草稿已保留；处理结束后可修改并复查，通过后保存。</p>}
             {planningTask.status === 'running' && <p>可以返回其他页面，后台会继续处理；重新打开时会恢复进度。</p>}
             {taskConnection && <p>{taskConnection}</p>}
           </div>}
@@ -652,7 +657,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
               <Select label="整理设定的文本模型" aria-label="整理参考设定文本模型" data={eligibleModels.map(model => ({ value: model.id, label: model.name }))} value={modelId || null} allowDeselect={false} disabled={!!pending || guarding || !!imported.current} onChange={value => { if (value && value !== modelId) selectModel(value) }} comboboxProps={{ zIndex: 350 }} />
               {!eligibleModels.length && referenceNeedsAnalysis.length > 0 && <p className="storyboard-planner-error">这些场次还需要整理参考设定，请先启用一个文本模型。</p>}
             </div>}
-            <header className="storyboard-planner-section-title"><h3>{focusedScene.scene_heading}</h3><p>{focusedScene.shots.length} 个镜头 · {focusedScene.scene_duration} 秒 · {focusedIsDraft ? awaitingReview ? '草稿已暂存，复核完成后可编辑' : '未保存草稿，可修改后确认' : focusedHasResult && planIsSaved ? '已保存分镜' : '复用已保存分镜'}</p></header>
+            <header className="storyboard-planner-section-title"><h3>{focusedScene.scene_heading}</h3><p>{focusedScene.shots.length} 个镜头 · {focusedScene.scene_duration} 秒 · {focusedIsDraft ? awaitingReview ? '草稿已暂存，处理结束后可修改与复查' : '未保存草稿，可修改后确认' : focusedHasResult && planIsSaved ? '已保存分镜' : '复用已保存分镜'}</p></header>
             {result && <WorkspaceDisclosure className="storyboard-planner-used-sources" label={<><Puzzle size={13} /><span>已使用：{result.used_skills[0]?.name || '基础分镜规则'}<small>辅助技能 {Math.max(0, result.used_skills.length - 1)} 个<span>·</span>参考资料 {result.source_documents.length} 份</small></span><ChevronRight size={13} /></>}>
 
               <div className="storyboard-planner-used-details">{result.skill_assignment?.reason && <p>选择理由：{result.skill_assignment.reason}</p>}<p>参考文档：{result.source_documents.map(document => document.title).join(' · ') || '未选择额外文档'}</p>{result.used_skills.map((skill, index) => <p key={skill.id}><strong>{index === 0 ? '主技能' : '辅助技能'} · {skill.name}</strong><small>版本 {skill.revision.slice(0, 8)} · {skill.files.join(' · ')}</small></p>)}</div>
@@ -660,15 +665,18 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
             </WorkspaceDisclosure>}
             {result?.directing_review && <div className="storyboard-planner-note" role="status">
               {result.directing_review.status === 'pending_review' ? '分镜草稿已保存，等待完成运镜与接镜复核。'
-                : result.directing_review.status === 'edited' ? '分镜已修改，当前版本尚未复核运镜与接镜。'
+                : result.directing_review.status === 'edited' ? '分镜已修改，当前版本尚未复核运镜与接镜；以下保留上次问题供修改参考。'
+                : result.directing_review.status === 'inconclusive' ? `草稿已保留，本次复查未能得出结论。${result.directing_review.error?.message || '可修改或重新复查。'}`
                 : result.directing_review.status === 'needs_work' ? '当前版本有需要修复的起止、首帧或接镜冲突，请查看依据并修改。'
                 : result.directing_review.status === 'warnings' ? '运镜与接镜文字复核已完成，以下节奏或动机问题需要你判断。'
                   : `运镜与接镜文字复核已完成${result.directing_review.repaired ? '，已自动修订并复查' : ''}。`}
-              {result.directing_review.issues.map((item, index) => <p key={index}>{context.scenes.find(scene => scene.id === item.scene_id)?.heading || '所选场次'} · 第{item.shot_index + 1}镜：{item.message} 建议：{item.repair}</p>)}
-              {!planIsSaved && !awaitingReview && <Button variant="default" size="xs" loading={pending === 'review'} disabled={!!pending || !!planIssue(result)} onClick={() => void reviewDraft()}>复查当前草稿</Button>}
+              {result.directing_review.issues.map((item, index) => <p key={index}>{context.scenes.find(scene => scene.id === item.scene_id)?.heading || '所选场次'} · 第{item.shot_index + 1}镜：{item.message} 依据：{item.evidence} 建议：{item.repair}</p>)}
+              {!planIsSaved && <Button variant="default" size="xs" loading={pending === 'review'} disabled={!!pending || !!planIssue(result)} onClick={() => void reviewDraft()}>复查当前草稿</Button>}
+              {!planIsSaved && result.directing_review.review_id && result.directing_review.status === 'needs_work' && <Button variant="light" size="xs" loading={pending === 'repair'} disabled={!!pending || !!planIssue(result)} onClick={() => void reviewDraft(true)}>仅修复已确认问题</Button>}
             </div>}
+            {result && !result.directing_review && !planIsSaved && <Button variant="default" size="xs" loading={pending === 'review'} disabled={!!pending || !!planIssue(result)} onClick={() => void reviewDraft()}>复查当前草稿</Button>}
             {issue && <p className="storyboard-planner-error" role="status">{issue}</p>}
-            <fieldset key={focusedScene.scene_id} disabled={locked || awaitingReview} className="storyboard-planner-preview">
+            <fieldset key={focusedScene.scene_id} disabled={locked} className="storyboard-planner-preview">
               {focusedIsDraft && <NumberInput label="本场规划时长" suffix=" 秒" min={1} max={maxScriptSceneDuration} value={focusedScene.scene_duration} onChange={value => editResult(current => ({ ...current, scenes: current.scenes.map(item => item.scene_id === focusedScene.scene_id ? { ...item, scene_duration: Number(value) } : item) }))} />}
               {focusedScene.shots.map((shot, index) => <WorkspaceDisclosure key={`${focusedScene.scene_id}-${index}`} className="storyboard-planner-shot" initiallyOpen={index === 0} label={<><span className="storyboard-planner-shot-number">{String(index + 1).padStart(2, '0')}</span><strong>{shot.title}</strong><span>{shot.duration} 秒</span></>}>
 

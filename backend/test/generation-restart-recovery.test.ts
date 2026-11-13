@@ -1,4 +1,6 @@
+import { validVideo } from './fixtures/valid-video.js'
 import assert from 'node:assert/strict'
+import sharp from 'sharp'
 import { execFile } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -12,6 +14,8 @@ process.env.VIDEO_STUDIO_DATA_DIR = directory
 const { buildApp, startWorker } = await import('../src/app.js')
 const { db, initDb, now, one, run } = await import('../src/infrastructure/database/db.js')
 const { encryptKey } = await import('../src/infrastructure/security/secrets.js')
+const { prepareGenerationExecution } = await import('../src/modules/jobs/job-generation-recovery.js')
+const { claimMediaJob, mediaJobExecution } = await import('../src/modules/jobs/job-local-results.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(directory, { recursive: true, force: true }) })
 beforeEach(() => { run('DELETE FROM projects'); run('DELETE FROM providers') })
@@ -83,7 +87,7 @@ test('a never-started queued video submits once, checkpoints in order, and remov
     if (String(url) === resultUrl) {
       calls.push('download')
       assert.ok(checkpoint(state.job.id), 'URL is durable before download')
-      return new Response('video bytes')
+      return new Response(validVideo)
     }
     calls.push('query')
     assert.equal(jobRow(state.job.id).external_id, 'accepted', 'ID is durable before query')
@@ -107,7 +111,7 @@ test('a known task ID survives restart and recovers by GET only despite missing 
   t.mock.method(globalThis, 'fetch', async (url: unknown, options?: RequestInit) => {
     assert.notEqual(options?.method, 'POST')
     calls.push(String(url))
-    return String(url) === resultUrl ? new Response('recovered') : complete()
+    return String(url) === resultUrl ? new Response(validVideo) : complete()
   })
   initDb()
   assert.equal(jobRow(state.job.id).status, 'queued')
@@ -131,7 +135,7 @@ test('saved video URLs recover without models/providers, and changing a prompt c
   t.mock.method(globalThis, 'fetch', async (url: unknown, options?: RequestInit) => {
     assert.equal(String(url), resultUrl)
     assert.notEqual(options?.method, 'POST')
-    return new Response('download without configuration')
+    return new Response(validVideo)
   })
   assert.equal((await post(`/api/jobs/${state.job.id}/retry`)).statusCode, 200)
   await work()
@@ -183,7 +187,7 @@ test('result URL persistence failure stops before download and preserves the ID 
   const calls: string[] = []
   t.mock.method(globalThis, 'fetch', async (url: unknown, options?: RequestInit) => {
     if (options?.method === 'POST') { calls.push('create'); return Response.json({ id: 'accepted' }) }
-    if (String(url) === resultUrl) { calls.push('download'); return new Response('bytes') }
+    if (String(url) === resultUrl) { calls.push('download'); return new Response(validVideo) }
     calls.push('query')
     return complete()
   })
@@ -209,7 +213,7 @@ test('download failures keep an encrypted checkpoint and resume only downloading
     if (String(url) !== resultUrl) { queries++; return complete() }
     downloads++
     if (downloads < 3) throw new Error(`mock disconnect: ${resultUrl}`)
-    return new Response('complete')
+    return new Response(validVideo)
   })
   await work()
   assert.equal(jobRow(state.job.id).status, 'failed')
@@ -228,14 +232,14 @@ test('download failures keep an encrypted checkpoint and resume only downloading
   assert.equal(checkpoint(state.job.id), undefined)
 })
 
-test('asset commit failure rolls back job success and checkpoint deletion, so the next attempt only downloads', async t => {
+test('asset commit failure rolls back job success and checkpoint deletion, so the next attempt takes over the validated local file', async t => {
   const state = await fixture()
   saveUrl(state.job.id)
   let downloads = 0
   t.mock.method(globalThis, 'fetch', async (url: unknown) => {
     assert.equal(String(url), resultUrl)
     downloads++
-    return new Response('saved bytes')
+    return new Response(validVideo)
   })
   db.exec("CREATE TEMP TRIGGER fail_success AFTER DELETE ON job_video_recovery BEGIN SELECT RAISE(ABORT,'mock commit failure'); END")
   try { await work() } finally { db.exec('DROP TRIGGER fail_success') }
@@ -246,7 +250,7 @@ test('asset commit failure rolls back job success and checkpoint deletion, so th
   assert.equal((await post(`/api/jobs/${state.job.id}/retry`)).statusCode, 200)
   await work()
   assert.equal(jobRow(state.job.id).status, 'succeeded')
-  assert.equal(downloads, 2)
+  assert.equal(downloads, 1)
   assert.equal(checkpoint(state.job.id), undefined)
 })
 
@@ -257,13 +261,15 @@ test('a separate process resumes persisted running IDs/URLs, stops unknown submi
   saveUrl(url.job.id)
   run('DELETE FROM providers WHERE id=?', url.provider.id)
   const code = `
-    import assert from 'node:assert/strict';
+    import assert from 'node:assert/strict'
+import sharp from 'sharp';
     import { buildApp, startWorker } from ${JSON.stringify(new URL('../src/app.js', import.meta.url).href)};
     import { db, one } from ${JSON.stringify(new URL('../src/infrastructure/database/db.js', import.meta.url).href)};
+    const validVideo = Buffer.from(${JSON.stringify(validVideo.toString('base64'))}, 'base64');
     const calls = { create:0, query:0, download:0 }, resultUrl = ${JSON.stringify(resultUrl)};
     globalThis.fetch = async (url, options) => {
       if (options?.method === 'POST') { calls.create++; return Response.json({id:'new-accepted'}); }
-      if (String(url) === resultUrl) { calls.download++; return new Response('mock child video'); }
+      if (String(url) === resultUrl) { calls.download++; return new Response(validVideo); }
       calls.query++; return Response.json({status:'succeeded', output:{url:resultUrl}});
     };
     const app = buildApp();
@@ -284,4 +290,95 @@ test('a separate process resumes persisted running IDs/URLs, stops unknown submi
   })
   assert.deepEqual(JSON.parse(result.stdout), { create: 1, query: 2, download: 3 })
   run('UPDATE job_queue_settings SET concurrency=3 WHERE id=1')
+})
+
+
+test('an expired result URL queries the original task exactly once, retains the new URL, and never POSTs', async t => {
+ const f = await fixture(), fresh = 'https://cdn.invalid/fresh.mp4?private=refresh'
+ saveUrl(f.job.id); run("UPDATE jobs SET external_id='original-task' WHERE id=?", f.job.id)
+ const calls: string[] = []
+ t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
+  assert.notEqual(init?.method, 'POST'); calls.push(String(url))
+  if (String(url) === resultUrl) return new Response('expired private url', { status: 403 })
+  if (String(url) === fresh) return new Response(validVideo)
+  return Response.json({ status: 'succeeded', output: { url: fresh } })
+ })
+ await work()
+ assert.equal(jobRow(f.job.id).status, 'succeeded', jobRow(f.job.id).error || '')
+ assert.deepEqual(calls, [resultUrl, 'https://offline.invalid/v1/tasks/original-task', fresh])
+ assert.equal(checkpoint(f.job.id), undefined)
+})
+
+test('a refreshed URL failure cannot loop into repeated task queries or paid creation', async t => {
+ const f = await fixture(), fresh = 'https://cdn.invalid/new-expired.mp4?private=refresh'
+ saveUrl(f.job.id); run("UPDATE jobs SET external_id='original-task' WHERE id=?", f.job.id)
+ const calls: string[] = []
+ t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
+  assert.notEqual(init?.method, 'POST'); calls.push(String(url))
+  return String(url).includes('/tasks/') ? Response.json({ status: 'succeeded', output: { url: fresh } }) : new Response('expired', { status: 403 })
+ })
+ await work()
+ assert.equal(jobRow(f.job.id).status, 'failed')
+ assert.deepEqual(calls, [resultUrl, 'https://offline.invalid/v1/tasks/original-task', fresh])
+ assert.ok(checkpoint(f.job.id)); assert.equal(jobRow(f.job.id).error!.includes('private=refresh'), false)
+})
+
+test('an expired URL with changed model identity cannot query or dispatch', async t => {
+ const f = await fixture()
+ saveUrl(f.job.id); run("UPDATE jobs SET external_id='original-task' WHERE id=?", f.job.id)
+ prepareGenerationExecution(jobRow(f.job.id), one<any>('SELECT * FROM models WHERE id=?', f.model.id)!, one<any>('SELECT * FROM providers WHERE id=?', f.provider.id)!)
+ run("UPDATE models SET remote_id='changed' WHERE id=?", f.model.id)
+ const calls: string[] = []
+ t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
+  assert.notEqual(init?.method, 'POST'); calls.push(String(url)); return new Response('expired', { status: 403 })
+ })
+ await work()
+ assert.equal(jobRow(f.job.id).status, 'failed'); assert.deepEqual(calls, [resultUrl]); assert.ok(checkpoint(f.job.id))
+})
+
+async function imageFixture() {
+ const f = await fixture()
+ run("UPDATE models SET modality='image',protocol='image_generations',settings=? WHERE id=?", JSON.stringify({ request_path: 'images', image_base64_path: 'data.0.b64_json', request_template: { prompt: '{{prompt}}' } }), f.model.id)
+ const bytes = await sharp({ create: { width: 16, height: 16, channels: 3, background: '#114455' } }).png().toBuffer()
+ return { ...f, bytes }
+}
+
+test('a Base64 image survives final DB rollback and restarts from its validated local file with no second POST', async t => {
+ const f = await imageFixture(); let requests = 0
+ t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => { requests++; assert.equal(init?.method, 'POST'); return Response.json({ data: [{ b64_json: f.bytes.toString('base64') }] }) })
+ db.exec("CREATE TEMP TRIGGER fail_image_asset BEFORE INSERT ON assets BEGIN SELECT RAISE(ABORT,'mock image commit failure'); END")
+ try { await work() } finally { db.exec('DROP TRIGGER fail_image_asset') }
+ assert.equal(jobRow(f.job.id).status, 'failed'); assert.equal(requests, 1)
+ assert.equal((await publicJob(f.project.id, f.job.id)).recovery_action, 'local')
+ run('DELETE FROM providers WHERE id=?', f.provider.id)
+ assert.equal((await publicJob(f.project.id, f.job.id)).recovery_modality, 'image')
+ assert.equal((await post(`/api/jobs/${f.job.id}/retry`)).statusCode, 200)
+ await work()
+ assert.equal(jobRow(f.job.id).status, 'succeeded', jobRow(f.job.id).error || ''); assert.equal(requests, 1)
+})
+
+test('local completion after a changed status cannot commit an asset or overwrite that status', async t => {
+ const f = await imageFixture()
+ t.mock.method(globalThis, 'fetch', async () => Response.json({ data: [{ b64_json: f.bytes.toString('base64') }] }))
+ db.exec("CREATE TEMP TRIGGER stop_after_local AFTER UPDATE OF state ON job_local_results WHEN NEW.state='ready' BEGIN UPDATE jobs SET status='failed',error='cancelled after local output' WHERE id=NEW.job_id; END")
+ try { await work() } finally { db.exec('DROP TRIGGER stop_after_local') }
+ assert.equal(jobRow(f.job.id).status, 'failed'); assert.equal(jobRow(f.job.id).error, 'cancelled after local output')
+ assert.equal(one('SELECT 1 FROM assets WHERE project_id=?', f.project.id), undefined)
+ assert.equal((await publicJob(f.project.id, f.job.id)).recovery_action, 'local')
+})
+
+test('a late prior worker failure cannot fail a job claimed by a newer worker', async t => {
+ const f = await imageFixture()
+ let rejectOld: ((reason: Error) => void) | undefined
+ t.mock.method(globalThis, 'fetch', async () => new Promise<Response>((_resolve, reject) => { rejectOld = reject }))
+ const stop = startWorker()
+ try {
+  for (let i=0; i<50 && !rejectOld; i++) await new Promise(resolve => setTimeout(resolve, 10))
+  assert.ok(rejectOld)
+  const old = mediaJobExecution(f.job.id)!.owner; claimMediaJob(jobRow(f.job.id))
+  assert.notEqual(mediaJobExecution(f.job.id)!.owner, old)
+  rejectOld(new Error('late old connection error')); await stop()
+  assert.equal(jobRow(f.job.id).status, 'running'); assert.equal(jobRow(f.job.id).error, null)
+  assert.equal(one('SELECT 1 FROM assets WHERE project_id=?', f.project.id), undefined)
+ } finally { await stop() }
 })

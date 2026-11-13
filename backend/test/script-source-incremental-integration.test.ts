@@ -597,6 +597,12 @@ test('corrupt pending reuse accounting cannot justify a recovered partial direct
       await started
       assert.ok(snapshot(id).revision_reuse!.reused_pages.length > 0)
       await first.close(); release()
+      // The original provider may finish despite local cancellation. Its exact
+      // complete reply is retained before abort reaches the business consumer.
+      await new Promise<void>(resolve => setImmediate(resolve))
+      const interruptedRun = snapshot(id).id
+      const retained = one<{ count: number }>("SELECT count(*) AS count FROM source_model_requests WHERE run_id=? AND state='completed'", interruptedRun)!.count
+      assert.equal(retained, 1, 'the complete original in-flight reply survives shutdown')
       const corrupted = snapshot(id) as unknown as { revision_reuse: Record<string, unknown> }
       if (issue === 'null_pages') corrupted.revision_reuse.reused_pages = null
       if (issue === 'missing_consumed_pages') corrupted.revision_reuse.reused_pages = []
@@ -608,7 +614,9 @@ test('corrupt pending reuse accounting cannot justify a recovered partial direct
         second.recover()
         const ready = await terminal(id, scriptSourceVersion(committed))
         assert.equal(ready.status, 'ready', ready.error || '')
-        assert.equal(prompts.filter(prompt => prompt.includes(mapMarker)).length, sourceWorkPlan(scriptSourcePassages(revised)).length)
+        assert.equal(prompts.filter(prompt => prompt.includes(mapMarker)).length + retained, sourceWorkPlan(scriptSourcePassages(revised)).length,
+          'rebuild every page from validated exact replies, querying only pages without a retained response')
+        assert.equal(snapshot(id).revision_reuse?.status, 'discarded', 'corrupt reuse accounting is discarded rather than trusted')
         assertFullSynthesis(prompts, revised)
         assertEvidence(revised, ready.sections)
       } finally { await second.close() }

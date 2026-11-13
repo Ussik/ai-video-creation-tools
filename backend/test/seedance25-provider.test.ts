@@ -1,3 +1,4 @@
+import { validVideo } from './fixtures/valid-video.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -25,13 +26,13 @@ test('Seedance 2.5 sends the official contract for all supported modes and keeps
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
     if (init?.method === 'POST') { submissions.push(JSON.parse(String(init.body))); return Response.json({ id: 'task-25' }) }
     if (String(url).includes('/tasks/')) return Response.json({ status: 'succeeded', content: { video_url: 'https://video.invalid/result.mp4' } })
-    return new Response('mock video result')
+    return new Response(validVideo)
   })
   for (const mode of ['text', 'first_frame', 'first_last_frame', 'reference', 'edit', 'extend'] as const) {
     const references = mode === 'text' ? [] : mode === 'first_last_frame' ? [image, image] : [image]
     const reference_video_url = ['reference', 'edit', 'extend'].includes(mode) ? 'asset://reference-video-25' : undefined
     const result = await generate(model(), provider, { prompt: '保持人物一致，连续转身。', mode, ratio: '9:16', resolution: '1080p', duration: 30, generate_audio: false, reference_video_url }, references, 'fixture', () => {})
-    assert.equal(await readFile(result.path, 'utf8'), 'mock video result')
+    assert.deepEqual(await readFile(result.path), validVideo)
     const payload = submissions.at(-1)!
     assert.equal(payload.model, 'doubao-seedance-2-5-260628')
     assert.equal(payload.ratio, ['text', 'reference'].includes(mode) ? '9:16' : 'adaptive')
@@ -53,7 +54,7 @@ test('Seedance 2.5 mandatory dimensions and draft resolution override stale mode
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
     if (init?.method === 'POST') { payload = JSON.parse(String(init.body)); return Response.json({ id: 'draft-25' }) }
     if (String(url).includes('/tasks/')) return Response.json({ status: 'succeeded', content: { video_url: 'https://video.invalid/draft.mp4' } })
-    return new Response('draft video')
+    return new Response(validVideo)
   })
   const settings = { ...seedance25VideoSettings(), mode_variables: { edit: { ratio: '16:9', duration: 5, omni_reference_task_type: 'auto' } }, draft_variables: { resolution: '1080p' } }
   await generate(model(settings), provider, { prompt: '编辑原片', mode: 'edit', duration: 20, ratio: '9:16', resolution: '720p', draft: true, reference_video_url: 'https://media.invalid/source.mov' }, [], 'fixture', () => {})
@@ -101,7 +102,7 @@ test('Seedance 2.5 preserves disabled audio and draft against stale mode overrid
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
     if (init?.method === 'POST') { payload = JSON.parse(String(init.body)); return Response.json({ id: 'audio-selection-25' }) }
     if (String(url).includes('/tasks/')) return Response.json({ status: 'succeeded', content: { video_url: 'https://video.invalid/silent.mp4' } })
-    return new Response('silent final video')
+    return new Response(validVideo)
   })
   const settings = { ...seedance25VideoSettings(), mode_variables: { text: { generate_audio: true, draft: true } } }
   await generate(model(settings), provider, { prompt: '无声街景', mode: 'text', generate_audio: false, draft: false, resolution: '1080p' }, [], 'fixture', () => {})
@@ -129,7 +130,7 @@ test('cancelled Seedance tasks stop and an existing task resumes without reading
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
     if (init?.method === 'POST') { created++; return Response.json({ id: 'known-25' }) }
     if (String(url).includes('/tasks/')) return Response.json(cancelled ? { status: 'cancelled', error: { message: 'creator cancelled' } } : { status: 'succeeded', content: { video_url: 'https://video.invalid/known.mp4' } })
-    return new Response('resumed video')
+    return new Response(validVideo)
   })
   let externalId = ''
   await assert.rejects(generate(model(), provider, { prompt: '动作', mode: 'text' }, [], 'fixture', id => { externalId = id }), /creator cancelled/)

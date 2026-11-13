@@ -1,3 +1,5 @@
+import { validateVideoResult } from '../media/media-result-validation.js'
+import { beforeMediaDispatch, localMediaWriting, localMediaReady, mediaExecutionSignal, MediaDownloadError } from './media-execution.js'
 import { acquireModelChannel, modelChannelIdentity, type ModelChannelLease } from './model-channel.js'
 import { createTextTransportBoundary, textHeadersTimeoutMs, readTextErrorBody, readTextResponseBody } from './text-transport-boundary.js'
 import { assertTextFrameBoundary, createTextFrameBoundary } from './text-frame-boundary.js'
@@ -237,15 +239,17 @@ function textHttpError(response: Response, raw: string, url: string, startedAt: 
 async function requestJson(method: 'GET' | 'POST', url: string, headers: Record<string, string>, body?: unknown,
   modality?: Modality, model = '', timeoutMs = modality === 'text' ? textRequestTimeoutMs : 90_000, parentSignal?: AbortSignal, identity: ProviderRequestIdentity = {}): Promise<Record<string, unknown>> {
   const startedAt = Date.now()
-  parentSignal = modelStepSignal(parentSignal)
+  parentSignal = modelStepSignal(parentSignal ?? mediaExecutionSignal())
   parentSignal?.throwIfAborted()
   let response: Response
   let raw: string
   try {
+    const serialized = body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body)
+    if (method === 'POST' && modality !== 'text') beforeMediaDispatch()
     response = await observeProviderFetch(url, {
       method,
       headers: { ...headers, ...(body === undefined || body instanceof FormData ? {} : { 'Content-Type': 'application/json' }) },
-      body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body),
+      body: serialized,
       signal: parentSignal ? AbortSignal.any([parentSignal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
     }, method === 'GET' ? 'media_poll' : 'media_create', fetch, { ...identity, ...(body && typeof body === 'object' && !(body instanceof FormData) && typeof (body as Settings).model === 'string' ? { remote_id: (body as Settings).model as string } : {}) })
     raw = response.ok ? await response.text() : await readTextErrorBody(response)
@@ -972,12 +976,16 @@ async function targetPath(projectId: string, suffix: string): Promise<string> {
   if (!/^[a-zA-Z0-9_-]+$/.test(projectId)) throw new Error('无效的项目 ID')
   const directory = join(mediaDir, projectId)
   await mkdir(directory, { recursive: true })
-  return join(directory, `${randomUUID()}${suffix}`)
+  const path = join(directory, `${randomUUID()}${suffix}`)
+  const kind = suffix === '.png' ? 'image' : suffix === '.mp4' ? 'video' : suffix === '.txt' ? 'text' : undefined
+  if (kind) localMediaWriting({ path, kind })
+  return path
 }
 
 async function saveBytes(projectId: string, suffix: string, bytes: Buffer): Promise<string> {
   const path = await targetPath(projectId, suffix)
   await writeFile(path, bytes)
+  await localMediaReady({ path, kind: 'text' })
   return path
 }
 
@@ -986,19 +994,20 @@ async function saveImage(projectId: string, bytes: Buffer): Promise<string> {
   const path = await targetPath(projectId, '.png')
   try {
     await sharp(bytes).rotate().png().toFile(path)
-    return path
   } catch (error) {
     await rm(path, { force: true })
     throw error
   }
+  await localMediaReady({ path, kind: 'image' })
+  return path
 }
 
 async function download(projectId: string, url: string, suffix: '.mp4' | '.png'): Promise<string> {
   const target = await targetPath(projectId, suffix === '.png' ? '.download' : suffix)
   try {
-    const parent = modelStepSignal()
+    const parent = mediaExecutionSignal()
     const response = await observeProviderFetch(httpUrl(url), { signal: parent ? AbortSignal.any([parent, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000) }, 'media_download')
-    if (!response.ok || !response.body) throw new Error(`下载模型结果失败 (${response.status})`)
+    if (!response.ok || !response.body) { void response.body?.cancel().catch(() => {}); throw new MediaDownloadError(response.status) }
     const limit = suffix === '.png' ? maxImageBytes : maxVideoBytes
     const length = Number(response.headers.get('content-length'))
     if (length > limit) throw new Error(`模型结果超过 ${Math.round(limit / 1024 / 1024)} MB`)
@@ -1020,13 +1029,15 @@ async function download(projectId: string, url: string, suffix: '.mp4' | '.png')
     }
     if (!total) throw new Error('模型结果为空')
     if (suffix === '.png') return await saveImage(projectId, await readFile(target))
-    return target
+    await validateVideoResult(target)
   } catch (error) {
     await rm(target, { force: true })
     throw error
   } finally {
     if (suffix === '.png') await rm(target, { force: true })
   }
+  await localMediaReady({ path: target, kind: 'video' })
+  return target
 }
 
 async function referenceImage(asset: MediaAsset, settings?: Settings): Promise<string> {
@@ -1087,6 +1098,8 @@ async function downloadImage(projectId: string, url: string): Promise<string> {
   const startedAt = Date.now()
   try { return await download(projectId, url, '.png') }
   catch (error) {
+    mediaExecutionSignal()?.throwIfAborted()
+    if (error instanceof MediaDownloadError) throw error
     if (isNetworkFailure(error)) throw imageNetworkError('结果图片下载', startedAt, error)
     throw new Error(`图片已生成，但结果图片下载失败（阶段：结果图片下载；耗时：${((Date.now() - startedAt) / 1000).toFixed(1)} 秒）。可重试下载现有结果，不会再次请求厂商生成。`)
   }
@@ -1101,6 +1114,8 @@ export async function recoverVideo(projectId: string, url: string): Promise<Gene
   const validatedUrl = httpUrl(url)
   try { return { path: await download(projectId, validatedUrl, '.mp4'), remoteUrl: validatedUrl } }
   catch (error) {
+    mediaExecutionSignal()?.throwIfAborted()
+    if (error instanceof MediaDownloadError) throw error
     // A signed result URL can contain credentials. Keep the transport's raw
     // message out of persisted/public job errors while retaining a safe code.
     throw new Error(`视频已生成，但结果视频下载失败（错误码：${networkCode(error) ?? 'UNKNOWN'}）。可重试下载现有结果，不会再次请求厂商生成。`)
@@ -1138,7 +1153,7 @@ function validatedVideoReference(value: string, settings: Settings): string {
 /** Keep provider polling cancelable while using the same host timer as the rest
  * of the app (and offline test clocks). */
 async function waitForProviderPoll(milliseconds: number): Promise<void> {
-  const signal = modelStepSignal()
+  const signal = mediaExecutionSignal()
   signal?.throwIfAborted()
   await new Promise<void>((resolve, reject) => {
     const abort = () => { clearTimeout(timer); reject(signal?.reason) }
@@ -1166,6 +1181,7 @@ async function pollTask(
       result = await getResult()
       transientErrors = 0
     } catch (error) {
+      mediaExecutionSignal()?.throwIfAborted()
       if (++transientErrors < 3) continue
       throw new Error(`查询视频任务 ${id} 失败: ${error instanceof Error ? error.message : String(error)}`)
     }
@@ -1390,6 +1406,7 @@ async function pollConfiguredImage(
       result = await requestJson('GET', apiUrl(settingString(settings, 'image_task_base_url', provider.base_url), getPath), headers, undefined, undefined, '', undefined, undefined, identity)
       transientErrors = 0
     } catch (error) {
+      mediaExecutionSignal()?.throwIfAborted()
       if (++transientErrors >= 3) throw new Error(`查询图片任务 ${externalId} 失败，可继续查询原任务：${error instanceof Error ? error.message : String(error)}`)
       await waitForProviderPoll(interval)
       continue

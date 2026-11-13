@@ -7,6 +7,7 @@ import { after, beforeEach, test } from 'node:test'
 const directory = await mkdtemp(join(tmpdir(), 'generation-recovery-policy-'))
 process.env.VIDEO_STUDIO_DATA_DIR = directory
 const { all, db, initDb, newId, now, one, required, run } = await import('../src/infrastructure/database/db.js')
+const { claimMediaJob, markMediaJobDispatch } = await import('../src/modules/jobs/job-local-results.js')
 const { generationAttempt, generationRecoveryInfo, prepareGenerationExecution, validExternalTaskId } = await import('../src/modules/jobs/job-generation-recovery.js')
 type Job = import('../src/infrastructure/database/db.js').Job
 type Model = import('../src/infrastructure/database/db.js').Model
@@ -126,10 +127,15 @@ test('legacy known task IDs can establish their first snapshot and subsequent co
   }
 })
 
-test('an attempt without a confirmed task ID authorizes only the first execution and never a second paid attempt', () => {
+test('prepared requests can finish local preparation, but a dispatched attempt without a task ID never authorizes another POST', () => {
   for (const modality of ['video', 'image'] as const) {
     const state = fixture(modality, null)
     assert.doesNotThrow(() => state.prepare())
+    assert.equal(state.info().recovery_action, 'prepare')
+    assert.doesNotThrow(() => state.prepare())
+    run("UPDATE jobs SET status='running' WHERE id=?", state.jobId)
+    markMediaJobDispatch(state.job(), claimMediaJob(state.job()))
+    run("UPDATE jobs SET status='failed' WHERE id=?", state.jobId)
     const snapshot = generationAttempt(state.jobId)
     assert.equal(state.info().recovery_action, 'verify')
     assert.equal(state.info().task_resume_available, false)

@@ -24,7 +24,7 @@ const provider = { id: 'provider', name: '提供商', enabled: true, adapter: 'h
 const result = { scene_ids: ['scene'], shots: [{ id: 'shot', source_scene_id: 'scene' }], visual_profiles: [], shot_visual_bindings: [], created_shots: 1, created_profiles: 0 } as ScriptCanvasResult
 const signature = 'a'.repeat(64)
 const context = { signature, scenes: [{ ...scene, shot_count: 0, material_count: 0 }], documents: [], skills: [], project: { name: '画布流程', style: '' } }
-const draft = { signature, scenes: [{ scene_id: 'scene', scene_heading: '车站', scene_duration: 5, shots: [{ shot_id: null, title: '等车', prompt: '林晚在车站等车', image_prompt: '林晚站在月台', video_prompt: '林晚看向驶来的列车，镜头推近', duration: 5, start_state: '', end_state: '', cut_note: '' }] }], used_skills: [], source_documents: [] }
+const draft = { signature, directing_review: { status: 'passed', review_id: 'current-review', repaired: false, issues: [] }, scenes: [{ scene_id: 'scene', scene_heading: '车站', scene_duration: 5, shots: [{ shot_id: null, title: '等车', prompt: '林晚在车站等车', image_prompt: '林晚站在月台', video_prompt: '林晚看向驶来的列车，镜头推近', duration: 5, start_state: '', end_state: '', cut_note: '' }] }], used_skills: [], source_documents: [] }
 function button(text: string) { const node = [...document.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === text); assert.ok(node, text); return node }
 async function mount(options: { models?: Model[]; detail?: ProjectDetail; refresh?: () => Promise<void>; close?: () => void; openShotManager?: (sceneIds?: string[]) => void } = {}) {
   dom.window.localStorage.clear(); dom.window.sessionStorage.clear()

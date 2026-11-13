@@ -125,7 +125,7 @@ export function createStoryboardPlanningTasks(options: Options) {
         state.snapshot.result = result; delete state.snapshot.candidate; delete state.snapshot.progress
         // Completed tasks need only the final preview and request identities.
         // Keep intermediate rules/plans only while they can save paid work.
-        state.steps = {}
+        if (!['needs_work', 'inconclusive', 'pending_review'].includes(result.directing_review?.status || '')) state.steps = {}
       } catch (issue) {
         settleTime(live)
         if (state.snapshot.status !== 'interrupted') state.snapshot.status = live.controller.signal.aborted ? 'cancelled' : 'failed'

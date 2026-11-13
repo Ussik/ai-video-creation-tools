@@ -193,3 +193,32 @@ test('restart fails interrupted speech without resubmission and leaves unstarted
   assert.equal(retry.statusCode, 422, retry.body)
   assert.equal(all('SELECT * FROM assets WHERE project_id=?', interrupted.p.id).length, 0)
 })
+
+
+test('TTS local audio and subtitle metadata survive a final asset transaction failure without resynthesis', async t => {
+ // The preceding restart fixture deliberately leaves one never-started queued job.
+ run("UPDATE jobs SET status='failed' WHERE status='queued'")
+ const f = await setup(); let requests = 0, requestId = ''
+ t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
+  requests++; requestId = new Headers(init?.headers).get('X-Api-Request-Id')!
+  return stream([{ code: 0, data: audio.toString('base64'), sentence: { words: [{ word: '台词', startTime: 0, endTime: 0.4 }] } }, { code: 20_000_000, usage: { text_words: 2 } }])
+ })
+ db.exec("CREATE TEMP TRIGGER fail_speech_asset BEFORE INSERT ON assets BEGIN SELECT RAISE(ABORT,'mock speech asset failure'); END")
+ const stop = startWorker()
+ try { assert.equal((await finished(f.job.id)).status, 'failed') }
+ finally { await stop(); db.exec('DROP TRIGGER fail_speech_asset') }
+ assert.equal(requests, 1)
+ const stage = one<{ state: string; metadata: string }>('SELECT state,metadata FROM job_local_results WHERE job_id=?', f.job.id)!
+ assert.equal(stage.state, 'ready'); assert.equal(JSON.parse(stage.metadata).request_id, requestId)
+ const retry = await app.inject({ method: 'POST', url: `/api/jobs/${f.job.id}/retry`, payload: {} })
+ assert.equal(retry.statusCode, 200, retry.body)
+ const next = startWorker()
+ try {
+  const job = await finished(f.job.id); assert.equal(job.status, 'succeeded', job.error || ''); assert.equal(requests, 1)
+  const take = one<{ metadata: string; duration_ms: number }>('SELECT metadata,duration_ms FROM speech_takes WHERE job_id=?', f.job.id)!
+  const metadata = JSON.parse(take.metadata)
+  assert.equal(metadata.request_id, requestId); assert.equal(metadata.usage_characters, 2)
+  assert.deepEqual(metadata.subtitles, [{ text: '台词', start_ms: 0, end_ms: 400 }]); assert.ok(take.duration_ms > 0)
+  assert.equal(one('SELECT 1 FROM job_local_results WHERE job_id=?', f.job.id), undefined)
+ } finally { await next() }
+})

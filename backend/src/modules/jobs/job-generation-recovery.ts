@@ -2,6 +2,7 @@ import { isContentPolicyRejection } from '@video-studio/shared/jobs/prompt-optim
 import type { GenerationRecoveryAction, GenerationRecoveryModality } from '@video-studio/shared/jobs/generation-recovery'
 import { db, now, one, run, type Job, type Model, type Provider } from '../../infrastructure/database/db.js'
 import { submissionRequestHash } from './resource-submissions.js'
+import { localJobResultKind, mediaJobExecution, prepareMediaJob } from './job-local-results.js'
 
 type Attempt = { modality: GenerationRecoveryModality; model_signature: string; provider_signature: string }
 export const validExternalTaskId = (value: string | null) => typeof value === 'string' && !!value.trim()
@@ -28,35 +29,36 @@ function matchesAttempt(attempt: Attempt, model: Model, provider: Provider) {
 
 export function generationRecoveryInfo(job: Job, model?: Model) {
   const attempt = generationAttempt(job.id)
+  const localKind = localJobResultKind(job), local = !!localKind, execution = mediaJobExecution(job.id)
   const image = Boolean(one('SELECT 1 FROM job_image_recovery WHERE job_id=?', job.id))
   const video = Boolean(one('SELECT 1 FROM job_video_recovery WHERE job_id=?', job.id))
-  const modality: GenerationRecoveryModality | null = video ? 'video' : image ? 'image' : attempt?.modality
+  const modality: GenerationRecoveryModality | null = localKind === 'image' || localKind === 'video' || localKind === 'audio' ? localKind : video ? 'video' : image ? 'image' : attempt?.modality
     || (model?.modality === 'image' || model?.modality === 'video' ? model.modality : null)
+  let speech = false
+  try { speech = !!JSON.parse(job.request).tts } catch { /* Keep malformed requests out of media recovery. */ }
   const provider = model ? one<Provider>('SELECT * FROM providers WHERE id=?', model.provider_id) : undefined
   let query = false
   try {
-    query = validExternalTaskId(job.external_id) && !!model?.enabled && !model.archived && !!provider?.enabled
+    query = !speech && validExternalTaskId(job.external_id) && !!model?.enabled && !model.archived && !!provider?.enabled
       && !provider.archived && provider.adapter === 'http'
       && (!attempt || matchesAttempt(attempt, model, provider))
       && (model.modality === 'video' || model.modality === 'image'
         && JSON.parse(model.settings).async_image === true && !isContentPolicyRejection(job.error))
   } catch { /* Broken configuration cannot authorize a new provider request. */ }
   let action: GenerationRecoveryAction | null = null
-  let speech = false
-  try { speech = !!JSON.parse(job.request).tts } catch { /* Keep malformed requests out of media recovery. */ }
-  if (job.status === 'failed' && job.job_type === 'generation' && !speech) {
-    action = image || video ? 'download' : query ? 'query'
+  if (job.status === 'failed' && job.job_type === 'generation') {
+    action = local ? 'local' : image || video ? 'download' : query ? 'query' : execution?.phase === 'prepared' && !validExternalTaskId(job.external_id) ? 'prepare' : speech ? null
       : modality || !model || job.external_id !== null && job.external_id !== undefined ? 'verify' : null
   }
-  return { recovery_available: image || video, task_resume_available: query,
-    recovery_action: action, recovery_modality: modality }
+  return { recovery_available: image || video || local, task_resume_available: query,
+    recovery_action: action, recovery_modality: speech ? 'audio' as const : modality }
 }
 
 /** Freeze execution identity once. A persisted attempt without a task ID must never POST again. */
 export function prepareGenerationExecution(job: Job, model: Model, provider: Provider) {
   db.transaction(() => {
     const attempt = generationAttempt(job.id)
-    if (attempt && !matchesAttempt(attempt, model, provider)) {
+    if (attempt && !matchesAttempt(attempt, model, provider) && mediaJobExecution(job.id)?.phase !== 'prepared') {
       throw new Error('原任务的模型或提供商配置已变化，已停止恢复。请还原原配置后继续查询，或核对厂商记录；不会重新提交生成。')
     }
     if (job.external_id !== null && job.external_id !== undefined) {
@@ -64,13 +66,28 @@ export function prepareGenerationExecution(job: Job, model: Model, provider: Pro
         || model.modality === 'image' && JSON.parse(model.settings).async_image === true)) {
         throw new Error('原任务编号或查询配置不可用，请先核对厂商记录；不会重新提交生成。')
       }
-    } else if (attempt) {
+    } else if (attempt && mediaJobExecution(job.id)?.phase !== 'prepared') {
       throw new Error('任务曾开始执行，但没有可确认的厂商任务编号或结果链接。厂商可能已计费，请先核对厂商记录；不会重新提交生成。')
+    }
+    if (attempt && mediaJobExecution(job.id)?.phase === 'prepared') {
+      const fingerprint = signatures(model, provider)
+      run('UPDATE job_generation_attempts SET modality=?,model_signature=?,provider_signature=? WHERE job_id=?', model.modality, fingerprint.model_signature, fingerprint.provider_signature, job.id)
     }
     if (!attempt && (model.modality === 'image' || model.modality === 'video')) {
       const fingerprint = signatures(model, provider)
+      prepareMediaJob(job.id)
       run('INSERT INTO job_generation_attempts (job_id,modality,model_signature,provider_signature,started_at) VALUES (?,?,?,?,?)',
         job.id, model.modality, fingerprint.model_signature, fingerprint.provider_signature, now())
     }
   }).immediate()
+}
+
+/** Query authorization is independent from the currently preferred URL checkpoint. */
+export function canRefreshGenerationResult(job: Job, model: Model, provider: Provider): boolean {
+  const attempt = generationAttempt(job.id)
+  try {
+    return !!model.enabled && !model.archived && !!provider.enabled && !provider.archived && validExternalTaskId(job.external_id)
+      && (!attempt || matchesAttempt(attempt, model, provider)) && provider.adapter === 'http'
+      && (model.modality === 'video' || model.modality === 'image' && JSON.parse(model.settings).async_image === true)
+  } catch { return false }
 }

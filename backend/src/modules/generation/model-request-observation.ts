@@ -7,6 +7,13 @@ import { currentModelRequestContext, modelTaskPolicies, withModelRequestContext,
 type Owner = 'request' | 'job' | 'director'
 type ObservationOptions = { taskId?: string; projectId?: string; modelId?: string; label: string; owner: Owner; signal?: AbortSignal; policy?: ModelTaskPolicy }
 const active = new Map<string, AbortController>()
+/** Stops local execution only; provider cancellation/charging is independent. */
+export function stopObservedModelTask(id: string): boolean {
+  const controller = active.get(id)
+  if (!controller) return false
+  controller.abort(new DOMException('已请求停止本地处理，上游状态仍需核对提供商记录', 'AbortError'))
+  return true
+}
 const numericFields = ['request_bytes', 'response_chars', 'first_event_ms', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'output_limit',
   'cache_read_tokens', 'cache_write_tokens', 'estimated_input_tokens', 'context_window_tokens', 'reserved_output_tokens', 'http_status', 'framing_reserve_tokens']
 const stringFields = ['kind', 'transport_kind', 'task_id', 'step_id', 'attempt_id', 'request_id', 'model_id', 'remote_id', 'failure_reason', 'raw_reason', 'delivery',

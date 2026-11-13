@@ -13,8 +13,9 @@ const testData = await mkdtemp(join(tmpdir(), 'controlled-storyboard-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
 const { buildApp } = await import('../src/app.js')
 const { all, db, now, one, run } = await import('../src/infrastructure/database/db.js')
-const { registerStoryboardPlanningRoutes } = await import('../src/modules/storyboard/storyboard-planning.js')
+const { registerStoryboardPlanningRoutes, storyboardCandidateScenes } = await import('../src/modules/storyboard/storyboard-planning.js')
 const { registerScriptCanvasRoutes } = await import('../src/modules/canvas/script-canvas-preparation.js')
+const { retainCandidateReview } = await import('../src/modules/generation/candidate-review-evidence.js')
 const { recordCreatorRequirement } = await import('../src/modules/script/script-creator-requirements.js')
 const { installSkillBundle, configureSkill, removeInstalledSkill, setSkillDefault, resetSkillTaskDefault } = await import('../src/modules/skills/skills.js')
 const app = buildApp()
@@ -325,6 +326,12 @@ async function setup(t: { after: (fn: () => Promise<unknown>) => void },
   registerStoryboardPlanningRoutes(routes, context)
   registerScriptCanvasRoutes(routes, context)
   const invoke = async (action: string, payload: object, status = 200) => {
+    // These tests isolate accepted-data behavior. Receipt gating is exercised
+    // independently in candidate-quality.test.ts against real review calls.
+    if (action === 'commit' && !('review_id' in payload)) {
+      const body = payload as { scenes: unknown; signature: string }
+      payload = { ...payload, review_id: retainCandidateReview({ projectId: project.id, family: 'storyboard', candidate: storyboardCandidateScenes(body.scenes), source: body.signature, modelId: 'mock-text', status: 'passed', report: { issues: [] } }).review_id }
+    }
     const response = await routes.inject({ method: 'POST', url: `/api/projects/${project.id}/script/storyboard/${action}`, payload })
     assert.equal(response.statusCode, status, response.body); return response.json()
   }

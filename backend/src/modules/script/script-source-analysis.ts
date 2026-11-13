@@ -1,3 +1,6 @@
+import { sourceModelRecovery, hasSourceModelRun, markSourceModelRun } from './source-model-recovery.js'
+import { observeModelTask, initModelRequestObservation } from '../generation/model-request-observation.js'
+import { modelTaskPolicies } from '../generation/model-task-policy.js'
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { all, newId, now, one, run, type Model, type Provider } from '../../infrastructure/database/db.js'
@@ -76,7 +79,7 @@ export function scriptSourceAnalysis(projectId: string): ScriptSourceAnalysis | 
   const document = source(projectId), row = one<Row>('SELECT * FROM script_source_analyses WHERE project_id=?', projectId)
   if (!document || row?.source_version !== scriptSourceVersion(document)) return null
   const state = JSON.parse(row.snapshot) as ScriptSourceAnalysis
-  if (state.pipeline_version !== sourceAnalysisPipelineVersion && state.pipeline_version !== 5) return null
+  if (state.pipeline_version !== sourceAnalysisPipelineVersion && state.pipeline_version !== 5) return state.status === 'failed' ? state : null
   if (state.pipeline_version === 5 && state.status === 'ready') {
     try {
       validateSourceCoverage(document.content, state.sections); validateSourceStory(state, state.story)
@@ -405,19 +408,21 @@ export function createScriptSourceAnalyzer(generate: SourceAnalyzer, limits: Sou
           throw Object.assign(new Error('剧本分析期间模型配置已变化，结果未采用，请重新分析'), { statusCode: 409 })
         }
       }
+      const recoverGenerate = sourceModelRecovery(projectId, state.id, { source: state.source_version, model: state.model_id, configuration: configurationHash }, generate)
       const checkedGenerate: SourceAnalyzer = async (...args) => {
         assertConfiguration()
-        const result = await generate(...args)
+        const result = await recoverGenerate(...args)
         assertConfiguration()
         return result
       }
       const recovery = { rebuilds: state.quality_rebuild_for ? 1 : 0 }
-      await scope.wait(withUnrestrictedScriptExecution(() => withSourceAnalysisRecovery(() => processSource(document, state, checkedGenerate,
+      initModelRequestObservation()
+      await observeModelTask({ taskId: `source:${state.id}`, projectId, modelId: state.model_id, label: '原稿分析', owner: 'request', signal: scope.signal, policy: modelTaskPolicies.generation }, () => scope.wait(withUnrestrictedScriptExecution(() => withSourceAnalysisRecovery(() => processSource(document, state, checkedGenerate,
         () => persist(projectId, state), scope.signal, limits, undefined, undefined, recovery), {
         signal: scope.signal, progressFingerprint: () => sourceAnalysisProgressFingerprint(state), diagnosisFingerprint: issue => sourceAnalysisDiagnosisFingerprint(state, issue), onRecovery: ({ message }) => {
           state.progress = { stage: 'repairing', message }; persist(projectId, state)
         },
-      })))
+      }))))
     }
     catch (issue) {
       if (current(projectId, state)) {
@@ -454,7 +459,7 @@ export function createScriptSourceAnalyzer(generate: SourceAnalyzer, limits: Sou
       configurationHash = sourceAnalysisConfigurationHash(configuration)
     } catch { /* The worker reports unavailable configuration; do not reuse it. */ }
     const previous = scriptSourceAnalysis(projectId)
-    const compatiblePrevious = previous?.model_id === modelId && (!previous.configuration_hash || previous.configuration_hash === configurationHash) ? previous : null
+    const compatiblePrevious = previous && [sourceAnalysisPipelineVersion, 5].includes(previous.pipeline_version!) && previous.model_id === modelId && (!previous.configuration_hash || previous.configuration_hash === configurationHash) ? previous : null
     if (compatiblePrevious && !['failed', 'paused'].includes(compatiblePrevious.status)) return compatiblePrevious
     active.get(projectId)?.controller.abort(new Error('剧本分析已被替换'))
     let cached: ScriptSourceAnalysis | null = null
@@ -480,6 +485,7 @@ export function createScriptSourceAnalyzer(generate: SourceAnalyzer, limits: Sou
         source_version: reuse.source_version, status: 'pending', planned_pages: reuse.pages.flatMap((page, index) => page.reuse_sections?.length ? [index] : []),
         reused_pages: [], reused_section_ids: [], reused_characters: 0 }
     }
+    markSourceModelRun(projectId, state.id)
     run('INSERT OR REPLACE INTO script_source_analyses (project_id,id,source_version,status,snapshot,updated_at) VALUES (?,?,?,?,?,?)',
       projectId, state.id, state.source_version, state.status, JSON.stringify(state), state.updated_at)
     queueMicrotask(pump)
@@ -523,7 +529,10 @@ export function createScriptSourceAnalyzer(generate: SourceAnalyzer, limits: Sou
         ownedProjects.add(row.project_id)
         if (row.status === 'queued') {
           const state = JSON.parse(row.snapshot) as ScriptSourceAnalysis
-          if (state.started_at && current(row.project_id, state)) {
+          if (!hasSourceModelRun(row.project_id, state.id)) {
+            state.status = 'failed'; state.error = '旧版本排队分析的请求受理状态未知，已保留完成步骤；请核对提供商记录后明确继续。'
+            delete state.started_at; persist(row.project_id, state)
+          } else if (state.started_at && current(row.project_id, state)) {
             delete state.started_at
             run('UPDATE script_source_analyses SET snapshot=? WHERE project_id=? AND id=?', JSON.stringify(state), row.project_id, state.id)
           }
@@ -531,7 +540,11 @@ export function createScriptSourceAnalyzer(generate: SourceAnalyzer, limits: Sou
       }
       for (const row of all<Row>("SELECT * FROM script_source_analyses WHERE status='running'")) {
         const state = JSON.parse(row.snapshot) as ScriptSourceAnalysis
-        ownedProjects.add(row.project_id); state.status = 'queued'; delete state.started_at; persist(row.project_id, state)
+        ownedProjects.add(row.project_id)
+        if (!hasSourceModelRun(row.project_id, state.id)) {
+          state.status = 'failed'; state.error = '旧版本分析在请求受理状态未知时中断，已保留完成步骤；请核对提供商记录后明确继续。'
+        } else state.status = 'queued'
+        delete state.started_at; persist(row.project_id, state)
       }
       pump()
     },

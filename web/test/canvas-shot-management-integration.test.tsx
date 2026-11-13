@@ -82,7 +82,7 @@ const scene = { id: 'scene', episode_number: 1, heading: '月台告别', duratio
 const textModel = { id: 'text-model', provider_id: 'provider', name: '文本模型', remote_id: 'text-v1', modality: 'text', protocol: 'chat_completions', enabled: true, settings: {} } as Model
 const oldShot: Shot = { id: 'old-shot', project_id: projectId, design_id: 'old-design', source_scene_id: scene.id, position: 0, title: '旧方案回望', prompt: '林晚看着列车。', image_prompt: '林晚站在月台。', video_prompt: '镜头慢慢推进。', duration: 10, selected_asset_id: null, start_state: '', end_state: '', cut_note: '' }
 const newShot: Shot = { ...oldShot, id: 'new-shot', design_id: 'new-design', title: '新方案列车入站' }
-const planDraft = { signature, mode: 'redesign', scenes: [{ scene_id: scene.id, scene_heading: scene.heading, scene_duration: 10, shots: [{ shot_id: null, title: newShot.title, prompt: newShot.prompt, image_prompt: newShot.image_prompt, video_prompt: newShot.video_prompt, duration: 10, start_state: '', end_state: '', cut_note: '' }] }], used_skills: [], source_documents: [] }
+const planDraft = { signature, directing_review: { status: 'passed', review_id: 'current-review', repaired: false, issues: [] }, mode: 'redesign', scenes: [{ scene_id: scene.id, scene_heading: scene.heading, scene_duration: 10, shots: [{ shot_id: null, title: newShot.title, prompt: newShot.prompt, image_prompt: newShot.image_prompt, video_prompt: newShot.video_prompt, duration: 10, start_state: '', end_state: '', cut_note: '' }] }], used_skills: [], source_documents: [] }
 function fixture() {
   return { id: projectId, name: '月台故事', brief: '夜间的告别', ratio: '16:9', updated_at: timestamp,
     script: { outline: '林晚等车。', characters: '林晚', scenes: [scene], artifacts: [], generation_options: {} },
@@ -355,7 +355,7 @@ function mockClipApi(t: TestContext, options: { existing?: boolean; withScript?:
     if (path === `/api/projects/${projectId}`) return Response.json(detail)
     if (path.endsWith('/shot-management')) return Response.json(snapshot())
     if (path.endsWith('/storyboard/clip/context')) { assert.equal(method, 'GET'); return Response.json(clipContext) }
-    if (path.endsWith('/storyboard/clip/plan')) return Response.json({ signature: 'b'.repeat(64), source_text: body.source_text, total_duration: body.total_duration, instructions: body.instructions,
+    if (path.endsWith('/storyboard/clip/plan')) return Response.json({ directing_review: { status: 'passed', review_id: 'clip-current-review', repaired: false, issues: [] }, signature: 'b'.repeat(64), source_text: body.source_text, total_duration: body.total_duration, instructions: body.instructions,
       shots: clipShots.map(shot => ({ title: shot.title, prompt: shot.prompt, image_prompt: shot.image_prompt, video_prompt: shot.video_prompt,
         duration: shot.duration, start_state: shot.start_state, end_state: shot.end_state, cut_note: shot.cut_note })),
       used_skills: [{ ...skills[0], files: ['SKILL.md'], role: 'primary' }], skill_assignment: { ids: ['clip-skill'], source: 'fixed', reason: '按分镜规划使用全局绑定。' } })

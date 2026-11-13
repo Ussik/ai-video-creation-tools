@@ -455,12 +455,17 @@ test('analysis HTTP errors remain visible, preserve edited output and allow a su
   } finally { await view.destroy() }
 })
 
-test('cancelled analysis cannot overwrite a newer retry when its ignored transport finishes late', async t => {
-  let finishOld: ((response: Response) => void) | undefined, oldSignal: AbortSignal | null | undefined, calls = 0
+test('cancelled analysis observes its original request and late ignored transport cannot overwrite recovered output', async t => {
+  let finishOld: ((response: Response) => void) | undefined, oldSignal: AbortSignal | null | undefined, calls = 0, operationId = ''
   mockApi(t, initialGraph(true, '保留的旧结果'), (body, init) => {
+    operationId = new Headers(init?.headers).get('x-ai-operation-id')!
     if (++calls === 1) { oldSignal = init?.signal; return new Promise<Response>(resolve => { finishOld = resolve }) }
-    return Response.json({ ...body, prompt: '新一次反推结果' })
+    return Response.json({ ...body, prompt: '原请求已完成的反推结果' })
   })
+  const transportFetch = globalThis.fetch
+  t.mock.method(globalThis, 'fetch', async (url, init) => String(url) === `/api/ai-operations/${operationId}`
+    ? Response.json({ id: operationId, state: 'completed', status_code: 200, result: { asset_id: uploaded.id, model_id: visionModel.id, prompt: '原请求已完成的反推结果' } })
+    : transportFetch(url, init))
   const view = await mount()
   try {
     await click('重新反推')
@@ -470,9 +475,10 @@ test('cancelled analysis cannot overwrite a newer retry when its ignored transpo
     assert.equal(field('专业提示词').value, '保留的旧结果')
     assert.equal(button('重新反推').disabled, false)
     await click('重新反推')
-    assert.equal(field('专业提示词').value, '新一次反推结果')
+    assert.equal(field('专业提示词').value, '原请求已完成的反推结果')
+    assert.equal(calls, 1, 'recovery never submits a second model request')
     await act(async () => { finishOld!(Response.json({ asset_id: uploaded.id, model_id: visionModel.id, prompt: '迟到旧结果，不应覆盖' })); await Promise.resolve() }); await settle()
-    assert.equal(field('专业提示词').value, '新一次反推结果')
+    assert.equal(field('专业提示词').value, '原请求已完成的反推结果')
   } finally { await view.destroy() }
 })
 
@@ -525,11 +531,16 @@ test('clearing the source removes uploaded identity and incoming image edges whi
 })
 
 test('deleting a running analysis cancels its lock and undo cannot revive a late result', async t => {
-  let finishOld: ((response: Response) => void) | undefined, oldSignal: AbortSignal | null | undefined, calls = 0
+  let finishOld: ((response: Response) => void) | undefined, oldSignal: AbortSignal | null | undefined, calls = 0, operationId = ''
   mockApi(t, initialGraph(true, '删除前保存的提示词'), (body, init) => {
+    operationId = new Headers(init?.headers).get('x-ai-operation-id')!
     if (++calls === 1) { oldSignal = init?.signal; return new Promise<Response>(resolve => { finishOld = resolve }) }
-    return Response.json({ ...body, prompt: '撤销后重新反推的结果' })
+    return Response.json({ ...body, prompt: '撤销后接管的原请求结果' })
   })
+  const transportFetch = globalThis.fetch
+  t.mock.method(globalThis, 'fetch', async (url, init) => String(url) === `/api/ai-operations/${operationId}`
+    ? Response.json({ id: operationId, state: 'completed', status_code: 200, result: { asset_id: uploaded.id, model_id: visionModel.id, prompt: '撤销后接管的原请求结果' } })
+    : transportFetch(url, init))
   const view = await mount()
   try {
     await click('重新反推')
@@ -550,6 +561,7 @@ test('deleting a running analysis cancels its lock and undo cannot revive a late
     await act(async () => { finishOld!(Response.json({ asset_id: uploaded.id, model_id: visionModel.id, prompt: '删除前发起的迟到结果' })); await Promise.resolve() }); await settle()
     assert.equal(field('专业提示词').value, '删除前保存的提示词')
     await click('重新反推')
-    assert.equal(field('专业提示词').value, '撤销后重新反推的结果')
+    assert.equal(field('专业提示词').value, '撤销后接管的原请求结果')
+    assert.equal(calls, 1, 'undo and explicit continuation do not dispatch a second model request')
   } finally { await view.destroy() }
 })

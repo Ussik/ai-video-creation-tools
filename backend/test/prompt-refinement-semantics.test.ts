@@ -23,15 +23,17 @@ function validReview(): PromptRefinementSemanticReview {
   })) }
 }
 let candidates: string[] = [], reviews: PromptRefinementSemanticReview[] = [], calls: string[] = [], prompts: string[] = []
+let reviewFailure = false
 let locateEvidence: ((prompt: string) => unknown) | undefined
 registerSkillRoutes(app, { generateText: async (_project, _model, prompt, contract) => {
   calls.push(contract!.name); prompts.push(prompt)
+  if (contract!.name === 'prompt_refinement_semantic_review' && reviewFailure) throw new Error('review transport unavailable')
   if (contract!.name === 'prompt_refinement_semantic_review') return JSON.stringify(reviews.length > 1 ? reviews.shift()! : reviews[0] || validReview())
   if (contract!.name === 'prompt_refinement_evidence_repair') return JSON.stringify(locateEvidence?.(prompt))
   return JSON.stringify({ prompt: candidates.length > 1 ? candidates.shift()! : candidates[0] || '人物站在桌边。' })
 } })
 after(async () => { await app.close(); db.close(); await rm(directory, { recursive: true, force: true }) })
-function reset(candidate: string, review = validReview()) { candidates = [candidate]; reviews = [review]; calls = []; prompts = []; locateEvidence = undefined }
+function reset(candidate: string, review = validReview()) { candidates = [candidate]; reviews = [review]; calls = []; prompts = []; locateEvidence = undefined; reviewFailure = false }
 const refine = (prompt: string, adjustment = '', extra: Record<string, unknown> = {}) => app.inject({ method: 'POST',
   url: '/api/projects/project/skills/refine-prompt', payload: { model_id: 'mock', stage: 'video_prompt', skill_ids: [],
     prompt, adjustment_request: adjustment, reference_asset_ids: [], mode: 'text', ...extra } })
@@ -57,13 +59,15 @@ test('the model classifies separated voice cues and unquoted lines before exact 
   assert.match(metadata.candidate_signature, /^[a-f0-9]{64}$/)
 })
 
-test('a model-classified missing line receives only one candidate correction and never returns success', async () => {
+test('a model-classified missing line receives one correction and retains a draft requiring work', async () => {
   const source = '老板：谁说不是呢！', review = validReview()
   review.dialogue = [{ speaker: '老板', text: '谁说不是呢！', source_evidence: source, authorized_change: false, authorization_evidence: '' }]
   reset('老板低下头。', review)
   const before = snapshot(), response = await refine(source)
-  assert.equal(response.statusCode, 422, response.body)
-  assert.match(response.body, /已修正一次.*逐字对白/)
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(response.json().quality.status, 'needs_work')
+  assert.equal(response.json().prompt_body, '老板低下头。')
+  assert.deepEqual(response.json().diagnostics.dialogue.missing, ['谁说不是呢！'])
   assert.deepEqual(calls, ['refined_prompt', 'prompt_refinement_semantic_review', 'refined_prompt', 'prompt_refinement_semantic_review'])
   assert.match(prompts[2]!, /独立语义核对修正/)
   assert.equal(snapshot(), before)
@@ -111,7 +115,8 @@ test('board view synonyms pass model review; an intentional board-view conflict 
   conflicting.request_conflicts.push({ message: '调整要求与既定展示要求冲突：要求删去背面。', evidence: '只展示前面即可' })
   reset(candidate, conflicting)
   const rejected = await refine(`【设定图固定要求】\n${source}\n【设定图固定要求结束】`, '只展示前面即可', { stage: 'image_prompt', prompt_document: true })
-  assert.equal(rejected.statusCode, 422, rejected.body)
+  assert.equal(rejected.statusCode, 200, rejected.body)
+  assert.equal(rejected.json().quality.status, 'needs_work')
   assert.match(rejected.body, /展示要求冲突/)
   assert.deepEqual(calls, ['refined_prompt', 'prompt_refinement_semantic_review'])
 })
@@ -160,9 +165,43 @@ test('locating evidence does not erase a missing-action finding or return an app
     return { repairs: [{ id: 'checks[0].source_evidence', first_unit: units[0].id, last_unit: units.at(-1).id }] }
   }
   const before = snapshot(), response = await refine(source)
-  assert.equal(response.statusCode, 422, response.body)
-  assert.match(response.body, /已修正一次.*缺少跑近及左手撑地/)
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(response.json().quality.status, 'needs_work')
+  assert.equal(response.json().prompt_body, candidate)
+  assert.match(response.body, /缺少跑近及左手撑地/)
   assert.deepEqual(calls, ['refined_prompt', 'prompt_refinement_semantic_review', 'prompt_refinement_evidence_repair',
     'refined_prompt', 'prompt_refinement_semantic_review', 'prompt_refinement_evidence_repair'])
   assert.equal(snapshot(), before)
+})
+
+
+test('review outage retains a complete editable candidate and review-only checks edited text against the original source', async () => {
+  const source = '阿宁推开门。', candidate = '阿宁缓缓推开门。'
+  reset(candidate); reviewFailure = true
+  const before = snapshot(), response = await refine(source)
+  assert.equal(response.statusCode, 200, response.body)
+  const retained = response.json()
+  assert.equal(retained.prompt_body, candidate); assert.equal(retained.quality.status, 'inconclusive')
+  assert.ok(retained.operation_id); assert.ok(retained.quality.review_id)
+  reviewFailure = false
+  const edited = '阿宁缓缓推开门，停在门边。'
+  const checked = await refine(source, '', { action: 'review', candidate_prompt: edited, source_signature: retained.quality.source_signature })
+  assert.equal(checked.statusCode, 200, checked.body); assert.equal(checked.json().quality.status, 'passed')
+  assert.equal(checked.json().prompt_body, edited)
+  assert.deepEqual(calls, ['refined_prompt', 'prompt_refinement_semantic_review', 'prompt_refinement_semantic_review'])
+  const reviewData = JSON.parse(prompts.at(-1)!.split('\n').at(-1)!)
+  assert.equal(reviewData.source, source); assert.equal(reviewData.candidate, edited)
+  const stale = await refine('已改动的基稿。', '', { action: 'review', candidate_prompt: edited, source_signature: retained.quality.source_signature })
+  assert.equal(stale.statusCode, 409); assert.equal(calls.length, 3)
+  assert.equal(snapshot(), before)
+})
+
+test('uncertain meaning retains the candidate without authorizing a creative correction', async () => {
+  const source = '阿宁站在门边。', candidate = '阿宁在门边停步。', review = validReview()
+  Object.assign(review.checks[0]!, { status: 'uncertain', description: '仍无法确定是否保留原意。', source_evidence: source })
+  reset(candidate, review)
+  const response = await refine(source)
+  assert.equal(response.statusCode, 200); assert.equal(response.json().quality.status, 'inconclusive')
+  assert.equal(response.json().prompt_body, candidate)
+  assert.deepEqual(calls, ['refined_prompt', 'prompt_refinement_semantic_review'])
 })

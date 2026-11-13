@@ -92,6 +92,7 @@ flowchart LR
 
 | 文档 | 用途 |
 | --- | --- |
+| [AI 接入可靠性与结果恢复](ai-integration-reliability.md) | 操作找回、防止未知结果重发、质量复查与本地媒体接管 |
 | [模型交互机制](model-interaction-controls.md) | 提示词、结构化输出与工具调用 |
 | [分析成本控制](script-analysis-cost-control.md) | 缓存、预算与用量作用域 |
 | [剧本质量增强](script-quality-enhancements.md) | 核对、修订与保存校验 |

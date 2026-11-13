@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto'
+import type { CandidateEvidenceResolution } from '@video-studio/shared/api/ai-candidate-quality'
+import type { GenerationSteps } from '../script/script-generation-steps.js'
 import { z } from 'zod'
 import { generateStructuredOutput, type StructuredGenerator } from '../generation/model-output.js'
 import type { RefinementReferenceIdentity } from './prompt-refinement-references.js'
@@ -94,14 +96,43 @@ export function promptRefinementDialogue(review: PromptRefinementSemanticReview,
     explicit_change: review.dialogue.some(line => line.authorized_change) }
 }
 
+export async function reviewPromptRefinementDetailed(input: PromptRefinementSemanticInput, generate: StructuredGenerator, signal?: AbortSignal,
+  options: { steps?: GenerationSteps; id?: string; reassess?: boolean } = {}) {
+  let review: PromptRefinementSemanticReview | undefined
+  let evidence: CandidateEvidenceResolution[] = []
+  const run = async <T>(id: string, work: () => Promise<T>, validate: (value: unknown) => T): Promise<T> => options.steps
+    ? options.steps.run(`${options.id || 'semantic'}:${id}`, id === 'report' ? '保留语义核对报告' : '核实语义证据', input, work, validate)
+    : validate(await work())
+  try {
+    // Persist classified meaning before evidence work so a locator outage can
+    // never hide a completed candidate or discard the paid report.
+    review = await run('report', () => generateStructuredOutput('prompt_refinement_semantic_review', promptRefinementSemanticReviewSchema, generate,
+      promptRefinementSemanticInstructions(input), { signal, validate: value => validateSemanticReview(value, input, false) }), value => {
+      const parsed = promptRefinementSemanticReviewSchema.parse(value)
+      validateSemanticReview(parsed, input, false)
+      return parsed
+    })
+    const resolved = await run('evidence', async () => {
+      const located = await locatePromptRefinementEvidence(review!, input, generate, signal, { reassess: options.reassess,
+        onEvidence: value => { evidence = value } })
+      validatePromptRefinementSemanticReview(located, input)
+      return { review: located, evidence }
+    }, value => {
+      const parsed = value as { review: unknown; evidence: CandidateEvidenceResolution[] }
+      const located = promptRefinementSemanticReviewSchema.parse(parsed.review)
+      validatePromptRefinementSemanticReview(located, input)
+      return { review: located, evidence: parsed.evidence }
+    })
+    return resolved
+  } catch (error) {
+    if (error instanceof Error) Object.assign(error, { retainedReview: (error as { retainedReview?: unknown }).retainedReview || review,
+      evidence: (error as { evidence?: unknown }).evidence || evidence })
+    throw error
+  }
+}
+
 export async function reviewPromptRefinement(input: PromptRefinementSemanticInput, generate: StructuredGenerator, signal?: AbortSignal) {
-  // Keep the semantic conclusions while locating inaccurate quotes; exact
-  // provenance validation still gates the completed report below.
-  const review = await generateStructuredOutput('prompt_refinement_semantic_review', promptRefinementSemanticReviewSchema, generate,
-    promptRefinementSemanticInstructions(input), { signal, validate: value => validateSemanticReview(value, input, false) })
-  const located = await locatePromptRefinementEvidence(review, input, generate, signal)
-  validatePromptRefinementSemanticReview(located, input)
-  return located
+  return (await reviewPromptRefinementDetailed(input, generate, signal)).review
 }
 
 export function promptRefinementSemanticSnapshot(review: PromptRefinementSemanticReview, input: PromptRefinementSemanticInput) {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { StructuredGenerator } from '../src/modules/generation/model-output.js'
-import { promptRefinementSemanticIssues, reviewPromptRefinement,
+import { promptRefinementSemanticIssues, reviewPromptRefinement, reviewPromptRefinementDetailed,
   type PromptRefinementSemanticInput, type PromptRefinementSemanticReview } from '../src/modules/skills/prompt-refinement-semantics.js'
 
 type SourceKey = 'source' | 'adjustment' | 'candidate'
@@ -250,4 +250,42 @@ test('one corrected locator response repairs evidence while retaining all semant
   assert.equal(result.checks[0]!.description, '还不能确认动作是否完整。')
   assert.equal(count(mock.calls, 'prompt_refinement_evidence_repair'), 2)
   assert.equal(count(mock.calls, 'prompt_refinement_semantic_review'), 1)
+})
+
+
+test('null evidence remains explicitly unresolved after independent reassessment and retains the classified report', async () => {
+  const report = review(); Object.assign(report.checks[0]!, { status: 'missing', source_evidence: '没有支持的引用。' })
+  let saved: unknown
+  const { createGenerationSteps } = await import('../src/modules/script/script-generation-steps.js')
+  const steps = createGenerationSteps({ save: value => { saved = structuredClone(value) } })
+  const calls: string[] = []
+  const generate: StructuredGenerator = async (_prompt, contract) => {
+    calls.push(contract!.name)
+    if (contract!.name === 'prompt_refinement_semantic_review') return JSON.stringify(report)
+    if (contract!.name === 'prompt_refinement_evidence_repair') return JSON.stringify({ repairs: [{ id: 'checks[0].source_evidence', first_unit: null, last_unit: null }] })
+    assert.equal(contract!.name, 'prompt_refinement_evidence_reassessment')
+    return JSON.stringify({ resolutions: [{ id: 'checks[0].source_evidence', disposition: 'unresolved', reason: '暂不能确认原结论是否有依据。' }] })
+  }
+  await assert.rejects(reviewPromptRefinementDetailed(input(), generate, undefined, { steps, reassess: true }), (error: unknown) => {
+    const value = error as { retainedReview: PromptRefinementSemanticReview; evidence: Array<{ disposition: string }> }
+    assert.equal(value.retainedReview.checks[0]!.status, 'missing')
+    assert.equal(value.evidence[0]!.disposition, 'unresolved'); return true
+  })
+  assert.ok((saved as { steps: Record<string, unknown> }).steps['semantic:report'])
+  assert.deepEqual(calls, ['prompt_refinement_semantic_review', 'prompt_refinement_evidence_repair', 'prompt_refinement_evidence_reassessment'])
+})
+
+test('a false claim can be explicitly withdrawn with a retained reason, while exact claims remain confirmed', async () => {
+  const report = review(); Object.assign(report.checks[0]!, { status: 'missing', source_evidence: '错误概述。' })
+  report.checks[1]!.candidate_evidence = input().candidate
+  const result = await reviewPromptRefinementDetailed(input(), async (_prompt, contract) => {
+    if (contract!.name === 'prompt_refinement_semantic_review') return JSON.stringify(report)
+    if (contract!.name === 'prompt_refinement_evidence_repair') return JSON.stringify({ repairs: [{ id: 'checks[0].source_evidence', first_unit: null, last_unit: null }] })
+    return JSON.stringify({ resolutions: [{ id: 'checks[0].source_evidence', disposition: 'withdrawn', reason: '该结论把并未要求的动作误认成必须事实。' }] })
+  }, undefined, { reassess: true })
+  assert.equal(result.review.checks[0]!.status, 'not_applicable')
+  assert.match(result.review.checks[0]!.description, /明确撤回/)
+  assert.equal(result.evidence.find(item => item.id === 'checks[0].source_evidence')!.disposition, 'withdrawn')
+  assert.equal(result.evidence.find(item => item.id === 'checks[1].candidate_evidence')!.disposition, 'confirmed')
+  assert.equal(report.checks[0]!.status, 'missing', 'the original classified report stays immutable')
 })

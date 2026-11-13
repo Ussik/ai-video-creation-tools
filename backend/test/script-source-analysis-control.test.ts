@@ -11,6 +11,7 @@ process.env.VIDEO_STUDIO_DATA_DIR = testData
 const { db, initDb, newId, now, run } = await import('../src/infrastructure/database/db.js')
 const { analyzeSourceSnapshot, createScriptSourceAnalyzer, scriptSourceAnalysis, scriptSourceVersion } = await import('../src/modules/script/script-source-analysis.js')
 const { registerScriptSourceRoutes, scriptSourceDocument } = await import('../src/modules/script/script-source-documents.js')
+const { markSourceModelRun } = await import('../src/modules/script/source-model-recovery.js')
 const { sourceAnalysisPipelineVersion } = await import('../src/modules/script/script-source-map.js')
 initDb()
 after(async () => { db.close(); await rm(testData, { recursive: true, force: true }) })
@@ -199,7 +200,7 @@ test('pause HTTP endpoint rejects stale analysis IDs without cancelling the curr
   } finally { release.resolve(); await app.close(); run('DELETE FROM projects WHERE id=?', item.id) }
 })
 
-test('recovery clears obsolete run clocks while preserving queued order and starts fresh clocks only when slots open', async () => {
+test('journaled recovery clears obsolete run clocks while preserving queued order and starts fresh clocks only when slots open', async () => {
   const items = [project('恢复队首'), project('遗留排队'), project('遗留运行')]
   const obsoleteStart = '2000-01-01T00:00:00.000Z'
   const queuedStamps = ['2001-01-01T00:00:00.000Z', '2002-01-01T00:00:00.000Z']
@@ -208,6 +209,7 @@ test('recovery clears obsolete run clocks while preserving queued order and star
       status: index === 2 ? 'running' : 'queued', completed_chunks: 0, total_chunks: 0, sections: [], error: null,
       updated_at: queuedStamps[index] || obsoleteStart, pipeline_version: sourceAnalysisPipelineVersion,
       ...(index ? { started_at: obsoleteStart } : {}) }
+    markSourceModelRun(item.id, state.id)
     run('INSERT INTO script_source_analyses (project_id,id,source_version,status,snapshot,updated_at) VALUES (?,?,?,?,?,?)',
       item.id, state.id, state.source_version, state.status, JSON.stringify(state), state.updated_at)
   }

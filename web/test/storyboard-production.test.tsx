@@ -7,7 +7,7 @@ import { MantineProvider } from '@mantine/core'
 import type { Model, ProjectDetail, ScriptCanvasResult } from '../src/shared/api/api'
 import type { ShotManagementSnapshot } from '@video-studio/shared/storyboard/shot-management'
 import { assertStoryboardProductionScope } from '../src/features/storyboard/storyboard-production'
-import { modelSelectionStorageKey, rememberModelSelection } from '../src/features/models/model-selection-store'
+import { rememberModelSelection } from '../src/features/models/model-selection-store'
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
@@ -18,7 +18,7 @@ Object.defineProperty(globalThis, 'ResizeObserver', { value: class { observe() {
 const { default: StoryboardProductionDialog } = await import('../src/features/storyboard/StoryboardProductionDialog')
 const { createRoot } = await import('react-dom/client')
 after(() => dom.window.close())
-beforeEach(() => dom.window.localStorage.removeItem(modelSelectionStorageKey('text')))
+beforeEach(() => dom.window.localStorage.clear())
 const models = [{ id: 'ordinary-text', name: '普通文本', enabled: true, modality: 'text' },
   { id: 'default-text', name: '默认文本', enabled: true, modality: 'text', is_default: true },
   { id: 'disabled-text', name: '已停用', enabled: false, modality: 'text' },
@@ -73,13 +73,13 @@ test('production freezes in-flight references and clears a cached preparation af
   const view = await mount()
   try {
     const selected = () => document.querySelector<HTMLInputElement>('[aria-label="整理参考设定文本模型"]')!
-    await act(async () => button('准备并加入画布').click())
+    await act(async () => { button('准备并加入画布').click(); await new Promise(resolve => setTimeout(resolve, 10)) })
     await act(() => rememberModelSelection('text', 'ordinary-text'))
     assert.equal(selected().value, '默认文本')
     await act(async () => finishPrepare(Response.json({ signature, scene_ids: ['scene'], profiles: [] })))
     assert.equal(selected().value, '普通文本')
     assert.match(document.querySelector('[role="alert"]')!.textContent!, /保存暂不可用/)
-    await act(async () => button('准备并加入画布').click())
+    await act(async () => { button('准备并加入画布').click(); await new Promise(resolve => setTimeout(resolve, 10)) })
     assert.deepEqual(requests.filter(request => request.path.endsWith('/canvas/prepare')).map(request => request.body.model_id), ['default-text', 'ordinary-text'])
     assert.equal(button('已加入画布').disabled, true)
     await act(() => rememberModelSelection('text', 'default-text'))
@@ -91,7 +91,7 @@ test('prepared references can go to production without any text model and preser
   const requests = mockRequests(t), completed: ScriptCanvasResult[] = []
   const view = await mount({ models: [], complete: value => { completed.push(value) } })
   try {
-    await act(async () => button('准备并加入画布').click())
+    await act(async () => { button('准备并加入画布').click(); await new Promise(resolve => setTimeout(resolve, 10)) })
     assert.deepEqual(requests.map(request => request.path), ['/api/projects/project', '/api/projects/project/script/canvas/check', '/api/projects/project/script/storyboard/canvas'])
     assert.deepEqual(requests[1].body, { scene_ids: ['scene'], design_id: 'design' })
     assert.deepEqual(requests[2].body, { scene_ids: ['scene'], shot_ids: ['shot'], design_id: 'design', mode: 'existing' })
@@ -103,7 +103,7 @@ test('production prepares references with automatic skill selection and commits 
   const requests = mockRequests(t, { needsAnalysis: true })
   const view = await mount()
   try {
-    await act(async () => button('准备并加入画布').click())
+    await act(async () => { button('准备并加入画布').click(); await new Promise(resolve => setTimeout(resolve, 10)) })
     assert.deepEqual(requests.map(request => request.path.split('/').slice(-2).join('/')), ['projects/project', 'canvas/check', 'canvas/prepare', 'canvas/commit', 'storyboard/canvas'])
     assert.deepEqual(requests[2].body, { scene_ids: ['scene'], design_id: 'design', signature, model_id: 'default-text' })
     assert.deepEqual(requests[3].body, { scene_ids: ['scene'], design_id: 'design', signature, profiles: [], reference_usage_version: 1 })
@@ -115,7 +115,7 @@ test('obsolete selected shots are rejected before checking or preparing another 
   const requests = mockRequests(t, { project: { ...detail, shots: [{ ...detail.shots[0], design_id: 'replacement-design' }] } })
   const view = await mount()
   try {
-    await act(async () => button('准备并加入画布').click())
+    await act(async () => { button('准备并加入画布').click(); await new Promise(resolve => setTimeout(resolve, 10)) })
     assert.equal(requests.length, 1)
     assert.match(document.querySelector('[role="alert"]')!.textContent!, /当前|更新/)
   } finally { await view.destroy() }
@@ -128,7 +128,7 @@ test('production preserves explicit visual coverage when committing a prepared p
   }) })
   const view = await mount()
   try {
-    await act(async () => button('准备并加入画布').click())
+    await act(async () => { button('准备并加入画布').click(); await new Promise(resolve => setTimeout(resolve, 10)) })
     const commit = requests.find(request => request.path.endsWith('/canvas/commit'))!
     assert.equal(commit.body.coverage_version, 1)
     assert.deepEqual(commit.body.visual_coverage, visual_coverage)
@@ -139,7 +139,7 @@ test('missing references require a text model before any model or commit request
   const requests = mockRequests(t, { needsAnalysis: true })
   const view = await mount({ models: [] })
   try {
-    await act(async () => button('准备并加入画布').click())
+    await act(async () => { button('准备并加入画布').click(); await new Promise(resolve => setTimeout(resolve, 10)) })
     assert.equal(requests.length, 2)
     assert.match(document.querySelector('[role="alert"]')!.textContent!, /启用.*文本模型/)
   } finally { await view.destroy() }
@@ -149,7 +149,7 @@ test('a failed handoff retries only the cached result without preparing or creat
   const requests = mockRequests(t); let completes = 0
   const view = await mount({ complete: async value => { assert.deepEqual(value, result); if (++completes === 1) throw new Error('刷新画布失败') } })
   try {
-    await act(async () => button('准备并加入画布').click())
+    await act(async () => { button('准备并加入画布').click(); await new Promise(resolve => setTimeout(resolve, 10)) })
     assert.match(document.querySelector('[role="alert"]')!.textContent!, /刷新画布失败/)
     const requestCount = requests.length
     await act(async () => button('重试打开画布').click())
@@ -163,7 +163,7 @@ test('cancelling reference generation ignores a late result and never commits or
   const requests = mockRequests(t, { needsAnalysis: true, prepare: () => new Promise(resolve => { resolvePrepare = resolve }) })
   const view = await mount({ complete: () => { completed++ }, cancel: () => { cancelled++ } })
   try {
-    await act(async () => button('准备并加入画布').click())
+    await act(async () => { button('准备并加入画布').click(); await new Promise(resolve => setTimeout(resolve, 10)) })
     assert.equal(requests.length, 3)
     await act(() => button('取消整理').click())
     assert.equal(cancelled, 1)
@@ -180,7 +180,7 @@ test('unmounting while validating selection isolates a late project response', a
     paths.push(String(url)); return new Promise<Response>(resolve => { resolveProject = resolve })
   })
   const view = await mount({ complete: () => { completed++ } })
-  await act(async () => button('准备并加入画布').click())
+  await act(async () => { button('准备并加入画布').click(); await new Promise(resolve => setTimeout(resolve, 10)) })
   await view.destroy()
   await act(async () => resolveProject(Response.json(detail)))
   assert.deepEqual(paths, ['/api/projects/project'])
@@ -193,9 +193,9 @@ test('reference commit failures reuse the preparation when its source signature 
     ? Response.json({ message: '暂时无法保存参考设定' }, { status: 503 }) : Response.json(result) })
   const view = await mount()
   try {
-    await act(async () => button('准备并加入画布').click())
+    await act(async () => { button('准备并加入画布').click(); await new Promise(resolve => setTimeout(resolve, 10)) })
     assert.match(document.querySelector('[role="alert"]')!.textContent!, /暂时无法保存/)
-    await act(async () => button('准备并加入画布').click())
+    await act(async () => { button('准备并加入画布').click(); await new Promise(resolve => setTimeout(resolve, 10)) })
     assert.equal(requests.filter(request => request.path.endsWith('/canvas/prepare')).length, 1)
     assert.equal(requests.filter(request => request.path.endsWith('/canvas/commit')).length, 2)
     assert.equal(requests.filter(request => request.path.endsWith('/storyboard/canvas')).length, 1)
@@ -216,7 +216,7 @@ test('a reference commit locks closing and repeated confirmation until the write
   })
   const view = await mount({ cancel: () => { cancelled++ } })
   try {
-    await act(async () => button('准备并加入画布').click())
+    await act(async () => { button('准备并加入画布').click(); await new Promise(resolve => setTimeout(resolve, 10)) })
     assert.equal(button('取消').disabled, true)
     assert.equal(button('关闭分镜制作准备').disabled, true)
     const primary = document.querySelector<HTMLButtonElement>('.storyboard-production-primary')
@@ -244,7 +244,7 @@ test('a verified historical pending design prepares its own references after ano
   const requests = mockRequests(t, { project: laterDetail, management: pendingSnapshot(), needsAnalysis: true })
   const view = await mount()
   try {
-    await act(async () => button('准备并加入画布').click())
+    await act(async () => { button('准备并加入画布').click(); await new Promise(resolve => setTimeout(resolve, 10)) })
     assert.deepEqual(requests.map(request => request.path.split('/').slice(-2).join('/')), ['projects/project', 'project/shot-management', 'canvas/check', 'canvas/prepare', 'canvas/commit', 'storyboard/canvas'])
     for (const request of requests.filter(request => /\/script\/canvas\/(check|prepare|commit)$/.test(request.path))) assert.equal(request.body.design_id, 'design')
     assert.deepEqual(requests.at(-1)!.body, { scene_ids: ['scene'], shot_ids: ['shot'], design_id: 'design', mode: 'existing' })
@@ -263,7 +263,7 @@ test('a historical design with an existing canvas prepares a later scene using t
   const requests = mockRequests(t, { project, management, needsAnalysis: true })
   const view = await mount({ sceneIds: ['second-scene'], shotIds: ['second-shot'] })
   try {
-    await act(async () => button('准备并加入画布').click())
+    await act(async () => { button('准备并加入画布').click(); await new Promise(resolve => setTimeout(resolve, 10)) })
     assert.deepEqual(requests.map(request => request.path.split('/').slice(-2).join('/')), ['projects/project', 'project/shot-management', 'canvas/check', 'canvas/prepare', 'canvas/commit', 'storyboard/canvas'])
     const references = requests.filter(request => /\/script\/canvas\/(check|prepare|commit)$/.test(request.path))
     assert.equal(references.length, 3)
@@ -282,7 +282,7 @@ test('a historical design whose linked canvas is missing is rejected before any 
   const requests = mockRequests(t, { project: laterDetail, management })
   const view = await mount()
   try {
-    await act(async () => button('准备并加入画布').click())
+    await act(async () => { button('准备并加入画布').click(); await new Promise(resolve => setTimeout(resolve, 10)) })
     assert.equal(requests.length, 2)
     assert.match(document.querySelector('[role="alert"]')!.textContent!, /方案|更新/)
     assert.throws(() => assertStoryboardProductionScope(laterDetail, 'project', ['scene'], ['shot'], 'design'))
@@ -294,7 +294,7 @@ test('a target shot moved to a different design is rejected before reference pre
   const requests = mockRequests(t, { project: laterDetail, management, needsAnalysis: true })
   const view = await mount()
   try {
-    await act(async () => button('准备并加入画布').click())
+    await act(async () => { button('准备并加入画布').click(); await new Promise(resolve => setTimeout(resolve, 10)) })
     assert.equal(requests.length, 2)
     assert.match(document.querySelector('[role="alert"]')!.textContent!, /方案|更新/)
   } finally { await view.destroy() }
@@ -305,7 +305,7 @@ test('base-plan production preserves the existing reference API contract without
   const requests = mockRequests(t, { project: { ...detail, shots: [{ ...detail.shots[0], design_id: null }] }, needsAnalysis: true })
   const view = await mount({ designId: null })
   try {
-    await act(async () => button('准备并加入画布').click())
+    await act(async () => { button('准备并加入画布').click(); await new Promise(resolve => setTimeout(resolve, 10)) })
     const references = requests.filter(request => /\/script\/canvas\/(check|prepare|commit)$/.test(request.path))
     assert.equal(references.length, 3)
     assert.ok(references.every(request => !Object.hasOwn(request.body, 'design_id')))

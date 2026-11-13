@@ -58,6 +58,11 @@ async function fixture(t: { after(fn: () => unknown): unknown }, handler?: Handl
     generateText: async (_projectId, modelId, prompt, contract, signal) => {
       assert.equal(modelId, 'mock-text')
       const name = contract?.name || ''; calls.push({ name, prompt })
+      if (!rawBatches && name === 'storyboard_targeted_repair') {
+        const repaired = handler ? await handler('controlled_storyboard', prompt, contract, signal) : raw
+        const data = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1))
+        return JSON.stringify({ patches: data.targets.map((target: any) => ({ ...target, shot: (repaired as any).scenes.find((scene: any) => scene.scene_id === target.scene_id).shots[target.shot_index] })) })
+      }
       if (!rawBatches && name === 'storyboard_scene_plan') {
         batchPlan = handler ? await handler('controlled_storyboard', prompt, contract, signal) : raw
         return JSON.stringify(storyboardOutlineFixture(batchPlan))
@@ -101,12 +106,15 @@ test('script planning uses scene and motion rules, reviews the compiled complete
   assert.equal(result.scenes[0].scene_direction, undefined)
   assert.deepEqual(result.used_skills.map((skill: { id: string }) => skill.id), [f.storyboard])
   assert.deepEqual(result.motion_skills.map((skill: { id: string }) => skill.id), [f.motion])
-  assert.deepEqual({ ...result.directing_review, content_signature: undefined }, { status: 'passed', repaired: false, issues: [], content_signature: undefined })
+  assert.equal(result.directing_review.status, 'passed')
+  assert.equal(result.directing_review.repaired, false)
+  assert.deepEqual(result.directing_review.issues, [])
+  assert.ok(result.directing_review.review_id)
   assert.match(result.directing_review.content_signature, /^[a-f0-9]{64}$/)
   assert.equal(first.continuity_plan.version, 1)
   assertNoWrites(f.project.id)
   const save = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/commit`, payload: {
-    signature: result.signature, request_id: crypto.randomUUID(), save_only: true,
+    signature: result.signature, review_id: result.directing_review.review_id, request_id: crypto.randomUUID(), save_only: true,
     scenes: result.scenes.map(({ scene_heading: _heading, ...scene }: Record<string, unknown>) => scene),
   } })
   assert.equal(save.statusCode, 200, save.body)
@@ -162,7 +170,7 @@ test('an explicitly selected video model supplies its own budget and invalidates
   assert.match(f.calls[0]!.prompt, /TARGET_SEEDANCE_DIALECT_SENTINEL/)
   run('UPDATE models SET settings=? WHERE id=?', JSON.stringify({ ...settings, max_reference_images: 5 }), videoId)
   const save = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/commit`, payload: {
-    signature: planned.signature, request_id: crypto.randomUUID(), target_video_model_id: videoId, save_only: true,
+    signature: planned.signature, review_id: planned.directing_review.review_id, request_id: crypto.randomUUID(), target_video_model_id: videoId, save_only: true,
     scenes: planned.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene),
   } })
   assert.equal(save.statusCode, 409, save.body)
@@ -171,12 +179,12 @@ test('an explicitly selected video model supplies its own budget and invalidates
   assert.equal(invalid.statusCode, 422, invalid.body)
 })
 
-test('automatic semantic repair is bounded to one rewrite and one fresh review', async t => {
+test('automatic semantic repair uses targeted patches and a fresh independent review', async t => {
   let generated = 0, reviewed = 0
   const f = await fixture(t, (name, prompt) => {
     if (name === 'controlled_storyboard') {
       generated++
-      if (generated === 2) { assert.match(prompt, /唯一一次内容修订/); assert.match(prompt, /后一镜不能再次走到门口/) }
+      if (generated === 2) { assert.match(prompt, /只修复有证据的镜头/); assert.match(prompt, /后一镜不能再次走到门口/) }
       return f.raw
     }
     reviewed++
@@ -184,7 +192,7 @@ test('automatic semantic repair is bounded to one rewrite and one fresh review',
   })
   const response = await f.plan()
   assert.equal(response.statusCode, 200, response.body)
-  assert.deepEqual(f.calls.map(call => call.name), ['controlled_storyboard', 'storyboard_directing_review', 'controlled_storyboard', 'storyboard_directing_review'])
+  assert.deepEqual(f.calls.map(call => call.name), ['controlled_storyboard', 'storyboard_directing_review', 'storyboard_targeted_repair', 'storyboard_directing_review'])
   assert.equal(response.json().directing_review.repaired, true)
   assertNoWrites(f.project.id)
 })
@@ -192,9 +200,9 @@ test('automatic semantic repair is bounded to one rewrite and one fresh review',
 test('a persistent directing error returns specific repair guidance without saving a draft as success', async t => {
   const f = await fixture(t, name => name === 'controlled_storyboard' ? f.raw : { issues: [issue(f.scene.id)] })
   const response = await f.plan()
-  assert.equal(response.statusCode, 422, response.body)
-  assert.match(response.body, /一次内容修订后仍未通过/)
-  assert.match(response.body, /第2镜/); assert.match(response.body, /只保留反应/)
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(response.json().directing_review.status, 'needs_work')
+  assert.match(response.body, /只保留反应/)
   assert.equal(f.calls.length, 4)
   assertNoWrites(f.project.id)
 })
@@ -202,7 +210,8 @@ test('a persistent directing error returns specific repair guidance without savi
 test('review cannot cite shots outside this draft even after its format correction', async t => {
   const f = await fixture(t, name => name === 'controlled_storyboard' ? f.raw : { issues: [issue('unselected-scene')] })
   const response = await f.plan()
-  assert.equal(response.statusCode, 422, response.body)
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(response.json().directing_review.status, 'inconclusive')
   assert.match(response.body, /范围之外/)
   assert.equal(f.calls.filter(call => call.name === 'controlled_storyboard').length, 1)
   assert.equal(f.calls.filter(call => call.name === 'storyboard_directing_review').length, 2)
@@ -219,8 +228,9 @@ test('source-backed speech and selected scope are revalidated during semantic re
     return bad
   })
   const response = await f.plan()
-  assert.equal(response.statusCode, 422, response.body)
-  assert.equal(generated, 3, 'one semantic rewrite with the existing single format correction')
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(response.json().directing_review.status, 'inconclusive')
+  assert.equal(generated, 3, 'invalid targeted patch receives the existing format correction')
   assert.equal(f.calls.filter(call => call.name === 'storyboard_directing_review').length, 1)
   assertNoWrites(f.project.id)
 })
@@ -365,7 +375,7 @@ test('reestimating a historical two-second scene previews a longer plan and save
   const review = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/review`,
     payload: { ...reviewPayload, duration_mode: 'reestimate' } })
   assert.equal(review.statusCode, 200, review.body)
-  const payload = { signature: result.signature, request_id: crypto.randomUUID(), save_only: true, scenes }
+  const payload = { signature: result.signature, review_id: result.directing_review.review_id, request_id: crypto.randomUUID(), save_only: true, scenes }
   const wrongSave = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/commit`, payload })
   assert.equal(wrongSave.statusCode, 409, wrongSave.body)
   assertNoWrites(f.project.id)
@@ -407,17 +417,19 @@ test('semantic repair may revise estimated scene duration and must review the re
   const f = await fixture(t, (name, prompt) => {
     if (name === 'controlled_storyboard') {
       generated++
-      if (generated === 2) assert.match(prompt, /按剧情重新估时允许同步修正场次与镜头时长/)
-      return timedPlan(f, generated === 1 ? 40 : 60)
+      if (generated === 2) assert.match(prompt, /只有issues明确timing_change:true/)
+      const plan = timedPlan(f, generated === 1 ? 40 : 50)
+      if (generated > 1) { plan.scenes[0].shots[0].duration = 20; plan.scenes[0].shots[1].duration = 30 }
+      return plan
     }
     reviewed++
-    assert.match(prompt, new RegExp(`"scene_duration":${reviewed === 1 ? 40 : 60}`))
-    return { issues: reviewed === 1 ? [{ ...issue(f.scene.id), code: 'unfilmable_motion',
+    assert.match(prompt, new RegExp(`"scene_duration":${reviewed === 1 ? 40 : 50}`))
+    return { issues: reviewed === 1 ? [{ ...issue(f.scene.id), code: 'unfilmable_motion', timing_change: true,
       message: '本镜对白与动作无法在当前时长内完成', repair: '保留完整内容并增加表演和停顿时间' }] : [] }
   })
   const response = await f.plan({ duration_mode: 'reestimate' })
   assert.equal(response.statusCode, 200, response.body)
-  assert.equal(response.json().scenes[0].scene_duration, 60)
+  assert.equal(response.json().scenes[0].scene_duration, 50)
   assert.equal(response.json().directing_review.repaired, true)
   assert.equal(reviewed, 2)
   assertNoWrites(f.project.id)
@@ -434,8 +446,10 @@ test('an explicit total stays exact during semantic repair and conflicts with re
   assert.match(conflict.body, /不能同时使用/)
   assert.equal(f.calls.length, 0)
   const response = await f.plan({ target_duration: 40 })
-  assert.equal(response.statusCode, 422, response.body)
-  assert.match(response.body, /总时长必须为 40 秒/)
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(response.json().directing_review.status, 'inconclusive')
+  assert.equal(response.json().scenes[0].scene_duration, 40)
+  assert.match(response.body, /不得改变镜头身份、已确定时长/)
   assert.equal(generated, 3, 'the off-target rewrite gets only the existing format correction')
   assert.equal(reviewed, 1, 'an off-target repaired draft never reaches another semantic review')
   assertNoWrites(f.project.id)
@@ -448,7 +462,7 @@ test('a changed source invalidates a reestimated preview before confirmation', a
   const result = response.json()
   run('UPDATE script_scenes SET duration=? WHERE id=?', 11, f.scene.id)
   const saved = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/commit`, payload: {
-    signature: result.signature, request_id: crypto.randomUUID(), save_only: true,
+    signature: result.signature, review_id: result.directing_review.review_id, request_id: crypto.randomUUID(), save_only: true,
     duration_mode: 'reestimate', scenes: editableScenes(result),
   } })
   assert.equal(saved.statusCode, 409, saved.body)
@@ -541,34 +555,27 @@ test('reestimating a two-second historical scene into 90 seconds uses recoverabl
   assertNoWrites(f.project.id)
 })
 
-test('a long-scene repair resumes its own batches without repeating the initial plan or accepted first review', async t => {
-  let outlineCount = 0, reviews = 0, interrupted = true, initial: any, revised: any
-  const offsets: string[] = []
-  const f = await fixture(t, (name, _prompt, contract) => {
-    if (name === 'storyboard_scene_plan') return storyboardOutlineFixture(++outlineCount === 1 ? initial : revised)
-    if (name === 'storyboard_shot_batch') {
-      const batch = storyboardBatchFixture(outlineCount === 1 ? initial : revised, contract!)
-      offsets.push(`${outlineCount}:${batch.shots[0]!.shot_index}`)
-      if (outlineCount === 2 && batch.shots[0]!.shot_index === 2 && interrupted) throw new Error('repair batch interrupted')
-      return batch
+test('a long-scene local repair keeps unrelated completed shots and never repeats outline batches', async t => {
+  let outlines = 0, reviews = 0, initial: any
+  const f = await fixture(t, (name, prompt, contract) => {
+    if (name === 'storyboard_scene_plan') { outlines++; return storyboardOutlineFixture(initial) }
+    if (name === 'storyboard_shot_batch') return storyboardBatchFixture(initial, contract!)
+    if (name === 'storyboard_targeted_repair') {
+      const data = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1))
+      return { patches: data.targets.map((target: any) => ({ ...target, shot: { ...initial.scenes[0].shots[target.shot_index], title: `局部修复${target.shot_index}` } })) }
     }
     return { issues: ++reviews === 1 ? [issue(f.scene.id)] : [] }
   }, true)
-  initial = longScenePlan(f); revised = longScenePlan(f, '修订')
+  initial = longScenePlan(f)
   run('UPDATE script_scenes SET duration=? WHERE id=?', 90, f.scene.id)
-  const input = await taskInput(f), start = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/tasks`,
-    payload: { ...input, request_id: crypto.randomUUID() } })
-  const id = start.json().id, failed = await taskState(f.routes, f.project.id, id)
-  assert.equal(failed.status, 'failed'); assert.equal(failed.stage, 'repairing')
-  assert.equal(failed.candidate.directing_review.status, 'pending_review')
-  assert.deepEqual(failed.progress, { phase: 'shots', completed_shots: 2, total_shots: 5 })
-  interrupted = false
-  await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/tasks/${id}/resume`, payload: {} })
-  const completed = await taskState(f.routes, f.project.id, id)
+  const start = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/tasks`,
+    payload: { ...await taskInput(f), request_id: crypto.randomUUID() } })
+  const completed = await taskState(f.routes, f.project.id, start.json().id)
   assert.equal(completed.status, 'succeeded'); assert.equal(completed.result.directing_review.repaired, true)
-  assert.equal(outlineCount, 2); assert.equal(reviews, 2)
-  assert.deepEqual(offsets, ['1:0', '1:2', '1:4', '2:0', '2:2', '2:2', '2:4'])
-  assert.ok(completed.result.scenes[0].shots.every((shot: any) => shot.title.startsWith('修订')))
+  assert.equal(outlines, 1); assert.equal(reviews, 2)
+  const shots = completed.result.scenes[0].shots
+  assert.ok(shots[0].title.startsWith('局部修复')); assert.ok(shots[1].title.startsWith('局部修复'))
+  assert.deepEqual(shots.slice(2).map((shot: any) => shot.title), initial.scenes[0].shots.slice(2).map((shot: any) => shot.title))
   assertNoWrites(f.project.id)
 })
 
@@ -615,7 +622,7 @@ test('background tasks expose a validated read-only candidate, deduplicate start
   assertNoWrites(f.project.id)
 })
 
-test('a failed director review keeps its candidate and explicit resume only reviews the saved candidate', async t => {
+test('a failed director review retains an inconclusive result and explicit review never regenerates', async t => {
   let reviews = 0
   const f = await fixture(t, name => {
     if (name === 'controlled_storyboard') return f.raw
@@ -624,21 +631,21 @@ test('a failed director review keeps its candidate and explicit resume only revi
   })
   const input = await taskInput(f)
   const start = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/tasks`, payload: { ...input, request_id: crypto.randomUUID() } })
-  const id = start.json().id, failed = await taskState(f.routes, f.project.id, id)
-  assert.equal(failed.status, 'failed'); assert.equal(failed.error.stage, 'reviewing')
-  assert.equal(failed.can_resume, true); assert.equal(failed.candidate.directing_review.status, 'pending_review')
+  const id = start.json().id, finished = await taskState(f.routes, f.project.id, id)
+  assert.equal(finished.status, 'succeeded'); assert.equal(finished.result.directing_review.status, 'inconclusive')
+  assert.equal(finished.can_resume, false)
   const lookup = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/tasks/lookup`, payload: input })
   assert.equal(lookup.json().task.id, id)
-  assert.equal(f.calls.length, 2, 'status lookup does not resume paid work')
-  const resume = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/tasks/${id}/resume`, payload: {} })
-  assert.equal(resume.statusCode, 200, resume.body)
-  const completed = await taskState(f.routes, f.project.id, id)
-  assert.equal(completed.status, 'succeeded')
+  assert.equal(f.calls.length, 2)
+  const review = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/review`, payload: {
+    signature: finished.result.signature, model_id: 'mock-text', scenes: finished.result.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene),
+  } })
+  assert.equal(review.statusCode, 200, review.body); assert.equal(review.json().status, 'passed')
   assert.deepEqual(f.calls.map(call => call.name), ['controlled_storyboard', 'storyboard_directing_review', 'storyboard_directing_review'])
   assertNoWrites(f.project.id)
 })
 
-test('a failed second review resumes the revised candidate without repeating either generation or the first review', async t => {
+test('a failed second review retains the revised draft and re-review never regenerates or repairs', async t => {
   let reviews = 0
   const f = await fixture(t, name => {
     if (name === 'controlled_storyboard') return f.raw
@@ -648,13 +655,15 @@ test('a failed second review resumes the revised candidate without repeating eit
     return { issues: [] }
   })
   const start = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/tasks`, payload: { ...await taskInput(f), request_id: crypto.randomUUID() } })
-  const id = start.json().id, failed = await taskState(f.routes, f.project.id, id)
-  assert.equal(failed.stage, 'rechecking'); assert.equal(failed.candidate.directing_review.repaired, true)
-  const resumed = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/tasks/${id}/resume`, payload: {} })
-  assert.equal(resumed.statusCode, 200, resumed.body)
-  const completed = await taskState(f.routes, f.project.id, id)
-  assert.equal(completed.status, 'succeeded')
-  assert.equal(f.calls.filter(call => call.name === 'controlled_storyboard').length, 2)
+  const finished = await taskState(f.routes, f.project.id, start.json().id)
+  assert.equal(finished.status, 'succeeded'); assert.equal(finished.result.directing_review.status, 'inconclusive')
+  assert.equal(finished.result.directing_review.repaired, true); assert.equal(finished.result.directing_review.issues.length, 1)
+  const review = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/review`, payload: {
+    signature: finished.result.signature, model_id: 'mock-text', scenes: finished.result.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene),
+  } })
+  assert.equal(review.statusCode, 200, review.body); assert.equal(review.json().status, 'passed')
+  assert.equal(f.calls.filter(call => call.name === 'controlled_storyboard').length, 1)
+  assert.equal(f.calls.filter(call => call.name === 'storyboard_targeted_repair').length, 1)
   assert.equal(f.calls.filter(call => call.name === 'storyboard_directing_review').length, 3)
   assertNoWrites(f.project.id)
 })
@@ -719,4 +728,83 @@ test('completed task GET rejects changed settings under the same selected model 
   const stale = await f.routes.inject({ method: 'GET', url: `/api/projects/${f.project.id}/script/storyboard/tasks/${id}` })
   assert.equal(stale.statusCode, 409, stale.body)
   assert.equal(f.calls.length, 2)
+})
+
+
+test('commit requires a server review of the current body and preserves accepted request replay', async t => {
+  const f = await fixture(t), response = await f.plan(), plan = response.json()
+  const scenes = plan.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene)
+  const request = { signature: plan.signature, request_id: crypto.randomUUID(), save_only: true, scenes }
+  const commit = (payload: object) => f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/commit`, payload })
+  for (const review_id of [undefined, 'forged-review']) {
+    const rejected = await commit({ ...request, review_id })
+    assert.equal(rejected.statusCode, 409, rejected.body); assertNoWrites(f.project.id)
+  }
+  const edited = structuredClone(scenes); edited[0].shots[0].title += '手工修改'
+  const rejected = await commit({ ...request, scenes: edited, review_id: plan.directing_review.review_id })
+  assert.equal(rejected.statusCode, 409, rejected.body); assertNoWrites(f.project.id)
+  const saved = await commit({ ...request, review_id: plan.directing_review.review_id })
+  assert.equal(saved.statusCode, 200, saved.body)
+  const replay = await commit(request)
+  assert.equal(replay.statusCode, 200, replay.body); assert.equal(replay.json().replayed, true)
+  assert.equal(f.calls.length, 2, 'commit and replay never request another model')
+})
+
+test('manual repair permits authorized retiming and carries the same latest formal sources into repair and re-review', async t => {
+  let generated = 0, reviewed = 0
+  const f = await fixture(t, (name, prompt) => {
+    if (name === 'controlled_storyboard') {
+      generated++
+      const value = timedPlan(f, generated < 3 ? 40 : 50)
+      if (generated === 3) {
+        assert.match(prompt, /"source_scenes"/); assert.match(prompt, /"source_documents"/)
+        assert.match(prompt, /LATEST_FORMAL_EPISODE/); assert.match(prompt, /"source_policy"/); assert.match(prompt, /"creative_authority"/)
+        value.scenes[0]!.shots[0]!.duration = 20; value.scenes[0]!.shots[1]!.duration = 30
+        const previous = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1)).readonly_plan.scenes[0]
+        value.scenes[0]!.shots.forEach((shot: any, index: number) => { shot.audio_plan = previous.shots[index].audio_plan })
+      }
+      return value
+    }
+    reviewed++
+    if (reviewed === 3) {
+      assert.match(prompt, /"scene_duration":50/); assert.match(prompt, /LATEST_FORMAL_EPISODE/)
+      assert.match(prompt, /"source_policy"/); assert.match(prompt, /"creative_authority"/)
+    }
+    return { issues: reviewed < 3 ? [{ ...issue(f.scene.id), timing_change: true }] : [] }
+  })
+  const update = await app.inject({ method: 'PUT', url: `/api/projects/${f.project.id}/script/artifacts`, payload: { artifacts: [{
+    artifact_type: 'episode_script', episode_number: 1, title: '本集最新正式正文', content: 'LATEST_FORMAL_EPISODE：阿宁停在门前，听门内声音。', status: 'ready',
+  }] } })
+  assert.equal(update.statusCode, 200, update.body)
+  const response = await f.plan({ signature: (await currentPlanningContext(f)).signature, duration_mode: 'reestimate' })
+  assert.equal(response.statusCode, 200, response.body)
+  const result = response.json()
+  assert.equal(result.directing_review.status, 'needs_work')
+  const scenes = result.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene)
+  const repaired = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/repair`, payload: {
+    signature: result.signature, duration_mode: 'reestimate', model_id: 'mock-text', review_id: result.directing_review.review_id, scenes,
+  } })
+  assert.equal(repaired.statusCode, 200, repaired.body)
+  assert.equal(repaired.json().directing_review.status, 'passed', repaired.body)
+  assert.equal(repaired.json().scenes[0].scene_duration, 50)
+  assert.equal(repaired.json().scenes[0].shots[0].duration, 20)
+  assert.equal(generated, 3); assert.equal(reviewed, 3)
+  assertNoWrites(f.project.id)
+})
+
+test('manual repair requires a current needs-work review and cannot reuse an inconclusive report', async t => {
+  for (const inconclusive of [false, true]) {
+    const f = await fixture(t, name => {
+      if (name === 'controlled_storyboard') return f.raw
+      if (inconclusive) throw new Error('review disconnected')
+      return { issues: [] }
+    })
+    const plan = (await f.plan()).json(), before = f.calls.length
+    const repaired = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/repair`, payload: {
+      signature: plan.signature, model_id: 'mock-text', review_id: plan.directing_review.review_id,
+      scenes: plan.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene),
+    } })
+    assert.equal(repaired.statusCode, 409, repaired.body); assert.equal(f.calls.length, before)
+    assertNoWrites(f.project.id)
+  }
 })

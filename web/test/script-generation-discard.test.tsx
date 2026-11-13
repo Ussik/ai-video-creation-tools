@@ -75,6 +75,7 @@ async function mount(t: TestContext, staleCheckpoint = false) {
     input.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
   })
   await act(async () => button('发送消息').click())
+  for (let index = 0; !document.querySelector('[aria-label="剧本草稿预览"]') && index < 100; index++) await act(() => new Promise(resolve => setTimeout(resolve, 1)))
   return { container, discards, calls, refreshed: () => refreshed, closed: () => closed, retainedDocuments: () => retainedDocuments,
     async destroy() { await act(() => root.unmount()); container.remove() } }
 }

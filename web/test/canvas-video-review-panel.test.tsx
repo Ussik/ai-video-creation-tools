@@ -22,6 +22,7 @@ const { default: Panel } = await import('../src/features/canvas/CanvasVideoRevie
 const { rememberModelSelection } = await import('../src/features/models/model-selection-store')
 beforeEach(() => rememberModelSelection('text', null))
 after(() => dom.window.close())
+beforeEach(() => dom.window.localStorage.clear())
 
 const report: VideoReviewReport = {
   id: 'report-one', project_id: 'project', asset_id: 'video', shot_id: 'shot', model_id: 'vision', model_name: '画面理解模型',

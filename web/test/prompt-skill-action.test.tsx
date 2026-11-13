@@ -353,3 +353,32 @@ test('model-reported board view loss and unresolved content-check errors block a
     assert.deepEqual(view.applied, [])
   } finally { await view.close() }
 })
+
+
+test('retained quality-failed candidate remains editable; edit invalidates approval and exact review enables apply', async () => {
+  const requests: Array<Record<string, unknown>> = []
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith('/skills/defaults')) return Response.json({ policies: policies() })
+    const input = JSON.parse(String(init?.body)); requests.push(input)
+    return Response.json({ prompt: input.action === 'review' ? input.candidate_prompt : '保留的完整草稿', skills: [], quality: {
+      status: input.action === 'review' ? 'passed' : 'needs_work', review_id: 'receipt', content_signature: 'content', source_signature: 'source',
+      evidence: [{ id: 'fact', disposition: 'confirmed', reason: '原文没有此动作', source_key: 'source', quote: '原始主要创作内容' }],
+    } })
+  }
+  const view = await mount()
+  try {
+    await act(() => button('使用技能整理提示词').click()); await act(async () => button('生成整理草稿').click())
+    assert.equal(editable('整理后的主要内容').textContent, '保留的完整草稿'); assert.equal(button('应用正文').disabled, true)
+    assert.match(document.body.textContent!, /原文没有此动作/)
+    await edit('整理后的主要内容', '人工修订的完整草稿')
+    assert.match(document.body.textContent!, /草稿已修改/); assert.match(document.body.textContent!, /原文没有此动作/)
+    assert.equal(button('应用正文').disabled, true)
+    await act(async () => button('复查当前草稿').click())
+    assert.equal(requests.length, 2); assert.equal(requests[1].action, 'review'); assert.equal(requests[1].candidate_prompt, '人工修订的完整草稿')
+    assert.equal(requests[1].prompt, sourcePrompt); assert.equal(requests[1].source_signature, 'source')
+    assert.equal(button('应用正文').disabled, false)
+    await edit('整理后的主要内容', '复查后的新编辑'); assert.equal(button('应用正文').disabled, true)
+    await act(async () => button('复查当前草稿').click()); await act(() => button('应用正文').click())
+    assert.equal(view.applied[0].body, '复查后的新编辑')
+  } finally { await view.close() }
+})

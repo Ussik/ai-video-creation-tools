@@ -1,3 +1,4 @@
+import { candidateQualityAccepted } from '@video-studio/shared/api/ai-candidate-quality'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -143,10 +144,16 @@ test('long route edits resume pages with intact source, rules, ordered pixels an
   const invoke = () => instance.inject({ method: 'POST', url: `/api/projects/${f.project.id}/skills/refine-prompt`, payload: f.payload })
   assert.equal((await invoke()).statusCode, 422)
   failPage = false
-  assert.equal((await invoke()).statusCode, 422, 'independent review failure cannot return a final candidate')
+  const interruptedReview = await invoke()
+  assert.equal(interruptedReview.statusCode, 200)
+  assert.equal(interruptedReview.json().quality.status, 'inconclusive')
+  assert.equal(candidateQualityAccepted(interruptedReview.json().quality), false, 'a retained draft cannot be applied until its independent review passes')
+  assert.match(interruptedReview.json().prompt_body, /清楚抬起右手/)
+  assert.match(interruptedReview.json().quality.error.message, /独立审读中断/)
   const before = page
   failReview = false
-  const result = await invoke(); assert.equal(result.statusCode, 200, result.body)
+  const result = await invoke(); assert.equal(result.statusCode, 200)
+  assert.equal(candidateQualityAccepted(result.json().quality), true)
   assert.equal(page, before, 'review resume must reuse the fully validated candidate without new patch requests')
   assert.equal(reviews, 2)
   const expected = f.source.replace('她缓慢抬手。', '她清楚抬起右手。').replace('结束状态：林晚仍站在门边。', '结束状态：林晚望向门外。')
@@ -176,10 +183,16 @@ test('long protected documents preserve fixed sections and reject dialogue remov
   const original = withProjectStyle(f.source, { version: 'fixture', source: 'settings', label: '水墨动画', details: {} })
   const payload = { ...f.payload, prompt: original, prompt_document: true, analyze_reference_images: false, check_video_content: false, restart: true }
   const invoke = () => instance.inject({ method: 'POST', url: `/api/projects/${f.project.id}/skills/refine-prompt`, payload })
-  let result = await invoke(); assert.equal(result.statusCode, 422, result.body); assert.match(result.body, /逐字对白/)
+  let result = await invoke()
+  assert.equal(result.statusCode, 200)
+  assert.equal(result.json().quality.status, 'needs_work')
+  assert.equal(candidateQualityAccepted(result.json().quality), false)
+  assert.deepEqual(result.json().diagnostics.dialogue.missing, ['我会回来的。'])
+  assert.equal(all('SELECT id FROM jobs WHERE project_id=?', f.project.id).length, 0)
   bad = 'parameters'; result = await invoke(); assert.equal(result.statusCode, 422, result.body); assert.match(result.body, /画面比例/)
   bad = 'reference'; result = await invoke(); assert.equal(result.statusCode, 422, result.body); assert.match(result.body, /参考图 2/)
-  bad = 'none'; result = await invoke(); assert.equal(result.statusCode, 200, result.body)
+  bad = 'none'; result = await invoke(); assert.equal(result.statusCode, 200)
+  assert.equal(candidateQualityAccepted(result.json().quality), true)
   assert.deepEqual(getManagedPromptBlocks(result.json().prompt), getManagedPromptBlocks(original))
   assert.equal(stripManagedPromptBlocks(result.json().prompt).trim(), f.source.replace('她缓慢抬手。', '她清楚抬起右手。'))
   assert.equal(calls, 7, 'each invalid proposal gets one format correction without persisting invalid edits')

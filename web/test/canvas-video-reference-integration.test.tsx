@@ -43,9 +43,13 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, getComputedStyle: do
 Object.defineProperty(dom.window, 'matchMedia', { value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) })
 Object.defineProperty(dom.window.document, 'fonts', { value: { addEventListener() {}, removeEventListener() {} } })
 const generationLocks = new Map<string, Promise<unknown>>()
-Object.defineProperty(dom.window.navigator, 'locks', { configurable: true, value: { request: async (name: string, action: () => Promise<unknown>) => {
+Object.defineProperty(dom.window.navigator, 'locks', { configurable: true, value: { request: async (name: string, optionsOrAction: { ifAvailable?: boolean; signal?: AbortSignal } | ((lock: unknown) => Promise<unknown>), maybeAction?: (lock: unknown) => Promise<unknown>) => {
+  const options = typeof optionsOrAction === 'function' ? {} : optionsOrAction
+  if (options.ifAvailable && options.signal) throw new DOMException('ifAvailable and signal cannot be combined', 'NotSupportedError')
+  const action = maybeAction || optionsOrAction as (lock: unknown) => Promise<unknown>
+  if (options.ifAvailable && generationLocks.has(name)) return action(null)
   const previous = generationLocks.get(name) || Promise.resolve()
-  const running = previous.catch(() => {}).then(action)
+  const running = previous.catch(() => {}).then(() => { options.signal?.throwIfAborted(); return action({ name }) })
   generationLocks.set(name, running)
   try { return await running } finally { if (generationLocks.get(name) === running) generationLocks.delete(name) }
 } } })
@@ -211,6 +215,7 @@ function mockApi(t: TestContext, graph: CanvasGraph, projectDetail = detail, han
   return { previews, resolvedPreviews, saved, analyses }
 }
 async function settle() {
+  await act(() => new Promise(resolve => setTimeout(resolve, 10)))
   await act(async () => {
     for (let pass = 0; pass < 8; pass++) {
       await Promise.resolve()
@@ -1211,6 +1216,7 @@ test('video preparation retains its failure and retries the same source action f
     const retry = [...status()!.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '重新分析')
     assert.ok(retry)
     await act(() => retry.click()); await settle()
+    for (let index = 0; api.analyses.length < 2 && index < 100; index++) await act(() => new Promise(resolve => setTimeout(resolve, 1)))
     assert.equal(api.analyses.length, 2)
     assert.match(status()!.textContent!, /正在理解本镜动作与台词/)
     assert.deepEqual(api.analyses[1], api.analyses[0], 'retry analyzes the same authored image and shot')

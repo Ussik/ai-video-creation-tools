@@ -208,7 +208,7 @@ test('setting-board refinement incorporates main content and supplements once wh
   assert.deepEqual(parts.primary, [modelBody])
   assert.equal(parts.supplement, '')
   assert.deepEqual(parts.context, blocks.slice(1))
-  assert.equal(result.prompt_body, '')
+  assert.equal(result.prompt_body, modelBody)
   assert.equal(result.prompt.split(modelBody).length - 1, 1)
   assert.match(captured, /原提示词：\n保留创作者定制的四视图与额外的旧木网针细节。\n\n把视图排列清楚。/)
   const readonlyContext = captured.split('当前文档只读结构上下文：')[1]!.split('\n实际参考图')[0]!
@@ -257,8 +257,10 @@ test('setting drafts that lose explicit current views are corrected once and nev
   const response = await refineApp.inject({ method: 'POST', url: `/api/projects/${project.id}/skills/refine-prompt`, payload: {
     ...input, shot_id: undefined, reference_asset_ids: [], prompt_document: true, prompt: primary,
   } })
-  assert.equal(response.statusCode, 422, response.body)
-  assert.match(response.body, /已修正一次.*未保留设定图展示要求.*俯视/)
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(response.json().quality.status, 'needs_work')
+  assert.equal(response.json().prompt_body, invalid)
+  assert.match(response.body, /未保留设定图展示要求.*俯视/)
   assert.equal(calls, before + 2)
   assert.deepEqual(tables.map(table => all(`SELECT * FROM ${table}`)), saved)
 })
@@ -273,7 +275,8 @@ test('fixed parameter conflicts fail before generation while natural-language bo
       ...input, shot_id: undefined, reference_asset_ids: [], prompt_document: true,
       prompt: '【设定图固定要求】\n需要展示：正侧背三视图。\n【设定图固定要求结束】', adjustment_request,
     } })
-    assert.equal(response.statusCode, 422, response.body)
+    assert.equal(response.statusCode, adjustment_request.startsWith('画面比例') ? 422 : 200, response.body)
+    if (!adjustment_request.startsWith('画面比例')) assert.equal(response.json().quality.status, 'needs_work')
     assert.match(response.body, /调整要求.*冲突/)
   }
   assert.equal(calls, before + 2)
@@ -688,7 +691,7 @@ test('wrong image identity in the model body receives bounded correction and val
   assert.deepEqual(result.reference_asset_ids, assets.slice(0, 2))
 })
 
-test('a model that repeatedly omits the explicitly added character fails rather than returning a misleading successful draft', async () => {
+test('a model that repeatedly omits the explicitly added character retains a draft requiring work', async () => {
   const { project, input, assets } = await fixture(), before = calls
   const tables = ['shots', 'shot_visual_bindings', 'canvas_nodes', 'jobs']
   const saved = tables.map(table => all(`SELECT * FROM ${table}`))
@@ -698,8 +701,9 @@ test('a model that repeatedly omits the explicitly added character fails rather 
     ...input, prompt_document: true, prompt: '姜望坐在船边。', explicit_reference_asset_ids: [assets[1]],
     adjustment_request: `加入陆沉舟作为新角色，外观使用[[ref:${assets[1]}]]。`,
   } })
-  assert.equal(response.statusCode, 422, response.body)
-  assert.match(response.body, /已修正一次.*未落实新增人物/)
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(response.json().quality.status, 'needs_work')
+  assert.match(response.body, /未落实新增人物/)
   assert.equal(calls, before + 2)
   assert.deepEqual(tables.map(table => all(`SELECT * FROM ${table}`)), saved)
 })

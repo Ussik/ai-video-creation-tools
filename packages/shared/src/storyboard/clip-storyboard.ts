@@ -20,6 +20,7 @@ export interface ClipStoryboardPlanInput {
 }
 export interface ClipStoryboardCommitInput {
   request_id: string
+  review_id?: string
   signature: string
   source_text: string
   total_duration: number

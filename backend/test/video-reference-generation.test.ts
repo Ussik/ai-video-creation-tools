@@ -1,3 +1,4 @@
+import { validVideo } from './fixtures/valid-video.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -117,7 +118,7 @@ test('Seedance provider sends storyboard plus character/scene/prop images with r
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
     if (init?.method === 'POST') { submissions.push(JSON.parse(String(init.body))); return Response.json({ id: 'video-ref-task' }) }
     if (String(url).includes('/tasks/')) return Response.json({ status: 'succeeded', content: { video_url: 'https://video.invalid/generated.mp4' } })
-    return new Response('mock video result', { headers: { 'Content-Type': 'video/mp4' } })
+    return new Response(validVideo, { headers: { 'Content-Type': 'video/mp4' } })
   })
   const settings = { ...seedance2VideoSettings(), poll_seconds: 0.001, mode_variables: { reference: { ratio: 'adaptive', resolution: '720p' } } }
   const result = await generate({ id: 'test', remote_id: 'declared', modality: 'video', settings },
@@ -131,7 +132,7 @@ test('Seedance provider sends storyboard plus character/scene/prop images with r
   assert.equal(content.length, 5)
   assert.deepEqual(content.slice(1).map(item => item.role), ['reference_image', 'reference_image', 'reference_image', 'reference_image'])
   for (let index = 0; index < references.length; index++) assert.equal(content[index + 1]!.image_url!.url, `data:image/png;base64,${(await readFile(references[index]!.path)).toString('base64')}`)
-  assert.equal(await readFile(result.path, 'utf8'), 'mock video result')
+  assert.deepEqual(await readFile(result.path), validVideo)
 })
 
 test('preflight rejects the exact Base64 request above 64 MB before submitting any provider request', async () => {
@@ -157,7 +158,7 @@ test('actual decoded MIME survives incorrect filename extensions and unsupported
       return Response.json({ id: 'mime-task' })
     }
     if (String(url).includes('/tasks/')) return Response.json({ status: 'succeeded', content: { video_url: 'https://video.invalid/mime.mp4' } })
-    return new Response('mock video', { headers: { 'Content-Type': 'video/mp4' } })
+    return new Response(validVideo, { headers: { 'Content-Type': 'video/mp4' } })
   })
   await generate({ id: 'mime-test', remote_id: 'configured', modality: 'video', settings },
     { adapter: 'http', base_url: 'https://video.invalid/api/v3' }, { prompt: '动作', mode: 'first_frame' },

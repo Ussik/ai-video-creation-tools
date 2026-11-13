@@ -1,3 +1,4 @@
+import { beforeMediaDispatch, mediaExecutionSignal } from './media-execution.js'
 import { modelStepSignal } from '../../modules/generation/model-execution.js'
 import { observeProviderFetch } from './text-request-plan.js'
 import { randomUUID } from 'node:crypto'
@@ -9,6 +10,9 @@ export interface SpeechSynthesisInput {
   instructions?: string
   context_text?: string
   speech_rate?: number
+  /** Persisted by the caller before dispatch; correlation, not provider idempotency. */
+  request_id?: string
+  signal?: AbortSignal
 }
 
 export interface SpeechWordTimestamp {
@@ -78,9 +82,10 @@ export async function synthesizeSpeech(rawInput: SpeechSynthesisInput, fetchImpl
   const input = validatedInput(rawInput)
   const performance = [input.instructions?.trim(), input.context_text?.trim()
     ? `情境参考（不要朗读）：\n${input.context_text.trim()}` : ''].filter(Boolean).join('\n')
-  const requestId = randomUUID()
+  const requestId = input.request_id ?? randomUUID()
+  if (!/^[a-zA-Z0-9_-]{1,160}$/.test(requestId)) throw new Error('语音请求编号无效，未发送。')
   const controller = new AbortController()
-  const parent = modelStepSignal()
+  const parent = modelStepSignal(input.signal ?? mediaExecutionSignal())
   const abortParent = () => controller.abort(parent!.reason)
   if (parent?.aborted) abortParent()
   else parent?.addEventListener('abort', abortParent, { once: true })
@@ -88,7 +93,10 @@ export async function synthesizeSpeech(rawInput: SpeechSynthesisInput, fetchImpl
   timer.unref()
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
   let completed = false
+  let dispatched = false
   try {
+    beforeMediaDispatch(requestId)
+    dispatched = true
     const response = await withAbort(observeProviderFetch(endpoint, {
       method: 'POST',
       headers: {
@@ -190,9 +198,12 @@ export async function synthesizeSpeech(rawInput: SpeechSynthesisInput, fetchImpl
       subtitles, usage_characters: usageCharacters, request_id: requestId }
   } catch (error) {
     if (parent?.aborted) throw parent.reason
-    if (controller.signal.aborted) throw timeoutError()
-    if (error instanceof SpeechProviderError) throw error
-    throw new Error('语音服务连接失败，请检查网络与调用记录后再手动重试。')
+    if (!dispatched) throw error
+    const failure = controller.signal.aborted ? timeoutError() : error instanceof SpeechProviderError ? error
+      : new SpeechProviderError('语音服务连接失败，请检查网络与调用记录后再手动重试。')
+    // Correlation survives failures; the vendor does not promise idempotency for this ID.
+    failure.message += `（请求编号：${requestId}）`
+    throw Object.assign(failure, { code: 'speech_provider_error', provider_request_id: requestId, delivery: 'unknown' as const })
   } finally {
     parent?.removeEventListener('abort', abortParent)
     clearTimeout(timer)

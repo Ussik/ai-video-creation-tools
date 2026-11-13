@@ -1,6 +1,8 @@
 import { WorkspaceDisclosure } from '../../shared/ui/WorkspaceDisclosure'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { UnstyledButton, Button, Input, Modal, Select, Switch, Textarea } from '@mantine/core'
+import { candidateQualityAccepted, type CandidateQuality } from '@video-studio/shared/api/ai-candidate-quality'
+import type { PromptRefinementResult } from '@video-studio/shared/skills/prompt-refinement-types'
 import type { VideoPromptDiagnostics } from '@video-studio/shared/media/video-prompt-checks'
 import PromptVideoChecks from './PromptVideoChecks'
 import { ArrowLeft, ChevronDown, LoaderCircle, Puzzle, ShieldCheck, WandSparkles } from 'lucide-react'
@@ -52,6 +54,9 @@ const profileDirections = [
 export default function PromptSkillAction(props: Props) {
   const [opened, setOpened] = useState(false), [pending, setPending] = useState(false), [error, setError] = useState('')
   const [result, setResult] = useState('')
+  const [quality, setQuality] = useState<CandidateQuality>()
+  const [reviewing, setReviewing] = useState(false)
+  const reviewInput = useRef<Record<string, unknown> | undefined>(undefined)
   const visionFallback = props.modality === 'video' && props.referenceAssetIds.length
     ? preferredModel(props.models.filter(model => model.settings?.supports_vision === true && ['responses', 'chat_completions'].includes(model.protocol)))?.id : undefined
   const { modelId, selectModel } = useSharedModelSelection('text', props.models, { locked: pending, active: opened, fallbackId: visionFallback })
@@ -138,12 +143,12 @@ export default function PromptSkillAction(props: Props) {
     || !!adjustmentReferenceError || continueFromResult && !!candidateScopeError || !(continueFromResult ? hasResultContent : sourceHasContent)
     || adjustment.length > maxAdjustmentLength
   const cannotApply = pending || props.disabled || stale || adjustmentChanged || !hasResultContent || !!resultError || !composedResult
-    || result.length > maxPromptLength || resultPreview.length > 80_000 || blockingDiagnostics
+    || result.length > maxPromptLength || resultPreview.length > 80_000 || blockingDiagnostics || !!quality && !candidateQualityAccepted(quality)
   function open() {
-    setDiagnostics(undefined); setLoadedFiles([]); setCheckedResult('')
+    setDiagnostics(undefined); setLoadedFiles([]); setCheckedResult(''); setQuality(undefined); reviewInput.current = undefined
     setOpened(true); setError(''); setResult(''); setHasResult(false); setResultBefore(sourceContent); setAdjusting(false); setInspection(null); setAdjustment(''); setResultAdjustment(''); setUsedSkills([]); setUsedAssignment(undefined)
   }
-  function close() { serial.current++; abort.current?.abort(); refining.current = false; setOpened(false); setPending(false); setResult(''); setHasResult(false); setResultBefore(''); setAdjusting(false); setInspection(null); setUsedSkills([]); setUsedAssignment(undefined); setError(''); setAdjustment(''); setResultAdjustment('') }
+  function close() { serial.current++; abort.current?.abort(); refining.current = false; setReviewing(false); setOpened(false); setPending(false); setResult(''); setHasResult(false); setResultBefore(''); setAdjusting(false); setInspection(null); setUsedSkills([]); setUsedAssignment(undefined); setError(''); setAdjustment(''); setResultAdjustment('') }
   function addDirection(text: string) {
     setAdjustment(current => {
       if (current.includes(text)) return current
@@ -162,8 +167,7 @@ export default function PromptSkillAction(props: Props) {
     setElapsed(0)
     setPending(true); setError(''); abort.current = new AbortController()
     try {
-      const response = await api<{ prompt: string; prompt_body?: string; reference_asset_ids?: string[]; skills: Array<{ name: string }>; skill_assignment?: SkillAssignment; loaded_files?: string[]; diagnostics?: VideoPromptDiagnostics }>(`/projects/${props.projectId}/skills/refine-prompt`, {
-        ...json('POST', { ...(restart ? { restart: true } : {}), stage, skill_ids: skillControl.requestIds(stage), model_id: modelId, prompt, prompt_body: body,
+      const request = { ...(restart ? { restart: true } : {}), stage, skill_ids: skillControl.requestIds(stage), model_id: modelId, prompt, prompt_body: body,
           ...(promptDocument ? { prompt_document: true } : {}),
           prompt_template: props.promptTemplate, adjustment_request: capturedAdjustment, target_model_id: props.targetModelId || null, shot_id: props.shotId,
           profile_id: props.profileId, ratio: props.ratio, duration: props.duration, mode: props.mode, reference_asset_ids: props.referenceAssetIds,
@@ -173,24 +177,43 @@ export default function PromptSkillAction(props: Props) {
           visual_reference_mode: props.visualReferenceMode, excluded_visual_profile_ids: props.excludedVisualProfileIds || [],
           ...(props.modality === 'video' ? { check_video_content: true, analyze_reference_images: inspectReferences,
             storyboard_reference_asset_id: props.storyboardReferenceAssetId || null,
-            video_reference_usages: props.mode === 'reference' ? props.videoReferenceUsages || [] : [] } : {}) }), signal: abort.current.signal,
-      })
+            video_reference_usages: props.mode === 'reference' ? props.videoReferenceUsages || [] : [] } : {}) }
+      const response = await api<Omit<PromptRefinementResult, 'quality' | 'skill_assignment'> & { quality?: CandidateQuality; skill_assignment?: SkillAssignment }>(`/projects/${props.projectId}/skills/refine-prompt`, { ...json('POST', request), signal: abort.current.signal })
       if (turn !== serial.current) return
       const responsePrompt = promptDocument ? tokenizePromptReferenceNumbers(response.prompt, response.reference_asset_ids ?? props.referenceAssetIds)
         : extractPromptBody({ prompt: response.prompt, prompt_body: response.prompt_body })
       const nextResult = promptRefinementContent(responsePrompt, visualBoard)
       if (!nextResult.trim()) throw new Error('整理结果缺少主要创作内容，请重新整理。')
-      setResult(nextResult); setHasResult(true); setAdjusting(false)
+      setResult(nextResult); setHasResult(true); setAdjusting(false); setQuality(response.quality); reviewInput.current = request
       setUsedAssignment(response.skill_assignment)
       setDiagnostics(response.diagnostics); setLoadedFiles(response.loaded_files || []); setCheckedResult(nextResult)
       setSourceKey(capturedKey); setSourceNodeKey(capturedNodeKey); setResultAdjustment(capturedAdjustment); setUsedSkills(response.skills.map(skill => skill.name))
     } catch (issue) { if (turn === serial.current) setError(issue instanceof Error ? issue.message : String(issue)) }
     finally { if (turn === serial.current) { refining.current = false; setPending(false) } }
   }
+  function editCandidate(value: string) {
+    setResult(value)
+    setQuality(current => current && { ...current, status: 'edited', review_id: undefined })
+  }
+  async function reviewCandidate() {
+    if (refining.current || !reviewInput.current || stale || adjustmentChanged || !hasResultContent || resultError) return
+    refining.current = true
+    const turn = ++serial.current, candidate = result
+    const controller = new AbortController(); abort.current = controller
+    setPending(true); setReviewing(true); setElapsed(0); setError('')
+    try {
+      const response = await api<PromptRefinementResult>(`/projects/${props.projectId}/skills/refine-prompt`, {
+        ...json('POST', { ...reviewInput.current, action: 'review', candidate_prompt: candidate, source_signature: quality?.source_signature }), signal: controller.signal,
+      })
+      if (turn !== serial.current || controller.signal.aborted) return
+      setQuality(response.quality); setDiagnostics(response.diagnostics); setCheckedResult(candidate)
+    } catch (issue) { if (turn === serial.current && !controller.signal.aborted) setError(issue instanceof Error ? issue.message : String(issue)) }
+    finally { if (turn === serial.current) { refining.current = false; setPending(false); setReviewing(false) } }
+  }
   const content = <>
     <div className="prompt-skill-content">
       {pending ? <section className="prompt-skill-running" role="status" aria-live="polite">
-        <LoaderCircle size={28} /><strong>正在整理正文…</strong><span>{elapsed} 秒 · 当前正文尚未更改</span>
+        <LoaderCircle size={28} /><strong>{reviewing ? '正在复查当前草稿…' : '正在整理正文…'}</strong><span>{elapsed} 秒 · 当前正文尚未更改</span>
       </section> : <>
         {showingForm ? <>
           <section className="prompt-skill-adjustment" aria-label="提示词调整方向">
@@ -244,7 +267,7 @@ export default function PromptSkillAction(props: Props) {
             <Textarea aria-label="整理前的主要内容" label="整理前" value={resultBefore} readOnly autosize minRows={8} maxRows={18}
               classNames={{ input: 'prompt-skill-before' }} />
             <Input.Wrapper label="整理后 · 草稿">
-              <CanvasPromptEditor aria-label="整理后的主要内容" value={result} onChange={setResult} compact
+              <CanvasPromptEditor aria-label="整理后的主要内容" value={result} onChange={editCandidate} compact
                 references={resultReferences} choices={resultReferences} minRows={8} maxLength={maxPromptLength} />
             </Input.Wrapper>
           </div>
@@ -259,6 +282,13 @@ export default function PromptSkillAction(props: Props) {
             <Button variant="subtle" size="compact-xs" disabled={!composedResult} onClick={() => setInspection('preview')}>完整提示词预览</Button>
           </div>
           {usedAssignment?.reason && <p className="prompt-skill-used">选择理由：{usedAssignment.reason}</p>}
+          {quality && <section className="prompt-skill-quality" aria-label="草稿复查" role="status">
+            <p>{quality.status === 'edited' ? '草稿已修改，需复查后应用。以下保留上次依据供参考。'
+              : quality.status === 'needs_work' ? '草稿已保留，仍有需要修改的问题；可手动修改后复查。'
+              : quality.status === 'inconclusive' ? `草稿已保留，本次复查未能得出结论。${quality.error?.message || '可重新复查。'}`
+              : candidateQualityAccepted(quality) ? '当前草稿已完成复查，可查看依据后应用。' : '草稿已保留，等待复查。'}</p>
+            {quality.evidence?.map(item => <p key={item.id}>{item.disposition === 'confirmed' ? '已确认' : item.disposition === 'withdrawn' ? '已撤回' : '待判断'}：{item.reason}{item.quote && `（${item.quote}）`}</p>)}
+          </section>}
           {blockingDiagnostics && <p className="prompt-skill-error" role="alert">内容核对发现未解决的问题，请继续调整并重新核对后再应用。</p>}
           {(diagnostics || loadedFiles.length > 0) && <WorkspaceDisclosure className="prompt-skill-checks" label="查看内容核对与加载资料">
             <PromptVideoChecks diagnostics={diagnostics} files={loadedFiles} edited={!!checkedResult && checkedResult !== result} stale={stale || adjustmentChanged} />
@@ -284,6 +314,7 @@ export default function PromptSkillAction(props: Props) {
           ? <Button className="prompt-skill-primary-action" disabled={cannotRun} onClick={() => void refine()}>{refineLabel}</Button>
           : <>
             <Button variant="default" disabled={props.disabled || !nodeChanged && (!hasResultContent || !!candidateScopeError)} onClick={() => { setError(''); setAdjusting(true) }}>{nodeChanged ? '重新整理' : '继续调整'}</Button>
+            <Button variant="default" disabled={pending || stale || adjustmentChanged || !hasResultContent || !!resultError || !reviewInput.current} onClick={() => void reviewCandidate()}>复查当前草稿</Button>
             <Button className="prompt-skill-apply" disabled={cannotApply}
               onClick={() => { if (cannotApply || !composedResult) return; props.onApply(composedResult.prompt, composedResult.body, composedResult.document); close() }}>应用正文</Button>
           </>}

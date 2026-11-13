@@ -1,3 +1,4 @@
+import { candidateQualityAccepted } from '@video-studio/shared/api/ai-candidate-quality'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -76,23 +77,33 @@ test('independent content review sees real pixels and returns separate generatio
   assert.equal(snapshot(), before)
 })
 
-test('dropping dialogue fails after one correction while explicit changes and existing text-only callers remain supported', async () => {
+test('dropping dialogue remains unapplied after one correction while explicit changes and existing text-only callers remain supported', async () => {
+  const before = snapshot()
   calls = []; seenPixels = 0; candidate = '本镜无对白，陆照站在桌边。'
   const failed = await refine()
-  assert.equal(failed.statusCode, 422, failed.body)
-  assert.match(failed.body, /逐字对白/); assert.equal(calls.length, 4)
+  assert.equal(failed.statusCode, 200)
+  assert.equal(failed.json().quality.status, 'needs_work')
+  assert.equal(candidateQualityAccepted(failed.json().quality), false)
+  assert.deepEqual(failed.json().diagnostics.dialogue.missing, ['老陈，面要凉了。'])
+  assert.equal(failed.json().prompt_body, candidate); assert.equal(calls.length, 4)
+  assert.equal(snapshot(), before, 'the incomplete dialogue candidate cannot change formal content')
   allowDialogueChange = true
   const changed = await refine({ adjustment_request: '删除本镜对白，其他动作和背景静止保持不变。' })
-  assert.equal(changed.statusCode, 200, changed.body)
+  assert.equal(changed.statusCode, 200)
+  assert.equal(candidateQualityAccepted(changed.json().quality), true)
   assert.equal(changed.json().diagnostics.dialogue.explicit_change, true)
   assert.equal(changed.json().diagnostics.references.mode, 'text_only')
   candidate = source; allowDialogueChange = false
 })
 
 test('visual findings may not claim unprovided image pixels', async () => {
-  badFinding = true
+  const before = snapshot(); badFinding = true
   const response = await refine({ check_video_content: true, analyze_reference_images: true })
-  assert.equal(response.statusCode, 422, response.body)
-  assert.match(response.body, /没有提供实际像素/)
+  assert.equal(response.statusCode, 200)
+  assert.equal(response.json().quality.status, 'inconclusive')
+  assert.equal(candidateQualityAccepted(response.json().quality), false)
+  assert.match(response.json().quality.error.message, /没有提供实际像素/)
+  assert.equal(response.json().diagnostics, undefined, 'unverified pixel claims never become accepted diagnostics')
+  assert.equal(snapshot(), before)
   badFinding = false
 })

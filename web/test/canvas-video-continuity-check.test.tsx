@@ -22,7 +22,7 @@ const { createRoot } = await import('react-dom/client')
 const { default: Panel } = await import('../src/features/canvas/CanvasVideoContinuityCheck')
 const { canvasContinuitySource } = await import('../src/features/canvas/canvas-continuity-review')
 const { rememberModelSelection } = await import('../src/features/models/model-selection-store')
-beforeEach(() => rememberModelSelection('text', null))
+beforeEach(() => { dom.window.localStorage.clear(); rememberModelSelection('text', null) })
 after(() => dom.window.close())
 
 async function settle() { await act(async () => { for (let i = 0; i < 10; i++) await Promise.resolve() }) }
@@ -50,7 +50,7 @@ async function mount(t: TestContext, options: { result?: CanvasContinuityResult;
   }
   return { f, props, requests, results, container, button, checkbox,
     rerender: async () => { await act(render); await settle() },
-    click: async (label: string) => { await act(() => button(label).click()); await settle() },
+    click: async (label: string) => { const count = requests.length; await act(() => button(label).click()); await settle(); if (label === '核对当前版本' || label === '重新核对当前版本') for (let index = 0; requests.length === count && index < 100; index++) await act(() => new Promise(resolve => setTimeout(resolve, 1))); await settle() },
     choose: async (name: string) => {
       const label = [...container.querySelectorAll('label')].find(item => item.textContent === '核对模型')!;
       const input = document.getElementById(label.htmlFor)!;
