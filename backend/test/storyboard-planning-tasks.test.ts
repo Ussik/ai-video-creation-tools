@@ -13,6 +13,7 @@ const { buildApp } = await import('../src/app.js')
 const { createStoryboardPlanningTasks } = await import('../src/modules/storyboard/storyboard-planning-tasks.js')
 const { runStoryboardPlanningWorkflow } = await import('../src/modules/storyboard/storyboard-planning-workflow.js')
 const { clearGenerationCheckpoint } = await import('../src/modules/script/script-generation-checkpoints.js')
+const { currentModelRequestContext, modelTaskPolicies, withModelRequestContext } = await import('../src/modules/generation/model-task-policy.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(directory, { recursive: true, force: true }) })
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -173,4 +174,56 @@ test('validated batch progress survives failure and restart without becoming a s
     assert.equal(second.read(projectId, requestId).progress, undefined)
     assert.equal(second.read(projectId, requestId).status, 'succeeded')
   } finally { await second.close() }
+})
+
+
+test('background planning keeps its own observation after the HTTP subscriber ends', async () => {
+  const projectId = await project(), subscriber = new AbortController(), requestId = randomUUID()
+  let release!: () => void, workerSignal: AbortSignal | undefined, workerTaskId: string | undefined
+  let inheritedPolicy: unknown, parentEvents = 0
+  const waiting = new Promise<void>(resolve => { release = resolve })
+  const tasks = createStoryboardPlanningTasks({ identity: (_projectId, input) => hash(input), execute: async (_projectId, _input, control) => {
+    const context = currentModelRequestContext()!
+    workerTaskId = context.taskId; workerSignal = context.signal; inheritedPolicy = context.policy
+    context.onDispatch?.({ request_id: 'background-planning', request_bytes: 10, model_id: 'background-model', request_purpose: 'generation' })
+    control.stage('reviewing')
+    await waiting
+    context.signal?.throwIfAborted()
+    context.onMetrics?.({ request_id: 'background-planning', input_tokens: 3, delivery: 'completed' })
+    return projection
+  } })
+  try {
+    const task = withModelRequestContext({ policy: modelTaskPolicies.review, taskId: 'finished-http-subscriber', signal: subscriber.signal,
+      onDispatch: () => { parentEvents++ }, onMetrics: () => { parentEvents++ } }, () =>
+      tasks.start(projectId, { source: 'same' }, requestId))
+    await until(() => tasks.read(projectId, task.id).stage === 'reviewing')
+    assert.equal(workerTaskId, `storyboard:${task.id}`)
+    assert.equal(inheritedPolicy, modelTaskPolicies.review, 'adding observation preserves the existing policy')
+    subscriber.abort(new Error('HTTP connection closed'))
+    assert.equal(workerSignal!.aborted, false, 'a subscriber cannot cancel a server-owned planning run')
+    assert.equal(tasks.read(projectId, task.id).status, 'running')
+    assert.equal(one<{ state: string }>('SELECT state FROM model_request_tasks WHERE id=?', workerTaskId)!.state, 'running')
+    release(); await tasks.wait(projectId, task.id)
+    assert.equal(one<{ state: string }>('SELECT state FROM model_request_tasks WHERE id=?', workerTaskId)!.state, 'succeeded')
+    assert.equal(parentEvents, 0, 'model events belong to the durable worker rather than its ended HTTP subscriber')
+    const attempt = one<{ task_id: string; state: string }>('SELECT task_id,state FROM model_request_attempts WHERE task_id=? AND id=?', workerTaskId, 'background-planning')
+    assert.deepEqual(attempt, { task_id: workerTaskId, state: 'settled' })
+  } finally { release(); await tasks.close() }
+})
+
+test('explicit planning cancellation settles its independent observation as cancelled', async () => {
+  const projectId = await project(), requestId = randomUUID()
+  const tasks = createStoryboardPlanningTasks({ identity: (_projectId, input) => hash(input), execute: async (_projectId, _input, control) => {
+    currentModelRequestContext()!.onDispatch?.({ request_id: 'cancel-background-planning', request_bytes: 10 })
+    control.stage('reviewing')
+    await new Promise<void>((_resolve, reject) => control.signal.addEventListener('abort', () => reject(control.signal.reason), { once: true }))
+    return projection
+  } })
+  try {
+    const task = tasks.start(projectId, { source: 'cancel' }, requestId)
+    await until(() => tasks.read(projectId, task.id).stage === 'reviewing')
+    await tasks.cancelRequest(projectId, requestId)
+    assert.equal(tasks.read(projectId, task.id).status, 'cancelled')
+    assert.equal(one<{ state: string }>('SELECT state FROM model_request_tasks WHERE id=?', `storyboard:${task.id}`)!.state, 'cancelled')
+  } finally { await tasks.close() }
 })

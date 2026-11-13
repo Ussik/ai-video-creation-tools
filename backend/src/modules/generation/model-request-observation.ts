@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { getLangfuseTracer, type LangfuseTracer } from '../../infrastructure/observability/langfuse-tracing.js'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { all, db, now, required, type Project } from '../../infrastructure/database/db.js'
 import { createScriptRequestUsage, withTextRequestUsage, type ScriptRequestUsage } from '../../infrastructure/providers/text-request-usage.js'
@@ -43,8 +44,13 @@ export function initModelRequestObservation() {
     db.exec("ALTER TABLE model_request_tasks ADD COLUMN progress TEXT NOT NULL DEFAULT '[]'")
   }
 }
-export function createModelRequestObservation(options: ObservationOptions) {
+export function createModelRequestObservation(options: ObservationOptions, tracer: LangfuseTracer = getLangfuseTracer()) {
   const id = options.taskId || randomUUID()
+  // Export is subordinate to the existing local observation. A failed client
+  // or exporter cannot prevent dispatch, change its result or create a retry.
+  const quietTrace = (work: () => void) => { try { work() } catch { /* Tracing never owns execution. */ } }
+  let trace: ReturnType<LangfuseTracer['observation']> | undefined
+  quietTrace(() => { trace = tracer.observation({ taskId: id, projectId: options.projectId, modelId: options.modelId, owner: options.owner, label: options.label }) })
   const previous = options.taskId ? db.prepare('SELECT usage,progress FROM model_request_tasks WHERE id=?').get(id) as {usage: string; progress: string} | undefined : undefined
   let usage = createScriptRequestUsage()
   if (previous) { try { usage = JSON.parse(previous.usage) as ScriptRequestUsage } catch { throw new Error('任务用量记录损坏，不能丢弃后重新派发') } }
@@ -74,10 +80,11 @@ export function createModelRequestObservation(options: ObservationOptions) {
     run<T>(work: () => T): T {
       return withModelRequestContext({ taskId: id, policy: options.policy || modelTaskPolicies.text, signal: options.signal,
         onProgress: value => safely(() => { progress.set(value.phase_id, value); recorded = true; persist() }),
-        onDispatch: value => safely(() => observe(value, false)), onMetrics: value => safely(() => observe(value, true)) },
+        onDispatch: value => { safely(() => observe(value, false)); quietTrace(() => { const stage = currentModelRequestContext()?.traceStage; trace?.dispatch({ ...safeModelMetrics(value), ...(stage ? { trace_stage: stage } : {}) }) }) },
+        onMetrics: value => { safely(() => observe(value, true)); quietTrace(() => trace?.metrics(safeModelMetrics(value))) } },
       () => withTextRequestUsage({ usage, onUpdate: () => persist() }, work))
     },
-    finish(next: 'succeeded' | 'failed' | 'cancelled') { state = next; safely(persist) },
+    finish(next: 'succeeded' | 'failed' | 'cancelled') { state = next; safely(persist); quietTrace(() => trace?.finish(next)) },
   }
 }
 export async function observeModelTask<T>(options: ObservationOptions, work: () => Promise<T>): Promise<T> {
@@ -108,7 +115,7 @@ export function activeModelRequestUsesModel(modelId: string): boolean {
   }
   return false
 }
-export function registerModelRequestObservation(app: FastifyInstance) {
+export function registerModelRequestObservation(app: FastifyInstance, tracer: LangfuseTracer = getLangfuseTracer()) {
   initModelRequestObservation()
   const observations = new WeakMap<FastifyRequest, { observation: ReturnType<typeof createModelRequestObservation>; controller: AbortController; cleanup: () => void }>()
   app.addHook('preHandler', (request, reply, done) => {
@@ -118,7 +125,7 @@ export function registerModelRequestObservation(app: FastifyInstance) {
     const controller = new AbortController()
     const body = request.body as { model_id?: unknown } | undefined
     const observation = createModelRequestObservation({ projectId: projectId(request), modelId: typeof body?.model_id === 'string' ? body.model_id : undefined,
-      label: requestLabel(request.routeOptions.url || request.url), owner: 'request', signal: controller.signal })
+      label: requestLabel(request.routeOptions.url || request.url), owner: 'request', signal: controller.signal }, tracer)
     const abort = () => { if (!reply.raw.writableEnded) { controller.abort(new DOMException('请求已停止；远端计费结果仍以提供商记录为准', 'AbortError')); observation.finish('cancelled'); active.delete(observation.id) } }
     request.raw.once('aborted', abort); reply.raw.once('close', abort)
     active.set(observation.id, controller)

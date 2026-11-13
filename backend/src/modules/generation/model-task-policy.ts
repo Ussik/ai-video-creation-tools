@@ -8,6 +8,7 @@ export type ModelTaskPolicy = Readonly<{
 export type ModelUnitProgress = Readonly<{ phase_id: string; label: string; completed_units: number; total_units: number | null }>
 export type ModelRequestContext = Readonly<{
   policy: ModelTaskPolicy; taskId?: string; stepId?: string; attemptId?: string
+  traceStage?: 'generation' | 'review' | 'repair' | 'classification' | 'prompt' | 'tool' | 'text' | 'media_generation'
   signal?: AbortSignal; onProgress?: (progress: ModelUnitProgress) => void; onDispatch?: (metrics: unknown) => void; onMetrics?: (metrics: unknown) => void
 }>
 const context = new AsyncLocalStorage<ModelRequestContext>()
@@ -59,9 +60,18 @@ register(modelTaskPolicies.prompt, ['refined_prompt', 'image_prompt_optimization
 export function resolveModelTaskPolicy(contractName?: string): ModelTaskPolicy {
   return currentModelRequestContext()?.policy ?? (contractName ? contracts.get(contractName) : undefined) ?? modelTaskPolicies.text
 }
+/** A fixed stage label derived from code-owned contract names only. It never
+ * changes execution policy or exports the contract name/source text. */
+function traceStageFor(name: string | undefined, policy: ModelTaskPolicy): ModelRequestContext['traceStage'] {
+  if (name && /^[a-z][a-z0-9_]{0,119}$/.test(name) && /(?:^|_)repair(?:_|$)/.test(name)) return 'repair'
+  const stages: Record<string, NonNullable<ModelRequestContext['traceStage']>> = { generation: 'generation', review: 'review',
+    classification: 'classification', prompt: 'prompt', tool_decision: 'tool', text: 'text', media_generation: 'media_generation' }
+  return stages[policy.purpose] || 'text'
+}
 export function modelContextFor(contractName?: string, explicit?: ModelRequestContext): ModelRequestContext {
   const inherited = currentModelRequestContext()
-  if (explicit) return { ...inherited, ...explicit }
+  if (explicit) return { ...inherited, ...explicit, traceStage: explicit.traceStage || traceStageFor(contractName, explicit.policy) }
   // Keep task identity, but a nested classification/review has its own purpose.
-  return { ...inherited, policy: contractName && contracts.has(contractName) ? contracts.get(contractName)! : inherited?.policy ?? modelTaskPolicies.text }
+  const policy = contractName && contracts.has(contractName) ? contracts.get(contractName)! : inherited?.policy ?? modelTaskPolicies.text
+  return { ...inherited, policy, traceStage: traceStageFor(contractName, policy) }
 }

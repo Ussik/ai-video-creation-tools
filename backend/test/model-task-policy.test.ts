@@ -26,3 +26,20 @@ test('concurrent task scopes never leak identities', async () => {
     await new Promise(resolve => setImmediate(resolve)); assert.equal(currentModelRequestContext()?.taskId, taskId)
   })))
 })
+
+
+test('trace stages distinguish generation, review and repair without changing inherited execution policies', async () => {
+  const { modelContextFor } = await import('../src/modules/generation/model-task-policy.js')
+  const { textRequestTrace } = await import('../src/infrastructure/providers/text-request-plan.js')
+  await withModelRequestContext({ taskId: 'same-operation', policy: modelTaskPolicies.generation }, async () => {
+    for (const [name, expected] of [['controlled_storyboard', 'generation'], ['storyboard_directing_review', 'review'], ['storyboard_targeted_repair', 'repair']]) {
+      const context = modelContextFor(name)
+      assert.equal(context.traceStage, expected)
+      assert.equal(context.taskId, 'same-operation')
+      if (expected === 'repair') assert.equal(context.policy, modelTaskPolicies.generation)
+      const trace = withModelRequestContext(context, textRequestTrace)
+      assert.ok(!('trace_stage' in trace), 'trace-only stage must not extend strict public provider/activity metrics')
+      assert.ok(!JSON.stringify(trace).includes(name))
+    }
+  })
+})

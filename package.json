@@ -15,6 +15,9 @@
     "test:backend": "npm run build:shared && npm run test --workspace=backend",
     "test:web": "npm run build:shared && npm run test --workspace=web",
     "check": "node scripts/check-architecture.mjs && npm run check:ui --workspace=web",
-    "start": "npm run start --workspace=backend"
+    "start": "npm run start --workspace=backend",
+    "langfuse:check": "npm run langfuse:check --workspace=backend --",
+    "langfuse:smoke": "npm run langfuse:smoke --workspace=backend --",
+    "langfuse:local": "node scripts/langfuse-local.mjs"
   }
 }
