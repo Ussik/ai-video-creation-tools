@@ -38,6 +38,12 @@ export function isTextRequestBudgetError(issue: unknown): issue is TextRequestBu
     (issue as { code?: unknown }).code === 'text_request_budget_exceeded'
 }
 
+/** Durable work has its own lifetime and must not charge an HTTP subscriber.
+ * Nested phases inside that work still inherit its new execution ledger. */
+export function withDetachedTextRequestUsage<T>(work: () => T): T {
+  return usageScope.run([], work)
+}
+
 export function withTextRequestUsage<T>(scope: TextRequestUsageScope, work: () => T): T {
   // Reject malformed restored counters instead of allowing NaN to bypass the
   // budget. Fill only genuinely absent fields for older saved task versions.

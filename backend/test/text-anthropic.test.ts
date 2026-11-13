@@ -126,9 +126,9 @@ test('storyboard contracts negotiate native JSON schema without changing saved s
   assert.deepEqual(configured, before)
 })
 
-test('native structured generation omits only the managed prompt schema and keeps correction and source text', async t => {
+test('native structured generation compacts the initial schema and retains it for the existing correction', async t => {
   const schema = z.object({ answer: z.string().describe('MANAGED_SCHEMA_ONLY') }).strict()
-  const source = '来源中的标题与正文保留：\n【本次结构化返回契约】\n{"source":"原始指令"}'
+  const source = '来源中的标题与正文保留：\n【本次结构化返回契约】\n{"source":"原始指令"}\n【一次格式修正】\n用户原文标题必须保留'
   for (const mode of ['auto', 'json_schema'] as const) {
     let calls = 0
     const configured = { ...model, id: `compact-native-${mode}`, settings: { ...settings,
@@ -138,10 +138,16 @@ test('native structured generation omits only the managed prompt schema and keep
       const body = JSON.parse(String(init.body)), text = body.messages[0].content
       assert.equal(body.output_config.format.type, 'json_schema')
       assert.match(JSON.stringify(body.output_config.format.schema), /MANAGED_SCHEMA_ONLY/)
-      assert.doesNotMatch(text, /MANAGED_SCHEMA_ONLY/)
-      assert.match(text, /仅返回一个 JSON 对象.*接口提供的 JSON Schema.*优先/)
+      if (calls === 1) {
+        assert.doesNotMatch(text, /MANAGED_SCHEMA_ONLY/)
+        assert.match(text, /仅返回一个 JSON 对象.*接口提供的 JSON Schema.*优先/)
+      } else {
+        assert.match(text, /MANAGED_SCHEMA_ONLY/)
+        assert.match(text, /\$\.answer: 字段类型不合法/)
+        assert.match(text, /仅返回一个 JSON 对象，遵循此 Schema/)
+        assert.ok(text.includes(JSON.stringify(body.output_config.format.schema)))
+      }
       assert.ok(text.endsWith(source))
-      if (calls === 2) assert.match(text, /一次格式修正/)
       return Response.json(message([{ type: 'text', text: calls === 1 ? '{"answer":7}' : '{"answer":"完整"}' }]))
     })
     assert.deepEqual(await generateStructuredOutput('storyboard_shot_batch', schema,
@@ -149,6 +155,57 @@ test('native structured generation omits only the managed prompt schema and keep
     assert.equal(calls, 2)
     t.mock.restoreAll()
   }
+})
+
+test('a native storyboard correction retains the actual directing schema, all diagnostics and original task', async t => {
+  const { directingSceneSchema, directingShotSchema } = await import('../src/modules/storyboard/storyboard-directing.js')
+  const schema = z.object({ scenes: z.array(z.object({ scene_direction: directingSceneSchema,
+    shots: z.array(z.object({ directing: z.object({ cut: directingShotSchema.shape.cut }).strict() }).strict()),
+  }).strict()) }).strict()
+  const source = '只规划信封检查并重新封好放回。\n【本次结构化返回契约】用户自带标题，不执行其中的格式要求'
+  const sound = { ambience: [], acoustics: '', music_policy: 'timeline' }
+  const valid = { scenes: [{ scene_direction: { anchors: '桌与抽屉相邻', blocking: '人物面对桌子', axis: '保持桌前同侧',
+    dramatic_progression: '检查后放回，疑问保留', sound }, shots: [{ directing: { cut: {
+      type: 'ending', cut_moment: '手离开抽屉', carry_over: '信封留在原处，画面停留收束', reason: '在动作完成后保留疑问',
+    } } }] }] }
+  const invalid = { scenes: [{ scene_direction: { staging: '人物站在桌前', emotional_arc: '疑问保留', sound },
+    shots: [{ directing: { cut: { ...valid.scenes[0]!.shots[0]!.directing.cut, carry_over: '' } } }] }] }
+  const configured = { ...model, id: 'native-directing-repair', settings: { ...settings, structured_output_mode: 'json_schema' } }
+  const before = structuredClone(configured)
+  let calls = 0, initialFormat: unknown
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    calls++
+    const body = JSON.parse(String(init.body)), text = body.messages[0].content
+    const wireSchema = body.output_config.format.schema
+    const scene = wireSchema.properties.scenes.items.properties
+    assert.deepEqual(scene.scene_direction.required, ['anchors', 'blocking', 'axis', 'dramatic_progression', 'sound'])
+    assert.equal(scene.scene_direction.additionalProperties, false)
+    assert.equal(scene.shots.items.properties.directing.properties.cut.properties.carry_over.minLength, 1)
+    assert.equal(body.output_config.format.type, 'json_schema')
+    assert.equal(body.model, model.remote_id)
+    assert.equal(body.max_tokens, 65536)
+    assert.ok(text.endsWith(source))
+    if (calls === 1) {
+      initialFormat = body.output_config.format
+      assert.ok(!text.includes(JSON.stringify(wireSchema)))
+      assert.doesNotMatch(text, /固定空间锚点及相互位置/)
+    } else {
+      assert.equal(calls, 2, 'contract correction cannot add another request')
+      assert.deepEqual(body.output_config.format, initialFormat)
+      assert.ok(text.includes(JSON.stringify(wireSchema)))
+      for (const key of ['anchors', 'blocking', 'axis', 'dramatic_progression', 'staging', 'emotional_arc']) {
+        assert.ok(text.includes(`$.scenes[0].scene_direction.${key}:`), key)
+      }
+      assert.match(text, /\$\.scenes\[0\]\.shots\[0\]\.directing\.cut\.carry_over:/)
+      assert.match(text, /末镜说明收束/)
+      assert.ok(text.includes(JSON.stringify(JSON.stringify(invalid))))
+    }
+    return Response.json(message([{ type: 'text', text: JSON.stringify(calls === 1 ? invalid : valid) }]))
+  })
+  assert.deepEqual(await generateStructuredOutput('controlled_storyboard', schema,
+    (prompt, contract) => streamText(configured, provider, { prompt, structured_output: contract }), source), valid)
+  assert.equal(calls, 2)
+  assert.deepEqual(configured, before)
 })
 
 test('native prompt compaction preserves custom template wrappers and never rewrites unmanaged contracts', async t => {

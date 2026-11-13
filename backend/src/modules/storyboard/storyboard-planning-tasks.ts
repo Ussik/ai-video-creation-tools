@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { now, one, run } from '../../infrastructure/database/db.js'
+import { withDetachedTextRequestUsage } from '../../infrastructure/providers/text-request-usage.js'
 import { observeModelTask } from '../generation/model-request-observation.js'
 import { currentModelRequestContext, modelTaskPolicies, withModelRequestContext } from '../generation/model-task-policy.js'
 import type { StoryboardPlanningProgress, StoryboardPlanningResult, StoryboardPlanningStage, StoryboardPlanningTask } from '@video-studio/shared/storyboard/storyboard-planning-types'
@@ -121,12 +122,13 @@ export function createStoryboardPlanningTasks(options: Options) {
       try {
         assertIdentity(state)
         // The durable run owns its lifetime. Retain its inherited policy while
-        // detaching the HTTP subscriber's identity, callbacks and abort signal.
+        // detaching the HTTP subscriber's identity, callbacks, abort signal
+        // and usage ledger. Its admission/resume request owns no model calls.
         const policy = currentModelRequestContext()?.policy || modelTaskPolicies.generation
-        const result = await withModelRequestContext({ policy, signal: live.controller.signal }, () =>
+        const result = await withDetachedTextRequestUsage(() => withModelRequestContext({ policy, signal: live.controller.signal }, () =>
           observeModelTask({ taskId: `storyboard:${state.snapshot.id}`, projectId: state.snapshot.project_id,
             label: '分镜规划', owner: 'request', signal: live.controller.signal, policy },
-          () => options.execute(state.snapshot.project_id, state.input, control)))
+          () => options.execute(state.snapshot.project_id, state.input, control))))
         live.controller.signal.throwIfAborted(); assertIdentity(state); settleTime(live)
         state.snapshot.stage = 'completed'; state.snapshot.stage_duration_ms = 0
         state.snapshot.status = 'succeeded'; state.snapshot.can_resume = false

@@ -14,6 +14,9 @@ const { createStoryboardPlanningTasks } = await import('../src/modules/storyboar
 const { runStoryboardPlanningWorkflow } = await import('../src/modules/storyboard/storyboard-planning-workflow.js')
 const { clearGenerationCheckpoint } = await import('../src/modules/script/script-generation-checkpoints.js')
 const { currentModelRequestContext, modelTaskPolicies, withModelRequestContext } = await import('../src/modules/generation/model-task-policy.js')
+const { beginTextRequest } = await import('../src/infrastructure/providers/text-request-usage.js')
+const { registerModelRequestObservation } = await import('../src/modules/generation/model-request-observation.js')
+const { default: Fastify } = await import('fastify')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(directory, { recursive: true, force: true }) })
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -226,4 +229,51 @@ test('explicit planning cancellation settles its independent observation as canc
     assert.equal(tasks.read(projectId, task.id).status, 'cancelled')
     assert.equal(one<{ state: string }>('SELECT state FROM model_request_tasks WHERE id=?', `storyboard:${task.id}`)!.state, 'cancelled')
   } finally { await tasks.close() }
+})
+
+
+test('HTTP acceptance and resume never inherit durable planning usage while its ledger accumulates each real request', async () => {
+  const projectId = await project(), requestId = randomUUID()
+  let first!: () => void, second!: () => void, executions = 0
+  const gates = [new Promise<void>(resolve => { first = resolve }), new Promise<void>(resolve => { second = resolve })]
+  const tasks = createStoryboardPlanningTasks({ identity: (_projectId, input) => hash(input), execute: async () => {
+    const round = ++executions
+    await gates[round - 1]
+    const context = currentModelRequestContext()!, requestId = `isolated-round-${round}`
+    const reservation = beginTextRequest({ request_bytes: 12, estimated_input_tokens: 5, reserved_output_tokens: 10 })
+    reservation.identify(requestId)
+    context.onDispatch?.({ request_id: requestId, request_bytes: 12 })
+    reservation.complete({ input_tokens: 4, output_tokens: 3 })
+    context.onMetrics?.({ request_id: requestId, input_tokens: 4, output_tokens: 3, delivery: 'completed' })
+    if (round === 1) throw new Error('offline review connection failure')
+    return projection
+  } })
+  const http = Fastify()
+  registerModelRequestObservation(http)
+  http.post('/api/projects/:id/accept-test', () => tasks.start(projectId, { source: 'same' }, requestId))
+  http.post('/api/projects/:id/resume-test', () => tasks.resume(projectId, requestId))
+  try {
+    const accepted = await http.inject({ method: 'POST', url: `/api/projects/${projectId}/accept-test`, payload: {} })
+    assert.equal(accepted.statusCode, 200, accepted.body)
+    const acceptanceId = String(accepted.headers['x-model-task-id'])
+    assert.notEqual(acceptanceId, `storyboard:${requestId}`)
+    first()
+    await until(() => tasks.read(projectId, requestId).status === 'failed')
+    const resumed = await http.inject({ method: 'POST', url: `/api/projects/${projectId}/resume-test`, payload: {} })
+    assert.equal(resumed.statusCode, 200, resumed.body)
+    const resumeId = String(resumed.headers['x-model-task-id'])
+    assert.notEqual(resumeId, acceptanceId)
+    second()
+    await tasks.wait(projectId, requestId)
+    const rows = (await http.inject(`/api/projects/${projectId}/model-requests`)).json() as Array<{ id: string; state: string;
+      usage: { requests: number; input_tokens: number; output_tokens: number }; attempts: unknown[] }>
+    assert.equal(rows.some(row => row.id === acceptanceId || row.id === resumeId), false,
+      'HTTP admission and resume only observe the task; neither dispatches or pays for its requests')
+    assert.equal(rows.length, 1)
+    const durable = rows[0]!
+    assert.equal(durable.id, `storyboard:${requestId}`); assert.equal(durable.state, 'succeeded')
+    assert.equal(durable.usage.requests, 2); assert.equal(durable.attempts.length, 2)
+    assert.equal(durable.usage.input_tokens, 8); assert.equal(durable.usage.output_tokens, 6)
+    assert.equal(executions, 2)
+  } finally { first(); second(); await tasks.close(); await http.close() }
 })

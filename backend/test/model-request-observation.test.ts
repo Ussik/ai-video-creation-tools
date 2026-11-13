@@ -11,6 +11,7 @@ const { initDb, db } = await import('../src/infrastructure/database/db.js')
 const { registerModelRequestObservation, createModelRequestObservation, observeModelTask, safeModelMetrics, activeModelRequestUsesModel } = await import('../src/modules/generation/model-request-observation.js')
 const { currentModelRequestContext, reportModelUnitProgress } = await import('../src/modules/generation/model-task-policy.js')
 const { beginTextRequest } = await import('../src/infrastructure/providers/text-request-usage.js')
+const { observeProviderFetch } = await import('../src/infrastructure/providers/text-request-plan.js')
 initDb()
 db.prepare('INSERT INTO projects(id,name,brief,ratio,created_at,updated_at) VALUES(?,?,?,?,?,?)').run('p','test','','16:9','now','now')
 const app=Fastify()
@@ -149,4 +150,76 @@ test('trace-only stage reaches the external observer without extending strict lo
   assert.equal(events[0]?.trace_stage, 'repair')
   const row = db.prepare('SELECT metrics FROM model_request_attempts WHERE task_id=?').get(observed.id) as { metrics: string }
   assert.ok(!('trace_stage' in JSON.parse(row.metrics)))
+})
+
+
+test('media creation, speech and result transports count actual dispatches without reserving text tokens', async () => {
+  const taskId = 'job:media-counts', bodies = ['{"prompt":"image"}', '{"text":"speech"}']
+  await observeModelTask({ taskId, projectId: 'p', owner: 'job', label: 'media' }, async () => {
+    for (const [transport, body] of [['media_create', bodies[0]], ['speech_create', bodies[1]],
+      ['media_poll', undefined], ['media_download', undefined]] as const) {
+      const response = await observeProviderFetch('https://offline.invalid/request', { method: body ? 'POST' : 'GET', body }, transport,
+        async () => new Response(transport === 'media_download' ? 'media bytes' : '{}'))
+      await response.text()
+    }
+  })
+  const row = db.prepare('SELECT usage FROM model_request_tasks WHERE id=?').get(taskId) as { usage: string }
+  const usage = JSON.parse(row.usage)
+  assert.equal(usage.requests, 2)
+  assert.equal(usage.request_bytes, bodies.reduce((sum, body) => sum + Buffer.byteLength(body), 0))
+  assert.equal(usage.transport_requests, 2); assert.equal(usage.transport_request_bytes, 0)
+  assert.equal(usage.uncertain_requests, 0); assert.deepEqual(usage.pending_requests, [])
+  assert.equal(usage.estimated_input_tokens, 0); assert.equal(usage.estimated_output_tokens, 0)
+  const attempts = db.prepare('SELECT state FROM model_request_attempts WHERE task_id=?').all(taskId) as Array<{ state: string }>
+  assert.equal(attempts.length, 4); assert.ok(attempts.every(attempt => attempt.state === 'settled'))
+})
+
+test('resuming a mixed task counts new media dispatches once and preserves pending text usage', async () => {
+  const taskId = 'job:mixed-counts', request = { request_id: 'media-once', kind: 'generation', transport_kind: 'media_create', request_bytes: 21 }
+  await observeModelTask({ taskId, projectId: 'p', owner: 'job', label: 'mixed' }, async () => {
+    const context = currentModelRequestContext()!
+    const text = beginTextRequest({ request_bytes: 12, estimated_input_tokens: 10, reserved_output_tokens: 30 })
+    text.identify('text-once')
+    context.onDispatch?.({ request_id: 'text-once', request_bytes: 12, kind: 'generation', transport_kind: 'text' })
+    text.complete({ input_tokens: 8 })
+    context.onMetrics?.({ request_id: 'text-once', input_tokens: 8, delivery: 'unknown' })
+    context.onDispatch?.(request)
+    context.onDispatch?.(request)
+    context.onMetrics?.({ ...request, delivery: 'completed' })
+    context.onMetrics?.({ ...request, delivery: 'completed' })
+  })
+  await observeModelTask({ taskId, projectId: 'p', owner: 'job', label: 'mixed' }, async () => {
+    const context = currentModelRequestContext()!
+    context.onDispatch?.(request)
+    context.onMetrics?.({ ...request, delivery: 'completed' })
+    const poll = { request_id: 'new-poll', kind: 'transport', transport_kind: 'media_poll', request_bytes: 7 }
+    context.onDispatch?.(poll); context.onMetrics?.({ ...poll, delivery: 'completed' })
+  })
+  const row = db.prepare('SELECT usage FROM model_request_tasks WHERE id=?').get(taskId) as { usage: string }
+  const usage = JSON.parse(row.usage)
+  assert.equal(usage.requests, 2); assert.equal(usage.request_bytes, 33)
+  assert.equal(usage.transport_requests, 1); assert.equal(usage.transport_request_bytes, 7)
+  assert.equal(usage.input_tokens, 8); assert.equal(usage.output_tokens, 0)
+  assert.equal(usage.uncertain_requests, 1); assert.equal(usage.pending_requests.length, 1)
+  assert.equal(usage.pending_requests[0].id, 'text-once')
+  assert.equal(usage.pending_requests[0].input_settled, true); assert.equal(usage.pending_requests[0].output_settled, false)
+  assert.equal(usage.estimated_input_tokens, 0); assert.equal(usage.estimated_output_tokens, 30)
+})
+
+
+test('a media request whose connection fails is still counted once without inventing text usage', async () => {
+  const taskId = 'job:media-unknown'
+  await assert.rejects(observeModelTask({ taskId, projectId: 'p', owner: 'job', label: 'media' }, async () => {
+    await observeProviderFetch('https://offline.invalid/create', { method: 'POST', body: '{}' }, 'media_create',
+      async () => { throw new TypeError('offline connection reset') })
+  }), /offline connection reset/)
+  const row = db.prepare('SELECT state,usage FROM model_request_tasks WHERE id=?').get(taskId) as { state: string; usage: string }
+  const usage = JSON.parse(row.usage)
+  assert.equal(row.state, 'failed'); assert.equal(usage.requests, 1); assert.equal(usage.request_bytes, 2)
+  assert.equal(usage.transport_requests, 0)
+  assert.equal(usage.uncertain_requests, 0); assert.deepEqual(usage.pending_requests, [])
+  assert.equal(usage.estimated_input_tokens, 0); assert.equal(usage.estimated_output_tokens, 0)
+  const attempt = db.prepare('SELECT state,metrics FROM model_request_attempts WHERE task_id=?').get(taskId) as { state: string; metrics: string }
+  assert.equal(attempt.state, 'settled'); assert.equal(JSON.parse(attempt.metrics).delivery, 'unknown')
+  assert.equal(JSON.parse(attempt.metrics).failure_reason, 'disconnected')
 })

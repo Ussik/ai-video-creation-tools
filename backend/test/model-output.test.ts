@@ -48,8 +48,13 @@ test('native contract compaction uses managed identity and preserves authored sc
     calls++
     const native = nativeOutputContractPrompt(prompt, contract)
     assert.ok(native.endsWith(authored))
-    assert.match(native, /仅返回一个 JSON 对象.*接口提供的 JSON Schema.*优先/)
-    assert.equal(native.split('SCHEMA_DESCRIPTION').length - 1, 1, 'the authored schema remains; only the managed copy is omitted')
+    if (calls === 1) {
+      assert.match(native, /仅返回一个 JSON 对象.*接口提供的 JSON Schema.*优先/)
+      assert.equal(native.split('SCHEMA_DESCRIPTION').length - 1, 1, 'the authored schema remains; only the initial managed copy is omitted')
+    } else {
+      assert.equal(native, prompt, 'the existing correction retains its complete managed schema')
+      assert.equal(native.split('SCHEMA_DESCRIPTION').length - 1, 2)
+    }
     assert.equal(prompt.split('SCHEMA_DESCRIPTION').length - 1, 2, 'the original prompt stays intact for fallback')
     assert.equal(nativeOutputContractPrompt(prompt, { ...contract! }), prompt, 'unmanaged contract copies cannot authorize removal')
     assert.equal(nativeOutputContractPrompt(authored, contract), authored, 'authored markers never identify a managed prefix')

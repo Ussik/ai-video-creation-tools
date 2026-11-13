@@ -1,6 +1,6 @@
 import { beforeMediaDispatch, mediaExecutionSignal } from './media-execution.js'
 import { modelStepSignal } from '../../modules/generation/model-execution.js'
-import { observeProviderFetch } from './text-request-plan.js'
+import { completeObservedProviderResponse, observeProviderFetch } from './text-request-plan.js'
 import { randomUUID } from 'node:crypto'
 
 export interface SpeechSynthesisInput {
@@ -193,6 +193,9 @@ export async function synthesizeSpeech(rawInput: SpeechSynthesisInput, fetchImpl
     }
     if (!completed) throw new SpeechProviderError('语音服务连接提前结束，尚未确认生成完成。请核对调用记录后再手动重试。')
     if (audioBytes === 0) throw new SpeechProviderError('语音服务已结束，但没有返回音频。')
+    // A validated terminal frame confirms synthesis even when the vendor leaves
+    // its stream open. Record completion before finally cancels the unused tail.
+    completeObservedProviderResponse(response)
     // The API documents word offsets, not an audio-duration field. Actual duration is probed after storage.
     return { audio: Buffer.concat(audioChunks, audioBytes), duration_ms: null,
       subtitles, usage_characters: usageCharacters, request_id: requestId }

@@ -113,6 +113,15 @@ export function notifyTextRequest<T>(phase: 'dispatch' | 'metrics', metrics: T, 
 
 export type ProviderRequestIdentity = { model_id?: string; remote_id?: string }
 
+const observedResponseCompletions = new WeakMap<Response, () => void>()
+
+/** A protocol adapter may confirm a validated terminal result before transport EOF.
+ * This never drains or changes the response; ordinary cancellation remains uncertain. */
+export function completeObservedProviderResponse(response: Response): void {
+  observedResponseCompletions.get(response)?.()
+  observedResponseCompletions.delete(response)
+}
+
 /** Observe the actual auxiliary transport through headers and body lifetime.
  * Returning a streaming Response retains pull/cancel behavior and never buffers
  * successful media or prose just for diagnostics. */
@@ -174,5 +183,6 @@ export async function observeProviderFetch(url: string, init: RequestInit, trans
   const observed = new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers })
   // Preserve read-only response metadata relied on by provider diagnostics.
   for (const key of ['url', 'redirected', 'type'] as const) Object.defineProperty(observed, key, { value: response[key] })
+  observedResponseCompletions.set(observed, () => finish('complete'))
   return observed
 }

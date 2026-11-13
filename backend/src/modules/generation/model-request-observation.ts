@@ -8,6 +8,8 @@ import { currentModelRequestContext, modelTaskPolicies, withModelRequestContext,
 type Owner = 'request' | 'job' | 'director'
 type ObservationOptions = { taskId?: string; projectId?: string; modelId?: string; label: string; owner: Owner; signal?: AbortSignal; policy?: ModelTaskPolicy }
 const active = new Map<string, AbortController>()
+// These auxiliary requests do not enter the text token-reservation ledger.
+const mediaTransports = new Set(['media_create', 'media_poll', 'media_download', 'speech_create'])
 /** Stops local execution only; provider cancellation/charging is independent. */
 export function stopObservedModelTask(id: string): boolean {
   const controller = active.get(id)
@@ -54,6 +56,9 @@ export function createModelRequestObservation(options: ObservationOptions, trace
   const previous = options.taskId ? db.prepare('SELECT usage,progress FROM model_request_tasks WHERE id=?').get(id) as {usage: string; progress: string} | undefined : undefined
   let usage = createScriptRequestUsage()
   if (previous) { try { usage = JSON.parse(previous.usage) as ScriptRequestUsage } catch { throw new Error('任务用量记录损坏，不能丢弃后重新派发') } }
+  const countedMediaRequests = new Set(previous ? (db.prepare(`SELECT id FROM model_request_attempts WHERE task_id=?
+    AND json_extract(metrics,'$.transport_kind') IN ('media_create','media_poll','media_download','speech_create')`)
+    .all(id) as Array<{ id: string }>).map(row => row.id) : [])
   const progress = new Map<string, ModelUnitProgress>()
   if (previous) for (const item of JSON.parse(previous.progress) as ModelUnitProgress[]) progress.set(item.phase_id, item)
   let state = 'running', recorded = false
@@ -65,8 +70,16 @@ export function createModelRequestObservation(options: ObservationOptions, trace
       .run(id, options.projectId || null, options.modelId || null, options.label, options.owner, state, JSON.stringify(usage), now(), now(), JSON.stringify([...progress.values()]))
   }
   const observe = (value: unknown, complete: boolean) => {
-    recorded = true; persist()
     const metrics = safeModelMetrics(value), requestId = typeof metrics.request_id === 'string' ? metrics.request_id : undefined
+    if (!complete && requestId && mediaTransports.has(String(metrics.transport_kind)) && !countedMediaRequests.has(requestId)) {
+      countedMediaRequests.add(requestId)
+      const bytes = Number.isSafeInteger(metrics.request_bytes) ? Number(metrics.request_bytes) : 0
+      if (metrics.kind === 'generation') { usage.requests++; usage.request_bytes += bytes }
+      else { usage.transport_requests++; usage.transport_request_bytes += bytes }
+      // A media request has no text-token reservation. Unknown media pricing
+      // must not fabricate pending text requests or token estimates.
+    }
+    recorded = true; persist()
     if (!requestId) return
     db.prepare(`INSERT INTO model_request_attempts (task_id,id,state,metrics,updated_at) VALUES (?,?,?,?,?)
       ON CONFLICT(task_id,id) DO UPDATE SET state=excluded.state,metrics=excluded.metrics,updated_at=excluded.updated_at`)

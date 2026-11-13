@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createLangfuseTracer, readLangfuseConfig, type LangfuseConfig, type LangfuseSpan, type LangfuseBatch } from '../src/infrastructure/observability/langfuse-tracing.js'
+import { synthesizeSpeech } from '../src/infrastructure/providers/speech-provider.js'
+import { modelTaskPolicies, withModelRequestContext } from '../src/modules/generation/model-task-policy.js'
 const enabled = (overrides: NodeJS.ProcessEnv = {}) => readLangfuseConfig({ LANGFUSE_TRACING: 'true', LANGFUSE_PUBLIC_KEY: 'pk-test', LANGFUSE_SECRET_KEY: 'sk-test', LANGFUSE_BASE_URL: 'http://localhost:3035', ...overrides })
 const spans = (batch: LangfuseBatch) => batch.resourceSpans.flatMap(resource => resource.scopeSpans.flatMap(scope => scope.spans))
 function attribute(span: LangfuseSpan, key: string) { return span.attributes.find(item => item.key === key)?.value.stringValue }
@@ -148,4 +150,26 @@ test('stuck confirmation stream is cancelled at the export deadline', async () =
   const tracer = createLangfuseTracer(enabled({ VIDEO_STUDIO_LANGFUSE_TIMEOUT_MS: '50' }), { fetch: async (_input, init) => { signal = init?.signal as AbortSignal; return new Response(new ReadableStream({ start() {}, cancel() { cancelled = true } })) } })
   const o = tracer.observation({ taskId: 'task', owner: 'request' }); o.dispatch({ request_id: 'r' }); o.finish('succeeded'); await tracer.flush(100)
   assert.equal(signal?.aborted, true); assert.equal(cancelled, true); assert.equal(tracer.status().failed, 1); assert.equal(tracer.status().pending, 0)
+})
+
+
+test('validated TTS terminal success exports one successful child despite cancelling an open response', async () => {
+  const c = capture(), operation = c.tracer.observation({ taskId: 'speech-job', owner: 'job' })
+  let cancelled = false
+  const audio = Buffer.from('ID3 fixture audio')
+  await withModelRequestContext({ policy: modelTaskPolicies.paid,
+    onDispatch: value => operation.dispatch(value), onMetrics: value => operation.metrics(value) }, () =>
+    synthesizeSpeech({ api_key: 'fixture-secret', text: '你好', speaker: 'zh_female_vv_uranus_bigtts' }, async () =>
+      new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(
+        JSON.stringify({ code: 0, data: audio.toString('base64') }) + '\n' + JSON.stringify({ code: 20_000_000 }) + '\n')) },
+        cancel() { cancelled = true } }))))
+  operation.finish('succeeded'); await c.tracer.flush()
+  assert.equal(cancelled, true)
+  const child = c.spans().filter(span => span.parentSpanId)
+  assert.equal(child.length, 1)
+  assert.equal(child[0]!.name, 'media_generation:speech_create')
+  assert.equal(child[0]!.status.code, 1)
+  assert.equal(metadata(child[0]!).delivery, 'completed')
+  assert.equal(metadata(c.spans().find(span => !span.parentSpanId)!).state, 'succeeded')
+  assert.equal(attribute(child[0]!, 'langfuse.observation.usage_details'), undefined)
 })

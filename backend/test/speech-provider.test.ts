@@ -3,6 +3,8 @@ import { test } from 'node:test'
 
 import { maxSpeechResponseBytes, speechRequestTimeoutMs, synthesizeSpeech } from '../src/infrastructure/providers/speech-provider.js'
 
+import { modelTaskPolicies, withModelRequestContext } from '../src/modules/generation/model-task-policy.js'
+
 const input = { api_key: 'secret-for-speech-test', text: '你好，晚安。', speaker: 'zh_female_vv_uranus_bigtts' }
 const encode = (message: Record<string, unknown>) => new TextEncoder().encode(`${JSON.stringify(message)}\n`)
 const audio = Buffer.from('ID3 test speech bytes')
@@ -156,9 +158,16 @@ test('a terminal success stops the stream even if the provider keeps the connect
     start(controller) { controller.enqueue(Buffer.concat([encode(chunk), encode(finished)])) },
     cancel() { cancelled = true },
   }))
-  const result = await synthesizeSpeech(input, async () => response)
+  const metrics: any[] = []
+  const result = await withModelRequestContext({ policy: modelTaskPolicies.paid, onMetrics: value => metrics.push(value) }, () =>
+    synthesizeSpeech(input, async () => response))
   assert.deepEqual(result.audio, audio)
   assert.equal(cancelled, true)
+  assert.equal(metrics.length, 1)
+  assert.equal(metrics[0].delivery, 'completed')
+  assert.equal(metrics[0].failure_reason, undefined)
+  assert.equal(metrics[0].raw_reason, undefined)
+  assert.equal(metrics[0].input_tokens, undefined)
 })
 
 test('invalid UTF-8 is rejected instead of silently corrupting subtitles', async () => {
@@ -202,4 +211,14 @@ test('empty input, invalid rates and paid clone voice IDs fail before contacting
     { ...input, speech_rate: 101 },
     { ...input, speech_rate: 0.5 },
   ]) await assert.rejects(synthesizeSpeech(invalid, shouldNotFetch))
+})
+
+
+test('a terminal marker without audio cannot confirm a successful speech transport', async () => {
+  const metrics: any[] = []
+  await assert.rejects(withModelRequestContext({ policy: modelTaskPolicies.paid, onMetrics: value => metrics.push(value) }, () =>
+    synthesizeSpeech(input, async () => new Response(new ReadableStream({ start(controller) { controller.enqueue(encode(finished)) } })))), /没有返回音频/)
+  assert.equal(metrics.length, 1)
+  assert.equal(metrics[0].delivery, 'accepted')
+  assert.equal(metrics[0].raw_reason, 'body_cancelled')
 })
