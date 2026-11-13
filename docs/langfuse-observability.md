@@ -107,9 +107,9 @@ Langfuse v4 的观察记录不可变，因此请求只有在收到最终指标�
 
 ## 执行、结构和质量结果
 
-追踪的业务根状态表示本次流程是否执行完成，不能据 `succeeded` 判断候选质量。模型请求记录实际交付状态；独立结果 span 分别记录结构 `valid / invalid_json / invalid_contract / invalid_business` 与质量 `passed / needs_work / inconclusive`，以及大纲生成、大纲校验、镜头扩写、格式修正、导演复核、内容修复、修复复查等中文细阶段。
+追踪的业务根状态表示本次流程是否执行完成，不能据 `succeeded` 判断候选质量。模型请求记录实际交付状态；独立结果 span 分别记录结构 `valid / invalid_json / invalid_contract / invalid_business` 与质量 `passed / needs_work / inconclusive`，以及大纲生成、大纲校验、镜头扩写、格式修正、导演复核、修复范围复核、内容修复、修复复查等中文细阶段。
 
-只有实际独立质量核对可产生相应通过结论；只有结构校验、未新增语义复核的理解或方案接口使用 `inconclusive`。修复效果记录为 `improved / unchanged / regressed`，失败历史不因后续成功而删除。结果 span 每任务最多导出 128 项，超过上限后仍更新 root 最新质量和省略计数；诊断数量上限不增加业务请求。
+修复范围复核只为已有错误补齐精确字段证据，结构有效不能解释为候选质量通过；它仍需后续内容修改与完整复查。只有实际独立质量核对可产生相应通过结论；只有结构校验、未新增语义复核的理解或方案接口使用 `inconclusive`。修复效果记录为 `improved / unchanged / regressed`，失败历史不因后续成功而删除。结果 span 每任务最多导出 128 项，超过上限后仍更新 root 最新质量和省略计数；诊断数量上限不增加业务请求。
 
 请求已结算与实际费用完整可知是不同事实。accepted 后断流即使账本没有 pending/uncertain，也仍需按 delivery 和 failure_reason 判断最终输出与计费是否未知，不能将未报告输出的 0 当成零费用。真实样本与这些边界见[本轮验收报告](./ai-workflow-quality-expansion-acceptance-2026-11-13.md)。
 

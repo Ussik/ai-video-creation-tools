@@ -46,7 +46,8 @@ export function validateStoryboardRepairEvidence(issue: ScopedReviewIssue, scene
   for (const scope of issue.repair_scope || []) {
     if (!allowed(scope.scene_id, scope.shot_index)) problem('修复范围超出了有证据的问题及其直接关联镜头')
     if (scope.fields.some(field => field.startsWith('scene_direction.') !== (scope.shot_index === null))) problem('场面调度与镜头字段的修复范围不一致')
-    if (!scope.fields.every(field => issue.evidence_refs?.some(reference => reference.scene_id === scope.scene_id && reference.shot_index === scope.shot_index && reference.field === field))) problem('每个修复字段必须有同位置的原文证据')
+    const uncovered = scope.fields.filter(field => !issue.evidence_refs?.some(reference => reference.scene_id === scope.scene_id && reference.shot_index === scope.shot_index && reference.field === field))
+    if (uncovered.length) problem(`repair_scope中scene_id=${scope.scene_id},shot_index=${scope.shot_index}的字段${uncovered.join('、')}缺少同位置evidence_refs；请逐个补充该field当前原文quote，或从repair_scope移除没有证据的字段，不能改用其他字段或来源的引用。`)
   }
   if (strict && !issue.evidence_refs?.length) {
     const relevant = scenes.flatMap(scene => scene.shots.flatMap((shot, index) => allowed(scene.scene_id, index) ? texts(shot) : []))

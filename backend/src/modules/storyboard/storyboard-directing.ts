@@ -119,7 +119,7 @@ export const storyboardDirectingReviewSchema = z.object({
     scene_id: text(120), shot_index: z.number().int().min(0).max(29),
     related_scene_id: text(120).nullable(), related_shot_index: z.number().int().min(0).max(29).nullable(),
     timing_change: z.boolean().optional(), severity: z.enum(['error', 'warning']), message: text(1500), evidence: text(2000), repair: text(1500),
-    evidence_refs: z.array(storyboardEvidenceReferenceSchema).min(1).max(6).optional(),
+    evidence_refs: z.array(storyboardEvidenceReferenceSchema).min(1).max(24).optional(),
     repair_scope: z.array(storyboardRepairScopeSchema).min(1).max(4).optional(),
   }).strict()).max(100),
 }).strict()
@@ -165,5 +165,7 @@ export function storyboardDirectingReviewPrompt(context: unknown): string {
     `按本次source_policy规定的资料优先级核对剧情与台词来源，最新正式正文优先于滞后的场次摘要和旧镜头，不因新方案正确采用最新设定而报来源漂移。固定镜头、留白、反打、换景别、明确省略/换场、蒙太奇和有意重复都可以成立；不能只因风格偏好、左右关键词或缺少花哨运镜报错。只有无依据的状态跳变、互相矛盾的摄影要求、时长内不可执行的运动、无叙事职责的重复镜头等具体缺陷才报issue。信息不足时不臆造穿帮；不要把需要创作者选择的口味问题当成error。\n` +
     `error用于必须修复的执行矛盾、动作断裂或来源漂移；warning用于有证据但可由创作者判断的节奏或动机风险。每项给出message、逐字引用当前设计或来源的evidence、最小repair；不能要求改动未选场次、已接受事实或新增台词。单镜问题关联字段均为null；跨镜问题只能引用pairs中的直接相邻镜头。shot_index从0开始。只有证据明确表明当前镜头时长不足且需要调整时才写timing_change:true；普通画面或连接问题不授权改时长。明确省略或换场按其允许的变化判断，不强迫起止状态逐字相同。无问题返回{"issues":[]}。\n` +
     `每个独立缺陷只报一次，message/evidence/repair简短直接，不复述整场；同一原因涉及相邻镜头合并一项。repair只能要求替换错误值，不能删除或清空任何必填字段。每项error必须提供evidence_refs精确引用scene_id、shot_index、field和逐字quote，并以repair_scope限定replace字段，每个待改字段都有同位置证据；warning可用evidence原文；场面调度的shot_index为null，字段为scene_direction的具体子项。无足够证据不授权改动。\n` +
+    `按整场所有镜头的联合覆盖对照正式来源中的必要动作链，核对准备、操作、确认与归位是否在序列中明确呈现，每个必要动作只需一个主镜完成，不要求每镜复制整条动作链。不可把结果状态或泛称完成当成中间动作已经发生；例如来源要求先折回再按压时，只写压平不能替代折回步骤。只有遍查本场完整序列后确实没有任何镜头承载来源操作，才可报source_drift并引用现有正文给出最小补全范围；后一镜已明确完成的动作不得要求前镜再做一次，前镜准备/接近而后镜操作是有效拆镜。不要新增来源没有的动作。\n` +
+    `同一动作或状态矛盾要逐字段核对完整表达：prompt、video_prompt正文及追加约束、image_prompt、start_state、end_state、cut_note、directing.camera和directing.cut。给出统一的最小修复方向，将所有仍承载同一矛盾的错误字段一并纳入证据与repair_scope，不能只改状态和切点而留下视频正文的相反要求。正确的邻镜与对照字段保持原值，不能因为作为证据引用就改动。\n` +
     `本次复核上下文：\n${JSON.stringify(context)}`
 }

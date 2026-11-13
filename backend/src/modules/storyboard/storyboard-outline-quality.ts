@@ -46,6 +46,7 @@ export async function ensureStoryboardOutlineQuality<T extends Outline>(input: {
       '按最新正式正文和创作者事实，逐场核对动作是否完整分配、是否重复已完成动作；逐镜核对prompt能否从start_state到达end_state，逐对核对前镜end_state→后镜start_state的动作阶段、持物与空间。' +
       'storyboard_rules是本次已选分镜专业规则，reference_budget和target_model约束可执行覆盖；核对大纲是否遵守其中与动作分配和场面相关的规则。' +
       '规则服从本次创作者要求、项目事实、正式来源和JSON契约，不将审美建议升级为错误，不检查尚未扩写的摄影字段。' +
+      '以整场全部镜头的联合覆盖核对准备、操作、确认和归位，每个动作只需一个主镜完成；不要求每镜重复整条链，后一镜已明确操作则前镜准备阶段有效。不能把最终状态当成中间步骤已完成，来源独立操作也不能被后续结果替代。' +
       '明确的省略、换场、反打与有意重复可以成立；不按左右词或字面相同机械判错。证据不足不臆造错误。\n' +
       '只报具体矛盾，每个原因一次；message/evidence/repair简短。禁止删除或清空必填字段。每项error必须提供evidence_refs，逐字quote所引用field的现有值，' +
       '并以repair_scope给出operation:replace及精确fields；镜头字段只允许prompt/start_state/end_state/cut_note，场面调度只允许scene_direction.anchors/blocking/axis/dramatic_progression且shot_index:null。' +

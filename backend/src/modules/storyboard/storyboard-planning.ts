@@ -27,11 +27,14 @@ import { createStoryboardPlanningTasks, type StoryboardPlanningControl } from '.
 import { runStoryboardPlanningWorkflow } from './storyboard-planning-workflow.js'
 import { retainCandidateReview, readCandidateReview, reviewModelSignature } from '../generation/candidate-review-evidence.js'
 import { repairStoryboardTargets } from './storyboard-targeted-repair.js'
+import { completeStoryboardRepairScope } from './storyboard-repair-scope-review.js'
 import { generateStoryboardPlanningBatches } from './storyboard-planning-batches.js'
 import type { StoryboardPlanningResult } from '@video-studio/shared/storyboard/storyboard-planning-types'
 import { ensureStoryboardOutlineQuality } from './storyboard-outline-quality.js'
 import { storyboardIssueFingerprint, storyboardValueSignature, storyboardRepairEffect } from './storyboard-review-scope.js'
 import { reportModelResult, withModelOperationStage } from '../generation/model-result-observation.js'
+import { currentModelRequestContext, modelTaskPolicies, withModelRequestContext } from '../generation/model-task-policy.js'
+import { isStoryboardPlanningBudgetError } from './storyboard-planning-budget.js'
 
 const repairHistorySchema = z.object({ attempted: z.array(z.string().length(64)).max(3) }).strict()
 type RepairHistory = z.infer<typeof repairHistorySchema>
@@ -540,15 +543,45 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       repair: async (prepared, candidate, report) => {
         const fingerprint = storyboardIssueFingerprint(report.issues)
         if (repairHistory.attempted.includes(fingerprint) || repairHistory.attempted.length >= 3) throw Object.assign(new Error('同一问题已尝试受限修复，不能重复请求'), { code: 'storyboard_repeated_issues', statusCode: 422 })
-        reportBeforeRepair = report
-        repairHistory = { attempted: [...repairHistory.attempted, fingerprint] }; control.retain(historyKey, repairHistory)
-        const planned = await repairStoryboardTargets({ candidate: candidate.planned, report, shotSchema: fullShotSchema,
-          generate, prompt: JSON.stringify({ ...compactContext, source_scenes: state.scenes.filter(scene => report.issues.some(issue => issue.scene_id === scene.id)),
-            source_documents: sources }) + '\n' + prepared.rules.text + '\n' + prepared.motionRules.text,
-          signal: controller.signal, allowTimingChange: input.duration_mode === 'reestimate' && !input.target_duration,
-          exactScope: true, sourceTexts, sceneDirectionSchema: directingSceneSchema })
-        checkCurrent(); validateSchedule(planned)
-        return compilePlan(schema.parse(planned))
+        const repairPrompt = JSON.stringify({ ...compactContext, source_scenes: state.scenes.filter(scene => report.issues.some(issue => issue.scene_id === scene.id)),
+          source_documents: sources }) + '\n' + prepared.rules.text + '\n' + prepared.motionRules.text
+        const completedScope = await completeStoryboardRepairScope({ candidate: candidate.planned, report, generate,
+          prompt: repairPrompt, signal: controller.signal, control, sourceTexts })
+        checkCurrent()
+        // A completed audit is reusable even when the content request is
+        // rejected by dispatch admission. Spend the repair attempt only at a
+        // real text dispatch, before its network side effect can become unknown.
+        reportBeforeRepair = completedScope.report
+        let consumed = false
+        const consume = () => {
+          if (consumed) return
+          checkCurrent()
+          repairHistory = { attempted: [...repairHistory.attempted, fingerprint] }
+          control.retain(historyKey, repairHistory); consumed = true
+        }
+        const inherited = currentModelRequestContext()
+        try {
+          const planned = await withModelRequestContext({ ...inherited, policy: inherited?.policy || modelTaskPolicies.generation,
+            onDispatch: metrics => {
+              const kind = (metrics as { transport_kind?: string } | undefined)?.transport_kind
+              // Background creation is a text generation dispatch; its polls
+              // and native token counting cannot consume a content repair.
+              if (kind === undefined || kind === 'text' || kind === 'background_create') consume()
+              inherited?.onDispatch?.(metrics)
+            } }, () => repairStoryboardTargets({ candidate: candidate.planned, report: completedScope.report, shotSchema: fullShotSchema,
+            generate, prompt: repairPrompt + '\n修复范围核对说明：' + JSON.stringify(completedScope.notes),
+            signal: controller.signal, allowTimingChange: input.duration_mode === 'reestimate' && !input.target_duration,
+            exactScope: true, sourceTexts, sceneDirectionSchema: directingSceneSchema }))
+          // Reusing a previously completed provider response need not dispatch.
+          consume(); checkCurrent(); validateSchedule(planned)
+          return compilePlan(schema.parse(planned))
+        } catch (error) {
+          // Known admission stops with no dispatch leave the allowance intact.
+          // Every other unobserved failure remains conservative; never infer
+          // that an unknown provider outcome was free to replay.
+          if (!consumed && !controller.signal.aborted && !isStoryboardPlanningBudgetError(error)) consume()
+          throw error
+        }
       },
       inconclusive: (prepared, candidate, repaired, error, report) => projectCandidate(prepared, candidate, repaired, report, error),
       projection: projectCandidate,
@@ -652,24 +685,37 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
     const schema = selectedPlanSchema(state.scenes)
     const controller = new AbortController(), abort = () => { if (!reply.raw.writableEnded) controller.abort(new DOMException('局部修复已取消', 'AbortError')) }
     request.raw.once('aborted', abort); reply.raw.once('close', abort)
-    let scenes = input.scenes
+    let scenes = input.scenes, contentRepairStarted = false
     try {
       const raw = schema.parse({ scenes: input.scenes.map(scene => ({ ...scene,
         scene_direction: scene.shots[0]?.continuity_plan?.scene,
         shots: scene.shots.map(({ continuity_plan, ...shot }) => ({ ...shot, directing: continuity_plan?.shot })),
       })) })
       validateStoryboardDirectingReview(report, raw.scenes, { strictEvidence: true, sourceTexts })
+      const repairPrompt = storyboardCreativeContextPrompt(state.creativeContext) + '\n本次创作者要求：' + input.instructions + '\n' + JSON.stringify({
+        project: { name: state.project.name, brief: state.project.brief, ratio: state.project.ratio },
+        source_scenes: state.scenes.filter(scene => report.issues.some(issue => issue.scene_id === scene.id)), source_documents: sources,
+        source_policy: storyboardSourcePolicy, creative_authority: storyboardCreativeAuthority,
+      })
+      const completedScope = await completeStoryboardRepairScope({ candidate: raw, report,
+        generate: (prompt, contract) => context.generateText(id, input.model_id, prompt, contract, controller.signal),
+        prompt: repairPrompt, signal: controller.signal, sourceTexts })
+      controller.signal.throwIfAborted()
+      if (snapshot(id, sceneIds, context).signature !== state.signature || reviewModelSignature(input.model_id) !== reviewRuntime || target && storyboardTargetModel(target.id)?.signature !== target.signature) fail('范围复核期间资料或模型已更新，请重新复查', 409)
+      // Another owner may have consumed this receipt while the audit ran.
+      // Audit failures never spend the finite content-repair allowance.
+      repairHistory = { attempted: [...new Set([...repairHistory.attempted,
+        ...unchangedCandidateHistory(id, input.scenes, input.signature, input.model_id).attempted])].slice(0, 3) }
+      if (stoppedRepair(repairHistory, report.issues)) throw Object.assign(new Error(repeatedRepairDiagnostic.message), { ...repeatedRepairDiagnostic, statusCode: 409 })
       repairHistory = { attempted: [...repairHistory.attempted, storyboardIssueFingerprint(report.issues)] }
       // Consume this exact receipt before dispatch so concurrent or stale requests cannot repeat it.
       retainCandidateReview({ projectId: id, family: 'storyboard', candidate: input.scenes, source: input.signature, modelId: input.model_id,
         status: 'needs_work', report: { report, repair_history: repairHistory } })
-      const planned = await repairStoryboardTargets({ candidate: raw, report, shotSchema: schema.shape.scenes.element.shape.shots.element,
+      contentRepairStarted = true
+      const planned = await repairStoryboardTargets({ candidate: raw, report: completedScope.report, shotSchema: schema.shape.scenes.element.shape.shots.element,
         generate: (prompt, contract) => context.generateText(id, input.model_id, prompt, contract, controller.signal), signal: controller.signal, allowTimingChange: input.duration_mode === 'reestimate',
         exactScope: true, sourceTexts, sceneDirectionSchema: directingSceneSchema,
-        prompt: storyboardCreativeContextPrompt(state.creativeContext) + '\n本次创作者要求：' + input.instructions + '\n' + JSON.stringify({
-          project: { name: state.project.name, brief: state.project.brief, ratio: state.project.ratio },
-          source_scenes: state.scenes.filter(scene => report.issues.some(issue => issue.scene_id === scene.id)), source_documents: sources, source_policy: storyboardSourcePolicy, creative_authority: storyboardCreativeAuthority,
-        }) })
+        prompt: repairPrompt + '\n修复范围核对说明：' + JSON.stringify(completedScope.notes) })
       scenes = draft.parse({ scenes: planned.scenes.map(({ scene_direction, ...scene }) => ({ ...scene,
         shots: scene.shots.map((shot, index) => {
           const original = input.scenes.find(item => item.scene_id === scene.scene_id)!.shots[index]!
@@ -702,7 +748,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       const diagnostic = { code: String((error as { code?: string })?.code || 'candidate_repair_inconclusive'), message: error instanceof Error ? error.message : String(error) }
       return { scenes: scenes.map(scene => ({ ...scene, scene_heading: state.scenes.find(source => source.id === scene.scene_id)!.heading })),
         directing_review: { ...retainCandidateReview({ projectId: id, family: 'storyboard', candidate: scenes, source: input.signature,
-          modelId: input.model_id, status: 'inconclusive', report: { report, error: diagnostic, repair_history: repairHistory } }), repaired: true, issues: report.issues, error: diagnostic } }
+          modelId: input.model_id, status: 'inconclusive', report: { report, error: diagnostic, repair_history: repairHistory } }), repaired: contentRepairStarted, issues: report.issues, error: diagnostic } }
     } finally { request.raw.removeListener('aborted', abort); reply.raw.removeListener('close', abort) }
   })
   app.post('/api/projects/:id/script/storyboard/commit', async request => {

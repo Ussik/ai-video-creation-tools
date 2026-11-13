@@ -93,7 +93,7 @@ export function storyboardWireOutputContract(body: Record<string, any>, protocol
   if (!schemaLine) return undefined
   try {
     const schema = JSON.parse(schemaLine), properties = schema.properties
-    const name = properties?.repairs ? 'storyboard_structure_repair' : properties?.issues ? (prompt.includes('你是分镜大纲的独立动作与接镜复核员') ? 'storyboard_outline_review' : 'storyboard_directing_review') : properties?.scene_id && properties?.shots ? 'storyboard_shot_batch'
+    const name = properties?.checked_fields && properties?.additions ? 'storyboard_repair_scope_review' : properties?.repairs ? 'storyboard_structure_repair' : properties?.issues ? (prompt.includes('你是分镜大纲的独立动作与接镜复核员') ? 'storyboard_outline_review' : 'storyboard_directing_review') : properties?.scene_id && properties?.shots ? 'storyboard_shot_batch'
       : properties?.scenes ? (properties.scenes.items?.properties?.shots?.items?.properties?.image_prompt ? 'controlled_storyboard' : 'storyboard_scene_plan') : undefined
     return name ? { name, schema } : undefined
   } catch { return undefined }
@@ -112,4 +112,10 @@ export function storyboardExactRepairFixture(value: any, prompt: string) {
     const root = target.shot_index === null ? scene : scene.shots[target.shot_index]
     return [target.key, target.field.split('.').reduce((current: any, part: string) => current[part], root)]
   })) }
+}
+
+/** A valid unchanged audit checks every application-owned field key. */
+export function storyboardScopeReviewFixture(prompt: string) {
+  const { fields } = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1))
+  return { outcome: 'complete', checked_fields: fields.map((field: { key: string }) => field.key), additions: [] }
 }
