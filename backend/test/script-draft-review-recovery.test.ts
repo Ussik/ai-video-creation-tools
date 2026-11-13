@@ -1,3 +1,4 @@
+import { draftReviewFixtureJson } from './fixtures/script-draft-completeness.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -24,7 +25,7 @@ after(async () => { db.close(); await rm(directory, { recursive: true, force: tr
 const dimensions = ['settings', 'consistency', 'requirements'] as const
 const expected = [...scriptStageArtifacts.outline]
 const clear = () => ({ facts: [], checked_artifacts: expected, findings: [] })
-const resultText = (value: unknown = clear()) => JSON.stringify(value)
+const resultText = (value: unknown = clear()) => draftReviewFixtureJson(value)
 const emptyResult = (contract?: OutputContract) => resultText(contract?.name.endsWith('_page') ? { items: [], complete: true } : clear())
 const exhausted = (partialText = '') => new TextOutputLimitError(partialText, 'length', {
   input_tokens: 66_000, output_tokens: 65_535, reasoning_tokens: 65_535,
@@ -34,16 +35,16 @@ function dimension(prompt: string): string {
 }
 function submitted(prompt: string) {
   const marker = '待核对草稿原文（资料）：'
-  return JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length)) as Array<{ key: string; artifact_type: string; content: string }>
+  return JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length).split('\n【本轮候选正文结束】')[0]!) as Array<{ key: string; artifact_type: string; content: string }>
 }
 function reviewContext(prompt: string) {
-  const start = '既有事实与创作要求（资料）：', end = '\n待核对草稿原文（资料）：'
-  return JSON.parse(prompt.slice(prompt.lastIndexOf(start) + start.length, prompt.lastIndexOf(end)))
+  const start = '既有事实与创作要求（资料）：'
+  return JSON.parse(prompt.slice(prompt.lastIndexOf(start) + start.length).split('\n【审读结果分页协议】')[0]!)
 }
-function evidenceMaterial(prompt: string) {
-  const marker = '【待定位证据（资料）】\n'
+function evidenceMaterial(prompt: string, reassessment = false) {
+  const marker = reassessment ? '【证据结论复核资料】\n' : '【待定位证据（资料）】\n'
   assert.ok(prompt.includes(marker), 'local recovery identifies only the evidence still awaiting location')
-  return JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length)) as {
+  return JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length).split('\n【本轮复核资料结束】')[0]!) as {
     issues: Array<{ id: string; source_key: string; quote: string; explanation: string; suggestion: string }>
     sources: Array<{ key: string; units: Array<{ id: number; text: string }> }>
   }
@@ -124,6 +125,15 @@ test('each focused dimension enforces complete artifact coverage and verbatim ev
         assert.equal(pending.issues[0]!.quote, unresolved.quote)
         return resultText({ repairs: [{ id: 'findings:0', first_unit: null, last_unit: null }] })
       }
+      if (contract?.name === 'script_draft_evidence_reassessment') {
+        calls.push('reassess')
+        const pending = evidenceMaterial(prompt, true)
+        assert.deepEqual(pending.issues.map(item => item.id), ['findings:0'])
+        assert.equal(pending.issues[0]!.explanation, unresolved.explanation)
+        assert.equal(pending.issues[0]!.quote, unresolved.quote)
+        return resultText({ reassessments: [{ id: 'findings:0', verdict: 'unresolved', reason: '现有证据仍不足以核实原审读结论。',
+          source_key: null, first_unit: null, last_unit: null }] })
+      }
       f.assertComplete(prompt)
       const scope = dimension(prompt); calls.push(scope)
       if (scope === 'whole') throw exhausted()
@@ -139,6 +149,8 @@ test('each focused dimension enforces complete artifact coverage and verbatim ev
       'only structural coverage failures repeat the complete dimension response')
     assert.equal(calls.filter(scope => scope === 'evidence').length, invalid === 'quote' ? 1 : 0,
       'evidence location gets one bounded request without repeating the semantic review')
+    assert.equal(calls.filter(scope => scope === 'reassess').length, invalid === 'quote' ? 1 : 0,
+      'an explicit locator failure gets one bounded semantic reassessment and remains unresolved')
     const checkpoint = f.store().checkpoint
     assert.equal(has(checkpoint, `review:dimension:${target}`), false)
     assert.equal(has(checkpoint, 'review:whole'), false, 'a failed dimension cannot produce overall success')
@@ -147,17 +159,19 @@ test('each focused dimension enforces complete artifact coverage and verbatim ev
     const resumed: string[] = []
     let repairedQuote = ''
     const resume = () => reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
-      if (contract?.name === 'script_draft_evidence_repair') {
-        resumed.push('evidence')
-        const pending = evidenceMaterial(prompt), issue = pending.issues[0]!
+      if (contract?.name === 'script_draft_evidence_reassessment') {
+        resumed.push('reassess')
+        const pending = evidenceMaterial(prompt, true), issue = pending.issues[0]!
         assert.equal(issue.explanation, unresolved.explanation)
         assert.equal(issue.suggestion, unresolved.suggestion)
         const source = pending.sources.find(source => source.key === issue.source_key)!
         const unit = source.units.find(unit => unit.text.includes(finding(f.draft, 0).quote))!
         assert.ok(unit, 'the replacement is selected from the unchanged corresponding candidate source')
         repairedQuote = unit.text.trim()
-        return resultText({ repairs: [{ id: issue.id, first_unit: unit.id, last_unit: unit.id }] })
+        return resultText({ reassessments: [{ id: issue.id, verdict: 'confirmed', reason: '候选原文仍支持原审读中的实质问题。',
+          source_key: source.key, first_unit: unit.id, last_unit: unit.id }] })
       }
+      assert.notEqual(contract?.name, 'script_draft_evidence_repair', 'semantic continuation must not repeat failed evidence location')
       const scope = dimension(prompt); resumed.push(scope); f.assertComplete(prompt)
       return emptyResult(contract)
     }, { context: f.context, steps: f.steps() })
@@ -175,8 +189,8 @@ test('each focused dimension enforces complete artifact coverage and verbatim ev
         return true
       }
       await assert.rejects(resume(), retainsFinding)
-      assert.deepEqual(resumed, ['evidence', ...dimensions.slice(dimensions.indexOf(target) + 1)],
-        'continuation locates the saved response and only reads the remaining dimensions')
+      assert.deepEqual(resumed, ['reassess', ...dimensions.slice(dimensions.indexOf(target) + 1)],
+        'continuation reassesses the saved response and only reads the remaining dimensions')
       await assert.rejects(reviewScriptDraftCompleteness(f.draft,
         async () => assert.fail('the repaired finding and completed dimensions must replay without a model request'),
         { context: f.context, steps: f.steps() }), retainsFinding)
@@ -360,7 +374,7 @@ test('three hundred cross-dimension reports can become one hundred real issues w
       for (const report of reports) groups.set(report.topic, [...(groups.get(report.topic) || []), report.index])
       assert.equal(groups.size, 100)
       for (const members of groups.values()) assert.equal(members.length, 3)
-      return JSON.stringify({ groups: [...groups].map(([topic, members]) => ({ topic, members })) })
+      return draftReviewFixtureJson({ groups: [...groups].map(([topic, members]) => ({ topic, members })) })
     }
     f.assertComplete(prompt)
     const scope = dimension(prompt); calls.push(scope)
@@ -394,7 +408,7 @@ test('more than two hundred final independent issues stop completion without tru
       const marker = '本轮问题：'
       const reports = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length)) as Array<{ index: number; topic: string }>
       assert.equal(reports.length, 210)
-      return JSON.stringify({ groups: reports.map(({ index, topic }) => ({ topic, members: [index] })) })
+      return draftReviewFixtureJson({ groups: reports.map(({ index, topic }) => ({ topic, members: [index] })) })
     }
     const scope = dimension(prompt); calls.push(scope)
     if (scope === 'whole') throw exhausted()

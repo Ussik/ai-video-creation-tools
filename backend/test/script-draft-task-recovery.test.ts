@@ -1,3 +1,4 @@
+import { draftReviewFixtureJson } from './fixtures/script-draft-completeness.js'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -31,7 +32,7 @@ const adopted = '能力代价：每次使用失去一天记忆，无法恢复。
 const answer = '只失去一天记忆，保留60集和回家结局。'
 const finding = (evidence = quote) => ({ source_key: 'outline', kind: 'unresolved_setting' as const, quote: evidence,
   topic: '铜钥匙每次使用的记忆代价', explanation: '能力代价的触发后果尚未落实。', suggestion: '说明失去一天记忆的直接后果。' })
-const response = (content: unknown) => Response.json({ choices: [{ message: { content: typeof content === 'string' ? content : JSON.stringify(content) }, finish_reason: 'stop' }],
+const response = (content: unknown) => Response.json({ choices: [{ message: { content: typeof content === 'string' ? content : draftReviewFixtureJson(content) }, finish_reason: 'stop' }],
   usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 } })
 const events = (body: string) => body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)))
 
@@ -71,7 +72,7 @@ async function fixture(t: TestContext, strategy: 'manual' | 'ai', requiredRounds
     if (prompt.includes('待核对草稿原文（资料）：')) {
       audits++
       const marker = '待核对草稿原文（资料）：'
-      const sources = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length))
+      const sources = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length).split('\n【本轮候选正文结束】')[0]!)
       return response({ checked_artifacts: scriptStageArtifacts.outline, findings: audits < requiredRounds ? [finding(sources[0].content)] : [] })
     }
     assert.match(prompt, /继续已授权阶段的候选草稿/)

@@ -4,7 +4,7 @@ import { Sparkles } from 'lucide-react'
 import { jobPromptRequest, type PromptOptimizationResult } from '@video-studio/shared/jobs/prompt-optimization'
 import type { Job, Model, Provider } from '../../shared/api/api'
 import { api, json } from '../../shared/api/api'
-import { preferredModel } from '../models/model-defaults'
+import { useSharedModelSelection } from '../models/useSharedModelSelection'
 import './prompt-optimization.css'
 
 type Props = {
@@ -19,10 +19,10 @@ export default function PromptOptimizationModal(props: Props) {
     props.providers.some(provider => provider.id === model.provider_id && provider.enabled && provider.adapter !== 'demo'))
   const original = String(jobPromptRequest(props.job.request).prompt || '')
   const source = props.prompt ?? original
-  const [modelId, setModelId] = useState(preferredModel(available)?.id || '')
   const [result, setResult] = useState(''), [changes, setChanges] = useState<string[]>([])
   const [adjustment, setAdjustment] = useState(''), [resultAdjustment, setResultAdjustment] = useState('')
   const [pending, setPending] = useState(false), [applying, setApplying] = useState(false), [error, setError] = useState('')
+  const { modelId, selectModel } = useSharedModelSelection('text', available, { locked: pending || applying })
   const [elapsed, setElapsed] = useState(0), [resultKey, setResultKey] = useState('')
   const [resultSourceKey, setResultSourceKey] = useState('')
   const serial = useRef(0), abort = useRef<AbortController | null>(null), locked = useRef(false)
@@ -30,9 +30,6 @@ export default function PromptOptimizationModal(props: Props) {
   const currentKey = JSON.stringify([sourceKey, modelId])
   const maxLength = props.maxLength || 80_000
   useEffect(() => () => { serial.current++; abort.current?.abort() }, [])
-  useEffect(() => {
-    if (!pending && !applying && !available.some(model => model.id === modelId)) setModelId(preferredModel(available)?.id || '')
-  }, [available, modelId, pending, applying])
   useEffect(() => {
     if (!pending) return
     const start = Date.now(), timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000)
@@ -77,7 +74,7 @@ export default function PromptOptimizationModal(props: Props) {
       <Text size="sm" c="dimmed">调整不合适的描述，保留合理的画面信息。改写后仍需由图片服务审核，参考图也可能影响审核结果。</Text>
       <Select label="用于优化的文本模型" aria-label="优化提示词的文本模型" placeholder="请选择文本模型"
         data={available.map(model => ({ value: model.id, label: model.name }))} value={modelId || null}
-        onChange={value => setModelId(value || '')} searchable allowDeselect={false} disabled={pending || applying}
+        onChange={value => selectModel(value || '')} searchable allowDeselect={false} disabled={pending || applying}
         comboboxProps={{ zIndex: 320 }} />
       {!available.length && <Alert color="orange">请先在模型设置中启用一个文本模型及其提供商。</Alert>}
       <section className="prompt-optimization-adjustment" aria-label="提示词调整方向">

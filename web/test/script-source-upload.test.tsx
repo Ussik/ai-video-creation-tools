@@ -7,6 +7,7 @@ import { MantineProvider } from '@mantine/core'
 import type { Model, Provider, ProjectDetail } from '../src/shared/api/api'
 import type { ScriptSourceAnalysis, ScriptSourceDocument } from '@video-studio/shared/script/script-source-document'
 import { skillStageOptions } from '../src/shared/api/skills-api'
+import { scriptStageArtifacts } from '@video-studio/shared/script/script-stage-content'
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
@@ -127,7 +128,7 @@ function mockApi(t: TestContext, initialSource: ScriptSourceDocument | null = nu
     } }
 }
 
-test('upload schedules analysis, and a source outline starts without waiting for it', async t => {
+test('upload schedules analysis and source preview starts the complete outline after analysis is ready', async t => {
   dom.window.localStorage.clear()
   const api = mockApi(t)
   const view = await mount()
@@ -139,15 +140,16 @@ test('upload schedules analysis, and a source outline starts without waiting for
     assert.match(view.container.textContent!, /已上传剧本.txt/)
     await act(() => view.container.querySelector<HTMLButtonElement>('button[aria-label="查看原剧本：已上传剧本.txt"]')!.click())
     assert.match(document.body.textContent!, /原文的最后一句/)
-    // Analysis is still queued/running, yet the outline task reads the persisted full text.
+    assert.equal(button('生成故事大纲').disabled, true, 'the complete stage waits for source analysis')
+    api.setAnalysis({ ...analysis, status: 'ready', completed_chunks: 1 })
+    await pollAnalysis()
     assert.equal(button('生成故事大纲').disabled, false)
     await act(() => button('生成故事大纲').click())
     await settle()
     assert.equal(api.calls.length, 1)
-    assert.deepEqual(api.calls[0]!.workflow, { stage: 'outline', scope: 'project', episode_number: 0, intent: 'source_outline', artifact_types: ['outline'] })
+    assert.deepEqual(api.calls[0]!.workflow, { stage: 'outline', scope: 'project', episode_number: 0, intent: 'stage_design', artifact_types: [...scriptStageArtifacts.outline] })
     const instruction = JSON.stringify(api.calls[0]!.messages)
-    assert.match(instruction, /依据完整原稿整理故事大纲/)
-    assert.doesNotMatch(instruction, /已授权你在该范围内设计尚缺的虚构细节|本阶段完整包含/)
+    assert.match(instruction, /本次只交付：概要设计、故事简述、背景设定、全剧分段、钩子预设、伏笔与回收、反转预设、创作禁区、分集大纲/)
     assert.match(JSON.stringify(api.calls[0]!.messages), /基于项目中已上传的原剧本/)
   } finally { await view.destroy() }
   const reopened = await mount()
@@ -536,7 +538,7 @@ test('revised effective source explains the map update and a prepared map stays 
 
     await render({ ...analysis, status: 'ready', phase: 'ready', completed_chunks: 1, sections: [{ offset: 0, length: source.content.length, title: '返乡', episode_number: 1, summary: '林舟回家', characters: [], events: [] }] })
     assert.match(container.textContent!, /当前有效稿的剧本地图已准备 · 1 段剧情/)
-    assert.match(container.textContent!, /后续创作共用当前版本/)
+    assert.doesNotMatch(container.textContent!, /目录、人物、事件与全剧信息已整理|后续创作共用当前版本/)
     assert.doesNotMatch(container.textContent!, /等待更新|正在更新|重新生成/)
     assert.equal(container.querySelector('[aria-label="剧本分析步骤"]'), null)
     assert.equal(container.querySelector('[role="timer"]'), null)

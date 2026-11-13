@@ -78,6 +78,6 @@ export function assetPresentations(detail: ProjectDetail | null, nodes: AssetNam
         title = `生成${kindLabels[asset.kind]} · ${new Date(asset.created_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}`
       }
     }
-    return [asset.id, { title, context, specs }]
+    return [asset.id, { title: asset.display_name?.trim() || title, context, specs }]
   }))
 }

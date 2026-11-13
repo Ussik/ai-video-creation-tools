@@ -42,6 +42,7 @@ export function creatorRequirementsContext(projectId: string) {
 
 export function recordCreatorRequirement(projectId: string, input: RecordRequirementInput): CreatorRequirement {
   const quote = input.quote.trim(), sourceText = input.source.text
+  const scope = (input.scope || '').slice(0, 200)
   if (!quote) invalid('要求引文不能为空')
   if (quote.length > maxRequirementQuote) invalid(`引文不能超过 ${maxRequirementQuote} 字；请只摘录相关的原话`)
   if (!sourceText.includes(quote)) invalid('引文必须逐字来自创作者的原消息；助手的说明或你的转述不能作为要求记录')
@@ -56,12 +57,12 @@ export function recordCreatorRequirement(projectId: string, input: RecordRequire
     if (activeCreatorRequirements(projectId).length - replaced.length >= maxActiveCreatorRequirements) {
       invalid(`有效要求已达 ${maxActiveCreatorRequirements} 条上限；请明确替代或合并旧要求，系统不会静默丢弃`, 409)
     }
-    const duplicate = activeCreatorRequirements(projectId).find(item => item.quote === quote && item.kind === (input.kind ?? 'requirement'))
+    const duplicate = activeCreatorRequirements(projectId).find(item => item.quote === quote && item.kind === (input.kind ?? 'requirement') && item.scope === scope)
     if (duplicate && !supersedes.length) return duplicate
     const id = newId(), timestamp = now()
     run(`INSERT INTO script_creator_requirements (id, project_id, kind, quote, source_text, message_id, conversation_id, scope, status, supersedes_id, superseded_by, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?)`, id, projectId, input.kind ?? 'requirement', quote, sourceText,
-    input.source.message_id ?? null, input.source.conversation_id ?? null, (input.scope || '').slice(0, 200), supersedes[0] ?? null, timestamp, timestamp)
+    input.source.message_id ?? null, input.source.conversation_id ?? null, scope, supersedes[0] ?? null, timestamp, timestamp)
     for (const entry of replaced) run("UPDATE script_creator_requirements SET status='superseded', superseded_by=?, updated_at=? WHERE id=?", id, timestamp, entry.id)
     return one<CreatorRequirement>('SELECT * FROM script_creator_requirements WHERE id=?', id)!
   })()

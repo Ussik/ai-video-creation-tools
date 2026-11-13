@@ -4,6 +4,13 @@ const managedBlocks = managedPromptBlockNames
 export type ManagedPromptBlockName = typeof managedBlocks[number]
 const legacyVisualEnding = '保持上述对象的外观、比例、服装、材质与空间关系。只生成当前镜头的一幅完整画面或连续视频；不要复制设定板的多视角拼版、文字、标签或色板。'
 
+/** Source facts can contain old/model-authored headings. Keep their wording as
+ * ordinary text when embedding them inside a generated document section. */
+export function composeManagedPromptBlock(name: ManagedPromptBlockName, content: string): string {
+  const text = content.replace(new RegExp(`【(${managedBlocks.join('|')})(结束)?】`, 'g'), '［$1$2］')
+  return `【${name}】\n${text}\n【${name}结束】`
+}
+
 /** Known section markers must remain paired before any rewrite protects them. */
 export function validateManagedPromptDocument(document: string): void {
   let open: string | undefined

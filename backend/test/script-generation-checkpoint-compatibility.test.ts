@@ -58,7 +58,7 @@ test('an exact compatible identity loads preserved content without writing, then
   const reopened = generationCheckpointStore('compatible', newIdentity)
   assert.equal(reopened.reusedCompatibleIdentity, false)
   assert.deepEqual(reopened.checkpoint, checkpoint)
-  assert.deepEqual(generationCheckpointStore('compatible', oldIdentity).checkpoint, checkpoint, 'exact historical identities keep their original validated work privately resumable')
+  assert.deepEqual(generationCheckpointStore('compatible', oldIdentity).checkpoint, { steps: {} }, 'same-workspace serialization migration consumes the source alias while retaining all content under the new identity')
   assert.deepEqual(one<{ cache_key: string; payload: string }>('SELECT cache_key,payload FROM script_generation_checkpoints WHERE project_id=?', 'compatible'), migrated, 'reading archived work does not replace the current display slot')
 })
 

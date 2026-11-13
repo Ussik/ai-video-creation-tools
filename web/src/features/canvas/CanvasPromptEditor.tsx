@@ -1,4 +1,5 @@
-import { useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState, useSyncExternalStore, type Ref } from 'react'
+import { useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode, type Ref } from 'react'
+import { createPortal } from 'react-dom'
 import { ActionIcon, Badge, HoverCard, Menu, Popover, Portal, ScrollArea, TextInput, UnstyledButton } from '@mantine/core'
 import { EditorContent, NodeViewContent, NodeViewWrapper, ReactNodeViewRenderer, useEditor, type NodeViewProps } from '@tiptap/react'
 import { Node as TiptapNode, Extension, mergeAttributes, type Editor, type JSONContent } from '@tiptap/core'
@@ -9,12 +10,15 @@ import { closeHistory, isHistoryTransaction } from '@tiptap/pm/history'
 import { ArrowLeft, Check, ChevronDown, ImageIcon, MoreHorizontal, Plus, Search, SlidersHorizontal, TriangleAlert, X } from 'lucide-react'
 import { tokenizePromptReferenceNumbers } from '@video-studio/shared/visuals/prompt-references'
 import { parsePromptSectionDocument, type PromptSectionBlock, type PromptSectionDocument } from '@video-studio/shared/visuals/prompt-section-document'
-import { promptPresentationPlugin } from './canvas-prompt-presentation'
+import { promptPresentationPlugin, promptRequirementsHost, promptRequirementsHostPlugin } from './canvas-prompt-presentation'
+import CanvasPromptRequirements from './CanvasPromptRequirements'
+import { buildPromptRequirements } from './canvas-prompt-requirements'
 import CanvasPromptSectionDiff from './CanvasPromptSectionDiff'
 import { promptSectionDetails } from './canvas-prompt-section-details'
 import { canvasPromptSectionDocument, rewriteCanvasPromptSections, visualBoardEditorDocument } from './canvas-prompt-composition'
 import { promptClipboardContent, promptPasteSlice, type PromptClipboardContent, type PromptCopyScope } from './canvas-prompt-clipboard'
 import './canvas-prompt-editor.css'
+import './canvas-prompt-requirements.css'
 
 export type CanvasPromptReference = {
   assetId: string
@@ -47,6 +51,11 @@ export type CanvasPromptEditorProps = {
   expanded?: boolean
   compact?: boolean
   visualBoard?: boolean
+  requirementsLayout?: boolean
+  modality?: 'image' | 'video'
+  mainAction?: ReactNode
+  bodyLabel?: string
+  sourceRecord?: ReactNode
   minRows?: number
   maxLength?: number
 }
@@ -55,6 +64,9 @@ type Runtime = {
   references: CanvasPromptReference[]; choices: CanvasPromptReference[]; additionalChoices: CanvasPromptReference[]; disabled: boolean
   readOnly: boolean
   visualBoard: boolean
+  requirementsLayout: boolean
+  selectedRequirementId?: string
+  selectRequirement: (id: string | null) => void
   maxLength: number
   placeholder: string
   change: (assetId: string, replacementId: string | null) => boolean
@@ -62,6 +74,8 @@ type Runtime = {
   resolveSource?: CanvasPromptEditorProps['onResolveSource']
   editParameters?: CanvasPromptEditorProps['onEditParameters']
   parameterSummary?: string
+  mainAction?: ReactNode
+  bodyLabel?: string
   subscribe: (listener: () => void) => () => void
   snapshot: () => number
   keydown: (event: KeyboardEvent) => boolean
@@ -248,8 +262,11 @@ function PromptManagedSectionView({ node, extension, editor, getPos }: NodeViewP
   const contentId = useId()
   const section = node.attrs.section as PromptSectionBlock
   const { id, name } = section
-  const displayName = primary ? '主要创作内容' : name
+  const displayName = primary ? runtime.bodyLabel || '主要创作内容' : name
   const details = promptSectionDetails(section, runtime.references)
+  const detail = runtime.requirementsLayout && !primary
+  const visible = !detail || runtime.selectedRequirementId === id
+  const expanded = detail || opened
   const hasParameterControls = details.parameters && !!runtime.editParameters
   const currentSection = () => ({ ...section,
     text: promptEditorText({ type: 'doc', content: [node.toJSON()] }),
@@ -261,40 +278,52 @@ function PromptManagedSectionView({ node, extension, editor, getPos }: NodeViewP
       const position = getPos()
       const selected = editor.isFocused && typeof position === 'number' && editor.state.selection.from > position && editor.state.selection.from < position + node.nodeSize
       setCurrent(selected)
-      if (selected) setOpened(true)
+      if (selected) {
+        setOpened(true)
+        if (runtime.requirementsLayout && !primary) runtime.selectRequirement(id)
+      }
     }
     editor.on('selectionUpdate', revealSelection)
     editor.on('focus', revealSelection)
     editor.on('blur', revealSelection)
     return () => { editor.off('selectionUpdate', revealSelection); editor.off('focus', revealSelection); editor.off('blur', revealSelection) }
-  }, [editor, getPos, node.nodeSize])
+  }, [editor, getPos, node.nodeSize, runtime.requirementsLayout, primary, id])
   function toggle() {
     const position = getPos()
     if (opened && typeof position === 'number' && editor.state.selection.from > position
       && editor.state.selection.from < position + node.nodeSize) {
-      let outside: number | undefined
-      editor.state.doc.forEach((candidate, offset) => {
-        if (outside === undefined && candidate.type.name === 'paragraph') outside = offset + 1
-      })
-      if (outside !== undefined) editor.commands.setTextSelection(outside)
-      else editor.commands.blur()
+      if (runtime.requirementsLayout) {
+        // Folding must not expose an empty separator by parking the caret in it.
+        // Keep the selection for reopening, without an active hidden caret.
+        editor.commands.blur()
+      } else {
+        let outside: number | undefined
+        editor.state.doc.forEach((candidate, offset) => {
+          if (outside === undefined && candidate.type.name === 'paragraph') outside = offset + 1
+        })
+        if (outside !== undefined) editor.commands.setTextSelection(outside)
+        else editor.commands.blur()
+      }
     }
     setOpened(value => !value)
   }
   const heading = <>
     <ChevronDown size={14} className="pc-prompt-managed-chevron" />
     <span className="pc-prompt-managed-heading-text"><span className="pc-prompt-managed-section-title">{displayName}</span>
-      {primary && <span className="pc-prompt-content-scope">整理对象</span>}</span>
+      {primary && !runtime.requirementsLayout && <span className="pc-prompt-content-scope">整理对象</span>}</span>
     {!opened && <span className={`pc-prompt-managed-summary is-inline${hasParameterControls ? ' pc-prompt-parameter-values' : ''}`}>
       {hasParameterControls ? runtime.parameterSummary || details.summary : details.summary}</span>}
     {(details.customized || details.pending) && <span className={`pc-prompt-managed-state${details.pending ? ' pc-prompt-managed-changed' : ' pc-prompt-managed-custom'}`}>{details.pending ? '待确认' : '已自定义'}</span>}
   </>
-  return <NodeViewWrapper className={`pc-prompt-managed-section${opened ? ' is-open' : ''}${primary ? ' is-primary' : ' is-secondary'}${current ? ' is-current' : ''}`} data-prompt-section-id={id} data-prompt-section-name={name}>
+  return <NodeViewWrapper className={`pc-prompt-managed-section${expanded ? ' is-open' : ''}${primary ? ' is-primary' : ' is-secondary'}${current ? ' is-current' : ''}`} hidden={!visible} data-prompt-section-id={id} data-prompt-section-name={name}>
     <div className="pc-prompt-managed-section-head" contentEditable={false}>
-      <UnstyledButton type="button" className="pc-prompt-managed-toggle" aria-label={`${opened ? '收起设定' : '展开编辑'}：${displayName}`}
+      {detail ? <div className="pc-prompt-detail-heading"><span>{name}</span>{details.pending && <span className="pc-prompt-detail-state">待确认来源更新</span>}</div> : <UnstyledButton type="button" className="pc-prompt-managed-toggle" aria-label={`${opened ? '收起设定' : '展开编辑'}：${displayName}`}
         aria-expanded={opened} aria-controls={contentId} onMouseDown={event => event.preventDefault()} onClick={toggle}>
         {heading}
-      </UnstyledButton>
+      </UnstyledButton>}
+      {primary && runtime.requirementsLayout && runtime.mainAction && <div className="pc-prompt-primary-action">{runtime.mainAction}</div>}
+      {detail && <UnstyledButton type="button" className="pc-prompt-detail-done" aria-label={`完成编辑：${name}`}
+        onMouseDown={event => event.preventDefault()} onClick={() => { editor.commands.blur(); runtime.selectRequirement(null) }}>完成</UnstyledButton>}
       <Menu position="bottom-end" withinPortal zIndex={280} returnFocus>
         <Menu.Target><ActionIcon type="button" size={26} variant="subtle" color="gray" aria-label={`区块操作：${displayName}`}
           onMouseDown={event => event.preventDefault()}><MoreHorizontal size={15} /></ActionIcon></Menu.Target>
@@ -308,6 +337,7 @@ function PromptManagedSectionView({ node, extension, editor, getPos }: NodeViewP
         </Menu.Dropdown>
       </Menu>
     </div>
+    {detail && <div className="pc-prompt-detail-source" contentEditable={false}>来源：{details.source} · {details.state}</div>}
     {details.pending && runtime.resolveSource && <div className="pc-prompt-managed-source-actions" contentEditable={false}>
       <span>来源有更新，请确认后生成。</span>
       <UnstyledButton type="button" disabled={runtime.disabled || runtime.readOnly} aria-label={`就地保留本节点修改：${displayName}`}
@@ -315,9 +345,13 @@ function PromptManagedSectionView({ node, extension, editor, getPos }: NodeViewP
       <UnstyledButton type="button" disabled={runtime.disabled || runtime.readOnly} aria-label={`就地使用来源更新：${displayName}`}
         onMouseDown={event => event.preventDefault()} onClick={() => runtime.resolveSource?.(id, 'follow_source')}>使用来源更新</UnstyledButton>
     </div>}
-    <div id={contentId} className="pc-prompt-managed-panel" hidden={!opened}>
+    <div id={contentId} className="pc-prompt-managed-panel" hidden={!expanded}>
       {details.parameters && <p className="pc-prompt-managed-parameter-note" contentEditable={false}>比例、清晰度等以底部生成参数为准；修改这里的文字可能产生参数冲突。</p>}
-      <NodeViewContent className="pc-prompt-managed-section-content" /></div>
+      <NodeViewContent className="pc-prompt-managed-section-content" {...(detail && name === '生成参数约束' && hasParameterControls ? { contentEditable: false } : {})} /></div>
+    {detail && hasParameterControls && <div className="pc-prompt-detail-parameters" contentEditable={false}>
+      <UnstyledButton type="button" className="pc-prompt-reference-scope" disabled={runtime.disabled || runtime.readOnly} onClick={() => runtime.editParameters?.()}><SlidersHorizontal size={14} />{runtime.parameterSummary || '生成参数'} · 调整参数</UnstyledButton>
+    </div>}
+    {detail && <p className="pc-prompt-requirement-protection" contentEditable={false}>整理主要内容时，此项保持原样。{name === '生成参数约束' && hasParameterControls ? '参数统一在生成参数面板中调整。' : '你仍可单独编辑本节点内容。'}</p>}
     <div className="pc-prompt-managed-section-end" contentEditable={false} aria-hidden="true">【{name}结束】</div>
     <CanvasPromptSectionDiff block={comparing ? currentSection() : undefined} references={runtime.references} disabled={runtime.disabled || runtime.readOnly}
       displayName={displayName} onClose={() => setComparing(false)} onResolve={runtime.resolveSource} />
@@ -400,7 +434,8 @@ function promptExtensions(runtime: () => Runtime) {
         renderHTML: attributes => attributes.promptBodyEntry ? { 'data-prompt-body-entry': '' } : {} }, promptBodySegment: { default: null, keepOnSplit: true,
         parseHTML: element => element.getAttribute('data-prompt-body-segment'),
         renderHTML: attributes => attributes.promptBodySegment ? { 'data-prompt-body-segment': attributes.promptBodySegment } : {} } } }],
-      addProseMirrorPlugins: () => [promptPresentationPlugin(() => runtime().placeholder, () => runtime().visualBoard), new Plugin({
+      addProseMirrorPlugins: () => [promptPresentationPlugin(() => runtime().placeholder, () => runtime().visualBoard, () => runtime().requirementsLayout),
+        promptRequirementsHostPlugin(() => runtime().requirementsLayout), new Plugin({
         filterTransaction: (transaction, state) => {
           if (!transaction.docChanged || transaction.getMeta('promptReferenceSync') || transaction.getMeta('preventUpdate')) return true
           if (promptEditorText(transaction.doc.toJSON()).length > runtime().maxLength) return false
@@ -496,6 +531,8 @@ export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
   const localChangeDepth = useRef(0), deferredValueSync = useRef(false)
   const [valueSyncVersion, setValueSyncVersion] = useState(0)
   const [bodyOpened, setBodyOpened] = useState(true)
+  const [selectedRequirementId, setSelectedRequirementId] = useState<string | null>(null)
+  const [, refreshRequirements] = useState(0)
   const bodyContentId = useId()
   const [picker, setPicker] = useState<Picker | null>(null)
   const [mentionAnchor, setMentionAnchor] = useState<{ left: number; top: number; height: number } | null>(null)
@@ -510,6 +547,13 @@ export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
     subscribe: (listener: () => void) => { runtimeListeners.current.add(listener); return () => { runtimeListeners.current.delete(listener) } },
     snapshot: () => runtimeVersion.current,
   })
+  const requirementsLayout = !!props.requirementsLayout && !props.compact
+  const activeSections = editorRef.current ? managedSections(editorRef.current.getJSON()).map(node => ({ ...node.attrs!.section,
+    text: promptEditorText({ type: 'doc', content: [node] }) } as PromptSectionBlock)) : sectionDocumentRef.current.blocks.filter(block => block.kind === 'managed' && !block.deleted)
+  const requirementEntries = buildPromptRequirements({ blocks: [...activeSections,
+    ...sectionDocumentRef.current.blocks.filter(block => block.kind === 'managed' && block.deleted)], visualBoard: !!props.visualBoard, modality: props.modality })
+  const visibleRequirements = requirementEntries.filter(entry => entry.status === 'active')
+  const selectedRequirement = visibleRequirements.find(entry => entry.id === selectedRequirementId)
   function runLocalChange<T>(operation: () => T): T {
     localChangeDepth.current++
     try { return operation() }
@@ -568,11 +612,15 @@ export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
     ...runtimeStore.current,
     references: props.references, choices: props.choices, additionalChoices: props.additionalChoices || [], disabled: !!props.disabled, readOnly: !!props.readOnly,
     visualBoard: !!props.visualBoard,
+    requirementsLayout, selectedRequirementId: selectedRequirement?.id,
+    selectRequirement: setSelectedRequirementId,
     maxLength: props.maxLength ?? 80_000,
     placeholder: props.placeholder || (props.visualBoard ? '编辑设定图内容…' : '描述主体、场景与构图，输入 @ 引用图片'),
     resolveSource: props.onResolveSource,
     editParameters: props.onEditParameters,
     parameterSummary: props.parameterSummary,
+    mainAction: props.mainAction,
+    bodyLabel: props.bodyLabel,
     keydown: event => event.isComposing ? false : pickerKeydown(event),
     removeSection: sectionId => {
       const current = editorRef.current
@@ -611,6 +659,7 @@ export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
     editable: !props.disabled && !props.readOnly,
     editorProps: { handleDOMEvents: { keydown: (_view, event) => event.isComposing }, attributes: { class: 'pc-prompt-editor-content nodrag nowheel', role: 'textbox', 'aria-multiline': 'true', 'aria-label': props['aria-label'] || '创作提示词', 'data-placeholder': props.placeholder || '描述画面，输入 @ 引用图片' } },
     onCreate: ({ editor: current }) => { previous.current = referenceCounts(current.getJSON()) },
+    onTransaction: ({ transaction }) => { if (transaction.docChanged && latest.current.requirementsLayout && editorRef.current) refreshRequirements(version => version + 1) },
     onUpdate: ({ editor: current, transaction }) => {
       if (transaction.getMeta('promptReferenceSync') || latest.current.readOnly) return
       const document = current.getJSON(), counts = referenceCounts(document)
@@ -657,6 +706,7 @@ export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
     onSelectionUpdate: ({ editor: current }) => syncMention(current),
   }, [])
   editorRef.current = editor
+  const requirementsHost = editor ? promptRequirementsHost(editor.state) : null
   useEffect(() => {
     if (!editor) return
     // Folding only changes presentation. Reveal prose whenever navigation,
@@ -678,8 +728,8 @@ export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
     // stays identical. Refresh node-view chrome without touching the document.
     runtimeVersion.current++
     runtimeListeners.current.forEach(listener => listener())
-  }, [props.disabled, props.readOnly, props.visualBoard, props.parameterSummary, props.onEditParameters, props.onResolveSource,
-    props.references, props.choices, props.additionalChoices])
+  }, [props.disabled, props.readOnly, props.visualBoard, props.parameterSummary, props.onEditParameters, props.onResolveSource, requirementsLayout, selectedRequirement?.id,
+    props.references, props.choices, props.additionalChoices, props.mainAction, props.bodyLabel])
   useEffect(() => {
     if (!editor) return
     editor.setEditable(!props.disabled && !props.readOnly)
@@ -777,25 +827,30 @@ export default function CanvasPromptEditor(props: CanvasPromptEditorProps) {
     pickerRef.current = { ...pickerRef.current, scope, query: '', index: 0, manual: true }
     setPicker(pickerRef.current)
   }
-  const ordinaryBody = !props.compact && !props.visualBoard
+  const ordinaryBody = !props.compact && (!props.visualBoard || !activeSections.some(block => block.name === '设定图固定要求'))
   const bodySummary: string[] = []
   if (ordinaryBody && !bodyOpened) editor?.state.doc.forEach(node => {
     if (node.type.name === 'paragraph') bodySummary.push(node.textBetween(0, node.content.size, ' ',
       leaf => leaf.type.name === 'promptReference' ? leaf.attrs.label || '引用图片' : ' '))
   })
-  return <div className={`pc-prompt-editor${props.expanded ? ' is-expanded' : ''}${props.compact ? ' is-compact' : ''}${props.visualBoard ? ' is-visual-board' : ''}${ordinaryBody && !bodyOpened ? ' is-body-collapsed' : ''}${props.disabled ? ' is-disabled' : ''}${props.readOnly ? ' is-readonly' : ''}`} style={{ '--pc-prompt-min-rows': props.minRows || 6 } as React.CSSProperties}>
+  return <div className={`pc-prompt-editor${requirementsLayout ? ' is-unified' : ''}${props.expanded ? ' is-expanded' : ''}${props.compact ? ' is-compact' : ''}${props.visualBoard ? ' is-visual-board' : ''}${ordinaryBody && !bodyOpened ? ' is-body-collapsed' : ''}${props.disabled ? ' is-disabled' : ''}${props.readOnly ? ' is-readonly' : ''}`} style={{ '--pc-prompt-min-rows': props.minRows || 6,
+    '--pc-prompt-selected-order': 21 + 2 * Math.max(0, visibleRequirements.findIndex(entry => entry.id === selectedRequirement?.id)) } as React.CSSProperties}>
     <div className="pc-prompt-editor-surface">
-      {ordinaryBody && <UnstyledButton type="button" className="pc-prompt-editor-heading pc-prompt-body-toggle"
-        aria-label={`${bodyOpened ? '收起设定' : '展开编辑'}：主要创作内容`} aria-expanded={bodyOpened} aria-controls={bodyContentId}
+      {ordinaryBody && <div className="pc-prompt-body-heading-row"><UnstyledButton type="button" className="pc-prompt-editor-heading pc-prompt-body-toggle"
+        aria-label={`${bodyOpened ? '收起设定' : '展开编辑'}：${props.bodyLabel || '主要创作内容'}`} aria-expanded={bodyOpened} aria-controls={bodyContentId}
         onMouseDown={event => event.preventDefault()} onClick={() => {
           if (bodyOpened) { closePicker(); editor?.commands.blur() }
           setBodyOpened(value => !value)
         }}>
         <ChevronDown size={14} className="pc-prompt-body-chevron" />
-        <span className="pc-prompt-body-title">主要创作内容</span><span className="pc-prompt-content-scope">整理对象</span>
+        <span className="pc-prompt-body-title">{props.bodyLabel || '主要创作内容'}</span>{!requirementsLayout && <span className="pc-prompt-content-scope">整理对象</span>}
         {!bodyOpened && <span className="pc-prompt-body-summary">{bodySummary.join(' ').replace(/\s+/g, ' ').trim() || '暂无创作内容'}</span>}
-      </UnstyledButton>}
-      <EditorContent id={bodyContentId} editor={editor} />
+      </UnstyledButton>{requirementsLayout && props.mainAction && <div className="pc-prompt-primary-action">{props.mainAction}</div>}</div>}
+      <EditorContent id={bodyContentId} className="pc-prompt-document" editor={editor} />
+      {requirementsLayout && requirementsHost && createPortal(<CanvasPromptRequirements entries={requirementEntries}
+        onEdit={id => { editor?.commands.blur(); setSelectedRequirementId(id) }} references={props.references} parameterSummary={props.parameterSummary}
+        onEditParameters={props.onEditParameters} onResolve={props.onResolveSource} disabled={!!props.disabled || !!props.readOnly}
+        fullPrompt={editor ? promptEditorText(editor.getJSON()) : props.value} sourceRecord={props.sourceRecord} />, requirementsHost)}
     </div>
     <Popover opened={!!picker && !!mentionAnchor} onDismiss={closePicker} position="bottom-start" offset={5} width="min(320px, calc(100vw - 16px))"
       floatingStrategy="fixed" preventPositionChangeWhenVisible={false} middlewares={{ flip: { padding: 8 }, shift: { padding: 8 } }}

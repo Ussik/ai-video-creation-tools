@@ -11,6 +11,7 @@ import { normalizeVisualBinding, referenceSnapshot, visualReferenceAssets } from
 import { visualBindingReferenceAssetIds } from '@video-studio/shared/media/video-reference-manifest'
 import type { VisualReferenceSnapshot } from '@video-studio/shared/visuals/visual-reference-types'
 import { resourceReadPage, resourceReadTracker } from './script-resource-read-page.js'
+import { markShotContinuityEdited } from '../storyboard/storyboard-continuity-state.js'
 
 const id = z.string().min(1).max(160), uniqueIds = z.array(id).max(100).refine(items => new Set(items).size === items.length, '对象 ID 不可重复')
 export const shotDraftValue = z.object({ title: z.string().trim().min(1).max(120), prompt: z.string().trim().min(1).max(16000),
@@ -341,7 +342,11 @@ export function applyResourceChanges(projectId: string, changes: ResourceChange[
       }
     } else if (change.type === 'shot') {
       const value = change.value
+      const previous = required<Shot>('shots', change.id)
       run('UPDATE shots SET title=?, prompt=?, image_prompt=?, video_prompt=?, duration=?, start_state=?, end_state=?, cut_note=? WHERE id=? AND project_id=?', value.title, value.prompt, value.image_prompt, value.video_prompt, value.duration, value.start_state, value.end_state, value.cut_note, change.id, projectId)
+      markShotContinuityEdited(previous, Object.entries(value).filter(([key, next]) => previous[key as keyof Shot] !== next).map(([key]) => key))
+      // A director's visual rewrite cannot silently cancel confirmed speech.
+      // Retained audio is a review baseline, independently revised by the creator.
     } else if (change.type === 'new_shot') {
       const value = change.value
       const position = one<{ position: number }>('SELECT COALESCE(MAX(position), -1)+1 AS position FROM shots WHERE project_id=? AND superseded_by IS NULL', projectId)!.position
@@ -366,7 +371,7 @@ export function applyResourceChanges(projectId: string, changes: ResourceChange[
         }
         for (const binding of selected) {
           const old = previous.find(item => item.profile_id === binding.profile.id)
-          const settings = old && 'revision' in old ? { sync_mode: old.sync_mode, reference_selection: old.reference_selection } : {}
+          const settings = old && 'revision' in old ? { sync_mode: old.sync_mode, reference_selection: old.reference_selection, reference_view: old.reference_view } : {}
           insertShotBinding(change.id, binding.profile, binding.required, binding.reference_asset_ids,
             binding.usage || (old && 'usage' in old ? old.usage : undefined) || 'both', false, settings)
           run('UPDATE shot_visual_bindings SET required=?, usage=COALESCE(?, usage) WHERE shot_id=? AND profile_id=?', Number(binding.required), binding.usage || null, change.id, binding.profile.id)

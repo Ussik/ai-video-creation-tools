@@ -4,6 +4,7 @@ import { newId } from '../../infrastructure/database/db.js'
 import { skillStageLabels, type SkillStage, type skillContext } from '../skills/skills.js'
 import type { ScriptActivity } from '@video-studio/shared/script/script-activity-types'
 import { workflowEnvelope, workflowRequest } from './script-workflow.js'
+import { normalizeScriptActivityAttempt } from './script-activity-attempt.js'
 export type { ScriptActivity } from '@video-studio/shared/script/script-activity-types'
 
 // These records contain application operations and public model text only.
@@ -71,12 +72,13 @@ export const scriptActivitySchema = z.object({
 export const scriptExecutionSchema = z.object({
   title: z.string().min(1).max(200), request: z.string().max(8000), started_at: z.number().int().min(0), targets: z.array(z.string().max(200)).max(50).optional(),
   focus_artifact: z.enum(['all', 'character', 'location', 'prop']).optional(), mode: z.enum(['all', 'script', 'director']).optional(),
-  document_action: z.object({ operation: z.enum(['review', 'revise']), document_ids: z.array(z.string().min(1).max(160)).min(1).max(8) }).strict().optional(),
+  document_action: z.object({ operation: z.enum(['review', 'revise']), document_ids: z.array(z.string().min(1).max(160)).min(1).max(8), revision_kind: z.literal('dialogue').optional() }).strict()
+    .refine(value => !value.revision_kind || value.operation === 'revise', '对白专项只能用于文档修订').optional(),
   workflow: workflowRequest.optional(),
   outcome: z.object({ kind: z.enum(['reply', 'question', 'draft', 'partial', 'saved', 'discarded', 'review', 'next_step', 'failed', 'cancelled']), summary: z.string().max(3000), draft_id: z.string().max(160).optional(), draft_version: z.string().max(160).optional() }).strict().optional(),
 }).strict()
-export const scriptActivitiesSchema = z.array(scriptActivitySchema)
-  .refine(value => new Set(value.map(event => event.id)).size === value.length, '执行记录 ID 不能重复')
+export const scriptActivitiesSchema = z.preprocess(value => Array.isArray(value) ? value.map(normalizeScriptActivityAttempt) : value,
+  z.array(scriptActivitySchema).refine(value => new Set(value.map(event => event.id)).size === value.length, '执行记录 ID 不能重复'))
 
 export function activityPreview(value: unknown, field: 'input' | 'output') {
   const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2) || ''
@@ -88,6 +90,7 @@ export function activityRecorder(onEvent: (event: Record<string, unknown>) => vo
   const revisions = new Map<string, number>()
   const entryRevisions = new WeakMap<ScriptActivity, number>()
   function emit(entry: ScriptActivity) {
+    entry = normalizeScriptActivityAttempt(entry)
     entryRevisions.set(entry, revisions.get(entry.id) || 0)
     const index = entries.findIndex(item => item.id === entry.id)
     if (index < 0) entries.push(entry)
@@ -115,7 +118,14 @@ export function activityRecorder(onEvent: (event: Record<string, unknown>) => vo
       const current = entries.find(item => item.id === entry.id)
       if (current && (current.status !== 'running' || entryRevisions.get(entry) !== entryRevisions.get(current))) return current
       const ended_at = Date.now()
-      return emit({ ...(current || entry), ...changes, status, ended_at, duration_ms: Math.max(0, ended_at - entry.started_at) })
+      // A recovered logical step retains its original start. Its final
+      // aggregation can take 0ms while decisions and edits took much longer.
+      const resumedLogicalStep = (revisions.get(entry.id) || 0) > 0 && !changes.reused
+      // Replayed checkpoints keep their original measured duration. Imported
+      // work has no authoring clock; its replay time must not become one.
+      const duration_ms = resumedLogicalStep ? Math.max(0, ended_at - entry.started_at)
+        : changes.duration_ms ?? (changes.reused ? undefined : Math.max(0, ended_at - entry.started_at))
+      return emit({ ...(current || entry), ...changes, status, ended_at, duration_ms })
     },
     update(entry: ScriptActivity, changes: Partial<ScriptActivity>) {
       const current = entries.find(item => item.id === entry.id)

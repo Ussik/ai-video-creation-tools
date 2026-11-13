@@ -2,6 +2,7 @@ import { visualBindingReferenceAssetIds } from '../media/video-reference-manifes
 import { visualBindingApplies } from './visual-binding-usage.js'
 import type { PromptVisualBinding } from './visual-prompt.js'
 import { visualReferenceViewLabels, type VisualReferencePurpose } from './visual-reference-types.js'
+import { composeManagedPromptBlock } from './prompt-document.js'
 
 // The two leading newlines belong to the managed block. Leave the creator's
 // whitespace before them and after the closing marker untouched.
@@ -41,5 +42,5 @@ export function withImageReferenceMapping(prompt: string, bindings: PromptVisual
   })
   const instructions = lines.join('\n') + '\n图片编号严格对应本次实际提交的顺序。仅继承每张图指定用途范围内的信息，保持同一对象的身份、外观与空间关系。' +
     '\n同一对象的不同视图属于同一主体，不生成重复人物或分身。只生成当前镜头的一幅完整画面，不复制参考图的多视角拼版、文字、标签、色板或无关人物。'
-  return `${base}\n\n【图片参考图用途】\n${instructions}\n【图片参考图用途结束】`
+  return `${base}\n\n${composeManagedPromptBlock('图片参考图用途', instructions)}`
 }

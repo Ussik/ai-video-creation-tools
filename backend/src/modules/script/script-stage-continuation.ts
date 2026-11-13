@@ -3,7 +3,7 @@ import { createStageContextWorkset, hasLargeStageSource, type StageContextSource
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { createStreamScope } from '@video-studio/shared/script/script-stream-policy'
-import { scriptArtifactLabels, scriptArtifactTypes } from '@video-studio/shared/script/script-stage-content'
+import { scriptArtifactLabels, scriptArtifactTypes, scriptStageArtifacts } from '@video-studio/shared/script/script-stage-content'
 import { scriptTaskArtifactTypes } from '@video-studio/shared/script/script-task-contract'
 import { TextOutputLimitError, TextProviderError } from '../../infrastructure/providers/text-errors.js'
 import { generateStructuredOutput, restoreOptionalNulls, type OutputContract } from '../generation/model-output.js'
@@ -22,6 +22,7 @@ export type StageStreamGenerator = (prompt: string, contract?: OutputContract, o
 
 const artifactSchema = workflowEnvelope.shape.artifacts.element
 const recoverableInitialEnvelope = workflowEnvelope.extend({ artifacts: z.array(z.unknown()).min(1), scenes: z.array(z.unknown()).default([]) })
+const standaloneScene = workflowScene.strict()
 const blockedUnit = z.object({ candidate_id: z.string(), original: z.unknown() }).strict()
 const semanticBlock = stageSemanticBlock
 export const stageContinuationEnvelope = z.object({
@@ -45,6 +46,16 @@ class StageBlockConflictError extends Error {
 }
 
 const checkpointId = 'draft:stream:state'
+const surplusCheckpointId = 'draft:stream:surplus'
+const diagnosticCheckpointId = 'draft:stream:diagnostic'
+const diagnosticPreviewLimit = 100000
+export const stageInitialResponseDiagnosticSchema = z.object({
+  version: z.literal(1), phase: z.literal('initial'), complete_response: z.literal(true),
+  raw_output: z.string().max(diagnosticPreviewLimit), raw_length: z.number().int().nonnegative(), truncated: z.boolean(),
+  error: z.string().max(2000), diagnostics: z.string().max(6000).optional(),
+}).strict().refine(value => value.raw_output.length === Math.min(value.raw_length, diagnosticPreviewLimit) &&
+  value.truncated === (value.raw_length > diagnosticPreviewLimit), '失败响应预览与原始长度不一致')
+const surplusSchema = z.array(blockedUnit).max(scriptArtifactTypes.length)
 export const stageContinuationStateSchema = z.object({
   version: z.literal(1), round: z.number().int().nonnegative(), initialEnded: z.boolean(),
   artifacts: z.array(artifactSchema).max(scriptArtifactTypes.length), scenes: z.array(workflowScene).max(100),
@@ -105,6 +116,9 @@ export async function generateStageDraftWithContinuation(request: z.infer<typeof
   let state: State = restored?.success ? restored.data : { version: 1, round: 0, initialEnded: false,
     artifacts: [], scenes: [], target: null, mode: 'document', blocks: [], noProgress: 0, focused: false, pendingArtifacts: [], initialComplete: false, blockedArtifacts: [], blockedScenes: [], pendingSceneRepair: null, pendingBlockResponse: null, blockStructureCorrections: [], blockConflicts: [] }
   const allowed = scriptTaskArtifactTypes(request)
+  const savedSurplus = steps.checkpoint.steps[surplusCheckpointId]
+  const restoredSurplus = savedSurplus?.input_hash === identityHash ? surplusSchema.safeParse(savedSurplus.value) : undefined
+  const surplus = restoredSurplus?.success ? restoredSurplus.data : []
   if (state.pendingBlockResponse && (!state.target || !allowed.includes(state.target))) {
     throw failure('待修接续原文无法归属到当前目标，断点已保留，不能忽略后重新生成。', 'stage_continuation_invalid_unit')
   }
@@ -139,6 +153,9 @@ export async function generateStageDraftWithContinuation(request: z.infer<typeof
     pendingArtifacts: state.pendingArtifacts, blockedArtifacts: state.blockedArtifacts, blockedScenes: state.blockedScenes,
     pendingSceneRepair: state.pendingSceneRepair, pendingBlockResponse: state.pendingBlockResponse })
   let previousSnapshot = ''
+  // Diagnostics never enter accepted state or drive a continuation decision.
+  // Capture only a delivered terminal body, not filtered/disconnected deltas.
+  let latestInitialResponse: string | undefined
   function persist() {
     const current = signature(state)
     if (current === previousSnapshot) return
@@ -154,7 +171,24 @@ export async function generateStageDraftWithContinuation(request: z.infer<typeof
     options.validate?.(draft)
     return draft
   }
-  function done(draft: WorkflowDraft) { steps.forget(checkpointId); return draft }
+  function done(draft: WorkflowDraft) {
+    steps.forget(checkpointId); steps.forget(diagnosticCheckpointId)
+    return draft
+  }
+  function preserveSurplus(candidate_id: string, original: unknown): boolean {
+    const parsed = artifactSchema.safeParse(original)
+    if (!parsed.success || allowed.includes(parsed.data.artifact_type) ||
+      !(scriptStageArtifacts[request.stage] as readonly string[]).includes(parsed.data.artifact_type)) return false
+    const previous = surplus.find(item => stageArtifactType(item.original) === parsed.data.artifact_type)
+    if (previous) return previous.candidate_id === candidate_id && signature(previous.original) === signature(original)
+    // A single-document task may receive a complete sibling document from
+    // the same stage. Keep its exact original separately; it neither belongs
+    // to this task's accepted draft nor completes the sibling's own task.
+    surplus.push({ candidate_id, original })
+    steps.retain(surplusCheckpointId, '保留本任务以外的同阶段文档', identity, surplus, value => surplusSchema.parse(value), options.parentId)
+    options.onProgress?.('已单独保留额外返回的同阶段文档，正在继续当前栏目；其他栏目仍按各自任务生成并核对。')
+    return true
+  }
   function rejectInitialUnit(kind: 'artifact' | 'scene', index: number, original: unknown, message: string, code: string): never {
     const blocked = kind === 'artifact' ? state.blockedArtifacts : state.blockedScenes
     const candidate_id = `${kind}:${index}`
@@ -183,13 +217,31 @@ export async function generateStageDraftWithContinuation(request: z.infer<typeof
     // the grammatical-prefix rules used while text is still streaming.
     const complete = completeResponse ? parseStructuredOutput(raw, recoverableInitialEnvelope) : null
     if (complete) recovered = complete
+    else if (completeResponse && request.stage === 'episode') {
+      // Complete bare scenes are an incomplete episode candidate, not the
+      // whole deliverable. Parse and validate the entire root collection so
+      // multiple roots, nested examples or an invalid middle member cannot
+      // lose all but their last valid scene.
+      let value: unknown
+      try { value = JSON.parse(raw) } catch { /* The ordinary envelope correction remains available. */ }
+      const scenes = Array.isArray(value) ? value : [value]
+      if (scenes.length >= 1 && scenes.length <= 100 && scenes.every(scene => {
+        const parsed = standaloneScene.safeParse(restoreOptionalNulls(scene, sceneInputSchema))
+        return parsed.success && [parsed.data.action, parsed.data.dialogue, parsed.data.narration].some(text => text.trim())
+      })) {
+        recovered = { artifacts: [], scenes }
+      }
+    }
     let invalidArtifact = false
     const seenTypes = new Set<string>()
     for (const [index, value] of recovered.artifacts.entries()) {
       const type = stageArtifactType(value)
-      if (type && !(allowed as readonly string[]).includes(type)) rejectInitialUnit('artifact', index, value, '模型返回了当前任务以外的文档，不能作为缺失栏目接续；此前完整结果已保留。', 'stage_continuation_invalid_unit')
       if (type && seenTypes.has(type)) rejectInitialUnit('artifact', index, value, '同一响应重复输出了同类型文档，不能去重后采用；此前完整结果已保留。', 'stage_continuation_conflict')
       if (type) seenTypes.add(type)
+      if (type && !(allowed as readonly string[]).includes(type)) {
+        if (preserveSurplus(`artifact:${index}`, value)) continue
+        rejectInitialUnit('artifact', index, value, '模型返回了当前任务以外的文档，不能作为缺失栏目接续；此前完整结果已保留。', 'stage_continuation_invalid_unit')
+      }
       const parsed = artifactSchema.safeParse(value)
       if (!parsed.success) {
         const candidate = repairableStageArtifact(value, index, request.stage)
@@ -542,6 +594,7 @@ export async function generateStageDraftWithContinuation(request: z.infer<typeof
   }
   const streamRequest: StageStreamGenerator = async (text, contract, onPartial) => {
     const cleanState = structuredClone(state)
+    const cleanSurplus = structuredClone(surplus)
     const cleanResponseConflict = responseConflict
     observedResponseConflicts.clear()
     try { return await (contextWorkset && contract?.name === 'script_stage_blocks'
@@ -551,6 +604,9 @@ export async function generateStageDraftWithContinuation(request: z.infer<typeof
         // This response's progressive units were never an accepted candidate.
         // Roll them back without deleting clean work from earlier responses.
         state = cleanState; responseConflict = cleanResponseConflict
+        surplus.splice(0, surplus.length, ...cleanSurplus)
+        if (surplus.length) steps.retain(surplusCheckpointId, '保留本任务以外的同阶段文档', identity, surplus, value => surplusSchema.parse(value), options.parentId)
+        else steps.forget(surplusCheckpointId)
         if (state.artifacts.length || state.scenes.length || state.blocks.length || state.pendingArtifacts.length ||
           state.blockedArtifacts.length || state.blockedScenes.length || state.pendingSceneRepair || state.pendingBlockResponse) persist()
         else steps.forget(checkpointId)
@@ -572,6 +628,17 @@ export async function generateStageDraftWithContinuation(request: z.infer<typeof
       return done(finalDraft(corrected))
     }
     if (state.pendingSceneRepair) return correctProjectScenes()
+    if (state.blockedArtifacts.length) {
+      const types = state.blockedArtifacts.map(item => stageArtifactType(item.original))
+      const blocked = state.blockedArtifacts.filter(item => {
+        const type = stageArtifactType(item.original)
+        // Old checkpoints classified even valid sibling documents as fatal.
+        // Reclassify only unique, valid, same-stage extras and preserve their
+        // originals before changing the active checkpoint. Conflicts remain.
+        return types.filter(value => value === type).length !== 1 || !preserveSurplus(item.candidate_id, item.original)
+      })
+      if (blocked.length !== state.blockedArtifacts.length) { state.blockedArtifacts = blocked; persist() }
+    }
     if (state.blockedArtifacts.length || state.blockedScenes.length) throw failure('此前文档或场次含有无法仅通过字段格式修正的问题，原始结果已保留，不能当作缺少内容跳过。请检查结果或调整创作要求后重新生成。', 'stage_continuation_invalid_unit')
     if (!state.initialEnded && state.round && (state.artifacts.length || state.scenes.length || state.pendingArtifacts.length)) state.initialEnded = true
     if (!state.initialEnded) {
@@ -584,6 +651,7 @@ export async function generateStageDraftWithContinuation(request: z.infer<typeof
           async (text, contract) => {
             const reader = createWorkflowStreamReader()
             const raw = await streamRequest(text, contract, raw => { const recovered = reader.read(raw); if (recovered.changed) readInitial(raw, recovered) })
+            latestInitialResponse = raw
             // Reconcile the terminal snapshot even if its envelope cannot be
             // parsed. A format error cannot make changed prose authoritative.
             readInitial(raw, undefined, true)
@@ -745,5 +813,18 @@ export async function generateStageDraftWithContinuation(request: z.infer<typeof
     }
     options.onProgress?.(`已保留 ${state.artifacts.length} 份完整文档${state.blocks.length ? `及当前文档的 ${state.blocks.length} 段完整内容` : ''}，本轮接续已停止，可继续未完成内容。`)
     throw failure('阶段创作已达到本轮接续轮次上限，已保留全部完整单元。可点击“重试本轮”从已保留内容继续补全。', 'stage_continuation_exhausted')
-  })()) } finally { scope.close() }
+  })()) } catch (error) {
+    if (latestInitialResponse !== undefined) {
+      const diagnostics = error && typeof error === 'object' && 'diagnostics' in error && typeof error.diagnostics === 'string'
+        ? error.diagnostics.slice(0, 6000) : undefined
+      steps.retain(diagnosticCheckpointId, '保留失败阶段响应诊断', identity, {
+        version: 1, phase: 'initial', complete_response: true,
+        raw_output: latestInitialResponse.slice(0, diagnosticPreviewLimit), raw_length: latestInitialResponse.length,
+        truncated: latestInitialResponse.length > diagnosticPreviewLimit,
+        error: String(error instanceof Error ? error.message : error).slice(0, 2000),
+        ...(diagnostics === undefined ? {} : { diagnostics }),
+      }, value => stageInitialResponseDiagnosticSchema.parse(value), options.parentId)
+    }
+    throw error
+  } finally { scope.close() }
 }

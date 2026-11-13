@@ -1,12 +1,14 @@
 export { MAX_AUXILIARY_SKILLS } from '@video-studio/shared/skills/skill-limits'
 export type { SkillSyncResult } from '@video-studio/shared/skills/skill-updates'
-export type { SkillTaskContext } from '@video-studio/shared/skills/skill-recommendation'
+export type { SkillTaskContext, SkillTaskKind } from '@video-studio/shared/skills/skill-recommendation'
+import type { SkillCatalogEntry, SkillTaskKind } from '@video-studio/shared/skills/skill-recommendation'
 export type SkillStage = 'script' | 'visual_assets' | 'image_prompt' | 'storyboard' | 'video_prompt'
 export type SkillSelections = Partial<Record<SkillStage, string[]>>
-export type CreativeSkillSelection = { ids: string[]; source: 'automatic' | 'default' | 'manual'; reason: string; task_label: string }
-export type SkillAssignment = Pick<CreativeSkillSelection, 'ids' | 'source' | 'reason'>
-export type SkillPolicy = { stage: SkillStage; label: string; primary_id: string | null; auxiliary_ids: string[]; source: 'global' | 'project'; warning: string;
-  skills: Array<{ id: string; name: string; description: string; revision: string }> }
+export type CreativeSkillSelection = { ids: string[]; source: 'automatic' | 'default' | 'manual'; reason: string; task_label: string; task_kind?: SkillTaskKind }
+export type SkillAssignment = { ids: string[]; source: CreativeSkillSelection['source'] | 'fixed'; reason: string; task?: SkillTaskKind }
+export type SkillPolicy = { stage: SkillStage; label: string; primary_id: string | null; auxiliary_ids: string[]; source: 'builtin' | 'global' | 'project'; warning: string;
+  skills: SkillCatalogEntry[] }
+export type SkillTaskPolicy = SkillPolicy & { task: SkillTaskKind }
 export const skillStageOptions: Array<{ value: SkillStage; label: string }> = [
   { value: 'script', label: '剧本创作' }, { value: 'visual_assets', label: '视觉设定' },
   { value: 'image_prompt', label: '图片提示词' }, { value: 'storyboard', label: '分镜规划' }, { value: 'video_prompt', label: '视频提示词' },

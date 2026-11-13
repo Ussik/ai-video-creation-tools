@@ -10,6 +10,7 @@ import { artifactKey, workflowLabels } from './script-workflow'
 import type { WorkflowArtifact, WorkflowRequest, WorkflowScene } from './script-workflow'
 import type { ScriptToolDraft } from './script-tools'
 import { documentChangePreview, editedToolDraft } from './script-tools'
+import { maxScriptSceneDuration } from '@video-studio/shared/script/script-duration'
 import type { RevisionTask } from '@video-studio/shared/script/script-revision-types'
 import type { ResourceChange } from '@video-studio/shared/script/script-resource-types'
 import type { ScriptSourceUpdate } from '@video-studio/shared/script/script-source-document'
@@ -35,7 +36,7 @@ export function DirectorSceneList({ scenes, onChange, disabled = false }: {
 
     <div className="sd-scene-content">{onChange ? <>
       <div className="sd-scene-fields">{(['heading', 'location', 'time_of_day', 'characters'] as const).map((key, fieldIndex) => <label key={key}>{['场次标题', '地点', '时间', '人物'][fieldIndex]}<TextInput aria-label={`第${index + 1}场${['标题', '地点', '时间', '人物'][fieldIndex]}`} value={scene[key]} disabled={disabled} onChange={event => onChange(index, { ...scene, [key]: event.currentTarget.value })} /></label>)}
-      <label>时长（秒）<NumberInput  min={1} max={30} value={scene.duration} disabled={disabled} aria-label={`第${index + 1}场时长`} onChange={value => onChange(index, { ...scene, duration: Math.max(1, Math.min(30, Number(value) || 1)) })} clampBehavior="none" /></label></div>
+      <label>时长（秒）<NumberInput  min={1} max={maxScriptSceneDuration} value={scene.duration} disabled={disabled} aria-label={`第${index + 1}场时长`} onChange={value => onChange(index, { ...scene, duration: Math.max(1, Math.min(maxScriptSceneDuration, Number(value) || 1)) })} clampBehavior="none" /></label></div>
       {(['action', 'dialogue', 'narration'] as const).map((key, fieldIndex) => <label key={key}>{['画面与动作', '对白', '旁白'][fieldIndex]}<Textarea value={scene[key]} disabled={disabled} aria-label={`第${index + 1}场${['动作', '对白', '旁白'][fieldIndex]}`} onChange={event => onChange(index, { ...scene, [key]: event.currentTarget.value })} /></label>)}
     </> : <>{(['action', 'dialogue', 'narration'] as const).filter(key => scene[key]?.trim()).map(key => <div className={`sd-scene-passage is-${key}`} key={key}><small>{{ action: '画面与动作', dialogue: '对白', narration: '旁白' }[key]}</small><DirectorDocumentBody text={scene[key]} /></div>)}</>}</div>
   </WorkspaceDisclosure>)}</div>
@@ -103,12 +104,12 @@ export default function DirectorDraftReview({ draft, busy, saving, saved, onChan
       <div className="sd-view-switch" role="group" aria-label="草稿展示方式"><UnstyledButton type="button" aria-pressed={!editing} onClick={() => setEditing(false)}>阅读</UnstyledButton><UnstyledButton type="button" aria-pressed={editing} disabled={busy || saved} onClick={() => setEditing(true)}><PenLine size={12} />编辑</UnstyledButton></div>
     </div>
     <div className="sd-document-meta"><span>{resources.length ? `${resources.length} 项视觉设定或分镜修改` : `${documents.length} 份文档`}{draft.scenes.length ? ` · ${draft.scenes.length} 场 · ${draft.scenes.reduce((sum, scene) => sum + scene.duration, 0)} 秒` : ''}</span><span>{editing ? '修改将随确认一起保存' : '确认后写入项目'}</span></div>
+    <div className="script-director-preview-scroll" key={`${activeKey}:${editing}`}>
     {draft.tool_draft && <p className="sd-draft-summary">{draft.tool_draft.summary}</p>}
     {draft.source_update && <p className="sd-draft-summary">{saved ? '文稿修订已保存，后续创作读取当前有效稿。' : '确认保存将同时更新当前有效稿和本阶段文档；后续创作使用修订后的文稿。'}上传原稿保留，可在文稿预览中查看。</p>}
     {progressTask && <RevisionProgress task={progressTask} working={busy && !saving} />}
     {dirty && <p className="sd-revision-note">正文或分场已手动调整，请继续任务核对当前版本后再保存。</p>}
     {!!draft.tool_draft?.impacts?.length && <WorkspaceDisclosure className="sd-draft-impacts" label={<>关联内容需核对 · {draft.tool_draft.impacts.length} 项</>}><p>以下是依赖关系或文本匹配线索。本次只保存草稿中的修改，其他内容需进一步核对。</p>{draft.tool_draft.impacts.map(item => <div key={`${item.kind}:${item.id}`}><strong>{item.title}</strong><span>{item.explanation}</span></div>)}</WorkspaceDisclosure>}
-    <div className="script-director-preview-scroll" key={`${activeKey}:${editing}`}>
       {activeResource ? <DirectorResourceDraft change={activeResource} editing={editing} disabled={busy || saved} profileNames={profileNames} sceneNames={sceneNames}
         onChange={change => onChange({ ...draft, resource_changes: resources.map((item, index) => index === resourceIndex ? change : item) })} /> : activeKey === 'scene-list' ? <DirectorSceneList scenes={draft.scenes} disabled={busy || saved} onChange={editing ? (index, scene) => onChange({ ...draft, scenes: draft.scenes.map((item, itemIndex) => itemIndex === index ? scene : item) }) : undefined} />
         : activeDocument && <div className="sd-document-page"><h2>{activeDocument.title}</h2>{diff?.changed && <WorkspaceDisclosure className="sd-change-preview" label={<>查看当前修改前后对比</>}><div className="sd-change-columns"><section><strong>修改前</strong><pre>{diff.before || '（新增内容）'}</pre></section><section><strong>修改后</strong><pre>{diff.after || '（删除内容）'}</pre></section></div></WorkspaceDisclosure>}{original?.original_content && <WorkspaceDisclosure className="sd-original-document" label={<>查看修改前原文</>}><DirectorDocumentBody text={original.original_content} /></WorkspaceDisclosure>}{editing ? <label className="sd-document-edit-label"><span>文档正文</span><Textarea className="sd-document-editor" maxLength={100000} aria-label={`编辑草稿：${activeDocument.title}`} value={activeDocument.content} disabled={busy || saved} onChange={event => updateContent(event.currentTarget.value)} /></label> : <DirectorDocumentBody text={activeDocument.content} title={activeDocument.title} />}{!!original?.replacements.length && <WorkspaceDisclosure className="sd-patch-reasons" label={<>模型修改依据 · {original.replacements.length} 项</>}>{original.replacements.map((edit, index) => <p key={index}>{edit.reason}</p>)}<small>依据对应模型最初提出的修改；上方正文为当前将保存的完整版本。</small></WorkspaceDisclosure>}</div>}

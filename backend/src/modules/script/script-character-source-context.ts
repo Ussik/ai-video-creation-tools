@@ -27,16 +27,14 @@ export type ScriptCharacterSourceContext = {
   /** Full mode keeps the original source in its existing prompt field. */
   source_ranges: Array<{ offset: number; length: number; section_ids: number[]; content: string }>
   literal_matches: Array<{ name: string; section_ids: number[]; raw_match_section_ids: number[] }>
+  /** Full-read model hypotheses, retained verbatim for semantic identity review. */
+  identity_hypotheses?: readonly Character[]
   global_background?: Overview & { interpretation_only: true }
   coverage: { complete_source: boolean; total_length: number; selected_length: number; total_sections: number; selected_sections: number }
 }
 
 const normalize = (name: string) => name.normalize('NFKC').trim()
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
-// Pronouns, roles without an individual identifier, and short surnames cannot
-// identify a person safely. Such tasks retain the full-manuscript route.
-const ambiguousName = /^(?:[他她它祂]|[男女]主(?:角)?|主角|配角|反派|众人|路人|群众|客人|游客|村民|士兵|侍卫|黑衣人|蒙面人|老人|老者|少年|少女|男孩|女孩|男人|女人|父亲|母亲|爸爸|妈妈|哥哥|姐姐|弟弟|妹妹|爷爷|奶奶|师父|师傅|老师|医生|护士|警察|老板|掌柜|大人|陛下|先生|小姐|公子|殿下|队长|首领|一人|某人|无名|未知|匿名)(?:[一二三四五六七八九十\d]+)?$/u
-const identityUncertainty = /同名|不同人物|另一个.{0,8}(?:人|角色)|身份(?:不明|未明|未知|存疑)|(?:无法|不能|尚未)(?:确认|确定|辨认).{0,12}(?:身份|同一|人物)|(?:身份|别名|称呼|同一人).{0,8}(?:不确定|有歧义|存疑)/u
 
 function literalCount(text: string, name: string): number {
   let count = 0
@@ -83,7 +81,7 @@ function rangesFor(ids: number[], sections: ScriptSourceSection[], content: stri
 export function buildScriptCharacterSourceContext(state: Pick<ScriptSourceAnalysis, 'source_version' | 'sections'>,
   source: Source, options: ScriptCharacterSourceContextOptions): ScriptCharacterSourceContext {
   const sourceVersion = scriptSourceVersion(source)
-  const contextHash = hash(['script-character-context-v3', sourceVersion, state.source_version, state.sections, options])
+  const contextHash = hash(['script-character-context-v4', sourceVersion, state.source_version, state.sections, options])
   const base = { source_version: sourceVersion, analysis_source_version: state.source_version, context_hash: contextHash }
   const full = (reason: string): ScriptCharacterSourceContext => ({ ...base, mode: 'full', reason,
     known_names: [...options.targetNames], selected_section_ids: state.sections.map((_, id) => id), source_ranges: [], literal_matches: [],
@@ -98,7 +96,7 @@ export function buildScriptCharacterSourceContext(state: Pick<ScriptSourceAnalys
   try { validateSourceCoverage(source.content, state.sections) } catch { return full('invalid_source_map') }
   if (!state.sections.length || !options.targetNames.length) return full('no_target_names')
   const targets = [...new Map(options.targetNames.map(name => [normalize(name), name])).entries()]
-  if (targets.some(([name]) => name.length < 2 || ambiguousName.test(name))) return full('ambiguous_character_name')
+  if (targets.some(([name]) => !name)) return full('empty_character_name')
   const sectionText = state.sections.map(section => source.content.slice(section.offset, section.offset + section.length).normalize('NFKC'))
   const fullText = source.content.normalize('NFKC')
   const known = new Map<string, string>(targets)
@@ -120,7 +118,7 @@ export function buildScriptCharacterSourceContext(state: Pick<ScriptSourceAnalys
   }
   const usedSeed = new Set<Character>()
   for (const [key, display] of known) {
-    if (!key || key.length < 2 || ambiguousName.test(key)) return full('ambiguous_character_name')
+    if (!key) return full('empty_character_name')
     const raw = sectionText.flatMap((text, id) => text.includes(key) ? [id] : [])
     const directory = state.sections.flatMap((section, id) => section.characters.some(character => normalize(character.name) === key) ? [id] : [])
     // Summary/event/thread mentions may locate a pronoun-only consequence or
@@ -129,17 +127,18 @@ export function buildScriptCharacterSourceContext(state: Pick<ScriptSourceAnalys
     const hints = state.sections.flatMap((section, id) =>
       [section.summary, ...section.events.map(event => event.summary), ...(section.open_threads || [])]
         .some(text => normalize(text).includes(key)) ? [id] : [])
-    if (directory.some(id => state.sections[id]!.characters.some(character => normalize(character.name) === key && identityUncertainty.test(character.description)))) return full('ambiguous_seed_identity')
     // Normalization can compose characters over a boundary; compare counts on
     // both forms so no matching name occurrence silently falls between ranges.
     if (literalCount(fullText, key) !== sectionText.reduce((count, text) => count + literalCount(text, key), 0)) return full('cross_section_literal_match')
     if (!raw.length) return full('name_without_source_evidence')
     const identities = [...seedIdentities.values()].filter(character => [character.name, ...character.aliases].some(name => normalize(name) === key))
     if (identities.length > 1) return full('ambiguous_seed_identity')
-    if (!identities.length && !directory.length) return full('unknown_character_name')
+    // A directory entry is only a location clue. If the complete-manuscript
+    // discovery did not establish a corresponding hypothesis, read the full
+    // original rather than treating absence of uncertainty words as certainty.
+    if (!identities.length) return full('unknown_seed_identity')
     const related = identities[0]
     if (related && !usedSeed.has(related)) {
-      if (identityUncertainty.test(related.description)) return full('ambiguous_seed_identity')
       usedSeed.add(related)
       if (!related.section_ids.length || related.section_ids.some(id => !Number.isInteger(id) || !state.sections[id])) return full('invalid_seed_evidence')
       for (const name of [related.name, ...related.aliases]) {
@@ -162,7 +161,7 @@ export function buildScriptCharacterSourceContext(state: Pick<ScriptSourceAnalys
   const limit = options.maxSelectedCharacters ?? 24_000
   if (!Number.isFinite(limit) || limit <= 0 || selectedLength > limit || selectedLength >= source.content.length * 0.75) return full('selected_scope_too_large')
   return { ...base, mode: 'targeted', reason: 'character_evidence_scope', known_names: [...known.values()], selected_section_ids: ids,
-    source_ranges: ranges, literal_matches: [...matches.values()],
+    source_ranges: ranges, literal_matches: [...matches.values()], identity_hypotheses: [...usedSeed],
     global_background: { ...options.overview, interpretation_only: true },
     coverage: { complete_source: false, total_length: source.content.length, selected_length: selectedLength,
       total_sections: state.sections.length, selected_sections: ids.length } }

@@ -52,7 +52,9 @@ function wireTypes(body: any): StageArtifactType[] {
   const contract = body.response_format?.json_schema
   assert.equal(contract?.name, 'workflow_draft', 'generation must use the typed subtask envelope')
   const type = contract.schema.properties.artifacts.items.properties.artifact_type
-  return type.enum || [type.const]
+  const types = type.enum || [type.const]
+  assert.equal(types.length, 1, 'each model authoring request handles exactly one document')
+  return types
 }
 function response(types: StageArtifactType[]) {
   return Response.json({ choices: [{ message: { content: JSON.stringify({ artifacts: types.map(artifact), scenes: [] }) }, finish_reason: 'stop' }] })
@@ -63,7 +65,7 @@ function deferred() {
   return { promise, resolve }
 }
 
-test('the real stage-design route executes five dependent groups, runs independent groups together and saves only after confirmation', { timeout: 10000 }, async t => {
+test('the real stage-design route executes nine document tasks with dependencies and saves only after confirmation', { timeout: 10000 }, async t => {
   const f = await fixture()
   await api('PUT', `/api/projects/${f.project.id}/script/artifacts`, { artifacts: [
     { artifact_type: 'characters', title: '已确认人物', content: '林舟是一名返乡记者，人物身份保持不变。', episode_number: 0, status: 'ready' },
@@ -90,23 +92,184 @@ test('the real stage-design route executes five dependent groups, runs independe
     await Promise.all([narrativeStarted.promise, worldStarted.promise])
     assert.deepEqual([...finished], ['outline'], 'both branches start while neither independent branch has completed')
     assert.deepEqual(f.formal(), before, 'running subtasks cannot change accepted documents or the manuscript')
+    const progress = (await api('GET', `/api/projects/${f.project.id}`)).script_generation_progress
+    assert.deepEqual(progress.documents, [{ ...artifact('outline'), episode_number: 0 }], 'the first column is readable while later columns are still generating')
   } finally { release.resolve() }
   const generated = await pending
   assert.equal(generated.statusCode, 200, generated.body)
   const value = generated.json()
-  assert.deepEqual(groups, [['outline'], ['synopsis', 'structure'], ['world', 'constraints'], ['hooks', 'foreshadowing', 'reversals'], ['episode_outline']])
+  assert.equal(groups.length, 9)
+  assert.deepEqual(groups.flat().sort(), [...scriptStageArtifacts.outline].sort())
   assert.equal(reviews, 1)
   assert.equal(value.tool_draft.status, 'pending')
   assert.equal(value.workflow.intent, 'stage_design')
   assert.deepEqual(value.tool_draft.documents.map((doc: any) => doc.artifact_type), [...scriptStageArtifacts.outline])
   const previews = value.activity.filter((entry: any) => entry.artifact_preview).map((entry: any) => entry.artifact_preview)
-  assert.equal(previews.length, 5)
+  assert.equal(previews.length, 9)
   assert.equal(previews.flatMap((preview: any) => preview.artifacts).length, 9)
   assert.deepEqual(f.formal(), before, 'a fully generated and reviewed preview still cannot write formal data')
+  assert.equal(one('SELECT payload FROM script_generation_checkpoints WHERE project_id=?', f.project.id), undefined, 'the final tool draft replaces generation checkpoints')
+  assert.equal((await api('GET', `/api/projects/${f.project.id}`)).script_generation_progress.documents.length, 9, 'pending creation drafts keep every column readable')
   await api('POST', `/api/projects/${f.project.id}/script/director/tool-drafts/${value.tool_draft.id}/commit`, { version: value.tool_draft.version, approved: true })
   const accepted = f.script().artifacts!
   assert.equal(accepted.filter(doc => scriptStageArtifacts.outline.includes(doc.artifact_type as any)).length, 9)
   assert.deepEqual(accepted.find(doc => doc.artifact_type === 'characters'), before.script.artifacts!.find(doc => doc.artifact_type === 'characters'))
+  assert.equal((await api('GET', `/api/projects/${f.project.id}`)).script_generation_progress, null)
+})
+
+test('failed later columns leave completed siblings readable through a new project detail request', { timeout: 10000 }, async t => {
+  const f = await fixture(), before = f.formal()
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const types = wireTypes(JSON.parse(String(init?.body)))
+    if (types[0] === 'world') return Response.json({ error: { message: '世界设定请求被拒绝', type: 'invalid_request_error' } }, { status: 400 })
+    return response(types)
+  })
+  const failed = await f.chat()
+  assert.ok(failed.statusCode >= 400, failed.body)
+  const first = await api('GET', `/api/projects/${f.project.id}`)
+  assert.deepEqual(first.script_generation_progress.documents.map((doc: any) => doc.artifact_type), ['outline', 'synopsis'])
+  const reloaded = await api('GET', `/api/projects/${f.project.id}`)
+  assert.deepEqual(reloaded.script_generation_progress, first.script_generation_progress)
+  assert.deepEqual(f.formal(), before, 'retaining progress never changes accepted data')
+})
+
+test('discarding a pending creation draft removes the completed-column display', async t => {
+  const f = await fixture()
+  t.mock.method(globalThis, 'fetch', async (_url, init) => draftCompletenessFixtureResponse(init) || response(wireTypes(JSON.parse(String(init?.body)))))
+  const generated = await f.chat()
+  assert.equal(generated.statusCode, 200, generated.body)
+  const draft = generated.json().tool_draft
+  assert.equal((await api('GET', `/api/projects/${f.project.id}`)).script_generation_progress.documents.length, 9)
+  await api('POST', `/api/projects/${f.project.id}/script/director/tool-drafts/${draft.id}/discard`, { version: draft.version })
+  assert.equal((await api('GET', `/api/projects/${f.project.id}`)).script_generation_progress, null)
+  assert.equal(f.script().artifacts?.length, 0)
+})
+
+test('editing a non-durable JSON preview before confirmation does not leave its original checkpoint displayed', async t => {
+  const f = await fixture()
+  t.mock.method(globalThis, 'fetch', async (_url, init) => draftCompletenessFixtureResponse(init) || response(wireTypes(JSON.parse(String(init?.body)))))
+  const generated = await f.chat({ stage: 'outline', intent: 'stage_design' }, false)
+  assert.equal(generated.statusCode, 200, generated.body)
+  const draft = generated.json().draft
+  assert.equal((await api('GET', `/api/projects/${f.project.id}`)).script_generation_progress.documents.length, 9)
+  draft.artifacts[0].content += '作者在确认前补充：林舟认清旧约的真正含义。'
+  await api('PUT', `/api/projects/${f.project.id}/script/director/draft`, draft)
+  assert.equal((await api('GET', `/api/projects/${f.project.id}`)).script_generation_progress, null)
+  assert.equal(f.script().artifacts?.find(item => item.artifact_type === 'outline')?.content, draft.artifacts[0].content)
+})
+
+test('non-durable JSON discard uses the original candidate token and keeps completed work resumable', async t => {
+  const f = await fixture()
+  t.mock.method(globalThis, 'fetch', async (_url, init) => draftCompletenessFixtureResponse(init) || response(wireTypes(JSON.parse(String(init?.body)))))
+  const generated = await f.chat({ stage: 'outline', intent: 'stage_design' }, false)
+  assert.equal(generated.statusCode, 200, generated.body)
+  const token = generated.json().generation_checkpoint
+  const progress = (await api('GET', `/api/projects/${f.project.id}`)).script_generation_progress
+  assert.deepEqual(token, { checkpoint_key: progress.checkpoint_key, updated_at: progress.updated_at })
+  assert.equal(typeof token.checkpoint_key, 'string')
+  const stale = await app.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/director/generation-progress/discard`, payload: { ...token, updated_at: '2000-01-01T00:00:00.000Z' } })
+  assert.equal(stale.statusCode, 409, stale.body)
+  assert.equal((await api('GET', `/api/projects/${f.project.id}`)).script_generation_progress.documents.length, 9)
+  const replacement = await app.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/director/chat`, payload: {
+    model_id: f.model.id, mode: 'script', use_tools: false, workflow: { stage: 'outline', intent: 'stage_design' },
+    messages: [{ role: 'user', text: '按新的整体创作方向重新生成完整故事设计资料，先给我预览。' }],
+  } })
+  assert.equal(replacement.statusCode, 200, replacement.body)
+  const current = replacement.json().generation_checkpoint
+  assert.notDeepEqual(current, token)
+  const oldDiscard = await app.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/director/generation-progress/discard`, payload: token })
+  assert.equal(oldDiscard.statusCode, 409, oldDiscard.body)
+  const currentProgress = (await api('GET', `/api/projects/${f.project.id}`)).script_generation_progress
+  assert.equal(currentProgress.checkpoint_key, current.checkpoint_key)
+  assert.equal(currentProgress.updated_at, current.updated_at)
+  await api('POST', `/api/projects/${f.project.id}/script/director/generation-progress/discard`, current)
+  assert.equal((await api('GET', `/api/projects/${f.project.id}`)).script_generation_progress, null)
+  assert.ok(one('SELECT payload FROM script_generation_checkpoints WHERE project_id=?', f.project.id), 'discard display keeps reusable work')
+  assert.equal(f.script().artifacts?.length, 0)
+})
+
+test('independent review findings retain readable columns after candidate handoff until discard', async t => {
+  const f = await fixture(), before = f.formal()
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const review = draftCompletenessFixtureResponse(init)
+    if (!review) return response(wireTypes(JSON.parse(String(init?.body))))
+    const envelope = await review.json() as any, content = JSON.parse(envelope.choices[0].message.content)
+    content.facts = []
+    content.findings = [{ source_key: content.checked_artifacts[0], kind: 'contradiction', severity: 'blocking', quote: '林舟拿到钥匙',
+      explanation: '钥匙取得的因果与归还约定冲突，影响本次完整故事设计。', suggestion: '澄清取得钥匙与旧约的因果。' }]
+    return Response.json({ choices: [{ message: { content: JSON.stringify(content) }, finish_reason: 'stop' }] })
+  })
+  const generated = await f.chat()
+  assert.equal(generated.statusCode, 200, generated.body)
+  const resolution = generated.json().draft_resolution
+  assert.ok(resolution?.id, generated.body)
+  assert.equal(one('SELECT payload FROM script_generation_checkpoints WHERE project_id=?', f.project.id), undefined)
+  const progress = (await api('GET', `/api/projects/${f.project.id}`)).script_generation_progress
+  assert.equal(progress.documents.length, 9, 'handoff to resolution preserves every complete candidate column')
+  assert.equal(progress.checkpoint_key, undefined)
+  assert.deepEqual(f.formal(), before)
+  await api('POST', `/api/projects/${f.project.id}/script/director/resolutions/${resolution.id}/discard`, { version: resolution.version })
+  assert.equal((await api('GET', `/api/projects/${f.project.id}`)).script_generation_progress, null)
+  assert.deepEqual(f.formal(), before)
+})
+
+test('durable JSON generation binds progress to the current task and an old discard cannot hide a newer run', { timeout: 10000 }, async t => {
+  const f = await fixture(), conversationId = crypto.randomUUID(), userId = crypto.randomUUID()
+  t.mock.method(globalThis, 'fetch', async (_url, init) => draftCompletenessFixtureResponse(init) || response(wireTypes(JSON.parse(String(init?.body)))))
+  const generate = async (taskId: string) => {
+    const message = { id: userId, role: 'user', text: '完成全剧故事设计，先提供草稿预览。' }
+    const result = await app.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/director/chat/stream`, payload: {
+      model_id: f.model.id, mode: 'script', workflow: { stage: 'outline', intent: 'stage_design' }, use_tools: false, messages: [message],
+      task: { id: taskId, conversation: { id: conversationId, messages: [message] }, execution: { title: '生成故事资料', request: message.text, started_at: Date.now() } },
+    } })
+    assert.equal(result.statusCode, 200, result.body)
+    assert.match(result.body, /"type":"done"/)
+    const checkpoint = one<{ payload: string; cache_key: string; updated_at: string }>('SELECT payload,cache_key,updated_at FROM script_generation_checkpoints WHERE project_id=?', f.project.id)!
+    assert.equal(JSON.parse(checkpoint.payload).steps['progress:source'].value.task_id, taskId)
+    const done = [...result.body.matchAll(/^data: ?(.+)$/gm)].map(match => JSON.parse(match[1]!)).find(event => event.type === 'done')
+    assert.deepEqual(done.generation_checkpoint, { checkpoint_key: checkpoint.cache_key, updated_at: checkpoint.updated_at })
+  }
+  const previous = crypto.randomUUID(), current = crypto.randomUUID()
+  await generate(previous)
+  await generate(current)
+  await api('POST', `/api/projects/${f.project.id}/script/director/tasks/${previous}/discard-draft`, {})
+  assert.equal((await api('GET', `/api/projects/${f.project.id}`)).script_generation_progress.documents.length, 9)
+  await api('POST', `/api/projects/${f.project.id}/script/director/tasks/${current}/discard-draft`, {})
+  assert.equal((await api('GET', `/api/projects/${f.project.id}`)).script_generation_progress, null)
+  assert.ok(one('SELECT payload FROM script_generation_checkpoints WHERE project_id=?', f.project.id), 'discard display does not clear recovery data')
+})
+
+test('one character-stage request writes biographies before relationships and preserves both for one confirmation', async t => {
+  const f = await fixture()
+  await api('PUT', `/api/projects/${f.project.id}/script/artifacts`, { artifacts: [
+    { artifact_type: 'outline', title: '已确认主线', content: '林舟返乡，调查旧约，归还钥匙。', episode_number: 0, status: 'ready' },
+  ] })
+  const before = f.formal(), calls: StageArtifactType[][] = []
+  const biography = { ...artifact('characters'), content: 'BIOGRAPHY_DEPENDENCY：林舟是返乡记者，许宁是与他互相信任的修复师。' }
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const review = draftCompletenessFixtureResponse(init)
+    if (review) return review
+    const body = JSON.parse(String(init?.body)), types = wireTypes(body)
+    calls.push(types)
+    if (types[0] === 'characters') {
+      assert.doesNotMatch(body.messages[0].content, /人物关系列出对应双方/)
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ artifacts: [biography], scenes: [] }) }, finish_reason: 'stop' }] })
+    }
+    assert.deepEqual(types, ['relationships'])
+    assert.deepEqual(calls[0], ['characters'])
+    assert.ok(body.messages[0].content.includes(biography.content), 'relationship design reads the completed character biographies')
+    assert.doesNotMatch(body.messages[0].content, /人物小传逐人列出/)
+    return response(types)
+  })
+  const generated = await f.chat({ stage: 'characters', intent: 'stage_design' })
+  assert.equal(generated.statusCode, 200, generated.body)
+  const value = generated.json()
+  assert.deepEqual(calls, [['characters'], ['relationships']])
+  assert.deepEqual(value.tool_draft.documents.map((document: any) => document.artifact_type), ['characters', 'relationships'])
+  assert.equal(value.activity.filter((entry: any) => entry.artifact_preview).length, 2)
+  assert.deepEqual(f.formal(), before, 'completed child tasks remain drafts until confirmed together')
+  await api('POST', `/api/projects/${f.project.id}/script/director/tool-drafts/${value.tool_draft.id}/commit`, { version: value.tool_draft.version, approved: true })
+  assert.deepEqual(f.script().artifacts!.filter(document => ['characters', 'relationships'].includes(document.artifact_type)).map(document => document.artifact_type), ['characters', 'relationships'])
 })
 
 test('the real supplement route generates seven missing documents and preserves every saved title and prose byte through preview and save', async t => {
@@ -132,7 +295,7 @@ test('the real supplement route generates seven missing documents and preserves 
   const generated = await f.chat({ stage: 'outline', intent: 'stage_design', operation: 'supplement' } as any)
   assert.equal(generated.statusCode, 200, generated.body)
   const value = generated.json()
-  assert.equal(groups.length, 4)
+  assert.equal(groups.length, 7)
   assert.equal(generatedTypes.length, 7)
   for (const original of before.script.artifacts!) {
     const preview = value.tool_draft.documents.find((doc: any) => doc.artifact_type === original.artifact_type)
@@ -206,7 +369,7 @@ for (const useTools of [true, false]) {
     const generated = await f.chat({ stage: 'outline', episode_number: 0, operation: 'supplement', intent: 'stage_design', artifact_types: missing } as any, useTools)
     assert.equal(generated.statusCode, 200, generated.body)
     const value = generated.json()
-    assert.equal(groups.length, 4)
+    assert.equal(groups.length, 8)
     assert.equal(generatedTypes.length, 8)
     assert.deepEqual([...generatedTypes].sort(), [...missing].sort(), 'every missing section is generated exactly once')
     const preview = useTools ? value.tool_draft.documents : value.draft.artifacts

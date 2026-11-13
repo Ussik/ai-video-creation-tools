@@ -6,15 +6,15 @@ import { Tabs, FileButton, UnstyledButton,
   } from '@mantine/core'
 import { Dropzone } from '@mantine/dropzone'
 import {
-  ArrowDown, ArrowDownWideNarrow, ArrowRight, ArrowUp, ArrowUpWideNarrow, Check, Clapperboard,
+  ArrowDown, ArrowDownWideNarrow, ArrowRight, ArrowUp, ArrowUpRight, ArrowUpWideNarrow, Check, Clapperboard,
   ChevronDown, Clock3, Download, Eye, FileText, Film, Image as ImageIcon, Layers3, LayoutGrid, List, Menu,
   MoreHorizontal, Music2, PanelLeftClose, PanelLeftOpen, Play, Plus, RefreshCcw, Save, Scissors, ScrollText, Search, Settings2,
-  Upload, FolderOpen, X, Puzzle, Mic2, Trash2,
+  Upload, FolderOpen, X, Puzzle, Mic2, Trash2, Pencil,
 } from 'lucide-react'
 import { api, json } from '../shared/api/api'
 import type { Asset, ContinuityReport, Model, ProductionRange, Project, ProjectDetail, Provider, Shot, TimelineClip } from '../shared/api/api'
 import ModelSettings from '../features/models/ModelSettings'
-import { preferredModel } from '../features/models/model-defaults'
+import { useSharedModelSelection } from '../features/models/useSharedModelSelection'
 import SkillsCenter from '../features/skills/SkillsCenter'
 import SpeechStudio from '../features/speech/SpeechStudio'
 import BasicFinalCutStudio from '../features/final-cut/BasicFinalCutStudio'
@@ -46,6 +46,7 @@ import { useProjectDetailRefresh } from './hooks/useProjectDetailRefresh'
 import { useAssetDownload } from '../features/assets/useAssetDownload'
 import ThemeToggle from '../shared/ui/ThemeToggle'
 import { assetPresentations, type AssetNameNode } from '../features/assets/asset-presentation'
+import AssetRenameDialog from '../features/assets/AssetRenameDialog'
 import '../features/final-cut/final-cut-workspace.css'
 
 type Tab = 'projects' | 'canvas' | 'studio' | 'assets' | 'jobs' | 'models' | 'skills'
@@ -175,6 +176,7 @@ function App() {
   const [optimizedPromptDraft, setOptimizedPromptDraft] = useState<OptimizedPromptDraft | null>(null)
   const [scriptEditorOpen, setScriptEditorOpen] = useState(false)
   const [storyboardOpen, setStoryboardOpen] = useState(false)
+  const [shotManagementRequest, setShotManagementRequest] = useState<{ projectId: string; id: string; sceneIds: string[] } | null>(null)
   const [speechProjectId, setSpeechProjectId] = useState<string | null>(null)
   const [speechFocus, setSpeechFocus] = useState<{ lineId?: string; sceneId?: string | null; shotId?: string | null }>({})
   const [cutPreviewMode, setCutPreviewMode] = useState('cut')
@@ -190,6 +192,7 @@ function App() {
   const [assetViewMode, setAssetViewMode] = useState<'grid' | 'list'>('grid')
   const [assetLibraryView, setAssetLibraryView] = useState<AssetLibraryView>('history')
   const [assetPreview, setAssetPreview] = useState<Asset | null>(null)
+  const [assetRename, setAssetRename] = useState<Asset | null>(null)
   const [assetNameNodes, setAssetNameNodes] = useState<{ projectId: string; nodes: AssetNameNode[] } | null>(null)
   const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([])
   const [candidateReview, setCandidateReview] = useState<CandidateReview | null>(null)
@@ -202,7 +205,6 @@ function App() {
   const [rangeDraft, setRangeDraft] = useState<ProductionRange>({ start_shot_id: null, end_shot_id: null })
   const [productionTarget, setProductionTarget] = useState<number | string>(45)
   const [continuity, setContinuity] = useState<ContinuityReport | null>(null)
-  const [continuityModelId, setContinuityModelId] = useState('')
   const [semanticChecking, setSemanticChecking] = useState(false)
   const [continuityLoading, setContinuityLoading] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -259,10 +261,7 @@ function App() {
   const previousAsset = assetMap.get(previousClip?.asset_id || '')
   const shotAssets = detail?.assets.filter((asset) => ((asset.shot_id === shotId && asset.source !== 'export') || asset.id === currentShot?.selected_asset_id) && (asset.kind === 'image' || asset.kind === 'video')) || []
   const continuityModels = models.filter(model => model.modality === 'text' && model.enabled && providers.some(provider => provider.id === model.provider_id && provider.enabled))
-  useEffect(() => {
-    setContinuityModelId(current => continuityModels.some(model => model.id === current)
-      ? current : preferredModel(continuityModels)?.id || '')
-  }, [models, providers])
+  const { modelId: continuityModelId, selectModel: selectContinuityModel } = useSharedModelSelection('text', continuityModels, { locked: semanticChecking })
   const plannedDuration = productionShots.reduce((sum, shot) => sum + shot.duration, 0)
   const speechTimeline = resolveSpeechTimeline(productionShots, detail?.timeline_clips || [], detail?.speech?.placements || [])
   const timelinePreview = buildPartialTimelinePreview({ shots: productionShots, clips: detail?.timeline_clips || [],
@@ -472,6 +471,7 @@ function App() {
     setDetail(null)
     setSelectedAssetIds([])
     setAssetPreview(null)
+    setAssetRename(null)
     setShotId(null)
     setCandidateReview(null)
     setShowTimelinePreview(false)
@@ -607,6 +607,20 @@ function App() {
     setAssetSourceFilter('all')
     setAssetQuery('')
     setSelectedAssetIds([])
+  }
+
+  async function renameAsset(asset: Asset, displayName: string) {
+    if (activeProjectId.current !== asset.project_id) return
+    const updated = await api<Asset>(`/assets/${encodeURIComponent(asset.id)}`, json('PATCH', { display_name: displayName }))
+    if (activeProjectId.current !== asset.project_id) return
+    // Supersede any poll that captured the asset before this save.
+    void refreshProjectDetail(asset.project_id).catch(error => {
+      if (activeProjectId.current === asset.project_id) setNotice(`素材名称已保存，刷新失败：${error instanceof Error ? error.message : String(error)}`)
+    })
+    setDetail(current => current?.id === asset.project_id
+      ? { ...current, assets: current.assets.map(item => item.id === asset.id ? updated : item) } : current)
+    setAssetPreview(current => current?.id === asset.id ? updated : current)
+    setNotice('素材已重命名')
   }
 
   function clearAssetFilters() {
@@ -1006,6 +1020,10 @@ function App() {
           onRefresh={() => refreshDetail(detail.id)}
           onOpenModels={() => { setScriptEditorOpen(false); setTab('models') }}
           onOpenCanvas={() => { setScriptEditorOpen(false); setTab('canvas') }}
+          onOpenShotManager={sceneIds => {
+            setShotManagementRequest({ projectId: detail.id, id: crypto.randomUUID(), sceneIds: sceneIds || [] })
+            setScriptEditorOpen(false); setScriptDirectorOpen(false); setTab('canvas')
+          }}
           onSupplementStage={stage => {
             openScriptDirector('all', { stage, episode_number: 0, operation: 'supplement', intent: 'stage_design' })
           }}
@@ -1015,6 +1033,8 @@ function App() {
 
       {detail && canvasOpen && <ProjectCanvas key={`project-canvas-${detail.id}`} detail={detail} models={models} providers={providers}
         initialLocation={canvasLocations.current.get(detail.id)}
+        shotManagementRequest={shotManagementRequest?.projectId === detail.id ? shotManagementRequest : null}
+        onShotManagementRequestHandled={id => setShotManagementRequest(current => current?.id === id ? null : current)}
         optimizedPromptDraft={optimizedPromptDraft?.projectId === detail.id ? optimizedPromptDraft : null}
         onOptimizedPromptDraftApplied={() => setOptimizedPromptDraft(null)}
         onLocationChange={location => { canvasLocations.current.set(detail.id, location) }}
@@ -1055,6 +1075,10 @@ function App() {
         onClose={() => { setScriptDirectorOpen(false); setScriptDirectorContext(''); setScriptDirectorNodeSource(undefined); setScriptDirectorStageRequest(undefined); setTab('canvas') }}
         onOpenModels={() => setTab('models')}
         onOpenDocument={artifact => openScriptEditor(artifact.episode_number ? `episode-${artifact.episode_number}` : artifact.artifact_type)}
+        onOpenShotManager={sceneIds => {
+          setShotManagementRequest({ projectId: detail.id, id: crypto.randomUUID(), sceneIds: sceneIds || [] })
+          setScriptEditorOpen(false); setScriptDirectorOpen(false); setTab('canvas')
+        }}
         onNotice={setNotice}
       />}
 
@@ -1139,7 +1163,7 @@ function App() {
                 <Button variant="default" size="xs" loading={continuityLoading} onClick={() => void refreshContinuity()} leftSection={<RefreshCcw size={14} />}>刷新检查</Button>
               </div>
               <div className="continuity-semantic-controls">
-                <Select aria-label="连续性语义检查模型" placeholder="选择文本模型" value={continuityModelId || null} onChange={value => setContinuityModelId(value || '')} data={continuityModels.map(model => ({ value: model.id, label: model.name }))} disabled={semanticChecking} />
+                <Select aria-label="连续性语义检查模型" placeholder="选择文本模型" value={continuityModelId || null} onChange={value => selectContinuityModel(value || '')} data={continuityModels.map(model => ({ value: model.id, label: model.name }))} disabled={semanticChecking} />
                 <Button variant="default" size="xs" loading={semanticChecking} disabled={!continuityModels.some(model => model.id === continuityModelId)} onClick={() => void analyzeContinuity()}>模型检查接镜状态</Button>
                 <small>{continuity.semantic_review?.status === 'checked' ? '镜头文字状态已检查' : continuity.semantic_review?.status === 'stale' ? '镜头或资料已变化，请重新进行模型检查' : '素材与时长已检查，镜头文字状态尚未进行模型检查'}</small>
               </div>
@@ -1230,6 +1254,7 @@ function App() {
           <div className="library-media"><UnstyledButton className="library-preview-button" aria-label={`预览 ${title}`} onClick={() => setAssetPreview(asset)}><AssetPreview asset={asset} compact /></UnstyledButton><label className="library-select" onClick={(event) => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}><Checkbox aria-label={`选择 ${title}`} checked={selected} onChange={() => toggleAssetSelection(asset.id)} /></label></div>
           <div className="library-copy"><strong className="library-asset-title" title={title}>{title}</strong>{(label?.context || label?.specs) && <small className="library-asset-context">{[label.context, label.specs].filter(Boolean).join(' · ')}</small>}<small>{assetKindLabel(asset.kind)} · {assetSourceLabel(asset.source)} · {dateLabel(asset.created_at)}</small>{asset.shot_id && <small className="library-shot">镜头：{detail.shots.find((shot) => shot.id === asset.shot_id)?.title || '未命名镜头'}</small>}{shotId && review && <Badge size="xs" variant="light" color={review.status === 'approved' ? 'teal' : review.status === 'rejected' ? 'red' : 'gray'}>{reviewStatusText[review.status]}</Badge>}</div>
           <div className="library-actions"><MantineMenu shadow="md" width={210} position="bottom-end"><MantineMenu.Target><ActionIcon variant="subtle" className="asset-card-more" aria-label={`素材操作：${title}`}><MoreHorizontal size={18} /></ActionIcon></MantineMenu.Target><MantineMenu.Dropdown>
+            <MantineMenu.Item leftSection={<Pencil size={14} />} onClick={() => setAssetRename(asset)} disabled={busy}>重命名</MantineMenu.Item>
             {!asset.saved && <MantineMenu.Item leftSection={<Save size={14} />} onClick={() => void saveAssetToLibrary(asset)} disabled={busy}>保存到资产库</MantineMenu.Item>}
             {asset.kind === 'audio' && <MantineMenu.Item disabled={busy} leftSection={<Music2 size={14} />} onClick={() => action(async () => { await api(`/projects/${detail.id}`, json('PATCH', { music_asset_id: detail.music_asset_id === asset.id ? null : asset.id })); await refreshDetail() })}>{detail.music_asset_id === asset.id ? '取消用作配乐' : '用作配乐'}</MantineMenu.Item>}
             {asset.kind !== 'audio' && <MantineMenu.Item leftSection={<Layers3 size={14} />} onClick={() => void addAssetsToCanvas([asset.id])} disabled={busy}>加入画布</MantineMenu.Item>}
@@ -1269,7 +1294,11 @@ function App() {
         onOpenCanvas={() => setTab('canvas')} onNotice={setNotice} />}
     </main>
 
-    <Modal opened={assetPreview !== null} onClose={() => setAssetPreview(null)} title={assetPreview && assetLabels.get(assetPreview.id)?.title || assetPreview?.filename || '素材预览'} size="lg" centered>
+    {assetRename && assetRename.project_id === detail?.id && <AssetRenameDialog key={assetRename.id}
+      asset={assetRename} currentName={assetLabels.get(assetRename.id)?.title || assetRename.display_name || assetRename.filename}
+      onSave={name => renameAsset(assetRename, name)}
+      onClose={() => setAssetRename(current => current?.id === assetRename.id ? null : current)} />}
+    <Modal opened={assetPreview !== null} onClose={() => setAssetPreview(null)} closeOnEscape={!assetRename} closeOnClickOutside={!assetRename} trapFocus={!assetRename} title={assetPreview && assetLabels.get(assetPreview.id)?.title || assetPreview?.filename || '素材预览'} size="lg" centered>
       {assetPreview && <div className="asset-preview-modal">
         <div className="asset-preview-stage"><AssetPreview asset={assetPreview} /></div>
         <div className="asset-preview-meta">
@@ -1284,9 +1313,10 @@ function App() {
         {assetPreview.prompt && <div className="asset-preview-prompt"><span>生成提示词</span><p>{assetPreview.prompt}</p></div>}
         {assetPreview.text && <div className="asset-preview-prompt"><span>文本内容</span><p>{assetPreview.text}</p></div>}
         <div className="asset-preview-actions">
+          <Button variant="default" onClick={() => setAssetRename(assetPreview)} disabled={busy} leftSection={<Pencil size={15} />}>重命名</Button>
           <Button variant="default" onClick={() => downloadAssets([assetPreview.id])} loading={assetDownload.downloading} leftSection={<Download size={15} />}>下载素材</Button>
           {assetPreview.kind !== 'audio' && <Button onClick={() => { void addAssetsToCanvas([assetPreview.id]); setAssetPreview(null) }} leftSection={<Layers3 size={15} />}>加入画布</Button>}
-          {assetPreview.shot_id && <Button variant="subtle" onClick={() => { void openShotInCanvas(assetPreview.shot_id!); setAssetPreview(null) }} disabled={busy} leftSection={<Clapperboard size={15} />}>打开关联画布</Button>}
+          {assetPreview.shot_id && <Button className="asset-preview-canvas-button" variant="default" onClick={() => { void openShotInCanvas(assetPreview.shot_id!); setAssetPreview(null) }} disabled={busy} leftSection={<LayoutGrid size={15} />} rightSection={<ArrowUpRight size={14} />}>打开关联画布</Button>}
         </div>
       </div>}
     </Modal>

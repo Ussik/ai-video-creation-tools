@@ -1,15 +1,13 @@
 import ScriptStageActions from './ScriptStageActions'
 import { stageOperationError, missingSavedStageArtifacts, stageLabels, type StageOperation, type StageTarget } from '@video-studio/shared/script/script-stage-access'
 import { WorkspaceDisclosure } from '../../shared/ui/WorkspaceDisclosure'
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Menu, UnstyledButton, Slider, Button, TextInput, Textarea, ActionIcon, NumberInput, Popover, Modal, Switch, Select, FileButton } from '@mantine/core'
 import {
   ArrowDown,
   ArrowUp,
   PanelRight,
-  PanelBottomClose,
-  PanelBottomOpen,
   Maximize2,
   Plus,
   Square,
@@ -39,13 +37,16 @@ import {
   Lightbulb,
   Palette,
   Paperclip,
+  Ellipsis,
+  BookOpen,
 } from 'lucide-react'
 import { api, json } from '../../shared/api/api'
 import type { Asset, Job, Model, ProjectDetail, Provider, ScriptArtifact, ScriptArtifactType, ScriptGenerationOptions } from '../../shared/api/api'
 import type { ScriptAction } from '../canvas/ProjectCanvas'
 import CreativeSkillSelector from '../skills/CreativeSkillSelector'
-import { preferredModel } from '../models/model-defaults'
+import { useSharedModelSelection } from '../models/useSharedModelSelection'
 import { useCreativeSkills } from '../skills/useCreativeSkills'
+import type { SkillTaskContext } from '../../shared/api/skills-api'
 import StoryboardPlanner from '../storyboard/StoryboardPlanner'
 import './script-director.css'
 import './script-director-chat.css'
@@ -57,15 +58,19 @@ import DirectorCandidatePreview from './DirectorCandidatePreview'
 import type { ScriptDraftResolution, ScriptDraftResolutionInput } from '@video-studio/shared/script/script-draft-resolution'
 import DirectorMessageTiming, { finishMessageTiming, type MessageTiming } from './DirectorMessageTiming'
 import DirectorActivity from './DirectorActivity'
+import DirectorSourceContext from './DirectorSourceContext'
+import DirectorCreationOptions from './DirectorCreationOptions'
 import DirectorMessageFailure from './DirectorMessageFailure'
 import { directorFailureText, directorMessageFailure } from './director-message-failure'
 import { scriptDiagnosticDisplayText } from './script-display-text'
 import { activityDraftId, canRetryExecution, conversationMessage, readActivity, updateActivity, settleActivity, type ScriptActivity, type ScriptExecution } from './director-activity'
+import { directorConversationStorageKey, releaseVerifiedDirectorConversationCache } from './director-conversation-storage'
 import type { ScriptActivityTarget } from '@video-studio/shared/script/script-activity-types'
 import { createStreamScope, directorStreamIdleTimeoutMs, directorReconnectDelay } from '@video-studio/shared/script/script-stream-policy'
-import { directorModes, directorModeProfiles, type DirectorMode } from '@video-studio/shared/script/script-creation-mode'
+import type { DirectorMode } from '@video-studio/shared/script/script-creation-mode'
 import { scriptArtifactLabels, scriptStageArtifacts } from '@video-studio/shared/script/script-stage-content'
 import { scriptTaskDeliverables } from '@video-studio/shared/script/script-task-contract'
+import { maxScriptSceneDuration } from '@video-studio/shared/script/script-duration'
 import { scriptSourceExtensions, scriptSourceFileLimit, type ScriptSourceDocument, type ScriptSourceUpdate, type ScriptSourceAnalysis } from '@video-studio/shared/script/script-source-document'
 import { ScriptSourceAnalysisStatus, ScriptSourcePreview } from './ScriptSourceAnalysisView'
 import type { CreationNextStep, ScriptCreationState } from '@video-studio/shared/script/script-creation-state-types'
@@ -87,7 +92,7 @@ import { workflowInstruction, workflowRequestForStage, workflowRequestSnapshot, 
 import { canAdoptReply, classificationBatch, classificationKey, followingMessages, replyRecognitionState, activeReplyChoice, replyChoices, replyDisplayText, replyClassificationVersion, contextualReplyTypes, type ReplyClassification } from './script-reply'
 import { regenerationSource } from './director-regeneration'
 import { directorChatContext } from './director-chat-context'
-import { documentTaskPrompt, toolDraftArtifacts, toolDraftScenes, toolDraftStage, toolDraftOutcome, editedToolDraft, type DocumentAction, type ScriptToolDraft, type StoryDecision } from './script-tools'
+import { documentTaskPrompt, scriptOperationSkillTask, toolDraftArtifacts, toolDraftScenes, toolDraftStage, toolDraftOutcome, editedToolDraft, type DocumentAction, type ScriptToolDraft, type StoryDecision } from './script-tools'
 import type { RevisionTask } from '@video-studio/shared/script/script-revision-types'
 import { useThemeVisuals } from './useThemeVisuals'
 import { isScriptThemeCategory, neutralThemeArtwork, scriptThemeArtwork, scriptThemeCategories } from '@video-studio/shared/script/script-theme-catalog'
@@ -219,7 +224,16 @@ const welcomeMessage: Message = {
 }
 
 function directorStorageKey(projectId: string) {
-  return `script-director-conversations:${projectId}`
+  return directorConversationStorageKey(projectId)
+}
+
+function saveDirectorConversationFallback(projectId: string, messages: Message[], history: ConversationSnapshot[]): boolean {
+  try {
+    window.localStorage.setItem(directorStorageKey(projectId), JSON.stringify({
+      messages: messages.filter(message => !message.pending).slice(-80), history: history.slice(0, 20),
+    }))
+    return true
+  } catch { return false }
 }
 
 function loadDirectorState(projectId: string): { messages: Message[]; history: ConversationSnapshot[] } {
@@ -257,6 +271,7 @@ export interface ScriptDirectorPanelProps {
   onRefresh: () => Promise<unknown>
   onClose: () => void
   onOpenModels: () => void
+  onOpenShotManager?: (sceneIds?: string[]) => void
   onOpenDocument?: (artifact: ScriptArtifact) => void
   onNotice: (message: string) => void
 }
@@ -285,7 +300,7 @@ function normaliseScene(scene: Partial<GeneratedScene>): GeneratedScene {
     dialogue: typeof scene.dialogue === 'string' ? scene.dialogue : '',
     narration: typeof scene.narration === 'string' ? scene.narration : '',
     duration: typeof scene.duration === 'number' && Number.isFinite(scene.duration)
-      ? Math.max(1, Math.min(30, Math.round(scene.duration))) : 5,
+      ? Math.max(1, Math.min(maxScriptSceneDuration, Math.round(scene.duration))) : 5,
   }
 }
 
@@ -380,7 +395,7 @@ function DirectorStructurePicker({
   onEpisodeCountChange: (value: number) => void
 }) {
   const count = Number.isFinite(episodeCount) ? Math.max(1, Math.min(200, Math.round(episodeCount as number))) : 20
-  return <div className={`script-director-structure-picker${open ? ' is-open' : ''}`}><Popover opened={open} onClose={() => { if (open) onToggle() }} withinPortal={false} position="top-start" trapFocus returnFocus offset={8}><Popover.Target>
+  return <div className={`script-director-structure-picker${open ? ' is-open' : ''}`}><Popover opened={open} onClose={() => { if (open) onToggle() }} withinPortal zIndex={400} position="top-start" trapFocus returnFocus offset={8}><Popover.Target>
     <UnstyledButton type="button" className="script-director-structure-card" onClick={onToggle} aria-expanded={open} aria-haspopup="dialog">
       <span className="script-director-setting-heading">
         <Clapperboard size={14} aria-hidden="true" />
@@ -432,7 +447,7 @@ type DirectorAutoFieldProps = {
 }
 
 function DirectorAutoField({ label, value, placeholder, options, icon: Icon, open, onToggle, onChange }: DirectorAutoFieldProps) {
-  return <div className={`script-director-auto-field${open ? ' is-open' : ''}`}><Popover opened={open} onClose={() => { if (open) onToggle() }} withinPortal={false} position="top-start" trapFocus returnFocus offset={8}>
+  return <div className={`script-director-auto-field${open ? ' is-open' : ''}`}><Popover opened={open} onClose={() => { if (open) onToggle() }} withinPortal zIndex={400} position="top-start" trapFocus returnFocus offset={8}>
     <Popover.Target><UnstyledButton type="button" className="script-director-auto-card" onClick={onToggle} aria-expanded={open} aria-haspopup="dialog">
       <span className="script-director-setting-heading">
         <Icon size={14} aria-hidden="true" />
@@ -832,13 +847,21 @@ function restoreStageTask(detail: ProjectDetail): WorkflowRequest | null {
   } catch { return null }
 }
 
-function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all', initialContext, canvasNodeSource, onApplyCanvasNodeProposal, initialStageRequest, openRequestId, hidden = false, onRefresh, onClose, onOpenModels, onOpenDocument, onNotice }: ScriptDirectorPanelProps) {
+function stageRevisionPrompt(target: Pick<WorkflowRequest, 'stage' | 'episode_number'>) {
+  return `请读取${target.stage === 'episode' ? `第 ${target.episode_number} 集正文与分场` : stageLabels[target.stage]}原文，只修改这个阶段。我希望修改：`
+}
+
+function removeRevisionPrefill(input: string, prompt: string) {
+  return input.startsWith(prompt) ? input.slice(prompt.length).replace(/^\r?\n/, '') : input
+}
+
+function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all', initialContext, canvasNodeSource, onApplyCanvasNodeProposal, initialStageRequest, openRequestId, hidden = false, onRefresh, onClose, onOpenModels, onOpenShotManager, onOpenDocument, onNotice }: ScriptDirectorPanelProps) {
   const [windowLayout, setWindowLayout] = useState(readWindowLayout)
+  const compactComposer = (windowLayout.docked ? window.innerHeight : windowLayout.rect.height) <= 520
   const [minimized, setMinimized] = useState(false)
   const [workflowOpen, setWorkflowOpen] = useState(false)
   const [composerMenuOpen, setComposerMenuOpen] = useState(false)
-  const [composerCollapsed, setComposerCollapsed] = useState(false)
-  const composerBodyId = useId()
+  const [composerOptionsOpen, setComposerOptionsOpen] = useState(false)
   const [readerReference, setReaderReference] = useState<DirectorReference | null>(null)
   const [references, setReferences] = useState<DirectorReference[]>(() => {
     try { return readReferences(JSON.parse(window.localStorage.getItem(`script-director-references:${detail.id}`) || '[]')) } catch { return [] }
@@ -876,10 +899,16 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   }), [models, providers])
   const [options, setOptions] = useState<ScriptGenerationOptions>(() => restoreWorkflowDraft(detail.id)?.generation_options || optionsFromDetail(detail))
   const [idea, setIdea] = useState(detail.brief || '')
-  const [modelId, setModelId] = useState(() => { try { return window.localStorage.getItem(`script-director-model:${detail.id}`) || '' } catch { return '' } })
+  const [working, setWorking] = useState<'chat' | 'prompt' | 'save' | 'shots' | null>(null)
+  const [canvasNodeProposalBusy, setCanvasNodeProposalBusy] = useState(false)
+  const { modelId, selectModel } = useSharedModelSelection('text', availableModels, {
+    locked: working !== null || sourceUploading || sourceAnalysisStarting || canvasNodeProposalBusy, active: !hidden,
+  })
   const [activeFocus, setActiveFocus] = useState<ScriptAction>(focusArtifact)
   const [creation, setCreation] = useState<ScriptCreationState | null>(null)
   const creationRefreshId = useRef(0)
+  const completedDocumentRefreshes = useRef(new Set<string>())
+  const documentProgressRefresh = useRef({ running: false, pending: false })
   const [mode, setMode] = useState<DirectorMode>('script')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [showSettingPresets, setShowSettingPresets] = useState(true)
@@ -898,7 +927,6 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const [contextComposerActive, setContextComposerActive] = useState(false)
   const [adoptingMessageId, setAdoptingMessageId] = useState<string | null>(null)
   const [handoffEpisode, setHandoffEpisode] = useState(() => Math.max(0, ...(detail.script.artifacts || []).filter(item => item.artifact_type === 'episode_script').map(item => item.episode_number || 0)))
-  const [working, setWorking] = useState<'chat' | 'prompt' | 'save' | 'shots' | null>(null)
   const [storyboardOpen, setStoryboardOpen] = useState(false)
   const [planningSceneIds, setPlanningSceneIds] = useState<string[]>([])
   const [connectionStatus, setConnectionStatus] = useState<string | null>(null)
@@ -914,12 +942,14 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const [previewOpen, setPreviewOpen] = useState(() => Boolean(restoreWorkflowDraft(detail.id)))
   const [artifactsOpen, setArtifactsOpen] = useState(false)
   const [scriptSaved, setScriptSaved] = useState(false)
+  const [lastSavedArtifactKey, setLastSavedArtifactKey] = useState<string | null>(null)
   const [workflowStage, setWorkflowStage] = useState<WorkflowStage>(() => generated?.workflow?.stage || workflowProgress(detail.script).next_stage || 'episode')
   const [episodeNumber, setEpisodeNumber] = useState(() => (generated?.workflow?.stage === 'episode' ? generated.workflow.episode_number : undefined) || workflowProgress(detail.script).next_episode || 1)
   const [episodeDuration, setEpisodeDuration] = useState<number | undefined>(() => (generated?.workflow?.stage === 'episode' ? generated.workflow.target_duration : undefined) || options.episode_duration)
   const [assetTaskStatus, setAssetTaskStatus] = useState<AssetTaskStatus>(focusArtifact === 'all' ? 'idle' : 'analyzing')
   const [assetPrompt, setAssetPrompt] = useState('')
-  const [assetImageModelId, setAssetImageModelId] = useState('')
+  const { modelId: assetImageModelId, selectModel: selectAssetImageModel } = useSharedModelSelection('image', imageModels,
+    { locked: working !== null || assetTaskStatus === 'generating', active: !hidden })
   const [assetJobId, setAssetJobId] = useState<string | null>(null)
   const [assetTaskId, setAssetTaskId] = useState<string | null>(null)
   const [messages, setMessages] = useState<Message[]>(() => loadDirectorState(detail.id).messages)
@@ -936,6 +966,11 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const classificationAttempts = useRef(new Set<string>())
   const classificationRequest = useRef<{ controller: AbortController; scope: string; batch: ReturnType<typeof classificationBatch> } | null>(null)
   const conversationSyncReady = useRef(false)
+  // Tracks whether the initial remote conversation matched the local cache and
+  // allowed us to release that old duplicate. While remote saves work, suppress
+  // routine local copies so they do not consume the quota we just reclaimed;
+  // failed remote saves explicitly recreate a local fallback below.
+  const remoteConversationCacheReleased = useRef(false)
   const conversationSaveSerial = useRef(0)
   const localConversationSaveTimer = useRef<number | null>(null)
   const remoteConversationSaveTimer = useRef<number | null>(null)
@@ -966,10 +1001,11 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
             label: model.name,
           }))}
           allowDeselect={false}
+          disabled={working !== null || sourceUploading || sourceAnalysisStarting || canvasNodeProposalBusy}
           size="xs"
           comboboxProps={{ withinPortal: true, zIndex: 400, position: 'top-start', width: 320 }}
           styles={{ dropdown: { maxWidth: 'calc(100vw - 24px)' }, option: { whiteSpace: 'normal', overflowWrap: 'anywhere' } }}
-          onChange={(value) => { setModelId(value || ''); try { window.localStorage.setItem(`script-director-model:${detail.id}`, value || '') } catch { /* Keep the selection in memory. */ } }}
+          onChange={value => selectModel(value || '')}
         />
 
   const assetJob = assetJobId ? detail.jobs.find((job) => job.id === assetJobId) : undefined
@@ -1014,7 +1050,6 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const stageContext = directorStageContext(detail.script, { pending: generated && !scriptSaved ? toolDraftStage(generated.tool_draft) || generated.workflow : undefined,
     ...(stageTask ? { explicit: stageTask } : {}), previous: [...messages].reverse().find(message => message.role === 'assistant')?.stage_context })
   const activeChoice = activeReplyChoice(messages, choiceDismissed, answeringChoiceId, activeFocus === 'all' ? stageContext : undefined)
-  useEffect(() => { if (activeChoice) setComposerCollapsed(false) }, [activeChoice?.messageId])
   useEffect(() => {
     try {
       if (stageTask) window.localStorage.setItem(`script-director-stage-task:${detail.id}`, JSON.stringify({ request: stageTask, progress: JSON.stringify(workflowProgress(detail.script)) }))
@@ -1023,19 +1058,43 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   }, [stageTask, detail.id, detail.script])
   const nextStep = stageTask || stageContext.mode === 'explicit' && (creation?.next_step?.stage !== stageContext.stage || stageContext.stage === 'episode' && creation?.next_step?.episode_number !== stageContext.episode_number) ? null : creation?.next_step
   const outlineIssue = outlineGenerationIssue(detail.script, { input, brief: detail.brief, referenceContents: [...references.map(reference => reference.content), ...(scriptSource ? [scriptSource.content] : [])], nextStep })
-  const workflowTarget = workflowRequestForStage(workflowStage, episodeNumber, episodeDuration, workflowOperation, { hasSource: Boolean(scriptSource), script: detail.script, ...workflowContract })
+  const workflowTarget = workflowRequestForStage(workflowStage, episodeNumber, episodeDuration, workflowOperation, {
+    hasSource: Boolean(scriptSource), script: detail.script, ...workflowContract,
+    ...(workflowStage === 'outline' && workflowOperation === 'generate' ? { intent: 'stage_design', artifact_types: [...scriptStageArtifacts.outline] } : {}),
+  })
   const currentSkillStage = activeFocus === 'all' ? 'script' : 'visual_assets'
-  const skillControl = useCreativeSkills(detail.id)
-  const skillSelector = <CreativeSkillSelector stage={currentSkillStage} policies={skillControl.policies} ids={skillControl.ids(currentSkillStage)} onChange={values => skillControl.change(currentSkillStage, values)}
+  const skillTask: SkillTaskContext | undefined = activeFocus !== 'all' ? { selection_mode: 'model' }
+    : scriptOperationSkillTask(workflowOpen ? null : documentTask, workflowOpen ? workflowTarget : stageTask, detail.script.artifacts || [])
+  const skillControl = useCreativeSkills(detail.id, true, { task: skillTask })
+  const skillSelector = (withinPortal = true) => <CreativeSkillSelector stage={currentSkillStage} policies={skillControl.policies} ids={skillControl.ids(currentSkillStage)} onChange={values => skillControl.change(currentSkillStage, values)}
     selection={skillControl.selection(currentSkillStage)} onUseAutomatic={() => skillControl.useAutomatic(currentSkillStage)}
-    projectId={detail.id} appearance="chat" disabled={!!working || closing} loading={skillControl.loading} error={skillControl.error} onDefaultsChanged={() => skillControl.reload(currentSkillStage)} />
+    projectId={detail.id} appearance="chat" withinPortal={withinPortal} disabled={!!working || closing} loading={skillControl.loading} error={skillControl.error} onDefaultsChanged={() => skillControl.reload(currentSkillStage)} />
+  const creationOptions = <DirectorCreationOptions mode={mode} onModeChange={setMode} opened={composerOptionsOpen} onOpenedChange={setComposerOptionsOpen}
+    disabled={busy || closing} skillSelector={skillSelector(false)} skillLabel={currentSkillStage === 'script' ? '创作技能' : '视觉设定技能'} />
   const workflowIssue = stageOperationError(detail.script, workflowTarget)
     || (workflowOperation === 'supplement' && workflowTarget.artifact_types?.length === 0 ? '所选栏目已保存，无需补齐' : null)
     || (workflowStage === 'outline' && workflowOperation === 'generate' ? outlineIssue : null)
   const directionStart = !messages.some(message => message.role === 'user') && creation?.status === 'direction'
-  const primaryArtifact = artifactCards.find(artifact => artifact.artifact_type === 'episode_script' && artifact.episode_number === handoffEpisode)
+  const primaryArtifact = artifactCards.find(artifact => artifactKey(artifact) === lastSavedArtifactKey)
+    || artifactCards.find(artifact => artifact.artifact_type === 'episode_script' && artifact.episode_number === handoffEpisode)
     || [...artifactCards].reverse().find(artifact => artifact.artifact_type === 'episode_script') || artifactCards.at(-1)
   const primaryArtifactScenes = detail.script.scenes.filter(scene => scene.episode_number === primaryArtifact?.episode_number)
+  const currentStageLabel = activeFocus !== 'all' ? focusArtifactLabels[activeFocus]
+    : stageContext.stage === 'episode' ? `第 ${stageContext.episode_number || episodeNumber} 集正文` : stageContext.stage ? stageLabels[stageContext.stage] : '剧本创作'
+  const currentDraftLabel = generated?.tool_draft?.kind === 'resource' ? '视觉设定与分镜'
+    : generated?.tool_draft?.kind === 'patch' ? '文档修订'
+    : generated?.workflow?.stage === 'episode' ? `第 ${generated.workflow.episode_number} 集`
+    : generated?.workflow ? workflowLabels[generated.workflow.stage] : currentStageLabel
+  const currentStageSaved = stageContext.stage === 'episode' ? progress.episodes.includes(stageContext.episode_number || episodeNumber)
+    : stageContext.stage ? progress.completed[stageContext.stage] : false
+  const currentStatus = busy ? working === 'save' ? '正在保存' : '正在处理'
+    : generated && !scriptSaved ? generated.tool_draft?.revision_task && generated.tool_draft.revision_task.status !== 'ready' ? '待完成' : '草稿待确认'
+    : activeChoice ? '待回答' : currentStageSaved ? '已保存' : '讨论中'
+  const composerObject = documentTask?.title || (stageTask ? stageTask.stage === 'episode' ? `第 ${stageTask.episode_number} 集正文` : stageLabels[stageTask.stage]
+    : generated && !scriptSaved ? `${currentDraftLabel}草稿` : currentStageLabel)
+  const composerPlaceholder = activeFocus !== 'all' ? `描述你希望如何处理${focusArtifactLabels[activeFocus]}…` : generated && !scriptSaved ? '这份草稿，你想调整哪里？' : documentTask || stageTask ? `描述你希望如何修改${composerObject}…` : '聊聊你的故事想法…'
+  const questionComposerActive = !!(activeChoice && !previewOpen && !references.length && !(contextComposerActive && input.trim()))
+  useEffect(() => { if (skillControl.error) setComposerOptionsOpen(true) }, [skillControl.error])
 
   const readerArtifact = readerReference ? { ...readerReference, status: 'ready', isUnsaved: false } : artifactCards.find(artifact => artifactKey(artifact) === readerKey)
   const readerScenes = !readerReference && readerArtifact?.artifact_type === 'episode_script'
@@ -1087,13 +1146,16 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   useEffect(() => {
     try { window.localStorage.setItem(`script-director-input:${detail.id}`, input) } catch { /* Keep the unsent input in memory. */ }
     const textarea = composerRef.current
-    if (textarea && !composerCollapsed) { textarea.style.height = 'auto'; textarea.style.height = `${Math.min(160, Math.max(72, textarea.scrollHeight))}px` }
-  }, [input, minimized, readerKey, readerReference, hidden, composerCollapsed, previewOpen, artifactsOpen, workflowOpen, activeChoice?.messageId, references.length])
+    if (textarea) { textarea.style.height = 'auto'; textarea.style.height = `${Math.min(compactComposer ? 72 : previewOpen ? 96 : 160, Math.max(compactComposer || previewOpen ? 48 : 72, textarea.scrollHeight))}px` }
+  }, [input, minimized, readerKey, readerReference, hidden, compactComposer, previewOpen, artifactsOpen, workflowOpen, activeChoice?.messageId, references.length])
   useEffect(() => {
-    const composer = directorPanelRef.current?.querySelector('.sd-composer-area')
-    if (!composer) return
-    const observer = new ResizeObserver(() => directorPanelRef.current?.style.setProperty('--composer-height', `${composer.getBoundingClientRect().height}px`))
-    observer.observe(composer)
+    const surfaces = directorPanelRef.current?.querySelectorAll('.sd-composer-context, .sd-composer-area')
+    if (!surfaces?.length) return
+    const observer = new ResizeObserver(() => {
+      const height = [...surfaces].reduce((total, surface) => total + surface.getBoundingClientRect().height, 0)
+      directorPanelRef.current?.style.setProperty('--composer-height', `${height}px`)
+    })
+    surfaces.forEach(surface => observer.observe(surface))
     return () => observer.disconnect()
   }, [minimized, readerKey, readerReference, previewOpen, activeChoice?.messageId, references.length, artifactsOpen, workflowOpen, activeFocus])
   useEffect(() => {
@@ -1120,7 +1182,6 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     const request = `${detail.id}:${openRequestId ?? ''}:${initialContext}`
     if (!initialContext || receivedContext.current === request) return
     receivedContext.current = request
-    setComposerCollapsed(false)
     setContextComposerActive(true)
     setPreviewOpen(false); setArtifactsOpen(false); setWorkflowOpen(false)
     setReaderKey(null); setReaderReference(null)
@@ -1213,9 +1274,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     if (localConversationSaveTimer.current !== null) window.clearTimeout(localConversationSaveTimer.current)
     localConversationSaveTimer.current = window.setTimeout(() => {
       localConversationSaveTimer.current = null
-      try {
-        window.localStorage.setItem(directorStorageKey(detail.id), JSON.stringify({ messages: messages.slice(-80), history: history.slice(0, 20) }))
-      } catch { /* The current conversation remains available in memory. */ }
+      if (remoteConversationCacheReleased.current) return
+      saveDirectorConversationFallback(detail.id, messages, history)
     }, 220)
     return () => {
       if (localConversationSaveTimer.current !== null) {
@@ -1249,7 +1309,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       window.cancelAnimationFrame(frame)
       if (messageScrollFrameRef.current === frame) messageScrollFrameRef.current = null
     }
-  }, [messages, assetTaskStatus, artifactsOpen, previewOpen, workflowOpen, minimized, readerKey, hidden, nextStep?.id, composerCollapsed, messagesVisible, openRequestId, conversationLoaded])
+  }, [messages, assetTaskStatus, artifactsOpen, previewOpen, workflowOpen, minimized, readerKey, hidden, nextStep?.id, messagesVisible, openRequestId, conversationLoaded])
 
   useEffect(() => {
     mountedRef.current = true
@@ -1279,12 +1339,14 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   useEffect(() => {
     let active = true
     conversationSyncReady.current = false
+    remoteConversationCacheReleased.current = false
     setConversationLoaded(false)
     void api<{ conversations: PersistedConversation[]; task_persistence?: boolean; tasks?: RunningDirectorTask[]; draft_results?: Array<RunningDirectorTask & { events: StreamEvent[] }> }>(`/projects/${detail.id}/script/conversations`)
       .then((result) => {
         if (!active) return
         taskPersistence.current = result.task_persistence === true
         const remote = Array.isArray(result.conversations) ? result.conversations : []
+        remoteConversationCacheReleased.current = releaseVerifiedDirectorConversationCache(detail.id, remote)
         const runningTask = result.tasks?.[0]
         if (runningTask) remote.sort((left, right) => Number(right.id === runningTask.conversation_id) - Number(left.id === runningTask.conversation_id))
         if (remote.length) {
@@ -1390,11 +1452,15 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       void (async () => {
         for (const conversation of snapshots) {
           if (conversationSaveSerial.current !== serial) return
-          await api<PersistedConversation>(`/projects/${detail.id}/script/conversations`, json('PUT', {
+          const saved = await api<PersistedConversation>(`/projects/${detail.id}/script/conversations`, json('PUT', {
             id: conversation.id,
             label: conversation.label,
             messages: conversation.messages.filter((message) => !message.pending).slice(-80).map(conversationMessage),
-          })).catch(() => null)
+          })).then(() => true).catch(() => false)
+          if (!saved) {
+            if (conversationSaveSerial.current === serial) saveDirectorConversationFallback(detail.id, messages, history)
+            return
+          }
         }
       })()
     }, 360)
@@ -1405,14 +1471,6 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       }
     }
   }, [detail.id, conversationId, history, messages])
-
-  useEffect(() => {
-    if (!availableModels.some(model => model.id === modelId)) setModelId(preferredModel(availableModels)?.id || '')
-  }, [availableModels, modelId])
-
-  useEffect(() => {
-    if (!imageModels.some(model => model.id === assetImageModelId)) setAssetImageModelId(preferredModel(imageModels)?.id || '')
-  }, [assetImageModelId, imageModels])
 
   useEffect(() => {
     if (!assetJob) return
@@ -1566,9 +1624,34 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     })
   }
 
+  async function refreshDocumentProgress() {
+    const refresh = documentProgressRefresh.current
+    refresh.pending = true
+    if (refresh.running) return
+    refresh.running = true
+    try {
+      while (refresh.pending && mountedRef.current) {
+        refresh.pending = false
+        // Completed columns are already persisted. A failed background refresh
+        // can be recovered by the existing project poll without retrying models.
+        await onRefresh().catch(() => {})
+      }
+    } finally { refresh.running = false }
+  }
+
   function appendProcessEvent(pendingId: string, event: StreamEvent) {
     if (event.activity) {
       const incoming = readActivity(Array.isArray(event.activity) ? event.activity : [event.activity])
+      let completedDocument = false
+      for (const entry of incoming) {
+        if (entry.status !== 'succeeded' || !entry.artifact_preview?.artifacts.length) continue
+        const key = `${detail.id}:${pendingId}:${entry.id}`
+        if (completedDocumentRefreshes.current.has(key)) continue
+        completedDocumentRefreshes.current.add(key)
+        if (completedDocumentRefreshes.current.size > 400) completedDocumentRefreshes.current.delete(completedDocumentRefreshes.current.values().next().value!)
+        completedDocument = true
+      }
+      if (completedDocument) void refreshDocumentProgress()
       const draftId = activityDraftId(incoming)
       if (draftId) {
         executionDraftIds.current.set(pendingId, draftId)
@@ -1820,7 +1903,6 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   }
 
   function startNewConversation() {
-    setComposerCollapsed(false)
     setInput('')
     setReferences([])
     setReaderReference(null)
@@ -1921,6 +2003,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       execution: { ...message.execution, outcome: refreshedToolOutcome(draft, message.execution.outcome) } } : message))
     if (!draft || draft.status === 'discarded') { setGenerated(current => current?.tool_draft ? null : current); setPreviewOpen(false); return }
     const artifacts = toolDraftArtifacts(draft)
+    if (draft.status === 'saved' && artifacts.length) setLastSavedArtifactKey(artifactKey(artifacts[0]))
     setGenerated({ tool_draft: draft, source_update: draft.source_update, ...(draft.workflow ? { workflow: draft.workflow } : {}), resource_changes: draft.resource_changes,
       outline: artifacts.find(item => item.artifact_type === 'outline')?.content || detail.script.outline,
       characters: artifacts.find(item => item.artifact_type === 'characters')?.content || detail.script.characters,
@@ -1999,6 +2082,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     if (event.classification_version && event.classification) setMessages(current => current.map(message => message.id === pendingId
       ? { ...message, classification_version: event.classification_version, classification: event.classification, classification_context: '[]', classification_source: event.classification_source } : message))
     if (event.project_changed) void onRefresh().catch(() => onNotice('项目已更新，刷新失败，请稍后重试'))
+    else if (event.draft || event.tool_draft !== undefined || event.draft_resolution !== undefined) void refreshDocumentProgress()
     receiveExecutionResult(event, pendingId)
   }
 
@@ -2024,7 +2108,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     try {
       await api(`/projects/${detail.id}/script/director/resolutions/${draftResolution.id}/discard`, json('POST', { version: draftResolution.version }))
       receiveDraftResolution(null)
-      void onRefresh().catch(() => onNotice('草稿状态已更新，项目刷新失败，请稍后重试'))
+      void refreshDocumentProgress()
       onNotice('已放弃候选稿，可以重新生成')
     } catch (issue) { setError(readableError(issue)); void refreshToolState().catch(() => {}) }
     finally { resolutionDiscardLock.current = false; setWorking(null) }
@@ -2089,20 +2173,36 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       execution: { ...message.execution, outcome: { ...message.execution.outcome!, kind: 'discarded', summary: '草稿已放弃，正式资料保持原状。' } } } : message))
     setGenerated(null); setPreviewOpen(false); setError(null)
     setCreation(null)
-    void onRefresh().catch(() => onNotice('草稿状态已更新，项目刷新失败，请稍后重试'))
+    void refreshDocumentProgress()
     void refreshToolState().catch(() => {})
   }
 
-  function reviewDocument(operation: DocumentAction['operation']) {
+  function reviewDocument(operation: DocumentAction['operation'] | 'dialogue') {
     if (!readerArtifact || readerReference || readerArtifact.isUnsaved || busy || !selectedModel) return
+    if (operation === 'dialogue' && readerArtifact.artifact_type !== 'episode_script') return
     const saved = detail.script.artifacts?.find(item => artifactKey(item) === artifactKey(readerArtifact))
     const id = saved?.id || `legacy:${readerArtifact.artifact_type}`
-    const task = { operation, document_ids: [id], title: readerArtifact.title }
+    const task: DocumentAction & { title: string } = { operation: operation === 'dialogue' ? 'revise' : operation, document_ids: [id], title: readerArtifact.title,
+      ...(operation === 'dialogue' ? { revision_kind: 'dialogue' } : {}) }
     setStageTask(null)
     setDocumentTask(operation === 'revise' ? task : null)
     setReaderKey(null); setReaderReference(null); setArtifactsOpen(false)
-    if (operation === 'review') void sendChatMessage(documentTaskPrompt(readerArtifact.title, 'review'), false, undefined, true, undefined, undefined, undefined, task)
-    else { setComposerCollapsed(false); setInput(documentTaskPrompt(readerArtifact.title, 'revise')); window.requestAnimationFrame(() => composerRef.current?.focus()) }
+    if (operation === 'review' || operation === 'dialogue') void sendChatMessage(documentTaskPrompt(readerArtifact.title, operation), false, undefined, true, undefined, undefined, undefined, task)
+    else { setInput(current => current.trim() ? current : documentTaskPrompt(readerArtifact.title, 'revise')); window.requestAnimationFrame(() => composerRef.current?.focus()) }
+  }
+
+  function cancelStageRevision() {
+    if (!stageTask) return
+    setInput(current => removeRevisionPrefill(current, stageRevisionPrompt(stageTask)))
+    setStageTask(null)
+    window.requestAnimationFrame(() => composerRef.current?.focus())
+  }
+
+  function cancelDocumentRevision() {
+    if (!documentTask) return
+    setInput(current => removeRevisionPrefill(current, documentTaskPrompt(documentTask.title, 'revise')))
+    setDocumentTask(null)
+    window.requestAnimationFrame(() => composerRef.current?.focus())
   }
 
   function chooseScriptFile(file: File | null) {
@@ -2121,7 +2221,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       const form = new FormData(); form.append('file', file)
       const source = await api<ScriptSourceDocument>(`/projects/${detail.id}/script/source${selectedModel ? `?model_id=${encodeURIComponent(modelId)}` : ''}`, { method: 'POST', body: form })
       if (!mountedRef.current) return
-      setScriptSource(source); setSourceAnalysisPollError(false); setComposerCollapsed(false)
+      setScriptSource(source); setSourceAnalysisPollError(false)
       onNotice(source.analysis ? '原剧本已保存，正在后台分析；可以继续填写创作要求' : '原剧本已保存，选择文本模型后可开始分析')
     } catch (issue) { if (mountedRef.current) setError(`上传剧本失败：${readableError(issue)}`) }
     finally { sourceUploadLock.current = false; if (mountedRef.current) { setSourceUploading(false); setSourceLoading(false) } }
@@ -2177,8 +2277,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     setWorkflowOpen(false); setArtifactsOpen(false); setReaderKey(null); setDocumentTask(null)
     if (target.operation === 'revise') {
       setStageTask(workflowRequestSnapshot({ ...target, target_duration: episodeDuration, operation: 'revise' }))
-      setComposerCollapsed(false)
-      setInput(input.trim() || `请读取${target.stage === 'episode' ? `第 ${target.episode_number} 集正文与分场` : stageLabels[target.stage]}原文，只修改这个阶段。我希望修改：`)
+      setInput(current => current.trim() ? current : stageRevisionPrompt(target))
       window.requestAnimationFrame(() => composerRef.current?.focus())
     } else {
       setStageTask(null)
@@ -2193,7 +2292,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     setWorkflowContract({ ...(contract?.intent ? { intent: contract.intent } : {}), ...(contract?.artifact_types ? { artifact_types: contract.artifact_types } : {}) })
     if (stage === 'episode') setEpisodeNumber(targetEpisode)
     const request = workflowRequestForStage(stage, targetEpisode, episodeDuration, operation === 'generate' ? undefined : operation,
-      { hasSource: Boolean(scriptSource), script: detail.script, ...contract })
+      { hasSource: Boolean(scriptSource), script: detail.script, ...contract,
+        ...(stage === 'outline' && operation === 'generate' ? { intent: 'stage_design', artifact_types: [...scriptStageArtifacts.outline] } : {}) })
     const issue = stageOperationError(detail.script, request)
       || (operation === 'supplement' && request.artifact_types?.length === 0 ? '所选栏目已保存，无需补齐' : null)
       || (stage === 'outline' && operation === 'generate' ? outlineIssue : null)
@@ -2282,7 +2382,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     const requestSkillSelections = skillControl.snapshot()
     const targets = selectedAction?.document_ids.map(id => detail.script.artifacts?.find(doc => doc.id === id)?.title || artifactCards.find(doc => id === `legacy:${doc.artifact_type}`)?.title || '指定文档')
     const execution: ScriptExecution = { title: resolutionInput ? '补齐候选草稿' : workflow ? `${workflow.operation === 'regenerate' ? '重新设计' : workflow.operation === 'supplement' ? '补齐' : workflow.operation === 'revise' ? '修订' : '生成'}${workflow.stage === 'episode' ? `第 ${workflow.episode_number} 集正文` : workflowLabels[workflow.stage]}` : selectedAction ? `${selectedAction.operation === 'review' ? '评审' : '修订'}项目文档` : requestFocus === 'all' ? '剧本创作对话' : `${assetTaskMeta[requestFocus].label}创作讨论`,
-      request: message.slice(0, 8000), started_at: Date.now(), focus_artifact: requestFocus, mode: requestMode, ...(targets ? { targets: targets.map(title => title.slice(0, 200)) } : {}), ...(selectedAction ? { document_action: { operation: selectedAction.operation, document_ids: selectedAction.document_ids } } : {}), ...(workflow ? { workflow } : {}) }
+      request: message.slice(0, 8000), started_at: Date.now(), focus_artifact: requestFocus, mode: requestMode, ...(targets ? { targets: targets.map(title => title.slice(0, 200)) } : {}), ...(selectedAction ? { document_action: { operation: selectedAction.operation, document_ids: selectedAction.document_ids, ...(selectedAction.revision_kind ? { revision_kind: selectedAction.revision_kind } : {}) } } : {}), ...(workflow ? { workflow } : {}) }
     const pendingMessage: Message = { id: pendingId, role: 'assistant', text: '正在整理你的想法…', pending: true, processing_started_at: startedAt, execution, ...(taskPersistence.current ? { task_id: pendingId } : {}) }
     const originalMessages = messages
     const originalConversationId = conversationId || crypto.randomUUID()
@@ -2296,6 +2396,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     if (usesComposer) setReferences([])
     if (!idea.trim()) setIdea(message)
     setWorking('chat')
+    if (usesComposer) setPreviewOpen(false)
     const controller = new AbortController()
     const scope = createStreamScope(controller.signal, { totalMs: null })
     streamAbortController.current = controller
@@ -2315,7 +2416,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         use_tools: requestFocus === 'all' && !adoptSource,
         ...(revisionTaskId ? { revision_task_id: revisionTaskId } : {}),
         ...(nextStepId ? { next_step_id: nextStepId } : {}),
-        ...(selectedAction ? { document_action: { operation: selectedAction.operation, document_ids: selectedAction.document_ids } } : {}),
+        ...(selectedAction ? { document_action: { operation: selectedAction.operation, document_ids: selectedAction.document_ids, ...(selectedAction.revision_kind ? { revision_kind: selectedAction.revision_kind } : {}) } } : {}),
         ...(workflow ? { workflow } : {}),
         ...(adoptSource ? { adopt_source: adoptSource } : {}),
         ...(userMessage.question_response ? { question_response: userMessage.question_response } : {}),
@@ -2452,6 +2553,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       : ['draft', 'partial'].includes(execution?.outcome?.kind || '') && execution?.outcome?.draft_id ? () => void recoverExecution(message) : undefined
     const interrupted = message.failed || execution?.outcome?.kind === 'failed' || execution?.outcome?.kind === 'cancelled'
     return <DirectorActivity activity={message.activity} execution={execution} pending={message.pending} failed={message.failed}
+      compact suppressDraftAction={Boolean(currentDraft)} suppressStopAction={working === 'chat' && !artifactsOpen && !workflowOpen}
       disabled={busy || closing || Boolean(recoveringMessageId)} onOpenDraft={openDraft} onOpenDocuments={openExecutionDocuments} onOpenSource={openExecutionSource}
       onContinueWithModel={message.task_can_resume && interrupted && !sourceChatBlocked && selectedModel ? () => void continueDirectorTask(message,true) : undefined} continueModelName={selectedModel?.name}
       onContinue={message.task_can_resume && interrupted && !sourceChatBlocked ? () => void continueDirectorTask(message) : undefined}
@@ -2466,7 +2568,10 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     return <div className="sd-reply-actions" aria-label="回复操作">
       {retryable && !interrupted && <Button type="button" disabled={busy || sourceChatBlocked || Boolean(classificationPending[message.id]) || closing || !selectedModel || Boolean(generated && !scriptSaved)} onClick={() => void regenerateReply(message)}
         title={generated && !scriptSaved ? '请先保存或放弃当前草稿' : '沿用原问题和引用资料重新回答；原版本保留在历史对话'} data-workspace-control="" variant="subtle"><RotateCcw size={13} />重新生成</Button>}
-      {activeFocus === 'all' && !message.failed && <Button type="button" className="sd-reply-recognize" size="xs" leftSection={<RotateCcw size={13} aria-hidden="true" />} disabled={busy || Boolean(classificationPending[message.id]) || closing || !selectedModel} onClick={() => reclassifyReply(message)} title="保留回复内容，仅让模型重新判断选择、填写问题和分集入口" data-workspace-control="" variant="default">重新识别选项</Button>}
+      {activeFocus === 'all' && !message.failed && <Menu withinPortal position="bottom-start" shadow="sm">
+        <Menu.Target><ActionIcon type="button" className="sd-reply-more" aria-label="更多回复操作" title="更多回复操作" data-workspace-control=""><Ellipsis size={16} /></ActionIcon></Menu.Target>
+        <Menu.Dropdown><Menu.Item leftSection={<RotateCcw size={13} aria-hidden="true" />} disabled={busy || Boolean(classificationPending[message.id]) || closing || !selectedModel} onClick={() => reclassifyReply(message)}>重新识别选项</Menu.Item></Menu.Dropdown>
+      </Menu>}
     </div>
   }
 
@@ -2634,6 +2739,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         const completed = generated.workflow.stage
         setPreviewOpen(false)
         setScriptSaved(true)
+        if (generated.artifacts.length) setLastSavedArtifactKey(artifactKey(generated.artifacts[0]))
         if (generated.source_message_id) setMessages(current => current.map(message => message.id === generated.source_message_id && message.execution ? { ...message,
           execution: { ...message.execution, outcome: { ...message.execution.outcome, kind: 'saved', summary: '当前阶段草稿已写入项目，可以查看保存结果。' } } } : message))
         const next = workflowProgress(saved)
@@ -2681,6 +2787,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       }))
       setPreviewOpen(false)
       setScriptSaved(true)
+      if (generated.artifacts.length) setLastSavedArtifactKey(artifactKey(generated.artifacts[0]))
       if (generated.source_message_id) setMessages(current => current.map(message => message.id === generated.source_message_id && message.execution ? { ...message,
         execution: { ...message.execution, outcome: { ...message.execution.outcome, kind: 'saved', summary: '创作文本已写入项目，可以查看保存结果。' } } } : message))
       setMessages((current) => [...current, {
@@ -2741,7 +2848,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     // would otherwise drop a just-completed reply when the user closes it.
     ++conversationSaveSerial.current
     if (remoteConversationSaveTimer.current !== null) window.clearTimeout(remoteConversationSaveTimer.current)
-    try { window.localStorage.setItem(directorStorageKey(detail.id), JSON.stringify({ messages: messages.slice(-80), history: history.slice(0, 20) })) } catch { /* API remains available. */ }
+    if (!remoteConversationCacheReleased.current) saveDirectorConversationFallback(detail.id, messages, history)
     if (conversationSyncReady.current) {
       const snapshots = [...history.slice(0, 20), { id: conversationId || crypto.randomUUID(), label: messages.find(message => message.role === 'user')?.text || '当前对话', messages }]
       try {
@@ -2749,14 +2856,17 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
           id: conversation.id, label: conversation.label,
           messages: conversation.messages.filter(message => !message.pending).slice(-80).map(conversationMessage),
         }))
-      } catch { onNotice('对话已缓存在本机，服务端保存失败，请稍后重试') }
+      } catch {
+        const cached = saveDirectorConversationFallback(detail.id, messages, history)
+        onNotice(cached ? '对话已缓存在本机，服务端保存失败，请稍后重试' : '服务端保存失败，且本机存储无法保存这份对话；请保持页面打开并恢复浏览器存储')
+      }
     }
     onClose()
   }
 
   return <aside
     hidden={hidden}
-    className={`script-director-panel sd-chat${previewOpen && generated ? ' is-reviewing' : ''}${windowLayout.docked ? ' is-docked' : ''}${minimized ? ' is-minimized' : ''}${(windowLayout.docked ? window.innerHeight : windowLayout.rect.height) <= 520 ? ' is-compact' : ''}`}
+    className={`script-director-panel sd-chat${previewOpen && generated ? ' is-reviewing' : ''}${windowLayout.docked ? ' is-docked' : ''}${minimized ? ' is-minimized' : ''}${compactComposer ? ' is-compact' : ''}`}
     style={{ '--chat-x': `${windowLayout.rect.x}px`, '--chat-y': `${windowLayout.rect.y}px`, '--chat-width': `${windowLayout.rect.width}px`, '--chat-height': `${windowLayout.rect.height}px` } as CSSProperties}
     data-canvas-overlay
     onKeyDown={event => {
@@ -2779,20 +2889,30 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   >
     <header className="script-director-header" onPointerDown={startWindowGesture} onPointerMove={moveWindowGesture} onPointerUp={() => { gestureRef.current = null }} onPointerCancel={() => { gestureRef.current = null }}>
       <div className="script-director-title">
-        <strong title={messages.find(message => message.role === 'user')?.text || '剧本创作'}>{messages.find(message => message.role === 'user')?.text.replace(/[#*`]/g, '').slice(0, 32) || '剧本创作'}</strong>
+        <strong>剧本对话</strong>
         <div className="sd-title-meta"><small>{detail.name || '未命名项目'}</small>
         </div>
       </div>
       <div className="script-director-header-actions">
-        <ActionIcon type="button" title="新建对话" aria-label="新建对话" onClick={startNewConversation} disabled={busy} data-workspace-control=""><MessageCirclePlus size={17} /></ActionIcon>
         <ActionIcon type="button" title="历史对话" aria-label="历史对话" className={historyOpen ? 'is-active' : 'is-muted'} onClick={() => setHistoryOpen((value) => !value)} data-workspace-control=""><History size={16} /></ActionIcon>
-        <ActionIcon type="button" title="剧本设定" aria-label="剧本设定" onClick={openSettings} data-workspace-control=""><Settings2 size={16} /></ActionIcon>
-        <ActionIcon type="button" title={`项目文档 · ${artifactCards.length}`} aria-label="项目文档" aria-expanded={artifactsOpen} onClick={() => { setArtifactsOpen(value => !value); setWorkflowOpen(false); setReaderKey(null); setMinimized(false) }} data-workspace-control=""><FileText size={16} /></ActionIcon>
-        <ActionIcon type="button" title={windowLayout.docked ? '切换为浮窗' : '停靠到右侧'} aria-label={windowLayout.docked ? '切换为浮窗' : '停靠到右侧'} onClick={() => setWindowLayout(current => ({ ...current, docked: !current.docked }))} data-workspace-control=""><PanelRight size={16} /></ActionIcon>
+        <Menu withinPortal position="bottom-end" width={200} shadow="sm">
+          <Menu.Target><ActionIcon type="button" aria-label="更多剧本工具" title="更多剧本工具" data-workspace-control=""><Ellipsis size={18} /></ActionIcon></Menu.Target>
+          <Menu.Dropdown>
+            <Menu.Item leftSection={<MessageCirclePlus size={15} />} onClick={startNewConversation} disabled={busy}>新建对话</Menu.Item>
+            <Menu.Item leftSection={<Settings2 size={15} />} onClick={openSettings}>剧本设定</Menu.Item>
+            <Menu.Item aria-label="项目文档" leftSection={<FileText size={15} />} onClick={() => { setArtifactsOpen(true); setWorkflowOpen(false); setReaderKey(null); setMinimized(false) }}>项目文档 · {artifactCards.length}</Menu.Item>
+            <Menu.Divider />
+            <Menu.Item leftSection={<PanelRight size={15} />} onClick={() => setWindowLayout(current => ({ ...current, docked: !current.docked }))}>{windowLayout.docked ? '切换为浮窗' : '停靠到右侧'}</Menu.Item>
+          </Menu.Dropdown>
+        </Menu>
         <Button type="button" title={minimized ? '展开对话' : '收起对话'} aria-label={minimized ? '展开对话' : '收起对话'} onClick={() => setMinimized(value => !value)} data-workspace-control="" variant="subtle">{minimized ? <Maximize2 size={16} /> : <Minus size={16} />}</Button>
         <Button type="button" title={busy ? '收起运行中的对话' : '关闭'} aria-label="关闭剧本导演" disabled={closing} onClick={() => void closeDirector()} data-workspace-control="" variant="subtle">{closing ? <LoaderCircle size={16} className="script-director-spinner" /> : <X size={18} />}</Button>
       </div>
     </header>
+    {!minimized && <div className="sd-current-context" aria-label="当前创作状态">
+      <span><FileText size={14} aria-hidden="true" /><strong>{currentStageLabel}</strong></span>
+      <span className={`sd-current-status${generated && !scriptSaved ? ' is-pending' : ''}`} role="status">{busy && <LoaderCircle size={12} className="script-director-spinner" aria-hidden="true" />}{currentStatus}</span>
+    </div>}
     {historyOpen && <div className="script-director-history" role="listbox" aria-label="历史对话">
       <strong>历史对话</strong>
       {history.length ? history.map((conversation) => <UnstyledButton type="button" key={conversation.id} disabled={busy} onClick={() => switchConversation(conversation)}>
@@ -2818,7 +2938,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       imageModels={imageModels}
       imageModelId={assetImageModelId}
       resultAsset={assetResult}
-      onImageModelChange={setAssetImageModelId}
+      onImageModelChange={selectAssetImageModel}
       onPromptChange={setAssetPrompt}
       onConfirm={() => void handleAssetConfirm()}
       onRetry={retryAssetAnalysis}
@@ -2879,9 +2999,16 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       })}
     {(!!artifactCards.length || hasSavedScript && detail.script.scenes.length > 0) && <section className="sd-deliverables" aria-label="创作成果">
       <header><span>创作成果</span><UnstyledButton type="button" onClick={() => { setArtifactsOpen(true); setWorkflowOpen(false); setReaderKey(null) }}>文档库 <span>{artifactCards.length}</span><ChevronRight size={13} /></UnstyledButton></header>
-      {generated && !scriptSaved ? <UnstyledButton type="button" className="sd-deliverable-document" aria-label={generated.workflow?.stage === 'episode' ? `查看第 ${generated.workflow.episode_number} 集草稿` : '查看草稿'} onClick={() => { setReaderKey(null); setArtifactsOpen(false); setWorkflowOpen(false); setPreviewOpen(true) }}>
-        <span className="sd-document-icon"><FileText size={18} /></span><span><strong>{generated.tool_draft?.kind === 'resource' ? '视觉设定与分镜草稿' : generated.workflow?.stage === 'episode' ? `第 ${generated.workflow.episode_number} 集草稿` : '待确认的创作草稿'}</strong><small>{generated.tool_draft?.kind === 'resource' ? `${generated.resource_changes?.length || 0} 项修改` : `${generated.artifacts.length} 份文档`} · 预览后确认保存</small></span><span className="sd-document-status">待确认</span><ChevronRight size={15} />
-      </UnstyledButton> : primaryArtifact && <UnstyledButton type="button" className="sd-deliverable-document" onClick={() => { setReaderKey(artifactKey(primaryArtifact)); setArtifactsOpen(false); setWorkflowOpen(false) }}>
+      {generated && !scriptSaved ? <div className="sd-current-deliverable">
+        <div className="sd-deliverable-document">
+          <span className="sd-document-icon"><FileText size={18} /></span><span><strong>{generated.artifacts.length === 1 ? generated.artifacts[0].title : `${currentDraftLabel}草稿`}</strong><small>{generated.tool_draft?.kind === 'resource' ? `${generated.resource_changes?.length || 0} 项修改` : `${generated.artifacts.length} 份文档`} · 确认后写入项目</small></span><span className="sd-document-status">待确认</span>
+        </div>
+        {generated.tool_draft?.summary && <p className="sd-deliverable-summary">{generated.tool_draft.summary}</p>}
+        <div className="sd-deliverable-actions">
+          <Button type="button" className="sd-document-primary" leftSection={<BookOpen size={14} />} disabled={busy} onClick={() => { setReaderKey(null); setReaderReference(null); setArtifactsOpen(false); setWorkflowOpen(false); setPreviewOpen(true) }} data-workspace-control="" variant="subtle">审阅草稿</Button>
+          <Button type="button" className="sd-deliverable-discuss" leftSection={<PenLine size={14} />} disabled={busy} onClick={() => { window.requestAnimationFrame(() => composerRef.current?.focus()) }} data-workspace-control="" variant="subtle">提出修改</Button>
+        </div>
+      </div> : primaryArtifact && <UnstyledButton type="button" className="sd-deliverable-document" onClick={() => { setReaderKey(artifactKey(primaryArtifact)); setArtifactsOpen(false); setWorkflowOpen(false) }}>
         <span className="sd-document-icon"><FileText size={18} /></span><span><strong>{primaryArtifact.artifact_type === 'episode_script' ? `第 ${primaryArtifact.episode_number} 集剧本` : primaryArtifact.title}</strong><small>{primaryArtifact.title}{primaryArtifact.artifact_type === 'episode_script' && primaryArtifactScenes.length ? ` · ${primaryArtifactScenes.length} 场 · ${primaryArtifactScenes.reduce((sum, scene) => sum + scene.duration, 0)} 秒` : ''}</small></span><span className="sd-document-status">已保存</span><ChevronRight size={15} />
       </UnstyledButton>}
       {hasSavedScript && detail.script.scenes.length > 0 && <section className="sd-production-row" aria-label="故事板制作">
@@ -2891,8 +3018,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
             data={[{ value: '0', label: '全部场次' }, ...savedEpisodes.map(artifact => ({ value: String(artifact.episode_number), label: `第 ${artifact.episode_number} 集` }))]}
             onChange={value => value !== null && setHandoffEpisode(Number(value))} />}
         </div>
-        <div className="sd-production-action"><small>{handoffScenes.length} 场 · 规划后加入</small>
-          <Button type="button" className="sd-document-primary" title="规划并确认分镜后加入画布" onClick={() => { setPlanningSceneIds(handoffScenes.map(scene => scene.id)); setStoryboardOpen(true) }} disabled={busy || !handoffScenes.length} data-workspace-control="" variant="subtle"><Plus size={14} />加入画布</Button>
+        <div className="sd-production-action"><small>{handoffScenes.length} 场 · 规划后保存</small>
+          <Button type="button" className="sd-document-primary" title="规划并保存分镜方案" onClick={() => { const ids = handoffScenes.map(scene => scene.id); if (onOpenShotManager) onOpenShotManager(ids); else { setPlanningSceneIds(ids); setStoryboardOpen(true) } }} disabled={busy || !handoffScenes.length} data-workspace-control="" variant="subtle"><Plus size={14} />规划分镜</Button>
         </div>
       </section>}
     </section>}
@@ -2915,7 +3042,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       {outlineIssue && !busy && !closing && progress.next_stage === 'outline' && !(generated && !scriptSaved) && <span className="sd-creation-progress" role="status">{outlineIssue}</span>}
     </nav>}
     </div>
-    <StoryboardPlanner opened={storyboardOpen && !hidden} onClose={() => setStoryboardOpen(false)} detail={detail} models={availableModels} initialSceneIds={planningSceneIds}
+    <StoryboardPlanner intent="plan" opened={storyboardOpen && !hidden} onClose={() => setStoryboardOpen(false)} detail={detail} models={availableModels} initialSceneIds={planningSceneIds}
       onRefresh={onRefresh} onOpenCanvas={onClose} onNotice={onNotice} />
     {artifactsOpen && <section className="sd-utility-panel" aria-label="项目文档列表">
       <header><strong>项目文档 · {artifactCards.length}</strong><ActionIcon type="button" aria-label="关闭项目文档" onClick={() => setArtifactsOpen(false)} data-workspace-control=""><X size={16} /></ActionIcon></header>
@@ -2931,18 +3058,14 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       <div className="sd-utility-body">
         <p>{workflowStage === 'episode' ? `本次仅创作第 ${episodeNumber} 集正文，承接全剧资料，不修改其他集。` : '本次整理全剧资料，覆盖整个故事；不会生成下一集正文。'}生成后可编辑、确认保存。</p>
         <p>首次生成顺序：大纲 → 人物与关系 → 场景 → 道具 → 分集正文。{progress.next_stage ? `当前建议：${progress.next_stage === 'episode' ? `第 ${progress.next_episode} 集正文` : workflowLabels[progress.next_stage]}。` : '当前资料与正文已齐备。'}未保存阶段按顺序开放；已保存阶段可随时修改、补齐或重新设计。</p>
-        {availableModels.length ? <>{modelSelector}{skillSelector}</> : <Button type="button" className="script-director-model-link" onClick={onOpenModels} data-workspace-control="" variant="subtle">配置可用文本模型</Button>}
+        {availableModels.length ? <>{modelSelector}{skillSelector()}</> : <Button type="button" className="script-director-model-link" onClick={onOpenModels} data-workspace-control="" variant="subtle">配置可用文本模型</Button>}
         <p>本次交付：{scriptTaskDeliverables(workflowTarget) || '没有需要补齐的栏目'}。</p>
-        {workflowStage === 'outline' && workflowOperation === 'generate' && <Select label="大纲交付范围" aria-label="大纲交付范围" allowDeselect={false}
-          value={workflowTarget.artifact_types?.length === 1 ? 'summary' : 'complete'} disabled={busy || Boolean(generated && !scriptSaved)}
-          data={[{ value: 'summary', label: scriptSource ? '整理原稿大纲 · 仅概要设计' : '生成初步大纲 · 仅概要设计' }, { value: 'complete', label: '完整大纲设计 · 9 栏' }]}
-          onChange={value => setWorkflowContract(value === 'complete' ? { intent: 'stage_design' } : { intent: scriptSource ? 'source_outline' : 'stage_design', artifact_types: ['outline'] })} />}
         {workflowOperation === 'supplement' && <p>只生成以上缺失栏目，已保存栏目的标题和正文保持原样，生成后由你确认保存。</p>}
         <Select label="创作阶段" aria-label="创作阶段" value={workflowStage} allowDeselect={false}
           data={workflowStages.map(stage => ({ value: stage, label: `${workflowLabels[stage]}${stage !== 'episode' && progress.completed[stage] ? ' · 已保存' : ''}`, disabled: stage !== progress.next_stage && !(stage === 'episode' ? progress.episodes.length : progress.completed[stage]) }))}
           disabled={busy || Boolean(generated && !scriptSaved)} onChange={value => { if (!value) return; const stage = value as WorkflowStage; setWorkflowStage(stage); setWorkflowContract({}); setWorkflowOperation(stage === 'episode' ? progress.episodes.includes(episodeNumber) ? 'revise' : 'generate' : progress.completed[stage] ? 'revise' : 'generate') }} />
         {(workflowStage === 'episode' ? progress.episodes.includes(episodeNumber) : progress.completed[workflowStage]) && <Select label="处理方式" aria-label="阶段处理方式" value={workflowOperation} allowDeselect={false} disabled={busy || Boolean(generated && !scriptSaved)}
-          data={[{ value: 'revise', label: '局部修改' }, { value: 'regenerate', label: workflowStage === 'episode' ? '重新设计本集' : workflowStage === 'outline' ? '完整大纲重新设计 · 9 栏' : '重新设计整阶段' }, ...(workflowStage !== 'episode' && missingSavedStageArtifacts(detail.script, workflowTarget).length ? [{ value: 'supplement', label: '补齐缺失栏目' }] : [])]} onChange={value => { if (value) { setWorkflowOperation(value as StageOperation); setWorkflowContract({}) } }} />}
+          data={[{ value: 'revise', label: '局部修改' }, { value: 'regenerate', label: workflowStage === 'episode' ? '重新设计本集' : '重新设计整阶段' }, ...(workflowStage !== 'episode' && missingSavedStageArtifacts(detail.script, workflowTarget).length ? [{ value: 'supplement', label: '补齐缺失栏目' }] : [])]} onChange={value => { if (value) { setWorkflowOperation(value as StageOperation); setWorkflowContract({}) } }} />}
         {workflowStage === 'episode' && <div className="script-director-episode-fields">
           <label>第 <NumberInput  min={1} max={200} value={episodeNumber} aria-label="生成第几集" disabled={busy} onChange={value => { const episode = Math.max(1, Math.min(200, Number(value) || 1)); setEpisodeNumber(episode); setWorkflowOperation(progress.episodes.includes(episode) ? 'revise' : 'generate') }} clampBehavior="none" /> 集</label>
           <label>单集 <NumberInput  min={5} max={600} value={episodeDuration ?? ''} placeholder="自动" aria-label="单集目标秒数" disabled={busy} onChange={value => { const duration = value ? Math.max(5, Math.min(600, Number(value) || 5)) : undefined; setEpisodeDuration(duration); setOptions(current => ({ ...current, episode_duration: duration })) }} clampBehavior="none" /> 秒</label>
@@ -2950,9 +3073,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         {generated && !scriptSaved ? <div className="script-director-workflow-actions">
           <Button type="button" onClick={() => { setWorkflowOpen(false); setPreviewOpen(true) }} data-workspace-control="" variant="subtle">查看待确认草稿</Button>
           <Button type="button" disabled={busy} onClick={() => void discardGenerated()} data-workspace-control="" variant="subtle">放弃草稿</Button>
-        </div> : <Button type="button" className="script-director-workflow-generate" disabled={busy || sourceUploading || (workflowTarget.intent === 'source_outline' ? sourceOutlineBlocked : sourceChatBlocked) || Boolean(workflowIssue) || !selectedModel} title={(workflowTarget.intent === 'source_outline' ? sourceOutlineBlocked : sourceChatBlocked) ? sourceSendBlockReason : undefined} onClick={() => handleStageAction(workflowTarget)} data-workspace-control="" variant="subtle"><FileText size={13} />{workflowStage === 'outline' && workflowOperation === 'generate'
-          ? workflowTarget.intent === 'source_outline' ? '整理原稿大纲' : workflowTarget.artifact_types?.length === 1 ? '生成初步大纲' : '生成完整大纲设计'
-          : `${workflowOperation === 'regenerate' ? '重新设计' : workflowOperation === 'supplement' ? '补齐' : workflowOperation === 'revise' ? '填写修改要求' : '生成'}${workflowStage === 'episode' ? `第 ${episodeNumber} 集正文` : stageLabels[workflowStage]}`}</Button>}
+        </div> : <Button type="button" className="script-director-workflow-generate" disabled={busy || sourceUploading || (workflowTarget.intent === 'source_outline' ? sourceOutlineBlocked : sourceChatBlocked) || Boolean(workflowIssue) || !selectedModel} title={(workflowTarget.intent === 'source_outline' ? sourceOutlineBlocked : sourceChatBlocked) ? sourceSendBlockReason : undefined} onClick={() => handleStageAction(workflowTarget)} data-workspace-control="" variant="subtle"><FileText size={13} />{`${workflowOperation === 'regenerate' ? '重新设计' : workflowOperation === 'supplement' ? '补齐' : workflowOperation === 'revise' ? '填写修改要求' : '生成'}${workflowStage === 'episode' ? `第 ${episodeNumber} 集正文` : stageLabels[workflowStage]}`}</Button>}
         {workflowIssue && <p className="sd-utility-empty" role="status">{workflowIssue}</p>}
       </div>
     </section>}
@@ -2970,39 +3091,31 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     {previewOpen && generated && <DirectorDraftReview draft={generated} busy={busy} saving={working === 'save'} saved={scriptSaved} onChange={setGenerated} onClose={() => setPreviewOpen(false)} onSave={() => void saveGenerated()} onDiscard={() => void discardGenerated()}
       onContinue={generated.tool_draft?.revision_task ? continueRevisionTask : undefined}
       profileNames={Object.fromEntries((detail.visual_profiles || []).map(profile => [profile.id, `${profile.name} · ${profile.variant}`]))} sceneNames={Object.fromEntries(detail.script.scenes.map(scene => [scene.id, scene.heading]))} />}
-    {!previewOpen && !artifactsOpen && !workflowOpen && <section className={`sd-composer-area${composerCollapsed ? ' is-collapsed' : ''}`} aria-label="对话输入区">
-      <div className="sd-composer-area-head">
-        {composerCollapsed ? <UnstyledButton type="button" className="sd-composer-expand" aria-expanded={false} aria-controls={composerBodyId} onClick={() => setComposerCollapsed(false)}>
-          <PanelBottomOpen size={15} /><span>展开输入区</span><small>{activeChoice ? '有选项待回答' : [input.length ? `草稿 ${input.length} 字` : '', references.length ? `已引用 ${references.length} 份文档` : ''].filter(Boolean).join(' · ')}</small>
-        </UnstyledButton> : <>
-          {!previewOpen && !artifactsOpen && !workflowOpen ? <div className="sd-skill-context" aria-label="当前创作技能">
-            <span>{currentSkillStage === 'script' ? '创作技能' : '视觉设定技能'}</span>{skillSelector}
-          </div> : <span className="sd-composer-area-label">输入区</span>}
-          <UnstyledButton type="button" className="sd-composer-collapse" aria-label="收起输入区" title="收起输入区" aria-expanded={true} aria-controls={composerBodyId} onClick={() => { setComposerCollapsed(true); setComposerMenuOpen(false) }}><PanelBottomClose size={14} /><span>收起</span></UnstyledButton>
-        </>}
-        {composerCollapsed && working === 'chat' && <UnstyledButton type="button" className="sd-composer-stop" aria-label="停止生成" title="停止生成" onClick={stopChatGeneration}><Square size={12} fill="currentColor" /><span>停止生成</span></UnstyledButton>}
-      </div>
-      <div id={composerBodyId} className="sd-composer-area-content" hidden={composerCollapsed}>
+    {!artifactsOpen && !workflowOpen && <>
+      <div className="sd-composer-context">
       {canvasNodeSource?.project_id === detail.id && onApplyCanvasNodeProposal && <DirectorCanvasNodeProposal source={canvasNodeSource}
         modelId={selectedModel?.id || ''} modelName={selectedModel?.name} composerInput={input} initialContext={initialContext}
-        disabled={busy || closing} hidden={hidden || minimized} onApply={onApplyCanvasNodeProposal} />}
-      {activeFocus === 'all' && scriptSource && <div className="sd-script-source-container" aria-label="原剧本来源"><div className="sd-script-source">
+        disabled={busy || closing} hidden={hidden || minimized} onBusyChange={setCanvasNodeProposalBusy} onApply={onApplyCanvasNodeProposal} />}
+      {activeFocus === 'all' && scriptSource && <DirectorSourceContext source={scriptSource} starting={sourceAnalysisStarting} pollError={sourceAnalysisPollError}><div className="sd-script-source-container" aria-label="原剧本来源"><div className="sd-script-source">
           <UnstyledButton className="sd-script-source-open" onClick={() => setSourcePreviewOpen(true)} aria-label={`查看${scriptSource.revision ? '当前有效稿' : '原剧本'}：${scriptSource.filename}`}><FileText size={16} /><span><strong>{scriptSource.filename}</strong><small>{scriptSource.revision ? `当前有效稿 · 第 ${scriptSource.revision} 次修订` : '原剧本'} · {scriptSource.content.length.toLocaleString()} 字 · 用于各阶段生成</small></span></UnstyledButton>
           <FileButton onChange={chooseScriptFile} accept={scriptSourceExtensions.join(',')}>{fileProps => <Button {...fileProps} type="button" variant="subtle" size="xs" loading={sourceUploading} disabled={busy || sourceUploading}>替换</Button>}</FileButton>
           <ActionIcon aria-label="移除原剧本来源" disabled={busy || sourceUploading} onClick={() => setSourceRemovalOpen(true)} variant="subtle"><X size={14} /></ActionIcon>
       </div><ScriptSourceAnalysisStatus source={scriptSource} starting={sourceAnalysisStarting} unavailable={!selectedModel || sourceUploading} pollError={sourceAnalysisPollError}
         hasPreviousFailure={messages.some(message => message.role === 'assistant' && !message.pending && (message.failed || message.execution?.outcome?.kind === 'failed'))}
-        onStart={() => void startSourceAnalysis()} onPause={() => void pauseSourceAnalysis()} /></div>}
-    {activeChoice && !previewOpen && !references.length && !(contextComposerActive && input.trim()) ? <DirectorQuestionPanel key={activeChoice.messageId}
-      choice={activeChoice.choice} answer={choiceAnswers[activeChoice.messageId] || { custom: false, text: '' }} busy={busy} unavailable={!selectedModel || sourceChatBlocked} controls={availableModels.length ? modelSelector : undefined} onConfigure={onOpenModels} onStop={working === 'chat' ? stopChatGeneration : undefined}
+        onStart={() => void startSourceAnalysis()} onPause={() => void pauseSourceAnalysis()} /></div></DirectorSourceContext>}
+      <DirectorReferences documents={references} disabled={busy} onOpen={setReaderReference} onRemove={key => setReferences(current => current.filter(document => document.key !== key))} />
+      {stageTask && <div className="sd-document-task"><span>修订：{stageTask.stage === 'episode' ? `第 ${stageTask.episode_number} 集正文` : stageLabels[stageTask.stage]}</span><ActionIcon type="button" aria-label="取消阶段修订" disabled={busy} onClick={cancelStageRevision} data-workspace-control=""><X size={13} /></ActionIcon></div>}
+      {documentTask && <div className="sd-document-task"><span>修订：{documentTask.title}</span><ActionIcon type="button" aria-label="取消定向修订" disabled={busy} onClick={cancelDocumentRevision} data-workspace-control=""><X size={13} /></ActionIcon></div>}
+      </div>
+    <section className="sd-composer-area" aria-label="对话输入区">
+      <div className="sd-composer-area-content">
+    {questionComposerActive && activeChoice ? <DirectorQuestionPanel key={activeChoice.messageId}
+      choice={activeChoice.choice} answer={choiceAnswers[activeChoice.messageId] || { custom: false, text: '' }} busy={busy} unavailable={!selectedModel || sourceChatBlocked} controls={<>{creationOptions}{availableModels.length ? modelSelector : <Button type="button" className="script-director-model-link" onClick={onOpenModels} variant="subtle">配置文本模型</Button>}</>} onConfigure={onOpenModels} onStop={working === 'chat' ? stopChatGeneration : undefined}
       onChange={answer => setChoiceAnswers(current => ({ ...current, [activeChoice.messageId]: answer }))}
       onSkip={() => skipQuestion(activeChoice.messageId, activeChoice.choice.question)}
       onContinue={answer => answerQuestion(activeChoice.messageId, activeChoice.choice.question, answer)} />
       : <div className="script-director-composer">
-      <DirectorReferences documents={references} disabled={busy} onOpen={setReaderReference} onRemove={key => setReferences(current => current.filter(document => document.key !== key))} />
-      {stageTask && <div className="sd-document-task"><span>修订：{stageTask.stage === 'episode' ? `第 ${stageTask.episode_number} 集正文` : stageLabels[stageTask.stage]}</span><ActionIcon type="button" aria-label="取消阶段修订" disabled={busy} onClick={() => setStageTask(null)} data-workspace-control=""><X size={13} /></ActionIcon></div>}
-      {documentTask && <div className="sd-document-task"><span>修订：{documentTask.title}</span><ActionIcon type="button" aria-label="取消定向修订" disabled={busy} onClick={() => setDocumentTask(null)} data-workspace-control=""><X size={13} /></ActionIcon></div>}
-      <Textarea ref={composerRef} value={input} maxLength={8000} onChange={(event) => setInput(event.currentTarget.value)} onKeyDown={handleInputKeyDown} placeholder={activeFocus === 'all' ? '聊聊你的故事想法…' : `描述你希望如何处理${focusArtifactLabels[activeFocus]}…`} aria-label="剧本创作对话" disabled={busy} />
+      <Textarea ref={composerRef} value={input} maxLength={8000} onChange={(event) => setInput(event.currentTarget.value)} onKeyDown={handleInputKeyDown} placeholder={composerPlaceholder} aria-label="剧本创作对话" disabled={busy} />
       <div className="script-director-composer-toolbar">
         <FileButton onChange={chooseScriptFile} accept={scriptSourceExtensions.join(',')} disabled={busy || sourceUploading}>{fileProps => <Menu opened={composerMenuOpen} onChange={setComposerMenuOpen} withinPortal position="top-start" width={220} offset={8}><Menu.Target><ActionIcon type="button" className="sd-composer-add" aria-label="对话工具" aria-expanded={composerMenuOpen} onClick={() => setComposerMenuOpen(value => !value)} data-workspace-control=""><Plus size={19} /></ActionIcon></Menu.Target>
         {composerMenuOpen && <Menu.Dropdown className="sd-composer-menu" role="menu" aria-label="对话工具菜单">
@@ -3012,29 +3125,15 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
           <Menu.Item type="button" role="menuitem" onClick={() => { setComposerMenuOpen(false); setArtifactsOpen(true); setWorkflowOpen(false) }} data-workspace-control=""><FileText size={15} />项目文档 · {artifactCards.length}</Menu.Item>
         </Menu.Dropdown>}
         </Menu>}</FileButton>
-        <Select
-          className="script-director-mode-select"
-          aria-label="创作模式"
-          value={mode}
-          data={directorModes.map(value => ({ value, label: directorModeProfiles[value].label }))}
-          allowDeselect={false}
-          rightSection={<ChevronDown size={13} />}
-          size="xs"
-          comboboxProps={{ withinPortal: true, zIndex: 400, position: 'top-start' }}
-          onChange={(value) => {
-            if (!value) return
-            const nextMode = value as DirectorMode
-            setMode(nextMode)
-          }}
-        />
+        {creationOptions}
         {modelSelector}
         <Button type="button" className="script-director-send" onClick={() => working === 'chat' ? stopChatGeneration() : void sendChatMessage()} disabled={working === 'chat' ? false : busy || sourceUploading || sourceChatBlocked || !conversationLoaded || skillControl.loading || !!skillControl.error || (!input.trim() && !references.length && !scriptSource) || !selectedModel} aria-label={working === 'chat' ? '停止生成' : '发送消息'} title={working === 'chat' ? '停止生成' : sourceChatBlocked ? sourceSendBlockReason : '发送消息'} data-workspace-control="" variant="subtle">{working === 'chat' ? <Square size={13} fill="currentColor" /> : <ArrowUp size={16} />}</Button>
       </div>
       {!availableModels.length && <Button type="button" className="script-director-model-link" onClick={onOpenModels} data-workspace-control="" variant="subtle">还没有可用文本模型，前往模型设置添加</Button>}
-      <div className="sd-composer-hint"><span role="status">{sourceChatBlocked ? sourceSendBlockReason : 'Enter 发送 · Shift+Enter 换行'}</span><span>{input.length ? `${input.length}/8000` : ''}</span></div>
+      <div className="sd-composer-hint" data-blocked={sourceChatBlocked || undefined}><span role="status">{sourceChatBlocked ? sourceSendBlockReason : 'Enter 发送 · Shift+Enter 换行'}</span><span>{input.length ? `${input.length}/8000` : ''}</span></div>
     </div>}
       </div>
-    </section>}
+    </section></>}
     </div>
 
     {readerArtifact && !minimized && <section className="sd-document-reader" aria-label="导演文档阅读器">
@@ -3048,13 +3147,12 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         try {
           const reference = { key: artifactKey(readerArtifact), title: readerArtifact.title, artifact_type: readerArtifact.artifact_type, episode_number: readerArtifact.episode_number || 0, content: readerArtifact.content }
           setReferences(addReference(references, reference))
-          setComposerCollapsed(false)
-          setArtifactsOpen(false)
+                setArtifactsOpen(false)
           setReaderKey(null); setReaderReference(null); setError(null)
           window.requestAnimationFrame(() => composerRef.current?.focus())
         } catch (issue) { setError(readableError(issue)); setReaderKey(null); setReaderReference(null) }
       }} data-workspace-control="" variant="subtle"><Plus size={14} />引用到对话</Button>
-        {!readerReference && !readerArtifact.isUnsaved && activeFocus === 'all' && <><Button type="button" disabled={busy || sourceChatBlocked || !selectedModel} onClick={() => reviewDocument('review')} data-workspace-control="" variant="subtle"><FileText size={14} />模型评审</Button><Button type="button" disabled={busy || sourceChatBlocked || !selectedModel} onClick={() => reviewDocument('revise')} data-workspace-control="" variant="subtle"><PenLine size={14} />对话修订</Button></>}
+        {!readerReference && !readerArtifact.isUnsaved && activeFocus === 'all' && <><Button type="button" disabled={busy || sourceChatBlocked || !selectedModel} onClick={() => reviewDocument('review')} data-workspace-control="" variant="subtle"><FileText size={14} />模型评审</Button><Button type="button" disabled={busy || sourceChatBlocked || !selectedModel} onClick={() => reviewDocument('revise')} data-workspace-control="" variant="subtle"><PenLine size={14} />对话修订</Button>{readerArtifact.artifact_type === 'episode_script' && <Button type="button" disabled={busy || sourceChatBlocked || !selectedModel} onClick={() => reviewDocument('dialogue')} data-workspace-control="" variant="subtle"><MessageCirclePlus size={14} />改台词</Button>}</>}
         {!readerReference && (readerArtifact.isUnsaved ? <Button type="button" className="sd-document-primary" onClick={() => { setReaderKey(null); setPreviewOpen(true) }} data-workspace-control="" variant="subtle">查看待确认草稿<ChevronRight size={14} /></Button> : onOpenDocument && <Button type="button" className="sd-document-primary" onClick={() => { const saved = detail.script.artifacts?.find(artifact => artifactKey(artifact) === readerKey); if (saved) onOpenDocument(saved) }} data-workspace-control="" variant="subtle"><PenLine size={14} />编辑文档</Button>)}
       </footer>
     </section>}
@@ -3069,7 +3167,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       <p className="sd-source-preview-hint">后续生成与工具读取使用当前有效稿；上传原稿保留供追溯。每个阶段仍需预览并确认保存。</p>
       {scriptSource && <ScriptSourcePreview source={scriptSource} />}
       <div className="sd-source-dialog-actions"><Button variant="default" onClick={() => setSourcePreviewOpen(false)}>关闭</Button>
-        {progress.next_stage && <Button disabled={busy || sourceUploading || (progress.next_stage === 'outline' ? sourceOutlineBlocked : sourceChatBlocked) || !selectedModel || Boolean(generated && !scriptSaved)} title={(progress.next_stage === 'outline' ? sourceOutlineBlocked : sourceChatBlocked) ? sourceSendBlockReason : undefined} onClick={() => { setSourcePreviewOpen(false); handleStageAction({ stage: progress.next_stage!, episode_number: progress.next_stage === 'episode' ? progress.next_episode || 1 : 0, operation: 'generate' }) }}>生成{progress.next_stage === 'episode' ? `第 ${progress.next_episode} 集正文` : stageLabels[progress.next_stage]}</Button>}
+        {progress.next_stage && <Button disabled={busy || sourceUploading || sourceChatBlocked || !selectedModel || Boolean(generated && !scriptSaved)} title={sourceChatBlocked ? sourceSendBlockReason : undefined} onClick={() => { setSourcePreviewOpen(false); handleStageAction({ stage: progress.next_stage!, episode_number: progress.next_stage === 'episode' ? progress.next_episode || 1 : 0, operation: 'generate' }) }}>生成{progress.next_stage === 'episode' ? `第 ${progress.next_episode} 集正文` : stageLabels[progress.next_stage]}</Button>}
       </div>
     </Modal>
     <Modal opened={!!pendingSourceFile && !hidden} onClose={() => setPendingSourceFile(null)} title="替换原剧本来源" centered zIndex={300}>
@@ -3096,10 +3194,13 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
           <header className="script-director-settings-modal-head"><div><span>剧本设定器</span></div><ActionIcon type="button" onClick={() => setSettingsOpen(false)} aria-label="关闭剧本设定器" data-workspace-control=""><X size={19} /></ActionIcon></header>
           <div className="script-director-settings-scroll" onMouseDown={(event) => {
             const target = event.target as HTMLElement
-            if (!target.closest('.script-director-structure-picker')) setStructurePickerOpen(false)
-            if (!target.closest('.script-director-auto-field')) setAutoFieldOpen(null)
+            if (!target.closest('.script-director-structure-picker') && !target.closest('.script-director-structure-popover')) setStructurePickerOpen(false)
+            if (!target.closest('.script-director-auto-field') && !target.closest('.script-director-auto-popover')) setAutoFieldOpen(null)
           }}>
-            <section className="script-director-settings-theme">
+            <section className="script-director-settings-theme" aria-labelledby="script-settings-theme-heading">
+              <header className="script-director-settings-section-heading">
+                <div><strong id="script-settings-theme-heading">故事题材</strong><span>选择主题类型，也可以添加融合题材</span></div>
+              </header>
               <div className={`script-director-settings-theme-layout${fusionRailOpen || fusionExitActive ? ' has-fusion-rail' : ''}`}>
                 <div className="script-director-theme-rail-column">
                   <InfiniteThemeRail
@@ -3111,7 +3212,6 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
                   />
                 </div>
                 <div className="script-director-theme-stage">
-                  <div className="script-director-theme-stage-label"><span>当前题材关系</span><small>先选主题材，点击融合题材后从右侧选择</small></div>
                   <div className={`script-director-theme-orbit${settingsDraft.genre_fusion || fusionExitActive ? ' has-fusion' : ''}`}>
                     <ScriptThemeWaterCanvas active={!hidden && !minimized} primary={settingsDraft.genre || ''} fusion={settingsDraft.genre_fusion || ''} primaryArtwork={primaryThemeArtwork} fusionArtwork={fusionThemeArtwork} onFusionSettled={() => setFusionExitActive(false)} />
                     {settingsDraft.genre_fusion ? <div className="script-director-theme-fusion-wrap">
@@ -3165,31 +3265,35 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
                 {themeVisuals.status === 'error' && <Button className="script-director-theme-match-retry" type="button" onClick={themeVisuals.retry} data-workspace-control="" variant="subtle"><RotateCcw size={12} />重试封面匹配</Button>}
               </div>
             </section>
-            <div className="script-director-settings-divider" aria-hidden="true" />
-            <div className="script-director-settings-grid">
-              {directorAutoFieldMeta.map((field) => <DirectorAutoField
-                key={field.key}
-                label={field.label}
-                value={settingsDraft[field.key] || ''}
-                placeholder={field.placeholder}
-                options={directorAutoFieldOptions[field.key]}
-                icon={field.icon}
-                open={autoFieldOpen === field.label}
-                onToggle={() => {
-                  setStructurePickerOpen(false)
-                  setAutoFieldOpen((current) => current === field.label ? null : field.label)
-                }}
-                onChange={(value) => updateSettingsDraft(field.key, value)}
-              />)}
-              <DirectorStructurePicker
-                value={settingsDraft.story_structure || ''}
-                episodeCount={settingsDraft.episode_count}
-                open={structurePickerOpen}
-                onToggle={() => { setAutoFieldOpen(null); setStructurePickerOpen((value) => !value) }}
-                onChange={(value) => updateSettingsDraft('story_structure', value)}
-                onEpisodeCountChange={(value) => updateSettingsDraft('episode_count', value)}
-              />
-            </div>
+            <section className="script-director-settings-fields" aria-labelledby="script-settings-fields-heading">
+              <header className="script-director-settings-section-heading">
+                <div><strong id="script-settings-fields-heading">创作要素</strong><span>未指定的内容将由模型结合剧本判断</span></div>
+              </header>
+              <div className="script-director-settings-grid">
+                {directorAutoFieldMeta.map((field) => <DirectorAutoField
+                  key={field.key}
+                  label={field.label}
+                  value={settingsDraft[field.key] || ''}
+                  placeholder={field.placeholder}
+                  options={directorAutoFieldOptions[field.key]}
+                  icon={field.icon}
+                  open={autoFieldOpen === field.label}
+                  onToggle={() => {
+                    setStructurePickerOpen(false)
+                    setAutoFieldOpen((current) => current === field.label ? null : field.label)
+                  }}
+                  onChange={(value) => updateSettingsDraft(field.key, value)}
+                />)}
+                <DirectorStructurePicker
+                  value={settingsDraft.story_structure || ''}
+                  episodeCount={settingsDraft.episode_count}
+                  open={structurePickerOpen}
+                  onToggle={() => { setAutoFieldOpen(null); setStructurePickerOpen((value) => !value) }}
+                  onChange={(value) => updateSettingsDraft('story_structure', value)}
+                  onEpisodeCountChange={(value) => updateSettingsDraft('episode_count', value)}
+                />
+              </div>
+            </section>
           </div>
           <footer className="script-director-settings-modal-foot"><Switch className="script-director-presets-toggle" label="展示爆款预设" checked={showSettingPresets} onChange={event => setShowSettingPresets(event.currentTarget.checked)} /><div><Button type="button" className="script-director-settings-cancel" onClick={() => setSettingsOpen(false)} data-workspace-control="" variant="subtle">取消</Button><Button type="button" className="script-director-settings-confirm" onClick={applySettings} data-workspace-control="" variant="subtle">确认设定</Button></div></footer>
         </div>

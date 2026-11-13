@@ -38,7 +38,7 @@ function register(policy: ModelTaskPolicy, names: readonly string[]) {
 }
 register(modelTaskPolicies.generation, [
   'workflow_draft', 'script_draft', 'script_stage_draft', 'script_stage_blocks', 'complete_script',
-  'controlled_storyboard', 'shot_plan', 'clip_storyboard', 'visual_profiles', 'script_stage_artifact_repair',
+  'controlled_storyboard', 'storyboard_scene_plan', 'storyboard_shot_batch', 'shot_plan', 'clip_storyboard', 'visual_profiles', 'script_stage_artifact_repair',
   'script_stage_scene_repair', 'script_stage_block_repair', 'script_stage_context_exchange', 'script_draft_repair', 'script_draft_repair_decisions',
   'script_draft_repair_edits', 'script_source_story', 'script_source_map', 'script_source_evidence_repair',
   'script_source_quality_repair', 'script_source_story_overview', 'script_source_story_characters',

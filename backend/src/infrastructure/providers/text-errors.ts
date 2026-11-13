@@ -1,3 +1,17 @@
+export type TextProviderFailureDiagnostics = Readonly<{
+  upstream_message?: string
+  upstream_request_id?: string
+  http_status?: number
+  elapsed_ms: number
+  response_chars: number
+  partial_text_incomplete: boolean
+  input_tokens?: number
+  output_tokens?: number
+  reasoning_tokens?: number
+  cache_read_tokens?: number
+  cache_write_tokens?: number
+}>
+
 export type TextFailureReason = 'output_limit' | 'context_overflow' | 'disconnected' | 'refusal' | 'invalid_tool' | 'invalid_response' | 'upstream_error' | 'cancelled'
 export type TextDeliveryState = 'not_sent' | 'rejected' | 'accepted' | 'output_started' | 'completed' | 'unknown'
 
@@ -16,6 +30,10 @@ export function textFailureReason(raw?: string): TextFailureReason {
  * is read-only and safe to retry; provider adapters never replay tools. */
 export class TextProviderError extends Error {
   readonly statusCode = 502
+  diagnostics?: string
+  /** Visible response text only; incomplete and never a validated result. */
+  raw_output?: string
+  providerDiagnostics?: TextProviderFailureDiagnostics
   failureReason: TextFailureReason
   rawReason?: string
   delivery: TextDeliveryState = 'unknown'

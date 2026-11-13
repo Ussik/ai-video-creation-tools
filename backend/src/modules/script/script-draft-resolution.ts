@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { ScriptDraftResolution, ScriptDraftFinding, ScriptDraftRepairRun } from '@video-studio/shared/script/script-draft-resolution'
 import { newId, now, one, run } from '../../infrastructure/database/db.js'
-import { workflowGenerationDraftSchema, type WorkflowDraft } from './script-workflow.js'
+import { workflowGenerationDraftSchema, parseScriptSceneDurationReplacement, type WorkflowDraft } from './script-workflow.js'
 import { draftCompletenessSources } from './script-draft-completeness.js'
 import { applyResolvedEdits, resolvePassageEdits } from './script-revision.js'
 import type { ScriptSourceDocument, ScriptSourceUpdate } from '@video-studio/shared/script/script-source-document'
@@ -140,7 +140,9 @@ export function applyScriptDraftChanges(input: WorkflowDraft, edits: DraftPassag
     if (key.startsWith('scene:')) {
       const [, index, field] = key.split(':')
       const scene = draft.scenes[Number(index)]!
-      Object.assign(scene, { [field!]: content })
+      if (field === 'duration') {
+        scene.duration = parseScriptSceneDurationReplacement(content)
+      } else Object.assign(scene, { [field!]: content })
     } else draft.artifacts.find(item => item.artifact_type === key)!.content = content
   }
   return workflowGenerationDraftSchema.parse(draft)

@@ -6,7 +6,8 @@ import { scriptReviewGuidance } from '@video-studio/shared/script/script-quality
 export function scriptToolGuidance(context: { workflow?: { operation?: string }; action?: { operation: string }; revisionTask?: unknown }) {
   const common =
     `${scriptCreativeAuthorityGuidance}\n` +
-    '技能由你结合本轮创作者要求、项目上下文和creation_skills目录中的用途说明判断。mode:model且尚未加载的环节，调用load_creation_skills明确传skill_ids和简短reason；首项为主技能，其余为辅助，不需要时选[]使用基础规则。default_ids仅供参考，不代替你的判断。mode:manual沿用locked_ids，包括[]，不能自行切换；同一环节加载后本轮冻结。准备剧本文档、剧本评审报告、视觉、分镜或提示词草稿前先加载对应环节；已加载的规则直接沿用。只读查询和普通讨论按需使用，读取资料的函数只返回资料。选技不授权生成、修改或保存。\n' +
+    '明确操作的技能由程序按绑定预先加载，creation_skills中mode:fixed直接沿用locked_ids和已注入规则，不另选或切换。mode:model且尚未加载的环节，由你结合创作者要求、上下文和目录用途调用load_creation_skills，明确传skill_ids和简短reason；首项为主技能，其余为辅助，不需要时选[]使用基础规则。default_ids仅供参考。mode:manual沿用locked_ids，包括[]，不能自行切换；同一环节加载后本轮冻结。准备剧本文档、剧本评审报告、视觉、分镜或提示词草稿前先加载对应环节；已加载的规则直接沿用。只读查询和普通讨论按需使用，读取资料的函数只返回资料。选技不授权生成、修改或保存。\n' +
+    'load_creation_skills返回可选参考文件目录available_references。按本次任务需要调用read_creation_skill_reference，逐字传递目录中的stage、skill_id、revision和path，不根据文件名宣称已读内容，不创建或执行文件。固定或手选技能的可选资料同样可读，但不得借读资料更换锁定技能。已读取文件本轮沿用，不重复加载；目录缺少的资料不能猜测存在。\n' +
     '使用真正的函数调用执行操作，不要在正文中模拟函数、伪造读取结果或声称已保存。下方已提供本轮开始时的创作状态与文档目录；状态变化或需要更多细节时调用get_creation_state。评审、修订前read_documents读取目标原文；长文档分段读完或读清目标段落，不依据摘要猜测。上传剧本的story_map只是AI生成的检索资料，人物、事件带原文位置，不是确认设定或完整原文。结合创作者最新原话，用地图定位后通过search_source_document/read_source_document核对所需原文；需要评价整份原剧本时读完所有段落，不凭地图或预览猜测。本轮已经提供完整原文时可以直接阅读，不必重复调用。模型自身完成专业评判，工具提供资料和文档操作。\n' +
     '创作顺序：故事方向→全剧大纲→人物与关系→场景→道具→分集正文→分镜。创建新文档先补最早缺失阶段；已有文档可随时定向修订，不因修订倒退创作进度或重做其他资料。未保存阶段必须按顺序确认保存，不能跳过；已保存阶段可使用阶段入口处理。\n' +
     '普通讨论不自动创建文档。创作者要求生成时，用create_document_draft提交当前阶段所有完整文档；已有阶段缺少栏目时，先read_documents读完已有原文，原样保留已有标题/正文并补齐缺失文档，一并提交完整阶段草稿。已有文档要补齐待定角色、调整关系等，用propose_document_patch局部修改。find逐字复制原文并包含唯一定位上下文，replace保留无关设定。需补充内容时替换包含插入位置的原文段落。把具体差异和理由说明给创作者。\n' +

@@ -1,12 +1,27 @@
 import { activityStatusLabel, type ScriptActivity } from './director-activity'
+import { activityOutputRecoveries, type ActivityOutputRecovery, type ActivityRecoveryOptions } from './director-activity-recovery'
 
-export type ActivityNode = { event: ScriptActivity; children: ActivityNode[]; waiting: boolean }
-export type ActivityDisplayStatus = ScriptActivity['status'] | 'waiting' | 'unconfirmed'
+export type ActivityNode = { event: ScriptActivity; children: ActivityNode[]; waiting: boolean; recovery?: ActivityOutputRecovery }
+export type ActivityDisplayStatus = ScriptActivity['status'] | 'waiting' | 'unconfirmed' | ActivityOutputRecovery
+
+function activityDisplayEvent(event: ScriptActivity, events: ScriptActivity[]): ScriptActivity {
+  if (event.scope !== 'task' || event.status !== 'succeeded' || event.reused !== undefined ||
+      !event.step_id || !/^work:(outline|characters|locations|props|episode):[^/]+$/.test(event.step_id)) return event
+  // Older task wrappers omitted checkpoint reuse metadata. Their checkpoint
+  // steps are siblings, identified by stable IDs rather than labels or clocks.
+  const stepIds = new Set([`${event.step_id}/draft`, `${event.step_id.replace(/^work:/, 'work:document:')}/draft`])
+  const matches = events.filter(step => step.scope === 'step' && step.parent_id === event.parent_id && stepIds.has(step.step_id || ''))
+  if (matches.length !== 1 || matches[0].status !== 'succeeded' || !matches[0].reused) return event
+  // Neither old wrapper nor replay step recorded trustworthy original timing.
+  // Change only this display copy; never replace saved history or guess time.
+  return { ...event, reused: true, duration_ms: undefined }
+}
 
 /** Presentation only: never rewrite persisted traces or infer ownership from
  * labels/timing. Old, orphaned and cyclic records remain visible in order. */
-export function activitySequence(events: ScriptActivity[]) {
-  const nodes = new Map(events.map(event => [event.id, { event, children: [], waiting: false } as ActivityNode]))
+export function activitySequence(events: ScriptActivity[], options?: ActivityRecoveryOptions) {
+  const recoveries = activityOutputRecoveries(events, options)
+  const nodes = new Map(events.map(event => [event.id, { event: activityDisplayEvent(event, events), children: [], waiting: false, recovery: recoveries.get(event.id) } as ActivityNode]))
   const roots: ActivityNode[] = []
   for (const event of events) {
     const node = nodes.get(event.id)!
@@ -62,12 +77,23 @@ export function activityCalls(step: ActivityNode) {
 
 export function activityPresentation(node: ActivityNode, pending?: boolean) {
   const event = node.event
-  const status: ActivityDisplayStatus = event.status === 'running' && !pending ? 'unconfirmed' : event.status
-  const label = status === 'unconfirmed' ? '未记录完成' : event.kind === 'skill' && event.status === 'succeeded' ? '规则已加载' : activityStatusLabel(event)
+  const status: ActivityDisplayStatus = event.status === 'failed' && node.recovery && (pending || node.recovery === 'continued') ? node.recovery
+    : event.status === 'running' && !pending ? 'unconfirmed' : event.status
+  const label = status === 'continuing' ? '已截断，正在接续' : status === 'continued' ? '已截断，已继续处理'
+    : status === 'unconfirmed' ? '未记录完成' : event.kind === 'skill' && event.status === 'succeeded' ? '规则已加载' : activityStatusLabel(event)
   return { status, label }
 }
 
 export function activityDuration(event: ScriptActivity, now: number, pending?: boolean) {
-  if (event.scope === 'notice' || event.reused || event.status === 'running' && !pending) return undefined
-  return event.status === 'running' ? Math.max(0, now - event.started_at) : event.duration_ms
+  if (event.scope === 'notice' || event.status === 'running' && (!pending || event.reused)) return undefined
+  // Replayed timestamps describe this restoration, not the original work.
+  // Older retained checkpoints used zero for an unknown original duration.
+  const validStart = Number.isFinite(event.started_at) && event.started_at > 0
+  const duration = event.status === 'running' ? validStart ? Math.max(0, now - event.started_at) : undefined
+    : event.duration_ms ?? (!event.reused && validStart && event.ended_at !== undefined && event.ended_at >= event.started_at ? event.ended_at - event.started_at : undefined)
+  return typeof duration === 'number' && Number.isFinite(duration) && duration >= 0 && (!event.reused || duration > 0) ? duration : undefined
+}
+
+export function activityDurationTitle(event: ScriptActivity) {
+  return event.reused ? '此前生成用时' : event.scope === 'task' ? '任务用时（包含内部步骤）' : '步骤用时（包含内部调用）'
 }

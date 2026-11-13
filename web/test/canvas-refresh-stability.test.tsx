@@ -385,11 +385,15 @@ function storyboardRevisionFixture() {
     prompt: '二十五岁的林晚走向站台', image_prompt: '二十五岁的林晚站在站台，正面中景', video_prompt: '二十五岁的林晚回头，镜头缓慢推近' }
   return { project, updated, canvasGraph }
 }
-function mockStoryboardRevisionCanvas(t: TestContext, canvasGraph: CanvasGraph) {
+function mockStoryboardRevisionCanvas(t: TestContext, canvasGraph: CanvasGraph, projectDetail = () => detail) {
   let current = structuredClone(canvasGraph)
   const saved: CanvasGraph[] = []
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
     const path = String(url)
+    if (path === '/api/projects/refresh' || path === '/api/projects/refresh/shot-management') {
+      assert.equal(init?.method || 'GET', 'GET', 'explicit imports refresh their source without mutating project records')
+      return Response.json(path.endsWith('/shot-management') ? { revision: 'fixture', shots: [], designs: [], canvases: [], scenes: [], trashed_assets: [] } : projectDetail())
+    }
     if (path === '/api/projects/refresh/canvases') return Response.json([{ id: detail.id, project_id: detail.id, name: '画布 1', is_default: true, node_count: current.nodes.length, viewport: null }])
     if (path === '/api/projects/refresh/skills/defaults') return Response.json({ policies: [] })
     assert.equal(path, '/api/projects/refresh/canvas', 'revision synchronization cannot generate media or change project records')
@@ -497,11 +501,13 @@ test('importing replanned shots excludes previous-revision jobs and media while 
   updated.shots[0].selected_asset_id = null
   updated.jobs = updated.jobs.map(job => ({ ...job, status: 'succeeded', result_asset_id: job.id === 'old-image-job' ? 'old-image' : 'old-video' }))
   canvasGraph.nodes = [canvasGraph.nodes[0]]; canvasGraph.edges = []
-  const { saved } = mockStoryboardRevisionCanvas(t, canvasGraph)
+  let freshDetail = updated
+  const { saved } = mockStoryboardRevisionCanvas(t, canvasGraph, () => freshDetail)
   const view = await mount(propsFor(updated, 0, []))
   try {
     await clickText(view.container, '导入分镜')
-    const imported = revisionDraft()
+    const imported = saved.at(-1)!
+    assert.ok(imported, 'explicit import persists its graph before reporting success')
     const generators = imported.nodes.filter(node => node.type === 'generation')
     assert.equal(generators.length, 1)
     assert.equal(generators[0].settings.storyboard_revision, 2)
@@ -516,10 +522,12 @@ test('importing replanned shots excludes previous-revision jobs and media while 
     withCurrent.assets.push({ ...withCurrent.assets[0], id: 'current-image', url: '/api/assets/current-image/file' })
     withCurrent.jobs.unshift({ ...withCurrent.jobs[0], id: 'current-image-job', result_asset_id: 'current-image',
       request: JSON.stringify({ modality: 'image', storyboard_revision: 2, prompt: withCurrent.shots[0].image_prompt }) })
+    freshDetail = withCurrent
     await view.render(propsFor(withCurrent, 1, []))
     await rightClick(view.container.querySelector('.react-flow__pane')!)
     await clickText(view.container.querySelector('.pc-context-menu')!, '导入分镜')
-    const next = revisionDraft()
+    const next = saved.at(-1)!
+    assert.ok(next, 'the second explicit import persists its current media choices')
     assert.ok(next.nodes.some(node => node.type === 'generation' && node.job_id === 'current-image-job' && node.asset_id === 'current-image'),
       'a successful job for the current revision remains reusable')
     assert.ok(next.nodes.some(node => node.type === 'image' && node.asset_id === 'current-image'))
@@ -945,10 +953,14 @@ function mockMultipleCanvases(t: TestContext, rejectSave = false, secondGraph?: 
       viewport: { x: -50, y: 25, zoom: 0.6 } }] : [])]
   const requests: Array<{ path: string; method: string; body?: any }> = []
   const failures = { remainingSaves: 0 }
-  const controls: { nextListGate?: Promise<void> } = {}
+  const controls: { nextListGate?: Promise<void>; projectDetail?: ProjectDetail } = {}
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
     const path = String(url), method = init?.method || 'GET', body = init?.body ? JSON.parse(String(init.body)) : undefined
     requests.push({ path, method, body })
+    if (path === '/api/projects/refresh' || path === '/api/projects/refresh/shot-management') {
+      assert.equal(method, 'GET', 'manual imports may only read the latest project and shot state')
+      return Response.json(path.endsWith('/shot-management') ? { revision: 'fixture', shots: [], designs: [], canvases: [], scenes: [], trashed_assets: [] } : controls.projectDetail || detail)
+    }
     if (path === '/api/projects/refresh/canvases') {
       if (method === 'POST') {
         const created = { id: `canvas-${metadata.length + 1}`, project_id: 'refresh', name: `画布 ${metadata.length + 1}`, is_default: false, node_count: 0, viewport: null }
@@ -1216,8 +1228,9 @@ for (const target of ['default', 'secondary'] as const) test(`select-all deletio
 })
 
 for (const target of ['default', 'secondary'] as const) test(`select-all deletion of the ${target} canvas survives a complete remount without local import markers`, async t => {
-  const { graphs, requests } = mockMultipleCanvases(t, false, graph)
+  const { graphs, requests, controls } = mockMultipleCanvases(t, false, graph)
   const withShots = { ...detail, shots: [{ id: 'kept-shot', project_id: detail.id, position: 0, title: '保留的分镜', prompt: '站台', duration: 5, selected_asset_id: null }] } as ProjectDetail
+  controls.projectDetail = withShots
   const targetId = target === 'default' ? 'refresh' : 'canvas-2'
   const targetPath = target === 'default' ? '/api/projects/refresh/canvas' : '/api/projects/refresh/canvases/canvas-2'
   const view = await mount(propsFor(withShots, 0, []))
@@ -1372,11 +1385,12 @@ test('a newer design request arriving during canvas metadata reload is resumed a
 })
 
 test('manual storyboard import only offers shots belonging to the current canvas design', async t => {
-  const { graphs, addCanvas } = mockMultipleCanvases(t)
+  const { graphs, addCanvas, controls } = mockMultipleCanvases(t)
   addCanvas('canvas-new', 'design-new')
   const shot = { project_id: detail.id, position: 0, prompt: '站台', duration: 5, selected_asset_id: null }
   const base = { ...detail, shots: [{ ...shot, id: 'new-shot', title: '当前方案镜头', design_id: 'design-new' }, { ...shot, id: 'foreign-shot', title: '其他方案镜头', design_id: 'design-other' }],
     historical_shots: [{ ...shot, id: 'legacy-shot', title: '旧镜头' }] } as ProjectDetail
+  controls.projectDetail = base
   const view = await mount(propsFor(base, 0, []))
   try {
     await clickText(await canvasMenu(view.container), '新方案 canvas-new')

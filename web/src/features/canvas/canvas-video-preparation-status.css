@@ -1,0 +1,50 @@
+.pc-video-preparation-status {
+  position: fixed;
+  z-index: 39;
+  right: 20px;
+  bottom: 86px;
+  width: min(360px, calc(100vw - 32px));
+  padding: 14px;
+  border: 1px solid var(--fc-border-strong);
+  border-radius: 10px;
+  background: var(--fc-surface-muted);
+  box-shadow: 0 10px 30px #00000030;
+  color: var(--fc-text);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.pc-video-preparation-heading { display: flex; align-items: center; gap: 8px; }
+.pc-video-preparation-heading strong { flex: 1; min-width: 0; font-size: 12px; font-weight: 600; }
+.pc-video-preparation-icon { flex: none; display: grid; place-items: center; color: var(--fc-text-secondary); }
+.pc-video-preparation-status.is-running { border-color: color-mix(in srgb, var(--fc-focus) 48%, var(--fc-border-strong)); }
+.pc-video-preparation-status.is-running .pc-video-preparation-icon { color: var(--fc-focus); }
+.pc-video-preparation-status.is-success .pc-video-preparation-icon { color: var(--mantine-color-green-5); }
+.pc-video-preparation-status.is-error .pc-video-preparation-icon { color: var(--mantine-color-red-5); }
+.pc-video-preparation-node { margin: 7px 0 0 26px; overflow: hidden; color: var(--fc-text-secondary); text-overflow: ellipsis; white-space: nowrap; }
+.pc-video-preparation-progress, .pc-video-preparation-message { margin: 8px 0 0 26px; color: var(--fc-text-secondary); overflow-wrap: anywhere; }
+.pc-video-preparation-progress > span { font-variant-numeric: tabular-nums; }
+.pc-video-preparation-progress p { margin: 4px 0 0; color: var(--fc-text-muted); font-size: 11px; }
+.pc-video-preparation-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
+.pc-video-preparation-actions .mantine-Button-root { font-size: 11px; }
+.pc-video-preparation-spin { animation: pc-video-preparation-spin 1s linear infinite; }
+.pc-node-preparation-status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border: 1px solid var(--fc-border-strong);
+  border-radius: 5px;
+  background: var(--fc-surface-muted);
+  color: var(--fc-focus);
+  font-size: 11px;
+  white-space: nowrap;
+}
+@keyframes pc-video-preparation-spin { to { transform: rotate(360deg); } }
+@media (max-width: 700px) {
+  .pc-video-preparation-status { right: 16px; bottom: calc(122px + env(safe-area-inset-bottom)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pc-video-preparation-spin { animation: none; }
+  .pc-node-preparation-status .pc-spin { animation: none; }
+}

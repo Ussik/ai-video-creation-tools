@@ -69,7 +69,10 @@ export function parseReplyClassifications(raw: string, ids: string[], requireSta
   const result = parseStructuredOutput(raw, classificationResult)
   if (!result || result.messages.length !== ids.length || new Set(result.messages.map(item => item.id)).size !== ids.length ||
     result.messages.some(item => !ids.includes(item.id) || requireStage && !hasStageInteractionMetadata(item.classification))) {
-    throw Object.assign(new Error('模型未返回完整有效的回复识别结果，交互入口保持隐藏'), { statusCode: 502 })
+    // Missing IDs or stage tags are an output contract failure. The shared
+    // structured-output boundary may correct them once; transport errors keep
+    // their own upstream status and do not enter this parser.
+    throw Object.assign(new Error('模型未返回完整有效的回复识别结果，交互入口保持隐藏'), { statusCode: 422 })
   }
   return result.messages
 }

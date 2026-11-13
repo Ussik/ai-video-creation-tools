@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { register } from 'node:module'
-import { after, test, type TestContext } from 'node:test'
+import { after, beforeEach, test, type TestContext } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
@@ -9,7 +9,7 @@ import type { CanvasVideoReviewPanelProps } from '../src/features/canvas/CanvasV
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
-for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLElement', 'Element', 'ShadowRoot', 'MutationObserver', 'Event', 'MouseEvent']) {
+for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLElement', 'Element', 'ShadowRoot', 'MutationObserver', 'Event', 'CustomEvent', 'MouseEvent']) {
   Object.defineProperty(globalThis, key, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[key] })
 }
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, getComputedStyle: dom.window.getComputedStyle.bind(dom.window),
@@ -19,6 +19,8 @@ Object.defineProperty(dom.window, 'matchMedia', { value: () => ({ matches: false
 Object.defineProperty(dom.window.document, 'fonts', { value: new dom.window.EventTarget() })
 const { createRoot } = await import('react-dom/client')
 const { default: Panel } = await import('../src/features/canvas/CanvasVideoReviewPanel')
+const { rememberModelSelection } = await import('../src/features/models/model-selection-store')
+beforeEach(() => rememberModelSelection('text', null))
 after(() => dom.window.close())
 
 const report: VideoReviewReport = {
@@ -46,6 +48,14 @@ async function mount(t: TestContext, props: Partial<CanvasVideoReviewPanelProps>
     assert.ok(found, `missing button ${label}`); return found
   }
   return { container, requests, button, destroy: async () => { await act(() => root.unmount()); container.remove() } }
+}
+
+async function chooseReviewModel(container: HTMLElement, name: string) {
+  const input = container.querySelector<HTMLInputElement>('input[aria-label="成片复核模型"]'); assert.ok(input)
+  await act(() => input.click())
+  const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(item => item.textContent === name)
+  assert.ok(option, `model option ${name}`)
+  await act(() => option.click())
 }
 
 test('opening review only reads history, preserves uncertainty and exposes timestamp evidence without editing the asset', async t => {
@@ -85,6 +95,41 @@ test('review starts with the configured default among capable models', async t =
     assert.equal(view.requests.length, 1)
     await act(async () => view.button('开始复核').click())
     assert.equal(JSON.parse(String(view.requests[1].init?.body)).model_id, 'default-vision')
+  } finally { await view.destroy() }
+})
+
+test('review panels follow an explicit shared text choice and remember it when reopened', async t => {
+  const options = [...defaults.models, { id: 'recent-vision', label: '最近选择的复核模型', inputMode: 'sampled_frames' as const, is_default: true }]
+  const first = await mount(t, { models: options }, []), second = await mount(t, { models: options }, [])
+  try {
+    await chooseReviewModel(first.container, defaults.models[0]!.label)
+    assert.equal(first.container.querySelector<HTMLInputElement>('input[aria-label="成片复核模型"]')!.value, defaults.models[0]!.label)
+    assert.equal(second.container.querySelector<HTMLInputElement>('input[aria-label="成片复核模型"]')!.value, defaults.models[0]!.label)
+    assert.ok(first.requests.every(item => item.init?.method !== 'POST'))
+    assert.ok(second.requests.every(item => item.init?.method !== 'POST'))
+  } finally { await second.destroy(); await first.destroy() }
+  const reopened = await mount(t, { models: options }, [])
+  try {
+    assert.equal(reopened.container.querySelector<HTMLInputElement>('input[aria-label="成片复核模型"]')!.value, defaults.models[0]!.label)
+    await act(async () => reopened.button('开始复核').click())
+    assert.equal(JSON.parse(String(reopened.requests[1]!.init?.body)).model_id, defaults.models[0]!.id)
+  } finally { await reopened.destroy() }
+})
+
+test('a pending review pins its request model until completion before following a newer compatible preference', async t => {
+  const alternate = { id: 'alternate-vision', label: '另一复核模型', inputMode: 'sampled_frames' as const }
+  let finish: ((response: Response) => void) | undefined
+  const view = await mount(t, { models: [...defaults.models, alternate] }, [], () => new Promise(resolve => { finish = resolve }))
+  try {
+    await chooseReviewModel(view.container, alternate.label)
+    await act(() => view.button('开始复核').click())
+    assert.equal(JSON.parse(String(view.requests[1]!.init?.body)).model_id, alternate.id)
+    await act(() => rememberModelSelection('text', defaults.models[0]!.id))
+    assert.equal(view.container.querySelector<HTMLInputElement>('input[aria-label="成片复核模型"]')!.value, alternate.label)
+    assert.equal(view.requests.length, 2)
+    await act(async () => finish!(Response.json({ ...report, model_id: alternate.id })))
+    assert.equal(view.container.querySelector<HTMLInputElement>('input[aria-label="成片复核模型"]')!.value, defaults.models[0]!.label)
+    assert.equal(view.requests.length, 2)
   } finally { await view.destroy() }
 })
 

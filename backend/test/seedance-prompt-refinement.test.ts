@@ -4,21 +4,40 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import Fastify from 'fastify'
-import { mentionsSeedanceVersion, seedance2PromptGuidance } from '../src/modules/generation/seedance-prompt.js'
+import { configuredVideoPromptDialect, mentionsSeedanceVersion, seedance2PromptGuidance } from '../src/modules/generation/seedance-prompt.js'
 import { seedance2VideoSettings, seedance25VideoSettings } from '@video-studio/shared/models/seedance-video-settings'
+import { semanticReviewFixture } from './helpers/prompt-refinement-semantics.js'
+import type { CreationSkillSelector } from '../src/modules/skills/model-skill-selection.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'seedance-prompt-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
 const { buildApp } = await import('../src/app.js')
 const { db, run, all } = await import('../src/infrastructure/database/db.js')
 const { registerSkillRoutes } = await import('../src/modules/skills/skill-routes.js')
-const { installSkillBundle, configureSkill, skillContext } = await import('../src/modules/skills/skills.js')
+const { installSkillBundle, configureSkill, optionalSkillReferenceCatalog, skillContext } = await import('../src/modules/skills/skills.js')
 const app = buildApp(), refineApp = Fastify()
 let captured = '', calls = 0
+const selectSkills: CreationSkillSelector = Object.assign(
+  async (_project: string, _model: string, input: Parameters<CreationSkillSelector>[2]) => ({ skill_ids: input.default_ids, reason: '模型选择当前视频提示词技能。' }),
+  { references: async (_project: string, _model: string, input: Parameters<NonNullable<CreationSkillSelector['references']>>[2]) => {
+    const target = input.task_context?.target_model || ''
+    const version = mentionsSeedanceVersion(target, '2.5') ? '2.5' : mentionsSeedanceVersion(target, '2.0') ? '2.0' : null
+    return { reference_ids: input.catalog.filter(file => version && file.path.endsWith(`seedance-${version}.md`)).map(file => file.id),
+      reason: '依据本次只读目标模型配置选择匹配的方言资料。' }
+  } },
+)
 refineApp.setErrorHandler((error, _request, reply) => reply.code((error as { statusCode?: number }).statusCode || 422).send({ detail: String(error) }))
 registerSkillRoutes(refineApp, {
-  selectSkills: async (_project, _model, input) => ({ skill_ids: input.default_ids, reason: '模型选择当前视频提示词技能。' }),
-  generateText: async (_project, _model, prompt) => {
+  selectSkills,
+  generateText: async (_project, _model, prompt, contract) => {
+  if (contract?.name === 'prompt_refinement_semantic_review') {
+    const input = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1)) as { source: string; candidate: string }
+    const review = semanticReviewFixture()
+    if (input.source.includes('她说：“我会回来的。”')) review.dialogue = [{ speaker: '林晚', text: '我会回来的。',
+      source_evidence: '她说：“我会回来的。”', authorized_change: false, authorization_evidence: '' }]
+    assert.ok(review.dialogue.every(line => input.candidate.includes(line.text)), 'reviewed candidate preserves the fixture dialogue')
+    return JSON.stringify(review)
+  }
   captured = prompt; calls++
   return JSON.stringify({ prompt: '林晚抬起右手，随后转身。固定机位。{林晚用中文说：“我会回来的。”}保持无字幕。' })
 } })
@@ -54,10 +73,14 @@ async function setup(remoteId = 'doubao-seedance-2-0-mini-260615') {
     mode: 'reference', prompt: '林晚抬起右手，随后转身。她说：“我会回来的。”', ratio: '9:16', duration: 5, reference_asset_ids: ids.slice(0, 2) } }
 }
 
-test('2.0 dialect references load for official Mini/Fast IDs and explicit labels without loading 2.5 rules', () => {
+test('2.0 dialect metadata matches official IDs while optional references require an explicit model selection', () => {
+  const catalog = optionalSkillReferenceCatalog('video_prompt', [skill.id])
+  const selected = catalog.find(file => file.path.endsWith('seedance-2.0.md'))!
+  assert.ok(selected)
   for (const label of ['doubao-seedance-2-0-mini-260615', 'doubao-seedance-2-0-fast-260128', 'Seedance 2.0', 'seedance_2_0']) {
     assert.equal(mentionsSeedanceVersion(label, '2.0'), true)
-    const context = skillContext('video_prompt', `目标模型：${label}`, [skill.id])
+    assert.ok(!skillContext('video_prompt', `目标模型：${label}`, [skill.id]).files.includes(selected.path), 'task keywords do not auto-load optional material')
+    const context = skillContext('video_prompt', `目标模型：${label}`, [skill.id], undefined, undefined, [selected.id])
     assert.ok(context.files.includes('skills/video/references/seedance-2.0.md'), label)
     assert.ok(!context.files.includes('skills/video/references/seedance-2.5.md'), label)
   }
@@ -91,6 +114,23 @@ test('official 2.5 model ID loads the matching skill and integer-second guidance
   const tooMany = await refineApp.inject({ method: 'POST', url: `/api/projects/${project.id}/skills/refine-prompt`, payload: { ...input, reference_asset_ids: [...references, 'over-limit'] } })
   assert.equal(tooMany.statusCode, 422)
   assert.equal(calls, before)
+})
+
+test('explicit configured dialect controls loaded references even with custom or conflicting model identities', async () => {
+  const { project, model, settings, input } = await setup('custom-video-endpoint')
+  const updated = await app.inject({ method: 'PATCH', url: `/api/models/${model.id}`, payload: {
+    name: 'Seedance 2.0 旧名称', settings: { ...settings, video_prompt_dialect: 'seedance-2.5' },
+  } })
+  assert.equal(updated.statusCode, 200, updated.body)
+  const response = await refineApp.inject({ method: 'POST', url: `/api/projects/${project.id}/skills/refine-prompt`, payload: input })
+  assert.equal(response.statusCode, 200, response.body)
+  assert.ok(response.json().loaded_files.includes('skills/video/references/seedance-2.5.md'))
+  assert.ok(!response.json().loaded_files.includes('skills/video/references/seedance-2.0.md'))
+  assert.match(captured, /【Seedance 2.5 提示词要求】/)
+  assert.doesNotMatch(captured, /Seedance 2.0 专用方言/)
+  assert.equal(configuredVideoPromptDialect({ name: 'Seedance 2.0', remote_id: 'seedance-2.5', settings: { video_prompt_dialect: 'minimax-h3' } }), 'minimax-h3')
+  assert.equal(seedance2PromptGuidance({ name: 'Seedance 2.0', remote_id: 'seedance-2.5', settings: { video_prompt_dialect: 'minimax-h3' } }), '')
+  assert.equal(configuredVideoPromptDialect({ name: '自定义模型', remote_id: 'unrecognized', settings: {} }), undefined)
 })
 
 test('Mini refinement combines installed dialect with current-node guidance and preserves the draft contract', async () => {

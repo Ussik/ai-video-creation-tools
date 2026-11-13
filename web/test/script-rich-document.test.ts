@@ -137,12 +137,30 @@ test('recognizes Chinese quoted titles without consuming title punctuation or nu
   }
 })
 
+test('outline chapter headings through level six retain their hierarchy at paragraph and list boundaries', () => {
+  const source = '### 二、全剧脉络与四大篇章概要\n#### 第一篇章：幽冥专列篇（第1–15集）\n- **起因与入局**：深夜误入列车。\n#####冲突与对决\n规则逆转。\n######1、结算与交接\n回到钟表铺。'
+  const [parsed, markdown, reloaded] = roundTrip(source)
+  assert.deepEqual(parsed.content?.map(node => [node.type, node.attrs?.level, textDocumentText(node)]), [
+    ['heading', 3, '二、全剧脉络与四大篇章概要'],
+    ['heading', 4, '第一篇章：幽冥专列篇（第1–15集）'],
+    ['bulletList', undefined, '起因与入局：深夜误入列车。'],
+    ['heading', 5, '冲突与对决'],
+    ['paragraph', undefined, '规则逆转。'],
+    ['heading', 6, '1、结算与交接'],
+    ['paragraph', undefined, '回到钟表铺。'],
+  ])
+  assert.match(markdown, /\n\n#### 第一篇章/)
+  assert.match(markdown, /\n\n##### 冲突与对决/)
+  assert.match(markdown, /\n\n###### 1、结算与交接/)
+  assert.deepEqual(reloaded, parsed)
+})
+
 test('preserves literal compact heading markers, hashtags and inline hashes', () => {
-  for (const text of ['#全剧故事大纲', '##项目信息', '###人物目标', '##20集暂定总体结构', '###1至5集家庭记忆裂缝', '#《旧祠堂门》全剧故事大纲', '##【人物关系】', '##1.林晚', '###2、父女关系', '#tag', '#123', '编号 #全剧故事大纲']) {
+  for (const text of ['#全剧故事大纲', '##项目信息', '###人物目标', '#### 第一篇章', '#####冲突与对决', '######1、结算与交接', '##20集暂定总体结构', '###1至5集家庭记忆裂缝', '#《旧祠堂门》全剧故事大纲', '##【人物关系】', '##1.林晚', '###2、父女关系', '#tag', '#123', '编号 #全剧故事大纲']) {
     const document: JSONContent = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] }
     assert.deepEqual(parseScriptDocument(serializeScriptDocument(document)), document)
   }
-  for (const text of ['#tag', '#123', '##2026', '##123abc', '#[tag]', '##1.2', '编号 #全剧故事大纲', '编号 ##20集', '正文 #《旧祠堂门》', '\\#全剧故事大纲', '\\##20集', '\\#《旧祠堂门》', '\\##1.林晚', '####更深层标题']) {
+  for (const text of ['#tag', '#123', '##2026', '##123abc', '#[tag]', '##1.2', '编号 #全剧故事大纲', '编号 ##20集', '正文 #《旧祠堂门》', '\\#全剧故事大纲', '\\##20集', '\\#《旧祠堂门》', '\\##1.林晚', '\\#### 第一篇章', '\\#####冲突与对决', '\\###### 结算与交接', '####### 超出六级的标记']) {
     assert.equal(parseScriptDocument(text).content?.[0]?.type, 'paragraph')
   }
 })

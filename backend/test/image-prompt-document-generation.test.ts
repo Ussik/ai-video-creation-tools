@@ -4,6 +4,7 @@ import { seedance2VideoSettings } from '@video-studio/shared/models/seedance-vid
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { validateManagedPromptDocument } from '@video-studio/shared/visuals/prompt-document'
 
 const directory = await mkdtemp(join(tmpdir(), 'image-prompt-document-'))
 process.env.VIDEO_STUDIO_DATA_DIR = directory
@@ -54,6 +55,24 @@ async function propReferences(state: Awaited<ReturnType<typeof fixture>>, bound 
   ] })
   return { ids, profile, references }
 }
+
+test('shot generation with referenced legacy style headings previews and queues a valid complete document', async () => {
+  const state = await fixture()
+  const definition = '【项目画风约束】低饱和冷色调。已绑定灰衣设定'
+  run('UPDATE visual_profiles SET definition=? WHERE id=?', definition, state.profile.id)
+  run('UPDATE shot_visual_bindings SET definition=? WHERE shot_id=? AND profile_id=?', definition, state.shot.id, state.profile.id)
+  const preview = await call('POST', `${state.url}/preview`, { shot_id: state.shot.id, model_id: state.model.id,
+    prompt: '姜望低头补网。', prompt_body: '姜望低头补网。', reference_asset_ids: [state.asset] })
+  assert.doesNotThrow(() => validateManagedPromptDocument(preview.prompt))
+  assert.match(preview.prompt, /低饱和冷色调。已绑定灰衣设定/)
+  assert.match(preview.prompt, /参考图 1：姜望/)
+  const document = { ...preview, prompt_document: true }
+  const checked = await call('POST', `${state.url}/preview`, document)
+  assert.equal(checked.prompt, preview.prompt)
+  assert.deepEqual(checked.reference_asset_ids, [state.asset])
+  const queued = await call('POST', state.url, checked)
+  assert.equal(JSON.parse(queued.request).prompt, preview.prompt)
+})
 
 test('explicit inactive prop references carry frozen identity, definitions and selected view purposes without selecting sibling views', async () => {
   const state = await fixture(), prop = await propReferences(state)

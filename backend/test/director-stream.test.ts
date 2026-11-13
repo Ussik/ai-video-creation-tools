@@ -149,6 +149,7 @@ test('Responses terminal output-limit text and usage survive SSE and ordinary JS
       event => { if (event.type === 'delta') deltas.push(event.text) }, undefined, value => { captured = value }), issue => {
       assert.ok(issue instanceof TextOutputLimitError)
       assert.equal(issue.partialText, '已生成正文结尾'); assert.equal(issue.reason, 'max_output_tokens')
+      assert.equal(issue.outputLimit, 96000); assert.equal(issue.outputLimitKind, 'text')
       assert.equal(issue.retryable, false); assert.ok(!issue.message.includes('private screenplay'))
       return true
     })

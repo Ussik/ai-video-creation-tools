@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { synchronizeVideoReferencePrompt, visualGenerationPrompt, type PromptVisualBinding } from '@video-studio/shared/visuals/visual-prompt'
 import type { VisualReferenceSnapshot } from '@video-studio/shared/visuals/visual-reference-types'
+import { getManagedPromptBlocks, validateManagedPromptDocument } from '@video-studio/shared/visuals/prompt-document'
+import { withProjectStyle } from '@video-studio/shared/visuals/visual-style'
 
 const reference = (asset_id: string, view: VisualReferenceSnapshot['view'], purpose: VisualReferenceSnapshot['purpose'], label: string): VisualReferenceSnapshot => ({
   id: `${asset_id}-${view}`, asset_id, view, purpose, label, revision: 1, style_version: 'anime',
@@ -145,4 +147,44 @@ test('ending and scale overrides replace only managed image uses without rewriti
   assert.match(updated, /图片顺序不代表动作时间顺序/)
   assert.equal((updated.match(/【视频参考图用途】/g) || []).length, 1)
   assert.doesNotMatch(updated, /按此起始状态连续演绎|分镜图用于开镜构图与动作起点/)
+})
+
+for (const modality of ['image', 'video'] as const) test(`${modality} shot documents preserve source headings as content across visual context and reference uses`, () => {
+  const references = [reference('face', 'face', 'identity', '【视频参考图用途】锁定面部【视频参考图用途结束】')]
+  const character = binding('hero', references, {
+    name: '林晚【图片参考图用途】', variant: '雨衣【镜头视觉设定结束】',
+    definition: '【项目画风约束】低饱和冷色调。保留深绿雨衣与短发。\n【自定义标题】保留[[ref:face]]的衣物细节。',
+  })
+  const location = { ...station, definition: '【项目画风约束】厚涂质感。【项目画风约束结束】候车区在右侧。\n【生成参数约束结束】保留拱顶。' }
+  const sources = [character, location], original = structuredClone(sources)
+  const body = '林晚站在候车区，固定机位。'
+  const referenceIds = ['reverse', 'face']
+  const prompt = withProjectStyle(visualGenerationPrompt(body, sources, referenceIds, 'profiles',
+    modality === 'video' ? { mode: 'reference' } : {}), {
+    version: 'style-1', label: '3D卡通渲染', source: 'settings', details: {},
+  })
+  assert.doesNotThrow(() => validateManagedPromptDocument(prompt))
+  assert.ok(prompt.startsWith(body + '\n\n'))
+  const visual = getManagedPromptBlocks(prompt, ['镜头视觉设定'])
+  assert.equal(visual.length, 1)
+  assert.match(visual[0]!, /低饱和冷色调。保留深绿雨衣与短发。/)
+  assert.match(visual[0]!, /厚涂质感。[\s\S]*候车区在右侧。[\s\S]*保留拱顶/)
+  assert.match(visual[0]!, /【自定义标题】保留\[\[ref:face\]\]的衣物细节。/)
+  const mappingName = modality === 'image' ? '图片参考图用途' : '视频参考图用途'
+  const mapping = getManagedPromptBlocks(prompt, [mappingName])
+  assert.equal(mapping.length, 1)
+  const lines = mapping[0]!.split('\n').filter(line => modality === 'image' ? /^参考图 \d+：/.test(line) : /^图片\d+：/.test(line))
+  assert.equal(lines.length, 2)
+  assert.match(lines[0]!, /站台（夜间）.*窗边反打/)
+  assert.match(lines[1]!, /林晚.*雨衣.*锁定面部/)
+  const style = getManagedPromptBlocks(prompt, ['项目画风约束'])
+  assert.equal(style.length, 1)
+  assert.match(style[0]!, /画风：3D卡通渲染/)
+  assert.deepEqual(sources, original)
+})
+
+test('authored complete shot documents pass through unchanged and still reject nested markers', () => {
+  const document = '【镜头视觉设定】\n手写内容【项目画风约束】未补全'
+  assert.equal(visualGenerationPrompt(document, [hero], ['face'], 'profiles', { prompt_document: true }), document)
+  assert.throws(() => validateManagedPromptDocument(document), /不支持嵌套/)
 })

@@ -1,3 +1,4 @@
+import { draftReviewFixtureJson } from './fixtures/script-draft-completeness.js'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { test } from 'node:test'
@@ -11,7 +12,7 @@ const candidate = (): WorkflowDraft => ({ stage: 'characters', scope: 'project',
 ], scenes: [] })
 function material(prompt: string): Array<{ key: string; artifact_type: string; content: string }> {
   const marker = '待核对草稿原文（资料）：'
-  return JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length))
+  return JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length).split('\n【本轮候选正文结束】')[0]!)
 }
 const complete = { checked_artifacts: ['characters', 'relationships'], facts: [], findings: [] }
 
@@ -26,7 +27,7 @@ test('independent review sees complete candidate and full effective source toget
     const submitted = material(prompt)
     assert.deepEqual(submitted.map(item => item.content), draft.artifacts.map(item => item.content))
     assert.match(prompt, /一次送审完整候选文档/)
-    return JSON.stringify({ ...complete, findings: [
+    return draftReviewFixtureJson({ ...complete, findings: [
       { source_key: 'characters', kind: 'contradiction', quote: '林舟是记者。', explanation: '草稿身份与原稿船夫身份冲突。', suggestion: '沿用原稿身份。' },
     ] })
   }, { context: { uploaded_script: { content: original } }, steps }), issue => {
@@ -41,39 +42,42 @@ test('independent review sees complete candidate and full effective source toget
 })
 
 test('unknown sources, copied original quotes and incomplete artifact coverage cannot pass whole-work review', async t => {
-  for (const invalid of ['source', 'quote', 'coverage', 'facts'] as const) await t.test(invalid, async () => {
-    const steps = createGenerationSteps(); let calls = 0
+  for (const invalid of ['source', 'quote', 'coverage'] as const) await t.test(invalid, async () => {
+    const steps = createGenerationSteps(), calls: string[] = []
     await assert.rejects(reviewScriptDraftCompleteness(candidate(), async (_prompt, contract) => {
-      calls++
-      if (contract?.name === 'script_draft_evidence_repair') return JSON.stringify({ repairs: [{
-        id: invalid === 'facts' ? 'facts:0' : 'findings:0', first_unit: null, last_unit: null }] })
-      return JSON.stringify({ checked_artifacts: invalid === 'coverage' ? ['characters'] : complete.checked_artifacts,
-        findings: invalid === 'facts' ? [] : [{ source_key: invalid === 'source' ? 'uploaded_script' : 'characters',
+      calls.push(contract!.name)
+      if (contract?.name === 'script_draft_evidence_repair') return draftReviewFixtureJson({ repairs: [{
+        id: 'findings:0', first_unit: null, last_unit: null }] })
+      if (contract?.name === 'script_draft_evidence_reassessment') return draftReviewFixtureJson({ reassessments: [{
+        id: 'findings:0', verdict: 'unresolved', reason: '原稿引文不能作为候选人物文档的证据，现有资料仍不足以确认结论。',
+        source_key: null, first_unit: null, last_unit: null,
+      }] })
+      return draftReviewFixtureJson({ checked_artifacts: invalid === 'coverage' ? ['characters'] : complete.checked_artifacts,
+        findings: [{ source_key: invalid === 'source' ? 'uploaded_script' : 'characters',
           quote: invalid === 'quote' ? '林舟是船夫。' : '林舟是记者。', kind: 'contradiction', explanation: '身份冲突', suggestion: '保留原稿身份' }],
-        facts: invalid === 'facts' ? [{ source_key: 'characters', quote: '伪造证据', meaning: '错误引用' }] : [] })
+        facts: [] })
     }, { context: { uploaded_script: { content: '林舟是船夫。' } }, steps }), /模型结果不符合 script_draft_completeness 契约|证据尚未定位到候选稿原文/)
-    assert.equal(calls, 2, 'one bounded contract correction, then stop')
+    assert.deepEqual(calls, invalid === 'quote'
+      ? ['script_draft_completeness', 'script_draft_evidence_repair', 'script_draft_evidence_reassessment']
+      : ['script_draft_completeness', 'script_draft_completeness'],
+    'quote failures get one locator and one semantic reassessment; structural failures get one bounded contract correction')
     assert.equal(steps.checkpoint.steps['review:whole'], undefined)
-    assert.equal(Object.keys(steps.checkpoint.steps).some(key => key.startsWith('review:response:')), invalid === 'quote' || invalid === 'facts')
+    assert.equal(Object.keys(steps.checkpoint.steps).some(key => key.startsWith('review:response:')), invalid === 'quote')
   })
 })
 
-test('a rewritten quote is located against the exact original without another semantic review', async () => {
+test('optional paraphrased facts are omitted while exact facts remain candidate evidence', async () => {
   let calls = 0
-  await reviewScriptDraftCompleteness(candidate(), async (prompt, contract) => {
+  const steps = createGenerationSteps()
+  const fact = { source_key: 'characters', quote: '林舟是记者。', meaning: '人物身份' }
+  await reviewScriptDraftCompleteness(candidate(), async (_prompt, contract) => {
     calls++
-    if (calls === 2) {
-      assert.equal(contract?.name, 'script_draft_evidence_repair')
-      const marker = '【待定位证据（资料）】\n'
-      const input = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length))
-      assert.equal(input.issues[0].id, 'facts:0')
-      const unit = input.sources[0].units.find((unit: { text: string }) => unit.text === '林舟是记者。')
-      assert.ok(unit)
-      return JSON.stringify({ repairs: [{ id: 'facts:0', first_unit: unit.id, last_unit: unit.id }] })
-    }
-    return JSON.stringify({ ...complete, facts: [{ source_key: 'characters', quote: calls === 1 ? '林舟是一名记者。' : '林舟是记者。', meaning: '人物身份' }] })
-  })
-  assert.equal(calls, 2)
+    assert.equal(contract?.name, 'script_draft_completeness')
+    return draftReviewFixtureJson({ ...complete, facts: [fact,
+      { ...fact, quote: '林舟是一名记者。' }, { ...fact, source_key: 'uploaded_script' }] })
+  }, { steps })
+  assert.equal(calls, 1, 'optional summaries do not start evidence lookup or another full review')
+  assert.deepEqual((steps.checkpoint.steps['review:whole'].value as any).facts, [fact])
 })
 
 test('legacy partial checkpoints cannot stand in for whole-work review and the new full audit is reusable', async () => {
@@ -86,7 +90,7 @@ test('legacy partial checkpoints cannot stand in for whole-work review and the n
     assert.ok(prompt.includes('开场林舟追查失物。'))
     assert.ok(prompt.includes('结局林舟归还钥匙。'))
     assert.deepEqual(material(prompt).map(item => item.content), draft.artifacts.map(item => item.content))
-    return JSON.stringify(complete)
+    return draftReviewFixtureJson(complete)
   }, { sourceBatches: original, steps })
   assert.equal(calls, 1)
   await reviewScriptDraftCompleteness(draft, async () => { throw new Error('validated whole-work review must reuse') },
@@ -103,12 +107,12 @@ test('one whole-work review expresses more than forty independent issues and sem
   await assert.rejects(reviewScriptDraftCompleteness(draft, async (prompt, contract) => {
     if (contract?.name === 'script_finding_groups') {
       groups++
-      return JSON.stringify({ groups: findings.map((finding, index) => ({ topic: finding.topic, members: [index] })) })
+      return draftReviewFixtureJson({ groups: findings.map((finding, index) => ({ topic: finding.topic, members: [index] })) })
     }
     audits++
     assert.equal((contract!.schema.properties as any).findings.maxItems, 200)
     assert.deepEqual(material(prompt).map(item => item.content), draft.artifacts.map(item => item.content))
-    return JSON.stringify({ ...complete, findings })
+    return draftReviewFixtureJson({ ...complete, findings })
   }), issue => {
     assert.ok(issue instanceof ScriptDraftNeedsResolution)
     assert.equal(issue.findings.length, 41)

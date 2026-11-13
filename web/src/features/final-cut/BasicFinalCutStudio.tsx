@@ -7,7 +7,11 @@ import { api, json } from '../../shared/api/api'
 import { StudioMediaPlayer } from '../../shared/ui/media/StudioMediaPlayer'
 import { assetPresentations } from '../assets/asset-presentation'
 import TimelinePreview from './TimelinePreview'
+import BasicCutReviewPanel from './BasicCutReviewPanel'
+import { basicCutReviewSignature } from './basic-cut-review'
 import { editingCutExportId, editingCutExportRevision, editingCutIssues, editingCutPreview } from './editing-cut-preview'
+import type { FinalCutAssetStatus } from './final-cut-asset-status'
+import { useFinalCutAssetStates } from './useFinalCutAssetStates'
 import { useEditingCuts } from './useEditingCuts'
 import './basic-final-cut-studio.css'
 
@@ -27,11 +31,13 @@ const freshId = () => crypto.randomUUID()
 
 /** All edits live in an independent cut; source shots, assets and speech selections stay read-only. */
 export default function BasicFinalCutStudio({ detail, sourceCanvasId, onRefresh, onOpenSpeech, onNotice, onDirtyChange }: BasicFinalCutStudioProps) {
+  const studio = useRef<HTMLElement>(null)
   const editor = useEditingCuts(detail.id, sourceCanvasId)
   const { draft, dirty, busy } = editor
   const [clipId, setClipId] = useState<string | null>(null), [speechId, setSpeechId] = useState<string | null>(null)
   const [panel, setPanel] = useState<string | null>('clip'), [mode, setMode] = useState<string | null>('cut')
   const [assetFilter, setAssetFilter] = useState<string | null>('all'), [query, setQuery] = useState('')
+  const [assetStatus, setAssetStatus] = useState<'all' | FinalCutAssetStatus>('all')
   const [sourceId, setSourceId] = useState<string | null>(null), [audioChoice, setAudioChoice] = useState<string | null>(null)
   const [extraAssets, setExtraAssets] = useState<Asset[]>([]), [localJobs, setLocalJobs] = useState<Job[]>([])
   const [durations, setDurations] = useState<Map<string, number>>(() => new Map())
@@ -41,11 +47,14 @@ export default function BasicFinalCutStudio({ detail, sourceCanvasId, onRefresh,
   const [pending, setPending] = useState<Pending | null>(null)
   const [createOpen, setCreateOpen] = useState(false), [createName, setCreateName] = useState(''), [copyDraft, setCopyDraft] = useState(false)
   const [importText, setImportText] = useState('')
+  const [reviewOpen, setReviewOpen] = useState(false)
   const currentProject = useRef(detail.id); currentProject.current = detail.id
   const callbacks = useRef({ onRefresh, onNotice, onDirtyChange }); callbacks.current = { onRefresh, onNotice, onDirtyChange }
   const blocked = busy || !!work
   const assets = useMemo(() => [...new Map([...extraAssets, ...detail.assets].map(asset => [asset.id, asset])).values()], [detail.assets, extraAssets])
   const names = useMemo(() => assetPresentations({ ...detail, assets }), [detail, assets])
+  const assetConfirmation = useFinalCutAssetStates(detail, sourceCanvasId, assets)
+  const assetStates = assetConfirmation.states
   const speechAssets = useMemo(() => {
     const result = new Map<string, { name: string; text: string }>()
     for (const line of detail.speech?.lines || []) {
@@ -78,6 +87,7 @@ export default function BasicFinalCutStudio({ detail, sourceCanvasId, onRefresh,
   const exportedAsset = assets.find(asset => asset.id === latestExport?.result_asset_id)
   const latestFailed = jobs[0]?.status === 'failed' ? jobs[0] : null
   const visibleAssets = assets.filter(asset => asset.kind !== 'text' && (assetFilter === 'all' || asset.kind === assetFilter)
+    && (assetStatus === 'all' || assetStates.get(asset.id)?.status === assetStatus)
     && `${assetName(asset.id)} ${asset.filename}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
 
   useEffect(() => { callbacks.current.onDirtyChange?.(dirty) }, [dirty])
@@ -86,7 +96,7 @@ export default function BasicFinalCutStudio({ detail, sourceCanvasId, onRefresh,
     setClipId(null); setSpeechId(null); setSourceId(null); setExtraAssets([]); setLocalJobs([])
     setDurations(new Map()); durationRequests.current.clear(); exactDurations.current.clear(); setIssue(''); setMode('cut'); setWork('')
   }, [detail.id])
-  useEffect(() => { setClipId(null); setSpeechId(null); setIssue(''); setMode('cut') }, [draft?.id])
+  useEffect(() => { setClipId(null); setSpeechId(null); setIssue(''); setMode('cut'); setReviewOpen(false) }, [draft?.id])
   useEffect(() => {
     if (!activeExport) return
     const timer = window.setInterval(() => { void callbacks.current.onRefresh().catch(() => {}) }, 2000)
@@ -210,7 +220,7 @@ export default function BasicFinalCutStudio({ detail, sourceCanvasId, onRefresh,
     setPanel('captions')
   }
 
-  return <section className="basic-cut-studio" aria-label="基础成片工作台">
+  return <section ref={studio} className="basic-cut-studio" aria-label="基础成片工作台">
     <header className="basic-cut-toolbar">
       <div className="basic-cut-title"><span>独立剪辑</span><Select aria-label="选择独立剪辑" placeholder={editor.loading ? '正在读取剪辑…' : '选择或新建剪辑'} value={draft?.id || null}
         data={editor.cuts.map(cut => ({ value: cut.id, label: cut.name }))} searchable allowDeselect={false} disabled={blocked || editor.loading} onChange={id => id && request({ kind: 'select', id })} /></div>
@@ -228,11 +238,24 @@ export default function BasicFinalCutStudio({ detail, sourceCanvasId, onRefresh,
         <aside className="basic-cut-assets" aria-label="剪辑素材库">
           <div className="basic-cut-section-head"><h2>项目素材 <small>{visibleAssets.length}</small></h2><FileButton onChange={files => void upload(files)} multiple accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,audio/mpeg,audio/wav,audio/mp4">{props => <Button {...props} size="compact-xs" variant="default" disabled={blocked} leftSection={<Upload size={14} />}>导入素材</Button>}</FileButton></div>
           <TextInput aria-label="搜索剪辑素材" placeholder="搜索素材" value={query} onChange={event => setQuery(event.currentTarget.value)} />
+          <div className="basic-cut-asset-status-filters" role="group" aria-label="素材确认状态">
+            {([{ value: 'all', label: '全部' }, { value: 'confirmed', label: '已确认' }, { value: 'candidate', label: '候选' }, { value: 'other', label: '其他' }] as const).map(item =>
+              <UnstyledButton key={item.value} type="button" aria-label={`筛选素材状态：${item.label}`} aria-pressed={assetStatus === item.value}
+                disabled={item.value !== 'all' && (assetConfirmation.loading || !!assetConfirmation.error)}
+                title={item.value === 'confirmed' ? '画布当前使用、镜头或配音已选用及设定已确认的素材' : item.value === 'other' ? '导入、导出、归档及旧版素材' : undefined}
+                onClick={() => setAssetStatus(item.value)}>{item.label}</UnstyledButton>)}
+          </div>
+          {assetConfirmation.loading && <p className="basic-cut-help" role="status">正在同步画布确认状态…</p>}
+          {assetConfirmation.error && <div className="basic-cut-asset-status-error" role="alert"><span>未能读取画布确认状态</span><Button size="compact-xs" variant="subtle" onClick={assetConfirmation.retry}>重试状态同步</Button></div>}
           <Tabs value={assetFilter} onChange={setAssetFilter}><Tabs.List><Tabs.Tab value="all">全部</Tabs.Tab><Tabs.Tab value="video">视频</Tabs.Tab><Tabs.Tab value="image">图片</Tabs.Tab><Tabs.Tab value="audio">音频</Tabs.Tab></Tabs.List></Tabs>
           <div className="basic-cut-asset-list">{visibleAssets.map(asset => <div className={`basic-cut-asset${sourceId === asset.id ? ' is-selected' : ''}`} key={asset.id}>
             <UnstyledButton className="basic-cut-asset-main" aria-label={`预览素材：${assetName(asset.id)}`} onClick={() => { setSourceId(asset.id); setMode('source') }}>
               <div className="basic-cut-asset-thumb">{asset.kind === 'image' ? <img src={asset.url} alt="" loading="lazy" /> : asset.kind === 'video' ? <video src={asset.url} muted playsInline preload="metadata" onLoadedMetadata={event => rememberDuration(asset.id, event.currentTarget.duration * 1000)} /> : <Music2 size={21} />}</div>
-              <div><strong>{assetName(asset.id)}</strong><small>{asset.kind === 'video' ? '视频' : asset.kind === 'image' ? '图片' : '音频'}{durations.has(asset.id) ? ` · ${seconds(durations.get(asset.id)!)}` : ''}</small></div>
+              <div><strong>{assetName(asset.id)}</strong><div className="basic-cut-asset-meta">
+                <Badge size="xs" variant="light" data-status={assetStates.get(asset.id)?.status} color={assetStates.get(asset.id)?.status === 'confirmed' ? 'teal' : assetStates.get(asset.id)?.status === 'candidate' ? 'yellow' : 'gray'}
+                  leftSection={assetStates.get(asset.id)?.status === 'confirmed' ? <Check size={10} /> : undefined}>{assetStates.get(asset.id)?.status === 'candidate' && (assetConfirmation.loading || assetConfirmation.error) ? '状态待同步' : assetStates.get(asset.id)?.label}</Badge>
+                <small>{asset.kind === 'video' ? '视频' : asset.kind === 'image' ? '图片' : '音频'}{durations.has(asset.id) ? ` · ${seconds(durations.get(asset.id)!)}` : ''}</small>
+              </div></div>
             </UnstyledButton><ActionIcon variant="subtle" aria-label={`添加${asset.kind === 'audio' ? '配音' : '片段'}：${assetName(asset.id)}`} disabled={blocked} onClick={() => void addAsset(asset)}><Plus size={16} /></ActionIcon>
           </div>)}{!visibleAssets.length && <p className="basic-cut-help">没有匹配素材，可导入本地文件或清除筛选。</p>}</div>
         </aside>
@@ -242,7 +265,7 @@ export default function BasicFinalCutStudio({ detail, sourceCanvasId, onRefresh,
           <div className="basic-cut-player">
           {mode === 'source' && source ? <div className="basic-cut-source-preview"><div className="basic-cut-source-stage">{source.kind === 'image' ? <img src={source.url} alt={assetName(source.id)} /> : <StudioMediaPlayer key={source.id} kind={source.kind === 'audio' ? 'audio' : 'video'} src={source.url} preload="metadata" onLoadedMetadata={(event: SyntheticEvent<HTMLVideoElement & HTMLAudioElement>) => rememberDuration(source.id, event.currentTarget.duration * 1000)} />}</div><div className="basic-cut-section-head"><strong>{assetName(source.id)}</strong><Button size="xs" disabled={blocked} onClick={() => void addAsset(source)} leftSection={<Plus size={14} />}>{source.kind === 'audio' ? '加入配音轨道' : '添加到末尾'}</Button></div></div>
             : preview && draft.clips.length ? <TimelinePreview clips={preview.clips} shots={preview.shots} assets={assets} ratio={draft.ratio} speechAudio={preview.speechAudio}
-              musicAsset={assets.find(asset => asset.id === draft.music_asset_id)} audioSettings={draft.audio_settings} captions={draft.captions} />
+              musicAsset={assets.find(asset => asset.id === draft.music_asset_id)} audioSettings={draft.audio_settings} captions={draft.captions} active={!reviewOpen} />
               : <div className="basic-cut-preview-empty"><Film size={36} /><strong>把第一个素材添加到时间线</strong><span>可以重复使用同一素材，并分别设置取段。</span></div>}
           </div>
           {!!exportIssues.length && <p className="basic-cut-help" role="status">{exportIssues[0]}</p>}
@@ -275,7 +298,15 @@ export default function BasicFinalCutStudio({ detail, sourceCanvasId, onRefresh,
         </aside>
       </div>
 
-      <section className="basic-cut-timeline" aria-label="独立剪辑时间线"><div className="basic-cut-section-head"><h2>入片顺序 <small>{seconds(duration)}</small></h2><span className="basic-cut-help">选择片段调整取段，用箭头改变顺序</span></div>
+      <section className="basic-cut-timeline" aria-label="独立剪辑时间线"><div className="basic-cut-section-head"><h2>入片顺序 <small>{seconds(duration)}</small></h2><BasicCutReviewPanel key={draft.id} cut={draft} assets={assets} durations={durations} disabled={blocked || !!inputIssues.length} onOpenChange={opened => {
+            if (opened) studio.current?.querySelectorAll<HTMLMediaElement>('video, audio').forEach(media => media.pause())
+            setReviewOpen(opened)
+          }}
+          onApply={(fromId, toId, fromOut, toIn, signature) => editor.update(current => {
+            const index = current.clips.findIndex(item => item.id === fromId)
+            if (index < 0 || current.clips[index + 1]?.id !== toId || basicCutReviewSignature(current, fromId, toId, assets) !== signature) return current
+            return { ...current, clips: current.clips.map((item, i) => i === index ? { ...item, out_ms: fromOut } : i === index + 1 ? { ...item, in_ms: toIn } : item) }
+          })} /><span className="basic-cut-help">选择片段调整取段，用箭头改变顺序</span></div>
         <div className="basic-cut-clip-strip">{draft.clips.map((item, i) => { const asset = assets.find(asset => asset.id === item.asset_id); return <div key={item.id} className={`basic-cut-clip${item.id === clip?.id ? ' is-selected' : ''}`}>
           <UnstyledButton className="basic-cut-clip-select" aria-label={`编辑片段 ${i + 1}：${item.title}`} onClick={() => { setClipId(item.id); setPanel('clip'); setMode('cut') }}><div className="basic-cut-clip-thumb">{asset?.kind === 'image' ? <img src={asset.url} alt="" /> : asset?.kind === 'video' ? <video src={asset.url} muted playsInline preload="metadata" /> : <ImageIcon size={20} />}</div><strong>{String(i + 1).padStart(2, '0')} · {item.title}</strong><small>{seconds(item.out_ms - item.in_ms)}</small></UnstyledButton>
           <div className="basic-cut-clip-actions"><ActionIcon variant="subtle" aria-label={`前移片段 ${i + 1}`} disabled={blocked || i === 0} onClick={() => moveClip(item.id, -1)}><ArrowUp size={14} /></ActionIcon><ActionIcon variant="subtle" aria-label={`后移片段 ${i + 1}`} disabled={blocked || i === draft.clips.length - 1} onClick={() => moveClip(item.id, 1)}><ArrowDown size={14} /></ActionIcon><ActionIcon variant="subtle" aria-label={`复制片段 ${i + 1}`} disabled={blocked} onClick={() => { const id = freshId(); editor.update(cut => ({ ...cut, clips: cut.clips.flatMap(part => part.id === item.id ? [part, { ...part, id }] : [part]) })); setClipId(id); setPanel('clip') }}><Copy size={14} /></ActionIcon><ActionIcon variant="subtle" color="red" aria-label={`移除片段 ${i + 1}`} disabled={blocked} onClick={() => editor.update(cut => ({ ...cut, clips: cut.clips.filter(part => part.id !== item.id) }))}><Trash2 size={14} /></ActionIcon></div>

@@ -3,12 +3,13 @@ import type { ScriptArtifact, ScriptScene } from '../src/infrastructure/database
 import type { ScriptSnapshot } from '../src/modules/script/script-document-tools.js'
 import assert from 'node:assert/strict'
 import { after, test } from 'node:test'
+import { createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { scriptStageArtifacts, scriptArtifactLabels, type ScriptStage } from '@video-studio/shared/script/script-stage-content'
 import { stageOperationError, missingSavedStageArtifacts, type StageOperation } from '@video-studio/shared/script/script-stage-access'
-import { directorStageContext, workflowProgress } from '../src/modules/script/script-workflow.js'
+import { directorStageContext, workflowProgress, workflowRequest } from '../src/modules/script/script-workflow.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'studio-stage-reprocessing-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
@@ -401,6 +402,183 @@ test('episode redesign rejects concurrent global settings and effective-source c
   }
 })
 
+test('episode redesign continues bare scenes into an audited versioned draft without guessing missing source IDs', async t => {
+  for (const array of [false, true]) for (const missingIds of [false, true]) await t.test(`${array ? 'root array' : 'single scene'} / ${missingIds ? 'missing existing IDs stay blocked' : 'valid source IDs retained'}`, async t => {
+    const { project, script, source, request, references } = await episodeFixture()
+    const provider = await call('POST', '/api/providers', { name: '单场外壳恢复', base_url: 'https://bare-scene.invalid/v1' })
+    const model = await call('POST', '/api/models', { provider_id: provider.id, name: '文本', remote_id: 'mock', modality: 'text', protocol: 'chat_completions', settings: {
+      request_path: 'chat/completions', request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] },
+      structured_output_mode: 'json_schema', text_path: 'choices.0.message.content',
+    } })
+    const before = script(), originalReferences = references(), contracts: string[] = []
+    const first = { ...request.scenes[0]!, duration: 45 }
+    const scenes = [first, ...request.scenes.slice(1).map(scene => {
+      if (!missingIds) return scene
+      const { source_scene_id: _id, ...withoutId } = scene
+      return withoutId
+    })]
+    let reviews = 0
+    t.mock.method(globalThis, 'fetch', async (_url, init) => {
+      const reviewed = draftCompletenessFixtureResponse(init)
+      if (reviewed) { reviews++; return reviewed }
+      const body = JSON.parse(String(init?.body)), prompt = body.messages[0].content as string
+      const contract = body.response_format?.json_schema?.name as string
+      contracts.push(contract)
+      let result: unknown
+      if (contract === 'script_episode_scene_identity_mapping') {
+        result = { matches: [], unresolved: request.scenes.slice(1).map(scene => ({
+          source_scene_id: scene.source_scene_id, reason: '当前候选对应不明确，不能按序号补关联。',
+        })) }
+      } else if (contracts.length === 1) {
+        assert.equal(contract, 'workflow_draft')
+        result = array ? scenes : first
+      } else {
+        assert.equal(contract, 'script_stage_blocks')
+        assert.ok(prompt.includes(JSON.stringify(first)), 'the original complete scene guides the remaining prose')
+        assert.doesNotMatch(prompt, /【一次格式修正】/)
+        result = { blocks: scenes.map((scene, index) => ({ id: `scene:${index}`, title: request.artifacts[0]!.title,
+          content: `第${index + 1}场完整正文：${scene.action}；${scene.dialogue}；${scene.narration}`, scenes: [scene] })), complete: true }
+      }
+      return Response.json({ choices: [{ message: { content: JSON.stringify(result) }, finish_reason: 'stop' }] })
+    })
+    const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload: {
+      model_id: model.id, mode: 'script', use_tools: true, workflow: { stage: 'episode', episode_number: 1, operation: 'regenerate' },
+      messages: [{ role: 'user', text: '重新设计第一集完整正文和分场，保留全部原场次关联，按剧情重新估时。' }],
+    } })
+    assert.deepEqual(contracts, ['workflow_draft', 'script_stage_blocks', ...(missingIds ? ['script_episode_scene_identity_mapping'] : [])])
+    if (missingIds) {
+      assert.equal(response.statusCode, 422, response.body)
+      assert.match(response.body, /对应|关联|已有场次|原ID/)
+      assert.equal(getToolDraft(project.id), null)
+    } else {
+      assert.equal(response.statusCode, 200, response.body)
+      const result = response.json()
+      assert.equal(result.tool_draft.documents[0].id, source.id)
+      assert.deepEqual(result.tool_draft.workflow.scenes, scenes)
+      assert.equal(reviews, 1, 'a recovered envelope still receives the independent complete-episode review')
+      assert.equal(one('SELECT * FROM script_generation_checkpoints WHERE project_id=?', project.id), undefined)
+    }
+    assert.deepEqual(script(), before, 'a recovered response is still a preview until the creator confirms it')
+    assert.deepEqual(references(), originalReferences)
+  })
+})
+
+test('missing episode source IDs are repaired as metadata after semantic review while complete prose is reused on retry', async t => {
+  for (const legacy of [false, true]) await t.test(legacy ? 'legacy whole-episode checkpoint' : 'episode work-item checkpoint', async t => {
+  const f = await episodeFixture(), { project, script, request, references, sources } = f
+  const provider = await call('POST', '/api/providers', { name: '缺失场次关联恢复', base_url: 'https://scene-identity.invalid/v1' })
+  const model = await call('POST', '/api/models', { provider_id: provider.id, name: '文本', remote_id: 'mock', modality: 'text', protocol: 'chat_completions', settings: {
+    request_path: 'chat/completions', request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] },
+    structured_output_mode: 'json_schema', text_path: 'choices.0.message.content',
+  } })
+  const original = [request.scenes[2]!, request.scenes[0]!, { ...request.scenes[0]!, heading: '全新插入场', action: '新事件在天桥发生', dialogue: '这里发生了新的事件。', source_scene_id: undefined },
+    request.scenes[3]!, request.scenes[1]!]
+  const scenes = original.map(({ source_scene_id: _id, ...scene }) => scene)
+  const authored = { artifacts: request.artifacts, scenes }
+  const before = script(), originalReferences = references(), contracts: string[] = []
+  let resolve = false, reviews = 0
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const reviewed = draftCompletenessFixtureResponse(init)
+    if (reviewed) { reviews++; return reviewed }
+    const body = JSON.parse(String(init?.body)), contract = body.response_format?.json_schema?.name as string
+    const prompt = body.messages[0].content as string
+    contracts.push(contract)
+    let result: unknown
+    if (contract === 'workflow_draft') result = authored
+    else if (contract === 'script_episode_scene_identity_mapping') {
+      for (const source of sources) assert.ok(prompt.includes(source.id))
+      for (const scene of scenes) assert.ok(prompt.includes(scene.action))
+      result = resolve ? { matches: sources.map(source => {
+        const scene_index = original.findIndex(scene => scene.source_scene_id === source.id)
+        return { source_scene_id: source.id, scene_index, source_field: 'action', source_quote: source.action,
+          draft_field: 'action', draft_quote: scenes[scene_index]!.action, reason: '候选保留对应场次的原事件及人物行动，新增场次另行保留。' }
+      }), unresolved: [] } : { matches: [], unresolved: sources.map(source => ({ source_scene_id: source.id, reason: '无法确认事件对应关系，不能按数组下标补ID。' })) }
+    } else {
+      assert.equal(contract, 'script_episode_scene_identity_review')
+      assert.ok(prompt.includes(request.artifacts[0]!.content))
+      result = { checked_source_scene_ids: sources.map(source => source.id), issues: [] }
+    }
+    return Response.json({ choices: [{ message: { content: JSON.stringify(result) }, finish_reason: 'stop' }] })
+  })
+  const payload = { model_id: model.id, mode: 'script', use_tools: true,
+    workflow: { stage: 'episode', episode_number: 1, operation: 'regenerate' },
+    messages: [{ role: 'user', text: '重新设计第一集，保留原场次关联，允许调整顺序并加入新场次。' }] }
+  const first = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload })
+  assert.equal(first.statusCode, 422, first.body)
+  assert.match(first.body, /关联|对应/)
+  assert.equal(getToolDraft(project.id), null)
+  assert.equal(reviews, 0)
+  const checkpoint = JSON.parse(one<{ payload: string }>('SELECT payload FROM script_generation_checkpoints WHERE project_id=?', project.id)!.payload)
+  assert.deepEqual(checkpoint.steps['work:episode:episode/draft'].value.scenes, scenes)
+  if (legacy) {
+    // Reproduce an existing, complete pre-scheduler draft rather than asking
+    // the writer to replace it when its missing identities are validated.
+    const workflow = { ...workflowRequest.parse(payload.workflow), intent: 'stage_design', artifact_types: ['episode_script'] }
+    checkpoint.steps = { draft: {
+      input_hash: createHash('sha256').update(JSON.stringify({ prompt: checkpoint.prompt, workflow })).digest('hex'),
+      value: authored,
+    } }
+    run('UPDATE script_generation_checkpoints SET payload=? WHERE project_id=?', JSON.stringify(checkpoint), project.id)
+  }
+  assert.deepEqual(script(), before)
+  resolve = true
+  const retried = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload })
+  assert.equal(retried.statusCode, 200, retried.body)
+  assert.deepEqual(contracts, ['workflow_draft', 'script_episode_scene_identity_mapping', 'script_episode_scene_identity_mapping', 'script_episode_scene_identity_review'])
+  const candidate = retried.json().tool_draft
+  assert.equal(reviews, 1, 'the repaired metadata must still pass independent complete-episode review')
+  assert.deepEqual(candidate.workflow.artifacts, request.artifacts)
+  assert.deepEqual(candidate.workflow.scenes.map(({ source_scene_id: _id, ...scene }: any) => scene), scenes)
+  assert.deepEqual(candidate.workflow.scenes.map((scene: any) => scene.source_scene_id || null), original.map(scene => scene.source_scene_id || null))
+  assert.deepEqual(script(), before, 'metadata recovery presents a preview without writing the script')
+  assert.deepEqual(references(), originalReferences)
+  })
+})
+
+test('episode identity recovery still blocks rejected semantics and concurrent changes before presenting any draft', async t => {
+  for (const conflict of ['review-rejected', 'scene-changed', 'document-changed'] as const) await t.test(conflict, async t => {
+    const { project, script, request, references, sources, source } = await episodeFixture()
+    const provider = await call('POST', '/api/providers', { name: '场次身份恢复边界', base_url: 'https://identity-boundary.invalid/v1' })
+    const model = await call('POST', '/api/models', { provider_id: provider.id, name: '文本', remote_id: 'mock', modality: 'text', protocol: 'chat_completions', settings: {
+      request_path: 'chat/completions', request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] },
+      structured_output_mode: 'json_schema', text_path: 'choices.0.message.content',
+    } })
+    const scenes = request.scenes.map(({ source_scene_id: _id, ...scene }) => scene)
+    const originalReferences = references(), contracts: string[] = []
+    let expected = script()
+    t.mock.method(globalThis, 'fetch', async (_url, init) => {
+      const reviewed = draftCompletenessFixtureResponse(init); if (reviewed) return reviewed
+      const body = JSON.parse(String(init?.body)), contract = body.response_format?.json_schema?.name as string
+      contracts.push(contract)
+      let result: unknown
+      if (contract === 'workflow_draft') result = { artifacts: request.artifacts, scenes }
+      else if (contract === 'script_episode_scene_identity_mapping') {
+        if (conflict === 'scene-changed') run('UPDATE script_scenes SET dialogue=? WHERE id=?', '作者在关联核对期间更新的对白', sources[0]!.id)
+        if (conflict === 'document-changed') run('UPDATE script_artifacts SET content=? WHERE id=?', '作者在关联核对期间更新的正文', source.id)
+        expected = script()
+        result = { matches: sources.map((item, scene_index) => ({ source_scene_id: item.id, scene_index,
+          source_field: 'action', source_quote: item.action, draft_field: 'action', draft_quote: scenes[scene_index]!.action,
+          reason: '对应同一角色行动与事件的重新设计。' })), unresolved: [] }
+      } else {
+        assert.equal(contract, 'script_episode_scene_identity_review')
+        result = { checked_source_scene_ids: sources.map(item => item.id), issues: conflict === 'review-rejected'
+          ? [{ source_scene_id: sources[0]!.id, kind: 'unrelated_match', scene_index: 0, reason: '引文真实但新场事件身份与旧场不对应。' }] : [] }
+      }
+      return Response.json({ choices: [{ message: { content: JSON.stringify(result) }, finish_reason: 'stop' }] })
+    })
+    const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload: {
+      model_id: model.id, mode: 'script', use_tools: true, workflow: { stage: 'episode', episode_number: 1, operation: 'regenerate' },
+      messages: [{ role: 'user', text: '重新设计第一集，保留全部原场次和镜头关联。' }],
+    } })
+    assert.equal(response.statusCode, conflict === 'review-rejected' ? 422 : 409, response.body)
+    assert.match(response.body, conflict === 'review-rejected' ? /独立复核不接受/ : /已变化|已被修改/)
+    assert.deepEqual(contracts, ['workflow_draft', 'script_episode_scene_identity_mapping', 'script_episode_scene_identity_review'])
+    assert.equal(getToolDraft(project.id), null)
+    assert.deepEqual(script(), expected, 'recovery must not overwrite concurrent edits or rejected content')
+    assert.deepEqual(references(), originalReferences)
+  })
+})
+
 test('unfinished stages and episode gaps are locked while saved stages remain available without resetting progress', async () => {
   assert.match(stageOperationError({}, { stage: 'locations', episode_number: 0 })!, /先完成并保存故事大纲/)
   assert.equal(stageOperationError({}, { stage: 'outline', episode_number: 0 }), null)
@@ -508,14 +686,14 @@ test('natural-language redesign resolves the old stage before tools over JSON an
     assert.equal(done.tool_draft.documents.length, 4)
     assert.equal(done.stage_context.stage, 'locations')
     assert.equal(intentCalls, 1)
-    assert.equal(turns, 2, 'the location design is split into spatial and continuity work items')
+    assert.equal(turns, 4, 'location design generates its four documents as separate work items')
     assert.deepEqual(script(), before)
     discardToolDraft(project.id, done.tool_draft.id, done.tool_draft.version)
     turns = 0
     const typed = await call('POST', `/api/projects/${project.id}/script/director/chat`, { ...payload, workflow: { stage: 'locations', operation: 'regenerate' } })
     assert.equal(typed.tool_draft.workflow.operation, 'regenerate')
     assert.equal(intentCalls, 1, 'a typed target is not reinterpreted by the model')
-    assert.equal(turns, 2)
+    assert.equal(turns, 4)
     t.mock.restoreAll()
   }
 })

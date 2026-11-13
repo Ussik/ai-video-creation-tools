@@ -35,8 +35,9 @@ export async function withCompatibleStructuredSettings<T>(model: GenerationModel
   } catch (issue) {
     signal?.throwIfAborted()
     const message = issue instanceof Error ? issue.message : String(issue)
-    const unsupported = !/invalid[_ ]schema|schema[^\n]{0,60}(?:invalid|not[_ ]valid)|无效.*schema/i.test(message) &&
-      /(?:返回|HTTP)\s*(?:400|422)\b/i.test(message) && /json_schema|response_format|text[. ]format|output_config[. ]format|structured.output/i.test(message) &&
+    const schemaProblem = /invalid[_ ]schema|schema[^\n]{0,80}(?:invalid|not[_ ]valid|too[_ ]large|too[_ ]long|size|complex|limit|keyword|propert|constraint)|(?:too[_ ]large|too[_ ]long|complex|keyword|constraint)[^\n]{0,80}schema|unsupported[_ ]keyword|无效.*schema/i.test(message)
+    const unsupported = !schemaProblem &&
+      /(?:返回|HTTP)\s*(?:400|422)\b/i.test(message) && /json_schema|response_format|text[. ]format|output_config(?:[. ]format)?|structured.output/i.test(message) &&
       /not.support|unsupported|unrecognized|unknown.parameter|not.allowed|不支持|无法识别/i.test(message)
     if (mode !== 'json_schema' || !unsupported) throw issue
     remember(key, 'prompt')

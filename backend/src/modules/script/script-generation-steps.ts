@@ -2,7 +2,7 @@ import { modelStepSignal } from '../generation/model-execution.js'
 import { createStreamScope } from '@video-studio/shared/script/script-stream-policy'
 import { createHash } from 'node:crypto'
 
-export type GenerationCheckpoint = { prompt?: string; steps: Record<string, { input_hash: string; value: unknown; duration_ms: number }> }
+export type GenerationCheckpoint = { prompt?: string; steps: Record<string, { input_hash: string; value: unknown; duration_ms?: number }> }
 export type GenerationStepEvent = { id: string; parent_id?: string; label: string; status: 'running' | 'succeeded' | 'failed' | 'cancelled'; reused?: boolean; duration_ms?: number }
 export type GenerationSteps = ReturnType<typeof createGenerationSteps>
 
@@ -25,7 +25,7 @@ export function createGenerationSteps(options: {
     retain<T>(id: string, _label: string, input: unknown, value: unknown, validate: (value: unknown) => T, _parentId?: string): T {
       const result = validate(structuredClone(value))
       const input_hash = createHash('sha256').update(JSON.stringify(input)).digest('hex')
-      checkpoint.steps[id] = { input_hash, value: structuredClone(result), duration_ms: 0 }
+      checkpoint.steps[id] = { input_hash, value: structuredClone(result) }
       options.save?.(checkpoint)
       return result
     },

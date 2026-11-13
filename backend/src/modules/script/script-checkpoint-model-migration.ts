@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { GenerationCheckpoint } from './script-generation-steps.js'
-import { scriptWorkPlan } from './script-task-execution.js'
+import { scriptWorkPlan, legacyScriptWorkPlan } from './script-task-execution.js'
 import { workflowGenerationDraftSchema, workflowRequest } from './script-workflow.js'
 
 /** Runtime identities contain configuration only, never credentials, provider
@@ -23,7 +23,7 @@ export function withScriptCheckpointModelMigration<T>(migration: ScriptCheckpoin
 }
 const fail = (message: string): never => { throw Object.assign(new Error(message), { statusCode: 409 }) }
 const checkpointSchema = z.object({ prompt: z.string().optional(), steps: z.record(z.string(), z.object({
-  input_hash: z.string(), value: z.unknown(), duration_ms: z.number().nonnegative(),
+  input_hash: z.string(), value: z.unknown(), duration_ms: z.number().nonnegative().optional(),
 }).strict()) }).strict()
 
 /** Older requests appended the default intent after serializing the other
@@ -60,7 +60,11 @@ export function migrateCompleteScriptDrafts(input: unknown, identity: unknown, s
   const binding = checkpoint.steps['progress:source']?.value as { source_version?: unknown } | undefined
   if (!binding || binding.source_version !== sourceVersion) return fail('已保留成果的来源无法与当前资料一致核对，不能迁移')
   const contracts = new Map<string, typeof request.data>([['draft', request.data], ['draft:whole', request.data]])
-  for (const task of scriptWorkPlan(request.data)) contracts.set(`work:${task.id}/draft`, { ...request.data, artifact_types: task.artifact_types })
+  for (const task of [...scriptWorkPlan(request.data), ...legacyScriptWorkPlan(request.data)]) {
+    const contract = { ...request.data, artifact_types: task.artifact_types }
+    contracts.set(`work:${task.id}/draft`, contract)
+    contracts.set(`work:document:${task.id}/draft`, contract)
+  }
   const steps: GenerationCheckpoint['steps'] = {}
   for (const [id, entry] of Object.entries(checkpoint.steps)) {
     const contract = contracts.get(id)
@@ -71,7 +75,7 @@ export function migrateCompleteScriptDrafts(input: unknown, identity: unknown, s
     // Embedded contracts may not silently override the exact request contract.
     if (Object.entries(contract).some(([key, expected]) => key in value && JSON.stringify(value[key]) !== JSON.stringify(expected))) continue
     if (!workflowGenerationDraftSchema.safeParse({ ...contract, ...value }).success) continue
-    if (!/^[a-f0-9]{64}$/.test(entry.input_hash) || !Number.isFinite(entry.duration_ms) || entry.duration_ms < 0) continue
+    if (!/^[a-f0-9]{64}$/.test(entry.input_hash) || entry.duration_ms !== undefined && (!Number.isFinite(entry.duration_ms) || entry.duration_ms < 0)) continue
     steps[id] = structuredClone(entry)
   }
   if (!Object.keys(steps).length) return fail('当前任务尚无可迁移的完整剧本成果；零散输出和远端请求不会转交给新模型')

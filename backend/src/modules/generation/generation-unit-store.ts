@@ -6,7 +6,7 @@ function valid(value: unknown): value is GenerationCheckpoint {
   if (!value || typeof value !== 'object' || !('steps' in value)) return false
   const steps = (value as GenerationCheckpoint).steps
   return !!steps && typeof steps === 'object' && !Array.isArray(steps) && Object.values(steps).every(step =>
-    step && typeof step.input_hash === 'string' && /^[a-f0-9]{64}$/.test(step.input_hash) && Object.hasOwn(step, 'value') && typeof step.duration_ms === 'number' && Number.isFinite(step.duration_ms) && step.duration_ms >= 0)
+    step && typeof step.input_hash === 'string' && /^[a-f0-9]{64}$/.test(step.input_hash) && Object.hasOwn(step, 'value') && (step.duration_ms === undefined || typeof step.duration_ms === 'number' && Number.isFinite(step.duration_ms) && step.duration_ms >= 0))
 }
 /** Identity rows coexist: one design/range cannot overwrite another task's
  * recoverable progress. No formal document is changed by checkpoint saves. */

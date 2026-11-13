@@ -8,14 +8,17 @@ export interface ShotManagementEntry {
   asset_count: number
   deleted_at: string | null
   delete_blockers: string[]
+  purge_blockers?: string[]
 }
 export interface ShotManagementSnapshot {
   revision: string
   shots: ShotManagementEntry[]
-  designs: Array<{ id: string; name: string; canvas_id: string | null }>
+  designs: Array<{ id: string; name: string; canvas_id: string | null; canvas_pending?: boolean;
+    source_type?: 'clip'; source_text?: string; total_duration?: number }>
   canvases: ShotManagementCanvasRef[]
   scenes: Array<{ id: string; heading: string; episode_number: number; position: number }>
-  trashed_assets: Array<{ id: string; filename: string; kind: string; deleted_at: string }>
+  trashed_assets: Array<{ id: string; filename: string; kind: string; deleted_at: string; purge_blockers?: string[] }>
+  empty_trash_blockers?: string[]
 }
 export interface ShotManagementPatch {
   title?: string
@@ -29,8 +32,11 @@ export interface ShotManagementPatch {
 }
 export interface ShotManagementActionInput {
   revision: string
-  action: 'update' | 'move' | 'duplicate' | 'trash' | 'restore' | 'restore_asset'
+  action: 'update' | 'move' | 'duplicate' | 'trash' | 'restore' | 'restore_asset' | 'trash_many' | 'trash_design' | 'restore_design'
+    | 'purge' | 'purge_many' | 'purge_asset' | 'empty_trash'
   shot_id?: string
+  shot_ids?: string[]
+  design_id?: string | null
   asset_id?: string
   patch?: ShotManagementPatch
   direction?: 'up' | 'down'

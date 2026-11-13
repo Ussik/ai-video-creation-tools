@@ -21,6 +21,7 @@ import type { Asset, AssetReview, AssetTask, AssetTaskEvent, CanvasEdge, CanvasN
 import { shotImagePrompt, shotVideoPrompt } from '@video-studio/shared/storyboard/shot-prompts'
 import { missingStageArtifacts, scriptArtifactLabels, scriptArtifactTypes, scriptStageArtifacts, scriptStageForArtifact } from '@video-studio/shared/script/script-stage-content'
 import { scriptDesignArtifactGuidance, scriptDesignStageInstructions } from '@video-studio/shared/script/script-design-content'
+import { maxScriptSceneDuration } from '@video-studio/shared/script/script-duration'
 import { decryptKey, encryptKey } from './infrastructure/security/secrets.js'
 import { generate, recoverImage, recoverVideo, streamText, validateVideoReferenceRequest, type TextRequestMetrics } from './infrastructure/providers/providers.js'
 import type { TextImageInput } from './infrastructure/providers/text-image-input.js'
@@ -42,15 +43,16 @@ import { promptParameterConflictMessage } from '@video-studio/shared/visuals/pro
 import { managedPromptBlockNames } from '@video-studio/shared/visuals/prompt-document'
 import { isPromptSectionDocument } from '@video-studio/shared/visuals/prompt-section-document'
 import { registerSkillRoutes } from './modules/skills/skill-routes.js'
-import { chooseCreationSkills, resolveCreationSkillContext, type CreationSkillSelector } from './modules/skills/model-skill-selection.js'
+import { chooseCreationSkills, chooseCreationSkillReferences, resolveCreationSkillContext, type CreationSkillSelector } from './modules/skills/model-skill-selection.js'
 import { registerPromptOptimizationRoutes } from './modules/jobs/prompt-optimization.js'
 import { createSubmission, findSubmission, jobSubmissionKey, submissionKey, submissionKeyInput, submissionRequestHash } from './modules/jobs/resource-submissions.js'
 import { generationRecoveryInfo, prepareGenerationExecution, validExternalTaskId } from './modules/jobs/job-generation-recovery.js'
 import { isContentPolicyRejection } from '@video-studio/shared/jobs/prompt-optimization'
-import { withSkillRules, applySkillRules, skillIdsInput, skillSelectionsInput, skillContext, skillPolicy } from './modules/skills/skills.js'
+import { withSkillRules, applySkillRules, fixedSkillContext, skillIdsInput, skillSelectionsInput, skillContext, skillPolicy, skillTaskPolicies } from './modules/skills/skills.js'
 import type { SkillStage } from './modules/skills/skills.js'
 import type { SkillTaskContext } from '@video-studio/shared/skills/skill-recommendation'
 import { registerStoryboardPlanningRoutes } from './modules/storyboard/storyboard-planning.js'
+import { registerClipStoryboardRoutes } from './modules/storyboard/clip-storyboard.js'
 import { activityRecorder, activityPreview, scriptActivitiesSchema, scriptExecutionSchema, type ScriptActivity } from './modules/script/script-activity.js'
 import { createDirectorTasks } from './modules/script/director-tasks.js'
 import { saveConversation } from './modules/script/script-conversations.js'
@@ -68,8 +70,9 @@ import { draftCompletenessSources, reviewScriptDraftCompleteness, ScriptDraftRev
 import { claimScriptDraft, clearScriptDraft, discardScriptDraft, draftResolutionInput, pendingScriptDraft, publicDraftResolution, repairScriptDraft, repairScriptSource, retainScriptDraft, updateScriptDraftRun, type PendingScriptDraft } from './modules/script/script-draft-resolution.js'
 import { generateScriptDraftRepairOutput, type DraftRepairOutput } from './modules/script/script-draft-repair-generation.js'
 import { advanceScriptDraftRepair, assessScriptDraftRepairProgress, scriptDraftDecisionReconciliationInstruction } from './modules/script/script-draft-repair-progress.js'
-import { executeScriptWorkPlan, restorePreservedScriptDraft, scriptWorkPlan, type ScriptWorkTask } from './modules/script/script-task-execution.js'
+import { executeScriptWorkPlan, retainedLegacyStageWork, restorePreservedScriptDraft, scriptWorkPlan, type ScriptWorkTask } from './modules/script/script-task-execution.js'
 import { initialScriptTaskContract, scriptTaskAcceptance, scriptTaskArtifactTypes } from '@video-studio/shared/script/script-task-contract'
+import { generateStageDraftWithContinuation } from './modules/script/script-stage-continuation.js'
 import { createScriptDraftRepairContext } from './modules/script/script-draft-repair-context.js'
 import { runScriptDraftRepairTools } from './modules/script/script-draft-repair-tools.js'
 import { createScriptExecutionUsage, scriptExecutionUsageLabel } from './modules/script/script-execution-usage.js'
@@ -84,9 +87,8 @@ import { isScriptThemeCategory } from '@video-studio/shared/script/script-theme-
 import { inputFields, interactionQuestions, classificationResult, directorInteractionSchema, directorStageContextSchema, hasStageInteractionMetadata, contextualReplyTypes, replyClassification, replyClassificationPrompt, parseReplyClassifications, replyClassificationVersion, replyFollowingMessages, type ReplySource } from './modules/script/script-reply-classification.js'
 import { referenceDocuments, decodeReferenceDocuments, referenceContext } from './modules/script/script-references.js'
 import { registerScriptSourceRoutes, scriptSourceContext, scriptSourceDocument, scriptSourceIndex, scriptSourceFallbackContext } from './modules/script/script-source-documents.js'
-import { buildScriptChatSourceContext } from './modules/script/script-chat-source-context.js'
+import { planScriptChatSourceContext } from './modules/script/script-chat-source-context.js'
 import { createGenerationSteps, type GenerationSteps } from './modules/script/script-generation-steps.js'
-import { generateStageDraftWithContinuation } from './modules/script/script-stage-continuation.js'
 import { hasRetainedGenerationWork, workflowDocumentContext } from './modules/script/script-workflow-context.js'
 import { generationCheckpointStore, clearGenerationCheckpoint } from './modules/script/script-generation-checkpoints.js'
 import { bindScriptGenerationProgressSource, discardScriptGenerationProgress, scriptGenerationProgress, scriptGenerationProgressCheckpoint } from './modules/script/script-generation-progress.js'
@@ -100,18 +102,22 @@ import { semanticContinuitySchema, semanticContinuityPrompt, parseSemanticContin
 import { documentAction, runScriptTools, getToolDraft, storyDecisions, toolDraftEdit, editToolDraft, discardToolDraft, commitToolDraft, attachDraftSourceUpdate, toolConversationStage, creationState, acceptCreationStep, clearCreationProposal, type ScriptToolDraft } from './modules/script/script-document-tools.js'
 import { documentHealth, documentReviewSchema } from './modules/script/script-document-review.js'
 import { projectDocuments, documentTools, validateWorkflowScenes } from './modules/script/script-document-tools.js'
+import { canRepairEpisodeSceneIdentity, repairEpisodeSceneIdentity } from './modules/script/script-episode-scene-identity.js'
 import { registerModelRoutes } from './modules/models/routes.js'
 import { checkProtocol, validateSettings } from './modules/models/validation.js'
 import { idParams, invalid, parse } from './infrastructure/http/request.js'
 import { extractVideoFrame, probeVideoDurationMs, render, type RenderClip } from './infrastructure/media/render.js'
 import { registerSpeechRoutes, projectSpeechData, speechCredentials, completeSpeechJob, type SpeechSnapshot } from './modules/speech/speech-routes.js'
 import { projectAudioSettings, speechExportPlan } from './modules/speech/speech-timeline.js'
+import { markChangedShotAdjacency, markShotContinuityEdited } from './modules/storyboard/storyboard-continuity-state.js'
 import type { SpeechAudioClip } from '@video-studio/shared/media/speech-timeline'
 import { synthesizeSpeech, type SpeechSynthesisResult } from './infrastructure/providers/speech-provider.js'
 import { probeSpeechDurationMs } from './modules/speech/speech-audio.js'
 import { registerAssetDownloadRoutes } from './modules/assets/asset-downloads.js'
 import { registerImagePromptAnalysisRoutes } from './modules/canvas/image-prompt-analysis.js'
 import { registerVideoPromptAnalysisRoutes, videoPromptAnalysisDraftSchema } from './modules/canvas/video-prompt-analysis.js'
+import { registerVideoAudioPlanRoutes, videoAudioPlanSchema, videoHandoffPlanSchema, videoAudioPlanInstructions, recoverGeneratedVideoAudioPlanSources } from './modules/canvas/video-audio-plan.js'
+import { registerVideoContinuityReviewRoutes } from './modules/canvas/video-continuity-review.js'
 import { registerVideoReviewRoutes } from './modules/assets/video-review.js'
 import { initializeVideoComparisonSchema, registerVideoComparisonRoutes } from './modules/generation/video-comparison.js'
 import { getAssetPreview } from './modules/assets/asset-previews.js'
@@ -122,6 +128,10 @@ import { registerEditingCutRoutes } from './modules/final-cut/editing-cuts.js'
 import type { EditingCutCaption } from '@video-studio/shared/media/editing-cut'
 
 const projectInput = z.object({ name: z.string().trim().min(1).max(120), brief: z.string().default(''), ratio: z.enum(['16:9', '9:16']).default('16:9') })
+const assetPatchInput = z.object({
+  display_name: z.string().regex(/^[^\x00-\x1f\x7f-\x9f]*$/u, '素材名称不能包含控制字符')
+    .trim().min(1, '请输入素材名称').max(120, '素材名称不能超过 120 个字符'),
+}).strict()
 const projectBatchDeleteInput = z.object({ project_ids: z.array(z.string().trim().min(1).max(120)).min(1) }).strict()
 const projectPatch = z.object({
   name: z.string().trim().min(1).max(120).optional(), brief: z.string().optional(),
@@ -133,6 +143,7 @@ const productionRangeInput = z.object({
 const shotInput = z.object({
   title: z.string().trim().min(1).max(120), prompt: z.string().default(''),
   image_prompt: z.string().max(20000).default(''), video_prompt: z.string().max(20000).default(''),
+  audio_plan: videoAudioPlanSchema.nullable().optional(),
   duration: z.number().int().min(1).max(30).default(5),
   source_scene_id: z.string().min(1).nullable().optional(),
   start_state: z.string().max(2000).default(''), end_state: z.string().max(2000).default(''),
@@ -141,6 +152,7 @@ const shotInput = z.object({
 const shotPatch = z.object({
   title: z.string().trim().min(1).max(120).optional(), prompt: z.string().optional(),
   image_prompt: z.string().max(20000).optional(), video_prompt: z.string().max(20000).optional(),
+  audio_plan: videoAudioPlanSchema.nullable().optional(),
   duration: z.number().int().min(1).max(30).optional(), position: z.number().int().min(0).optional(),
   start_state: z.string().max(2000).optional(), end_state: z.string().max(2000).optional(),
   cut_note: z.string().max(2000).optional(),
@@ -151,7 +163,7 @@ const scriptSceneFields = z.object({
   location: z.string().max(500).default(''), time_of_day: z.string().max(120).default(''),
   characters: z.string().max(2000).default(''), action: z.string().max(10000).default(''),
   dialogue: z.string().max(10000).default(''), narration: z.string().max(10000).default(''),
-  duration: z.number().int().min(1).max(30).default(5),
+  duration: z.number().int().min(1).max(maxScriptSceneDuration).default(5),
 })
 const scriptGenerationOptions = scriptSettingsSchema
 
@@ -290,7 +302,7 @@ const scriptDraftArtifact = z.object({
 })
 const scriptDraft = z.object({
   outline: z.string().max(20000), characters: z.string().max(20000),
-  scenes: z.array(scriptSceneFields.extend({ duration: z.number().int().min(1).max(30) })).min(1).max(100),
+  scenes: z.array(scriptSceneFields.extend({ duration: z.number().int().min(1).max(maxScriptSceneDuration) })).min(1).max(100),
   artifacts: z.array(scriptDraftArtifact).max(scriptArtifactTypes.length).optional(),
 }).superRefine((draft, context) => {
   const artifacts = draft.artifacts || []
@@ -324,6 +336,7 @@ const plannedShot = z.object({
   title: z.string().trim().min(1).max(120),
   prompt: z.string().trim().min(1).max(10000),
   image_prompt: z.string().max(20000).default(''), video_prompt: z.string().max(20000).default(''),
+  audio_plan: videoAudioPlanSchema,
   duration: z.number().int().min(1).max(30),
   start_state: z.string().max(2000).default(''),
   end_state: z.string().max(2000).default(''),
@@ -332,7 +345,11 @@ const plannedShot = z.object({
 const shotPlanDraft = z.object({
   scenes: z.array(z.object({ scene_id: z.string().min(1), shots: z.array(plannedShot).min(1).max(5) })).min(1).max(10),
 })
-const createPlannedShotsInput = shotPlanDraft.extend({ request_id: z.uuid() })
+// Previously previewed drafts have no audio contract; keep them explicitly
+// unknown on save, while new model output always requires the full contract.
+const createPlannedShotsInput = z.object({ request_id: z.uuid(), scenes: z.array(z.object({
+  scene_id: z.string().min(1), shots: z.array(plannedShot.extend({ audio_plan: videoAudioPlanSchema.nullable().optional() })).min(1).max(5),
+})).min(1).max(10) })
 const videoReferenceUsageInput = z.array(z.object({ asset_id: z.string().min(1).max(100), usage: z.enum(videoReferenceUsages) }).strict()).max(30)
 const promptReferenceOverridesInput = z.record(z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/), z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/).nullable())
   .refine(value => Object.keys(value).length <= 100, '参考图片调整不能超过 100 项')
@@ -459,6 +476,7 @@ const canvasSettings = z.object({
   video_analysis_end_ms: z.number().int().nonnegative().nullable().optional(),
   video_analysis_fps: z.number().min(0.2).max(5).optional(),
   video_analysis_result: videoPromptAnalysisDraftSchema.optional(),
+  modify_confirmed_audio: z.boolean().optional(),
   visual_dependencies: z.boolean().optional(),
   visual_profile_id: z.string().min(1).max(100).optional(),
   visual_profile_revision: z.number().int().min(1).optional(),
@@ -477,6 +495,8 @@ const canvasSettings = z.object({
     source_signature: z.string().min(1).max(100),
     applied_signature: z.string().min(1).max(100),
     inherited_reference_asset_ids: z.array(canvasId).max(100).optional(),
+    semantic_plan: videoHandoffPlanSchema.optional(),
+    semantic_source_signature: z.string().regex(/^[a-f0-9]{16}$/).optional(),
   }).strict().optional(),
   video_reference_usages: videoReferenceUsageInput.optional(),
   excluded_visual_profile_ids: z.array(canvasId).max(50).optional(),
@@ -927,9 +947,8 @@ function appendMissingScriptSettings(prompt: string, options: z.infer<typeof scr
 }
 
 function buildScriptGenerationPrompt(project: Project, data: z.infer<typeof scriptGenerationPromptInput>): string {
-  if (data.skill_selections?.script === undefined) return baseScriptGenerationPrompt(project, data)
   return withSkillRules('script', baseScriptGenerationPrompt(project, data), undefined, { projectId: project.id, selections: data.skill_selections,
-    task: { text: data.idea, workflow_stage: 'episode', purpose: 'create' } })
+    task: { task_kind: 'script_write', text: data.idea, workflow_stage: 'episode', purpose: 'create' } })
 }
 function baseScriptGenerationPrompt(project: Project, data: z.infer<typeof scriptGenerationPromptInput>): string {
   const settingLines = scriptSettingLines(data.generation_options)
@@ -962,7 +981,7 @@ function baseScriptGenerationPrompt(project: Project, data: z.infer<typeof scrip
     `如果是系列剧，再返回 episode_outline。outline 和 characters 仍作为顶层字段返回。` +
     `每种文档类型仅一份，title 必填且非空，content 提供完整正文与小节标题，不重复文档总标题。\n` +
     scriptDesignStageInstructions('locations') + '\n' + scriptDesignStageInstructions('props') + '\n' +
-    `先分析故事节奏、动作复杂度、对白长度和情绪停顿，再给每场分配不同的 1 到 30 秒时长；不要机械均分。总时长以剧情完整和节奏自然为准。` +
+    `先分析故事节奏、动作复杂度、对白长度和情绪停顿，再给每场分配合理的 1 到 ${maxScriptSceneDuration} 秒时长；不要机械均分。场次可以包含多个镜头，不受单个生成镜头的时长限制。总时长以剧情完整和节奏自然为准。` +
     `每场写清楚可拍摄的视觉内容，人物与场景在各场保持一致。`
 }
 
@@ -973,6 +992,11 @@ function directorSkillTask(data: Pick<z.infer<typeof scriptDirectorChatInput>, '
     workflow_stage: data.workflow?.stage,
     ...(data.focus_artifact !== 'all' ? { focus: data.focus_artifact } : {}),
     ...(stage === 'script' ? { operation: data.document_action?.operation, purpose: 'create' as const } : { purpose: 'refine' as const }),
+    ...(!data.workflow && !data.document_action ? { selection_mode: 'model' as const } : {}),
+    ...(stage !== 'script' ? { task_kind: stage } : data.document_action?.operation === 'review' ? { task_kind: 'review' as const }
+      : data.document_action?.revision_kind === 'dialogue' ? { task_kind: 'dialogue_revision' as const }
+        : data.workflow?.intent === 'source_outline' ? { task_kind: 'source_analysis' as const }
+          : data.workflow ? { task_kind: data.workflow.stage === 'episode' ? 'script_write' as const : 'story_develop' as const } : {}),
   }
 }
 async function resolveDirectorSkills(project: Project, data: DirectorInput, task: string, model: Model, provider: Provider,
@@ -981,7 +1005,10 @@ async function resolveDirectorSkills(project: Project, data: DirectorInput, task
   const rules = await resolveCreationSkillContext({ stage, task, selectedIds: data.skill_selections?.[stage], projectId: project.id,
     modelId: model.id, assignmentTask: directorSkillTask(data, stage), signal,
     reuseKey: createHash('sha256').update(JSON.stringify([model.remote_id, model.protocol, model.settings, provider.id, provider.base_url, provider.adapter])).digest('hex'),
-    select: (_projectId, _modelId, input, requestSignal) => chooseCreationSkills(model, provider, input, item => decryptKey(item.key_ciphertext || null), requestSignal),
+    select: Object.assign<CreationSkillSelector, Pick<CreationSkillSelector, 'references'>>(
+      (_projectId, _modelId, input, requestSignal) => chooseCreationSkills(model, provider, input, item => decryptKey(item.key_ciphertext || null), requestSignal), {
+        references: (_projectId, _modelId, input, requestSignal) => chooseCreationSkillReferences(model, provider, input, item => decryptKey(item.key_ciphertext || null), requestSignal),
+      }),
     generate: (prompt, contract) => generateTextOutput(model, provider, prompt, contract, signal),
   })
   // Freeze this execution's decision for generation, validation and resume data.
@@ -1071,6 +1098,25 @@ function baseScriptDirectorChatPrompt(project: Project, data: z.infer<typeof scr
 }
 
 type DirectorInput = z.infer<typeof scriptDirectorChatInput>
+
+type WorkflowCheckpointContext = { workflow: NonNullable<DirectorInput['workflow']>; prompt: string; legacyPrompt: string }
+function legacyWorkflowCheckpointContexts(workflow: NonNullable<DirectorInput['workflow']>,
+  prompt: (workflow: NonNullable<DirectorInput['workflow']>, legacy: boolean) => string): WorkflowCheckpointContext[] {
+  const { intent, artifact_types, ...base } = workflow
+  if (!intent || !artifact_types) return []
+  const seen = new Set([JSON.stringify(workflow)]), contexts: WorkflowCheckpointContext[] = []
+  // The server previously appended either missing contract field after scope
+  // normalization. Recreate only those four equivalent historical orders so
+  // exact prompt and step hashes can still recover their original prose.
+  for (const hadIntent of [false, true]) for (const hadArtifacts of [false, true]) {
+    const declared = workflowRequest.parse({ ...base, ...(hadIntent ? { intent } : {}), ...(hadArtifacts ? { artifact_types } : {}) })
+    const variant = { ...declared, intent, artifact_types }, serialized = JSON.stringify(variant)
+    if (seen.has(serialized)) continue
+    seen.add(serialized)
+    contexts.push({ workflow: variant, prompt: prompt(variant, false), legacyPrompt: prompt(variant, true) })
+  }
+  return contexts
+}
 
 /** The creator's own earlier words (outside the 32-message window), verbatim, as part of every prompt of this conversation. */
 function earlierCreatorWording(projectId: string, data: { conversation_id?: string; messages: Array<{ id?: string; text: string }> }, strict = false) {
@@ -1167,10 +1213,11 @@ async function toolDirectorChat(project: Project, data: DirectorInput, model: Mo
   const messages = data.messages.map((message, index) => ({ index, ...message }))
   const pending = getToolDraft(project.id)
   const uploadedSource = scriptSourceDocument(project.id)
-  const sourceContext = buildScriptChatSourceContext(uploadedSource, { messages: data.messages, toolsAvailable: true,
+  const sourceContext = await planScriptChatSourceContext(uploadedSource, { messages: data.messages, toolsAvailable: true, signal,
     enabled: process.env.VIDEO_STUDIO_SCRIPT_TARGETED_CONTEXT !== '0', workflow: data.workflow, documentAction: data.document_action,
     pendingDraft: pending || data.intent_context?.pending_draft, questionResponse: data.question_response,
-    resourceActions: data.mode !== 'script' || data.messages.some(message => message.reference_documents?.length) })
+    resourceActions: data.mode !== 'script' || data.messages.some(message => message.reference_documents?.length) },
+  (prompt, contract) => generateTextOutput(model, provider, prompt, contract, signal))
   if (uploadedSource) {
     const contextStep = activity.start({ kind: 'context', label: sourceContext.mode === 'targeted' ? '读取相关剧本原文' : '使用完整剧本资料',
       summary: sourceContext.mode === 'targeted'
@@ -1186,14 +1233,28 @@ async function toolDirectorChat(project: Project, data: DirectorInput, model: Mo
       filename: uploadedSource.filename, revision: uploadedSource.revision || 0, total_length: uploadedSource.content.length,
       source_kind: 'effective', source_version: sourceContext.source_version, analysis_source_version: uploadedSource.analysis?.source_version },
     pending_draft: pending && { id: pending.id, version: pending.version, summary: pending.summary, revision_task: pending.revision_task } }
-  const skillRules = data.skill_selections?.script !== undefined
-    ? { script: skillContext('script', data.messages.map(message => message.text).join('\n'), data.skill_selections.script, project.id) } : {}
-  const creationSkills = skillPolicy(project.id).map(policy => ({
-    stage: policy.stage, label: policy.label, mode: data.skill_selections?.[policy.stage] !== undefined ? 'manual' : 'model',
-    locked_ids: data.skill_selections?.[policy.stage] ?? null,
-    default_ids: policy.primary_id ? [policy.primary_id, ...policy.auxiliary_ids] : [],
+  const skillTask = { ...directorSkillTask(data, 'script'),
+    ...(data.document_action?.operation === 'revise' && !data.document_action.revision_kind && stage.stage
+      ? { task_kind: stage.stage === 'episode' ? 'script_write' as const : 'story_develop' as const, workflow_stage: stage.stage } : {}) }
+  const fixedScriptRules = data.skill_selections?.script === undefined
+    ? fixedSkillContext('script', data.messages.map(message => message.text).join('\n'), project.id, skillTask) : undefined
+  const initialScriptRules = data.skill_selections?.script !== undefined
+    ? skillContext('script', data.messages.map(message => message.text).join('\n'), data.skill_selections.script, project.id)
+    : fixedScriptRules
+  const skillRules = initialScriptRules ? { script: initialScriptRules } : {}
+  const fixedAssignment = fixedScriptRules?.assignment
+  const taskPolicies = skillTaskPolicies(project.id)
+  const creationSkills = skillPolicy(project.id).map(policy => {
+    const binding = policy.stage !== 'script' && data.skill_selections?.[policy.stage] === undefined ? taskPolicies.find(task => task.task === policy.stage) : undefined
+    const boundIds = binding ? binding.primary_id ? [binding.primary_id, ...binding.auxiliary_ids] : [] : undefined
+    return {
+    stage: policy.stage, label: policy.label, mode: policy.stage === 'script' && fixedAssignment || binding ? 'fixed' : data.skill_selections?.[policy.stage] !== undefined ? 'manual' : 'model',
+    locked_ids: policy.stage === 'script' && fixedAssignment ? fixedAssignment.ids : data.skill_selections?.[policy.stage] ?? boundIds ?? null,
+    ...(policy.stage === 'script' && fixedAssignment ? { task: fixedAssignment.task, reason: fixedAssignment.reason } : binding ? { task: binding.task } : {}),
+    ...(binding?.warning ? { warning: binding.warning } : {}),
+    default_ids: boundIds ?? (policy.primary_id ? [policy.primary_id, ...policy.auxiliary_ids] : []),
     eligible_skills: policy.skills, loaded: policy.stage === 'script' && skillRules.script !== undefined,
-  }))
+  } })
   const prompt = applySkillRules(`你是项目「${project.name}」的影视创作协作者。你可以通过工具读取、搜索和操作本项目资料。\n` +
     `${directorModeInstructions(data.mode)}\n` +
     // Version-bound manuscript first: identical across turns of one source
@@ -1206,12 +1267,13 @@ async function toolDirectorChat(project: Project, data: DirectorInput, model: Mo
     (data.workflow ? `创作者本轮明确要求处理这个阶段：${JSON.stringify(data.workflow)}。operation=regenerate时先读完该阶段全部原文，再用create_document_draft提交完整的新设计草稿；operation=supplement时原样保留已有标题正文并补齐；operation=revise时读取并用propose_document_patch局部修订。未指定operation只生成尚未保存的当前阶段，仅处理指定阶段与集数。无需再建议点击生成，不自行保存。\n` : '') +
     (data.workflow ? workflowInstructions(data.workflow, 'tools') : '') +
     (!data.workflow && stage.stage ? `以下是当前阶段的内容标准，仅在创作者明确要求生成或修订时适用；普通讨论、设定回答和跳过不授权创建草稿。\n${workflowContentInstructions({ stage: stage.stage, scope: stage.stage === 'episode' ? 'episode' : 'project', episode_number: stage.episode_number || 0, target_duration: data.generation_options?.episode_duration })}` : '') +
-    (data.document_action ? `本轮明确操作：${JSON.stringify(data.document_action)}。先读这些文档。review只评审；revise依据最新创作者要求提出修改，仅能修改这些文档。\n` : '') +
+    (data.document_action ? `本轮明确操作：${JSON.stringify(data.document_action)}。先读这些文档。review只评审；revise依据最新创作者要求提出修改，仅能修改这些文档。\n` +
+      (data.document_action.revision_kind === 'dialogue' ? '本轮为对白专项：只改选中文档中人物说出口的台词，逐字保留无关叙述、事件、人物身份、动作、旁白、地点、场序与时长，不新增或删除场次。对应分场仅同步dialogue字段。保留原意、事实和剧情走向，强化人物声线、潜台词、口语节奏与冲突；用精确片段替换提交待确认草稿，不自行保存。\n' : '') : '') +
     (data.question_response ? `本轮为设定回答：${JSON.stringify(data.question_response)}。只讨论、记录具体决定和追问，不生成或保存文档。\n` : '') +
     `${referenceContext(data.messages)}${earlierCreatorWording(project.id, data, Boolean(data.workflow))}实际对话（index用于决定来源）：\n${JSON.stringify(messages)}`, skillRules.script || { text: '', skills: [], files: [] })
   if (skillRules.script) activity.skills('script', skillRules.script)
   const result = await runScriptTools({ project, script: () => projectScript(project.id), stage,
-    model, provider, prompt, activity, skillRules, skillSelections: data.skill_selections || {}, messages: data.messages, conversationId: data.conversation_id, action: data.document_action, workflow: data.workflow?.stage, operation: data.workflow?.operation, taskContract: data.workflow, currentSettings: data.generation_options,
+    model, provider, prompt, activity, skillRules, skillTaskContext: skillTask, skillSelections: data.skill_selections || {}, messages: data.messages, conversationId: data.conversation_id, action: data.document_action, workflow: data.workflow?.stage, operation: data.workflow?.operation, taskContract: data.workflow, currentSettings: data.generation_options,
     onSkillSelection: (stage, ids) => {
       data.skill_selections = { ...data.skill_selections, [stage]: ids }
       styleSync?.onSkillsSelected?.(data)
@@ -1298,7 +1360,9 @@ async function directStageDirectorChat(project: Project, data: DirectorInput, mo
   let generated: ReturnType<typeof directorResult>
   try {
     const raw = await directorTextOutput(project, model, provider, data, prompt, event => onEvent(event), signal, activity, redesign?.validate, false,
-      metrics => measurements.push(metrics), checkpointContext, legacyCheckpointContext)
+      metrics => measurements.push(metrics), checkpointContext, legacyCheckpointContext,
+      legacyWorkflowCheckpointContexts(workflow, (variant, legacy) => buildScriptDirectorChatPrompt(project, { ...data, workflow: variant },
+        { ...promptTask, legacyArtifactContext: legacy }) + (redesign?.prompt || '')))
     generated = directorResult(raw, data)
     activity.finish(generation, 'succeeded', { summary: '模型已返回有效的阶段草稿', ...combineTextMetrics(measurements) })
   } catch (error) {
@@ -1345,9 +1409,13 @@ function combineTextMetrics(values: TextRequestMetrics[]): Partial<TextRequestMe
     }, {}),
     ...(last.request_purpose ? { request_purpose: values.every(item => item.request_purpose === last.request_purpose) ? last.request_purpose : 'mixed' } : {}),
     ...(values.length === 1 && last.output_limit !== undefined ? { output_limit: last.output_limit } : {}),
+    ...(values.length === 1 && last.output_limit_reason ? { output_limit_reason: last.output_limit_reason } : {}),
+    ...(values.length === 1 && last.output_limit_kind ? { output_limit_kind: last.output_limit_kind } : {}),
     ...(last.estimated_input_tokens !== undefined ? { estimated_input_tokens: last.estimated_input_tokens } : {}),
     ...(last.context_window_tokens !== undefined ? { context_window_tokens: last.context_window_tokens } : {}),
     ...(last.reserved_output_tokens !== undefined ? { reserved_output_tokens: last.reserved_output_tokens } : {}),
+    ...Object.fromEntries((['input_limit_tokens', 'output_limit_tokens', 'budget_mode', 'input_count_method', 'capacity_status', 'output_source', 'capability_source'] as const)
+      .flatMap(key => last[key] === undefined ? [] : [[key, last[key]]])),
     ...(last.upstream_request_id ? { upstream_request_id: last.upstream_request_id } : {}),
     ...(last.http_status ? { http_status: last.http_status } : {}) }
 }
@@ -1514,10 +1582,12 @@ function resolutionSourceVersion(project: Project) {
     creationState(project.id, projectScript(project.id)).version, currentScriptSourceVersion(project.id)])).digest('hex')
 }
 
-function directorRecoveryKey(project: Project, model: Model, provider: Provider, data: DirectorInput) {
+function directorRecoveryKey(project: Project, model: Model, provider: Provider, data: DirectorInput, legacyWorkflowOrder = false) {
   const selectedStages = (Object.keys(data.skill_selections || {}) as SkillStage[])
     .filter(stage => stage !== 'script' && data.skill_selections?.[stage] !== undefined).sort()
-  return createHash('sha256').update(JSON.stringify({ version: 1, source: resolutionSourceVersion(project),
+  return createHash('sha256').update(JSON.stringify({ version: 2, source: resolutionSourceVersion(project),
+    task: { ...directorSkillTask(data, 'script'), document_action: data.document_action,
+      workflow: data.workflow && !legacyWorkflowOrder ? workflowRequest.parse(data.workflow) : data.workflow },
     pending: pendingScriptDraft(project.id)?.version, preview: getToolDraft(project.id)?.version,
     model: { id: model.id, protocol: model.protocol, remote_id: model.remote_id, settings: model.settings },
     provider: { id: provider.id, base_url: provider.base_url, adapter: provider.adapter, auth_header: provider.auth_header, auth_prefix: provider.auth_prefix },
@@ -1625,6 +1695,9 @@ async function resumeScriptDraftOnce(project: Project, data: DirectorInput, mode
     const repairDiagnostic = (priorDiagnostic ? `上次修订诊断：${priorDiagnostic === 'unchanged' ? '提交内容未改变实际正文' : '提交内容回到了此前已经复核过的正文'}。请核对仍未落实的问题，读取相关段落后作出新的有效修改，避免重复同一补丁。\n` : '') +
       (claimed.repair_history?.strategy === 'decision_reconciliation' ? scriptDraftDecisionReconciliationInstruction + '\n' : '') +
       (pending.draft.intent === 'source_outline' ? '【原稿整理任务优先约束】只修正大纲对原稿的失真、遗漏或内部矛盾；原稿只读，source_edits必须为空数组。不创造原稿没有的规则、答案和结局，不因原稿未知而补造，不把设计深化建议作为缺口。下文通用创作修补规则仅在此范围内适用。\n' : '')
+    const repairTiming = pending.draft.stage === 'episode' ? { unit: 'seconds' as const,
+      estimated_total: pending.draft.scenes.reduce((sum, scene) => sum + scene.duration, 0),
+      ...(pending.draft.target_duration === undefined ? {} : { target_duration: pending.draft.target_duration }) } : undefined
     const prompt = withSkillRules('script', repairDiagnostic + `继续已授权阶段的候选草稿，只补齐下列冲突和缺口，并同步受影响文档及分场。返回精确替换 edits、简短 summary 及按问题顺序逐项对应的 decisions（每项写实际采用的具体决定，不只写委托AI），不重写整套文档，不保存。\n` +
       `find 必须逐字引用对应 source_key 的原文且唯一；同一来源的替换范围不得重叠。需插入时用包含插入位置的原文作为 find。保留无关段落的全部文字、标题、原场次ID、人物身份、集数、主线与结局。\n` +
       `原剧本已明确的故事事实、集数、主线和结局作为依据；原稿未展开的细节按本次决定补齐。用户方案优先于 AI 建议，AI 委托仅针对列出的问题及其直接关联。已有事实互相冲突时采用最小改动使因果自洽，在 summary 中说明调整，不扩展到其他阶段。\n` +
@@ -1667,11 +1740,16 @@ async function resumeScriptDraftOnce(project: Project, data: DirectorInput, mode
         undefined, { projectId: project.id, selections: original.skill_selections })
       const fallback = () => generateScriptDraftRepairOutput(toolPrompt +
         `\n可替换来源：${JSON.stringify(draftCompletenessSources(pending.draft))}`, pending.findings.map(findingIdentity), generateRepair,
-        { signal, steps: repairSteps, validate: validateRepair, onRecovery: recovery })
+        { signal, steps: repairSteps, validate: validateRepair, onRecovery: recovery, timing: repairTiming })
       const legacyInputHash = createHash('sha256').update(JSON.stringify({ prompt })).digest('hex')
       const legacyRecoveryHash = createHash('sha256').update(JSON.stringify({ version: 1, prompt, issue_ids: pending.findings.map(findingIdentity) })).digest('hex')
+      const legacyTimingInputHash = repairTiming && createHash('sha256').update(JSON.stringify({ prompt, timing: repairTiming })).digest('hex')
+      const legacyTimingRecoveryHash = repairTiming && createHash('sha256').update(JSON.stringify({ version: 1, prompt,
+        issue_ids: pending.findings.map(findingIdentity), timing: repairTiming })).digest('hex')
       const legacy = repairStore.checkpoint.steps.repair?.input_hash === legacyInputHash ||
-        repairStore.checkpoint.steps['repair:recovery']?.input_hash === legacyRecoveryHash
+        repairStore.checkpoint.steps['repair:recovery']?.input_hash === legacyRecoveryHash ||
+        !!repairTiming && (repairStore.checkpoint.steps.repair?.input_hash === legacyTimingInputHash ||
+          repairStore.checkpoint.steps['repair:recovery']?.input_hash === legacyTimingRecoveryHash)
       const repairToolEntries = new Map<string, ScriptActivity>()
       const runTools = () => runScriptDraftRepairTools({
         workspace: createScriptDraftRepairContext({ candidateId: pending.id, candidateVersion: pending.version,
@@ -1690,7 +1768,7 @@ async function resumeScriptDraftOnce(project: Project, data: DirectorInput, mode
         },
       })
       const patch = legacy ? await generateScriptDraftRepairOutput(prompt, pending.findings.map(findingIdentity), generateRepair,
-        { signal, steps: repairSteps, validate: validateRepair, onRecovery: recovery })
+        { signal, steps: repairSteps, validate: validateRepair, onRecovery: recovery, timing: repairTiming })
         : await (repairBudget ? repairBudget.run(runTools) : runTools())
       repaired = repairScriptDraft(pending, patch.edits); sourceUpdate = repairScriptSource(pending, source, patch.source_edits); repairSummary = patch.summary
       repairDecisions = patch.decisions
@@ -1747,7 +1825,7 @@ async function resumeScriptDraftOnce(project: Project, data: DirectorInput, mode
     }
     ensureCurrent()
     const workflow = resolutionWorkflow(repaired!)
-    const result = redesign ? await redesign.finish(directorResult(JSON.stringify({ reply: repairSummary, artifacts: repaired!.artifacts, scenes: repaired!.scenes }), { ...continued, workflow }))
+    const result = redesign ? await redesign.finish({ reply: repairSummary!, draft: repaired! })
       : original.use_tools ? await presentStageDraft(project, continued, repaired!, repairSummary, send, signal, activity, source ? scriptDocumentVersion(source) : null)
       : { reply: repairSummary, draft: { ...repaired!, source_version: source ? scriptDocumentVersion(source) : null }, workflow, activity: activity.entries,
         stage_context: directorStageContext(projectScript(project.id), { explicit: workflow }) }
@@ -1836,7 +1914,10 @@ async function executeDirectorChatRequest(project: Project, data: DirectorInput,
   const generation = activity.start({ kind: 'model', label: '模型处理请求', name: model.name, summary: resolved.data.workflow ? '正在编写当前阶段草稿' : '正在处理创作对话' })
   send({ type: 'progress', stage: 'analysis', text: resolved.data.workflow ? '正在编写当前阶段的可编辑文档…' : '正在分析故事结构、人物动机和当前问题…' })
   const preserved = preservedStageArtifacts(project.id, resolved.data.workflow)
-  const fullText = await directorTextOutput(project, model, provider, resolved.data, prompt, send, signal, activity, redesign?.validate, Boolean(resolved.sourceText), undefined, checkpointContext, legacyCheckpointContext)
+  const fullText = await directorTextOutput(project, model, provider, resolved.data, prompt, send, signal, activity, redesign?.validate, Boolean(resolved.sourceText), undefined, checkpointContext, legacyCheckpointContext,
+    resolved.data.workflow ? legacyWorkflowCheckpointContexts(resolved.data.workflow, (variant, legacy) => buildScriptDirectorChatPrompt(project,
+      { ...resolved.data, workflow: variant }, { ...resolved, brief: undefined, savedContext, redesignEpisode: redesign?.episodeNumber,
+        legacyArtifactContext: legacy }) + (redesign?.prompt || '')) : [])
   signal.throwIfAborted()
   const generated = directorResult(fullText, resolved.data, resolved.sourceText, preserved)
   if (generated.draft && currentScriptSourceVersion(project.id) !== sourceVersion) {
@@ -2014,10 +2095,11 @@ function baseShotPlanningPrompt(project: Project, scenes: ScriptScene[], shotsPe
     `若场次已有镜头，请规划新的补充画面，避免重复已有镜头；新镜头会追加，原镜头和素材保留。` +
     `prompt 是镜头的叙事描述。image_prompt 独立描述单幅开镜首帧：主体、场景、景别、静态姿态、构图、光线与风格，不写动作链、运镜或对白字幕。` +
     `video_prompt 独立描述从首帧开始的动作先后、表情变化、运镜、节奏与收镜状态，保持人物、服装、道具和场景连贯，不重复图片信息图的拼版要求。` +
+    `${videoAudioPlanInstructions}\n` +
     `每镜补充 start_state（开镜时人物位置、姿势、道具状态）、end_state（收镜时状态）、cut_note（本镜如何从前一镜接入及建议切点，整段第一镜可留空）；相邻镜头的状态应连续，禁止动作无因重置。` +
     `不要在画面中加入文字、字幕或水印。\n` +
     `只输出合法 JSON 对象，不要 Markdown 或说明。格式：` +
-    `{"scenes":[{"scene_id":"原始场次 ID","shots":[{"title":"镜头标题","prompt":"镜头叙事描述","image_prompt":"单幅首帧图片提示词","video_prompt":"连续动作与运镜视频提示词","duration":镜头秒数,"start_state":"开镜状态","end_state":"收镜状态","cut_note":"接镜方式"}]}]}。\n` +
+    `{"scenes":[{"scene_id":"原始场次 ID","shots":[{"title":"镜头标题","prompt":"镜头叙事描述","image_prompt":"单幅首帧图片提示词","video_prompt":"连续动作与运镜视频提示词","audio_plan":{"version":1,"speech":[{"speaker":"说话者","text":"原文台词","delivery":"语气与发声方式","mode":"dialogue","source_text":"包含该台词的原文摘录"}],"sound_effects":[],"music":"","silent":false},"duration":镜头秒数,"start_state":"开镜状态","end_state":"收镜状态","cut_note":"接镜方式"}]}]}。没有台词时speech返回空数组，其他声音也必须按原文填写；完全无声时silent才为true。\n` +
     `待拆场次：${JSON.stringify(scenes.map(scene => ({
       id: scene.id, heading: scene.heading, location: scene.location, time_of_day: scene.time_of_day,
       characters: scene.characters, action: scene.action, dialogue: scene.dialogue,
@@ -2043,25 +2125,6 @@ function selectedScenes(projectId: string, ids: string[]): ScriptScene[] {
     .filter(scene => ids.includes(scene.id))
   if (scenes.length !== ids.length) invalid('所选场次不属于当前项目')
   return scenes
-}
-
-function distributeShotDurations(shots: z.infer<typeof plannedShot>[], duration: number): number[] {
-  if (shots.length > duration) invalid('镜头数量不能超过场次秒数')
-  if (shots.reduce((sum, shot) => sum + shot.duration, 0) === duration) return shots.map(shot => shot.duration)
-  const remaining = duration - shots.length
-  const weights = shots.map(shot => Math.max(1, shot.duration))
-  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0)
-  const shares = weights.map(weight => remaining * weight / totalWeight)
-  const allocations = shares.map(share => Math.floor(share))
-  let leftover = remaining - allocations.reduce((sum, value) => sum + value, 0)
-  const order = shares.map((share, index) => ({ index, remainder: share - allocations[index]! }))
-    .sort((a, b) => b.remainder - a.remainder || a.index - b.index)
-  for (const item of order) {
-    if (!leftover) break
-    allocations[item.index]! += 1
-    leftover -= 1
-  }
-  return allocations.map(value => value + 1)
 }
 
 async function generateTextOutput(model: Model, provider: Provider, prompt: string, contract?: OutputContract, signal?: AbortSignal, images?: TextImageInput[]): Promise<string> {
@@ -2105,7 +2168,9 @@ async function tracedDirectorRequest(model: Model, provider: Provider, text: str
   onEvent: (event: Record<string, unknown>) => void = () => {}, onMetrics?: (metrics: TextRequestMetrics) => void) {
   const parent = activity && [...activity.entries].reverse().find(entry => entry.scope === 'task' && entry.status === 'running')
   const phase = activity && [...activity.entries].reverse().find(entry => entry.scope === 'step' && entry.kind === 'context' && entry.status === 'running')
-  const labels: Record<string, string> = { workflow_draft: '模型编写完整阶段草稿', script_stage_blocks: '模型继续编写未完成内容', script_draft_completeness: '模型整体核对阶段设定', script_draft_evidence_repair: '模型定位候选稿原文证据' }
+  const labels: Record<string, string> = { workflow_draft: '模型编写完整阶段草稿', script_stage_blocks: '模型继续编写未完成内容',
+    script_episode_scene_identity_mapping: '模型核对新旧场次对应关系', script_episode_scene_identity_review: '模型复核场次关联',
+    script_draft_completeness: '模型整体核对阶段设定', script_draft_evidence_repair: '模型定位候选稿原文证据' }
   const entry = activity?.start({ kind: 'model', scope: 'step', attempt: modelAttemptNumber(), parent_id: parentId || phase?.id || parent?.id, name: model.name,
     label: labels[contract?.name || ''] || (phase?.label === '核对阶段设定' ? '模型核对阶段设定' : '模型处理当前步骤'), summary: phase?.label || '生成当前阶段内容' })
   let metrics: TextRequestMetrics | undefined
@@ -2241,7 +2306,9 @@ function directorGenerationSteps(store: ReturnType<typeof generationCheckpointSt
 
 async function directorTextOutput(project: Project, model: Model, provider: Provider, data: DirectorInput, prompt: string,
   onEvent: (event: Record<string, unknown>) => void = () => {}, signal?: AbortSignal, activity?: ReturnType<typeof activityRecorder>, validate?: (draft: Parameters<typeof validateWorkflowScenes>[1]) => void, preserveSource = false,
-  onMetrics?: (metrics: TextRequestMetrics) => void, checkpointContext?: string, legacyCheckpointContext?: string) {
+  onMetrics?: (metrics: TextRequestMetrics) => void, checkpointContext?: string, legacyCheckpointContext?: string,
+  legacyWorkflowContexts: readonly WorkflowCheckpointContext[] = []) {
+  data = { ...data }
   const source = scriptSourceDocument(project.id)
   if (source) completeSourceEvidence(source)
   const parent = activity && [...activity.entries].reverse().find(entry => entry.scope === 'task' && entry.status === 'running')
@@ -2264,25 +2331,49 @@ async function directorTextOutput(project: Project, model: Model, provider: Prov
     model: { id: model.id, remote_id: model.remote_id, protocol: model.protocol, settings: model.settings },
     provider: { id: provider.id, adapter: provider.adapter, base_url: provider.base_url, auth_header: provider.auth_header, auth_prefix: provider.auth_prefix },
   }
-  const store = generationCheckpointStore(project.id, checkpointIdentity, 'generation',
+  let store = generationCheckpointStore(project.id, checkpointIdentity, 'generation',
     legacyCheckpointContext ? [{ ...checkpointIdentity, prompt: legacyCheckpointContext }] : [])
+  if (!hasRetainedGenerationWork(store.checkpoint)) for (const context of legacyWorkflowContexts) {
+    const identity = { ...checkpointIdentity, prompt: context.prompt, workflow: context.workflow }
+    const retained = generationCheckpointStore(project.id, identity, 'generation', [{ ...identity, prompt: context.legacyPrompt }])
+    if (!hasRetainedGenerationWork(retained.checkpoint)) continue
+    // Preserve the original request order as well as its complete prompt:
+    // individual writing-step hashes include both. Keep this legacy identity
+    // as the primary store so another retry cannot orphan its exact inputs.
+    store = retained
+    data.workflow = context.workflow
+    break
+  }
   const generationPrompt = store.reusedCompatibleIdentity && !hasRetainedGenerationWork(store.checkpoint)
     ? prompt : store.checkpoint.prompt || prompt
   if (store) store.checkpoint.prompt = generationPrompt
   const steps = store ? directorGenerationSteps(store, signal, activity, parent) : undefined
+  const identitySnapshot = projectScript(project.id)
+  const identityDocuments = projectDocuments(project.id, identitySnapshot).filter(document => document.artifact_type === 'episode_script' &&
+    document.episode_number === data.workflow!.episode_number)
+  const missingSceneIdentity = (error: unknown, draft: WorkflowDraft) => Boolean(error && typeof error === 'object' &&
+    'code' in error && error.code === 'episode_scene_identity_missing' && canRepairEpisodeSceneIdentity(draft, identitySnapshot.scenes))
+  const validateAuthoredDraft = (draft: WorkflowDraft) => {
+    try { validate?.(draft) }
+    catch (error) {
+      // Only a missing association is deferred. Foreign/duplicate IDs and
+      // every other business error keep the existing failure boundary.
+      if (!missingSceneIdentity(error, draft)) throw error
+    }
+  }
   bindScriptGenerationProgressSource(steps!, source ? scriptDocumentVersion(source) : null,
     activity?.entries.find(entry => entry.task_id)?.task_id)
-  const legacyWork = Boolean(store.checkpoint.steps.draft || store.checkpoint.steps['draft:stream:state'])
+  const legacyEpisodeWork = data.workflow.stage === 'episode' && Boolean(store.checkpoint.steps.draft || store.checkpoint.steps['draft:stream:state'])
   const taskEntries = new Map<string, ScriptActivity>()
   const taskPlan = scriptWorkPlan(data.workflow)
   const planEntry = activity?.start({ kind: 'context', scope: 'step', parent_id: parent?.id, label: '安排创作任务',
     summary: taskPlan.map(task => task.label.replace(/^编写/, '')).join(' → '),
     ...activityPreview(taskPlan.map(({ id, label, depends_on, acceptance }) => ({ id, label, depends_on, acceptance })), 'output') })
   if (planEntry) activity!.finish(planEntry, 'succeeded')
-  const value = legacyWork ?
+  const value = legacyEpisodeWork ?
     await steps!.run('draft', '编写阶段草稿', { prompt: generationPrompt, workflow: data.workflow }, async () => {
     const result = await generateStageDraftWithContinuation(data.workflow!, generationPrompt, request, {
-      signal, steps: steps!, validate, contextRetrieval: true, contextSource: source ? { content: source.content, version: scriptDocumentVersion(source) } : undefined, onRetry: directorRetryNotice(activity),
+      signal, steps: steps!, validate: validateAuthoredDraft, contextRetrieval: true, contextSource: source ? { content: source.content, version: scriptDocumentVersion(source) } : undefined, onRetry: directorRetryNotice(activity),
       onProgress: message => {
         onEvent({ type: 'progress', stage: 'generating', text: message })
         if (activity) {
@@ -2297,8 +2388,9 @@ async function directorTextOutput(project: Project, model: Model, provider: Prov
       } },
     })
     return { artifacts: result.artifacts, scenes: result.scenes }
-  }, value => { const result = workflowEnvelope.parse(value); validate?.(workflowGenerationDraftSchema.parse({ ...data.workflow!, ...result })); return result }) : await executeScriptWorkPlan({
+  }, value => { const result = workflowEnvelope.parse(value); validateAuthoredDraft(workflowGenerationDraftSchema.parse({ ...data.workflow!, ...result })); return result }) : await executeScriptWorkPlan({
     request: data.workflow, steps: steps!, signal, contextRetrieval: true, contextSource: source ? { content: source.content, version: scriptDocumentVersion(source) } : undefined,
+    legacyWork: retainedLegacyStageWork(data.workflow, generationPrompt, steps!),
     preserved,
     prompt: task => {
       const request = { ...data.workflow!, artifact_types: task.artifact_types }
@@ -2311,7 +2403,7 @@ async function directorTextOutput(project: Project, model: Model, provider: Prov
       return tracedDirectorRequest(model, provider, text, contract, signal, activity, taskEntries.get(task.id)?.id,
         event => { if (onPartial && event.type === 'delta' && typeof event.text === 'string') { raw += event.text; onPartial(raw) } }, onMetrics)
     },
-    onTask: (task, status, candidate, error) => {
+    onTask: (task, status, candidate, error, timing) => {
       if (!activity) return
       if (status === 'running') {
         taskEntries.set(task.id, activity.start({ kind: 'context', scope: 'task', parent_id: parent?.id,
@@ -2319,7 +2411,8 @@ async function directorTextOutput(project: Project, model: Model, provider: Prov
       } else {
         const entry = taskEntries.get(task.id)
         if (entry) activity.finish(entry, status === 'succeeded' ? 'succeeded' : signal?.aborted ? 'cancelled' : 'failed', {
-          summary: candidate ? '本项成果已保留，可预览；任务完成后核对一致性' : error instanceof Error ? error.message.slice(0, 3000) : '本项任务未完成，已完成成果仍保留',
+          ...timing,
+          summary: candidate ? timing?.reused ? '已复用本项成果，可预览；任务完成后核对一致性' : '本项成果已保留，可预览；任务完成后核对一致性' : error instanceof Error ? error.message.slice(0, 3000) : '本项任务未完成，已完成成果仍保留',
           ...(candidate ? { artifact_preview: { stage: candidate.stage, scope: candidate.scope, episode_number: candidate.episode_number,
             artifacts: candidate.artifacts, scenes: candidate.scenes } } : {}),
         })
@@ -2332,8 +2425,15 @@ async function directorTextOutput(project: Project, model: Model, provider: Prov
     },
     onRetry: (task, attempt, delayMs) => directorRetryNotice(activity, taskEntries.get(task.id)?.id)(attempt, delayMs),
   })
-  const draft = restorePreservedScriptDraft(workflowGenerationDraftSchema.parse({ ...data.workflow, ...value }), preserved)
-  validate?.(draft)
+  let draft = restorePreservedScriptDraft(workflowGenerationDraftSchema.parse({ ...data.workflow, ...value }), preserved)
+  try { validate?.(draft) }
+  catch (error) {
+    if (!missingSceneIdentity(error, draft)) throw error
+    onEvent({ type: 'progress', stage: 'generating', text: '完整正文已保留，正在核对新旧场次对应关系，仅补齐原场次关联。' })
+    draft = await repairEpisodeSceneIdentity(draft, identitySnapshot.scenes, identityDocuments,
+      (text, contract) => request(text, contract), { signal, steps })
+    validate?.(draft)
+  }
   if ((source ? scriptDocumentVersion(source) : null) !== currentScriptSourceVersion(project.id)) {
     throw Object.assign(new Error('上传剧本已变化，请重新生成；已有文档未修改'), { statusCode: 409 })
   }
@@ -2539,6 +2639,15 @@ export function buildApp(): FastifyInstance {
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用')
     return chooseCreationSkills(model, provider, input, item => decryptKey(item.key_ciphertext || null), signal)
   }
+  selectCreativeSkills.references = async (_projectId, modelId, input, signal) => {
+    const model = required<Model>('models', modelId)
+    if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
+    checkProtocol(model.modality, model.protocol)
+    validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>, model.protocol)
+    const provider = required<Provider>('providers', model.provider_id)
+    if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用')
+    return chooseCreationSkillReferences(model, provider, input, item => decryptKey(item.key_ciphertext || null), signal)
+  }
   const creativeRules = (stage: SkillStage, projectId: string, modelId: string, task: string,
     selections?: z.infer<typeof skillSelectionsInput>, assignmentTask?: SkillTaskContext) => resolveCreationSkillContext({
     stage, projectId, modelId, task, selectedIds: selections?.[stage], assignmentTask, select: selectCreativeSkills,
@@ -2606,12 +2715,15 @@ export function buildApp(): FastifyInstance {
   registerScriptCanvasRoutes(app, { script: projectScript, scenePrompt,
     generateText: creativeText, selectSkills: selectCreativeSkills })
   registerStoryboardPlanningRoutes(app, { script: projectScript, scenePrompt, generateText: creativeText, selectSkills: selectCreativeSkills })
+  registerClipStoryboardRoutes(app, { generateText: creativeText, selectSkills: selectCreativeSkills })
   registerSpeechRoutes(app, { touchProject, jobPublic })
   registerEditingCutRoutes(app)
   registerShotManagementRoutes(app)
   registerAssetDownloadRoutes(app)
   registerImagePromptAnalysisRoutes(app)
   registerVideoPromptAnalysisRoutes(app)
+  registerVideoAudioPlanRoutes(app, { generateText: creativeText })
+  registerVideoContinuityReviewRoutes(app, { generateText: creativeText })
   registerVideoReviewRoutes(app)
   initializeVideoComparisonSchema()
 
@@ -3639,6 +3751,7 @@ export function buildApp(): FastifyInstance {
     const existing = new Set(all<{ source_scene_id: string }>(
       'SELECT source_scene_id FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL AND source_scene_id IS NOT NULL', id,
     ).map(item => item.source_scene_id))
+    if (scenes.some(scene => scene.duration > 30 && !existing.has(scene.id))) invalid('超过 30 秒的场次请先规划分镜，再转换为镜头')
     const shots: Shot[] = [], skipped_scene_ids: string[] = []
     db.transaction(() => {
       let position = one<{ next: number }>('SELECT COALESCE(MAX(position), -1)+1 AS next FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL', id)!.next
@@ -3680,6 +3793,11 @@ export function buildApp(): FastifyInstance {
       const ids = new Set(value.scenes.map(scene => scene.scene_id))
       if (ids.size !== expected.length || value.scenes.length !== expected.length || expected.some(scene => !ids.has(scene.id))) invalid('文本模型返回的场次与所选场次不一致')
       if (value.scenes.some(scene => scene.shots.length > expected.find(item => item.id === scene.scene_id)!.duration)) invalid('文本模型生成的镜头数超过场次时长')
+      for (const scene of value.scenes) {
+        const source = expected.find(item => item.id === scene.scene_id)!
+        if (scene.shots.reduce((sum, shot) => sum + shot.duration, 0) !== source.duration) invalid(`「${source.heading}」的镜头时长总和必须为 ${source.duration} 秒，请依据对白、动作和节奏重新分配`)
+        for (const shot of scene.shots) shot.audio_plan = recoverGeneratedVideoAudioPlanSources(shot.audio_plan, [scenePrompt(source), data.prompt_override || ''])
+      }
     }
     const sourceHash = createHash('sha256').update(JSON.stringify(scenes)).digest('hex')
     const identity = { version: 1, sourceHash, project: [project.brief, project.ratio], model: creativeModelIdentity(model.id), prompt }
@@ -3717,10 +3835,9 @@ export function buildApp(): FastifyInstance {
     store.clear()
     return { skill_assignment: rules.assignment, used_skills: rules.skills, scenes: scenes.map(scene => {
       const shots = byId.get(scene.id)!.shots
-      const durations = distributeShotDurations(shots, scene.duration)
       return {
         scene_id: scene.id, scene_heading: scene.heading, scene_duration: scene.duration,
-        shots: shots.map((shot, index) => ({ ...shot, duration: durations[index], image_prompt: shotImagePrompt(shot), video_prompt: shotVideoPrompt(shot) })),
+        shots: shots.map(shot => ({ ...shot, image_prompt: shotImagePrompt(shot), video_prompt: shotVideoPrompt(shot) })),
       }
     }) }
   })
@@ -3768,10 +3885,10 @@ export function buildApp(): FastifyInstance {
         for (const shot of plans.get(scene.id)!) {
           const shotId = newId()
           run(`INSERT INTO shots (id, project_id, position, title, prompt, duration, selected_asset_id, created_at, source_scene_id,
-            start_state, end_state, cut_note, image_prompt, video_prompt, design_id)
-            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            start_state, end_state, cut_note, image_prompt, video_prompt, design_id, audio_plan)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             shotId, id, provisionalPosition++, shot.title, shot.prompt, shot.duration, now(), scene.id,
-            shot.start_state, shot.end_state, shot.cut_note, shotImagePrompt(shot), shotVideoPrompt(shot), sceneStoryboardDesign(id, scene.id))
+            shot.start_state, shot.end_state, shot.cut_note, shotImagePrompt(shot), shotVideoPrompt(shot), sceneStoryboardDesign(id, scene.id), shot.audio_plan ? JSON.stringify(shot.audio_plan) : null)
           inheritSceneVisualBindings(shotId, scene.id)
           createdIds.push(shotId)
           additions.push({ id: shotId, source_scene_id: scene.id })
@@ -3851,6 +3968,14 @@ export function buildApp(): FastifyInstance {
       try { retained=JSON.parse(checkpoint.payload) } catch { throw Object.assign(new Error('原任务检查点已损坏，不能迁移；已有任务和正式文档均未修改'),{statusCode:409}) }
       migrateCompleteScriptDrafts(retained,{workflow:data.workflow},migration!.sourceVersion)
     }
+    // Runtime contract expansion used a different property order from parsing
+    // the same durable request. Accept that exact legacy serialization only
+    // when its workflow values are unchanged; every source/config input is
+    // still recomputed from current state by the same recovery-key function.
+    const storedWorkflow = (originalRequest as DirectorInput).workflow
+    const legacyKeys = storedWorkflow && data.workflow &&
+      JSON.stringify(workflowRequest.parse(storedWorkflow)) === JSON.stringify(workflowRequest.parse(data.workflow))
+      ? [directorRecoveryKey(project, model, provider, { ...data, workflow: storedWorkflow }, true)] : []
     const restoredActivities = snapshot.events.find(event => event.type === 'activity')?.activity as ScriptActivity[] | undefined
     return directorTasks.continue(id, taskId, newKey, async (signal, send) => {
       const execute=()=>executePreparedDirector(project, data, model, provider, send, signal, undefined,
@@ -3861,7 +3986,7 @@ export function buildApp(): FastifyInstance {
         if(migration) run('UPDATE script_director_tasks SET request_payload=?,resume_key=? WHERE id=? AND project_id=?',JSON.stringify(originalRequest),oldKey,taskId,id)
         throw error
       }
-    },switching?{previousKey:oldKey,request:data}:undefined)
+    }, { ...(switching ? { previousKey: oldKey, request: data } : {}), legacyKeys: switching ? [] : legacyKeys })
   })
   app.post('/api/projects/:id/script/director/tasks/:taskId/cancel', async request => {
     const { id, taskId } = parse(z.object({ id: z.string().min(1), taskId: z.string().min(1) }), request.params)
@@ -4037,10 +4162,10 @@ export function buildApp(): FastifyInstance {
       const position = one<{ next: number }>('SELECT COALESCE(MAX(position), -1)+1 AS next FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL', id)!.next
       const shotId = newId()
       run(`INSERT INTO shots (id, project_id, position, title, prompt, duration, selected_asset_id, created_at, source_scene_id,
-        start_state, end_state, cut_note, image_prompt, video_prompt, design_id)
-        VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`, shotId, id, position, data.title, data.prompt,
+        start_state, end_state, cut_note, image_prompt, video_prompt, design_id, audio_plan)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, shotId, id, position, data.title, data.prompt,
         data.duration, now(), data.source_scene_id ?? null, data.start_state, data.end_state, data.cut_note, data.image_prompt, data.video_prompt,
-        sceneStoryboardDesign(id, data.source_scene_id ?? null))
+        sceneStoryboardDesign(id, data.source_scene_id ?? null), data.audio_plan ? JSON.stringify(data.audio_plan) : null)
       inheritSceneVisualBindings(shotId, data.source_scene_id ?? null)
       touchProject(id)
       return required<Shot>('shots', shotId)
@@ -4057,11 +4182,13 @@ export function buildApp(): FastifyInstance {
     const canvasId = finalCutCanvasId(request.query)
     const scope = canvasId === undefined ? undefined : requireFinalCutShot(shot.project_id, canvasId, id)
     const data = parse(shotPatch, request.body)
+    const changedFields = Object.entries(data).filter(([key, value]) => key !== 'position' && JSON.stringify(shot[key as keyof Shot]) !== JSON.stringify(value)).map(([key]) => key)
     if (data.position !== undefined) {
       if (shot.superseded_by && !scope) invalid('历史方案镜头不参与当前制作顺序')
       const ids = (scope?.shots ?? resolveFinalCutScope(shot.project_id).shots).map(item => item.id).filter(item => item !== id)
       ids.splice(Math.min(data.position, ids.length), 0, id)
       db.transaction(() => {
+        const beforeOrder = all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL', shot.project_id)
         ids.forEach((item, index) => run('UPDATE shots SET position=? WHERE id=?', index, item))
         const updatedScope = resolveFinalCutScope(shot.project_id, canvasId)
         selectedProductionShots(updatedScope.shots, updatedScope.range)
@@ -4077,10 +4204,14 @@ export function buildApp(): FastifyInstance {
           const savedScope = resolveFinalCutScope(shot.project_id, saved.canvas_id)
           selectedProductionShots(savedScope.shots, savedScope.range)
         }
+        markChangedShotAdjacency(beforeOrder, all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL', shot.project_id))
       })()
       delete data.position
     }
-    for (const [key, value] of Object.entries(data)) run(`UPDATE shots SET ${key}=? WHERE id=?`, value, id)
+    // Visual prose edits do not revoke accepted speech or the scene sound bed.
+    // An explicit audio_plan patch is the separate sound revision contract.
+    for (const [key, value] of Object.entries(data)) run(`UPDATE shots SET ${key}=? WHERE id=?`, key === 'audio_plan' && value ? JSON.stringify(value) : value, id)
+    markShotContinuityEdited(shot, changedFields)
     touchProject(shot.project_id)
     return required<Shot>('shots', id)
   })
@@ -4254,6 +4385,14 @@ export function buildApp(): FastifyInstance {
     run('INSERT INTO saved_assets (asset_id, project_id, created_at) VALUES (?, ?, ?)', assetId, id, now())
     touchProject(id)
     return assetPublic(required<Asset>('assets', assetId))
+  })
+  app.patch('/api/assets/:id', async request => {
+    const { id } = parse(idParams, request.params)
+    const asset = required<Asset>('assets', id)
+    const { display_name } = parse(assetPatchInput, request.body)
+    run('UPDATE assets SET display_name=? WHERE id=?', display_name, id)
+    touchProject(asset.project_id)
+    return assetPublic(required<Asset>('assets', id))
   })
   app.post('/api/assets/:id/save', async request => {
     const { id } = parse(idParams, request.params)

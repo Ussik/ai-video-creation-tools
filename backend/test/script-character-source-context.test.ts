@@ -16,7 +16,8 @@ function fixture(extra: Record<number, string> = {}) {
   }
   const source = { filename: '人物资料.txt', content }
   const state = { source_version: scriptSourceVersion(source), sections }
-  const seedCharacters: ScriptSourceStory['characters'] = [{ name: '赵云', aliases: ['赵将军'], description: '守卫明示的称呼', section_ids: [5, 25] }]
+  const seedCharacters: ScriptSourceStory['characters'] = [{ name: '赵云', aliases: ['赵将军'], description: '守卫明示的称呼', section_ids: [5, 25] },
+    { name: '韩舟12', aliases: [], description: '独立的赶路人物', section_ids: [12] }]
   const options: ScriptCharacterSourceContextOptions = { targetNames: ['赵云'], seedCharacters,
     overview: { summary: '赵云调查城中的信物。', ending: { summary: '信物归还。', section_ids: [29] } } }
   return { state, source, options }
@@ -47,7 +48,7 @@ test('a directory-only location supplements raw occurrences but never hides an o
   assert.ok(result.selected_section_ids.includes(9)); assert.ok(result.selected_section_ids.includes(14))
 })
 
-test('a later directory-known independent character can be scoped without treating its name as a seed alias', () => {
+test('a later full-read seed character can be scoped without treating its name as another identity alias', () => {
   const { state, source, options } = fixture()
   const result = buildScriptCharacterSourceContext(state, source, { ...options, targetNames: ['韩舟12'] })
   assert.equal(result.mode, 'targeted')
@@ -132,10 +133,10 @@ test('source version mismatch and incomplete or stale source coordinates keep fu
   assert.equal(buildScriptCharacterSourceContext(stale, source, options).reason, 'invalid_source_map')
 })
 
-test('generic, unknown, evidence-free aliases and overlapping different identities retain the full manuscript', () => {
+test('unknown seed identities, evidence-free aliases and overlapping identities retain the full manuscript', () => {
   const { state, source, options } = fixture({ 12: '士兵站岗。张三穿过树林。' })
-  assert.equal(buildScriptCharacterSourceContext(state, source, { ...options, targetNames: ['士兵'] }).reason, 'ambiguous_character_name')
-  assert.equal(buildScriptCharacterSourceContext(state, source, { ...options, targetNames: ['张三'] }).reason, 'unknown_character_name')
+  assert.equal(buildScriptCharacterSourceContext(state, source, { ...options, targetNames: ['士兵'] }).reason, 'unknown_seed_identity')
+  assert.equal(buildScriptCharacterSourceContext(state, source, { ...options, targetNames: ['张三'] }).reason, 'unknown_seed_identity')
   assert.equal(buildScriptCharacterSourceContext(state, source, { ...options, seedCharacters: [{ ...options.seedCharacters![0]!, aliases: ['赵元帅'] }] }).reason, 'alias_without_source_evidence')
   assert.equal(buildScriptCharacterSourceContext(state, source, { ...options,
     seedCharacters: [...options.seedCharacters!, { name: '赵云', aliases: [], description: '另一个同名人物', section_ids: [5] }] }).reason, 'ambiguous_seed_identity')
@@ -144,19 +145,31 @@ test('generic, unknown, evidence-free aliases and overlapping different identiti
 test('names normalized from fullwidth spellings retain exact unmodified source text', () => {
   const { state, source, options } = fixture({ 12: 'ＪＯＨＮ在此驻足。', 24: 'JOHN向山谷出发。' })
   state.sections[12]!.characters[0]!.name = 'JOHN'
-  const result = buildScriptCharacterSourceContext(state, source, { ...options, targetNames: ['ＪＯＨＮ'] })
+  const result = buildScriptCharacterSourceContext(state, source, { ...options, targetNames: ['ＪＯＨＮ'],
+    seedCharacters: [{ name: 'JOHN', aliases: [], description: '全文确认的人物', section_ids: [12, 24] }] })
   assert.equal(result.mode, 'targeted')
   assert.deepEqual(result.literal_matches[0]!.raw_match_section_ids, [12, 24])
   assert.match(result.source_ranges[0]!.content, /ＪＯＨＮ/)
   assert.equal(source.content.includes(result.source_ranges[0]!.content), true)
 })
 
-test('explicit identity uncertainty in a full-source seed or directory prevents narrowing', () => {
+test('identity uncertainty prose is retained for the model instead of classified by a keyword gate', () => {
   const { state, source, options } = fixture()
-  assert.equal(buildScriptCharacterSourceContext(state, source, { ...options,
-    seedCharacters: [{ ...options.seedCharacters![0]!, description: '身份存疑，无法确认是否同一人' }] }).reason, 'ambiguous_seed_identity')
+  const description = '身份存疑，无法确认是否同一人'
+  const result = buildScriptCharacterSourceContext(state, source, { ...options,
+    seedCharacters: [{ ...options.seedCharacters![0]!, description }] })
+  assert.equal(result.mode, 'targeted')
+  assert.equal(result.identity_hypotheses?.[0]?.description, description)
   state.sections[5]!.characters[0]!.description = '与另一人同名，不能确定身份'
-  assert.equal(buildScriptCharacterSourceContext(state, source, options).reason, 'ambiguous_seed_identity')
+  assert.equal(buildScriptCharacterSourceContext(state, source, options).mode, 'targeted')
+})
+
+test('a role label established by the full-read model is not rejected by a hardcoded role list', () => {
+  const { state, source, options } = fixture({ 12: '士兵站岗。' })
+  const result = buildScriptCharacterSourceContext(state, source, { ...options, targetNames: ['士兵'],
+    seedCharacters: [{ name: '士兵', aliases: [], description: '原稿全文已核实的独立人物称呼', section_ids: [12] }] })
+  assert.equal(result.mode, 'targeted')
+  assert.deepEqual(result.known_names, ['士兵'])
 })
 
 test('identical repeated seed identities keep the union of all original evidence', () => {
@@ -203,7 +216,8 @@ test('packs fall back instead of truncating over budget or nearly complete selec
   const characterOnlyLength = [4, 5, 6, 24, 25, 26].reduce((sum, id) => sum + state.sections[id]!.length, 0)
   assert.equal(buildScriptCharacterSourceContext(state, source, { ...options, maxSelectedCharacters: characterOnlyLength }).reason, 'selected_scope_too_large',
     'ending originals participate in the same budget rather than being silently omitted')
-  assert.equal(buildScriptCharacterSourceContext(state, source, { ...options, targetNames: state.sections.map(section => section.characters[0]!.name) }).reason, 'selected_scope_too_large')
+  assert.equal(buildScriptCharacterSourceContext(state, source, { ...options, targetNames: state.sections.map(section => section.characters[0]!.name),
+    seedCharacters: state.sections.map((section, id) => ({ name: section.characters[0]!.name, aliases: [], description: '全文核实的人物', section_ids: [id] })) }).reason, 'selected_scope_too_large')
 })
 
 test('context identity binds complete source, directory, overview, seeds, and selected policy', () => {

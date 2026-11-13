@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { connectImageVideoHandoff, createImageVideoHandoff, fixedReferenceAsset, imageVideoConnection, pinnedCanvasReference } from '../src/features/canvas/canvas-shot-workflow'
+import { JSDOM } from 'jsdom'
+import { rememberModelSelection } from '../src/features/models/model-selection-store'
+import { connectImageVideoHandoff, createImageVideoHandoff, fixedReferenceAsset, imageVideoConnection, pendingImageVideoHandoff, resolveImageVideoHandoff, pinnedCanvasReference } from '../src/features/canvas/canvas-shot-workflow'
+import type { ImageVideoSemanticPlan } from '../src/features/canvas/canvas-image-video-context'
 import { storyboardItems } from '../src/features/storyboard/storyboard'
 import { visualNodeAsset } from '../src/features/canvas/canvas-visual-profiles'
 import { syncCanvasStoryboardRevision } from '../src/features/canvas/canvas-storyboard-revision'
@@ -22,6 +25,12 @@ function fixture() {
   return { source, graph, detail, models, fresh }
 }
 
+function semanticPlan(text = '刘叔，这两天自来水管没洗吧？'): ImageVideoSemanticPlan {
+  return { motion_prompt: '许知夜放下纸巾，看向老板，平稳说出本镜台词。', audio_plan: { version: 1,
+    speech: [{ speaker: '许知夜', text, delivery: '平稳', mode: 'dialogue', source_text: `许知夜：“${text}”` }],
+    sound_effects: ['雨声'], music: '', silent: false } }
+}
+
 test('video handoff prefers the compatible default and preserves an explicit compatible selection', () => {
   const f = fixture()
   const preferred = { ...f.models[1], id: 'default-video', is_default: true } as Model
@@ -31,6 +40,34 @@ test('video handoff prefers the compatible default and preserves an explicit com
   assert.equal(create(models).model_id, preferred.id)
   assert.equal(create(models, 'compatible').model_id, 'compatible')
   assert.equal(create([{ ...f.models[0], is_default: true }, f.models[1]]).model_id, 'compatible')
+})
+
+test('video handoff uses the most recent compatible choice while keeping explicit bindings and capability fallbacks', () => {
+  const browser = new JSDOM('', { url: 'http://localhost/' }), previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const previousCustomEvent = Object.getOwnPropertyDescriptor(globalThis, 'CustomEvent')
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: browser.window })
+  Object.defineProperty(globalThis, 'CustomEvent', { configurable: true, value: browser.window.CustomEvent })
+  try {
+    const f = fixture(), configured = { ...f.models[1], id: 'configured-video', is_default: true } as Model
+    const recent = { ...f.models[1], id: 'recent-video' } as Model
+    const models = [...f.models, configured, recent]
+    const create = (selectedId?: string) => createImageVideoHandoff(f.graph, f.source, f.detail,
+      models, { ...f.fresh, model_id: selectedId || null }, 'edge').graph.nodes[1]!
+    rememberModelSelection('video', recent.id)
+    assert.equal(create().model_id, recent.id)
+    assert.equal(create('compatible').model_id, 'compatible', 'explicit existing binding wins over the shared preference')
+    rememberModelSelection('video', 'unsupported')
+    assert.equal(create().model_id, configured.id, 'a remembered text-only video generator cannot handle a first-frame handoff')
+    rememberModelSelection('video', 'removed-model')
+    assert.equal(create().model_id, configured.id)
+    assert.equal(f.fresh.model_id, f.source.model_id)
+  } finally {
+    browser.window.close()
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+    if (previousCustomEvent) Object.defineProperty(globalThis, 'CustomEvent', previousCustomEvent)
+    else Reflect.deleteProperty(globalThis, 'CustomEvent')
+  }
 })
 
 test('handoff adds one same-shot video generator, selects a compatible model and pins the chosen candidate', () => {
@@ -49,7 +86,7 @@ test('handoff adds one same-shot video generator, selects a compatible model and
   assert.equal(image_video_handoff?.source_node_id, f.source.id)
   assert.equal(image_video_handoff?.source_asset_id, 'chosen')
   assert.deepEqual(parameters, { modality: 'video', mode: 'first_frame', visual_reference_mode: 'keyframe', candidate_count: 1, storyboard_reference_asset_id: 'chosen',
-    storyboard_revision: 0, duration: 10, ratio: 'adaptive', resolution: '480p' })
+    storyboard_revision: 0, duration: 10, ratio: 'adaptive', resolution: '720p' })
   assert.deepEqual(result.graph.edges, [{ id: 'frame-edge', source: 'image', target: 'video', reference_asset_id: 'chosen' }])
   assert.deepEqual(storyboardItems(f.detail, result.graph, f.models).map(item => item.kind), ['image', 'video'])
 })
@@ -143,7 +180,7 @@ test('connecting an existing video generator carries the shot video prompt and p
   assert.equal(target.settings.mode, 'first_frame')
   assert.equal(target.settings.visual_reference_mode, 'keyframe')
   assert.equal(target.settings.duration, 10)
-  assert.equal(target.settings.resolution, '480p')
+  assert.equal(target.settings.resolution, '720p')
   assert.equal(target.settings.ratio, '16:9')
   assert.deepEqual(graph.edges, [{ id: 'edge', source: 'image', target: 'video', reference_asset_id: 'chosen' }])
   const repeated = connectImageVideoHandoff(graph, pair, f.detail, f.models, 'duplicate')
@@ -512,6 +549,138 @@ test('changed image updates an untouched video in place, preserving geometry, pa
   assert.match(refreshed.text, /视频时长：8 秒/)
   assert.match(refreshed.text, /1080p/)
   assert.equal(createImageVideoHandoff(next.graph, nextSource, detail, f.models, f.fresh, 'unused').graph, next.graph)
+})
+
+test('changing only shot dialogue refreshes automatic handoffs once and preserves a manually edited video', () => {
+  const f = fixture(), source = editedImage(f, '许知夜坐在桌前。')
+  const detail = { ...f.detail, shots: [{ ...f.detail.shots[0], video_prompt: '许知夜低沉开口：“原来的台词。”' }] }
+  const first = createImageVideoHandoff({ ...f.graph, nodes: [source] }, source, detail, f.models, f.fresh, 'frame', 'first_frame', semanticPlan('原来的台词。'))
+  const changed = { ...detail, shots: [{ ...detail.shots[0], video_prompt: '许知夜低沉开口：“新的台词。”' }] }
+  const next = createImageVideoHandoff(first.graph, source, changed, f.models, { ...f.fresh, id: 'unused' }, 'unused', 'first_frame', semanticPlan('新的台词。'))
+  assert.equal(next.updated, true)
+  assert.equal(next.created, false)
+  assert.match(next.graph.nodes[1].text, /新的台词/)
+  assert.doesNotMatch(next.graph.nodes[1].text, /原来的台词/)
+  assert.equal(createImageVideoHandoff(next.graph, source, changed, f.models, f.fresh, 'unused').graph, next.graph)
+  const manual = { ...first.graph.nodes[1], text: '手工视频草稿。本镜无对白。' }
+  const manualGraph = { ...first.graph, nodes: [source, manual] }
+  const preserved = createImageVideoHandoff(manualGraph, source, changed, f.models, { ...f.fresh, id: 'new-version' }, 'new-frame')
+  assert.equal(preserved.created, true)
+  assert.deepEqual(preserved.graph.nodes.find(node => node.id === manual.id), manual)
+})
+
+test('a structured shot audio plan reaches the video even when its motion prompt contains no speech', () => {
+  const f = fixture(), plan = semanticPlan('这句台词只存在结构化字段里。')
+  const detail = { ...f.detail, shots: [{ ...f.detail.shots[0], audio_plan: plan.audio_plan }] }
+  const result = createImageVideoHandoff(f.graph, f.source, detail, f.models, f.fresh, 'frame')
+  const video = result.graph.nodes.find(node => node.id === result.nodeId)!
+  assert.match(video.text, /这句台词只存在结构化字段里。/)
+  assert.match(video.text, /角色睁眼，缓慢坐起，镜头推近/)
+  assert.equal(pendingImageVideoHandoff(result.graph, video, detail, f.models), undefined)
+})
+
+test('an analysed plan upgrades an untouched legacy video without metadata rather than returning its silent draft', () => {
+  const f = fixture()
+  const legacy = { ...f.fresh, type: 'generation' as const, prompt: f.detail.shots[0].video_prompt!, text: '', shot_id: 'shot',
+    settings: { modality: 'video' as const, mode: 'first_frame' as const, storyboard_reference_asset_id: 'chosen' } }
+  const graph = { ...f.graph, nodes: [f.source, legacy], edges: [{ id: 'frame', source: f.source.id, target: legacy.id, reference_asset_id: 'chosen' }] }
+  const result = createImageVideoHandoff(graph, f.source, f.detail, f.models, f.fresh, 'unused', 'first_frame', semanticPlan())
+  assert.equal(result.nodeId, legacy.id)
+  assert.equal(result.updated, true)
+  assert.equal(result.created, false)
+  assert.match(result.graph.nodes[1].text, /刘叔，这两天自来水管没洗吧？/)
+  assert.ok(result.graph.nodes[1].settings.image_video_handoff?.semantic_plan)
+})
+
+test('legacy raw video prose remains explicitly restorable after boundary composition while similar manual prose stays protected', () => {
+  const f = fixture(), detail = { ...f.detail, shots: [{ ...f.detail.shots[0], start_state: '躺在床上', end_state: '坐在床沿', cut_note: '视线向右接门口反打' }] }
+  const legacy = { ...f.fresh, type: 'generation' as const, prompt: detail.shots[0]!.video_prompt!, text: '', shot_id: 'shot',
+    settings: { modality: 'video' as const, mode: 'first_frame' as const, storyboard_reference_asset_id: 'chosen' } }
+  const graph = { ...f.graph, nodes: [f.source, legacy], edges: [{ id: 'frame', source: f.source.id, target: legacy.id, reference_asset_id: 'chosen' }] }
+  const pending = pendingImageVideoHandoff(graph, legacy, detail, f.models)
+  assert.ok(pending, 'an exact pre-composition baseline must retain the explicit restoration action')
+  const restored = resolveImageVideoHandoff(graph, legacy.id, pending.context.signature, semanticPlan(), detail, f.models)
+  assert.notEqual(restored, graph)
+  assert.ok(restored.nodes[1]!.settings.image_video_handoff?.semantic_plan)
+  const manual = { ...legacy, prompt: `${legacy.prompt}，再停两秒看向门外。` }, manualGraph = { ...graph, nodes: [f.source, manual] }
+  assert.equal(pendingImageVideoHandoff(manualGraph, manual, detail, f.models), undefined)
+  assert.equal(resolveImageVideoHandoff(manualGraph, manual.id, pending.context.signature, semanticPlan(), detail, f.models), manualGraph)
+  assert.equal(manualGraph.nodes[1]!.prompt, manual.prompt)
+})
+
+test('the exact pre-composition fallback is restorable but its edited camera prose is never treated as automatic', () => {
+  const f = fixture(), detail = { ...f.detail, shots: [{ ...f.detail.shots[0], video_prompt: '', start_state: '躺在床上', end_state: '坐在床沿', cut_note: '视线向右接门口反打' }] }
+  // Pin the actual old serialized format, independently of the new composer.
+  const oldFallback = '生成当前分镜的一个连续视频镜头。描述动作先后、表情变化、镜头运动与节奏，保持人物、服装、道具、场景和光线连续；不要拼接无关镜头。\n\n镜头描述\n\n开镜状态：躺在床上\n\n收镜状态：坐在床沿\n\n接镜要求：视线向右接门口反打\n\n仅在首帧或首尾帧生成模式下，从指定首帧的构图、人物位置、姿态和物体状态开始延续动作；多图参考的开场状态按正文设计。不添加画面文字、字幕或水印。'
+  const legacy = { ...f.fresh, type: 'generation' as const, prompt: oldFallback, text: '', shot_id: 'shot',
+    settings: { modality: 'video' as const, mode: 'first_frame' as const, storyboard_reference_asset_id: 'chosen' } }
+  const graph = { ...f.graph, nodes: [f.source, legacy], edges: [{ id: 'frame', source: f.source.id, target: legacy.id, reference_asset_id: 'chosen' }] }
+  const pending = pendingImageVideoHandoff(graph, legacy, detail, f.models)
+  assert.ok(pending)
+  assert.notEqual(resolveImageVideoHandoff(graph, legacy.id, pending.context.signature, semanticPlan(), detail, f.models), graph)
+  for (const prompt of [`${oldFallback}\n\n保持固定机位两秒后再摇向门口。`, oldFallback.replace('镜头描述', '创作者改成手持跟拍')]) {
+    const manual = { ...legacy, prompt }, manualGraph = { ...graph, nodes: [f.source, manual] }
+    assert.equal(pendingImageVideoHandoff(manualGraph, manual, detail, f.models), undefined)
+    assert.equal(resolveImageVideoHandoff(manualGraph, manual.id, pending.context.signature, semanticPlan(), detail, f.models), manualGraph)
+  }
+})
+
+test('asset-linked storyboard images retain their shot audio when the image node has no shot id', () => {
+  const f = fixture(), plan = semanticPlan('素材对应的分镜台词。')
+  const source = { ...f.source, shot_id: null }
+  const detail = { ...f.detail, shots: [{ ...f.detail.shots[0], audio_plan: plan.audio_plan }] }
+  const first = createImageVideoHandoff({ ...f.graph, nodes: [source] }, source, detail, f.models, f.fresh, 'frame')
+  const video = first.graph.nodes.find(node => node.id === first.nodeId)!
+  assert.equal(video.shot_id, 'shot')
+  assert.match(video.text, /素材对应的分镜台词。/)
+  assert.equal(pendingImageVideoHandoff(first.graph, video, detail, f.models), undefined)
+})
+
+test('legacy automatic handoffs remain pending until a model plan is applied, preserving media and settings', () => {
+  const f = fixture(), source = editedImage(f)
+  const first = createImageVideoHandoff({ ...f.graph, nodes: [source] }, source, f.detail, f.models, f.fresh, 'frame')
+  const original = first.graph.nodes[1]
+  const video = { ...original, x: 980, y: 420, asset_id: 'completed-media', job_id: 'completed',
+    settings: { ...original.settings, duration: 8, resolution: '1080p', generation_completed_job_id: 'completed' } }
+  const graph = { ...first.graph, nodes: [source, video] }
+  const pending = pendingImageVideoHandoff(graph, video, f.detail, f.models)!
+  assert.ok(pending)
+  assert.equal(video.settings.image_video_handoff?.semantic_plan, undefined)
+  const next = resolveImageVideoHandoff(graph, video.id, pending.context.signature, semanticPlan(), f.detail, f.models)
+  const resolved = next.nodes[1]
+  assert.match(resolved.text, /刘叔，这两天自来水管没洗吧？/)
+  assert.match(resolved.text, /放下纸巾/)
+  assert.equal(resolved.asset_id, 'completed-media')
+  assert.equal(resolved.job_id, 'completed')
+  assert.deepEqual([resolved.x, resolved.y, resolved.settings.duration, resolved.settings.resolution], [980, 420, 8, '1080p'])
+  assert.equal(resolved.settings.generation_completed_job_id, 'completed')
+  assert.equal(pendingImageVideoHandoff(next, resolved, f.detail, f.models), undefined)
+  assert.equal(resolveImageVideoHandoff(next, resolved.id, pending.context.signature, semanticPlan(), f.detail, f.models), next)
+  assert.equal(video.text, original.text, 'analysis does not mutate its source graph')
+})
+
+test('analysis cannot overwrite a manual draft, active job, changed source or wrong source signature', () => {
+  for (const change of ['manual', 'active', 'source', 'signature'] as const) {
+    const f = fixture(), source = editedImage(f)
+    const first = createImageVideoHandoff({ ...f.graph, nodes: [source] }, source, f.detail, f.models, f.fresh, 'frame')
+    const pending = pendingImageVideoHandoff(first.graph, first.graph.nodes[1], f.detail, f.models)!
+    const target = change === 'manual' ? { ...first.graph.nodes[1], text: '创作者独立写的完整视频。' }
+      : change === 'active' ? { ...first.graph.nodes[1], job_id: 'running' } : first.graph.nodes[1]
+    const detail = change === 'active' ? { ...f.detail, jobs: [...f.detail.jobs,
+      { id: 'running', status: 'running' } as ProjectDetail['jobs'][number]] } : f.detail
+    const graph = { ...first.graph, nodes: [change === 'source' ? editedImage(f, '新人物站在车门边。') : source, target] }
+    const next = resolveImageVideoHandoff(graph, target.id, change === 'signature' ? 'wrong' : pending.context.signature, semanticPlan(), detail, f.models)
+    assert.equal(next, graph, change)
+  }
+})
+
+test('a missing or changed source cannot be mistaken for an analysed handoff', () => {
+  const f = fixture(), source = editedImage(f)
+  const first = createImageVideoHandoff({ ...f.graph, nodes: [source] }, source, f.detail, f.models, f.fresh, 'frame')
+  const video = first.graph.nodes[1]
+  assert.throws(() => pendingImageVideoHandoff({ ...first.graph, nodes: [video] }, video, f.detail, f.models), /来源图片节点已移除/)
+  const movedSource = { ...source, asset_id: 'new' }
+  assert.throws(() => pendingImageVideoHandoff({ ...first.graph, nodes: [movedSource, video] }, video, f.detail, f.models), /来源图片已变化/)
 })
 
 test('changed sources create a new version when the prior video has manual prose, reference edits or an active job', () => {

@@ -4,7 +4,7 @@ import { generateStructuredOutput } from '../src/modules/generation/model-output
 import { currentModelRequestContext, modelTaskPolicies, withModelRequestContext, resolveModelTaskPolicy } from '../src/modules/generation/model-task-policy.js'
 
 test('all long business contracts have explicit generation policy rather than 8K fallback', () => {
-  for (const name of ['controlled_storyboard', 'visual_profiles', 'shot_plan', 'complete_script']) {
+  for (const name of ['controlled_storyboard', 'storyboard_scene_plan', 'storyboard_shot_batch', 'visual_profiles', 'shot_plan', 'complete_script']) {
     assert.equal(resolveModelTaskPolicy(name).outputTokens, 65536, name)
   }
   assert.equal(resolveModelTaskPolicy('reply_classification').recovery, 'atomic')

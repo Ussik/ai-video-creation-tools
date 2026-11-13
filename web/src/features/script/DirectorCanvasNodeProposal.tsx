@@ -12,13 +12,14 @@ export type DirectorCanvasNodeProposalProps = {
   initialContext?: string
   disabled?: boolean
   hidden?: boolean
+  onBusyChange?: (busy: boolean) => void
   onApply: (proposal: CanvasNodeProposal) => Promise<CanvasNodeProposalApplyResult>
 }
 
 const parameterLabels = { ratio: '画面比例', resolution: '分辨率', duration: '时长（秒）', generate_audio: '生成声音' } as const
 const valueLabel = (value: unknown) => value === true ? '开启' : value === false ? '关闭' : value === null || value === undefined ? '默认' : String(value)
 
-export default function DirectorCanvasNodeProposal({ source, modelId, modelName, composerInput, initialContext, disabled, hidden, onApply }: DirectorCanvasNodeProposalProps) {
+export default function DirectorCanvasNodeProposal({ source, modelId, modelName, composerInput, initialContext, disabled, hidden, onBusyChange, onApply }: DirectorCanvasNodeProposalProps) {
   const sourceKey = canvasNodeProposalSourceKey(source)
   const scopeKey = `${sourceKey}:${modelId}`
   const scope = useRef(scopeKey)
@@ -32,6 +33,7 @@ export default function DirectorCanvasNodeProposal({ source, modelId, modelName,
   const [opened, setOpened] = useState(false)
   const [instructions, setInstructions] = useState('')
   const [proposal, setProposal] = useState<CanvasNodeProposal | null>(null)
+  const [proposalModelId, setProposalModelId] = useState('')
   const [result, setResult] = useState<CanvasNodeProposalApplyResult | null>(null)
   const [generating, setGenerating] = useState(false)
   const [applying, setApplying] = useState(false)
@@ -46,7 +48,7 @@ export default function DirectorCanvasNodeProposal({ source, modelId, modelName,
     applyingLock.current = false
     initializedInstructions.current = false
     setGenerating(false); setApplying(false); setOpened(false)
-    setInstructions(''); setProposal(null); setResult(null); setError(null)
+    setInstructions(''); setProposal(null); setProposalModelId(''); setResult(null); setError(null)
     return () => { ++requestEpoch.current; request.current?.abort() }
   }, [sourceKey])
   useEffect(() => {
@@ -57,6 +59,8 @@ export default function DirectorCanvasNodeProposal({ source, modelId, modelName,
     generatingLock.current = false
     setGenerating(false)
   }, [modelId])
+  useEffect(() => { onBusyChange?.(generating || applying) }, [generating, applying, onBusyChange])
+  useEffect(() => () => { onBusyChange?.(false) }, [onBusyChange])
   useEffect(() => { if (hidden) close() }, [hidden])
 
   function open() {
@@ -92,6 +96,7 @@ export default function DirectorCanvasNodeProposal({ source, modelId, modelName,
       })
       if (!current()) return
       if (canvasNodeProposalSourceKey(next.source) !== sourceKey) throw new Error('返回的方案来源与当前节点不一致，请重新读取节点')
+      setProposalModelId(modelId)
       setProposal(next)
     } catch (issue) {
       if (current()) setError(issue instanceof Error ? issue.message : String(issue))
@@ -101,7 +106,7 @@ export default function DirectorCanvasNodeProposal({ source, modelId, modelName,
   }
 
   async function apply() {
-    if (!proposal || disabled || generatingLock.current || applyingLock.current || result) return
+    if (!proposal || proposalModelId !== modelId || disabled || generatingLock.current || applyingLock.current || result) return
     applyingLock.current = true
     const epoch = requestEpoch.current, capturedSource = sourceKey
     setApplying(true); setError(null)
@@ -117,6 +122,7 @@ export default function DirectorCanvasNodeProposal({ source, modelId, modelName,
 
   const changedParameters = proposal ? (Object.keys(parameterLabels) as Array<keyof typeof parameterLabels>)
     .filter(key => proposal.before.parameters[key] !== proposal.after.parameters[key]) : []
+  const staleProposal = !!proposal && !result && proposalModelId !== modelId
   return <>
     <Group justify="space-between" gap="xs" aria-label="画布节点修改方案">
       <Text size="xs" c="dimmed">已载入{source.modality === 'video' ? '视频' : '图片'}节点配置</Text>
@@ -136,6 +142,7 @@ export default function DirectorCanvasNodeProposal({ source, modelId, modelName,
             disabled={disabled || !modelId || !instructions.trim() || instructions.length > 4000 || applying || !!result}>生成修改方案</Button>
         </Group>
         {error && <Alert color="red" title="方案尚未应用" role="alert">{error}</Alert>}
+        {staleProposal && <Alert color="orange" role="alert">文本模型已切换，当前方案仍保留，请重新生成或切回原模型后确认。</Alert>}
         {proposal && <Stack gap="sm" aria-label="节点修改差异">
           {proposal.changes.length > 0 && <Text size="sm">修改说明：{proposal.changes.join('；')}</Text>}
           <Textarea label="原提示词" value={proposal.before.prompt} readOnly minRows={4} maxRows={12} autosize />
@@ -151,7 +158,7 @@ export default function DirectorCanvasNodeProposal({ source, modelId, modelName,
           <Text size="xs" c="dimmed">方案保留在本次导演窗口中，确认后保存到来源画布。来源配置变化时，需要重新读取节点。</Text>
           {result ? <Alert color="green" title="草稿已创建" role="status">
             已创建独立生成草稿{result.referenceNodeCount ? `和 ${result.referenceNodeCount} 个参考图片节点` : ''}。可回到画布检查，使用画布撤销可撤回本次新增。
-          </Alert> : <Button onClick={() => void apply()} loading={applying} disabled={disabled || generating}>确认创建草稿</Button>}
+          </Alert> : <Button onClick={() => void apply()} loading={applying} disabled={disabled || generating || staleProposal}>确认创建草稿</Button>}
         </Stack>}
         <Group justify="flex-end"><Button variant="default" onClick={close} disabled={applying}>关闭</Button></Group>
       </Stack>

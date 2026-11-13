@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type SyntheticEvent } from 'react'
 import { Alert, Badge, Button, FileButton, Loader, NumberInput, SimpleGrid, Textarea } from '@mantine/core'
-import { Check, Copy, Film, Play, ScanSearch, Settings2, Sparkles, TriangleAlert, Upload, X } from 'lucide-react'
+import { Check, Copy, Film, Play, Settings2, Sparkles, TriangleAlert, Upload, X } from 'lucide-react'
 import { videoAnalysisShotPrompt, videoAnalysisText, type VideoPromptAnalysisResult } from '@video-studio/shared/media/video-prompt-analysis'
 import { StudioMediaPlayer } from '../../shared/ui/media/StudioMediaPlayer'
 import CanvasSelect from './CanvasSelect'
+import CanvasVideoAnalysisIcon from './CanvasVideoAnalysisIcon'
 import { videoAnalysisRangeIssue, videoAnalysisTime } from './canvas-video-analysis'
 import './canvas-video-analysis-panel.css'
 
@@ -78,7 +79,7 @@ export default function CanvasVideoAnalysisPanel({ asset, models, modelId, instr
   }
   return <section className="pc-video-analysis-panel nodrag nowheel" aria-label="视频反推提示词" data-canvas-overlay
     onPointerDown={stopPropagation} onClick={stopPropagation} onKeyDown={stopPropagation} onWheel={stopPropagation}>
-    <header className="pc-video-analysis-heading"><ScanSearch size={18} /><div><h2>视频反推提示词</h2>
+    <header className="pc-video-analysis-heading"><CanvasVideoAnalysisIcon size={18} /><div><h2>视频反推提示词</h2>
       <p>上传视频，或连接画布中的视频节点，分析画风、动作与运镜，整理为逐镜头提示词。</p></div></header>
     <div className={`pc-video-analysis-source${asset ? ' has-video' : ''}`}>
       {asset ? <><StudioMediaPlayer key={`${asset.id}:${asset.url}`} ref={video} src={asset.url} controls playsInline preload="metadata"
@@ -120,10 +121,10 @@ export default function CanvasVideoAnalysisPanel({ asset, models, modelId, instr
       </p>}
     </div>
     {(rangeIssue || fpsIssue) && <Alert color="yellow" icon={<TriangleAlert size={16} />}>{rangeIssue || fpsIssue}</Alert>}
-    {otherPending && <Alert color="blue" icon={<ScanSearch size={16} />}>另一个反推节点正在处理，请完成或取消后再操作。</Alert>}
+    {otherPending && <Alert color="blue" icon={<CanvasVideoAnalysisIcon size={16} />}>另一个反推节点正在处理，请完成或取消后再操作。</Alert>}
     <Textarea label="反推要求" description="选填，说明要重点分析的内容" placeholder="例如：重点拆解剑招、碰撞后的受力反应、环境反馈和摄影机移动"
       value={instructions} onChange={event => onInstructionsChange(event.currentTarget.value)} disabled={busy} maxLength={4000} autosize minRows={2} maxRows={5} size="sm" />
-    <div className="pc-video-analysis-actions pc-video-analysis-run"><Button type="button" size="sm" leftSection={<ScanSearch size={15} />} loading={pending}
+    <div className="pc-video-analysis-actions pc-video-analysis-run"><Button type="button" size="sm" leftSection={<CanvasVideoAnalysisIcon size={15} />} loading={pending}
       disabled={busy || !asset || !selectedModel || !!rangeIssue || !!fpsIssue} onClick={onAnalyze}>{result ? '重新反推' : '开始反推'}</Button>
       {processing && onCancel && <Button type="button" size="sm" variant="subtle" onClick={onCancel}>{uploading ? '取消上传' : '取消反推'}</Button>}
     </div>

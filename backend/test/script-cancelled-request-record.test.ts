@@ -1,3 +1,4 @@
+import { sourceScopeResponse } from './helpers/source-scope-response.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -88,6 +89,8 @@ test('a request cancelled while in flight still carries its purpose and byte siz
   const started = new Promise<void>(resolve => { entered = resolve })
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as NativeBody
+    const scope = sourceScopeResponse(prompt(body))
+    if (scope) return textResponse('chat_completions', scope)
     if (prompt(body).includes('本次独立调用只理解创作者意图')) return intentResponse('chat_completions')
     entered()
     await new Promise<never>((_, reject) => {
@@ -112,6 +115,6 @@ test('a request cancelled while in flight still carries its purpose and byte siz
   assert.equal(cancelledModel.request_purpose, 'tool_decision')
   assert.ok(cancelledModel.request_bytes > 0, 'its request size was recorded before the network wait')
   const ledger = activity.find((entry: any) => entry.usage?.current)!.usage.current
-  // Neither response reported usage (the intent reply has none; the other was cancelled), so both stay unknown.
-  assert.equal(ledger.requests, 2); assert.equal(ledger.uncertain_requests, 2, 'requests without reported usage stay unknown rather than becoming zero')
+  // Intent, source-scope and cancelled tool requests report no usage, so all stay unknown.
+  assert.equal(ledger.requests, 3); assert.equal(ledger.uncertain_requests, 3, 'requests without reported usage stay unknown rather than becoming zero')
 })

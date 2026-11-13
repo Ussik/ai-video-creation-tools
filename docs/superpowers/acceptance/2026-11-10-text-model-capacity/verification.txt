@@ -1,0 +1,26 @@
+backend
+# tests 289
+# pass 289
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 9791.400958
+
+frontend
+# tests 63
+# pass 63
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 4712.237833
+
+npm run build: exit 0
+Architecture check: passed
+Mantine UI guard: passed
+TypeScript shared/backend/frontend: passed
+git diff --check: passed
+Original API :8000/api/models: HTTP 200
+Original frontend :8888/: HTTP 200
+Gemini real request settings: responses / output65536 / context1000000
+Temporary listeners :18081 / :18881: absent
+Ego TaskSpace36: finished

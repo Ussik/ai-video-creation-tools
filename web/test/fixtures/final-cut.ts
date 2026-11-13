@@ -60,6 +60,8 @@ export function fixture() {
       if (method === 'PATCH') Object.assign(detail, body)
       return Response.json(canvasId ? { ...activeDetail, final_cut_canvas_id: canvasId } : detail)
     }
+    if (path === `/api/projects/${projectId}/shot-management`) return Response.json({ revision: 'fixture-shot-state',
+      shots: [], designs: [], canvases, scenes: [], trashed_assets: [] })
     if (path === `/api/projects/${projectId}/canvases`) return Response.json(canvases)
     if (path === `/api/projects/${projectId}/canvas`) {
       if (method === 'PUT') graphs[projectId] = { ...body, revision: 'saved-rev' } as CanvasGraph

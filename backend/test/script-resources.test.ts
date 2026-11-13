@@ -221,6 +221,15 @@ test('shot plans preserve source IDs, support preview edits and cannot duplicate
   commitToolDraft(f.project.id, revised.id, revised.version, f.script)
   assert.equal(one<any>('SELECT * FROM shots WHERE id=?', saved.id).end_state, '林晚停在候车室中央')
   assert.equal(one<any>('SELECT * FROM shots WHERE id=?', saved.id).image_prompt, shot.image_prompt)
+  const audio = { version: 1, speech: [{ speaker: '林晚', text: '先别动。', delivery: '', mode: 'dialogue', source_text: '林晚说：先别动。' }], sound_effects: ['雨声'], music: '', silent: false }
+  run('UPDATE shots SET audio_plan=? WHERE id=?', JSON.stringify(audio), saved.id)
+  const audioPatcher = f.tools(), reread = await audioPatcher.execute('get_storyboard_context', { shot_ids: [saved.id], limit: 10 }) as any
+  const current = reread.objects.find((item: any) => item.type === 'shot')
+  await audioPatcher.execute('propose_shot_patch', { summary: '修改本镜动作和声音', shots: [{ shot_id: saved.id, base_version: current.version,
+    changes: { video_prompt: '林晚转身，整段静音。' } }] })
+  const changed = getToolDraft(f.project.id)!
+  commitToolDraft(f.project.id, changed.id, changed.version, f.script)
+  assert.deepEqual(one<any>('SELECT * FROM shots WHERE id=?', saved.id).audio_plan, audio, 'a prose rewrite cannot silently cancel accepted sound; it remains the baseline for explicit audio review')
 })
 
 test('read-before-write, explicit intent, selected document scope and discussion-only apply to resource tools', async () => {

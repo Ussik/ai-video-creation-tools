@@ -4,7 +4,8 @@ import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
-import { skillStageOptions, type SkillPolicy, type SkillStage, type SkillTaskContext, type SkillSelections } from '../src/shared/api/skills-api'
+import { skillTaskDefinitions } from '@video-studio/shared/skills/skill-recommendation'
+import { skillStageOptions, type SkillTaskPolicy, type SkillPolicy, type SkillStage, type SkillTaskContext, type SkillSelections } from '../src/shared/api/skills-api'
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
 for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLElement', 'Element', 'ShadowRoot', 'Event', 'MouseEvent', 'MutationObserver']) Object.defineProperty(globalThis, key, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[key] })
@@ -48,14 +49,14 @@ function RememberedHarness({ projectId = 'one', stage = 'video_prompt', active =
 }
 const selections = () => JSON.parse(document.querySelector('output')!.textContent!)
 
-test('all five stages show defaults; changing a primary is temporary until explicitly saved', async t => {
+test('all nine task defaults are editable; changing a primary is temporary until explicitly saved', async t => {
   const writes: Array<{ url: string; body: any }> = []; const defaults = policies()
   t.mock.method(globalThis, 'fetch', async (url, init) => {
     if (init?.method === 'PUT') { const body = JSON.parse(String(init.body)); writes.push({ url: String(url), body }); Object.assign(defaults[0], body) }
-    return Response.json({ policies: defaults })
+    return Response.json({ policies: String(url).endsWith('/task-defaults') ? taskPolicies(defaults) : defaults })
   })
   const settings = await mount(<Settings projectId="one" projectName="项目一" />)
-  assert.equal(document.querySelectorAll('.creative-skill-default-row').length, 5)
+  assert.equal(document.querySelectorAll('.creative-skill-default-row').length, 9)
   await settings.destroy()
   const view = await mount(<Harness />)
   try {
@@ -72,6 +73,65 @@ test('all five stages show defaults; changing a primary is temporary until expli
     await choose('script主技能', '__base__')
     assert.deepEqual(JSON.parse(document.querySelector('output')!.textContent!).script, [])
     assert.equal(document.querySelector<HTMLInputElement>('input[aria-label="script辅助技能"]')!.disabled, true)
+  } finally { await view.destroy() }
+})
+
+test('selected primary and auxiliary tool-dependent skills show one scope note without changing selection or saving defaults', async t => {
+  const defaults = policies(), policy = defaults.find(item => item.stage === 'image_prompt')!
+  for (const suffix of ['b', 'c']) policy.skills.find(skill => skill.id === `image_prompt-${suffix}`)!.integration = {
+    mode: 'rules_only', tool_requirements: ['Bash'], note: '当前仅使用创作规则与文本参考资料，技能要求的外部工具、脚本及其产物未接入。',
+  }
+  let writes = 0
+  t.mock.method(globalThis, 'fetch', async () => { writes++; throw new Error('scope display must not save defaults') })
+  const changes: string[][] = []
+  const selector = (ids: string[]) => <Selector stage="image_prompt" policies={defaults} ids={ids} onChange={ids => changes.push(ids)} appearance="prompt" />
+  const view = await mount(selector(['image_prompt-a']))
+  try {
+    await act(() => button('图片提示词技能选择').click())
+    assert.equal(document.querySelector('[aria-label="技能接入范围"]'), null)
+    await view.render(selector(['image_prompt-a', 'image_prompt-b', 'image_prompt-c']))
+    const note = document.querySelector('[aria-label="技能接入范围"]')!
+    assert.equal(document.querySelectorAll('[aria-label="技能接入范围"]').length, 1)
+    assert.match(note.textContent!, /image_prompt技能b、image_prompt技能c/)
+    assert.match(note.textContent!, /外部工具、脚本及其产物未接入/)
+    await view.render(selector(['image_prompt-b']))
+    assert.match(document.querySelector('[aria-label="技能接入范围"]')!.textContent!, /image_prompt技能b/)
+    await view.render(selector(['image_prompt-a']))
+    assert.equal(document.querySelector('[aria-label="技能接入范围"]'), null)
+    assert.deepEqual(changes, [])
+    assert.equal(writes, 0)
+  } finally { await view.destroy() }
+})
+
+test('task defaults save the selected task independently and project reset restores inheritance', async t => {
+  const taskDefaults = taskPolicies(), writes: Array<{ path: string; method: string; body?: unknown }> = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    const path = String(url)
+    if (init?.method && init.method !== 'GET') {
+      const body = init.body ? JSON.parse(String(init.body)) : undefined
+      writes.push({ path, method: init.method, ...(body ? { body } : {}) })
+      const policy = taskDefaults.find(item => path.endsWith(`/${item.task}`))!
+      if (body) Object.assign(policy, body, { source: path.includes('/projects/') ? 'project' : 'global' })
+      else Object.assign(policy, { source: 'global' })
+    }
+    return Response.json({ policies: taskDefaults })
+  })
+  const view = await mount(<Settings projectId="one" projectName="项目一" />)
+  try {
+    assert.equal(document.querySelectorAll('.creative-skill-default-row').length, 9)
+    await act(() => button('台词专项修订技能选择').click())
+    await choose('script主技能', 'write')
+    await choose('script辅助技能', 'review')
+    assert.equal(writes.length, 0)
+    await act(async () => button('设为全局默认').click())
+    assert.deepEqual(writes[0], { path: '/api/skills/task-defaults/dialogue_revision', method: 'PUT', body: { primary_id: 'write', auxiliary_ids: ['review'] } })
+    assert.equal(taskDefaults.find(item => item.task === 'script_write')!.primary_id, 'write')
+    assert.deepEqual(taskDefaults.find(item => item.task === 'script_write')!.auxiliary_ids, [])
+    await act(() => button('台词专项修订技能选择').click())
+    await act(() => document.querySelector<HTMLInputElement>('input[value="project"]')!.click())
+    await act(() => button('台词专项修订技能选择').click())
+    await act(async () => button('恢复全局默认').click())
+    assert.deepEqual(writes[1], { path: '/api/projects/one/skills/task-defaults/dialogue_revision', method: 'DELETE' })
   } finally { await view.destroy() }
 })
 
@@ -257,6 +317,19 @@ function automaticPolicies(): SkillPolicy[] {
     ],
   })
 }
+
+function taskPolicies(stages = automaticPolicies()): SkillTaskPolicy[] {
+  return skillTaskDefinitions.map(definition => {
+    const policy = stages.find(item => item.stage === definition.stage)!
+    const primary = definition.kind === 'story_develop' ? 'develop' : definition.kind === 'review' ? 'review'
+      : definition.kind === 'dialogue_revision' ? 'dialogue' : policy.primary_id
+    const skills = policy.skills.some(item => item.id === primary) || !primary ? policy.skills
+      : [...policy.skills, { id: primary, name: definition.primary_name, description: definition.label, revision: 'a'.repeat(40) }]
+    return { ...policy, task: definition.kind, label: definition.label, primary_id: primary, skills }
+  })
+}
+function automaticDefaults() { return { policies: automaticPolicies(), task_policies: taskPolicies() } }
+
 function AutomaticHarness({ task, remember = false, automatic, projectId = 'automatic-one' }: { task: SkillTaskContext; remember?: boolean; automatic?: boolean; projectId?: string }) {
   const skills = useCreativeSkills(projectId, true, { task, automatic, rememberSelections: remember })
   const [captured, setCaptured] = React.useState<SkillSelections | null>(null)
@@ -268,36 +341,36 @@ function AutomaticHarness({ task, remember = false, automatic, projectId = 'auto
     <output>{JSON.stringify({ selected, selections: skills.selections, captured })}</output></>
 }
 
-test('automatic mode waits for model selection and typing tasks makes no model or policy write request', async t => {
+test('explicit tasks show fixed bindings while free discussion stays automatic without model calls', async t => {
   const calls: string[] = []
   t.mock.method(globalThis, 'fetch', async (url, init) => {
-    assert.ok(!init?.method || init.method === 'GET')
-    calls.push(String(url))
-    return Response.json({ policies: automaticPolicies() })
+    assert.ok(!init?.method || init.method === 'GET'); calls.push(String(url))
+    return Response.json(automaticDefaults())
   })
   const view = await mount(<AutomaticHarness task={{ workflow_stage: 'outline' }} />)
   try {
-    assert.deepEqual(selections().selected.ids, [])
+    assert.deepEqual(selections().selected.ids, ['develop'])
     assert.deepEqual(selections().selections, {})
-    assert.equal(selections().selected.source, 'automatic')
+    assert.equal(selections().selected.source, 'default')
     await act(() => button('剧本创作技能选择').click())
-    assert.match(document.querySelector('.creative-skill-popover header')!.textContent!, /模型自动选择/)
-    assert.equal(document.querySelector<HTMLInputElement>('input[aria-label="script主技能"]')!.value, '模型自动选择')
-    assert.equal(button('设为项目默认').disabled, true, 'automatic mode cannot accidentally save an empty manual default')
-    const reason = document.querySelector('[aria-label="技能分配依据"]')
-    assert.ok(reason?.textContent?.trim())
-    assert.ok(selections().selected.reason)
+    assert.match(document.querySelector('.creative-skill-popover header')!.textContent!, /按功能分配/)
+    assert.equal(document.querySelector<HTMLInputElement>('input[aria-label="script主技能"]')!.value, 'short-drama-develop')
+    assert.equal(document.querySelector('[role="option"][value="__automatic__"]'), null)
     await view.render(<AutomaticHarness task={{ workflow_stage: 'episode' }} />)
-    assert.deepEqual(selections().selected.ids, [])
+    assert.deepEqual(selections().selected.ids, ['write'])
     await view.render(<AutomaticHarness task={{ operation: 'review' }} />)
+    assert.deepEqual(selections().selected.ids, ['review'])
+    await view.render(<AutomaticHarness task={{ task_kind: 'dialogue_revision' }} />)
+    assert.deepEqual(selections().selected.ids, ['dialogue'])
+    await view.render(<AutomaticHarness task={{}} />)
     assert.deepEqual(selections().selected.ids, [])
-    assert.equal(calls.length, 1, 'changing a task performs no recommendation API call')
-    assert.equal(dom.window.localStorage.getItem('creative-prompt-skills:automatic-one'), null)
+    assert.equal(selections().selected.source, 'automatic')
+    assert.equal(calls.length, 1, 'changing task context makes no model request or policy write')
   } finally { await view.destroy() }
 })
 
-test('manual base rules remain an explicit empty override until model automatic selection is restored', async t => {
-  t.mock.method(globalThis, 'fetch', async () => Response.json({ policies: automaticPolicies() }))
+test('manual base rules remain explicit until fixed task defaults are restored', async t => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json(automaticDefaults()))
   const view = await mount(<AutomaticHarness task={{ workflow_stage: 'outline' }} />)
   try {
     await act(() => button('剧本创作技能选择').click())
@@ -307,9 +380,9 @@ test('manual base rules remain an explicit empty override until model automatic 
     assert.deepEqual(selections().selections, { script: [] })
     await view.render(<AutomaticHarness task={{ operation: 'review' }} />)
     assert.deepEqual(selections().selected.ids, [])
-    await act(() => button('恢复模型自动选择').click())
-    assert.deepEqual(selections().selected.ids, [])
-    assert.equal(selections().selected.source, 'automatic')
+    await act(() => button('恢复按功能分配').click())
+    assert.deepEqual(selections().selected.ids, ['review'])
+    assert.equal(selections().selected.source, 'default')
     assert.deepEqual(selections().selections, {})
   } finally { await view.destroy() }
 })
@@ -322,34 +395,34 @@ test('remembered manual choices override automatic tasks and restoring one stage
   t.mock.method(globalThis, 'fetch', async (_url, init) => {
     assert.ok(!init?.method || init.method === 'GET')
     fetches++
-    return Response.json({ policies: automaticPolicies() })
+    return Response.json(automaticDefaults())
   })
   const view = await mount(<AutomaticHarness task={{ workflow_stage: 'outline' }} remember />)
   try {
     assert.deepEqual(selections().selected.ids, ['write'])
     assert.equal(selections().selected.source, 'manual')
     await act(() => button('剧本创作技能选择').click())
-    await act(() => button('恢复模型自动选择').click())
-    assert.deepEqual(selections().selected.ids, [])
+    await act(() => button('恢复按功能分配').click())
+    assert.deepEqual(selections().selected.ids, ['develop'])
     assert.deepEqual(JSON.parse(dom.window.localStorage.getItem(key)!), { video_prompt: [] })
     assert.deepEqual(selections().selections.video_prompt, [])
     assert.equal(fetches, 1, 'restoring automatic selection does not reload or write policies')
     await view.render(<AutomaticHarness key="next-node" task={{ operation: 'review' }} remember />)
-    assert.deepEqual(selections().selected.ids, [])
-    assert.equal(selections().selected.source, 'automatic')
+    assert.deepEqual(selections().selected.ids, ['review'])
+    assert.equal(selections().selected.source, 'default')
   } finally { await view.destroy(); dom.window.localStorage.clear() }
 })
 
 test('request snapshots contain only explicit overrides and stay frozen while tasks and manual choices change', async t => {
-  t.mock.method(globalThis, 'fetch', async () => Response.json({ policies: automaticPolicies() }))
+  t.mock.method(globalThis, 'fetch', async () => Response.json(automaticDefaults()))
   const view = await mount(<AutomaticHarness task={{ workflow_stage: 'outline' }} />)
   try {
     await act(() => button('冻结审查请求').click())
     assert.deepEqual(selections().captured, {})
-    assert.deepEqual(selections().selected.ids, [])
+    assert.deepEqual(selections().selected.ids, ['develop'])
     await view.render(<AutomaticHarness task={{ workflow_stage: 'episode' }} />)
     assert.deepEqual(selections().captured, {})
-    assert.deepEqual(selections().selected.ids, [])
+    assert.deepEqual(selections().selected.ids, ['write'])
     await act(() => button('剧本创作技能选择').click())
     await choose('script主技能', 'develop')
     await act(() => button('冻结审查请求').click())
@@ -366,11 +439,11 @@ test('default editing can disable model selection while late policy loads never 
   const view = await mount(<AutomaticHarness task={{ workflow_stage: 'outline' }} />)
   try {
     await view.render(<AutomaticHarness task={{ operation: 'review' }} />)
-    await act(() => release(Response.json({ policies: automaticPolicies() })))
-    assert.deepEqual(selections().selected.ids, [])
-    assert.equal(selections().selected.source, 'automatic')
+    await act(() => release(Response.json(automaticDefaults())))
+    assert.deepEqual(selections().selected.ids, ['review'])
+    assert.equal(selections().selected.source, 'default')
     await view.render(<AutomaticHarness task={{ operation: 'review' }} automatic={false} />)
-    assert.deepEqual(selections().selected.ids, ['write'])
+    assert.deepEqual(selections().selected.ids, ['review'])
     assert.equal(selections().selected.source, 'default')
   } finally { await view.destroy() }
 })

@@ -231,14 +231,17 @@ test('controlled recognition repairs old missing tags and fails visibly instead 
   const { project, model } = await fixture()
   const source = { id: 'untagged', text: '是否接受寻找姐姐的主线？', following_messages: [] }
   let classification: Record<string, unknown> = { type: 'confirmation_request', status: 'pending', question: source.text }
-  mock(t, () => ({ messages: [{ id: source.id, classification }] }))
+  let attempts = 0
+  mock(t, () => { attempts++; return { messages: [{ id: source.id, classification }] } })
   const url = `/api/projects/${project.id}/script/replies/classify`
   const body = { model_id: model.id, messages: [source] }
   await call('POST', url, body)
   const unvalidated = await app.inject({ method: 'POST', url, payload: { ...body, stage_controlled: true } })
   assert.equal(unvalidated.statusCode, 422)
   assert.match(unvalidated.body, /交互入口保持隐藏/)
+  assert.equal(attempts, 3, 'the stage contract gets one bounded correction after its original classification')
   classification = { ...classification, interaction: { stage: 'outline', purpose: 'setting' } }
   const corrected = await call<{ messages: Array<{ classification: typeof classification }> }>('POST', url, { ...body, stage_controlled: true })
   assert.deepEqual(corrected.messages[0].classification, classification)
+  assert.equal(attempts, 4, 'only the explicit corrected request retries after the bounded failure')
 })

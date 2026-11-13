@@ -79,10 +79,10 @@ export function ScriptSourceAnalysisStatus({ source, starting, unavailable, poll
     {interrupted && analysis.progress && <small>上次处理项：{analysis.progress.stage === 'splitting' ? '重新进行全文分析' : scriptDiagnosticDisplayText(analysis.progress.message).replace(/；全文一次提交$/, '')}</small>}
     {(interrupted || pending && resume.available) && <small>{scriptDiagnosticDisplayText(resume.message)}</small>}
     {hasPreviousFailure && (pending || analysis?.status === 'ready') && <small>这里显示当前文稿的分析状态；对话中的“未完成”是对应轮次的历史结果。</small>}
-    {(!pending || pollError) && <small>{pollError && pending ? '暂时无法读取进度，正在重试…保留上次确认的步骤。'
+    {analysis?.status !== 'ready' && (!pending || pollError) && <small>{pollError && pending ? '暂时无法读取进度，正在重试…保留上次确认的步骤。'
       : analysis?.status === 'paused' ? '创作要求仍可填写，完成分析后再发送。'
         : analysis?.status === 'failed' ? analysis.error && scriptDiagnosticDisplayText(analysis.error).slice(0, 300) || `请重试分析，${sourceLabel}已保留。`
-        : !analysis && unavailable ? '请先选择可用文本模型。' : analysis?.status === 'ready' ? '目录、人物、事件与全剧信息已整理，后续创作共用当前版本。' : '分析只整理剧本资料，阶段文档仍需生成并确认保存。'}</small>}
+        : !analysis && unavailable ? '请先选择可用文本模型。' : '分析只整理剧本资料，阶段文档仍需生成并确认保存。'}</small>}
   </div>
 }
 

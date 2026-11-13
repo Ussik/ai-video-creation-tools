@@ -496,9 +496,10 @@ test('episode patches synchronize scene fields without replacing scene or shot I
   const doc = script().artifacts![0], tools = makeTools(), read = await readDoc(tools, doc.id)
   const input = { summary: '修改台词', changes: [{ document_id: doc.id, base_version: read.version, replacements: [{ find: '别走。', replace: '等等我。', reason: '更明确的挽留' }] }] }
   await assert.rejects(tools.execute('propose_document_patch', input), /同步对应分场/)
-  await tools.execute('propose_document_patch', { ...input, scene_changes: [{ scene_id: scene.id, base_version: read.scenes![0].version, changes: { dialogue: '等等我。' } }] })
+  await tools.execute('propose_document_patch', { ...input, scene_changes: [{ scene_id: scene.id, base_version: read.scenes![0].version, changes: { dialogue: '等等我。', duration: 600 } }] })
   const draft = getToolDraft(project.id)!; commitToolDraft(project.id, draft.id, draft.version, script)
   assert.equal(script().scenes[0].id, scene.id); assert.equal(script().scenes[0].action, scene.action); assert.equal(script().scenes[0].dialogue, '等等我。')
+  assert.equal(script().scenes[0].duration, 600, 'scene patches retain a duration spanning several generated shots')
   assert.equal(one<{ source_scene_id: string }>('SELECT source_scene_id FROM shots WHERE id=?', 'linked-shot')!.source_scene_id, scene.id); assert.match(script().artifacts![0].content, /等等我/)
   const stage = toolConversationStage(project.id, script(), directorStageContext(script()), { operation: 'revise', document_ids: [doc.id] })
   assert.equal(stage.stage, 'episode'); assert.equal(stage.episode_number, 1); assert.equal(stage.mode, 'explicit')
@@ -637,6 +638,57 @@ async function runToolLoop(current: Awaited<ReturnType<typeof fixture>>, signal?
     } },
   }))
 }
+
+test('native draft wire schemas constrain explicit workflows and keep ordinary discussion unrestricted', async t => {
+  for (const protocol of ['chat_completions', 'responses'] as const) {
+    for (const workflow of ['outline', 'episode', undefined] as const) await t.test(`${protocol} / ${workflow || 'discussion'}`, async t => {
+      const current = await fixture(), before = current.script()
+      let requests = 0
+      t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+        requests++
+        const body = JSON.parse(String(init.body))
+        const functions = body.tools.map((tool: any) => tool.function || tool)
+        const parameters = functions.find((tool: any) => tool.name === 'create_document_draft')!.parameters
+        const fields = parameters.properties
+        const scenes = fields.scenes.anyOf?.find((item: any) => item.type === 'array') || fields.scenes
+        if (workflow) {
+          assert.equal(fields.stage.const, workflow)
+          assert.deepEqual(fields.artifacts.items.properties.artifact_type.enum, workflow === 'outline' ? ['outline'] : ['episode_script'])
+          if (workflow === 'outline') {
+            assert.equal(scenes.maxItems, 0)
+            assert.ok(!JSON.stringify(scenes).includes('heading'))
+            assert.ok(!JSON.stringify(scenes).includes('dialogue'))
+          } else {
+            assert.ok(scenes.items.properties.heading)
+            assert.ok(scenes.items.properties.dialogue)
+          }
+        } else {
+          assert.deepEqual(fields.stage.enum, ['outline', 'characters', 'locations', 'props', 'episode'])
+          assert.ok(fields.artifacts.items.properties.artifact_type.enum.includes('characters'))
+          assert.ok(fields.artifacts.items.properties.artifact_type.enum.includes('episode_script'))
+          assert.equal(scenes.maxItems, 100)
+        }
+        return protocol === 'responses'
+          ? Response.json({ status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '已检查当前任务。' }] }] })
+          : Response.json({ choices: [{ message: { role: 'assistant', content: '已检查当前任务。' }, finish_reason: 'stop' }] })
+      })
+      await withUnrestrictedScriptExecution(() => runScriptTools({
+        project: current.project, script: current.script, stage: directorStageContext(current.script()),
+        ...(workflow ? { workflow, taskContract: { artifact_types: workflow === 'outline' ? ['outline'] : ['episode_script'] } } : {}),
+        messages: [{ role: 'user', text: '检查当前任务。' }], checkApproval: async () => false, onEvent: () => {},
+        prompt: '检查当前任务。', resolveKey: () => '',
+        provider: { adapter: 'http', base_url: 'https://workflow-wire.invalid/v1' },
+        model: { id: 'wire-model', remote_id: 'wire', modality: 'text', protocol, settings: {
+          request_path: protocol === 'responses' ? 'responses' : 'chat/completions',
+          request_template: { model: '{{model}}', ...(protocol === 'responses' ? { input: '{{prompt}}' } : { messages: [{ role: 'user', content: '{{prompt}}' }] }) },
+          text_path: protocol === 'responses' ? 'output_text' : 'choices.0.message.content',
+        } },
+      }))
+      assert.equal(requests, 1)
+      assert.deepEqual(current.script(), before)
+    })
+  }
+})
 
 test('native tools finish after more than sixteen rounds and sixty-four calls', async t => {
   for (const protocol of ['chat_completions', 'responses'] as const) await t.test(protocol, async t => {

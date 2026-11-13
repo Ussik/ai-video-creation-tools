@@ -11,6 +11,7 @@ import { withProjectStyle } from '@video-studio/shared/visuals/visual-style'
 import { applyExactPromptPatches, generateExactPromptEdits, promptParagraphs, promptSourceHash, type PromptExactPatch } from '../src/modules/skills/prompt-exact-edit.js'
 import { createGenerationSteps } from '../src/modules/script/script-generation-steps.js'
 import { TextOutputLimitError } from '../src/infrastructure/providers/text-errors.js'
+import { semanticReviewFixture } from './helpers/prompt-refinement-semantics.js'
 import { currentModelRequestContext } from '../src/modules/generation/model-task-policy.js'
 
 const directory = await mkdtemp(join(tmpdir(), 'prompt-exact-edit-'))
@@ -122,11 +123,11 @@ test('long route edits resume pages with intact source, rules, ordered pixels an
       signal!.throwIfAborted(); assert.equal(images.length, 1)
       if (!firstPixels) firstPixels = images[0]!.data_url
       assert.equal(images[0]!.data_url, firstPixels)
-      if (contract?.name === 'video_prompt_content_review') {
+      if (contract?.name === 'prompt_refinement_semantic_review') {
         reviews++; calls.push('review')
         assert.match(prompt, /清楚抬起右手/); assert.match(prompt, /望向门外/); assert.match(prompt, /我会回来的/)
         if (failReview) throw Object.assign(new Error('独立审读中断'), { statusCode: 422 })
-        return JSON.stringify(review)
+        return JSON.stringify({ ...semanticReviewFixture(), content_review: review })
       }
       assert.equal(contract?.name, 'refined_prompt_page')
       calls.push('patch'); page++
@@ -161,6 +162,10 @@ test('long protected documents preserve fixed sections and reject dialogue remov
   const f = await fixture(), instance = isolated(); t.after(() => instance.close())
   let bad: 'dialogue' | 'parameters' | 'reference' | 'none' = 'dialogue', calls = 0
   registerSkillRoutes(instance, { generateText: async (_project, _model, _prompt, contract) => {
+    if (contract?.name === 'prompt_refinement_semantic_review') {
+      return JSON.stringify({ ...semanticReviewFixture(), dialogue: [{ speaker: '林晚', text: '我会回来的。',
+        source_evidence: '她说：“我会回来的。”', authorized_change: false, authorization_evidence: '' }] })
+    }
     assert.equal(contract?.name, 'refined_prompt_page'); calls++
     const change = bad === 'dialogue' ? patch(f.source, '她说：“我会回来的。”', '无对白。') : bad === 'parameters'
       ? patch(f.source, '结束状态：林晚仍站在门边。', '结束状态：林晚仍站在门边。\n画面比例：9:16')
@@ -169,7 +174,7 @@ test('long protected documents preserve fixed sections and reject dialogue remov
     return JSON.stringify({ items: [change], complete: true })
   } })
   const original = withProjectStyle(f.source, { version: 'fixture', source: 'settings', label: '水墨动画', details: {} })
-  const payload = { ...f.payload, prompt: original, prompt_document: true, analyze_reference_images: false, check_video_content: false }
+  const payload = { ...f.payload, prompt: original, prompt_document: true, analyze_reference_images: false, check_video_content: false, restart: true }
   const invoke = () => instance.inject({ method: 'POST', url: `/api/projects/${f.project.id}/skills/refine-prompt`, payload })
   let result = await invoke(); assert.equal(result.statusCode, 422, result.body); assert.match(result.body, /逐字对白/)
   bad = 'parameters'; result = await invoke(); assert.equal(result.statusCode, 422, result.body); assert.match(result.body, /画面比例/)

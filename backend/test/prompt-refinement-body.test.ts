@@ -7,6 +7,7 @@ import Fastify from 'fastify'
 import { withProjectStyle } from '@video-studio/shared/visuals/visual-style'
 import { getManagedPromptBlocks, stripManagedPromptBlocks } from '@video-studio/shared/visuals/prompt-document'
 import { visualBoardPromptParts } from '@video-studio/shared/visuals/visual-board-document'
+import { semanticIssueFixture, semanticReviewFixture } from './helpers/prompt-refinement-semantics.js'
 
 const directory = await mkdtemp(join(tmpdir(), 'studio-refine-body-'))
 process.env.VIDEO_STUDIO_DATA_DIR = directory
@@ -16,8 +17,10 @@ const { registerSkillRoutes } = await import('../src/modules/skills/skill-routes
 const app = buildApp(), refineApp = Fastify()
 let captured = '', modelBody = '整理后的单幅画面：姜望低头补网，陆沉舟准备登船。', duringModel: (() => void) | undefined
 let calls = 0, modelResults: string[] = []
+let semanticResults = [semanticReviewFixture()]
 refineApp.setErrorHandler((error, _request, reply) => reply.code((error as { statusCode?: number }).statusCode || 422).send({ detail: String(error) }))
-registerSkillRoutes(refineApp, { generateText: async (_project, _model, prompt) => {
+registerSkillRoutes(refineApp, { generateText: async (_project, _model, prompt, contract) => {
+  if (contract?.name === 'prompt_refinement_semantic_review') return JSON.stringify(semanticResults.length > 1 ? semanticResults.shift()! : semanticResults[0])
   captured = prompt
   calls++
   duringModel?.()
@@ -33,6 +36,7 @@ async function create(url: string, payload: unknown, method: 'POST' | 'PUT' | 'P
 async function fixture() {
   duringModel = undefined
   modelResults = []
+  semanticResults = [semanticReviewFixture()]
   modelBody = '整理后的单幅画面：姜望低头补网，陆沉舟准备登船。'
   const project = await create('/api/projects', { name: '正文和固定设定分离' })
   run("INSERT INTO scripts (project_id, generation_options, updated_at) VALUES (?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET generation_options=excluded.generation_options",
@@ -226,6 +230,53 @@ test('primary-only setting documents can refine without profile context or suppl
   assert.deepEqual(visualBoardPromptParts(result.prompt), { primary: [modelBody], supplement: '', context: [context] })
   assert.match(captured, /原提示词：\n木质网针正侧背三视图，保留打磨痕迹。/)
   assert.doesNotMatch(captured, /灰褐短褂|正侧背与面部细节|厚涂仙侠动画/)
+})
+
+test('setting refinement protects current facts and display requirements even from adjustment or skill preferences', async () => {
+  const { project, input } = await fixture()
+  const context = '【项目画风约束】\n画风：木刻，保留纸张纹理。\n【项目画风约束结束】'
+  const primary = '对象：旧木网针；版本：修补态。\n视觉设定：\n旧木材质，针孔边缘有一道裂痕。\n需要展示：\n正侧背三视图和俯视，针孔细节。'
+  modelBody = '旧木网针（修补态），旧木材质，针孔边缘保留一道裂痕。正视图、侧视图、后视图和顶视图排列有序，针孔细节清晰。'
+  const result = await refine(project.id, { ...input, shot_id: undefined, reference_asset_ids: [], prompt_document: true,
+    prompt: `【设定图固定要求】\n${primary}\n【设定图固定要求结束】\n\n${context}`, adjustment_request: '精简重复描述，排列清楚。' })
+  assert.match(captured, /只整理语言表达、句子顺序和重复描述/)
+  assert.match(captured, /不能改变既定事实、身份、版本、状态、结构、材质、配色和展示要求/)
+  assert.match(captured, /调整要求及技能建议也不能授权突破此边界/)
+  assert.doesNotMatch(captured, /定义、视图和版式允许按本次要求整理|允许相应更新本镜头的人物参与/)
+  assert.deepEqual(visualBoardPromptParts(result.prompt), { primary: [modelBody], supplement: '', context: [context] })
+})
+
+test('setting drafts that lose explicit current views are corrected once and never returned as applicable', async () => {
+  const { project, input } = await fixture(), before = calls
+  const primary = '【设定图固定要求】\n对象：旧木网针；版本：修补态。\n需要展示：正侧背三视图与俯视。\n【设定图固定要求结束】'
+  const invalid = '旧木网针（修补态）展示正侧背三视图。'
+  modelResults = [invalid, invalid]
+  semanticResults = [semanticIssueFixture('board_views', '未保留设定图展示要求：俯视。', { source: '俯视' })]
+  const tables = ['visual_profiles', 'shot_visual_bindings', 'canvas_nodes', 'jobs']
+  const saved = tables.map(table => all(`SELECT * FROM ${table}`))
+  const response = await refineApp.inject({ method: 'POST', url: `/api/projects/${project.id}/skills/refine-prompt`, payload: {
+    ...input, shot_id: undefined, reference_asset_ids: [], prompt_document: true, prompt: primary,
+  } })
+  assert.equal(response.statusCode, 422, response.body)
+  assert.match(response.body, /已修正一次.*未保留设定图展示要求.*俯视/)
+  assert.equal(calls, before + 2)
+  assert.deepEqual(tables.map(table => all(`SELECT * FROM ${table}`)), saved)
+})
+
+test('fixed parameter conflicts fail before generation while natural-language board conflicts use model review', async () => {
+  const { project, input } = await fixture(), before = calls
+  for (const adjustment_request of ['画面比例：9:16', '删除背面视图。', '将三视图改为四视图。']) {
+    const review = semanticReviewFixture()
+    review.request_conflicts = [{ message: '调整要求与既定展示要求冲突。', evidence: adjustment_request }]
+    semanticResults = [review]
+    const response = await refineApp.inject({ method: 'POST', url: `/api/projects/${project.id}/skills/refine-prompt`, payload: {
+      ...input, shot_id: undefined, reference_asset_ids: [], prompt_document: true,
+      prompt: '【设定图固定要求】\n需要展示：正侧背三视图。\n【设定图固定要求结束】', adjustment_request,
+    } })
+    assert.equal(response.statusCode, 422, response.body)
+    assert.match(response.body, /调整要求.*冲突/)
+  }
+  assert.equal(calls, before + 2)
 })
 
 test('a setting profile with a removed primary refines its remaining body without restoring saved facts', async () => {
@@ -583,6 +634,7 @@ test('an explicit new-character request corrects purpose-only output into a visi
   run('UPDATE shot_visual_bindings SET usage=? WHERE shot_id=? AND profile_id=?', 'none', shot.id, lu.id)
   const block = '【生成参数约束】\n画面比例：16:9\n【生成参数约束结束】'
   modelResults = ['姜望坐在船边补网；参考图1只用于陆沉舟的人物身份、面部和服装。', '姜望坐在船边补网。陆沉舟站在画面右侧准备登船，外观依据参考图1。']
+  semanticResults = [semanticIssueFixture('character_presence', '未落实新增人物“陆沉舟”。', { adjustment: '加入这个新角色' }), semanticReviewFixture()]
   const result = await refine(project.id, { ...input, reference_asset_ids: [assets[1], assets[0]], explicit_reference_asset_ids: [assets[1]],
     prompt_document: true, prompt: `姜望坐在船边补网。\n\n${block}`,
     adjustment_request: `将[[ref:${assets[1]}]]作为陆沉舟的人物参考，加入这个新角色。` })
@@ -594,11 +646,10 @@ test('an explicit new-character request corrects purpose-only output into a visi
   assert.deepEqual(getManagedPromptBlocks(result.prompt), [block])
 })
 
-test('unknown adjustment tokens, invalid explicit selections and mismatched character assignments fail before model calls', async () => {
+test('unknown adjustment tokens and invalid explicit selections fail before model calls', async () => {
   const { project, input, assets } = await fixture(), before = calls
   for (const options of [
     { adjustment_request: '加入[[ref:unconnected-image]]中的人物。' },
-    { adjustment_request: `将[[ref:${assets[0]}]]作为陆沉舟的人物参考。` },
     { explicit_reference_asset_ids: [assets[2]] },
   ]) {
     const response = await refineApp.inject({ method: 'POST', url: `/api/projects/${project.id}/skills/refine-prompt`, payload: { ...input, ...options } })
@@ -614,13 +665,13 @@ test('continuing from a saved purpose-only draft still corrects the requested ne
   const purposeOnly = '姜望坐在船边补网；参考图1只用于陆沉舟的人物身份、面部和服装。'
   const block = '【生成参数约束】\n画面比例：16:9\n【生成参数约束结束】'
   modelResults = [purposeOnly, '姜望坐在船边补网。陆沉舟站在右侧准备登船，人物外观参考图1。']
+  semanticResults = [semanticIssueFixture('character_presence', '未落实新增人物“陆沉舟”。', { adjustment: '加入这个新角色' }), semanticReviewFixture()]
   const result = await refine(project.id, { ...input, reference_asset_ids: [assets[1], assets[0]], explicit_reference_asset_ids: [assets[1]],
     prompt_document: true, prompt: `${purposeOnly}\n\n${block}`,
     adjustment_request: `将[[ref:${assets[1]}]]作为陆沉舟的人物参考，加入这个新角色，保留姜望。` })
   assert.equal(calls, before + 2)
   assert.match(captured, /未落实新增人物“陆沉舟”/)
-  const characters = JSON.parse(captured.split('本次明确新增的画面人物：')[1]!.split('。每个人物')[0]!)
-  assert.deepEqual(characters.map((character: { name: string }) => character.name), ['陆沉舟'])
+  assert.match(captured, /加入这个新角色，保留姜望/)
   assert.match(result.prompt_body, /陆沉舟站在右侧.*参考图 1/)
   assert.deepEqual(getManagedPromptBlocks(result.prompt), [block])
 })
@@ -628,6 +679,7 @@ test('continuing from a saved purpose-only draft still corrects the requested ne
 test('wrong image identity in the model body receives bounded correction and valid bodies keep final image order', async () => {
   const { project, input, assets } = await fixture(), before = calls
   modelResults = ['姜望坐在左侧。陆沉舟站在右侧，将参考图1作为陆沉舟的人物参考。', '姜望坐在左侧。陆沉舟站在右侧，将参考图2作为陆沉舟的人物参考。']
+  semanticResults = [semanticIssueFixture('reference_identity', '图片身份对应错误：陆沉舟引用了姜望的人物图。', { adjustment: '加入陆沉舟' }), semanticReviewFixture()]
   const result = await refine(project.id, { ...input, prompt_document: true, prompt: '姜望坐在左侧。',
     explicit_reference_asset_ids: [assets[1]], adjustment_request: `加入陆沉舟，人物外观使用[[ref:${assets[1]}]]。` })
   assert.equal(calls, before + 2)
@@ -641,6 +693,7 @@ test('a model that repeatedly omits the explicitly added character fails rather 
   const tables = ['shots', 'shot_visual_bindings', 'canvas_nodes', 'jobs']
   const saved = tables.map(table => all(`SELECT * FROM ${table}`))
   modelResults = ['姜望坐在船边；参考图2只用于陆沉舟人物外观。', '姜望坐在船边；参考图2只用于陆沉舟人物外观。']
+  semanticResults = [semanticIssueFixture('character_presence', '未落实新增人物“陆沉舟”。', { adjustment: '加入陆沉舟作为新角色' })]
   const response = await refineApp.inject({ method: 'POST', url: `/api/projects/${project.id}/skills/refine-prompt`, payload: {
     ...input, prompt_document: true, prompt: '姜望坐在船边。', explicit_reference_asset_ids: [assets[1]],
     adjustment_request: `加入陆沉舟作为新角色，外观使用[[ref:${assets[1]}]]。`,

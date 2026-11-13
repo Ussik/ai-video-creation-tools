@@ -1,0 +1,116 @@
+/* Floating scene/shot manager; inline and drawer references keep their own layout. */
+.project-canvas .pc-visual-panel.pc-binding-panel {
+  width: 416px;
+  background: var(--fc-panel);
+}
+.project-canvas .pc-visual-panel.pc-binding-panel > header {
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 18px 20px;
+}
+.pc-binding-panel-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--visual-panel-border);
+  border-radius: 11px;
+  background: var(--visual-panel-raised);
+  color: var(--visual-panel-secondary);
+}
+.project-canvas .pc-visual-panel.pc-binding-panel > header > div { flex: 1; gap: 3px; }
+.project-canvas .pc-visual-panel.pc-binding-panel > header strong { font-size: 16px; line-height: 1.5; letter-spacing: -.02em; }
+.project-canvas .pc-visual-panel.pc-binding-panel > header > .mantine-ActionIcon-root { flex: none; width: 30px; height: 30px; }
+.project-canvas .pc-visual-panel.pc-binding-panel .pc-profile-inspector-fields {
+  gap: 14px;
+  padding: 18px 20px 0;
+  overflow: hidden;
+}
+.pc-binding-panel .pc-profile-inspector-fields > :not(.pc-visual-bindings) { flex: none; }
+.project-canvas .pc-visual-panel.pc-binding-panel .pc-profile-inspector-fields > .pc-visual-note { color: var(--visual-panel-muted); }
+.pc-binding-panel-intro {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: var(--visual-panel-raised);
+}
+.pc-binding-panel-intro > svg { flex: none; margin-top: 3px; color: var(--visual-panel-muted); }
+.project-canvas .pc-visual-panel.pc-binding-panel .pc-binding-panel-intro .pc-visual-note { font-size: 11px; line-height: 1.8; }
+.project-canvas .pc-visual-panel.pc-binding-panel .mantine-InputWrapper-label { margin-bottom: 6px; color: var(--visual-panel-secondary); font-size: 11px; font-weight: 500; }
+.project-canvas .pc-visual-panel.pc-binding-panel .mantine-Input-input { min-height: 36px; font-size: 12px; }
+.pc-binding-panel .pc-visual-usage { max-height: 112px; overflow-y: auto; flex-shrink: 1; }
+.pc-binding-panel .pc-visual-bindings {
+  flex: 1;
+  min-height: 0;
+  align-content: start;
+  gap: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding: 1px 5px 18px 1px;
+  margin-right: -6px;
+}
+.pc-binding-panel .pc-visual-binding {
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid var(--visual-panel-border);
+  border-radius: 11px;
+  background: var(--visual-panel-raised);
+  transition: border-color 160ms ease;
+}
+.pc-binding-panel .pc-visual-binding.is-bound { border-color: color-mix(in srgb, var(--visual-panel-focus) 45%, var(--visual-panel-border)); }
+.pc-binding-panel .pc-visual-binding:focus-within { border-color: var(--visual-panel-focus); }
+.pc-binding-panel .pc-visual-binding > .pc-binding-row-head { align-items: center; gap: 10px; }
+.pc-binding-panel .pc-binding-profile-preview {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 46px;
+  height: 46px;
+  overflow: hidden;
+  border: 1px solid var(--visual-panel-border);
+  border-radius: 7px;
+  background: var(--workspace-ink, var(--fc-surface));
+  color: var(--visual-panel-muted);
+}
+.project-canvas .pc-visual-panel.pc-binding-panel .pc-binding-row-identity .mantine-Checkbox-label { padding-left: 8px; color: var(--visual-panel-text); font-size: 12px; font-weight: 500; line-height: 1.6; overflow-wrap: anywhere; }
+.pc-binding-panel .pc-binding-row-head > .mantine-ActionIcon-root { flex: none; width: 26px; height: 26px; }
+.pc-binding-panel-status { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 8px; margin: 5px 0 0 28px; color: var(--visual-panel-muted); font-size: 10px; line-height: 1.5; }
+.pc-binding-panel-status > span + span { padding: 2px 6px; border-radius: 4px; background: var(--workspace-ink, var(--fc-surface)); }
+.pc-binding-panel-status [data-sync-status='current'] { color: var(--fc-primary); }
+.pc-binding-panel-status :is([data-sync-status='waiting_confirmation'], [data-sync-status='manual_review']) { color: var(--fc-warning); }
+.pc-binding-panel-details { display: grid; gap: 12px; margin-top: 13px; padding-top: 12px; border-top: 1px solid var(--visual-panel-border); }
+.pc-binding-panel .pc-visual-binding-meta { justify-content: space-between; gap: 6px 10px; margin: 0; padding: 0; }
+.pc-binding-panel .pc-visual-binding-meta > span { font-size: 10px; font-variant-numeric: tabular-nums; }
+.project-canvas .pc-visual-panel.pc-binding-panel .pc-visual-binding-meta label { font-size: 11px; }
+.pc-binding-panel .pc-binding-sync-controls { justify-items: stretch; gap: 7px; }
+.pc-binding-panel .mantine-Switch-body { justify-content: space-between; flex-direction: row-reverse; gap: 12px; }
+.pc-binding-panel .mantine-Switch-label { padding: 0; font-size: 11px; }
+.pc-binding-panel .mantine-Switch-track { flex: none; cursor: pointer; }
+.pc-binding-panel .mantine-Switch-track[data-disabled] { cursor: default; }
+.project-canvas .pc-visual-panel.pc-binding-panel .pc-binding-panel-details .pc-visual-note { font-size: 11px; line-height: 1.75; overflow-wrap: anywhere; }
+.pc-binding-panel .pc-binding-references { gap: 9px; margin: 0; padding: 10px; border: 0; border-radius: 7px; background: var(--workspace-ink, var(--fc-surface)); }
+.pc-binding-panel .pc-binding-reference-actions > span { font-weight: 500; }
+.pc-binding-panel .pc-binding-reference-preview { display: grid; place-items: center; width: 72px; height: 80px; overflow: hidden; border: 1px solid var(--visual-panel-border); border-radius: 7px; background: var(--visual-panel-raised); }
+.pc-binding-panel .pc-visual-bindings > .pc-visual-note { padding: 28px 16px; text-align: center; border: 1px dashed var(--visual-panel-border); border-radius: 10px; }
+.project-canvas .pc-visual-panel.pc-binding-panel > footer { justify-content: space-between; gap: 5px 12px; padding: 13px 20px; }
+.pc-binding-panel > footer .pc-visual-note { display: flex; align-items: center; gap: 7px; font-variant-numeric: tabular-nums; }
+.pc-binding-panel > footer .pc-visual-note > svg { color: var(--visual-panel-secondary); }
+.pc-binding-panel > footer > small { color: var(--visual-panel-muted); font-size: 10px; }
+.pc-binding-panel > footer > .mantine-Button-root { width: 100%; margin-top: 5px; }
+@media (max-height: 740px) {
+  .project-canvas .pc-visual-panel.pc-binding-panel .pc-profile-inspector-fields { overflow-y: auto; padding-bottom: 16px; }
+  .pc-binding-panel .pc-visual-bindings { flex: none; overflow: visible; padding-bottom: 0; }
+}
+@media (max-width: 500px) {
+  .project-canvas .pc-visual-panel.pc-binding-panel > header { padding: 14px 16px; }
+  .project-canvas .pc-visual-panel.pc-binding-panel .pc-profile-inspector-fields { padding: 14px 16px 0; }
+  .project-canvas .pc-visual-panel.pc-binding-panel > footer { padding: 12px 16px; }
+  .pc-binding-panel .pc-visual-binding { padding: 11px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pc-binding-panel .pc-visual-binding { transition: none; }
+}

@@ -45,7 +45,7 @@ function draft() {
   return { artifacts: [{ artifact_type: 'outline', title: scriptArtifactLabels.outline, content: candidateText }], scenes: [] }
 }
 function finding() {
-  return { checked_artifacts: ['outline'], findings: [{ source_key: 'outline', kind: 'missing_core_setting', quote: candidateText,
+  return { checked_artifacts: ['outline'], findings: [{ source_key: 'outline', kind: 'missing_core_setting', severity: 'blocking', quote: candidateText,
     explanation: '作者视角尚无幕后真相。', suggestion: '确定幕后真相及回收。' }] }
 }
 async function resolutionVersion(projectId: string) {

@@ -16,6 +16,9 @@ export interface TimelineClip {
   source_duration_ms: number | null
   source_audio_gain: number
   source_audio_fade_ms: number
+  /** Disposable review windows can crop an edge without introducing a new fade. */
+  source_audio_envelope_in_ms?: number
+  source_audio_envelope_out_ms?: number
 }
 
 interface TimelinePreviewProps {
@@ -55,10 +58,12 @@ function formatTime(ms: number): string {
 }
 
 function sourceAudioLevel(clip: PreviewClip, offsetMs: number): number {
-  const fadeMs = Math.min(clip.clip.source_audio_fade_ms, clip.durationMs / 2)
-  const fadeLevel = fadeMs > 0
-    ? Math.min(1, offsetMs / fadeMs, (clip.durationMs - offsetMs) / fadeMs)
-    : 1
+  const envelopeStart = clip.clip.source_audio_envelope_in_ms ?? clip.clip.in_ms
+  const envelopeEnd = clip.clip.source_audio_envelope_out_ms ?? clip.clip.out_ms
+  const fadeMs = Math.min(clip.clip.source_audio_fade_ms, (envelopeEnd - envelopeStart) / 2)
+  const elapsed = clip.clip.in_ms + offsetMs - envelopeStart
+  const remaining = envelopeEnd - clip.clip.in_ms - offsetMs
+  const fadeLevel = fadeMs > 0 ? Math.min(1, elapsed / fadeMs, remaining / fadeMs) : 1
   return clip.clip.source_audio_gain * Math.max(0, fadeLevel)
 }
 
@@ -89,7 +94,7 @@ export default function TimelinePreview({ clips, assets, shots, ratio, musicAsse
   const incomplete = orderedShots.length === 0 || missingShots.length > 0 || resolved.length !== clips.length
   const totalMs = resolved.reduce((sum, item) => sum + item.durationMs, 0)
   const signature = resolved.map((item) => item.key).join('|')
-  const audioSignature = resolved.map((item) => `${item.key}:${item.clip.source_audio_gain}:${item.clip.source_audio_fade_ms}`).join('|')
+  const audioSignature = resolved.map((item) => `${item.key}:${item.clip.source_audio_gain}:${item.clip.source_audio_fade_ms}:${item.clip.source_audio_envelope_in_ms}:${item.clip.source_audio_envelope_out_ms}`).join('|')
   const musicKey = musicAsset?.kind === 'audio' && musicAsset.url
     ? `${musicAsset.id}:${musicAsset.url}`
     : ''

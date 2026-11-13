@@ -6,15 +6,17 @@ import { createHash } from 'node:crypto'
 import { setImmediate as yieldToCancellation } from 'node:timers/promises'
 import { z } from 'zod'
 import { scriptStageArtifacts } from '@video-studio/shared/script/script-stage-content'
+import { maxScriptSceneDuration } from '@video-studio/shared/script/script-duration'
 import { all, one, run, db, newId, now, type Project, type ScriptArtifact, type ScriptScene, type Shot } from '../../infrastructure/database/db.js'
-import { workflowGenerationDraftInput, workflowGenerationDraftSchema, workflowContentInstructions, workflowDraftSchema, workflowScene, workflowProgress, directorStageContext, type DirectorStageContext, type WorkflowDraft, type WorkflowStage } from './script-workflow.js'
+import { workflowGenerationDraftInput, workflowGenerationDraftSchema, workflowContentInstructions, workflowDraftSchema, workflowStageDraftInput, workflowScene, workflowProgress, directorStageContext, type DirectorStageContext, type WorkflowDraft, type WorkflowStage } from './script-workflow.js'
 import { archivedMessage, archivedMessages, activeCreatorRequirements, allCreatorRequirements, maxRequirementQuote, recordCreatorRequirement, withdrawCreatorRequirement } from './script-creator-requirements.js'
 import { batchableReadTools, deferredCallOutput, scriptToolProfile } from './script-tool-profile.js'
 import { replyClassification, replyClassificationVersion, inputFields, interactionQuestions } from './script-reply-classification.js'
 import { scriptSettingsSchema, visualStyleDetailsSchema, mergeConfirmedScriptSettings } from './script-intent.js'
 import { assertStyleVersion, projectVisualStyle } from '../visuals/project-visual-style.js'
 import { textToolSession, type TextTool, type ToolOutput } from '../../infrastructure/providers/text-tools.js'
-import type { GenerationModel, GenerationProvider, TextRequestMetrics } from '../../infrastructure/providers/providers.js'
+import { streamText, type GenerationModel, type GenerationProvider, type TextRequestMetrics } from '../../infrastructure/providers/providers.js'
+import { TextProviderError } from '../../infrastructure/providers/text-errors.js'
 import { activityRecorder, activityPreview } from './script-activity.js'
 import type { CreationNextStep, ScriptCreationState } from '@video-studio/shared/script/script-creation-state-types'
 import { restoreOptionalNulls } from '../generation/model-output.js'
@@ -22,7 +24,8 @@ import { documentHealth, documentReviewInput, saveDocumentReview, projectReferen
 import type { DocumentReview, DraftImpact } from '@video-studio/shared/script/script-review-types'
 import { resourceTools, resourceSchemas, modelResourceSchemas, resourceDescriptions, resourceValueEdit, modelResourceValueEdit, editResourceValues, validateResourceChanges, applyResourceChanges, resourceDraftImpacts } from './script-resource-tools.js'
 import type { ResourceChange } from '@video-studio/shared/script/script-resource-types'
-import { skillContext, skillIdsInput, skillPolicy, skillStages, type SkillSelections, type SkillStage } from '../skills/skills.js'
+import { applySkillRules, fixedSkillContext, skillContext, skillIdsInput, skillPolicy, skillStages, skillTaskPolicies, optionalSkillReferenceCatalog, readOptionalSkillReference, type SkillReferenceDescriptor, type SkillSelections, type SkillStage } from '../skills/skills.js'
+import type { SkillTaskContext } from '@video-studio/shared/skills/skill-recommendation'
 import { revisionSchemas, revisionLimit, revisionHash, revisionProblem, toolDiagnostic, resolvePassageEdits, applyResolvedEdits, type RevisionTask, type ToolDiagnostic } from './script-revision.js'
 import { missingStageArtifacts, scriptStageForArtifact } from '@video-studio/shared/script/script-stage-content'
 import { scriptReviewGuidance } from '@video-studio/shared/script/script-quality'
@@ -33,15 +36,19 @@ import type { ScriptSourceUpdate } from '@video-studio/shared/script/script-sour
 import { emptyRevisionReads, mergeRevisionRead, nextUnreadOffset, type RevisionRead, type RevisionReads } from './script-revision-reads.js'
 import { buildDocumentReadPage } from './script-document-read-page.js'
 import { createScriptToolProgress, type ScriptToolProgressDecision } from './script-tool-progress.js'
+import { createDocumentReviewRecovery } from './script-document-review-generation.js'
+import { scriptDraftReviewContext } from './script-draft-review-context.js'
+import { reviewDialogueRevision, type DialogueRevisionInput } from './script-dialogue-boundary.js'
 
 const ids = z.array(z.string().min(1).max(160)).min(1).max(8).refine(items => new Set(items).size === items.length, '文档不能重复')
-export const documentAction = z.object({ operation: z.enum(['review', 'revise']), document_ids: ids }).strict()
+export const documentAction = z.object({ operation: z.enum(['review', 'revise']), document_ids: ids, revision_kind: z.literal('dialogue').optional() }).strict()
+  .refine(value => !value.revision_kind || value.operation === 'revise', '对白专项只能用于文档修订')
 const replacement = z.object({ find: z.string().min(1).max(100_000).optional(), paragraph_id: z.string().min(1).max(160).optional(), replace: z.string().max(100_000), reason: z.string().trim().min(1).max(2000) }).strict().refine(edit => !!edit.find || !!edit.paragraph_id, '需要find或paragraph_id')
 // Partial workflowScene keeps field defaults in Zod 4, which would clear
 // omitted scene fields. Patch fields intentionally have no defaults.
 const sceneUpdates = z.object({
   heading: z.string().trim().min(1).max(120).optional(), location: z.string().max(500).optional(), time_of_day: z.string().max(120).optional(),
-  characters: z.string().max(2000).optional(), action: z.string().max(10000).optional(), dialogue: z.string().max(10000).optional(), narration: z.string().max(10000).optional(), duration: z.number().int().min(1).max(30).optional(),
+  characters: z.string().max(2000).optional(), action: z.string().max(10000).optional(), dialogue: z.string().max(10000).optional(), narration: z.string().max(10000).optional(), duration: z.number().int().min(1).max(maxScriptSceneDuration).optional(),
 }).strict().refine(value => Object.keys(value).length > 0, '需要修改字段')
 const sceneChange = z.object({ scene_id: z.string().min(1), base_version: z.string().min(1), changes: sceneUpdates }).strict()
 const patchSchema = z.object({ summary: z.string().trim().min(1).max(3000), task_id: z.string().optional(), draft_version: z.string().optional(), changes: z.array(z.object({ document_id: z.string().min(1), base_version: z.string().min(1), rebase: z.boolean().optional(), replacements: z.array(replacement).min(1).max(40) }).strict()).min(1).max(revisionLimit), scene_changes: z.array(sceneChange).max(100).default([]) }).strict()
@@ -56,6 +63,9 @@ type Replacement = { find: string; replace: string; reason: string }
 export type ToolDocument = { id: string; artifact_type: ScriptArtifact['artifact_type']; episode_number: number; title: string; content: string; version: string; status: string }
 export type ToolDraftDocument = Omit<ToolDocument, 'status'> & { original_content: string; replacements: Replacement[] }
 export type ScriptToolDraft = {
+  revision_kind?: 'dialogue'
+  /** Binds independent speech-range validation to the complete source/candidate. */
+  dialogue_review?: { fingerprint: string }
   source_update?: ScriptSourceUpdate
   /** null records that no source existed; undefined is an unverifiable legacy draft. */
   source_version?: string | null
@@ -70,8 +80,11 @@ export type ScriptToolDraft = {
 type DraftRow = { id: string; project_id: string; version: string; status: ScriptToolDraft['status']; payload: string }
 type Decision = { id: string; topic: string; content: string; basis: string; source_text: string; updated_at: string }
 export type ScriptSnapshot = { outline: string; characters: string; artifacts?: ScriptArtifact[]; scenes: ScriptScene[]; generation_options: Record<string, unknown> }
+type LoadedSkillRules = ReturnType<typeof skillContext> & { assignment?: NonNullable<ReturnType<typeof fixedSkillContext>>['assignment'] }
 type ToolsContext = {
-  skillRules?: Partial<Record<SkillStage, ReturnType<typeof skillContext>>>;
+  skillRules?: Partial<Record<SkillStage, LoadedSkillRules>>;
+  /** Server-owned operation context; ordinary discussion leaves task_kind unset. */
+  skillTaskContext?: SkillTaskContext;
   /** Present for model selection; an explicit stage array (including []) is locked. */
   skillSelections?: SkillSelections;
   /** Persist only this execution's frozen choice for validation and recovery. */
@@ -92,12 +105,20 @@ type ToolsContext = {
   onVisualStyleSaved?: () => void;
   authorizeCreation?: (draft: WorkflowDraft, explicitStage: boolean) => Promise<boolean>;
   validateCreation?: (draft: WorkflowDraft, preserved: ToolDocument[]) => Promise<void>;
+  validateDialogueRevision?: (input: DialogueRevisionInput) => Promise<void>;
   authorizeResource?: (summary: string, changes: ResourceChange[]) => Promise<boolean>;
   checkApproval: (draft: ScriptToolDraft) => Promise<boolean>;
   onEvent: (event: Record<string, unknown>) => void; signal?: AbortSignal
 }
 function problem(message: string, statusCode = 422): never { throw Object.assign(new Error(message), { statusCode }) }
 function version(value: unknown) { return createHash('sha256').update(JSON.stringify(value)).digest('hex') }
+function dialogueReviewFingerprint(draft: ScriptToolDraft) {
+  return version({ contract: 'dialogue-boundary-v1', source_version: draft.source_version,
+    kind: draft.kind, documents: draft.documents.map(({ id, version, title, artifact_type, episode_number, original_content, content }) =>
+      ({ id, version, title, artifact_type, episode_number, original_content, content })),
+    scene_changes: draft.scene_changes || [], workflow: draft.workflow, source_update: draft.source_update,
+    resource_changes: draft.resource_changes, revision_task: draft.revision_task })
+}
 export function projectDocuments(projectId: string, script: ScriptSnapshot): ToolDocument[] {
   const documents = (script.artifacts || []).map(item => ({ id: item.id, artifact_type: item.artifact_type,
     episode_number: item.episode_number || 0, title: item.title, content: item.content,
@@ -301,7 +322,8 @@ export function validateWorkflowScenes(script: Pick<ScriptSnapshot, 'scenes'>, w
     if (!sources.some(source => source.id === scene.source_scene_id)) problem('只能关联本集已有场次，不能使用其他集或项目的场次ID')
     retained.add(scene.source_scene_id)
   }
-  if (sources.some(scene => !retained.has(scene.id))) problem('重新设计必须保留本集全部已有场次，并为每场填写source_scene_id；可改写、调整顺序或补充新场次，不能删除已有场次')
+  if (sources.some(scene => !retained.has(scene.id))) throw Object.assign(new Error('重新设计必须保留本集全部已有场次，并为每场填写source_scene_id；可改写、调整顺序或补充新场次，不能删除已有场次'),
+    { statusCode: 422, code: 'episode_scene_identity_missing' })
 }
 
 export function attachDraftSourceUpdate(projectId: string, id: string, update: ScriptSourceUpdate) {
@@ -341,10 +363,15 @@ export function toolConversationStage(projectId: string, script: ScriptSnapshot,
   return target ? directorStageContext(script, draft && !action ? { pending: documentStage(target) } : { explicit: documentStage(target) })
     : previous.stage ? previous : directorStageContext(script, { explicit: { stage: 'outline', episode_number: 0 } })
 }
-export function commitToolDraft(projectId: string, id: string, expected: string, script: () => ScriptSnapshot): ScriptToolDraft {
+export function commitToolDraft(projectId: string, id: string, expected: string, script: () => ScriptSnapshot, reviewedDialogueFingerprint?: string): ScriptToolDraft {
   return db.transaction(() => {
     const draft = getToolDraft(projectId, id)
     if (!draft || draft.status !== 'pending' || draft.version !== expected) problem('草稿已变化，请重新确认', 409)
+    if ((draft.revision_kind === 'dialogue' || reviewedDialogueFingerprint) &&
+      (reviewedDialogueFingerprint || draft.dialogue_review?.fingerprint) !== dialogueReviewFingerprint(draft)) {
+      revisionProblem('dialogue_review_stale', '对白专项草稿内容已变化，原范围核对不能用于当前版本',
+        '继续当前对白专项，让系统按当前原文重新核对后预览保存；需要修改动作、旁白或剧情时另用普通修订。')
+    }
     const current = script(), documents = projectDocuments(projectId, current), timestamp = now()
     if (draft.workflow?.operation === 'regenerate' || draft.workflow?.operation === 'supplement') {
       workflowGenerationDraftSchema.parse({ ...draft.workflow, artifacts: draft.documents.map(({ artifact_type, title, content }) => ({ artifact_type, title, content })) })
@@ -420,6 +447,7 @@ export function commitToolDraft(projectId: string, id: string, expected: string,
 
 const schemas = {
   load_creation_skills: z.object({ stage: z.enum(skillStages), skill_ids: skillIdsInput.optional(), reason: z.string().trim().min(1).max(1000).optional() }).strict(),
+  read_creation_skill_reference: z.object({ stage: z.enum(skillStages), skill_id: z.string().min(1).max(100), revision: z.string().min(1).max(160), path: z.string().min(1).max(500) }).strict(),
   ...modelResourceSchemas,
   ...revisionSchemas,
   read_model_resource: z.object({ resource_id: z.string().regex(/^[a-f0-9]{64}$/), version: z.string().regex(/^[a-f0-9]{64}$/), offset: z.number().int().min(0), length: z.number().int().min(1).max(16000).default(8000) }).strict(),
@@ -441,7 +469,7 @@ const schemas = {
   record_creator_requirement: z.object({
     kind: z.enum(['requirement', 'open_question']).default('requirement'),
     quote: z.string().trim().min(1).max(maxRequirementQuote), source_message_index: z.number().int().min(0).max(31),
-    scope: z.string().trim().max(200).default(''), supersedes: z.array(z.string().min(1).max(100)).max(20).default([]),
+    scope: z.string().trim().max(200).default('').describe('仅按创作者明确范围填写：项目通用用project，指定集用episode:<集数>，指定场用scene:<内部scene_id>，独立片段用clip；不能把局部或范围不明的要求擅自标为project。已有自由文本保留原义。'), supersedes: z.array(z.string().min(1).max(100)).max(20).default([]),
     withdraw: z.string().min(1).max(100).optional(),
   }).strict(),
   read_creator_requirements: z.object({ include_superseded: z.boolean().default(false), requirement_id: z.string().min(1).max(100).optional(),
@@ -462,7 +490,8 @@ const schemas = {
   commit_document_draft: z.object({ draft_id: z.string().min(1), version: z.string().min(1) }).strict(),
 }
 const descriptions: Record<keyof typeof schemas, string> = {
-  load_creation_skills: '准备对应创作任务前选择并读取主技能和辅助技能规则。先根据本轮要求及creation_skills目录的说明判断，自动模式明确传skill_ids（首项为主技能，其余为辅助；可用[]表示基础规则）和简短reason。手动锁定项只能沿用，不得切换；同一环节首次加载后本轮冻结。stage为script、visual_assets、image_prompt、storyboard或video_prompt。读取资料无需调用。',
+  load_creation_skills: '准备对应创作任务前选择并读取主技能和辅助技能规则。先根据本轮要求及creation_skills目录的说明判断，自动模式明确传skill_ids（首项为主技能，其余为辅助；可用[]表示基础规则）和简短reason。手动锁定项只能沿用，不得切换；同一环节首次加载后本轮冻结。stage为script、visual_assets、image_prompt、storyboard或video_prompt。必读规则自动加载；根据available_references目录判断是否需用read_creation_skill_reference补读可选资料。读取项目资料无需调用。',
+  read_creation_skill_reference: '按本轮已加载技能的available_references目录补读所需专业资料。逐字使用目录中的stage、skill_id、revision和path；只能读取已锁定技能的已安装Markdown资料，不能切换技能、访问任意文件或调用外部服务。根据完整内容判断适用性，不凭目录摘要断定规则；本轮规则与补读资料总量至多100000字符。',
   ...resourceDescriptions,
   manage_revision_task: '管理跨文档统一修订任务。start在创作者明确要求补齐/统一时，全部已有文档用scope:all_documents（程序取得完整目录）；选定范围用document_ids，填写summary和真实user来源索引，保存任务范围；不写正式文档。read返回持久进度、拟定决定、草稿version及分页关联对象原文/版本，使用reference_next_offset读完。update携带task_id/version记录decisions（topic、choice、reason），决定仅留在草稿，保存后才采用。继续已有任务不再次start或重复授权，不擅自扩大范围。',
   review_revision_batch: '对统一修订任务最终有效草稿进行专业核对。先read_documents(source:draft)分段读完文档与所有分场，用返回的文档version；检查待定、缺失、跨文档一致性和正文/分场同步，结论resolved/unchanged/needs_change。仍有问题必须findings逐字引用证据；刻意保留悬念标intentional_suspense并说明理由。references先通过manage_revision_task(read)读到当前对象，核对与整组草稿/拟定决定一致性；needs_change阻止整组完成。分批至多8份文档/10项引用累积报告，不靠关键词或模型一句已完成判定成功。',
@@ -497,6 +526,28 @@ const localSourceReadTools = new Set(['read_model_resource', 'get_creation_state
   'read_source_document', 'search_source_document', 'read_full_source_document', 'read_documents', 'read_episode_scenes',
   'find_related_content', 'get_document_review_context', 'read_visual_profiles', 'get_storyboard_context', 'read_creator_requirements'])
 
+function operationSkillTask(context: ToolsContext): SkillTaskContext {
+  const task = context.skillTaskContext || {}
+  const operation = context.action?.operation
+  const workflow_stage = context.workflow || (context.action ? context.stage.stage || undefined : undefined)
+  return { ...task, text: task.text ?? context.messages.filter(message => message.role === 'user').at(-1)?.text,
+    ...(workflow_stage ? { workflow_stage } : {}), ...(operation ? { operation } : {}),
+    ...(operation === 'review' ? { task_kind: 'review' as const }
+      : context.action?.revision_kind === 'dialogue' ? { task_kind: 'dialogue_revision' as const }
+        : context.taskContract?.intent === 'source_outline' ? { task_kind: 'source_analysis' as const } : {}) }
+}
+function initialSkillRules(context: ToolsContext) {
+  const rules = { ...context.skillRules }
+  const manual = context.skillSelections?.script
+  if (manual !== undefined) {
+    if (rules.script && JSON.stringify(rules.script.skills.map(skill => skill.id)) !== JSON.stringify(manual)) rules.script = skillContext('script', '', manual, context.project.id, operationSkillTask(context))
+  } else if (!rules.script) {
+    const fixed = fixedSkillContext('script', context.messages.map(message => message.text).join('\n'), context.project.id, operationSkillTask(context))
+    if (fixed) rules.script = fixed
+  }
+  return rules
+}
+
 export function documentTools(context: ToolsContext) {
   const projectId = context.project.id
   const modelResources = createModelResultResources()
@@ -516,38 +567,79 @@ export function documentTools(context: ToolsContext) {
     return sourceVersion ? { source_version: sourceVersion } : {}
   }
   const initialDraft = getToolDraft(projectId)
+  const ordinaryRevision = context.action?.operation === 'revise' && !context.action.revision_kind
+  const dialogueOnly = context.action?.revision_kind === 'dialogue' || initialDraft?.revision_kind === 'dialogue' && !ordinaryRevision
   if (context.revisionTaskId && (initialDraft?.status !== 'pending' || initialDraft.revision_task?.id !== context.revisionTaskId
     || context.discussionOnly || context.action || context.workflow || context.legacyPending)) problem('只能继续当前待确认的统一修订任务，请读取当前草稿', 409)
   const resources = resourceTools(projectId)
   const modelSkillSelection = context.skillSelections !== undefined
-  const skillRules = { ...context.skillRules }
+  const skillRules = initialSkillRules(context)
+  const skillReferenceCatalogs = new Map<SkillStage, SkillReferenceDescriptor[]>()
+  const readSkillReferences = new Set<string>()
+  const skillTask = operationSkillTask(context)
+  const stageSkillTask = (stage: SkillStage): SkillTaskContext => stage === 'script' ? skillTask : { ...skillTask, selection_mode: undefined, task_kind: stage }
+  function skillReferences(stage: SkillStage) {
+    let catalog = skillReferenceCatalogs.get(stage)
+    const rules = skillRules[stage]
+    if (!catalog && rules) {
+      catalog = optionalSkillReferenceCatalog(stage, rules.skills.map(skill => skill.id), stageSkillTask(stage))
+        .filter(file => rules.skills.some(skill => skill.id === file.skill_id && skill.revision === file.revision))
+      skillReferenceCatalogs.set(stage, catalog)
+    }
+    return (catalog || []).map(file => ({ ...file, loaded: Boolean(rules?.skills.find(skill => skill.id === file.skill_id)?.files.includes(file.path)) }))
+  }
+  function skillContextCharacters(replacementStage?: SkillStage, replacementText?: string) {
+    return Object.entries(skillRules).reduce((total, [stage, rules]) => total + (stage === replacementStage ? replacementText! : rules.text).length, 0)
+  }
+  // Freeze the exact installed catalog alongside any preloaded fixed rules.
+  for (const stage of Object.keys(skillRules) as SkillStage[]) skillReferences(stage)
   const skillReasons: Partial<Record<SkillStage, string>> = {}
   const loadedSkillStages = new Set<SkillStage>(!modelSkillSelection || skillRules.script ? ['script'] : [])
+  for (const [stage, rules] of Object.entries(skillRules) as Array<[SkillStage, LoadedSkillRules]>) {
+    if (rules.assignment) {
+      skillReasons[stage] = rules.assignment.reason
+      context.onSkillSelection?.(stage, rules.skills.map(skill => skill.id))
+    }
+  }
   function lockedSkillIds(stage: SkillStage) {
-    return context.skillRules?.[stage]?.skills.map(skill => skill.id) ?? context.skillSelections?.[stage]
+    return skillRules[stage]?.assignment ? undefined : context.skillSelections?.[stage] ?? context.skillRules?.[stage]?.skills.map(skill => skill.id)
+  }
+  function selectionMode(stage: SkillStage) {
+    return skillRules[stage]?.assignment ? 'fixed' : lockedSkillIds(stage) !== undefined ? 'manual' : stage === 'script' ? 'model' : 'fixed'
+  }
+  function resourceSkillBinding(stage: SkillStage) {
+    return stage === 'script' ? undefined : skillTaskPolicies(projectId).find(policy => policy.task === stage)
   }
   function creationSkills() {
-    return skillPolicy(projectId).map(policy => ({
+    return skillPolicy(projectId).map(policy => {
+      const binding = selectionMode(policy.stage) === 'fixed' ? resourceSkillBinding(policy.stage) : undefined
+      const boundIds = binding ? binding.primary_id ? [binding.primary_id, ...binding.auxiliary_ids] : [] : undefined
+      return {
       stage: policy.stage, label: policy.label,
-      mode: lockedSkillIds(policy.stage) !== undefined ? 'manual' : 'model',
-      locked_ids: lockedSkillIds(policy.stage) ?? null,
-      default_ids: policy.primary_id ? [policy.primary_id, ...policy.auxiliary_ids] : [],
+      mode: selectionMode(policy.stage),
+      locked_ids: skillRules[policy.stage]?.assignment?.ids ?? lockedSkillIds(policy.stage) ?? boundIds ?? null,
+      task: skillRules[policy.stage]?.assignment?.task ?? binding?.task ?? null,
+      default_ids: boundIds ?? (policy.primary_id ? [policy.primary_id, ...policy.auxiliary_ids] : []),
+      ...(binding?.warning ? { warning: binding.warning } : {}),
       eligible_skills: policy.skills,
       loaded: loadedSkillStages.has(policy.stage),
       selected_ids: skillRules[policy.stage]?.skills.map(skill => skill.id) ?? null,
+      available_references: skillReferences(policy.stage),
       reason: skillReasons[policy.stage] ?? null,
-    }))
+    } })
   }
   function requireSkills(stage: SkillStage) {
-    if (modelSkillSelection && !loadedSkillStages.has(stage) && lockedSkillIds(stage) === undefined
-      && !skillPolicy(projectId).find(policy => policy.stage === stage)!.skills.length) {
-      skillRules[stage] = skillContext(stage, '', [], projectId)
-      skillReasons[stage] = '当前环节没有已启用的可用技能，使用基础创作规则'
+    const binding = !loadedSkillStages.has(stage) && lockedSkillIds(stage) === undefined ? resourceSkillBinding(stage) : undefined
+    if ((binding && !binding.primary_id && !binding.auxiliary_ids.length)
+      || (stage === 'script' && modelSkillSelection && !loadedSkillStages.has(stage) && lockedSkillIds(stage) === undefined && !skillPolicy(projectId).find(policy => policy.stage === stage)!.skills.length)) {
+      const rules: LoadedSkillRules = binding ? fixedSkillContext(stage, '', projectId, stageSkillTask(stage))! : skillContext(stage, '', [], projectId, stageSkillTask(stage))
+      skillRules[stage] = rules
+      skillReasons[stage] = rules.assignment?.reason || '当前环节没有已启用的可用技能，使用基础创作规则'
       loadedSkillStages.add(stage)
-      context.onSkillSelection?.(stage, [])
+      context.onSkillSelection?.(stage, rules.skills.map(skill => skill.id))
     }
-    if ((modelSkillSelection || skillRules[stage]?.skills.length) && !loadedSkillStages.has(stage)) {
-      problem(`请先调用load_creation_skills，按creation_skills目录选择并加载${stage}技能；自动模式须填写skill_ids和reason，手动锁定项沿用原选择`)
+    if ((modelSkillSelection || selectionMode(stage) === 'fixed' || skillRules[stage]?.skills.length) && !loadedSkillStages.has(stage)) {
+      problem(`请先调用load_creation_skills加载${stage}技能；fixed模式沿用功能绑定，无需另选；自动模式须填写skill_ids和reason，手动锁定项沿用原选择`)
     }
   }
   const readVersions = new Map<string, RevisionRead>()
@@ -568,6 +660,7 @@ export function documentTools(context: ToolsContext) {
   const authorizedCreationScopes = new Set<string>()
   function saveDecision(data: z.infer<typeof schemas.record_story_decision>, sourceText: string) {
     if (context.action?.operation === 'review') problem('本轮只评审文档，不改动已确认设定')
+    if (dialogueOnly) problem('对白专项保留已确认设定，不记录或修改新的故事决定')
     const existing = one<Decision>('SELECT * FROM script_story_decisions WHERE project_id=? AND topic=?', projectId, data.topic)
     const id = existing?.id || newId()
     db.transaction(() => {
@@ -671,6 +764,54 @@ export function documentTools(context: ToolsContext) {
     if (context.discussionOnly || context.action?.operation === 'review') problem('本轮只讨论或评审，不创建或保存文档草稿')
     if (context.legacyPending) problem('当前有阶段草稿待确认，请先处理它')
   }
+  function checkDialogueSceneChanges(changes: Array<{ changes: Record<string, unknown> }> = []) {
+    if (dialogueOnly && changes.some(change => Object.keys(change.changes).some(key => key !== 'dialogue'))) {
+      problem('本轮为对白专项，只能修改所选文档的台词及对应场次dialogue；人物、动作、旁白、地点、时长等字段须保留')
+    }
+  }
+  function checkDialogueDraft(draft: ScriptToolDraft) {
+    if (!dialogueOnly) return
+    draft.documents.forEach(doc => checkScope(doc.id))
+    if (draft.kind !== 'patch' || draft.workflow || draft.source_update || draft.resource_changes?.length || draft.revision_task?.decisions.length) problem('对白专项只能继续所选文档的局部修订草稿，不能包含原稿或故事设定变更')
+    for (const change of draft.scene_changes || []) {
+      if (Object.keys(change.original).some(key => key !== 'dialogue' && change.original[key as keyof typeof change.original] !== change.scene[key as keyof typeof change.scene])) problem('当前草稿包含对白以外的场次修改，请另用普通修订处理')
+    }
+  }
+  async function reviewDialogueDraft(draft: ScriptToolDraft) {
+    if (!dialogueOnly) {
+      // Only an explicit ordinary revision may expand the inherited scope.
+      if (ordinaryRevision) { delete draft.revision_kind; delete draft.dialogue_review }
+      return
+    }
+    checkDialogueDraft(draft)
+    const assertDialogueSources = () => {
+      assertSourceUnchanged()
+      if (draft.source_version !== sourceVersion || draft.documents.some(doc => {
+        const source = docs().find(source => source.id === doc.id)
+        return !source || source.version !== doc.version || source.content !== doc.original_content
+      }) || (draft.scene_changes || []).some(change => {
+        const scene = context.script().scenes.find(scene => scene.id === change.id)
+        return !scene || version(scene) !== change.version || version(sceneFields(scene)) !== version(change.original)
+      })) revisionProblem('dialogue_source_changed', '对白专项依据的原文或分场版本已变化，未写入修改',
+        '读取当前正文、分场和已有草稿，保留有效修改后按当前版本重新核对；不能沿用旧范围核对结果。')
+    }
+    assertDialogueSources()
+    const fingerprint = dialogueReviewFingerprint(draft)
+    if (draft.dialogue_review?.fingerprint === fingerprint) return
+    if (!context.validateDialogueRevision) revisionProblem('dialogue_review_unavailable', '当前无法确认对白专项的正文范围，未写入修改',
+      '保留原文并重新执行对白专项核对；范围不清或需改剧情时请使用普通修订。', { retryable: false })
+    await context.validateDialogueRevision({ targets: [
+      ...draft.documents.map(doc => ({ key: `document:${doc.id}`, title: doc.title, before: doc.original_content, after: doc.content })),
+      ...(draft.scene_changes || []).map(change => ({ key: `scene:${change.id}:dialogue`, title: `${change.original.heading} · 对白`, before: change.original.dialogue, after: change.scene.dialogue,
+        document_key: `document:${draft.documents.find(doc => doc.artifact_type === 'episode_script' && doc.episode_number === change.episode_number)?.id}` })),
+    ], context: { brief: context.project.brief, characters: context.script().characters, settings: context.script().generation_options,
+      creator_requirements: activeCreatorRequirements(projectId), confirmed_decisions: storyDecisions(projectId),
+      scenes: draft.scene_changes?.map(({ id, original, scene }) => ({ id, original, candidate: scene })) } })
+    context.signal?.throwIfAborted()
+    assertDialogueSources()
+    draft.revision_kind = 'dialogue'
+    draft.dialogue_review = { fingerprint }
+  }
   function currentTask(taskId?: string, expected?: string) {
     const draft = getToolDraft(projectId)
     if (!draft?.revision_task || taskId && taskId !== draft.revision_task.id) revisionProblem('task_not_found', '找不到当前统一修订任务', '先get_creation_state确认当前任务，不要猜测ID。', { retryable: false })
@@ -707,6 +848,7 @@ export function documentTools(context: ToolsContext) {
   }
   return {
     assertSourceUnchanged,
+    reviewRules: () => skillRules.script?.text || '',
     // Exact document/source reads retain their existing bounded pages and
     // coverage receipts. Only oversized state catalogs use this resource path.
     modelResult: (name: string, value: unknown) => name === 'get_creation_state' ? modelResources.externalize(value) : value,
@@ -725,6 +867,7 @@ export function documentTools(context: ToolsContext) {
       }
       const schema = schemas[name as keyof typeof schemas]
       if (schema) args = restoreOptionalNulls(args, z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }))
+      if (dialogueOnly && name === 'set_project_visual_style') problem('对白专项保留现有画风，不修改项目视觉设定')
       if (name in resourceSchemas) {
         if (!name.startsWith('propose_')) return resources.execute(name, args)
         canDraft()
@@ -749,22 +892,47 @@ export function documentTools(context: ToolsContext) {
       switch (name) {
         case 'load_creation_skills': {
           const { stage, skill_ids, reason } = schemas.load_creation_skills.parse(args)
-          const frozen = skillRules[stage], lockedIds = lockedSkillIds(stage)
+          const lockedIds = lockedSkillIds(stage)
+          const fixed = !skillRules[stage] && lockedIds === undefined && stage !== 'script'
+            ? fixedSkillContext(stage, context.messages.map(message => message.text).join('\n'), projectId, stageSkillTask(stage)) : undefined
+          const frozen = skillRules[stage] || fixed
           const frozenIds = frozen?.skills.map(skill => skill.id)
           const fixedIds = frozenIds ?? lockedIds
           if (skill_ids !== undefined && fixedIds !== undefined && JSON.stringify(skill_ids) !== JSON.stringify(fixedIds)) {
-            problem(lockedIds !== undefined ? '本环节由创作者手动锁定，不能切换技能' : '本环节技能已在本轮加载并冻结，不能切换技能')
+            problem(frozen?.assignment ? '本环节按明确操作固定绑定技能，不能切换技能' : lockedIds !== undefined ? '本环节由创作者手动锁定，不能切换技能' : '本环节技能已在本轮加载并冻结，不能切换技能')
           }
           if (modelSkillSelection && !frozen && lockedIds === undefined && (skill_ids === undefined || !reason)) {
             problem('自动选技须由模型根据creation_skills目录明确填写skill_ids和简短reason；可选[]使用基础规则')
           }
           const selectedIds = fixedIds ?? skill_ids
-          const rules = frozen || skillContext(stage, context.messages.map(message => message.text).join('\n'), selectedIds, projectId)
+          const rules: LoadedSkillRules = frozen || skillContext(stage, context.messages.map(message => message.text).join('\n'), selectedIds, projectId, stageSkillTask(stage))
+          if (!skillRules[stage] && skillContextCharacters() + rules.text.length > 100_000) problem('本轮技能规则与参考资料合计超过100000字符，请减少技能或参考资料')
           skillRules[stage] = rules
-          skillReasons[stage] ||= lockedIds !== undefined ? '沿用创作者手动选择' : reason || '沿用已配置的技能'
+          skillReasons[stage] ||= rules.assignment?.reason || (lockedIds !== undefined ? '沿用创作者手动选择' : reason || '沿用已配置的技能')
           loadedSkillStages.add(stage)
           context.onSkillSelection?.(stage, rules.skills.map(skill => skill.id))
-          return { stage, ...rules, reason: skillReasons[stage], selection_mode: lockedIds !== undefined ? 'manual' : 'model', frozen: true }
+          return { stage, ...rules, available_references: skillReferences(stage), reason: skillReasons[stage], selection_mode: selectionMode(stage), frozen: true }
+        }
+        case 'read_creation_skill_reference': {
+          const { stage, skill_id, revision, path } = schemas.read_creation_skill_reference.parse(args)
+          if (!loadedSkillStages.has(stage) || !skillRules[stage]) problem('请先调用load_creation_skills加载并锁定本环节技能')
+          const rules = skillRules[stage]!
+          const selected = rules.skills.find(skill => skill.id === skill_id && skill.revision === revision)
+          const descriptor = skillReferenceCatalogs.get(stage)?.find(file => file.skill_id === skill_id && file.revision === revision && file.path === path)
+          if (!selected || !descriptor) problem('只能按本轮available_references目录读取锁定技能、版本及精确资料路径', 409)
+          const file = readOptionalSkillReference(stage, rules.skills.map(skill => skill.id), descriptor, stageSkillTask(stage))
+          const key = `${stage}:${descriptor.id}`
+          const reused = readSkillReferences.has(key) || selected.files.includes(file.path)
+          if (!reused) {
+            const text = `${rules.text}\n\n【${selected.name}；版本 ${selected.revision}；参考资料 ${file.path}】\n${file.content}`
+            if (skillContextCharacters(stage, text) > 100_000) problem('本轮技能规则与参考资料合计超过100000字符，请减少补读资料')
+            rules.text = text
+            rules.files = [...new Set([...rules.files, file.path])]
+            selected.files = [...new Set([...selected.files, file.path])]
+            readSkillReferences.add(key)
+          }
+          return { stage, skill_id, skill_name: selected.name, revision, path, content: file.content, characters: file.content.length,
+            reused, context_characters: skillContextCharacters(), skills: rules.skills, files: rules.files }
         }
         case 'get_creation_state': schemas.get_creation_state.parse(args); return { project: context.project, settings: mergeConfirmedScriptSettings(context.script().generation_options, context.currentSettings), saved_settings: context.script().generation_options, project_visual_style: projectVisualStyle(projectId), uploaded_script: scriptSourceIndex(projectId),
           creation_skills: creationSkills(),
@@ -775,6 +943,7 @@ export function documentTools(context: ToolsContext) {
           creation: { ...creationState(projectId, context.script()), stage_context: context.stage }, current_operation: context.operation || null, document_health: documentHealth(projectId, docs()), decisions: storyDecisions(projectId), pending_draft: getToolDraft(projectId) ? { id: getToolDraft(projectId)!.id, version: getToolDraft(projectId)!.version, summary: getToolDraft(projectId)!.summary, revision_task: getToolDraft(projectId)!.revision_task } : null }
         case 'manage_revision_task': {
           const data = schemas.manage_revision_task.parse(args)
+          if (dialogueOnly && data.operation !== 'read') problem('对白专项只整理所选文档台词草稿，不新建或更新统一设定任务')
           if (data.operation === 'start') {
             if (context.operation === 'regenerate' || context.operation === 'supplement') problem('本轮只创建完整阶段草稿，不建立局部统一修订任务')
             canDraft()
@@ -1045,9 +1214,11 @@ export function documentTools(context: ToolsContext) {
           requireSkills('script')
           if (context.operation === 'regenerate' || context.operation === 'supplement') problem('本轮须提交完整阶段草稿，请使用create_document_draft；局部修改请选择revise')
           const data = schemas.propose_document_patch.parse(args)
+          checkDialogueSceneChanges(data.scene_changes)
           const pending = getToolDraft(projectId)
           if (pending && !pending.revision_task) revisionProblem('pending_draft_exists', '已有待确认草稿，请读取并继续修改它', '使用manage_document_draft(read/update)修改同一草稿，不新建或覆盖。')
           const draft = pending ? currentTask(data.task_id, data.draft_version) : undefined
+          if (draft) checkDialogueDraft(draft)
           if (draft && (!data.task_id || !data.draft_version)) revisionProblem('task_version_required', '继续统一修订需要task_id和当前draft_version', 'manage_revision_task(read)读取当前任务与草稿版本后追加批次。')
           if (!draft && (data.task_id || data.draft_version)) revisionProblem('task_not_found', '统一任务已不存在', '读取当前创作状态，不能复用已保存或放弃的任务。', { retryable: false })
           // Normalize repeated entries, then process groups of eight. All validation
@@ -1103,11 +1274,14 @@ export function documentTools(context: ToolsContext) {
             for (const document of documents) { const index = draft.documents.findIndex(doc => doc.id === document.id); if (index < 0) draft.documents.push(document); else draft.documents[index] = document }
             draft.scene_changes ||= []
             for (const scene of scene_changes) { const index = draft.scene_changes.findIndex(item => item.id === scene.id); if (index < 0) draft.scene_changes.push(scene); else draft.scene_changes[index] = scene }
+            await reviewDialogueDraft(draft)
             draft.revision_task!.batches += Math.ceil(changes.length / 8)
             return { ...saveTask(draft, data.draft_version!), batches: Math.ceil(changes.length / 8) }
           }
           const impacts = documentDraftImpacts(projectId, docs(), documents, scene_changes.map(change => change.id))
-          resultDraft = persistDraft(projectId, { id: newId(), version: newId(), kind: 'patch', source_version: sourceVersion, summary: data.summary, documents, scene_changes, impacts, status: 'pending' })
+          const proposal: ScriptToolDraft = { id: newId(), version: newId(), kind: 'patch', source_version: sourceVersion, summary: data.summary, documents, scene_changes, impacts, status: 'pending' }
+          await reviewDialogueDraft(proposal)
+          resultDraft = persistDraft(projectId, proposal)
           return { draft_id: resultDraft.id, version: resultDraft.version, summary: resultDraft.summary, impacts, batches: Math.ceil(changes.length / 8), saved: false }
         }
         case 'manage_document_draft': {
@@ -1115,6 +1289,9 @@ export function documentTools(context: ToolsContext) {
           if (!draft || draft.status !== 'pending') problem('没有待确认草稿')
           if (data.operation === 'read') { readDraftVersion = draft.version; resultDraft = draft; return draft }
           canDraft()
+          checkDialogueDraft(draft)
+          checkDialogueSceneChanges(data.scene_changes)
+          if (dialogueOnly && data.scenes) problem('对白专项不能替换完整分场，请只提交dialogue的scene_changes')
           if (data.version !== draft.version) revisionProblem('draft_version_changed', '草稿版本已变化，请重新读取', 'manage_document_draft(read)取得当前version再提交修改；不覆盖并行更改。')
           if (data.operation === 'discard') {
             draft.documents.forEach(doc => checkScope(doc.id))
@@ -1168,6 +1345,7 @@ export function documentTools(context: ToolsContext) {
             validateWorkflowScenes(context.script(), draft.workflow)
             if (draft.workflow.operation === 'supplement' && draft.documents.some(doc => doc.version && doc.original_content.trim() && doc.content !== doc.original_content)) problem('补齐栏目不能改写已保存文档，请使用局部修改或重新设计')
           }
+          await reviewDialogueDraft(draft)
           if (draft.workflow) await context.validateCreation?.(draft.workflow, draft.workflow.operation === 'regenerate' ? [] : docs())
           context.signal?.throwIfAborted()
           draft.impacts = documentDraftImpacts(projectId, docs(), draft.documents, draftSceneIds(draft))
@@ -1179,11 +1357,13 @@ export function documentTools(context: ToolsContext) {
         case 'commit_document_draft': {
           canDraft(); const data = schemas.commit_document_draft.parse(args), draft = getToolDraft(projectId, data.draft_id)
           if (!initialDraft || !draft || draft.id !== initialDraft.id || draft.version !== initialDraft.version || data.version !== draft.version) problem('只能保存本轮开始前已存在并确认的草稿版本，修改后需重新确认')
+          checkDialogueDraft(draft)
           draft.documents.forEach(doc => checkScope(doc.id))
           if (draft.kind === 'resource' && (context.action || context.workflow)) problem('本轮指定的文档范围与视觉或分镜草稿不一致')
           if (!await context.checkApproval(draft)) problem('创作者尚未明确批准保存当前草稿，请展示预览供确认')
+          await reviewDialogueDraft(draft)
           context.signal?.throwIfAborted()
-          resultDraft = commitToolDraft(projectId, draft.id, draft.version, context.script); mutated = true
+          resultDraft = commitToolDraft(projectId, draft.id, draft.version, context.script, dialogueOnly ? draft.dialogue_review?.fingerprint : undefined); mutated = true
           return { saved: true, draft_id: draft.id, documents: [...draft.documents.map(doc => doc.title), ...draft.resource_changes?.map(change => change.title) || []] }
         }
         default: problem('未知工具，不能执行')
@@ -1196,6 +1376,7 @@ const operationLabels: Record<string, string> = {
   read_source_document: '读取剧本原文', search_source_document: '查找剧本原文', read_full_source_document: '补读完整剧本',
   read_episode_scenes: '读取分集场次',
   load_creation_skills: '加载本次创作技能',
+  read_creation_skill_reference: '补读创作技能资料',
   manage_revision_task: '管理统一修订任务', review_revision_batch: '核对修订结果与关联内容',
   get_project_visual_style: '读取项目画风', set_project_visual_style: '更新已确认画风',
   read_model_resource: '分页读取当前会话外置的完整工具结果。使用返回的resource_id/version和next_offset；只读句柄不表示已读正文，逐页读取后才可使用完整资料。',
@@ -1209,6 +1390,7 @@ const operationLabels: Record<string, string> = {
 function operationSummary(name: string, result: unknown) {
   const value = result as Record<string, unknown>
   if (name === 'load_creation_skills') return `${(value.skills as Array<{ name: string }>).map(skill => skill.name).join('、') || '基础创作规则'}：${String(value.reason || '已加载本轮规则').slice(0, 500)}`
+  if (name === 'read_creation_skill_reference') return `已读取${value.skill_name}的${value.path}，${value.characters}字${value.reused ? '，沿用本轮已读版本' : ''}`
   if (name === 'read_source_document' || name === 'read_full_source_document') return `已读取原文 ${Number(value.offset) + 1}–${value.next_offset} / ${value.total_length} 字${name === 'read_full_source_document' ? '，已补入完整有效稿' : ''}`
   if (name === 'search_source_document') return `本次返回 ${(value.matches as unknown[]).length} 条，共 ${value.total_matches} 处字面命中${value.truncated ? '，后续命中可继续读取' : ''}；身份关系需核对原文`
   if (name === 'get_project_visual_style') return value.source === 'unspecified'
@@ -1245,26 +1427,68 @@ export async function runScriptTools(context: ToolsContext & {
   activity?: ReturnType<typeof activityRecorder>
 }) {
   const activity = context.activity || activityRecorder(context.onEvent)
+  const originalScriptRules = context.skillRules?.script
+  context = { ...context, skillRules: initialSkillRules(context) }
+  if (!originalScriptRules && context.skillRules?.script) activity.skills('script', context.skillRules.script)
   const stageGeneration = Boolean(context.workflow && context.operation !== 'revise')
   // A session that read (or was given) the manuscript is bound to that version: if it changes mid-run, whatever was
   // compacted or planned from the old text must not be carried onto the new one.
   const sourceBound = context.sourceContextMode === 'targeted' || context.sourceVersion !== null && context.sourceVersion !== undefined
-  const stageToolNames = new Set(['read_model_resource', 'get_creation_state', 'load_creation_skills', 'read_documents', 'read_source_document', 'search_source_document',
+  const stageToolNames = new Set(['read_model_resource', 'get_creation_state', 'load_creation_skills', 'read_creation_skill_reference', 'read_documents', 'read_source_document', 'search_source_document',
     'create_document_draft', 'propose_document_patch', 'find_related_content', 'manage_document_draft',
     ...(context.workflow === 'episode' && context.operation === 'regenerate' ? ['read_episode_scenes'] : [])])
   const profile = scriptToolProfile({ discussionOnly: context.discussionOnly, reviewOnly: context.action?.operation === 'review' })
-  const availableFunctions = context.sourceContextMode === 'targeted' ? scriptFunctions.filter(tool => localSourceReadTools.has(tool.name))
+  const availableFunctions = (context.sourceContextMode === 'targeted' ? scriptFunctions.filter(tool => localSourceReadTools.has(tool.name))
     : stageGeneration ? scriptFunctions.filter(tool => stageToolNames.has(tool.name))
-      : scriptFunctions.filter(tool => !profile.excluded.has(tool.name))
-  const toolPrompt = stageGeneration ? `${context.prompt}\n本轮已明确授权生成当前阶段。按本轮creation_skills配置加载尚未加载的剧本技能，然后只使用为本阶段提供的函数完成生成。` : context.prompt
+      : scriptFunctions.filter(tool => !profile.excluded.has(tool.name)))
+    .map(tool => context.workflow && tool.name === 'create_document_draft' ? { ...tool,
+      parameters: z.toJSONSchema(workflowStageDraftInput(context.workflow, context.taskContract?.artifact_types), { io: 'input', unrepresentable: 'any' }),
+    } : tool)
+  const prompt = context.skillRules?.script ? applySkillRules(context.prompt, context.skillRules.script) : context.prompt
+  const toolPrompt = stageGeneration ? `${prompt}\n本轮已明确授权生成当前阶段。按本轮creation_skills配置加载尚未加载的剧本技能，然后只使用为本阶段提供的函数完成生成。` : prompt
   const registry = activity.start({ kind: 'context', label: 'Function Calling', summary: `本轮已向模型提供 ${availableFunctions.length} 项函数，由模型按需选择调用`,
     ...activityPreview(availableFunctions.map(({ name, description }) => ({ name, description })), 'output') })
   activity.finish(registry, 'succeeded')
   let roundMetrics: TextRequestMetrics | undefined
   let currentModelStep: ReturnType<typeof activity.start> | undefined
+  const dialogueReviews = new Map<string, Promise<void>>()
+  if (!context.validateDialogueRevision) context = { ...context, validateDialogueRevision: input => {
+    const key = version(input)
+    const existing = dialogueReviews.get(key)
+    if (existing) return existing
+    const review = reviewDialogueRevision(input, async (text, contract) => {
+      const entry = activity.start({ kind: 'model', label: '核对对白修改范围', name: context.model.name || context.model.remote_id,
+        summary: '核对本次变化是否只涉及台词表达，并保护动作、旁白、人物原意和剧情事实' })
+      try {
+        const raw = await streamText(context.model, context.provider, { prompt: text,
+          structured_output: contract && { ...contract, request_policy: 'script_evidence' } }, context.resolveKey,
+        undefined, context.signal, metrics => activity.update(entry, metrics))
+        activity.finish(entry, 'succeeded', { ...activityPreview(raw, 'output') })
+        return raw
+      } catch (issue) {
+        activity.finish(entry, context.signal?.aborted ? 'cancelled' : 'failed', { summary: issue instanceof Error ? issue.message : String(issue) })
+        throw issue
+      }
+    }, { signal: context.signal }).catch(issue => {
+      dialogueReviews.delete(key)
+      throw issue
+    })
+    dialogueReviews.set(key, review)
+    return review
+  } }
   const tools = documentTools(context), turn = textToolSession(context.model, context.provider, toolPrompt, availableFunctions, context.resolveKey, context.signal,
     text => context.onEvent({ type: 'progress', text }), metrics => { roundMetrics = metrics }, { parallelCalls: true,
       onDispatch: sent => { if (currentModelStep) activity.update(currentModelStep, { request_bytes: sent.request_bytes, request_purpose: sent.request_purpose, ...(sent.estimated_input_tokens === undefined ? {} : { estimated_input_tokens: sent.estimated_input_tokens }) }) } })
+  const reviewSkillRules = structuredClone(context.skillRules?.script)
+  const reviewRecovery = context.action?.operation === 'review' ? createDocumentReviewRecovery({
+    projectId: context.project.id, documentIds: context.action.document_ids, documents: () => projectDocuments(context.project.id, context.script()),
+    context: () => scriptDraftReviewContext({ uploaded_script: effectiveScriptSource(context.project.id),
+      saved_documents: projectDocuments(context.project.id, context.script()).filter(document => !context.action?.document_ids.includes(document.id)), scenes: context.script().scenes,
+      confirmed_decisions: storyDecisions(context.project.id), creator_requirements: activeCreatorRequirements(context.project.id),
+      current_settings: context.script().generation_options, skill_rules: reviewSkillRules }),
+    prompt: toolPrompt, model: context.model, provider: context.provider, resolveKey: context.resolveKey, tools, activity, signal: context.signal,
+  }) : undefined
+  let recoveredReview = reviewRecovery?.pending ? await reviewRecovery.run() : undefined
   let outputs: ToolOutput[] = [], finalText = '', repairContinuations = 0
   let continuation: string | undefined, lastFailure: ToolDiagnostic | undefined, transportFailure: string | undefined, progressFailure: string | undefined
   const unresolved = new Map<string, ToolDiagnostic>()
@@ -1297,7 +1521,7 @@ export async function runScriptTools(context: ToolsContext & {
     if (decision.action === 'stop') progressFailure = message
     else continuation = [continuation, message].filter(Boolean).join('\n')
   }
-  for (let round = 0; ; round++) {
+  for (let round = 0; !recoveredReview; round++) {
     // Even an immediately resolving provider/tool must yield to cancellation
     // and checkpoint I/O. Completion depends on real task state, never a count.
     await yieldToCancellation(undefined, { signal: context.signal })
@@ -1316,6 +1540,14 @@ export async function runScriptTools(context: ToolsContext & {
     } catch (issue) {
       const cancelled = context.signal?.aborted && context.signal.reason?.name === 'AbortError'
       activity.finish(modelStep, cancelled ? 'cancelled' : 'failed', { summary: cancelled ? '已停止模型请求' : `模型请求失败：${issue instanceof Error ? issue.message : String(issue)}`.slice(0, 3000), ...(roundMetrics || {}) })
+      if (!context.signal?.aborted && reviewRecovery && issue instanceof TextProviderError && ['length', 'max_output_tokens'].includes(issue.upstreamCode || '')) {
+        // Native arguments are never recovered. An already committed report is
+        // returned as-is; otherwise use the separate read-only paging contract.
+        recoveredReview = tools.result().review || await reviewRecovery.run()
+        finalText = recoveredReview.summary
+        lastFailure = undefined
+        break
+      }
       if (!context.signal?.aborted && tools.result().tool_draft) { transportFailure = issue instanceof Error ? issue.message : String(issue); break }
       throw issue
     }
@@ -1357,7 +1589,7 @@ export async function runScriptTools(context: ToolsContext & {
           if (failure?.code === 'pending_draft_exists' || failure?.document_id && changes?.some(change => change.document_id === failure.document_id)) unresolved.delete('propose_document_patch')
         }
         lastFailure = [...unresolved.values()].at(-1)
-        if (call.name === 'load_creation_skills') activity.skills((result as { stage: SkillStage }).stage, result as ReturnType<typeof skillContext>)
+        if (call.name === 'load_creation_skills' || call.name === 'read_creation_skill_reference') activity.skills((result as { stage: SkillStage }).stage, result as ReturnType<typeof skillContext>)
         context.onEvent({ type: 'process', label, summary: operationSummary(call.name, result) })
         const sourceResult = result as { offset: number; next_offset: number; total_length: number; source_version: string; complete_source?: boolean }
         const searchResult = result as { matches: unknown[]; total_matches: number; truncated: boolean; next_cursor: string | null; source_version: string }
@@ -1365,7 +1597,8 @@ export async function runScriptTools(context: ToolsContext & {
           offset: sourceResult.offset, next_offset: sourceResult.next_offset, total_length: sourceResult.total_length,
           source_version: sourceResult.source_version, complete_source: sourceResult.complete_source }
           : call.name === 'search_source_document' ? { matches: searchResult.matches.length, total_matches: searchResult.total_matches,
-            truncated: searchResult.truncated, next_cursor: searchResult.next_cursor, source_version: searchResult.source_version } : result
+            truncated: searchResult.truncated, next_cursor: searchResult.next_cursor, source_version: searchResult.source_version }
+          : call.name === 'read_creation_skill_reference' ? { ...(result as Record<string, unknown>), content: undefined } : result
         activity.finish(operation, 'succeeded', { summary: operationSummary(call.name, result).slice(0, 3000), targets: activityTargets(call.name, result), ...activityPreview(publicResult, 'output') })
         outputs.push({ id: call.id, output: JSON.stringify({ ok: true, result: tools.modelResult(call.name, result) }) })
         const state = revisionProgressState()
@@ -1406,7 +1639,7 @@ export async function runScriptTools(context: ToolsContext & {
     outputs.sort((left,right)=>(order.get(left.id)??0)-(order.get(right.id)??0))
     if (progressFailure || tools.result().classification) break
   }
-  const result = tools.result()
+  const result = { ...tools.result(), ...(recoveredReview ? { review: recoveredReview } : {}) }
   if (progressFailure && !result.tool_draft) result.tool_draft = getToolDraft(context.project.id)
   const incomplete = result.tool_draft?.status === 'pending' && result.tool_draft.revision_task?.status !== 'ready' && !!result.tool_draft.revision_task
   const interruption = progressFailure || transportFailure
@@ -1415,7 +1648,7 @@ export async function runScriptTools(context: ToolsContext & {
     : transportFailure || lastFailure ? { kind: result.tool_draft ? 'partial' as const : 'failed' as const, summary: `本轮未完整完成：${transportFailure || lastFailure!.message}。${result.tool_draft ? '已保留草稿，请检查后继续。' : '没有成功提交草稿。'}` }
     : undefined
   if (execution_outcome) finalText = execution_outcome.summary + (lastFailure ? `\n处理建议：${lastFailure.repair}` : '')
-  return { ...result, ...(execution_outcome ? { execution_outcome } : {}), creation: creationState(context.project.id, context.script()), activity: activity.entries, reply: result.reply || finalText || (result.tool_draft ? '草稿已准备，请检查后确认保存。' : '未获得有效回复，请重试。'),
+  return { ...result, ...(execution_outcome ? { execution_outcome } : {}), creation: creationState(context.project.id, context.script()), activity: activity.entries, reply: result.reply || finalText || recoveredReview?.summary || (result.tool_draft ? '草稿已准备，请检查后确认保存。' : '未获得有效回复，请重试。'),
     stage_context: result.tool_draft?.status === 'saved' || result.tool_draft?.status === 'discarded' ? directorStageContext(context.script()) : toolConversationStage(context.project.id, context.script(), directorStageContext(context.script(), { previous: context.stage }), result.tool_draft?.status === 'pending' ? undefined : context.action),
     // Ordinary text is deliberately unclassified: missed ask_creator calls
     // remain eligible for the existing bounded, cached recognition path.

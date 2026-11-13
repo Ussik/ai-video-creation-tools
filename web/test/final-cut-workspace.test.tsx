@@ -188,7 +188,9 @@ test('return to an empty canvas imports only the missing current shot once', asy
   try {
     view.data.graphs[projectId].nodes = []; view.data.graphs.second.nodes = []
     await click(button(view.container, '在画布调整此镜头'))
-    const saved = JSON.parse(dom.window.localStorage.getItem(`project-canvas-draft:${projectId}`)!)
+    const saved = { graph: view.data.graphs[projectId] }
+    assert.ok(view.data.requests.some(request => request.path === `/api/projects/${projectId}/canvas` && request.method === 'PUT'),
+      'explicit shot import persists before navigation completes')
     assert.ok(saved.graph.nodes.length > 0)
     assert.equal(saved.graph.nodes.filter((node: { type: string }) => node.type === 'project_script_ref').length, 1)
     const shotNodes = saved.graph.nodes.filter((node: { type: string }) => node.type !== 'project_script_ref')

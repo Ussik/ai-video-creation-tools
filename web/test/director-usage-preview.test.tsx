@@ -74,6 +74,30 @@ test('creative task progress omits usage and capacity from current, historical a
   } finally { await view.destroy() }
 })
 
+test('output-limit call details distinguish upstream limits, capacity estimates and reasoning usage', async () => {
+  const records: ScriptActivity[] = [
+    { id: 'task', kind: 'context', scope: 'task', status: 'failed', label: '审读剧本', summary: '已保留完整问题，可继续审读', started_at: 1 },
+    { id: 'step', parent_id: 'task', kind: 'context', scope: 'step', status: 'failed', label: '核对全文', summary: '上游输出超限', started_at: 2 },
+    { id: 'model', parent_id: 'step', kind: 'model', scope: 'step', status: 'failed', label: '调用审读模型', name: 'review_candidate',
+      summary: '模型输出超限', started_at: 3, output_limit_reason: 'max_output_tokens', output_limit_kind: 'reasoning',
+      reserved_output_tokens: 128000, output_tokens: 16000, reasoning_tokens: 16000, response_chars: 0 },
+  ]
+  const view = await mount(<DirectorActivity activity={records} failed />)
+  try {
+    await act(() => button(view.container, '查看执行步骤').click())
+    const call = view.container.querySelector('[data-activity-id="model"]')!
+    assert.match(call.textContent!, /请求输出上限.*未显式设置，由上游决定/)
+    assert.match(call.textContent!, /容量估算预留.*128,000 tokens（仅用于估算）/)
+    assert.match(call.textContent!, /其中思考用量.*16,000 tokens/)
+    assert.match(call.textContent!, /上游结束原因.*max_output_tokens.*超限类型.*思考耗尽输出预算/)
+    records[2] = { ...records[2]!, output_limit: 32000, output_limit_kind: 'tool_arguments' }
+    await view.update(<DirectorActivity activity={records} failed />)
+    assert.match(call.textContent!, /请求输出上限.*32,000 tokens/)
+    assert.match(call.textContent!, /工具参数输出被截断/)
+    assert.doesNotMatch(call.textContent!, /未显式设置，由上游决定/)
+  } finally { await view.destroy() }
+})
+
 test('task results remain readable during later work, update with their activity and never save or restart work', async () => {
   let stops = 0, continues = 0
   globalThis.fetch = async () => assert.fail('activity preview must use the retained result without another request')

@@ -130,6 +130,9 @@ function renderDocumentNode(node: JSONContent, key: number): React.ReactNode {
   if (node.type === 'heading') {
     if (node.attrs?.level === 1) return <h1 key={key}>{children}</h1>
     if (node.attrs?.level === 2) return <h2 key={key}>{children}</h2>
+    if (node.attrs?.level === 4) return <h4 key={key}>{children}</h4>
+    if (node.attrs?.level === 5) return <h5 key={key}>{children}</h5>
+    if (node.attrs?.level === 6) return <h6 key={key}>{children}</h6>
     return <h3 key={key}>{children}</h3>
   }
   if (node.type === 'bulletList') return <ul key={key}>{children}</ul>

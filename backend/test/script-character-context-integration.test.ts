@@ -14,7 +14,7 @@ type Input = {
   source: { filename: string; content?: string; total_length?: number }
   character_context?: { source_ranges: Array<{ offset: number; content: string; section_ids: number[] }> }
   materials: Array<{ section: ScriptSourceSection & { id: number } }>
-  part: { key: string; kind: 'overview' | 'characters' | 'characters_merge' | 'timeline' | 'threads' | 'uncertainties'; target_names?: string[]; section_ids?: number[] }
+  part: { key: string; kind: 'overview' | 'characters' | 'characters_merge' | 'timeline' | 'threads' | 'uncertainties'; target_names?: string[]; section_ids?: number[]; include_additional_characters?: boolean; merge_candidates?: Character[] }
 }
 
 const freshSignal = () => new AbortController().signal
@@ -47,8 +47,15 @@ function inputFrom(prompt: string): Input {
 function response(input: Input): Record<string, unknown> {
   if (input.part.kind === 'overview') return { covered_section_ids: input.materials.map(item => item.section.id), summary: '四十名调查者依次完成独立调查，最终归还记录并离开钟楼。',
     ending: { summary: '最后一位调查者归还记录，众人离开钟楼。', section_ids: [39] } }
-  if (input.part.kind === 'characters' || input.part.kind === 'characters_merge') {
-    const characters: Character[] = input.part.target_names!.map(name => ({ name, aliases: [], description: `${name}完成独立调查并留下记录。`,
+  if (input.part.kind === 'characters_merge') {
+    const candidates = input.part.merge_candidates!, first = candidates[0]!
+    return { characters: [{ ...first,
+      aliases: [...new Set(candidates.flatMap(character => [character.name, ...character.aliases]))].filter(name => name !== first.name),
+      section_ids: [...new Set(candidates.flatMap(character => character.section_ids))].sort((left, right) => left - right) }] }
+  }
+  if (input.part.kind === 'characters') {
+    const targetNames = input.part.include_additional_characters ? names : input.part.target_names!
+    const characters: Character[] = targetNames.map(name => ({ name, aliases: [], description: `${name}完成独立调查并留下记录。`,
       section_ids: input.materials.filter(item => item.section.characters.some(character => character.name === name)).map(item => item.section.id) }))
     return input.complete_source ? { characters } : { characters, needs_full_source: false, reason: '' }
   }

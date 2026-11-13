@@ -1,3 +1,4 @@
+import { sourceScopeResponse } from './helpers/source-scope-response.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -89,6 +90,8 @@ test('an ordinary conversation that keeps repeating the identical read is stoppe
   let turns = 0
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as NativeBody
+    const scope = sourceScopeResponse(prompt(body))
+    if (scope) return textResponse('chat_completions', scope)
     if (prompt(body).includes('本次独立调用只理解创作者意图')) return intentResponse('chat_completions')
     turns++
     if (turns > 40) return textResponse('chat_completions', '（保护：不应走到这里）')
@@ -109,6 +112,8 @@ test('legitimate varied reading is never treated as a stall', async t => {
   let turns = 0
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as NativeBody
+    const scope = sourceScopeResponse(prompt(body))
+    if (scope) return textResponse('chat_completions', scope)
     if (prompt(body).includes('本次独立调用只理解创作者意图')) return intentResponse('chat_completions')
     turns++
     if (turns <= 8) return loopingToolResponse(`range-${turns}`, 'read_source_document', { offset: (turns - 1) * 1500, length: 1500 })

@@ -1,4 +1,13 @@
 .pc-prompt-document-status { margin-top: 10px; }
+.pc-prompt-source-trigger { flex: none; max-width: 100%; }
+.pc-prompt-source-trigger-label { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px 7px; min-width: 0; white-space: normal; }
+.pc-prompt-source-trigger-pending { color: var(--mantine-color-orange-text); }
+.pc-prompt-source-trigger-removed { color: var(--mantine-color-dimmed); }
+.pc-prompt-source-dialog .pc-prompt-removed-sections { margin: 0 0 16px; }
+.pc-prompt-source-dialog-records { min-width: 0; }
+.pc-prompt-source-dialog .pc-prompt-source-record-note { margin-bottom: 10px; }
+.pc-prompt-source-dialog-footer { display: flex; justify-content: flex-end; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--mantine-color-default-border); }
+.pc-prompt-source-comparison { display: contents; }
 .pc-prompt-source-record-label, .pc-prompt-source-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
 .pc-prompt-source-record-note { margin-bottom: 6px; }
 .pc-prompt-source-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 10px 0; border-bottom: 1px solid var(--mantine-color-default-border); }

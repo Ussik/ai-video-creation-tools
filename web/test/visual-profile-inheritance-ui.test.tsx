@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { after, test, type TestContext } from 'node:test'
+import { after, beforeEach, test, type TestContext } from 'node:test'
 import { register } from 'node:module'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
@@ -19,7 +19,9 @@ const { createRoot } = await import('react-dom/client')
 const { default: Fields } = await import('../src/features/visuals/VisualProfileFields')
 const { default: Inspector } = await import('../src/features/visuals/VisualProfileInspector')
 const { default: Organizer } = await import('../src/features/visuals/VisualProfileOrganizer')
+const { rememberModelSelection } = await import('../src/features/models/model-selection-store')
 after(() => dom.window.close())
+beforeEach(() => dom.window.localStorage.clear())
 const noop = () => {}
 const base = { id: 'base', project_id: 'project', kind: 'character', name: '林晚', variant: '基础', definition: '黑色短发，固定脸型', view_requirements: '正侧背', revision: 1,
   definition_status: 'ready', base_profile_id: null, state_delta: '', board_asset_id: null, asset_task_id: null, board_prompt: '基础图' } as VisualProfile
@@ -140,5 +142,38 @@ test('an analyzed cycle is shown as a relation conflict and cannot be saved', as
     assert.equal(button('确认保存 2 份设定').disabled, true)
     assert.match(view.container.textContent!, /循环引用/)
     assert.equal(requests.length, 1)
+  } finally { await view.destroy() }
+})
+
+test('a shared text model change preserves edited visual drafts, blocks saving and restores them when switching back', async t => {
+  const alternate = { ...model, id: 'another-text', name: '另一文本模型' }
+  const requests: Array<{ path: string; body: any }> = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    const path = String(url)
+    if (path.endsWith('/skills/defaults')) return Response.json({ policies: [{ stage: 'visual_assets', label: '视觉设定', primary_id: null, auxiliary_ids: [], source: 'global', warning: '', skills: [] }] })
+    if (path.endsWith('/models')) return Response.json([model, alternate])
+    requests.push({ path, body: JSON.parse(String(init?.body)) })
+    return Response.json({ profiles: [baseDraft] })
+  })
+  const view = await mount(<Organizer detail={detail} models={[model, alternate]} onRefresh={async () => {}} onClose={noop} onDirtyChange={noop} onBusyChange={noop} />)
+  try {
+    await act(() => button('整理设定草稿').click())
+    assert.equal(requests[0].body.model_id, model.id)
+    await fill('设定名称', '人工调整的角色名称')
+    assert.equal(button('确认保存 1 份设定').disabled, false)
+    await act(() => rememberModelSelection('text', alternate.id))
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="设定名称"]')!.value, '人工调整的角色名称', 'the edited draft stays visible')
+    assert.equal(button('确认保存 1 份设定').disabled, true)
+    assert.match(view.container.textContent!, /文本模型已切换/)
+    assert.doesNotMatch(view.container.textContent!, /剧本资料已变化/)
+    assert.equal(requests.length, 1, 'synchronization neither saves nor analyzes automatically')
+    await act(() => rememberModelSelection('text', model.id))
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="设定名称"]')!.value, '人工调整的角色名称')
+    assert.equal(button('确认保存 1 份设定').disabled, false, 'returning to the generating model restores the existing draft')
+    assert.doesNotMatch(view.container.textContent!, /文本模型已切换/)
+    assert.equal(requests.length, 1)
+    await act(() => rememberModelSelection('text', alternate.id))
+    await act(() => button('放弃草稿').click())
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="整理设定的文本模型"]')!.value, alternate.name)
   } finally { await view.destroy() }
 })

@@ -1,3 +1,4 @@
+import { sourceScopeResponse } from './helpers/source-scope-response.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -84,6 +85,8 @@ for (const protocol of ['chat_completions', 'responses'] as const) test(`${proto
   let turns = 0
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as NativeBody
+    const scope = sourceScopeResponse(prompt(body), { mode: 'targeted', literal_queries: ['赵师傅'] })
+    if (scope) return textResponse(protocol, scope)
     if (prompt(body).includes('本次独立调用只理解创作者意图')) return intentResponse(protocol)
     turns++
     assert.ok(prompt(body).includes(question), 'the exact creator request remains present across tool turns')
@@ -125,6 +128,8 @@ test('a source replacement while a targeted model request is pending rejects eve
   let turns = 0
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as NativeBody
+    const scope = sourceScopeResponse(prompt(body), { mode: 'targeted', literal_queries: ['赵师傅'] })
+    if (scope) return textResponse('chat_completions', scope)
     if (prompt(body).includes('本次独立调用只理解创作者意图')) return intentResponse('chat_completions')
     turns++
     assert.ok(prompt(body).includes('【局部原文资料包】'))
@@ -143,6 +148,8 @@ test('targeted chat can expand to the complete pinned original through a real na
   let turns = 0
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as NativeBody
+    const scope = sourceScopeResponse(prompt(body), { mode: 'targeted', literal_queries: ['赵师傅'] })
+    if (scope) return textResponse('chat_completions', scope)
     if (prompt(body).includes('本次独立调用只理解创作者意图')) return intentResponse('chat_completions')
     turns++
     assert.ok(!prompt(body).includes(unrelated))
@@ -169,6 +176,8 @@ test('targeted chat rejects a mutating call even if a provider returns one outsi
   let turns = 0, rejected = false
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as NativeBody
+    const scope = sourceScopeResponse(prompt(body), { mode: 'targeted', literal_queries: ['赵师傅'] })
+    if (scope) return textResponse('chat_completions', scope)
     if (prompt(body).includes('本次独立调用只理解创作者意图')) return intentResponse('chat_completions')
     turns++
     if (turns === 1) return toolResponse('chat_completions', 'record_story_decision', {
@@ -204,6 +213,8 @@ test('global, creative, unmatched and disabled requests retain the complete orig
     let turns = 0
     t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as NativeBody
+      const scope = sourceScopeResponse(prompt(body), entry.label === '没有原文匹配' ? { mode: 'targeted', literal_queries: ['完全未出现的称呼'] } : {})
+      if (scope) return textResponse('chat_completions', scope)
       if (prompt(body).includes('本次独立调用只理解创作者意图')) return intentResponse('chat_completions')
       turns++
       assert.ok(prompt(body).includes(JSON.stringify(source.content)))

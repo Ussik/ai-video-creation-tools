@@ -117,7 +117,7 @@ function fixture(): { detail: ProjectDetail; graph: CanvasGraph } {
   edges: [{ id: 'fixed-frame', source: 'image-node', target: 'video-node', reference_asset_id: 'latest' }] }
   return { detail, graph }
 }
-function mockApi(t: TestContext, initialGraph: CanvasGraph) {
+function mockApi(t: TestContext, initialGraph: CanvasGraph, saveAsset?: (assetId: string) => Response | Promise<Response>) {
   let graph = structuredClone(initialGraph)
   const control = { failNextSave: false }
   const saved: CanvasGraph[] = [], requests: Array<{ path: string; method: string }> = []
@@ -127,6 +127,11 @@ function mockApi(t: TestContext, initialGraph: CanvasGraph) {
     if (path === `/api/projects/${projectId}/canvases`) return Response.json([{ id: projectId, project_id: projectId,
       name: '画布 1', is_default: true, node_count: graph.nodes.length, viewport: null }])
     if (path === `/api/projects/${projectId}/skills/defaults`) return Response.json({ policies: [] })
+    const assetSave = /^\/api\/assets\/([^/]+)\/save$/.exec(path)
+    if (assetSave && saveAsset) {
+      assert.equal(method, 'POST')
+      return saveAsset(assetSave[1]!)
+    }
     assert.equal(path, `/api/projects/${projectId}/canvas`, 'choosing a candidate must never submit generation or change the timeline')
     if (method === 'PUT') {
       if (control.failNextSave) {
@@ -184,6 +189,122 @@ async function useCandidate(container: HTMLElement, id: string) {
   const button = image.closest('button'); assert.ok(button)
   await act(() => button.click()); await settle()
 }
+
+function composerAssetSave(container: HTMLElement) {
+  return [...container.querySelectorAll<HTMLButtonElement>('.pc-prompt-composer button')]
+    .find(button => /^(保存到资产|已保存到资产)$/.test(button.textContent?.trim() || ''))
+}
+
+for (const modality of ['image', 'video'] as const) test(`the ${modality} composer saves its displayed historical result to the library without changing the canvas or final cut`, async t => {
+  const { detail, graph } = modality === 'video' ? videoFixture() : fixture()
+  const nodeId = `${modality}-node`, assetId = modality === 'video' ? 'older-video' : 'older'
+  const node = graph.nodes.find(node => node.id === nodeId)!
+  node.asset_id = assetId
+  node.settings.generation_completed_job_id = node.job_id!
+  detail.assets.find(asset => asset.id === assetId)!.saved = false
+  const original = structuredClone(detail)
+  const savedIds: string[] = []
+  const api = mockApi(t, graph, id => {
+    savedIds.push(id)
+    return Response.json({ ...detail.assets.find(asset => asset.id === id)!, saved: true })
+  })
+  let refreshes = 0
+  const view = await mount(detail, nodeId, async () => {
+    refreshes++
+    return { ...structuredClone(detail), assets: detail.assets.map(asset => ({ ...asset, saved: asset.saved || savedIds.includes(asset.id) })) }
+  })
+  try {
+    const save = composerAssetSave(view.container)
+    assert.ok(save, 'the selected result exposes a visible save action in the composer')
+    assert.equal(save.disabled, false)
+    const beforeGraph = api.graph(), beforeCanvasSaves = api.saved.length
+    await act(() => save.click()); await settle()
+    assert.deepEqual(savedIds, [assetId], 'save the displayed candidate, even when its job points to the latest result')
+    assert.equal(refreshes, 1)
+    const saved = composerAssetSave(view.container)
+    assert.equal(saved?.textContent?.trim(), '已保存到资产')
+    assert.equal(saved?.disabled, true)
+    assert.equal(api.saved.length, beforeCanvasSaves, 'saving to the library never rewrites the canvas')
+    assert.deepEqual(api.graph(), beforeGraph)
+    assert.deepEqual(detail, original, 'project shots, final selection, trim and asset props are not mutated')
+    assert.ok(api.requests.every(request => request.method === 'GET' || request.path === `/api/assets/${assetId}/save`),
+      'the only write promotes the asset to the library; no generation, selection or timeline request is allowed')
+  } finally { await view.destroy() }
+})
+
+test('composer asset saving blocks duplicate clicks while pending and reports completion after refresh', async t => {
+  const { detail, graph } = fixture()
+  detail.assets.find(asset => asset.id === 'latest')!.saved = false
+  let finishSave!: () => void, saves = 0, refreshes = 0
+  const pendingSave = new Promise<Response>(resolve => { finishSave = () => resolve(Response.json({ ...detail.assets.find(asset => asset.id === 'latest')!, saved: true })) })
+  mockApi(t, graph, () => { saves++; return pendingSave })
+  const view = await mount(detail, 'image-node', async () => {
+    refreshes++
+    return { ...structuredClone(detail), assets: detail.assets.map(asset => ({ ...asset, saved: true })) }
+  })
+  try {
+    const save = composerAssetSave(view.container)!
+    assert.ok(save)
+    await act(() => { save.click(); save.click() }); await settle()
+    assert.equal(saves, 1, 'repeated clicks cannot submit the same pending save')
+    assert.equal(composerAssetSave(view.container)?.disabled, true)
+    assert.equal(refreshes, 0)
+    await act(async () => { finishSave(); await pendingSave }); await settle()
+    assert.equal(refreshes, 1)
+    assert.equal(composerAssetSave(view.container)?.textContent?.trim(), '已保存到资产')
+    assert.equal(composerAssetSave(view.container)?.disabled, true)
+  } finally {
+    await act(async () => { finishSave(); await pendingSave }); await settle()
+    await view.destroy()
+  }
+})
+
+test('a failed library save remains unsaved, reports the error and allows retrying', async t => {
+  const { detail, graph } = fixture()
+  detail.assets.find(asset => asset.id === 'latest')!.saved = false
+  let saves = 0, refreshes = 0
+  const api = mockApi(t, graph, id => ++saves === 1
+    ? Response.json({ detail: '模拟资产保存失败' }, { status: 503 })
+    : Response.json({ ...detail.assets.find(asset => asset.id === id)!, saved: true }))
+  const view = await mount(detail, 'image-node', async () => {
+    refreshes++
+    return { ...structuredClone(detail), assets: detail.assets.map(asset => ({ ...asset, saved: true })) }
+  })
+  try {
+    const beforeGraph = api.graph()
+    await act(() => composerAssetSave(view.container)!.click()); await settle()
+    assert.equal(saves, 1)
+    assert.equal(refreshes, 0)
+    assert.match(view.container.querySelector('.pc-notice')?.textContent || '', /模拟资产保存失败/)
+    assert.equal(composerAssetSave(view.container)?.textContent?.trim(), '保存到资产')
+    assert.equal(composerAssetSave(view.container)?.disabled, false)
+    assert.deepEqual(api.graph(), beforeGraph)
+    await act(() => composerAssetSave(view.container)!.click()); await settle()
+    assert.equal(saves, 2)
+    assert.equal(refreshes, 1)
+    assert.equal(composerAssetSave(view.container)?.textContent?.trim(), '已保存到资产')
+    assert.equal(composerAssetSave(view.container)?.disabled, true)
+  } finally { await view.destroy() }
+})
+
+test('saved results show their library state and a node without a result has no save action', async t => {
+  const { detail, graph } = fixture()
+  const image = graph.nodes.find(node => node.id === 'image-node')!
+  image.asset_id = null; image.job_id = null
+  const api = mockApi(t, graph)
+  const view = await mount(detail)
+  try {
+    assert.equal(composerAssetSave(view.container), undefined, 'a node without a result cannot save an asset')
+    const video = view.container.querySelector<HTMLElement>('[data-id="video-node"]')!
+    await act(() => video.click()); await settle()
+    const saved = composerAssetSave(view.container)
+    assert.ok(saved, 'an existing saved result retains a visible library status')
+    assert.equal(saved.textContent?.trim(), '已保存到资产')
+    assert.equal(saved.disabled, true)
+    await act(() => saved.click()); await settle()
+    assert.equal(api.requests.some(request => request.path.endsWith('/save')), false)
+  } finally { await view.destroy() }
+})
 
 test('shot image candidates include successful images across batches and exclude other shots, profiles, video, frames and uploads', async t => {
   const { detail, graph } = fixture(), original = structuredClone(detail)

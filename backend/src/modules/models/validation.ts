@@ -4,6 +4,7 @@ import type { Model } from '../../infrastructure/database/db.js'
 import { invalid } from '../../infrastructure/http/request.js'
 import { documentedImageConfigError } from '@video-studio/shared/models/documented-images-api'
 import { resolveTextApiSettings, textApiConfigError } from '@video-studio/shared/models/text-api-settings'
+import { videoModelConfigError } from '@video-studio/shared/models/video-model-settings'
 import { textContextConfigError } from '@video-studio/shared/models/text-context-settings'
 import { imageAnalysisConfigError } from '@video-studio/shared/models/image-analysis-settings'
 import { videoInputConfigError } from '@video-studio/shared/models/video-analysis-settings'
@@ -34,6 +35,7 @@ export function validateSettings(mod: Model['modality'], settings: Record<string
     if (issue) invalid(issue)
     if (settings.text_api !== undefined) settings = resolveTextApiSettings(settings, protocol ?? '')
   }
+  if (mod === 'video') { const issue = videoModelConfigError(settings); if (issue) invalid(issue) }
   if (settings.image_analysis !== undefined) {
     if (mod !== 'image') invalid('image_analysis 图片反推配置仅适用于图片模型')
     const issue = imageAnalysisConfigError(settings)

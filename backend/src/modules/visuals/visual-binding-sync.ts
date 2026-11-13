@@ -57,7 +57,7 @@ export function resolveVisualBinding(shot: Shot, value: VisualBinding): Resolved
   const style = projectVisualStyle(profile.project_id)
   const board = currentVisualProfileBoard(profile, style.version)
   const recommended = recommendVisualReferences(profile, visualReferenceAssets(profile.id),
-    [binding.usage === 'video' ? shot.video_prompt : shot.image_prompt, shot.start_state].filter(Boolean).join('\n'), style.version)
+    binding.reference_view ? { view: binding.reference_view } : undefined, style.version)
     .filter(reference => hasImage(profile.project_id, reference.asset_id)
       && !assetStyleNeedsReview(profile.project_id, reference.asset_id, style.version, profile.id)).map(referenceSnapshot)
   if (profile.definition_status !== 'ready' || (!board && !recommended.length) || profile.base_profile_id && !board) {

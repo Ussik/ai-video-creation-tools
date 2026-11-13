@@ -8,7 +8,7 @@ const markOrder: Mark[] = ['bold', 'italic', 'strike']
 const delimiters: Record<Mark, string> = { bold: '**', italic: '_', strike: '~~' }
 const punctuation = /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/
 // Generated Chinese headings may omit the space before titles or numbering.
-const headingPattern = /^ {0,3}(#{1,3})(?:[ \t]+|(?=(?:\d+[.、．)）][ \t]*)?\d*\p{Script=Han}|[《〈「『【〔（“‘][ \t]*\d*\p{Script=Han})|$)(.*)$/u
+const headingPattern = /^ {0,3}(#{1,6})(?:[ \t]+|(?=(?:\d+[.、．)）][ \t]*)?\d*\p{Script=Han}|[《〈「『【〔（“‘][ \t]*\d*\p{Script=Han})|$)(.*)$/u
 
 function textNode(text: string, marks: Mark[] = []): JSONContent {
   return { type: 'text', text, ...(marks.length ? { marks: markOrder.filter(mark => marks.includes(mark)).map(type => ({ type })) } : {}) }
@@ -366,7 +366,7 @@ function blockMarkdown(node: JSONContent, depth = 0): string {
   if (depth > 24) return ''
   const children = node.content || []
   if (node.type === 'paragraph') return escapeBlockStart(inlineMarkdown(children))
-  if (node.type === 'heading') return `${'#'.repeat(Math.max(1, Math.min(3, Number(node.attrs?.level) || 1)))} ${inlineMarkdown(children)}`
+  if (node.type === 'heading') return `${'#'.repeat(Math.max(1, Math.min(6, Number(node.attrs?.level) || 1)))} ${inlineMarkdown(children)}`
   if (node.type === 'horizontalRule') return '---'
   if (node.type === 'table') {
     const headers = children[0]?.content || []

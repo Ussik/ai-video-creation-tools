@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict'
 import { register } from 'node:module'
-import { after, test } from 'node:test'
+import { after, beforeEach, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
 import type { CanvasNodeProposal, CanvasNodeProposalSource } from '@video-studio/shared/canvas/canvas-node-proposal'
 import type { DirectorCanvasNodeProposalProps } from '../src/features/script/DirectorCanvasNodeProposal'
+import type { Model, Provider, ProjectDetail } from '../src/shared/api/api'
+import { modelSelectionStorageKey, rememberModelSelection } from '../src/features/models/model-selection-store'
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
@@ -17,9 +19,13 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, getComputedStyle: do
   ResizeObserver: class { observe() {} unobserve() {} disconnect() {} } })
 Object.defineProperty(dom.window, 'matchMedia', { value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) })
 Object.defineProperty(dom.window.document, 'fonts', { value: new dom.window.EventTarget() })
+dom.window.HTMLElement.prototype.scrollTo = () => {}
+dom.window.HTMLElement.prototype.scrollIntoView = () => {}
 const { createRoot } = await import('react-dom/client')
 const { default: DirectorCanvasNodeProposal } = await import('../src/features/script/DirectorCanvasNodeProposal')
+const { default: ScriptDirectorPanel } = await import('../src/features/script/ScriptDirectorPanel')
 after(() => dom.window.close())
+beforeEach(() => dom.window.localStorage.removeItem(modelSelectionStorageKey('text')))
 
 const source: CanvasNodeProposalSource = {
   project_id: 'project', project_updated_at: 'v1', project_style_version: 'style-v1', canvas_id: 'canvas', canvas_revision: 'a'.repeat(64),
@@ -163,4 +169,63 @@ test('changing the text model preserves typed instructions and cancels only the 
     assert.ok(!document.querySelector('[aria-label="节点修改差异"]'))
     assert.equal(button('生成修改方案').disabled, false)
   } finally { await view.destroy() }
+})
+
+test('director freezes shared choices during node proposal work and keeps the completed preview stale until its model is restored', async t => {
+  let finishProposal!: (response: Response) => void, finishApply!: () => void
+  let requestSignal: AbortSignal | null | undefined, applications = 0
+  const requests: Array<{ text_model_id: string }> = []
+  const applyFinished = new Promise<void>(resolve => { finishApply = resolve })
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    const path = String(url)
+    if (path.endsWith('/node-proposals')) {
+      requests.push(JSON.parse(String(init?.body)))
+      requestSignal = init?.signal
+      return new Promise<Response>(resolve => { finishProposal = resolve })
+    }
+    if (path.endsWith('/skills/defaults')) return Response.json({ policies: [] })
+    if (path.endsWith('/script/source')) return Response.json(null)
+    if (path.endsWith('/tools-state')) return Response.json({ draft: null, decisions: [] })
+    if (path.endsWith('/conversations')) return Response.json({ conversations: [] })
+    throw new Error(`Unexpected ${path}`)
+  })
+  const detail = { id: 'project', name: '节点方案测试', brief: '', ratio: '9:16',
+    script: { outline: '', characters: '', scenes: [], artifacts: [], generation_options: {} },
+    shots: [], jobs: [], assets: [], asset_tasks: [] } as unknown as ProjectDetail
+  const models = [{ id: 'text-model', provider_id: 'provider', name: '原文本模型', modality: 'text', enabled: true, settings: {} },
+    { id: 'another-text-model', provider_id: 'provider', name: '另一文本模型', modality: 'text', enabled: true, settings: {} }] as Model[]
+  const providers = [{ id: 'provider', name: '提供商', enabled: true, adapter: 'http' }] as Provider[]
+  const container = document.createElement('div'); document.body.append(container)
+  const root = createRoot(container)
+  await act(() => root.render(<MantineProvider env="test"><ScriptDirectorPanel detail={detail} models={models} providers={providers}
+    canvasNodeSource={source} onApplyCanvasNodeProposal={async () => { applications++; await applyFinished; return { nodeId: 'new-node', referenceNodeCount: 1, alreadyApplied: false } }}
+    onRefresh={async () => {}} onClose={() => {}} onOpenModels={() => {}} onNotice={() => {}} /></MantineProvider>))
+  try {
+    const selected = () => document.querySelector<HTMLInputElement>('input[aria-label="文本模型"]')!
+    await act(() => button('调整节点配置').click())
+    await typeInstructions('保留原节点，只缩短动作')
+    await act(() => button('生成修改方案').click())
+    assert.equal(selected().disabled, true)
+    await act(() => rememberModelSelection('text', 'another-text-model'))
+    assert.equal(selected().value, '原文本模型')
+    assert.equal(requestSignal?.aborted, false, 'an external preference cannot cancel the in-flight proposal')
+    await act(async () => finishProposal(Response.json(proposal())))
+    assert.equal(selected().value, '另一文本模型', 'the idle director follows the latest shared choice')
+    assert.equal(field('修改后提示词').value, proposal().after.prompt)
+    assert.equal(button('确认创建草稿').disabled, true)
+    assert.match(document.body.textContent!, /文本模型已切换，当前方案仍保留/)
+    assert.deepEqual(requests.map(request => request.text_model_id), ['text-model'])
+    assert.equal(applications, 0)
+    await act(() => rememberModelSelection('text', 'text-model'))
+    assert.equal(button('确认创建草稿').disabled, false)
+    await act(() => button('确认创建草稿').click())
+    assert.equal(selected().disabled, true)
+    await act(() => rememberModelSelection('text', 'another-text-model'))
+    assert.equal(selected().value, '原文本模型', 'applying the captured proposal also freezes the selection')
+    await act(async () => finishApply())
+    assert.equal(applications, 1)
+    assert.equal(selected().value, '另一文本模型')
+    assert.match(document.body.textContent!, /草稿已创建/)
+    assert.doesNotMatch(document.body.textContent!, /文本模型已切换，当前方案仍保留/)
+  } finally { await act(() => root.unmount()); container.remove() }
 })

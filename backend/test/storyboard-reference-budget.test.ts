@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 import Fastify from 'fastify'
 import type { ScriptScene, Shot } from '../src/infrastructure/database/db.js'
+import { withStoryboardDirecting } from './helpers/storyboard-directing.js'
+import { fixtureVisualCoverage, withFixtureVisualCoverage } from './helpers/visual-coverage.js'
 
 const directory = await mkdtemp(join(tmpdir(), 'storyboard-reference-budget-'))
 process.env.VIDEO_STUDIO_DATA_DIR = directory
@@ -34,6 +36,9 @@ async function fixture() {
       { shot_id: second.id, usage: index === 8 ? 'both' as const : 'none' as const }] }))
   return { project, scene, first, second, profiles }
 }
+function coverage(f: Awaited<ReturnType<typeof fixture>>, profiles = f.profiles) {
+  return { coverage_version: 1, visual_coverage: fixtureVisualCoverage(profiles, [f.scene], [f.first, f.second].map(shot => ({ ...shot, shot_id: shot.id, scene_id: f.scene.id }))) }
+}
 
 test('planning reserves one composition slot, respects stricter models and invalidates stale model budgets', async () => {
   const f = await fixture()
@@ -57,10 +62,10 @@ test('nine scene candidates are allowed when each shot fits eight settings plus 
     scenePrompt: scene => scene.heading,
     generateText: async (_project, _model, prompt) => {
       assert.match(prompt, /视频最多 9 张.*预留 1 张/)
-      if (++calls === 1) return JSON.stringify({ profiles: f.profiles.map(profile => ({ ...profile,
-        shot_usage: profile.shot_usage.map(item => item.shot_id === f.first.id ? { ...item, usage: 'both' } : item) })) })
+      if (++calls === 1) return withFixtureVisualCoverage(JSON.stringify({ profiles: f.profiles.map(profile => ({ ...profile,
+        shot_usage: profile.shot_usage.map(item => item.shot_id === f.first.id ? { ...item, usage: 'both' } : item) })) }), prompt)
       assert.match(prompt, /一次格式修正[\s\S]*需 9 张设定参考图，最多允许 8 张/)
-      return JSON.stringify({ profiles: f.profiles })
+      return withFixtureVisualCoverage(JSON.stringify({ profiles: f.profiles }), prompt)
     },
   })
   try {
@@ -72,7 +77,8 @@ test('nine scene candidates are allowed when each shot fits eight settings plus 
     const prepared = response.json()
     assert.equal(all('SELECT * FROM visual_profiles WHERE project_id=?', f.project.id).length, 0, 'analysis must stay read-only')
     const saved = await routes.inject({ method: 'POST', url: `${url}/commit`, payload: { signature: prepared.signature,
-      scene_ids: prepared.scene_ids, profiles: prepared.profiles, reference_usage_version: prepared.reference_usage_version } })
+      scene_ids: prepared.scene_ids, profiles: prepared.profiles, reference_usage_version: prepared.reference_usage_version,
+      coverage_version: prepared.coverage_version, visual_coverage: prepared.visual_coverage } })
     assert.equal(saved.statusCode, 200, saved.body)
     assert.equal(all('SELECT * FROM visual_profiles WHERE project_id=?', f.project.id).length, 9)
     assert.deepEqual(storyboardReferenceBudgetIssues(f.project.id, [f.scene.id]), [])
@@ -91,8 +97,9 @@ test('over-budget drafts are rejected before writing references; existing shots 
   try {
     const url = `/api/projects/${f.project.id}/script/canvas`
     const checked = (await routes.inject({ method: 'POST', url: `${url}/check`, payload: { scene_ids: [f.scene.id] } })).json()
+    const overProfiles = f.profiles.map(profile => ({ ...profile, shot_usage: profile.shot_usage.map(item => ({ ...item, usage: 'both' as const })) }))
     const response = await routes.inject({ method: 'POST', url: `${url}/commit`, payload: { signature: checked.signature, scene_ids: [f.scene.id], reference_usage_version: 1,
-      profiles: f.profiles.map(profile => ({ ...profile, shot_usage: profile.shot_usage.map(item => ({ ...item, usage: 'both' })) })) } })
+      profiles: overProfiles, ...coverage(f, overProfiles) } })
     assert.equal(response.statusCode, 422, response.body)
     assert.match(response.body, /最多允许 8 张.*分镜图预留 1 张/)
     assert.equal(all('SELECT * FROM visual_profiles WHERE project_id=?', f.project.id).length, 0)
@@ -122,10 +129,10 @@ test('analysis that remains over budget after correction rejects without changin
   registerScriptCanvasRoutes(routes, {
     script: id => ({ outline: '', characters: '', scenes: all<ScriptScene>('SELECT * FROM script_scenes WHERE project_id=?', id) }),
     scenePrompt: scene => scene.heading,
-    generateText: async () => {
+    generateText: async (_project, _model, prompt) => {
       calls++
-      return JSON.stringify({ profiles: f.profiles.map(profile => ({ ...profile,
-        shot_usage: profile.shot_usage.map(item => ({ ...item, usage: 'both' })) })) })
+      return withFixtureVisualCoverage(JSON.stringify({ profiles: f.profiles.map(profile => ({ ...profile,
+        shot_usage: profile.shot_usage.map(item => ({ ...item, usage: 'both' })) })) }), prompt)
     },
   })
   const shots = all<Shot>('SELECT * FROM shots WHERE project_id=?', f.project.id)
@@ -146,7 +153,7 @@ test('prepared scenes need analysis again when frozen references grow beyond the
   const f = await fixture()
   const url = `/api/projects/${f.project.id}/script/canvas`
   const checked = await call('POST', `${url}/check`, { scene_ids: [f.scene.id] })
-  await call('POST', `${url}/commit`, { signature: checked.signature, scene_ids: [f.scene.id], profiles: f.profiles, reference_usage_version: 1 })
+  await call('POST', `${url}/commit`, { signature: checked.signature, scene_ids: [f.scene.id], profiles: f.profiles, reference_usage_version: 1, ...coverage(f) })
   const ready = await call('POST', `${url}/check`, { scene_ids: [f.scene.id] })
   assert.deepEqual(ready.needs_analysis, [])
   const snapshots = ['face', 'front'].map(view => ({ id: `${f.project.id}-${view}`, asset_id: `${f.project.id}-${view}`, view,
@@ -158,7 +165,7 @@ test('prepared scenes need analysis again when frozen references grow beyond the
   assert.match(storyboardReferenceBudgetIssues(f.project.id, [f.scene.id])[0]!.message, /需 9 张设定参考图/)
 })
 
-test('projected canvas references use the same camera selection as inheritance and count face plus body separately', async () => {
+test('projected references use confirmed defaults for both video and inheritance, counting face plus body separately', async () => {
   const f = await fixture(), stamp = now(), style = projectVisualStyle(f.project.id)
   run('UPDATE shots SET video_prompt=? WHERE id=?', '五人背面行走', f.first.id)
   const profiles = f.profiles.slice(0, 5).map(profile => ({ ...profile,
@@ -173,13 +180,14 @@ test('projected canvas references use the same camera selection as inheritance a
       (id,profile_id,asset_id,revision,style_version,view,purpose,label,status,is_default,created_at,updated_at)
       VALUES (?,?,?,1,?,?,?,'','confirmed',1,?,?)`, id, profile.id, id, style.version, view, purpose, stamp, stamp)
   }
-  assert.deepEqual(storyboardReferenceBudgetIssues(f.project.id, [f.scene.id], profiles), [], 'video-camera selection needs only five back views')
+  assert.match(storyboardReferenceBudgetIssues(f.project.id, [f.scene.id], profiles)[0]!.message,
+    /视频过程.*需 10 张设定参考图/, 'a back-view mention in prose cannot remove confirmed face/default references')
   assert.match(storyboardReferenceBudgetIssues(f.project.id, [f.scene.id], profiles, { inheritSceneReferences: true })[0]!.message,
     /视频过程.*需 10 张设定参考图/, 'canvas inheritance freezes five face and five front images')
   const url = `/api/projects/${f.project.id}/script/canvas`
   const checked = await call('POST', `${url}/check`, { scene_ids: [f.scene.id] })
   const response = await app.inject({ method: 'POST', url: `${url}/commit`, payload: { signature: checked.signature,
-    scene_ids: [f.scene.id], profiles, reference_usage_version: 1 } })
+    scene_ids: [f.scene.id], profiles, reference_usage_version: 1, ...coverage(f, profiles) } })
   assert.equal(response.statusCode, 422, response.body)
   assert.match(response.body, /需 10 张设定参考图/)
   assert.deepEqual(all('SELECT * FROM scene_visual_bindings WHERE scene_id=?', f.scene.id), [])
@@ -191,14 +199,16 @@ test('the storyboard director receives the reference budget before planning shot
   registerStoryboardPlanningRoutes(routes, {
     script: id => ({ outline: '', characters: '', scenes: all<ScriptScene>('SELECT * FROM script_scenes WHERE project_id=?', id) }),
     scenePrompt: scene => scene.heading,
-    generateText: async (_project, _model, prompt) => {
+    generateText: async (_project, _model, prompt, contract) => {
+      if (contract?.name === 'storyboard_directing_review') return JSON.stringify({ issues: [] })
       assert.match(prompt, /视频最多 9 张.*预留 1 张.*各最多使用 8 张/)
       assert.match(prompt, /面部图和身体图是两张/)
       assert.match(prompt, /拆成有叙事意义.*保留原有剧情、对白和关键对象/)
-      return JSON.stringify({ scenes: [{ scene_id: f.scene.id, scene_duration: 20,
+      return JSON.stringify(withStoryboardDirecting({ scenes: [{ scene_id: f.scene.id, scene_duration: 20,
         shots: [f.first, f.second].map(shot => ({ shot_id: shot.id, title: shot.title, prompt: '保留当前叙事',
           image_prompt: shot.image_prompt, video_prompt: shot.video_prompt, duration: 10,
-          start_state: shot.start_state, end_state: '', cut_note: '' })) }] })
+          audio_plan: { version: 1, speech: [], sound_effects: [], music: '', silent: true },
+          start_state: shot.start_state, end_state: '人物动作完成，保持原有站位关系', cut_note: '按人物反应承接并收束' })) }] }))
     },
   })
   try {

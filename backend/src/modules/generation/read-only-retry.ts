@@ -6,6 +6,8 @@ import { claimModelAttempt, modelStepSignal, remainingModelAttempts, remainingMo
 const managedRetry = Symbol('readOnlyRetry')
 type RetryOptions = {
   signal?: AbortSignal; onRetry?: (attempt: number, delayMs: number) => void;
+  /** Only validated atomic read-only output may discard an incomplete draft. */
+  discardIncompleteOutput?: boolean;
   wait?: (ms: number, signal?: AbortSignal) => Promise<void>;
   random?: () => number;
 }
@@ -22,7 +24,7 @@ export async function retryReadOnlyRequest<T>(request: () => Promise<T>, options
     try { return await request() }
     catch (issue) {
       signal?.throwIfAborted()
-      if (issue instanceof TextProviderError && (issue.outputStarted || issue.partialText || ['context_overflow', 'output_limit', 'refusal', 'invalid_tool', 'invalid_response', 'cancelled'].includes(issue.failureReason))) throw issue
+      if (issue instanceof TextProviderError && ((!options.discardIncompleteOutput && (issue.outputStarted || issue.partialText)) || ['context_overflow', 'output_limit', 'refusal', 'invalid_tool', 'invalid_response', 'cancelled'].includes(issue.failureReason))) throw issue
       if (attempt >= 2 || !remainingModelAttempts() || (!Number.isFinite(remainingModelStepMs()) && Date.now() - started > 10 * 60_000) || !(issue instanceof TextProviderError) || !issue.retryable) throw issue
       const jitter = 0.75 + (options.random || Math.random)() * 0.5
       const delayMs = Math.max(issue.retryAfterMs || 0, Math.round(2000 * jitter))

@@ -26,11 +26,35 @@ function replaceLabels(text: string, labels: Record<string, string>): string {
 const draftFieldLabels: Record<string, string> = {
   artifact_type: '文档类型', title: '文档标题', content: '文档正文', status: '状态', type: '类型别名',
 }
+const sceneStageExplanations: Record<string, string> = {
+  '仅分集正文阶段需要分场剧本': '生成结果中的分场内容与当前创作阶段不一致，未通过校验。请重新生成当前阶段。',
+  '分集正文缺少对应分场，请保留正文并补齐 scenes': '分集正文缺少对应分场，需要保留正文并补齐分场后再确认。',
+  '当前项目资料阶段不应包含分场剧本，scenes 必须为空数组': '当前正在编写全剧资料，生成结果中不应包含分集的分场内容。',
+}
+
+/** Older task failures stored Zod's issue array directly instead of a public diagnostic. */
+function legacySceneStageDiagnostic(text: string): string {
+  if (!text.trimStart().startsWith('[')) return text
+  let value: unknown
+  try { value = JSON.parse(text) } catch { return text }
+  type Issue = { code: string; message: string; path: Array<string | number> }
+  const isIssue = (item: unknown): item is Issue => !!item && typeof item === 'object' &&
+    'code' in item && typeof item.code === 'string' && 'message' in item && typeof item.message === 'string' &&
+    'path' in item && Array.isArray(item.path) && item.path.every(part => typeof part === 'string' || typeof part === 'number')
+  if (!Array.isArray(value) || !value.every(isIssue)) return text
+  const isSceneStageIssue = (issue: Issue) => issue.code === 'custom' && Object.hasOwn(sceneStageExplanations, issue.message) &&
+    issue.path.length === 1 && issue.path[0] === 'scenes'
+  if (!value.some(isSceneStageIssue)) return text
+  return value.map(issue => isSceneStageIssue(issue) ? sceneStageExplanations[issue.message] :
+    `${issue.path.length ? `${issue.path.join('.')}: ` : ''}${issue.message}`).join('\n')
+}
 
 function workflowDraftDiagnosticDisplayText(text: string): string {
   const contract = /模型结果不符合\s+workflow_draft\s+契约/g
   if (!contract.test(text)) return text
   return text.replace(contract, '阶段草稿未通过格式与内容校验')
+    .replace(new RegExp(`(?:\\$(?:\\.result)?\\.)?scenes:[ \\t]*(${Object.keys(sceneStageExplanations).map(escapePattern).join('|')})(?=\\s|[；;。]|$)`, 'g'),
+      (_match, issue: string) => sceneStageExplanations[issue]!)
     .replace(/(?<![A-Za-z0-9_])(?:\$(?:\.result)?\.)?artifacts(?:\.(\d+)|\[(\d+)\])(?:\.(artifact_type|title|content|status|type))?:[ \t]*([^\n]*?)(?=\n|[；;][ \t]*[A-Za-z_$][\w$]*(?:\[\d+\]|\.[\w$]+)*[ \t]*:|$)/g,
       (match, legacyIndex: string | undefined, arrayIndex: string | undefined, field: string | undefined, issue: string) => {
         const document = `第 ${Number(legacyIndex ?? arrayIndex) + 1} 份文档`
@@ -57,7 +81,7 @@ function workflowDraftDiagnosticDisplayText(text: string): string {
 
 /** Format public diagnostics at render time; stored errors and call payloads stay verbatim. */
 export function scriptDiagnosticDisplayText(text: string): string {
-  const readable = workflowDraftDiagnosticDisplayText(text)
+  const readable = workflowDraftDiagnosticDisplayText(legacySceneStageDiagnostic(text))
     .replace(/模型结果不符合\s+(script_source_[a-z_]+)\s+契约/g,
       (match, key: string) => sourceAnalysisLabels[key] ? `${sourceAnalysisLabels[key]}未通过格式与内容校验` : match)
     .replace(/(?<![A-Za-z0-9_])characters_merge:[a-f0-9]+(?![A-Za-z0-9_])/g, '人物身份归并')

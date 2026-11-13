@@ -1,0 +1,53 @@
+
+> ai-video-studio@0.1.0 build
+> npm run check && npm run build:shared && npm run build --workspace=backend && npm run build --workspace=web
+
+
+> ai-video-studio@0.1.0 check
+> node scripts/check-architecture.mjs && npm run check:ui --workspace=web
+
+Architecture check passed: feature directories, workspace boundaries and shared imports.
+
+> ai-video-studio-web@0.1.0 check:ui
+> node scripts/check-ui-components.mjs
+
+UI component guard passed: no hand-written basic controls, overlays or native media toolbars.
+
+> ai-video-studio@0.1.0 build:shared
+> npm run build --workspace=@video-studio/shared
+
+
+> @video-studio/shared@0.1.0 build
+> node ../../scripts/clean-build.mjs shared && tsc -p tsconfig.json
+
+
+> ai-video-studio-server@0.1.0 build
+> node ../scripts/clean-build.mjs backend && tsc -p tsconfig.json
+
+
+> ai-video-studio-web@0.1.0 prebuild
+> npm run check:ui
+
+
+> ai-video-studio-web@0.1.0 check:ui
+> node scripts/check-ui-components.mjs
+
+UI component guard passed: no hand-written basic controls, overlays or native media toolbars.
+
+> ai-video-studio-web@0.1.0 build
+> tsc -b && vite build
+
+vite v6.4.3 building for production...
+transforming...
+✓ 3144 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                     0.41 kB │ gzip:   0.30 kB
+dist/assets/index-CZDUVeYV.css  1,057.73 kB │ gzip: 153.69 kB
+dist/assets/index-DRVB5FMn.js   2,924.75 kB │ gzip: 899.71 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 4.17s

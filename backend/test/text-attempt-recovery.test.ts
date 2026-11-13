@@ -18,3 +18,27 @@ test('a long Retry-After becomes explicit resumable wait without early retry',as
  assert.equal(calls,1);assert.equal(waits,0)
  assert.ok((issue as TextProviderError & {retryAt:number}).retryAt>Date.now()+100000)
 })
+
+
+test('validated atomic read-only output can explicitly discard one transient incomplete response', async () => {
+ let calls = 0
+ const issue = new TextProviderError('disconnected', true, 'stream_disconnected')
+ issue.partialText = '{"answer":"partial'; issue.outputStarted = true
+ const result = await retryReadOnlyRequest(async () => {
+  calls++
+  if (calls === 1) throw issue
+  return '{"answer":"complete"}'
+ }, { discardIncompleteOutput: true, wait: async () => {} })
+ assert.equal(result, '{"answer":"complete"}'); assert.equal(calls, 2)
+})
+
+test('discarding an incomplete draft never retries output limits, context rejection or invalid tool arguments', async () => {
+ for (const code of ['max_tokens', 'context_length_exceeded', 'invalid_tool_call']) {
+  let calls = 0
+  const issue = new TextProviderError('failed', true, code)
+  issue.partialText = 'incomplete'; issue.outputStarted = true
+  await assert.rejects(retryReadOnlyRequest(async () => { calls++; throw issue },
+   { discardIncompleteOutput: true, wait: async () => {} }), error => error === issue)
+  assert.equal(calls, 1)
+ }
+})

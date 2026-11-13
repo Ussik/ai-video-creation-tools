@@ -34,8 +34,8 @@ test('capacity settings accept only explicit safe positive integers and preserve
   assert.match(textContextConfigError({ context_window_tokens: 1000, output_reserve_tokens: 1000 })!, /小于/)
   assert.equal(textContextConfigError({ output_reserve_tokens: 1000 }), null)
   const settings = model().settings as Record<string, unknown>
-  assert.throws(() => validateSettings('text', { ...settings, context_window_tokens: '128000' }), /正整数/)
-  assert.doesNotThrow(() => validateSettings('text', { ...settings, context_window_tokens: 128000, output_reserve_tokens: 16000 }))
+  assert.throws(() => validateSettings('text', { ...settings, context_window_tokens: '128000' }, 'responses'), /正整数/)
+  assert.doesNotThrow(() => validateSettings('text', { ...settings, context_window_tokens: 128000, output_reserve_tokens: 16000 }, 'responses'))
 })
 
 test('Unicode estimates count code points, include CJK and astral text, and keep Latin estimates proportional', () => {

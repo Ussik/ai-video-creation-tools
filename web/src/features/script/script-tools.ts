@@ -8,8 +8,23 @@ import type { ScriptExecution } from '@video-studio/shared/script/script-activit
 import type { ScriptSourceUpdate } from '@video-studio/shared/script/script-source-document'
 import { scriptStageForArtifact } from '@video-studio/shared/script/script-stage-content'
 import { scriptReviewGuidance } from '@video-studio/shared/script/script-quality'
+import type { SkillTaskContext } from '@video-studio/shared/skills/skill-recommendation'
 
-export type DocumentAction = { operation: 'review' | 'revise'; document_ids: string[] }
+export type DocumentAction = { operation: 'review' | 'revise'; document_ids: string[]; revision_kind?: 'dialogue' }
+/** Match the operation scope the server uses before it loads fixed skills. */
+export function scriptOperationSkillTask(action: DocumentAction | null, workflow: WorkflowRequest | null | undefined,
+  documents: ReadonlyArray<{ id: string; artifact_type: ScriptArtifactType }>): SkillTaskContext | undefined {
+  if (action?.operation === 'review') return { task_kind: 'review' }
+  if (action?.revision_kind === 'dialogue') return { task_kind: 'dialogue_revision' }
+  if (action) {
+    const id = action.document_ids[0]
+    const type = documents.find(document => document.id === id)?.artifact_type || (id?.startsWith('legacy:') ? id.slice(7) : undefined)
+    const stage = type ? scriptStageForArtifact(type) || 'outline' : undefined
+    return { operation: action.operation, ...(stage ? { workflow_stage: stage } : {}) }
+  }
+  if (workflow) return { workflow_stage: workflow.stage, ...(workflow.intent === 'source_outline' ? { task_kind: 'source_analysis' } : {}) }
+  return undefined
+}
 export type ScriptToolDraft = {
   source_update?: ScriptSourceUpdate;
   source_version?: string | null;
@@ -73,7 +88,8 @@ export function editedToolDraft(draft: ScriptToolDraft, artifacts: WorkflowArtif
   return { changed, input: { version: draft.version, documents, ...(sourceChanged ? { source_content: sourceUpdate!.content } : {}), ...(hasScenes ? { scenes: scenes.map(({ episode_number: _episode, ...scene }) => scene) } : {}) } }
 }
 
-export function documentTaskPrompt(title: string, operation: DocumentAction['operation']) {
+export function documentTaskPrompt(title: string, operation: DocumentAction['operation'] | 'dialogue') {
+  if (operation === 'dialogue') return `请读取「${title}」全文和相关人物设定，进行台词专项修订。保留剧情事件、角色关系、知情范围、关键线索、时长与题材语言风格，逐字保留动作、旁白及其他非台词内容。先明确每场人物的交流目标、阻力和不愿直说的内容，再修订说明书式解释、空泛宣言、同质口吻及重复对白。结合已有动作、反应或沉默理解潜台词，只修改人物说出口的台词，不机械删长句、口头语或金句，不添加无依据的情节。对应分场仅同步dialogue字段，提交可预览的修订草稿，等待我确认保存。`
   return operation === 'review' ? `请读取「${title}」全文，结合已有大纲、相关文档和已确认决定进行评审。指出待定或缺失设定、矛盾及有证据的创作质量问题，引用原文证据并给出建议。只分析，先不要修改或保存。\n${scriptReviewGuidance}`
     : `请读取「${title}」原文。我希望修改：`
 }

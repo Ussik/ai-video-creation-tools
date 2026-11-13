@@ -37,7 +37,7 @@ function button(label: string, scope: ParentNode = document) {
   return result
 }
 async function settle() { await act(async () => { await new Promise<void>(resolve => setImmediate(resolve)) }) }
-async function mount(t: TestContext, detail = project, extraProps: Partial<Pick<ScriptEditorProps, 'onSupplementStage' | 'busy'>> = {}) {
+async function mount(t: TestContext, detail = project, extraProps: Partial<Pick<ScriptEditorProps, 'onSupplementStage' | 'busy' | 'onOpenShotManager'>> = {}) {
   let openedCanvas = 0
   const requests: Array<{ path: string; method: string; body: Record<string, unknown> }> = []
   t.mock.method(globalThis, 'fetch', async (url, init) => {
@@ -99,7 +99,7 @@ test('a first generation opens its retained outline even before any accepted scr
     assert.equal(section.querySelector('[contenteditable="false"]')?.textContent, '第一份已经保留的完整大纲。')
     assert.match(view.container.querySelector('.script-stage-completeness')!.textContent!, /已生成 1\/9 项，1 项待确认/)
     assert.equal(button('保存').disabled, true)
-    assert.equal(button('加入画布').disabled, true)
+    assert.equal(button('规划分镜').disabled, true)
     assert.deepEqual(view.requests, [])
   } finally { await view.destroy() }
 })
@@ -164,6 +164,22 @@ test('saving another chapter excludes retained generation drafts from accepted s
   } finally { await view.destroy() }
 })
 
+test('saving another chapter preserves long scene durations for later storyboard planning', async t => {
+  const detail: ProjectDetail = { ...project, script: { ...project.script, scenes: [{
+    id: 'long-scene', project_id: project.id, position: 0, episode_number: 1, heading: '会议室与走廊',
+    action: '会议结束后，主角走入走廊。', duration: 600, location: '', time_of_day: '',
+    characters: '', dialogue: '', narration: '', created_at: '', updated_at: '',
+  }] } }
+  const view = await mount(t, detail)
+  try {
+    const outline = view.container.querySelector('[data-script-section="outline"] [contenteditable="true"]') as HTMLElement & { editor: Editor }
+    await act(() => outline.editor.commands.setContent('<p>已修订的大纲。</p>'))
+    await act(async () => button('保存').click()); await settle()
+    assert.equal(view.requests.length, 1)
+    assert.deepEqual((view.requests[0].body.scenes as Array<{ id: string; duration: number }>).map(scene => [scene.id, scene.duration]), [['long-scene', 600]])
+  } finally { await view.destroy() }
+})
+
 test('an accepted document supersedes an identical retained draft without duplicate prose or dirty state', async t => {
   const candidate = { artifact_type: 'synopsis' as const, title: '故事简述', content: '已核对完成的巡夜故事。', episode_number: 0 }
   const detail = withProgress([candidate]), view = await mount(t, detail)
@@ -214,7 +230,7 @@ test('editor keeps saved documents and canvas navigation without a complete-scri
     assert.match(view.container.querySelector('[data-script-section="outline"]')!.textContent!, /保留已确认的大纲/)
     assert.equal(button('保存').disabled, true)
     assert.ok(button('全文搜索'))
-    assert.ok(button('加入画布'))
+    assert.ok(button('规划分镜'))
     await act(() => button('返回画布').click())
     assert.equal(view.openedCanvas(), 1)
     assert.deepEqual(view.requests, [], 'opening the editor never requests generation prompts or drafts')
@@ -369,5 +385,22 @@ test('saving a manual edit omits uncreated placeholders and preserves saved empt
     assert.equal(saved.find(artifact => artifact.artifact_type === 'characters')?.content, project.script.characters)
     for (const [key, value] of Object.entries(generationOptions)) assert.equal((view.requests[0].body.generation_options as Record<string, unknown>)[key], value)
     assert.deepEqual(view.requests[0].body.scenes, project.script.scenes)
+  } finally { await view.destroy() }
+})
+
+
+test('script editor routes saved scene scope to the shared shot manager without generating or saving', async t => {
+  const scopes: Array<string[] | undefined> = []
+  const detail = { ...project, script: { ...project.script, scenes: [
+    { id: 'scene-one', heading: '祠堂', location: '祠堂', time_of_day: '夜', characters: '许行舟', action: '推门', dialogue: '', narration: '', duration: 8, position: 0 },
+  ] } } as unknown as ProjectDetail
+  const view = await mount(t, detail, { onOpenShotManager: ids => scopes.push(ids) })
+  try {
+    assert.equal(button('规划分镜').disabled, false)
+    await act(() => button('规划分镜').click())
+    assert.deepEqual(scopes, [['scene-one']])
+    assert.deepEqual(view.requests, [])
+    assert.equal(view.openedCanvas(), 0)
+    assert.equal(document.querySelector('.storyboard-planner'), null)
   } finally { await view.destroy() }
 })

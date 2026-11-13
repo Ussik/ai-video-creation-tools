@@ -72,7 +72,7 @@ test('partial results, invalid complete drafts and opaque extra fields cannot be
   assert.throws(() => withScriptCheckpointModelMigration(migration, () => generationCheckpointStore('invalid', target)), /尚无可迁移/)
   assert.deepEqual(generationCheckpointStore('invalid', target).checkpoint.steps, {})
 })
-test('independent source history remains isolated and explicit clearing removes every model identity', () => {
+test('independent source history remains isolated and clearing only removes the active identity', () => {
   seed('history')
   const changed = { ...identity, source: { version: 'another-source' } }
   const other = generationCheckpointStore('history', changed)
@@ -80,7 +80,7 @@ test('independent source history remains isolated and explicit clearing removes 
   assert.equal(Object.keys(generationCheckpointStore('history', identity).checkpoint.steps).length, 4)
   assert.deepEqual(generationCheckpointStore('history', changed).checkpoint.steps.another.value, 'separate')
   clearGenerationCheckpoint('history')
-  assert.deepEqual(generationCheckpointStore('history', identity).checkpoint.steps, {})
+  assert.equal(Object.keys(generationCheckpointStore('history', identity).checkpoint.steps).length, 4, 'unrelated historical work remains recoverable')
   assert.deepEqual(generationCheckpointStore('history', changed).checkpoint.steps, {})
 })
 

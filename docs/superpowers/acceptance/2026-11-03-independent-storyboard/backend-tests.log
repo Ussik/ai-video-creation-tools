@@ -1,0 +1,608 @@
+TAP version 13
+# Subtest: read-only preparation then atomic drafts, required bindings and shot prompts without image generation
+ok 1 - read-only preparation then atomic drafts, required bindings and shot prompts without image generation
+  ---
+  duration_ms: 54.330917
+  type: 'test'
+  ...
+# Subtest: retries reuse all shots, confirmed profiles and optional bindings without calling the model again
+ok 2 - retries reuse all shots, confirmed profiles and optional bindings without calling the model again
+  ---
+  duration_ms: 50.635333
+  type: 'test'
+  ...
+# Subtest: source changes during analysis and before commit reject stale results without writes
+ok 3 - source changes during analysis and before commit reject stale results without writes
+  ---
+  duration_ms: 14.70975
+  type: 'test'
+  ...
+# Subtest: foreign, empty, conflicting or excessive drafts roll back the whole commit
+ok 4 - foreign, empty, conflicting or excessive drafts roll back the whole commit
+  ---
+  duration_ms: 16.580458
+  type: 'test'
+  ...
+# Subtest: fingerprints track same-episode documents and scene bindings, ignoring other episode documents
+ok 5 - fingerprints track same-episode documents and scene bindings, ignoring other episode documents
+  ---
+  duration_ms: 20.242333
+  type: 'test'
+  ...
+# Subtest: draft edits update unresolved snapshots; approved boards stay on their original definition later
+ok 6 - draft edits update unresolved snapshots; approved boards stay on their original definition later
+  ---
+  duration_ms: 21.367125
+  type: 'test'
+  ...
+# Subtest: deleting a prepared project cleans fingerprints with foreign keys enabled
+ok 7 - deleting a prepared project cleans fingerprints with foreign keys enabled
+  ---
+  duration_ms: 9.908625
+  type: 'test'
+  ...
+# Subtest: preparation honors project defaults, temporary visual skill selections and explicit base rules
+ok 8 - preparation honors project defaults, temporary visual skill selections and explicit base rules
+  ---
+  duration_ms: 24.940375
+  type: 'test'
+  ...
+# Subtest: reference fingerprints follow planned visual content and ignore media selection and other scenes
+ok 9 - reference fingerprints follow planned visual content and ignore media selection and other scenes
+  ---
+  duration_ms: 23.338125
+  type: 'test'
+  ...
+# Subtest: scoped preparation keeps scene candidates separate from each images and video objects and detects concurrent usage edits
+ok 10 - scoped preparation keeps scene candidates separate from each images and video objects and detects concurrent usage edits
+  ---
+  duration_ms: 27.270583
+  type: 'test'
+  ...
+# Subtest: strict model output with nullable optional fields prepares and commits legacy and independent design references
+    # Subtest: legacy design
+    ok 1 - legacy design
+      ---
+      duration_ms: 10.588041
+      type: 'test'
+      ...
+    # Subtest: independent design
+    ok 2 - independent design
+      ---
+      duration_ms: 12.736
+      type: 'test'
+      ...
+    1..2
+ok 11 - strict model output with nullable optional fields prepares and commits legacy and independent design references
+  ---
+  duration_ms: 23.683875
+  type: 'test'
+  ...
+# Subtest: independent designs create fresh same-name characters, locations and props without old boards or historical shot bindings
+ok 12 - independent designs create fresh same-name characters, locations and props without old boards or historical shot bindings
+  ---
+  duration_ms: 81.679875
+  type: 'test'
+  ...
+# Subtest: visual commits reject forged design scopes, cross-design bases and historical shot usage atomically
+ok 13 - visual commits reject forged design scopes, cross-design bases and historical shot usage atomically
+  ---
+  duration_ms: 7.9955
+  type: 'test'
+  ...
+# Subtest: mixed current designs are analyzed separately and duplicate draft keys stay within each design
+ok 14 - mixed current designs are analyzed separately and duplicate draft keys stay within each design
+  ---
+  duration_ms: 22.119292
+  type: 'test'
+  ...
+# Subtest: manual profiles and scene bindings stay in the selected design and return precise created identities
+ok 15 - manual profiles and scene bindings stay in the selected design and return precise created identities
+  ---
+  duration_ms: 13.256167
+  type: 'test'
+  ...
+# Subtest: deleting every current shot keeps the scene design and template preparation cannot revert to historical resources
+ok 16 - deleting every current shot keeps the scene design and template preparation cannot revert to historical resources
+  ---
+  duration_ms: 12.221459
+  type: 'test'
+  ...
+# Subtest: design migration preserves legacy shots and profiles as the active legacy scheme and is repeatable
+ok 17 - design migration preserves legacy shots and profiles as the active legacy scheme and is repeatable
+  ---
+  duration_ms: 2.099
+  type: 'test'
+  ...
+# Subtest: the pending-canvas migration is repeatable and distinguishes unattached plans from deleted canvases
+ok 18 - the pending-canvas migration is repeatable and distinguishes unattached plans from deleted canvases
+  ---
+  duration_ms: 1.864917
+  type: 'test'
+  ...
+# Subtest: storyboard planning requests streams and validates the collected result for both text protocols
+    # Subtest: responses
+    ok 1 - responses
+      ---
+      duration_ms: 82.875083
+      type: 'test'
+      ...
+    # Subtest: chat_completions
+    ok 2 - chat_completions
+      ---
+      duration_ms: 17.262792
+      type: 'test'
+      ...
+    1..2
+ok 19 - storyboard planning requests streams and validates the collected result for both text protocols
+  ---
+  duration_ms: 100.707042
+  type: 'test'
+  ...
+# Subtest: storyboard planning preserves an explicit non-streaming template and accepts ordinary JSON
+ok 20 - storyboard planning preserves an explicit non-streaming template and accepts ordinary JSON
+  ---
+  duration_ms: 12.147791
+  type: 'test'
+  ...
+# Subtest: storyboard planning rejects a stream without completion even when its JSON is complete and does not retry
+ok 21 - storyboard planning rejects a stream without completion even when its JSON is complete and does not retry
+  ---
+  duration_ms: 15.704625
+  type: 'test'
+  ...
+# Subtest: storyboard planning still checks timing and requests one correction after a completed stream
+ok 22 - storyboard planning still checks timing and requests one correction after a completed stream
+  ---
+  duration_ms: 12.753375
+  type: 'test'
+  ...
+# Subtest: storyboard scope contracts retain only selected internal IDs even with a full episode reference
+ok 23 - storyboard scope contracts retain only selected internal IDs even with a full episode reference
+  ---
+  duration_ms: 21.448042
+  type: 'test'
+  ...
+# Subtest: storyboard planning repairs readable scene code against the selected scope without committing
+ok 24 - storyboard planning repairs readable scene code against the selected scope without committing
+  ---
+  duration_ms: 14.834625
+  type: 'test'
+  ...
+# Subtest: storyboard planning repairs unselected extra scene against the selected scope without committing
+ok 25 - storyboard planning repairs unselected extra scene against the selected scope without committing
+  ---
+  duration_ms: 11.408125
+  type: 'test'
+  ...
+# Subtest: storyboard planning repairs missing selected scene against the selected scope without committing
+ok 26 - storyboard planning repairs missing selected scene against the selected scope without committing
+  ---
+  duration_ms: 14.6515
+  type: 'test'
+  ...
+# Subtest: storyboard planning repairs duplicate selected scene against the selected scope without committing
+ok 27 - storyboard planning repairs duplicate selected scene against the selected scope without committing
+  ---
+  duration_ms: 12.745209
+  type: 'test'
+  ...
+# Subtest: an uncorrected scene alias is rejected after one correction and cannot save a guessed mapping
+ok 28 - an uncorrected scene alias is rejected after one correction and cannot save a guessed mapping
+  ---
+  duration_ms: 16.718625
+  type: 'test'
+  ...
+# Subtest: storyboard upstream failures reach the client and diagnostic log without changing project shots
+ok 29 - storyboard upstream failures reach the client and diagnostic log without changing project shots
+  ---
+  duration_ms: 8.567916
+  type: 'test'
+  ...
+# Subtest: saving an independent plan keeps its canvas pending through replay and later edits
+ok 30 - saving an independent plan keeps its canvas pending through replay and later edits
+  ---
+  duration_ms: 24.176292
+  type: 'test'
+  ...
+# Subtest: a pending plan creates one canvas only after reference preparation and imports selected current shots
+ok 31 - a pending plan creates one canvas only after reference preparation and imports selected current shots
+  ---
+  duration_ms: 20.3375
+  type: 'test'
+  ...
+# Subtest: a saved pending historical design prepares and enters production without changing the newer design
+ok 32 - a saved pending historical design prepares and enters production without changing the newer design
+  ---
+  duration_ms: 59.303875
+  type: 'test'
+  ...
+# Subtest: an existing historical canvas can prepare and import its next scene without changing the newer design
+ok 33 - an existing historical canvas can prepare and import its next scene without changing the newer design
+  ---
+  duration_ms: 69.963375
+  type: 'test'
+  ...
+# Subtest: an older pending design cannot borrow a newer accepted source fingerprint after the script changes
+ok 34 - an older pending design cannot borrow a newer accepted source fingerprint after the script changes
+  ---
+  duration_ms: 15.355791
+  type: 'test'
+  ...
+# Subtest: an active legacy design can use its own accepted scene source before per-design fingerprints existed
+ok 35 - an active legacy design can use its own accepted scene source before per-design fingerprints existed
+  ---
+  duration_ms: 12.931958
+  type: 'test'
+  ...
+# Subtest: updating an empty redesigned scene keeps its design instead of returning to legacy references
+ok 36 - updating an empty redesigned scene keeps its design instead of returning to legacy references
+  ---
+  duration_ms: 19.977958
+  type: 'test'
+  ...
+# Subtest: an independent redesign excludes old shots, preserves their complete history and creates one isolated canvas idempotently
+ok 37 - an independent redesign excludes old shots, preserves their complete history and creates one isolated canvas idempotently
+  ---
+  duration_ms: 19.098458
+  type: 'test'
+  ...
+# Subtest: redesign rejects old shot IDs, stale sources and changed mode or instructions before writing any design
+ok 38 - redesign rejects old shot IDs, stale sources and changed mode or instructions before writing any design
+  ---
+  duration_ms: 11.1665
+  type: 'test'
+  ...
+# Subtest: a new redesign can combine selected scenes from different previous designs without modifying unselected history
+ok 39 - a new redesign can combine selected scenes from different previous designs without modifying unselected history
+  ---
+  duration_ms: 17.163084
+  type: 'test'
+  ...
+# Subtest: canvas import includes same-design base profiles even without their own shot binding and rejects cross-design ancestry
+ok 40 - canvas import includes same-design base profiles even without their own shot binding and rejects cross-design ancestry
+  ---
+  duration_ms: 26.144958
+  type: 'test'
+  ...
+# Subtest: deleted design canvases cannot silently fall back on import or commit replay
+ok 41 - deleted design canvases cannot silently fall back on import or commit replay
+  ---
+  duration_ms: 12.343125
+  type: 'test'
+  ...
+# Subtest: recycled shots retain replanning history and deleted design canvases recover through one new canvas
+    # Subtest: retained current shots
+    ok 1 - retained current shots
+      ---
+      duration_ms: 23.172541
+      type: 'test'
+      ...
+    # Subtest: recycled current shots
+    ok 2 - recycled current shots
+      ---
+      duration_ms: 36.138792
+      type: 'test'
+      ...
+    1..2
+ok 42 - recycled shots retain replanning history and deleted design canvases recover through one new canvas
+  ---
+  duration_ms: 59.602541
+  type: 'test'
+  ...
+# Subtest: planning accepts one primary and five auxiliaries and forwards every selected rule
+ok 43 - planning accepts one primary and five auxiliaries and forwards every selected rule
+  ---
+  duration_ms: 16.524959
+  type: 'test'
+  ...
+# Subtest: metadata is read-only and canvas import rejects both missing plans and direct scene conversion
+ok 44 - metadata is read-only and canvas import rejects both missing plans and direct scene conversion
+  ---
+  duration_ms: 4.781208
+  type: 'test'
+  ...
+# Subtest: planning versions follow creative project inputs without false conflicts from preparation timestamps
+ok 45 - planning versions follow creative project inputs without false conflicts from preparation timestamps
+  ---
+  duration_ms: 6.228208
+  type: 'test'
+  ...
+# Subtest: patching one scene field keeps its episode, timing and other creative source fields
+ok 46 - patching one scene field keeps its episode, timing and other creative source fields
+  ---
+  duration_ms: 2.0155
+  type: 'test'
+  ...
+# Subtest: planning always reads the selected episodes latest saved body, even without selected reference documents
+ok 47 - planning always reads the selected episodes latest saved body, even without selected reference documents
+  ---
+  duration_ms: 6.107708
+  type: 'test'
+  ...
+# Subtest: saved source fingerprints ignore timestamps, canvas deletion and unrelated episodes but reject changed episode body
+ok 48 - saved source fingerprints ignore timestamps, canvas deletion and unrelated episodes but reject changed episode body
+  ---
+  duration_ms: 9.118708
+  type: 'test'
+  ...
+# Subtest: scene, shared documents and project style changes each make a confirmed plan require replanning
+    # Subtest: scene
+    ok 1 - scene
+      ---
+      duration_ms: 5.410583
+      type: 'test'
+      ...
+    # Subtest: document
+    ok 2 - document
+      ---
+      duration_ms: 12.104792
+      type: 'test'
+      ...
+    # Subtest: style
+    ok 3 - style
+      ---
+      duration_ms: 5.410125
+      type: 'test'
+      ...
+    1..3
+ok 49 - scene, shared documents and project style changes each make a confirmed plan require replanning
+  ---
+  duration_ms: 23.19
+  type: 'test'
+  ...
+# Subtest: unchanged current plans keep selected media; stale sources reset it even when new shot wording is identical, once
+ok 50 - unchanged current plans keep selected media; stale sources reset it even when new shot wording is identical, once
+  ---
+  duration_ms: 11.368208
+  type: 'test'
+  ...
+# Subtest: a changed replan refreshes image and video nodes across canvases while preserving independent nodes and media history
+ok 51 - a changed replan refreshes image and video nodes across canvases while preserving independent nodes and media history
+  ---
+  duration_ms: 17.069875
+  type: 'test'
+  ...
+# Subtest: historical templates and authored shots need a confirmed source baseline before reuse
+ok 52 - historical templates and authored shots need a confirmed source baseline before reuse
+  ---
+  duration_ms: 17.450916
+  type: 'test'
+  ...
+# Subtest: mixed selections require a saved plan for every scene and reuse the existing scene unchanged
+ok 53 - mixed selections require a saved plan for every scene and reuse the existing scene unchanged
+  ---
+  duration_ms: 24.781916
+  type: 'test'
+  ...
+# Subtest: deleted storyboard image nodes can be reimported with the same plan, assets and bindings
+ok 54 - deleted storyboard image nodes can be reimported with the same plan, assets and bindings
+  ---
+  duration_ms: 42.446209
+  type: 'test'
+  ...
+# Subtest: planning rejects more than ten scenes before invoking the model while metadata accepts the full scope
+ok 55 - planning rejects more than ten scenes before invoking the model while metadata accepts the full scope
+  ---
+  duration_ms: 6.634625
+  type: 'test'
+  ...
+# Subtest: planning submits only selected documents, skills and scenes, supports no skills and stays read-only
+ok 56 - planning submits only selected documents, skills and scenes, supports no skills and stays read-only
+  ---
+  duration_ms: 24.543
+  type: 'test'
+  ...
+# Subtest: an omitted or null shot count lets the model choose different counts for each scene without a default
+ok 57 - an omitted or null shot count lets the model choose different counts for each scene without a default
+  ---
+  duration_ms: 12.130167
+  type: 'test'
+  ...
+# Subtest: an explicit shot count remains a suggestion and does not force the output count
+ok 58 - an explicit shot count remains a suggestion and does not force the output count
+  ---
+  duration_ms: 5.659083
+  type: 'test'
+  ...
+# Subtest: automatic counts still require a nonempty plan with valid per-scene timing
+ok 59 - automatic counts still require a nonempty plan with valid per-scene timing
+  ---
+  duration_ms: 9.029959
+  type: 'test'
+  ...
+# Subtest: a total duration is allocated across selected scenes; invalid allocation is rejected without writes
+ok 60 - a total duration is allocated across selected scenes; invalid allocation is rejected without writes
+  ---
+  duration_ms: 10.712125
+  type: 'test'
+  ...
+# Subtest: confirming a changed replan preserves shot IDs and history, detaches old media and timeline, and replays once
+ok 61 - confirming a changed replan preserves shot IDs and history, detaches old media and timeline, and replays once
+  ---
+  duration_ms: 20.326792
+  type: 'test'
+  ...
+# Subtest: foreign IDs, removed existing shots and concurrent edits are rejected atomically
+ok 62 - foreign IDs, removed existing shots and concurrent edits are rejected atomically
+  ---
+  duration_ms: 5.873042
+  type: 'test'
+  ...
+# Subtest: planned shots require prepared visual references before canvas import; missing boards stay blocked until confirmation
+ok 63 - planned shots require prepared visual references before canvas import; missing boards stay blocked until confirmation
+  ---
+  duration_ms: 56.099666
+  type: 'test'
+  ...
+# Subtest: changing a saved shot plan invalidates reference preparation and retries preserve completed boards
+ok 64 - changing a saved shot plan invalidates reference preparation and retries preserve completed boards
+  ---
+  duration_ms: 32.356792
+  type: 'test'
+  ...
+# Subtest: replanning with changed documents refreshes all setting types and only the selected shot snapshots
+ok 65 - replanning with changed documents refreshes all setting types and only the selected shot snapshots
+  ---
+  duration_ms: 1654.330625
+  type: 'test'
+  ...
+# Subtest: planning reserves one composition slot, respects stricter models and invalidates stale model budgets
+ok 66 - planning reserves one composition slot, respects stricter models and invalidates stale model budgets
+  ---
+  duration_ms: 44.814791
+  type: 'test'
+  ...
+# Subtest: nine scene candidates are allowed when each shot fits eight settings plus one storyboard; over-budget analysis gets corrected
+ok 67 - nine scene candidates are allowed when each shot fits eight settings plus one storyboard; over-budget analysis gets corrected
+  ---
+  duration_ms: 57.612125
+  type: 'test'
+  ...
+# Subtest: over-budget drafts are rejected before writing references; existing shots and media stay intact
+ok 68 - over-budget drafts are rejected before writing references; existing shots and media stay intact
+  ---
+  duration_ms: 9.612708
+  type: 'test'
+  ...
+# Subtest: budget counts frozen images instead of profiles and deduplicates images shared by multiple objects
+ok 69 - budget counts frozen images instead of profiles and deduplicates images shared by multiple objects
+  ---
+  duration_ms: 5.270083
+  type: 'test'
+  ...
+# Subtest: analysis that remains over budget after correction rejects without changing shots or creating assets
+ok 70 - analysis that remains over budget after correction rejects without changing shots or creating assets
+  ---
+  duration_ms: 9.958833
+  type: 'test'
+  ...
+# Subtest: prepared scenes need analysis again when frozen references grow beyond the setting budget
+ok 71 - prepared scenes need analysis again when frozen references grow beyond the setting budget
+  ---
+  duration_ms: 38.983667
+  type: 'test'
+  ...
+# Subtest: projected canvas references use the same camera selection as inheritance and count face plus body separately
+ok 72 - projected canvas references use the same camera selection as inheritance and count face plus body separately
+  ---
+  duration_ms: 28.41925
+  type: 'test'
+  ...
+# Subtest: the storyboard director receives the reference budget before planning shots
+ok 73 - the storyboard director receives the reference budget before planning shots
+  ---
+  duration_ms: 9.631583
+  type: 'test'
+  ...
+# Subtest: source-backed setting boards need no boilerplate body and retain a primary-only document on submission
+ok 74 - source-backed setting boards need no boilerplate body and retain a primary-only document on submission
+  ---
+  duration_ms: 48.350208
+  type: 'test'
+  ...
+# Subtest: a full setting document without creative content is rejected without restoring saved profile requirements
+ok 75 - a full setting document without creative content is rejected without restoring saved profile requirements
+  ---
+  duration_ms: 23.827459
+  type: 'test'
+  ...
+# Subtest: profile reuse, multiview board tasks and scene-to-shot inheritance do not enqueue generation
+ok 76 - profile reuse, multiview board tasks and scene-to-shot inheritance do not enqueue generation
+  ---
+  duration_ms: 15.328417
+  type: 'test'
+  ...
+# Subtest: missing boards, capability limits and foreign references block generation; explicit text-only can proceed
+ok 77 - missing boards, capability limits and foreign references block generation; explicit text-only can proceed
+  ---
+  duration_ms: 30.029708
+  type: 'test'
+  ...
+# Subtest: RightAPI shot generation sends three confirmed boards and recovers persisted image tasks through restart and retry without another POST
+ok 78 - RightAPI shot generation sends three confirmed boards and recovers persisted image tasks through restart and retry without another POST
+  ---
+  duration_ms: 341.005542
+  type: 'test'
+  ...
+# Subtest: confirmed boards fill unresolved snapshots and followers automatically advance after confirmation
+ok 79 - confirmed boards fill unresolved snapshots and followers automatically advance after confirmation
+  ---
+  duration_ms: 14.555708
+  type: 'test'
+  ...
+# Subtest: preview and queued requests match without duplicate context; changed or removed bindings invalidate confirmation
+ok 80 - preview and queued requests match without duplicate context; changed or removed bindings invalidate confirmation
+  ---
+  duration_ms: 8.087209
+  type: 'test'
+  ...
+# Subtest: editable final prompts stay identical through preview and queue, while keyframes need no confirmed information board
+ok 81 - editable final prompts stay identical through preview and queue, while keyframes need no confirmed information board
+  ---
+  duration_ms: 9.8615
+  type: 'test'
+  ...
+# Subtest: model extraction returns editable unsaved drafts and rejects out-of-scope scenes
+ok 82 - model extraction returns editable unsaved drafts and rejects out-of-scope scenes
+  ---
+  duration_ms: 15.543375
+  type: 'test'
+  ...
+# Subtest: information boards preview confirmed reference profiles, validate selections and reject changed references before creating tasks
+ok 83 - information boards preview confirmed reference profiles, validate selections and reject changed references before creating tasks
+  ---
+  duration_ms: 19.810583
+  type: 'test'
+  ...
+# Subtest: asset task generation rejects missing reference mappings without creating a queued job
+ok 84 - asset task generation rejects missing reference mappings without creating a queued job
+  ---
+  duration_ms: 3.652125
+  type: 'test'
+  ...
+# Subtest: profile candidate counts enqueue exactly one, two or four jobs atomically without extra shots or approval
+ok 85 - profile candidate counts enqueue exactly one, two or four jobs atomically without extra shots or approval
+  ---
+  duration_ms: 27.799042
+  type: 'test'
+  ...
+# Subtest: profile batches stay generating until all candidates finish, retain successes and preserve the approved board
+ok 86 - profile batches stay generating until all candidates finish, retain successes and preserve the approved board
+  ---
+  duration_ms: 317.356375
+  type: 'test'
+  ...
+# Subtest: profile canvas identity persists without shots; duplicate and foreign profiles are rejected
+ok 87 - profile canvas identity persists without shots; duplicate and foreign profiles are rejected
+  ---
+  duration_ms: 8.737792
+  type: 'test'
+  ...
+# Subtest: candidate archive persists independently of canvas nodes and protects the approved board
+ok 88 - candidate archive persists independently of canvas nodes and protects the approved board
+  ---
+  duration_ms: 10.047917
+  type: 'test'
+  ...
+# Subtest: atomic board submission validates reference signatures and creates only one asset task and no shot
+ok 89 - atomic board submission validates reference signatures and creates only one asset task and no shot
+  ---
+  duration_ms: 7.286292
+  type: 'test'
+  ...
+# Subtest: mock provider receives a confirmed multiview board and frozen text when rendering a shot
+ok 90 - mock provider receives a confirmed multiview board and frozen text when rendering a shot
+  ---
+  duration_ms: 2039.970875
+  type: 'test'
+  ...
+1..90
+# tests 99
+# suites 0
+# pass 99
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 3819.863542

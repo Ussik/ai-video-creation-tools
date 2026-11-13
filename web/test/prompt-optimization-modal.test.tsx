@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import { register } from 'node:module'
-import { after, test } from 'node:test'
+import { after, beforeEach, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
 import type { Job, Model, Provider } from '../src/shared/api/api'
+import { rememberModelSelection } from '../src/features/models/model-selection-store'
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
@@ -20,6 +21,7 @@ dom.window.HTMLElement.prototype.scrollIntoView = () => {}
 const { createRoot } = await import('react-dom/client')
 const { default: PromptOptimizationModal } = await import('../src/features/jobs/PromptOptimizationModal')
 after(() => dom.window.close())
+beforeEach(() => dom.window.localStorage.clear())
 const job = { id: 'job', project_id: 'project', request: '{"prompt":"原始画面描述"}', error: 'content_policy_violation' } as Job
 const models = [{ id: 'text', name: '文本模型', provider_id: 'provider', enabled: true, modality: 'text' },
   { id: 'disabled', name: '禁用模型', provider_id: 'provider', enabled: false, modality: 'text' }] as Model[]
@@ -229,5 +231,27 @@ test('model request errors remain visible with the source intact and allow anoth
     assert.equal(button('生成优化建议').disabled, false); assert.equal(button('应用到画布').disabled, true)
     await act(async () => button('生成优化建议').click())
     assert.equal(calls, 2); assert.deepEqual(view.applied, [])
+  } finally { await view.close() }
+})
+
+test('external model selection waits for the running optimization then preserves its candidate as stale', async () => {
+  let finish!: (response: Response) => void
+  const requests: Array<Record<string, unknown>> = []
+  globalThis.fetch = async (_url, options) => {
+    requests.push(JSON.parse(String(options?.body)))
+    return new Promise(resolve => { finish = resolve })
+  }
+  const catalog = [...models, { ...models[0], id: 'other', name: '另一文本模型' }]
+  const view = await mount(catalog)
+  try {
+    await act(() => button('生成优化建议').click())
+    await act(() => rememberModelSelection('text', 'other'))
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="优化提示词的文本模型"]')!.value, '文本模型')
+    assert.equal(requests[0].model_id, 'text')
+    await act(async () => finish(Response.json({ prompt: '原模型完成的候选', changes: [] })))
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="优化提示词的文本模型"]')!.value, '另一文本模型')
+    assert.equal(textarea('优化后的提示词').value, '原模型完成的候选')
+    assert.equal(button('应用到画布').disabled, true)
+    assert.deepEqual(view.applied, [])
   } finally { await view.close() }
 })

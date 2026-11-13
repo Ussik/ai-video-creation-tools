@@ -8,6 +8,7 @@ import { scriptDraftFindingLimit } from './script-finding-state.js'
 import { scriptSourcePassages } from './script-source-map.js'
 import { generatePagedReviewItems, ReviewPaginationStalledError } from './script-review-pagination.js'
 import { recoverArrayStream } from './script-streamed-units.js'
+import { reassessDraftReviewEvidence } from './script-draft-evidence-reassessment.js'
 
 type Evidence = { source_key: string; quote: string }
 type Review = { findings: Evidence[]; facts: Evidence[] }
@@ -15,6 +16,10 @@ type Source = { key: string; title: string; content: string }
 const repairSchema = z.object({ repairs: z.array(z.object({
   id: z.string(), first_unit: z.number().int().nonnegative().nullable(), last_unit: z.number().int().nonnegative().nullable(),
 }).strict()).min(1).max(scriptDraftFindingLimit + 40) }).strict()
+const semanticPendingSchema = z.object({ version: z.literal(1), report_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  ids: z.array(z.string().regex(/^(?:findings|facts):\d+$/)).min(1).max(scriptDraftFindingLimit + 40),
+}).strict()
+const reportHash = (value: Review) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 
 export function retainedDraftReviewFindings(prompt: string, steps?: GenerationSteps): unknown[] | undefined {
   const id = `review:response:${createHash('sha256').update(prompt).digest('hex')}:seed`
@@ -78,6 +83,49 @@ export async function generateDraftReviewWithEvidence<T extends Review>(prompt: 
       throw issue
     }
   }
+  // Structured-output validation checks the response but does not return its
+  // normalized value. Apply it to fresh results as well as retained reports
+  // before deciding which evidence needs a model locator.
+  result = validateStructure(result)
+  const retain = (value: T) => steps?.retain(id, '已保留审读结论，证据尚待定位', input, value, validateStructure, options.parentId)
+  const unresolvedEvidence = () => Object.assign(new Error('阶段设定核对的部分证据尚未定位到候选稿原文；已保留审读结论和已核实引文，继续时只处理剩余证据。'), {
+    statusCode: 422, code: 'script_draft_evidence_unresolved', structuredOutputContract: 'script_draft_evidence_repair',
+  })
+  const semanticPendingId = `${id}:evidence:semantic-pending`
+  const reassess = async (pending: T, pendingIds?: string[]) => {
+    // Save every successful location before an independent semantic request,
+    // which can itself be interrupted or rejected by the provider.
+    retain(pending)
+    const retainPending = (value: true | z.infer<typeof semanticPendingSchema>) => steps?.retain(semanticPendingId,
+      '证据定位失败，继续独立复核结论', input, value, value => value === true ? true : semanticPendingSchema.parse(value), options.parentId)
+    retainPending(pendingIds ? { version: 1, report_hash: reportHash(pending), ids: pendingIds } : true)
+    const reassessed = await reassessDraftReviewEvidence(prompt, pending, sources, generate, {
+      id: `${id}:evidence:reassessment`, signal, steps, parentId: options.parentId, answerMode: options.answerMode, pendingIds,
+    })
+    retain(reassessed.result)
+    steps?.forget(`${id}:evidence:pages`)
+    if (reassessed.unresolved) {
+      retainPending({ version: 1, report_hash: reportHash(reassessed.result), ids: reassessed.pendingIds })
+      throw unresolvedEvidence()
+    }
+    const checked = validate(reassessed.result)
+    steps?.forget(semanticPendingId)
+    steps?.forget(id)
+    return checked
+  }
+  const semanticPending = steps?.checkpoint.steps[semanticPendingId]
+  if (semanticPending?.input_hash === hash) {
+    if (semanticPending.value === true) return reassess(result)
+    const saved = semanticPendingSchema.safeParse(semanticPending.value)
+    if (saved.success && saved.data.report_hash === reportHash(result) && new Set(saved.data.ids).size === saved.data.ids.length &&
+      saved.data.ids.every(id => {
+        const [field, index] = id.split(':') as ['findings' | 'facts', string]
+        return result![field][Number(index)] !== undefined
+      })) return reassess(result, saved.data.ids)
+    // Legacy or damaged state cannot identify completed semantic decisions.
+    // Reassess the retained report in full rather than silently skipping work.
+    return reassess(result)
+  }
   const issues = (['findings', 'facts'] as const).flatMap(field => result![field].flatMap((item, index) => {
     const source = sources.find(source => source.key === item.source_key)!
     return source.content.includes(item.quote) ? [] : [{ id: `${field}:${index}`, field, index, item, source }]
@@ -87,7 +135,6 @@ export async function generateDraftReviewWithEvidence<T extends Review>(prompt: 
     steps?.forget(id)
     return checked
   }
-  const retain = (value: T) => steps?.retain(id, '已保留审读结论，证据尚待定位', input, value, validateStructure, options.parentId)
   retain(result)
   modelStepSignal(signal)?.throwIfAborted()
   const documents = [...new Map(issues.map(issue => [issue.source.key, issue.source])).values()].map(source => ({ ...source,
@@ -120,9 +167,6 @@ export async function generateDraftReviewWithEvidence<T extends Review>(prompt: 
     for (const repair of value.repairs) resolved(repair)
   }
   const evidenceGenerate: StructuredGenerator = (text, contract) => generate(text, contract && { ...contract, request_policy: 'script_evidence' })
-  const unresolvedEvidence = () => Object.assign(new Error('阶段设定核对的部分证据尚未定位到候选稿原文；已保留审读结论和已核实引文，继续时只处理剩余证据。'), {
-    statusCode: 422, code: 'script_draft_evidence_unresolved', structuredOutputContract: 'script_draft_evidence_repair',
-  })
   const pagingId = `${id}:evidence:paging`, pagingInput = { version: 1, repairPrompt }
   const pagingHash = createHash('sha256').update(JSON.stringify(pagingInput)).digest('hex')
   const previousPaging = steps?.checkpoint.steps[pagingId]
@@ -148,6 +192,7 @@ export async function generateDraftReviewWithEvidence<T extends Review>(prompt: 
   if (paged) {
     const located = new Map<string, z.infer<typeof repairSchema>['repairs'][number]>()
     let unresolved = false
+    let stalledWithNull = false
     const repairs = await generatePagedReviewItems({ id: `${id}:evidence:pages`, name: 'script_draft_evidence_repair',
       itemSchema: repairSchema.shape.repairs.element, prompt: repairPrompt, generate: evidenceGenerate,
       signal, steps, parentId: options.parentId, initialItems: repairSeed, maxItems: issues.length,
@@ -170,9 +215,17 @@ export async function generateDraftReviewWithEvidence<T extends Review>(prompt: 
         }
         retain(pending)
       }
-      if (unresolved && issue instanceof ReviewPaginationStalledError) throw unresolvedEvidence()
+      if (unresolved && issue instanceof ReviewPaginationStalledError) { stalledWithNull = true; return [] }
       throw issue
     })
+    if (stalledWithNull) {
+      const pending = structuredClone(result)
+      for (const repair of located.values()) {
+        const match = resolved(repair)!
+        pending[match.issue.field][match.issue.index]!.quote = match.quote
+      }
+      return reassess(pending)
+    }
     repaired = { repairs }
   }
   if (!repaired) throw new Error('证据定位未完成')
@@ -185,12 +238,7 @@ export async function generateDraftReviewWithEvidence<T extends Review>(prompt: 
   // Preserve successful locations even if another finding has no supporting
   // evidence. Such a response cannot remove a finding or complete the audit.
   if (repaired.repairs.some(repair => repair.first_unit === null)) {
-    retain(pending)
-    // A null location is unfinished work, never a durable completed page.
-    // Located quotes live in the provisional report above, so the next call
-    // requests only still-unlocated evidence even when every answer was null.
-    steps?.forget(`${id}:evidence:pages`)
-    throw unresolvedEvidence()
+    return reassess(pending)
   }
   const checked = validate(pending)
   steps?.forget(id)

@@ -1,0 +1,13 @@
+.basic-cut-review { display: grid; gap: 16px; min-width: 0; }
+.basic-cut-review-status { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.basic-cut-review-status > span { font-size: 11px; color: var(--fc-text-muted); line-height: 1.7; }
+.basic-cut-review-controls, .basic-cut-review-frames { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.basic-cut-review-frames figure { margin: 0; display: grid; gap: 7px; min-width: 0; }
+.basic-cut-review-frames img, .basic-cut-review-frame-error { width: 100%; aspect-ratio: 16/9; object-fit: contain; background: var(--fc-canvas); border-radius: 5px; }
+.basic-cut-review-frame-error { display: grid; place-items: center; color: var(--fc-text-muted); font-size: 12px; }
+.basic-cut-review-frames figcaption { color: var(--fc-text-secondary); font-size: 11px; }
+.basic-cut-review-preview { display: grid; gap: 12px; }
+.basic-cut-review-preview > strong { font-size: 12px; font-weight: 550; }
+.basic-cut-review-preview .timeline-preview-stage { max-height: 330px; }
+.basic-cut-review-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+@media (max-width: 600px) { .basic-cut-review-controls, .basic-cut-review-frames { grid-template-columns: minmax(0, 1fr); } }

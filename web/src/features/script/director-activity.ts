@@ -1,5 +1,6 @@
 import type { ScriptActivity, ScriptActivityTarget, ScriptExecution } from '@video-studio/shared/script/script-activity-types'
 import type { DocumentReview } from '@video-studio/shared/script/script-review-types'
+import { activityOutputRecoveries } from './director-activity-recovery'
 export type { ScriptActivity, ScriptExecution }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -138,7 +139,12 @@ export function executionView(activity: ScriptActivity[] | undefined, execution:
   if (skills.length) stats.push(`${skills.length} 个 Skill 已加载`)
   const draftCount = events.filter(event => event.status === 'succeeded' && ['create_document_draft', 'propose_document_patch', 'propose_visual_profile_draft', 'propose_visual_binding_patch', 'propose_shot_plan', 'propose_shot_patch'].includes(event.name || '')).length
   if (draftCount) stats.push('已准备草稿')
-  const rejected = events.filter(event => event.status === 'failed').length
+  const recoveries = activityOutputRecoveries(events, { pending, failed: failed || state === 'failed' || state === 'cancelled' })
+  const continued = [...recoveries.values()].filter(recovery => recovery === 'continued').length
+  const continuing = recoveries.size - continued
+  if (continued) stats.push(`${continued} 条截断记录已继续处理`)
+  if (continuing) stats.push(`${continuing} 条截断记录正在接续`)
+  const rejected = events.filter(event => event.status === 'failed' && !recoveries.has(event.id)).length
   if (rejected && state !== 'failed') stats.push(`含 ${rejected} 条失败记录`)
   return { events, sources, skills, active, groups, state, stateLabel: labels[state], stats, outcome, canRetry: canRetryExecution(events) }
 }

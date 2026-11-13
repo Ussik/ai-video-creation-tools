@@ -1,3 +1,4 @@
+import { seedance2VideoSettings } from '@video-studio/shared/models/seedance-video-settings'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -5,6 +6,8 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { imagesApiSettings } from '@video-studio/shared/models/images-api-settings'
 import { documentedImageSettings } from '@video-studio/shared/models/documented-images-api'
+import { standardTextSettings } from '@video-studio/shared/models/text-api-settings'
+import { semanticReviewFixture } from './helpers/prompt-refinement-semantics.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'provider-settings-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
@@ -103,9 +106,56 @@ test('standard model settings reach shared creative entrypoints and ignore disco
     calls++; assert.equal(String(url), 'https://standard-creative.invalid/v1/chat/completions')
     const body = JSON.parse(String(init.body))
     assert.equal(body.model, 'actual'); assert.equal(body.max_completion_tokens, 4096)
-    return Response.json({ choices: [{ message: { content: JSON.stringify({ prompt: '主角在雨后的走廊等待门开。' }) }, finish_reason: 'stop' }] })
+    const value = body.response_format?.json_schema?.name === 'prompt_refinement_semantic_review'
+      ? semanticReviewFixture() : { prompt: '主角在雨后的走廊等待门开。' }
+    return Response.json({ choices: [{ message: { content: JSON.stringify(value) }, finish_reason: 'stop' }] })
   })
   const result = await call('POST', `/api/projects/${project.id}/skills/refine-prompt`, { model_id: model.id,
     stage: 'image_prompt', prompt: '主角在走廊等待门开。', adjustment_request: '补充雨后环境', skill_ids: [] })
-  assert.equal(calls, 1); assert.match(result.prompt, /雨后/)
+  assert.equal(calls, 2, 'generation and semantic review both use the configured standard channel'); assert.match(result.prompt, /雨后/)
+})
+
+test('standard text forms persist canonical options through create, PATCH protocol switches and catalog import', async () => {
+  const provider = await call('POST', '/api/providers', { name: '标准表单', base_url: 'https://fixture.invalid/v1' })
+  const settings = { text_api: { mode: 'standard', max_output_tokens: 65_536, chat_output_field: 'max_tokens', reasoning_effort: 'high', thinking: 'disabled' },
+    context_window_tokens: 1_000_000, output_reserve_tokens: 1000, pricing: { per_generation: 0.1 }, supports_vision: true }
+  const created = await call('POST', '/api/models', { provider_id: provider.id, name: '标准文本', remote_id: 'arbitrary-model', modality: 'text', protocol: 'responses', settings })
+  assert.deepEqual(created.settings, settings)
+  const switched = await call('PATCH', `/api/models/${created.id}`, { protocol: 'chat_completions' })
+  assert.deepEqual(switched.settings, settings)
+  const restored = await call('PATCH', `/api/models/${created.id}`, { protocol: 'responses', name: '标准文本改名' })
+  assert.deepEqual(restored.settings, settings)
+  const cleared = { ...settings, ...standardTextSettings('responses') }
+  assert.deepEqual((await call('PATCH', `/api/models/${created.id}`, { settings: cleared })).settings, cleared)
+  const imported = await call('POST', `/api/providers/${provider.id}/model-catalog/import`, { models: [
+    { remote_id: 'catalog-chat', modality: 'text', protocol: 'chat_completions', enabled: true, settings: standardTextSettings('chat_completions') },
+    { remote_id: 'catalog-responses', modality: 'text', protocol: 'responses', enabled: true, settings: standardTextSettings('responses') },
+  ] })
+  assert.equal(imported.imported.length, 2)
+  for (const model of imported.imported) assert.deepEqual(model.settings, { text_api: { mode: 'standard' } })
+})
+
+
+test('invalid managed options are rejected before model persistence; custom templates remain editable', async () => {
+  const provider = await call('POST', '/api/providers', { name: '校验', base_url: 'https://fixture.invalid/v1' })
+  const settings = standardTextSettings('responses')
+  const created = await call('POST', '/api/models', { provider_id: provider.id, name: '校验文本', remote_id: 'fixture', modality: 'text', protocol: 'responses', settings })
+  for (const settings of [
+    { text_api: { mode: 'standard', max_output_tokens: -1 } },
+    { text_api: { mode: 'standard', request_parameters: { max_tokens: 4000 } } },
+    { text_api: { mode: 'standard' }, request_path: 'override' },
+    { text_api: { mode: 'standard', max_output_tokens: 1000 }, context_window_tokens: 1000 },
+  ]) {
+    const rejected = await app.inject({ method: 'PATCH', url: `/api/models/${created.id}`, payload: { settings } })
+    assert.equal(rejected.statusCode, 422, rejected.body)
+    assert.deepEqual(JSON.parse(one<{ settings: string }>('SELECT settings FROM models WHERE id=?', created.id)!.settings), { text_api: { mode: 'standard' } })
+  }
+  const custom = { text_api: { mode: 'custom' }, request_path: 'custom/text', request_template: { prompt: '{{prompt}}', max_tokens: 8000 }, text_path: 'answer' }
+  assert.deepEqual((await call('PATCH', `/api/models/${created.id}`, { settings: custom })).settings, custom)
+  const video = { ...seedance2VideoSettings(), default_duration: 12, default_ratio: '9:16', default_resolution: '720p' }
+  const videoModel = await call('POST', '/api/models', { provider_id: provider.id, name: '视频默认参数', remote_id: 'video', modality: 'video', protocol: 'async_video', settings: video })
+  for (const patch of [{ default_duration: 200 }, { default_duration: 3 }, { default_ratio: 'invalid' }, { default_resolution: '4K' }]) {
+    const rejected = await app.inject({ method: 'PATCH', url: `/api/models/${videoModel.id}`, payload: { settings: { ...video, ...patch } } })
+    assert.equal(rejected.statusCode, 422, rejected.body)
+  }
 })

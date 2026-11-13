@@ -1,0 +1,1626 @@
+TAP version 13
+# Subtest: a script request opens the project shot workspace once without planning or entering production
+ok 1 - a script request opens the project shot workspace once without planning or entering production
+  ---
+  duration_ms: 596.939666
+  type: 'test'
+  ...
+# Subtest: planning from the manager saves independently and returns to the new scheme
+ok 2 - planning from the manager saves independently and returns to the new scheme
+  ---
+  duration_ms: 903.848125
+  type: 'test'
+  ...
+# Subtest: a saved pending scheme enters explicit production preparation without writing into the original canvas
+ok 3 - a saved pending scheme enters explicit production preparation without writing into the original canvas
+  ---
+  duration_ms: 949.001042
+  type: 'test'
+  ...
+# Subtest: historical shots with an existing canvas still check their own references before a later import
+ok 4 - historical shots with an existing canvas still check their own references before a later import
+  ---
+  duration_ms: 854.198625
+  type: 'test'
+  ...
+# Subtest: the 规划分镜 entry opens independent planning metadata without a model request or scene-import shortcut
+ok 5 - the 规划分镜 entry opens independent planning metadata without a model request or scene-import shortcut
+  ---
+  duration_ms: 374.415416
+  type: 'test'
+  ...
+# Subtest: missing storyboards cannot bypass planning when no text model is available
+ok 6 - missing storyboards cannot bypass planning when no text model is available
+  ---
+  duration_ms: 225.257
+  type: 'test'
+  ...
+# Subtest: the script planning fallback saves independently and retries refresh without another commit
+ok 7 - the script planning fallback saves independently and retries refresh without another commit
+  ---
+  duration_ms: 336.049542
+  type: 'test'
+  ...
+# Subtest: script planning opens the shared shot manager with its scene scope when the integration callback is provided
+ok 8 - script planning opens the shared shot manager with its scene scope when the integration callback is provided
+  ---
+  duration_ms: 63.620291
+  type: 'test'
+  ...
+# Subtest: editor keeps saved documents and canvas navigation without a complete-script generation entry
+ok 9 - editor keeps saved documents and canvas navigation without a complete-script generation entry
+  ---
+  duration_ms: 158.518542
+  type: 'test'
+  ...
+# Subtest: manual document edits still support undo, redo and saving through the original contract
+ok 10 - manual document edits still support undo, redo and saving through the original contract
+  ---
+  duration_ms: 320.979333
+  type: 'test'
+  ...
+# Subtest: design groups expose four editable sections and preserve historical model titles and bodies when saving
+ok 11 - design groups expose four editable sections and preserve historical model titles and bodies when saving
+  ---
+  duration_ms: 204.7055
+  type: 'test'
+  ...
+# Subtest: missing chapters stay explicit and do not copy legacy outline, scene bodies or generation settings
+ok 12 - missing chapters stay explicit and do not copy legacy outline, scene bodies or generation settings
+  ---
+  duration_ms: 57.98375
+  type: 'test'
+  ...
+# Subtest: stage supplement buttons open the requested missing scope and wait for saved edits
+ok 13 - stage supplement buttons open the requested missing scope and wait for saved edits
+  ---
+  duration_ms: 118.359125
+  type: 'test'
+  ...
+# Subtest: stages without a saved primary document keep manual entry and do not offer unsupported supplement requests
+ok 14 - stages without a saved primary document keep manual entry and do not offer unsupported supplement requests
+  ---
+  duration_ms: 65.932792
+  type: 'test'
+  ...
+# Subtest: busy editors disable supplement and manual creation without issuing requests
+ok 15 - busy editors disable supplement and manual creation without issuing requests
+  ---
+  duration_ms: 44.74475
+  type: 'test'
+  ...
+# Subtest: saving a manual edit omits uncreated placeholders and preserves saved empty chapters
+ok 16 - saving a manual edit omits uncreated placeholders and preserves saved empty chapters
+  ---
+  duration_ms: 177.967292
+  type: 'test'
+  ...
+# Subtest: script editor routes saved scene scope to the shared shot manager without generating or saving
+ok 17 - script editor routes saved scene scope to the shared shot manager without generating or saving
+  ---
+  duration_ms: 55.533
+  type: 'test'
+  ...
+# Subtest: partial task restores progress and proposed decisions, resumes the same scope, then enables unified save
+ok 18 - partial task restores progress and proposed decisions, resumes the same scope, then enables unified save
+  ---
+  duration_ms: 510.985583
+  type: 'test'
+  ...
+# Subtest: manual changes to verified bulk draft update before/after preview, require recheck and sync before resume
+ok 19 - manual changes to verified bulk draft update before/after preview, require recheck and sync before resume
+  ---
+  duration_ms: 201.140959
+  type: 'test'
+  ...
+# Subtest: refreshing the same revision preserves its interruption reason until the draft version or status changes
+ok 20 - refreshing the same revision preserves its interruption reason until the draft version or status changes
+  ---
+  duration_ms: 527.126375
+  type: 'test'
+  ...
+# Subtest: ordinary composer questions never authorize resuming a pending unified revision
+ok 21 - ordinary composer questions never authorize resuming a pending unified revision
+  ---
+  duration_ms: 126.160709
+  type: 'test'
+  ...
+# Subtest: current difference includes manual additions and bulk tasks never pretend to be a single-stage workflow
+ok 22 - current difference includes manual additions and bulk tasks never pretend to be a single-stage workflow
+  ---
+  duration_ms: 0.25725
+  type: 'test'
+  ...
+# Subtest: manual draft edits synchronize content and scenes; questions for saved stages remain selectable
+ok 23 - manual draft edits synchronize content and scenes; questions for saved stages remain selectable
+  ---
+  duration_ms: 0.442167
+  type: 'test'
+  ...
+# Subtest: native text without a classification still extracts and displays creator choices
+ok 24 - native text without a classification still extracts and displays creator choices
+  ---
+  duration_ms: 510.378459
+  type: 'test'
+  ...
+# Subtest: visual and storyboard resource edits synchronize before saving without changing IDs
+ok 25 - visual and storyboard resource edits synchronize before saving without changing IDs
+  ---
+  duration_ms: 88.658334
+  type: 'test'
+  ...
+# Subtest: structured professional review and native provenance remain readable after history reload
+ok 26 - structured professional review and native provenance remain readable after history reload
+  ---
+  duration_ms: 634.225375
+  type: 'test'
+  ...
+# Subtest: review sends only strict action fields and revision prefills editable instructions
+ok 27 - review sends only strict action fields and revision prefills editable instructions
+  ---
+  duration_ms: 289.688791
+  type: 'test'
+  ...
+# Subtest: creative review reports render every quality dimension from saved conversation history
+ok 28 - creative review reports render every quality dimension from saved conversation history
+  ---
+  duration_ms: 73.469709
+  type: 'test'
+  ...
+# Subtest: server patch restores, compares original, syncs manual edits before dialogue and saves the current version
+ok 29 - server patch restores, compares original, syncs manual edits before dialogue and saves the current version
+  ---
+  duration_ms: 425.847334
+  type: 'test'
+  ...
+# Subtest: read-only failed review retries the same question and document scope without appending the failed answer
+ok 30 - read-only failed review retries the same question and document scope without appending the failed answer
+  ---
+  duration_ms: 137.937
+  type: 'test'
+  ...
+# Subtest: an interrupted write offers recovery and restores its exact saved draft without repeating the model request
+ok 31 - an interrupted write offers recovery and restores its exact saved draft without repeating the model request
+  ---
+  duration_ms: 85.182042
+  type: 'test'
+  ...
+# Subtest: a failed discussion never claims a preexisting draft as its result or reopens its preview
+ok 32 - a failed discussion never claims a preexisting draft as its result or reopens its preview
+  ---
+  duration_ms: 91.712083
+  type: 'test'
+  ...
+# Subtest: discarding a returned draft updates the originating task and removes the editable draft action
+ok 33 - discarding a returned draft updates the originating task and removes the editable draft action
+  ---
+  duration_ms: 104.751542
+  type: 'test'
+  ...
+# Subtest: native completion synchronizes confirmed settings into the next dialogue request
+ok 34 - native completion synchronizes confirmed settings into the next dialogue request
+  ---
+  duration_ms: 97.934458
+  type: 'test'
+  ...
+# Subtest: a lost stream after a save recovers the actual saved draft status instead of offering another save
+ok 35 - a lost stream after a save recovers the actual saved draft status instead of offering another save
+  ---
+  duration_ms: 84.153792
+  type: 'test'
+  ...
+# Subtest: execution UI updates live calls, preserves repeated invocations and persists expandable details with history
+ok 36 - execution UI updates live calls, preserves repeated invocations and persists expandable details with history
+  ---
+  duration_ms: 753.426125
+  type: 'test'
+  ...
+# Subtest: stopping a streamed operation settles its trace without turning completed steps into failures
+ok 37 - stopping a streamed operation settles its trace without turning completed steps into failures
+  ---
+  duration_ms: 87.415334
+  type: 'test'
+  ...
+# Subtest: a completed document draft opens its preview immediately even if the server leaves the stream open
+ok 38 - a completed document draft opens its preview immediately even if the server leaves the stream open
+  ---
+  duration_ms: 101.606
+  type: 'test'
+  ...
+# Subtest: workflow draft keeps the server source version through save conflicts and local restoration instead of adopting the current source
+    # Subtest: generated from an earlier source
+    ok 1 - generated from an earlier source
+      ---
+      duration_ms: 270.769125
+      type: 'test'
+      ...
+    # Subtest: generated without a source
+    ok 2 - generated without a source
+      ---
+      duration_ms: 214.923708
+      type: 'test'
+      ...
+    1..2
+ok 39 - workflow draft keeps the server source version through save conflicts and local restoration instead of adopting the current source
+  ---
+  duration_ms: 486.095542
+  type: 'test'
+  ...
+# Subtest: a skipped question becomes a completed historical task while keeping the skip button wording
+ok 40 - a skipped question becomes a completed historical task while keeping the skip button wording
+  ---
+  duration_ms: 112.64675
+  type: 'test'
+  ...
+# (node:1257) ExperimentalWarning: The MockTimers API is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: a stalled connection exits pending state, preserves received text and fails only the unfinished steps
+ok 41 - a stalled connection exits pending state, preserves received text and fails only the unfinished steps
+  ---
+  duration_ms: 88.187541
+  type: 'test'
+  ...
+# Subtest: execution sequence nests calls, keeps active ancestors in progress and retains durations and disclosure state
+ok 42 - execution sequence nests calls, keeps active ancestors in progress and retains durations and disclosure state
+  ---
+  duration_ms: 26.123459
+  type: 'test'
+  ...
+# Subtest: continuation progress under task stays a process notice while the draft and real calls retain their states
+ok 43 - continuation progress under task stays a process notice while the draft and real calls retain their states
+  ---
+  duration_ms: 21.747083
+  type: 'test'
+  ...
+# Subtest: continuation progress under draft stays a process notice while the draft and real calls retain their states
+ok 44 - continuation progress under draft stays a process notice while the draft and real calls retain their states
+  ---
+  duration_ms: 21.020459
+  type: 'test'
+  ...
+# Subtest: server heartbeats keep work pending beyond the browser deadline until an authoritative server result
+ok 45 - server heartbeats keep work pending beyond the browser deadline until an authoritative server result
+  ---
+  duration_ms: 183.396875
+  type: 'test'
+  ...
+# Subtest: initial direction discussion leads to one native outline action, then saving advances to characters
+ok 46 - initial direction discussion leads to one native outline action, then saving advances to characters
+  ---
+  duration_ms: 205.81925
+  type: 'test'
+  ...
+# Subtest: historical workflow text does not recreate an unvalidated or duplicate generate button
+ok 47 - historical workflow text does not recreate an unvalidated or duplicate generate button
+  ---
+  duration_ms: 78.369542
+  type: 'test'
+  ...
+# Subtest: stale next-step response clears the button and never reissues generation automatically
+ok 48 - stale next-step response clears the button and never reissues generation automatically
+  ---
+  duration_ms: 119.704584
+  type: 'test'
+  ...
+# Subtest: a saved first episode exposes storyboard handoff while later episodes remain unwritten
+ok 49 - a saved first episode exposes storyboard handoff while later episodes remain unwritten
+  ---
+  duration_ms: 69.691375
+  type: 'test'
+  ...
+# Subtest: a delayed initial state cannot overwrite a newer native proposal
+ok 50 - a delayed initial state cannot overwrite a newer native proposal
+  ---
+  duration_ms: 60.522334
+  type: 'test'
+  ...
+# Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+# Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+# Subtest: settings option Escape retains the dialog and draft; cancelling never saves project settings
+ok 51 - settings option Escape retains the dialog and draft; cancelling never saves project settings
+  ---
+  duration_ms: 176.008959
+  type: 'test'
+  ...
+# Subtest: new stage buttons lock future work and saved scenes expose three distinct actions
+ok 52 - new stage buttons lock future work and saved scenes expose three distinct actions
+  ---
+  duration_ms: 79.870584
+  type: 'test'
+  ...
+# Subtest: stage redesign and missing-section completion send exact typed actions without selecting episode two
+ok 53 - stage redesign and missing-section completion send exact typed actions without selecting episode two
+  ---
+  duration_ms: 117.629208
+  type: 'test'
+  ...
+# Subtest: editor missing-section request opens an exact delivery preview and waits for the explicit generate click
+ok 54 - editor missing-section request opens an exact delivery preview and waits for the explicit generate click
+  ---
+  duration_ms: 72.694542
+  type: 'test'
+  ...
+# Subtest: outline-stage revision retains its typed scope and bypasses the eight-document action limit
+ok 55 - outline-stage revision retains its typed scope and bypasses the eight-document action limit
+  ---
+  duration_ms: 74.971
+  type: 'test'
+  ...
+# Subtest: saved episodes can be selected for revision and pending drafts disable all stage actions
+ok 56 - saved episodes can be selected for revision and pending drafts disable all stage actions
+  ---
+  duration_ms: 131.800666
+  type: 'test'
+  ...
+# Subtest: saved episode redesign sends the selected saved episode rather than generating the next one
+ok 57 - saved episode redesign sends the selected saved episode rather than generating the next one
+  ---
+  duration_ms: 122.658583
+  type: 'test'
+  ...
+# Subtest: reopening a cached episode redesign preserves scene identity through normalization and manual edit serialization
+ok 58 - reopening a cached episode redesign preserves scene identity through normalization and manual edit serialization
+  ---
+  duration_ms: 76.882625
+  type: 'test'
+  ...
+# Subtest: an unsent stage revision restores its target after reopening and cancelling clears that saved scope
+ok 59 - an unsent stage revision restores its target after reopening and cancelling clears that saved scope
+  ---
+  duration_ms: 145.413083
+  type: 'test'
+  ...
+# Subtest: opening only reads metadata, defaults to current canvas design, and filters across schemes, scenes and text
+ok 60 - opening only reads metadata, defaults to current canvas design, and filters across schemes, scenes and text
+  ---
+  duration_ms: 999.959542
+  type: 'test'
+  ...
+# Subtest: editing requires explicit save, sends the snapshot revision and prevents repeated writes while pending
+ok 61 - editing requires explicit save, sends the snapshot revision and prevents repeated writes while pending
+  ---
+  duration_ms: 318.681875
+  type: 'test'
+  ...
+# Subtest: dirty selection and close need a discard decision; cancelling keeps the current editor
+ok 62 - dirty selection and close need a discard decision; cancelling keeps the current editor
+  ---
+  duration_ms: 329.095041
+  type: 'test'
+  ...
+# Subtest: reorder uses same-scheme scene direction, blockers prevent trash, and the recycle bin restores shots and assets
+ok 63 - reorder uses same-scheme scene direction, blockers prevent trash, and the recycle bin restores shots and assets
+  ---
+  duration_ms: 440.347708
+  type: 'test'
+  ...
+# Subtest: selected shots are sent to the chosen target canvas without writing a graph in the manager
+ok 64 - selected shots are sent to the chosen target canvas without writing a graph in the manager
+  ---
+  duration_ms: 250.355167
+  type: 'test'
+  ...
+# Subtest: a revision conflict keeps edits until an explicit reload and then unlocks the manager
+ok 65 - a revision conflict keeps edits until an explicit reload and then unlocks the manager
+  ---
+  duration_ms: 233.440333
+  type: 'test'
+  ...
+# Subtest: late mutation responses from a previous project do not refresh or notify the next project
+ok 66 - late mutation responses from a previous project do not refresh or notify the next project
+  ---
+  duration_ms: 185.93375
+  type: 'test'
+  ...
+# Subtest: batch addition cannot discard a dirty editor and a project switch clears its discard dialog
+ok 67 - batch addition cannot discard a dirty editor and a project switch clears its discard dialog
+  ---
+  duration_ms: 311.660625
+  type: 'test'
+  ...
+# Subtest: duplication uses the saved shot action and selects the returned independent shot
+ok 68 - duplication uses the saved shot action and selects the returned independent shot
+  ---
+  duration_ms: 235.897
+  type: 'test'
+  ...
+# Subtest: the workspace exposes scene totals, scan-friendly shot columns and factual production status
+ok 69 - the workspace exposes scene totals, scan-friendly shot columns and factual production status
+  ---
+  duration_ms: 211.982
+  type: 'test'
+  ...
+# Subtest: shot thumbnails keep the selected image and fall back to the latest available image
+ok 70 - shot thumbnails keep the selected image and fall back to the latest available image
+  ---
+  duration_ms: 114.10175
+  type: 'test'
+  ...
+# Subtest: planning uses the chosen scene and respects the unsaved-edit guard
+ok 71 - planning uses the chosen scene and respects the unsaved-edit guard
+  ---
+  duration_ms: 190.066542
+  type: 'test'
+  ...
+# Subtest: an empty saved plan can start planning without choosing a target canvas
+ok 72 - an empty saved plan can start planning without choosing a target canvas
+  ---
+  duration_ms: 42.089333
+  type: 'test'
+  ...
+# Subtest: a pending plan creates its own canvas while mixed-plan selections remain blocked
+ok 73 - a pending plan creates its own canvas while mixed-plan selections remain blocked
+  ---
+  duration_ms: 273.930083
+  type: 'test'
+  ...
+# Subtest: a newly saved design is selected after refreshing without overwriting a dirty shot
+ok 74 - a newly saved design is selected after refreshing without overwriting a dirty shot
+  ---
+  duration_ms: 291.511333
+  type: 'test'
+  ...
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# Subtest: blank count enables automatic planning, numeric suggestions are sent, and clearing restores automatic mode
+ok 75 - blank count enables automatic planning, numeric suggestions are sent, and clearing restores automatic mode
+  ---
+  duration_ms: 854.17625
+  type: 'test'
+  ...
+# Subtest: invalid planning preserves scene diagnostics and remains retryable without saving or opening the canvas
+ok 76 - invalid planning preserves scene diagnostics and remains retryable without saving or opening the canvas
+  ---
+  duration_ms: 159.521625
+  type: 'test'
+  ...
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# Subtest: metadata does not generate; selected skill/docs are explicit and edited draft only saves on confirmation
+ok 77 - metadata does not generate; selected skill/docs are explicit and edited draft only saves on confirmation
+  ---
+  duration_ms: 360.533292
+  type: 'test'
+  ...
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# Subtest: empty skill selection uses base rules and changing configuration invalidates a generated draft
+ok 78 - empty skill selection uses base rules and changing configuration invalidates a generated draft
+  ---
+  duration_ms: 165.389125
+  type: 'test'
+  ...
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# Subtest: storyboard automatic mode sends no selected ids and displays the model result while manual base rules override it
+ok 79 - storyboard automatic mode sends no selected ids and displays the model result while manual base rules override it
+  ---
+  duration_ms: 174.97575
+  type: 'test'
+  ...
+# Subtest: refresh failure retries the same saved result without a second commit
+ok 80 - refresh failure retries the same saved result without a second commit
+  ---
+  duration_ms: 129.23725
+  type: 'test'
+  ...
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# Subtest: updated screenplay scenes must be replanned from the current episode document before old shots can return to the canvas
+ok 81 - updated screenplay scenes must be replanned from the current episode document before old shots can return to the canvas
+  ---
+  duration_ms: 132.828833
+  type: 'test'
+  ...
+# Subtest: a stale scene cannot bypass replanning even if a saved-plan flag remains true and no model is configured
+ok 82 - a stale scene cannot bypass replanning even if a saved-plan flag remains true and no model is configured
+  ---
+  duration_ms: 27.508208
+  type: 'test'
+  ...
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# Subtest: default episode documents follow the selected scenes while manual reference choices are retained
+ok 83 - default episode documents follow the selected scenes while manual reference choices are retained
+  ---
+  duration_ms: 215.494167
+  type: 'test'
+  ...
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# Subtest: deleted storyboard nodes take priority and full batches can switch to saved plans for model-free re-add
+ok 84 - deleted storyboard nodes take priority and full batches can switch to saved plans for model-free re-add
+  ---
+  duration_ms: 266.480292
+  type: 'test'
+  ...
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# Subtest: saved professional plans can be previewed and reused without a model or a commit
+ok 85 - saved professional plans can be previewed and reused without a model or a commit
+  ---
+  duration_ms: 178.487708
+  type: 'test'
+  ...
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# Subtest: mixed scope only plans missing scenes and imports both new and saved plans after confirmation
+ok 86 - mixed scope only plans missing scenes and imports both new and saved plans after confirmation
+  ---
+  duration_ms: 281.511375
+  type: 'test'
+  ...
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# Subtest: replanning passes updated shot identities to the canvas even when refresh needs a retry
+ok 87 - replanning passes updated shot identities to the canvas even when refresh needs a retry
+  ---
+  duration_ms: 323.965417
+  type: 'test'
+  ...
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# Subtest: redesign defaults to fresh shots and a dedicated canvas while retries keep the committed target
+ok 88 - redesign defaults to fresh shots and a dedicated canvas while retries keep the committed target
+  ---
+  duration_ms: 329.845958
+  type: 'test'
+  ...
+# Subtest: recycled shots and deleted canvases keep redesign available and confirmation opens the newly created canvas
+    # Subtest: {"shotCount":0,"missingCanvas":false,"mixed":false}
+    ok 1 - {"shotCount":0,"missingCanvas":false,"mixed":false}
+      ---
+      duration_ms: 108.774
+      type: 'test'
+      ...
+    # Subtest: {"shotCount":0,"missingCanvas":true,"mixed":false}
+    ok 2 - {"shotCount":0,"missingCanvas":true,"mixed":false}
+      ---
+      duration_ms: 101.864667
+      type: 'test'
+      ...
+    # Subtest: {"shotCount":1,"missingCanvas":true,"mixed":false}
+    ok 3 - {"shotCount":1,"missingCanvas":true,"mixed":false}
+      ---
+      duration_ms: 106.975542
+      type: 'test'
+      ...
+    # Subtest: {"shotCount":0,"missingCanvas":true,"mixed":true}
+    ok 4 - {"shotCount":0,"missingCanvas":true,"mixed":true}
+      ---
+      duration_ms: 105.140875
+      type: 'test'
+      ...
+    1..4
+ok 89 - recycled shots and deleted canvases keep redesign available and confirmation opens the newly created canvas
+  ---
+  duration_ms: 423.330041
+  type: 'test'
+  ...
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# Subtest: redesign covers the entire selected scope and changing its mode invalidates the preview
+ok 90 - redesign covers the entire selected scope and changing its mode invalidates the preview
+  ---
+  duration_ms: 260.973709
+  type: 'test'
+  ...
+# Subtest: redesign does not silently reuse a legacy shot identity returned by the model
+ok 91 - redesign does not silently reuse a legacy shot identity returned by the model
+  ---
+  duration_ms: 64.664584
+  type: 'test'
+  ...
+# Subtest: legacy scene shots are not treated as ready plans and oversized ranges make the batch explicit
+ok 92 - legacy scene shots are not treated as ready plans and oversized ranges make the batch explicit
+  ---
+  duration_ms: 50.828333
+  type: 'test'
+  ...
+# Subtest: confirmation uses a fresh source version to prepare references before importing the planned shots
+ok 93 - confirmation uses a fresh source version to prepare references before importing the planned shots
+  ---
+  duration_ms: 93.705875
+  type: 'test'
+  ...
+# Subtest: failed reference preparation keeps saved shots and retries without another storyboard commit
+ok 94 - failed reference preparation keeps saved shots and retries without another storyboard commit
+  ---
+  duration_ms: 133.544333
+  type: 'test'
+  ...
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# An update to StoryboardPlanner inside a test was not wrapped in act(...).
+# When testing, code that causes React state updates should be wrapped into act(...):
+# act(() => {
+#   /* fire events that update state */
+# });
+# /* assert on the output */
+# This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+# Subtest: a failed reference draft save resumes the saved new design without recreating shots or losing its canvas
+ok 95 - a failed reference draft save resumes the saved new design without recreating shots or losing its canvas
+  ---
+  duration_ms: 184.72175
+  type: 'test'
+  ...
+# Subtest: saved plans still prepare missing references and an explicit empty selection uses base rules
+ok 96 - saved plans still prepare missing references and an explicit empty selection uses base rules
+  ---
+  duration_ms: 124.777
+  type: 'test'
+  ...
+# Subtest: cancelling reference analysis prevents a late result from being committed or opening the canvas
+ok 97 - cancelling reference analysis prevents a late result from being committed or opening the canvas
+  ---
+  duration_ms: 115.46475
+  type: 'test'
+  ...
+# Subtest: saving reference skill defaults reloads only that policy and preserves the edited storyboard preview
+ok 98 - saving reference skill defaults reloads only that policy and preserves the edited storyboard preview
+  ---
+  duration_ms: 255.215334
+  type: 'test'
+  ...
+# Subtest: independent planning saves the edited scheme without references, canvas creation, or a canvas handoff
+ok 99 - independent planning saves the edited scheme without references, canvas creation, or a canvas handoff
+  ---
+  duration_ms: 153.665875
+  type: 'test'
+  ...
+# Subtest: independent saving retries refresh without committing again or preparing references
+ok 100 - independent saving retries refresh without committing again or preparing references
+  ---
+  duration_ms: 102.280583
+  type: 'test'
+  ...
+# Subtest: independent saved plans return to management without manufacturing a draft or making a write
+ok 101 - independent saved plans return to management without manufacturing a draft or making a write
+  ---
+  duration_ms: 30.178375
+  type: 'test'
+  ...
+# Subtest: independent drafts confirm before close and before changing planning settings
+ok 102 - independent drafts confirm before close and before changing planning settings
+  ---
+  duration_ms: 222.580291
+  type: 'test'
+  ...
+# Subtest: independent save ignores a late commit after the planner is closed
+ok 103 - independent save ignores a late commit after the planner is closed
+  ---
+  duration_ms: 69.033542
+  type: 'test'
+  ...
+# Subtest: production opens without requests and defaults to the preferred enabled text model
+ok 104 - production opens without requests and defaults to the preferred enabled text model
+  ---
+  duration_ms: 162.974416
+  type: 'test'
+  ...
+# Subtest: prepared references can go to production without any text model and preserve the selected shot scope
+ok 105 - prepared references can go to production without any text model and preserve the selected shot scope
+  ---
+  duration_ms: 35.575083
+  type: 'test'
+  ...
+# Subtest: production prepares references with automatic skill selection and commits before importing the saved plan
+ok 106 - production prepares references with automatic skill selection and commits before importing the saved plan
+  ---
+  duration_ms: 49.420333
+  type: 'test'
+  ...
+# Subtest: obsolete selected shots are rejected before checking or preparing another active design
+ok 107 - obsolete selected shots are rejected before checking or preparing another active design
+  ---
+  duration_ms: 88.197875
+  type: 'test'
+  ...
+# Subtest: missing references require a text model before any model or commit request
+ok 108 - missing references require a text model before any model or commit request
+  ---
+  duration_ms: 23.056542
+  type: 'test'
+  ...
+# Subtest: a failed handoff retries only the cached result without preparing or creating a canvas again
+ok 109 - a failed handoff retries only the cached result without preparing or creating a canvas again
+  ---
+  duration_ms: 60.222209
+  type: 'test'
+  ...
+# Subtest: cancelling reference generation ignores a late result and never commits or hands off
+ok 110 - cancelling reference generation ignores a late result and never commits or hands off
+  ---
+  duration_ms: 56.310625
+  type: 'test'
+  ...
+# Subtest: unmounting while validating selection isolates a late project response
+ok 111 - unmounting while validating selection isolates a late project response
+  ---
+  duration_ms: 33.782708
+  type: 'test'
+  ...
+# Subtest: reference commit failures reuse the preparation when its source signature is unchanged
+ok 112 - reference commit failures reuse the preparation when its source signature is unchanged
+  ---
+  duration_ms: 97.954917
+  type: 'test'
+  ...
+# Subtest: a reference commit locks closing and repeated confirmation until the write finishes
+ok 113 - a reference commit locks closing and repeated confirmation until the write finishes
+  ---
+  duration_ms: 58.646792
+  type: 'test'
+  ...
+# Subtest: a verified historical pending design prepares its own references after another plan was saved
+ok 114 - a verified historical pending design prepares its own references after another plan was saved
+  ---
+  duration_ms: 35.783875
+  type: 'test'
+  ...
+# Subtest: a historical design with an existing canvas prepares a later scene using the same explicit design
+ok 115 - a historical design with an existing canvas prepares a later scene using the same explicit design
+  ---
+  duration_ms: 44.037583
+  type: 'test'
+  ...
+# Subtest: a historical design whose linked canvas is missing is rejected before any reference request
+ok 116 - a historical design whose linked canvas is missing is rejected before any reference request
+  ---
+  duration_ms: 51.398209
+  type: 'test'
+  ...
+# Subtest: a target shot moved to a different design is rejected before reference preparation
+ok 117 - a target shot moved to a different design is rejected before reference preparation
+  ---
+  duration_ms: 38.002875
+  type: 'test'
+  ...
+# Subtest: base-plan production preserves the existing reference API contract without a design parameter
+ok 118 - base-plan production preserves the existing reference API contract without a design parameter
+  ---
+  duration_ms: 28.506875
+  type: 'test'
+  ...
+# Subtest: deleted or foreign historical entries cannot use pending-plan permission
+ok 119 - deleted or foreign historical entries cannot use pending-plan permission
+  ---
+  duration_ms: 0.309333
+  type: 'test'
+  ...
+# Subtest: historical permission validates every selected current and historical shot against the fresh snapshot
+ok 120 - historical permission validates every selected current and historical shot against the fresh snapshot
+  ---
+  duration_ms: 0.418625
+  type: 'test'
+  ...
+1..120
+# tests 126
+# suites 0
+# pass 126
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 9706.187041

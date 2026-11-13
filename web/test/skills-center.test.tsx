@@ -58,28 +58,37 @@ function button(text: string, root: ParentNode = document) {
   const element = [...root.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === text)
   assert.ok(element, text); return element
 }
-function textarea(label: string) {
-  const element = document.querySelector<HTMLTextAreaElement>(`textarea[aria-label="${label}"]`)
-  assert.ok(element, label); return element
-}
-async function fill(label: string, value: string) {
-  if (label === '本次调整要求') {
-    await act(() => adjustmentEditor().commands.setContent(promptEditorDocument(value, []), { emitUpdate: true }))
-    return
-  }
-  const element = textarea(label)
-  const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value')!.set!
-  await act(() => { setter.call(element, value); element.dispatchEvent(new dom.window.Event('input', { bubbles: true })) })
+async function fill(label: '本次调整要求' | '整理后的主要内容', value: string) {
+  if (label === '本次调整要求' && !document.querySelector('[contenteditable][aria-label="本次调整要求"]')) await act(() => button('继续调整').click())
+  const editor = label === '本次调整要求' ? adjustmentEditor() : candidateEditor()
+  await act(() => editor.commands.setContent(promptEditorDocument(value, []), { emitUpdate: true }))
 }
 function adjustmentEditor() {
   const element = document.querySelector<HTMLElement & { editor: import('@tiptap/core').Editor }>('[contenteditable][aria-label="本次调整要求"]')
   assert.ok(element, 'adjustment reference editor'); return element.editor
 }
-function completePromptEditor() {
-  const element = document.querySelector<HTMLElement & { editor: import('@tiptap/core').Editor }>('[contenteditable][aria-label="整理结果"]')
-  assert.ok(element, 'protected full prompt editor'); return element.editor
+function candidateEditor() {
+  const element = document.querySelector<HTMLElement & { editor: import('@tiptap/core').Editor }>('[contenteditable][aria-label="整理后的主要内容"]')
+  assert.ok(element, 'main-content draft editor'); return element.editor
+}
+async function completePreview() {
+  await act(() => button('完整提示词预览').click())
+  const element = document.querySelector<HTMLElement>('.prompt-skill-inspection pre')
+  assert.ok(element, 'read-only complete prompt preview')
+  assert.equal(element.closest('[contenteditable]'), null, 'the complete preview is outside the editable draft')
+  const text = element.textContent || ''
+  await act(() => button('返回整理').click())
+  return text
+}
+async function runNextRefinement() {
+  if (document.querySelector('.prompt-skill-result')) {
+    const label = [...document.querySelectorAll<HTMLButtonElement>('button')].some(item => item.textContent === '重新整理') ? '重新整理' : '继续调整'
+    await act(() => button(label).click())
+  }
+  await act(() => button(document.body.textContent?.includes('当前正文、固定设定、参考图或生成配置已变化') ? '重新整理' : '继续整理').click())
 }
 async function choose(label: string, value: string) {
+  if (label === '整理提示词的文本模型' && !document.querySelector(`input[aria-label="${label}"]`)) await act(() => button('继续调整').click())
   const input = document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)
   assert.ok(input, label)
   await act(() => input.click())
@@ -97,7 +106,7 @@ function promptAction(props: Partial<React.ComponentProps<typeof PromptSkillActi
     targetModelId="image" shotId="shot" ratio="9:16" duration={5} mode="reference" referenceAssetIds={['frame']} onApply={() => {}} {...props} />
 }
 
-test('prompt adjustment omits automatic skill ids and shows the model choice while remembered base rules stay authoritative', async t => {
+test('prompt adjustment uses fixed defaults without submitted ids while remembered base rules stay authoritative', async t => {
   const storageKey = 'creative-prompt-skills:project'
   dom.window.localStorage.removeItem(storageKey)
   const requests: Array<Record<string, unknown>> = []
@@ -116,17 +125,20 @@ test('prompt adjustment omits automatic skill ids and shows the model choice whi
   try {
     await openPromptAction()
     await fill('本次调整要求', '制作白底道具资产')
-    assert.match(document.querySelector('.prompt-skill-primary')!.textContent!, /模型自动选择/)
+    assert.match(document.querySelector('.prompt-skill-primary')!.textContent!, /short-drama-image-prompts/)
+    assert.match(document.querySelector('.prompt-skill-card')!.textContent!, /按功能分配/)
     assert.equal(requests.length, 0, 'opening and typing cannot call a selection model')
-    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
+    await act(() => button('生成整理草稿', document.querySelector('[role="dialog"]')!).click())
     assert.equal(Object.hasOwn(requests[0], 'skill_ids'), false)
     assert.match(document.querySelector('.prompt-skill-result')!.textContent!, /使用技能：novel-art/)
     assert.match(document.querySelector('.prompt-skill-result')!.textContent!, /选择理由：本次需要道具资产的美术设计方法/)
     assert.equal(dom.window.localStorage.getItem(storageKey), null, 'an automatic recommendation must not become a remembered manual choice')
+    await act(() => button('继续调整').click())
     await act(() => button('更换').click())
     await choose('image_prompt主技能', '__base__')
     await act(() => button('更换').click())
-    assert.equal(button('应用提示词').disabled, true, 'switching automatic mode to manual base rules invalidates a result even when both display no preselected ids')
+    await act(() => button('返回对照').click())
+    assert.equal(button('应用正文').disabled, true, 'switching automatic mode to manual base rules invalidates a result even when both display no preselected ids')
     assert.match(document.querySelector('.prompt-skill-result')!.textContent!, /使用技能：novel-art/, 'the actual previous choice stays visible with the retained candidate')
     await view.destroy()
     dom.window.localStorage.setItem(storageKey, JSON.stringify({ image_prompt: [] }))
@@ -134,7 +146,7 @@ test('prompt adjustment omits automatic skill ids and shows the model choice whi
     await openPromptAction()
     await fill('本次调整要求', '制作白底道具资产')
     assert.match(document.querySelector('.prompt-skill-primary')!.textContent!, /基础创作规则/)
-    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
+    await act(() => button('生成整理草稿', document.querySelector('[role="dialog"]')!).click())
     assert.deepEqual(requests[1]?.skill_ids, [])
   } finally { await view.destroy(); dom.window.localStorage.removeItem(storageKey) }
 })
@@ -288,19 +300,19 @@ test('prompt refinement stays a draft, blocks stale application and applies only
   const view = await mount(component('人物信息图'))
   try {
     await act(() => document.querySelector<HTMLButtonElement>('[aria-label="使用技能整理提示词"]')!.click())
-    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
+    await act(() => button('生成整理草稿', document.querySelector('[role="dialog"]')!).click())
     assert.equal(applied.length, 0)
     assert.deepEqual(requests[0], { stage: 'image_prompt', model_id: 'text', prompt: '人物信息图', prompt_body: '人物信息图', adjustment_request: '', target_model_id: 'image', shot_id: 'shot', ratio: '9:16', duration: 5, mode: 'reference', reference_asset_ids: ['frame'], excluded_visual_profile_ids: [] })
     await view.render(component('人物信息图', 'other-shot'))
-    assert.equal(button('应用提示词').disabled, true)
+    assert.equal(button('应用正文').disabled, true)
     assert.equal(applied.length, 0)
     await view.render(component('人物信息图，新服装'))
-    assert.equal(button('应用提示词').disabled, true)
-    assert.ok(document.body.textContent?.includes('当前节点内容或生成配置已变化'))
-    await act(() => button('重新整理').click())
+    assert.equal(button('应用正文').disabled, true)
+    assert.ok(document.body.textContent?.includes('当前正文、固定设定、参考图或生成配置已变化'))
+    await runNextRefinement()
     assert.equal((requests[1] as { prompt: string }).prompt, '人物信息图，新服装', 'changed node context starts from its current source, not the obsolete result')
-    assert.equal(button('应用提示词').disabled, false)
-    await act(() => button('应用提示词').click())
+    assert.equal(button('应用正文').disabled, false)
+    await act(() => button('应用正文').click())
     assert.deepEqual(applied, ['9:16 人物三视图，保持身份和服装一致'])
   } finally { await view.destroy() }
 })
@@ -321,7 +333,7 @@ test('creator adjustment requests are trimmed and remain drafts until explicitly
     await fill('本次调整要求', '字'.repeat(4001))
     assert.equal(promptEditorText(adjustmentEditor().getJSON()), '', 'adjustment editor rejects text exceeding the 4,000 character limit')
     await fill('本次调整要求', '  保留人物动作，改成近景\n背景简化。  ')
-    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
+    await act(() => button('生成整理草稿', document.querySelector('[role="dialog"]')!).click())
     assert.equal(requests[0]?.prompt, '人物在雨中回头')
     assert.equal(requests[0]?.adjustment_request, '保留人物动作，改成近景\n背景简化。')
     assert.equal(applied.length, 0)
@@ -329,10 +341,10 @@ test('creator adjustment requests are trimmed and remain drafts until explicitly
     assert.equal(applied.length, 0, 'closing a preview must never overwrite the node')
     await openPromptAction()
     assert.equal(promptEditorText(adjustmentEditor().getJSON()), '', 'another editing session starts with no leftover instructions')
-    assert.equal(document.querySelector('textarea[aria-label="整理结果"]'), null)
-    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
+    assert.equal(document.querySelector('[contenteditable][aria-label="整理后的主要内容"]'), null)
+    await act(() => button('生成整理草稿', document.querySelector('[role="dialog"]')!).click())
     assert.equal(requests[1]?.adjustment_request, '')
-    await act(() => button('应用提示词').click())
+    await act(() => button('应用正文').click())
     assert.deepEqual(applied, ['人物在雨中回头，面部近景，背景虚化'])
   } finally { await view.destroy() }
 })
@@ -352,23 +364,23 @@ test('successive adjustments use the edited candidate and preserve it through a 
   try {
     await openPromptAction()
     await fill('本次调整要求', '改成近景')
-    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
-    assert.equal(button('应用提示词').disabled, false)
-    await fill('整理后的正文', '雨中人物近景，红色围巾')
+    await act(() => button('生成整理草稿', document.querySelector('[role="dialog"]')!).click())
+    assert.equal(button('应用正文').disabled, false)
+    await fill('整理后的主要内容', '雨中人物近景，红色围巾')
     await fill('本次调整要求', ' 情绪克制，不改变围巾 ')
-    assert.equal(textarea('整理后的正文').value, '雨中人物近景，红色围巾')
-    assert.equal(button('应用提示词').disabled, true, 'new instructions must be processed before applying the older candidate')
-    await act(() => button('继续调整').click())
-    assert.equal(textarea('整理后的正文').value, '雨中人物近景，红色围巾', 'a failed request retains the last editable candidate')
+    assert.equal(document.querySelector('.prompt-skill-source p')!.textContent, '雨中人物近景，红色围巾')
+    assert.equal(document.querySelector('.prompt-skill-result'), null, 'continue form replaces the result and apply action')
+    await runNextRefinement()
+    assert.equal(document.querySelector('.prompt-skill-source p')!.textContent, '雨中人物近景，红色围巾', 'a failed request retains the draft for retry')
     assert.match(document.querySelector('[role="dialog"]')!.textContent!, /模型暂时不可用/)
     assert.equal(applied.length, 0)
-    await act(() => button('继续调整').click())
+    await runNextRefinement()
     assert.equal(requests[1]?.prompt, '雨中人物近景，红色围巾')
     assert.deepEqual(requests[2], requests[1], 'retry sends the same candidate and current instructions only')
     assert.equal(requests[2]?.adjustment_request, '情绪克制，不改变围巾')
     assert.equal(Object.hasOwn(requests[2]!, 'messages'), false)
-    assert.equal(button('应用提示词').disabled, false)
-    await act(() => button('应用提示词').click())
+    assert.equal(button('应用正文').disabled, false)
+    await act(() => button('应用正文').click())
     assert.deepEqual(applied, ['雨中人物近景，红色围巾，情绪克制'])
   } finally { await view.destroy() }
 })
@@ -386,7 +398,7 @@ test('image, video and visual profile shortcuts append editable directions appro
   const cases = [
     { props: {}, labels: ['加强构图', '突出情绪', '精简描述'], absent: '优化运镜', stage: 'image_prompt' },
     { props: { modality: 'video' as const, targetModelId: 'video' }, labels: ['细化动作', '优化运镜', '精简描述'], absent: '加强构图', stage: 'video_prompt' },
-    { props: { profileId: 'character', shotId: null }, labels: ['细化材质', '补充视图', '精简描述'], absent: '突出情绪', stage: 'image_prompt' },
+    { props: { profileId: 'character', shotId: null }, labels: ['梳理材质', '理清视图', '精简描述'], absent: '突出情绪', stage: 'image_prompt' },
   ]
   for (const entry of cases) {
     const view = await mount(promptAction(entry.props))
@@ -401,7 +413,7 @@ test('image, video and visual profile shortcuts append editable directions appro
       assert.ok(withShortcut.startsWith('保留人物身份。'))
       assert.ok(withShortcut.length > '保留人物身份。'.length, 'a shortcut appends a concrete direction without replacing the creator request')
       await fill('本次调整要求', `${withShortcut}\n避免新增人物。`)
-      await act(() => button('整理提示词', dialog).click())
+      await act(() => button('生成整理草稿', dialog).click())
       const request = requests.at(-1)!
       assert.equal(request.stage, entry.stage)
       assert.equal(request.adjustment_request, `${withShortcut}\n避免新增人物。`.trim())
@@ -431,28 +443,29 @@ test('changing only the refinement model or skill retains manual candidate edits
     onApply: prompt => applied.push(prompt) }))
   try {
     await openPromptAction()
-    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
-    await fill('整理后的正文', '首轮候选，用户手动加入红色围巾')
+    await act(() => button('生成整理草稿', document.querySelector('[role="dialog"]')!).click())
+    await fill('整理后的主要内容', '首轮候选，用户手动加入红色围巾')
     await choose('整理提示词的文本模型', 'text-other')
-    assert.equal(textarea('整理后的正文').value, '首轮候选，用户手动加入红色围巾')
-    assert.equal(button('应用提示词').disabled, true, 'an older policy result cannot be applied before the requested adjustment')
-    await act(() => button('继续调整').click())
+    assert.equal(document.querySelector('.prompt-skill-source p')!.textContent, '首轮候选，用户手动加入红色围巾')
+    assert.match(document.body.textContent!, /文本模型或技能已变化/)
+    await runNextRefinement()
     assert.equal(requests[1]?.prompt, '首轮候选，用户手动加入红色围巾', 'changing a text model must retain the edited candidate instead of reverting to the node source')
     assert.equal(requests[1]?.model_id, 'text-other')
-    assert.equal(button('应用提示词').disabled, false)
+    assert.equal(button('应用正文').disabled, false)
 
-    await fill('整理后的正文', '更换模型后的候选，继续保留手动服装细节')
+    await fill('整理后的主要内容', '更换模型后的候选，继续保留手动服装细节')
+    await act(() => button('继续调整').click())
     await act(() => button('更换').click())
     await choose('image_prompt主技能', 'alternate-skill')
     await act(() => button('更换').click())
-    assert.equal(textarea('整理后的正文').value, '更换模型后的候选，继续保留手动服装细节')
-    assert.equal(button('应用提示词').disabled, true)
-    await act(() => button('继续调整').click())
+    assert.equal(document.querySelector('.prompt-skill-source p')!.textContent, '更换模型后的候选，继续保留手动服装细节')
+    assert.match(document.body.textContent!, /文本模型或技能已变化/)
+    await runNextRefinement()
     assert.equal(requests[2]?.prompt, '更换模型后的候选，继续保留手动服装细节', 'changing a skill also retains all manual candidate edits')
     assert.equal(requests[2]?.model_id, 'text-other')
     assert.deepEqual(requests[2]?.skill_ids, ['alternate-skill'])
     assert.equal(applied.length, 0)
-    await act(() => button('应用提示词').click())
+    await act(() => button('应用正文').click())
     assert.deepEqual(applied, ['更换技能后的候选'])
   } finally { await view.destroy() }
 })
@@ -476,29 +489,27 @@ test('managed shot refinement edits only the creative body and keeps the assembl
     promptReferenceOverrides: { old: 'frame', removed: null }, onApply: (prompt, promptBody) => applied.push([prompt, promptBody]) }))
   try {
     await openPromptAction()
-    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
+    await act(() => button('生成整理草稿', document.querySelector('[role="dialog"]')!).click())
     assert.equal(requests[0]?.prompt, body)
     assert.equal(requests[0]?.prompt_body, body)
     assert.equal(requests[0]?.prompt_template, template)
     assert.equal(requests[0]?.resolution, '4K')
     assert.deepEqual(requests[0]?.prompt_reference_overrides, { old: 'frame', removed: null }, 'the backend must receive explicit replacement/removal decisions when assembling its system preview')
     assert.doesNotMatch(String(requests[0]?.prompt), /镜头视觉设定|图片参考图用途/)
-    assert.equal(textarea('整理后的正文').value, '林晚回头，近景突出眼神。')
-    const preview = textarea('整理后的完整提示词预览')
-    assert.equal(preview.readOnly, true, 'system settings cannot be rewritten in the result preview')
-    assert.equal(preview.value, assembled('林晚回头，近景突出眼神。'))
+    assert.equal(promptEditorText(candidateEditor().getJSON()), '林晚回头，近景突出眼神。')
+    assert.equal(await completePreview(), `【主要创作内容】\n林晚回头，近景突出眼神。\n【主要创作内容结束】\n\n${system}`)
     assert.deepEqual(applied, [], 'a completed refinement remains a draft')
 
-    await fill('整理后的正文', '林晚回头，用户指定手持红色雨伞。')
+    await fill('整理后的主要内容', '林晚回头，用户指定手持红色雨伞。')
     await fill('本次调整要求', '保留红色雨伞，神情克制。')
-    await act(() => button('继续调整').click())
+    await runNextRefinement()
     assert.equal(requests[1]?.prompt, '林晚回头，用户指定手持红色雨伞。')
     assert.equal(requests[1]?.prompt_body, requests[1]?.prompt)
     assert.equal(requests[1]?.prompt_template, template)
     assert.deepEqual(requests[1]?.prompt_reference_overrides, requests[0]?.prompt_reference_overrides)
     assert.doesNotMatch(String(requests[1]?.prompt_body), /镜头视觉设定|参考图 1/)
-    assert.equal((textarea('整理后的完整提示词预览').value.match(/【图片参考图用途】/g) || []).length, 1)
-    await act(() => button('应用提示词').click())
+    assert.equal(((await completePreview()).match(/【图片参考图用途】/g) || []).length, 1)
+    await act(() => button('应用正文').click())
     assert.deepEqual(applied, [[assembled('林晚回头，保持用户指定的红色雨伞。'), '林晚回头，保持用户指定的红色雨伞。']])
   } finally { await view.destroy() }
 })
@@ -515,16 +526,16 @@ test('visual-profile refinement accepts a legacy response and applies its body a
     onApply: (prompt, promptBody) => applied.push([prompt, promptBody]) }))
   try {
     await openPromptAction()
-    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
+    await act(() => button('生成整理草稿', document.querySelector('[role="dialog"]')!).click())
     assert.equal(requests[0]?.profile_id, 'hero')
     assert.equal(requests[0]?.prompt, '林晚人物信息图，三视图。')
     assert.equal(requests[0]?.prompt_body, '林晚人物信息图，三视图。', 'profile refinement also sends its creative body separately')
-    await act(() => button('应用提示词').click())
+    await act(() => button('应用正文').click())
     assert.deepEqual(applied, [['林晚设定图：正面与侧面，保持蓝色校服。', '林晚设定图：正面与侧面，保持蓝色校服。']])
   } finally { await view.destroy() }
 })
 
-test('complete-document refinement keeps one editable result and submits manually edited blocks on continuation', async t => {
+test('complete-document refinement edits only the main-content draft and keeps protected blocks unchanged on continuation', async t => {
   const requests: Array<Record<string, unknown>> = [], applied: string[] = []
   const system = '【镜头视觉设定】\n人物：林晚，蓝色校服，参考图 1 保持面部\n【镜头视觉设定结束】\n\n【项目画风约束】\n保留手绘线条\n【项目画风约束结束】'
   const source = `人物回头。\n\n${system}`
@@ -539,24 +550,34 @@ test('complete-document refinement keeps one editable result and submits manuall
     promptBody: '过期的单独正文不应使用', onApply: value => applied.push(value) }))
   try {
     await openPromptAction()
-    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
+    await act(() => button('生成整理草稿', document.querySelector('[role="dialog"]')!).click())
     assert.equal(requests[0]?.prompt, source)
     assert.equal(requests[0]?.prompt_document, true)
     assert.equal(requests[0]?.prompt_body, '人物回头。')
-    const result = completePromptEditor()
+    const result = candidateEditor()
     assert.equal(result.isEditable, true)
-    assert.match(promptEditorText(result.getJSON()), /保留手绘线条/)
-    assert.equal(document.querySelectorAll('.prompt-skill-result .pc-prompt-managed-section-head[contenteditable="false"]').length, 2)
-    assert.equal(document.querySelector('textarea[aria-label="整理后的正文"]'), null)
-    assert.equal(document.querySelector('textarea[aria-label="整理后的完整提示词预览"]'), null)
-    const edited = promptEditorText(result.getJSON()).replace('蓝色校服', '深蓝外套').replace('保留手绘线条', '保留用户手动指定的水彩笔触')
-    await act(() => { result.chain().setMeta('promptDocumentReplace', true)
-      .setContent(promptEditorDocument(edited, [{ assetId: 'frame', label: '参考图', url: '' }]), { emitUpdate: true }).run() })
-    await act(() => button('继续调整').click())
+    assert.equal(promptEditorText(result.getJSON()), '人物缓慢回头。')
+    assert.equal(result.getJSON().content!.some(node => node.type === 'promptManagedSection'), false, 'protected blocks have no editable node in the draft')
+    assert.equal(await completePreview(), `【主要创作内容】\n人物缓慢回头。\n【主要创作内容结束】\n\n${system}`)
+    await act(() => button('查看').click())
+    assert.match(document.querySelector('.prompt-skill-inspection')!.textContent!, /镜头视觉设定[\s\S]*项目画风约束/)
+    await act(() => button('返回整理').click())
+    await fill('整理后的主要内容', `人物缓慢回头。\n\n${system.replace('蓝色校服', '深蓝外套')}`)
+    assert.equal(button('应用正文').disabled, true, 'managed sections cannot be smuggled into the main-content draft')
+    assert.equal(button('继续调整').disabled, true)
+    assert.match(document.querySelector('.prompt-skill-result [role="alert"]')!.textContent!, /主要创作内容.*设定与生成要求/)
+    await act(() => { button('继续调整').click(); button('应用正文').click() })
+    assert.equal(requests.length, 1, 'out-of-scope blocks cannot be sent to a continuation request')
+    assert.deepEqual(applied, [], 'out-of-scope blocks cannot overwrite the node')
+    const editedBody = '人物缓慢回头，用户手动补充抬手动作。'
+    await fill('整理后的主要内容', editedBody)
+    await runNextRefinement()
+    const edited = `${editedBody}\n\n${system}`
     assert.equal(requests[1]?.prompt, edited)
-    assert.equal(requests[1]?.prompt_body, '人物缓慢回头。')
+    assert.equal(requests[1]?.prompt_body, editedBody)
     assert.equal(requests[1]?.prompt_document, true)
-    await act(() => button('应用提示词').click())
+    assert.equal(await completePreview(), `【主要创作内容】\n${editedBody}\n【主要创作内容结束】\n\n${system}`)
+    await act(() => button('应用正文').click())
     assert.deepEqual(applied, [edited])
   } finally { await view.destroy() }
 })
@@ -573,10 +594,11 @@ test('a complete profile document over the former body limit remains applicable 
     onApply: value => applied.push(value) }))
   try {
     await openPromptAction()
-    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
-    assert.equal(promptEditorText(completePromptEditor().getJSON()), prompt)
-    assert.equal(button('应用提示词').disabled, false)
-    await act(() => button('应用提示词').click())
+    await act(() => button('生成整理草稿', document.querySelector('[role="dialog"]')!).click())
+    assert.equal(promptEditorText(candidateEditor().getJSON()), '人物信息图，保持主体一致。')
+    assert.equal(await completePreview(), `【主要创作内容】\n人物信息图，保持主体一致。\n【主要创作内容结束】\n\n${fixed}`, 'the read-only preview labels the creative body and retains all fixed settings beyond the former body limit')
+    assert.equal(button('应用正文').disabled, false)
+    await act(() => button('应用正文').click())
     assert.deepEqual(applied, [prompt])
   } finally { await view.destroy() }
 })
@@ -594,13 +616,13 @@ test('changing a reference replacement invalidates the assembled refinement whil
   const view = await mount(component('frame'))
   try {
     await openPromptAction()
-    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
-    await fill('整理后的正文', '人物回头，保留手工补充的抬手动作。')
+    await act(() => button('生成整理草稿', document.querySelector('[role="dialog"]')!).click())
+    await fill('整理后的主要内容', '人物回头，保留手工补充的抬手动作。')
     await view.render(component('replacement'))
-    assert.equal(button('应用提示词').disabled, true, 'a preview built for another image cannot be applied')
-    assert.equal(textarea('整理后的正文').value, '人物回头，保留手工补充的抬手动作。')
-    assert.match(document.querySelector('[role="dialog"]')!.textContent!, /当前节点内容或生成配置已变化/)
-    await act(() => button('重新整理').click())
+    assert.equal(button('应用正文').disabled, true, 'a preview built for another image cannot be applied')
+    assert.equal(promptEditorText(candidateEditor().getJSON()), '人物回头，保留手工补充的抬手动作。')
+    assert.match(document.querySelector('[role="dialog"]')!.textContent!, /当前正文、固定设定、参考图或生成配置已变化/)
+    await runNextRefinement()
     assert.equal(requests[1]?.prompt_body, '人物回头。', 'a changed node must use its current body instead of a candidate from obsolete references')
     assert.deepEqual(requests[1]?.prompt_reference_overrides, { previous: 'replacement' })
     assert.deepEqual(applied, [])
@@ -632,7 +654,7 @@ test('adjustments select the active Pei Yan image by identity and remain drafts 
     assert.equal(promptEditorText(editor.getJSON()), '将[[ref:peiyan]] 作为裴砚的人物参考，加入画面左侧远景。')
     assert.match(document.querySelector('[aria-label="本次调整要求"]')!.textContent!, /裴砚 · 执卷官常态/)
     assert.deepEqual(applied, [], 'editing instructions does not update the node')
-    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
+    await act(() => button('生成整理草稿', document.querySelector('[role="dialog"]')!).click())
     assert.equal(requests[0]?.adjustment_request, '将[[ref:peiyan]] 作为裴砚的人物参考，加入画面左侧远景。')
     assert.deepEqual(requests[0]?.reference_asset_ids, ['lu', 'peiyan'])
     assert.deepEqual(requests[0]?.explicit_reference_asset_ids, ['peiyan'])
@@ -653,12 +675,12 @@ test('numbered result references use the returned image order instead of the pre
     onApply: prompt => applied.push(prompt) }))
   try {
     await openPromptAction()
-    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
+    await act(() => button('生成整理草稿', document.querySelector('[role="dialog"]')!).click())
     assert.equal(Object.hasOwn(requests[0]!, 'explicit_reference_asset_ids'), false, 'empty explicit references do not change legacy request shapes')
     const expected = '[[ref:lu]]用于陆照，[[ref:peiyan]]用于裴砚；裴砚在画面左侧。'
-    assert.equal(promptEditorText(completePromptEditor().getJSON()), expected)
+    assert.equal(promptEditorText(candidateEditor().getJSON()), expected)
     assert.deepEqual([...document.querySelectorAll('.prompt-skill-result .pc-prompt-reference')].map(chip => chip.textContent), ['陆照', '裴砚'])
-    await act(() => button('应用提示词').click())
+    await act(() => button('应用正文').click())
     assert.deepEqual(applied, [expected])
   } finally { await view.destroy() }
 })
@@ -677,17 +699,17 @@ test('an adjustment containing a disconnected or invalid image cannot be submitt
   try {
     await openPromptAction()
     await fill('本次调整要求', '将[[ref:frame]]作为裴砚的人物参考。')
-    assert.equal(button('整理提示词', document.querySelector('[role="dialog"]')!).disabled, false)
+    assert.equal(button('生成整理草稿', document.querySelector('[role="dialog"]')!).disabled, false)
     await view.render(component([]))
-    assert.equal(button('整理提示词', document.querySelector('[role="dialog"]')!).disabled, true)
+    assert.equal(button('生成整理草稿', document.querySelector('[role="dialog"]')!).disabled, true)
     assert.match(document.querySelector('[role="alert"]')!.textContent!, /图片引用已失效：裴砚/)
     assert.equal(document.querySelectorAll('.prompt-skill-adjustment .pc-prompt-reference.is-invalid').length, 1)
     await view.render(component(['frame'], true))
-    assert.equal(button('整理提示词', document.querySelector('[role="dialog"]')!).disabled, true)
+    assert.equal(button('生成整理草稿', document.querySelector('[role="dialog"]')!).disabled, true)
     assert.equal(requests.length, 0)
     await fill('本次调整要求', '保留当前人物。')
-    assert.equal(button('整理提示词', document.querySelector('[role="dialog"]')!).disabled, false)
-    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
+    assert.equal(button('生成整理草稿', document.querySelector('[role="dialog"]')!).disabled, false)
+    await act(() => button('生成整理草稿', document.querySelector('[role="dialog"]')!).click())
     assert.equal(requests.length, 1)
   } finally { await view.destroy() }
 })
@@ -699,15 +721,15 @@ test('changing image metadata or explicit references invalidates the draft witho
   const view = await mount(component('裴砚旧版', ['frame']))
   try {
     await openPromptAction()
-    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
-    await fill('整理后的正文', '保留手工补充的抬手动作。')
+    await act(() => button('生成整理草稿', document.querySelector('[role="dialog"]')!).click())
+    await fill('整理后的主要内容', '保留手工补充的抬手动作。')
     await view.render(component('裴砚新版', ['frame']))
-    assert.equal(button('应用提示词').disabled, true, 'a changed image label requires another refinement')
-    assert.equal(textarea('整理后的正文').value, '保留手工补充的抬手动作。')
-    await act(() => button('重新整理').click())
-    assert.equal(button('应用提示词').disabled, false)
+    assert.equal(button('应用正文').disabled, true, 'a changed image label requires another refinement')
+    assert.equal(promptEditorText(candidateEditor().getJSON()), '保留手工补充的抬手动作。')
+    await runNextRefinement()
+    assert.equal(button('应用正文').disabled, false)
     await view.render(component('裴砚新版', []))
-    assert.equal(button('应用提示词').disabled, true, 'a changed explicit connection requires another refinement')
+    assert.equal(button('应用正文').disabled, true, 'a changed explicit connection requires another refinement')
   } finally { await view.destroy() }
 })
 
@@ -743,7 +765,7 @@ test('video refinement requests independent checks and compatible image input, e
   try {
     await openPromptAction()
     assert.equal(document.querySelector<HTMLInputElement>('[aria-label="整理提示词的文本模型"]')!.value, '参考图理解模型')
-    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
+    await act(() => button('生成整理草稿', document.querySelector('[role="dialog"]')!).click())
     assert.equal(requests[0].check_video_content, true)
     assert.equal(requests[0].analyze_reference_images, true)
     assert.equal(requests[0].model_id, 'vision')
@@ -754,16 +776,16 @@ test('video refinement requests independent checks and compatible image input, e
     assert.match(checks.textContent!, /motion-recipe.md/)
     assert.match(checks.textContent!, /主动作：陆照跑到桌边站稳/)
     assert.match(checks.textContent!, /参考图视觉诊断/)
-    await fill('整理后的正文', '陆照放慢脚步站稳，笑着喊“老陈，面要凉了”。')
+    await fill('整理后的主要内容', '陆照放慢脚步站稳，笑着喊“老陈，面要凉了”。')
     assert.match(checks.textContent!, /正文已手动编辑.*对应编辑前的结果/)
     const source = '陆照在门边停下，笑着喊“老陈，面要凉了”。'
     await view.render(component(source))
-    assert.equal(button('应用提示词').disabled, true)
+    assert.equal(button('应用正文').disabled, true)
     assert.match(document.body.textContent!, /以下报告依据已过期/)
     assert.deepEqual(applied, [])
-    await act(() => button('重新整理').click())
+    await runNextRefinement()
     assert.equal(requests[1].prompt, source)
-    assert.equal(button('应用提示词').disabled, false)
+    assert.equal(button('应用正文').disabled, false)
     assert.ok(!document.body.textContent!.includes('以下报告依据已过期'))
   } finally { await view.destroy() }
 })
@@ -782,12 +804,12 @@ test('video refinement does not send image-analysis flag for incompatible or tex
   const view = await mount(promptAction({ modality: 'video', models: available }))
   try {
     await openPromptAction()
-    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
+    await act(() => button('生成整理草稿', document.querySelector('[role="dialog"]')!).click())
     assert.equal(requests[0].check_video_content, true)
     assert.equal(requests[0].analyze_reference_images, false)
     assert.match(document.body.textContent!, /仅依据文字，未查看参考图像素/)
     await choose('整理提示词的文本模型', 'incompatible')
-    await act(() => button('继续调整').click())
+    await runNextRefinement()
     assert.equal(requests[1].model_id, 'incompatible')
     assert.equal(requests[1].analyze_reference_images, false)
     assert.equal(requests[1].check_video_content, true)
@@ -817,18 +839,19 @@ test('visual-board refinement accepts an empty supplement and applies one main t
     const opener = document.querySelector<HTMLButtonElement>('button[aria-label="使用技能整理提示词"]')!
     assert.equal(opener.disabled, false, 'the main task is sufficient without supplemental body prose')
     await openPromptAction()
-    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
+    await act(() => button('生成整理草稿', document.querySelector('[role="dialog"]')!).click())
     assert.equal(requests[0]?.prompt, source)
     assert.equal(requests[0]?.prompt_body, '')
     assert.equal(requests[0]?.prompt_document, true)
     assert.equal(requests[0]?.profile_id, 'hero')
     assert.equal(requests[0]?.stage, 'image_prompt')
-    assert.equal(document.querySelector<HTMLElement>('.prompt-skill-result .is-primary .pc-prompt-managed-panel')!.hidden, false)
-    assert.equal(document.querySelector<HTMLElement>('.prompt-skill-result .is-secondary .pc-prompt-managed-panel')!.hidden, true)
-    assert.match(document.querySelector('.prompt-skill-result')!.textContent!, /主要创作内容/)
-    assert.equal(promptEditorText(completePromptEditor().getJSON()), refined)
+    assert.equal(candidateEditor().getJSON().content!.some(node => node.type === 'promptManagedSection'), false, 'the draft only exposes the main task text')
+    assert.equal(promptEditorText(candidateEditor().getJSON()), '人物正面、侧面与背面，清晰展示蓝色校服材质。')
+    assert.match(document.querySelector('.prompt-skill-heading')!.textContent!, /整理结果.*草稿可编辑，确认后应用到正文/)
+    assert.match(document.querySelector('.prompt-skill-result .prompt-skill-context')!.textContent!, /固定设定保持不变/)
+    assert.equal(await completePreview(), refined)
     assert.deepEqual(applied, [], 'the reviewed result is still a draft until applied')
-    await act(() => button('应用提示词').click())
+    await act(() => button('应用正文').click())
     assert.equal(applied[0]?.prompt, refined)
     assert.equal(applied[0]?.body, '')
     assert.equal(serializePromptSectionDocument(applied[0]!.sections!), refined)
@@ -868,35 +891,36 @@ test('clearing a visual-board candidate keeps its editor and undo history withou
     assert.equal(original.textContent, `人物三视图。\n\n${supplement}`)
     assert.equal(original.closest('[contenteditable]'), null, 'the original task is a read-only source display')
     assert.doesNotMatch(original.textContent!, /手绘线条|设定图固定要求/)
-    assert.ok(button('细化材质'))
-    assert.ok(button('补充视图'))
+    assert.ok(button('梳理材质'))
+    assert.ok(button('理清视图'))
     assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '加强构图'), false)
-    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
-    const editor = completePromptEditor()
+    await act(() => button('生成整理草稿', document.querySelector('[role="dialog"]')!).click())
+    const editor = candidateEditor()
     await act(() => editor.commands.selectAll())
     await act(() => editor.view.dom.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Backspace', bubbles: true, cancelable: true })))
     assert.equal(promptEditorText(editor.getJSON()), '')
-    assert.equal(completePromptEditor(), editor, 'an empty candidate keeps the same editor instance mounted')
+    assert.equal(candidateEditor(), editor, 'an empty candidate keeps the same editor instance mounted')
     assert.equal(editor.isDestroyed, false)
     assert.equal(button('继续调整').disabled, true)
-    assert.equal(button('应用提示词').disabled, true)
-    assert.match(document.querySelector('.prompt-skill-status')!.textContent!, /已整理 · 0 字/)
+    assert.equal(button('应用正文').disabled, true)
+    assert.match(document.querySelector('.prompt-skill-status')!.textContent!, /尚未应用 · 0 字/)
     await act(() => button('继续调整').click())
     assert.equal(requests.length, 1, 'empty candidates cannot silently re-submit the original task')
     await act(() => editor.commands.undo())
-    assert.equal(completePromptEditor(), editor)
-    assert.equal(promptEditorText(editor.getJSON()), candidate)
+    assert.equal(candidateEditor(), editor)
+    assert.equal(promptEditorText(editor.getJSON()), '人物三视图，清晰呈现衣领的织物纹理。')
+    assert.equal(await completePreview(), `\n\n${candidate}`, 'the removed supplement keeps its original boundary whitespace')
     assert.equal(button('继续调整').disabled, false)
-    assert.equal(button('应用提示词').disabled, false)
+    assert.equal(button('应用正文').disabled, false)
     await act(() => editor.commands.redo())
     assert.equal(promptEditorText(editor.getJSON()), '')
-    assert.equal(completePromptEditor(), editor)
+    assert.equal(candidateEditor(), editor)
     assert.equal(button('继续调整').disabled, true)
     assert.equal(requests.length, 1)
   } finally { await view.destroy() }
 })
 
-test('continuing after a same-name primary paste retains the active identity and the deleted source separately', async t => {
+test('continuing a source with a same-name pasted primary retains its active identity and deleted source separately', async t => {
   const primary = '【设定图固定要求】\n原始三视图。\n【设定图固定要求结束】'
   const context = '【项目画风约束】\n手绘线条\n【项目画风约束结束】'
   const source = `${primary}\n\n${context}`
@@ -906,35 +930,40 @@ test('continuing after a same-name primary paste retains the active identity and
   original.sourceStatus = 'source_changed'
   const pasted = '【设定图固定要求】\n粘贴的蓝色短尺。\n【设定图固定要求结束】'
   const refined = pasted.replace('粘贴的', '整理后的')
+  const pastedSource = `${pasted}\n\n${context}`
+  const active = { ...parsePromptSectionDocument(pasted).blocks.find(block => block.kind === 'managed')!, id: 'pasted-primary' }
+  const removed = { ...original, text: '', deleted: true }
+  sections.blocks = sections.blocks.flatMap(block => block.id === original.id ? [removed, active] : [block])
   const requests: Array<Record<string, unknown>> = [], applied: PromptSectionDocument[] = []
   t.mock.method(globalThis, 'fetch', async (url, init) => {
     if (String(url).endsWith('/skills/defaults')) return defaults()
     const request = JSON.parse(String(init!.body)) as Record<string, unknown>
     requests.push(request)
-    return reply({ prompt: requests.length === 1 ? source : `${refined}\n\n${context}`, prompt_body: '', skills: [] })
+    return reply({ prompt: requests.length === 1 ? pastedSource : `${refined}\n\n${context}`, prompt_body: '', skills: [] })
   })
-  const view = await mount(promptAction({ prompt: source, promptTemplate: source, promptSections: sections,
+  const view = await mount(promptAction({ prompt: pastedSource, promptTemplate: source, promptSections: sections,
     visualBoard: true, profileId: 'hero', shotId: null, onApply: (_prompt, _body, document) => { if (document) applied.push(document) } }))
   try {
     await openPromptAction()
-    await act(() => button('整理提示词', document.querySelector('[role="dialog"]')!).click())
-    const editor = completePromptEditor()
-    await act(() => editor.commands.selectAll())
-    await act(() => editor.view.pasteText(`${pasted}\n\n${context}`, new dom.window.Event('paste') as ClipboardEvent))
-    const active = editor.getJSON().content!.find(node => node.type === 'promptManagedSection' && node.attrs?.section.name === '设定图固定要求')!.attrs!.section
+    await act(() => button('生成整理草稿', document.querySelector('[role="dialog"]')!).click())
+    const editor = candidateEditor()
+    assert.equal(requests[0]?.prompt, pastedSource)
+    assert.equal(promptEditorText(editor.getJSON()), '粘贴的蓝色短尺。')
     assert.notEqual(active.id, original.id)
     assert.equal(active.sourceText, undefined)
     assert.equal(active.pendingSourceText, undefined)
-    await act(() => button('继续调整').click())
-    assert.equal(requests[1]?.prompt, `${pasted}\n\n${context}`)
-    assert.equal(promptEditorText(completePromptEditor().getJSON()), `${refined}\n\n${context}`)
-    await act(() => button('应用提示词').click())
+    await fill('整理后的主要内容', '粘贴的蓝色短尺，用户补充刻度。')
+    await runNextRefinement()
+    assert.equal(requests[1]?.prompt, `${pasted.replace('蓝色短尺。', '蓝色短尺，用户补充刻度。')}\n\n${context}`)
+    assert.equal(promptEditorText(candidateEditor().getJSON()), '整理后的蓝色短尺。')
+    assert.equal(await completePreview(), `${refined}\n\n${context}`)
+    await act(() => button('应用正文').click())
     const updated = applied[0]!.blocks.find(block => block.id === active.id)!
     assert.equal(updated.deleted, undefined)
     assert.equal(updated.text, refined)
     assert.equal(updated.sourceText, undefined, 'a pasted task does not inherit an old template baseline')
     assert.equal(updated.pendingSourceText, undefined)
-    assert.deepEqual(applied[0]!.blocks.find(block => block.id === original.id), { ...original, text: '', deleted: true })
+    assert.deepEqual(applied[0]!.blocks.find(block => block.id === original.id), removed)
     assert.equal(applied[0]!.blocks.filter(block => block.name === '设定图固定要求' && !block.deleted).length, 1)
   } finally { await view.destroy() }
 })

@@ -29,7 +29,7 @@ export type ScriptSourceAnalysis = {
   synthesis?: { level: number; cursor: number; inputs: unknown[]; outputs: unknown[] }
   /** Private durable synthesis tasks; omitted from public responses. */
   story_work?: { input_hash: string; tasks: Array<{ key: string; result?: unknown;
-    output_checkpoint?: { steps: Record<string, { input_hash: string; value: unknown; duration_ms: number }> }
+    output_checkpoint?: { steps: Record<string, { input_hash: string; value: unknown; duration_ms?: number }> }
     recovery?: 'character-coverage-v1'
     context?: { strategy: 'whole-source-v1' | 'character-evidence-v1'; input_hash: string; fallback_from_hash?: string; reason?: string }
     failure?: { message: string; evidence?: ScriptSourceCharacterEvidenceIssue } }> }
@@ -44,7 +44,7 @@ export type ScriptSourceAnalysis = {
   completed_characters?: number
   queue_position?: number
   /** Private validated output pages; input identity includes the full source and analysis. */
-  quality_work?: { input_hash: string; checkpoint: { steps: Record<string, { input_hash: string; value: unknown; duration_ms: number }> } }
+  quality_work?: { input_hash: string; checkpoint: { steps: Record<string, { input_hash: string; value: unknown; duration_ms?: number }> } }
   quality?: { input_hash: string; status: 'passed' | 'issues'; findings: Array<{ kind: 'omission' | 'unsupported' | 'causality'; explanation: string; unit_ids: number[] }> }
   /** Private marker: review feedback has already started one corrective run. */
   quality_rebuild_for?: string

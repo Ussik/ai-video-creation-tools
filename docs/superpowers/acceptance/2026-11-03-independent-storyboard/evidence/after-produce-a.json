@@ -1,0 +1,228 @@
+{
+  "project_id": "a7a5e15614744cd08d6ecc1826215811",
+  "scene_ids": [
+    "13aae9e5cf6949799242e13b079b1d2c",
+    "c9c689ac8632431b80e27098863fcd2b"
+  ],
+  "backend": "http://127.0.0.1:18001",
+  "mock_upstream": "http://127.0.0.1:18002",
+  "data_directory": "/tmp/studio-storyboard-qa-20261103",
+  "models": [
+    {
+      "id": "d06ff0146d0649b69c470ffd05267330",
+      "name": "QA mock · 分镜文本模型",
+      "enabled": 1
+    }
+  ],
+  "providers": [
+    {
+      "id": "1c21f06e6d374f6ea1ea66f3af6af9f9",
+      "name": "QA mock · 本地隔离",
+      "base_url": "http://127.0.0.1:18002/v1",
+      "enabled": 1
+    }
+  ],
+  "counts": {
+    "projects": 1,
+    "script_scenes": 2,
+    "shots": 19,
+    "storyboard_designs": 2,
+    "project_canvases": 2,
+    "canvas_nodes": 3,
+    "visual_profiles": 0,
+    "jobs": 0
+  },
+  "designs": [
+    {
+      "id": "5c8901a5-157b-48d4-86e1-977c83c7a28f",
+      "name": "分镜方案 2",
+      "canvas_id": "df184c27d2424ce6be568b3e7dd590a0",
+      "canvas_pending": 0
+    },
+    {
+      "id": "ba22e93a-fd3a-46b4-873e-7d9bad6310a8",
+      "name": "分镜方案 3",
+      "canvas_id": null,
+      "canvas_pending": 1
+    }
+  ],
+  "shots": [
+    {
+      "id": "75f10b966dbc4620b2f8ea3025d81b56",
+      "title": "雨巷全景 · A 已修改",
+      "source_scene_id": "13aae9e5cf6949799242e13b079b1d2c",
+      "design_id": null,
+      "superseded_by": "5c8901a5-157b-48d4-86e1-977c83c7a28f",
+      "deleted_at": null
+    },
+    {
+      "id": "914dda2c8910471f83897f233d2994f0",
+      "title": "动作推进 2",
+      "source_scene_id": "13aae9e5cf6949799242e13b079b1d2c",
+      "design_id": null,
+      "superseded_by": "5c8901a5-157b-48d4-86e1-977c83c7a28f",
+      "deleted_at": null
+    },
+    {
+      "id": "66b6d71e351a41b8adbb3876ceba1646",
+      "title": "情绪收束 3",
+      "source_scene_id": "13aae9e5cf6949799242e13b079b1d2c",
+      "design_id": null,
+      "superseded_by": "5c8901a5-157b-48d4-86e1-977c83c7a28f",
+      "deleted_at": null
+    },
+    {
+      "id": "74690d809dc74ca8a81b1cf478a9f257",
+      "title": "环境建立 1",
+      "source_scene_id": "c9c689ac8632431b80e27098863fcd2b",
+      "design_id": null,
+      "superseded_by": "5c8901a5-157b-48d4-86e1-977c83c7a28f",
+      "deleted_at": null
+    },
+    {
+      "id": "83b9dd765fe341358db442f26be5b8dd",
+      "title": "动作推进 2",
+      "source_scene_id": "c9c689ac8632431b80e27098863fcd2b",
+      "design_id": null,
+      "superseded_by": "5c8901a5-157b-48d4-86e1-977c83c7a28f",
+      "deleted_at": null
+    },
+    {
+      "id": "79f3c812985a458497bfbc2096b0c25a",
+      "title": "情绪收束 3",
+      "source_scene_id": "c9c689ac8632431b80e27098863fcd2b",
+      "design_id": null,
+      "superseded_by": "5c8901a5-157b-48d4-86e1-977c83c7a28f",
+      "deleted_at": null
+    },
+    {
+      "id": "cef33450be49445ca27d4110daad33e1",
+      "title": "雨巷全景 · A 已修改（副本）",
+      "source_scene_id": "13aae9e5cf6949799242e13b079b1d2c",
+      "design_id": null,
+      "superseded_by": "5c8901a5-157b-48d4-86e1-977c83c7a28f",
+      "deleted_at": null
+    },
+    {
+      "id": "0ac7437d8d1046b28c4985ad1e1c668f",
+      "title": "历史方案A · 雨巷",
+      "source_scene_id": "13aae9e5cf6949799242e13b079b1d2c",
+      "design_id": "5c8901a5-157b-48d4-86e1-977c83c7a28f",
+      "superseded_by": "ba22e93a-fd3a-46b4-873e-7d9bad6310a8",
+      "deleted_at": null
+    },
+    {
+      "id": "9403b41e18644722a13ea1e6d7042c8e",
+      "title": "动作推进 2",
+      "source_scene_id": "13aae9e5cf6949799242e13b079b1d2c",
+      "design_id": "5c8901a5-157b-48d4-86e1-977c83c7a28f",
+      "superseded_by": "ba22e93a-fd3a-46b4-873e-7d9bad6310a8",
+      "deleted_at": null
+    },
+    {
+      "id": "e23c76d5fc20414cb4f05fd3b5c7b845",
+      "title": "情绪收束 3",
+      "source_scene_id": "13aae9e5cf6949799242e13b079b1d2c",
+      "design_id": "5c8901a5-157b-48d4-86e1-977c83c7a28f",
+      "superseded_by": "ba22e93a-fd3a-46b4-873e-7d9bad6310a8",
+      "deleted_at": null
+    },
+    {
+      "id": "afa8135f55324ef4a75bccdf11592918",
+      "title": "环境建立 1",
+      "source_scene_id": "c9c689ac8632431b80e27098863fcd2b",
+      "design_id": "5c8901a5-157b-48d4-86e1-977c83c7a28f",
+      "superseded_by": "ba22e93a-fd3a-46b4-873e-7d9bad6310a8",
+      "deleted_at": null
+    },
+    {
+      "id": "a092f6a74164489b95cff034e3895a76",
+      "title": "动作推进 2",
+      "source_scene_id": "c9c689ac8632431b80e27098863fcd2b",
+      "design_id": "5c8901a5-157b-48d4-86e1-977c83c7a28f",
+      "superseded_by": "ba22e93a-fd3a-46b4-873e-7d9bad6310a8",
+      "deleted_at": null
+    },
+    {
+      "id": "89ec31c3772b4f6e8b5051c03b6001fc",
+      "title": "情绪收束 3",
+      "source_scene_id": "c9c689ac8632431b80e27098863fcd2b",
+      "design_id": "5c8901a5-157b-48d4-86e1-977c83c7a28f",
+      "superseded_by": "ba22e93a-fd3a-46b4-873e-7d9bad6310a8",
+      "deleted_at": null
+    },
+    {
+      "id": "eab9f72d62344ba9bcbe3c52a92ceff6",
+      "title": "当前方案B · 雨巷",
+      "source_scene_id": "13aae9e5cf6949799242e13b079b1d2c",
+      "design_id": "ba22e93a-fd3a-46b4-873e-7d9bad6310a8",
+      "superseded_by": null,
+      "deleted_at": null
+    },
+    {
+      "id": "cf0962060d8e46c1bf4177950ede4b49",
+      "title": "动作推进 2",
+      "source_scene_id": "13aae9e5cf6949799242e13b079b1d2c",
+      "design_id": "ba22e93a-fd3a-46b4-873e-7d9bad6310a8",
+      "superseded_by": null,
+      "deleted_at": null
+    },
+    {
+      "id": "e17d6644252b4754b864b3405a9580cf",
+      "title": "情绪收束 3",
+      "source_scene_id": "13aae9e5cf6949799242e13b079b1d2c",
+      "design_id": "ba22e93a-fd3a-46b4-873e-7d9bad6310a8",
+      "superseded_by": null,
+      "deleted_at": null
+    },
+    {
+      "id": "aef4e63197b0462e844efbf4c31d8c43",
+      "title": "环境建立 1",
+      "source_scene_id": "c9c689ac8632431b80e27098863fcd2b",
+      "design_id": "ba22e93a-fd3a-46b4-873e-7d9bad6310a8",
+      "superseded_by": null,
+      "deleted_at": null
+    },
+    {
+      "id": "7451305c642d40e3b62990b2cab12bae",
+      "title": "动作推进 2",
+      "source_scene_id": "c9c689ac8632431b80e27098863fcd2b",
+      "design_id": "ba22e93a-fd3a-46b4-873e-7d9bad6310a8",
+      "superseded_by": null,
+      "deleted_at": null
+    },
+    {
+      "id": "5cab3d9d3e0a48a7aa6c227f63175d9c",
+      "title": "情绪收束 3",
+      "source_scene_id": "c9c689ac8632431b80e27098863fcd2b",
+      "design_id": "ba22e93a-fd3a-46b4-873e-7d9bad6310a8",
+      "superseded_by": null,
+      "deleted_at": null
+    }
+  ],
+  "mock_requests": [
+    {
+      "type": "storyboard-plan",
+      "stream": false,
+      "timestamp": "2026-11-03T15:39:07.602Z",
+      "scene_ids": [
+        "13aae9e5cf6949799242e13b079b1d2c",
+        "c9c689ac8632431b80e27098863fcd2b"
+      ]
+    },
+    {
+      "type": "storyboard-plan",
+      "stream": false,
+      "timestamp": "2026-11-03T15:40:00.885Z",
+      "scene_ids": [
+        "13aae9e5cf6949799242e13b079b1d2c",
+        "c9c689ac8632431b80e27098863fcd2b"
+      ]
+    },
+    {
+      "type": "references",
+      "stream": false,
+      "timestamp": "2026-11-03T15:43:20.292Z"
+    }
+  ]
+}

@@ -1,10 +1,10 @@
-import { Plugin, type EditorState } from '@tiptap/pm/state'
+import { Plugin, PluginKey, type EditorState } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import type { Node } from '@tiptap/pm/model'
 
 /** Only decorate layout. Every original paragraph and section separator stays
  * in the document, clipboard, undo history and serialized model prompt. */
-function promptPresentation(state: EditorState, placeholder: string, visualBoard: boolean) {
+function promptPresentation(state: EditorState, placeholder: string, visualBoard: boolean, unified: boolean) {
   const nodes: Array<{ node: Node; position: number }> = []
   const decorations: Decoration[] = []
   state.doc.forEach((node, position) => nodes.push({ node, position }))
@@ -41,7 +41,7 @@ function promptPresentation(state: EditorState, placeholder: string, visualBoard
       && (!visualBoard || node.attrs.section.name !== '设定图固定要求'))
     const count = requirementNodes.length
     const headingPosition = visualBoard ? requirementNodes[0]?.position : nodes[firstSection].position
-    if (headingPosition !== undefined) decorations.push(Decoration.widget(headingPosition, () => {
+    if (!unified && headingPosition !== undefined) decorations.push(Decoration.widget(headingPosition, () => {
       const heading = document.createElement('div')
       heading.className = 'pc-prompt-presets-heading'
       heading.contentEditable = 'false'
@@ -51,6 +51,16 @@ function promptPresentation(state: EditorState, placeholder: string, visualBoard
       heading.append(label, detail)
       return heading
     }, { key: `prompt-presets-${visualBoard ? 'board-' : ''}${count}`, side: -1, stopEvent: () => true }))
+  }
+  if (unified && visualBoard && nodes.some(({ node }) => node.type.name === 'promptManagedSection' && node.attrs.section.name === '设定图固定要求')) {
+    const supplement = nodes.find(({ node }) => node.type.name === 'paragraph' && node.textContent.trim())
+    if (supplement) decorations.push(Decoration.widget(supplement.position, () => {
+      const heading = document.createElement('div')
+      heading.className = 'pc-prompt-supplement-heading'
+      heading.contentEditable = 'false'
+      heading.textContent = '补充创作内容 · 整理时一并合入主要内容'
+      return heading
+    }, { key: 'prompt-supplement-heading', side: -1, stopEvent: () => true }))
   }
   for (let index = 0; index < nodes.length; index++) {
     const { node, position } = nodes[index]
@@ -77,6 +87,37 @@ function promptPresentation(state: EditorState, placeholder: string, visualBoard
   return DecorationSet.create(state.doc, decorations)
 }
 
-export function promptPresentationPlugin(placeholder: () => string = () => '描述画面，输入 @ 引用图片', visualBoard: () => boolean = () => false) {
-  return new Plugin({ props: { decorations: state => promptPresentation(state, placeholder(), visualBoard()) } })
+export function promptPresentationPlugin(placeholder: () => string = () => '描述画面，输入 @ 引用图片', visualBoard: () => boolean = () => false, unified: () => boolean = () => false) {
+  return new Plugin({ props: { decorations: state => promptPresentation(state, placeholder(), visualBoard(), unified()) } })
+}
+
+const requirementsHostKey = new PluginKey<HTMLElement | null>('promptRequirementsHost')
+
+export function promptRequirementsHost(state: EditorState): HTMLElement | null {
+  return requirementsHostKey.getState(state) || null
+}
+
+/** Each editor owns its controls-only host. StrictMode can initialize two
+ * editors for one React component; sharing a DOM widget makes their observers
+ * repeatedly move it between views. Editable node views stay in place. */
+export function promptRequirementsHostPlugin(enabled: () => boolean) {
+  return new Plugin<HTMLElement | null>({
+    key: requirementsHostKey,
+    state: {
+      init: () => {
+        if (typeof document === 'undefined') return null
+        const host = document.createElement('div')
+        host.className = 'pc-prompt-requirements-host'
+        host.contentEditable = 'false'
+        return host
+      },
+      apply: (_transaction, host) => host,
+    },
+    props: { decorations: state => {
+      const host = promptRequirementsHost(state)
+      return host && enabled()
+        ? DecorationSet.create(state.doc, [Decoration.widget(state.doc.content.size, () => host,
+          { key: 'prompt-requirements-controls', side: 1, stopEvent: () => true })]) : null
+    } },
+  })
 }

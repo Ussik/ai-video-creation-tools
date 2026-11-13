@@ -1,3 +1,5 @@
+import type { VideoPromptDialect } from '@video-studio/shared/skills/skill-recommendation'
+
 /** Prompt dialect selection only; provider capabilities still come from explicit settings. */
 export function mentionsSeedanceVersion(text: string, version: '2.0' | '2.5'): boolean {
   const minor = version === '2.0' ? '0' : '5'
@@ -5,14 +7,26 @@ export function mentionsSeedanceVersion(text: string, version: '2.0' | '2.5'): b
 }
 
 type PromptTarget = { name: string; remote_id: string; settings: Record<string, unknown> }
+/** Only call with configured model identity/settings, never a story or user instruction. */
+export function videoPromptDialect(identity: string): VideoPromptDialect | undefined {
+  if (mentionsSeedanceVersion(identity, '2.5')) return 'seedance-2.5'
+  if (mentionsSeedanceVersion(identity, '2.0')) return 'seedance-2.0'
+  if (/minimax[- _]?h3(?=$|[^a-z0-9])/i.test(identity)) return 'minimax-h3'
+  if (/wan[- _]?3[. _-]0(?=$|[^0-9])/i.test(identity)) return 'wan-3.0'
+  return undefined
+}
+export function configuredVideoPromptDialect(target: PromptTarget | null): VideoPromptDialect | undefined {
+  if (!target) return undefined
+  for (const value of [target.settings.video_prompt_dialect, target.settings.target_video_model,
+    target.settings.video_reference_profile, target.remote_id, target.name]) {
+    const dialect = typeof value === 'string' ? videoPromptDialect(value) : undefined
+    if (dialect) return dialect
+  }
+  return undefined
+}
 export function seedance2PromptGuidance(target: PromptTarget | null): string {
-  if (!target) return ''
-  const dialect = [target.settings.video_prompt_dialect, target.settings.target_video_model, target.settings.video_reference_profile]
-    .find(value => typeof value === 'string' && (mentionsSeedanceVersion(value, '2.0') || mentionsSeedanceVersion(value, '2.5')))
-  const identity = [dialect, target.remote_id, target.name]
-    .find(value => typeof value === 'string' && (mentionsSeedanceVersion(value, '2.0') || mentionsSeedanceVersion(value, '2.5')))
-  if (typeof identity !== 'string') return ''
-  if (mentionsSeedanceVersion(identity, '2.5')) {
+  const dialect = configuredVideoPromptDialect(target)
+  if (dialect === 'seedance-2.5') {
     // Official Seedance 2.5 prompt guide, reviewed 2026-10-24.
     return '\n【Seedance 2.5 提示词要求】\n' +
       '只整理当前节点已有叙事，保留创作者确认的剧情、对白、模式和素材用途，不增加其他镜头。先概述主体、地点、事件与风格，再按动作先后、运镜和声音组织具体情节。\n' +
@@ -23,7 +37,7 @@ export function seedance2PromptGuidance(target: PromptTarget | null): string {
       '保持参考、首帧、首尾帧、编辑或延长的任务类别。编辑明确修改范围及从何状态改为何状态，可用整数秒时间戳限定时段；原视频画幅和时长跟随输入。' +
       '延长明确向前或向后延续，并交代画面与声音衔接；首帧、首尾帧和延长的画幅跟随输入。普通参考任务仍沿用本次所选画幅和时长。\n'
   }
-  if (!mentionsSeedanceVersion(identity, '2.0')) return ''
+  if (dialect !== 'seedance-2.0') return ''
   // Official 2.0 series prompt guide, reviewed 2026-10-10 (updated 2026-09-22).
   return '\n【Seedance 2.0 系列提示词要求】\n' +
     '同样适用于 2.0 Fast / Mini，只整理当前节点已有叙事，不增加其他镜头或改变已确认的剧情、对白、画幅、时长和模式。\n' +

@@ -22,9 +22,13 @@ export function workflowDocumentContext(artifacts: readonly ContextArtifact[], l
  * work keeps its original prompt and hashes so no accepted prose is lost. */
 export function hasRetainedGenerationWork(checkpoint: GenerationCheckpoint): boolean {
   return Object.entries(checkpoint.steps).some(([id, step]) => {
-    if (id !== 'draft:stream:state') return true
+    // A rejected response is diagnostic data, never accepted creative work.
+    // Per-document generation tasks namespace their step ids with a slash.
+    if (id === 'draft:stream:diagnostic' || id.endsWith('/draft:stream:diagnostic')) return false
+    if (id !== 'draft:stream:state' && !id.endsWith('/draft:stream:state')) return true
     if (!step.value || typeof step.value !== 'object') return true
     const state = step.value as Record<string, unknown>
+    if (state.pendingSceneRepair != null || state.pendingBlockResponse != null) return true
     if (Array.isArray(state.pendingArtifacts) && state.pendingArtifacts.length > 0) return true
     if (Array.isArray(state.blockedArtifacts) && state.blockedArtifacts.length > 0) return true
     if (Array.isArray(state.blockedScenes) && state.blockedScenes.length > 0) return true

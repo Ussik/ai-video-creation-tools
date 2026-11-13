@@ -98,6 +98,28 @@ test('compact book titles and numbered headings render with heading styles and s
   })
 })
 
+test('deep outline headings render as h4 through h6 and retain levels after an edit and reload', () => {
+  const parsed = parseScriptDocument('#### 第一篇章：幽冥专列篇\n- **起因与入局**：误入列车。\n#####冲突与对决\n######1、结算与交接')
+  withEditor(parsed, editor => {
+    assert.equal(editor.view.dom.querySelector('h4')?.textContent, '第一篇章：幽冥专列篇')
+    assert.equal(editor.view.dom.querySelector('h5')?.textContent, '冲突与对决')
+    assert.equal(editor.view.dom.querySelector('h6')?.textContent, '1、结算与交接')
+    assert.equal(editor.view.dom.textContent?.includes('#'), false)
+    editor.commands.setTextSelection(1)
+    editor.commands.insertContent('修订：')
+    editor.state.doc.check()
+    const edited = normalizeTextDocument(editor.getJSON())
+    const stored = serializeScriptDocument(edited)
+    assert.match(stored, /^#### 修订：第一篇章/)
+    withEditor(parseScriptDocument(stored), reloaded => {
+      assert.deepEqual(normalizeTextDocument(reloaded.getJSON()), edited)
+      assert.equal(reloaded.view.dom.querySelector('h4')?.textContent, '修订：第一篇章：幽冥专列篇')
+      assert.equal(reloaded.view.dom.querySelector('h5')?.textContent, '冲突与对决')
+      assert.equal(reloaded.view.dom.querySelector('h6')?.textContent, '1、结算与交接')
+    })
+  })
+})
+
 test('serialized rich script content is accepted by the real Tiptap schema', () => {
   const original: JSONContent = {
     type: 'doc',

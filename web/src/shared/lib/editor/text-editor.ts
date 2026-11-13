@@ -18,10 +18,10 @@ function canSaveDocument(document: JSONContent): boolean {
     && new TextEncoder().encode(JSON.stringify(normalizeTextDocument(document))).length <= 256000
 }
 
-export function textEditorExtensions() {
+export function textEditorExtensions(options: { headingLevels?: Array<1 | 2 | 3 | 4 | 5 | 6> } = {}) {
   return [
     StarterKit.configure({
-      heading: { levels: [1, 2, 3] },
+      heading: { levels: options.headingLevels ?? [1, 2, 3] },
       code: false, codeBlock: false,
       link: false, underline: false, trailingNode: false,
     }),

@@ -10,7 +10,9 @@ export type ScriptActivityArtifactPreview = {
 
 /** Public execution records shared by API and UI, without server dependencies. */
 export type ScriptActivity = {
-  task_id?: string; step_id?: string; attempt?: number; sequence?: number;
+  task_id?: string; step_id?: string;
+  /** One-based claimed request attempt; absent when the counter is unknown. */
+  attempt?: number; sequence?: number;
   id: string; kind: 'skill' | 'tool' | 'model' | 'context';
   status: 'running' | 'succeeded' | 'failed' | 'cancelled';
   label: string; summary: string; started_at: number; ended_at?: number; duration_ms?: number;
@@ -19,6 +21,7 @@ export type ScriptActivity = {
   input?: string; output?: string; input_truncated?: boolean; output_truncated?: boolean;
   request_bytes?: number; response_chars?: number; first_event_ms?: number;
   input_tokens?: number; output_tokens?: number; reasoning_tokens?: number; output_limit?: number;
+  output_limit_reason?: 'max_output_tokens' | 'length'; output_limit_kind?: 'text' | 'reasoning' | 'tool_arguments';
   cache_read_tokens?: number; cache_write_tokens?: number; cache_miss_tokens?: number; request_purpose?: string;
   estimated_input_tokens?: number; context_window_tokens?: number; reserved_output_tokens?: number;
   input_limit_tokens?: number; output_limit_tokens?: number;
@@ -31,7 +34,6 @@ export type ScriptActivity = {
   failure_reason?: 'output_limit'|'context_overflow'|'disconnected'|'refusal'|'invalid_tool'|'invalid_response'|'upstream_error'|'cancelled';
   output_parameter?: 'max_output_tokens'|'max_completion_tokens'|'max_tokens'; framing_reserve_tokens?: number;
   raw_reason?: string; delivery?: 'not_sent'|'rejected'|'accepted'|'output_started'|'completed'|'unknown'; output_started?: boolean;
-  output_limit_reason?: 'max_output_tokens'|'length'; output_limit_kind?: 'text'|'reasoning'|'tool_arguments';
   upstream_request_id?: string; http_status?: number;
   usage?: { current: ScriptRequestUsage; cumulative?: ScriptRequestUsage; limits?: ScriptRequestUsageLimits };
   targets?: ScriptActivityTarget[];
@@ -44,7 +46,7 @@ export type ScriptExecution = {
   title: string; request: string; started_at: number; targets?: string[];
   focus_artifact?: 'all' | 'character' | 'location' | 'prop';
   mode?: 'all' | 'script' | 'director';
-  document_action?: { operation: 'review' | 'revise'; document_ids: string[] };
+  document_action?: { operation: 'review' | 'revise'; document_ids: string[]; revision_kind?: 'dialogue' };
   workflow?: { operation?: import('./script-stage-access.js').StageOperation; stage: 'outline' | 'characters' | 'locations' | 'props' | 'episode'; scope?: 'project' | 'episode'; episode_number: number; target_duration?: number;
     intent?: import('./script-task-contract.js').ScriptTaskIntent; artifact_types?: StageArtifactType[] };
   outcome?: { kind: 'reply' | 'question' | 'draft' | 'partial' | 'saved' | 'discarded' | 'review' | 'next_step' | 'failed' | 'cancelled'; summary: string; draft_id?: string; draft_version?: string };

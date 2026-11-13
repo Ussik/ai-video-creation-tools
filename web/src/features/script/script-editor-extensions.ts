@@ -5,7 +5,7 @@ import { textEditorExtensions } from '../../shared/lib/editor/text-editor'
 // tables, whose cells support paragraphs and inline formatting.
 export function scriptEditorExtensions() {
   return [
-    ...textEditorExtensions(),
+    ...textEditorExtensions({ headingLevels: [1, 2, 3, 4, 5, 6] }),
     Table.configure({ resizable: false, cellMinWidth: 120, renderWrapper: true, HTMLAttributes: { class: 'script-document-table' } }),
     TableRow,
     TableCell.extend({ content: 'paragraph+' }),

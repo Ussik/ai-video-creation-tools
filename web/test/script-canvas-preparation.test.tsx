@@ -26,17 +26,17 @@ const signature = 'a'.repeat(64)
 const context = { signature, scenes: [{ ...scene, shot_count: 0, material_count: 0 }], documents: [], skills: [], project: { name: '画布流程', style: '' } }
 const draft = { signature, scenes: [{ scene_id: 'scene', scene_heading: '车站', scene_duration: 5, shots: [{ shot_id: null, title: '等车', prompt: '林晚在车站等车', image_prompt: '林晚站在月台', video_prompt: '林晚看向驶来的列车，镜头推近', duration: 5, start_state: '', end_state: '', cut_note: '' }] }], used_skills: [], source_documents: [] }
 function button(text: string) { const node = [...document.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === text); assert.ok(node, text); return node }
-async function mount(options: { models?: Model[]; detail?: ProjectDetail; refresh?: () => Promise<void>; close?: () => void } = {}) {
+async function mount(options: { models?: Model[]; detail?: ProjectDetail; refresh?: () => Promise<void>; close?: () => void; openShotManager?: (sceneIds?: string[]) => void } = {}) {
   dom.window.localStorage.clear(); dom.window.sessionStorage.clear()
   dom.window.localStorage.setItem('script-director-model:canvas-ui', model.id)
   const container = document.createElement('div'); document.body.append(container); const root = createRoot(container)
-  await act(async () => root.render(<MantineProvider env="test"><ScriptDirectorPanel detail={options.detail || detail} models={options.models || [model]} providers={[provider]} onRefresh={options.refresh || (async () => {})} onClose={options.close || (() => {})} onOpenModels={() => {}} onNotice={() => {}} /></MantineProvider>))
+  await act(async () => root.render(<MantineProvider env="test"><ScriptDirectorPanel detail={options.detail || detail} models={options.models || [model]} providers={[provider]} onRefresh={options.refresh || (async () => {})} onClose={options.close || (() => {})} onOpenModels={() => {}} onOpenShotManager={options.openShotManager} onNotice={() => {}} /></MantineProvider>))
   return { container, destroy: async () => { await act(() => root.unmount()); container.remove() } }
 }
 const common = (path: string) => path.endsWith('/skills/defaults') ? Response.json({ policies: [{ stage: 'script', label: '剧本创作', primary_id: null, auxiliary_ids: [], source: 'global', warning: '', skills: [] }] }) : path.endsWith('/tools-state') ? Response.json({ draft: null, decisions: [] })
   : path.endsWith('/conversations') ? Response.json({ conversations: [] }) : path.endsWith('/script/source') ? Response.json(null) : null
 
-test('the single 加入画布 entry opens planning metadata without a model request or scene-import shortcut', async t => {
+test('the 规划分镜 entry opens independent planning metadata without a model request or scene-import shortcut', async t => {
   const requests: Array<{ path: string; body: any }> = []; let closed = 0
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
     const path = String(url), basic = common(path); if (basic) return basic
@@ -47,8 +47,8 @@ test('the single 加入画布 entry opens planning metadata without a model requ
   const view = await mount({ close: () => closed++ })
   try {
     const production = view.container.querySelector('[aria-label="故事板制作"]')!
-    assert.deepEqual([...production.querySelectorAll('button')].map(button => button.textContent?.trim()), ['加入画布'])
-    await act(async () => button('加入画布').click())
+    assert.deepEqual([...production.querySelectorAll('button')].map(button => button.textContent?.trim()), ['规划分镜'])
+    await act(async () => button('规划分镜').click())
     assert.equal(requests.length, 1)
     assert.ok(requests[0].path.endsWith('/storyboard/context'))
     assert.deepEqual(requests[0].body, { scene_ids: ['scene'] })
@@ -68,7 +68,7 @@ test('missing storyboards cannot bypass planning when no text model is available
   })
   const view = await mount({ models: [] })
   try {
-    await act(async () => button('加入画布').click())
+    await act(async () => button('规划分镜').click())
     assert.equal(paths.length, 1); assert.ok(paths[0].endsWith('/storyboard/context'))
     assert.equal(button('开始规划').disabled, true)
     assert.match(document.body.textContent!, /配置并启用文本模型/)
@@ -77,13 +77,14 @@ test('missing storyboards cannot bypass planning when no text model is available
   } finally { await view.destroy() }
 })
 
-test('the unified flow confirms a planned draft and retries refresh without another commit', async t => {
+test('the script planning fallback saves independently and retries refresh without another commit', async t => {
   let commits = 0, plans = 0, checks = 0, imports = 0, refreshes = 0, closed = 0
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
     const path = String(url), basic = common(path); if (basic) return basic
     if (path.endsWith('/storyboard/context')) return Response.json(context)
+    if (path.endsWith('/storyboard/preview')) return Response.json({ preview: null })
     if (path.endsWith('/storyboard/plan')) { plans++; return Response.json(draft) }
-    if (path.endsWith('/storyboard/commit')) { commits++; return Response.json(result) }
+    if (path.endsWith('/storyboard/commit')) { commits++; assert.equal(JSON.parse(String(init?.body)).save_only, true); return Response.json(result) }
     if (path.endsWith('/script/canvas/check')) {
       checks++; assert.deepEqual(JSON.parse(String(init?.body)), { scene_ids: ['scene'] })
       return Response.json({ signature, scene_ids: ['scene'], needs_analysis: [] })
@@ -93,17 +94,32 @@ test('the unified flow confirms a planned draft and retries refresh without anot
   })
   const view = await mount({ close: () => closed++, refresh: async () => { if (++refreshes === 1) throw new Error('刷新失败') } })
   try {
-    await act(async () => button('加入画布').click())
+    await act(async () => button('规划分镜').click())
     assert.equal(plans, 0); assert.equal(commits, 0)
     await act(async () => button('开始规划').click())
     assert.equal(plans, 1); assert.equal(commits, 0)
     assert.equal(dom.window.sessionStorage.getItem('script-canvas-open:canvas-ui'), null)
-    await act(async () => button('确认加入画布').click())
+    await act(async () => button('保存分镜方案').click())
     assert.match(document.body.textContent!, /刷新失败/); assert.equal(closed, 0)
-    await act(async () => button('继续加入画布').click())
-    assert.equal(commits, 1); assert.equal(closed, 1)
-    assert.equal(checks, 1); assert.equal(imports, 1); assert.equal(refreshes, 2)
-    const queued = JSON.parse(dom.window.sessionStorage.getItem('script-canvas-open:canvas-ui')!)
-    assert.deepEqual(queued.result, { ...result, updated_shot_ids: [] })
+    await act(async () => button('重试刷新').click())
+    assert.equal(commits, 1); assert.equal(closed, 0, 'saving the fallback planner keeps the script editor open')
+    assert.equal(checks, 0); assert.equal(imports, 0); assert.equal(refreshes, 2)
+    assert.equal(dom.window.sessionStorage.getItem('script-canvas-open:canvas-ui'), null)
+  } finally { await view.destroy() }
+})
+
+
+test('script planning opens the shared shot manager with its scene scope when the integration callback is provided', async t => {
+  const scopes: Array<string[] | undefined> = [], unexpected: string[] = []
+  t.mock.method(globalThis, 'fetch', async url => {
+    const path = String(url), basic = common(path); if (basic) return basic
+    unexpected.push(path); throw new Error(`Unexpected ${path}`)
+  })
+  const view = await mount({ openShotManager: ids => scopes.push(ids) })
+  try {
+    await act(() => button('规划分镜').click())
+    assert.deepEqual(scopes, [['scene']])
+    assert.deepEqual(unexpected, [])
+    assert.equal(document.querySelector('.storyboard-planner'), null)
   } finally { await view.destroy() }
 })

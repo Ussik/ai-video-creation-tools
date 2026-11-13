@@ -35,7 +35,7 @@ function revisionDraft(ready = false): ScriptToolDraft {
 }
 const stream = (value: object) => new Response(`data: ${JSON.stringify({ type: 'done', ...value })}\n\n`, { headers: { 'Content-Type': 'text/event-stream' } })
 function button(text: string) { const node = [...document.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === text || item.getAttribute('aria-label') === text); assert.ok(node, text); return node }
-async function mount(projectDetail = detail, preserveDraft = false, sourceDocument: unknown = null, initialStageRequest?: import('../src/features/script/script-workflow').WorkflowRequest) {
+async function mount(projectDetail = detail, preserveDraft = false, sourceDocument: unknown = null, initialStageRequest?: import('../src/features/script/script-workflow').WorkflowRequest, refreshProject?: () => ProjectDetail) {
   const mockedFetch = globalThis.fetch
   const fixtureFetch: typeof fetch = async (...args) => String(args[0]).endsWith('/skills/defaults')
     ? Response.json({ policies: skillStageOptions.map(({ value: stage, label }) => ({ stage, label, primary_id: null, auxiliary_ids: [], source: 'global', warning: '', skills: [] })) })
@@ -47,11 +47,18 @@ async function mount(projectDetail = detail, preserveDraft = false, sourceDocume
   }
   dom.window.localStorage.setItem('script-director-model:project-tools', model.id)
   const container = document.createElement('div'); document.body.append(container); const root = createRoot(container)
-  await act(async () => root.render(<MantineProvider env="test"><ScriptDirectorPanel detail={projectDetail} models={[model]} providers={[provider]} initialStageRequest={initialStageRequest} openRequestId={initialStageRequest ? 1 : undefined} onRefresh={async () => {}} onClose={() => {}} onOpenModels={() => {}} onNotice={() => {}} /></MantineProvider>))
+  const render = (next = projectDetail) => root.render(<MantineProvider env="test"><ScriptDirectorPanel detail={next} models={[model]} providers={[provider]} initialStageRequest={initialStageRequest} openRequestId={initialStageRequest ? 1 : undefined} onRefresh={async () => { if (refreshProject) render(refreshProject()) }} onClose={() => {}} onOpenModels={() => {}} onNotice={() => {}} /></MantineProvider>)
+  await act(async () => render())
   return { container, destroy: async () => { await act(() => root.unmount()); container.remove(); if (globalThis.fetch === fixtureFetch) globalThis.fetch = mockedFetch } }
 }
 function setInput(selector: string, value: string) { const field = document.querySelector<HTMLTextAreaElement>(selector)!; Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value')!.set!.call(field, value); field.dispatchEvent(new dom.window.Event('input', { bubbles: true })) }
 async function openDoc() { await act(() => button('对话工具').click()); await act(() => button('项目文档 · 2').click()); await act(() => button('阅读文档：全剧人物设定').click()) }
+async function openHeaderTool(label: string) {
+  await act(() => button('更多剧本工具').click())
+  const item = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(node => node.textContent === label || node.getAttribute('aria-label') === label)
+  assert.ok(item, `header tool: ${label}`)
+  await act(() => item.click())
+}
 
 test('partial task restores progress and proposed decisions, resumes the same scope, then enables unified save', async t => {
   let pending: ScriptToolDraft | null = revisionDraft(), submitted: any, commits = 0
@@ -312,6 +319,44 @@ test('review sends only strict action fields and revision prefills editable inst
   } finally { await view.destroy() }
 })
 
+test('dialogue revision targets the saved episode, preserves manual base rules and waits for draft confirmation', async t => {
+  const episode = { ...doc, id: 'episode-dialogue', artifact_type: 'episode_script' as const, episode_number: 1, title: '第一集正文', content: '夜，家门外。\n林晚：我绝不会向命运低头。' }
+  const revised = { ...episode, content: '夜，家门外。林晚按住袖口。\n林晚：回去就说我摔的。', version: 'episode-v1', original_content: episode.content,
+    replacements: [{ find: '我绝不会向命运低头。', replace: '回去就说我摔的。', reason: '以掩饰伤势的交流目的替代空泛宣言。' }] }
+  const dialogueDraft: ScriptToolDraft = { id: 'dialogue-draft', version: 'dialogue-v1', kind: 'patch', summary: '修订第一集台词', status: 'pending', documents: [revised] }
+  let submitted: any, commits = 0
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    const path = String(url)
+    if (path.endsWith('/tools-state')) return Response.json({ draft: null, decisions: [] })
+    if (path.endsWith('/conversations')) return Response.json({ conversations: [] })
+    if (path.endsWith('/chat/stream')) { submitted = JSON.parse(String(init?.body)); return stream({ reply: '已准备台词修订草稿。', tool_draft: dialogueDraft, classification: { type: 'other' }, classification_version: replyClassificationVersion }) }
+    if (path.endsWith('/commit')) { commits++; return Response.json({ ...dialogueDraft, status: 'saved' }) }
+    if (path.includes('/conversations/')) return Response.json({})
+    throw new Error(`Unexpected ${path}`)
+  })
+  const project = { ...detail, script: { ...detail.script, artifacts: [doc, episode] } }
+  const view = await mount(project)
+  try {
+    await act(() => button('创作选项').click())
+    await act(() => button('剧本创作技能选择').click())
+    const input = document.querySelector<HTMLInputElement>('input[aria-label="script主技能"]')!
+    await act(() => input.click())
+    await act(() => document.querySelector<HTMLElement>('[role="option"][value="__base__"]')!.click())
+    await act(() => button('剧本创作技能选择').click())
+    await act(() => button('创作选项').click())
+    await openHeaderTool('项目文档')
+    await act(() => button('阅读文档：第一集正文').click())
+    await act(async () => button('改台词').click())
+    assert.deepEqual(submitted.document_action, { operation: 'revise', document_ids: [episode.id], revision_kind: 'dialogue' })
+    assert.deepEqual(submitted.skill_selections, { script: [] })
+    assert.match(submitted.messages.at(-1).text, /台词专项修订[\s\S]*等待我确认保存/)
+    assert.equal(commits, 0)
+    assert.match(view.container.textContent!, /修订第一集台词/)
+    await act(async () => button('确认保存').click())
+    assert.equal(commits, 1)
+  } finally { await view.destroy() }
+})
+
 test('creative review reports render every quality dimension from saved conversation history', async t => {
   const review = { id: 'quality-review', summary: '人物选择与剧情兑现的审读建议', documents: [{ id: doc.id, version: 'doc-version' }], created_at: '2026-10-12', findings: creativeReviewCategories.map(category => ({
     document_id: doc.id, document_version: 'doc-version', category, severity: 'info', quote: '身份待定。', explanation: '需结合具体行动核对。', suggestion: '明确选择与后果。', related: [],
@@ -333,6 +378,7 @@ test('creative review reports render every quality dimension from saved conversa
 
 test('server patch restores, compares original, syncs manual edits before dialogue and saves the current version', async t => {
   let pending: ScriptToolDraft | null = structuredClone(draft)
+  let refreshedProject = detail
   const requests: Array<{ url: string; method: string; body: any }> = []
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
     const path = String(url), body = init?.body ? JSON.parse(String(init.body)) : undefined, method = init?.method || 'GET'; requests.push({ url: path, method, body })
@@ -341,34 +387,111 @@ test('server patch restores, compares original, syncs manual edits before dialog
     if (path.endsWith('/tool-drafts/draft-1') && method === 'PUT') { pending = { ...pending!, version: 'version-2', documents: pending!.documents.map(doc => ({ ...doc, content: body.documents[0].content })) }; return Response.json(pending) }
     if (path.endsWith('/chat/stream')) return stream({ reply: '已读取补充的采访经历。', classification_version: 8, classification: { type: 'other' }, tool_draft: pending,
       activity: [{ id: 'source', kind: 'tool', name: 'read_documents', status: 'succeeded', label: '阅读项目文档', summary: '已读取修改前文档', started_at: Date.now(), targets: [{ kind: 'document', id: doc.id, title: doc.title }] }] })
-    if (path.endsWith('/commit')) { assert.equal(body.version, 'version-2'); assert.equal(body.approved, true); const saved = { ...pending!, status: 'saved' }; pending = null; return Response.json(saved) }
+    if (path.endsWith('/commit')) {
+      assert.equal(body.version, 'version-2'); assert.equal(body.approved, true)
+      const saved = { ...pending!, status: 'saved' }
+      refreshedProject = { ...detail, script: { ...detail.script, characters: saved.documents[0].content, artifacts: [{ ...doc, content: saved.documents[0].content }] } }
+      pending = null
+      return Response.json(saved)
+    }
     if (path.includes('/conversations/')) return Response.json({})
     throw new Error(`Unexpected request ${path}`)
   })
-  const view = await mount()
+  const view = await mount(detail, false, null, undefined, () => refreshedProject)
   try {
     assert.match(view.container.textContent!, /文档修订草稿/); assert.match(view.container.querySelector('.sd-original-document')!.textContent!, /身份待定/)
     await act(() => button('编辑').click()); const revised = draft.documents[0].content + '\n她曾采访过失踪案。'
-    await act(() => setInput('textarea[aria-label="编辑草稿：全剧人物设定"]', revised)); await act(() => button('稍后处理').click())
-    await act(() => setInput('textarea[aria-label="剧本创作对话"]', '看看补充的采访经历')); await act(async () => button('发送消息').click())
+    await act(() => setInput('textarea[aria-label="编辑草稿：全剧人物设定"]', revised))
+    const composer = view.container.querySelector<HTMLTextAreaElement>('textarea[aria-label="剧本创作对话"]')!
+    assert.ok(composer, 'the composer stays available alongside the draft preview')
+    assert.equal(composer.disabled, false)
+    assert.equal(composer.closest('[hidden]'), null)
+    assert.ok(view.container.querySelector('[aria-label="剧本草稿预览"]'))
+    assert.equal(requests.filter(item => item.url.endsWith('/commit')).length, 0)
+    await act(() => setInput('textarea[aria-label="剧本创作对话"]', '看看补充的采访经历'))
+    assert.ok(view.container.querySelector('[aria-label="剧本草稿预览"]'), 'typing a revision does not require closing the preview')
+    await act(async () => button('发送消息').click())
+    const sync = requests.find(item => item.method === 'PUT' && item.url.endsWith('/tool-drafts/draft-1'))!, chat = requests.find(item => item.url.endsWith('/chat/stream'))!
+    assert.equal(sync.body.documents[0].content, revised); assert.ok(requests.indexOf(sync) < requests.indexOf(chat))
+    assert.equal(requests.filter(item => item.url.endsWith('/commit')).length, 0, 'discussing the edited draft does not adopt it')
+    assert.match(view.container.querySelector('[aria-label="剧本草稿预览"]')!.textContent!, /采访过失踪案/)
     assert.match(view.container.querySelector('.sd-activity-state')!.textContent!, /草稿待确认/)
-    assert.equal(view.container.querySelector('.sd-reply-actions button')?.textContent, '重新识别选项')
     await act(() => button('稍后处理').click())
-    await act(() => button('查看并编辑草稿').click())
+    assert.equal([...document.querySelectorAll('[role="menuitem"]')].some(item => item.textContent === '重新识别选项'), false, 'recognition recovery does not compete with the main result action')
+    const replyMore = view.container.querySelector<HTMLButtonElement>('[aria-label="更多回复操作"]')!
+    assert.ok(replyMore)
+    await act(() => replyMore.click())
+    const recognize = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(item => item.textContent === '重新识别选项')!
+    assert.ok(recognize, 'recognition recovery remains reachable through reply actions')
+    assert.equal(recognize.disabled, false)
+    await act(() => recognize.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    assert.equal(view.container.querySelector('.sd-activity-action-primary'), null, 'the current draft has a single result entry')
+    await act(() => button('审阅草稿').click())
     assert.match(view.container.querySelector('[aria-label="剧本草稿预览"]')!.textContent!, /采访过失踪案/)
     await act(() => button('稍后处理').click())
+    await act(() => view.container.querySelector<HTMLButtonElement>('.sd-activity-compact-summary')!.click())
     await act(() => view.container.querySelector<HTMLButtonElement>('.sd-activity-toggle')!.click())
     await act(() => view.container.querySelector<HTMLButtonElement>('.sd-activity-targets button')!.click())
     assert.match(view.container.querySelector('.sd-document-reader')!.textContent!, /身份待定/)
     assert.doesNotMatch(view.container.querySelector('.sd-document-reader')!.textContent!, /采访过失踪案/)
     await act(() => button('关闭文档阅读器').click())
-    await act(() => button('查看并编辑草稿').click())
-    const sync = requests.find(item => item.method === 'PUT' && item.url.endsWith('/tool-drafts/draft-1'))!, chat = requests.find(item => item.url.endsWith('/chat/stream'))!
-    assert.equal(sync.body.documents[0].content, revised); assert.ok(requests.indexOf(sync) < requests.indexOf(chat))
+    await act(() => button('审阅草稿').click())
     await act(async () => button('确认保存').click()); assert.match(view.container.textContent!, /已保存/); assert.equal(requests.filter(item => item.url.endsWith('/commit')).length, 1)
     assert.match(view.container.querySelector('.sd-activity-state')!.textContent!, /已保存/)
-    assert.equal(button('查看保存结果').disabled, false)
+    const savedResult = view.container.querySelector<HTMLButtonElement>('.sd-deliverables .sd-deliverable-document')!
+    assert.ok(savedResult)
+    assert.equal(savedResult.disabled, false)
+    assert.match(savedResult.textContent!, /已保存/)
+    await act(() => savedResult.click())
+    assert.match(view.container.querySelector('.sd-document-reader')!.textContent!, /采访过失踪案/)
   } finally { await view.destroy() }
+})
+
+test('a short draft window keeps input available and preserves its draft while creation options open', async t => {
+  const storageKey = 'script-director-window'
+  const previousLayout = dom.window.localStorage.getItem(storageKey)
+  let view: Awaited<ReturnType<typeof mount>> | undefined
+  t.mock.method(globalThis, 'fetch', async (url: unknown) => {
+    const path = String(url)
+    if (path.endsWith('/tools-state')) return Response.json({ draft: structuredClone(draft), decisions: [] })
+    if (path.endsWith('/conversations')) return Response.json({ conversations: [] })
+    throw new Error(`Unexpected short-window request ${path}`)
+  })
+  try {
+    dom.window.localStorage.setItem(storageKey, JSON.stringify({ rect: { x: 12, y: 12, width: 360, height: 400 }, docked: false }))
+    view = await mount()
+    const area = view.container.querySelector<HTMLElement>('[aria-label="对话输入区"]')!
+    const composer = area.querySelector<HTMLTextAreaElement>('textarea[aria-label="剧本创作对话"]')!
+    assert.ok(composer, 'input remains immediately available in a short window')
+    assert.equal(composer.closest('[hidden]'), null)
+    assert.equal(composer.disabled, false)
+    await act(() => setInput('textarea[aria-label="剧本创作对话"]', '补充人物采访经历。'))
+    assert.equal(composer.value, '补充人物采访经历。')
+    const save = button('确认保存')
+    const preview = view.container.querySelector('[aria-label="剧本草稿预览"]')!
+    assert.ok(preview)
+    assert.equal(save.closest('[hidden]'), null)
+    await act(() => button('创作选项').click())
+    assert.ok(document.querySelector('[role="dialog"][aria-label="创作选项面板"]'))
+    assert.equal(area.querySelector('textarea[aria-label="剧本创作对话"]'), composer)
+    assert.equal(composer.closest('[hidden]'), null)
+    assert.equal(composer.disabled, false)
+    assert.equal(composer.value, '补充人物采访经历。', 'opening options preserves the unsent draft')
+    assert.equal(button('确认保存'), save)
+    assert.equal(view.container.querySelector('[aria-label="剧本草稿预览"]'), preview)
+    await act(() => button('创作选项').click())
+    assert.equal(document.querySelector('[role="dialog"][aria-label="创作选项面板"]'), null)
+    assert.equal(area.querySelector('textarea[aria-label="剧本创作对话"]'), composer)
+    assert.equal(composer.closest('[hidden]'), null)
+    assert.equal(composer.disabled, false)
+    assert.equal(composer.value, '补充人物采访经历。', 'closing options keeps the same unsent draft available')
+    assert.equal(button('确认保存'), save, 'opening and closing options keeps draft confirmation mounted')
+    assert.equal(view.container.querySelector('[aria-label="剧本草稿预览"]'), preview)
+  } finally {
+    if (view) await view.destroy()
+    if (previousLayout === null) dom.window.localStorage.removeItem(storageKey)
+    else dom.window.localStorage.setItem(storageKey, previousLayout)
+  }
 })
 
 test('read-only failed review retries the same question and document scope without appending the failed answer', async t => {
@@ -539,6 +662,7 @@ test('execution UI updates live calls, preserves repeated invocations and persis
     assert.equal(section.querySelector('button')!.getAttribute('aria-expanded'), 'false')
     assert.match(section.textContent!, /查阅 1 份文档 · 1 个 Skill 已加载/)
     await act(() => section.querySelector<HTMLButtonElement>('button')!.click())
+    await act(() => section.querySelector<HTMLButtonElement>('.sd-activity-toggle')!.click())
     assert.equal(section.querySelectorAll('.is-tool').length, 9)
     assert.equal(section.querySelector('.sd-activity-technical'), null, 'there is no second global copy of the calls')
     const readDetail = section.querySelectorAll('.sd-activity-step.is-tool')[0].querySelector('.sd-activity-calls')!
@@ -564,6 +688,7 @@ test('execution UI updates live calls, preserves repeated invocations and persis
     const restored = await mount()
     try {
       assert.match(restored.container.querySelector('.sd-activity')!.textContent!, /查阅 1 份文档 · 1 个 Skill 已加载/)
+      await act(() => restored.container.querySelector<HTMLButtonElement>('.sd-activity-compact-summary')!.click())
       await act(() => restored.container.querySelector<HTMLButtonElement>('.sd-activity-toggle')!.click())
       assert.equal(restored.container.querySelectorAll('.sd-activity-step.is-tool').length, 9)
       await act(() => restored.container.querySelector<HTMLButtonElement>('.sd-activity-targets button')!.click())
@@ -591,7 +716,10 @@ test('stopping a streamed operation settles its trace without turning completed 
     await act(async () => button('发送消息').click())
     assert.match(view.container.querySelector('.sd-activity')!.textContent!, /处理中/)
     assert.match(view.container.querySelector('.sd-activity-wait')!.textContent!, /当前步骤仍在处理中/)
-    await act(async () => button('停止任务').click())
+    assert.equal([...view.container.querySelectorAll('.sd-activity button')].some(node => node.textContent === '停止任务'), false, 'the task card does not duplicate the composer stop action')
+    const stop = view.container.querySelectorAll<HTMLButtonElement>('button[aria-label="停止生成"]')
+    assert.equal(stop.length, 1, 'the composer exposes one stop action while generation is running')
+    await act(async () => stop[0].click())
     await act(() => view.container.querySelector<HTMLButtonElement>('.sd-activity-toggle')!.click())
     assert.match(view.container.querySelector('.sd-activity')!.textContent!, /已停止/)
     assert.ok(!view.container.querySelector('.sd-activity-icon.is-running'))
@@ -676,7 +804,7 @@ test('workflow draft keeps the server source version through save conflicts and 
       assert.equal(JSON.parse(window.localStorage.getItem(draftKey)!).source_version, sourceVersion, 'restoring local data retains an explicit null as well as a hash')
       await act(() => button('稍后处理').click())
       assert.match(reopened.container.querySelector('[aria-label="原剧本来源"]')!.textContent!, /已经替换的当前原稿/)
-      await act(() => button('查看草稿').click())
+      await act(() => button('审阅草稿').click())
       assert.match(reopened.container.querySelector('[aria-label="剧本草稿预览"]')!.textContent!, /候选原文与未涉及的设定须保留/)
       await act(async () => button('确认保存').click())
       assert.deepEqual(submitted.map(body => body.source_version), [sourceVersion, sourceVersion], 'a current upload never replaces the draft source version')
@@ -939,10 +1067,11 @@ const outlineStep: CreationNextStep = { id: 'ready-outline', stage: 'outline', e
 
 test('initial direction discussion leads to one native outline action, then saving advances to characters', async t => {
   let creation = stateFor(emptyProject), pending: ScriptToolDraft | null = null, chatCalls = 0
+  let refreshedProject = emptyProject
   const requests: any[] = []
-  const artifacts = (['outline'] as const).map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: `${scriptArtifactLabels[artifact_type]}：林晚调查城市怪谈。` }))
+  const artifacts = scriptStageArtifacts.outline.map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type], content: `${scriptArtifactLabels[artifact_type]}：林晚调查城市怪谈。` }))
   const created: ScriptToolDraft = { id: 'outline-draft', version: 'outline-v1', kind: 'create', summary: '全剧大纲草稿', status: 'pending',
-    workflow: { stage: 'outline', scope: 'project', episode_number: 0, intent: 'stage_design', artifact_types: ['outline'], artifacts, scenes: [] },
+    workflow: { stage: 'outline', scope: 'project', episode_number: 0, intent: 'stage_design', artifact_types: [...scriptStageArtifacts.outline], artifacts, scenes: [] },
     documents: artifacts.map(doc => ({ ...doc, id: `${doc.artifact_type}:0`, episode_number: 0, version: '', original_content: '', replacements: [] })) }
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
     const path = String(url), body = init?.body ? JSON.parse(String(init.body)) : undefined
@@ -956,7 +1085,7 @@ test('initial direction discussion leads to one native outline action, then savi
       return stream({ reply: '大纲草稿已准备，请检查后保存。', tool_draft: pending, classification_version: replyClassificationVersion, classification: { type: 'other' }, creation })
     }
     if (path.endsWith('/tool-drafts/outline-draft') && init?.method === 'PUT') {
-      assert.equal(body.documents.length, 1)
+      assert.equal(body.documents.length, 9)
       assert.equal(body.documents.find((doc: any) => doc.id === 'outline:0').content, '林晚沿线索追查城市怪谈。')
       pending = { ...created, version: 'outline-v2', documents: created.documents.map(doc => ({ ...doc, content: body.documents.find((item: any) => item.id === doc.id).content })) }
       return Response.json(pending)
@@ -964,12 +1093,14 @@ test('initial direction discussion leads to one native outline action, then savi
     if (path.endsWith('/commit')) {
       assert.equal(body.approved, true); assert.equal(body.version, 'outline-v2')
       const saved = { ...pending, status: 'saved' }; pending = null
-      creation = stateFor(emptyProject, { ...outlineStep, id: 'ready-characters', stage: 'characters', summary: '大纲已保存', source: 'progress' })
+      refreshedProject = { ...emptyProject, script: { ...emptyProject.script, outline: saved.documents![0].content,
+        artifacts: saved.documents!.map(document => ({ ...doc, ...document, id: `saved-${document.artifact_type}` })) } }
+      creation = stateFor(refreshedProject, { ...outlineStep, id: 'ready-characters', stage: 'characters', summary: '大纲已保存', source: 'progress' })
       return Response.json(saved)
     }
     throw new Error(`Unexpected request ${path}`)
   })
-  const view = await mount(emptyProject)
+  const view = await mount(emptyProject, false, null, undefined, () => refreshedProject)
   try {
     assert.ok(button('探索故事方向'))
     await act(() => button('对话工具').click())
@@ -985,18 +1116,24 @@ test('initial direction discussion leads to one native outline action, then savi
     assert.equal(view.container.querySelectorAll('.sd-creation-actions > button').length, 1)
     await act(async () => button('生成全剧故事大纲').click())
     assert.equal(requests[2].use_tools, true); assert.equal(requests[2].next_step_id, outlineStep.id)
-    assert.deepEqual(requests[2].workflow, { stage: 'outline', scope: 'project', episode_number: 0, intent: 'stage_design', artifact_types: ['outline'] })
+    assert.deepEqual(requests[2].workflow, { stage: 'outline', scope: 'project', episode_number: 0, intent: 'stage_design', artifact_types: [...scriptStageArtifacts.outline] })
     assert.match(view.container.querySelector('[aria-label="剧本草稿预览"]')!.textContent!, /林晚调查城市怪谈/)
     assert.equal(view.container.querySelector('.sd-creation-actions'), null)
-    assert.match(view.container.querySelector('.sd-document-meta')!.textContent!, /1 份文档/)
-    await act(() => (view.container.querySelector('[aria-label="选择草稿文档"]') as HTMLInputElement).click())
-    const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
-    assert.equal(options.length, 1)
+    assert.match(view.container.querySelector('.sd-document-meta')!.textContent!, /9 份文档/)
+    const draftSelect = view.container.querySelector<HTMLInputElement>('[aria-label="选择草稿文档"]')!
+    await act(() => draftSelect.click())
+    const draftListbox = document.getElementById(draftSelect.getAttribute('aria-controls')!)!
+    assert.ok(draftListbox)
+    const options = [...draftListbox.querySelectorAll<HTMLElement>('[role="option"]')]
+    assert.equal(options.length, 9)
     await act(() => options.find(option => option.textContent === '概要设计')!.click())
     await act(() => button('编辑').click())
     await act(() => setInput('textarea[aria-label="编辑草稿：概要设计"]', '林晚沿线索追查城市怪谈。'))
     await act(async () => button('确认保存').click())
     assert.ok(button('生成全剧人物设定'))
+    const nextStage = view.container.querySelector('[aria-label="当前创作状态"]')!
+    assert.match(nextStage.querySelector('strong')!.textContent!, /人物/)
+    assert.equal(nextStage.querySelector('[role="status"]')!.textContent, '讨论中', 'the next stage does not inherit the saved state of the previous outline')
     assert.equal(view.container.querySelectorAll('.sd-creation-actions > button').length, 1)
     assert.equal([...view.container.querySelectorAll('button')].some(item => item.textContent === '探索故事方向' || item.textContent === '更新全剧大纲'), false)
   } finally { await view.destroy() }
@@ -1050,7 +1187,7 @@ test('a saved first episode exposes storyboard handoff while later episodes rema
   try {
     assert.ok(button('生成第 2 集正文'))
     assert.ok(view.container.querySelector('[aria-label="故事板制作"]'))
-    assert.equal(button('加入画布').disabled, false)
+    assert.equal(button('规划分镜').disabled, false)
     assert.equal(view.container.querySelector<HTMLInputElement>('[aria-label="选择制作分镜的集数"]')!.value, '第 1 集')
   } finally { await view.destroy() }
 })
@@ -1089,16 +1226,25 @@ test('settings option Escape retains the dialog and draft; cancelling never save
   const view = await mount()
   const escape = async (node: HTMLElement) => act(() => node.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
   try {
-    await act(() => button('剧本设定').click())
+    await openHeaderTool('剧本设定')
     const dialog = document.querySelector('.script-director-settings-modal')!
     assert.ok(dialog)
     const audience = [...document.querySelectorAll<HTMLButtonElement>('.script-director-auto-card')].find(node => node.textContent?.includes('目标受众'))!
     await act(() => audience.click())
     await act(() => button('男频').click())
-    await escape(document.querySelector<HTMLElement>('.script-director-auto-popover input')!)
+    const audienceInput = document.querySelector<HTMLInputElement>('.script-director-auto-popover input')!
+    await act(() => audienceInput.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true })))
+    assert.ok(document.querySelector('.script-director-auto-popover'), 'clicking a portaled input keeps its editor open')
+    await act(() => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(audienceInput, '全年龄观众')
+      audienceInput.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+    })
+    assert.ok(document.querySelector('.script-director-auto-popover'), 'typing in the portaled input keeps its editor open')
+    assert.match(audience.textContent!, /全年龄观众/)
+    await escape(audienceInput)
     assert.equal(document.querySelector('.script-director-settings-modal'), dialog)
     assert.equal(document.querySelector('.script-director-auto-popover'), null)
-    assert.match(audience.textContent!, /男频/)
+    assert.match(audience.textContent!, /全年龄观众/)
     await act(() => document.querySelector<HTMLButtonElement>('.script-director-structure-card')!.click())
     await escape(document.querySelector<HTMLElement>('[role="slider"][aria-label="预计集数"]')!)
     assert.equal(document.querySelector('.script-director-settings-modal'), dialog)
@@ -1106,7 +1252,7 @@ test('settings option Escape retains the dialog and draft; cancelling never save
     await act(() => button('取消').click())
     assert.equal(document.querySelector('.script-director-settings-modal'), null)
     assert.equal(writes.filter(path => path.endsWith('/script') || path.includes('/canvas')).length, 0)
-    await act(() => button('剧本设定').click())
+    await openHeaderTool('剧本设定')
     assert.match(document.querySelector('.script-director-auto-card')!.textContent!, /自动/)
   } finally { await view.destroy() }
 })
@@ -1266,19 +1412,93 @@ test('reopening a cached episode redesign preserves scene identity through norma
   } finally { await view.destroy() }
 })
 
-test('an unsent stage revision restores its target after reopening and cancelling clears that saved scope', async t => {
+test('cancelling a stage revision removes its automatic prompt while preserving creator text', async t => {
+  const project = savedStagesProject(), requests: any[] = []
+  mockStageChat(t, project, requests)
+  const requirements = '保留原有空间关系，只调整医院大厅的灯光。'
+  const cases = [
+    { name: 'untouched template', initial: '', edit: undefined, expected: '' },
+    { name: 'requirements appended directly', initial: '', edit: (prompt: string) => `${prompt}${requirements}`, expected: requirements },
+    { name: 'requirements on the next line', initial: '', edit: (prompt: string) => `${prompt}\n${requirements}`, expected: requirements },
+    { name: 'creator paragraph spacing', initial: '', edit: (prompt: string) => `${prompt}\n\n${requirements}`, expected: `\n${requirements}` },
+    { name: 'completely rewritten request', initial: '', edit: () => `  ${requirements}\n`, expected: `  ${requirements}\n` },
+    { name: 'input written before selecting revision', initial: '  上次尚未发送的场景设定。\n', edit: undefined, expected: '  上次尚未发送的场景设定。\n' },
+  ]
+  for (const item of cases) {
+    const view = await mount(project)
+    try {
+      await act(() => setInput('textarea[aria-label="剧本创作对话"]', item.initial))
+      await act(() => button('处理已保存的场景设计').click())
+      await act(() => button('局部修改').click())
+      const composer = view.container.querySelector<HTMLTextAreaElement>('textarea[aria-label="剧本创作对话"]')!
+      if (!item.initial) assert.match(composer.value, /我希望修改：/, item.name)
+      else assert.equal(composer.value, item.initial, 'choosing a revision preserves existing input')
+      if (item.edit) await act(() => setInput('textarea[aria-label="剧本创作对话"]', item.edit!(composer.value)))
+      await act(() => button('取消阶段修订').click())
+      assert.equal(view.container.querySelector('.sd-document-task'), null, item.name)
+      assert.equal(composer.value, item.expected, item.name)
+      assert.equal(window.localStorage.getItem(`script-director-input:${project.id}`), item.expected, 'the retained draft also survives reopening')
+      assert.deepEqual(requests, [], 'cancelling a local task never starts model generation')
+    } finally { await view.destroy() }
+  }
+})
+
+test('cancelling a document revision removes its automatic prompt while preserving creator text', async t => {
+  let chats = 0
+  t.mock.method(globalThis, 'fetch', async (url: unknown) => {
+    const path = String(url)
+    if (path.endsWith('/tools-state')) return Response.json({ draft: null, decisions: [] })
+    if (path.endsWith('/conversations')) return Response.json({ conversations: [] })
+    if (path.endsWith('/chat/stream')) chats++
+    throw new Error(`Unexpected cancellation request ${path}`)
+  })
+  const requirements = '保留陈默的职业，只补充林晚的采访经历。'
+  const cases = [
+    { name: 'untouched template', initial: '', edit: undefined, expected: '' },
+    { name: 'requirements appended directly', initial: '', edit: (prompt: string) => `${prompt}${requirements}`, expected: requirements },
+    { name: 'requirements on the next line', initial: '', edit: (prompt: string) => `${prompt}\n${requirements}`, expected: requirements },
+    { name: 'creator paragraph spacing', initial: '', edit: (prompt: string) => `${prompt}\n\n${requirements}`, expected: `\n${requirements}` },
+    { name: 'completely rewritten request', initial: '', edit: () => `  ${requirements}\n`, expected: `  ${requirements}\n` },
+    { name: 'input written before selecting revision', initial: '  上次尚未发送的人物设定。\n', edit: undefined, expected: '  上次尚未发送的人物设定。\n' },
+  ]
+  for (const item of cases) {
+    const view = await mount()
+    try {
+      await act(() => setInput('textarea[aria-label="剧本创作对话"]', item.initial))
+      await openDoc()
+      await act(() => button('对话修订').click())
+      const composer = view.container.querySelector<HTMLTextAreaElement>('textarea[aria-label="剧本创作对话"]')!
+      if (!item.initial) assert.match(composer.value, /请读取「全剧人物设定」原文。我希望修改：/, item.name)
+      else assert.equal(composer.value, item.initial, 'choosing a revision preserves existing input')
+      if (item.edit) await act(() => setInput('textarea[aria-label="剧本创作对话"]', item.edit!(composer.value)))
+      await act(() => button('取消定向修订').click())
+      assert.equal(view.container.querySelector('.sd-document-task'), null, item.name)
+      assert.equal(composer.value, item.expected, item.name)
+      assert.equal(window.localStorage.getItem(`script-director-input:${detail.id}`), item.expected, 'the retained draft also survives reopening')
+      assert.equal(chats, 0, 'cancelling a local task never starts model generation')
+    } finally { await view.destroy() }
+  }
+})
+
+test('an unsent stage revision restores its target after reopening and cancelling clears its saved scope and automatic prompt', async t => {
   const project = savedStagesProject(), requests: any[] = []
   mockStageChat(t, project, requests)
   const first = await mount(project)
+  await act(() => setInput('textarea[aria-label="剧本创作对话"]', ''))
   await act(() => button('处理已保存的场景设计').click())
   await act(() => button('局部修改').click())
+  const prompt = first.container.querySelector<HTMLTextAreaElement>('textarea[aria-label="剧本创作对话"]')!.value
+  assert.match(prompt, /我希望修改：/)
   await first.destroy()
   const reopened = await mount(project)
   try {
     assert.match(reopened.container.querySelector('.sd-document-task')!.textContent!, /场景设计/)
+    assert.equal(reopened.container.querySelector<HTMLTextAreaElement>('textarea[aria-label="剧本创作对话"]')!.value, prompt)
     await act(() => button('取消阶段修订').click())
     assert.equal(reopened.container.querySelector('.sd-document-task'), null)
     assert.equal(window.localStorage.getItem(`script-director-stage-task:${project.id}`), null)
+    assert.equal(reopened.container.querySelector<HTMLTextAreaElement>('textarea[aria-label="剧本创作对话"]')!.value, '')
+    assert.equal(window.localStorage.getItem(`script-director-input:${project.id}`), '')
     assert.deepEqual(requests, [])
   } finally { await reopened.destroy() }
 })

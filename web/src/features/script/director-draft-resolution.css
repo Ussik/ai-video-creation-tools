@@ -17,7 +17,7 @@
 .sd-resolution-submit .mantine-Button-root { border: 1px solid var(--fc-border); color: var(--fc-text-secondary); background: var(--fc-panel); }
 .sd-resolution-submit .mantine-Button-root:hover:not(:disabled) { border-color: var(--fc-border-strong); color: var(--fc-text); background: var(--fc-surface-hover); }
 .sd-resolution-submit .mantine-Button-root.is-primary { border-color: transparent; color: var(--fc-on-primary); background: var(--fc-primary); }
-.sd-resolution-submit .mantine-Button-root.is-primary:hover:not(:disabled) { color: var(--fc-on-primary); background: var(--fc-primary-hover); }
+.sd-resolution-submit .mantine-Button-root.is-primary:hover:not(:disabled):not([data-loading]) { border-color: transparent; color: var(--fc-on-primary); background: var(--fc-primary-hover); }
 .sd-resolution-actions .mantine-Button-root:focus-visible { outline: 2px solid var(--fc-focus); outline-offset: 3px; }
 .sd-resolution-actions .mantine-Button-root:disabled { color: var(--fc-text-subtle); background: var(--fc-surface-muted); border-color: var(--fc-border-soft); opacity: .65; }
 .sd-resolution-secondary .mantine-Button-root:disabled { background: transparent; border-color: transparent; }

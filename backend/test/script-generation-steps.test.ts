@@ -47,6 +47,22 @@ test('restart reuses only exact inputs and revalidates saved results', async () 
   assert.equal(calls, 3)
 })
 
+test('cached execution keeps the original duration while imported results remain unmeasured', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 })
+  const events: GenerationStepEvent[] = []
+  const steps = createGenerationSteps({ onStep: event => events.push(event) })
+  await steps.run('timed', '生成栏目', {}, async () => { t.mock.timers.tick(12_345); return 42 }, number)
+  t.mock.timers.tick(60_000)
+  await steps.run('timed', '生成栏目', {}, async () => { throw new Error('must reuse') }, number)
+  assert.equal(events.at(-1)?.reused, true)
+  assert.equal(events.at(-1)?.duration_ms, 12_345)
+  steps.retain('imported', '已有栏目', {}, 7, number)
+  await steps.run('imported', '已有栏目', {}, async () => { throw new Error('must retain') }, number)
+  assert.equal(events.at(-1)?.reused, true)
+  assert.equal(events.at(-1)?.duration_ms, undefined)
+  assert.equal(steps.checkpoint.steps.imported?.duration_ms, undefined)
+})
+
 test('failed, invalid and cancelled work never becomes a reusable result', async () => {
   for (const failure of ['transport', 'validation', 'cancel', 'timeout']) {
     const controller = new AbortController(), events: GenerationStepEvent[] = []

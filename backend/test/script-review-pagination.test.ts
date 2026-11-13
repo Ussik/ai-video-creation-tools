@@ -118,7 +118,7 @@ test('a focused stage audit exceeding output limits finishes as pages and retain
   const draft: WorkflowDraft = { stage: 'outline', scope: 'project', episode_number: 0, scenes: [], artifacts: types.map(artifact_type => ({
     artifact_type, title: scriptArtifactLabels[artifact_type], content: '开场得到钥匙，结尾却没有归还。',
   })) }
-  const finding = { source_key: types[0]!, kind: 'contradiction', quote: '结尾却没有归还',
+  const finding = { source_key: types[0]!, kind: 'contradiction', severity: 'blocking', quote: '结尾却没有归还',
     explanation: '结尾与作者明确要求归还钥匙冲突。', suggestion: '落实归还的既定结局。' }
   const calls: string[] = []
   await assert.rejects(reviewScriptDraftCompleteness(draft, async (prompt, contract) => {

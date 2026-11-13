@@ -3,10 +3,10 @@ import { posix } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { z } from 'zod'
 import { all, db, now, one, run, required } from '../../infrastructure/database/db.js'
-import { mentionsSeedanceVersion } from '../generation/seedance-prompt.js'
+import { videoPromptDialect } from '../generation/seedance-prompt.js'
 import { MAX_AUXILIARY_SKILLS, MAX_CREATIVE_SKILLS } from '@video-studio/shared/skills/skill-limits'
 import type { SkillSyncItem, SkillSyncResult } from '@video-studio/shared/skills/skill-updates'
-import type { SkillTaskContext } from '@video-studio/shared/skills/skill-recommendation'
+import { fixedSkillTask, skillTaskDefinitions, type SkillCatalogEntry, type SkillIntegrationScope, type SkillTaskContext, type SkillTaskKind, type VideoPromptDialect } from '@video-studio/shared/skills/skill-recommendation'
 
 export const skillStages = ['script', 'visual_assets', 'image_prompt', 'storyboard', 'video_prompt'] as const
 export type SkillStage = typeof skillStages[number]
@@ -49,7 +49,10 @@ export function initSkills(): void {
   ); CREATE TABLE IF NOT EXISTS skill_repositories (repo TEXT PRIMARY KEY, created_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS skill_stage_defaults (stage TEXT PRIMARY KEY, primary_id TEXT, auxiliary_ids TEXT NOT NULL DEFAULT '[]');
   CREATE TABLE IF NOT EXISTS project_skill_defaults (project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    stage TEXT NOT NULL, primary_id TEXT, auxiliary_ids TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(project_id,stage));`)
+    stage TEXT NOT NULL, primary_id TEXT, auxiliary_ids TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(project_id,stage));
+  CREATE TABLE IF NOT EXISTS skill_task_defaults (task TEXT PRIMARY KEY, primary_id TEXT, auxiliary_ids TEXT NOT NULL DEFAULT '[]');
+  CREATE TABLE IF NOT EXISTS project_skill_task_defaults (project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    task TEXT NOT NULL, primary_id TEXT, auxiliary_ids TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(project_id,task));`)
   for (const stage of skillStages) ensureSkillDefault(stage)
 }
 function invalid(message: string, statusCode = 422): never { throw Object.assign(new Error(message), { statusCode }) }
@@ -318,10 +321,18 @@ export async function syncInstalledSkills(fetcher: Fetcher = fetch): Promise<Ski
     unchanged: results.filter(item => item.status === 'unchanged').length, failed: results.filter(item => item.status === 'failed').length, results }
 }
 function eligibleSkills(stage: SkillStage) { return installedSkills().filter(skill => skill.enabled && skill.stages.includes(stage)) }
+function skillIntegrationScope(skill: Pick<InstalledSkill, 'tool_requirements'>): SkillIntegrationScope {
+  return { mode: 'rules_only', tool_requirements: [...skill.tool_requirements],
+    note: skill.tool_requirements.length ? '当前仅使用创作规则与文本参考资料，技能要求的外部工具、脚本及其产物未接入。' : '当前使用创作规则与文本参考资料。' }
+}
+function skillCatalogEntry(skill: InstalledSkill): SkillCatalogEntry {
+  return { id: skill.id, name: skill.name, description: skill.description, revision: skill.revision, integration: skillIntegrationScope(skill) }
+}
 function ensureSkillDefault(stage: SkillStage) {
   const eligible = eligibleSkills(stage), current = one<{ primary_id: string | null; auxiliary_ids: string }>('SELECT * FROM skill_stage_defaults WHERE stage=?', stage)
-  // An explicit base-rules choice is stable; an absent row can acquire its first eligible primary.
-  if (current && (current.primary_id === null || eligible.some(skill => skill.id === current.primary_id))) return
+  // Existing bindings stay visible when their skills become unavailable. Only
+  // an absent row may acquire its first primary; never silently replace one.
+  if (current) return
   const primary = eligible.find(skill => skill.name === preferredPrimary[stage]) || eligible.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))[0]
   if (!primary) { if (current) run('DELETE FROM skill_stage_defaults WHERE stage=?', stage); return }
   run('INSERT INTO skill_stage_defaults (stage,primary_id,auxiliary_ids) VALUES (?,?,?) ON CONFLICT(stage) DO UPDATE SET primary_id=excluded.primary_id, auxiliary_ids=excluded.auxiliary_ids', stage, primary?.id || null, '[]')
@@ -338,7 +349,7 @@ export function skillPolicy(projectId?: string) {
     return { stage, label: skillStageLabels[stage], primary_id: primary, auxiliary_ids: auxiliary,
       source: validLocal ? 'project' as const : 'global' as const,
       warning: local && !validLocal ? '项目主技能已停用或卸载，当前沿用全局默认，请重新选择。' : '',
-      skills: eligible.map(({ id, name, description, revision }) => ({ id, name, description, revision })) }
+      skills: eligible.map(skillCatalogEntry) }
   })
 }
 export function setSkillDefault(stage: SkillStage, selection: SkillSelection, projectId?: string) {
@@ -347,17 +358,145 @@ export function setSkillDefault(stage: SkillStage, selection: SkillSelection, pr
   const eligible = eligibleSkills(stage)
   skillIdsInput.parse(ids)
   if (ids.some(id => !eligible.some(skill => skill.id === id))) invalid('所选技能未启用或不适用于此创作环节')
-  if (projectId) {
-    required('projects', projectId)
-    run('INSERT INTO project_skill_defaults VALUES (?,?,?,?) ON CONFLICT(project_id,stage) DO UPDATE SET primary_id=excluded.primary_id, auxiliary_ids=excluded.auxiliary_ids', projectId, stage, selection.primary_id, JSON.stringify(selection.auxiliary_ids))
-  } else run('INSERT INTO skill_stage_defaults VALUES (?,?,?) ON CONFLICT(stage) DO UPDATE SET primary_id=excluded.primary_id, auxiliary_ids=excluded.auxiliary_ids', stage, selection.primary_id, JSON.stringify(selection.auxiliary_ids))
+  const task = stage === 'script' ? 'script_write' : stage
+  db.transaction(() => {
+    if (projectId) {
+      required('projects', projectId)
+      run('INSERT INTO project_skill_defaults VALUES (?,?,?,?) ON CONFLICT(project_id,stage) DO UPDATE SET primary_id=excluded.primary_id, auxiliary_ids=excluded.auxiliary_ids', projectId, stage, selection.primary_id, JSON.stringify(selection.auxiliary_ids))
+      run('INSERT INTO project_skill_task_defaults VALUES (?,?,?,?) ON CONFLICT(project_id,task) DO UPDATE SET primary_id=excluded.primary_id, auxiliary_ids=excluded.auxiliary_ids', projectId, task, selection.primary_id, JSON.stringify(selection.auxiliary_ids))
+    } else {
+      run('INSERT INTO skill_stage_defaults VALUES (?,?,?) ON CONFLICT(stage) DO UPDATE SET primary_id=excluded.primary_id, auxiliary_ids=excluded.auxiliary_ids', stage, selection.primary_id, JSON.stringify(selection.auxiliary_ids))
+      run('INSERT INTO skill_task_defaults VALUES (?,?,?) ON CONFLICT(task) DO UPDATE SET primary_id=excluded.primary_id, auxiliary_ids=excluded.auxiliary_ids', task, selection.primary_id, JSON.stringify(selection.auxiliary_ids))
+    }
+  })()
   return skillPolicy(projectId)
 }
-export function resetProjectSkillDefault(projectId: string, stage: SkillStage) { required('projects', projectId); run('DELETE FROM project_skill_defaults WHERE project_id=? AND stage=?', projectId, stage); return skillPolicy(projectId) }
+export function resetProjectSkillDefault(projectId: string, stage: SkillStage) {
+  required('projects', projectId)
+  db.transaction(() => {
+    run('DELETE FROM project_skill_defaults WHERE project_id=? AND stage=?', projectId, stage)
+    run('DELETE FROM project_skill_task_defaults WHERE project_id=? AND task=?', projectId, stage === 'script' ? 'script_write' : stage)
+  })()
+  return skillPolicy(projectId)
+}
+const stageDefaultTasks: Partial<Record<SkillTaskKind, SkillStage>> = {
+  script_write: 'script', visual_assets: 'visual_assets', image_prompt: 'image_prompt', storyboard: 'storyboard', video_prompt: 'video_prompt',
+}
+export type SkillTaskPolicy = {
+  task: SkillTaskKind; stage: SkillStage; label: string; primary_id: string | null; auxiliary_ids: string[];
+  source: 'builtin' | 'global' | 'project'; warning: string;
+  skills: SkillCatalogEntry[];
+}
+type SavedSkillSelection = { primary_id: string | null; auxiliary_ids: string }
+export function skillTaskPolicies(projectId?: string): SkillTaskPolicy[] {
+  if (projectId) required('projects', projectId)
+  return skillTaskDefinitions.map(task => {
+    const eligible = eligibleSkills(task.stage)
+    const local = projectId ? one<SavedSkillSelection>('SELECT primary_id,auxiliary_ids FROM project_skill_task_defaults WHERE project_id=? AND task=?', projectId, task.kind) : null
+    const global = one<SavedSkillSelection>('SELECT primary_id,auxiliary_ids FROM skill_task_defaults WHERE task=?', task.kind)
+    const localStage = stageDefaultTasks[task.kind] && projectId ? one<SavedSkillSelection>('SELECT primary_id,auxiliary_ids FROM project_skill_defaults WHERE project_id=? AND stage=?', projectId, task.stage) : null
+    const globalStage = stageDefaultTasks[task.kind] ? one<SavedSkillSelection>('SELECT primary_id,auxiliary_ids FROM skill_stage_defaults WHERE stage=?', task.stage) : null
+    const selected = local || localStage || global || globalStage
+    let primary: string | null, auxiliary: string[], source: SkillTaskPolicy['source'], warning = ''
+    if (selected) {
+      primary = selected.primary_id; auxiliary = JSON.parse(selected.auxiliary_ids) as string[]
+      source = local || localStage ? 'project' : 'global'
+      const ids = primary ? [primary, ...auxiliary] : auxiliary
+      if (ids.some(id => !eligible.some(skill => skill.id === id))) warning = '绑定的主技能或辅助技能已停用、卸载或不适用于此环节，请重新选择。'
+    } else {
+      primary = eligible.find(skill => skill.name === task.primary_name)?.id || null
+      auxiliary = []; source = 'builtin'
+      if (!primary && eligible.length) warning = `尚未启用推荐技能 ${task.primary_name}，本任务将使用基础创作规则；可在默认技能中配置。`
+    }
+    return { task: task.kind, stage: task.stage, label: task.label, primary_id: primary, auxiliary_ids: auxiliary,
+      source, warning, skills: eligible.map(skillCatalogEntry) }
+  })
+}
+export function setSkillTaskDefault(task: SkillTaskKind, selection: SkillSelection, projectId?: string) {
+  const definition = skillTaskDefinitions.find(item => item.kind === task)
+  if (!definition) invalid('未知的创作任务')
+  if (projectId) required('projects', projectId)
+  const ids = selection.primary_id ? [selection.primary_id, ...selection.auxiliary_ids] : []
+  if (!selection.primary_id && selection.auxiliary_ids.length) invalid('基础规则模式不能单独配置辅助技能')
+  skillIdsInput.parse(ids)
+  const eligible = eligibleSkills(definition.stage)
+  if (ids.some(id => !eligible.some(skill => skill.id === id))) invalid('所选技能未启用或不适用于当前任务')
+  db.transaction(() => {
+    if (stageDefaultTasks[task]) setSkillDefault(definition.stage, selection, projectId)
+    if (projectId) run('INSERT INTO project_skill_task_defaults VALUES (?,?,?,?) ON CONFLICT(project_id,task) DO UPDATE SET primary_id=excluded.primary_id,auxiliary_ids=excluded.auxiliary_ids',
+      projectId, task, selection.primary_id, JSON.stringify(selection.auxiliary_ids))
+    else run('INSERT INTO skill_task_defaults VALUES (?,?,?) ON CONFLICT(task) DO UPDATE SET primary_id=excluded.primary_id,auxiliary_ids=excluded.auxiliary_ids',
+      task, selection.primary_id, JSON.stringify(selection.auxiliary_ids))
+  })()
+  return skillTaskPolicies(projectId)
+}
+export function resetProjectSkillTaskDefault(projectId: string, task: SkillTaskKind) {
+  required('projects', projectId)
+  const definition = skillTaskDefinitions.find(item => item.kind === task)
+  if (!definition) invalid('未知的创作任务')
+  db.transaction(() => {
+    run('DELETE FROM project_skill_task_defaults WHERE project_id=? AND task=?', projectId, task)
+    if (stageDefaultTasks[task]) resetProjectSkillDefault(projectId, definition.stage)
+  })()
+  return skillTaskPolicies(projectId)
+}
+export function resetSkillTaskDefault(task: SkillTaskKind) {
+  const definition = skillTaskDefinitions.find(item => item.kind === task)
+  if (!definition) invalid('未知的创作任务')
+  db.transaction(() => {
+    run('DELETE FROM skill_task_defaults WHERE task=?', task)
+    if (stageDefaultTasks[task]) {
+      const primary = eligibleSkills(definition.stage).find(skill => skill.name === definition.primary_name)
+      run('INSERT INTO skill_stage_defaults VALUES (?,?,?) ON CONFLICT(stage) DO UPDATE SET primary_id=excluded.primary_id,auxiliary_ids=excluded.auxiliary_ids', definition.stage, primary?.id || null, '[]')
+    }
+  })()
+  return skillTaskPolicies()
+}
+export function fixedSkillContext(stage: SkillStage, task: string, projectId?: string, taskContext?: SkillTaskContext) {
+  if (taskContext?.task_kind && !skillTaskDefinitions.some(item => item.kind === taskContext.task_kind && item.stage === stage)) invalid('技能任务与创作环节不匹配')
+  const kind = fixedSkillTask(stage, taskContext)
+  if (!kind) return undefined
+  const policy = skillTaskPolicies(projectId).find(item => item.task === kind)!
+  const ids = policy.primary_id ? [policy.primary_id, ...policy.auxiliary_ids] : []
+  if (policy.warning && ids.length) invalid(policy.warning)
+  const context = skillContext(stage, task, ids, projectId, taskContext)
+  return { ...context, assignment: { ids, source: 'fixed' as const, task: kind,
+    reason: `按${policy.label}使用${policy.source === 'project' ? '项目' : policy.source === 'global' ? '全局' : '推荐'}绑定。${policy.warning}` } }
+}
 export function resolveSkillSelections(projectId?: string, overrides: SkillSelections = {}): SkillSelections {
   return Object.fromEntries(skillPolicy(projectId).map(policy => [policy.stage, overrides[policy.stage] ?? (policy.primary_id ? [policy.primary_id, ...policy.auxiliary_ids] : [])]))
 }
-export function skillContext(stage: SkillStage, task: string, selectedIds?: string[], projectId?: string, _assignmentTask?: SkillTaskContext): { text: string; skills: Array<{ id: string; name: string; revision: string; files: string[]; role: 'primary' | 'auxiliary' }>; files: string[] } {
+export type SkillReferenceDescriptor = {
+  id: string; skill_id: string; skill_name: string; revision: string; path: string; title: string; summary: string; characters: number; signature: string
+}
+const referenceId = (skillId: string, path: string) => `${skillId}:${path}`
+const referenceDocument = (path: string) => /\.(md|txt|json|ya?ml)$/i.test(path)
+/** An explicit index of installed optional documents; metadata never decides relevance. */
+export function optionalSkillReferenceCatalog(stage: SkillStage, selectedIds: string[], assignmentTask?: SkillTaskContext): SkillReferenceDescriptor[] {
+  const ids = skillIdsInput.parse(selectedIds), eligible = installedSkills().filter(skill => skill.enabled && skill.stages.includes(stage))
+  if (ids.some(id => !eligible.some(skill => skill.id === id))) invalid('所选技能未启用或不适用于此创作环节，请重新选择')
+  return ids.flatMap(id => {
+    const skill = eligible.find(skill => skill.id === id)!, detail = installedSkillDetail(id)
+    return detail.files.filter(file => typeof file.path === 'string' && safePath(file.path) && typeof file.content === 'string'
+      && !/(^|\/)SKILL\.md$/.test(file.path) && referenceDocument(file.path)
+      && compatibleSkillReference(file.path, skill.name, assignmentTask)
+      && !requiredSkillReference(file.path, stage, skill.name, assignmentTask)).map(file => ({
+      id: referenceId(id, file.path), skill_id: id, skill_name: skill.name, revision: skill.revision, path: file.path,
+      title: file.content.split('\n').find(line => /^#{1,6}\s+/.test(line))?.replace(/^#{1,6}\s+/, '').slice(0, 160) || posix.basename(file.path),
+      summary: file.content.slice(0, 240), characters: file.content.length,
+      signature: createHash('sha256').update(file.content).digest('hex'),
+    }))
+  })
+}
+/** Read a catalogued installed file by exact identity, never an arbitrary path. */
+export function readOptionalSkillReference(stage: SkillStage, selectedIds: string[], descriptor: SkillReferenceDescriptor,
+  assignmentTask?: SkillTaskContext): SkillFile {
+  const current = optionalSkillReferenceCatalog(stage, selectedIds, assignmentTask).find(file => file.id === descriptor.id)
+  if (!current || current.signature !== descriptor.signature || current.revision !== descriptor.revision) invalid('技能参考资料已更新或不属于本次锁定技能，请重新加载', 409)
+  return installedSkillDetail(current.skill_id).files.find(file => file.path === current.path)!
+}
+export function skillContext(stage: SkillStage, task: string, selectedIds?: string[], projectId?: string, assignmentTask?: SkillTaskContext,
+  selectedReferenceIds: string[] = []): { text: string; skills: Array<{ id: string; name: string; revision: string; files: string[]; role: 'primary' | 'auxiliary' }>; files: string[] } {
   const eligible = installedSkills().filter(skill => skill.enabled && skill.stages.includes(stage))
   // Synchronous loading never infers intent. Execution paths resolve automatic
   // choices through the model before calling this loader with explicit IDs.
@@ -366,44 +505,99 @@ export function skillContext(stage: SkillStage, task: string, selectedIds?: stri
     invalid('所选技能未启用或不适用于此创作环节，请重新选择')
   }
   const active = ids.map(id => eligible.find(skill => skill.id === id)!)
+  const optional = optionalSkillReferenceCatalog(stage, ids, assignmentTask)
+  if (new Set(selectedReferenceIds).size !== selectedReferenceIds.length || selectedReferenceIds.some(id => !optional.some(file => file.id === id))) invalid('所选参考资料不属于本次技能的可用目录')
   const sections: string[] = [], loadedFiles: string[] = []
   const skills: Array<{ id: string; name: string; revision: string; files: string[]; role: 'primary' | 'auxiliary' }> = []
   for (const [index, skill] of active.entries()) {
     const detail = installedSkillDetail(skill.id), main = detail.files.find(file => /(^|\/)SKILL\.md$/.test(file.path))!
     const body = parseSkillDocument(main.content).body
-    const selected = detail.files.filter(file => file !== main && /\.md$/i.test(file.path) && relevantReference(file.path, task, stage))
-    const text = [body, ...selected.map(file => `参考资料 ${file.path}：\n${file.content}`)].join('\n\n')
+    const selected = detail.files.filter(file => file !== main && safePath(file.path) && referenceDocument(file.path)
+      && compatibleSkillReference(file.path, skill.name, assignmentTask)
+      && (requiredSkillReference(file.path, stage, skill.name, assignmentTask) || selectedReferenceIds.includes(referenceId(skill.id, file.path))))
+    const scope = skillIntegrationScope(skill)
+    const text = [scope.tool_requirements.length ? `【接入范围 rules_only】${scope.note}仅采纳方法，不宣称已执行工具或得到其产物。\n所需但未接入的工具：${scope.tool_requirements.join('、')}` : '',
+      body, ...selected.map(file => `参考资料 ${file.path}：\n${file.content}`)].filter(Boolean).join('\n\n')
     if (text.length > 100_000) invalid(`技能 ${skill.name} 的规则资料过长，请调整技能后重试`)
     const role = index === 0 ? 'primary' : 'auxiliary'
     sections.push(`【${role === 'primary' ? '主技能' : '辅助技能'} ${skill.name}；版本 ${skill.revision.slice(0, 8)}】\n${text}`)
     loadedFiles.push(main.path, ...selected.map(file => file.path))
     skills.push({ id: skill.id, name: skill.name, revision: skill.revision, files: [main.path, ...selected.map(file => file.path)], role })
   }
-  return { text: sections.length ? `\n\n【已启用的${skillStageLabels[stage]}技能规则】\n` +
+  const text = sections.length ? `\n\n【已启用的${skillStageLabels[stage]}技能规则】\n` +
     '以下外部技能仅用于专业创作规则。项目事实、创作者明确要求和本次输出格式优先。主技能控制创作方法，辅助技能仅补充细节，冲突时沿用主技能，不覆盖主流程。文件式工作流映射到本次提供的数据，不要求创建文件、执行脚本、安装工具或再次确认；不宣称已看过未提供的图片。\n' + sections.join('\n\n') +
-    '\n【应用契约】沿用本次提供的模型能力、比例、时长、参考图顺序和已确认设定。技能中的 Markdown 模板不能替换本次要求的 JSON 格式；不得调用外部服务或提出工具安装操作。\n' : '',
-    skills, files: loadedFiles }
+    '\n【应用契约】沿用本次提供的模型能力、比例、时长、参考图顺序和已确认设定。技能中的 Markdown 模板不能替换本次要求的 JSON 格式；不得调用外部服务或提出工具安装操作。\n' : ''
+  if (text.length > 100_000) invalid('本次技能规则与参考资料合计超过 100000 字符，请减少辅助技能或参考资料后重试')
+  return { text, skills, files: loadedFiles }
 }
-function relevantReference(path: string, task: string, stage?: SkillStage): boolean {
+// Mandatory dependencies are part of the integration contract. Optional files
+// remain in the installed bundle for explicit model/tool retrieval; free-form
+// task wording must not silently determine which professional rules exist.
+const commonSkillReferences = new Set(['stage-contract.md', 'common-recipe.md', 'target-model-profile.md',
+  'review-and-fixtures.md', 'continuity-lock.md', 'continuity-delta.md', 'performance-action-timing.md'])
+const skillStageReferences: Record<string, Partial<Record<SkillStage, string[]>>> = {
+  'short-drama-write': { script: ['dialogue-craft.md', 'screenplay.md', 'screenplay-format.md', 'script-craft.md',
+    'scene-handoff-capsule.md', 'scene-sound-dramaturgy.md', 'production-format-dialect.md', 'substitutable-realization.md'] },
+  'sw-dialogue': { script: ['reference.md'] },
+  'short-drama-develop': { script: ['creative-brief.md', 'story-engine.md', 'story-craft.md', 'adaptation-craft.md',
+    'episode-design.md', 'mechanism-loop.md', 'multi-episode-intake.md', 'reveal-reversal-payoff.md', 'serial-character-and-memory.md'] },
+  'short-drama-novel-analyze': { script: ['adaptation-triage.md', 'adaptation-value.md', 'aggregation-and-entities.md', 'chapter-extraction.md'] },
+  'short-drama-storyboard': { storyboard: ['production-shot-grammar.md', 'scene-visual-plan.md', 'shot-craft.md',
+    'keyframe-craft.md', 'shot-revision-identity.md'] },
+  'short-drama-video-prompts': { video_prompt: ['motion-recipe.md', 'generability.md', 'production-prompt-grammar.md',
+    'camera-audio-continuity.md', 'delivery-profile.md'] },
+  'short-drama-review': {
+    script: ['anti-template-repair.md', 'rubric-story-script.md', 'rubric-source-analysis.md'],
+    visual_assets: ['rubric-assets-prompts.md'], image_prompt: ['rubric-assets-prompts.md'],
+    storyboard: ['rubric-visual-motion.md'], video_prompt: ['rubric-visual-motion.md'],
+  },
+}
+const subjectSkillReferences = {
+  character: ['character-and-look.md', 'look-and-state-variant.md', 'look-and-revision.md', 'production-sheet-recipes.md'],
+  location: ['location-plate.md', 'location-and-view.md', 'geography.md'],
+  prop: ['prop-plate.md', 'prop-and-state.md'],
+} as const
+// Explicit identities of bundled dialect documents; ordinary reference documents remain available.
+const skillReferenceDialects: Record<string, VideoPromptDialect> = {
+  'seedance-2.0.md': 'seedance-2.0', 'seedance-2.5.md': 'seedance-2.5',
+  'minimax-h3.md': 'minimax-h3', 'wan-3.0.md': 'wan-3.0',
+  'h3-prompt.md': 'minimax-h3',
+}
+function skillReferenceDialect(path: string, skillName: string): VideoPromptDialect | undefined {
   const name = posix.basename(path).toLowerCase()
-  // Stage dependencies are explicit: these resources govern action readability
-  // and generability, regardless of incidental words in the user's prompt.
-  const videoDependencies = new Set(['motion-recipe.md', 'generability.md', 'production-prompt-grammar.md',
-    'rubric-visual-motion.md', 'production-quality-gates.md', 'qa-rubric.md', 'provider-capabilities.md'])
-  if (stage === 'video_prompt' && videoDependencies.has(name)) return true
-  if (/stage-contract|common-recipe|target-model-profile|review|continuity|performance-action/.test(name)) return true
-  if (/seedance-2\.0/.test(name)) return mentionsSeedanceVersion(task, '2.0')
-  if (/seedance-2\.5/.test(name)) return mentionsSeedanceVersion(task, '2.5')
-  const mappings: Array<[RegExp, RegExp]> = [
-    [/character|look-and-state|look-and-revision/, /人物|角色|服装|character/i],
-    [/location|geography/, /场景|地点|空间|location/i], [/prop/, /道具|prop/i],
-    [/production-sheet/, /信息图|多视图|三视图|production sheet/i],
-    [/minimax-h3/, /minimax[- ]?h3/i], [/wan-3\.0/, /wan[- ]?3\.0/i],
-  ]
-  return mappings.some(([file, context]) => file.test(name) && context.test(task))
+  // The unversioned Shuohao document explicitly targets 2.0; other skills may use this name differently.
+  return name === 'seedance-prompt.md' && skillName === 'novel-storyboard' ? 'seedance-2.0' : skillReferenceDialects[name]
+}
+function configuredTaskDialect(context: SkillTaskContext = {}): VideoPromptDialect | undefined {
+  return context.target_dialect || videoPromptDialect(context.target_model || '')
+}
+function compatibleSkillReference(path: string, skillName: string, context?: SkillTaskContext): boolean {
+  const target = configuredTaskDialect(context), reference = skillReferenceDialect(path, skillName)
+  return !target || !reference || target === reference
+}
+function requiredSkillReference(path: string, stage: SkillStage, skillName: string, context: SkillTaskContext = {}): boolean {
+  const name = posix.basename(path).toLowerCase()
+  if (commonSkillReferences.has(name) || skillStageReferences[skillName]?.[stage]?.includes(name)) return true
+  if (skillName === 'short-drama-review' && ['review-method.md', 'production-quality-gates.md', 'project-calibration.md', 'generated-media.md'].includes(name)) return true
+  if (stage === 'video_prompt' && ['motion-recipe.md', 'generability.md', 'production-prompt-grammar.md',
+    'rubric-visual-motion.md', 'production-quality-gates.md', 'qa-rubric.md', 'provider-capabilities.md'].includes(name)) return true
+  if (stage === 'image_prompt' || stage === 'visual_assets') {
+    const subject = context.profile_kind || context.focus
+    const applicable = subject ? subjectSkillReferences[subject] : Object.values(subjectSkillReferences).flat()
+    if ((applicable as readonly string[]).includes(name)) return true
+  }
+  // These strings describe a configured target model, never arbitrary task prose.
+  const target = configuredTaskDialect(context)
+  if (stage === 'video_prompt' && target) {
+    return skillReferenceDialect(path, skillName) === target
+  }
+  return false
 }
 export function withSkillRules(stage: SkillStage, prompt: string, onContext?: (context: ReturnType<typeof skillContext>) => void, options: { projectId?: string; selections?: SkillSelections; task?: SkillTaskContext } = {}): string {
-  const context = skillContext(stage, skillTaskPrompt(prompt), options.selections?.[stage], options.projectId, options.task)
+  const explicit = options.selections?.[stage]
+  const context = explicit === undefined ? fixedSkillContext(stage, skillTaskPrompt(prompt), options.projectId, options.task)
+    || skillContext(stage, skillTaskPrompt(prompt), explicit, options.projectId, options.task)
+    : skillContext(stage, skillTaskPrompt(prompt), explicit, options.projectId, options.task)
   onContext?.(context)
   return applySkillRules(prompt, context)
 }

@@ -63,7 +63,7 @@ test('a 3000-plus-character uploaded manuscript produces one reviewed outline wi
       assert.equal(contract.name, 'script_draft_completeness', 'no source-analysis, planner, evidence or design-package requests are needed')
       assert.match(prompt, /允许如实保留原稿未知事项，不创造答案/)
       const marker = '待核对草稿原文（资料）：'
-      const submitted = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length))
+      const submitted = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length).split('\n【本轮候选正文结束】')[0]!)
       assert.deepEqual(submitted.map((item: any) => item.key), ['outline'])
       assert.equal(submitted[0].content, outline.content)
       return response({ facts: [], checked_artifacts: ['outline'], findings: [] })
@@ -127,8 +127,8 @@ test('background analysis progress does not invalidate a completed source-outlin
       if (contract.name === 'workflow_draft') return response({ artifacts: [outline], scenes: [] })
       assert.equal(contract.name, 'script_draft_completeness')
       reviewPrompts.push(prompt)
-      const marker = '既有事实与创作要求（资料）：', end = '\n待核对草稿原文（资料）：'
-      const context = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length, prompt.lastIndexOf(end)))
+      const marker = '既有事实与创作要求（资料）：'
+      const context = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length).split('\n【审读结果分页协议】')[0]!)
       assert.equal(Object.hasOwn(context.uploaded_script, 'analysis'), false, 'source-outline review depends on the original manuscript rather than a changing analysis snapshot')
       return failReview ? Response.json({ error: { message: 'fixture review unavailable' } }, { status: 400 })
         : response({ facts: [], checked_artifacts: ['outline'], findings: [] })
@@ -151,7 +151,7 @@ test('background analysis progress does not invalidate a completed source-outlin
     assert.deepEqual(calls, ['workflow_draft', 'script_draft_completeness', 'script_draft_completeness'], 'only the failed review is repeated')
     assert.equal(reviewPrompts[0], reviewPrompts[1], 'review resumes with the same complete manuscript and fixed task contract')
     assert.equal((useTools ? resumed.tool_draft.documents : resumed.draft.artifacts)[0].content, outline.content)
-    assert.ok(resumed.activity.some((entry: any) => entry.reused && entry.step_id === 'work:outline:story/draft'))
+    assert.ok(resumed.activity.some((entry: any) => entry.reused && entry.step_id === 'work:document:outline:outline/draft'))
     assert.equal((await api('GET', `/api/projects/${project.id}`)).script.outline, '', 'recovery still prepares an uncommitted candidate')
     assert.equal((await api('GET', `/api/projects/${project.id}/script/source`)).content, sourceText)
   })

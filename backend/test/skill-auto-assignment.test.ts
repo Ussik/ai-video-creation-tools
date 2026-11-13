@@ -10,7 +10,7 @@ const testData = await mkdtemp(join(tmpdir(), 'studio-model-skills-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
 const { buildApp } = await import('../src/app.js')
 const { db, all } = await import('../src/infrastructure/database/db.js')
-const { installSkillBundle, configureSkill, skillContext, skillPolicy, setSkillDefault } = await import('../src/modules/skills/skills.js')
+const { installSkillBundle, installedSkillDetail, configureSkill, skillContext, skillPolicy, setSkillDefault, setSkillTaskDefault } = await import('../src/modules/skills/skills.js')
 const { documentTools, runScriptTools } = await import('../src/modules/script/script-document-tools.js')
 const { directorStageContext } = await import('../src/modules/script/script-workflow.js')
 const app = buildApp()
@@ -28,6 +28,8 @@ function install(name: string, description: string, stages: Parameters<typeof co
   return skill.id
 }
 const write = install('short-drama-write', '创作完整短剧正文，推进冲突和人物行动。', ['script'])
+const develop = install('short-drama-develop', '设计故事方向、全剧大纲与人物关系。', ['script'])
+const dialogue = install('sw-dialogue', '对白潜台词、人物声线与口语节奏。', ['script'])
 const analyze = install('source-structure', '理解已有材料的人物关系、事件因果和叙事结构。', ['script'])
 const board = install('shot-planning', '把场景规划成可拍摄的镜头与连续动作。', ['storyboard'])
 const video = install('motion-detail', '编写镜头运动与人物动作的视频提示词。', ['video_prompt'])
@@ -87,10 +89,10 @@ test('automatic choices require IDs and a reason, validate eligibility and freez
   assert.deepEqual(all('SELECT * FROM skill_stage_defaults'), before)
 })
 
-test('manual choices and explicit base rules remain locked while read-only operations need no selection', async () => {
+test('manual choices and explicit base rules override fixed stages while read-only operations need no selection', async () => {
   const { context } = await fixture()
-  for (const selected of [[write], []]) {
-    const tools = documentTools(context({ skillSelections: { script: selected } }))
+  for (const selected of [[write], []]) for (const workflow of [undefined, 'outline'] as const) {
+    const tools = documentTools(context({ workflow, skillSelections: { script: selected } }))
     const state = await tools.execute('get_creation_state', {}) as any
     assert.equal(state.creation_skills[0].mode, 'manual')
     assert.deepEqual(state.creation_skills[0].locked_ids, selected)
@@ -105,9 +107,121 @@ test('manual choices and explicit base rules remain locked while read-only opera
   assert.deepEqual(state.selected_skills, [])
 })
 
+test('resource tools load fixed functional bindings on demand while preserving manual choices and empty overrides', async t => {
+  t.mock.method(globalThis, 'fetch', async () => { throw new Error('Unexpected paid or network request') })
+  const { context } = await fixture()
+  for (const stage of ['visual_assets', 'image_prompt', 'storyboard', 'video_prompt'] as const) {
+    const primary = stage === 'storyboard' ? board : stage === 'video_prompt' ? video : install(`fixed-${stage}`, `负责${stage}专门功能。`, [stage])
+    const auxiliary = install(`auxiliary-${stage}`, `辅助${stage}规则。`, [stage])
+    setSkillTaskDefault(stage, { primary_id: primary, auxiliary_ids: [auxiliary] })
+    t.after(() => { setSkillTaskDefault(stage, { primary_id: primary, auxiliary_ids: [] }); configureSkill(auxiliary, false, [stage]) })
+    const frozen: Array<{ stage: string; ids: string[] }> = []
+    const tools = documentTools(context({ onSkillSelection: (stage, ids) => frozen.push({ stage, ids }) }))
+    const state = await tools.execute('get_creation_state', {}) as any
+    const catalog = state.creation_skills.find((item: any) => item.stage === stage)
+    assert.equal(catalog.mode, 'fixed'); assert.equal(catalog.task, stage)
+    assert.equal(catalog.loaded, false); assert.equal(catalog.selected_ids, null)
+    assert.deepEqual(catalog.locked_ids, [primary, auxiliary])
+    assert.doesNotMatch(JSON.stringify(state), /RULE_/)
+    await assert.rejects(tools.execute('load_creation_skills', { stage, skill_ids: [auxiliary], reason: '让模型切换' }), /固定绑定/)
+    const loaded = await tools.execute('load_creation_skills', { stage }) as any
+    assert.equal(loaded.selection_mode, 'fixed'); assert.equal(loaded.assignment.task, stage)
+    assert.deepEqual(ids(loaded), [primary, auxiliary])
+    assert.deepEqual(loaded.skills.map((skill: any) => skill.role), ['primary', 'auxiliary'])
+    assert.deepEqual(frozen, [{ stage, ids: [primary, auxiliary] }])
+    setSkillTaskDefault(stage, { primary_id: auxiliary, auxiliary_ids: [] })
+    assert.deepEqual(ids(await tools.execute('load_creation_skills', { stage }) as any), [primary, auxiliary])
+    for (const selected of [[auxiliary], []]) {
+      const manual = documentTools(context({ skillSelections: { [stage]: selected } }))
+      const manualCatalog = (await manual.execute('get_creation_state', {}) as any).creation_skills.find((item: any) => item.stage === stage)
+      assert.equal(manualCatalog.mode, 'manual'); assert.deepEqual(manualCatalog.locked_ids, selected)
+      const rules = await manual.execute('load_creation_skills', { stage }) as any
+      assert.equal(rules.selection_mode, 'manual'); assert.deepEqual(ids(rules), selected)
+      await assert.rejects(manual.execute('load_creation_skills', { stage, skill_ids: [primary], reason: '切换' }), /手动锁定/)
+    }
+    setSkillTaskDefault(stage, { primary_id: primary, auxiliary_ids: [] })
+    configureSkill(primary, false, [stage])
+    await assert.rejects(documentTools(context()).execute('load_creation_skills', { stage }), /停用|不可用/)
+    configureSkill(primary, true, [stage])
+  }
+})
+
+test('native resource loading uses the fixed stage without a selection request or eager rule injection', async t => {
+  const { context } = await fixture(), saved: Array<{ stage: string; ids: string[] }> = []
+  let requests = 0
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const body = JSON.parse(String(init?.body)); requests++
+    assert.ok(!body.tools.some((tool: any) => tool.function.name === 'select_creation_skills'))
+    assert.doesNotMatch(body.messages[0].content, /RULE_shot-planning/)
+    if (requests === 1) return toolCall('load_creation_skills', { stage: 'storyboard' })
+    const output = JSON.parse(body.messages.at(-1).content)
+    assert.equal(output.result.selection_mode, 'fixed')
+    assert.deepEqual(ids(output.result), [board])
+    assert.match(output.result.text, /RULE_shot-planning/)
+    return finalReply()
+  })
+  await runScriptTools({ ...context({ onSkillSelection: (stage, ids) => saved.push({ stage, ids }) }), model, provider,
+    prompt: '创作者要求整理分镜，按目录加载所需功能。', resolveKey: () => '' })
+  assert.equal(requests, 2)
+  assert.deepEqual(saved, [{ stage: 'storyboard', ids: [board] }])
+})
+
+test('fixed native tasks freeze bindings for resume and reject changed skill revisions before invoking a model', async t => {
+  for (const drift of [false, true]) await t.test(drift ? 'changed skill revision' : 'changed task default', async t => {
+    const original = installedSkillDetail(develop)
+    setSkillTaskDefault('story_develop', { primary_id: develop, auxiliary_ids: [] })
+    t.after(() => { installSkillBundle(original, develop); setSkillTaskDefault('story_develop', { primary_id: develop, auxiliary_ids: [] }) })
+    const { project } = await fixture()
+    await call('PUT', `/api/projects/${project.id}/script/artifacts`, { artifacts: [{ artifact_type: 'outline', title: '旧案', content: '林晚追查车站旧案。', status: 'ready' }] })
+    const p = await call('POST', '/api/providers', { name: '固定任务恢复', base_url: 'https://fixed-resume-skills.invalid/v1' })
+    const m = await call('POST', '/api/models', { provider_id: p.id, name: '模拟文本', remote_id: 'mock', modality: 'text', protocol: 'chat_completions',
+      settings: { request_path: 'chat/completions', stream: false, request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] }, text_path: 'choices.0.message.content' } })
+    let requests = 0, recovering = false
+    t.mock.method(globalThis, 'fetch', async (_url, init) => {
+      requests++
+      const body = JSON.parse(String(init?.body)), prompt = body.messages[0].content
+      assert.ok(body.tools.some((tool: any) => tool.function.name === 'load_creation_skills'))
+      assert.ok(!body.tools.some((tool: any) => tool.function.name === 'select_creation_skills'))
+      assert.match(prompt, /RULE_short-drama-develop/)
+      assert.doesNotMatch(prompt, /RULE_source-structure/)
+      if (!recovering) {
+        assert.match(prompt, /"mode":"fixed"/)
+        return Response.json({ error: { message: 'fixture interrupted', type: 'invalid_request_error' } }, { status: 400 })
+      }
+      return finalReply()
+    })
+    const taskId = crypto.randomUUID(), taskUrl = `/api/projects/${project.id}/script/director/tasks/${taskId}`
+    const first = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat/stream`, payload: {
+      model_id: m.id, mode: 'script', use_tools: true, workflow: { stage: 'outline', scope: 'project', episode_number: 0, operation: 'revise' },
+      messages: [{ role: 'user', text: '局部修订大纲中的因果说明。' }],
+      task: { id: taskId, conversation: { id: crypto.randomUUID(), messages: [{ id: 'question', role: 'user', text: '局部修订大纲。' }] },
+        execution: { title: '固定任务恢复', request: '局部修订大纲', started_at: Date.now(), mode: 'script' } },
+    } })
+    assert.equal(first.statusCode, 200, first.body)
+    const failed = await call('GET', taskUrl)
+    assert.equal(failed.status, 'failed'); assert.equal(failed.can_resume, true)
+    const stored = JSON.parse(all<{ request_payload: string }>('SELECT request_payload FROM script_director_tasks WHERE id=?', taskId)[0]!.request_payload)
+    assert.deepEqual(stored.skill_selections.script, [develop])
+    assert.equal(stored.workflow.operation, 'revise')
+    if (drift) installSkillBundle({ ...original, revision: 'b'.repeat(40) }, develop)
+    else setSkillTaskDefault('story_develop', { primary_id: analyze, auxiliary_ids: [] })
+    recovering = true
+    const continued = await app.inject({ method: 'POST', url: taskUrl + '/continue', payload: {} })
+    if (drift) {
+      assert.equal(continued.statusCode, 409, continued.body)
+      assert.equal(requests, 1, 'revision drift rejects before a model call')
+    } else {
+      assert.equal(continued.statusCode, 200, continued.body)
+      await app.inject({ method: 'GET', url: taskUrl + '/stream' })
+      assert.equal((await call('GET', taskUrl)).status, 'succeeded')
+      assert.equal(requests, 2, 'resuming must use the frozen binding without a selection call')
+    }
+  })
+})
+
 test('script and resource drafting require loaded rules but still create only an authorized unsaved draft', async () => {
   const { project, context } = await fixture()
-  const tools = documentTools(context({ workflow: 'outline', stage: directorStageContext(context().script(), { explicit: { stage: 'outline', episode_number: 0 } }),
+  const tools = documentTools(context({ workflow: 'outline', skillSelections: { script: [] }, stage: directorStageContext(context().script(), { explicit: { stage: 'outline', episode_number: 0 } }),
     taskContract: { intent: 'stage_design', artifact_types: ['outline'] } }))
   const draft = { stage: 'outline', scope: 'project', episode_number: 0, artifacts: [{ artifact_type: 'outline', title: '城市旧案', content: '林晚调查车站失踪案，循着录音追查旧日事故。' }], scenes: [] }
   await assert.rejects(tools.execute('create_document_draft', draft), /load_creation_skills/)
@@ -122,7 +236,7 @@ test('script and resource drafting require loaded rules but still create only an
   const proposal = { summary: '车站镜头', scenes: [{ scene_id: scene.id, base_version: read.objects[0].version,
     shots: [{ title: '入站', prompt: '人物走入', image_prompt: '站在入口', video_prompt: '走入车站', duration: 5 }] }] }
   await assert.rejects(resources.execute('propose_shot_plan', proposal), /load_creation_skills/)
-  await resources.execute('load_creation_skills', { stage: 'storyboard', skill_ids: [board], reason: '需要把车站行动整理成镜头。' })
+  await resources.execute('load_creation_skills', { stage: 'storyboard' })
   assert.equal((await resources.execute('propose_shot_plan', proposal) as any).saved, false)
   assert.equal(all('SELECT * FROM jobs WHERE project_id IN (?,?)', project.id, other.project.id).length, 0)
 })
@@ -150,18 +264,26 @@ test('native Function Calling lets the model read the catalog, choose by meaning
   assert.deepEqual(all('SELECT * FROM skill_stage_defaults'), before)
 })
 
-test('native stage-generation tool visibility includes model selection before draft creation', async t => {
+test('native explicit stages inject fixed rules before the first model request and refuse switching', async t => {
   const { context } = await fixture()
+  const tools = documentTools(context({ workflow: 'outline' }))
+  const state = await tools.execute('get_creation_state', {}) as any
+  assert.equal(state.creation_skills[0].mode, 'fixed')
+  assert.equal(state.creation_skills[0].task, 'story_develop')
+  assert.equal(state.creation_skills[0].loaded, true)
+  assert.deepEqual(state.creation_skills[0].locked_ids, [develop])
+  await assert.rejects(tools.execute('load_creation_skills', { stage: 'script', skill_ids: [write], reason: '换一种' }), /固定绑定/)
+  assert.equal((await tools.execute('load_creation_skills', { stage: 'script' }) as any).selection_mode, 'fixed')
   let requests = 0
   t.mock.method(globalThis, 'fetch', async (_url, init) => {
     const body = JSON.parse(String(init?.body)); requests++
     assert.ok(body.tools.some((tool: any) => tool.function.name === 'load_creation_skills'))
-    assert.doesNotMatch(body.messages[0].content, /不要重复加载技能/)
-    if (requests === 1) return toolCall('load_creation_skills', { stage: 'script', skill_ids: [write], reason: '生成阶段大纲，使用短剧创作方法。' })
+    assert.match(body.messages[0].content, /RULE_short-drama-develop/)
+    assert.doesNotMatch(body.messages[0].content, /RULE_short-drama-write/)
     return finalReply()
   })
   await runScriptTools({ ...context({ workflow: 'outline' }), model, provider, prompt: '生成当前大纲。', resolveKey: () => '' })
-  assert.equal(requests, 2)
+  assert.equal(requests, 1)
 })
 
 test('director initial prompt exposes the catalog without auto rules, while manual selections remain injected', async t => {
@@ -184,6 +306,35 @@ test('director initial prompt exposes the catalog without auto rules, while manu
   await call('POST', `/api/projects/${project.id}/script/director/chat`, { ...request, skill_selections: { script: [] } })
   assert.doesNotMatch(prompts[2], /RULE_/)
   assert.equal(skillPolicy(project.id)[0].primary_id, write)
+})
+
+test('director dialogue actions inject their fixed skill and narrow revision instructions without a selection or review request', async t => {
+  const { project, snapshot } = await fixture()
+  await call('PUT', `/api/projects/${project.id}/script/artifacts`, { artifacts: [{ artifact_type: 'episode_script', episode_number: 1, title: '第一集', content: '林晚：别走。', status: 'ready' }] })
+  const documentId = snapshot().artifacts[0]!.id
+  const p = await call('POST', '/api/providers', { name: '对白专项', base_url: 'https://dialogue-skills.invalid/v1' })
+  const m = await call('POST', '/api/models', { provider_id: p.id, name: '模拟文本', remote_id: 'mock', modality: 'text', protocol: 'chat_completions',
+    settings: { request_path: 'chat/completions', stream: false, request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] }, text_path: 'choices.0.message.content' } })
+  const prompts: string[] = []
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const body = JSON.parse(String(init?.body)); prompts.push(body.messages[0].content)
+    assert.ok(body.tools.some((tool: any) => tool.function.name === 'propose_document_patch'))
+    assert.ok(!body.tools.some((tool: any) => tool.function.name === 'select_creation_skills'))
+    return finalReply()
+  })
+  const request = { model_id: m.id, mode: 'script', use_tools: true,
+    document_action: { operation: 'revise', document_ids: [documentId], revision_kind: 'dialogue' }, messages: [{ role: 'user', text: '只润色这集台词。' }] }
+  await call('POST', `/api/projects/${project.id}/script/director/chat`, request)
+  assert.equal(prompts.length, 1)
+  assert.match(prompts[0]!, /RULE_sw-dialogue/)
+  assert.ok(prompts[0]!.includes(dialogue))
+  assert.match(prompts[0]!, /"task":"dialogue_revision"/)
+  assert.match(prompts[0]!, /只改选中文档中人物说出口的台词/)
+  assert.match(prompts[0]!, /对应分场仅同步dialogue字段/)
+  await call('POST', `/api/projects/${project.id}/script/director/chat`, { ...request, skill_selections: { script: [] } })
+  assert.equal(prompts.length, 2)
+  assert.doesNotMatch(prompts[1]!, /RULE_/)
+  assert.match(prompts[1]!, /"mode":"manual"/)
 })
 
 test('director fallback uses a native selection call and freezes the returned IDs for actual generation', async t => {
@@ -238,6 +389,7 @@ test('durable director requests preserve a non-default model choice across inter
     })
     const taskId = crypto.randomUUID(), taskUrl = `/api/projects/${project.id}/script/director/tasks/${taskId}`
     const payload = { model_id: m.id, mode: 'script', use_tools: native,
+      ...(native ? { skill_selections: { script: [analyze] } } : {}),
       ...(native ? { workflow: { stage: 'outline', scope: 'project', episode_number: 0, operation: 'revise' } }
         : { question_response: { status: 'answered', question: '本次需要做什么？' } }),
       messages: [{ role: 'user', text: '先核对原有材料中的人物动机和事件因果。' }],
@@ -291,7 +443,7 @@ test('typed stage recovery reuses its generated checkpoint and the non-default c
   })
   const taskId = crypto.randomUUID(), taskUrl = `/api/projects/${project.id}/script/director/tasks/${taskId}`
   const first = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat/stream`, payload: {
-    model_id: m.id, mode: 'script', use_tools: true, workflow: { stage: 'outline', scope: 'project', episode_number: 0 },
+    model_id: m.id, mode: 'script', use_tools: true, skill_selections: { script: [alternate] }, workflow: { stage: 'outline', scope: 'project', episode_number: 0 },
     messages: [{ role: 'user', text: '生成林晚调查车站旧案的全剧大纲。' }],
     task: { id: taskId, conversation: { id: crypto.randomUUID(), messages: [{ id: 'question', role: 'user', text: '生成全剧大纲。' }] },
       execution: { title: '大纲恢复选技', request: '生成全剧大纲', started_at: Date.now(), mode: 'script' } },
@@ -299,7 +451,7 @@ test('typed stage recovery reuses its generated checkpoint and the non-default c
   assert.equal(first.statusCode, 200, first.body)
   const failed = await call('GET', taskUrl)
   assert.equal(failed.status, 'failed'); assert.equal(failed.can_resume, true)
-  assert.equal(selections, 1); assert.equal(drafts, 1)
+  assert.equal(selections, 0); assert.equal(drafts, 1)
   assert.deepEqual(JSON.parse(all<{ request_payload: string }>('SELECT request_payload FROM script_director_tasks WHERE id=?', taskId)[0]!.request_payload).skill_selections.script, [alternate])
   assert.equal(all('SELECT * FROM script_generation_checkpoints WHERE project_id=?', project.id).length, 1)
   failReview = false
@@ -307,7 +459,7 @@ test('typed stage recovery reuses its generated checkpoint and the non-default c
   await app.inject({ method: 'GET', url: taskUrl + '/stream' })
   const completed = await call('GET', taskUrl)
   assert.equal(completed.status, 'succeeded')
-  assert.equal(selections, 1, 'resume must not select skills again')
+  assert.equal(selections, 0, 'manual and resumed tasks must not select skills again')
   assert.equal(drafts, 1, 'the generated stage checkpoint must retain its identity and be reused')
   assert.equal(reviews, 2)
   assert.equal(skillPolicy(project.id)[0].primary_id, write)
@@ -325,7 +477,7 @@ test('native resource skill revision drift invalidates a durable recovery key be
   let requests = 0
   t.mock.method(globalThis, 'fetch', async () => {
     requests++
-    if (requests === 1) return toolCall('load_creation_skills', { stage: 'storyboard', skill_ids: [board], reason: '核对故事与后续镜头连续性的关联。' })
+    if (requests === 1) return toolCall('load_creation_skills', { stage: 'storyboard' })
     return Response.json({ error: { message: 'fixture interrupted', type: 'invalid_request_error' } }, { status: 400 })
   })
   const taskId = crypto.randomUUID(), taskUrl = `/api/projects/${project.id}/script/director/tasks/${taskId}`
@@ -344,4 +496,44 @@ test('native resource skill revision drift invalidates a durable recovery key be
   assert.equal(resumed.statusCode, 409, resumed.body)
   assert.match(resumed.json().detail, /模型配置已变化|不能续用旧任务/)
   assert.equal(requests, 2, 'a changed resource skill must reject resume before selecting or invoking the model')
+})
+
+test('durable native resource loads retain frozen IDs after the functional default changes', async t => {
+  const alternate = install('alternate-shot-planning', '另一套分镜规划方法。', ['storyboard'])
+  setSkillTaskDefault('storyboard', { primary_id: board, auxiliary_ids: [] })
+  t.after(() => { setSkillTaskDefault('storyboard', { primary_id: board, auxiliary_ids: [] }); configureSkill(alternate, false, ['storyboard']) })
+  const { project } = await fixture()
+  await call('PUT', `/api/projects/${project.id}/script/artifacts`, { artifacts: [{ artifact_type: 'outline', title: '旧案', content: '林晚追查车站旧案。', status: 'ready' }] })
+  const p = await call('POST', '/api/providers', { name: '资源固定绑定恢复', base_url: 'https://resource-fixed-resume.invalid/v1' })
+  const m = await call('POST', '/api/models', { provider_id: p.id, name: '模拟文本', remote_id: 'mock', modality: 'text', protocol: 'chat_completions',
+    settings: { request_path: 'chat/completions', stream: false, request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] }, text_path: 'choices.0.message.content' } })
+  let requests = 0, recovering = false
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const body = JSON.parse(String(init?.body)); requests++
+    assert.ok(!body.tools.some((tool: any) => tool.function.name === 'select_creation_skills'))
+    assert.doesNotMatch(body.messages[0].content, /RULE_shot-planning|RULE_alternate-shot-planning/)
+    if (requests === 1 || requests === 3) return toolCall('load_creation_skills', { stage: 'storyboard' })
+    const output = JSON.parse(body.messages.at(-1).content).result
+    assert.deepEqual(ids(output), [board]); assert.match(output.text, /RULE_shot-planning/)
+    assert.doesNotMatch(output.text, /RULE_alternate-shot-planning/)
+    if (!recovering) return Response.json({ error: { message: 'fixture interrupted', type: 'invalid_request_error' } }, { status: 400 })
+    return finalReply()
+  })
+  const taskId = crypto.randomUUID(), taskUrl = `/api/projects/${project.id}/script/director/tasks/${taskId}`
+  const first = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat/stream`, payload: {
+    model_id: m.id, mode: 'script', use_tools: true, workflow: { stage: 'outline', scope: 'project', episode_number: 0, operation: 'revise' },
+    messages: [{ role: 'user', text: '核对行动与分镜之间的关联。' }],
+    task: { id: taskId, conversation: { id: crypto.randomUUID(), messages: [{ id: 'question', role: 'user', text: '核对关联。' }] },
+      execution: { title: '资源固定绑定恢复', request: '核对关联', started_at: Date.now(), mode: 'script' } },
+  } })
+  assert.equal(first.statusCode, 200, first.body)
+  const failed = await call('GET', taskUrl)
+  assert.equal(failed.status, 'failed'); assert.equal(failed.can_resume, true)
+  assert.deepEqual(JSON.parse(all<{ request_payload: string }>('SELECT request_payload FROM script_director_tasks WHERE id=?', taskId)[0]!.request_payload).skill_selections.storyboard, [board])
+  setSkillTaskDefault('storyboard', { primary_id: alternate, auxiliary_ids: [] })
+  recovering = true
+  await call('POST', taskUrl + '/continue', {})
+  await app.inject({ method: 'GET', url: taskUrl + '/stream' })
+  assert.equal((await call('GET', taskUrl)).status, 'succeeded')
+  assert.equal(requests, 4)
 })

@@ -3,6 +3,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
+import type { DirectorTaskSnapshot } from '../src/modules/script/director-tasks.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'video-studio-project-deletion-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
@@ -164,8 +165,11 @@ test('batch deletion keeps the entire selection when any generation or director 
     await expectBlocked()
   }
   run("UPDATE jobs SET status='succeeded' WHERE id=?", active.jobId)
+  const snapshot: DirectorTaskSnapshot = { id: 'batch-director', project_id: active.id, conversation_id: `${active.id}-conversation`,
+    message_id: 'reply', status: 'running', started_at: Date.now(), events: [],
+    execution: { title: '删除保护测试', request: '本地夹具任务', started_at: Date.now(), mode: 'script' } }
   run(`INSERT INTO script_director_tasks (id, project_id, conversation_id, user_message_id, message_id, request_hash, status, snapshot, created_at, updated_at)
-    VALUES ('batch-director', ?, ?, 'user', 'reply', 'hash', 'running', '{}', ?, ?)`, active.id, `${active.id}-conversation`, now(), now())
+    VALUES ('batch-director', ?, ?, 'user', 'reply', 'hash', 'running', ?, ?, ?)`, active.id, snapshot.conversation_id, JSON.stringify(snapshot), now(), now())
   await expectBlocked()
   const single = await app.inject({ method: 'DELETE', url: `/api/projects/${active.id}` })
   assert.equal(single.statusCode, 422, single.body)
