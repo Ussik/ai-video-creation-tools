@@ -65,13 +65,13 @@ test('an edited old preview removes stale rules even after a creator prepends th
   assert.match(updated, /我的前置要求：突出代价/); assert.match(updated, /正文任务保持原样/)
 })
 
-test('automatic prompt preview never loads default skill rules or calls a model', async t => {
+test('explicit script prompt preview loads the fixed writer and never calls a selection model', async t => {
   const { buildApp } = await import('../src/app.js')
   const app = buildApp(); t.after(() => app.close())
   t.mock.method(globalThis, 'fetch', async () => { throw new Error('preview must not call a model') })
   const automatic = await app.inject({ method: 'POST', url: '/api/projects/project/script/generate/prompt', payload: { idea: '雨夜车站' } })
   assert.equal(automatic.statusCode, 200, automatic.body)
-  assert.doesNotMatch(automatic.json().prompt, /RULE_|【已启用的/)
+  assert.match(automatic.json().prompt, /RULE_ordinary/)
   const manual = await app.inject({ method: 'POST', url: '/api/projects/project/script/generate/prompt', payload: { idea: '雨夜车站', skill_selections: { script: [standard] } } })
   assert.equal(manual.statusCode, 200, manual.body)
   assert.match(manual.json().prompt, /RULE_ordinary/)

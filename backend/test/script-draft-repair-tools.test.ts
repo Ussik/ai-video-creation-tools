@@ -75,6 +75,49 @@ test('patches reject ambiguity, overlap, unchanged content and absent source man
   assert.throws(() => workspace({ currentSource: undefined }).assertPatch({ ...patch(), source_edits: [{ find: original, replace: original + '新增。', reason: '补齐' }] }), /没有可修改的有效稿/)
 })
 
+test('timing repair loads the full affected scene with editable numeric evidence and a read-only derived total', () => {
+  const episode: WorkflowDraft = { stage: 'episode', scope: 'episode', episode_number: 1, target_duration: 90,
+    artifacts: [{ artifact_type: 'episode_script', title: '第一集', content: '林晚在车站完整说明事故经过。' }],
+    scenes: [{ heading: '车站', location: '车站', time_of_day: '夜', characters: '林晚', action: '林晚说明事故经过。',
+      dialogue: '先听我说完昨晚的经过。', narration: '林晚回想起列车进站前的声音。', duration: 2 },
+    { heading: '远处', location: '', time_of_day: '', characters: '', action: '信号灯闪烁。', dialogue: '', narration: '', duration: 4 }] }
+  const timingFinding = { ...finding, source_key: 'scene:0:duration', quote: '2', explanation: '完整对话无法在估时内完成', suggestion: '保留对白并重新估时' }
+  const context = workspace({ draft: episode, findings: [timingFinding] })
+  assert.deepEqual(context.initial.documents.map(item => item.source_key), [
+    'scene:0:heading', 'scene:0:location', 'scene:0:time_of_day', 'scene:0:characters',
+    'scene:0:action', 'scene:0:dialogue', 'scene:0:narration', 'scene:0:duration',
+  ])
+  for (const field of ['heading', 'location', 'time_of_day', 'characters', 'action', 'dialogue', 'narration', 'duration'] as const) {
+    assert.equal(context.initial.documents.find(item => item.source_key === `scene:0:${field}`)!.content, String(episode.scenes[0]![field]))
+  }
+  assert.equal(context.initial.context_mode, 'targeted')
+  assert.ok(context.initial.documents.every(item => !item.source_key.startsWith('scene:1:')))
+  assert.equal(context.initial.timing!.estimated_total, 6)
+  assert.equal(context.initial.timing!.target_duration, 90)
+  assert.match(context.initial.timing!.instructions, /不能作为补丁来源或直接修改/)
+  const value = { decisions: ['按完整对白重新估为45秒。'], summary: '仅修正场次估时', source_edits: [],
+    edits: [{ source_key: 'scene:0:duration', find: '2', replace: '45', reason: '保留对白并为表演留出时间' }] }
+  assert.doesNotThrow(() => context.assertPatch(value))
+  assert.throws(() => context.assertPatch({ ...value, edits: [{ ...value.edits[0]!, replace: '45秒' }] }), /整数/)
+  assert.throws(() => context.assertPatch({ ...value, edits: [{ ...value.edits[0]!, source_key: 'timing:estimated_total' }] }), /不属于/)
+  assert.equal(episode.scenes[0]!.duration, 2)
+  assert.notEqual(workspace({ draft: { ...episode, target_duration: 120 }, findings: [timingFinding] }).identity, context.identity)
+
+  const related = workspace({ draft: episode, findings: [{ ...timingFinding, source_key: 'episode_script', quote: '说明事故经过',
+    related_findings: [{ source_key: 'scene:0:duration', quote: '2', explanation: timingFinding.explanation, suggestion: timingFinding.suggestion }] }] })
+  assert.equal(related.initial.documents.find(item => item.source_key === 'scene:0:dialogue')!.content, episode.scenes[0]!.dialogue)
+  assert.ok(related.initial.documents.every(item => !item.source_key.startsWith('scene:1:')))
+
+  const onDemand = workspace({ draft: episode, findings: [{ ...finding, source_key: 'episode_script' }] })
+  assert.equal(onDemand.initial.documents.length, 1)
+  const read = onDemand.read('candidate-v1', ['scene:0:duration'])
+  assert.deepEqual(read.documents.map(item => item.source_key), context.initial.documents.map(item => item.source_key))
+  assert.ok(read.documents.every(item => 'content' in item))
+  assert.doesNotThrow(() => onDemand.assertPatch(value))
+  onDemand.resetReads()
+  assert.throws(() => onDemand.assertPatch(value), /尚未完整读取/)
+})
+
 test('batch read then valid submission ends without an extra model summary and invokes caller validation', async () => {
   let turns = 0, validations = 0
   const value = patch('world')

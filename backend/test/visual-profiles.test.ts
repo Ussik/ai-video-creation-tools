@@ -8,7 +8,7 @@ import sharp from 'sharp'
 import Fastify from 'fastify'
 import { rightApiImageSettings } from '../src/infrastructure/providers/rightapi-image-settings.js'
 import { visualGenerationPrompt, type PromptVisualBinding } from '@video-studio/shared/visuals/visual-prompt'
-import { stripManagedPromptBlocks } from '@video-studio/shared/visuals/prompt-document'
+import { stripManagedPromptBlocks, validateManagedPromptDocument } from '@video-studio/shared/visuals/prompt-document'
 import { visualBoardPromptParts } from '@video-studio/shared/visuals/visual-board-document'
 
 const testData = await mkdtemp(join(tmpdir(), 'visual-profiles-'))
@@ -55,6 +55,25 @@ test('source-backed setting boards need no boilerplate body and retain a primary
   assert.equal(JSON.parse(generated.job.request).prompt, prompt)
   assert.equal(one<{ definition: string }>('SELECT definition FROM visual_profiles WHERE id=?', profile.id)?.definition, profile.definition)
   assert.equal(all('SELECT * FROM shots WHERE project_id=?', project.id).length, 0)
+})
+
+test('retrying a board with a legacy style heading in its profile accepts the generated document', async () => {
+  const { project, profile, draft } = await setup(), supported = await model()
+  const definition = '【项目画风约束】低饱和冷色调，3D卡通渲染。' + draft.definition
+  await call('PATCH', `/api/visual-profiles/${profile.id}`, { definition, expected_revision: profile.revision })
+  const detail = await call<Visuals>('GET', `/api/projects/${project.id}/visual-profiles`)
+  const updated = detail.visual_profiles.find(item => item.id === profile.id)!
+  assert.doesNotThrow(() => validateManagedPromptDocument(updated.board_prompt))
+  assert.match(visualBoardPromptParts(updated.board_prompt).primary[0]!, /低饱和冷色调，3D卡通渲染。黑色齐耳短发/)
+  const input = { model_id: supported.id, expected_revision: updated.revision,
+    prompt_override: updated.board_prompt, prompt_document: true }
+  const preview = await call<{ prompt: string; reference_signature: string }>('POST', `/api/visual-profiles/${profile.id}/board-preview`, input)
+  const generated = await call<{ job: { request: string } }>('POST', `/api/visual-profiles/${profile.id}/generate`, {
+    ...input, prompt: preview.prompt, reference_signature: preview.reference_signature,
+    ratio: '16:9', resolution: null, quality: null, clarity: null, background: null,
+  })
+  assert.equal(JSON.parse(generated.job.request).prompt, updated.board_prompt)
+  assert.equal(one<{ definition: string }>('SELECT definition FROM visual_profiles WHERE id=?', profile.id)?.definition, definition)
 })
 
 test('a full setting document without creative content is rejected without restoring saved profile requirements', async () => {

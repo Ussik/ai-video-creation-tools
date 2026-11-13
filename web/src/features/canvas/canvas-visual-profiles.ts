@@ -94,7 +94,9 @@ export function automaticVisualReferenceEdges(graph: CanvasGraph, detail: Projec
       if (!visualBindingApplies(binding, targetModality)) continue
       if (!binding.required && target.settings.excluded_visual_profile_ids?.includes(binding.profile_id)) continue
       const assetIds = visualBindingReferenceAssetIds(binding)
-      if (binding.shot_id === target.shot_id && !assetIds.length && binding.required && target.settings.visual_dependencies) {
+      // Saved and newly added generators may omit the legacy dependency flag.
+      // Show their pending references unless the creator explicitly opted out.
+      if (binding.shot_id === target.shot_id && !assetIds.length && binding.required && target.settings.visual_dependencies !== false) {
         const source = graph.nodes.find(node => node.id !== target.id && node.settings.visual_profile_id === binding.profile_id
           && node.settings.visual_profile_revision === binding.revision && !graph.edges.some(edge => edge.source === node.id && edge.target === target.id))
         if (source) edges.push({ id: `auto-visual-dependency:${JSON.stringify([target.id, binding.profile_id])}`, source: source.id, target: target.id })

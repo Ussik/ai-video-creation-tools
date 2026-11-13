@@ -1,4 +1,4 @@
-import { managedPromptBlockNames, stripManagedPromptBlocks, validateManagedPromptDocument, type ManagedPromptBlockName } from './prompt-document.js'
+import { composeManagedPromptBlock, managedPromptBlockNames, stripManagedPromptBlocks, validateManagedPromptDocument, type ManagedPromptBlockName } from './prompt-document.js'
 
 export type PromptSectionBlock = {
   id: string
@@ -166,6 +166,28 @@ export function parsePromptSectionDocument(text: string, options: {
     }
   }
   return { version: 1, blocks }
+}
+
+/** Older generated templates embedded source headings as document markers.
+ * Recover only literal sections still matching that saved template; authored
+ * edits and incomplete drafts without template evidence remain untouched. */
+export function recoverLegacyPromptSectionDocument(document: PromptSectionDocument, previousSource: string): PromptSectionDocument {
+  const replacements: Array<{ before: string; after: string }> = []
+  const pattern = new RegExp(`【(${managedPromptBlockNames.join('|')})】\\n([\\s\\S]*?)\\n【\\1结束】`, 'g')
+  const source = previousSource.replace(pattern, (before: string, name: ManagedPromptBlockName, content: string) => {
+    try { validateManagedPromptDocument(before); return before } catch {
+      const after = composeManagedPromptBlock(name, content)
+      replacements.push({ before, after })
+      return after
+    }
+  })
+  if (!replacements.length) return document
+  // Ambiguous, truncated or mismatched source structure is not recoverable.
+  try { validateManagedPromptDocument(source) } catch { return document }
+  const before = serializePromptSectionDocument(document)
+  let text = before
+  for (const replacement of replacements) text = text.split(replacement.before).join(replacement.after)
+  return text === before ? document : parsePromptSectionDocument(text, { previousDocument: document, sourceText: source })
 }
 
 type LineEdit = { start: number; end: number; lines: string[] }

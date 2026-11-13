@@ -1,5 +1,6 @@
 import { api, json, type Job, type Shot } from '../../shared/api/api'
 import type { CanvasGraph } from './ProjectCanvas'
+import { canvasGenerationStorage, type CanvasGenerationStorage } from './canvas-generation-storage'
 
 export type CanvasGenerationSubmissionScope = { projectId: string; canvasId: string; nodeId: string }
 export type CanvasGenerationSubmission = CanvasGenerationSubmissionScope & {
@@ -14,13 +15,40 @@ export type CanvasGenerationSubmission = CanvasGenerationSubmissionScope & {
   inFlightKey?: string | null
   rejected?: string
 }
-type SubmissionStorage = Pick<Storage, 'getItem' | 'setItem'>
+type SubmissionStorage = CanvasGenerationStorage
 type SubmissionApi = <T>(path: string, init?: RequestInit) => Promise<T>
 type SubmissionLock = Pick<LockManager, 'request'>
 
 export const canvasGenerationSubmissionStoragePrefix = 'canvas-generation-submission:'
 export const canvasGenerationSubmissionStorageKey = (scope: CanvasGenerationSubmissionScope) =>
   `${canvasGenerationSubmissionStoragePrefix}${JSON.stringify([scope.projectId, scope.canvasId, scope.nodeId])}`
+
+function storageReadFailure(): Error {
+  return new Error('无法读取生成提交记录，已停止后续提交；请恢复浏览器存储后检查已有任务')
+}
+
+function isStorageQuotaFailure(error: unknown): boolean {
+  const value = error as { name?: unknown; code?: unknown; message?: unknown; cause?: unknown } | null
+  if (!value || typeof value !== 'object') return false
+  if (value.name === 'QuotaExceededError' || value.name === 'NS_ERROR_DOM_QUOTA_REACHED'
+    || value.code === 22 || value.code === 1014 || value.code === '22' || value.code === '1014') return true
+  const message = typeof value.message === 'string' ? value.message : ''
+  if (/quota.{0,24}(exceed|full|limit)|(?:exceed|full|limit).{0,24}quota|storage.{0,24}(full|quota|space)|(?:no|not enough|insufficient).{0,16}space/i.test(message)) return true
+  return value.cause !== error && isStorageQuotaFailure(value.cause)
+}
+
+function storageQuotaFailure(): Error {
+  return new Error('浏览器本地存储空间已满（QuotaExceededError），无法保存生成提交记录；已停止后续提交，请恢复浏览器存储后检查已有任务')
+}
+
+function storageAccess(storage?: SubmissionStorage): SubmissionStorage {
+  if (storage) return storage
+  try {
+    return canvasGenerationStorage()
+  } catch {
+    throw storageReadFailure()
+  }
+}
 
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
@@ -45,9 +73,14 @@ export function canvasGenerationSubmissionSource(graph: CanvasGraph, nodeId: str
   }) })
 }
 
-export function readCanvasGenerationSubmission(scope: CanvasGenerationSubmissionScope,
-  storage: SubmissionStorage = window.localStorage): CanvasGenerationSubmission | null {
-  const raw = storage.getItem(canvasGenerationSubmissionStorageKey(scope))
+export async function readCanvasGenerationSubmission(scope: CanvasGenerationSubmissionScope,
+  storage?: SubmissionStorage, migrateLegacy = false): Promise<CanvasGenerationSubmission | null> {
+  const target = storageAccess(storage)
+  let raw: string | null
+  const key = canvasGenerationSubmissionStorageKey(scope)
+  try { raw = await target.getItem(key) } catch (error) {
+    throw new Error(`${storageReadFailure().message}。${error instanceof Error ? error.message : String(error)}`)
+  }
   if (!raw) return null
   let item: CanvasGenerationSubmission
   try { item = JSON.parse(raw) } catch { throw new Error('生成提交记录无法读取，请保留浏览器数据并查看任务记录') }
@@ -58,31 +91,57 @@ export function readCanvasGenerationSubmission(scope: CanvasGenerationSubmission
     || item.shot && (typeof item.shot.key !== 'string' || !item.shot.input || typeof item.shot.input !== 'object')) {
     throw new Error('生成提交记录不完整，请保留浏览器数据并查看任务记录')
   }
+  // Readers also run outside the submission lock. Only a writer holding the
+  // existing Web Lock may migrate the legacy record and install its marker.
+  if (migrateLegacy) await target.migrateItem?.(key, raw)
   return item
 }
 
 export const canvasGenerationSubmissionFinished = (item: CanvasGenerationSubmission) =>
   !!item.rejected || item.candidates.every(candidate => !!candidate.jobId)
 
-export function persistCanvasGenerationSubmission(item: CanvasGenerationSubmission,
-  storage: SubmissionStorage = window.localStorage, creating = false): CanvasGenerationSubmission {
-  const previous = readCanvasGenerationSubmission(item, storage)
+export function canvasGenerationSubmissionFailureNotice(error: unknown, hasDurableRecord: boolean): string {
+  const detail = error instanceof Error ? error.message : String(error)
+  if (detail.includes('当前浏览器环境无法保护重复提交')) {
+    return hasDurableRecord
+      ? `提交未完成或状态未确认，原提交已保留，可检查已有任务或继续原提交。${detail}`
+      : `本次没有发起新的生成提交；${detail}`
+  }
+  if (hasDurableRecord) return `提交未完成或状态未确认，原提交已保留，可检查已有任务或继续原提交。${detail}`
+  if (isStorageQuotaFailure(error) || /QuotaExceededError|quota.{0,24}(exceed|full|limit)|storage.{0,24}(full|quota|space)/i.test(detail)) {
+    return '本次没有发起新的生成提交；浏览器本地存储空间已满。自动恢复未成功。请关闭旧页面后重试，或检查浏览器网站存储权限与可用空间。'
+  }
+  if (detail.includes('无法保存生成提交记录') || detail.includes('无法读取生成提交记录')
+    || detail.includes('生成提交记录无法读取') || detail.includes('生成提交记录不完整')) {
+    return `本次没有发起新的生成提交；提交记录无法确认或保存。请恢复浏览器存储后检查已有任务。${detail.includes('旧标签页') ? detail : ''}`
+  }
+  return `本次没有发起新的生成提交；提交记录无法确认或保存。请先检查已有任务，恢复浏览器存储后再重试。${detail}`
+}
+
+export async function persistCanvasGenerationSubmission(item: CanvasGenerationSubmission,
+  storage?: SubmissionStorage, creating = false): Promise<CanvasGenerationSubmission> {
+  const target = storageAccess(storage)
+  const previous = await readCanvasGenerationSubmission(item, target, true)
   if (!creating && previous?.id !== item.id) throw new Error('生成提交记录已变化，请重新检查已有任务')
   const next = previous?.id === item.id ? { ...item, shot: item.shot && { ...item.shot, id: previous.shot?.id || item.shot.id },
     candidates: item.candidates.map((candidate, index) => ({ ...candidate, jobId: previous.candidates[index]?.jobId || candidate.jobId })) } : item
   const key = canvasGenerationSubmissionStorageKey(item), value = JSON.stringify(next)
   try {
-    storage.setItem(key, value)
-    if (storage.getItem(key) !== value) throw new Error('write verification failed')
-  } catch { throw new Error('无法保存生成提交记录，已停止后续提交；请恢复浏览器存储后检查已有任务') }
+    await target.setItem(key, value)
+    if (await target.getItem(key) !== value) throw new Error('write verification failed')
+  } catch (error) {
+    if (isStorageQuotaFailure(error)) throw storageQuotaFailure()
+    throw new Error(`无法保存生成提交记录，已停止后续提交；请恢复浏览器存储后检查已有任务。${error instanceof Error ? error.message : String(error)}`)
+  }
   return next
 }
 
-export function createCanvasGenerationSubmission(input: CanvasGenerationSubmissionScope & {
+export async function createCanvasGenerationSubmission(input: CanvasGenerationSubmissionScope & {
   sourceSignature: string; baselineJobId: string | null; request: Record<string, unknown>; candidateCount: number;
   shotInput?: Record<string, unknown>
-}, storage: SubmissionStorage = window.localStorage): CanvasGenerationSubmission {
-  const existing = readCanvasGenerationSubmission(input, storage)
+}, storage?: SubmissionStorage): Promise<CanvasGenerationSubmission> {
+  const target = storageAccess(storage)
+  const existing = await readCanvasGenerationSubmission(input, target)
   if (existing && (!canvasGenerationSubmissionFinished(existing)
     // A second tab can still display the pre-submit node. Its first click must
     // recover the first tab's intent, not create another candidate batch.
@@ -93,7 +152,7 @@ export function createCanvasGenerationSubmission(input: CanvasGenerationSubmissi
     request: JSON.parse(JSON.stringify(input.request)),
     shot: input.shotInput ? { key: `${id}_shot`, input: JSON.parse(JSON.stringify(input.shotInput)), id: null } : null,
     candidates: Array.from({ length: Math.max(1, Math.min(4, Math.trunc(input.candidateCount))) }, (_, index) => ({ key: `${id}_${index}`, jobId: null })),
-  }, storage, true)
+  }, target, true)
 }
 
 const localLocks = new Map<string, Promise<unknown>>()
@@ -117,12 +176,12 @@ export async function recoverCanvasGenerationSubmission(item: CanvasGenerationSu
   isActive?: () => boolean
   onProgress?: (item: CanvasGenerationSubmission) => Promise<void> | void
 } = {}): Promise<CanvasGenerationSubmission> {
-  const storage = options.storage || window.localStorage, request = options.api || api
-  let current = readCanvasGenerationSubmission(item, storage)
+  const storage = storageAccess(options.storage), request = options.api || api
+  let current = await readCanvasGenerationSubmission(item, storage)
   if (!current || current.id !== item.id) throw new Error('生成提交记录已变化，请重新检查已有任务')
   const active = () => options.isActive?.() !== false
   const persist = async (next: CanvasGenerationSubmission) => {
-    current = persistCanvasGenerationSubmission(next, storage)
+    current = await persistCanvasGenerationSubmission(next, storage)
     await options.onProgress?.(current)
   }
   const base = `/projects/${encodeURIComponent(item.projectId)}`

@@ -9,7 +9,7 @@ import { visualReferencePurposeLabels, visualReferenceViewLabels } from '@video-
 import { effectiveVisualStyleOrigin, isEffectiveVisualStyle, type ProjectVisualStyle } from '@video-studio/shared/visuals/visual-style'
 import { generationCost, imageGenerationDefaults, imageRatioError, imageRatios, imageRequestResolution, modelDefaultResolution } from '../canvas/canvas-model-parameters'
 import { visualJobRequest } from '../canvas/canvas-visual-profiles'
-import { preferredModel } from '../models/model-defaults'
+import { useSharedModelSelection } from '../models/useSharedModelSelection'
 import { visualAssetStyleWarning } from './visual-asset-style'
 import './visual-reference-assets.css'
 
@@ -80,7 +80,6 @@ export default function VisualReferenceAssets({ profile, detail, models, provide
   const [label, setLabel] = useState('')
   const [sourceId, setSourceId] = useState(profile.board_asset_id || '')
   const [referenceIds, setReferenceIds] = useState<string[]>(profile.board_asset_id ? [profile.board_asset_id] : [])
-  const [modelId, setModelId] = useState('')
   const [ratio, setRatio] = useState('')
   const [resolution, setResolution] = useState('')
   const [candidateCount, setCandidateCount] = useState<1 | 2 | 4>(1)
@@ -101,7 +100,8 @@ export default function VisualReferenceAssets({ profile, detail, models, provide
   const visible = references.filter(item => (item.status === 'archived') === showArchived)
   const imageModels = models.filter(model => model.enabled && model.modality === 'image'
     && (!providers || providers.some(provider => provider.id === model.provider_id && provider.enabled && provider.adapter !== 'demo')))
-  const model = imageModels.find(item => item.id === modelId) || preferredModel(imageModels)
+  const { modelId, selectModel } = useSharedModelSelection('image', imageModels, { locked: busy, active: open })
+  const model = imageModels.find(item => item.id === modelId)
   const assets = detail.assets.filter(asset => asset.kind === 'image' && asset.project_id === detail.id)
     .sort((left, right) => Number(right.id === profile.board_asset_id) - Number(left.id === profile.board_asset_id) || right.created_at.localeCompare(left.created_at))
   const source = assets.find(asset => asset.id === sourceId)
@@ -123,6 +123,7 @@ export default function VisualReferenceAssets({ profile, detail, models, provide
   const context = { expected_revision: profile.revision, expected_style_version: styleVersion || '' }
   useEffect(() => { onBusyChange?.(busy); return () => onBusyChange?.(false) }, [busy, onBusyChange])
   useEffect(() => { setImageRatio(1); setImageFailed(false); dragging.current = null }, [sourceId])
+  useEffect(() => { setRatio(''); setResolution('') }, [modelId])
   useEffect(() => {
     if (viewsFor(profile.kind).includes(view)) return
     const next = viewsFor(profile.kind)[0]
@@ -272,7 +273,7 @@ export default function VisualReferenceAssets({ profile, detail, models, provide
             <Button type="button" className="pc-reference-text-action" disabled={busy} onClick={() => setCrop({ x: 0, y: 0, width: 1, height: 1 })} data-workspace-control="" variant="subtle">重置为整张图</Button>
           </div></div>}{imageFailed && <p className="pc-visual-error" role="alert">原图加载失败，请重新选择图片。</p>}</>}
         {mode === 'generate' && <><p className="pc-reference-assets-help">以确认的信息图或所选图片为依据，只生成单个对象的单一视角。先预览并编辑提示词，再提交生成。</p>
-          <div className="pc-reference-generation-settings"><label>图片模型<Select aria-label="独立参考生成模型" value={model?.id || ''} disabled={busy || !imageModels.length} onChange={value => { setModelId((value || '')); setRatio(''); setResolution('') }} data={imageModels.map(item => ({ value: item.id, label: item.name }))} allowDeselect={false} searchable={true} /></label>
+          <div className="pc-reference-generation-settings"><label>图片模型<Select aria-label="独立参考生成模型" value={model?.id || ''} disabled={busy || !imageModels.length} onChange={value => selectModel(value || '')} data={imageModels.map(item => ({ value: item.id, label: item.name }))} allowDeselect={false} searchable={true} /></label>
             <label>画幅<Select aria-label="独立参考生成画幅" value={selectedRatio} disabled={busy || !ratioOptions.length} onChange={value => setRatio((value || ''))} data={ratioOptions} allowDeselect={false} searchable={false} /></label>
             {!!resolutions.length && <label>分辨率<Select aria-label="独立参考生成分辨率" value={selectedResolution} disabled={busy} onChange={value => setResolution((value || ''))} data={resolutions} allowDeselect={false} searchable={false} /></label>}
             <label>候选数量<Select aria-label="独立参考候选数量" value={String(candidateCount)} disabled={busy} onChange={value => setCandidateCount(Number((value || '')) as 1 | 2 | 4)} data={[1, 2, 4].map(value => ({ value: String(value), label: value + ' 张' }))} allowDeselect={false} searchable={false} /></label>

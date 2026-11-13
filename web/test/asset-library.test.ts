@@ -38,3 +38,12 @@ test('filtered empty results do not claim that the library itself is empty', () 
   assert.equal(libraryEmptyText('history', 4), '没有符合条件的素材')
   assert.equal(libraryEmptyText('personal', 4), '没有符合条件的素材')
 })
+
+test('search finds a persisted custom name without requiring a presentation-name map', () => {
+  const named = assets.map(asset => asset.id === 'saved' ? { ...asset, display_name: '雷神 MASK 终版' } : asset)
+  for (const query of ['雷神', 'mask', '  终版  ', 'Selected.mp4']) {
+    assert.deepEqual(filterLibraryAssets(named, [], { ...filters, query }).map(asset => asset.id), ['saved'])
+  }
+  assert.deepEqual(filterLibraryAssets(named, [], { ...filters, query: '雷神', kind: 'image' }), [])
+  assert.equal(assets.find(asset => asset.id === 'saved')?.display_name, undefined)
+})

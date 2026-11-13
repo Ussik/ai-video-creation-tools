@@ -19,23 +19,23 @@
 .pc-prompt-editor-content:has(.pc-prompt-presets-heading) > * { flex-shrink: 0; }
 .pc-prompt-editor-content p { margin: 0; min-height: 1.8em; }
 .pc-prompt-editor-content > p.pc-prompt-body-entry { position: relative; min-height: calc(var(--pc-prompt-min-rows, 6) * 1.3em); }
-.pc-prompt-body-placeholder::before { position: absolute; inset: 0 0 auto; color: var(--mantine-color-placeholder); content: attr(data-placeholder); pointer-events: none; }
+.pc-prompt-body-placeholder::before { position: absolute; inset: 0 0 auto; padding: inherit; color: var(--mantine-color-placeholder); content: attr(data-placeholder); pointer-events: none; }
 .pc-prompt-editor-content > p.pc-prompt-section-spacer { min-height: 3px; line-height: 3px; }
 .pc-prompt-editor-content.ProseMirror-focused > p.pc-prompt-section-spacer.is-current { min-height: 1.8em; line-height: inherit; }
-.pc-prompt-editor.is-expanded .pc-prompt-editor-heading { padding: 17px 22px 0; }
-.pc-prompt-editor.is-expanded .pc-prompt-editor-content { min-height: 280px; max-height: min(58vh, 620px); padding: 16px 22px 20px; font-size: 15px; line-height: 1.9; }
-.pc-prompt-editor.is-expanded .pc-prompt-editor-content > p.pc-prompt-body-entry { min-height: 200px; }
+.pc-prompt-editor.is-expanded > .pc-prompt-editor-surface > .pc-prompt-editor-heading { padding: 17px 22px 0; }
+.pc-prompt-editor.is-expanded > .pc-prompt-editor-surface > .pc-prompt-document > .pc-prompt-editor-content { min-height: 280px; max-height: min(58vh, 620px); padding: 16px 22px 20px; font-size: 15px; line-height: 1.9; }
+.pc-prompt-editor.is-expanded > .pc-prompt-editor-surface > .pc-prompt-document > .pc-prompt-editor-content > p.pc-prompt-body-entry { min-height: 200px; }
 .pc-prompt-editor.is-body-collapsed .pc-prompt-body-toggle { padding-bottom: 11px; }
-.pc-prompt-editor.is-body-collapsed .pc-prompt-editor-content > p { display: none; }
-.pc-prompt-editor.is-body-collapsed .pc-prompt-editor-content { min-height: 0; padding-top: 0; }
-.pc-prompt-editor.is-body-collapsed .pc-prompt-editor-content:not(:has(.pc-prompt-presets-heading)) { padding-bottom: 0; }
+.pc-prompt-editor.is-body-collapsed > .pc-prompt-editor-surface > .pc-prompt-document > .pc-prompt-editor-content > p { display: none; }
+.pc-prompt-editor.is-body-collapsed > .pc-prompt-editor-surface > .pc-prompt-document > .pc-prompt-editor-content { min-height: 0; padding-top: 0; }
+.pc-prompt-editor.is-body-collapsed > .pc-prompt-editor-surface > .pc-prompt-document > .pc-prompt-editor-content:not(:has(.pc-prompt-presets-heading)) { padding-bottom: 0; }
 .pc-prompt-editor.is-body-collapsed .pc-prompt-presets-heading { margin-top: 0; }
 /* The composer's body owns scrolling in both anchored and expanded layouts,
    including the prompt, opened sections, references and notes. */
-.pc-prompt-composer-body .pc-prompt-editor .pc-prompt-editor-content { max-height: none; overflow-y: visible; scrollbar-gutter: auto; }
-.pc-prompt-editor.is-disabled .pc-prompt-editor-content { cursor: default; }
-.pc-prompt-editor.is-readonly .pc-prompt-editor-surface { background: var(--mantine-color-default-hover); }
-.pc-prompt-editor.is-readonly .pc-prompt-editor-content { cursor: default; }
+.pc-prompt-composer-body > .pc-prompt-editor > .pc-prompt-editor-surface > .pc-prompt-document > .pc-prompt-editor-content { max-height: none; overflow-y: visible; scrollbar-gutter: auto; }
+.pc-prompt-editor.is-disabled > .pc-prompt-editor-surface > .pc-prompt-document > .pc-prompt-editor-content { cursor: default; }
+.pc-prompt-editor.is-readonly > .pc-prompt-editor-surface { background: var(--mantine-color-default-hover); }
+.pc-prompt-editor.is-readonly > .pc-prompt-editor-surface > .pc-prompt-document > .pc-prompt-editor-content { cursor: default; }
 .pc-prompt-presets-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 22px 0 0; padding: 0 2px 10px; color: var(--fc-text-muted); font-size: 11px; line-height: 1.6; white-space: normal; cursor: default; user-select: none; }
 .pc-prompt-presets-heading > span:first-child { font-weight: 500; }
 .pc-prompt-presets-heading > span:last-child { text-align: right; }
@@ -69,15 +69,15 @@
 .pc-prompt-managed-section-content p.pc-prompt-section-label:first-child { margin-top: 0; }
 .pc-prompt-managed-section-content p.pc-prompt-section-label + p { margin-top: 2px; }
 .pc-prompt-managed-section-end { display: none; }
-.pc-prompt-editor.is-visual-board .pc-prompt-editor-content > p.pc-prompt-body-entry { min-height: 2.8em; }
-.pc-prompt-editor.is-visual-board .pc-prompt-editor-heading > span:first-child { color: var(--mantine-color-dimmed); font-weight: 400; }
+.pc-prompt-editor.is-visual-board > .pc-prompt-editor-surface > .pc-prompt-document > .pc-prompt-editor-content > p.pc-prompt-body-entry { min-height: 2.8em; }
+.pc-prompt-editor.is-visual-board > .pc-prompt-editor-surface > .pc-prompt-editor-heading > span:first-child { color: var(--mantine-color-dimmed); font-weight: 400; }
 .pc-prompt-editor.is-visual-board .pc-prompt-presets-heading { margin-top: 12px; }
 .pc-prompt-managed-section.is-primary { border: 1px solid var(--mantine-color-default-border); background: var(--fc-surface); }
 .pc-prompt-managed-section.is-primary .pc-prompt-managed-section-title { font-weight: 600; }
 .pc-prompt-managed-section.is-primary .pc-prompt-managed-section-content { border-top-style: solid; }
-.pc-prompt-editor.is-visual-board .pc-prompt-editor-surface,
-.pc-prompt-editor.is-visual-board .pc-prompt-editor-surface:focus-within { border-color: transparent; box-shadow: none; background: transparent; }
-.pc-prompt-editor.is-visual-board .pc-prompt-editor-content { padding: 0; }
+.pc-prompt-editor.is-visual-board:not(.is-unified) > .pc-prompt-editor-surface,
+.pc-prompt-editor.is-visual-board:not(.is-unified) > .pc-prompt-editor-surface:focus-within { border-color: transparent; box-shadow: none; background: transparent; }
+.pc-prompt-editor.is-visual-board > .pc-prompt-editor-surface > .pc-prompt-document > .pc-prompt-editor-content { padding: 0; }
 .pc-prompt-editor.is-visual-board .pc-prompt-managed-section.is-primary { border-color: var(--fc-border-soft); border-radius: 8px; }
 .pc-prompt-editor.is-visual-board .pc-prompt-managed-section.is-primary.is-current { border-color: var(--mantine-primary-color-filled); box-shadow: 0 0 0 1px var(--mantine-primary-color-light); }
 .pc-prompt-editor.is-visual-board .pc-prompt-managed-section-content { padding: 12px 1px 16px; line-height: 1.85; }

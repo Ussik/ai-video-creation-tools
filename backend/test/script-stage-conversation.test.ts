@@ -71,7 +71,7 @@ test('stage generation keeps every supplied conversation message without promoti
     assert.equal(events.some(event => event.type === 'error'), false, response.body)
     const result = streaming ? events.find(event => event.type === 'done') : response.json()
     assert.ok(useTools ? result.tool_draft : result.draft, 'the response is an editable draft only')
-    assert.equal(writerCalls, 5, 'every dependency group receives the complete original conversation')
+    assert.equal(writerCalls, scriptStageArtifacts.outline.length, 'every document task receives the complete original conversation')
     assert.equal(intentCalls, 0, 'an explicit workflow already authorizes and defines the task in both response modes')
     const decisions = db.prepare('SELECT count(*) AS total FROM script_story_decisions WHERE project_id=?').get(project.id) as { total: number }
     assert.equal(decisions.total, 0, 'the earlier user constraint was never persisted as a story decision')

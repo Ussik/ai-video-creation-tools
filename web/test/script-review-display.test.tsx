@@ -8,6 +8,7 @@ import type { ScriptDraftResolution, ScriptDraftResolutionInput } from '@video-s
 import type { ScriptActivity, ScriptExecution } from '@video-studio/shared/script/script-activity-types'
 import type { ScriptSourceDocument } from '@video-studio/shared/script/script-source-document'
 import type { DocumentReview } from '@video-studio/shared/script/script-review-types'
+import { directorMessageFailure } from '../src/features/script/director-message-failure'
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
@@ -133,6 +134,20 @@ test('historical failures, activity summaries and source status are readable whi
     assert.ok([...view.container.querySelectorAll('.sd-activity-payload pre')].some(node => node.textContent === failureReason), 'raw returned diagnostic is retained verbatim')
     assert.ok([...view.container.querySelectorAll('.sd-activity-payload pre')].some(node => node.textContent === '{"task":"characters:2"}'))
     assert.deepEqual({ activity, execution, source }, before)
+  } finally { await view.destroy() }
+})
+
+test('reopened scene-stage failures show an actionable explanation instead of the stored Zod JSON', async () => {
+  const diagnostic = JSON.stringify([{ code: 'custom', message: '仅分集正文阶段需要分场剧本', path: ['scenes'] }], null, 2)
+  const storedMessage = { role: 'assistant' as const, text: `对话失败：${diagnostic}` }
+  const failure = directorMessageFailure(storedMessage)!
+  const view = await mount(<DirectorMessageFailure detail={failure.detail} processing_duration_ms={32900} />)
+  try {
+    const card = view.container.querySelector('[role="alert"]')!
+    assert.match(card.textContent!, /本轮未完成.*分场内容与当前创作阶段不一致.*请重新生成当前阶段/s)
+    assert.doesNotMatch(card.textContent!, /"code"|"path"|scenes|custom/)
+    assert.match(card.textContent!, /用时 32\.9 秒/)
+    assert.equal(storedMessage.text, `对话失败：${diagnostic}`, 'the stored historical error remains available verbatim')
   } finally { await view.destroy() }
 })
 

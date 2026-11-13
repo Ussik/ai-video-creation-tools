@@ -18,20 +18,18 @@ const materialStart = '既有事实与创作要求（资料）：'
 const sourceStart = '\n待核对草稿原文（资料）：'
 const taskStart = '\n【原始任务与资料】\n'
 function contextFrom(prompt: string): Record<string, any> {
-  return JSON.parse(prompt.slice(prompt.lastIndexOf(materialStart) + materialStart.length, prompt.lastIndexOf(sourceStart)))
+  return JSON.parse(prompt.slice(prompt.lastIndexOf(materialStart) + materialStart.length).split('\n【审读结果分页协议】')[0]!)
 }
 function candidatesFrom(prompt: string) {
-  return JSON.parse(prompt.slice(prompt.lastIndexOf(sourceStart) + sourceStart.length)) as Array<{
+  return JSON.parse(prompt.slice(prompt.lastIndexOf(sourceStart) + sourceStart.length).split('\n【本轮候选正文结束】')[0]!) as Array<{
     key: string; artifact_type: string; title: string; content: string
   }>
 }
-/** Reconstruct the pre-optimization task from observed wire material. The
- * legacy hash contains complete history and no wire-only history guidance. */
-function legacyPrompt(wire: string, context: unknown) {
+/** Reconstruct the canonical task including the complete-history contract. */
+function canonicalPrompt(wire: string, context: unknown) {
   const task = wire.slice(wire.indexOf(taskStart) + taskStart.length)
-  const before = task.slice(0, task.lastIndexOf(materialStart)).replace(scriptDraftReviewHistoryGuidance, '')
-  return before + materialStart + JSON.stringify(scriptDraftReviewContext(context)) +
-    task.slice(task.lastIndexOf(sourceStart))
+  const before = task.slice(0, task.lastIndexOf(materialStart))
+  return before + materialStart + JSON.stringify(scriptDraftReviewContext(context))
 }
 
 /** All checkpoint state is detached in memory; no database modules are used. */
@@ -80,31 +78,24 @@ function assertWire(prompt: string, f: ReturnType<typeof fixture>) {
     'requested_settings', 'task_scope', 'future_constraint'] as const) assert.deepEqual(sent[key], original[key], `${key} stays complete`)
   assert.deepEqual(candidatesFrom(prompt), f.draft.artifacts.map(artifact => ({ key: artifact.artifact_type,
     artifact_type: artifact.artifact_type, title: artifact.title, content: artifact.content })))
-  const { problem: _problem, summary_id: _summary, ...settled } = f.context.resolved_findings.decisions[0]!
-  assert.deepEqual(sent.resolved_findings.decisions[0], settled)
-  assert.deepEqual(sent.resolved_findings.decisions.slice(1), f.context.resolved_findings.decisions.slice(1),
-    'unresolved and decision-less legacy records retain their complete problem, answer and summary reference')
-  assert.deepEqual(sent.resolved_findings.summaries, f.context.resolved_findings.summaries.slice(1, 3))
-  assert.equal(sent.resolved_findings.additional_context, f.context.resolved_findings.additional_context)
-  assert.equal(prompt.includes(f.context.resolved_findings.decisions[0]!.problem), false)
-  assert.equal(prompt.includes(f.context.resolved_findings.summaries[0]!.text), false)
-  assert.equal(prompt.includes(f.context.resolved_findings.summaries[3]!.text), false)
+  assert.deepEqual(sent.resolved_findings, f.context.resolved_findings,
+    'every decision retains its complete dependency evidence until structured dependencies are available')
   assert.ok(prompt.includes(scriptDraftReviewHistoryGuidance))
 }
 
-test('actual completeness wire omits retired defects and unreferenced summaries while all current facts stay exact', async () => {
+test('actual completeness wire retains history evidence and provides interpretation guidance', async () => {
   const f = fixture(), before = structuredClone(f.context)
   let wire = ''
   await reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
     wire = prompt; assert.equal(contract?.name, 'script_draft_completeness'); assertWire(prompt, f)
     return resultText()
   }, { context: f.context, steps: f.steps() })
-  const canonical = legacyPrompt(wire, f.context)
+  const canonical = canonicalPrompt(wire, f.context)
   assert.ok(canonical.includes(f.context.resolved_findings.decisions[0]!.problem))
   assert.ok(canonical.includes(f.context.resolved_findings.summaries[0]!.text))
-  assert.equal(canonical.includes(scriptDraftReviewHistoryGuidance), false)
+  assert.ok(canonical.includes(scriptDraftReviewHistoryGuidance), 'history contract participates in cache identity')
   assert.equal(f.snapshot().steps['review:whole']!.input_hash, hash({ version: 3, prompt: canonical }),
-    'the successful checkpoint uses the complete legacy task identity rather than the smaller wire prompt')
+    'the successful checkpoint includes the complete-history interpretation contract')
   assert.deepEqual(f.context, before, 'stored history and its old evidence remain unchanged')
   await reviewScriptDraftCompleteness(f.draft, async () => assert.fail('identical successful canonical input is cached'),
     { context: f.context, steps: f.steps() })
@@ -120,7 +111,7 @@ async function interruptAfterSettings(f: ReturnType<typeof fixture>) {
     throw interrupted
   }, { context: f.context, steps: f.steps() }), issue => issue === interrupted)
   assert.ok(settingsWire)
-  const canonical = legacyPrompt(settingsWire, f.context)
+  const canonical = canonicalPrompt(settingsWire, f.context)
   assert.equal(f.snapshot().steps['review:dimension:settings']!.input_hash, hash({ version: 1, prompt: canonical }),
     'existing dimension checkpoint identity includes complete original history')
   return f.snapshot().steps['review:dimension:settings']!
@@ -137,7 +128,7 @@ test('legacy settings checkpoint survives wire projection and only unfinished di
     { context: f.context, steps: f.steps() })
 })
 
-test('source, creator, adopted decision and even omitted historical material remain part of cache identity', async t => {
+test('source, creator, adopted decision and complete historical material remain part of cache identity', async t => {
   for (const changed of ['source', 'creator', 'decision', 'retired_problem', 'retired_summary'] as const) await t.test(changed, async () => {
     const f = fixture(), oldSettings = await interruptAfterSettings(f)
     if (changed === 'source') f.context.uploaded_script.content += '\n新的真实原稿事实。'
@@ -161,7 +152,7 @@ test('pending evidence stored under the full legacy prompt resumes only its loca
   await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => {
     observed = prompt; throw interrupted
   }, { context: f.context, steps: f.steps() }), issue => issue === interrupted)
-  const canonical = legacyPrompt(observed, f.context), source = f.draft.artifacts[0]!
+  const canonical = canonicalPrompt(observed, f.context), source = f.draft.artifacts[0]!
   const finding = { source_key: source.artifact_type, kind: 'contradiction' as const,
     quote: '旧审读引文尚未精确定位。', explanation: '名单容量与当前创作决定需要逐字核对。', suggestion: '按十七位的既定容量落实正文。' }
   const responseId = `review:response:${createHash('sha256').update(canonical).digest('hex')}`
@@ -206,7 +197,7 @@ test('a changed complete input cannot reuse a pending evidence checkpoint from a
   let observed = ''
   await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => { observed = prompt; throw interrupted },
     { context: f.context, steps: f.steps() }), issue => issue === interrupted)
-  const canonical = legacyPrompt(observed, f.context)
+  const canonical = canonicalPrompt(observed, f.context)
   const responseId = `review:response:${createHash('sha256').update(canonical).digest('hex')}`
   f.seed({ steps: { [responseId]: { input_hash: hash({ version: 1, prompt: canonical }), value: { ...clear(), findings: [{
     source_key: f.draft.artifacts[0]!.artifact_type, kind: 'contradiction', quote: '旧版不匹配引文',
@@ -218,4 +209,20 @@ test('a changed complete input cannot reuse a pending evidence checkpoint from a
     calls.push(contract?.name || ''); assertWire(prompt, f); return resultText()
   }, { context: f.context, steps: f.steps() })
   assert.deepEqual(calls, ['script_draft_completeness'])
+})
+
+
+test('legacy reviews that omitted history cannot be reused under the complete dependency contract', async () => {
+  const f = fixture(), interrupted = new TextProviderError('capture current task', false, 'provider_error')
+  let observed = ''
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => { observed = prompt; throw interrupted },
+    { context: f.context, steps: f.steps() }), issue => issue === interrupted)
+  const current = canonicalPrompt(observed, f.context), legacy = current.replace(scriptDraftReviewHistoryGuidance, '')
+  assert.notEqual(current, legacy)
+  f.seed({ steps: { 'review:whole': { input_hash: hash({ version: 3, prompt: legacy }), value: clear(), duration_ms: 0 } } })
+  let calls = 0
+  await reviewScriptDraftCompleteness(f.draft, async prompt => {
+    calls++; assertWire(prompt, f); return resultText()
+  }, { context: f.context, steps: f.steps() })
+  assert.equal(calls, 1, 'a prior pass based on stripped history needs one fresh semantic review')
 })

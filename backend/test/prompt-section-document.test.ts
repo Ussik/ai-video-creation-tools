@@ -1,12 +1,46 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { isPromptSectionDocument, parsePromptSectionDocument, reconcilePromptSectionDocument,
-  resolvePromptSectionSource, serializePromptSectionDocument } from '../../packages/shared/src/visuals/prompt-section-document.js'
-import { stripManagedPromptBlocks } from '../../packages/shared/src/visuals/prompt-document.js'
+  recoverLegacyPromptSectionDocument, resolvePromptSectionSource, serializePromptSectionDocument } from '../../packages/shared/src/visuals/prompt-section-document.js'
+import { composeManagedPromptBlock, stripManagedPromptBlocks, validateManagedPromptDocument } from '../../packages/shared/src/visuals/prompt-document.js'
 
 const block = (name: string, content: string) => `【${name}】\n${content}\n【${name}结束】`
 const visual = (content: string) => block('镜头视觉设定', content)
 const managed = (document: ReturnType<typeof parsePromptSectionDocument>) => document.blocks.filter(section => section.kind === 'managed')
+
+test('saved malformed generated sections recover with exact template evidence and preserve authored text and existing identities', () => {
+  const content = '人物：许知夜；[[ref:hero]]\n【项目画风约束】冷灰色，黑色风衣。\n场景：暗轨站台；[[ref:station]]\n【项目画风约束】浓雾与铁轨。'
+  const legacy = visual(content)
+  const template = `原正文\n\n${legacy}\n\n${block('图片参考图用途', '[[ref:hero]]人物身份，[[ref:station]]空间')}\n\n${block('项目画风约束', '3D卡通渲染')}`
+  const body = '  我修改过的动作与构图。\n\t'
+  const authored = template.replace('原正文', body).replace('3D卡通渲染', '人工木刻画风')
+  const document = parsePromptSectionDocument(authored, { sourceText: template })
+  const original = structuredClone(document)
+  const previousIds = managed(document).map(section => section.id)
+  assert.throws(() => validateManagedPromptDocument(authored), /镜头视觉设定结束/)
+  const recovered = recoverLegacyPromptSectionDocument(document, template)
+  const expected = authored.replace(legacy, composeManagedPromptBlock('镜头视觉设定', content))
+  assert.equal(serializePromptSectionDocument(recovered), expected)
+  assert.doesNotThrow(() => validateManagedPromptDocument(expected))
+  assert.equal(stripManagedPromptBlocks(expected), body)
+  for (const id of previousIds) assert.ok(managed(recovered).some(section => section.id === id))
+  assert.deepEqual(document, original)
+  assert.equal(recoverLegacyPromptSectionDocument(recovered, template), recovered)
+  const nextSource = template.replace(legacy, composeManagedPromptBlock('镜头视觉设定', content))
+  const merged = reconcilePromptSectionDocument(recovered, nextSource, { body })
+  assert.equal(serializePromptSectionDocument(merged), expected)
+  assert.ok(merged.blocks.every(section => section.pendingSourceText === undefined))
+})
+
+test('legacy section recovery leaves manually changed malformed sections and unfinished source templates intact', () => {
+  const legacy = visual('人物：许知夜\n【项目画风约束】黑衣')
+  const edited = parsePromptSectionDocument(legacy.replace('黑衣', '人工蓝衣'))
+  assert.equal(recoverLegacyPromptSectionDocument(edited, legacy), edited)
+  const document = parsePromptSectionDocument(legacy)
+  for (const source of ['', legacy.replace('【镜头视觉设定结束】', ''), `${legacy}\n【图片参考图用途】尚未写完`]) {
+    assert.equal(recoverLegacyPromptSectionDocument(document, source), document)
+  }
+})
 
 test('old text round trips literally with all whitespace, unknown headings and incomplete markers', () => {
   const text = `\n\t人工正文。\r\n\r\n${visual('人物：林晚\r\n场景：站台')}\n\n【未知章节】保留\n\n` +

@@ -1,11 +1,14 @@
 import type { VisualReferenceAsset, VisualReferencePurpose, VisualReferenceSnapshot, VisualReferenceStatus, VisualReferenceView } from '../visuals/visual-reference-types.js'
 import type { StageArtifactType } from '../script/script-stage-content.js'
 import type { GenerationRecoveryAction, GenerationRecoveryModality } from '../jobs/generation-recovery.js'
+import type { VideoAudioPlan } from '../media/video-prompt-audio.js'
+import type { StoryboardContinuityPlan } from '../storyboard/storyboard-continuity.js'
 export type { VisualReferenceAsset, VisualReferencePurpose, VisualReferenceSnapshot, VisualReferenceStatus, VisualReferenceView } from '../visuals/visual-reference-types.js'
 
 export type Modality = 'text' | 'image' | 'video'
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed'
-export type Protocol = 'responses' | 'chat_completions' | 'image_generations' | 'async_video'
+export type TextProviderProtocol = 'responses' | 'chat_completions' | 'anthropic_messages'
+export type Protocol = TextProviderProtocol | 'image_generations' | 'async_video'
 
 export interface Project {
   id: string
@@ -31,6 +34,9 @@ export interface Shot {
   prompt: string
   image_prompt?: string
   video_prompt?: string
+  /** Null means legacy audio has not been analysed; it does not mean silence. */
+  audio_plan?: VideoAudioPlan | null
+  continuity_plan?: StoryboardContinuityPlan | null
   storyboard_revision?: number
   duration: number
   selected_asset_id: string | null
@@ -146,6 +152,7 @@ export interface PlannedShot {
   prompt: string
   image_prompt?: string
   video_prompt?: string
+  audio_plan?: VideoAudioPlan | null
   duration: number
   start_state?: string
   end_state?: string
@@ -172,6 +179,7 @@ export interface Asset {
   shot_id: string | null
   kind: Modality | 'audio'
   filename: string
+  display_name?: string | null
   source: 'upload' | 'generated' | 'export'
   model_id: string | null
   prompt: string | null
@@ -238,6 +246,8 @@ export interface Provider {
   base_url: string
   auth_header: string
   auth_prefix: string
+  /** Default for newly added text models; null preserves a legacy unset default. */
+  protocol?: TextProviderProtocol | null
   model_catalog: {
     path: string
     list_path: string
@@ -258,6 +268,7 @@ export interface Model {
   settings: Record<string, unknown>
   enabled: boolean
   is_default?: boolean
+  sort_order?: number
 }
 export interface ProjectDetail extends Project {
   final_cut_canvas_id?: string
@@ -338,6 +349,8 @@ export interface ShotVisualBinding extends Omit<VisualProfile, 'id' | 'project_i
   sync_mode?: 'follow' | 'locked'
   /** Explicit selections retain their assets and ordering during automatic updates. */
   reference_selection?: 'auto' | 'manual'
+  /** Model-planned camera view; null retains confirmed defaults. */
+  reference_view?: VisualReferenceView | null
   sync_status?: 'current' | 'waiting_confirmation' | 'manual_review'
 }
 export interface VisualReferenceContext {
@@ -400,6 +413,8 @@ export interface ScriptCanvasCheck { signature: string; scene_ids: string[]; nee
 export interface ScriptCanvasPlan {
   signature: string; scene_ids: string[]; profiles: VisualProfileDraft[]
   reference_usage_version?: 1
+  coverage_version?: 1
+  visual_coverage?: import('../visuals/visual-reference-coverage.js').VisualReferenceCoverage[]
   used_skills?: Array<{ id: string; name: string; revision: string; files: string[]; role?: 'primary' | 'auxiliary' }>
   loaded_files?: string[]
 }

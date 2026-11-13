@@ -1,3 +1,4 @@
+import { draftReviewFixtureJson } from './fixtures/script-draft-completeness.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -8,6 +9,8 @@ import { TextOutputLimitError, TextProviderError } from '../src/infrastructure/p
 import { beginTextRequest } from '../src/infrastructure/providers/text-request-usage.js'
 import { reviewScriptDraftCompleteness, ScriptDraftNeedsResolution } from '../src/modules/script/script-draft-completeness.js'
 import { createGenerationSteps, type GenerationCheckpoint } from '../src/modules/script/script-generation-steps.js'
+import { ReviewPaginationStalledError } from '../src/modules/script/script-review-pagination.js'
+import type { OutputContract } from '../src/modules/generation/model-output.js'
 import type { WorkflowDraft } from '../src/modules/script/script-workflow.js'
 
 const directory = await mkdtemp(join(tmpdir(), 'draft-review-recovery-'))
@@ -22,7 +25,8 @@ after(async () => { db.close(); await rm(directory, { recursive: true, force: tr
 const dimensions = ['settings', 'consistency', 'requirements'] as const
 const expected = [...scriptStageArtifacts.outline]
 const clear = () => ({ facts: [], checked_artifacts: expected, findings: [] })
-const resultText = (value: unknown = clear()) => JSON.stringify(value)
+const resultText = (value: unknown = clear()) => draftReviewFixtureJson(value)
+const emptyResult = (contract?: OutputContract) => resultText(contract?.name.endsWith('_page') ? { items: [], complete: true } : clear())
 const exhausted = (partialText = '') => new TextOutputLimitError(partialText, 'length', {
   input_tokens: 66_000, output_tokens: 65_535, reasoning_tokens: 65_535,
 })
@@ -31,16 +35,16 @@ function dimension(prompt: string): string {
 }
 function submitted(prompt: string) {
   const marker = '待核对草稿原文（资料）：'
-  return JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length)) as Array<{ key: string; artifact_type: string; content: string }>
+  return JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length).split('\n【本轮候选正文结束】')[0]!) as Array<{ key: string; artifact_type: string; content: string }>
 }
 function reviewContext(prompt: string) {
-  const start = '既有事实与创作要求（资料）：', end = '\n待核对草稿原文（资料）：'
-  return JSON.parse(prompt.slice(prompt.lastIndexOf(start) + start.length, prompt.lastIndexOf(end)))
+  const start = '既有事实与创作要求（资料）：'
+  return JSON.parse(prompt.slice(prompt.lastIndexOf(start) + start.length).split('\n【审读结果分页协议】')[0]!)
 }
-function evidenceMaterial(prompt: string) {
-  const marker = '【待定位证据（资料）】\n'
+function evidenceMaterial(prompt: string, reassessment = false) {
+  const marker = reassessment ? '【证据结论复核资料】\n' : '【待定位证据（资料）】\n'
   assert.ok(prompt.includes(marker), 'local recovery identifies only the evidence still awaiting location')
-  return JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length)) as {
+  return JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length).split('\n【本轮复核资料结束】')[0]!) as {
     issues: Array<{ id: string; source_key: string; quote: string; explanation: string; suggestion: string }>
     sources: Array<{ key: string; units: Array<{ id: number; text: string }> }>
   }
@@ -93,11 +97,11 @@ const has = (checkpoint: GenerationCheckpoint, id: string) => Object.hasOwn(chec
 
 test('reasoning-only whole-review exhaustion automatically checks three dimensions with the complete work and constraints', async () => {
   const f = fixture(), calls: string[] = []
-  await reviewScriptDraftCompleteness(f.draft, async prompt => {
+  await reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
     f.assertComplete(prompt)
     const scope = dimension(prompt); calls.push(scope)
     if (scope === 'whole') throw exhausted()
-    return resultText()
+    return emptyResult(contract)
   }, { context: f.context, steps: f.steps() })
   assert.deepEqual(calls, ['whole', ...dimensions])
   const checkpoint = f.store().checkpoint
@@ -121,10 +125,19 @@ test('each focused dimension enforces complete artifact coverage and verbatim ev
         assert.equal(pending.issues[0]!.quote, unresolved.quote)
         return resultText({ repairs: [{ id: 'findings:0', first_unit: null, last_unit: null }] })
       }
+      if (contract?.name === 'script_draft_evidence_reassessment') {
+        calls.push('reassess')
+        const pending = evidenceMaterial(prompt, true)
+        assert.deepEqual(pending.issues.map(item => item.id), ['findings:0'])
+        assert.equal(pending.issues[0]!.explanation, unresolved.explanation)
+        assert.equal(pending.issues[0]!.quote, unresolved.quote)
+        return resultText({ reassessments: [{ id: 'findings:0', verdict: 'unresolved', reason: '现有证据仍不足以核实原审读结论。',
+          source_key: null, first_unit: null, last_unit: null }] })
+      }
       f.assertComplete(prompt)
       const scope = dimension(prompt); calls.push(scope)
       if (scope === 'whole') throw exhausted()
-      if (scope !== target) return resultText()
+      if (scope !== target) return emptyResult(contract)
       return resultText(invalid === 'coverage' ? { ...clear(), checked_artifacts: expected.slice(1) }
         : { ...clear(), findings: [unresolved] })
     }, { context: f.context, steps: f.steps() }), issue => {
@@ -136,6 +149,8 @@ test('each focused dimension enforces complete artifact coverage and verbatim ev
       'only structural coverage failures repeat the complete dimension response')
     assert.equal(calls.filter(scope => scope === 'evidence').length, invalid === 'quote' ? 1 : 0,
       'evidence location gets one bounded request without repeating the semantic review')
+    assert.equal(calls.filter(scope => scope === 'reassess').length, invalid === 'quote' ? 1 : 0,
+      'an explicit locator failure gets one bounded semantic reassessment and remains unresolved')
     const checkpoint = f.store().checkpoint
     assert.equal(has(checkpoint, `review:dimension:${target}`), false)
     assert.equal(has(checkpoint, 'review:whole'), false, 'a failed dimension cannot produce overall success')
@@ -144,19 +159,21 @@ test('each focused dimension enforces complete artifact coverage and verbatim ev
     const resumed: string[] = []
     let repairedQuote = ''
     const resume = () => reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
-      if (contract?.name === 'script_draft_evidence_repair') {
-        resumed.push('evidence')
-        const pending = evidenceMaterial(prompt), issue = pending.issues[0]!
+      if (contract?.name === 'script_draft_evidence_reassessment') {
+        resumed.push('reassess')
+        const pending = evidenceMaterial(prompt, true), issue = pending.issues[0]!
         assert.equal(issue.explanation, unresolved.explanation)
         assert.equal(issue.suggestion, unresolved.suggestion)
         const source = pending.sources.find(source => source.key === issue.source_key)!
         const unit = source.units.find(unit => unit.text.includes(finding(f.draft, 0).quote))!
         assert.ok(unit, 'the replacement is selected from the unchanged corresponding candidate source')
         repairedQuote = unit.text.trim()
-        return resultText({ repairs: [{ id: issue.id, first_unit: unit.id, last_unit: unit.id }] })
+        return resultText({ reassessments: [{ id: issue.id, verdict: 'confirmed', reason: '候选原文仍支持原审读中的实质问题。',
+          source_key: source.key, first_unit: unit.id, last_unit: unit.id }] })
       }
+      assert.notEqual(contract?.name, 'script_draft_evidence_repair', 'semantic continuation must not repeat failed evidence location')
       const scope = dimension(prompt); resumed.push(scope); f.assertComplete(prompt)
-      return resultText()
+      return emptyResult(contract)
     }, { context: f.context, steps: f.steps() })
     if (invalid === 'coverage') {
       await resume()
@@ -172,8 +189,8 @@ test('each focused dimension enforces complete artifact coverage and verbatim ev
         return true
       }
       await assert.rejects(resume(), retainsFinding)
-      assert.deepEqual(resumed, ['evidence', ...dimensions.slice(dimensions.indexOf(target) + 1)],
-        'continuation locates the saved response and only reads the remaining dimensions')
+      assert.deepEqual(resumed, ['reassess', ...dimensions.slice(dimensions.indexOf(target) + 1)],
+        'continuation reassesses the saved response and only reads the remaining dimensions')
       await assert.rejects(reviewScriptDraftCompleteness(f.draft,
         async () => assert.fail('the repaired finding and completed dimensions must replay without a model request'),
         { context: f.context, steps: f.steps() }), retainsFinding)
@@ -183,19 +200,19 @@ test('each focused dimension enforces complete artifact coverage and verbatim ev
 
 test('another output limit stops focused recovery and a persisted continuation runs only unfinished dimensions', async () => {
   const f = fixture(), calls: string[] = [], failure = exhausted()
-  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => {
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
     const scope = dimension(prompt); calls.push(scope)
     if (scope === 'whole') throw exhausted()
     if (scope === 'consistency') throw failure
-    return resultText()
-  }, { context: f.context, steps: f.steps() }), issue => issue === failure)
-  assert.deepEqual(calls, ['whole', 'settings', 'consistency'])
+    return emptyResult(contract)
+  }, { context: f.context, steps: f.steps() }), issue => issue instanceof ReviewPaginationStalledError && issue.cause === failure)
+  assert.deepEqual(calls, ['whole', 'settings', 'consistency', ...Array(4).fill('consistency')])
   const saved = f.store().checkpoint
   assert.equal(has(saved, 'review:dimension:settings'), true)
   assert.equal(has(saved, 'review:dimension:consistency'), false)
   assert.equal(has(saved, 'review:whole'), false)
   const resumed: string[] = []
-  await reviewScriptDraftCompleteness(f.draft, async prompt => { resumed.push(dimension(prompt)); return resultText() },
+  await reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => { resumed.push(dimension(prompt)); return emptyResult(contract) },
     { context: f.context, steps: f.steps() })
   assert.deepEqual(resumed, ['consistency', 'requirements'])
 })
@@ -207,14 +224,14 @@ test('persisted review usage remains cumulative across continuation without enfo
   try {
     process.env.VIDEO_STUDIO_SCRIPT_ANALYSIS_MAX_REQUESTS = '2'
     const budget = sourceProposalBudget(f.projectId, scriptProposalBudgetScope(f.draft))
-    const generator = async (prompt: string) => {
+    const generator = async (prompt: string, contract?: OutputContract) => {
       const scope = dimension(prompt)
       const request = beginTextRequest({ request_bytes: Buffer.byteLength(prompt), estimated_input_tokens: 66_000, reserved_output_tokens: 65_535 })
       dispatched.push(scope)
       request.complete({ input_tokens: 66_000, output_tokens: scope === 'whole' ? 65_535 : 30, reasoning_tokens: scope === 'whole' ? 65_535 : 0 })
       if (scope === 'whole') throw exhausted()
       if (scope === 'consistency' && failConsistency) throw interrupted
-      return resultText()
+      return emptyResult(contract)
     }
     await assert.rejects(budget.run(() => reviewScriptDraftCompleteness(f.draft, generator,
       { context: f.context, steps: f.steps() })), issue => issue === interrupted)
@@ -237,30 +254,30 @@ test('persisted review usage remains cumulative across continuation without enfo
 
 test('cancellation preserves completed dimensions and prevents all further model dispatch until explicit continuation', async () => {
   const f = fixture(), controller = new AbortController(), reason = new Error('创作者停止核对'), calls: string[] = []
-  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => {
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
     const scope = dimension(prompt); calls.push(scope)
     if (scope === 'whole') throw exhausted()
     if (scope === 'consistency') { controller.abort(reason); throw reason }
-    return resultText()
+    return emptyResult(contract)
   }, { context: f.context, signal: controller.signal, steps: f.steps(controller.signal) }), issue => issue === reason)
   assert.deepEqual(calls, ['whole', 'settings', 'consistency'])
   assert.equal(has(f.store().checkpoint, 'review:dimension:settings'), true)
   assert.equal(has(f.store().checkpoint, 'review:whole'), false)
   const resumed: string[] = []
-  await reviewScriptDraftCompleteness(f.draft, async prompt => { resumed.push(dimension(prompt)); return resultText() },
+  await reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => { resumed.push(dimension(prompt)); return emptyResult(contract) },
     { context: f.context, steps: f.steps() })
   assert.deepEqual(resumed, ['consistency', 'requirements'])
 })
 
 test('even valid JSON carried as truncated partial text never substitutes for a completed review', async () => {
   const f = fixture(), calls: string[] = [], failure = exhausted(resultText())
-  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => {
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
     const scope = dimension(prompt); calls.push(scope)
     if (scope === 'whole') throw exhausted(resultText())
     if (scope === 'consistency') throw failure
-    return resultText()
-  }, { context: f.context, steps: f.steps() }), issue => issue === failure)
-  assert.deepEqual(calls, ['whole', 'settings', 'consistency'])
+    return emptyResult(contract)
+  }, { context: f.context, steps: f.steps() }), issue => issue instanceof ReviewPaginationStalledError && issue.cause === failure)
+  assert.deepEqual(calls, ['whole', 'settings', 'consistency', ...Array(4).fill('consistency')])
   assert.equal(has(f.store().checkpoint, 'review:whole'), false)
   assert.equal(has(f.store().checkpoint, 'review:dimension:consistency'), false)
 })
@@ -268,19 +285,19 @@ test('even valid JSON carried as truncated partial text never substitutes for a 
 test('a changed manuscript, creator constraint or candidate invalidates the former recovery and all dimension results', async t => {
   for (const changed of ['source', 'creator', 'candidate']) await t.test(changed, async () => {
     const f = fixture()
-    await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => {
+    await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
       const scope = dimension(prompt)
       if (scope === 'whole' || scope === 'consistency') throw exhausted()
-      return resultText()
-    }, { context: f.context, steps: f.steps() }), TextOutputLimitError)
+      return emptyResult(contract)
+    }, { context: f.context, steps: f.steps() }), ReviewPaginationStalledError)
     if (changed === 'source') f.context.uploaded_script.content += '\n当前有效稿新增的重要因果。'
     if (changed === 'creator') f.context.creator_messages[1]!.text += '再保留主角已知真相的条件。'
     if (changed === 'candidate') f.draft.artifacts[8]!.content += '\n最后一份文档的真实修改。'
     const calls: string[] = []
-    await reviewScriptDraftCompleteness(f.draft, async prompt => {
+    await reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
       const scope = dimension(prompt); calls.push(scope); f.assertComplete(prompt)
       if (scope === 'whole') throw exhausted()
-      return resultText()
+      return emptyResult(contract)
     }, { context: f.context, steps: f.steps() })
     assert.deepEqual(calls, ['whole', ...dimensions])
   })
@@ -288,15 +305,15 @@ test('a changed manuscript, creator constraint or candidate invalidates the form
 
 test('a corrupt dimension is revalidated and its new real findings cannot be hidden by an older empty aggregate', async () => {
   const f = fixture()
-  await reviewScriptDraftCompleteness(f.draft, async prompt => {
+  await reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
     if (dimension(prompt) === 'whole') throw exhausted()
-    return resultText()
+    return emptyResult(contract)
   }, { context: f.context, steps: f.steps() })
   const store = f.store(), saved = store.checkpoint
   saved.steps['review:dimension:settings']!.value = { ...clear(), findings: [{ ...finding(f.draft, 0), quote: '缓存里伪造的不存在引文' }] }
   store.save(saved)
   const actual = finding(f.draft, 0, '当前正文与原稿人物身份矛盾。'), calls: string[] = []
-  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => {
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
     const scope = dimension(prompt); calls.push(scope)
     assert.equal(scope, 'settings', 'only the corrupt dimension needs another request')
     return resultText({ ...clear(), findings: [actual] })
@@ -318,7 +335,7 @@ test('all distinct cross-dimension findings survive aggregation and still block 
     assert.deepEqual(issue.findings.map(item => item.quote), findings.map(item => item.quote))
     return true
   }
-  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => {
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
     f.assertComplete(prompt)
     const scope = dimension(prompt); calls.push(scope)
     if (scope === 'whole') throw exhausted()
@@ -347,7 +364,7 @@ test('three hundred cross-dimension reports can become one hundred real issues w
     }
     return true
   }
-  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => {
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
     if (prompt.includes('归并本阶段独立复核发现的共同事项')) {
       calls.push('groups')
       const marker = '本轮问题：'
@@ -357,7 +374,7 @@ test('three hundred cross-dimension reports can become one hundred real issues w
       for (const report of reports) groups.set(report.topic, [...(groups.get(report.topic) || []), report.index])
       assert.equal(groups.size, 100)
       for (const members of groups.values()) assert.equal(members.length, 3)
-      return JSON.stringify({ groups: [...groups].map(([topic, members]) => ({ topic, members })) })
+      return draftReviewFixtureJson({ groups: [...groups].map(([topic, members]) => ({ topic, members })) })
     }
     f.assertComplete(prompt)
     const scope = dimension(prompt); calls.push(scope)
@@ -385,13 +402,13 @@ test('more than two hundred final independent issues stop completion without tru
     assert.match(issue.message, /未截断或忽略问题/)
     return true
   }
-  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => {
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
     if (prompt.includes('归并本阶段独立复核发现的共同事项')) {
       calls.push('groups')
       const marker = '本轮问题：'
       const reports = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length)) as Array<{ index: number; topic: string }>
       assert.equal(reports.length, 210)
-      return JSON.stringify({ groups: reports.map(({ index, topic }) => ({ topic, members: [index] })) })
+      return draftReviewFixtureJson({ groups: reports.map(({ index, topic }) => ({ topic, members: [index] })) })
     }
     const scope = dimension(prompt); calls.push(scope)
     if (scope === 'whole') throw exhausted()

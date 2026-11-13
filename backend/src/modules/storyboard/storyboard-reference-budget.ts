@@ -8,15 +8,16 @@ import type { StoryboardReferenceBudget } from '@video-studio/shared/storyboard/
 import type { VisualProfile } from '../visuals/visual-profiles.js'
 import { parseVisualReferenceSnapshots, visualReferenceAssets } from '../visuals/visual-reference-assets.js'
 import { projectVisualStyle } from '../visuals/project-visual-style.js'
+import type { VisualReferenceView } from '@video-studio/shared/visuals/visual-reference-types'
 
 type ProfileDraft = Pick<VisualProfile, 'kind' | 'name' | 'variant'> & {
   scene_ids: string[]
   design_id?: string | null
-  shot_usage?: Array<{ shot_id: string; usage: VisualBindingUsage }>
+  shot_usage?: Array<{ shot_id: string; usage: VisualBindingUsage; reference_view?: VisualReferenceView | null }>
 }
 type Binding = { shot_id: string; profile_id: string; name: string; usage?: VisualBindingUsage;
-  board_asset_id: string | null; reference_assets?: unknown }
-type DraftOptions = { replaceSceneBindings?: boolean; inheritSceneReferences?: boolean }
+  board_asset_id: string | null; reference_assets?: unknown; reference_selection?: string; sync_mode?: string }
+type DraftOptions = { replaceSceneBindings?: boolean; inheritSceneReferences?: boolean; shots?: Shot[] }
 
 /** Planning has no chosen video model yet. Use a safe nine-image baseline and
  * respect stricter enabled multi-reference models, reserving the composition image. */
@@ -44,7 +45,7 @@ export function storyboardReferenceBudgetInstructions(budget = storyboardReferen
  * by shot usage, and estimate unresolved profiles as their future single board. */
 export function storyboardReferenceBudgetIssues(projectId: string, sceneIds: string[], drafts?: ProfileDraft[], options: DraftOptions = {}): Array<{ scene_id: string; message: string }> {
   const budget = storyboardReferenceBudget()
-  const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position', projectId)
+  const shots = (options.shots || all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position', projectId))
     .filter(shot => sceneIds.includes(shot.source_scene_id || ''))
   const saved = all<Binding>(`SELECT b.* FROM shot_visual_bindings b JOIN shots s ON s.id=b.shot_id WHERE s.project_id=? AND s.deleted_at IS NULL`, projectId)
   const profiles = all<VisualProfile>('SELECT * FROM visual_profiles WHERE project_id=?', projectId)
@@ -64,16 +65,15 @@ export function storyboardReferenceBudgetIssues(projectId: string, sceneIds: str
       for (const draft of drafts) {
         if (!draft.scene_ids.includes(shot.source_scene_id || '')) continue
         if (draft.design_id !== undefined && draft.design_id !== designId) continue
-        const usage = draft.shot_usage ? draft.shot_usage.find(item => item.shot_id === shot.id)?.usage || 'none' : 'both'
+        const shotUsage = draft.shot_usage?.find(item => item.shot_id === shot.id)
+        const usage = draft.shot_usage ? shotUsage?.usage || 'none' : 'both'
         const profile = profiles.find(profile => (profile.design_id || null) === designId && key(profile) === key(draft))
         const profileId = profile?.id || `planned:${designId || 'legacy'}:${key(draft)}`
         const existing = bindings.get(profileId)
-        // Canvas preparation inherits new bindings before applying their usage,
-        // so it freezes image-camera selections even for video-only objects.
-        const referencePrompt = usage === 'video' && !options.inheritSceneReferences ? shot.video_prompt : shot.image_prompt
-        const references = !existing && profile ? recommendVisualReferences(profile, visualReferenceAssets(profile.id),
-          [referencePrompt, shot.start_state].filter(Boolean).join('\n'), style.version) : []
-        bindings.set(profileId, existing ? { ...existing, usage } : { shot_id: shot.id, profile_id: profileId,
+        const retain = existing && (existing.reference_selection === 'manual' || existing.sync_mode === 'locked' || shotUsage?.reference_view === undefined)
+        const references = !retain && profile ? recommendVisualReferences(profile, visualReferenceAssets(profile.id),
+          shotUsage?.reference_view ? { view: shotUsage.reference_view } : undefined, style.version) : []
+        bindings.set(profileId, existing ? { ...existing, usage, ...(!retain ? { reference_assets: references } : {}) } : { shot_id: shot.id, profile_id: profileId,
           name: draft.name, usage, board_asset_id: profile?.board_asset_id || null, reference_assets: references })
       }
     }

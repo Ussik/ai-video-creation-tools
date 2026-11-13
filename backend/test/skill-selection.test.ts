@@ -9,7 +9,7 @@ const testData = await mkdtemp(join(tmpdir(), 'studio-primary-skills-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
 const { buildApp } = await import('../src/app.js')
 const { db, all } = await import('../src/infrastructure/database/db.js')
-const { installSkillBundle, configureSkill, removeInstalledSkill, skillPolicy, skillContext, setSkillDefault, withSkillRules, applySkillRules } = await import('../src/modules/skills/skills.js')
+const { installSkillBundle, configureSkill, removeInstalledSkill, skillPolicy, skillContext, setSkillDefault, withSkillRules, applySkillRules, fixedSkillContext } = await import('../src/modules/skills/skills.js')
 const { documentTools } = await import('../src/modules/script/script-document-tools.js')
 const { directorStageContext } = await import('../src/modules/script/script-workflow.js')
 const { analyzeVisualProfiles } = await import('../src/modules/visuals/visual-profiles.js')
@@ -82,14 +82,16 @@ test('project overrides are isolated; temporary selections never write defaults 
   assert.equal(all('SELECT * FROM project_skill_defaults WHERE project_id=?', p.id).length, 0)
 })
 
-test('unavailable project primaries warn and inherit; automatic fallback can adopt a later replacement', async () => {
+test('unavailable bindings warn and fixed tasks require an explicit replacement', async () => {
   const p = await call('POST', '/api/projects', { name: '回退测试' }), temporary = install('temp-visual', ['visual_assets'])
   setSkillDefault('visual_assets', { primary_id: temporary, auxiliary_ids: [] }, p.id)
   removeInstalledSkill(temporary)
   assert.equal(policy('visual_assets', p.id).primary_id, null); assert.match(policy('visual_assets', p.id).warning, /停用或卸载/)
   const replacement = install('replacement-visual', ['visual_assets'])
-  assert.equal(policy('visual_assets').primary_id, replacement)
+  assert.equal(policy('visual_assets').primary_id, null)
+  assert.throws(() => fixedSkillContext('visual_assets', '人物', p.id), /停用、卸载或不适用/)
   assert.throws(() => skillContext('visual_assets', '人物', [temporary], p.id), /重新选择/)
+  setSkillDefault('visual_assets', { primary_id: replacement, auxiliary_ids: [] })
 })
 
 test('reapplying a changed selection replaces preview rules once and preserves edited task content', () => {
@@ -122,16 +124,17 @@ test('actual generation replaces stale preview rules with the selected primary a
   assert.equal(all('SELECT * FROM jobs WHERE project_id=?', p.id).length, 0)
 })
 
-test('visual organization accepts a model choice and explicit switching excludes other available rules', async () => {
+test('visual organization uses its fixed binding and explicit switching excludes other available rules', async () => {
   const p = await call('POST', '/api/projects', { name: '视觉主技能' }), scene = await call('POST', `/api/projects/${p.id}/script/scenes`, { heading: '车站', characters: '林晚' })
   const primary = policy('visual_assets').primary_id!, alternate = install('alternate-visual', ['visual_assets'])
   setSkillDefault('visual_assets', { primary_id: alternate, auxiliary_ids: [] }, p.id)
   let captured = ''
-  const context = { selectSkills: async () => ({ skill_ids: [alternate], reason: '沿用项目默认中的合适视觉整理技能。' }), script: () => ({ outline: '车站救援', characters: '林晚', scenes: [scene] }), generateText: async (_id: string, _model: string, prompt: string) => {
+  const context = { selectSkills: async () => { throw new Error('fixed visual organization must not consult a selector') }, script: () => ({ outline: '车站救援', characters: '林晚', scenes: [scene] }), generateText: async (_id: string, _model: string, prompt: string) => {
     captured = prompt
     return JSON.stringify({ profiles: [{ kind: 'character', name: '林晚', variant: '默认', definition: '短发，雨衣', view_requirements: '正侧背三视图', scene_ids: [scene.id] }] })
   } }
   const inherited = await analyzeVisualProfiles(p.id, { model_id: 'mock', scene_ids: [scene.id] }, context)
+  assert.equal(inherited.skill_assignment.source, 'fixed')
   assert.deepEqual(inherited.skills.map(item => item.id), [alternate]); assert.match(captured, /RULE_alternate-visual/)
   assert.doesNotMatch(captured, /RULE_replacement-visual/)
   const switched = await analyzeVisualProfiles(p.id, { model_id: 'mock', scene_ids: [scene.id], skill_ids: [primary] }, context)

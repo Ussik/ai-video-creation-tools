@@ -1,6 +1,6 @@
 import type { Asset, Model, ProjectDetail } from '../../shared/api/api'
 import type { CanvasGraph, CanvasNode } from './ProjectCanvas'
-import { shotVideoPrompt } from '@video-studio/shared/storyboard/shot-prompts'
+import { isAutomaticShotVideoPrompt, shotVideoPrompt } from '@video-studio/shared/storyboard/shot-prompts'
 import { videoResolutionOptions } from '@video-studio/shared/media/video-parameters'
 import { supportsVideoMultiReference } from '@video-studio/shared/media/video-reference-config'
 import { modelDefaultResolution } from './canvas-model-parameters'
@@ -8,7 +8,7 @@ import { preferredModel } from '../models/model-defaults'
 import { visualBindingApplies } from '@video-studio/shared/visuals/visual-binding-usage'
 import { canvasJobMatchesStoryboard, storyboardRevision } from './canvas-storyboard-revision'
 import { applyImageVideoContext, imageVideoContentSignature, imageVideoSourceContext,
-  type ImageVideoSourceContext } from './canvas-image-video-context'
+  type ImageVideoSourceContext, type ImageVideoSemanticPlan } from './canvas-image-video-context'
 import { materializePromptReference } from './canvas-prompt-reference-graph'
 import { allProjectShots } from './canvas-design-scope'
 export { pinnedCanvasReference } from './canvas-reference-snapshot'
@@ -91,12 +91,12 @@ function automaticVideo(graph: CanvasGraph, node: CanvasNode, detail: ProjectDet
     || settings.prompt_body !== undefined || node.text.trim() || Object.keys(settings.prompt_reference_overrides || {}).length
     || settings.excluded_visual_profile_ids?.length || settings.video_reference_usages?.length) return false
   const shot = allProjectShots(detail).find(shot => shot.id === node.shot_id)
-  if (node.prompt.trim() && (!shot || node.prompt !== shotVideoPrompt(shot))) return false
+  if (node.prompt.trim() && (!shot || !isAutomaticShotVideoPrompt(node.prompt, shot))) return false
   return !graph.edges.some(edge => edge.target === node.id && edge.source !== sourceId)
 }
 
 function inheritImageContext(graph: CanvasGraph, node: CanvasNode, source: CanvasNode, asset: Asset,
-  detail: ProjectDetail, models: Model[], context: ImageVideoSourceContext): CanvasGraph {
+  detail: ProjectDetail, models: Model[], context: ImageVideoSourceContext, semanticPlan?: ImageVideoSemanticPlan): CanvasGraph {
   let next = graph
   // All inherited images are visible fixed inputs. The composer and generation
   // endpoint therefore resolve the same explicit choices, including usage:none.
@@ -111,17 +111,20 @@ function inheritImageContext(graph: CanvasGraph, node: CanvasNode, source: Canva
     const shot = allProjectShots(detail).find(shot => shot.id === node.shot_id)
     baseline = { ...node, text: '', prompt: shotVideoPrompt(shot || { prompt: source.prompt || asset.prompt || source.title }), settings }
   }
-  const applied = applyImageVideoContext(baseline, context, detail, models)
+  const plan = semanticPlan || (!context.customized && context.audioPlan
+    ? { audio_plan: context.audioPlan, motion_prompt: context.audioSource.shotPrompt } : undefined)
+  const applied = applyImageVideoContext(baseline, context, detail, models, plan)
   const stamped: CanvasNode = { ...applied, settings: { ...applied.settings, image_video_handoff: {
     source_node_id: source.id, source_asset_id: asset.id, source_signature: context.signature,
     applied_signature: videoContentSignature(next, applied), inherited_reference_asset_ids: inheritedIds,
+    ...(plan ? { semantic_plan: plan, semantic_source_signature: context.signature } : {}),
   } } }
   return { ...next, nodes: next.nodes.map(item => item.id === node.id ? stamped : item) }
 }
 
 /** Attach to an existing generator without losing its draft, geometry or history. */
 export function connectImageVideoHandoff(graph: CanvasGraph, connection: NonNullable<ReturnType<typeof imageVideoConnection>>,
-  detail: ProjectDetail, models: Model[], edgeId: string) {
+  detail: ProjectDetail, models: Model[], edgeId: string, semanticPlan?: ImageVideoSemanticPlan) {
   const { source, asset } = connection
   const target = graph.nodes.find(node => node.id === connection.target.id) || connection.target
   const sourceId = sourceShotId(source, asset, detail)
@@ -144,7 +147,7 @@ export function connectImageVideoHandoff(graph: CanvasGraph, connection: NonNull
     && storyboardRevision(target.settings.storyboard_revision) === revision
     && target.settings.mode !== 'text' && (target.settings.mode !== 'reference' || target.settings.storyboard_reference_asset_id)
     && (target.settings.mode !== 'first_frame' || !target.settings.storyboard_reference_asset_id || target.settings.storyboard_reference_asset_id === asset.id)
-    && !sourceChanged) return graph
+    && !sourceChanged && (!semanticPlan || target.settings.image_video_handoff?.semantic_source_signature === context?.signature)) return graph
   const automaticModel = !target.settings.mode || target.settings.mode === 'text'
     ? hasShotVisualBindings(detail, shotId) && multiReferenceModel(models, target.model_id) : undefined
   const mode = target.settings.mode && target.settings.mode !== 'text' ? target.settings.mode : automaticModel ? 'reference' : 'first_frame'
@@ -184,11 +187,11 @@ export function connectImageVideoHandoff(graph: CanvasGraph, connection: NonNull
   }
   const next = { ...graph, nodes: graph.nodes.map(item => item.id === target.id ? node : item), edges }
   return context && ['first_frame', 'reference'].includes(mode)
-    ? inheritImageContext(next, node, source, asset, detail, models, context) : next
+    ? inheritImageContext(next, node, source, asset, detail, models, context, semanticPlan) : next
 }
 
 export function createImageVideoHandoff(graph: CanvasGraph, source: CanvasNode, detail: ProjectDetail, models: Model[], freshNode: CanvasNode, edgeId: string,
-  mode: 'first_frame' | 'reference' = 'first_frame') {
+  mode: 'first_frame' | 'reference' = 'first_frame', semanticPlan?: ImageVideoSemanticPlan) {
   if (source.settings.visual_profile_id) throw new Error('设定信息图不能直接作为分镜首帧，请先生成分镜图')
   const asset = imageAsset(source, detail)
   if (!asset) throw new Error('请先生成或选择一张分镜图片')
@@ -202,21 +205,22 @@ export function createImageVideoHandoff(graph: CanvasGraph, source: CanvasNode, 
   // over the automatic video created from the latest image changes.
   const ordered = [...candidates].reverse()
   const matching = ordered.find(node => node.settings.image_video_handoff?.source_signature === context.signature)
-  if (matching) return { graph, nodeId: matching.id, created: false, updated: false, preserved: false }
+  if (matching && (!semanticPlan || matching.settings.image_video_handoff?.semantic_source_signature === context.signature
+    || !automaticVideo(graph, matching, detail, source.id))) return { graph, nodeId: matching.id, created: false, updated: false, preserved: false }
   const existing = ordered.find(node => automaticVideo(graph, node, detail, source.id))
   if (existing) {
-    if (!context.customized && !existing.settings.image_video_handoff) {
+    if (!semanticPlan && !context.customized && !existing.settings.image_video_handoff) {
       return { graph, nodeId: existing.id, created: false, updated: false, preserved: false }
     }
     const oldIds = new Set(existing.settings.image_video_handoff?.inherited_reference_asset_ids || [])
     const next = { ...graph, edges: graph.edges.filter(edge => edge.target !== existing.id
       || !edge.reference_asset_id || !oldIds.has(edge.reference_asset_id) || edge.reference_asset_id === asset.id) }
-    const updated = inheritImageContext(next, existing, source, asset, detail, models, context)
+    const updated = inheritImageContext(next, existing, source, asset, detail, models, context, semanticPlan)
     return { graph: updated, nodeId: existing.id, created: false, updated: true, preserved: false }
   }
   // An unchanged legacy draft is still the requested video. Once the source
   // has creative changes, preserve that draft and create a new version.
-  if (ordered.length && !context.customized && !ordered[0].settings.image_video_handoff) {
+  if (!semanticPlan && ordered.length && !context.customized && !ordered[0].settings.image_video_handoff) {
     return { graph, nodeId: ordered[0].id, created: false, updated: false, preserved: false }
   }
   const nodeLimit = graph.nodes.filter(node => node.type === 'project_script_ref').length === 1 ? 501 : 500
@@ -236,8 +240,41 @@ export function createImageVideoHandoff(graph: CanvasGraph, source: CanvasNode, 
       ratio: 'adaptive', resolution: model ? modelDefaultResolution(model, videoResolutionOptions(model.settings)) || null : '480p' } }
   const next = { ...graph, nodes: [...graph.nodes, node], edges: [...graph.edges,
     { id: edgeId, source: source.id, target: node.id, reference_asset_id: asset.id }] }
-  return { graph: inheritImageContext(next, node, source, asset, detail, models, context), nodeId: node.id,
+  return { graph: inheritImageContext(next, node, source, asset, detail, models, context, semanticPlan), nodeId: node.id,
     created: true, updated: false, preserved: candidates.length > 0 }
+}
+
+/** An unfinished semantic migration is explicit, never interpreted as silence. */
+export function pendingImageVideoHandoff(graph: CanvasGraph, node: CanvasNode, detail: ProjectDetail, models: Model[]) {
+  const handoff = node.settings.image_video_handoff
+  if (node.type !== 'generation' || !(node.settings.modality === 'video' || models.some(model => model.id === node.model_id && model.modality === 'video'))) return undefined
+  const legacyEdge = !handoff ? graph.edges.find(edge => edge.target === node.id
+    && (!edge.reference_asset_id || !node.settings.storyboard_reference_asset_id || edge.reference_asset_id === node.settings.storyboard_reference_asset_id)
+    && graph.nodes.some(item => item.id === edge.source && !item.settings.visual_profile_id
+      && (item.type === 'image' || item.type === 'generation' && item.settings.modality === 'image'))) : undefined
+  const sourceId = handoff?.source_node_id || legacyEdge?.source
+  if (!sourceId || !automaticVideo(graph, node, detail, sourceId)) return undefined
+  const source = graph.nodes.find(item => item.id === sourceId)
+  if (!source) throw new Error('视频的来源图片节点已移除，请重新承接分镜并检查动作与台词')
+  if (!['first_frame', 'reference'].includes(node.settings.mode || '')) return undefined
+  const asset = imageAsset(source, detail)
+  const expectedAsset = handoff?.source_asset_id || legacyEdge?.reference_asset_id || node.settings.storyboard_reference_asset_id
+  if (!asset || expectedAsset && asset.id !== expectedAsset) throw new Error('视频的来源图片已变化，请从当前分镜图重新承接动作与台词')
+  const context = imageVideoSourceContext(graph, source, detail, models)
+  if (handoff?.semantic_plan && handoff.semantic_source_signature === context.signature) return undefined
+  return { source, asset, context }
+}
+
+/** Apply a reviewed snapshot only while the source and automatic target still match. */
+export function resolveImageVideoHandoff(graph: CanvasGraph, nodeId: string, signature: string,
+  plan: ImageVideoSemanticPlan, detail: ProjectDetail, models: Model[]): CanvasGraph {
+  const node = graph.nodes.find(item => item.id === nodeId)
+  const pending = node && pendingImageVideoHandoff(graph, node, detail, models)
+  if (!node || !pending || pending.context.signature !== signature) return graph
+  const inherited = new Set(node.settings.image_video_handoff?.inherited_reference_asset_ids || [])
+  const next = { ...graph, edges: graph.edges.filter(edge => edge.target !== nodeId || !edge.reference_asset_id
+    || !inherited.has(edge.reference_asset_id) || edge.reference_asset_id === pending.asset.id) }
+  return inheritImageContext(next, node, pending.source, pending.asset, detail, models, pending.context, plan)
 }
 
 export function fixedReferenceAsset(graph: CanvasGraph, targetId: string, assets: Asset[]) {

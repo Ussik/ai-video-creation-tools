@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
-import { estimateTextRequestTokens } from './text-context.js'
+import { estimateTextRequestTokens, textRequestInput } from './text-context.js'
 import { parseTextUsage } from './text-usage-parse.js'
 import { beginTextRequest, settlePendingTextRequest, type TextRequestUsageMetrics } from './text-request-usage.js'
 
@@ -25,7 +25,7 @@ async function failedUsage(response: Response, wait: <T>(value: Promise<T>) => P
  * Polling deliberately avoids depending on a provider's stream cursor support. */
 export async function backgroundTextResponse(url: string, body: Record<string, unknown>, headers: Record<string, string>,
   signal: AbortSignal, wait: <T>(value: Promise<T>) => Promise<T>, touch: () => void,
-  reservedOutputTokens?: number): Promise<Response> {
+  reservedOutputTokens?: number, plannedInputTokens?: number): Promise<Response> {
   const store = recovery.getStore()!
   const requestBody: Record<string, unknown> = { ...body, stream: false, background: true }
   const key = createHash('sha256').update(JSON.stringify([url, requestBody])).digest('hex')
@@ -34,7 +34,7 @@ export async function backgroundTextResponse(url: string, body: Record<string, u
   if (!saved) {
     signal.throwIfAborted()
     const serialized = JSON.stringify(requestBody)
-    const inputTokens = estimateTextRequestTokens(requestBody)
+    const inputTokens = plannedInputTokens ?? estimateTextRequestTokens(textRequestInput(requestBody))
     const limit = requestBody.max_output_tokens ?? requestBody.max_completion_tokens ?? requestBody.max_tokens ?? reservedOutputTokens
     const generation = beginTextRequest({ request_bytes: Buffer.byteLength(serialized), estimated_input_tokens: inputTokens,
       ...(typeof limit === 'number' && Number.isSafeInteger(limit) && limit > 0 ? { reserved_output_tokens: limit } : {}) })

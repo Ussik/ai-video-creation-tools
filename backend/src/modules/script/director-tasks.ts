@@ -6,6 +6,7 @@ import { all, db, now, one, run } from '../../infrastructure/database/db.js'
 import { withTextResponseRecovery, type BackgroundResponse } from '../../infrastructure/providers/text-background.js'
 import { invalid } from '../../infrastructure/http/request.js'
 import { conversationTimestamp, insertConversationMessage, saveConversation, type ConversationMessage } from './script-conversations.js'
+import { normalizeScriptEventActivities } from './script-activity-attempt.js'
 
 type Event = Record<string, unknown>
 type Status = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'paused'
@@ -16,12 +17,17 @@ export type DirectorTaskSnapshot = {
 type TaskRow = { id: string; project_id: string; conversation_id: string; message_id: string; request_hash: string; snapshot: string; status: Status; request_payload?: string; resume_key?: string }
 export type DirectorTaskInput = { id: string; conversation: { id: string; label?: string; messages: ConversationMessage[] }; execution: ScriptExecution }
 type Running = { snapshot: DirectorTaskSnapshot; controller: AbortController; listeners: Set<(event: Event) => void>; timer?: ReturnType<typeof setTimeout>; work?: Promise<void> }
-const readOnlyTools = new Set(['get_creation_state', 'load_creation_skills', 'get_project_visual_style', 'search_project_content', 'read_documents', 'find_related_content', 'get_document_review_context', 'read_visual_profiles', 'get_storyboard_context', 'read_source_document', 'search_source_document', 'read_episode_scenes', 'get_repair_context', 'search_repair_context', 'submit_repair_patch', 'ask_creator'])
+const readOnlyTools = new Set(['get_creation_state', 'load_creation_skills', 'read_creation_skill_reference', 'get_project_visual_style', 'search_project_content', 'read_documents', 'find_related_content', 'get_document_review_context', 'read_visual_profiles', 'get_storyboard_context', 'read_source_document', 'search_source_document', 'read_episode_scenes', 'get_repair_context', 'search_repair_context', 'submit_repair_patch', 'ask_creator'])
 function canReplayAfter(activity: ScriptActivity) {
   return readOnlyTools.has(activity.name || '') || activity.name === 'set_project_visual_style'
     && activity.step_id === 'confirmed_visual_style_sync' && activity.scope === 'step' && activity.round === undefined
 }
 const problem = (message: string, statusCode = 409): never => { throw Object.assign(new Error(message), { statusCode }) }
+function storedSnapshot(value: string): DirectorTaskSnapshot {
+  const snapshot = JSON.parse(value) as DirectorTaskSnapshot
+  snapshot.events = snapshot.events.map(normalizeScriptEventActivities)
+  return snapshot
+}
 
 function resultExecution(execution: ScriptExecution, result: Event, id: string): ScriptExecution {
   const draft = result.tool_draft as { id: string; version: string; status: string; workflow?: ScriptExecution['workflow']; revision_task?: { status: string }; documents: Array<{ title: string }>; resource_changes?: Array<{ title: string }> } | undefined
@@ -44,7 +50,7 @@ export function createDirectorTasks() {
   function read(projectId: string, id: string): DirectorTaskSnapshot {
     const row = one<TaskRow>('SELECT * FROM script_director_tasks WHERE id=? AND project_id=?', id, projectId)
     if (!row) return problem('创作任务不存在或不属于当前项目', 404)
-    return running.get(id)?.snapshot || JSON.parse(row.snapshot) as DirectorTaskSnapshot
+    return running.get(id)?.snapshot || storedSnapshot(row.snapshot)
   }
   function persist(snapshot: DirectorTaskSnapshot) {
     run('UPDATE script_director_tasks SET status=?, snapshot=?, updated_at=? WHERE id=?', snapshot.status, JSON.stringify(snapshot), now(), snapshot.id)
@@ -79,12 +85,12 @@ export function createDirectorTasks() {
   // A process restart cannot reconnect to an old provider call. Do not charge
   // for an automatic replay; retain its records and report the interruption.
   for (const row of all<TaskRow>("SELECT * FROM script_director_tasks WHERE status='running'")) {
-    const snapshot = JSON.parse(row.snapshot) as DirectorTaskSnapshot
+    const snapshot = storedSnapshot(row.snapshot)
     settle(snapshot, 'interrupted', '后端服务已重启，本轮任务已中断。已完成的草稿和操作仍保留，请检查后继续。')
   }
   function emit(task: Running, event: Event) {
     if (task.snapshot.status !== 'running') return
-    event = { ...event, task_id: task.snapshot.id, sequence: task.snapshot.sequence = (task.snapshot.sequence || 0) + 1 }
+    event = normalizeScriptEventActivities({ ...event, task_id: task.snapshot.id, sequence: task.snapshot.sequence = (task.snapshot.sequence || 0) + 1 })
     const events = task.snapshot.events
     const kind = String(event.type)
     let durableUsage = false
@@ -236,18 +242,21 @@ export function createDirectorTasks() {
       if (!row.request_payload) return problem('此历史任务未保存恢复资料，请检查草稿后重新发起')
       return JSON.parse(row.request_payload!) as unknown
     },
-    continue(projectId: string, id: string, key: string, execute: (signal: AbortSignal, emit: (event: Event) => void) => Promise<Event>) {
+    continue(projectId: string, id: string, key: string, execute: (signal: AbortSignal, emit: (event: Event) => void) => Promise<Event>, compatibleKeys: readonly string[] = []) {
       const snapshot = read(projectId, id)
       if (snapshot.status === 'running') return snapshot
       if (shuttingDown) return problem('服务正在关闭，请稍后重试', 503)
       if (snapshot.status === 'succeeded' || !snapshot.can_resume) return problem('此任务不能继续，请检查已有草稿后重新发起')
       const row = one<TaskRow>('SELECT * FROM script_director_tasks WHERE id=?', id)!
-      if (row.resume_key !== key) return problem('项目资料、有效稿、候选版本或模型配置已变化，请重新检查后发起，不能续用旧任务')
+      if (row.resume_key !== key && !compatibleKeys.includes(row.resume_key || '')) return problem('项目资料、有效稿、候选版本或模型配置已变化，请重新检查后发起，不能续用旧任务')
       if (one("SELECT id FROM script_director_tasks WHERE project_id=? AND status='running'", projectId)) return problem('当前项目已有任务运行，请先查看或停止')
       snapshot.status = 'running'
       snapshot.execution = { ...snapshot.execution, outcome: undefined }
       snapshot.events = snapshot.events.filter(event => ['activity', 'process'].includes(String(event.type)))
-      persist(snapshot)
+      db.transaction(() => {
+        persist(snapshot)
+        run('UPDATE script_director_tasks SET resume_key=? WHERE id=? AND project_id=?', key, id, projectId)
+      })()
       launch(snapshot, execute)
       return snapshot
     },

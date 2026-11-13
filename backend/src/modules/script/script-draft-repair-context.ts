@@ -3,7 +3,7 @@ import type { ScriptDraftFinding } from '@video-studio/shared/script/script-draf
 import { draftCompletenessSources } from './script-draft-completeness.js'
 import { applyResolvedEdits, resolvePassageEdits, revisionProblem } from './script-revision.js'
 import type { DraftRepairOutput } from './script-draft-repair-generation.js'
-import type { WorkflowDraft } from './script-workflow.js'
+import { parseScriptSceneDurationReplacement, scriptSceneDurationRepairInstructions, type WorkflowDraft } from './script-workflow.js'
 
 type RepairDocument = { source_key: string; title: string; version: string; length: number; content: string; source_scene_id?: string }
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -22,6 +22,13 @@ export function createScriptDraftRepairContext(input: {
       ? { source_scene_id: input.draft.scenes[Number(source.key.split(':')[1])]!.source_scene_id } : {}),
   }))
   const byKey = new Map(documents.map(document => [document.source_key, document]))
+  // A duration is evidence for the complete scene's performance time. Supply
+  // its actual dialogue/actions alongside the number so a targeted repair can
+  // estimate from the candidate rather than from the finding's explanation.
+  const withSceneTimingContext = (selected: RepairDocument[]) => [...new Map(selected.flatMap(document => {
+    const match = /^(scene:\d+:)duration$/.exec(document.source_key)
+    return match ? documents.filter(item => item.source_key.startsWith(match[1]!)) : [document]
+  }).map(document => [document.source_key, document])).values()]
   const requested = new Set<string>()
   let fallback = !input.findings.length
   for (const finding of input.findings) {
@@ -32,7 +39,7 @@ export function createScriptDraftRepairContext(input: {
       else requested.add(key)
     }
   }
-  const initialDocuments = documents.filter(document => fallback || requested.has(document.source_key))
+  const initialDocuments = withSceneTimingContext(documents.filter(document => fallback || requested.has(document.source_key)))
   const loaded = new Set(initialDocuments.map(document => document.source_key))
   const descriptor = ({ content: _content, ...document }: RepairDocument) => document
   const directory = documents.map(descriptor)
@@ -52,14 +59,19 @@ export function createScriptDraftRepairContext(input: {
       return document!
     })
   }
+  const timing = input.draft.stage === 'episode' ? { unit: 'seconds' as const,
+    estimated_total: input.draft.scenes.reduce((sum, scene) => sum + scene.duration, 0),
+    ...(input.draft.target_duration === undefined ? {} : { target_duration: input.draft.target_duration }),
+    instructions: scriptSceneDurationRepairInstructions } : undefined
   return {
-    identity: hash([input.candidateId, input.candidateVersion, input.sourceVersion, documents, input.currentSource]),
+    identity: hash([input.candidateId, input.candidateVersion, input.sourceVersion, documents, input.currentSource, ...(timing ? [timing] : [])]),
     candidateId: input.candidateId, candidateVersion: input.candidateVersion, sourceVersion: input.sourceVersion,
     initial: {
       candidate_id: input.candidateId, candidate_version: input.candidateVersion, source_version: input.sourceVersion,
       context_mode: fallback ? 'full' as const : 'targeted' as const,
       ...(fallback ? { context_reason: '问题位置缺失或超出当前目录，已提供全部候选正文以保留完整关联背景。' } : {}),
       directory: structuredClone(directory), documents: structuredClone(initialDocuments),
+      ...(timing ? { timing } : {}),
     },
     assertVersion,
     resetReads() {
@@ -75,7 +87,7 @@ export function createScriptDraftRepairContext(input: {
       .map(({ source_key, version }) => ({ source_key, version })).sort((left, right) => left.source_key.localeCompare(right.source_key)),
     read(candidateVersion: string, keys: readonly string[]) {
       assertVersion(candidateVersion)
-      return { candidate_version: input.candidateVersion, documents: select(keys).map(document => {
+      return { candidate_version: input.candidateVersion, documents: withSceneTimingContext(select(keys)).map(document => {
         if (loaded.has(document.source_key)) return { ...descriptor(document), already_loaded: true as const }
         loaded.add(document.source_key)
         return { ...document, already_loaded: false as const }
@@ -109,7 +121,9 @@ export function createScriptDraftRepairContext(input: {
         if (!loaded.has(key)) revisionProblem('unread_repair_source', `「${document!.title}」尚未完整读取`, '先调用 get_repair_context 读取该文档，再提交精确补丁。')
         const changes = resolvePassageEdits(document!.content, document!.version, value.edits.filter(edit => edit.source_key === key),
           [[0, document!.content.length]], { id: key, title: document!.title })
-        changed = applyResolvedEdits(document!.content, changes) !== document!.content || changed
+        const content = applyResolvedEdits(document!.content, changes)
+        if (/^scene:\d+:duration$/.test(key)) parseScriptSceneDurationReplacement(content)
+        changed = content !== document!.content || changed
       }
       if (value.source_edits.length) {
         if (input.currentSource === undefined) revisionProblem('missing_repair_source', '当前项目没有可修改的有效稿', 'source_edits 返回空数组。')

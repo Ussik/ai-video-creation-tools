@@ -2,10 +2,12 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { after, test } from 'node:test'
+import { after, test, type TestContext } from 'node:test'
 import Fastify from 'fastify'
 import type { ScriptArtifact, ScriptScene } from '../src/infrastructure/database/db.js'
 import { scriptArtifactTypes, scriptStageForArtifact } from '@video-studio/shared/script/script-stage-content'
+import { assertCompiledStoryboardSources, storyboardWireContract, withStoryboardDirecting, storyboardOutlineFixture, storyboardBatchFixture } from './helpers/storyboard-directing.js'
+import { withFixtureVisualCoverage } from './helpers/visual-coverage.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'controlled-storyboard-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
@@ -13,7 +15,8 @@ const { buildApp } = await import('../src/app.js')
 const { all, db, now, one, run } = await import('../src/infrastructure/database/db.js')
 const { registerStoryboardPlanningRoutes } = await import('../src/modules/storyboard/storyboard-planning.js')
 const { registerScriptCanvasRoutes } = await import('../src/modules/canvas/script-canvas-preparation.js')
-const { installSkillBundle, configureSkill, removeInstalledSkill } = await import('../src/modules/skills/skills.js')
+const { recordCreatorRequirement } = await import('../src/modules/script/script-creator-requirements.js')
+const { installSkillBundle, configureSkill, removeInstalledSkill, setSkillDefault, resetSkillTaskDefault } = await import('../src/modules/skills/skills.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 async function call(method: 'GET' | 'POST' | 'PATCH' | 'PUT', url: string, payload?: object) {
@@ -34,8 +37,8 @@ async function upstreamPlanning(protocol: 'responses' | 'chat_completions' = 're
     payload: { signature: context.signature, scene_ids: [scene.id], model_id: model.id, skill_ids: [] } }) }
 }
 
-function planningStream(draft: unknown, protocol: 'responses' | 'chat_completions' = 'responses', complete = true) {
-  const raw = JSON.stringify(draft), events: unknown[] = []
+function planningStream(draft: unknown, protocol: 'responses' | 'chat_completions' = 'responses', complete = true, enrich = true) {
+  const raw = JSON.stringify(enrich ? withStoryboardDirecting(draft) : draft), events: unknown[] = []
   for (let offset = 0; offset < raw.length; offset += 53) {
     const text = raw.slice(offset, offset + 53)
     events.push(protocol === 'responses' ? { type: 'response.output_text.delta', delta: text } : { choices: [{ delta: { content: text } }] })
@@ -50,11 +53,26 @@ function planningStream(draft: unknown, protocol: 'responses' | 'chat_completion
   } }), { headers: { 'Content-Type': 'text/event-stream' } })
 }
 
+/** Review is a separate read-only model step; generation retry counters below count generation only. */
+function mockPlanningFetch(t: TestContext, generate: (url: unknown, init: RequestInit) => Promise<Response>) {
+  return t.mock.method(globalThis, 'fetch', async (url: unknown, init: RequestInit) => {
+    const body = JSON.parse(String(init.body))
+    const protocol = Array.isArray(body.messages) ? 'chat_completions' : 'responses'
+    if (storyboardWireContract(body, protocol) === 'storyboard_directing_review') {
+      return body.stream === false
+        ? Response.json(protocol === 'responses' ? { output_text: JSON.stringify({ issues: [] }) }
+          : { choices: [{ message: { content: JSON.stringify({ issues: [] }) } }] })
+        : planningStream({ issues: [] }, protocol)
+    }
+    return generate(url, init)
+  })
+}
+
 test('storyboard planning requests streams and validates the collected result for both text protocols', async t => {
   for (const protocol of ['responses', 'chat_completions'] as const) await t.test(protocol, async t => {
     const f = await upstreamPlanning(protocol, { structured_output_mode: 'json_schema' })
     let calls = 0
-    t.mock.method(globalThis, 'fetch', async (url: unknown, init: RequestInit) => {
+    mockPlanningFetch(t, async (url: unknown, init: RequestInit) => {
       calls++
       const body = JSON.parse(String(init.body)), headers = new Headers(init.headers)
       assert.equal(String(url), `https://gateway.invalid/v1/${protocol === 'responses' ? 'responses' : 'chat/completions'}`)
@@ -71,7 +89,7 @@ test('storyboard planning requests streams and validates the collected result fo
     })
     const response = await f.plan()
     assert.equal(response.statusCode, 200, response.body)
-    assert.deepEqual(response.json().scenes, [{ ...f.draft.scenes[0], scene_heading: f.scene.heading }])
+    assertCompiledStoryboardSources(response.json().scenes, [{ ...f.draft.scenes[0], scene_heading: f.scene.heading }])
     assert.equal(calls, 1)
     assert.equal(all('SELECT id FROM shots WHERE project_id=?', f.project.id).length, 0)
   })
@@ -79,27 +97,55 @@ test('storyboard planning requests streams and validates the collected result fo
 
 test('storyboard planning preserves an explicit non-streaming template and accepts ordinary JSON', async t => {
   const f = await upstreamPlanning('responses', { request_template: { model: '{{model}}', input: '{{prompt}}', stream: false } })
-  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+  mockPlanningFetch(t, async (_url: unknown, init: RequestInit) => {
     assert.equal(JSON.parse(String(init.body)).stream, false)
     return Response.json({ output: [
       { type: 'reasoning', content: [{ type: 'summary_text', text: '这段不是分镜方案正文' }] },
-      { type: 'message', content: [{ type: 'output_text', text: JSON.stringify(f.draft) }] },
+      { type: 'message', content: [{ type: 'output_text', text: JSON.stringify(withStoryboardDirecting(f.draft)) }] },
     ] })
   })
   const response = await f.plan()
   assert.equal(response.statusCode, 200, response.body)
-  assert.deepEqual(response.json().scenes, [{ ...f.draft.scenes[0], scene_heading: f.scene.heading }])
+  assertCompiledStoryboardSources(response.json().scenes, [{ ...f.draft.scenes[0], scene_heading: f.scene.heading }])
 })
 
-test('storyboard planning rejects a stream without completion even when its JSON is complete and does not retry', async t => {
+test('legacy planning recovers source punctuation but cannot use generated motion prose as dialogue evidence', async t => {
+  const f = await upstreamPlanning(), original = '先生，签下名字。', source = `房东太太：${original}`
+  await call('PATCH', `/api/script-scenes/${f.scene.id}`, { dialogue: source })
+  const before = storyboardFormalState(f.project.id)
+  let generatedSource = source, generatedText = original.replace('，', ','), calls = 0
+  mockPlanningFetch(t, async () => {
+    calls++
+    return Response.json({ output_text: JSON.stringify({ scenes: [{ scene_id: f.scene.id, shots: [{ ...shot(null, 20),
+      video_prompt: `模型动作说明：${generatedSource}`, audio_plan: {
+        version: 1, speech: [{ speaker: '房东太太', text: generatedText, source_text: generatedSource, delivery: '', mode: 'dialogue' }],
+        sound_effects: [], music: '', silent: false,
+      } }] }] }) })
+  })
+  const payload = { model_id: f.model.id, scene_ids: [f.scene.id], skill_selections: { storyboard: [] } }
+  const planned = await call('POST', `/api/projects/${f.project.id}/script/plan-shots`, payload)
+  assert.equal(planned.scenes[0].shots[0].audio_plan.speech[0].text, original)
+  assert.equal(calls, 1)
+  generatedSource = '模型自写：立刻把所有钥匙交给我。'
+  generatedText = '立刻把所有钥匙交给我。'
+  const rejected = await app.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/plan-shots`, payload })
+  assert.equal(rejected.statusCode, 422, rejected.body)
+  assert.match(rejected.json().detail, /来源摘录不在/)
+  assert.equal(calls, 3, 'invented speech still fails after the one model correction')
+  const supplied = await call('POST', `/api/projects/${f.project.id}/script/plan-shots`, { ...payload, prompt_override: generatedSource })
+  assert.equal(supplied.scenes[0].shots[0].audio_plan.speech[0].text, generatedText, 'explicit creator source remains available')
+  assert.deepEqual(storyboardFormalState(f.project.id), before)
+})
+
+test('storyboard planning rejects a stream without completion after one bounded read-only retry', async t => {
   const f = await upstreamPlanning()
   let calls = 0
   t.mock.method(console, 'error', () => {})
-  t.mock.method(globalThis, 'fetch', async () => { calls++; return planningStream(f.draft, 'responses', false) })
+  mockPlanningFetch(t, async () => { calls++; return planningStream(f.draft, 'responses', false) })
   const response = await f.plan()
   assert.equal(response.statusCode, 502)
   assert.match(response.json().detail, /连接提前结束/)
-  assert.equal(calls, 1)
+  assert.equal(calls, 2)
   assert.equal(all('SELECT id FROM shots WHERE project_id=?', f.project.id).length, 0)
   assert.equal((await call('POST', `/api/projects/${f.project.id}/script/storyboard/context`, { scene_ids: [f.scene.id] })).signature, f.context.signature)
 })
@@ -108,14 +154,14 @@ test('storyboard planning still checks timing and requests one correction after 
   const f = await upstreamPlanning()
   const invalid = structuredClone(f.draft); invalid.scenes[0]!.shots[0]!.duration = 9
   let calls = 0
-  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+  mockPlanningFetch(t, async (_url: unknown, init: RequestInit) => {
     const body = JSON.parse(String(init.body)); assert.equal(body.stream, true)
     if (++calls === 2) assert.match(body.input, /一次格式修正[\s\S]*镜头时长总和必须等于本场规划时长/)
     return planningStream(calls === 1 ? invalid : f.draft)
   })
   const response = await f.plan()
   assert.equal(response.statusCode, 200, response.body)
-  assert.deepEqual(response.json().scenes, [{ ...f.draft.scenes[0], scene_heading: f.scene.heading }])
+  assertCompiledStoryboardSources(response.json().scenes, [{ ...f.draft.scenes[0], scene_heading: f.scene.heading }])
   assert.equal(calls, 2)
   assert.equal(all('SELECT id FROM shots WHERE project_id=?', f.project.id).length, 0)
 })
@@ -130,10 +176,14 @@ test('storyboard scope contracts retain only selected internal IDs even with a f
   const selectedIds = [f.scene.id, other.id]
   const context = await call('POST', `/api/projects/${f.project.id}/script/storyboard/context`, { scene_ids: selectedIds })
   const before = storyboardFormalState(f.project.id)
+  const fullPlan = withStoryboardDirecting({ scenes: [...selectedIds].reverse().map(scene_id => ({ scene_id, scene_duration: 20, shots: [shot(null, 20)] })) })
   let calls = 0
-  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+  mockPlanningFetch(t, async (_url: unknown, init: RequestInit) => {
+    const body = JSON.parse(String(init.body))
+    if (body.response_format.json_schema.name === 'storyboard_shot_batch') return planningStream(
+      storyboardBatchFixture(fullPlan, body.response_format.json_schema), 'chat_completions', true, false)
     calls++
-    const body = JSON.parse(String(init.body)), schema = body.response_format.json_schema.schema.properties.scenes
+    const schema = body.response_format.json_schema.schema.properties.scenes
     assert.equal(schema.minItems, 2); assert.equal(schema.maxItems, 2)
     assert.deepEqual(schema.items.properties.scene_id.enum, selectedIds)
     assert.ok(!schema.items.properties.scene_id.enum.includes(unselected.id))
@@ -144,7 +194,7 @@ test('storyboard scope contracts retain only selected internal IDs even with a f
     const source = JSON.parse(prompt.split('选中场次：')[1].split('\n')[0])
     assert.deepEqual(source.map((scene: { scene_id: string }) => scene.scene_id), selectedIds)
     assert.deepEqual(source.map((scene: { heading: string }) => scene.heading), ['EP001-SC001 外 · 试灯街 · 夜', other.heading])
-    return planningStream({ scenes: [...selectedIds].reverse().map(scene_id => ({ scene_id, scene_duration: 20, shots: [shot(null, 20)] })) }, 'chat_completions')
+    return planningStream(storyboardOutlineFixture(fullPlan), 'chat_completions', true, false)
   })
   const response = await app.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/plan`, payload: {
     signature: context.signature, scene_ids: selectedIds, model_id: f.model.id, skill_ids: [],
@@ -174,8 +224,12 @@ for (const problem of ['readable scene code', 'unselected extra scene', 'missing
       : problem === 'unselected extra scene' ? [scene(f.scene.id), scene(other.id)]
       : problem === 'missing selected scene' ? [scene(f.scene.id)] : [scene(f.scene.id), scene(f.scene.id)] }
     let calls = 0
-    t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
-      const body = JSON.parse(String(init.body)); calls++
+    mockPlanningFetch(t, async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body))
+      const fullPlan = withStoryboardDirecting({ scenes: selectedIds.map(scene) })
+      if (body.text.format.name === 'storyboard_shot_batch') return planningStream(
+        storyboardBatchFixture(fullPlan, body.text.format), 'responses', true, false)
+      calls++
       if (calls === 2) {
         const correction = body.input.split('【一次格式修正】')[1]?.split('【原始任务与资料】')[0]
         assert.ok(correction, 'invalid scene mapping triggers the one correction request')
@@ -186,7 +240,8 @@ for (const problem of ['readable scene code', 'unselected extra scene', 'missing
         if (multiple) assert.match(correction, /EP001-SC002/)
         if (problem === 'duplicate selected scene') assert.match(correction, /重复/)
       }
-      return planningStream(calls === 1 ? invalid : { scenes: selectedIds.map(scene) })
+      const value = withStoryboardDirecting(calls === 1 ? invalid : fullPlan)
+      return planningStream(multiple ? storyboardOutlineFixture(value) : value, 'responses', true, false)
     })
     const response = await app.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/plan`, payload: {
       signature: context.signature, scene_ids: selectedIds, model_id: f.model.id, skill_ids: [],
@@ -202,7 +257,7 @@ test('an uncorrected scene alias is rejected after one correction and cannot sav
   const f = await upstreamPlanning('responses')
   const before = storyboardFormalState(f.project.id)
   let calls = 0
-  t.mock.method(globalThis, 'fetch', async () => {
+  mockPlanningFetch(t, async () => {
     calls++
     return planningStream({ scenes: [{ ...f.draft.scenes[0], scene_id: 'EP001-SC001' }] })
   })
@@ -225,7 +280,7 @@ test('storyboard upstream failures reach the client and diagnostic log without c
   const logs: unknown[] = []
   t.mock.method(console, 'error', (...values: unknown[]) => { logs.push(values) })
   let calls = 0
-  t.mock.method(globalThis, 'fetch', async () => { calls++; return new Response(null, { status: 502, statusText: 'Bad Gateway', headers: { 'x-request-id': 'storyboard-upstream-502' } }) })
+  mockPlanningFetch(t, async () => { calls++; return new Response(null, { status: 502, statusText: 'Bad Gateway', headers: { 'x-request-id': 'storyboard-upstream-502' } }) })
   const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/storyboard/plan`, payload: {
     signature: context.signature, scene_ids: [scene.id], model_id: model.id,
   } })
@@ -235,7 +290,7 @@ test('storyboard upstream failures reach the client and diagnostic log without c
   assert.match(response.json().detail, /storyboard-upstream-502/)
   assert.match(response.json().diagnostics, /gpt-6-astra/)
   assert.match(JSON.stringify(logs), /storyboard-upstream-502/)
-  assert.equal(calls, 1)
+  assert.equal(calls, 2)
   assert.equal(all('SELECT id FROM shots WHERE project_id=?', project.id).length, 0)
   assert.equal((await call('POST', `/api/projects/${project.id}/script/storyboard/context`, { scene_ids: [scene.id] })).signature, context.signature)
 })
@@ -248,16 +303,23 @@ async function setup(t: { after: (fn: () => Promise<unknown>) => void },
   const other = await call('POST', `/api/projects/${project.id}/script/scenes`, { heading: '码头场次', duration: 30, action: '隐藏场次动作', episode_number: 2 })
   run('INSERT INTO scripts (project_id, outline, characters, updated_at) VALUES (?, ?, ?, ?)', project.id, '大纲选中内容', '人物未选择内容', now())
   const routes = Fastify(); t.after(() => routes.close()); let calls = 0, visualCalls = 0
+  const reviewPrompts: string[] = []
+  let batchPlan: any
   const context = {
-    selectSkills: async (_id: string, _model: string, input: import('../src/modules/skills/model-skill-selection.js').CreationSkillSelectionInput) =>
-      ({ skill_ids: input.default_ids, reason: '模型根据当前分镜任务选择技能。' }),
+    selectSkills: async () => { throw new Error('Known planning and preparation tasks must use fixed bindings') },
     script: (id: string) => ({ ...one<{ outline: string; characters: string }>('SELECT * FROM scripts WHERE project_id=?', id)!, generation_options: {},
       scenes: all<ScriptScene>('SELECT * FROM script_scenes WHERE project_id=? ORDER BY position', id), artifacts: all<ScriptArtifact>('SELECT * FROM script_artifacts WHERE project_id=? ORDER BY position', id) }),
     scenePrompt: (scene: ScriptScene) => `${scene.heading}\n${scene.action}\n${scene.dialogue}`,
     generateText: async (_id: string, model: string, prompt: string, contract?: import('../src/modules/generation/model-output.js').OutputContract) => {
       assert.equal(model, 'mock-text')
-      if (contract?.name === 'visual_profiles') { visualCalls++; return generateVisual(prompt) }
-      assert.equal(contract?.name, 'controlled_storyboard'); calls++; return generate(prompt)
+      if (contract?.name === 'visual_profiles') { visualCalls++; return withFixtureVisualCoverage(await generateVisual(prompt), prompt) }
+      if (contract?.name === 'storyboard_directing_review') { reviewPrompts.push(prompt); return JSON.stringify({ issues: [] }) }
+      if (contract?.name === 'storyboard_shot_batch') return JSON.stringify(storyboardBatchFixture(batchPlan, contract))
+      if (contract?.name === 'storyboard_scene_plan') {
+        calls++; batchPlan = withStoryboardDirecting(JSON.parse(await generate(prompt)))
+        return JSON.stringify(storyboardOutlineFixture(batchPlan))
+      }
+      assert.equal(contract?.name, 'controlled_storyboard'); calls++; return JSON.stringify(withStoryboardDirecting(JSON.parse(await generate(prompt))))
     },
   }
   registerStoryboardPlanningRoutes(routes, context)
@@ -273,14 +335,398 @@ async function setup(t: { after: (fn: () => Promise<unknown>) => void },
   const prepareReferences = async (sceneIds = [scene.id]) => {
     const checked = await reference('check', { scene_ids: sceneIds })
     const prepared = await reference('prepare', { signature: checked.signature, scene_ids: sceneIds, model_id: 'mock-text' })
-    return reference('commit', { signature: prepared.signature, scene_ids: sceneIds, profiles: prepared.profiles })
+    return reference('commit', { signature: prepared.signature, scene_ids: sceneIds, profiles: prepared.profiles,
+      coverage_version: prepared.coverage_version, visual_coverage: prepared.visual_coverage })
   }
-  return { project, scene, other, invoke, reference, prepareReferences,
+  return { project, scene, other, invoke, reference, prepareReferences, reviewPrompts,
     context: () => invoke('context', { scene_ids: [scene.id] }), calls: () => calls, visualCalls: () => visualCalls }
 }
 function shot(shotId: string | null, duration: number, title = '推近镜头') {
-  return { shot_id: shotId, title, duration, prompt: '人物沿通道移动', image_prompt: '日漫，人物站在通道左侧，近景', video_prompt: '人物向前移动，镜头跟随', start_state: '在通道左侧', end_state: '走到出口', cut_note: '接前一镜' }
+  return { shot_id: shotId, title, duration, prompt: '人物沿通道移动', image_prompt: '日漫，人物站在通道左侧，近景', video_prompt: '人物向前移动，镜头跟随',
+    audio_plan: { version: 1 as const, speech: [], sound_effects: [], music: '', silent: true },
+    start_state: '在通道左侧', end_state: '走到出口', cut_note: '接前一镜' }
 }
+
+test('generated speech restores a unique source punctuation variant before review and keeps commits exact', async t => {
+  const original = '先生，签下名字……这辈子就别想搬走。', generated = original.replace('，', ',')
+  const source = `房东太太（阴笑）：${original}`
+  let sceneId = ''
+  const f = await setup(t, async prompt => {
+    assert.match(prompt, /不将中文标点转换为半角英文标点/)
+    return JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [{ ...shot(null, 30),
+      audio_plan: { version: 1, speech: [{ speaker: '房东太太', text: generated, source_text: source, delivery: '阴笑', mode: 'dialogue' }],
+        sound_effects: [], music: '', silent: false } }] }] })
+  })
+  sceneId = f.scene.id
+  run('UPDATE script_scenes SET dialogue=? WHERE id=?', source, sceneId)
+  const context = await f.context(), before = storyboardFormalState(f.project.id)
+  const planned = await f.invoke('plan', { signature: context.signature, scene_ids: [sceneId], model_id: 'mock-text', skill_ids: [] })
+  assert.equal(f.calls(), 1, 'deterministic recovery does not need a model correction')
+  assert.equal(planned.scenes[0].shots[0].audio_plan.speech[0].text, original)
+  assert.equal(planned.scenes[0].shots[0].audio_plan.speech[0].source_text, source)
+  assert.ok(f.reviewPrompts[0]!.includes(original))
+  assert.ok(!f.reviewPrompts[0]!.includes(generated), 'the director reviews the recovered exact source')
+  assert.deepEqual(storyboardFormalState(f.project.id), before, 'planning remains read-only')
+  const scenes = planned.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene)
+  const edited = structuredClone(scenes)
+  edited[0].shots[0].audio_plan.speech[0].text = generated
+  const rejected = await f.invoke('commit', { signature: planned.signature, request_id: crypto.randomUUID(), save_only: true, scenes: edited }, 422)
+  assert.match(rejected.message, /必须逐字包含/)
+  assert.deepEqual(storyboardFormalState(f.project.id), before, 'manual edits do not gain model-only recovery')
+  const saved = await f.invoke('commit', { signature: planned.signature, request_id: crypto.randomUUID(), save_only: true, scenes })
+  assert.equal(saved.shots[0].audio_plan.speech[0].text, original)
+  assert.equal(one<any>('SELECT * FROM shots WHERE id=?', saved.shots[0].id)!.audio_plan.speech[0].text, original)
+})
+
+test('completed storyboard previews recover matching inputs without model calls or accepted-data writes', async t => {
+  let sceneId = ''
+  const f = await setup(t, async () => JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(null, 30)] }] }))
+  sceneId = f.scene.id
+  const context = await f.context(), before = storyboardFormalState(f.project.id)
+  const input = { signature: context.signature, scene_ids: [sceneId], document_ids: ['legacy:outline'], model_id: 'mock-text', skill_ids: [] }
+  assert.equal((await f.invoke('preview', input)).preview, null)
+  assert.equal(f.calls(), 0)
+  const planned = await f.invoke('plan', input)
+  assert.deepEqual((await f.invoke('preview', input)).preview, planned)
+  assert.equal(f.calls(), 1)
+  for (const change of [{ instructions: '改用新的调度' }, { target_duration: 31 }, { duration_mode: 'reestimate' },
+    { mode: 'redesign' }, { shots_per_scene: 3 }, { model_id: 'another-model' }, { document_ids: [] }]) {
+    assert.equal((await f.invoke('preview', { ...input, ...change })).preview, null)
+  }
+  assert.equal(f.calls(), 1, 'cache lookups never invoke generation')
+  assert.deepEqual(storyboardFormalState(f.project.id), before)
+  await f.invoke('plan', input)
+  assert.equal(f.calls(), 2, 'explicit generation still creates a fresh preview')
+  run('UPDATE script_scenes SET action=? WHERE id=?', '人物改在另一侧入场', sceneId)
+  await f.invoke('preview', input, 409)
+  assert.equal((await f.invoke('preview', { ...input, signature: (await f.context()).signature })).preview, null)
+})
+
+test('damaged, expired and semantically invalid cached storyboard previews are never returned', async t => {
+  let sceneId = ''
+  const f = await setup(t, async () => JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(null, 30)] }] }))
+  sceneId = f.scene.id
+  const input = { signature: (await f.context()).signature, scene_ids: [sceneId], model_id: 'mock-text', skill_ids: [] }
+  const planned = await f.invoke('plan', input)
+  const update = (payload: string, timestamp = now()) => run('UPDATE script_step_checkpoints SET payload=?,updated_at=? WHERE project_id=? AND namespace=?',
+    payload, timestamp, f.project.id, 'storyboard-planning-preview')
+  update('{damaged')
+  assert.equal((await f.invoke('preview', input)).preview, null)
+  update(JSON.stringify(planned), '2000-01-01T00:00:00.000Z')
+  assert.equal((await f.invoke('preview', input)).preview, null)
+  const invalid = structuredClone(planned); invalid.scenes[0].shots[0].duration = 29
+  update(JSON.stringify(invalid))
+  assert.equal((await f.invoke('preview', input)).preview, null)
+  invalid.scenes[0].shots[0].duration = 30
+  invalid.scenes[0].shots[0].image_prompt += ' 未经复核的首帧调整'
+  update(JSON.stringify(invalid))
+  assert.equal((await f.invoke('preview', input)).preview, null, 'cached edits cannot reuse a review of different text')
+  assert.equal(f.calls(), 1)
+})
+
+test('changing the selected text model or provider configuration invalidates a completed preview', async t => {
+  const f = await upstreamPlanning()
+  mockPlanningFetch(t, async () => planningStream(f.draft))
+  const generated = await f.plan()
+  assert.equal(generated.statusCode, 200, generated.body)
+  const input = { signature: f.context.signature, scene_ids: [f.scene.id], model_id: f.model.id, skill_ids: [] }
+  const lookup = () => call('POST', `/api/projects/${f.project.id}/script/storyboard/preview`, input)
+  assert.ok((await lookup()).preview)
+  const model = one<any>('SELECT * FROM models WHERE id=?', f.model.id)!
+  run('UPDATE models SET remote_id=? WHERE id=?', 'another-remote-model', model.id)
+  assert.equal((await lookup()).preview, null)
+  run('UPDATE models SET remote_id=? WHERE id=?', model.remote_id, model.id)
+  assert.ok((await lookup()).preview)
+  run('UPDATE providers SET base_url=? WHERE id=?', 'https://changed.example.invalid/v1', model.provider_id)
+  assert.equal((await lookup()).preview, null)
+})
+
+test('formal storyboard generation and both director reviews share scoped active creative context', async t => {
+  let sceneId = '', generationPrompt = ''
+  const f = await setup(t, async prompt => {
+    generationPrompt = prompt
+    return JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(null, 30)] }] })
+  })
+  sceneId = f.scene.id
+  const record = (quote: string, scope = 'project', extra = {}) => recordCreatorRequirement(f.project.id, { quote, scope, source: { text: quote }, ...extra })
+  const old = record('OLD_SUPERSEDED_RHYTHM')
+  record('ACTIVE_PROJECT_RHYTHM', 'project', { supersedes: [old.id] })
+  record('CURRENT_SCENE_RESTRAINT', `scene:${sceneId}`)
+  record('OTHER_EPISODE_REQUIREMENT', 'episode:2')
+  record('LEGACY_SCOPED_CONTEXT', '第一集的对白')
+  record('UNRESOLVED_MUSIC_QUESTION', 'project', { kind: 'open_question' })
+  run('UPDATE scripts SET generation_options=? WHERE project_id=?', JSON.stringify({ genre: 'SAVED_GENRE', story_structure: 'SAVED_RHYTHM_DESIGN' }), f.project.id)
+  run(`INSERT INTO script_story_decisions (id,project_id,topic,content,basis,source_text,created_at,updated_at)
+    VALUES (?,?,?,?,'creator_confirmed',?,?,?)`, crypto.randomUUID(), f.project.id, '节奏', 'CONFIRMED_PACING', 'CREATOR_ORIGINAL_QUOTE', now(), now())
+  const context = await f.context(), instructions = '本次用完整长镜头保留停顿'
+  const planned = await f.invoke('plan', { signature: context.signature, scene_ids: [sceneId], model_id: 'mock-text', skill_ids: [], instructions })
+  const scenes = planned.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene)
+  await f.invoke('review', { signature: planned.signature, scenes, instructions, model_id: 'mock-text' })
+  assert.equal(f.reviewPrompts.length, 2)
+  for (const prompt of [generationPrompt, ...f.reviewPrompts]) {
+    assert.match(prompt, /ACTIVE_PROJECT_RHYTHM|CURRENT_SCENE_RESTRAINT/)
+    for (const marker of ['ACTIVE_PROJECT_RHYTHM', 'CURRENT_SCENE_RESTRAINT', 'LEGACY_SCOPED_CONTEXT', 'UNRESOLVED_MUSIC_QUESTION', 'SAVED_GENRE', 'SAVED_RHYTHM_DESIGN', 'CONFIRMED_PACING', 'CREATOR_ORIGINAL_QUOTE', instructions]) assert.ok(prompt.includes(marker), marker)
+    assert.doesNotMatch(prompt, /OLD_SUPERSEDED_RHYTHM|OTHER_EPISODE_REQUIREMENT/)
+    assert.match(prompt, /kind=open_question是尚未确定的问题/)
+    assert.match(prompt, /创作者本次明确指令优先/)
+  }
+})
+
+test('creative requirement, decision and setting changes invalidate previews and accepted scene sources', async t => {
+  for (const kind of ['requirement', 'decision', 'setting'] as const) await t.test(kind, async t => {
+    const f = await setup(t), original = await f.context()
+    const scenes = [{ scene_id: f.scene.id, scene_duration: 30, shots: [shot(null, 30)] }]
+    await f.invoke('commit', { signature: original.signature, request_id: crypto.randomUUID(), scenes })
+    const accepted = await f.context()
+    recordCreatorRequirement(f.project.id, { quote: 'Only the other episode', scope: 'episode:2', source: { text: 'Only the other episode' } })
+    assert.equal((await f.context()).signature, accepted.signature, 'an explicit unrelated episode scope does not change the selected source')
+    if (kind === 'requirement') recordCreatorRequirement(f.project.id, { quote: '保留自然的情绪停顿', scope: `scene:${f.scene.id}`, source: { text: '保留自然的情绪停顿' } })
+    else if (kind === 'setting') run('UPDATE scripts SET generation_options=? WHERE project_id=?', JSON.stringify({ story_structure: '缓慢积累，避免机械反转' }), f.project.id)
+    else run(`INSERT INTO script_story_decisions (id,project_id,topic,content,basis,source_text,created_at,updated_at)
+      VALUES (?,?,?,?,'creator_confirmed',?,?,?)`, crypto.randomUUID(), f.project.id, '视角', '保留主人公的受限视角', '只从主人公视角讲述', now(), now())
+    const changed = await f.context()
+    assert.notEqual(changed.signature, accepted.signature)
+    assert.equal(changed.scenes[0].planned, false)
+    assert.equal(changed.scenes[0].needs_replan, true)
+    await f.invoke('commit', { signature: accepted.signature, request_id: crypto.randomUUID(), scenes: [{ ...scenes[0], shots: [shot(accepted.existing_shots[0].shot_id, 30)] }] }, 409)
+    await f.invoke('review', { signature: accepted.signature, model_id: 'mock-text', scenes: [{ ...scenes[0], shots: [shot(accepted.existing_shots[0].shot_id, 30)] }] }, 409)
+  })
+})
+
+test('explicit scene and episode requirements invalidate only their matching accepted scene sources', async t => {
+  const f = await setup(t), sceneIds = [f.scene.id, f.other.id]
+  const before = await f.invoke('context', { scene_ids: sceneIds })
+  await f.invoke('commit', { signature: before.signature, request_id: crypto.randomUUID(), scenes: sceneIds.map(scene_id => ({ scene_id, scene_duration: 30, shots: [shot(null, 30)] })) })
+  recordCreatorRequirement(f.project.id, { quote: '当前车站场保留停顿', scope: `scene:${f.scene.id}`, source: { text: '当前车站场保留停顿' } })
+  const afterScene = await f.invoke('context', { scene_ids: sceneIds })
+  assert.equal(afterScene.scenes.find((scene: any) => scene.id === f.scene.id).needs_replan, true)
+  assert.equal(afterScene.scenes.find((scene: any) => scene.id === f.other.id).planned, true)
+  recordCreatorRequirement(f.project.id, { quote: '第二集采用受限视角', scope: 'episode:2', source: { text: '第二集采用受限视角' } })
+  const afterEpisode = await f.invoke('context', { scene_ids: sceneIds })
+  assert.equal(afterEpisode.scenes.find((scene: any) => scene.id === f.other.id).needs_replan, true)
+})
+
+test('the same creator wording can apply to separate episode scopes without deduplicating away a target', async t => {
+  let sceneId = '', generationPrompt = ''
+  const f = await setup(t, async prompt => {
+    generationPrompt = prompt
+    return JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(null, 30)] }] })
+  })
+  sceneId = f.scene.id
+  const quote = 'SAME_WORDING_FOR_TWO_EPISODES', source = { text: quote }
+  const other = recordCreatorRequirement(f.project.id, { quote, source, scope: 'episode:2' })
+  const current = recordCreatorRequirement(f.project.id, { quote, source, scope: 'episode:1' })
+  assert.notEqual(current.id, other.id)
+  assert.equal(recordCreatorRequirement(f.project.id, { quote, source, scope: 'episode:1' }).id, current.id)
+  await f.invoke('plan', { signature: (await f.context()).signature, scene_ids: [sceneId], model_id: 'mock-text', skill_ids: [] })
+  assert.ok(generationPrompt.includes(current.id))
+  assert.ok(!generationPrompt.includes(other.id))
+})
+
+test('saving an independent plan keeps its canvas pending through replay and later edits', async t => {
+  let sceneId = ''
+  const f = await setup(t, async () => JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(null, 30)] }] }))
+  sceneId = f.scene.id
+  await call('GET', `/api/projects/${f.project.id}/canvases`)
+  const before = { canvases: all('SELECT * FROM project_canvases WHERE project_id=?', f.project.id),
+    nodes: all('SELECT * FROM canvas_nodes WHERE project_id=?', f.project.id), profiles: all('SELECT * FROM visual_profiles WHERE project_id=?', f.project.id) }
+  const context = await f.context()
+  const plan = await f.invoke('plan', { scene_ids: [sceneId], signature: context.signature, model_id: 'mock-text', mode: 'redesign' })
+  const request = { signature: plan.signature, mode: plan.mode, request_id: crypto.randomUUID(), save_only: true,
+    scenes: plan.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene) }
+  const saved = await f.invoke('commit', request)
+  assert.equal(saved.design_id, request.request_id)
+  assert.equal(saved.target_canvas_id, null)
+  assert.equal(one<any>('SELECT * FROM storyboard_designs WHERE id=?', saved.design_id)!.canvas_pending, 1)
+  assert.deepEqual(all('SELECT * FROM project_canvases WHERE project_id=?', f.project.id), before.canvases)
+  assert.deepEqual(all('SELECT * FROM canvas_nodes WHERE project_id=?', f.project.id), before.nodes)
+  assert.deepEqual(all('SELECT * FROM visual_profiles WHERE project_id=?', f.project.id), before.profiles)
+  assert.equal(f.visualCalls(), 0)
+  const snapshot = await call('GET', `/api/projects/${f.project.id}/shot-management`)
+  assert.equal(snapshot.designs.find((design: any) => design.id === saved.design_id).canvas_pending, true)
+  const fresh = await f.context()
+  assert.equal(fresh.scenes[0].planned, true)
+  assert.equal(fresh.scenes[0].requires_redesign, false)
+  const replay = await f.invoke('commit', request)
+  assert.equal(replay.replayed, true)
+  assert.equal(replay.target_canvas_id, null)
+  await f.invoke('commit', { ...request, save_only: false }, 409)
+  const edited = await f.invoke('commit', { signature: fresh.signature, request_id: crypto.randomUUID(), save_only: true,
+    scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(saved.shots[0].id, 30, '手动调整后的镜头')] }] })
+  assert.equal(edited.design_id, saved.design_id)
+  assert.equal(edited.target_canvas_id, null)
+  assert.equal(edited.shots[0].title, '手动调整后的镜头')
+  assert.deepEqual(all('SELECT * FROM project_canvases WHERE project_id=?', f.project.id), before.canvases)
+})
+
+test('a pending plan creates one canvas only after reference preparation and imports selected current shots', async t => {
+  let sceneId = ''
+  const f = await setup(t, async () => JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30,
+    shots: [shot(null, 15, '先看入口'), shot(null, 15, '再看出口')] }] }))
+  sceneId = f.scene.id
+  const initial = await f.context()
+  const plan = await f.invoke('plan', { scene_ids: [sceneId], signature: initial.signature, model_id: 'mock-text', mode: 'redesign' })
+  const request = { signature: plan.signature, mode: plan.mode, request_id: crypto.randomUUID(), save_only: true,
+    scenes: plan.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene) }
+  const saved = await f.invoke('commit', request)
+  const count = all('SELECT * FROM project_canvases WHERE project_id=?', f.project.id).length
+  const input = { scene_ids: [sceneId], design_id: saved.design_id, shot_ids: [saved.shots[1].id], mode: 'existing' }
+  const missing = await f.invoke('canvas', input, 422)
+  assert.match(missing.message, /参考设定尚未整理/)
+  assert.equal(all('SELECT * FROM project_canvases WHERE project_id=?', f.project.id).length, count)
+  await f.prepareReferences()
+  await f.invoke('canvas', { ...input, design_id: 'another-design' }, 422)
+  await f.invoke('canvas', { ...input, shot_ids: [f.other.id] }, 422)
+  assert.equal(all('SELECT * FROM project_canvases WHERE project_id=?', f.project.id).length, count)
+  const imported = await f.invoke('canvas', input)
+  assert.ok(imported.target_canvas_id)
+  assert.deepEqual(imported.shots.map((shot: any) => shot.id), [saved.shots[1].id])
+  assert.equal(one<any>('SELECT * FROM storyboard_designs WHERE id=?', saved.design_id)!.canvas_pending, 0)
+  const repeated = await f.invoke('canvas', input)
+  assert.equal(repeated.target_canvas_id, imported.target_canvas_id)
+  assert.equal(all('SELECT * FROM project_canvases WHERE project_id=?', f.project.id).length, count + 1)
+  assert.equal(all('SELECT * FROM canvas_nodes WHERE project_id=?', f.project.id).length, 0, 'handoff does not create generation nodes on the server')
+  const replay = await f.invoke('commit', request)
+  assert.equal(replay.target_canvas_id, imported.target_canvas_id)
+  run('DELETE FROM project_canvases WHERE id=?', imported.target_canvas_id)
+  const deleted = await f.invoke('canvas', input, 409)
+  assert.match(deleted.message, /专属画布已删除/)
+  await f.invoke('commit', request, 409)
+  assert.equal(all('SELECT * FROM project_canvases WHERE project_id=?', f.project.id).length, count)
+})
+
+test('a saved pending historical design prepares and enters production without changing the newer design', async t => {
+  let sceneId = '', title = '方案 A 的镜头'
+  const f = await setup(t, async () => JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(null, 30, title)] }] }),
+    async prompt => {
+      const shots = JSON.parse(prompt.split('选定场次已规划镜头：')[1]!) as Array<{ shot_id: string; title: string }>
+      assert.equal(shots.length, 1)
+      return JSON.stringify({ profiles: [{ kind: 'character', name: shots[0]!.title, variant: '默认', definition: '蓝色外套人物', view_requirements: '正侧背',
+        scene_ids: [sceneId], shot_usage: [{ shot_id: shots[0]!.shot_id, usage: 'both' }] }] })
+    })
+  sceneId = f.scene.id
+  const save = async () => {
+    const context = await f.context()
+    const plan = await f.invoke('plan', { scene_ids: [sceneId], signature: context.signature, model_id: 'mock-text', mode: 'redesign' })
+    return f.invoke('commit', { signature: plan.signature, mode: plan.mode, request_id: crypto.randomUUID(), save_only: true,
+      scenes: plan.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene) })
+  }
+  const first = await save()
+  title = '方案 B 的镜头'
+  const second = await save()
+  const prepare = async (designId?: string) => {
+    const scope = { scene_ids: [sceneId], ...(designId ? { design_id: designId } : {}) }
+    const checked = await f.reference('check', scope)
+    const plan = await f.reference('prepare', { ...scope, signature: checked.signature, model_id: 'mock-text', skill_ids: [] })
+    return { scope, plan }
+  }
+  const newer = await prepare()
+  await f.reference('commit', { ...newer.scope, signature: newer.plan.signature, profiles: newer.plan.profiles, reference_usage_version: 1,
+    coverage_version: newer.plan.coverage_version, visual_coverage: newer.plan.visual_coverage })
+  const secondState = () => ({ shot: one('SELECT * FROM shots WHERE id=?', second.shots[0].id),
+    bindings: all('SELECT * FROM shot_visual_bindings WHERE shot_id=?', second.shots[0].id),
+    profiles: all('SELECT * FROM visual_profiles WHERE design_id=?', second.design_id) })
+  const before = secondState()
+  const older = await prepare(first.design_id)
+  assert.deepEqual(older.plan.profiles.flatMap((profile: any) => profile.shot_usage.map((usage: any) => usage.shot_id)), [first.shots[0].id])
+  const crossDesign = structuredClone(older.plan.profiles)
+  crossDesign[0].shot_usage[0].shot_id = second.shots[0].id
+  await f.reference('commit', { ...older.scope, signature: older.plan.signature, profiles: crossDesign, reference_usage_version: 1 }, 422)
+  await f.reference('commit', { ...older.scope, signature: older.plan.signature, profiles: older.plan.profiles, reference_usage_version: 1,
+    coverage_version: older.plan.coverage_version, visual_coverage: older.plan.visual_coverage })
+  assert.deepEqual(secondState(), before, 'preparing the historical design cannot change the newer shots, references or profiles')
+  const input = { scene_ids: [sceneId], design_id: first.design_id, shot_ids: [first.shots[0].id], mode: 'existing' }
+  await f.invoke('canvas', { ...input, shot_ids: [second.shots[0].id] }, 422)
+  const imported = await f.invoke('canvas', input)
+  assert.ok(imported.target_canvas_id)
+  assert.deepEqual(imported.shots.map((shot: any) => shot.id), [first.shots[0].id])
+  const { shot_ids: _shotIds, ...wholeDesign } = input
+  assert.deepEqual((await f.invoke('canvas', wholeDesign)).shots.map((shot: any) => shot.id), [first.shots[0].id])
+  assert.equal((await f.invoke('canvas', input)).target_canvas_id, imported.target_canvas_id)
+  assert.equal(one<any>('SELECT * FROM storyboard_designs WHERE id=?', second.design_id)!.canvas_pending, 1)
+  assert.equal((await f.context()).existing_shots[0].shot_id, second.shots[0].id)
+  assert.deepEqual(secondState(), before)
+  run('DELETE FROM project_canvases WHERE id=?', imported.target_canvas_id)
+  await f.invoke('canvas', input, 409)
+})
+
+test('an existing historical canvas can prepare and import its next scene without changing the newer design', async t => {
+  let sceneIds: string[] = [], designName = '方案 A'
+  const f = await setup(t, async () => JSON.stringify({ scenes: sceneIds.map((scene_id, index) => ({ scene_id, scene_duration: 30,
+    shots: [shot(null, 30, `${designName} 第${index + 1}场`)] })) }), async prompt => {
+    const shots = JSON.parse(prompt.split('选定场次已规划镜头：')[1]!) as Array<{ shot_id: string; scene_id: string; title: string }>
+    return JSON.stringify({ profiles: shots.map(shot => ({ kind: 'character', name: shot.title, variant: '默认', definition: '蓝色外套人物', view_requirements: '正侧背',
+      scene_ids: [shot.scene_id], shot_usage: [{ shot_id: shot.shot_id, usage: 'both' }] })) })
+  })
+  sceneIds = [f.scene.id, f.other.id]
+  const save = async () => {
+    const context = await f.invoke('context', { scene_ids: sceneIds })
+    const plan = await f.invoke('plan', { scene_ids: sceneIds, signature: context.signature, model_id: 'mock-text', mode: 'redesign' })
+    return f.invoke('commit', { signature: plan.signature, mode: plan.mode, request_id: crypto.randomUUID(), save_only: true,
+      scenes: plan.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene) })
+  }
+  const first = await save()
+  designName = '方案 B'
+  const second = await save()
+  const prepare = async (selectedSceneIds: string[], designId?: string) => {
+    const scope = { scene_ids: selectedSceneIds, ...(designId ? { design_id: designId } : {}) }
+    const check = await f.reference('check', scope)
+    const plan = await f.reference('prepare', { ...scope, signature: check.signature, model_id: 'mock-text', skill_ids: [] })
+    return f.reference('commit', { ...scope, signature: plan.signature, profiles: plan.profiles, reference_usage_version: 1,
+      coverage_version: plan.coverage_version, visual_coverage: plan.visual_coverage })
+  }
+  await prepare(sceneIds)
+  const secondState = () => ({ shots: all('SELECT * FROM shots WHERE design_id=? ORDER BY id', second.design_id),
+    bindings: all('SELECT b.* FROM shot_visual_bindings b JOIN shots s ON s.id=b.shot_id WHERE s.design_id=? ORDER BY b.shot_id,b.profile_id', second.design_id),
+    profiles: all('SELECT * FROM visual_profiles WHERE design_id=? ORDER BY id', second.design_id) })
+  const before = secondState()
+  await prepare([f.scene.id], first.design_id)
+  const initial = await f.invoke('canvas', { scene_ids: [f.scene.id], design_id: first.design_id, shot_ids: [first.shots[0].id], mode: 'existing' })
+  assert.ok(initial.target_canvas_id)
+  assert.equal(one<any>('SELECT canvas_pending FROM storyboard_designs WHERE id=?', first.design_id)!.canvas_pending, 0)
+  const scope = { scene_ids: [f.other.id], design_id: first.design_id }
+  assert.deepEqual((await f.reference('check', scope)).needs_analysis, [f.other.id])
+  const prepared = await prepare([f.other.id], first.design_id)
+  assert.deepEqual(prepared.shots.map((shot: any) => shot.id), [first.shots[1].id])
+  const next = await f.invoke('canvas', { ...scope, shot_ids: [first.shots[1].id], mode: 'existing' })
+  assert.equal(next.target_canvas_id, initial.target_canvas_id)
+  assert.deepEqual(next.shots.map((shot: any) => shot.id), [first.shots[1].id])
+  assert.deepEqual(secondState(), before, 'adding another historical scene preserves every newer shot, profile and binding')
+})
+
+test('an older pending design cannot borrow a newer accepted source fingerprint after the script changes', async t => {
+  let sceneId = ''
+  const f = await setup(t, async () => JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(null, 30)] }] }))
+  sceneId = f.scene.id
+  const save = async () => {
+    const context = await f.context()
+    const plan = await f.invoke('plan', { scene_ids: [sceneId], signature: context.signature, model_id: 'mock-text', mode: 'redesign' })
+    return f.invoke('commit', { signature: plan.signature, mode: plan.mode, request_id: crypto.randomUUID(), save_only: true,
+      scenes: plan.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene) })
+  }
+  const first = await save()
+  run('UPDATE script_scenes SET action=? WHERE id=?', '剧本改为人物留在原地', sceneId)
+  const second = await save()
+  await f.prepareReferences()
+  const failed = await f.invoke('canvas', { scene_ids: [sceneId], design_id: first.design_id, shot_ids: [first.shots[0].id], mode: 'existing' }, 422)
+  assert.match(failed.message, /剧本|来源|已更新|重新规划/)
+  assert.equal(one<any>('SELECT * FROM storyboard_designs WHERE id=?', first.design_id)!.canvas_pending, 1)
+  assert.equal(one<any>('SELECT * FROM storyboard_designs WHERE id=?', second.design_id)!.canvas_pending, 1)
+})
+
+test('an active legacy design can use its own accepted scene source before per-design fingerprints existed', async t => {
+  let sceneId = ''
+  const f = await setup(t, async () => JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(null, 30)] }] }))
+  sceneId = f.scene.id
+  const context = await f.context()
+  const plan = await f.invoke('plan', { scene_ids: [sceneId], signature: context.signature, model_id: 'mock-text', mode: 'redesign' })
+  const saved = await f.invoke('commit', { signature: plan.signature, mode: plan.mode, request_id: crypto.randomUUID(), save_only: true,
+    scenes: plan.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene) })
+  run("UPDATE storyboard_designs SET source_fingerprints='{}' WHERE id=?", saved.design_id)
+  await f.prepareReferences()
+  const imported = await f.invoke('canvas', { scene_ids: [sceneId], design_id: saved.design_id, shot_ids: [saved.shots[0].id], mode: 'existing' })
+  assert.ok(imported.target_canvas_id)
+})
 
 test('updating an empty redesigned scene keeps its design instead of returning to legacy references', async t => {
   let sceneId = ''
@@ -564,7 +1010,7 @@ test('planning accepts one primary and five auxiliaries and forwards every selec
     return JSON.stringify({ scenes: [{ scene_id: f.scene.id, scene_duration: 30, shots: [shot(null, 30)] }] })
   })
   const selected = Array.from({ length: 6 }, (_value, index) => skill(`five-aux-planner-${index}`, `RULE_planner_${index}`))
-  t.after(() => { for (const id of selected) removeInstalledSkill(id) })
+  t.after(() => { for (const id of selected) removeInstalledSkill(id); resetSkillTaskDefault('storyboard') })
   const context = await f.context()
   const result = await f.invoke('plan', { signature: context.signature, scene_ids: [f.scene.id], model_id: 'mock-text', skill_ids: selected })
   assert.deepEqual(result.used_skills.map((item: { id: string }) => item.id), selected)
@@ -773,7 +1219,13 @@ test('a changed replan refreshes image and video nodes across canvases while pre
       const node = refreshed.nodes.find((node: { id: string }) => node.id === `${key}-${modality}`)
       const previous = before[index].nodes.find((item: { id: string }) => item.id === node.id)
       assert.equal(node.title, '全新镜头标题')
-      assert.equal(node.prompt, modality === 'image' ? 'NEW_IMAGE_COMPOSITION' : 'NEW_VIDEO_ACTION')
+      if (modality === 'image') assert.equal(node.prompt, 'NEW_IMAGE_COMPOSITION')
+      else {
+        assert.ok(node.prompt.startsWith('NEW_VIDEO_ACTION'))
+        assert.match(node.prompt, /在通道左侧/)
+        assert.match(node.prompt, /走到出口/)
+        assert.match(node.prompt, /接前一镜/)
+      }
       assert.equal(node.text, ''); assert.equal(node.asset_id, null); assert.equal(node.job_id, null)
       assert.equal(node.settings.storyboard_revision, 1); assert.equal(node.settings.duration, 20)
       assert.equal(node.settings.modality, modality)
@@ -808,7 +1260,7 @@ test('historical templates and authored shots need a confirmed source baseline b
   assert.equal(context.scenes[0].planned, false)
   assert.equal(context.scenes[0].needs_replan, true)
   assert.match(context.scenes[0].replan_reason, /缺少来源版本/)
-  assert.deepEqual(context.existing_shots, [{ ...value, scene_id: f.scene.id, title: '车站场次' }])
+  assert.deepEqual(context.existing_shots, [{ ...value, audio_plan: null, continuity_plan: null, scene_id: f.scene.id, title: '车站场次' }])
   await f.invoke('canvas', { scene_ids: [f.scene.id], mode: 'existing' }, 422)
   await f.invoke('commit', { signature: context.signature, request_id: crypto.randomUUID(), scenes: [
     { scene_id: f.scene.id, scene_duration: 30, shots: [{ ...value, title: '车站场次' }] },
@@ -923,7 +1375,7 @@ test('planning rejects more than ten scenes before invoking the model while meta
 
 test('planning submits only selected documents, skills and scenes, supports no skills and stays read-only', async t => {
   const selected = skill('selected', 'SELECTED_SKILL_MARKER'), ignored = skill('ignored', 'IGNORED_SKILL_MARKER')
-  t.after(async () => { removeInstalledSkill(selected); removeInstalledSkill(ignored) })
+  t.after(async () => { removeInstalledSkill(selected); removeInstalledSkill(ignored); resetSkillTaskDefault('storyboard') })
   let sceneId = '', selectedRules = true
   const f = await setup(t, async prompt => {
     assert.match(prompt, /大纲选中内容/); assert.doesNotMatch(prompt, /人物未选择内容|隐藏场次动作|IGNORED_SKILL_MARKER/)
@@ -931,17 +1383,20 @@ test('planning submits only selected documents, skills and scenes, supports no s
     return JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(null, 12), shot(null, 18, '反应镜头')] }] })
   })
   sceneId = f.scene.id
+  setSkillDefault('storyboard', { primary_id: selected, auxiliary_ids: [] }, f.project.id)
   const context = await f.context(), input = { signature: context.signature, scene_ids: [sceneId], document_ids: ['legacy:outline'], skill_ids: [selected], model_id: 'mock-text' }
   const result = await f.invoke('plan', input)
   assert.deepEqual(result.used_skills.map((s: { id: string }) => s.id), [selected])
   assert.deepEqual(result.source_documents.map((d: { id: string }) => d.id), ['legacy:outline'])
   assert.equal(all('SELECT * FROM shots WHERE project_id=?', f.project.id).length, 0)
   assert.deepEqual(context.default_skill_ids, [selected])
-  assert.equal(context.skill_policy.source, 'global')
+  assert.equal(context.skill_policy.source, 'project')
   const { skill_ids: _selectedIds, ...inherited } = input
-  const automatic = await f.invoke('plan', inherited)
-  assert.deepEqual(automatic.used_skills.map((item: { id: string }) => item.id), [selected])
-  assert.deepEqual(automatic.skill_assignment, { ids: [selected], source: 'automatic', reason: '模型根据当前分镜任务选择技能。' })
+  const fixed = await f.invoke('plan', inherited)
+  assert.deepEqual(fixed.used_skills.map((item: { id: string }) => item.id), [selected])
+  assert.deepEqual(fixed.skill_assignment.ids, [selected])
+  assert.equal(fixed.skill_assignment.source, 'fixed'); assert.equal(fixed.skill_assignment.task, 'storyboard')
+  assert.match(fixed.skill_assignment.reason, /项目绑定/)
   selectedRules = false
   assert.deepEqual((await f.invoke('plan', { ...input, skill_ids: [] })).used_skills, [])
   await f.invoke('plan', { ...input, document_ids: ['foreign'] }, 422)
@@ -951,7 +1406,7 @@ test('planning submits only selected documents, skills and scenes, supports no s
 
 test('an omitted or null shot count lets the model choose different counts for each scene without a default', async t => {
   const selected = skill('auto-count', 'AUTO_COUNT_SKILL_MARKER')
-  t.after(async () => { removeInstalledSkill(selected) })
+  t.after(async () => { removeInstalledSkill(selected); resetSkillTaskDefault('storyboard') })
   let sceneId = '', otherId = ''
   const f = await setup(t, async prompt => {
     assert.match(prompt, /AUTO_COUNT_SKILL_MARKER/)

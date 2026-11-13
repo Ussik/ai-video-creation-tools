@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { scriptStageArtifacts } from '@video-studio/shared/script/script-stage-content'
 import { TextOutputLimitError, TextProviderError } from '../src/infrastructure/providers/text-errors.js'
 import { createGenerationSteps, type GenerationCheckpoint } from '../src/modules/script/script-generation-steps.js'
-import { generateStageDraftWithContinuation, type StageStreamGenerator } from '../src/modules/script/script-stage-continuation.js'
+import { generateStageDraftWithContinuation, stageContinuationStateSchema, type StageStreamGenerator } from '../src/modules/script/script-stage-continuation.js'
 import { workflowRequest } from '../src/modules/script/script-workflow.js'
 
 const request = workflowRequest.parse({ stage: 'outline' })
@@ -31,6 +31,125 @@ test('normal stage generation is one full-source request and leaves no duplicate
   }, { steps })
   assert.equal(calls, 1); assert.equal(draft.artifacts.length, 9)
   assert.deepEqual(steps.checkpoint.steps, {})
+})
+
+test('a complete untruncated episode without scenes retains its prose and generates only corresponding scenes', async () => {
+  for (const fields of [{}, { scenes: [] }]) {
+    const req = workflowRequest.parse({ stage: 'episode', episode_number: 1, intent: 'stage_design', artifact_types: ['episode_script'] })
+    const original = { artifact_type: 'episode_script', title: '第1集 · 钥匙', content: '林舟拿到钥匙，承诺归还。\n\n林舟履行承诺，交还钥匙。' }
+    const scenes = [scene('场一'), scene('场二')], steps = createGenerationSteps(), notices: string[] = []
+    let calls = 0, validations = 0
+    const draft = await generateStageDraftWithContinuation(req, sourcePrompt, async (prompt, contract) => {
+      if (++calls === 1) {
+        assert.equal(contract?.name, 'workflow_draft')
+        return JSON.stringify({ artifacts: [original], ...fields })
+      }
+      assert.equal(contract?.name, 'script_stage_blocks')
+      assert.match(prompt, /模式：scenes/)
+      assert.match(prompt, /分集正文文档已完整，保持正文不变/)
+      assert.ok(prompt.includes(JSON.stringify(original)), 'the exact accepted document guides the missing scenes')
+      assert.doesNotMatch(prompt, /【一次格式修正】/)
+      return JSON.stringify({ blocks: scenes.map((item, index) => block(`scene:${index + 1}`, '', [item])), complete: true })
+    }, { steps, maxRounds: 2, onProgress: message => notices.push(message), validate: value => {
+      validations++
+      assert.deepEqual(value.artifacts, [original])
+      assert.deepEqual(value.scenes, scenes)
+    } })
+    assert.equal(calls, 2)
+    assert.equal(validations, 1, 'final business validation still checks the complete candidate')
+    assert.deepEqual(draft.artifacts, [original])
+    assert.deepEqual(draft.scenes, scenes)
+    assert.ok(notices.some(message => message.includes('仅补齐与正文对应的分场')))
+    assert.deepEqual(steps.checkpoint.steps, {})
+  }
+})
+
+test('a historical episode checkpoint that failed before initialEnded resumes scenes without requesting its prose again', async () => {
+  const req = workflowRequest.parse({ stage: 'episode', episode_number: 1, intent: 'stage_design', artifact_types: ['episode_script'] })
+  const original = { artifact_type: 'episode_script', title: '第1集 · 钥匙', content: '林舟拿到钥匙，明确承诺归还。' }
+  const steps = createGenerationSteps()
+  steps.retain('draft:stream:state', '历史失败的完整正文', { strategy: 'stage-semantic-stream-v1', request: req, prompt: sourcePrompt }, {
+    version: 1, round: 1, initialEnded: false, initialComplete: false, artifacts: [original], scenes: [],
+    target: null, mode: 'document', blocks: [], noProgress: 0,
+  }, value => stageContinuationStateSchema.parse(value))
+  let calls = 0
+  const draft = await generateStageDraftWithContinuation(req, sourcePrompt, async (prompt, contract) => {
+    calls++
+    assert.equal(contract?.name, 'script_stage_blocks')
+    assert.match(prompt, /模式：scenes/)
+    assert.ok(prompt.includes(JSON.stringify(original)))
+    return JSON.stringify({ blocks: [block('scene:1', '', [scene('场一')])], complete: true })
+  }, { steps, maxRounds: 1 })
+  assert.equal(calls, 1)
+  assert.deepEqual(draft.artifacts, [original])
+  assert.deepEqual(draft.scenes, [scene('场一')])
+  assert.deepEqual(steps.checkpoint.steps, {})
+})
+
+test('empty scene continuations cannot certify an episode complete and stop at the caller round limit', async () => {
+  const req = workflowRequest.parse({ stage: 'episode', episode_number: 1 })
+  const original = { artifact_type: 'episode_script', title: '第1集', content: '林舟承诺归还钥匙。' }
+  const steps = createGenerationSteps()
+  let calls = 0
+  await assert.rejects(generateStageDraftWithContinuation(req, sourcePrompt, async (_prompt, contract) => {
+    calls++
+    if (calls === 1) return JSON.stringify({ artifacts: [original], scenes: [] })
+    assert.equal(contract?.name, 'script_stage_blocks')
+    return JSON.stringify({ blocks: [], complete: true })
+  }, { steps, maxRounds: 3 }), (error: unknown) => (error as { code: string }).code === 'stage_continuation_exhausted')
+  assert.equal(calls, 3)
+  const saved = stageContinuationStateSchema.parse(steps.checkpoint.steps['draft:stream:state']!.value)
+  assert.deepEqual(saved.artifacts, [original])
+  assert.deepEqual(saved.scenes, [])
+  assert.equal(saved.mode, 'scenes')
+})
+
+test('missing scene recovery rejects invalid scene semantics while retaining the complete episode body', async () => {
+  for (const invalid of [block('scene:1', '', [{ ...scene('场一'), duration: 0 }]), block('scene:1', '另写一份正文。', [scene('场一')])]) {
+    const req = workflowRequest.parse({ stage: 'episode', episode_number: 1 })
+    const original = { artifact_type: 'episode_script', title: '第1集', content: '林舟承诺归还钥匙。' }
+    const steps = createGenerationSteps()
+    let calls = 0
+    await assert.rejects(generateStageDraftWithContinuation(req, sourcePrompt, async () => {
+      if (++calls === 1) return JSON.stringify({ artifacts: [original], scenes: [] })
+      return JSON.stringify({ blocks: [invalid], complete: true })
+    }, { steps }), /契约/)
+    assert.equal(calls, 2, 'invalid scene values or new prose cannot be fixed by requesting the accepted body again')
+    const saved = stageContinuationStateSchema.parse(steps.checkpoint.steps['draft:stream:state']!.value)
+    assert.deepEqual(saved.artifacts, [original])
+    assert.deepEqual(saved.scenes, [])
+    assert.deepEqual(saved.blocks, [])
+    assert.ok(saved.pendingBlockResponse)
+    if (!invalid.content) assert.ok(saved.pendingBlockResponse.diagnostics.some(message => message.includes('duration')))
+  }
+})
+
+test('an interrupted missing-scene continuation resumes only the remaining scenes and preserves the episode body', async () => {
+  const req = workflowRequest.parse({ stage: 'episode', episode_number: 1 }), store = workspace()
+  const original = { artifact_type: 'episode_script', title: '第1集', content: '林舟拿到钥匙，承诺归还。\n\n林舟交还钥匙。' }
+  const first = { ...block('scene:1', '', [scene('场一')]), title: original.title }
+  let calls = 0
+  await assert.rejects(generateStageDraftWithContinuation(req, sourcePrompt, async (_prompt, _contract, onPartial) => {
+    if (++calls === 1) return JSON.stringify({ artifacts: [original], scenes: [] })
+    onPartial?.(JSON.stringify({ blocks: [first], complete: false }))
+    throw new TextProviderError('socket reset', true)
+  }, { steps: store.runner() }), /socket reset/)
+  assert.equal(calls, 2)
+  const saved = stageContinuationStateSchema.parse(store.get().steps['draft:stream:state']!.value)
+  assert.deepEqual(saved.artifacts, [original])
+  assert.deepEqual(saved.blocks, [first])
+  const draft = await generateStageDraftWithContinuation(req, sourcePrompt, async (prompt, contract) => {
+    calls++
+    assert.equal(contract?.name, 'script_stage_blocks')
+    assert.ok(prompt.includes(JSON.stringify(original)))
+    assert.ok(prompt.includes(JSON.stringify(first)))
+    assert.match(prompt, /模式：scenes/)
+    return JSON.stringify({ blocks: [block('scene:2', '', [scene('场二')])], complete: true })
+  }, { steps: store.runner() })
+  assert.equal(calls, 3)
+  assert.deepEqual(draft.artifacts, [original])
+  assert.deepEqual(draft.scenes, [scene('场一'), scene('场二')])
+  assert.deepEqual(store.get().steps, {})
 })
 
 test('length failure retains complete documents, discards partial JSON and continues episodes as complete semantic units', async () => {
@@ -548,7 +667,7 @@ test('conflicting content for an accepted semantic id fails instead of replacing
     if (++calls === 1) throw new TextOutputLimitError(truncation(body('outline').artifacts.slice(0, -1)), 'length')
     return JSON.stringify({ blocks: [block('episode:1', calls === 2 ? '第一次完整剧情。' : '冲突改写剧情。')], complete: false })
   }), (error: unknown) => (error as { code: string }).code === 'stage_continuation_conflict')
-  assert.equal(calls, 3)
+  assert.equal(calls, 4, 'one conflict correction is allowed before repeated unchanged conflict stops')
 })
 
 test('only explicit caller round limits bound a run and resume keeps completed units', async () => {
@@ -694,13 +813,17 @@ test('covering 51 received scenes in rebuilt prose does not double-count capacit
 })
 
 test('nullable required scene fields remain invalid and cannot produce a completed candidate', async () => {
-  const req = workflowRequest.parse({ stage: 'episode', episode_number: 1 })
+  const req = workflowRequest.parse({ stage: 'episode', episode_number: 1 }), steps = createGenerationSteps()
   let calls = 0
   await assert.rejects(generateStageDraftWithContinuation(req, sourcePrompt, async () => {
     if (++calls === 1) throw new TextOutputLimitError('{"artifacts":[', 'length')
     return JSON.stringify({ blocks: [block('scene:1', '完整正文。', [{ ...scene('场一'), duration: null }])], complete: true })
-  }), /契约/)
-  assert.equal(calls, 3, 'one bounded schema correction, then failure')
+  }, { steps }), /契约/)
+  assert.equal(calls, 2, 'invalid scene semantics cannot be fixed by rewriting a retained complete body')
+  const saved = stageContinuationStateSchema.parse(steps.checkpoint.steps['draft:stream:state']!.value)
+  assert.deepEqual(saved.blocks, [])
+  assert.ok(saved.pendingBlockResponse!.diagnostics.some(message => message.includes('duration')))
+  assert.equal((saved.pendingBlockResponse!.value.blocks as Array<{ scenes: Array<{ duration: null }> }>)[0]!.scenes[0]!.duration, null)
 })
 
 test('scene recovery never skips an invalid middle scene and keeps later scenes as a false contiguous prefix', async () => {

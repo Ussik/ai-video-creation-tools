@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 import Fastify from 'fastify'
 import { stripManagedPromptBlocks } from '@video-studio/shared/visuals/prompt-document'
+import { semanticReviewFixture } from './helpers/prompt-refinement-semantics.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'studio-skills-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
@@ -50,7 +51,11 @@ const fetcher: typeof fetch = async input => {
 remoteApp.setErrorHandler((issue, _request, reply) => reply.code((issue as { statusCode?: number }).statusCode || 422).send({ detail: issue instanceof Error ? issue.message : String(issue) }))
 registerSkillRoutes(remoteApp, { fetcher,
   selectSkills: async (_projectId, _modelId, input) => ({ skill_ids: input.default_ids, reason: '模型根据任务选择适用的图片技能。' }),
-  generateText: async (_projectId, _modelId, prompt) => { capturedPrompt = prompt; generated++; return JSON.stringify({ prompt: '9:16 人物从开镜位置转身，镜头缓慢推近。' + (prompt.includes('我会回来。') ? '她说：“我会回来。”' : '') }) } })
+  generateText: async (_projectId, _modelId, prompt, contract) => {
+    if (contract?.name === 'prompt_refinement_semantic_review') return JSON.stringify(semanticReviewFixture())
+    if (contract?.name === 'creation_skill_reference_selection') return JSON.stringify({ reference_ids: [], reason: '本次主规则与固定依赖足够。' })
+    capturedPrompt = prompt; generated++; return JSON.stringify({ prompt: '9:16 人物从开镜位置转身，镜头缓慢推近。' + (prompt.includes('我会回来。') ? '她说：“我会回来。”' : '') })
+  } })
 after(async () => { await remoteApp.close(); await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 async function call<T>(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, payload?: unknown, target = remoteApp): Promise<T> {
   const response = await target.inject({ method, url, ...(payload !== undefined ? { payload } : {}) })
@@ -92,7 +97,7 @@ test('installation resolves nested directories, pins source version, bundles ref
   assert.equal(rejected.statusCode, 422)
 })
 
-test('enabling is explicit, references depend on current subject, and disabling removes runtime rules', async () => {
+test('enabling is explicit, required references do not depend on wording, and disabling removes runtime rules', async () => {
   const skill = installedSkills()[0]!
   assert.equal(skillContext('image_prompt', '人物').text, '')
   const empty = await remoteApp.inject({ method: 'PATCH', url: `/api/skills/${skill.id}`, payload: { enabled: true, stages: [] } })
@@ -100,11 +105,13 @@ test('enabling is explicit, references depend on current subject, and disabling 
   await call('PATCH', `/api/skills/${skill.id}`, { enabled: true, stages: ['image_prompt'] })
   const context = skillContext('image_prompt', '制作人物信息图')
   assert.match(context.text, /同一张脸/)
-  assert.ok(!context.text.includes('门窗位置'))
+  assert.ok(context.text.includes('门窗位置'))
+  assert.deepEqual(skillContext('image_prompt', '继续调整它').files, context.files, 'task wording cannot silently drop required references')
   assert.match(context.text, /本次要求的 JSON/)
   assert.equal(skillContext('video_prompt', '人物').text, '')
   await call('PATCH', `/api/skills/${skill.id}`, { enabled: false, stages: ['image_prompt'] })
-  assert.equal(withSkillRules('image_prompt', '本次任务'), '本次任务')
+  assert.throws(() => withSkillRules('image_prompt', '本次任务'), /停用、卸载或不适用/)
+  assert.equal(withSkillRules('image_prompt', '本次任务', undefined, { selections: { image_prompt: [] } }), '本次任务')
   configureSkill(skill.id, true, ['image_prompt'])
 })
 
@@ -270,10 +277,11 @@ test('Skill prompt metadata identifies only actually loaded rules and references
   assert.equal(metadata.revision, skill.revision)
   assert.ok(metadata.files.some(file => /SKILL\.md$/.test(file)))
   assert.ok(metadata.files.some(file => /character/.test(file)))
-  assert.ok(!metadata.files.some(file => /location/.test(file)))
+  assert.ok(metadata.files.some(file => /location/.test(file)), 'a generic image task retains applicable subject references')
   assert.ok(metadata.files.every(file => observed!.files.includes(file)))
   configureSkill(skill.id, false, ['image_prompt'])
-  withSkillRules('image_prompt', '制作人物信息图', context => { observed = context })
+  assert.throws(() => withSkillRules('image_prompt', '制作人物信息图'), /停用、卸载或不适用/)
+  withSkillRules('image_prompt', '制作人物信息图', context => { observed = context }, { selections: { image_prompt: [] } })
   assert.ok(!observed!.skills.some(item => item.id === skill.id))
 })
 
@@ -298,4 +306,61 @@ test('video prompt skill receives actual numbered storyboard and object roles, s
   const invalid = await remoteApp.inject({ method: 'POST', url: `/api/projects/${project.id}/skills/refine-prompt`, payload: { ...input, storyboard_reference_asset_id: 'unrelated' } })
   assert.equal(invalid.statusCode, 422)
   assert.equal(generated, calls)
+})
+
+test('script skills load their dialogue dependencies without leaking generic references or other stages', () => {
+  const references = [
+    { name: 'short-drama-write', filename: 'dialogue-craft.md', rule: '交换说话者测试：对调台词后核对各自目标与关系风险。' },
+    { name: 'short-drama-review', filename: 'anti-template-repair.md', rule: '过度收口：至少引用两处总结句或金句及其叙事损失。' },
+    { name: 'sw-dialogue', filename: 'reference.md', rule: '潜台词检查：区分字面话语、真实诉求和不能直说的原因。' },
+    { name: 'unrelated-script-skill', filename: 'reference.md', rule: '无关技能的通用资料不应自动加载。' },
+  ]
+  const installed = references.map(reference => {
+    const prefix = `skills/${reference.name}`
+    const skill = installSkillBundle({ repo: 'test/script-reference-dependencies', path: prefix, name: reference.name,
+      description: reference.name, license: 'MIT', revision: revisionA, tool_requirements: [], suggested_stages: ['script'], url: '', files: [
+        { path: `${prefix}/SKILL.md`, content: `---\nname: ${reference.name}\ndescription: 台词规则\n---\n[按需资料](references/${reference.filename})` },
+        { path: `${prefix}/references/${reference.filename}`, content: reference.rule },
+      ] })
+    configureSkill(skill.id, true, ['script', 'image_prompt'])
+    return { ...reference, id: skill.id, path: `${prefix}/references/${reference.filename}` }
+  })
+  const ids = installed.map(skill => skill.id)
+  const context = skillContext('script', '继续写这一场', ids)
+  for (const skill of installed.slice(0, 3)) {
+    assert.ok(context.text.includes(skill.rule), `${skill.name} must receive the reference body, not only its link`)
+    assert.ok(context.files.includes(skill.path))
+    assert.ok(context.skills.find(item => item.id === skill.id)!.files.includes(skill.path))
+  }
+  assert.ok(!context.text.includes(installed[3]!.rule))
+  assert.ok(!context.files.includes(installed[3]!.path))
+  const imageContext = skillContext('image_prompt', '继续写这一场', ids)
+  for (const skill of installed) {
+    assert.ok(!imageContext.text.includes(skill.rule))
+    assert.ok(!imageContext.files.includes(skill.path))
+  }
+})
+
+
+test('structured subject and configured target model control required files without reading creative prose', () => {
+  const skill = installSkillBundle({ repo: 'test/metadata-file-dependencies', path: 'skills/short-drama-video-prompts',
+    name: 'short-drama-video-prompts', description: '视频方法', license: 'MIT', revision: revisionA, tool_requirements: [],
+    suggested_stages: ['video_prompt'], url: '', files: [
+      { path: 'skills/short-drama-video-prompts/SKILL.md', content: '---\nname: short-drama-video-prompts\ndescription: 视频方法\n---\n按配置读取模型资料。' },
+      { path: 'skills/short-drama-video-prompts/references/seedance-2.0.md', content: '模型2.0专用规则。' },
+      { path: 'skills/short-drama-video-prompts/references/seedance-2.5.md', content: '模型2.5专用规则。' },
+      { path: 'skills/short-drama-video-prompts/references/motion-recipe.md', content: '必须保留动作与声音。' },
+    ] })
+  configureSkill(skill.id, true, ['video_prompt'])
+  const onlyProse = skillContext('video_prompt', '人物提到 seedance-2.5', [skill.id])
+  assert.ok(onlyProse.text.includes('必须保留动作与声音'))
+  assert.ok(!onlyProse.text.includes('模型2.5专用规则'))
+  const structured = skillContext('video_prompt', '继续', [skill.id], undefined, { target_model: 'doubao-seedance-2-0-mini-260615' })
+  assert.ok(structured.text.includes('模型2.0专用规则'))
+  assert.ok(!structured.text.includes('模型2.5专用规则'))
+  const image = installedSkills().find(item => item.name === 'short-drama-image-prompts')!
+  configureSkill(image.id, true, ['image_prompt'])
+  const subject = skillContext('image_prompt', '地点人物道具都只是引号中的台词', [image.id], undefined, { profile_kind: 'character' })
+  assert.ok(subject.files.some(path => path.endsWith('character-and-look.md')))
+  assert.ok(!subject.files.some(path => path.endsWith('location-plate.md')))
 })

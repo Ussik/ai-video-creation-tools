@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -6,6 +7,8 @@ import { after, test } from 'node:test'
 import { draftCompletenessFixtureResponse } from './fixtures/script-draft-completeness.js'
 import type { ScriptSourceDocument } from '@video-studio/shared/script/script-source-document'
 import { scriptStageArtifacts, scriptArtifactLabels } from '@video-studio/shared/script/script-stage-content'
+import type { GenerationCheckpoint } from '../src/modules/script/script-generation-steps.js'
+import { scriptDocumentVersion } from '../src/modules/script/script-source-identity.js'
 const dataDir = await mkdtemp(join(tmpdir(), 'studio-generation-resume-'))
 process.env.VIDEO_STUDIO_DATA_DIR = dataDir
 const { buildApp } = await import('../src/app.js')
@@ -31,15 +34,36 @@ function outlineEnvelope(episodes: number) {
 }
 
 const outlineWorkflow = { stage: 'outline', scope: 'project', episode_number: 0, intent: 'stage_design', artifact_types: [...scriptStageArtifacts.outline] } as const
-const outlineWorkKeys = ['story', 'narrative', 'world', 'payoffs', 'episodes'].map(id => `work:outline:${id}/draft`)
+const outlineWorkKeys = scriptStageArtifacts.outline.map(id => `work:document:outline:${id}/draft`)
 function outlineForContract(contract: { schema: any }, full: ReturnType<typeof outlineEnvelope>) {
   const types = contract.schema.properties.artifacts.items.properties.artifact_type.enum as string[]
   return { artifacts: full.artifacts.filter(document => types.includes(document.artifact_type)), scenes: [] }
 }
-function assertCompletedOutlineGroups(steps: Record<string, { value: { artifacts: unknown[] } }>, full: ReturnType<typeof outlineEnvelope>) {
-  assert.deepEqual(Object.keys(steps).sort(), [...outlineWorkKeys].sort(), 'all completed work groups survive an independent review failure')
-  const documents = Object.values(steps).flatMap(step => step.value.artifacts)
+function assertSourceProgress(steps: GenerationCheckpoint['steps'], source: ScriptSourceDocument) {
+  const metadata = steps['progress:source']
+  assert.ok(metadata, 'retained draft display is bound to its effective source')
+  assert.equal(metadata.input_hash, createHash('sha256').update('null').digest('hex'), 'display metadata is independent of generation input identity')
+  const value = metadata.value as { source_version?: unknown; task_id?: unknown; hidden?: unknown }
+  assert.equal(value.source_version, scriptDocumentVersion(source))
+  assert.ok(Object.keys(value).every(key => ['source_version', 'task_id', 'hidden'].includes(key)))
+  if (value.task_id !== undefined) assert.ok(typeof value.task_id === 'string' && value.task_id.length > 0)
+  assert.ok(value.hidden === undefined || value.hidden === false, 'the retained candidate remains visible after a recoverable failure')
+}
+function assertCompletedOutlineGroups(steps: GenerationCheckpoint['steps'], full: ReturnType<typeof outlineEnvelope>, source: ScriptSourceDocument) {
+  assertSourceProgress(steps, source)
+  assert.deepEqual(Object.keys(steps).filter(key => key.startsWith('work:')).sort(), [...outlineWorkKeys].sort(), 'all completed work groups survive an independent review failure')
+  const documents = outlineWorkKeys.flatMap(key => (steps[key]!.value as { artifacts: unknown[] }).artifacts)
   assert.deepEqual(full.artifacts.map(document => documents.find(item => (item as { artifact_type: string }).artifact_type === document.artifact_type)), full.artifacts)
+}
+function assertReusedOutlineTiming(activities: Array<{ reused?: boolean; scope?: string; step_id?: string; duration_ms?: number }>, steps: Record<string, { duration_ms?: number }>) {
+  const reused = activities.filter(entry => entry.reused)
+  assert.deepEqual(reused.filter(entry => entry.scope === 'step').map(entry => entry.step_id).sort(), [...outlineWorkKeys].sort())
+  assert.deepEqual(reused.filter(entry => entry.scope === 'task').map(entry => entry.step_id).sort(), scriptStageArtifacts.outline.map(type => `work:outline:${type}`).sort())
+  for (const type of scriptStageArtifacts.outline) {
+    const key = `work:document:outline:${type}/draft`, original = steps[key]!.duration_ms
+    assert.equal(reused.find(entry => entry.step_id === key)?.duration_ms, original, 'step replay retains the original generation duration')
+    assert.equal(reused.find(entry => entry.step_id === `work:outline:${type}`)?.duration_ms, original, 'task replay retains the original generation duration')
+  }
 }
 
 function assertFullMaterial(prompt: string, content: string, creatorMessage: string) {
@@ -78,7 +102,7 @@ test('stream retry reuses the complete long-source draft after audit failure and
     if (reviewed) {
       reviews++; reviewPrompts.push(prompt)
       const marker = '待核对草稿原文（资料）：'
-      const submitted = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length))
+      const submitted = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length).split('\n【本轮候选正文结束】')[0]!)
       assert.deepEqual(submitted.map((document: { artifact_type: string }) => document.artifact_type), [...scriptStageArtifacts.outline])
       assert.ok(submitted.every((document: { content: string }, index: number) => document.content === outlineEnvelope(9).artifacts[index]!.content), 'audit must inspect complete candidate bodies')
       if (failAudit) return Response.json({ error: { message: 'fixture upstream interrupted', type: 'server_error' } }, { status: 503 })
@@ -102,26 +126,26 @@ test('stream retry reuses the complete long-source draft after audit failure and
   const first = await stream(false)
   assert.match(first.find(event => event.type === 'error')?.message || '', /核对未完成.*fixture upstream interrupted/)
   assert.equal(getToolDraft(project.id), null, 'failed independent review must not publish a candidate')
-  assert.equal(draftPrompts.length, 5, 'the declared nine-document contract follows five dependency groups')
+  assert.equal(draftPrompts.length, 9, 'the nine-document stage contract runs nine document tasks')
   assert.equal(reviews, 2, 'only the interrupted review receives one bounded transport retry')
   const firstActivities = first.filter(event => event.type === 'activity').map(event => event.activity)
-  assert.ok(firstActivities.some(entry => entry.step_id === 'work:outline:story' && entry.scope === 'task'))
+  assert.ok(firstActivities.some(entry => entry.step_id === 'work:outline:outline' && entry.scope === 'task'))
   assert.ok(firstActivities.some(entry => entry.kind === 'model' && entry.status === 'failed' && entry.parent_id))
   const checkpoint = one<{ payload: string }>('SELECT payload FROM script_generation_checkpoints WHERE project_id=?', project.id)!
   assert.ok(checkpoint)
   const savedSteps = JSON.parse(checkpoint.payload).steps
-  assertCompletedOutlineGroups(savedSteps, outlineEnvelope(9))
+  assertCompletedOutlineGroups(savedSteps, outlineEnvelope(9), source)
   assert.equal(one<{ content: string }>('SELECT content FROM script_source_documents WHERE project_id=?', project.id)!.content, content)
   const before = contracts.length
   failAudit = false
   const second = await stream(), done = second.find(event => event.type === 'done')
   assert.ok(done, JSON.stringify(second.filter(event => event.type === 'error')))
   assert.deepEqual(contracts.slice(before), ['script_draft_completeness'], 'resume must review the retained complete draft without regenerating it')
-  assert.equal(draftPrompts.length, 5)
+  assert.equal(draftPrompts.length, 9)
   assert.equal(reviews, 3)
   assert.equal(reviewPrompts.at(-1), reviewPrompts[0], 'resume must audit the same source, candidate and creator requirements')
   assert.equal(done.tool_draft.documents.length, 9)
-  assert.deepEqual(done.activity.filter((entry: { reused?: boolean; step_id?: string }) => entry.reused).map((entry: { step_id: string }) => entry.step_id).sort(), [...outlineWorkKeys].sort())
+  assertReusedOutlineTiming(done.activity, savedSteps)
   const task = done.activity.find((entry: { scope?: string }) => entry.scope === 'task')
   scriptActivitiesSchema.parse(done.activity)
   assert.equal(task.status, 'succeeded')
@@ -161,7 +185,7 @@ test('whole-source Responses authoring retries once and audit recovery reuses th
       assert.ok(prompt.includes('GLOBAL_FACT'), 'review retains source analysis alongside the complete original source')
       auditPrompts.push(prompt)
       const marker = '待核对草稿原文（资料）：'
-      const submitted = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length))
+      const submitted = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length).split('\n【本轮候选正文结束】')[0]!)
       assert.deepEqual(submitted.map((document: { artifact_type: string }) => document.artifact_type), [...scriptStageArtifacts.outline])
       assert.ok(submitted.every((document: { content: string }, index: number) => document.content === outlineEnvelope(1).artifacts[index]!.content))
       if (failAudit) { auditFailures++; return failure() }
@@ -181,11 +205,11 @@ test('whole-source Responses authoring retries once and audit recovery reuses th
   const first = await stream()
   assert.match(first.find(event => event.type === 'error')?.message || '', /核对未完成.*模型服务中断/)
   assert.equal(auditFailures, 2, 'one retry, then preserve the failure instead of looping')
-  assert.equal(authoring.length, 6, 'five work groups and the interrupted first group retry complete the declared task')
+  assert.equal(authoring.length, 10, 'nine document tasks and one interrupted task retry complete the declared stage')
   assert.equal(authoring[0], authoring[1], 'transient failure retry must retain all original inputs')
   assert.equal(getToolDraft(project.id), null)
   const payloadRow = one<{ payload: string }>('SELECT payload FROM script_generation_checkpoints WHERE project_id=?', project.id)!
-  assertCompletedOutlineGroups(JSON.parse(payloadRow.payload).steps, outlineEnvelope(1))
+  assertCompletedOutlineGroups(JSON.parse(payloadRow.payload).steps, outlineEnvelope(1), source)
   const authoringBefore = authoring.length, callsBefore = contracts.length
   failAudit = false
   const second = await stream(), done = second.find(event => event.type === 'done')
@@ -194,7 +218,7 @@ test('whole-source Responses authoring retries once and audit recovery reuses th
   assert.deepEqual(contracts.slice(callsBefore), ['script_draft_completeness'])
   assert.equal(auditPrompts.length, 3)
   assert.ok(auditPrompts.every(prompt => prompt === auditPrompts[0]), 'all review attempts must see the same complete source and candidate')
-  assert.deepEqual(done.activity.filter((entry: { reused?: boolean }) => entry.reused).map((entry: { step_id: string }) => entry.step_id).sort(), [...outlineWorkKeys].sort())
+  assertReusedOutlineTiming(done.activity, JSON.parse(payloadRow.payload).steps)
   const entries = first.filter(event => event.type === 'activity').map(event => event.activity)
   assert.ok(entries.some(entry => entry.label === '当前步骤自动重试' && entry.scope === 'step' && entry.summary.includes('此前完成结果保留')))
   assert.ok(entries.some(entry => entry.kind === 'model' && entry.status === 'failed'))
@@ -243,7 +267,7 @@ test('Responses output-limit continuation preserves eight complete documents and
       assert.ok(prompt.includes('GLOBAL_CONTINUITY'), 'review retains whole-story analysis without replacing the full source')
       reviewPrompts.push(prompt)
       const marker = '待核对草稿原文（资料）：'
-      const submitted = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length))
+      const submitted = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length).split('\n【本轮候选正文结束】')[0]!)
       assert.deepEqual(submitted.map((document: { artifact_type: string; content: string }) => ({ artifact_type: document.artifact_type, content: document.content })), full.artifacts.map(({ artifact_type, content }) => ({ artifact_type, content })),
         'independent audit must receive all nine complete documents in their original order')
       assert.ok(!prompt.includes('TRUNCATED_TAIL_MUST_NOT_SURVIVE'), 'unclosed JSON tail must never enter review')
@@ -254,7 +278,7 @@ test('Responses output-limit continuation preserves eight complete documents and
       authoring.push(prompt)
       const output = outlineForContract(contract, full)
       if (output.artifacts[0]?.artifact_type !== 'episode_outline') return Response.json({ status: 'completed', output_text: JSON.stringify(output) })
-      assert.equal(authoring.length, 5, 'the first four successful groups must precede episode continuation')
+      assert.equal(authoring.length, 9, 'the first eight completed documents must precede episode continuation')
       const cut = Math.floor(truncated.length / 2)
       return sse([{ type: 'response.output_text.delta', delta: truncated.slice(0, cut) }, { type: 'response.output_text.delta', delta: truncated.slice(cut) },
         { type: 'response.incomplete', response: { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' },
@@ -280,11 +304,11 @@ test('Responses output-limit continuation preserves eight complete documents and
   }
   const first = await stream()
   assert.match(first.find(event => event.type === 'error')?.message || '', /核对未完成.*模型服务中断/)
-  assert.equal(authoring.length, 5); assert.equal(continuations.length, 1); assert.equal(reviewPrompts.length, 2)
+  assert.equal(authoring.length, 9); assert.equal(continuations.length, 1); assert.equal(reviewPrompts.length, 2)
   assert.ok(!first.some(event => event.type === 'delta'), 'initial and continuation JSON must not leak into chat text even when the independent audit fails')
-  assert.deepEqual(contracts, [...Array(5).fill('workflow_draft'), 'script_stage_blocks', 'script_draft_completeness', 'script_draft_completeness'])
+  assert.deepEqual(contracts, [...Array(9).fill('workflow_draft'), 'script_stage_blocks', 'script_draft_completeness', 'script_draft_completeness'])
   const activities = scriptActivitiesSchema.parse([...new Map(first.filter(event => event.type === 'activity').map(event => [event.activity.id, event.activity] as const)).values()])
-  const draftStep = activities.find(entry => entry.kind === 'context' && entry.scope === 'task' && entry.step_id === 'work:outline:episodes')
+  const draftStep = activities.find(entry => entry.kind === 'context' && entry.scope === 'task' && entry.step_id === 'work:outline:episode_outline')
   assert.ok(draftStep)
   assert.ok(first.some(event => event.type === 'activity' && event.activity.id === draftStep.id && /正在从已保留内容继续/.test(event.activity.summary)),
     'continuation updates the existing episode task while the eight dependency documents remain intact')
@@ -293,24 +317,24 @@ test('Responses output-limit continuation preserves eight complete documents and
     { label: '模型编写完整阶段草稿', status: 'failed' },
     { label: '模型继续编写未完成内容', status: 'succeeded' },
   ], 'both actual model calls remain under the same draft step')
-  assert.equal(activities.filter(entry => entry.scope === 'task' && entry.step_id === 'work:outline:episodes').length, 1,
+  assert.equal(activities.filter(entry => entry.scope === 'task' && entry.step_id === 'work:outline:episode_outline').length, 1,
     'output-limit continuation must retain one business task')
   assert.equal(getToolDraft(project.id), null, 'failed independent audit must not publish a candidate')
   const checkpoint = JSON.parse(one<{ payload: string }>('SELECT payload FROM script_generation_checkpoints WHERE project_id=?', project.id)!.payload)
-  assertCompletedOutlineGroups(checkpoint.steps, full)
+  assertCompletedOutlineGroups(checkpoint.steps, full, source)
   assertUncommitted()
   const callsBefore = contracts.length
   failReview = false
   const second = await stream(), done = second.find(event => event.type === 'done')
   assert.ok(done, JSON.stringify(second.filter(event => event.type === 'error')))
   assert.deepEqual(contracts.slice(callsBefore), ['script_draft_completeness'], 'recovery must only repeat the independent audit')
-  assert.equal(authoring.length, 5); assert.equal(continuations.length, 1); assert.equal(reviewPrompts.length, 3)
+  assert.equal(authoring.length, 9); assert.equal(continuations.length, 1); assert.equal(reviewPrompts.length, 3)
   assert.ok(reviewPrompts.every(prompt => prompt === reviewPrompts[0]))
   const documents = done.tool_draft.documents.map((document: { artifact_type: string; title: string; content: string }) => ({ artifact_type: document.artifact_type, title: document.title, content: document.content }))
   assert.deepEqual(documents, full.artifacts, 'eight retained originals and the complete ninth document must appear exactly once')
   assert.equal(new Set(documents.map((document: { artifact_type: string }) => document.artifact_type)).size, 9)
   assert.ok(!JSON.stringify(documents).includes('TRUNCATED_TAIL_MUST_NOT_SURVIVE'))
-  assert.deepEqual(done.activity.filter((entry: { reused?: boolean }) => entry.reused).map((entry: { step_id: string }) => entry.step_id).sort(), [...outlineWorkKeys].sort())
+  assertReusedOutlineTiming(done.activity, checkpoint.steps)
   assert.ok(!second.some(event => event.type === 'delta'), 'internal structured outputs must not leak into chat text')
   assert.equal(one('SELECT * FROM script_generation_checkpoints WHERE project_id=?', project.id), undefined)
   scriptActivitiesSchema.parse(done.activity)
@@ -339,7 +363,7 @@ test('Responses disconnected streams checkpoint complete documents through onPar
   const full = outlineEnvelope(9)
   full.artifacts[0]!.content = 'RETAINED_OUTLINE：林舟拾到钥匙，为守护伙伴沿线索返乡，结局将钥匙归还伙伴。'
   full.artifacts[1]!.content = 'RETAINED_SYNOPSIS：伙伴说出钥匙归属，林舟因此护送伙伴返乡，最终归还钥匙，伙伴身份全程不变。'
-  const firstDocument = '{"artifacts":[' + JSON.stringify(full.artifacts[1])
+  const firstDocument = '{"artifacts":[' + JSON.stringify(full.artifacts[2])
   const partial = firstDocument + ',{"artifact_type":"structure","title":"叙事结构","content":"DISCONNECTED_TAIL_MUST_NOT_SURVIVE'
   const contracts: string[] = [], continuationTargets: string[] = []
   const groupCalls = new Map<string, number>()
@@ -356,7 +380,7 @@ test('Responses disconnected streams checkpoint complete documents through onPar
       assert.ok(prompt.includes('GLOBAL_DISCONNECT'))
       reviews++
       const marker = '待核对草稿原文（资料）：'
-      const submitted = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length))
+      const submitted = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length).split('\n【本轮候选正文结束】')[0]!)
       assert.deepEqual(submitted.map((document: { artifact_type: string; content: string }) => ({ artifact_type: document.artifact_type, content: document.content })),
         full.artifacts.map(({ artifact_type, content }) => ({ artifact_type, content })))
       assert.ok(!prompt.includes('DISCONNECTED_TAIL_MUST_NOT_SURVIVE'))
@@ -367,7 +391,7 @@ test('Responses disconnected streams checkpoint complete documents through onPar
       const group = output.artifacts.map(document => document.artifact_type).join(',')
       groupCalls.set(group, (groupCalls.get(group) || 0) + 1)
       assert.equal(groupCalls.get(group), 1, 'once complete units exist, a disconnected request must stop instead of replaying competing prose')
-      if (group !== 'synopsis,structure') return Response.json({ status: 'completed', output_text: JSON.stringify(output) })
+      if (group !== 'world') return Response.json({ status: 'completed', output_text: JSON.stringify(output) })
       // No response.incomplete or terminal partialText exists here. The app's
       // real third callback must retain the closed objects before SSE EOF.
       return sse([{ type: 'response.output_text.delta', delta: firstDocument }, { type: 'response.output_text.delta', delta: partial.slice(firstDocument.length) }])
@@ -398,23 +422,24 @@ test('Responses disconnected streams checkpoint complete documents through onPar
   assert.match(first.find(event => event.type === 'error')?.message || '', /连接提前结束/)
   assert.ok(!first.some(event => event.type === 'delta'), 'checkpointing streamed JSON must not expose internal text before a disconnect')
   assert.ok(!first.some(event => event.type === 'done'))
-  assert.deepEqual([...groupCalls.keys()].sort(), ['outline', 'synopsis,structure', 'world,constraints'].sort())
+  assert.deepEqual([...groupCalls.keys()].sort(), ['outline', 'synopsis', 'world'].sort())
   assert.equal(continuationTargets.length, 0); assert.equal(reviews, 0)
   assert.equal(getToolDraft(project.id), null)
   const checkpoint = JSON.parse(one<{ payload: string }>('SELECT payload FROM script_generation_checkpoints WHERE project_id=?', project.id)!.payload)
-  assert.deepEqual(Object.keys(checkpoint.steps).sort(), ['work:outline:story/draft', 'work:outline:world/draft', 'work:outline:narrative/draft:stream:state'].sort(),
-    'independent successful world work is saved even when its concurrent narrative sibling disconnects')
-  assert.deepEqual(checkpoint.steps['work:outline:narrative/draft:stream:state'].value.artifacts, [full.artifacts[1]], 'SSE progress must be synchronously checkpointed before EOF rejects')
-  assert.deepEqual(checkpoint.steps['work:outline:story/draft'].value.artifacts, [full.artifacts[0]])
-  assert.deepEqual(checkpoint.steps['work:outline:world/draft'].value.artifacts, full.artifacts.filter(document => ['world', 'constraints'].includes(document.artifact_type)))
+  assertSourceProgress(checkpoint.steps, source)
+  assert.deepEqual(Object.keys(checkpoint.steps).filter(key => key.startsWith('work:')).sort(), ['work:document:outline:outline/draft', 'work:document:outline:synopsis/draft', 'work:document:outline:world/draft:stream:state'].sort(),
+    'the completed synopsis is saved even when its concurrent world task disconnects')
+  assert.deepEqual(checkpoint.steps['work:document:outline:world/draft:stream:state'].value.artifacts, [full.artifacts[2]], 'SSE progress must be synchronously checkpointed before EOF rejects')
+  assert.deepEqual(checkpoint.steps['work:document:outline:outline/draft'].value.artifacts, [full.artifacts[0]])
+  assert.deepEqual(checkpoint.steps['work:document:outline:synopsis/draft'].value.artifacts, [full.artifacts[1]])
   assert.ok(!JSON.stringify(checkpoint).includes('DISCONNECTED_TAIL_MUST_NOT_SURVIVE'))
   assertUncommitted()
   const callsBefore = contracts.length
   const second = await stream(), done = second.find(event => event.type === 'done')
   assert.ok(done, JSON.stringify(second.filter(event => event.type === 'error')))
-  assert.deepEqual([...groupCalls.values()], [1, 1, 1, 1, 1], 'completed story/world groups and retained narrative content are never regenerated')
-  assert.deepEqual(contracts.slice(callsBefore), ['script_stage_blocks', 'workflow_draft', 'workflow_draft', 'script_draft_completeness'])
-  assert.deepEqual(continuationTargets, ['structure'])
+  assert.deepEqual([...groupCalls.values()], Array(9).fill(1), 'each document is generated once and retained world prose is never regenerated')
+  assert.deepEqual(contracts.slice(callsBefore), [...Array(6).fill('workflow_draft'), 'script_draft_completeness'])
+  assert.deepEqual(continuationTargets, [])
   assert.equal(reviews, 1)
   const documents = done.tool_draft.documents.map((document: { artifact_type: string; title: string; content: string }) => ({ artifact_type: document.artifact_type, title: document.title, content: document.content }))
   assert.deepEqual(documents, full.artifacts)

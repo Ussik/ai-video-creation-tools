@@ -5,7 +5,7 @@ import type { VideoReviewReport } from '@video-studio/shared/media/video-review'
 import { api, json } from '../../shared/api/api'
 import { WorkspaceDisclosure } from '../../shared/ui/WorkspaceDisclosure'
 import { videoReviewTime, type VideoReviewModelOption } from './canvas-video-review'
-import { preferredModel } from '../models/model-defaults'
+import { useSharedModelSelection } from '../models/useSharedModelSelection'
 import './canvas-video-review.css'
 
 export interface CanvasVideoReviewPanelProps {
@@ -23,12 +23,12 @@ const checkLabels = { pass: '通过', issue: '有问题', uncertain: '未确认'
 const colors = { usable: 'teal', needs_work: 'orange', uncertain: 'gray' }
 
 export default function CanvasVideoReviewPanel({ projectId, assetId, shotId, models, onSeek, onClose }: CanvasVideoReviewPanelProps) {
-  const [modelId, setModelId] = useState(preferredModel(models)?.id || '')
   const [instructions, setInstructions] = useState('')
   const [reviews, setReviews] = useState<VideoReviewReport[]>([])
   const [selectedId, setSelectedId] = useState('')
   const [loading, setLoading] = useState(true)
   const [pending, setPending] = useState(false)
+  const { modelId, selectModel } = useSharedModelSelection('text', models, { locked: pending })
   const [elapsed, setElapsed] = useState(0)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -50,7 +50,6 @@ export default function CanvasVideoReviewPanel({ projectId, assetId, shotId, mod
       .finally(() => { if (!request.signal.aborted) setLoading(false) })
     return () => { request.abort(); serial.current++; controller.current?.abort() }
   }, [path])
-  useEffect(() => { if (!pending && !models.some(item => item.id === modelId)) setModelId(preferredModel(models)?.id || '') }, [models, modelId, pending])
   useEffect(() => {
     if (!pending) return
     const started = Date.now()
@@ -83,7 +82,7 @@ export default function CanvasVideoReviewPanel({ projectId, assetId, shotId, mod
       <Button variant="subtle" color="gray" size="compact-xs" aria-label="关闭成片复核面板" onClick={onClose}><X size={16} /></Button></header>
     <div className="pc-video-review-form">
       <Select label="复核模型" aria-label="成片复核模型" placeholder="选择视频或图片理解模型" value={model?.id || null}
-        data={models.map(item => ({ value: item.id, label: item.label }))} onChange={value => setModelId(value || '')}
+        data={models.map(item => ({ value: item.id, label: item.label }))} onChange={value => selectModel(value || '')}
         searchable allowDeselect={false} disabled={pending || !models.length} comboboxProps={{ zIndex: 350 }} />
       {!models.length && <Alert color="yellow" title="暂无可用的复核模型" icon={<TriangleAlert size={16} />}>请在模型设置中为已确认支持的文本模型开启图片理解或视频理解。</Alert>}
       {model?.inputMode === 'sampled_frames' && <p className="pc-video-review-hint">此模型检查按时间排列的抽样画面；连续运动、滑步速度及声音仍需播放确认。</p>}

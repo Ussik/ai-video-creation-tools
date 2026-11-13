@@ -59,8 +59,8 @@ test('native supplementation tasks durably resume unfinished review dimensions w
       const scope = /本轮核查维度：([a-z]+)。/.exec(prompt)?.[1] || 'whole'
       audits.push(scope); requestPrompts.push(prompt)
       const start = '既有事实与创作要求（资料）：', end = '\n待核对草稿原文（资料）：'
-      const context = JSON.parse(prompt.slice(prompt.lastIndexOf(start) + start.length, prompt.lastIndexOf(end)))
-      const submitted = JSON.parse(prompt.slice(prompt.lastIndexOf(end) + end.length))
+      const context = JSON.parse(prompt.slice(prompt.lastIndexOf(start) + start.length).split('\n【审读结果分页协议】')[0]!)
+      const submitted = JSON.parse(prompt.slice(prompt.lastIndexOf(end) + end.length).split('\n【本轮候选正文结束】')[0]!)
       assert.equal(context.uploaded_script.content, source.content)
       assert.deepEqual(context.uploaded_script.analysis.story, analysis.story)
       assert.equal(Object.hasOwn(context.uploaded_script.analysis, 'work'), false)
@@ -87,7 +87,7 @@ test('native supplementation tasks durably resume unfinished review dimensions w
   assert.equal(first.statusCode, 502, first.body)
   assert.match(first.body, /阶段设定核对未完成/)
   assert.deepEqual(audits, ['whole', 'settings', 'consistency'], first.body)
-  assert.equal(generations, 4, 'the historical outline is reused and four missing design work items are generated')
+  assert.equal(generations, expected.length, 'the historical outline is reused and every missing design document is generated once')
   assert.equal(getToolDraft(project.id), null)
   const row = () => db.prepare('SELECT cache_key, payload FROM script_generation_checkpoints WHERE project_id=?').get(project.id) as { cache_key: string; payload: string } | undefined
   assert.ok(row(), 'completed generation remains available while its independent review is unfinished')
@@ -101,7 +101,7 @@ test('native supplementation tasks durably resume unfinished review dimensions w
   failConsistency = false
   const resumed = await api('POST', url, payload)
   assert.deepEqual(audits, ['whole', 'settings', 'consistency', 'consistency', 'requirements'])
-  assert.equal(generations, 4, 'completed work items and reviewed dimensions are reused without generating again')
+  assert.equal(generations, expected.length, 'completed work items and reviewed dimensions are reused without generating again')
   assert.equal(requestPrompts[2], requestPrompts[3], 'the unfinished dimension resumes with the exact complete input')
   assert.ok(resumed.tool_draft)
   assert.ok(resumed.activity.some((entry: { step_id?: string; reused?: boolean }) => entry.step_id === 'review:dimension:settings' && entry.reused))

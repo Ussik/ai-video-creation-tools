@@ -69,11 +69,15 @@ test('title normalization does not permit rewriting a retained prop visual id or
     onPartial?.(JSON.stringify({ blocks: [first], complete: false }))
     return JSON.stringify({ blocks: [rewritten, second], complete: true })
   }, { steps }), (error: unknown) => (error as { code?: string }).code === 'stage_continuation_conflict')
-  assert.equal(calls, 2)
-  const retained = steps.checkpoint.steps['draft:stream:state']!.value as { artifacts: unknown[]; blocks: Array<typeof first> }
+  assert.equal(calls, 3, 'one correction is allowed before the unchanged conflict stops')
+  const retained = steps.checkpoint.steps['draft:stream:state']!.value as {
+    artifacts: unknown[]; blocks: Array<typeof first>; blockConflicts: Array<{ rejected_preview: string; occurrences: number }>
+  }
   assert.deepEqual(retained.artifacts, initial)
-  assert.deepEqual(retained.blocks, [first])
-  assert.ok(!JSON.stringify(retained).includes('白玉圆印'))
+  assert.deepEqual(retained.blocks, [first, { ...second, title: first.title }], 'legal later units remain available for continuation')
+  assert.ok(!JSON.stringify(retained.blocks).includes('白玉圆印'), 'the rejected rewrite never enters accepted prose')
+  assert.ok(retained.blockConflicts[0]!.rejected_preview.includes('白玉圆印'), 'the rejected rewrite is retained only as a diagnostic')
+  assert.equal(retained.blockConflicts[0]!.occurrences, 2, 'the same conflict was returned in two provider responses')
 })
 
 test('a disconnect after receiving a prop entry resumes the remaining entries without regenerating saved prose', async () => {

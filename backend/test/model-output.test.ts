@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { z } from 'zod'
-import { applyOutputContract, generateStructuredOutput, isStructuredOutputError, outputContract, restoreOptionalNulls, strictJsonSchema } from '../src/modules/generation/model-output.js'
+import { applyOutputContract, generateStructuredOutput, isStructuredOutputError, nativeOutputContractPrompt, outputContract, restoreOptionalNulls, strictJsonSchema } from '../src/modules/generation/model-output.js'
 import { streamText, type GenerationModel } from '../src/infrastructure/providers/providers.js'
 import { textToolSession } from '../src/infrastructure/providers/text-tools.js'
 import { workflowEnvelope, workflowInstructions } from '../src/modules/script/script-workflow.js'
@@ -38,6 +38,27 @@ test('discriminated outputs use a root envelope and normalize optional null para
     return JSON.stringify({ result: { action: 'discuss', note: null } })
   }, '判断请求')
   assert.deepEqual(result, { action: 'discuss' })
+})
+
+test('native contract compaction uses managed identity and preserves authored schema text and correction context', async () => {
+  const schema = z.object({ answer: z.string().describe('SCHEMA_DESCRIPTION') }).strict()
+  const authored = '原文中的契约不能删除：\n【本次结构化返回契约】\n' + JSON.stringify(outputContract('fixture', schema).schema)
+  let calls = 0
+  await generateStructuredOutput('fixture', schema, async (prompt, contract) => {
+    calls++
+    const native = nativeOutputContractPrompt(prompt, contract)
+    assert.ok(native.endsWith(authored))
+    assert.match(native, /仅返回一个 JSON 对象.*接口提供的 JSON Schema.*优先/)
+    assert.equal(native.split('SCHEMA_DESCRIPTION').length - 1, 1, 'the authored schema remains; only the managed copy is omitted')
+    assert.equal(prompt.split('SCHEMA_DESCRIPTION').length - 1, 2, 'the original prompt stays intact for fallback')
+    assert.equal(nativeOutputContractPrompt(prompt, { ...contract! }), prompt, 'unmanaged contract copies cannot authorize removal')
+    assert.equal(nativeOutputContractPrompt(authored, contract), authored, 'authored markers never identify a managed prefix')
+    if (calls === 1) return '{"answer":7}'
+    assert.match(native, /一次格式修正/)
+    assert.match(native, /字段类型不合法/)
+    return '{"answer":"完整"}'
+  }, authored)
+  assert.equal(calls, 2)
 })
 
 test('enveloped outputs preserve root definition references and trailing source data', async () => {
@@ -128,6 +149,61 @@ test('unrelated JSON candidates do not replace actionable workflow diagnostics w
   assert.doesNotMatch(diagnostics, /\$\.artifacts: 缺少必填字段|\$\.note/)
 })
 
+test('a bare scene array is diagnosed at its root without presenting the last scene as the entire response', async () => {
+  let calls = 0, diagnostics = ''
+  const scenes = [{ heading: '前台', duration: 45 }, { heading: '会议室', duration: 35 }]
+  const corrected = { artifacts: [{ artifact_type: 'episode_script', title: '第1集', content: '先在前台，再到会议室。' }], scenes }
+  const result = await generateStructuredOutput('workflow_draft', workflowEnvelope, async () => {
+    calls++
+    return JSON.stringify(calls === 1 ? scenes : corrected)
+  }, '返回完整分集正文与对应分场。', { onAttempt: (_attempt, value) => { if (value) diagnostics = value } })
+  assert.equal(calls, 2)
+  assert.match(diagnostics, /\$: 字段类型不合法，要求 object，当前为 array/)
+  assert.doesNotMatch(diagnostics, /\$\.heading|\$\.duration|\$\.artifacts: 缺少必填字段/)
+  assert.equal(result.scenes.length, 2)
+})
+
+test('damaged outer JSON does not diagnose a nested sound plan as the response root', async () => {
+  const sound = { ambience: ['雨声'], acoustics: '室内', music_policy: 'timeline' }
+  const schema = z.object({ scenes: z.array(z.object({ sound: z.object({ ambience: z.array(z.string()), acoustics: z.string(), music_policy: z.string() }).strict() }).strict()) }).strict()
+  const raw = '{"scenes":[{"sound":' + JSON.stringify(sound)
+  let calls = 0, diagnostics = ''
+  const result = await generateStructuredOutput('controlled_storyboard', schema, async () => ++calls === 1 ? raw : JSON.stringify({ scenes: [{ sound }] }), '分镜规划',
+    { onAttempt: (_attempt, value) => { if (value) diagnostics = value } })
+  assert.equal(calls, 2)
+  assert.match(diagnostics, /外层 JSON.*不完整|语法错误/)
+  assert.doesNotMatch(diagnostics, /\$\.scenes: 缺少必填字段|\$\.(?:ambience|acoustics|music_policy).*删除/)
+  assert.deepEqual(result, { scenes: [{ sound }] })
+})
+
+test('an actual sound-only root still receives its own missing and extra root field diagnostics', async () => {
+  const schema = z.object({ scenes: z.array(z.string()) }).strict()
+  let calls = 0, diagnostics = ''
+  await generateStructuredOutput('controlled_storyboard', schema, async () => ++calls === 1
+    ? '说明：\n```json\n' + JSON.stringify({ ambience: [], acoustics: '', music_policy: 'timeline' }) + '\n```' : '{"scenes":[]}', '分镜规划',
+  { onAttempt: (_attempt, value) => { if (value) diagnostics = value } })
+  assert.match(diagnostics, /\$\.scenes: 缺少必填字段/)
+  assert.match(diagnostics, /\$\.ambience: .*删除/)
+})
+
+test('safe syntax recovery accepts the first response and still runs strict schema and semantic validation', async () => {
+  const schema = z.object({ scenes: z.array(z.object({ text: z.string() }).strict()) }).strict()
+  const text = '原话<think>不是推理</think>\r\n下一句，保持原文。'
+  const raw = '{"scenes":[{"text":' + JSON.stringify(text).replaceAll('\\r', '\r').replaceAll('\\n', '\n') + ',},],}'
+  let calls = 0, validations = 0
+  const result = await generateStructuredOutput('controlled_storyboard', schema, async () => { calls++; return raw }, '分镜规划', {
+    validate: value => { validations++; assert.equal(value.scenes[0]!.text, text) },
+  })
+  assert.equal(calls, 1)
+  assert.equal(validations, 1)
+  assert.equal(result.scenes[0]!.text, text)
+  let semanticCalls = 0
+  await assert.rejects(generateStructuredOutput('controlled_storyboard', schema, async () => { semanticCalls++; return raw }, '分镜规划',
+    { validate: () => { throw new Error('台词来源不在本次剧本中') } }), /台词来源不在本次剧本中/)
+  assert.equal(semanticCalls, 2)
+  await assert.rejects(generateStructuredOutput('controlled_storyboard', schema, async () => '{"scenes":[{"text":"正文","extra":true,},],}', '分镜规划'), /\$\.scenes\[0\]\.extra: .*删除/)
+})
+
 test('persistent workflow field errors stop after one correction without silently discarding unknown fields', async () => {
   const invalid = JSON.stringify({ artifacts: [{ type: 'props', title: '道具', content: '不可丢失的原正文。' }], scenes: [] })
   let calls = 0
@@ -145,6 +221,28 @@ test('persistent workflow field errors stop after one correction without silentl
     return true
   })
   assert.equal(calls, 2)
+})
+
+test('diagnostic output retains the complete bounded JSON and both ends of oversized results without external reasoning', async () => {
+  const schema = z.object({ count: z.number() }).strict()
+  const visible = JSON.stringify({ text: '正文<think>原文标记</think>' + '字'.repeat(8000), end: 'ROOT_TAIL' })
+  await assert.rejects(generateStructuredOutput('diagnostic_fixture', schema, async () => '<think>PRIVATE_REASONING</think>\n' + visible, '核对'), (issue: unknown) => {
+    const failure = issue as Error & { raw_output: string }
+    assert.equal(failure.raw_output.trim(), visible)
+    assert.doesNotMatch(failure.raw_output, /PRIVATE_REASONING/)
+    assert.match(failure.raw_output, /<think>原文标记<\/think>/)
+    assert.ok(failure.raw_output.includes('ROOT_TAIL'))
+    return true
+  })
+  const oversized = JSON.stringify({ start: 'ROOT_HEAD', text: '字'.repeat(210000), end: 'ROOT_TAIL' })
+  await assert.rejects(generateStructuredOutput('diagnostic_fixture', schema, async () => oversized, '核对'), (issue: unknown) => {
+    const failure = issue as Error & { raw_output: string }
+    assert.equal(failure.raw_output.length, 200000)
+    assert.ok(failure.raw_output.startsWith('{"start":"ROOT_HEAD"'))
+    assert.ok(failure.raw_output.endsWith('"end":"ROOT_TAIL"}'))
+    assert.match(failure.raw_output, /中间内容已省略/)
+    return true
+  })
 })
 
 test('union corrections follow the actual target and operation and identify nested payload errors', async () => {

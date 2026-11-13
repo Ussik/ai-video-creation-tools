@@ -68,3 +68,31 @@ test('search matches display names and still matches original filenames while re
   for (const query of ['林昭', '医院护士制服', 'f765def3']) assert.equal(filterLibraryAssets(input.assets, [], { ...filters, query }, names).length, 1)
   assert.equal(filterLibraryAssets(input.assets, [], { ...filters, query: '林昭', kind: 'video' }, names).length, 0)
 })
+
+test('custom asset names take precedence over generated, canvas and uploaded titles while preserving their metadata', () => {
+  const input = detail([
+    asset('board', { display_name: '雷神面具设定' }),
+    asset('canvas', { display_name: '雨夜面具特写' }),
+    asset('upload', { source: 'upload', filename: '护士参考.png', display_name: '护士服装参考' }),
+    asset('export', { source: 'export', kind: 'video', display_name: '预告片终版' }),
+  ], { visual_profiles: [profile()], jobs: [job('board-job', 'board', { clarity: '4K', ratio: '16:9' })] })
+  const before = JSON.stringify(input)
+  const names = assetPresentations(input, [{ title: '自动画布标题', asset_id: 'canvas', job_id: null }])
+  assert.equal(names.get('board')?.title, '雷神面具设定')
+  assert.equal(names.get('board')?.context, '人物设定 · v2 · 设定图')
+  assert.equal(names.get('board')?.specs, '4K · 16:9')
+  assert.equal(names.get('canvas')?.title, '雨夜面具特写')
+  assert.equal(names.get('upload')?.title, '护士服装参考')
+  assert.equal(names.get('export')?.title, '预告片终版')
+  assert.equal(JSON.stringify(input), before)
+  assert.equal(input.assets[0].filename, 'f765def3-95b0-490e-ba85-f8cecc65e639.png')
+})
+
+test('legacy assets with null or blank custom names retain their readable fallback titles', () => {
+  const names = assetPresentations(detail([
+    asset('board', { display_name: null }),
+    asset('upload', { source: 'upload', filename: '旧参考.png', display_name: '   ' }),
+  ], { visual_profiles: [profile()] }))
+  assert.equal(names.get('board')?.title, '林昭 · EP001医院护士制服')
+  assert.equal(names.get('upload')?.title, '旧参考.png')
+})

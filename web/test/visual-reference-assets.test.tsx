@@ -1,7 +1,7 @@
 import { chooseCombobox } from './component-controls'
 import assert from 'node:assert/strict'
 import { register } from 'node:module'
-import { after, test } from 'node:test'
+import { after, beforeEach, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
@@ -20,7 +20,9 @@ Object.defineProperty(document, 'fonts', { value: { addEventListener() {}, remov
 dom.window.HTMLElement.prototype.scrollIntoView = () => {}
 const { createRoot } = await import('react-dom/client')
 const { default: ReferenceAssets, normalizedReferenceCrop, referenceCropFromPoints, referenceAssetNeedsReview } = await import('../src/features/visuals/VisualReferenceAssets')
+const { rememberModelSelection, rememberedModelId } = await import('../src/features/models/model-selection-store')
 after(() => dom.window.close())
+beforeEach(() => dom.window.localStorage.clear())
 
 const styleVersion = 'a'.repeat(64)
 const profile = { id: 'profile', project_id: 'project', kind: 'character', name: '林晚', variant: '常服', revision: 2,
@@ -171,6 +173,34 @@ test('mouse dragging a crop backwards uses the actual image bounds, without lett
     await pointer('pointerdown', 250, 180); await pointer('pointermove', 70, 60); await pointer('pointerup', 70, 60)
     const percentages = ['左侧位置', '顶部位置', '宽度', '高度'].map(label => document.querySelector<HTMLInputElement>(`[aria-label="裁切${label}百分比"]`)!.value)
     assert.deepEqual(percentages, ['20', '20', '60', '60'])
+  } finally { await screen.destroy() }
+})
+
+test('reference generation remembers image choices and preserves a stale prompt when another entry changes the image model', async t => {
+  const image = models[1]!, alternate = { ...image, id: 'alternate-image', name: '另一图片模型' }
+  const requests: Array<Record<string, unknown>> = []
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    requests.push(JSON.parse(String(init?.body)))
+    return Response.json({ prompt: '已核对的独立参考提示词', reference_asset_ids: ['board'], reference_signature: 'signature', project_style_version: styleVersion, mode: 'reference' })
+  })
+  const screen = await mount(profile, detail, [image, alternate])
+  try {
+    await act(() => button('添加参考图').click()); await act(() => button('按角度生成').click())
+    await change('独立参考生成模型', alternate.name)
+    assert.equal(rememberedModelId('image'), alternate.id)
+    await act(() => button('预览提示词').click())
+    assert.equal(requests[0].model_id, alternate.id)
+    assert.equal(button('生成 1 张候选').disabled, false)
+    await act(() => rememberModelSelection('text', 'unrelated-text'))
+    assert.equal(button('生成 1 张候选').disabled, false, 'a text preference does not change image generation')
+    await act(() => rememberModelSelection('image', image.id))
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="独立参考生成模型"]')!.value, image.name)
+    assert.equal(document.querySelector<HTMLTextAreaElement>('[aria-label="独立参考生成提示词"]')!.value, '已核对的独立参考提示词')
+    assert.equal(button('生成 1 张候选').disabled, true)
+    assert.equal(requests.length, 1)
+    await act(() => button('重新预览提示词').click())
+    assert.equal(requests[1].model_id, image.id)
+    assert.equal(button('生成 1 张候选').disabled, false)
   } finally { await screen.destroy() }
 })
 

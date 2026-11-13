@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { all, db, newId, now, one, required, run } from '../../infrastructure/database/db.js'
-import type { Asset, AssetTask, Job, Model, Project, ScriptArtifact, ScriptScene, Shot } from '../../infrastructure/database/db.js'
+import type { Asset, AssetTask, Job, Model, Project, ScriptArtifact, ScriptScene, Shot, StoryboardDesign } from '../../infrastructure/database/db.js'
 import { generateStructuredOutput, type OutputContract } from '../generation/model-output.js'
 import { imageReferenceConfigError } from '@video-studio/shared/media/image-reference-config'
 import { videoReferenceConfigError } from '@video-studio/shared/media/video-reference-config'
@@ -17,7 +17,7 @@ import { assertStyleVersion, assetStyleNeedsReview, effectiveVisualStyleForPromp
 import { withProjectStyle, withoutProjectStyle, projectStyleInstructions, projectStyleTemplateError } from '@video-studio/shared/visuals/visual-style'
 import { skillIdsInput } from '../skills/skills.js'
 import { resolveCreationSkillContext, type CreationSkillSelector } from '../skills/model-skill-selection.js'
-import type { VisualReferenceSnapshot } from '@video-studio/shared/visuals/visual-reference-types'
+import { visualReferenceViews, type VisualReferenceView, type VisualReferenceSnapshot } from '@video-studio/shared/visuals/visual-reference-types'
 import { visualReferenceAssets, normalizeVisualBinding, referenceSnapshot, selectedVisualReferenceSnapshots, registerVisualReferenceRoutes } from './visual-reference-assets.js'
 import { recommendVisualReferences } from '@video-studio/shared/visuals/visual-reference-selection'
 import { visualBindingUsages, visualBindingsForModality, type VisualBindingUsage } from '@video-studio/shared/visuals/visual-binding-usage'
@@ -29,6 +29,7 @@ import { enrichExplicitReferenceBindings } from '@video-studio/shared/visuals/ex
 import { explicitReferenceProfiles } from './explicit-reference-context.js'
 import { persistResolvedVisualBindings, resolveShotVisualBindings, resolveVisualBinding, synchronizeProjectVisualBindings, synchronizeVisualProfileBindings,
   type VisualBindingReferenceSelection, type VisualBindingSyncMode } from './visual-binding-sync.js'
+import { scopeVisualReferenceCoverage, validateVisualReferenceCoverage, visualReferenceCoverageInstructions, visualReferenceCoverageSchema } from './visual-reference-coverage.js'
 
 export type VisualKind = 'character' | 'location' | 'prop'
 export interface VisualProfile {
@@ -49,6 +50,7 @@ export interface VisualBinding extends Pick<VisualProfile, 'kind' | 'name' | 'va
   usage?: VisualBindingUsage
   sync_mode?: VisualBindingSyncMode
   reference_selection?: VisualBindingReferenceSelection
+  reference_view?: VisualReferenceView | null
 }
 export const profileInput = z.object({
   kind: z.enum(['character', 'location', 'prop']), name: z.string().trim().min(1).max(100),
@@ -62,12 +64,24 @@ export const profileInput = z.object({
   state_delta: z.string().trim().max(3000).optional(),
 }).strict()
 export const profileDraft = z.object({ profiles: z.array(profileInput.extend({
-  shot_usage: z.array(z.object({ shot_id: z.string().min(1), usage: z.enum(visualBindingUsages) }).strict()).max(300).optional(),
+  shot_usage: z.array(z.object({ shot_id: z.string().min(1), usage: z.enum(visualBindingUsages),
+    reference_view: z.enum(visualReferenceViews).nullable().default(null) }).strict()).max(300).optional(),
 })).max(100) }).strict()
 // Design scope comes from the selected scenes and active shots; strict model
 // output must not ask the model to choose this server-owned ID or null.
+const analysisProfile = profileDraft.shape.profiles.element.omit({ design_id: true, base_profile_id: true, base_draft_key: true, state_delta: true })
+const analysisStateDelta = z.string().trim().min(1).max(3000)
+  .describe('必填：仅说明相对基础设定改变的服装或局部状态，不能为 null、空串或空白；不能只在 definition 中说明变化。')
 const profileAnalysisDraft = profileDraft.extend({
-  profiles: z.array(profileDraft.shape.profiles.element.omit({ design_id: true })).max(100),
+  visual_coverage: visualReferenceCoverageSchema.optional(),
+  profiles: z.array(z.union([
+    analysisProfile.extend({ base_profile_id: z.null().optional(), base_draft_key: z.null().optional(),
+      state_delta: z.string().trim().max(0).optional() }).describe('独立设定：没有基础关系，state_delta 省略或为空。'),
+    analysisProfile.extend({ base_profile_id: profileInput.shape.base_profile_id.unwrap().unwrap(), base_draft_key: z.null().optional(),
+      state_delta: analysisStateDelta }).describe('派生设定：引用已有基础档案，必须同时填写非空 state_delta。'),
+    analysisProfile.extend({ base_profile_id: z.null().optional(), base_draft_key: profileInput.shape.base_draft_key.unwrap().unwrap(),
+      state_delta: analysisStateDelta }).describe('派生设定：引用本批基础草稿，必须同时填写非空 state_delta。'),
+  ])).max(100),
 })
 const bindingsInput = z.object({ bindings: z.array(z.object({
   profile_id: z.string().min(1), required: z.boolean().default(true),
@@ -142,7 +156,14 @@ function baseReferenceStatus(profile: VisualProfile): 'none' | 'waiting' | 'read
 
 type ProfileDraftInput = z.infer<typeof profileDraft>['profiles'][number]
 /** Scene candidates are historical; active shots determine the current design. */
-export function sceneVisualDesignIds(projectId: string, sceneIds: string[]) {
+export function sceneVisualDesignIds(projectId: string, sceneIds: string[], explicitDesignId?: string | null) {
+  if (explicitDesignId) {
+    const design = one<StoryboardDesign>('SELECT * FROM storyboard_designs WHERE id=? AND project_id=?', explicitDesignId, projectId)
+    if (!design) invalid('设计方案不属于当前项目')
+    const savedSceneIds: string[] = JSON.parse(design.scene_ids)
+    if (sceneIds.some(sceneId => !savedSceneIds.includes(sceneId))) invalid('所选场次不属于指定设计方案')
+    return new Map(sceneIds.map(sceneId => [sceneId, explicitDesignId] as [string, string | null]))
+  }
   const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL', projectId)
   const designs = new Map<string, string | null>()
   for (const sceneId of sceneIds) {
@@ -153,6 +174,7 @@ export function sceneVisualDesignIds(projectId: string, sceneIds: string[]) {
       AND EXISTS (SELECT 1 FROM json_each(d.scene_ids) WHERE value=?) ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1`, projectId, sceneId)
     designs.set(sceneId, domains.size ? [...domains][0] || null : latest?.id || null)
   }
+  if (explicitDesignId === null && [...designs.values()].some(designId => designId !== null)) invalid('所选场次已不属于基础设计方案')
   return designs
 }
 
@@ -176,9 +198,9 @@ export function scopeVisualProfileDrafts(projectId: string, inputs: ProfileDraft
   })
 }
 
-export function resolveVisualProfileDrafts(projectId: string, inputs: ProfileDraftInput[], profileIds?: string[]) {
+export function resolveVisualProfileDrafts(projectId: string, inputs: ProfileDraftInput[], profileIds?: string[], sceneDesigns?: Map<string, string | null>) {
   const keys = new Map<string, string>(), staged = new Map<string, VisualProfile>()
-  const resolved = scopeVisualProfileDrafts(projectId, inputs).map((input, index) => {
+  const resolved = scopeVisualProfileDrafts(projectId, inputs, sceneDesigns).map((input, index) => {
     if (input.base_profile_id && input.base_draft_key) invalid('基础设定只能选择已存档案或本批草稿之一')
     const matching = one<VisualProfile>('SELECT * FROM visual_profiles WHERE project_id=? AND kind=? AND name=? AND variant=?', projectId, input.kind, input.name, input.variant)
     if (matching && (matching.design_id || null) !== (input.design_id || null)) invalid('同名视觉版本已存在于其他设计方案，请修改版本名称后重试')
@@ -191,12 +213,12 @@ export function resolveVisualProfileDrafts(projectId: string, inputs: ProfileDra
     }
     return { input, id, existing, base_profile_id: null as string | null, state_delta: '' }
   })
-  for (const value of resolved) {
+  for (const [index, value] of resolved.entries()) {
     const { input, existing } = value
     value.base_profile_id = input.base_draft_key ? keys.get(input.base_draft_key) || invalid('基础设定指向不存在的本批草稿')
       : input.base_profile_id !== undefined ? input.base_profile_id : existing?.base_profile_id || null
     value.state_delta = input.state_delta ?? existing?.state_delta ?? ''
-    if (value.base_profile_id && !value.state_delta) invalid('派生状态必须说明相对基础设定的变化')
+    if (value.base_profile_id && !value.state_delta) invalid(`$.profiles[${index}].state_delta（${input.name}／${input.variant}）：派生状态必须说明相对基础设定的变化`)
     if (!value.base_profile_id && value.state_delta) invalid('请先选择基础设定，再填写状态变化')
     staged.set(value.id, { ...existing, ...input, id: value.id, project_id: projectId,
       base_profile_id: value.base_profile_id, state_delta: value.state_delta, revision: existing?.revision || 1,
@@ -286,6 +308,7 @@ function prepareBoard(profile: VisualProfile, input: z.infer<typeof boardInput>)
   const rawPrompt = resolveVisualProfileDisplayText((input.prompt_document ? input.prompt_override ?? ''
     : extractPromptBody({ prompt: input.prompt_override ?? '' })) +
     (supplement.trim() ? `\n\n本次补充要求：\n${supplement}` : ''), textContext).text
+  if (!input.prompt_document && input.prompt_override !== undefined && !rawPrompt.trim()) invalid('请输入提示词正文')
   if (input.prompt_document) {
     try { validateManagedPromptDocument(rawPrompt) } catch (error) { invalid(error instanceof Error ? error.message : '提示词系统区标记无效') }
     if (!hasVisualBoardPromptContent(rawPrompt)) invalid('请输入设定图内容或补充要求')
@@ -384,23 +407,23 @@ export function checkBindings(projectId: string, bindings: z.infer<typeof bindin
   })
 }
 export function insertShotBinding(shotId: string, profile: VisualProfile, isRequired: boolean, selectedIds?: string[], usage: VisualBindingUsage = 'both', refresh = false,
-  settings: { sync_mode?: VisualBindingSyncMode; reference_selection?: VisualBindingReferenceSelection } = {}) {
+  settings: { sync_mode?: VisualBindingSyncMode; reference_selection?: VisualBindingReferenceSelection; reference_view?: VisualReferenceView | null } = {}) {
   if (!refresh && one('SELECT 1 FROM shot_visual_bindings WHERE shot_id=? AND profile_id=?', shotId, profile.id)) return
   const shot = required<Shot>('shots', shotId), style = projectVisualStyle(profile.project_id)
   if ((shot.design_id || null) !== (profile.design_id || null)) invalid('镜头参考设定必须来自同一设计方案')
   const references = selectedIds === undefined ? recommendVisualReferences(profile, visualReferenceAssets(profile.id),
-    [usage === 'video' ? shot.video_prompt : shot.image_prompt, shot.start_state].filter(Boolean).join('\n'), style.version).map(referenceSnapshot)
+    settings.reference_view ? { view: settings.reference_view } : undefined, style.version).map(referenceSnapshot)
     : selectedVisualReferenceSnapshots(profile, selectedIds)
   run(`INSERT INTO shot_visual_bindings
-    (shot_id, profile_id, required, revision, kind, name, variant, definition, view_requirements, board_asset_id, board_style_version, reference_assets, usage, sync_mode, reference_selection)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (shot_id, profile_id, required, revision, kind, name, variant, definition, view_requirements, board_asset_id, board_style_version, reference_assets, usage, sync_mode, reference_selection, reference_view)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(shot_id, profile_id) DO UPDATE SET required=excluded.required, revision=excluded.revision,
       kind=excluded.kind, name=excluded.name, variant=excluded.variant, definition=excluded.definition,
       view_requirements=excluded.view_requirements, board_asset_id=excluded.board_asset_id,
       board_style_version=excluded.board_style_version, reference_assets=excluded.reference_assets, usage=excluded.usage,
-      sync_mode=excluded.sync_mode, reference_selection=excluded.reference_selection`, shotId, profile.id, Number(isRequired), profile.revision,
+      sync_mode=excluded.sync_mode, reference_selection=excluded.reference_selection, reference_view=excluded.reference_view`, shotId, profile.id, Number(isRequired), profile.revision,
     profile.kind, profile.name, profile.variant, profile.definition, profile.view_requirements, profile.board_asset_id, profile.board_style_version || null, JSON.stringify(references), usage,
-    settings.sync_mode || 'follow', settings.reference_selection || (selectedIds === undefined ? 'auto' : 'manual'))
+    settings.sync_mode || 'follow', settings.reference_selection || (selectedIds === undefined ? 'auto' : 'manual'), settings.reference_view || null)
 }
 export function inheritSceneVisualBindings(shotId: string, sceneId: string | null) {
   if (!sceneId) return
@@ -410,13 +433,14 @@ export function inheritSceneVisualBindings(shotId: string, sceneId: string | nul
   for (const binding of bindings) insertShotBinding(shotId, required<VisualProfile>('visual_profiles', binding.profile_id), !!binding.required)
 }
 
-export function validateProfileShotUsage(projectId: string, input: z.infer<typeof profileDraft>['profiles'][number]) {
+export function validateProfileShotUsage(projectId: string, input: z.infer<typeof profileDraft>['profiles'][number], historicalDesignId?: string | null) {
   if (!input.shot_usage) return
   if (new Set(input.shot_usage.map(item => item.shot_id)).size !== input.shot_usage.length) invalid('镜头参考用途不能重复')
   for (const item of input.shot_usage) {
     const shot = required<Shot>('shots', item.shot_id)
     if (shot.project_id !== projectId || !input.scene_ids.includes(shot.source_scene_id || '')) invalid('镜头参考用途必须属于设定所绑定的场次')
-    if (shot.superseded_by) invalid('镜头参考用途不能修改历史方案中的镜头')
+    if (shot.deleted_at) invalid('镜头参考用途不能修改已回收的镜头')
+    if (shot.superseded_by && (!historicalDesignId || shot.design_id !== historicalDesignId)) invalid('镜头参考用途不能修改历史方案中的镜头')
     if (input.design_id !== undefined && (shot.design_id || null) !== input.design_id) invalid('镜头参考用途必须属于同一设计方案')
   }
 }
@@ -429,9 +453,11 @@ export function applyProfileShotUsage(profile: VisualProfile, input: z.infer<typ
     const shot = required<Shot>('shots', item.shot_id)
     const refresh = refreshSceneIds.has(shot.source_scene_id || '') && !!previous
     insertShotBinding(item.shot_id, profile, !!(previous?.required ?? sceneRequired?.required ?? 1), undefined, item.usage, false,
-      { sync_mode: previous?.sync_mode, reference_selection: previous?.reference_selection })
+      { sync_mode: previous?.sync_mode, reference_selection: previous?.reference_selection, reference_view: item.reference_view })
     run('UPDATE shot_visual_bindings SET usage=? WHERE shot_id=? AND profile_id=?', item.usage, item.shot_id, profile.id)
-    if (refresh) resolveShotVisualBindings(item.shot_id, { persist: true })
+    if (item.reference_view !== undefined) run(`UPDATE shot_visual_bindings SET reference_view=?
+      WHERE shot_id=? AND profile_id=? AND reference_selection='auto' AND sync_mode='follow'`, item.reference_view, item.shot_id, profile.id)
+    if (refresh || item.reference_view !== undefined) resolveShotVisualBindings(item.shot_id, { persist: true })
   }
 }
 
@@ -729,7 +755,7 @@ export function autoConfirmGeneratedProfileBoard(job: Job): void {
   updateVisualProfile(profile.id, { board_asset_id: first.asset.id, expected_revision: profile.revision, expected_style_version: first.style.version }, { styleReview: 'automatic' })
 }
 
-export async function analyzeVisualProfiles(id: string, data: { model_id: string; scene_ids: string[]; skill_ids?: string[]; inherit_scene_references?: boolean; refresh_scene_ids?: string[]; design_id?: string | null }, context: {
+export async function analyzeVisualProfiles(id: string, data: { model_id: string; scene_ids: string[]; skill_ids?: string[]; inherit_scene_references?: boolean; require_visual_coverage?: boolean; refresh_scene_ids?: string[]; design_id?: string | null }, context: {
   script: (projectId: string) => { outline: string; characters: string; artifacts?: ScriptArtifact[]; scenes: ScriptScene[] };
   generateText: (projectId: string, modelId: string, prompt: string, contract?: OutputContract) => Promise<string>;
   selectSkills?: CreationSkillSelector;
@@ -738,7 +764,7 @@ export async function analyzeVisualProfiles(id: string, data: { model_id: string
   const script = context.script(id)
   const scenes = script.scenes.filter(scene => data.scene_ids.includes(scene.id))
   if (new Set(data.scene_ids).size !== data.scene_ids.length || scenes.length !== data.scene_ids.length) invalid('所选场次不属于当前项目或重复')
-  const sceneDesigns = sceneVisualDesignIds(id, data.scene_ids)
+  const sceneDesigns = sceneVisualDesignIds(id, data.scene_ids, data.design_id)
   const domains = new Set(sceneDesigns.values())
   if (domains.size > 1) invalid('请分别整理不同设计方案的视觉设定')
   const designId = [...domains][0] || null
@@ -747,8 +773,9 @@ export async function analyzeVisualProfiles(id: string, data: { model_id: string
   if (designId && (!design || design.project_id !== id)) invalid('设计方案不属于当前项目')
   const episodes = new Set(scenes.map(scene => scene.episode_number))
   const artifacts = (script.artifacts || []).filter(item => !item.episode_number || episodes.has(item.episode_number))
-  const plannedShots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position, id', id)
-    .filter(shot => data.scene_ids.includes(shot.source_scene_id || ''))
+  const scopedShots = all<Shot>(`SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL${data.design_id ? ' AND design_id=?' : ' AND superseded_by IS NULL'} ORDER BY position, id`,
+    ...(data.design_id ? [id, data.design_id] : [id])).filter(shot => data.scene_ids.includes(shot.source_scene_id || ''))
+  const plannedShots = scopedShots
     .map(shot => ({ shot_id: shot.id, scene_id: shot.source_scene_id, title: shot.title, prompt: shot.prompt, image_prompt: shot.image_prompt,
       video_prompt: shot.video_prompt, start_state: shot.start_state, end_state: shot.end_state }))
   const prompt = `你是影视视觉设定总监。为选定场次整理可复用的人物、场景和关键道具视觉设定档案。\n` +
@@ -763,6 +790,7 @@ export async function analyzeVisualProfiles(id: string, data: { model_id: string
     `基础版本已在已有档案中时用其真实id填写base_profile_id，基础版本是本批另一草稿时填写base_draft_key，二者只能使用一个。` +
     `没有明确基础版本的独立对象不填基础关系，不因为名称相似就合并身份，不创造未在场次中需要的基础版本。` +
     `派生状态的state_delta只写相对基础版本明确改变的服装或局部状态，其余脸、发型、体型、配色和材质保持基础版本。` +
+    `只要填写base_profile_id或base_draft_key，就必须在同一对象中填写非空state_delta，不能用definition或variant代替；复用已有派生档案时逐字保留其基础关系和state_delta。` +
     visualProfileTextInstructions +
     `例如右手背溅泥只写右手背少量泥点，不将人物整体改成满身泥污。基础关系不能自指、循环或用派生状态反向定义基础版本。` +
     `基础关系仅用于状态设定图生成，不代表基础版本额外出现在镜头中；shot_usage仍依据当前版本是否实际出镜。已有档案未明确关系时只在草稿中建议，不擅自改写存档。\n` +
@@ -773,11 +801,14 @@ export async function analyzeVisualProfiles(id: string, data: { model_id: string
     `结合选定场次与已规划镜头的开镜、动作和收镜，整理实际出镜所需的参考设定；镜头新增的服装、地点或关键道具也要纳入。` +
     `场次关联仅是候选资料池，不代表每镜都出镜。每份档案必须用shot_usage逐一说明其scene_ids中每个已规划镜头的用途：` +
     `both=开镜图片与视频都使用，image=仅开镜图片，video=仅视频过程出现，none=本镜头不使用。` +
+    `每项shot_usage同时返回reference_view：结合本镜对象的实际视角选择face/front/three_quarter/side/back/wide/reverse/layout/detail之一；无法确定或本镜不使用时返回null，沿用已确认默认图。` +
+    `这是结构化参考视角，程序只按此字段选择图片，不会从正文关键词猜测。不得将“不要背面”等否定要求当作背面选择；不同对象分别判断。` +
     `图片依据image_prompt的单幅开镜画面；视频依据video_prompt及开镜、收镜状态。背景中实际可见的对象也纳入；` +
     `仅在对白中提及、画外人物、仅提供光色而未出镜的灯体，不应成为该画面的必需对象。不要为凑全场设定将对象塞入画面。` +
     `只创建有实际需要的档案，不强求每场都包含人物、场景、道具三类，不为普通背景杂物创建参考。这里只整理待确认的设定，不生成图片。\n` +
+    (data.require_visual_coverage ? visualReferenceCoverageInstructions + '\n' : '') +
     storyboardReferenceBudgetInstructions() +
-    `kind 只能取 character、location 或 prop。只输出合法 JSON：{"profiles":[{"draft_key":"本批唯一键","kind":"character","name":"对象名称","variant":"服装或状态版本","definition":"详细中文设定","view_requirements":"信息图视图与细节要求","scene_ids":["所用场次ID"],"shot_usage":[{"shot_id":"已规划镜头ID","usage":"both"}]}]}。派生版本另外填写base_profile_id或base_draft_key以及state_delta；独立版本省略这三项。无已规划镜头时shot_usage为空数组。\n` +
+    `kind 只能取 character、location 或 prop。只输出合法 JSON：{"profiles":[{"draft_key":"本批唯一键","kind":"character","name":"对象名称","variant":"服装或状态版本","definition":"详细中文设定","view_requirements":"信息图视图与细节要求","scene_ids":["所用场次ID"],"shot_usage":[{"shot_id":"已规划镜头ID","usage":"both","reference_view":null}]}]${data.require_visual_coverage ? ',"visual_coverage":[{"scene_id":"所用场次ID","shot_id":"已规划镜头ID或null","source_excerpt":"该镜原文摘录","objects":[{"kind":"character","name":"对象名称","variant":"服装或状态版本","usage":"both","requires_profile":true,"reason":"该对象在画面中出现且需要保持外貌一致"}],"no_reference_reason":""}]' : ''}}。派生版本另外填写base_profile_id或base_draft_key以及state_delta；独立版本省略这三项。无已规划镜头时shot_usage为空数组。\n` +
     `${projectStyleInstructions(projectVisualStyle(id))}\n固定视觉特征必须符合项目画风；旧档案若缺少画风说明，需要在草稿中补齐，不把材质描述变成写实渲染要求。\n` +
     `项目：${project.name}；故事：${script.outline}\n已有档案：${JSON.stringify(all<VisualProfile>('SELECT * FROM visual_profiles WHERE project_id=? AND design_id IS ? ORDER BY kind, name, variant', id, designId).map(publicProfile))}\n` +
     `剧本资料：${JSON.stringify(artifacts)}\n人物资料：${script.characters}\n选定场次：${JSON.stringify(scenes)}\n` +
@@ -786,24 +817,31 @@ export async function analyzeVisualProfiles(id: string, data: { model_id: string
     projectId: id, modelId: data.model_id, select: context.selectSkills,
     generate: (text, contract) => context.generateText(id, data.model_id, text, contract),
     assignmentTask: { purpose: 'create' } })
-  const draft = await generateStructuredOutput('visual_profiles', profileAnalysisDraft,
+  const analysisSchema = data.require_visual_coverage ? profileAnalysisDraft.extend({ visual_coverage: visualReferenceCoverageSchema }) : profileAnalysisDraft
+  const draft = await generateStructuredOutput('visual_profiles', analysisSchema,
     (text, contract) => context.generateText(id, data.model_id, text, contract), rules.text + '\n【本次任务】\n' + prompt, {
+      correctionInstructions: '逐项检查 profiles：填写 base_profile_id 或 base_draft_key 的派生设定，必须在同一对象的 state_delta 中写出相对基础设定的具体变化，不能为 null、空字符串或空白，也不能只写在 definition 或 variant 中。依据原任务、场次和已有设定补全；已有派生设定保留原基础关系与变化说明，不得为通过校验删除真实派生关系或编造变化。独立设定的两个基础字段省略或为 null，state_delta 省略或为空。保留全部设定与每个镜头的 shot_usage，返回完整 profiles。' + (data.require_visual_coverage ? visualReferenceCoverageInstructions : ''),
       validate: value => {
+        if (data.require_visual_coverage || value.visual_coverage) validateVisualReferenceCoverage(value.visual_coverage, scenes, scopedShots, value.profiles)
         if (value.profiles.some(profile => !profile.scene_ids.length || profile.scene_ids.some(sceneId => !data.scene_ids.includes(sceneId)))) invalid('每份视觉设定必须引用至少一个选定场次，不能引用范围外的场次')
         const scopedProfiles = scopeVisualProfileDrafts(id, value.profiles, sceneDesigns)
         for (const profile of scopedProfiles) {
-          validateProfileShotUsage(id, profile)
+          validateProfileShotUsage(id, profile, data.design_id)
           const expected = plannedShots.filter(shot => profile.scene_ids.includes(shot.scene_id || ''))
           if (expected.some(shot => !profile.shot_usage?.some(item => item.shot_id === shot.shot_id))) invalid('请明确每个已规划镜头的图片与视频参考用途')
         }
-        resolveVisualProfileDrafts(id, scopedProfiles)
+        resolveVisualProfileDrafts(id, scopedProfiles, undefined, sceneDesigns)
         assertStoryboardReferenceBudget(id, data.scene_ids, scopedProfiles, {
           replaceSceneBindings: data.inherit_scene_references === true,
           inheritSceneReferences: data.inherit_scene_references,
+          shots: scopedShots,
         })
       },
     })
-  return { ...draft, profiles: scopeVisualProfileDrafts(id, draft.profiles, sceneDesigns), skills: rules.skills, loaded_files: rules.files, skill_assignment: rules.assignment }
+  const scopedProfiles = scopeVisualProfileDrafts(id, draft.profiles, sceneDesigns)
+  return { ...draft, profiles: scopedProfiles,
+    ...(draft.visual_coverage ? { visual_coverage: scopeVisualReferenceCoverage(draft.visual_coverage, draft.profiles, scopedProfiles) } : {}),
+    skills: rules.skills, loaded_files: rules.files, skill_assignment: rules.assignment }
 }
 
 export function registerVisualProfileRoutes(app: FastifyInstance, context: {
@@ -998,7 +1036,7 @@ export function registerVisualProfileRoutes(app: FastifyInstance, context: {
         // An explicit refresh re-snapshots the binding from the profile's current revision and confirmed board, for a locked
         // shot as well; without it the request would validate and then change nothing.
         insertShotBinding(id, binding.profile, binding.required, binding.reference_asset_ids, binding.usage || previous?.usage || 'both',
-          data.refresh_profile_ids.includes(binding.profile.id), { sync_mode: syncMode, reference_selection: selection })
+          data.refresh_profile_ids.includes(binding.profile.id), { sync_mode: syncMode, reference_selection: selection, reference_view: previous?.reference_view })
         if (binding.reference_asset_ids !== undefined) {
           const saved = one<VisualBinding>('SELECT * FROM shot_visual_bindings WHERE shot_id=? AND profile_id=?', id, binding.profile.id)!
           const selected = selectedVisualReferenceSnapshots(binding.profile, binding.reference_asset_ids, saved.revision, normalizeVisualBinding(saved).reference_assets)

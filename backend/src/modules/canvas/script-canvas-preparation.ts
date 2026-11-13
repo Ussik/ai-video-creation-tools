@@ -10,6 +10,7 @@ import { projectVisualStyle } from '../visuals/project-visual-style.js'
 import { shotImagePrompt, shotVideoPrompt } from '@video-studio/shared/storyboard/shot-prompts'
 import { assertStoryboardReferenceBudget, storyboardReferenceBudget, storyboardReferenceBudgetIssues } from '../storyboard/storyboard-reference-budget.js'
 import { skillIdsInput } from '../skills/skills.js'
+import { scopeVisualReferenceCoverage, validateVisualReferenceCoverage, visualReferenceCoverageSchema } from '../visuals/visual-reference-coverage.js'
 
 type Context = {
   selectSkills?: CreationSkillSelector;
@@ -17,23 +18,30 @@ type Context = {
   scenePrompt: (scene: ScriptScene) => string;
   generateText: (projectId: string, modelId: string, prompt: string, contract?: OutputContract) => Promise<string>;
 }
-const scopeInput = z.object({ scene_ids: z.array(z.string().min(1)).min(1).max(100) }).strict()
+const scopeInput = z.object({ scene_ids: z.array(z.string().min(1)).min(1).max(100), design_id: z.string().min(1).nullable().optional() }).strict()
 const planInput = scopeInput.extend({ signature: z.string().length(64), model_id: z.string().min(1).optional(), skill_ids: skillIdsInput.optional() })
 const commitInput = scopeInput.extend({ signature: z.string().length(64), profiles: profileDraft.shape.profiles,
-  reference_usage_version: z.literal(1).optional() })
+  reference_usage_version: z.literal(1).optional(), coverage_version: z.literal(1).optional(), visual_coverage: visualReferenceCoverageSchema.optional() })
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 function conflict(): never { throw Object.assign(new Error('剧本或视觉设定已更新，请重新加入画布'), { statusCode: 409 }) }
 function invalid(message: string): never { throw Object.assign(new Error(message), { statusCode: 422 }) }
+function assertSceneTemplateDurations(state: { scenes: ScriptScene[]; shots: Shot[] }) {
+  if (state.scenes.some(scene => scene.duration > 30 && !state.shots.some(shot => shot.source_scene_id === scene.id))) {
+    invalid('超过 30 秒的场次请先规划分镜，再加入画布')
+  }
+}
 
-export function scriptCanvasPreparationSnapshot(id: string, sceneIds: string[], context: Pick<Context, 'script'>) {
+export function scriptCanvasPreparationSnapshot(id: string, sceneIds: string[], context: Pick<Context, 'script'>, designId?: string | null) {
   const project = required<Project>('projects', id)
   const script = context.script(id)
   const scenes = script.scenes.filter(scene => sceneIds.includes(scene.id))
   if (new Set(sceneIds).size !== sceneIds.length || scenes.length !== sceneIds.length) invalid('所选场次不属于当前项目或重复')
   const style = projectVisualStyle(id)
-  const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position, id', id)
+  const shots = all<Shot>(`SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL${designId ? ' AND design_id=?' : ' AND superseded_by IS NULL'} ORDER BY position, id`,
+    ...(designId ? [id, designId] : [id]))
     .filter(shot => sceneIds.includes(shot.source_scene_id || ''))
-  const sceneDesigns = sceneVisualDesignIds(id, sceneIds)
+  const sceneDesigns = sceneVisualDesignIds(id, sceneIds, designId)
+  if (designId && scenes.some(scene => !shots.some(shot => shot.source_scene_id === scene.id))) invalid('指定方案的场次没有可制作镜头，请刷新分镜管理')
   const designIds = new Set(sceneDesigns.values())
   const allVisuals = visualProjectData(id)
   const profiles = allVisuals.visual_profiles.filter(profile => designIds.has(profile.design_id || null))
@@ -44,10 +52,10 @@ export function scriptCanvasPreparationSnapshot(id: string, sceneIds: string[], 
     shot_visual_bindings: allVisuals.shot_visual_bindings.filter(binding => profileIds.has(binding.profile_id) && shots.some(shot => shot.id === binding.shot_id)),
   }
   const referenceBudget = storyboardReferenceBudget()
-  const overBudgetScenes = new Set(storyboardReferenceBudgetIssues(id, sceneIds).map(issue => issue.scene_id))
+  const overBudgetScenes = new Set(storyboardReferenceBudgetIssues(id, sceneIds, undefined, { shots }).map(issue => issue.scene_id))
   const signatureFor = (scene: ScriptScene) => hash({
     // Invalidate preparation caches created before definition refresh was supported.
-    preparation_version: 3,
+    preparation_version: 4,
     design: sceneDesigns.get(scene.id) ? one('SELECT id, name, instructions FROM storyboard_designs WHERE id=?', sceneDesigns.get(scene.id)) : null,
     brief: project.brief, outline: script.outline, characters: script.characters,
     referenceBudget, artifacts: (script.artifacts || []).filter(item => !item.episode_number || item.episode_number === scene.episode_number)
@@ -72,8 +80,8 @@ export function scriptCanvasPreparationSnapshot(id: string, sceneIds: string[], 
   return { scenes, shots, visuals, signature, signatureFor, needsAnalysis, refreshSceneIds, sceneDesigns }
 }
 
-export function checkScriptCanvasPreparation(id: string, sceneIds: string[], context: Pick<Context, 'script'>) {
-  const state = scriptCanvasPreparationSnapshot(id, sceneIds, context)
+export function checkScriptCanvasPreparation(id: string, sceneIds: string[], context: Pick<Context, 'script'>, designId?: string | null) {
+  const state = scriptCanvasPreparationSnapshot(id, sceneIds, context, designId)
   return { signature: state.signature, scene_ids: sceneIds, needs_analysis: state.needsAnalysis.map(scene => scene.id) }
 }
 
@@ -81,13 +89,14 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
   app.post('/api/projects/:id/script/canvas/check', async request => {
     const { id } = z.object({ id: z.string().min(1) }).parse(request.params)
     const data = scopeInput.parse(request.body)
-    return checkScriptCanvasPreparation(id, data.scene_ids, context)
+    return checkScriptCanvasPreparation(id, data.scene_ids, context, data.design_id)
   })
   app.post('/api/projects/:id/script/canvas/prepare', async request => {
     const { id } = z.object({ id: z.string().min(1) }).parse(request.params)
     const data = planInput.parse(request.body)
-    const state = scriptCanvasPreparationSnapshot(id, data.scene_ids, context)
+    const state = scriptCanvasPreparationSnapshot(id, data.scene_ids, context, data.design_id)
     if (state.signature !== data.signature) conflict()
+    assertSceneTemplateDurations(state)
     const groups = new Map<string | null, string[]>()
     for (const scene of state.needsAnalysis) {
       const designId = state.sceneDesigns.get(scene.id) || null
@@ -96,13 +105,16 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
     const drafts = await Promise.all([...groups].map(([design_id, scene_ids]) => analyzeVisualProfiles(id, {
       model_id: data.model_id || invalid('请选择文本模型，以整理缺少的视觉设定'),
       scene_ids, design_id, skill_ids: data.skill_ids, inherit_scene_references: true,
+      require_visual_coverage: true,
       refresh_scene_ids: [...state.refreshSceneIds].filter(sceneId => scene_ids.includes(sceneId)),
     }, context)))
-    if (scriptCanvasPreparationSnapshot(id, data.scene_ids, context).signature !== state.signature) conflict()
+    if (scriptCanvasPreparationSnapshot(id, data.scene_ids, context, data.design_id).signature !== state.signature) conflict()
     return { signature: state.signature, scene_ids: data.scene_ids, profiles: drafts.flatMap(draft => draft.profiles),
       reference_usage_version: 1,
+      coverage_version: 1, visual_coverage: drafts.flatMap(draft => draft.visual_coverage || []),
       skill_assignment: { ids: [...new Set(drafts.flatMap(draft => draft.skill_assignment.ids))],
-        source: data.skill_ids !== undefined ? 'manual' as const : drafts.some(draft => draft.skill_assignment.source === 'automatic') ? 'automatic' as const : 'default' as const,
+        source: data.skill_ids !== undefined ? 'manual' as const : drafts.some(draft => draft.skill_assignment.source === 'fixed') ? 'fixed' as const
+          : drafts.some(draft => draft.skill_assignment.source === 'automatic') ? 'automatic' as const : 'default' as const,
         reason: [...new Set(drafts.map(draft => draft.skill_assignment.reason))].join('\n') || '所选场次无需补充视觉设定。' },
       used_skills: [...new Map(drafts.flatMap(draft => draft.skills).map(skill => [skill.id, skill])).values()],
       loaded_files: [...new Map(drafts.flatMap(draft => draft.loaded_files).map(file => [JSON.stringify(file), file])).values()] }
@@ -111,12 +123,19 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
     const { id } = z.object({ id: z.string().min(1) }).parse(request.params)
     const data = commitInput.parse(request.body)
     return db.transaction(() => {
-      const state = scriptCanvasPreparationSnapshot(id, data.scene_ids, context)
+      const state = scriptCanvasPreparationSnapshot(id, data.scene_ids, context, data.design_id)
       if (state.signature !== data.signature) conflict()
+      assertSceneTemplateDurations(state)
       const allowed = new Set(state.needsAnalysis.map(scene => scene.id))
+      if (allowed.size) {
+        if (data.coverage_version !== 1) invalid('缺少逐镜视觉覆盖说明，请重新整理参考设定')
+        validateVisualReferenceCoverage(data.visual_coverage, state.needsAnalysis,
+          state.shots.filter(shot => allowed.has(shot.source_scene_id || '')), data.profiles)
+      }
       if (data.profiles.some(profile => !profile.scene_ids.length || profile.scene_ids.some(sceneId => !allowed.has(sceneId)))) invalid('视觉草稿必须引用本次需要整理的场次')
       const scopedProfiles = scopeVisualProfileDrafts(id, data.profiles, state.sceneDesigns)
-      for (const input of scopedProfiles) validateProfileShotUsage(id, input)
+      const scopedCoverage = data.visual_coverage && scopeVisualReferenceCoverage(data.visual_coverage, data.profiles, scopedProfiles)
+      for (const input of scopedProfiles) validateProfileShotUsage(id, input, data.design_id)
       const merged = new Map<string, z.infer<typeof profileDraft>['profiles'][number]>()
       for (const input of scopedProfiles) {
         const key = JSON.stringify([input.design_id || null, input.kind, input.name, input.variant])
@@ -139,9 +158,10 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
       assertStoryboardReferenceBudget(id, [...allowed], [...merged.values()], {
         replaceSceneBindings: data.reference_usage_version === 1 || [...merged.values()].some(input => input.shot_usage !== undefined),
         inheritSceneReferences: true,
+        shots: state.shots,
       })
       let createdProfiles = 0
-      const resolved = resolveVisualProfileDrafts(id, [...merged.values()])
+      const resolved = resolveVisualProfileDrafts(id, [...merged.values()], undefined, state.sceneDesigns)
       for (const { input, id: profileId, existing } of resolved) {
         if (!existing) {
           const timestamp = now()
@@ -174,7 +194,7 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
       let nextPosition = one<{ next: number }>('SELECT COALESCE(MAX(position), -1)+1 AS next FROM shots WHERE project_id=?', id)!.next
       let createdShots = 0
       for (const scene of state.scenes) {
-        let shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND source_scene_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position', id, scene.id)
+        let shots = state.shots.filter(shot => shot.source_scene_id === scene.id)
         if (!shots.length) {
           const shotId = newId(), prompt = context.scenePrompt(scene)
           run(`INSERT INTO shots (id, project_id, position, title, prompt, duration, selected_asset_id, created_at, source_scene_id, image_prompt, video_prompt, design_id)
@@ -183,6 +203,17 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
           createdShots++
         }
         for (const shot of shots) inheritSceneVisualBindings(shot.id, scene.id)
+        // A newly created template has no pre-existing shot ID in coverage.
+        // Apply its explicit image/video decision to the new binding IDs.
+        if (!state.shots.some(shot => shot.source_scene_id === scene.id) && allowed.has(scene.id)) {
+          const coverage = scopedCoverage?.find(item => item.scene_id === scene.id && item.shot_id === null)
+          for (const shot of shots) for (const binding of all<{ profile_id: string }>('SELECT profile_id FROM shot_visual_bindings WHERE shot_id=?', shot.id)) {
+            const profile = resolved.find(item => item.id === binding.profile_id)?.input
+            const object = profile && coverage?.objects.find(object => object.requires_profile
+              && object.kind === profile.kind && object.name === profile.name && object.variant === profile.variant)
+            run('UPDATE shot_visual_bindings SET usage=? WHERE shot_id=? AND profile_id=?', object?.usage || 'none', shot.id, binding.profile_id)
+          }
+        }
       }
       // Scoped analysis replaces whole-scene inheritance. Scene candidates
       // omitted from the new result stay available without becoming shot inputs.
@@ -195,10 +226,10 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
         const profile = required<VisualProfile>('visual_profiles', profileId)
         applyProfileShotUsage(profile, input, state.refreshSceneIds)
       }
-      assertStoryboardReferenceBudget(id, data.scene_ids)
+      const prepared = scriptCanvasPreparationSnapshot(id, data.scene_ids, context, data.design_id)
+      assertStoryboardReferenceBudget(id, data.scene_ids, undefined, { shots: prepared.shots })
       // The legacy preparation route can create a scene template. Record the
       // final shot contents so that creation itself does not invalidate the cache.
-      const prepared = scriptCanvasPreparationSnapshot(id, data.scene_ids, context)
       for (const scene of prepared.scenes) {
         const profileIds = prepared.visuals.scene_visual_bindings.filter(binding => binding.scene_id === scene.id).map(binding => binding.profile_id).sort()
         run(`INSERT INTO script_canvas_preparations (scene_id, signature, profile_ids) VALUES (?, ?, ?)
@@ -206,7 +237,7 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
       }
       run('UPDATE projects SET updated_at=? WHERE id=?', now(), id)
       const visuals = visualProjectData(id)
-      const shots = all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position', id).filter(shot => data.scene_ids.includes(shot.source_scene_id || ''))
+      const shots = prepared.shots
       const shotIds = new Set(shots.map(shot => shot.id))
       const bindings = visuals.shot_visual_bindings.filter(binding => shotIds.has(binding.shot_id))
       const profileIds = new Set(bindings.map(binding => binding.profile_id))

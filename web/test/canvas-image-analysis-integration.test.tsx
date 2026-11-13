@@ -18,7 +18,7 @@ register(`data:text/javascript,${encodeURIComponent(`
 `)}`, import.meta.url)
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
-for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLElement', 'HTMLAnchorElement', 'Element', 'ShadowRoot', 'Event', 'MouseEvent', 'MutationObserver', 'DOMParser', 'File', 'FormData']) {
+for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLElement', 'HTMLAnchorElement', 'Element', 'ShadowRoot', 'Event', 'CustomEvent', 'MouseEvent', 'MutationObserver', 'DOMParser', 'File', 'FormData']) {
   Object.defineProperty(globalThis, key, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[key] })
 }
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, getComputedStyle: dom.window.getComputedStyle.bind(dom.window) })
@@ -66,6 +66,7 @@ Object.assign(dom.window, { ResizeObserver: TestResizeObserver, DOMMatrixReadOnl
 const { createRoot } = await import('react-dom/client')
 const { default: ProjectCanvas } = await import('../src/features/canvas/ProjectCanvas')
 const { promptEditorText } = await import('../src/features/canvas/CanvasPromptEditor')
+const { rememberModelSelection } = await import('../src/features/models/model-selection-store')
 after(() => dom.window.close())
 
 const projectId = 'image-analysis-test', timestamp = '2026-10-22T00:00:00Z'
@@ -146,8 +147,12 @@ async function savedGraph(snapshots: CanvasGraph[]) {
   assert.ok(snapshots.length, 'actual graph autosave reached HTTP')
   return snapshots.at(-1)!
 }
-async function mount(openExisting = true, overrides: Partial<ProjectCanvasProps> = {}) {
-  dom.window.localStorage.clear(); dom.window.sessionStorage.clear(); frames.clear()
+async function mount(openExisting = true, overrides: Partial<ProjectCanvasProps> = {}, preservePreferences = false) {
+  if (!preservePreferences) {
+    dom.window.localStorage.clear()
+    for (const modality of ['text', 'image', 'video'] as const) rememberModelSelection(modality, null)
+  }
+  dom.window.sessionStorage.clear(); frames.clear()
   dom.window.localStorage.setItem(`project-canvas-viewport:${projectId}`, JSON.stringify({ x: 0, y: 0, zoom: 0.8 }))
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container)
@@ -170,7 +175,17 @@ async function mount(openExisting = true, overrides: Partial<ProjectCanvasProps>
   } }
 }
 
-test('a new image node exposes an empty body above folded requirements and persists both into its generation preview', async t => {
+async function chooseModel(label: string, name: string) {
+  const input = document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)
+    || (() => { const text = [...document.querySelectorAll<HTMLLabelElement>('label')].find(item => item.textContent === label); return text ? document.getElementById(text.htmlFor) as HTMLInputElement : null })()
+  assert.ok(input, `model selector: ${label}`)
+  await act(() => input.click()); await settle()
+  const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(item => item.textContent === name)
+  assert.ok(option, `model option: ${name}`)
+  await act(() => option.click()); await settle()
+}
+
+test('a new image node exposes an empty body above compact fixed settings and persists both into its generation preview', async t => {
   const transport = mockApi(t, initialGraph(false), () => { throw new Error('editing a prompt must not run image analysis') })
   const view = await mount(false)
   try {
@@ -183,17 +198,27 @@ test('a new image node exposes an empty body above folded requirements and persi
     assert.match(requirements[0], /【图片生成要求】/)
     assert.equal(editor.state.doc.firstChild?.type.name, 'paragraph')
     assert.equal(editor.state.doc.firstChild?.textContent, '')
-    assert.equal(button('展开编辑：图片生成要求').getAttribute('aria-expanded'), 'false')
+    assert.match(view.container.querySelector('[aria-label="固定设定摘要"]')!.textContent!, /设定与要求 · 1 项/)
+    assert.equal(view.container.querySelector('.pc-prompt-requirement-choice'), null, 'fixed settings do not occupy the prose editor')
     assert.equal(button('开始生成').disabled, true, 'generated requirements alone are not authored prompt content')
     const beforeEdit = await savedGraph(transport.saved)
     const created = beforeEdit.nodes.find(item => item.type === 'generation')!
     assert.ok(created)
     assert.equal(created.text, '', 'displaying an empty body does not write generated text into the node')
     const saveCount = transport.saved.length
-    await click('展开编辑：图片生成要求')
-    await click('收起设定：图片生成要求')
+    await click('查看固定设定')
+    const fixed = document.querySelector('[role="dialog"]')!
+    assert.match(fixed.textContent!, /图片生成要求/)
+    assert.equal(fixed.querySelector('[contenteditable="true"]'), null)
+    assert.match(fixed.querySelector('pre')!.textContent!, /图片生成要求|画面比例|背景|清晰度/)
+    await click('关闭固定设定')
+    await click('预览完整提示词')
+    const preview = document.querySelector('[role="dialog"]')!
+    assert.equal(preview.querySelector('pre')!.textContent, original)
+    assert.equal(preview.querySelector('[contenteditable="true"]'), null)
+    await click('关闭完整提示词预览')
     await savedGraph(transport.saved)
-    assert.equal(transport.saved.length, saveCount, 'folding changes only the view, without autosaving a graph mutation')
+    assert.equal(transport.saved.length, saveCount, 'preview changes only the view, without autosaving a graph mutation')
     assert.equal(promptEditorText(editor.getJSON()), original)
 
     const authored = '窗边的年轻女子，柔和晨光，近景构图，保留自然织物纹理。'
@@ -244,6 +269,63 @@ test('new canvas nodes use eligible category defaults and keep saved node select
     assert.equal(saved.nodes.find(item => item.type === 'image_analysis')?.model_id, defaultVision.id)
     assert.equal(transport.analyses.length, 0)
     assert.equal(transport.previews.length, 0)
+  } finally { await view.destroy() }
+})
+
+test('an explicit image-model choice becomes the default for later nodes and the next visit while saved bindings remain intact', async t => {
+  const graph = initialGraph(false), existing = node('saved-image', 'generation', { model_id: imageModel.id, settings: { modality: 'image', ratio: '16:9' } })
+  graph.nodes.push(existing)
+  const configured = { ...imageModel, is_default: true }
+  const alternate = { ...imageModel, id: 'recent-image', name: '最近选择图片模型', settings: { ...imageModel.settings, ratios: ['1:1'], resolutions: ['2K'] } }
+  const models = [visionModel, configured, alternate]
+  const transport = mockApi(t, graph, () => { throw new Error('choosing a model must not generate or analyze media') })
+  const first = await mount(false, { models })
+  let persisted: CanvasGraph
+  try {
+    await click('添加图片生成节点')
+    await chooseModel('生成模型', alternate.name)
+    await click('添加图片生成节点')
+    persisted = await savedGraph(transport.saved)
+    assert.deepEqual(persisted.nodes.find(item => item.id === existing.id), existing)
+    const added = persisted.nodes.filter(item => item.type === 'generation' && item.id !== existing.id)
+    assert.equal(added.length, 2)
+    assert.ok(added.every(item => item.model_id === alternate.id))
+    assert.equal(added[1]!.settings.ratio, '1:1')
+    assert.equal(added[1]!.settings.resolution, '2K')
+    assert.equal(transport.analyses.length + transport.previews.length, 0)
+  } finally { await first.destroy() }
+  const revisit = mockApi(t, persisted!, () => { throw new Error('creating a node must not generate media') })
+  const second = await mount(false, { models }, true)
+  try {
+    await click('添加图片生成节点')
+    const saved = await savedGraph(revisit.saved)
+    assert.equal(saved.nodes.filter(item => item.type === 'generation').at(-1)!.model_id, alternate.id)
+    assert.deepEqual(saved.nodes.find(item => item.id === existing.id), existing)
+  } finally { await second.destroy() }
+})
+
+test('image analysis remembers an image model by its actual category and falls back within eligible capabilities', async t => {
+  const nano = { ...imageModel, id: 'nano-recent', name: '最近选择 Gemini 图片模型',
+    settings: { ...imageModel.settings, image_analysis: { enabled: true, protocol: 'gemini_generate_content' } } }
+  const configuredImage = { ...imageModel, is_default: true }
+  const configuredVision = { ...visionModel, is_default: true }
+  const graph = initialGraph(false)
+  const transport = mockApi(t, graph, () => { throw new Error('selecting defaults must not analyze media') })
+  const view = await mount(false, { models: [configuredVision, configuredImage, nano] })
+  try {
+    await act(() => rememberModelSelection('image', imageModel.id)); await settle()
+    await click('添加图片反推提示词节点')
+    const first = await savedGraph(transport.saved)
+    assert.equal(first.nodes.find(item => item.type === 'image_analysis')!.model_id, visionModel.id, 'plain remembered image generator cannot serve image analysis')
+    await chooseModel('看图模型', nano.name)
+    const close = document.querySelector<HTMLButtonElement>('.mantine-Modal-close'); assert.ok(close)
+    await act(() => close.click()); await settle()
+    await click('添加图片生成节点')
+    await click('添加图片反推提示词节点')
+    const saved = await savedGraph(transport.saved)
+    assert.equal(saved.nodes.find(item => item.type === 'generation')!.model_id, nano.id, 'Gemini analysis selection remembers its image modality')
+    assert.ok(saved.nodes.filter(item => item.type === 'image_analysis').every(item => item.model_id === nano.id))
+    assert.equal(transport.analyses.length + transport.previews.length, 0)
   } finally { await view.destroy() }
 })
 

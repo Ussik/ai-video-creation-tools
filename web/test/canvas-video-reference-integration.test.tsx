@@ -22,6 +22,10 @@ import type { CanvasNodeProposalActions } from '../src/features/canvas/ProjectCa
 import type { CanvasNodeProposal, CanvasNodeProposalSource } from '@video-studio/shared/canvas/canvas-node-proposal'
 import { canvasGenerationSubmissionStorageKey, createCanvasGenerationSubmission, readCanvasGenerationSubmission } from '../src/features/canvas/canvas-generation-submission'
 import { parseCanvasNodeClipboard } from '../src/features/canvas/canvas-node-clipboard'
+import { createImageVideoHandoff, pendingImageVideoHandoff, resolveImageVideoHandoff } from '../src/features/canvas/canvas-shot-workflow'
+import { rememberModelSelection } from '../src/features/models/model-selection-store'
+import type { VideoAudioPlan } from '@video-studio/shared/media/video-prompt-audio'
+import { shotVideoPrompt } from '@video-studio/shared/storyboard/shot-prompts'
 
 // Render the actual canvas and composer; only CSS and HTTP transport are mocked.
 register(`data:text/javascript,${encodeURIComponent(`
@@ -98,15 +102,17 @@ const videoModel: Model = { id: 'video-model', provider_id: 'provider', name: '�
   modality: 'video', protocol: 'async_video', enabled: true,
   settings: { supported_modes: ['text', 'first_frame', 'first_last_frame', 'reference'], max_reference_images: 9,
     resolutions: ['480p', '720p'], ratios: ['adaptive', '9:16'], request_template: { prompt: '{{prompt}}', images: '{{images}}' } } }
+const handoffTextModel: Model = { ...videoModel, id: 'handoff-text-model', name: '镜头理解模型', modality: 'text', protocol: 'chat_completions', settings: {} }
 const hero = { id: 'hero', project_id: 'video-reference-test', kind: 'character', name: '林晚', variant: '校服', revision: 2,
   definition: '短发，蓝色校服', view_requirements: '正面与侧面', board_asset_id: 'hero-board', board_prompt: '', asset_task_id: null,
   definition_status: 'ready' } as VisualProfile
 const station = { ...hero, id: 'station', kind: 'location', name: '站台', variant: '夜间', definition: '空旷地下站台', board_asset_id: 'station-board' } as VisualProfile
 const bind = (profile: VisualProfile, required: boolean): ShotVisualBinding => ({ ...profile, profile_id: profile.id, shot_id: 'shot', required })
+const fixtureAudioPlan: VideoAudioPlan = { version: 1, speech: [], sound_effects: ['站台环境声'], music: '', silent: false }
 const detail = { id: 'video-reference-test', name: '夜班列车', brief: '车站故事', ratio: '9:16', updated_at: timestamp,
   script: { outline: '林晚等车。', characters: '林晚', scenes: [], artifacts: [], generation_options: {} },
   shots: [{ id: 'shot', project_id: 'video-reference-test', position: 0, title: '站台回望', prompt: '林晚在站台回头。', video_prompt: '林晚缓缓回头，镜头平移。',
-    duration: 5, selected_asset_id: 'storyboard', source_scene_id: null, start_state: '', end_state: '', cut_note: '' }],
+    duration: 5, selected_asset_id: 'storyboard', source_scene_id: null, start_state: '', end_state: '', cut_note: '', audio_plan: fixtureAudioPlan }],
   assets: ['storyboard', 'hero-board', 'station-board', 'manual'].map(id => ({ id, project_id: 'video-reference-test', kind: 'image', filename: `${id}.png`,
     shot_id: id === 'storyboard' ? 'shot' : null, url: `/api/assets/${id}/file`, created_at: timestamp })),
   jobs: [], asset_tasks: [], timeline_clips: [], asset_reviews: [], visual_profiles: [hero, station], scene_visual_bindings: [],
@@ -115,8 +121,11 @@ const detail = { id: 'video-reference-test', name: '夜班列车', brief: '车�
 function node(id: string, type: CanvasNode['type'], x: number, asset_id: string | null = null): CanvasNode {
   return { id, type, x, y: 100, width: 330, height: 260, title: id, text: '', prompt: '', asset_id, shot_id: null, model_id: null, job_id: null, settings: {} }
 }
+// General reference/composer fixtures begin with a reviewed video. Dedicated
+// legacy tests construct their unfinished graph separately below.
+const reviewedFixtureGraphs = new WeakSet<CanvasGraph>()
 function initialGraph(mode: 'reference' | 'first_frame', extraManual = false): CanvasGraph {
-  return { revision: 'initial', nodes: [
+  const graph: CanvasGraph = { revision: 'initial', nodes: [
     { ...node('storyboard-node', 'image', 50, 'storyboard'), shot_id: 'shot' },
     { ...node('video-node', 'generation', 500), title: '分镜视频', shot_id: 'shot', model_id: videoModel.id, prompt: '林晚缓缓回头，镜头平移。',
       settings: { modality: 'video', mode, visual_reference_mode: mode === 'reference' ? 'profiles' : 'keyframe', storyboard_reference_asset_id: 'storyboard', resolution: '480p', ratio: '9:16' } },
@@ -124,11 +133,23 @@ function initialGraph(mode: 'reference' | 'first_frame', extraManual = false): C
     { ...node('project-script:video-reference-test', 'project_script_ref', -790), title: detail.name, width: 720, height: 480 },
   ], edges: [{ id: 'storyboard-edge', source: 'storyboard-node', target: 'video-node', reference_asset_id: 'storyboard' },
     ...(extraManual ? [{ id: 'manual-edge', source: 'manual-node', target: 'video-node', reference_asset_id: 'manual' }] : [])] }
+  reviewedFixtureGraphs.add(graph)
+  return graph
 }
 type PreviewInput = { video_reference_usages?: import('@video-studio/shared/media/video-reference-usage').VideoReferenceUsageSelection[]; mode: string; reference_asset_ids: string[]; explicit_reference_asset_ids?: string[]; prompt: string; visual_reference_mode: string; excluded_visual_profile_ids?: string[]; storyboard_reference_asset_id?: string | null }
 type ApiHandler = (path: string, method: string, body: Record<string, unknown>, init?: RequestInit) => Response | Promise<Response> | undefined
 function mockApi(t: TestContext, graph: CanvasGraph, projectDetail = detail, handler?: ApiHandler, saveError: boolean | ((graph: CanvasGraph) => boolean) = false, canvasGraphs?: Record<string, CanvasGraph>) {
-  const previews: PreviewInput[] = [], resolvedPreviews: PreviewInput[] = [], saved: CanvasGraph[] = []
+  for (const value of [graph, ...Object.values(canvasGraphs || {})]) if (reviewedFixtureGraphs.has(value)) {
+    for (const node of [...value.nodes]) {
+      const pending = pendingImageVideoHandoff(value, node, projectDetail, [videoModel, handoffTextModel])
+      if (!pending) continue
+      const shot = projectDetail.shots.find(shot => shot.id === node.shot_id)
+      Object.assign(value, resolveImageVideoHandoff(value, node.id, pending.context.signature, {
+        audio_plan: shot?.audio_plan || fixtureAudioPlan, motion_prompt: shot?.video_prompt || '人物保持当前动作。',
+      }, projectDetail, [videoModel, handoffTextModel]))
+    }
+  }
+  const previews: PreviewInput[] = [], resolvedPreviews: PreviewInput[] = [], saved: CanvasGraph[] = [], analyses: Record<string, unknown>[] = []
   t.after(() => dom.window.localStorage.removeItem('project-reference-batch:["video-reference-test","video-reference-test"]'))
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
     const path = String(url), method = init?.method || 'GET'
@@ -159,8 +180,15 @@ function mockApi(t: TestContext, graph: CanvasGraph, projectDetail = detail, han
       saved.push(value)
       return Response.json({ ...value, revision: `saved-${saved.length}` })
     }
-    const handled = await handler?.(path, method, init?.body ? JSON.parse(String(init.body)) : {}, init)
+    const body = init?.body ? JSON.parse(String(init.body)) : {}
+    if (path === '/api/projects/video-reference-test/canvas/video-audio-plan') analyses.push(body)
+    const handled = await handler?.(path, method, body, init)
     if (handled) return handled
+    if (path === '/api/projects/video-reference-test/canvas/video-audio-plan') return Response.json({
+      source_signature: body.source_signature,
+      audio_plan: { version: 1, speech: [], sound_effects: [], music: '', silent: true },
+      motion_prompt: '人物维持当前空间关系后停步，镜头保持低机位。',
+    })
     if (path.startsWith('/api/projects/video-reference-test/generation-submissions/')) return Response.json({ job: null })
     if (path.startsWith('/api/projects/video-reference-test/shot-submissions/')) return Response.json({ shot: null })
     assert.equal(path, '/api/projects/video-reference-test/generate/preview', 'test must never create a paid generation job')
@@ -180,7 +208,7 @@ function mockApi(t: TestContext, graph: CanvasGraph, projectDetail = detail, han
     resolvedPreviews.push(response)
     return Response.json(response)
   })
-  return { previews, resolvedPreviews, saved }
+  return { previews, resolvedPreviews, saved, analyses }
 }
 async function settle() {
   await act(async () => {
@@ -275,6 +303,19 @@ async function mount(projectDetail = detail, portals = false, overrides: Partial
     } }
 }
 
+async function editFixedRequirement(view: Awaited<ReturnType<typeof mount>>, name: string) {
+  await act(() => view.button('查看固定设定').click()); await settle()
+  const control = [...document.querySelectorAll<HTMLButtonElement>('.pc-prompt-fixed-dialog [aria-label^="查看要求："]')]
+    .find(button => button.getAttribute('aria-label')?.startsWith(`查看要求：${name} · `))
+  assert.ok(control, `readonly settings entry ${name}`)
+  if (control.getAttribute('aria-expanded') === 'false') { await act(() => control.click()); await settle() }
+  const item = control.closest('.mantine-Accordion-item')!
+  assert.equal(item.querySelector('[contenteditable="true"], textarea, input'), null, 'viewing fixed settings is read-only')
+  const edit = item.querySelector<HTMLButtonElement>('[aria-label^="单独编辑要求："]')!
+  assert.ok(edit, `explicit editing entry ${name}`)
+  await act(() => edit.click()); await settle()
+}
+
 test('Seedance 2.5 canvas submits source aspect and 480p draft while retaining the saved resolution preference', async t => {
   const graph = initialGraph('first_frame'), target = graph.nodes.find(node => node.id === 'video-node')!
   target.settings.resolution = '1080p'
@@ -283,7 +324,8 @@ test('Seedance 2.5 canvas submits source aspect and 480p draft while retaining t
   const trigger = () => view.container.querySelector<HTMLButtonElement>('.pc-generation-parameters-trigger')!
   try {
     assert.match(trigger().textContent!, /源画幅 · 1080p/)
-    assert.match(view.container.querySelector('.pc-prompt-parameter-values')!.textContent!, /源画幅 · 1080p/)
+    assert.match(view.container.querySelector('.pc-prompt-composer-foot .pc-generation-parameters-trigger')!.textContent!, /源画幅 · 1080p/)
+    await editFixedRequirement(view, '视频生成要求')
     await act(() => view.button('区块操作：视频生成要求').click()); await settle()
     await act(() => view.button('调整参数：视频生成要求').click()); await settle()
     assert.equal(trigger().getAttribute('aria-expanded'), 'true', 'ordinary video shortcut opens the shared footer controls')
@@ -294,7 +336,7 @@ test('Seedance 2.5 canvas submits source aspect and 480p draft while retaining t
     assert.deepEqual([...panel.querySelectorAll('[aria-label="清晰度"] button')].map(button => button.textContent), ['480p', '720p', '1080p'])
     await act(() => panel.querySelector<HTMLInputElement>('[aria-label="样片模式"]')!.click()); await settle()
     assert.match(trigger().textContent!, /源画幅 · 480p/)
-    assert.match(view.container.querySelector('.pc-prompt-parameter-values')!.textContent!, /源画幅 · 480p.*样片/)
+    assert.match(view.container.querySelector('.pc-prompt-composer-foot .pc-generation-parameters-trigger')!.textContent!, /源画幅 · 480p.*样片/)
     await act(() => trigger().click()); await settle()
     await view.preview()
     assert.equal(api.previews.length, 1)
@@ -319,7 +361,7 @@ test('Seedance 2.5 edit canvas follows source timing while keeping a positive pl
   try {
     const trigger = view.container.querySelector<HTMLButtonElement>('.pc-generation-parameters-trigger')!
     assert.match(trigger.textContent!, /源画幅 · 720p · 原视频时长/)
-    assert.equal(view.container.querySelector('.pc-prompt-parameter-values')!.textContent, '源画幅 · 720p · 原视频时长')
+    assert.match(view.container.querySelector('.pc-prompt-composer-foot .pc-generation-parameters-trigger')!.textContent!, /源画幅 · 720p · 原视频时长/)
     assert.match(view.prompt().value, /视频时长：跟随原视频/)
     assert.equal(view.container.querySelector<HTMLInputElement>('[aria-label="参考视频地址"]')!.placeholder, '公网视频 URL 或 asset:// 素材 ID')
     await view.editPrompt(view.prompt().value.replace('视频时长：跟随原视频，保留原视频的时间结构与镜头连续性。', '视频时长：20 秒，沿用原视频。'))
@@ -347,7 +389,7 @@ test('legacy final complete drafts keep authored bounded settings when opened in
     target.settings = { ...target.settings, prompt_is_final: true, prompt_template: source }
     view = await mount(detail, false, { models: [imageModel] })
     assert.match(promptEditorText(view.prompt().editor.getJSON()), /用户保留的旧版外套/)
-    assert.doesNotMatch(view.container.querySelector('.pc-prompt-document-status')!.textContent!, /项待确认/)
+    assert.doesNotMatch(view.button('查看来源与修改记录').textContent!, /项待确认/)
     await view.preview()
     assert.match(api.previews.at(-1)!.prompt, /用户保留的旧版外套/)
   } finally { await view.destroy() }
@@ -370,23 +412,27 @@ test('node custom settings merge independent source changes and require a persis
       shot_visual_bindings: [bind(hero, true), bind(nextStation, false)] })
     assert.ok(rawPrompt().includes(local))
     assert.ok(rawPrompt().includes(nextStation.definition), 'independent project edits merge within the same block')
-    assert.doesNotMatch(view.container.querySelector('.pc-prompt-document-status')!.textContent!, /项待确认/)
+    assert.doesNotMatch(view.button('查看来源与修改记录').textContent!, /项待确认/)
     await view.preview()
     assert.equal(api.previews.length, 1)
     await view.renderDetail(updated)
     assert.ok(rawPrompt().includes(local), 'overlapping source changes preserve the node edit')
-    assert.match(view.container.querySelector('.pc-prompt-document-status')!.textContent!, /1 项待确认/)
+    assert.match(view.button('查看来源与修改记录').textContent!, /1 项待确认/)
     await view.preview()
     assert.equal(api.previews.length, 1, 'unresolved source conflicts cannot produce a mixed preview')
+    await act(() => view.button('查看来源与修改记录').click()); await settle()
     await act(() => view.button('保留本节点修改：镜头视觉设定').click()); await settle()
+    await act(() => view.button('关闭来源与修改记录').click()); await settle()
     assert.ok(rawPrompt().includes(local))
-    assert.doesNotMatch(view.container.querySelector('.pc-prompt-document-status')!.textContent!, /项待确认/)
+    assert.doesNotMatch(view.button('查看来源与修改记录').textContent!, /项待确认/)
     await act(() => new Promise(resolve => setTimeout(resolve, 900))); await settle()
     Object.assign(graph, api.saved.at(-1)!)
     await view.destroy(); view = await mount(updated, false, { models: [imageModel] })
     assert.ok(rawPrompt().includes(local), 'explicit keep decision survives reload')
-    assert.doesNotMatch(view.container.querySelector('.pc-prompt-document-status')!.textContent!, /项待确认/)
+    assert.doesNotMatch(view.button('查看来源与修改记录').textContent!, /项待确认/)
+    await act(() => view.button('查看来源与修改记录').click()); await settle()
     await act(() => view.button('沿用来源内容：镜头视觉设定').click()); await settle()
+    await act(() => view.button('关闭来源与修改记录').click()); await settle()
     assert.ok(rawPrompt().includes(nextHero.definition))
     assert.ok(!rawPrompt().includes(local))
     assert.ok(rawPrompt().includes(nextStation.definition))
@@ -563,7 +609,7 @@ test('prompt toolbar keeps one refinement and copy action through refreshes, gen
   const actions = () => {
     const toolbar = document.querySelector('.pc-prompt-composer-head')!
     assert.ok(toolbar)
-    const refine = toolbar.querySelectorAll<HTMLButtonElement>('[aria-label="使用技能整理提示词"]')
+    const refine = document.querySelectorAll<HTMLButtonElement>('.pc-prompt-primary-action [aria-label="使用技能整理提示词"]')
     const copy = toolbar.querySelectorAll<HTMLButtonElement>('[aria-label="复制节点"]')
     assert.equal(refine.length, 1, 'refreshes must not leave old refinement buttons behind')
     assert.equal(copy.length, 1, 'the copy menu has one stable trigger')
@@ -593,7 +639,7 @@ test('prompt toolbar keeps one refinement and copy action through refreshes, gen
   } finally { await view.destroy() }
 })
 
-test('pointer interactions with portaled prompt skills keep the selected node and refinement modal open', async t => {
+test('pointer interactions with portaled prompt skills keep the selected node and independent refinement modal open', async t => {
   const api = mockApi(t, initialGraph('reference'))
   // Mantine's test environment disables portals and hides this regression.
   const view = await mount(detail, true)
@@ -623,10 +669,11 @@ test('pointer interactions with portaled prompt skills keep the selected node an
   try {
     await pointerClick(view.button('使用技能整理提示词'))
     modal()
+    await pointerClick(document.querySelector<HTMLElement>('.prompt-skill-configuration .workspace-disclosure-control')!)
     await pointerClick(view.button('视频提示词技能选择'))
     const popover = document.querySelector<HTMLElement>('.creative-skill-popover')!
     assert.ok(popover)
-    assert.equal(modal().contains(popover), false, 'regression exercises an actual portal outside the modal')
+    assert.equal(modal().contains(popover), false, 'regression exercises an actual portal outside the refinement modal')
     await pointerClick(popover.querySelector<HTMLElement>('header')!)
     modal()
     await chooseSkill('video_prompt主技能', 'video-b')
@@ -667,10 +714,11 @@ test('prompt primary and auxiliary choices carry into the next real canvas node 
     await act(() => option.click()); await settle()
   }
   try {
-    const skillAction = view.container.querySelector<HTMLButtonElement>('.pc-prompt-composer-head button[aria-label="使用技能整理提示词"]')
+    const skillAction = view.container.querySelector<HTMLButtonElement>('.pc-prompt-primary-action button[aria-label="使用技能整理提示词"]')
     assert.ok(skillAction && !skillAction.disabled)
     await act(() => skillAction.click()); await settle()
     assert.ok(document.querySelector('.prompt-skill-modal'))
+    await act(() => document.querySelector<HTMLElement>('.prompt-skill-configuration .workspace-disclosure-control')!.click()); await settle()
     await act(() => view.button('视频提示词技能选择').click()); await settle()
     await choose('video_prompt主技能', 'video-b')
     await choose('video_prompt辅助技能', 'video-a')
@@ -683,6 +731,7 @@ test('prompt primary and auxiliary choices carry into the next real canvas node 
     assert.ok(view.container.querySelector('[data-id="next-video-node"].selected'))
     await act(() => view.button('使用技能整理提示词').click()); await settle()
     skillSummary()
+    await act(() => document.querySelector<HTMLElement>('.prompt-skill-configuration .workspace-disclosure-control')!.click()); await settle()
     await act(() => view.button('视频提示词技能选择').click()); await settle()
     assert.equal(document.querySelector<HTMLInputElement>('input[aria-label="video_prompt辅助技能"]')!.parentElement?.textContent?.includes('视频技能a'), true)
     assert.deepEqual(api.saved, [])
@@ -1040,6 +1089,280 @@ function editedImageHandoffFixture() {
   return { graph, source, projectDetail, body }
 }
 
+function plan5DialogueFixture() {
+  const line = '刘叔，这两天自来水管没洗吧？煮出来的汤底，隐隐带着股烂鱼死水腥泥味。'
+  const shotPrompt = `镜头保持稳定的视线平视微拉。许知夜用纸巾擦拭唇角红油，缓缓放下手，嘴唇微动沉声开口，声音平稳而带着洞察感：“${line}”说话间其眼眸深处掠过一丝冷意。`
+  const imageBody = '许知夜坐在雨棚下的红色塑料桌前，穿黑色外套，手中持有擦嘴的纸巾。'
+  const projectDetail: ProjectDetail = { ...detail, visual_profiles: [], shot_visual_bindings: [], shots: [{ ...detail.shots[0],
+    title: '许知夜擦嘴角品出死水腥泥味', prompt: '许知夜擦嘴角后指出汤底异味。', video_prompt: shotPrompt,
+    start_state: '纸巾擦过嘴角', end_state: '手慢慢放下', cut_note: '接老板反应', duration: 8, audio_plan: null }] }
+  const graph = initialGraph('reference'), source = graph.nodes.find(item => item.id === 'video-node')!
+  source.asset_id = 'storyboard'; source.model_id = imageModel.id; source.prompt = projectDetail.shots[0]!.prompt
+  source.title = '最新分镜图'; source.text = imageBody
+  source.settings = { modality: 'image', mode: 'reference', ratio: '9:16', resolution: '1K',
+    prompt_is_final: true, prompt_body: imageBody, prompt_base: source.prompt, prompt_template: '' }
+  graph.edges = []
+  const audioPlan: VideoAudioPlan = { version: 1, speech: [{ speaker: '许知夜', text: line, delivery: '声音平稳而带着洞察感',
+    mode: 'dialogue', source_text: shotPrompt }], sound_effects: ['雨声与铁锅沸水声'], music: '', silent: false }
+  const semanticPlan = { audio_plan: audioPlan, motion_prompt: '许知夜擦拭嘴角，慢慢放下纸巾，开口指出汤底异味；镜头平视微拉。' }
+  return { line, shotPrompt, imageBody, projectDetail, graph, source, semanticPlan }
+}
+
+function videoPreparationClock(t: TestContext) {
+  let now = Date.now(), timerId = 1_000_000
+  const timeouts = new Map<number, { deadline: number; callback: () => void }>(), intervals = new Map<number, () => void>()
+  const nativeTimeout = dom.window.setTimeout.bind(dom.window), nativeClearTimeout = dom.window.clearTimeout.bind(dom.window)
+  const nativeInterval = dom.window.setInterval.bind(dom.window), nativeClearInterval = dom.window.clearInterval.bind(dom.window)
+  t.mock.method(Date, 'now', () => now)
+  // Advance the elapsed-time display and notification deadlines without
+  // changing React Flow's animation or save-debounce clocks.
+  t.mock.method(dom.window, 'setTimeout', (handler: TimerHandler, delay?: number, ...args: unknown[]) => {
+    if ((delay !== 3000 && delay !== 5000) || typeof handler !== 'function') return nativeTimeout(handler, delay, ...args)
+    const id = ++timerId; timeouts.set(id, { deadline: now + delay, callback: () => handler(...args) }); return id
+  })
+  t.mock.method(dom.window, 'clearTimeout', (id?: number) => {
+    if (id !== undefined && timeouts.delete(id)) return
+    nativeClearTimeout(id)
+  })
+  t.mock.method(dom.window, 'setInterval', (handler: TimerHandler, delay?: number, ...args: unknown[]) => {
+    if (delay !== 1000 || typeof handler !== 'function') return nativeInterval(handler, delay, ...args)
+    const id = ++timerId; intervals.set(id, () => handler(...args)); return id
+  })
+  t.mock.method(dom.window, 'clearInterval', (id?: number) => {
+    if (id !== undefined && intervals.delete(id)) return
+    nativeClearInterval(id)
+  })
+  return async (milliseconds: number) => {
+    await act(() => {
+      now += milliseconds
+      for (const [id, timer] of timeouts) {
+        if (timer.deadline > now) continue
+        timeouts.delete(id); timer.callback()
+      }
+      intervals.forEach(callback => callback())
+    })
+    await settle()
+  }
+}
+
+for (const mode of ['reference', 'first_frame'] as const) test(`video preparation for ${mode} stays visible while running and dismisses five seconds after success`, async t => {
+  const f = plan5DialogueFixture()
+  let release!: (response: Response) => void, request: Record<string, unknown> = {}
+  const api = mockApi(t, f.graph, f.projectDetail, (path, _method, body) => {
+    if (!path.endsWith('/canvas/video-audio-plan')) return
+    request = body
+    return new Promise<Response>(resolve => { release = resolve })
+  })
+  const view = await mount(f.projectDetail, false, { models: [imageModel, videoModel, handoffTextModel] })
+  const advance = videoPreparationClock(t)
+  const status = () => document.querySelector<HTMLElement>('.pc-video-preparation-status')
+  const statusButton = (label: string) => {
+    const button = [...status()!.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === label)
+    assert.ok(button, label); return button
+  }
+  try {
+    await act(() => view.button(mode === 'reference' ? '作为参考设计视频' : '以此图作为首帧生成').click()); await settle()
+    assert.equal(api.analyses.length, 1)
+    assert.equal(status()?.getAttribute('role'), 'status')
+    assert.equal(status()?.getAttribute('aria-label'), '视频准备状态')
+    assert.match(status()!.textContent!, /正在理解本镜动作与台词/)
+    assert.match(view.container.querySelector(`[data-id="${f.source.id}"] .pc-node-preparation-status`)!.textContent!, /理解中/)
+    await advance(8000)
+    assert.match(status()!.textContent!, /正在理解本镜动作与台词/)
+    assert.match(status()!.textContent!, /已等待 8 秒/)
+    await act(() => view.container.querySelector<HTMLElement>('[data-id="storyboard-node"]')!.click()); await settle()
+    assert.match(status()!.textContent!, /正在理解本镜动作与台词/, 'changing the selected node cannot hide a running analysis')
+    await act(() => release(Response.json({ ...f.semanticPlan, source_signature: request.source_signature }))); await settle()
+    assert.match(status()!.textContent!, /动作与台词已就绪/)
+    assert.equal(view.container.querySelector('.pc-node-preparation-status'), null)
+    await advance(4000)
+    assert.match(status()!.textContent!, /动作与台词已就绪/)
+    await act(() => view.container.querySelector<HTMLElement>('[data-id="storyboard-node"]')!.click()); await settle()
+    await act(() => statusButton('查看视频节点').click()); await settle()
+    assert.ok(view.button(`视频生成模式：${mode === 'reference' ? '多图参考' : '首帧承接'}`))
+    assert.ok(view.bodyPrompt().includes(f.line))
+    assert.equal(api.analyses.length, 1, 'viewing the prepared video never starts another analysis')
+    await advance(999)
+    assert.ok(status(), 'the full success display time starts when analysis completes')
+    await advance(1)
+    assert.equal(status(), null, 'success automatically disappears even after selecting and locating nodes')
+  } finally { await view.destroy() }
+})
+
+test('video preparation retains its failure and retries the same source action from the status card', async t => {
+  const f = plan5DialogueFixture()
+  let release!: (response: Response) => void, request: Record<string, unknown> = {}, attempt = 0
+  const api = mockApi(t, f.graph, f.projectDetail, (path, _method, body) => {
+    if (!path.endsWith('/canvas/video-audio-plan')) return
+    request = body; attempt++
+    if (attempt === 1) return Response.json({ message: '模拟镜头理解服务暂时不可用' }, { status: 503 })
+    return new Promise<Response>(resolve => { release = resolve })
+  })
+  const view = await mount(f.projectDetail, false, { models: [imageModel, videoModel, handoffTextModel] })
+  const advance = videoPreparationClock(t)
+  const status = () => document.querySelector<HTMLElement>('.pc-video-preparation-status')
+  try {
+    await act(() => view.button('作为参考设计视频').click()); await settle()
+    assert.match(status()!.textContent!, /动作与台词分析失败/)
+    assert.match(status()!.textContent!, /模拟镜头理解服务暂时不可用/)
+    await advance(30000)
+    assert.match(status()!.textContent!, /动作与台词分析失败/, 'the failure remains after transient notices expire')
+    assert.match(status()!.textContent!, /模拟镜头理解服务暂时不可用/)
+    const retry = [...status()!.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '重新分析')
+    assert.ok(retry)
+    await act(() => retry.click()); await settle()
+    assert.equal(api.analyses.length, 2)
+    assert.match(status()!.textContent!, /正在理解本镜动作与台词/)
+    assert.deepEqual(api.analyses[1], api.analyses[0], 'retry analyzes the same authored image and shot')
+    await act(() => release(Response.json({ ...f.semanticPlan, source_signature: request.source_signature }))); await settle()
+    assert.match(status()!.textContent!, /动作与台词已就绪/)
+    assert.ok(view.bodyPrompt().includes(f.line))
+    assert.ok(view.button('视频生成模式：多图参考'))
+    assert.equal(api.previews.length, 0, 'preparation and retry do not submit a generation')
+    await advance(5000)
+    assert.equal(status(), null, 'a successful retry also dismisses automatically')
+  } finally { await view.destroy() }
+})
+
+test('video preparation exposes the same persistent state while restoring an unfinished legacy video', async t => {
+  const f = plan5DialogueFixture(), created = createImageVideoHandoff(f.graph, f.source, f.projectDetail, [imageModel, videoModel],
+    node('legacy-video', 'generation', 900), 'legacy-preparation-edge', 'reference')
+  const target = created.graph.nodes.find(item => item.id === created.nodeId)!
+  target.settings.image_video_handoff!.source_signature = '1111111111111111'
+  let release!: (response: Response) => void, request: Record<string, unknown> = {}
+  const api = mockApi(t, created.graph, f.projectDetail, (path, _method, body) => {
+    if (!path.endsWith('/canvas/video-audio-plan')) return
+    request = body
+    return new Promise<Response>(resolve => { release = resolve })
+  })
+  const view = await mount(f.projectDetail, false, { models: [imageModel, videoModel, handoffTextModel] })
+  const advance = videoPreparationClock(t)
+  const status = () => document.querySelector<HTMLElement>('.pc-video-preparation-status')
+  try {
+    await act(() => view.container.querySelector<HTMLElement>(`[data-id="${target.id}"]`)!.click()); await settle()
+    const restore = [...document.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '分析并恢复动作与台词')
+    assert.ok(restore)
+    await act(() => restore.click()); await settle()
+    assert.equal(api.analyses.length, 1)
+    assert.match(status()!.textContent!, /正在理解本镜动作与台词/)
+    assert.match(view.container.querySelector(`[data-id="${target.id}"] .pc-node-preparation-status`)!.textContent!, /理解中/)
+    await advance(4000)
+    assert.match(status()!.textContent!, /已等待 4 秒/)
+    await act(() => release(Response.json({ ...f.semanticPlan, source_signature: request.source_signature }))); await settle()
+    assert.match(status()!.textContent!, /动作与台词已就绪/)
+    assert.ok(view.bodyPrompt().includes(f.line))
+    assert.equal(view.container.querySelector('.pc-node-preparation-status'), null)
+    assert.ok(api.saved.at(-1)!.nodes.find(item => item.id === target.id)!.settings.image_video_handoff!.semantic_plan)
+    await act(() => view.button('关闭视频准备状态').click()); await settle()
+    assert.equal(status(), null, 'success can still be dismissed manually before its deadline')
+  } finally { await view.destroy() }
+})
+
+test('plan5 dialogue reaches the final generation preview through explicit analysis using the remembered text model', async t => {
+  const f = plan5DialogueFixture()
+  const fallback = { ...handoffTextModel, is_default: true }, remembered = { ...handoffTextModel, id: 'remembered-text', name: '最近选择的文本模型' }
+  const api = mockApi(t, f.graph, f.projectDetail, (path, method, body) => {
+    if (!path.endsWith('/canvas/video-audio-plan')) return
+    assert.equal(method, 'POST')
+    assert.equal(body.model_id, remembered.id)
+    assert.equal(body.shot_video_prompt, shotVideoPrompt(f.projectDetail.shots[0]!))
+    assert.equal(body.image_body, f.imageBody)
+    return Response.json({ ...f.semanticPlan, source_signature: body.source_signature })
+  })
+  const view = await mount(f.projectDetail, false, { models: [imageModel, videoModel, fallback, remembered] })
+  try {
+    assert.equal(api.analyses.length, 0, 'mounting an image never starts a model request')
+    await act(() => rememberModelSelection('text', remembered.id)); await settle()
+    await act(() => view.button('作为参考设计视频').click()); await settle()
+    assert.equal(api.analyses.length, 1)
+    assert.ok(view.bodyPrompt().includes(f.line), 'the continuous prose format cannot discard the authored spoken line')
+    assert.match(view.bodyPrompt(), /慢慢放下纸巾/)
+    await view.preview()
+    assert.equal(api.previews.length, 1)
+    assert.ok(api.previews[0]!.prompt.includes(f.line))
+    assert.ok(api.resolvedPreviews[0]!.prompt.includes(f.line))
+    assert.match(api.resolvedPreviews[0]!.prompt, /必须逐字生成可听见的人声/)
+    await view.preview(); await view.preview()
+    assert.equal(api.previews.length, 2)
+    assert.equal(api.analyses.length, 1, 'opening generation information reuses the reviewed plan')
+  } finally { await view.destroy() }
+})
+
+test('unchanged images with confirmed audio still analyze adjacent cuts and refresh the cached plan after a neighbor edit', async t => {
+  const f = plan5DialogueFixture()
+  f.projectDetail.shots[0]!.audio_plan = f.semanticPlan.audio_plan
+  const neighbor = { ...f.projectDetail.shots[0]!, id: 'reaction', position: 1, title: '老板反应',
+    video_prompt: '老板在门边抬头，固定机位', start_state: '老板抬眼看向许知夜', end_state: '收住目光', cut_note: '停在反应上' }
+  f.projectDetail.shots.push(neighbor)
+  f.source.text = ''
+  f.source.settings = { modality: 'image', mode: 'reference', ratio: '9:16', resolution: '1K' }
+  const api = mockApi(t, f.graph, f.projectDetail, (path, _method, body) => path.endsWith('/canvas/video-audio-plan')
+    ? Response.json({ ...f.semanticPlan, source_signature: body.source_signature }) : undefined)
+  const view = await mount(f.projectDetail, false, { models: [imageModel, videoModel, handoffTextModel] })
+  const selectSource = async () => { await act(() => view.container.querySelector<HTMLElement>(`[data-id="${f.source.id}"]`)!.click()); await settle() }
+  try {
+    assert.equal(api.analyses.length, 0)
+    await act(() => view.button('作为参考设计视频').click()); await settle()
+    assert.equal(api.analyses.length, 1, 'confirmed own-shot audio cannot bypass adjacent-cut analysis')
+    const initialSignature = api.analyses[0]!.source_signature
+    await view.renderDetail({ ...f.projectDetail, shots: f.projectDetail.shots.map(shot => shot.id === neighbor.id ? { ...shot, start_state: '老板先转身再抬眼' } : shot) })
+    await selectSource()
+    await act(() => view.button('作为参考设计视频').click()); await settle()
+    assert.equal(api.analyses.length, 2)
+    assert.notEqual(api.analyses[1]!.source_signature, initialSignature)
+    await selectSource()
+    await act(() => view.button('作为参考设计视频').click()); await settle()
+    assert.equal(api.analyses.length, 2, 'unchanged adjacent context reuses the reviewed plan')
+  } finally { await view.destroy() }
+})
+
+for (const legacyMetadata of ['saved handoff', 'missing handoff metadata'] as const) test(`persisted legacy handoff with ${legacyMetadata} restores dialogue only from its explicit action and protects subsequent manual video edits`, async t => {
+  const f = plan5DialogueFixture(), created = createImageVideoHandoff(f.graph, f.source, f.projectDetail, [imageModel, videoModel],
+    node('legacy-video', 'generation', 900), 'legacy-handoff-edge', 'reference')
+  const persisted = created.graph, target = persisted.nodes.find(item => item.id === created.nodeId)!
+  if (legacyMetadata === 'saved handoff') target.settings.image_video_handoff!.source_signature = '1111111111111111'
+  else {
+    target.text = ''; target.prompt = f.shotPrompt
+    target.settings = { modality: 'video', mode: 'reference', visual_reference_mode: 'profiles', storyboard_reference_asset_id: 'storyboard',
+      duration: 8, ratio: '9:16', resolution: '480p' }
+  }
+  assert.equal(target.settings.image_video_handoff?.semantic_plan, undefined)
+  assert.ok(!target.text.includes(f.line))
+  const api = mockApi(t, persisted, f.projectDetail, (path, _method, body) => path.endsWith('/canvas/video-audio-plan')
+    ? Response.json({ ...f.semanticPlan, source_signature: body.source_signature }) : undefined)
+  const view = await mount(f.projectDetail, false, { models: [imageModel, videoModel, handoffTextModel] })
+  const restoreButton = () => [...document.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '分析并恢复动作与台词')
+  const select = async (id: string) => { await act(() => view.container.querySelector<HTMLElement>(`[data-id="${id}"]`)!.click()); await settle() }
+  try {
+    await select(target.id)
+    assert.ok(restoreButton(), 'old automatic prompts have a visible restoration action')
+    assert.equal(api.analyses.length, 0)
+    await view.preview()
+    assert.equal(api.analyses.length, 0, 'opening information cannot silently invoke a model')
+    assert.equal(api.previews.length, 0, 'unfinished legacy migration cannot submit an incomplete video prompt')
+    await act(() => restoreButton()!.click()); await settle()
+    assert.equal(api.analyses.length, 1)
+    assert.ok(view.bodyPrompt().includes(f.line))
+    assert.equal(restoreButton(), undefined)
+    assert.ok(api.saved.at(-1)!.nodes.find(item => item.id === target.id)!.settings.image_video_handoff!.semantic_plan)
+    await view.preview(); await view.preview(); await view.preview()
+    assert.equal(api.previews.length, 2)
+    assert.equal(api.analyses.length, 1, 'reviewed legacy plans are cached for later previews')
+    await view.preview()
+    const authored = '我手动设计的视频：许知夜停下动作，固定镜头保持两秒后转向雨棚外。'
+    await view.editBody(authored)
+    await select(f.source.id)
+    await view.editBody(`${f.imageBody} 纸巾改放到桌角。`)
+    await select(target.id)
+    assert.equal(view.bodyPrompt(), authored)
+    assert.equal(restoreButton(), undefined, 'source changes cannot authorize overwriting a manual video draft')
+    assert.equal(api.analyses.length, 1)
+    await view.preview()
+    assert.ok(api.previews.at(-1)!.prompt.includes(authored))
+    assert.equal(api.analyses.length, 1)
+  } finally { await view.destroy() }
+})
+
 for (const mode of ['reference', 'first_frame'] as const) test(`image-to-video ${mode} quick action carries the edited scene and its effective references into the real composer`, async t => {
   const { graph, source, projectDetail, body: imageBody } = editedImageHandoffFixture()
   const previews: PreviewInput[] = []
@@ -1053,7 +1376,7 @@ for (const mode of ['reference', 'first_frame'] as const) test(`image-to-video $
     return Response.json({ ...request, prompt: resolved.prompt, reference_asset_ids: resolved.referenceAssetIds,
       visual_signature: 'edited-image-handoff' })
   })
-  const view = await mount(projectDetail, false, { models: [imageModel, videoModel] })
+  const view = await mount(projectDetail, false, { models: [imageModel, videoModel, handoffTextModel] })
   try {
     await act(() => view.button(mode === 'reference' ? '作为参考设计视频' : '以此图作为首帧生成').click()); await settle()
     assert.ok(view.button(`视频生成模式：${mode === 'reference' ? '多图参考' : '首帧承接'}`))
@@ -1091,7 +1414,7 @@ for (const mode of ['reference', 'first_frame'] as const) test(`image-to-video $
 test('repeating image-to-video refreshes an untouched draft and preserves a hand-edited video as a separate node', async t => {
   const { graph, source, projectDetail } = editedImageHandoffFixture()
   const api = mockApi(t, graph, projectDetail)
-  let view = await mount(projectDetail, false, { models: [imageModel, videoModel] })
+  let view = await mount(projectDetail, false, { models: [imageModel, videoModel, handoffTextModel] })
   const selectedId = () => view.container.querySelector('.react-flow__node.selected')?.getAttribute('data-id')
   const chooseSource = async () => { await act(() => view.container.querySelector<HTMLElement>(`[data-id="${source.id}"]`)!.click()); await settle() }
   const handoff = async () => { await act(() => view.button('作为参考设计视频').click()); await settle(); return selectedId() }
@@ -1121,11 +1444,12 @@ test('repeating image-to-video refreshes an untouched draft and preserves a hand
     assert.ok(saved.nodes.find(item => item.id === newVideoId)!.settings.image_video_handoff, 'the inherited source identity is saved on the video node')
     await view.destroy()
     Object.assign(graph, saved)
-    view = await mount(projectDetail, false, { models: [imageModel, videoModel] })
+    view = await mount(projectDetail, false, { models: [imageModel, videoModel, handoffTextModel] })
     assert.equal(await handoff(), newVideoId, 'reopening the saved canvas reuses the latest video version')
     await act(() => view.container.querySelector<HTMLElement>(`[data-id="${originalVideoId}"]`)!.click()); await settle()
     assert.equal(view.bodyPrompt(), authoredVideoBody, 'the protected video draft survives save and reload')
-    assert.equal(api.previews.length, 0, 'creating and refreshing drafts does not create generation tasks or invoke a model')
+    assert.equal(api.previews.length, 0, 'creating and refreshing drafts never creates media generation tasks')
+    assert.equal(api.analyses.length, 3, 'only the three distinct authored image designs need model analysis')
   } finally { await view.destroy() }
 })
 
@@ -1265,20 +1589,23 @@ test('refining a complete prompt preserves its bounded settings and keeps one ed
   }
   try {
     await act(() => view.button('使用技能整理提示词').click()); await settle()
-    await act(() => modalButton('整理提示词').click()); await settle()
+    await act(() => modalButton('生成整理草稿').click()); await settle()
     assert.equal(requests[0]?.prompt_body, originalBody)
     assert.equal(requests[0]?.prompt_document, true)
     assert.match(String(requests[0]?.prompt), /【镜头视觉设定】/)
     assert.match(String(requests[0]?.prompt), /【图片参考图用途】/)
     assert.equal(view.bodyPrompt(), originalBody, 'refinement has no effect before explicit application')
-    const result = document.querySelector<HTMLElement & { editor: import('@tiptap/core').Editor }>('[contenteditable][aria-label="整理结果"]')!
+    const result = document.querySelector<HTMLElement & { editor: import('@tiptap/core').Editor }>('[contenteditable][aria-label="整理后的主要内容"]')!
     assert.ok(result)
     assert.equal(result.editor.isEditable, true)
     assert.match(promptEditorText(result.editor.getJSON()), /近景突出神情/)
-    assert.match(promptEditorText(result.editor.getJSON()), /【图片参考图用途】/)
+    assert.doesNotMatch(promptEditorText(result.editor.getJSON()), /【图片参考图用途】/)
+    await act(() => modalButton('完整提示词预览').click()); await settle()
+    assert.match(document.querySelector('.prompt-skill-inspection pre')!.textContent!, /【图片参考图用途】/)
+    await act(() => modalButton('返回整理').click()); await settle()
     assert.equal(document.querySelector('textarea[aria-label="整理后的正文"]'), null)
     assert.equal(document.querySelector('textarea[aria-label="整理后的完整提示词预览"]'), null)
-    await act(() => modalButton('应用提示词').click()); await settle()
+    await act(() => modalButton('应用正文').click()); await settle()
     assert.equal(view.bodyPrompt(), refinedBody)
     assert.doesNotMatch(view.bodyPrompt(), /参考图\s*\d|\[\[ref:/)
     assert.match(view.systemPrompt(), /图片参考图用途/)
@@ -1287,7 +1614,7 @@ test('refining a complete prompt preserves its bounded settings and keeps one ed
     assert.deepEqual(new Set(api.resolvedPreviews.at(-1)!.reference_asset_ids), new Set(['storyboard', 'hero-board', 'station-board']))
     assert.match(api.resolvedPreviews.at(-1)!.prompt, /近景突出神情/)
     await act(() => view.button('使用技能整理提示词').click()); await settle()
-    await act(() => modalButton('整理提示词').click()); await settle()
+    await act(() => modalButton('生成整理草稿').click()); await settle()
     assert.equal(requests[1]?.prompt_document, true)
     assert.match(String(requests[1]?.prompt), /近景突出神情/)
     assert.match(String(requests[1]?.prompt), /【镜头视觉设定】/)
@@ -1348,7 +1675,7 @@ test('an explicitly connected character outside the shot defaults stays availabl
     assert.ok(peiyanChoice)
     await act(() => peiyanChoice.click()); await settle()
     await act(() => adjustment.editor.chain().insertContent('作为裴砚的人物外观参考，将他加入画面左侧后方，保留已有镜头和人物。').run()); await settle()
-    const refine = [...document.querySelectorAll<HTMLButtonElement>('.prompt-skill-modal button')].find(button => button.textContent === '整理提示词')!
+    const refine = [...document.querySelectorAll<HTMLButtonElement>('.prompt-skill-modal button')].find(button => button.textContent === '生成整理草稿')!
     assert.ok(refine)
     await act(() => refine.click()); await settle()
     assert.equal(refinements.length, 1)
@@ -1356,7 +1683,7 @@ test('an explicitly connected character outside the shot defaults stays availabl
     assert.deepEqual(refinements[0].explicit_reference_asset_ids, ['peiyan-board'])
     assert.match(String(refinements[0].adjustment_request), /\[\[ref:peiyan-board\]\]/, 'the selected character is sent by stable asset identity')
     assert.equal(refinements[0].prompt_body, body)
-    const result = document.querySelector<HTMLElement & { editor: import('@tiptap/core').Editor }>('[contenteditable][aria-label="整理结果"]')!
+    const result = document.querySelector<HTMLElement & { editor: import('@tiptap/core').Editor }>('[contenteditable][aria-label="整理后的主要内容"]')!
     assert.ok(result)
     assert.match(promptEditorText(result.editor.getJSON()), /裴砚站在左侧后方，人物外观参考\[\[ref:peiyan-board\]\]/)
     assert.equal(result.querySelector('.pc-prompt-reference.is-invalid'), null)
@@ -1423,9 +1750,11 @@ for (const section of ['automatic', 'custom', 'deleted'] as const) test(`an expl
     assert.match(mapping, /对应对象的局部纹理、连接与持握等细节/)
     if (section === 'deleted') {
       assert.equal(visualContext(), '', 'creator-deleted sections stay deleted as new semantic context arrives')
-      assert.doesNotMatch(view.container.querySelector('.pc-prompt-document-status')!.textContent!, /项待确认/)
+      assert.doesNotMatch(view.button('查看来源与修改记录').textContent!, /项待确认/)
       assert.equal(view.container.querySelector('[aria-label="保留本节点修改：镜头视觉设定"]'), null)
-      assert.match(view.container.querySelector('[aria-label="已移除的提示词区块"]')!.textContent!, /镜头视觉设定/)
+      await act(() => view.button('查看来源与修改记录').click()); await settle()
+      assert.match(document.querySelector('[aria-label="已移除的提示词区块"]')!.textContent!, /镜头视觉设定/)
+      await act(() => view.button('关闭来源与修改记录').click()); await settle()
     }
     else {
       assert.match(visualContext(), /道具：巡天尺/)
@@ -1443,11 +1772,13 @@ for (const section of ['automatic', 'custom', 'deleted'] as const) test(`an expl
       assert.equal(api.previews.length, 1, 'a deleted pending requirement never blocks the direct preview')
       assert.doesNotMatch(api.previews.at(-1)!.prompt, /【镜头视觉设定】/)
       assert.equal(visualContext(), '', 'previewing does not restore the deleted source section')
+      await act(() => view.button('查看来源与修改记录').click()); await settle()
       await act(() => view.button('恢复来源内容：镜头视觉设定').click()); await settle()
+      await act(() => view.button('关闭来源与修改记录').click()); await settle()
       assert.match(visualContext(), /道具：巡天尺/)
       assert.match(visualContext(), /青铜直尺，尺身狭长，边缘有星轨刻纹，柄端连接一枚黑玉环/)
       assert.equal(view.bodyPrompt().trim(), body)
-      assert.doesNotMatch(view.container.querySelector('.pc-prompt-document-status')!.textContent!, /项待确认/)
+      assert.doesNotMatch(view.button('查看来源与修改记录').textContent!, /项待确认/)
       await view.preview()
       assert.match(api.previews.at(-1)!.prompt, /道具：巡天尺/, 'source recovery uses the latest pending context, including the newly connected prop')
     }
@@ -1463,7 +1794,7 @@ for (const mode of ['reference', 'first_frame'] as const) test(`an unbound prop 
   const { graph, target, projectDetail } = explicitUnboundPropFixture('automatic')
   target.asset_id = 'storyboard'
   const api = mockApi(t, graph, projectDetail)
-  const view = await mount(projectDetail, false, { models: [imageModel, videoModel] })
+  const view = await mount(projectDetail, false, { models: [imageModel, videoModel, handoffTextModel] })
   try {
     await act(() => view.button(mode === 'reference' ? '作为参考设计视频' : '以此图作为首帧生成').click()); await settle()
     const text = promptEditorText(view.prompt().editor.getJSON())
@@ -1540,7 +1871,7 @@ for (const entry of ['library', 'handles'] as const) test(`adding an inactive mu
     assert.match(prompt, /\[\[ref:hero-face\]\]/)
     assert.doesNotMatch(prompt, /\[\[ref:hero-board\]\]/, 'approved independent snapshots take precedence over the legacy board')
     await act(() => view.button('使用技能整理提示词').click()); await settle()
-    const refine = [...document.querySelectorAll<HTMLButtonElement>('.prompt-skill-modal button')].find(button => button.textContent === '整理提示词')!
+    const refine = [...document.querySelectorAll<HTMLButtonElement>('.prompt-skill-modal button')].find(button => button.textContent === '生成整理草稿')!
     assert.ok(refine)
     await act(() => refine.click()); await settle()
     assert.equal(refinements.length, 1)
@@ -1756,7 +2087,7 @@ test('legacy body-first setting drafts open without prompt saves and keep one ma
   const originalSettings = structuredClone(target.settings)
   const textModel: Model = { ...videoModel, id: 'text-model', name: '整理模型', modality: 'text', protocol: 'chat_completions', settings: {} }
   const previews: Array<Record<string, unknown>> = [], refinements: Array<Record<string, unknown>> = []
-  const candidateSupplement = '候选补充：配饰统一为哑光银。'
+  const candidateSupplement = '候选补充：衣领的三道缝线应清晰可辨。'
   const api = mockApi(t, graph, projectDetail, (path, _method, request) => {
     if (path.endsWith('/board-preview')) {
       previews.push(request)
@@ -1765,7 +2096,7 @@ test('legacy body-first setting drafts open without prompt saves and keep one ma
     if (path.endsWith('/skills/refine-prompt')) {
       refinements.push(request)
       const prompt = String(request.prompt)
-      const primary = getManagedPromptBlocks(prompt, ['设定图固定要求'])[0]!.replace('正面与侧面', '正面与侧面，配饰统一为哑光银')
+      const primary = getManagedPromptBlocks(prompt, ['设定图固定要求'])[0]!.replace('正面与侧面', '正面和侧面')
       const context = getManagedPromptBlocks(prompt).filter(block => !block.startsWith('【设定图固定要求】'))
       // A legacy server may still send prose first. Applying this reviewed
       // candidate must use the same order already shown in the editor.
@@ -1805,26 +2136,31 @@ test('legacy body-first setting drafts open without prompt saves and keep one ma
     await view.preview()
     assert.equal(view.button('使用技能整理提示词').disabled, false)
     await act(() => view.button('使用技能整理提示词').click()); await settle()
-    await act(() => modalButton('整理提示词').click()); await settle()
+    await act(() => modalButton('生成整理草稿').click()); await settle()
     assert.equal(refinements.length, 1)
-    const candidate = document.querySelector<HTMLElement & { editor: import('@tiptap/core').Editor }>('[contenteditable][aria-label="整理结果"]')!
+    const candidate = document.querySelector<HTMLElement & { editor: import('@tiptap/core').Editor }>('[contenteditable][aria-label="整理后的主要内容"]')!
     assert.ok(candidate)
     const candidateText = promptEditorText(candidate.editor.getJSON())
-    assert.ok(candidateText.startsWith('【设定图固定要求】'))
+    assert.doesNotMatch(candidateText, /【设定图固定要求】|【图片生成要求】/)
+    await act(() => modalButton('完整提示词预览').click()); await settle()
+    assert.match(document.querySelector('.prompt-skill-inspection pre')!.textContent!, /【设定图固定要求】/)
+    await act(() => modalButton('返回整理').click()); await settle()
     assertProseOnce(candidateText, true)
     assert.equal(promptEditorText(view.prompt().editor.getJSON()), opened, 'a candidate must not modify the canvas before application')
-    await act(() => modalButton('应用提示词').click()); await settle()
+    await act(() => modalButton('应用正文').click()); await settle()
     const applied = promptEditorText(view.prompt().editor.getJSON())
     assert.ok(applied.startsWith('【设定图固定要求】'), 'direct application keeps the displayed main-first candidate order')
     assertProseOnce(applied, true)
-    assert.match(applied, /正面与侧面，配饰统一为哑光银/)
+    assert.match(applied, /正面和侧面/)
+    assert.match(applied, /短发，蓝色校服/, 'rewording preserves the established appearance')
     await act(() => new Promise(resolve => setTimeout(resolve, 900))); await settle()
     const saved = api.saved.at(-1)!, settings = saved.nodes.find(node => node.id === target.id)!.settings
     assert.ok(settings.profile_prompt_override!.startsWith('【设定图固定要求】'))
     const savedPrimary = settings.prompt_sections!.blocks.find(block => block.id === originalPrimary.id)!
     assert.ok(savedPrimary)
     assert.equal(savedPrimary.sourceText, originalPrimary.sourceText, 'the reviewed candidate changes the local task without rewriting its source')
-    assert.match(savedPrimary.text, /配饰统一为哑光银/)
+    assert.match(savedPrimary.text, /正面和侧面/)
+    assert.match(savedPrimary.text, /短发，蓝色校服/)
     assertProseOnce(serializePromptSectionDocument(settings.prompt_sections!), true)
   } finally { await view.destroy() }
 })
@@ -1838,13 +2174,14 @@ for (const board of [true, false]) test(`${board ? 'setting board' : 'ordinary i
   const api = mockApi(t, graph)
   let view = await mount(detail, true, { models: [imageModel] })
   const shortcut = async () => {
+    await editFixedRequirement(view, '图片生成要求')
     await act(() => view.button('区块操作：图片生成要求').click()); await settle()
     await act(() => view.button('调整参数：图片生成要求').click()); await settle()
   }
   const popover = () => document.querySelector<HTMLElement>('[role="dialog"][aria-label="生成参数"]')
   const footer = () => view.container.querySelector<HTMLButtonElement>('.pc-generation-parameters-trigger')!
   try {
-    assert.match(view.container.querySelector('.pc-prompt-editor')!.textContent!, /9:16 · 1K/)
+    assert.match(footer().textContent!, /9:16 · 1K/)
     await shortcut()
     assert.equal(document.querySelectorAll('[role="dialog"][aria-label="生成参数"]').length, 1)
     assert.equal(footer().getAttribute('aria-expanded'), 'true', 'shortcut opens the existing footer control')
@@ -1856,7 +2193,7 @@ for (const board of [true, false]) test(`${board ? 'setting board' : 'ordinary i
     assert.ok(clarity)
     await act(() => clarity.click()); await settle()
     assert.match(footer().textContent!, /16:9 · 4K/)
-    assert.match(view.container.querySelector('.pc-prompt-editor')!.textContent!, /16:9 · 4K/)
+    assert.match(footer().textContent!, /16:9 · 4K/)
     assert.match(view.systemPrompt(), /16:9/)
     assert.equal(view.container.querySelector('.pc-prompt-parameter-conflicts'), null)
     await act(() => footer().click()); await settle()
@@ -1871,7 +2208,7 @@ for (const board of [true, false]) test(`${board ? 'setting board' : 'ordinary i
     Object.assign(graph, saved)
     await view.destroy(); view = await mount(detail, true, { models: [imageModel] })
     assert.equal(popover(), null, 'parameter popover starts closed after reload')
-    assert.match(view.container.querySelector('.pc-prompt-editor')!.textContent!, /16:9 · 4K/)
+    assert.match(footer().textContent!, /16:9 · 4K/)
     assert.match(view.systemPrompt(), /16:9/)
     assert.equal(view.container.querySelector('.pc-prompt-parameter-conflicts'), null)
     await shortcut()
@@ -1900,6 +2237,7 @@ test('a legacy saved setting board keeps its deliberately omitted primary withou
     await view.preview()
     assert.equal(previews.length, 1)
     assert.doesNotMatch(String(previews[0].prompt_override), /【设定图固定要求】/)
+    await act(() => view.button('查看来源与修改记录').click()); await settle()
     assert.ok(document.querySelector('[aria-label="恢复来源内容：主要创作内容"]'), 'explicit recovery remains available')
   } finally { await view.destroy() }
 })
@@ -2209,6 +2547,69 @@ function mockBoards(t: TestContext, graph: CanvasGraph, projectDetail: ProjectDe
   return { ...api, boardPreviews: previews, generated }
 }
 
+for (const origin of ['new image handoff', 'existing video'] as const) test(`${origin} shows reference connections while queued and awaiting approval, then one ready connection`, async t => {
+  const projectDetail: ProjectDetail = { ...detail, visual_profiles: [missingHero],
+    shot_visual_bindings: [bind(missingHero, true)], assets: detail.assets.filter(asset => asset.id !== 'hero-board') }
+  let graph = initialGraph('reference')
+  if (origin === 'new image handoff') {
+    const source = graph.nodes.find(node => node.id === 'storyboard-node')!, fresh = graph.nodes.find(node => node.id === 'video-node')!
+    const sourceGraph = { ...graph, nodes: graph.nodes.filter(node => node.id !== fresh.id), edges: [] }
+    graph = createImageVideoHandoff(sourceGraph, source, projectDetail, [videoModel], fresh, 'storyboard-edge', 'reference',
+      { audio_plan: fixtureAudioPlan, motion_prompt: projectDetail.shots[0].video_prompt! }).graph
+  }
+  assert.equal(graph.nodes.find(node => node.id === 'video-node')!.settings.visual_dependencies, undefined,
+    'both new and previously saved video nodes use the default reference behavior')
+  const api = mockBoards(t, graph, projectDetail)
+  const view = await mount(projectDetail, false, { models: [videoModel, imageModel] })
+  const referenceConnections = () => [...view.container.querySelectorAll<SVGGElement>('.react-flow__edge')]
+    .filter(edge => edge.getAttribute('data-id')?.startsWith('auto-visual'))
+  const expectConnection = (pending: boolean) => {
+    const connections = referenceConnections()
+    assert.equal(connections.length, 1, 'one reference produces exactly one rendered connection')
+    const edge = connections[0], path = edge.querySelector<SVGPathElement>('.react-flow__edge-path')
+    assert.ok(path, 'the reference connection must render an SVG path immediately')
+    assert.equal(path.style.opacity, '1', 'the connection remains visible on the canvas')
+    assert.equal(edge.querySelector('.pc-studio-edge')!.classList.contains('is-hidden'), false)
+    assert.equal(path.style.strokeDasharray, 'none', 'pending and ready references share the same solid connection style')
+    assert.equal(path.style.strokeWidth, '1.5', 'reference readiness and selection preserve the shared line width')
+    assert.equal(path.style.vectorEffect, 'non-scaling-stroke', 'zoom preserves the same line width as a connection being drawn')
+    assert.equal(edge.querySelector('title')!.textContent, pending
+      ? '参考图待就绪，生成并确认后用于此节点' : '已绑定的设定参考图，点击调整镜头视觉设定')
+  }
+  try {
+    await act(() => view.button('一键生成所需参考图').click()); await settle()
+    assert.deepEqual(api.generated.map(request => request.profileId), [hero.id])
+    const saved = api.saved.at(-1)!, referenceNode = saved.nodes.find(node => node.settings.visual_profile_id === hero.id)
+    assert.ok(referenceNode, 'the requested image generator appears beside its video target')
+    assert.ok(view.container.querySelector(`[data-id="${referenceNode.id}"]`))
+    assert.ok(!saved.edges.some(edge => edge.source === referenceNode.id && edge.target === 'video-node'),
+      'the pending dependency must not become an explicit generation input')
+    expectConnection(true)
+    assert.equal(view.images().length, 1, 'the video only uses its already available storyboard image')
+
+    const candidate = { ...detail.assets[0], id: 'new-hero-board', shot_id: null, filename: 'new-hero-board.png', url: '/api/assets/new-hero-board/file' }
+    const completed: ProjectDetail = { ...projectDetail, assets: [...projectDetail.assets, candidate],
+      visual_profiles: [{ ...missingHero, candidate_asset_ids: [candidate.id] }],
+      jobs: [{ id: 'job-hero-0', status: 'succeeded', created_at: timestamp, result_asset_id: candidate.id,
+        request: JSON.stringify({ visual_profile_id: hero.id, visual_profile_revision: hero.revision }) } as ProjectDetail['jobs'][number]] }
+    await view.renderDetail(completed)
+    expectConnection(true)
+    assert.match(view.button('定位参考设定：林晚 · 校服').textContent!, /去确认/)
+    assert.equal(view.images().length, 1, 'a successful unconfirmed candidate remains outside the video references')
+    assert.equal(view.container.querySelector(`.pc-video-reference-preview img[src="${candidate.url}"]`), null)
+
+    const approvedHero = { ...completed.visual_profiles![0], board_asset_id: candidate.id, revision: hero.revision + 1 }
+    const approved: ProjectDetail = { ...completed, visual_profiles: [approvedHero], shot_visual_bindings: [bind(approvedHero, true)] }
+    await view.renderDetail(approved)
+    expectConnection(false)
+    assert.equal(view.images().length, 2, 'approval makes the bound image available to the video')
+    assert.ok(view.container.querySelector(`.pc-video-reference-preview img[src="${candidate.url}"]`))
+    await view.renderDetail(approved)
+    expectConnection(false)
+    assert.equal(api.generated.length, 1, 'completion and approval refreshes never create another paid generation')
+  } finally { await view.destroy() }
+})
+
 test('one click fills only missing references, preserves each board configuration and prevents duplicate submission until refresh', async t => {
   const optional = { ...missingHero, id: 'optional', name: '可选道具' }
   const confirmed = { ...hero, id: 'confirmed', name: '已确认人物' }
@@ -2230,8 +2631,8 @@ test('one click fills only missing references, preserves each board configuratio
       profile_prompt_override: '手工设定提示词' } },
     { ...node('notes', 'text', 1200), text: '不要添加装饰品' })
   graph.edges.push({ id: 'hero-input', source: 'hero-node', target: 'video-node' }, { id: 'notes-input', source: 'notes', target: 'hero-node' })
-  const originalTarget = structuredClone(graph.nodes.find(node => node.id === 'video-node')!)
   const api = mockBoards(t, graph, projectDetail)
+  const originalTarget = structuredClone(graph.nodes.find(node => node.id === 'video-node')!)
   let refreshes = 0
   const view = await mount(projectDetail, false, { models: [videoModel, imageModel, alternateImageModel], onRefresh: async () => { refreshes++ } })
   try {
@@ -2363,13 +2764,13 @@ test('one-click confirmation handles only unresolved references for this shot an
     jobs: [{ id: 'queued-job', status: 'running', created_at: timestamp, request: JSON.stringify({ visual_profile_id: queued.id, visual_profile_revision: queued.revision }) } as ProjectDetail['jobs'][number]] }
   const graph = initialGraph('reference')
   graph.nodes.push({ ...node('hero-node', 'generation', 900), model_id: imageModel.id, asset_id: 'manual', settings: { modality: 'image', visual_profile_id: hero.id, visual_profile_revision: hero.revision } })
-  const originalTarget = structuredClone(graph.nodes.find(node => node.id === 'video-node')!)
   const requests: Record<string, unknown>[] = []
   const api = mockApi(t, graph, projectDetail, (path, method, body) => {
     assert.equal(path, '/api/projects/video-reference-test/visual-profiles/confirm-first')
     assert.equal(method, 'POST'); requests.push(body)
     return Response.json({ confirmed: [hero, station], skipped: [] })
   })
+  const originalTarget = structuredClone(graph.nodes.find(node => node.id === 'video-node')!)
   let refreshes = 0
   const view = await mount(projectDetail, false, { models: [videoModel, imageModel], onRefresh: async () => { refreshes++ } })
   try {
@@ -2890,6 +3291,59 @@ async function settleSubmission() {
   await act(() => new Promise(resolve => setTimeout(resolve, 100))); await settle()
 }
 
+test('canvas keeps recovery warnings hidden while a fresh generation submission is pending and after acceptance', async t => {
+  const graph = initialGraph('reference'), keys: string[] = []
+  let release!: (response: Response) => void
+  mockApi(t, graph, detail, (path, _method, _body, init) => {
+    if (!path.endsWith('/generate')) return
+    keys.push(new Headers(init?.headers).get('Idempotency-Key')!)
+    return new Promise<Response>(resolve => { release = resolve })
+  })
+  const view = await mount()
+  try {
+    await act(() => view.button('开始生成').click()); await settleSubmission()
+    assert.equal(keys.length, 1, 'the real submission has reached the server and is still pending')
+    assert.equal((await readCanvasGenerationSubmission(generationSubmissionScope))!.candidates[0].jobId, null)
+    assert.equal(view.container.querySelector('[aria-label="原生成提交状态"]'), null,
+      'a normal pending request must not be presented as interrupted work')
+    assert.equal(view.button('开始生成').disabled, true, 'the pending request still prevents duplicate submission')
+    await act(() => release(Response.json({ id: 'accepted-without-warning', status: 'queued', created_at: timestamp })))
+    await settleSubmission()
+    assert.equal((await readCanvasGenerationSubmission(generationSubmissionScope))!.candidates[0].jobId, 'accepted-without-warning')
+    assert.equal(view.container.querySelector('[aria-label="原生成提交状态"]'), null)
+    assert.equal(keys.length, 1)
+  } finally { await view.destroy() }
+})
+
+test('canvas reveals recovery after a failed submission and hides it while explicitly continuing the same request', async t => {
+  const graph = initialGraph('reference'), keys: string[] = []
+  let reject!: (reason: Error) => void, release!: (response: Response) => void
+  mockApi(t, graph, detail, (path, _method, _body, init) => {
+    if (!path.endsWith('/generate')) return
+    keys.push(new Headers(init?.headers).get('Idempotency-Key')!)
+    return new Promise<Response>((resolve, fail) => { release = resolve; reject = fail })
+  })
+  const view = await mount()
+  try {
+    await act(() => view.button('开始生成').click()); await settleSubmission()
+    assert.equal(keys.length, 1)
+    assert.equal(view.container.querySelector('[aria-label="原生成提交状态"]'), null)
+    await act(() => reject(new TypeError('模拟提交网络中断'))); await settleSubmission()
+    assert.match(view.container.querySelector('[aria-label="原生成提交状态"]')!.textContent!, /0\/1/)
+    assert.equal(view.button('继续原生成提交').disabled, false)
+    await act(() => view.button('继续原生成提交').click()); await settleSubmission()
+    assert.equal(keys.length, 2)
+    assert.equal(keys[1], keys[0], 'continuation preserves the original request identity')
+    assert.equal(view.container.querySelector('[aria-label="原生成提交状态"]'), null,
+      'an explicit continuation is actively submitting rather than awaiting recovery')
+    await act(() => release(Response.json({ id: 'continued-without-warning', status: 'queued', created_at: timestamp })))
+    await settleSubmission()
+    assert.equal((await readCanvasGenerationSubmission(generationSubmissionScope))!.candidates[0].jobId, 'continued-without-warning')
+    assert.equal(view.container.querySelector('[aria-label="原生成提交状态"]'), null)
+    assert.equal(keys.length, 2)
+  } finally { await view.destroy() }
+})
+
 test('canvas recovers a lost accepted generation response, saves its job and refreshes live task status', async t => {
   const graph = initialGraph('reference')
   let accepted: ProjectDetail['jobs'][number] | null = null, posts = 0, refreshes = 0
@@ -2907,7 +3361,7 @@ test('canvas recovers a lost accepted generation response, saves its job and ref
   try {
     await act(() => view.button('开始生成').click()); await settleSubmission()
     assert.equal(posts, 1)
-    assert.equal(readCanvasGenerationSubmission(generationSubmissionScope)?.candidates[0].jobId, 'lost-response-job')
+    assert.equal((await readCanvasGenerationSubmission(generationSubmissionScope))?.candidates[0].jobId, 'lost-response-job')
     assert.equal(api.saved.at(-1)!.nodes.find(node => node.id === 'video-node')!.job_id, 'lost-response-job')
     assert.ok(refreshes >= 1, 'recovered task refreshes project jobs so active-task polling can resume')
     await view.renderDetail({ ...detail, jobs: [accepted!] })
@@ -2931,10 +3385,10 @@ test('canvas double clicks share one operation while a deliberate next generatio
   try {
     await act(() => { view.button('开始生成').click(); view.button('开始生成').click() }); await settleSubmission()
     assert.equal(keys.length, 1)
-    const first = readCanvasGenerationSubmission(generationSubmissionScope)!
+    const first = (await readCanvasGenerationSubmission(generationSubmissionScope))!
     await act(() => view.button('开始生成').click()); await settleSubmission()
     assert.equal(keys.length, 2); assert.notEqual(keys[0], keys[1])
-    assert.notEqual(readCanvasGenerationSubmission(generationSubmissionScope)!.id, first.id)
+    assert.notEqual((await readCanvasGenerationSubmission(generationSubmissionScope))!.id, first.id)
   } finally { await view.destroy() }
 })
 
@@ -2957,19 +3411,20 @@ test('canvas refresh only finds accepted candidates and explicit continuation su
   })
   const view = await mount()
   await act(() => view.button('开始生成').click()); await settleSubmission()
-  const original = readCanvasGenerationSubmission(generationSubmissionScope)!
+  const original = (await readCanvasGenerationSubmission(generationSubmissionScope))!
   assert.equal(keys.length, 1)
   assert.deepEqual(original.candidates.map(candidate => candidate.jobId), [null, null, null])
   const frozen = structuredClone(original.request)
-  const remote = api.saved.at(-1)!
-  graph.nodes = remote.nodes; graph.edges = remote.edges; graph.revision = `saved-${api.saved.length}`
+  const remote = api.saved.at(-1) || graph
+  graph.nodes = remote.nodes; graph.edges = remote.edges
+  if (api.saved.length) graph.revision = `saved-${api.saved.length}`
   await view.destroy()
   lookupBlocked = false
   const restored = await mount(detail, false, { onRefresh: async () => { refreshes++ } }, true)
   try {
     await settleSubmission()
     assert.equal(keys.length, 1, 'mount performs only read-only lookup')
-    assert.equal(readCanvasGenerationSubmission(generationSubmissionScope)!.candidates[0].jobId, 'candidate-1')
+    assert.equal((await readCanvasGenerationSubmission(generationSubmissionScope))!.candidates[0].jobId, 'candidate-1')
     assert.match(restored.container.querySelector('[aria-label="原生成提交状态"]')!.textContent!, /1\/3/)
     assert.ok(refreshes >= 1)
     await act(() => restored.button('检查已有生成任务').click()); await settleSubmission()
@@ -2978,7 +3433,7 @@ test('canvas refresh only finds accepted candidates and explicit continuation su
     assert.deepEqual(keys, original.candidates.map(candidate => candidate.key))
     assert.ok(bodies.every(body => JSON.stringify(body) === JSON.stringify(frozen)), 'continuation preserves the exact approved request')
     assert.equal(api.saved.at(-1)!.nodes.find(node => node.id === 'video-node')!.job_id, 'candidate-3')
-    assert.equal(readCanvasGenerationSubmission(generationSubmissionScope)!.candidates.filter(candidate => candidate.jobId).length, 3)
+    assert.equal((await readCanvasGenerationSubmission(generationSubmissionScope))!.candidates.filter(candidate => candidate.jobId).length, 3)
   } finally { await restored.destroy() }
 })
 
@@ -2998,8 +3453,8 @@ test('canvas lost shot creation response keeps its fixed shot and starts no paid
   const view = await mount()
   try {
     await act(() => view.button('开始生成').click()); await settleSubmission()
-    assert.equal(shotPosts, 1); assert.equal(generationPosts, 0)
-    const item = readCanvasGenerationSubmission(generationSubmissionScope)!
+    assert.equal(shotPosts, 1, view.container.textContent || ''); assert.equal(generationPosts, 0)
+    const item = (await readCanvasGenerationSubmission(generationSubmissionScope))!
     assert.equal(item.shot?.key, shotKey); assert.equal(item.shot?.id, 'durable-new-shot')
     assert.equal(api.saved.at(-1)!.nodes.find(node => node.id === 'video-node')!.shot_id, 'durable-new-shot')
     await act(() => view.button('继续原生成提交').click()); await settleSubmission()
@@ -3019,16 +3474,17 @@ test('canvas recovery preserves newly edited inputs instead of overwriting them 
   const view = await mount()
   try {
     await act(() => view.button('开始生成').click()); await settleSubmission()
-    const old = readCanvasGenerationSubmission(generationSubmissionScope)!
+    const old = (await readCanvasGenerationSubmission(generationSubmissionScope))!
     originalKey = old.candidates[0].key
     await view.editBody('新的人物动作与镜头方向。')
     found = true
     await act(() => view.button('检查已有生成任务').click()); await settleSubmission()
-    assert.equal(readCanvasGenerationSubmission(generationSubmissionScope)!.candidates[0].jobId, 'old-accepted')
-    assert.equal(api.saved.at(-1)!.nodes.find(node => node.id === 'video-node')!.job_id, null)
+    assert.equal((await readCanvasGenerationSubmission(generationSubmissionScope))!.candidates[0].jobId, 'old-accepted')
+    assert.ok(api.saved.every(value => value.nodes.find(node => node.id === 'video-node')!.job_id === null),
+      'recovering an old request cannot persist its association over the edited draft')
     assert.match(view.bodyPrompt(), /新的人物动作/)
     await act(() => view.button('开始生成').click()); await settleSubmission()
-    assert.notEqual(readCanvasGenerationSubmission(generationSubmissionScope)!.id, old.id, 'changed inputs become a new deliberate operation')
+    assert.notEqual((await readCanvasGenerationSubmission(generationSubmissionScope))!.id, old.id, 'changed inputs become a new deliberate operation')
     assert.equal(posts, 2, 'the new deliberate intention submits with its new identity')
   } finally { await view.destroy() }
 })
@@ -3044,7 +3500,7 @@ test('canvas displays accepted candidate count and definitive API rejection with
   const view = await mount()
   try {
     await act(() => view.button('开始生成').click()); await settleSubmission()
-    const record = readCanvasGenerationSubmission(generationSubmissionScope)!
+    const record = (await readCanvasGenerationSubmission(generationSubmissionScope))!
     assert.equal(posts, 2); assert.equal(record.rejected, '所选分辨率不再可用', 'HTTP status metadata reaches real Canvas rejection handling')
     assert.deepEqual(record.candidates.map(candidate => candidate.jobId), ['first-accepted', null, null])
     const status = view.container.querySelector('[aria-label="原生成提交状态"]')!.textContent!
@@ -3086,11 +3542,11 @@ test('canvas preview racing another tab recovers that operation without implicit
   try {
     await act(() => view.button('开始生成').click()); await settle()
     assert.ok(release)
-    const otherTab = createCanvasGenerationSubmission({ ...generationSubmissionScope, sourceSignature: 'another tab source',
+    const otherTab = await createCanvasGenerationSubmission({ ...generationSubmissionScope, sourceSignature: 'another tab source',
       baselineJobId: null, request: { ...previewBody, prompt: '另一标签已确认的原参数' }, candidateCount: 2 })
     await act(() => release(Response.json(previewBody))); await settleSubmission()
     assert.equal(posts, 0)
-    assert.equal(readCanvasGenerationSubmission(generationSubmissionScope)!.id, otherTab.id)
+    assert.equal((await readCanvasGenerationSubmission(generationSubmissionScope))!.id, otherTab.id)
     assert.match(view.container.querySelector('[aria-label="原生成提交状态"]')!.textContent!, /0\/2/)
   } finally { await view.destroy() }
 })
@@ -3105,9 +3561,10 @@ test('canvas association save failure retains accepted work and reload restores 
   const view = await mount()
   await act(() => view.button('开始生成').click()); await settleSubmission()
   assert.equal(posts, 1)
-  assert.equal(readCanvasGenerationSubmission(generationSubmissionScope)!.candidates[0].jobId, 'save-failed-job')
-  const remote = api.saved.at(-1)!
-  graph.nodes = remote.nodes; graph.edges = remote.edges; graph.revision = `saved-${api.saved.length}`
+  assert.equal((await readCanvasGenerationSubmission(generationSubmissionScope))!.candidates[0].jobId, 'save-failed-job')
+  const remote = api.saved.at(-1) || graph
+  graph.nodes = remote.nodes; graph.edges = remote.edges
+  if (api.saved.length) graph.revision = `saved-${api.saved.length}`
   await view.destroy()
   rejectAssociation = false
   const restored = await mount(detail, false, { onRefresh: async () => { refreshes++ } }, true)
@@ -3137,12 +3594,12 @@ test('canvas storage failure after acceptance stops later candidates and read-on
   const view = await mount()
   try {
     await act(() => view.button('开始生成').click()); await settleSubmission()
-    const pending = readCanvasGenerationSubmission(generationSubmissionScope)!
+    const pending = (await readCanvasGenerationSubmission(generationSubmissionScope))!
     assert.equal(posts, 1); assert.equal(pending.candidates[0].jobId, null); assert.ok(pending.inFlightKey)
     rejectAcceptedWrite = false
     await act(() => view.button('检查已有生成任务').click()); await settleSubmission()
     assert.equal(posts, 1)
-    assert.equal(readCanvasGenerationSubmission(generationSubmissionScope)!.candidates[0].jobId, 'accepted-before-quota')
+    assert.equal((await readCanvasGenerationSubmission(generationSubmissionScope))!.candidates[0].jobId, 'accepted-before-quota')
     assert.equal(api.saved.at(-1)!.nodes.find(node => node.id === 'video-node')!.job_id, 'accepted-before-quota')
   } finally { rejectAcceptedWrite = false; await view.destroy() }
 })

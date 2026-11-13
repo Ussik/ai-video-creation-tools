@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { textToolSession } from '../src/infrastructure/providers/text-tools.js'
 import type { GenerationModel } from '../src/infrastructure/providers/providers.js'
-import { TextOutputLimitError, TextProviderError } from '../src/infrastructure/providers/text-errors.js'
+import { TextOutputLimitError, TextToolOutputLimitError, TextProviderError } from '../src/infrastructure/providers/text-errors.js'
 import { withUnrestrictedScriptExecution } from '../src/modules/generation/model-execution.js'
 
 const functions = [{ name: 'read_documents', description: '读取', parameters: { type: 'object', properties: { document_ids: { type: 'array', items: { type: 'string' } } } } }]
@@ -120,7 +120,10 @@ test('reasoning-only truncated tools remain nonretryable transport failures with
     await assert.rejects(textToolSession(model(protocol), provider, 'request', functions, () => '')(), (issue: unknown) => {
       assert.ok(issue instanceof TextProviderError)
       assert.ok(!(issue instanceof TextOutputLimitError))
-      assert.equal(issue.message, '模型输出被截断，未执行工具调用：已达到模型输出长度上限')
+      assert.ok(issue instanceof TextToolOutputLimitError)
+      assert.equal(issue.message, '模型输出被截断，未执行工具调用：推理已耗尽输出预算，未返回完整工具调用')
+      assert.deepEqual(issue.usage, { input_tokens: 5, output_tokens: 65535, reasoning_tokens: 65535 })
+      assert.equal(issue.outputLimitKind, 'reasoning')
       assert.equal(issue.retryable, false)
       return true
     })

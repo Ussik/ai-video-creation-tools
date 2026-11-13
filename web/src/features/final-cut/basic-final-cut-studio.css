@@ -18,6 +18,13 @@
 .basic-cut-section-head h2, .basic-cut-section-head h3 { margin: 0; font-size: 13px; font-weight: 550; }
 .basic-cut-section-head h2 small { font-size: 11px; color: var(--fc-text-muted); font-weight: 400; margin-left: 6px; }
 .basic-cut-assets > * { flex-shrink: 0; }
+.basic-cut-asset-status-filters { display: flex; gap: 3px; padding: 3px; background: var(--fc-canvas); border: 1px solid var(--fc-border-soft); border-radius: 5px; }
+.basic-cut-asset-status-filters > button { flex: 1; padding: 5px 3px; border-radius: 3px; text-align: center; color: var(--fc-text-secondary); font-size: 11px; line-height: 1.5; white-space: nowrap; }
+.basic-cut-asset-status-filters > button:hover { background: var(--fc-surface-hover); }
+.basic-cut-asset-status-filters > button[aria-pressed="true"] { color: var(--fc-text); background: var(--fc-panel); box-shadow: 0 1px 3px #0002; font-weight: 600; }
+.basic-cut-asset-status-filters > button:focus-visible { outline: 2px solid var(--fc-primary); outline-offset: 1px; }
+.basic-cut-asset-status-filters > button:disabled { opacity: .5; cursor: wait; }
+.basic-cut-asset-status-error { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 11px; color: var(--fc-text-secondary); }
 .basic-cut-asset-list { flex: 1 1 auto; min-height: 0; overflow: auto; display: grid; align-content: start; gap: 5px; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .basic-cut-asset { display: flex; align-items: center; border: 1px solid transparent; border-radius: 5px; gap: 4px; padding: 5px; min-width: 0; }
 .basic-cut-asset:hover { background: var(--fc-surface-hover); }
@@ -26,6 +33,10 @@
 .basic-cut-asset-main > div:last-child { min-width: 0; display: grid; gap: 5px; }
 .basic-cut-asset-main strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: 12px; line-height: 1.5; font-weight: 500; }
 .basic-cut-asset-main small { font-size: 10px; color: var(--fc-text-muted); }
+.basic-cut-asset-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.basic-cut-asset-meta .mantine-Badge-root { flex: none; font-size: 9px; font-weight: 500; text-transform: none; }
+.basic-cut-asset-meta .mantine-Badge-root[data-status="confirmed"] { color: var(--fc-success); background: var(--fc-success-soft); }
+.basic-cut-asset-meta .mantine-Badge-root[data-status="candidate"] { color: var(--fc-warning); background: var(--fc-warning-soft); }
 .basic-cut-asset-thumb { width: 61px; height: 42px; flex: none; display: grid; place-items: center; background: var(--fc-canvas); overflow: hidden; border-radius: 3px; color: var(--fc-text-muted); }
 .basic-cut-asset-thumb :is(img,video) { width: 100%; height: 100%; object-fit: cover; }
 .basic-cut-preview-column { display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; }

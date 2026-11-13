@@ -2,11 +2,14 @@ import assert from 'node:assert/strict'
 import { register } from 'node:module'
 import { after, test, type TestContext } from 'node:test'
 import { JSDOM } from 'jsdom'
+import { IDBFactory } from 'fake-indexeddb'
 import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
 import type { Model, ProjectDetail, VisualProfile } from '../src/shared/api/api'
 import { getManagedPromptBlocks, stripManagedPromptBlocks } from '@video-studio/shared/visuals/prompt-document'
 import type { CanvasGraph, CanvasNode, ProjectCanvasProps } from '../src/features/canvas/ProjectCanvas'
+import { canvasGenerationSubmissionStorageKey, createCanvasGenerationSubmission, readCanvasGenerationSubmission } from '../src/features/canvas/canvas-generation-submission'
+import { directorConversationStorageKey } from '../src/features/script/director-conversation-storage'
 
 // Exercise the complete canvas; only styles and HTTP transport are mocked.
 register(`data:text/javascript,${encodeURIComponent(`
@@ -97,7 +100,7 @@ function initialGraph(): CanvasGraph {
 }
 type PreviewRequest = { prompt: string; reference_asset_ids: string[]; explicit_reference_asset_ids?: string[]; mode: string; prompt_document: boolean;
   source_artifact_type?: string; shot_id: string | null }
-function mockApi(t: TestContext, allowMockGeneration = false, graph = initialGraph()) {
+function mockApi(t: TestContext, allowMockGeneration = false, graph = initialGraph(), conversations: unknown[] = []) {
   let currentGraph = graph
   const submittedKeys = new Set<string>()
   const saved: CanvasGraph[] = [], previews: PreviewRequest[] = [], generations: PreviewRequest[] = [], unexpectedRequests: string[] = []
@@ -112,6 +115,7 @@ function mockApi(t: TestContext, allowMockGeneration = false, graph = initialGra
       return Response.json(currentGraph)
     }
     if (path === `/api/projects/${projectId}/skills/defaults`) return Response.json({ policies: [] })
+    if (path === `/api/projects/${projectId}/script/conversations` && method === 'GET') return Response.json({ conversations })
     // A real submission first asks whether this idempotency key already has a job (no side effect), then posts it once.
     if (allowMockGeneration && method === 'GET' && path.startsWith(`/api/projects/${projectId}/generation-submissions/`)) {
       const key = decodeURIComponent(path.slice(`/api/projects/${projectId}/generation-submissions/`.length))
@@ -222,7 +226,6 @@ for (const [kind, label, detailPattern] of [
     assert.equal(transport.previews.length, 0)
   } finally { await view.destroy() }
 })
-
 test('right clicking an existing picture creates a setting with that exact picture already connected', async t => {
   const transport = mockApi(t), view = await mount()
   try {
@@ -295,11 +298,11 @@ test('reference handles compose the setting template, preserve manual text on re
     const body = '保留参考人物的身份与衣装，强调衣领结构与手套细节。'
     await view.editBody(body)
     await view.connect('input-b', target.id)
-    assert.equal(stripManagedPromptBlocks(view.promptText()), body)
+    assert.equal(stripManagedPromptBlocks(view.promptText()).trim(), body)
     const remove = [...view.container.querySelectorAll<HTMLButtonElement>('.pc-composer-reference-remove')].find(item => item.getAttribute('aria-label')?.includes('参考A'))
     assert.ok(remove, 'connected reference can be removed')
     await act(() => remove.click()); await settle()
-    assert.equal(stripManagedPromptBlocks(view.promptText()), body)
+    assert.equal(stripManagedPromptBlocks(view.promptText()).trim(), body)
     assert.doesNotMatch(view.promptText(), /\[\[ref:source-a\]\]/)
     assert.match(view.promptText(), /\[\[ref:source-b\]\]/)
     await click('查看生成信息')
@@ -310,7 +313,7 @@ test('reference handles compose the setting template, preserve manual text on re
     assert.equal(persisted.edges.filter(edge => edge.target === target.id).length, 1)
     await view.destroy()
     view = await mount(); await view.select(target.id)
-    assert.equal(stripManagedPromptBlocks(view.promptText()), body)
+    assert.equal(stripManagedPromptBlocks(view.promptText()).trim(), body)
     assert.match(view.promptText(), /\[\[ref:source-b\]\]/)
     assert.match(view.promptText(), /【设定图固定要求】/)
     assert.doesNotMatch(view.promptText(), /\[\[ref:source-a\]\]/)
@@ -329,7 +332,6 @@ test('explicit generation queues the setting directly without creating a storybo
     await click('开始生成')
     const saved = await savedGraph(transport.saved)
     assert.equal(transport.previews.length, 1)
-    console.error('PROBE notice=', JSON.stringify(document.querySelector('.pc-notice')?.textContent), '| gens', transport.generations.length)
     assert.equal(transport.generations.length, 1, document.querySelector('.pc-notice')?.textContent || 'only a mocked queue request is allowed')
     const preview = transport.previews[0], queued = transport.generations[0]
     assert.equal(queued.shot_id, null)
@@ -345,5 +347,108 @@ test('explicit generation queues the setting directly without creating a storybo
     assert.equal(result.shot_id, null)
     assert.equal(result.job_id, 'mock-setting-job')
     assert.equal(result.settings.visual_template_kind, 'location')
+  } finally { await view.destroy() }
+})
+
+test('prop setting can submit with full localStorage and preserves unsynced director content', async t => {
+  const transport = mockApi(t, true), view = await mount()
+  Object.defineProperty(dom.window, 'indexedDB', { configurable: true, value: new IDBFactory() })
+  t.after(() => { delete (dom.window as unknown as { indexedDB?: IDBFactory }).indexedDB })
+  const directorKey = directorConversationStorageKey(projectId)
+  const unsynced = JSON.stringify({ messages: [{ id: 'unsynced', role: 'user', text: '尚未同步的完整创作要求' }], history: [] })
+  dom.window.localStorage.setItem(directorKey, unsynced)
+  const storagePrototype = Object.getPrototypeOf(dom.window.localStorage)
+  t.mock.method(storagePrototype, 'setItem', () => { throw new dom.window.DOMException('storage full', 'QuotaExceededError') })
+  try {
+    const picture = view.container.querySelector<HTMLElement>('[data-id="input-a"]'); assert.ok(picture)
+    await act(() => picture.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 300, clientY: 200 }))); await settle()
+    await menuItem('创建道具设定')
+    const initial = await savedGraph(transport.saved), created = initial.nodes.find(item => item.settings.visual_template_kind === 'prop')!
+    await click('开始生成')
+    await savedGraph(transport.saved)
+    assert.equal(transport.generations.length, 1, view.container.querySelector('.pc-notice')?.textContent || '')
+    assert.equal(dom.window.localStorage.getItem(directorKey), unsynced)
+    const scope = { projectId, canvasId: projectId, nodeId: created.id }
+    const stored = await readCanvasGenerationSubmission(scope)
+    assert.equal(stored?.candidates[0].jobId, 'mock-setting-job')
+    assert.equal(dom.window.localStorage.getItem(canvasGenerationSubmissionStorageKey(scope)), null)
+  } finally { await view.destroy() }
+})
+
+test('prop setting does not submit when the browser cannot save its generation intent', async t => {
+  const transport = mockApi(t, true), view = await mount()
+  const storagePrototype = Object.getPrototypeOf(dom.window.localStorage), originalSet = storagePrototype.setItem
+  t.mock.method(storagePrototype, 'setItem', function (this: Storage, key: string, value: string) {
+    if (key.startsWith('canvas-generation-submission:')) throw new Error('quota exceeded')
+    return originalSet.call(this, key, value)
+  })
+  try {
+    const picture = view.container.querySelector<HTMLElement>('[data-id="input-a"]'); assert.ok(picture)
+    await act(() => picture.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 300, clientY: 200 }))); await settle()
+    await menuItem('创建道具设定')
+    await click('开始生成')
+    assert.equal(transport.generations.length, 0, 'the generation POST is gated by a verified durable intent')
+    const notice = view.container.querySelector('.pc-notice')?.textContent || ''
+    assert.match(notice, /本次没有发起新的生成提交/)
+    assert.match(notice, /浏览器本地存储空间已满/)
+    assert.match(notice, /自动恢复未成功/)
+    assert.doesNotMatch(notice, /原提交已保留/)
+  } finally { await view.destroy() }
+})
+
+test('prop setting safely releases a server-verified director cache and retries the durable intent', async t => {
+  const cachedMessage = { id: 'saved-user-message', role: 'user', text: '已保存的创作要求' }
+  const transport = mockApi(t, true, initialGraph(), [{ id: 'saved-conversation', label: '已保存对话', messages: [cachedMessage] }])
+  const view = await mount()
+  const storagePrototype = Object.getPrototypeOf(dom.window.localStorage), originalSet = storagePrototype.setItem
+  const directorKey = directorConversationStorageKey(projectId)
+  dom.window.localStorage.setItem(directorKey, JSON.stringify({ messages: [cachedMessage], history: [] }))
+  let simulatedQuota = true
+  t.mock.method(storagePrototype, 'setItem', function (this: Storage, key: string, value: string) {
+    if (key.startsWith('canvas-generation-submission:') && simulatedQuota) {
+      simulatedQuota = false
+      throw new dom.window.DOMException('storage full', 'QuotaExceededError')
+    }
+    return originalSet.call(this, key, value)
+  })
+  try {
+    const picture = view.container.querySelector<HTMLElement>('[data-id="input-a"]'); assert.ok(picture)
+    await act(() => picture.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 300, clientY: 200 }))); await settle()
+    await menuItem('创建道具设定')
+    const initial = await savedGraph(transport.saved), created = initial.nodes.find(item => item.settings.visual_template_kind === 'prop')!
+    assert.ok(created)
+    await click('开始生成')
+    await savedGraph(transport.saved)
+    assert.equal(dom.window.localStorage.getItem(directorKey), null, 'only the server-verified duplicate cache was released')
+    assert.ok(dom.window.localStorage.getItem(canvasGenerationSubmissionStorageKey({ projectId, canvasId: projectId, nodeId: created.id })),
+      'the retried submission intent is durable before the paid request')
+    assert.equal(transport.generations.length, 1)
+  } finally { await view.destroy() }
+})
+
+test('a failed new round does not call an older completed submission the current submission', async t => {
+  const transport = mockApi(t, true), view = await mount()
+  try {
+    const picture = view.container.querySelector<HTMLElement>('[data-id="input-a"]'); assert.ok(picture)
+    await act(() => picture.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 300, clientY: 200 }))); await settle()
+    await menuItem('创建道具设定')
+    const initial = await savedGraph(transport.saved), created = initial.nodes.find(item => item.settings.visual_template_kind === 'prop')!
+    assert.ok(created)
+    const scope = { projectId, canvasId: projectId, nodeId: created.id }
+    const old = await createCanvasGenerationSubmission({ ...scope, sourceSignature: 'old', baselineJobId: null,
+      request: { prompt: 'old', shot_id: null }, candidateCount: 1 })
+    dom.window.localStorage.setItem(canvasGenerationSubmissionStorageKey(scope), JSON.stringify({
+      ...old, candidates: old.candidates.map(candidate => ({ ...candidate, jobId: 'old-completed-job' })),
+    }))
+    const storagePrototype = Object.getPrototypeOf(dom.window.localStorage), originalSet = storagePrototype.setItem
+    t.mock.method(storagePrototype, 'setItem', function (this: Storage, key: string, value: string) {
+      if (key.startsWith('canvas-generation-submission:')) throw new Error('quota exceeded')
+      return originalSet.call(this, key, value)
+    })
+    await click('开始生成')
+    const notice = view.container.querySelector('.pc-notice')?.textContent || ''
+    assert.match(notice, /本次没有发起新的生成提交/)
+    assert.doesNotMatch(notice, /原提交已保留/)
+    assert.equal(transport.generations.length, 0)
   } finally { await view.destroy() }
 })

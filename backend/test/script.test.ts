@@ -8,6 +8,7 @@ import { after, test } from 'node:test'
 import { scriptStageArtifacts, scriptArtifactLabels } from '@video-studio/shared/script/script-stage-content'
 import { draftCompletenessFixtureResponse } from './fixtures/script-draft-completeness.js'
 import { workflowFixtureTypes } from './fixtures/script-workflow.js'
+import type { VideoAudioPlan } from '@video-studio/shared/media/video-prompt-audio'
 
 const testData = await mkdtemp(join(tmpdir(), 'video-studio-script-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
@@ -67,6 +68,7 @@ interface Scene {
 }
 interface Shot {
   id: string; title: string; prompt: string; image_prompt: string; video_prompt: string; source_scene_id: string | null; position: number
+  audio_plan: VideoAudioPlan | null
 }
 interface Script {
   outline: string; characters: string; generation_options: Record<string, string>; scenes: Scene[]
@@ -85,12 +87,58 @@ test('empty generation idea falls back to the project name and retains saved scr
   assert.equal(saved.script.outline, '现代学生穿越上古，命名异兽')
 })
 
+test('long script scenes survive scene edits and full saves while shots retain their own duration limit', async () => {
+  const project = await call<{ id: string }>('POST', '/api/projects', { name: '长场景兼容' })
+  const scene = await call<Scene>('POST', `/api/projects/${project.id}/script/scenes`, {
+    heading: '会议室到走廊', action: '长对话之后，主角离开会议室走入走廊。', duration: 600,
+  })
+  assert.equal(scene.duration, 600)
+  const patched = await call<Scene>('PATCH', `/api/script-scenes/${scene.id}`, { duration: 120 })
+  assert.equal(patched.duration, 120)
+  const saved = await call<Script>('PUT', `/api/projects/${project.id}/script`, {
+    outline: '保留长场景', characters: '', scenes: [{ ...patched, duration: 600 }],
+  })
+  assert.equal(saved.scenes[0]?.duration, 600)
+  const committed = await call<Script>('PUT', `/api/projects/${project.id}/script/commit`, {
+    outline: '修改大纲而保留场景', characters: '', scenes: saved.scenes, artifacts: [],
+  })
+  assert.equal(committed.scenes[0]?.duration, 600)
+  for (const [method, url, payload] of [
+    ['POST', `/api/projects/${project.id}/script/scenes`, { heading: '过长场景', duration: 601 }],
+    ['PATCH', `/api/script-scenes/${scene.id}`, { duration: 601 }],
+    ['POST', `/api/projects/${project.id}/shots`, { title: '过长镜头', duration: 31, source_scene_id: scene.id }],
+  ] as const) {
+    const rejected = await app.inject({ method, url, payload })
+    assert.equal(rejected.statusCode, 422, rejected.body)
+  }
+  const afterRejection = await call<{ script: Script; shots: Shot[] }>('GET', `/api/projects/${project.id}`)
+  assert.deepEqual(afterRejection.script.scenes.map(item => [item.id, item.duration]), [[scene.id, 600]])
+  assert.deepEqual(afterRejection.shots, [])
+})
+
+test('legacy scene conversion rejects unplanned long scenes before creating any shots', async () => {
+  const project = await call<{ id: string }>('POST', '/api/projects', { name: '长场景必须先规划' })
+  const short = await call<Scene>('POST', `/api/projects/${project.id}/script/scenes`, { heading: '短场景', duration: 8 })
+  const long = await call<Scene>('POST', `/api/projects/${project.id}/script/scenes`, { heading: '长场景', duration: 120 })
+  const rejected = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/convert-to-shots`, payload: { scene_ids: [short.id, long.id] } })
+  assert.equal(rejected.statusCode, 422, rejected.body)
+  assert.match(rejected.body, /先规划分镜/)
+  assert.deepEqual((await call<{ shots: Shot[] }>('GET', `/api/projects/${project.id}`)).shots, [])
+
+  const planned = await call<Shot>('POST', `/api/projects/${project.id}/shots`, { title: '已规划镜头', duration: 15, source_scene_id: long.id })
+  const result = await call<{ shots: Shot[]; skipped_scene_ids: string[] }>('POST', `/api/projects/${project.id}/script/convert-to-shots`, { scene_ids: [short.id, long.id] })
+  assert.deepEqual(result.shots.map(item => item.source_scene_id), [short.id])
+  assert.deepEqual(result.skipped_scene_ids, [long.id])
+  assert.ok((await call<{ shots: Shot[] }>('GET', `/api/projects/${project.id}`)).shots.some(item => item.id === planned.id))
+})
+
 test('script editing is atomic and existing shots survive scene revisions', async () => {
   const legacy = await call<{ script: Script; shots: Shot[] }>('GET', '/api/projects/legacy-project')
   assert.deepEqual(legacy.script, { outline: '', characters: '', generation_options: {}, scenes: [] })
   assert.equal(legacy.shots[0]?.source_scene_id, null)
   assert.equal(legacy.shots[0]?.image_prompt, '')
   assert.equal(legacy.shots[0]?.video_prompt, '')
+  assert.equal(legacy.shots[0]?.audio_plan, null, 'legacy shots keep unknown audio instead of silently becoming mute')
 
   const first = await call<Scene>('POST', '/api/projects/legacy-project/script/scenes', {
     heading: '站台', location: '雨夜车站', action: '列车驶入站台', duration: 6,
@@ -620,13 +668,15 @@ test('script director conversations persist per project and replace their messag
 
 test('planned shots are reviewed before insertion and preserve existing work', async t => {
   let modelOutput = ''
+  let modelReplies: string[] = [], modelCalls = 0
   let submittedPrompt = ''
   const textApi = createServer(async (request, response) => {
     let body = ''
     for await (const chunk of request) body += chunk.toString()
     submittedPrompt = (JSON.parse(body) as { messages: Array<{ content: string }> }).messages[0]?.content || ''
+    modelCalls++
     response.setHeader('Content-Type', 'application/json')
-    response.end(JSON.stringify({ choices: [{ message: { content: modelOutput } }] }))
+    response.end(JSON.stringify({ choices: [{ message: { content: modelReplies.shift() ?? modelOutput } }] }))
   })
   await new Promise<void>(resolve => textApi.listen(0, '127.0.0.1', resolve))
   t.after(async () => {
@@ -659,36 +709,56 @@ test('planned shots are reviewed before insertion and preserve existing work', a
   const initial = await call<{ shots: Shot[] }>('POST', `/api/projects/${project.id}/script/convert-to-shots`, {
     scene_ids: [first.id, third.id],
   })
+  const silentAudio: VideoAudioPlan = { version: 1, speech: [], sound_effects: [], music: '', silent: true }
+  const rainAudio: VideoAudioPlan = { version: 1, speech: [], sound_effects: ['逐渐稀疏的雨声'], music: '', silent: false }
   modelOutput = JSON.stringify({ scenes: [
     { scene_id: second.id, shots: [
-      { title: '云开', prompt: '广角镜头中云层缓慢散开', image_prompt: '云层遮挡天空的静态广角首帧', video_prompt: '云层缓慢散开，镜头平稳上仰', duration: 3 },
-      { title: '日光', prompt: '暖光照亮街角小店湿路面', duration: 3 },
+      { title: '云开', prompt: '广角镜头中云层缓慢散开', image_prompt: '云层遮挡天空的静态广角首帧', video_prompt: '云层缓慢散开，镜头平稳上仰', duration: 3, audio_plan: silentAudio },
+      { title: '日光', prompt: '暖光照亮街角小店湿路面', duration: 2, audio_plan: silentAudio },
     ] },
     { scene_id: first.id, shots: [
-      { title: '街角', prompt: '蓝灰色空街与暖色店铺灯光', duration: 2 },
-      { title: '雨丝', prompt: '雨丝在店铺门前逐渐稀疏', duration: 2 },
-      { title: '反光', prompt: '湿路面倒映橱窗的暖黄色灯', duration: 2 },
+      { title: '街角', prompt: '蓝灰色空街与暖色店铺灯光', duration: 2, audio_plan: rainAudio },
+      { title: '雨丝', prompt: '雨丝在店铺门前逐渐稀疏', duration: 2, audio_plan: rainAudio },
+      { title: '反光', prompt: '湿路面倒映橱窗的暖黄色灯', duration: 2, audio_plan: rainAudio },
     ] },
   ] })
   const planPreview = await call<{ prompt: string }>('POST', `/api/projects/${project.id}/script/plan-shots/prompt`, {
     scene_ids: [second.id, first.id], shots_per_scene: 3,
   })
   assert.match(planPreview.prompt, /雨渐停/)
-  const planned = await call<{ scenes: Array<{ scene_id: string; scene_duration: number; shots: Array<{ title: string; prompt: string; image_prompt: string; video_prompt: string; duration: number }> }> }>(
-    'POST', `/api/projects/${project.id}/script/plan-shots`, {
-      model_id: model.id, scene_ids: [second.id, first.id], shots_per_scene: 3,
-      prompt_override: `${planPreview.prompt}\n额外要求：保持雨夜冷暖对比。`,
-    })
+  const planningInput = { model_id: model.id, scene_ids: [second.id, first.id], shots_per_scene: 3,
+    prompt_override: `${planPreview.prompt}\n额外要求：保持雨夜冷暖对比。` }
+  const planned = await call<{ scenes: Array<{ scene_id: string; scene_duration: number; shots: Array<{ title: string; prompt: string; image_prompt: string; video_prompt: string; duration: number; audio_plan: VideoAudioPlan }> }> }>(
+    'POST', `/api/projects/${project.id}/script/plan-shots`, planningInput)
   assert.match(submittedPrompt, /本次结构化返回契约/)
   assert.equal(submittedPrompt.split('【原始任务与资料】\n')[1], `${planPreview.prompt}\n额外要求：保持雨夜冷暖对比。`)
   assert.deepEqual(planned.scenes.map(scene => scene.scene_id), [first.id, second.id])
   assert.deepEqual(planned.scenes.map(scene => scene.shots.reduce((sum, shot) => sum + shot.duration, 0)), [6, 5])
+  assert.deepEqual(planned.scenes[1]!.shots.map(shot => shot.duration), [3, 2], 'valid model timing is preserved without redistribution')
   assert.equal(planned.scenes[0]?.shots[0]?.title, '街角')
   assert.match(planned.scenes[0]!.shots[0]!.image_prompt, /单幅首帧/)
   assert.match(planned.scenes[0]!.shots[0]!.video_prompt, /连续视频/)
   assert.equal(planned.scenes[1]!.shots[0]!.image_prompt, '云层遮挡天空的静态广角首帧')
   assert.equal(planned.scenes[1]!.shots[0]!.video_prompt, '云层缓慢散开，镜头平稳上仰')
   assert.equal((await call<{ shots: Shot[] }>('GET', `/api/projects/${project.id}`)).shots.length, 2)
+
+  const incorrectTiming = JSON.parse(modelOutput)
+  incorrectTiming.scenes[0].shots[1].duration = 3
+  const incorrectOutput = JSON.stringify(incorrectTiming), beforeCorrection = modelCalls
+  modelReplies = [incorrectOutput, modelOutput]
+  const corrected = await call<typeof planned>('POST', `/api/projects/${project.id}/script/plan-shots`, planningInput)
+  assert.equal(modelCalls, beforeCorrection + 2, 'a 3+3 second model draft for a 5 second scene requires model correction')
+  assert.match(submittedPrompt, /一次格式修正[\s\S]*镜头时长总和必须为 5 秒/)
+  assert.deepEqual(corrected.scenes[1]!.shots.map(shot => shot.duration), [3, 2])
+  const beforeFailure = modelCalls
+  modelReplies = [incorrectOutput, incorrectOutput]
+  const failedTiming = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/plan-shots`, payload: planningInput })
+  assert.equal(failedTiming.statusCode, 422, failedTiming.body)
+  assert.equal(modelCalls, beforeFailure + 2)
+  assert.match(failedTiming.json().detail, /镜头时长总和必须为 5 秒/)
+  assert.deepEqual(JSON.parse(failedTiming.json().raw_output).scenes[0].shots.map((shot: { duration: number }) => shot.duration), [3, 3],
+    'an invalid uncorrected plan fails with its original timing instead of being silently rescaled')
+  assert.equal((await call<{ shots: Shot[] }>('GET', `/api/projects/${project.id}`)).shots.length, 2, 'planning and failed correction never insert shots')
 
   const invalid = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/create-planned-shots`, payload: {
     request_id: randomUUID(),
@@ -706,6 +776,9 @@ test('planned shots are reviewed before insertion and preserve existing work', a
   assert.equal(result.shots.length, 5)
   assert.equal(result.shots[3]!.image_prompt, planned.scenes[1]!.shots[0]!.image_prompt)
   assert.equal(result.shots[3]!.video_prompt, planned.scenes[1]!.shots[0]!.video_prompt)
+  assert.deepEqual(result.shots[0]!.audio_plan, rainAudio)
+  assert.deepEqual(result.shots[3]!.audio_plan, silentAudio)
+  assert.deepEqual(one<{ audio_plan: VideoAudioPlan }>('SELECT audio_plan FROM shots WHERE id=?', result.shots[0]!.id)!.audio_plan, rainAudio)
   const repeated = await call<{ shots: Shot[]; replayed: boolean; payload_changed: boolean }>('POST',
     `/api/projects/${project.id}/script/create-planned-shots`, createPayload)
   assert.deepEqual(repeated.shots.map(shot => shot.id), result.shots.map(shot => shot.id))

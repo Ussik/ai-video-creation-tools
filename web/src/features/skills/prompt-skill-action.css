@@ -1,161 +1,122 @@
+.prompt-skill-action { display: inline-flex; min-width: 0; }
 .prompt-skill-modal {
-  --fc-surface: var(--workspace-ink, #0f1012);
-  --fc-border: var(--canvas-chrome-border, #2b2e33);
-  --fc-border-soft: var(--canvas-chrome-border, #2b2e33);
+  --fc-surface: var(--workspace-ink, #101113);
+  --fc-panel: var(--canvas-chrome-raised, #202226);
+  --fc-border: var(--canvas-chrome-border, #34373c);
+  --fc-border-soft: var(--canvas-chrome-border, #34373c);
+  --fc-border-strong: var(--workspace-line-strong, #535b65);
   --fc-text: var(--workspace-text, #e8eaec);
   --fc-text-muted: var(--canvas-chrome-icon, #b5bac1);
   --fc-text-subtle: var(--workspace-muted, #94999f);
   --fc-focus: var(--canvas-chrome-focus, #69727b);
+  --fc-primary: var(--workspace-text, #e8eaec);
+  --fc-on-primary: var(--workspace-ink, #181a1e);
+  --fc-danger: var(--mantine-color-red-4, #ff8787);
+  --fc-danger-soft: var(--mantine-color-red-light, #ff878711);
   display: flex;
   flex-direction: column;
-  max-height: min(760px, calc(100dvh - 64px));
+  max-height: min(820px, calc(100dvh - 48px));
   overflow: hidden;
-  background: var(--canvas-chrome-surface, #191919f2);
   border: 1px solid var(--fc-border);
+  background: var(--canvas-chrome-surface, #191b1ef8);
   color: var(--fc-text);
-  backdrop-filter: blur(18px);
+  box-shadow: 0 24px 80px #0006;
 }
-
-.prompt-skill-modal .prompt-skill-header {
-  flex: none;
-  min-height: 76px;
-  padding: 17px 22px;
-  border-bottom: 1px solid var(--fc-border);
-  background: var(--fc-panel);
-}
-.prompt-skill-modal .prompt-skill-title { font-size: 16px; font-weight: 600; }
-.prompt-skill-heading { display: grid; gap: 4px; }
-.prompt-skill-heading small { color: var(--fc-text-subtle); font-size: 11px; font-weight: 400; line-height: 1.5; }
-.prompt-skill-modal .prompt-skill-close {
-  border-radius: 8px;
-  color: var(--fc-text-subtle);
-  transition: background-color 150ms, color 150ms;
-}
-.prompt-skill-modal .prompt-skill-close:hover { background: var(--canvas-chrome-hover, var(--fc-surface-muted)); color: var(--fc-text); }
+.prompt-skill-modal .prompt-skill-header { flex: none; min-height: 82px; padding: 24px 28px 4px; border-bottom: 0; background: transparent; }
+.prompt-skill-modal .prompt-skill-title { font-size: 18px; font-weight: 600; }
+.prompt-skill-heading { display: grid; gap: 5px; }
+.prompt-skill-heading small { color: var(--fc-text-subtle); font-size: 12px; font-weight: 400; line-height: 1.6; }
+.prompt-skill-modal .prompt-skill-close { border-radius: 7px; color: var(--fc-text-subtle); }
+.prompt-skill-modal .prompt-skill-close:hover { background: var(--canvas-chrome-hover, #ffffff0a); color: var(--fc-text); }
 .prompt-skill-modal .prompt-skill-body { display: flex; flex-direction: column; min-height: 0; padding: 0; overflow: hidden; }
-.prompt-skill-content {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  min-height: 0;
-  padding: 20px 22px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: var(--workspace-line-strong, #34383d) transparent;
-}
-.prompt-skill-settings { display: grid; gap: 10px; }
-.prompt-skill-card { min-width: 0; padding: 11px 13px; border: 1px solid var(--fc-border); border-radius: 10px; background: var(--fc-panel); }
-.prompt-skill-card > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--fc-text-subtle); font-size: 11px; line-height: 1.6; }
-.prompt-skill-card > header small { flex: none; font-size: 10px; }
-.prompt-skill-selection { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; margin-top: 5px; }
+.prompt-skill-stage { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.prompt-skill-stage[hidden] { display: none; }
+.prompt-skill-content { display: flex; flex-direction: column; gap: 20px; min-height: 0; padding: 22px 28px 26px; overflow-y: auto; scrollbar-width: thin; }
+.prompt-skill-support { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 10px 24px; min-width: 0; }
+.prompt-skill-support > .prompt-skill-source { min-width: 0; }
+.prompt-skill-support > .prompt-skill-source:has(.workspace-disclosure-control[data-active]) { grid-column: 1 / -1; }
+.prompt-skill-support > .prompt-skill-source:has(.workspace-disclosure-control[data-active]) + .prompt-skill-context { justify-self: end; }
+.prompt-skill-context { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; color: var(--fc-text-muted); font-size: 12px; }
+.prompt-skill-support .prompt-skill-context { min-height: 32px; justify-content: flex-end; gap: 5px; }
+.prompt-skill-context > span { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.prompt-skill-context svg { flex: none; color: var(--fc-text-subtle); }
+.prompt-skill-modal :is(.prompt-skill-context, .prompt-skill-result-meta) .mantine-Button-root { flex: none; color: var(--fc-text-muted); font-size: 12px; font-weight: 400; }
+.prompt-skill-modal .mantine-InputWrapper-label { margin-bottom: 10px; color: var(--fc-text); font-size: 13px; font-weight: 500; }
+.prompt-skill-optional { padding-left: 7px; color: var(--fc-text-subtle); font-size: 12px; font-weight: 400; }
+.prompt-skill-adjustment { display: grid; gap: 10px; min-width: 0; }
+.prompt-skill-adjustment .pc-prompt-editor-surface, .prompt-skill-comparison .pc-prompt-editor-surface { border: 1px solid var(--fc-border); border-radius: 8px; background: var(--fc-surface); }
+.prompt-skill-adjustment .pc-prompt-editor-content { min-height: 112px; max-height: 220px; padding: 14px 16px; color: var(--fc-text); font-size: 14px; line-height: 1.85; }
+.prompt-skill-adjustment .pc-prompt-editor-content:has(> p:first-child:last-child:empty)::before { color: var(--fc-text-subtle); }
+.prompt-skill-directions { display: flex; flex-wrap: wrap; gap: 7px; }
+.prompt-skill-modal .prompt-skill-directions .mantine-Button-root { border: 1px solid var(--fc-border-soft); border-radius: 6px; background: transparent; color: var(--fc-text-muted); font-size: 11px; font-weight: 400; }
+.prompt-skill-modal .prompt-skill-directions .mantine-Button-root:hover:not(:disabled), .prompt-skill-modal .prompt-skill-directions .mantine-Button-root[aria-pressed='true'] { border-color: var(--fc-focus); background: var(--canvas-chrome-hover, #ffffff0a); color: var(--fc-text); }
+.prompt-skill-adjustment-hint { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; color: var(--fc-text-subtle); font-size: 11px; line-height: 1.7; }
+.prompt-skill-adjustment-hint small { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; }
+.prompt-skill-modal .workspace-disclosure-control { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; border-radius: 5px; color: var(--fc-text-muted); font-size: 12px; font-weight: 400; }
+.prompt-skill-modal .workspace-disclosure-control small { color: var(--fc-text-subtle); font-size: 11px; overflow-wrap: anywhere; }
+.prompt-skill-modal .prompt-skill-configuration { padding-top: 0; }
+.prompt-skill-modal .prompt-skill-configuration > .mantine-Accordion-item > .workspace-disclosure-control { width: fit-content; max-width: 100%; }
+.prompt-skill-modal .prompt-skill-configuration .mantine-Accordion-label { flex-wrap: wrap; gap: 4px 10px; }
+.prompt-skill-modal .prompt-skill-configuration > .mantine-Accordion-item > .workspace-disclosure-control > .mantine-Accordion-chevron { margin-left: 12px; }
+.prompt-skill-source p { max-height: 180px; margin: 10px 0 0; padding: 12px; overflow-y: auto; border-radius: 7px; background: var(--fc-surface); color: var(--fc-text-subtle); font-size: 12px; line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere; }
+.prompt-skill-card { min-width: 0; margin-top: 4px; padding: 14px 16px; border-radius: 8px; background: var(--fc-panel); }
+.prompt-skill-card > header { display: flex; justify-content: space-between; gap: 10px; color: var(--fc-text-subtle); font-size: 11px; line-height: 1.6; }
+.prompt-skill-selection { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; margin-top: 7px; }
 .prompt-skill-primary { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .prompt-skill-primary svg { flex: none; color: var(--fc-text-subtle); }
-.prompt-skill-primary strong { min-width: 0; color: var(--fc-text); font-size: 13px; font-weight: 550; line-height: 1.6; overflow-wrap: anywhere; }
-.prompt-skill-card > p { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin: 3px 0 0 23px; color: var(--fc-text-subtle); font-size: 10px; line-height: 1.65; }
-.prompt-skill-modal .mantine-InputWrapper-label { margin-bottom: 6px; color: var(--fc-text-muted); font-size: 11px; font-weight: 500; }
-.prompt-skill-modal .prompt-skill-model-input {
-  height: 38px;
-  border: 1px solid var(--fc-border);
-  border-radius: 9px;
-  background: var(--fc-surface);
-  color: var(--fc-text);
-  font-size: 13px;
-}
+.prompt-skill-primary strong { font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.prompt-skill-card > p { margin: 6px 0 0; color: var(--fc-text-subtle); font-size: 11px; line-height: 1.7; }
+.prompt-skill-card > p > span { padding-inline: 6px; }
+.prompt-skill-settings { display: grid; gap: 12px; margin-top: 14px; }
+.prompt-skill-modal .prompt-skill-model-input { height: 38px; border: 1px solid var(--fc-border); border-radius: 7px; background: var(--fc-surface); color: var(--fc-text); font-size: 13px; }
 .prompt-skill-modal .mantine-Input-section { color: var(--fc-text-subtle); }
-.prompt-skill-source { min-width: 0; padding-top: 13px; border-top: 1px solid var(--fc-border); }
-.prompt-skill-source .workspace-disclosure-control { display: flex; align-items: center; gap: 8px; border-radius: 4px; color: var(--fc-text-muted); font-size: 11px; line-height: 1.7; list-style: none; cursor: pointer; }
-.prompt-skill-source .workspace-disclosure-control small { margin-left: auto; color: var(--fc-text-subtle); font-size: 10px; }
-.prompt-skill-source .workspace-disclosure-control svg { flex: none; color: var(--fc-text-subtle); transition: transform 150ms; }
-.prompt-skill-source:has(.workspace-disclosure-control[data-active]) .workspace-disclosure-control svg { transform: rotate(180deg); }
-.prompt-skill-source .workspace-disclosure-control:hover { color: var(--fc-text); }
-.prompt-skill-source .workspace-disclosure-control:focus-visible { outline: 2px solid var(--fc-focus); outline-offset: 3px; }
-.prompt-skill-source > p { max-height: 130px; margin: 10px 0 0; padding: 10px 12px; overflow-y: auto; border-radius: 8px; background: var(--fc-surface); color: var(--fc-text-subtle); font-size: 12px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; scrollbar-width: thin; }
-.prompt-skill-adjustment { display: grid; gap: 10px; min-width: 0; }
-.prompt-skill-adjustment .pc-prompt-editor-surface { border-color: var(--fc-border); border-radius: 10px; background: var(--fc-surface); }
-.prompt-skill-adjustment .pc-prompt-editor-content { max-height: 180px; padding: 10px 12px; color: var(--fc-text); font-size: 13px; line-height: 1.75; }
-.prompt-skill-adjustment .pc-prompt-editor-content:has(> p:first-child:last-child:empty)::before { color: var(--fc-text-subtle); }
-.prompt-skill-adjustment .mantine-InputWrapper-description { margin-top: 0; margin-bottom: 7px; color: var(--fc-text-subtle); font-size: 11px; line-height: 1.6; }
-.prompt-skill-directions { display: flex; flex-wrap: wrap; gap: 6px; }
-.prompt-skill-modal .prompt-skill-directions .mantine-Button-root { border: 1px solid var(--fc-border-soft); border-radius: 7px; background: transparent; color: var(--fc-text-muted); font-size: 11px; font-weight: 400; }
-.prompt-skill-modal .prompt-skill-directions .mantine-Button-root:hover:not(:disabled),
-.prompt-skill-modal .prompt-skill-directions .mantine-Button-root[aria-pressed='true'] { border-color: var(--fc-focus); background: var(--canvas-chrome-hover, var(--fc-surface-muted)); color: var(--fc-text); }
-.prompt-skill-adjustment-hint { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--fc-text-subtle); font-size: 11px; line-height: 1.6; }
-.prompt-skill-adjustment-hint small { flex: none; font-size: 10px; font-variant-numeric: tabular-nums; }
-.prompt-skill-adjustment-notice { margin: 0; color: var(--fc-text-muted); font-size: 12px; line-height: 1.7; }
-.prompt-skill-result { display: grid; gap: 8px; min-width: 0; }
-.prompt-skill-modal .prompt-skill-editor {
-  height: clamp(170px, 30dvh, 280px);
-  padding: 12px 14px;
-  border-radius: 10px;
-  border-color: var(--fc-border);
-  background: var(--fc-surface);
-  color: var(--fc-text);
-  line-height: 1.85;
-  font-size: 13px;
-  resize: none;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: var(--workspace-line-strong, #34383d) transparent;
-  transition: border-color 150ms, box-shadow 150ms;
-}
-.prompt-skill-modal :is(.prompt-skill-model-input, .prompt-skill-editor, .prompt-skill-adjustment .pc-prompt-editor-content):hover:not(:disabled) { border-color: var(--workspace-line-strong, var(--fc-border)); }
-.prompt-skill-modal :is(.prompt-skill-model-input, .prompt-skill-editor, .prompt-skill-adjustment .pc-prompt-editor-content):is(:focus, :focus-visible, [data-expanded]) {
-  border-color: var(--fc-focus) !important;
-  outline: none;
-  box-shadow: 0 0 0 2px #ffffff0a;
-}
-.prompt-skill-used { margin: 0; color: var(--fc-text-subtle); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
-.prompt-skill-progress { display: flex; align-items: center; gap: 7px; min-width: 0; color: var(--fc-text-muted); font-size: 11px; line-height: 1.7; }
-.prompt-skill-progress svg { flex: none; animation: prompt-skill-spin 1.2s linear infinite; }
-.prompt-skill-error { margin: 0; padding: 10px 12px; border-radius: 8px; background: #a7675f14; color: #d8a99f; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
-.prompt-skill-footer { display: flex; align-items: center; justify-content: space-between; flex: none; gap: 14px; padding: 14px 22px; border-top: 1px solid var(--fc-border); background: var(--fc-panel); }
-.prompt-skill-status { min-width: 0; color: var(--fc-text-subtle); font-size: 10px; line-height: 1.7; }
+.prompt-skill-result { display: grid; gap: 16px; min-width: 0; }
+.prompt-skill-result-heading { display: flex; justify-content: space-between; flex-wrap: wrap; align-items: center; gap: 7px 12px; }
+.prompt-skill-result-heading strong { font-size: 13px; font-weight: 500; }
+.prompt-skill-result-heading small { color: var(--fc-text-subtle); font-size: 11px; }
+.prompt-skill-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 20px; }
+.prompt-skill-comparison > * { min-width: 0; }
+.prompt-skill-modal .prompt-skill-before { width: 100%; min-height: 302px; padding: 14px 16px; background: transparent; border: 1px solid var(--fc-border); border-radius: 8px; color: var(--fc-text-muted); font-size: 14px; line-height: 1.9; overflow-y: auto; }
+.prompt-skill-comparison .pc-prompt-editor-content { min-height: 302px; max-height: 480px; padding: 14px 16px; color: var(--fc-text); font-size: 14px; line-height: 1.9; }
+.prompt-skill-result-meta { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px 12px; }
+.prompt-skill-used { margin: 0; color: var(--fc-text-subtle); font-size: 11px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.prompt-skill-running { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; min-height: 240px; text-align: center; }
+.prompt-skill-running svg { color: var(--fc-text-muted); animation: prompt-skill-spin 1.2s linear infinite; }
+.prompt-skill-running strong { font-size: 15px; font-weight: 500; }
+.prompt-skill-running span { color: var(--fc-text-subtle); font-size: 12px; }
+.prompt-skill-error { margin: 0; padding: 11px 12px; border-radius: 7px; background: var(--fc-danger-soft); color: var(--fc-danger); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.prompt-skill-adjustment-notice { margin: 0; color: var(--mantine-color-orange-4); font-size: 12px; line-height: 1.7; }
+.prompt-skill-footer { display: flex; justify-content: space-between; align-items: center; flex: none; gap: 14px; padding: 16px 28px; border-top: 1px solid var(--fc-border); background: var(--fc-panel); }
+.prompt-skill-status { min-width: 0; color: var(--fc-text-subtle); font-size: 11px; line-height: 1.7; }
 .prompt-skill-actions { display: flex; justify-content: flex-end; flex: none; gap: 8px; }
-.prompt-skill-modal .prompt-skill-actions .mantine-Button-root {
-  height: 36px;
-  border: 1px solid var(--fc-border);
-  border-radius: 8px;
-  background: var(--canvas-chrome-raised, var(--fc-panel));
-  color: var(--fc-text-muted);
-  font-size: 12px;
-  font-weight: 550;
-}
-.prompt-skill-modal .prompt-skill-actions .mantine-Button-root:hover:not(:disabled) { border-color: var(--workspace-line-strong, var(--fc-border)); background: var(--canvas-chrome-hover, var(--fc-surface-muted)); color: var(--fc-text); }
-.prompt-skill-modal .prompt-skill-actions .prompt-skill-apply { border-color: var(--fc-border-strong); background: var(--fc-primary); color: var(--fc-on-primary); }
-.prompt-skill-modal .prompt-skill-actions .prompt-skill-apply:hover:not(:disabled) { border-color: var(--fc-border-strong); background: var(--fc-primary); color: var(--fc-on-primary); }
-.prompt-skill-modal .prompt-skill-actions .mantine-Button-root:is(:disabled, [data-disabled]),
-.prompt-skill-modal .prompt-skill-model-input:disabled { border-color: var(--fc-border); background: var(--canvas-chrome-raised, var(--fc-panel)); color: var(--workspace-subtle, var(--fc-text-subtle)); -webkit-text-fill-color: var(--workspace-subtle, #696f76); }
-.prompt-skill-modal button:focus-visible { outline: 2px solid var(--canvas-chrome-focus, #69727b); outline-offset: 3px; }
-
+.prompt-skill-modal .prompt-skill-actions .mantine-Button-root { height: 36px; border: 1px solid var(--fc-border); border-radius: 7px; background: transparent; color: var(--fc-text-muted); font-size: 12px; font-weight: 500; }
+.prompt-skill-modal .prompt-skill-actions .mantine-Button-root:hover:not(:disabled) { border-color: var(--fc-border-strong); background: var(--canvas-chrome-hover, #ffffff0a); color: var(--fc-text); }
+.prompt-skill-modal .prompt-skill-actions :is(.prompt-skill-apply, .prompt-skill-primary-action) { border-color: var(--fc-primary); background: var(--fc-primary); color: var(--fc-on-primary); }
+.prompt-skill-modal .prompt-skill-actions :is(.prompt-skill-apply, .prompt-skill-primary-action):hover:not(:disabled) { background: var(--fc-primary); color: var(--fc-on-primary); opacity: .9; }
+.prompt-skill-modal .prompt-skill-actions .mantine-Button-root:is(:disabled, [data-disabled]) { border-color: var(--fc-border); background: var(--fc-panel); color: var(--fc-text-subtle); opacity: .55; }
+.prompt-skill-modal button:focus-visible { outline: 2px solid var(--fc-focus); outline-offset: 3px; }
+.prompt-skill-inspection { min-height: 0; padding: 22px 28px 26px; overflow-y: auto; scrollbar-width: thin; }
+.prompt-skill-inspection section + section { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--fc-border); }
+.prompt-skill-inspection h3 { margin: 0 0 10px; color: var(--fc-text); font-size: 13px; font-weight: 500; }
+.prompt-skill-inspection pre { margin: 0; color: var(--fc-text-muted); font: inherit; font-size: 13px; line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere; }
 /* The model menu is portaled outside the modal. */
-.prompt-skill-dropdown.prompt-skill-dropdown {
-  --select-surface: var(--canvas-chrome-surface, #17191bf2);
-  --select-border: var(--canvas-chrome-border, #2b2e33);
-  --select-text: var(--workspace-text, #e8eaec);
-  --select-muted: var(--workspace-muted, #94999f);
-  --select-hover: var(--canvas-chrome-hover, #25282c);
-  --select-checked: var(--canvas-chrome-selected, #2c3034);
-  border-radius: 10px;
-  background: var(--select-surface);
-  border-color: var(--select-border);
-  color: var(--select-text);
-  box-shadow: var(--canvas-chrome-shadow, 0 16px 38px #00000099);
-  backdrop-filter: blur(18px);
-}
-.prompt-skill-dropdown [data-combobox-option] { font-size: 12px; border-radius: 6px; }
-.prompt-skill-dropdown [data-combobox-option][data-checked]:hover { background: var(--select-hover); }
-.prompt-skill-dropdown [data-combobox-option]:is([data-combobox-selected], :focus-visible) { border-color: var(--canvas-chrome-focus, var(--fc-border-strong)); background: var(--select-hover); }
-
+.prompt-skill-dropdown.prompt-skill-dropdown { border-radius: 8px; background: var(--canvas-chrome-surface, #17191bf2); border-color: var(--canvas-chrome-border, #34373c); color: var(--workspace-text, #e8eaec); box-shadow: 0 16px 38px #0006; }
+.prompt-skill-dropdown [data-combobox-option] { font-size: 12px; border-radius: 5px; }
+.prompt-skill-dropdown [data-combobox-option]:is([data-combobox-selected], :focus-visible) { background: var(--canvas-chrome-hover, #25282c); }
 @keyframes prompt-skill-spin { to { transform: rotate(360deg); } }
-@media (max-width: 520px) {
-  .prompt-skill-modal { max-height: calc(100dvh - 32px); }
-  .prompt-skill-modal .prompt-skill-header { min-height: 70px; padding: 14px 16px; }
-  .prompt-skill-content { padding: 16px; gap: 16px; }
-  .prompt-skill-footer { flex-wrap: wrap; gap: 10px; padding: 12px 16px; }
-  .prompt-skill-actions { margin-left: auto; }
-  .prompt-skill-modal .prompt-skill-editor { padding: 10px 12px; }
+@media (max-width: 620px) {
+  .prompt-skill-modal { max-height: calc(100dvh - 24px); }
+  .prompt-skill-modal .prompt-skill-header { min-height: 76px; padding: 20px 16px 4px; }
+  .prompt-skill-content, .prompt-skill-inspection { padding: 18px 16px; }
+  .prompt-skill-support { gap: 8px 12px; }
+  .prompt-skill-support .prompt-skill-context { flex-wrap: wrap; justify-content: flex-end; gap: 0; }
+  .prompt-skill-support .prompt-skill-context > span { font-size: 11px; }
+  .prompt-skill-modal .prompt-skill-source .workspace-disclosure-control { font-size: 11px; }
+  .prompt-skill-source .mantine-Accordion-label { flex-wrap: wrap; gap: 2px 7px; }
+  .prompt-skill-adjustment-hint { gap: 8px; }
+  .prompt-skill-comparison { grid-template-columns: minmax(0, 1fr); }
+  .prompt-skill-modal .prompt-skill-before, .prompt-skill-comparison .pc-prompt-editor-content { min-height: 180px; max-height: 280px; }
+  .prompt-skill-footer { flex-wrap: wrap; gap: 10px; padding: 14px 16px; }
+  .prompt-skill-actions { flex-wrap: wrap; margin-left: auto; }
 }
-@media (prefers-reduced-motion: reduce) {
-  .prompt-skill-modal :is(button, input, textarea) { transition: none; }
-  .prompt-skill-progress svg { animation: none; }
-}
+@media (prefers-reduced-motion: reduce) { .prompt-skill-running svg { animation: none; } }

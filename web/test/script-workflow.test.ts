@@ -14,7 +14,7 @@ test('project buttons after episode one never carry the next episode or its runt
   for (const stage of workflowStages.filter(stage => stage !== 'episode')) {
     const request = workflowRequestForStage(stage, 2, 300)
     assert.deepEqual(request, { stage, scope: 'project', episode_number: 0,
-      ...(stage === 'outline' ? { intent: 'stage_design', artifact_types: ['outline'] } : {}) })
+      ...(stage === 'outline' ? { intent: 'stage_design', artifact_types: [...scriptStageArtifacts.outline] } : {}) })
     assert.match(workflowInstruction(request), /整个故事的全剧资料/)
   }
   const episode = workflowRequestForStage('episode', 2, 300)
@@ -22,8 +22,9 @@ test('project buttons after episode one never carry the next episode or its runt
   assert.match(workflowInstruction(episode), /仅处理第 2 集正文/)
 })
 
-test('uploaded source outline buttons declare one faithful deliverable and never authorize invented answers', () => {
-  const request = workflowRequestForStage('outline', 8, 120, undefined, { hasSource: true })
+test('explicit source-summary contracts remain faithful without changing the complete-outline default', () => {
+  const contract = { hasSource: true, intent: 'source_outline' as const, artifact_types: ['outline'] as const }
+  const request = workflowRequestForStage('outline', 8, 120, undefined, { ...contract, artifact_types: [...contract.artifact_types] })
   assert.deepEqual(request, { stage: 'outline', scope: 'project', episode_number: 0, intent: 'source_outline', artifact_types: ['outline'] })
   const instruction = workflowInstruction(request, '生成故事大纲')
   assert.match(instruction, /本次只交付：概要设计/)
@@ -32,14 +33,16 @@ test('uploaded source outline buttons declare one faithful deliverable and never
   assert.match(instruction, /不新增原稿未明确的谜底、能力代价或后续剧情/)
   assert.match(instruction, /文风建议和后续深化不阻断/)
   assert.doesNotMatch(instruction, /本阶段完整包含|钩子预设|伏笔与回收|分集大纲|已授权你在该范围内设计尚缺的虚构细节|不再将这些设定标为待定/)
-  assert.deepEqual(workflowRequestForStage('outline', 1, undefined, undefined, { hasSource: true }), request,
+  assert.deepEqual(workflowRequestForStage('outline', 1, undefined, undefined, { ...contract, artifact_types: [...contract.artifact_types] }), request,
     'a label or chat keywords cannot expand the declared task')
 })
 
-test('ordinary new story outlines stay focused and only an explicit complete design selects all nine deliverables', () => {
-  const ordinary = workflowRequestForStage('outline', 1)
-  assert.deepEqual(ordinary.artifact_types, ['outline']); assert.equal(ordinary.intent, 'stage_design')
-  assert.doesNotMatch(workflowInstruction(ordinary), /本阶段完整包含|本次只交付：[^\n]*分集大纲/)
+test('story outline defaults deliver all nine documents with or without an uploaded source', () => {
+  for (const hasSource of [false, true]) {
+    const ordinary = workflowRequestForStage('outline', 1, undefined, undefined, { hasSource })
+    assert.deepEqual(ordinary.artifact_types, [...scriptStageArtifacts.outline]); assert.equal(ordinary.intent, 'stage_design')
+    assert.match(workflowInstruction(ordinary), /本次只交付：概要设计、故事简述、背景设定、全剧分段、钩子预设、伏笔与回收、反转预设、创作禁区、分集大纲/)
+  }
   const complete = workflowRequestForStage('outline', 1, undefined, undefined, { hasSource: true, intent: 'stage_design' })
   assert.deepEqual(complete.artifact_types, [...scriptStageArtifacts.outline]); assert.equal(complete.intent, 'stage_design')
   assert.match(workflowInstruction(complete), /本次只交付：概要设计、故事简述、背景设定、全剧分段、钩子预设、伏笔与回收、反转预设、创作禁区、分集大纲/)
@@ -49,7 +52,7 @@ test('ordinary new story outlines stay focused and only an explicit complete des
 })
 
 test('restoring a candidate preserves its declared task and never retrofits new-task defaults onto history', () => {
-  const request = { ...workflowRequestForStage('outline', 1, undefined, undefined, { hasSource: true }), target_duration: 120 }
+  const request = { ...workflowRequestForStage('outline', 1, undefined, undefined, { hasSource: true, intent: 'source_outline', artifact_types: ['outline'] }), target_duration: 120 }
   const before = structuredClone(request)
   const restored = workflowRequestSnapshot(request)
   assert.deepEqual(restored, { stage: 'outline', scope: 'project', episode_number: 0, intent: 'source_outline', artifact_types: ['outline'] })

@@ -63,6 +63,49 @@ test('whole repair exposes exactly nine decisions on the wire and preserves the 
   assert.ok(f.events.some(event => event.id === 'repair' && event.reused))
 })
 
+test('episode fallback repairs retain read-only timing and complete dialogue through whole and recovered requests', async t => {
+  const sources = [{ key: 'scene:0:duration', content: '2' },
+    { key: 'scene:0:dialogue', content: '先听我把昨晚的全部经过说完，然后再决定是否报警。' },
+    { key: 'scene:0:action', content: '林晚讲述事故，停顿后等待对方回应。' }]
+  const episodePrompt = `可替换来源：${JSON.stringify(sources)}`
+  const timing = { unit: 'seconds' as const, estimated_total: 2, target_duration: 90 }
+  const issueIds = ['scene-duration'], decision = '保留完整对白与动作，修正本场估时为45秒。'
+  const patch = { summary: '修正场次估时', source_edits: [],
+    edits: [{ source_key: 'scene:0:duration', find: '2', replace: '45', reason: '按完整对话及必要停顿估时' }] }
+  for (const recover of [false, true]) await t.test(recover ? 'recovered' : 'whole', async () => {
+    const stages: string[] = []
+    const result = await generateScriptDraftRepairOutput(episodePrompt, issueIds, async (sent, contract) => {
+      stages.push(stage(contract))
+      const encodedTiming = /本集时长上下文（只读）：([^\n]+)/.exec(sent)?.[1]
+      assert.ok(encodedTiming)
+      assert.deepEqual(JSON.parse(encodedTiming), timing)
+      assert.match(sent, /不能作为 source_key、quote 或补丁目标/)
+      assert.match(sent, /估时修补应保留完整对白与动作/)
+      assert.ok(sent.endsWith(episodePrompt), 'fallback and both recovery stages retain the complete original scene text')
+      if (recover && stage(contract) === 'whole') throw outputLimit()
+      if (stage(contract) === '_decisions') return text({ decisions: [{ issue_id: issueIds[0], decision }] })
+      return text(stage(contract) === '_edits' ? patch : { ...patch, decisions: [decision] })
+    }, { timing })
+    assert.deepEqual(result, { ...patch, decisions: [decision] })
+    assert.deepEqual(stages, recover ? ['whole', '_decisions', '_edits'] : ['whole'])
+  })
+})
+
+test('timing changes invalidate complete fallback repair checkpoints even when the source prompt stays identical', async () => {
+  const f = fixture(), timing = { unit: 'seconds' as const, estimated_total: 2, target_duration: 90 }
+  await generateScriptDraftRepairOutput(prompt, ids, async () => text(whole()), { steps: f.steps(), timing })
+  const reused = await generateScriptDraftRepairOutput(prompt, ids, async () => assert.fail('the same timing may reuse the completed patch'),
+    { steps: f.steps(), timing })
+  assert.deepEqual(reused, whole())
+  let calls = 0
+  await generateScriptDraftRepairOutput(prompt, ids, async sent => {
+    calls++
+    assert.ok(sent.includes('"target_duration":120'))
+    return text(whole())
+  }, { steps: f.steps(), timing: { ...timing, target_duration: 120 } })
+  assert.equal(calls, 1)
+})
+
 test('two malformed whole results switch once to exact identified decisions then independent patches, with fresh step attempts', async () => {
   const f = fixture(), calls: string[] = [], attempts: number[] = [], validations: string[][] = []
   const invalidWhole = { ...whole(), summary: '不能把活动摘要当作具体决定', decisions: ['错误的合并决定'],

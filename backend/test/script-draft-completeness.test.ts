@@ -1,3 +1,4 @@
+import { draftReviewFixtureJson } from './fixtures/script-draft-completeness.js'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -32,7 +33,7 @@ function candidate(stage: ScriptStage, content = '能力使用后的具体损失
     scenes: stage === 'episode' ? [{ heading: '夜间车站', location: '车站', characters: '林晚', action: content, dialogue: '我会去查清楚。', duration: 12 }] : [] })
 }
 function sources(prompt: string): Array<{ key: string; artifact_type: string; title: string; content: string }> {
-  return JSON.parse(prompt.slice(prompt.lastIndexOf('待核对草稿原文（资料）：') + '待核对草稿原文（资料）：'.length))
+  return JSON.parse(prompt.slice(prompt.lastIndexOf('待核对草稿原文（资料）：') + '待核对草稿原文（资料）：'.length).split('\n【本轮候选正文结束】')[0]!)
 }
 
 test('review provides Chinese document names while retaining machine references and verbatim source evidence', async () => {
@@ -48,7 +49,7 @@ test('review provides Chinese document names while retaining machine references 
     assert.match(prompt, /explanation、suggestion 和新建 topic 使用简体中文/)
     assert.match(prompt, /source_key、checked_artifacts 等定位字段仍使用真实机器标识，不翻译/)
     assert.match(prompt, /既有事项的 topic 原样沿用/)
-    return JSON.stringify({ checked_artifacts: scriptStageArtifacts.outline, findings: [finding] })
+    return draftReviewFixtureJson({ checked_artifacts: scriptStageArtifacts.outline, findings: [finding] })
   }), error => {
     assert.ok(error instanceof ScriptDraftNeedsResolution)
     const { id: _id, ...reviewedFinding } = error.findings[0]!
@@ -64,7 +65,7 @@ test('all stages reject semantic gaps with precise repair evidence even without 
       const submitted = sources(prompt)
       assert.match(prompt, /已授权你在该范围内设计尚缺的虚构细节/)
       assert.match(prompt, /不要凭“未定”等关键词直接下结论/)
-      return JSON.stringify({ checked_artifacts: scriptStageArtifacts[stage], findings: [{ source_key: submitted[0].key,
+      return draftReviewFixtureJson({ checked_artifacts: scriptStageArtifacts[stage], findings: [{ source_key: submitted[0].key,
         kind: 'missing_core_setting', quote: submitted[0].content, explanation: '核心代价仍未设计，后续人物选择缺乏依据。', suggestion: '确定损失、触发条件和恢复条件。' }] })
     }), issue => issue instanceof ScriptToolProblem && issue.diagnostic.code === 'incomplete_creative_settings' &&
       issue.diagnostic.retryable && issue.diagnostic.repair.includes(draft.artifacts[0].content))
@@ -78,7 +79,7 @@ test('viewer uncertainty and justified absence pass the semantic review without 
     calls++
     assert.match(prompt, /作者已有答案\/回收安排，均不算未完成/)
     assert.match(prompt, /待确认草稿的具体创作方案可以通过/)
-    return JSON.stringify({ checked_artifacts: scriptStageArtifacts.outline, findings: [] })
+    return draftReviewFixtureJson({ checked_artifacts: scriptStageArtifacts.outline, findings: [] })
   })
   assert.equal(calls, 1)
 })
@@ -96,15 +97,20 @@ test('fabricated evidence uses bounded local recovery while invalid sources and 
         assert.deepEqual(pending.issues.map(item => item.id), ['findings:0'])
         assert.equal(pending.issues[0]!.quote, '原文不存在的证据')
         assert.deepEqual(pending.sources.map(item => item.key), [pending.issues[0]!.source_key])
-        return JSON.stringify({ repairs: pending.issues.map(({ id }) => ({ id, first_unit: null, last_unit: null })) })
+        return draftReviewFixtureJson({ repairs: pending.issues.map(({ id }) => ({ id, first_unit: null, last_unit: null })) })
+      }
+      if (contract?.name === 'script_draft_evidence_reassessment') {
+        phases.push('reassessment')
+        return draftReviewFixtureJson({ reassessments: [{ id: 'findings:0', verdict: 'unresolved', reason: '仍无法核实候选正文中的证据。',
+          source_key: null, first_unit: null, last_unit: null }] })
       }
       phases.push('review')
       const submitted = sources(prompt)
-      return JSON.stringify({ checked_artifacts: invalid === 'coverage' ? ['characters'] : scriptStageArtifacts.characters,
+      return draftReviewFixtureJson({ checked_artifacts: invalid === 'coverage' ? ['characters'] : scriptStageArtifacts.characters,
         findings: [{ source_key: invalid === 'source' ? 'foreign-document' : submitted[0].key, kind: 'unresolved_setting',
           quote: invalid === 'quote' ? '原文不存在的证据' : submitted[0].content, explanation: '未完成', suggestion: '补齐' }] })
     }), invalid === 'quote' ? /证据/ : /证据必须逐字|核对必须覆盖/)
-    assert.deepEqual(phases, invalid === 'quote' ? ['review', 'evidence'] : ['review', 'review'])
+    assert.deepEqual(phases, invalid === 'quote' ? ['review', 'evidence', 'reassessment'] : ['review', 'review'])
   }
 })
 
@@ -115,7 +121,7 @@ test('historical supplementation excludes unchanged text while reviewing every n
   await reviewScriptDraftCompleteness(draft, async prompt => {
     assert.ok(!sources(prompt).some(source => source.key === 'locations'))
     assert.equal(sources(prompt).length, 3)
-    return JSON.stringify({ checked_artifacts: scriptStageArtifacts.locations.slice(1), findings: [] })
+    return draftReviewFixtureJson({ checked_artifacts: scriptStageArtifacts.locations.slice(1), findings: [] })
   }, { preserved: historical })
   assert.equal(draft.artifacts[0].content, historical[0].content)
   let calls = 0
@@ -129,9 +135,70 @@ test('episode review includes structured scene gaps and does not mistake a compl
   await assert.rejects(reviewScriptDraftCompleteness(draft, async prompt => {
     const scene = sources(prompt).find(source => source.key === 'scene:0:action')!
     assert.deepEqual(scene, { key: 'scene:0:action', artifact_type: 'episode_script', title: '第 1 场 · 动作', content: draft.scenes[0].action })
-    return JSON.stringify({ checked_artifacts: ['episode_script'], findings: [{ source_key: scene.key, kind: 'missing_core_setting',
+    return draftReviewFixtureJson({ checked_artifacts: ['episode_script'], findings: [{ source_key: scene.key, kind: 'missing_core_setting',
       quote: scene.content, explanation: '结构化场次尚无具体动作，与正文不一致。', suggestion: '同步正文中的开门、失忆和刻字动作。' }] })
   }, { preserved: [{ ...draft.artifacts[0], episode_number: 1 }] }), /结构化场次尚无具体动作/)
+})
+
+test('episode timing review receives exact seconds, full speech and the episode total and preserves blocking timing evidence', async () => {
+  const draft = candidate('episode', '林晚在车站完整说明事故经过，并与同伴交谈后决定去查清楚。')
+  draft.scenes[0]!.duration = 2
+  draft.scenes[0]!.dialogue = '林晚：我已经把昨晚发生的事情全部查清楚了，先听我把经过说完，再一起决定下一步该去哪里。'
+  draft.scenes[0]!.narration = '她回忆昨晚的经过。'
+  draft.target_duration = 60
+  const before = structuredClone(draft)
+  await assert.rejects(reviewScriptDraftCompleteness(draft, async prompt => {
+    const duration = sources(prompt).find(source => source.key === 'scene:0:duration')!
+    assert.deepEqual(duration, { key: 'scene:0:duration', artifact_type: 'episode_script', title: '第 1 场 · 估计时长（秒，整数）', content: '2' })
+    assert.equal(sources(prompt).find(source => source.key === 'scene:0:dialogue')!.content, draft.scenes[0]!.dialogue)
+    assert.equal(sources(prompt).find(source => source.key === 'scene:0:narration')!.content, draft.scenes[0]!.narration)
+    assert.match(prompt, /"timing":\{"unit":"seconds","estimated_total":2,"target_duration":60\}/)
+    assert.match(prompt, /逐场核对估计秒数能否容纳完整对白、旁白、动作、人物反应与必要停顿/)
+    assert.match(prompt, /不按固定字速、关键词、统一每场秒数或仅因2秒就判错/)
+    assert.match(prompt, /不能作为 source_key 或 quote/)
+    assert.match(prompt, /不删除对白、旁白或必要动作来凑时长/)
+    return draftReviewFixtureJson({ checked_artifacts: ['episode_script'], findings: [{ source_key: duration.key,
+      kind: 'contradiction', severity: 'blocking', quote: duration.content,
+      explanation: '第1场估计2秒无法完成这段完整对白、回忆旁白与对谈后的决定，合计也未落实本次单集时长要求。',
+      suggestion: '保留完整对白与必要停顿，按实际表演重新估计该场秒数；明确无法兼容的目标时长冲突。' }] })
+  }), error => {
+    assert.ok(error instanceof ScriptDraftNeedsResolution)
+    assert.equal(error.findings[0]!.source_key, 'scene:0:duration')
+    assert.equal(error.findings[0]!.quote, '2')
+    return true
+  })
+  assert.deepEqual(draft, before, 'read-only timing review cannot shorten speech or mutate the candidate')
+})
+
+test('a two-second silent short action can pass without a duration or dialogue quota', async () => {
+  const draft = candidate('episode', '林晚在寂静车站抬眼，看见灯灭。')
+  Object.assign(draft.scenes[0]!, { action: '林晚抬眼，灯随即熄灭。', dialogue: '', narration: '', duration: 2 })
+  let calls = 0
+  await reviewScriptDraftCompleteness(draft, async prompt => {
+    calls++
+    assert.equal(sources(prompt).find(source => source.key === 'scene:0:duration')!.content, '2')
+    assert.match(prompt, /2秒无声短动作可以成立/)
+    return draftReviewFixtureJson({ checked_artifacts: ['episode_script'], findings: [] })
+  })
+  assert.equal(calls, 1)
+})
+
+test('changing only a scene estimate or the episode timing target invalidates a completed review checkpoint', async () => {
+  const draft = candidate('episode', '林晚在车站等车，灯灭后转身。')
+  const steps = createGenerationSteps()
+  let calls = 0
+  const generate = async () => { calls++; return draftReviewFixtureJson({ checked_artifacts: ['episode_script'], findings: [] }) }
+  await reviewScriptDraftCompleteness(draft, generate, { steps })
+  const first = steps.checkpoint.steps['review:whole']!.input_hash
+  await reviewScriptDraftCompleteness(draft, generate, { steps })
+  assert.equal(calls, 1, 'identical timing and prose reuse the completed independent review')
+  draft.scenes[0]!.duration = 20
+  await reviewScriptDraftCompleteness(draft, generate, { steps })
+  assert.equal(calls, 2)
+  assert.notEqual(steps.checkpoint.steps['review:whole']!.input_hash, first)
+  draft.target_duration = 60
+  await reviewScriptDraftCompleteness(draft, generate, { steps })
+  assert.equal(calls, 3, 'the explicit episode target is part of the current review input too')
 })
 
 test('network failures and cancellation do not become a passed audit or retry upstream requests', async () => {
@@ -168,7 +235,7 @@ test('whole-work audit retries failed transport, reuses exact validated work and
     const submitted = sources(prompt)
     assert.deepEqual(submitted.map(item => item.content), draft.artifacts.map(item => item.content), 'every candidate document is complete')
     if (fail) throw new Error('audit connection interrupted')
-    return JSON.stringify({ checked_artifacts: scriptStageArtifacts.characters, findings: [],
+    return draftReviewFixtureJson({ checked_artifacts: scriptStageArtifacts.characters, findings: [],
       facts: [{ source_key: submitted[0].key, quote: submitted[0].content.slice(0, 24), meaning: '确切人物设定' }] })
   }
   const steps = () => createGenerationSteps({ checkpoint, save: state => { checkpoint = structuredClone(state) } })
@@ -182,6 +249,10 @@ test('whole-work audit retries failed transport, reuses exact validated work and
   const first = checkpoint.steps['review:whole']!
   ;(first.value as { facts: Array<{ quote: string }> }).facts[0]!.quote = '伪造且不存在的原文'
   await reviewScriptDraftCompleteness(draft, generator, { context, steps: steps() })
+  assert.equal(calls, 2, 'unverified optional facts are discarded without repeating the completed audit')
+  ;(first.value as { findings: unknown[] }).findings = [{ source_key: 'characters', kind: 'contradiction',
+    quote: '伪造且不存在的问题证据', explanation: '角色身份冲突', suggestion: '保留原稿身份' }]
+  await reviewScriptDraftCompleteness(draft, generator, { context, steps: steps() })
   assert.equal(calls, 3, 'restored evidence is validated against complete candidate text')
   await reviewScriptDraftCompleteness(draft, generator, { context: { ...context, source_version: 'v2' }, steps: steps() })
   assert.equal(calls, 4, 'changed effective source invalidates the old audit')
@@ -194,13 +265,13 @@ test('cached audit findings still block completion and changed candidate text ca
   const generate = async (prompt: string) => {
     calls++
     const submitted = sources(prompt)
-    return JSON.stringify({ checked_artifacts: scriptStageArtifacts.characters, findings: [{ source_key: submitted[0].key, kind: 'missing_core_setting', quote: submitted[0].content, explanation: '尚无动机', suggestion: '补齐动机' }] })
+    return draftReviewFixtureJson({ checked_artifacts: scriptStageArtifacts.characters, findings: [{ source_key: submitted[0].key, kind: 'missing_core_setting', quote: submitted[0].content, explanation: '尚无动机', suggestion: '补齐动机' }] })
   }
   await assert.rejects(reviewScriptDraftCompleteness(draft, generate, { steps }), /尚无动机/)
   await assert.rejects(reviewScriptDraftCompleteness(draft, generate, { steps }), /尚无动机/)
   assert.equal(calls, 1, 'cached findings are retained rather than mistaken for a passed audit')
   draft.artifacts[0].content = '角色为守护伙伴归还钥匙。'
-  await reviewScriptDraftCompleteness(draft, async () => { calls++; return JSON.stringify({ checked_artifacts: scriptStageArtifacts.characters, findings: [] }) }, { steps })
+  await reviewScriptDraftCompleteness(draft, async () => { calls++; return draftReviewFixtureJson({ checked_artifacts: scriptStageArtifacts.characters, findings: [] }) }, { steps })
   assert.equal(calls, 2)
 })
 
@@ -217,7 +288,7 @@ async function fixture(toolCalling = true) {
     request_path: 'chat/completions', request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] }, text_path: 'choices.0.message.content' } })
   return { project, model }
 }
-const response = (content: unknown) => Response.json({ choices: [{ message: { content: typeof content === 'string' ? content : JSON.stringify(content) }, finish_reason: 'stop' }] })
+const response = (content: unknown) => Response.json({ choices: [{ message: { content: typeof content === 'string' ? content : draftReviewFixtureJson(content) }, finish_reason: 'stop' }] })
 // These regression cases intentionally exercise the complete design package,
 // whose generation is now split into task-sized wire contracts. The fixture
 // follows each declared subset rather than returning unrelated documents.
@@ -384,7 +455,7 @@ async function pauseNineIssues(t: any) {
     edits: findings.map((item, index) => ({ source_key: item.source_key, find: item.quote, replace: decisions[index], reason: '落实本项授权决定。' })) }
   return { ...f, pending, decisions, patch }
 }
-const meteredResponse = (content: unknown) => Response.json({ choices: [{ message: { content: JSON.stringify(content) }, finish_reason: 'stop' }],
+const meteredResponse = (content: unknown) => Response.json({ choices: [{ message: { content: draftReviewFixtureJson(content) }, finish_reason: 'stop' }],
   usage: { prompt_tokens: 120, completion_tokens: 80, total_tokens: 200 } })
 
 test('repair requires one concrete decision per issue and never substitutes the activity summary', async t => {
@@ -446,7 +517,7 @@ test('nine authorized issues recover eight-decision whole outputs within one cha
     if (prompt.includes('待核对草稿原文（资料）：')) {
       audits++
       const marker = '既有事实与创作要求（资料）：'
-      const context = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length, prompt.lastIndexOf('\n待核对草稿原文（资料）：')))
+      const context = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length).split('\n【审读结果分页协议】')[0]!)
       assert.deepEqual(context.resolved_findings.decisions.map((item: any) => item.decision), f.decisions)
       assert.deepEqual(sources(prompt)[0].content, f.decisions.join('\n'))
       return meteredResponse({ checked_artifacts: scriptStageArtifacts.outline, findings: [] })
@@ -609,7 +680,7 @@ test('forty-one manual plans and actual repair decisions remain complete and str
     if (prompt.includes('待核对草稿原文（资料）：')) {
       audits++
       const marker = '既有事实与创作要求（资料）：'
-      const reviewContext = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length, prompt.lastIndexOf('\n待核对草稿原文（资料）：')))
+      const reviewContext = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length).split('\n【审读结果分页协议】')[0]!)
       assert.equal(reviewContext.resolved_findings.decisions.length, 41)
       assert.deepEqual(reviewContext.resolved_findings.decisions.map((item: any) => item.decision), answers)
       assert.ok(reviewContext.resolved_findings.decisions.every((item: any) => item.decision !== '一次补齐全部四十一项具体代价。'))
@@ -1046,7 +1117,7 @@ test('semantic repair reuses creation authorization and a failed workflow edit k
     validateCreation: (draft, preserved) => reviewScriptDraftCompleteness(draft, async prompt => {
       audits++
       const pending = sources(prompt).find(source => source.content.includes('待定'))
-      return JSON.stringify({ checked_artifacts: scriptStageArtifacts.outline, findings: pending ? [{ source_key: pending.key,
+      return draftReviewFixtureJson({ checked_artifacts: scriptStageArtifacts.outline, findings: pending ? [{ source_key: pending.key,
         kind: 'unresolved_setting', quote: pending.content, explanation: '主线结局尚未确定。', suggestion: '确定主角最后的选择与后果。' }] : [] })
     }, { preserved }),
   })
@@ -1081,6 +1152,24 @@ test('exact repairs preserve metadata and untouched scene fields and reject inve
   assert.throws(() => repairScriptDraft(pending, [{ ...edit, source_key: 'episode_script' }, { ...edit, source_key: 'episode_script', find: '代价：待定。' }]))
   const ambiguous = structuredClone(pending); ambiguous.draft.scenes[0].action += '能力代价：待定。'
   assert.throws(() => repairScriptDraft(ambiguous, [{ ...edit, source_key: 'scene:0:action' }]))
+})
+
+test('exact timing repairs write numeric scene seconds without editing speech or a derived episode total', async () => {
+  const { repairScriptDraft } = await import('../src/modules/script/script-draft-resolution.js')
+  const draft = candidate('episode', '林晚完整讲述昨夜事故，再与同伴讨论下一步。')
+  draft.scenes[0]!.duration = 2
+  const before = structuredClone(draft)
+  const pending = { id: 'candidate', version: 'timing-v1', draft, findings: [], request: {}, source_version: 'source' }
+  const edit = { source_key: 'scene:0:duration', find: '2', replace: '45', reason: '保留完整对白并重新估计表演时间' }
+  const repaired = repairScriptDraft(pending, [edit])
+  assert.equal(repaired.scenes[0]!.duration, 45)
+  assert.equal(typeof repaired.scenes[0]!.duration, 'number')
+  assert.deepEqual({ ...repaired.scenes[0], duration: before.scenes[0]!.duration }, before.scenes[0])
+  assert.deepEqual(draft, before)
+  for (const replace of ['45秒', '', '0', '601', '2.5', '"45"', '4e1']) {
+    assert.throws(() => repairScriptDraft(pending, [{ ...edit, replace }]), undefined, `invalid duration replacement ${replace}`)
+  }
+  assert.throws(() => repairScriptDraft(pending, [{ ...edit, source_key: 'timing:estimated_total' }]), /不属于/)
 })
 
 test('durable tasks complete as a question when paused and cancellation of a repair keeps the original candidate', async t => {
@@ -1253,7 +1342,7 @@ test('whole-work audit retains cross-document contradictions and reads all origi
     assert.deepEqual(submitted.map(item => item.content), draft.artifacts.map(item => item.content))
     assert.ok(prompt.includes('开场林舟拿到钥匙。'))
     assert.ok(prompt.includes('结局林舟归还钥匙。'))
-    return JSON.stringify({ checked_artifacts: scriptStageArtifacts.characters, facts: [], findings: [{ source_key: 'relationships', quote: '林舟是医生。',
+    return draftReviewFixtureJson({ checked_artifacts: scriptStageArtifacts.characters, facts: [], findings: [{ source_key: 'relationships', quote: '林舟是医生。',
       kind: 'contradiction', explanation: '人物身份与人物小传不一致', suggestion: '沿用已确认记者身份' }] })
   }, { sourceBatches: [[{ id: 0, content: '开场林舟拿到钥匙。' }], [{ id: 1, content: '结局林舟归还钥匙。' }]] }), /人物身份与人物小传不一致/)
   assert.equal(calls, 1)
@@ -1287,7 +1376,7 @@ test('continuation control messages preserve authorized review context and resum
       if (prompt.includes('待核对草稿原文（资料）：')) {
         const stage = /本轮核查维度：([a-z]+)。/.exec(prompt)?.[1] || 'whole'
         const marker = '既有事实与创作要求（资料）：'
-        const context = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length, prompt.lastIndexOf('\n待核对草稿原文（资料）：')))
+        const context = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length).split('\n【审读结果分页协议】')[0]!)
         reviews.push({ stage, context })
         if (stage === 'whole') return Response.json({ choices: [{ message: { content: JSON.stringify({ checked_artifacts: scriptStageArtifacts.outline, findings: [] }) }, finish_reason: 'length' }] })
         if (stage === 'consistency' && failConsistency) return Response.json({ error: { message: '一致性复核连接中断' } }, { status: 502 })

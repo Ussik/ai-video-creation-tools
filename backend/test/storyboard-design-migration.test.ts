@@ -54,3 +54,18 @@ test('design migration preserves legacy shots and profiles as the active legacy 
   }
   assert.deepEqual(all('PRAGMA foreign_key_check'), [])
 })
+
+test('the pending-canvas migration is repeatable and distinguishes unattached plans from deleted canvases', () => {
+  db.prepare(`INSERT INTO storyboard_designs (id,project_id,canvas_id,name,scene_ids,created_at)
+    VALUES ('legacy-deleted-design','legacy-design-project',NULL,'已删除画布的旧方案','[]','2026-01-01')`).run()
+  db.prepare(`INSERT INTO storyboard_designs (id,project_id,canvas_id,canvas_pending,name,scene_ids,created_at)
+    VALUES ('new-pending-design','legacy-design-project',NULL,1,'尚未加入画布的新方案','[]','2026-01-02')`).run()
+  initDb(); initDb()
+  assert.equal(one<any>('SELECT canvas_pending FROM storyboard_designs WHERE id=?', 'legacy-deleted-design')!.canvas_pending, 0)
+  assert.equal(one<any>('SELECT canvas_pending FROM storyboard_designs WHERE id=?', 'new-pending-design')!.canvas_pending, 1)
+  assert.equal(one<any>('SELECT source_fingerprints FROM storyboard_designs WHERE id=?', 'legacy-deleted-design')!.source_fingerprints, '{}')
+  const columns = db.pragma('table_info(storyboard_designs)') as Array<{ name: string }>
+  assert.equal(columns.filter(column => column.name === 'canvas_pending').length, 1)
+  assert.equal(columns.filter(column => column.name === 'source_fingerprints').length, 1)
+  assert.deepEqual(all('PRAGMA foreign_key_check'), [])
+})

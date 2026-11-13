@@ -66,6 +66,7 @@ Object.assign(dom.window, { ResizeObserver: TestResizeObserver, DOMMatrixReadOnl
 const { createRoot } = await import('react-dom/client')
 const { default: ProjectCanvas } = await import('../src/features/canvas/ProjectCanvas')
 const { promptEditorText } = await import('../src/features/canvas/CanvasPromptEditor')
+const { rememberModelSelection, rememberedModelId } = await import('../src/features/models/model-selection-store')
 after(() => dom.window.close())
 
 const projectId = 'video-analysis-test', timestamp = '2026-10-22T00:00:00Z'
@@ -178,6 +179,38 @@ function result() {
     global_style: '三维国漫，暖色侧光。', shots: [shotResult, { ...shotResult, title: '远景落石', start_ms: 3000, end_ms: 9000,
       video_prompt: '第二个镜头独有的落石描述。' }], uncertainties: ['未分析声音。'] }
 }
+
+test('video analysis publishes its text choice for later nodes while existing bindings and capability fallbacks stay local', async t => {
+  const graph = initialGraph(), original = structuredClone(graph.nodes.find(item => item.id === 'analysis')!)
+  const alternate = { ...visionModel, id: 'recent-video-analysis', name: '最近视频理解模型' }
+  const plain = { ...visionModel, id: 'plain-text', name: '普通文本模型', settings: {} }
+  const transport = mockApi(t, graph, () => { throw new Error('choosing a model must not run analysis') })
+  const view = await mount(false, { models: [{ ...visionModel, is_default: true }, alternate, plain, imageModel] })
+  try {
+    await click('添加视频反推提示词节点')
+    const label = [...document.querySelectorAll<HTMLLabelElement>('label')].find(item => item.textContent === '视频理解模型'); assert.ok(label)
+    const input = document.getElementById(label.htmlFor) as HTMLInputElement
+    await act(() => input.click()); await settle()
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(item => item.textContent === alternate.name); assert.ok(option)
+    await act(() => option.click()); await settle()
+    assert.equal(rememberedModelId('text'), alternate.id)
+    const close = document.querySelector<HTMLButtonElement>('.mantine-Modal-close'); assert.ok(close)
+    await act(() => close.click()); await settle()
+    await click('添加视频反推提示词节点')
+    let saved = await savedGraph(transport.saved)
+    assert.deepEqual(saved.nodes.find(item => item.id === original.id), original)
+    assert.ok(saved.nodes.filter(item => item.type === 'video_analysis' && item.id !== original.id).every(item => item.model_id === alternate.id))
+    await act(() => rememberModelSelection('text', plain.id)); await settle()
+    const nextClose = document.querySelector<HTMLButtonElement>('.mantine-Modal-close'); assert.ok(nextClose)
+    await act(() => nextClose.click()); await settle()
+    await click('添加视频反推提示词节点')
+    saved = await savedGraph(transport.saved)
+    assert.equal(saved.nodes.filter(item => item.type === 'video_analysis').at(-1)!.model_id, visionModel.id)
+    assert.equal(rememberedModelId('text'), plain.id, 'an ineligible fallback must not replace the shared text preference')
+    assert.deepEqual(saved.nodes.find(item => item.id === original.id), original)
+    assert.equal(transport.analyses.length + transport.previews.length, 0)
+  } finally { await view.destroy() }
+})
 
 test('video analysis edits persist and creating one shot freezes only that prompt without submitting generation', async t => {
   const transport = mockApi(t, initialGraph(), body => {

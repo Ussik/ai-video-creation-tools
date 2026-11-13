@@ -113,6 +113,30 @@ test('confirming references fills unresolved bindings and automatically matches 
   assert.deepEqual(oldData.shot_visual_bindings.find(item => item.shot_id === old.id)?.reference_assets.map(item => item.id), [legacyReference.id])
 })
 
+test('model-planned reference views persist through automatic sync while manual selections remain authoritative', async () => {
+  const state = await setup('character', false)
+  const front = await register(state, 'front', true), back = await register(state, 'back'), side = await register(state, 'side')
+  const shot = await call('POST', `/api/projects/${state.project.id}/shots`, { title: '独立视角', image_prompt: '不要背面，正脸近景。' })
+  const { applyProfileShotUsage } = await import('../src/modules/visuals/visual-profiles.js')
+  const profile = one<any>('SELECT * FROM visual_profiles WHERE id=?', state.profile.id)!
+  const input = { ...profile, scene_ids: [], shot_usage: [{ shot_id: shot.id, usage: 'both' as const, reference_view: 'back' as const }] }
+  applyProfileShotUsage(profile, input)
+  let data = await call<Visuals>('GET', `/api/projects/${state.project.id}`)
+  assert.deepEqual(data.shot_visual_bindings.find(item => item.shot_id === shot.id)!.reference_assets.map(item => item.id), [back.id])
+  assert.equal(one<{ reference_view: string }>('SELECT reference_view FROM shot_visual_bindings WHERE shot_id=?', shot.id)!.reference_view, 'back')
+  await call('PATCH', `/api/shots/${shot.id}`, { image_prompt: '纯正面画面，无背影。' })
+  data = await call<Visuals>('GET', `/api/projects/${state.project.id}`)
+  assert.deepEqual(data.shot_visual_bindings.find(item => item.shot_id === shot.id)!.reference_assets.map(item => item.id), [back.id], 'prose edits do not reinterpret the saved structural view')
+  await call('PUT', `/api/shots/${shot.id}/visual-bindings`, { bindings: [{ profile_id: profile.id, required: true }], refresh_profile_ids: [profile.id] })
+  data = await call<Visuals>('GET', `/api/projects/${state.project.id}`)
+  assert.deepEqual(data.shot_visual_bindings.find(item => item.shot_id === shot.id)!.reference_assets.map(item => item.id), [back.id], 'explicit profile refresh retains the planned view')
+  await call('PUT', `/api/shots/${shot.id}/visual-bindings`, { bindings: [{ profile_id: profile.id, required: true, reference_asset_ids: [side.id] }] })
+  applyProfileShotUsage(profile, { ...input, shot_usage: [{ shot_id: shot.id, usage: 'both', reference_view: 'front' }] })
+  data = await call<Visuals>('GET', `/api/projects/${state.project.id}`)
+  assert.deepEqual(data.shot_visual_bindings.find(item => item.shot_id === shot.id)!.reference_assets.map(item => item.id), [side.id])
+  assert.notEqual(front.id, side.id)
+})
+
 test('candidate/foreign selections reject atomically and changed snapshots or project styles invalidate submitted previews', async () => {
   const state = await setup(), foreign = await setup(), face = await register(state, 'face', true), side = await register(state, 'side', true)
   const candidate = await register(state, 'front', false, false), unrelated = await register(foreign, 'face', true)

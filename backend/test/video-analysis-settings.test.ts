@@ -28,7 +28,7 @@ test('video format settings reject unknown formats and preserve generic defaults
   for (const video_input_format of ['unknown', ['doubao_ark'], {}, null, 1]) assert.match(videoInputConfigError({ video_input_format })!, /视频输入格式/)
   assert.ok(videoInputConfigError('bad json'))
   const base = { request_path: 'responses', request_template: {}, text_path: 'output.0.content.0.text' }
-  assert.doesNotThrow(() => validateSettings('text', { ...base, ...settings }))
-  assert.throws(() => validateSettings('text', { ...base, video_input_format: 'unknown' }), /视频输入格式/)
-  assert.throws(() => validateSettings('image', { ...base, video_input_format: 'doubao_ark' }), /仅适用于文本模型/)
+  assert.doesNotThrow(() => validateSettings('text', { ...base, ...settings }, 'responses'))
+  assert.throws(() => validateSettings('text', { ...base, video_input_format: 'unknown' }, 'responses'), /视频输入格式/)
+  assert.throws(() => validateSettings('image', { ...base, video_input_format: 'doubao_ark' }, 'image_generations'), /仅适用于文本模型/)
 })

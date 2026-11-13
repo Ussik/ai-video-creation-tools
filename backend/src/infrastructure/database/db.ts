@@ -6,6 +6,8 @@ import { probeVideoDurationMs } from '../media/render.js'
 import { dataDir } from '../paths.js'
 import { upgradeLegacySeedance25Settings } from '../../modules/models/legacy-seedance25-settings.js'
 import type { StageArtifactType } from '@video-studio/shared/script/script-stage-content'
+import { isVideoAudioPlan, type VideoAudioPlan } from '@video-studio/shared/media/video-prompt-audio'
+import { isStoryboardContinuityPlan, type StoryboardContinuityPlan } from '@video-studio/shared/storyboard/storyboard-continuity'
 
 export { dataDir } from '../paths.js'
 export const mediaDir = resolve(dataDir, 'media')
@@ -27,6 +29,8 @@ export interface Shot {
   duration: number; selected_asset_id: string | null; created_at: string;
   source_scene_id: string | null; start_state: string; end_state: string; cut_note: string
   image_prompt: string; video_prompt: string
+  audio_plan?: VideoAudioPlan | null
+  continuity_plan?: StoryboardContinuityPlan | null
   storyboard_revision?: number
   deleted_at?: string | null
   design_id?: string | null
@@ -34,7 +38,11 @@ export interface Shot {
 }
 export interface StoryboardDesign {
   id: string; project_id: string; canvas_id: string | null; name: string;
-  scene_ids: string; instructions: string; created_at: string
+  scene_ids: string; instructions: string; created_at: string; canvas_pending: number; source_fingerprints: string
+}
+export interface StoryboardClipPlan {
+  design_id: string; project_id: string; source_text: string; total_duration: number;
+  source_signature: string; payload_hash: string; shot_ids: string; created_at: string
 }
 export interface TimelineClip {
   id: string; project_id: string; shot_id: string; asset_id: string;
@@ -85,17 +93,18 @@ export interface Provider {
   id: string; name: string; adapter: 'http' | 'demo';
   base_url: string; auth_header: string; auth_prefix: string;
   key_ciphertext: string | null; model_catalog: string;
+  protocol?: 'responses' | 'chat_completions' | 'anthropic_messages' | null;
   created_at: string; enabled: number; archived: number
 }
 export interface Model {
   id: string; provider_id: string; name: string; remote_id: string;
   modality: 'text' | 'image' | 'video';
-  protocol: 'responses' | 'chat_completions' | 'image_generations' | 'async_video';
-  settings: string; enabled: number; archived: number; is_default?: number
+  protocol: 'responses' | 'chat_completions' | 'anthropic_messages' | 'image_generations' | 'async_video';
+  settings: string; enabled: number; archived: number; is_default?: number; sort_order?: number
 }
 export interface Asset {
   id: string; project_id: string; shot_id: string | null;
-  kind: 'text' | 'image' | 'video' | 'audio'; filename: string;
+  kind: 'text' | 'image' | 'video' | 'audio'; filename: string; display_name?: string | null;
   path: string; source: 'upload' | 'generated' | 'export'; deleted_at?: string | null
   model_id: string | null; prompt: string | null; remote_url: string | null; created_at: string
 }
@@ -145,11 +154,25 @@ export interface CanvasEdge {
 }
 
 export function one<T>(sql: string, ...params: unknown[]): T | undefined {
-  return db.prepare(sql).get(...params) as T | undefined
+  return hydrateAudioPlan(db.prepare(sql).get(...params)) as T | undefined
 }
 
 export function all<T>(sql: string, ...params: unknown[]): T[] {
-  return db.prepare(sql).all(...params) as T[]
+  return db.prepare(sql).all(...params).map(hydrateAudioPlan) as T[]
+}
+
+function hydrateAudioPlan(row: unknown): unknown {
+  if (!row || typeof row !== 'object') return row
+  const value = row as Record<string, unknown>
+  if (Object.hasOwn(row, 'audio_plan')) try {
+    const plan: unknown = typeof value.audio_plan === 'string' ? JSON.parse(value.audio_plan) : value.audio_plan
+    value.audio_plan = isVideoAudioPlan(plan) ? plan : null
+  } catch { value.audio_plan = null }
+  if (Object.hasOwn(row, 'continuity_plan')) try {
+    const plan: unknown = typeof value.continuity_plan === 'string' ? JSON.parse(value.continuity_plan) : value.continuity_plan
+    value.continuity_plan = isStoryboardContinuityPlan(plan) ? plan : null
+  } catch { value.continuity_plan = null }
+  return row
 }
 
 export function run(sql: string, ...params: unknown[]): void {
@@ -353,7 +376,7 @@ export function initDb(): void {
       id TEXT PRIMARY KEY, name TEXT NOT NULL, adapter TEXT NOT NULL,
       base_url TEXT NOT NULL, auth_header TEXT NOT NULL DEFAULT 'Authorization',
       auth_prefix TEXT NOT NULL DEFAULT 'Bearer ', key_ciphertext TEXT,
-      model_catalog TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+      model_catalog TEXT NOT NULL DEFAULT '{}', protocol TEXT, created_at TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1, archived INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS models (
@@ -361,7 +384,7 @@ export function initDb(): void {
       name TEXT NOT NULL, remote_id TEXT NOT NULL, modality TEXT NOT NULL,
       protocol TEXT NOT NULL DEFAULT 'responses',
       settings TEXT NOT NULL DEFAULT '{}', enabled INTEGER NOT NULL DEFAULT 1,
-      archived INTEGER NOT NULL DEFAULT 0
+      archived INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS assets (
       id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -620,6 +643,9 @@ export function initDb(): void {
     db.exec("ALTER TABLE shot_visual_bindings ADD COLUMN usage TEXT NOT NULL DEFAULT 'both' CHECK (usage IN ('both', 'image', 'video', 'none'))")
   }
   const visualBindingColumns = all<{ name: string }>('PRAGMA table_info(shot_visual_bindings)')
+  if (!visualBindingColumns.some(column => column.name === 'reference_view')) {
+    db.exec('ALTER TABLE shot_visual_bindings ADD COLUMN reference_view TEXT')
+  }
   if (!visualBindingColumns.some(column => column.name === 'sync_mode')) {
     db.exec("ALTER TABLE shot_visual_bindings ADD COLUMN sync_mode TEXT NOT NULL DEFAULT 'follow' CHECK (sync_mode IN ('follow', 'locked'))")
   }
@@ -682,6 +708,12 @@ export function initDb(): void {
   }
 
   const shotColumns = db.pragma('table_info(shots)') as Array<{ name: string }>
+  if (!shotColumns.some(column => column.name === 'audio_plan')) {
+    db.exec('ALTER TABLE shots ADD COLUMN audio_plan TEXT')
+  }
+  if (!shotColumns.some(column => column.name === 'continuity_plan')) {
+    db.exec('ALTER TABLE shots ADD COLUMN continuity_plan TEXT')
+  }
   if (!shotColumns.some(column => column.name === 'storyboard_revision')) {
     db.exec('ALTER TABLE shots ADD COLUMN storyboard_revision INTEGER NOT NULL DEFAULT 0')
   }
@@ -813,6 +845,18 @@ export function initDb(): void {
       name TEXT NOT NULL, scene_ids TEXT NOT NULL, instructions TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_storyboard_designs_project ON storyboard_designs(project_id, created_at);`)
+    const designColumns = db.pragma('table_info(storyboard_designs)') as Array<{ name: string }>
+    // A missing linked canvas remains deleted. Only newly saved independent
+    // plans explicitly opt into creating their first canvas later.
+    if (!designColumns.some(column => column.name === 'canvas_pending')) db.exec('ALTER TABLE storyboard_designs ADD COLUMN canvas_pending INTEGER NOT NULL DEFAULT 0')
+    if (!designColumns.some(column => column.name === 'source_fingerprints')) db.exec("ALTER TABLE storyboard_designs ADD COLUMN source_fingerprints TEXT NOT NULL DEFAULT '{}'")
+    db.exec(`CREATE TABLE IF NOT EXISTS storyboard_clip_plans (
+      design_id TEXT PRIMARY KEY REFERENCES storyboard_designs(id) ON DELETE CASCADE,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      source_text TEXT NOT NULL, total_duration INTEGER NOT NULL CHECK(total_duration BETWEEN 1 AND 120),
+      source_signature TEXT NOT NULL, payload_hash TEXT NOT NULL, shot_ids TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_storyboard_clip_plans_project ON storyboard_clip_plans(project_id, created_at);`)
     for (const field of ['design_id', 'superseded_by']) {
       if (!shotColumns.some(column => column.name === field)) db.exec(`ALTER TABLE shots ADD COLUMN ${field} TEXT REFERENCES storyboard_designs(id) ON DELETE SET NULL`)
     }
@@ -834,6 +878,9 @@ export function initDb(): void {
   for (const table of ['shots', 'assets']) {
     const columns = db.pragma(`table_info(${table})`) as Array<{ name: string }>
     if (!columns.some(column => column.name === 'deleted_at')) db.exec(`ALTER TABLE ${table} ADD COLUMN deleted_at TEXT`)
+  }
+  if (!all<{ name: string }>('PRAGMA table_info(assets)').some(column => column.name === 'display_name')) {
+    db.exec('ALTER TABLE assets ADD COLUMN display_name TEXT')
   }
 
   const previousSelections = all<Shot>(`SELECT shots.* FROM shots
@@ -867,6 +914,9 @@ export function initDb(): void {
   if (!providerColumns.some(column => column.name === 'model_catalog')) {
     db.exec("ALTER TABLE providers ADD COLUMN model_catalog TEXT NOT NULL DEFAULT '{}'")
   }
+  if (!providerColumns.some(column => column.name === 'protocol')) {
+    db.exec('ALTER TABLE providers ADD COLUMN protocol TEXT')
+  }
   const modelColumns = db.pragma('table_info(models)') as Array<{ name: string }>
   if (!modelColumns.some(column => column.name === 'protocol')) {
     db.exec("ALTER TABLE models ADD COLUMN protocol TEXT NOT NULL DEFAULT 'responses'")
@@ -876,6 +926,17 @@ export function initDb(): void {
   }
   if (!modelColumns.some(column => column.name === 'is_default')) {
     db.exec('ALTER TABLE models ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0')
+  }
+  if (!modelColumns.some(column => column.name === 'sort_order')) {
+    db.transaction(() => {
+      db.exec('ALTER TABLE models ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0')
+      const positions = new Map<string, number>()
+      for (const model of all<Model>('SELECT * FROM models ORDER BY modality, name, id')) {
+        const position = positions.get(model.provider_id) ?? 0
+        run('UPDATE models SET sort_order=? WHERE id=?', position, model.id)
+        positions.set(model.provider_id, position + 1)
+      }
+    })()
   }
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS models_default_modality ON models(modality) WHERE is_default=1')
   if (!one('SELECT 1 FROM studio_migrations WHERE id=?', 'image-ratio-parameters-v1')) {

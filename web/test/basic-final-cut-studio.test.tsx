@@ -5,6 +5,7 @@ import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
 import type { EditingCut } from '@video-studio/shared/media/editing-cut'
+import type { FinalCutAssetNode } from '../src/features/final-cut/final-cut-asset-status'
 import { fixture } from './fixtures/final-cut'
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
@@ -68,10 +69,11 @@ function data() {
     music_asset_id: null, audio_settings: { music_gain: .24, duck_music: true, duck_source: true },
     captions: [{ id: 'caption', start_ms: 0, end_ms: 2000, text: '预告字幕' }], created_at: detail.created_at, updated_at: detail.updated_at }
   return { detail, cuts: [base, { ...structuredClone(base), id: 'cut-b', name: '预告B', clips: [structuredClone(base.clips[1])], speech: [], captions: [] }],
+    graph: { nodes: [] as FinalCutAssetNode[] }, canvasError: false,
     requests: [] as Array<{ path: string; method: string; body: any }>, conflict: false, failExport: false }
 }
 
-async function mount(t: import('node:test').TestContext, source = data()) {
+async function mount(t: import('node:test').TestContext, source = data(), sourceCanvasId?: string) {
   sessionStorage.clear()
   const before = structuredClone(source.detail), container = document.createElement('div'); document.body.append(container)
   const calls: boolean[] = []
@@ -79,6 +81,8 @@ async function mount(t: import('node:test').TestContext, source = data()) {
     const path = String(url), method = init?.method || 'GET'
     const body = init?.body instanceof FormData ? init.body : init?.body ? JSON.parse(String(init.body)) : null
     source.requests.push({ path, method, body })
+    if (path.endsWith('/canvas') || path.includes('/canvases/')) return source.canvasError
+      ? Response.json({ detail: '暂时无法读取画布' }, { status: 503 }) : Response.json(source.graph)
     if (path.endsWith('/editing-cuts') && method === 'GET') return Response.json({ cuts: source.cuts })
     if (path.endsWith('/editing-cuts') && method === 'POST') {
       const cut = { ...structuredClone(source.cuts[1]), id: 'new-cut', name: body.name, revision: 1, clips: [], captions: [], speech: [] }
@@ -100,15 +104,19 @@ async function mount(t: import('node:test').TestContext, source = data()) {
     throw new Error(`Unexpected API: ${method} ${path}`)
   })
   const root = createRoot(container)
-  await act(async () => root.render(<MantineProvider env="test"><BasicFinalCutStudio detail={source.detail} onRefresh={async () => {}}
-    onOpenSpeech={() => {}} onNotice={() => {}} onDirtyChange={dirty => calls.push(dirty)} /></MantineProvider>)); await settle()
-  return { source, container, before, calls, destroy: async () => { await act(() => root.unmount()); container.remove() } }
+  const render = () => root.render(<MantineProvider env="test"><BasicFinalCutStudio detail={source.detail} onRefresh={async () => {}}
+    sourceCanvasId={sourceCanvasId} onOpenSpeech={() => {}} onNotice={() => {}} onDirtyChange={dirty => calls.push(dirty)} /></MantineProvider>)
+  await act(render); await settle()
+  return { source, container, before, calls, rerender: async () => { await act(render); await settle() },
+    destroy: async () => { await act(() => root.unmount()); container.remove() } }
 }
 
 test('opening reads independent cuts only, then duplicate/reorder/trim saves without changing originals', async t => {
   const view = await mount(t)
   try {
-    assert.deepEqual(view.source.requests.map(x => [x.method, x.path]), [['GET', `/api/projects/${view.source.detail.id}/editing-cuts`]])
+    assert.deepEqual(view.source.requests.map(x => [x.method, x.path]), [
+      ['GET', `/api/projects/${view.source.detail.id}/editing-cuts`], ['GET', `/api/projects/${view.source.detail.id}/canvas`],
+    ])
     await click('复制片段 1'); await fill('素材出点', '3.5'); await click('后移片段 2')
     assert.ok(view.container.textContent?.includes('有未保存修改'))
     await click('保存剪辑')
@@ -181,6 +189,96 @@ test('speech assets show searchable dialogue, voice and candidate names instead 
   } finally { await view.destroy() }
 })
 
+test('asset status separates same-name candidates and confirmed selections while combining search and media filters', async t => {
+  const source = data()
+  source.detail.assets.find(asset => asset.id === 'alternate')!.kind = 'video'
+  const view = await mount(t, source)
+  try {
+    const library = view.container.querySelector('[aria-label="剪辑素材库"]')!
+    const rows = () => [...library.querySelectorAll('.basic-cut-asset')]
+    const sameName = rows().filter(row => row.querySelector('strong')?.textContent === '走向列车 · 视频')
+    assert.equal(sameName.length, 2)
+    assert.deepEqual(sameName.map(row => row.querySelector('.mantine-Badge-root')?.textContent), ['已确认', '候选'])
+    await click('筛选素材状态：已确认')
+    assert.equal(button('筛选素材状态：已确认').getAttribute('aria-pressed'), 'true')
+    assert.equal(rows().length, 3)
+    assert.ok(rows().every(row => row.textContent?.includes('已确认')))
+    await click('视频')
+    assert.equal(rows().length, 1)
+    assert.ok(rows()[0].querySelector('video')?.getAttribute('src') === source.detail.assets[0].url)
+    await click('筛选素材状态：候选')
+    assert.equal(rows().length, 1)
+    assert.ok(rows()[0].textContent?.includes('候选'))
+    await fill('搜索剪辑素材', '不存在的素材')
+    assert.equal(rows().length, 0)
+    assert.match(library.textContent!, /没有匹配素材/)
+    await fill('搜索剪辑素材', 'alternate.png')
+    assert.equal(rows().length, 1)
+    await click('预览素材：走向列车 · 视频')
+    await click('添加到末尾')
+    assert.equal(rows().length, 1)
+    assert.equal(rows()[0].querySelector('.mantine-Badge-root')?.textContent, '候选')
+    await fill('搜索剪辑素材', '')
+    await click('音频')
+    assert.equal(rows().length, 2)
+    assert.ok(rows().some(row => row.textContent?.includes('候选 2')))
+    assert.deepEqual(source.detail, view.before)
+    assert.ok(source.requests.every(request => request.method === 'GET'))
+  } finally { await view.destroy() }
+})
+
+test('current canvas images and videos are confirmed before any shot is selected for a final cut', async t => {
+  const source = data()
+  source.detail.shots = source.detail.shots.map(shot => ({ ...shot, selected_asset_id: null }))
+  source.detail.assets.push({ ...source.detail.assets[0], id: 'old-video' })
+  source.graph.nodes = [{ type: 'generation', asset_id: 'video', settings: { modality: 'video' } },
+    { type: 'generation', asset_id: 'alternate', settings: { modality: 'image' } }]
+  const view = await mount(t, source, 'current-canvas')
+  try {
+    assert.ok(source.requests.some(request => request.path === `/api/projects/${source.detail.id}/canvases/current-canvas`))
+    await click('筛选素材状态：已确认')
+    await click('视频')
+    const library = view.container.querySelector('[aria-label="剪辑素材库"]')!
+    assert.equal(library.querySelectorAll('.basic-cut-asset').length, 1)
+    assert.ok(library.querySelector('video'))
+    assert.ok(library.textContent?.includes('已确认'))
+    await click('图片')
+    assert.equal(library.querySelectorAll('.basic-cut-asset').length, 1)
+    assert.ok(library.querySelector('img'))
+    assert.ok(library.textContent?.includes('已确认'))
+    await click('视频'); await click('筛选素材状态：候选')
+    assert.equal(library.querySelectorAll('.basic-cut-asset').length, 1)
+    assert.ok(library.textContent?.includes('候选'))
+    assert.deepEqual(source.detail, view.before)
+    assert.ok(source.requests.every(request => request.method === 'GET'))
+  } finally { await view.destroy() }
+})
+
+test('canvas status fetch failure is visible and retry restores confirmation without editing the canvas', async t => {
+  const source = data()
+  source.graph.nodes = [{ type: 'generation', asset_id: 'alternate', settings: { modality: 'image' } }]
+  const view = await mount(t, source)
+  try {
+    await click('筛选素材状态：已确认'); await click('图片')
+    assert.equal(view.container.querySelectorAll('.basic-cut-asset').length, 2)
+    source.canvasError = true; source.detail = { ...source.detail }
+    await view.rerender()
+    assert.match(view.container.textContent!, /未能读取画布确认状态/)
+    assert.equal(button('筛选素材状态：候选').disabled, true)
+    assert.equal(button('筛选素材状态：全部').disabled, false)
+    await click('筛选素材状态：全部')
+    assert.equal(view.container.querySelectorAll('.basic-cut-asset').length, 2)
+    assert.ok(view.container.textContent?.includes('状态待同步'))
+    source.canvasError = false
+    await click('重试状态同步')
+    assert.equal(button('筛选素材状态：候选').disabled, false)
+    assert.ok(!view.container.textContent?.includes('未能读取画布确认状态'))
+    await click('筛选素材状态：已确认'); await click('图片')
+    assert.equal(view.container.querySelectorAll('.basic-cut-asset').length, 2)
+    assert.ok(source.requests.every(request => request.method === 'GET'))
+  } finally { await view.destroy() }
+})
+
 test('browser container duration cannot reject a valid saved speech boundary', async t => {
   const view = await mount(t)
   try {
@@ -206,6 +304,10 @@ test('uploads add project assets without a shot association; imported video can 
     const upload = view.source.requests.find(x => x.path.endsWith('/assets'))!
     assert.ok(upload.body instanceof FormData); assert.equal(upload.body.get('shot_id'), null)
     assert.ok(view.container.textContent?.includes('新片段.mp4'))
+    await click('筛选素材状态：其他')
+    const library = view.container.querySelector('[aria-label="剪辑素材库"]')!
+    assert.equal(library.querySelectorAll('.basic-cut-asset').length, 1)
+    assert.ok(library.textContent?.includes('已导入'))
     await click('添加到末尾'); await click('保存剪辑')
     const body = view.source.requests.find(x => x.method === 'PUT')!.body
     assert.equal(body.clips.at(-1).asset_id, 'uploaded'); assert.equal(body.clips.at(-1).out_ms, 6000)
@@ -269,5 +371,50 @@ test('caption preview renders shared line wrapping at the current timeline posit
     const caption = view.container.querySelector('.timeline-preview-caption')!
     assert.ok(caption); assert.ok(caption.textContent?.includes('\n'))
     assert.match(caption.textContent!, /中文字幕/)
+  } finally { await view.destroy() }
+})
+
+test('basic cut review previews the selected pair and mix, requires manual confirmation, and applies only to the independent draft', async t => {
+  const source = data()
+  source.cuts[0].clips[1] = { ...source.cuts[0].clips[0], id: 'part2', title: '同素材的另一段', in_ms: 1000, out_ms: 4000 }
+  source.cuts[0].speech[0].start_ms = 3300
+  source.cuts[0].music_asset_id = 'music'
+  const originalSpeech = structuredClone(source.cuts[0].speech)
+  const view = await mount(t, source)
+  try {
+    await click('接镜复核 0/1')
+    const panel = () => document.querySelector<HTMLElement>('[aria-label="基础剪辑接镜复核"]')!
+    assert.ok(panel().textContent?.includes('当前原声、配音和配乐混音'))
+    assert.ok(panel().querySelector('audio[src="/voice1.mp3"]'))
+    assert.ok(panel().querySelector('audio[src="/music.mp3"]'))
+    const frames = () => [...panel().querySelectorAll<HTMLImageElement>('.basic-cut-review-frames img')]
+    assert.match(frames()[0].getAttribute('src')!, /time_ms=4958/)
+    assert.match(frames()[1].getAttribute('src')!, /time_ms=1000/)
+    const confirm = () => panel().querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    assert.equal(confirm().disabled, true)
+    await act(() => frames()[0].dispatchEvent(new dom.window.Event('error'))); await settle()
+    assert.equal(confirm().disabled, true)
+    await click('重新读取切点画面')
+    await act(() => frames().forEach(image => image.dispatchEvent(new dom.window.Event('load')))); await settle()
+    await act(() => confirm().click()); await settle()
+    await click('标记本接点人工已复核')
+    assert.ok(panel().textContent?.includes('人工已复核'))
+    assert.equal(button('接镜复核 1/1').disabled, false)
+    await fill('接镜上一片段出点', '4.5')
+    assert.equal(confirm().checked, false)
+    assert.equal(button('应用候选切点到草稿').disabled, true)
+    await act(() => frames().forEach(image => image.dispatchEvent(new dom.window.Event('load')))); await settle()
+    await act(() => confirm().click()); await settle()
+    await click('应用候选切点到草稿')
+    assert.ok(panel().textContent?.includes('内容已变化，待复查'))
+    assert.equal(view.source.requests.filter(item => item.method !== 'GET').length, 0)
+    await act(() => document.querySelector<HTMLButtonElement>('.mantine-Modal-close')!.click()); await settle()
+    await click('保存剪辑')
+    const body = view.source.requests.find(item => item.method === 'PUT')!.body
+    assert.deepEqual(body.clips.map((item: { id: string; in_ms: number; out_ms: number }) => [item.id, item.in_ms, item.out_ms]), [['part1', 1000, 4500], ['part2', 1000, 4000]])
+    assert.equal(body.clips[0].source_audio_gain, .55)
+    assert.equal(body.clips[0].source_audio_fade_ms, 15)
+    assert.deepEqual(body.speech, originalSpeech)
+    assert.deepEqual(view.source.detail, view.before)
   } finally { await view.destroy() }
 })

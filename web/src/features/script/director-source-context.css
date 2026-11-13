@@ -1,0 +1,23 @@
+.sd-source-context { margin: 0 14px 8px; color: var(--fc-text-secondary); }
+.sd-source-context .mantine-Accordion-item { border: 0; }
+.sd-source-context .sd-source-context-toggle { min-height: 30px; padding: 4px 2px; border-radius: 6px; color: var(--fc-text-secondary); font-size: 12px; }
+.sd-source-context .sd-source-context-toggle:hover { background: var(--fc-surface-hover); }
+.sd-source-context .mantine-Accordion-label { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 0; }
+.sd-source-context .mantine-Accordion-chevron { width: 14px; margin-left: 6px; color: var(--fc-text-muted); }
+.sd-source-context-label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.sd-source-context-label svg { flex: none; }
+.sd-source-context-label > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sd-source-context-status { flex: none; margin-left: auto; color: var(--fc-text-muted); font-size: 11px; white-space: nowrap; }
+.sd-source-context-status.needs-attention { color: var(--fc-text-secondary); }
+.sd-source-context .mantine-Accordion-content { padding: 6px 0 2px; }
+.sd-source-context-content { min-width: 0; }
+.sd-source-context-content .sd-script-source-container { margin: 0; }
+.sd-source-context .sd-source-context-toggle:focus-visible { outline: 2px solid var(--fc-focus); outline-offset: 2px; }
+@media (max-width: 360px) {
+  .sd-source-context { margin-right: 12px; margin-left: 12px; }
+  .sd-source-context .mantine-Accordion-label { gap: 5px; }
+  .sd-source-context-label { gap: 4px; }
+}
+@media (pointer: coarse) {
+  .sd-source-context .sd-source-context-toggle { min-height: 44px; }
+}

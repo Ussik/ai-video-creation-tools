@@ -3,7 +3,7 @@ import { register } from 'node:module'
 import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act, useState } from 'react'
-import { MantineProvider } from '@mantine/core'
+import { MantineProvider, Modal } from '@mantine/core'
 import { ReactFlow, ReactFlowProvider, useReactFlow, type Node, type ReactFlowInstance } from '@xyflow/react'
 
 register(`data:text/javascript,${encodeURIComponent(`
@@ -72,7 +72,7 @@ async function settle() {
     }
   })
 }
-async function mount(width = 1200, height = 800, bottomInset = 0) {
+async function mount(width = 1200, height = 800, bottomInset = 0, keyboardDialogs = false) {
   frames.clear()
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container)
@@ -80,19 +80,33 @@ async function mount(width = 1200, height = 800, bottomInset = 0) {
   function Harness() {
     instance = useReactFlow()
     const [expanded, setExpanded] = useState(false)
+    const [nestedOpened, setNestedOpened] = useState(false), [menuOpened, setMenuOpened] = useState(false)
     return <div className="project-canvas"><div className="pc-flow" data-width={width} data-height={height}>
       <ReactFlow defaultNodes={[initialNode]} defaultViewport={{ x: 10, y: 20, zoom: 1 }} minZoom={0.1} maxZoom={8}>
         <CanvasComposerToolbar nodeId="image" expanded={expanded} bottomInset={bottomInset} onCollapse={() => setExpanded(false)}>
           <div className="pc-prompt-composer">
             <div className="pc-prompt-composer-head"><button aria-label={expanded ? '缩小创作区' : '放大创作区'} onClick={() => setExpanded(value => !value)}>展开</button></div>
-            <div className="pc-prompt-composer-body"><textarea aria-label="创作提示词" defaultValue="保持提示词" /></div>
+            <div className="pc-prompt-composer-body"><textarea aria-label="创作提示词" defaultValue="保持提示词" />
+              {keyboardDialogs && <>
+                <button aria-label="查看固定设定" onClick={() => setNestedOpened(true)}>查看</button>
+                <button aria-label="打开参数菜单" aria-haspopup="menu" aria-expanded={menuOpened} onClick={() => setMenuOpened(true)}>参数</button>
+                {menuOpened && <div role="menu" onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setMenuOpened(false) } }}>
+                  <input aria-label="菜单输入" />
+                </div>}
+                <Modal opened={nestedOpened} onClose={() => setNestedOpened(false)} title="固定设定验收" withCloseButton={false}
+                  attributes={{ content: { 'aria-label': '固定设定验收' } }} zIndex={280} transitionProps={{ duration: 0 }}>
+                  <input aria-label="弹窗首项" data-autofocus />
+                  <button aria-label="弹窗末项" onClick={() => setNestedOpened(false)}>返回正文</button>
+                </Modal>
+              </>}
+            </div>
             <div className="pc-prompt-composer-foot"><button>生成</button></div>
           </div>
         </CanvasComposerToolbar>
       </ReactFlow>
     </div></div>
   }
-  await act(() => root.render(<MantineProvider env="test"><ReactFlowProvider><Harness /></ReactFlowProvider></MantineProvider>))
+  await act(() => root.render(<MantineProvider env={keyboardDialogs ? undefined : "test"}><ReactFlowProvider><Harness /></ReactFlowProvider></MantineProvider>))
   await settle()
   return { container, instance: instance!, destroy: async () => { await act(() => root.unmount()); container.remove(); frames.clear() } }
 }
@@ -187,5 +201,57 @@ test('expanded editor collapses below its node and returns input focus without c
     assert.equal(document.activeElement, view.container.querySelector('textarea'))
     assert.equal((document.activeElement as HTMLTextAreaElement).value, '保持提示词')
     assert.deepEqual(view.instance.getViewport(), viewport)
+  } finally { await view.destroy() }
+})
+
+
+test('portaled nested dialogs keep Escape ownership and their document Tab focus loop while the composer stays expanded', async () => {
+  const view = await mount(1200, 800, 0, true)
+  let documentTabs = 0
+  const observeTab = (event: KeyboardEvent) => { if (event.key === 'Tab') documentTabs++ }
+  document.addEventListener('keydown', observeTab)
+  try {
+    await act(() => view.container.querySelector<HTMLButtonElement>('[aria-label="放大创作区"]')!.click()); await settle()
+    const composer = view.container.querySelector<HTMLElement>('[role="dialog"][aria-label="创作区"]')!
+    assert.ok(composer)
+    await act(() => composer.querySelector<HTMLButtonElement>('[aria-label="查看固定设定"]')!.click()); await settle()
+    const nested = document.querySelector<HTMLElement>('[role="dialog"][aria-label="固定设定验收"]')!
+    assert.ok(nested)
+    assert.equal(composer.contains(nested), false, 'regression exercises a real portal outside the composer DOM')
+    const first = nested.querySelector<HTMLInputElement>('[aria-label="弹窗首项"]')!
+    const last = nested.querySelector<HTMLButtonElement>('[aria-label="弹窗末项"]')!
+    await act(() => last.focus())
+    const forward = new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+    await act(() => last.dispatchEvent(forward)); await settle()
+    assert.equal(documentTabs, 1, 'the outer composer must let Tab reach Mantine’s document focus handler')
+    assert.equal(forward.defaultPrevented, true)
+    assert.equal(document.activeElement, first, 'Tab wraps inside the nested dialog')
+    const backward = new dom.window.KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true })
+    await act(() => first.dispatchEvent(backward)); await settle()
+    assert.equal(documentTabs, 2)
+    assert.equal(document.activeElement, last, 'Shift+Tab wraps inside the nested dialog')
+    await act(() => last.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))); await settle()
+    assert.equal(document.querySelector('[role="dialog"][aria-label="固定设定验收"]'), null, 'Escape closes only the nested surface')
+    assert.equal(view.container.querySelector('[role="dialog"][aria-label="创作区"]'), composer)
+    assert.ok(composer.querySelector('[aria-label="缩小创作区"]'))
+    await act(() => composer.querySelector('textarea')!.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))); await settle()
+    assert.equal(view.container.querySelector('[role="dialog"][aria-label="创作区"]'), null, 'Escape on the composer itself still collapses it')
+    checkAttachment(view.container, view.instance)
+  } finally { document.removeEventListener('keydown', observeTab); await view.destroy() }
+})
+
+test('an expanded composer lets its open contained menu consume Escape before collapsing on the next Escape', async () => {
+  const view = await mount(1200, 800, 0, true)
+  try {
+    await act(() => view.container.querySelector<HTMLButtonElement>('[aria-label="放大创作区"]')!.click()); await settle()
+    const composer = view.container.querySelector<HTMLElement>('[role="dialog"][aria-label="创作区"]')!
+    await act(() => composer.querySelector<HTMLButtonElement>('[aria-label="打开参数菜单"]')!.click()); await settle()
+    const menuInput = composer.querySelector<HTMLInputElement>('[aria-label="菜单输入"]')!
+    await act(() => menuInput.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))); await settle()
+    assert.equal(composer.querySelector('[role="menu"]'), null)
+    assert.equal(view.container.querySelector('[role="dialog"][aria-label="创作区"]'), composer)
+    await act(() => composer.querySelector('textarea')!.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))); await settle()
+    assert.equal(view.container.querySelector('[role="dialog"][aria-label="创作区"]'), null)
+    checkAttachment(view.container, view.instance)
   } finally { await view.destroy() }
 })

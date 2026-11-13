@@ -1,6 +1,10 @@
+import { textTokenCounterConfigError } from '../../infrastructure/providers/text-request-plan.js'
+import { scopeTextCapabilities, textCapabilitiesConfigError, type TextCapabilityScope } from '@video-studio/shared/models/text-capabilities'
 import type { Model } from '../../infrastructure/database/db.js'
 import { invalid } from '../../infrastructure/http/request.js'
 import { documentedImageConfigError } from '@video-studio/shared/models/documented-images-api'
+import { resolveTextApiSettings, textApiConfigError } from '@video-studio/shared/models/text-api-settings'
+import { videoModelConfigError } from '@video-studio/shared/models/video-model-settings'
 import { textContextConfigError } from '@video-studio/shared/models/text-context-settings'
 import { imageAnalysisConfigError } from '@video-studio/shared/models/image-analysis-settings'
 import { videoInputConfigError } from '@video-studio/shared/models/video-analysis-settings'
@@ -14,13 +18,24 @@ export function checkBaseUrl(value: string): void {
 }
 
 export function checkProtocol(mod: Model['modality'], kind: Model['protocol']): void {
-  if ((mod === 'text' && ['responses', 'chat_completions'].includes(kind)) ||
+  if ((mod === 'text' && ['responses', 'chat_completions', 'anthropic_messages'].includes(kind)) ||
     (mod === 'image' && kind === 'image_generations') ||
     (mod === 'video' && kind === 'async_video')) return
   invalid('模型类型与接口协议不匹配')
 }
 
-export function validateSettings(mod: Model['modality'], settings: Record<string, unknown>): void {
+export function validateSettings(mod: Model['modality'], settings: Record<string, unknown>, protocol: Model['protocol'], scope?: TextCapabilityScope): void {
+  if (mod === 'text') { const issue = textCapabilitiesConfigError(settings); if (issue) invalid(issue) }
+  if (mod === 'text' && scope) settings = scopeTextCapabilities(settings, { ...scope, base_url: typeof settings.api_base_url === 'string' ? settings.api_base_url : scope.base_url })
+  if (settings.text_api !== undefined && mod !== 'text') invalid('text_api 配置仅适用于文本模型')
+  if (mod === 'text') {
+    const counterIssue = textTokenCounterConfigError(settings, protocol)
+    if (counterIssue) invalid(counterIssue)
+    const issue = textApiConfigError(settings, protocol)
+    if (issue) invalid(issue)
+    if (settings.text_api !== undefined) settings = resolveTextApiSettings(settings, protocol)
+  }
+  if (mod === 'video') { const issue = videoModelConfigError(settings); if (issue) invalid(issue) }
   if (settings.image_analysis !== undefined) {
     if (mod !== 'image') invalid('image_analysis 图片反推配置仅适用于图片模型')
     const issue = imageAnalysisConfigError(settings)

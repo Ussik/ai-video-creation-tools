@@ -98,6 +98,46 @@ test('workflow draft formatting is scoped to contract diagnostics and retains ot
     '阶段草稿未通过格式与内容校验：当前阶段缺少完整文档：背景设定')
 })
 
+test('legacy stage scene validation arrays explain the mismatch without exposing internal JSON', () => {
+  const issue = { code: 'custom', message: '仅分集正文阶段需要分场剧本', path: ['scenes'] }
+  const source = JSON.stringify([issue], null, 2)
+  const expected = '生成结果中的分场内容与当前创作阶段不一致，未通过校验。请重新生成当前阶段。'
+  assert.equal(scriptDiagnosticDisplayText(source), expected)
+  assert.equal(scriptDiagnosticDisplayText(`模型结果不符合 workflow_draft 契约：scenes: ${issue.message}`), `阶段草稿未通过格式与内容校验：${expected}`)
+  assert.equal(source, JSON.stringify([issue], null, 2), 'presentation leaves historical diagnostics intact')
+})
+
+test('stage scene diagnostics keep other failures and leave unrelated JSON and prose intact', () => {
+  const source = JSON.stringify([
+    { code: 'custom', message: '仅分集正文阶段需要分场剧本', path: ['scenes'] },
+    { code: 'custom', message: '当前阶段缺少完整文档：故事简述', path: ['artifacts'] },
+  ])
+  const display = scriptDiagnosticDisplayText(source)
+  assert.match(display, /分场内容与当前创作阶段不一致/)
+  assert.match(display, /当前阶段缺少完整文档：故事简述/)
+  assert.doesNotMatch(display, /"code"|"path"/)
+  for (const unchanged of [
+    '原文中的提示是“仅分集正文阶段需要分场剧本”。',
+    JSON.stringify([{ code: 'custom', message: '仅分集正文阶段需要分场剧本', path: ['dialogue'] }]),
+    JSON.stringify([{ message: '仅分集正文阶段需要分场剧本', path: ['scenes'] }]),
+    '[{"code":"custom","message":"仅分集正文阶段需要分场剧本","path":["scenes"]}',
+  ]) assert.equal(scriptDiagnosticDisplayText(unchanged), unchanged)
+})
+
+test('scene diagnostics distinguish missing episode scenes from extra project scenes', () => {
+  for (const [message, expected] of [
+    ['分集正文缺少对应分场，请保留正文并补齐 scenes', '分集正文缺少对应分场，需要保留正文并补齐分场后再确认。'],
+    ['当前项目资料阶段不应包含分场剧本，scenes 必须为空数组', '当前正在编写全剧资料，生成结果中不应包含分集的分场内容。'],
+  ]) {
+    const diagnostic = JSON.stringify([{ code: 'custom', message, path: ['scenes'] }])
+    assert.equal(scriptDiagnosticDisplayText(diagnostic), expected)
+    assert.equal(scriptDiagnosticDisplayText(`模型结果不符合 workflow_draft 契约：scenes: ${message}`), `阶段草稿未通过格式与内容校验：${expected}`)
+    assert.equal(scriptDiagnosticDisplayText(message!), message, 'ordinary model prose is not rewritten')
+    const unrelated = JSON.stringify([{ code: 'custom', message, path: ['dialogue'] }])
+    assert.equal(scriptDiagnosticDisplayText(unrelated), unrelated, 'the translation requires the exact validation field')
+  }
+})
+
 test('review prose translates the screenshot document references and preserves adjacent Chinese text', () => {
   assert.equal(scriptReviewDisplayText('episode_outline 第31集告帖点名；world的封坛匣条目与constraints 第37条冲突，foreshadowing第22条及synopsis也须同步。'),
     '分集大纲 第31集告帖点名；背景设定的封坛匣条目与创作禁区 第37条冲突，伏笔与回收第22条及故事简述也须同步。')

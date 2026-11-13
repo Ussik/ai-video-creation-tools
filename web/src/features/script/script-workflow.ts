@@ -51,7 +51,8 @@ export function workflowRequestForStage(stage: WorkflowStage, episodeNumber: num
   const missing = operation === 'supplement' && contract.script ? missingSavedStageArtifacts(contract.script, { stage, episode_number: episodeNumber }) : null
   const request = workflowRequestSnapshot({ stage, episode_number: episodeNumber, target_duration: duration, operation,
     ...(missing ? { intent: 'stage_design', artifact_types: missing.filter(type => !contract.artifact_types || contract.artifact_types.includes(type)) }
-      : { ...(contract.intent ? { intent: contract.intent } : {}), ...(contract.artifact_types ? { artifact_types: contract.artifact_types } : {}) }) })
+      : { ...(stage === 'outline' && (!operation || operation === 'generate') && !contract.intent ? { intent: 'stage_design' as const } : {}),
+        ...(contract.intent ? { intent: contract.intent } : {}), ...(contract.artifact_types ? { artifact_types: contract.artifact_types } : {}) }) })
   return initialScriptTaskContract(request, Boolean(contract.hasSource))
 }
 

@@ -83,11 +83,12 @@ test('explicit model choices and configured defaults remain usable', () => {
   assert.equal(imageResolutionClarity('auto'), undefined)
 })
 
-test('video node defaults prefer 480p while preserving image model defaults', () => {
+test('video node defaults honor configured resolution before the 480p fallback', () => {
   const video = model({ resolutions: ['480p', '720p'], default_resolution: '720p' }, 'video')
-  assert.equal(modelDefaultResolution(video, videoResolutionOptions(video.settings)), '480p')
-  assert.equal(modelDefaultResolution(model({ resolutions: ['1080p'], default_resolution: '1080p' }, 'video'), videoResolutionOptions()), '480p')
-  assert.equal(modelDefaultResolution(model({ resolutions: ['480P'], default_resolution: '720p' }, 'video'), ['480P', '720p']), '480P')
+  assert.equal(modelDefaultResolution(video, videoResolutionOptions(video.settings)), '720p')
+  assert.equal(modelDefaultResolution(model({ resolutions: ['1080p'], default_resolution: '1080p' }, 'video'), videoResolutionOptions()), '1080p')
+  assert.equal(modelDefaultResolution(model({ resolutions: ['480P'], default_resolution: '720p' }, 'video'), ['480P', '720p']), '720p')
+  assert.equal(modelDefaultResolution(model({}, 'video'), ['480p', '720p']), '480p')
 })
 
 test('explicit Seedance 2.5 controls use documented dimensions and source rules without guessing from model names', () => {

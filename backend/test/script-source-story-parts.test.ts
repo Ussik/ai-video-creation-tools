@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import type { ScriptSourceAnalysis, ScriptSourceSection } from '@video-studio/shared/script/script-source-document'
 import { synthesizeSourceStory, validateSourceStory } from '../src/modules/script/script-source-story.js'
 import { sourceStoryTasks } from '../src/modules/script/script-source-story-plan.js'
+import { scriptSourceVersion } from '../src/modules/script/script-source-identity.js'
 
 type Character = { name: string; aliases: string[]; description: string; section_ids: number[] }
 type Input = {
@@ -90,6 +91,35 @@ test('dense long-story tasks each retain the full manuscript and directory while
   assert.equal(state.story_work, undefined); assert.deepEqual(savedTaskKeys, new Set(tasks))
   assert.equal(progress.length, tasks.length)
   assert.deepEqual(validateSourceStory(state, story), story)
+})
+
+test('model identity uncertainty expands a scoped character task to the complete original regardless of wording', async () => {
+  const { state, source } = manuscript()
+  state.source_version = scriptSourceVersion(source)
+  let discoveries = 0, localRequests = 0, fullRetries = 0
+  const awaitingFull = new Set<string>()
+  const story = await synthesizeSourceStory(state, async prompt => {
+    const input = inputFrom(prompt) as Input & { character_context?: { identity_hypotheses: Character[] } }
+    if (input.character_context) {
+      localRequests++
+      assert.ok(input.character_context.identity_hypotheses.length)
+      assert.match(prompt, /不以特定词语是否出现代替判断/)
+      awaitingFull.add(input.part.key)
+      return JSON.stringify({ needs_full_source: true, reason: '已有资料仍不足以确认这一人物的经历，需要连贯阅读。', characters: [] })
+    }
+    if (awaitingFull.delete(input.part.key)) { fullRetries++; assert.equal(input.source.content, source.content) }
+    if (input.part.kind === 'characters' && input.part.include_additional_characters) {
+      discoveries++
+      return JSON.stringify(reply({ ...input, part: { ...input.part,
+        target_names: [...new Set(input.materials.flatMap(item => item.section.characters.map(character => character.name)))] } }))
+    }
+    return JSON.stringify(reply(input))
+  }, () => {}, signal(), undefined, 1000, source)
+  assert.equal(discoveries, 1)
+  assert.ok(localRequests > 0, 'later batches can use known identities from full-source discovery')
+  assert.equal(fullRetries, localRequests)
+  assert.equal(awaitingFull.size, 0)
+  assert.ok(story.characters.some(character => character.name === '林舟' && character.aliases.includes('阿舟')))
 })
 
 test('dynamic task groups are deterministic, cover every section exactly once, and normalize equivalent character names', () => {

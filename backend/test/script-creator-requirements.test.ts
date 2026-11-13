@@ -1,3 +1,4 @@
+import { sourceScopeResponse } from './helpers/source-scope-response.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -117,6 +118,8 @@ test('creator requirements keep verbatim quotes with their source, outlive the c
   let seen = ''
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as NativeBody
+    const scope = sourceScopeResponse(prompt(body))
+    if (scope) return textResponse('chat_completions', scope)
     if (prompt(body).includes('本次独立调用只理解创作者意图')) return intentResponse('chat_completions')
     seen = prompt(body); return textResponse('chat_completions', '好的。')
   })
@@ -160,6 +163,8 @@ test('the model tools record, supersede and read requirements, and refuse assist
   const results: any[] = []
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as NativeBody
+    const scope = sourceScopeResponse(prompt(body))
+    if (scope) return textResponse('chat_completions', scope)
     if (prompt(body).includes('本次独立调用只理解创作者意图')) return intentResponse('chat_completions')
     turn++
     if (turn === 1) return multiToolResponse([

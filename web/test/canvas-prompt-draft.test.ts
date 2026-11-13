@@ -37,7 +37,27 @@ test('legacy shots get distinct static and temporal prompts, while explicit shot
   assert.match(shotVideoPrompt(shot), /站到窗前/)
   assert.match(shotVideoPrompt(shot), /接窗外夜景/)
   assert.equal(shotImagePrompt({ ...shot, image_prompt: '自定义静态构图' }), '自定义静态构图')
-  assert.equal(shotVideoPrompt({ ...shot, video_prompt: '自定义动作节奏' }), '自定义动作节奏')
+  const temporal = shotVideoPrompt({ ...shot, video_prompt: '自定义动作节奏' })
+  assert.ok(temporal.startsWith('自定义动作节奏\n\n'))
+  assert.match(temporal, /开镜状态：躺在床上/)
+  assert.match(temporal, /收镜状态：站到窗前/)
+  assert.match(temporal, /接镜要求：接窗外夜景/)
+  assert.equal(shotVideoPrompt({ prompt: '', video_prompt: '自定义动作节奏' }), '自定义动作节奏')
+})
+
+test('authored video prose keeps one current boundary block across imports and state edits', () => {
+  const shot = { prompt: '走向门口', video_prompt: '手持跟拍，从人物身后停在门槛。',
+    start_state: '人物左手持灯站在桌边', end_state: '右脚踏至门槛，左手仍持灯', cut_note: '右脚落地时切门外侧面，保持向右运动' }
+  const composed = shotVideoPrompt(shot)
+  assert.ok(composed.startsWith(shot.video_prompt))
+  assert.equal(shotVideoPrompt({ ...shot, video_prompt: composed }), composed)
+  const updated = shotVideoPrompt({ ...shot, video_prompt: composed, end_state: '停在门内，不跨门槛' })
+  assert.ok(updated.startsWith(shot.video_prompt), 'authored camera prose remains available for review')
+  assert.match(updated, /正文中旧状态与此冲突时以本区块为准/)
+  assert.match(updated, /收镜状态：停在门内，不跨门槛/)
+  assert.doesNotMatch(updated, /右脚踏至门槛，左手仍持灯/)
+  assert.equal(updated.split('【镜头起止与接镜约束】').length, 2)
+  assert.equal(shotVideoPrompt({ ...shot, video_prompt: updated, start_state: '', end_state: '', cut_note: '' }), shot.video_prompt)
 })
 
 test('editing the full prompt survives reload and independent parameter and reference changes', () => {

@@ -1,3 +1,4 @@
+import { sourceScopeResponse } from './helpers/source-scope-response.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -79,6 +80,8 @@ test('upload returns before background analysis completes and the next conversat
       })
     }
     if (prompt.includes('【全剧整合资料】') || prompt.includes('【原稿分析核对资料】')) return Response.json({ choices: [{ message: { content: sourceAnalysisFixture(prompt) }, finish_reason: 'stop' }] })
+    const scope = sourceScopeResponse(prompt)
+    if (scope) return Response.json({ choices: [{ message: { content: scope }, finish_reason: 'stop' }] })
     chatCalls++
     assert.ok(prompt.includes('INPUT_VISUAL_STYLE: 日漫二维画风'))
     if (prompt.includes('本次独立调用只理解创作者意图')) assert.ok(prompt.includes('MAP_STORY_SUMMARY'))
@@ -332,7 +335,7 @@ test('every stage writer and completeness check receive the original script inde
     assert.equal(response.statusCode, 200, `${stage}: ${response.body}`)
     const result = useTools ? response.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5))).find(event => event.type === 'done') : response.json()
     assert.ok(useTools ? result?.tool_draft : result?.draft, `${stage}: ${response.body}`)
-    assert.equal(writerCalls, stage === 'locations' || stage === 'props' ? 2 : 1, stage)
+    assert.equal(writerCalls, stage === 'outline' ? 1 : scriptStageArtifacts[stage].length, stage)
   }
 })
 

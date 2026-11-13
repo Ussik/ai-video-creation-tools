@@ -6,6 +6,7 @@ import { JSDOM } from 'jsdom'
 import { MantineProvider } from '@mantine/core'
 import { resolvePromptReferences } from '@video-studio/shared/visuals/prompt-references'
 import { stripManagedPromptBlocks } from '@video-studio/shared/visuals/prompt-document'
+import { parsePromptSectionDocument } from '@video-studio/shared/visuals/prompt-section-document'
 import type { Model, ProjectDetail, VisualProfile } from '../src/shared/api/api'
 import type { CanvasGraph, CanvasNode, ProjectCanvasProps } from '../src/features/canvas/ProjectCanvas'
 
@@ -345,7 +346,11 @@ test('an orphan generating task and an empty editable body both disable current 
     assert.deepEqual(api.previews, []); assert.deepEqual(api.generated, []); assert.deepEqual(api.unexpected, [])
   } finally { await view.destroy() }
 
-  const emptyApi = mockApi(t, initialGraph(''))
+  // A saved empty document explicitly omits the editable primary. A legacy
+  // empty override can still inherit the profile's valid fixed main task.
+  const emptyGraph = initialGraph('')
+  emptyGraph.nodes.find(node => node.id === 'state-node')!.settings.prompt_sections = parsePromptSectionDocument('')
+  const emptyApi = mockApi(t, emptyGraph)
   const emptyView = await mount(readyDetail)
   try {
     assertFoundationMapping(emptyView.promptText(), 'base-image')

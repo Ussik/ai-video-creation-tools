@@ -61,8 +61,11 @@ export default function CanvasComposerToolbar({ nodeId, children, expanded = fal
     styles={{ content: { border: 0, boxShadow: 'none' } }}
     classNames={{ root: 'pc-composer-modal-root', content: 'pc-composer-modal-content', body: 'pc-composer-modal-body' }}
     data-canvas-overlay onPointerDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}
-    onKeyDown={event => event.stopPropagation()}
+    onKeyDown={event => { if (event.key !== 'Tab') event.stopPropagation() }}
     onKeyDownCapture={event => {
+      // React events from a nested portal still cross this component. Its
+      // dialog owns Escape and its document listener owns the Tab focus loop.
+      if (!(event.target instanceof Node) || !event.currentTarget.contains(event.target)) return
       // Let an open nested menu consume Escape first. Capture the closed-menu
       // case too, since select/parameter triggers stop keyboard propagation.
       if (event.key !== 'Escape' || event.nativeEvent.isComposing

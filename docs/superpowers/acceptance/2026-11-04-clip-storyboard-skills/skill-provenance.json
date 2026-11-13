@@ -1,0 +1,10 @@
+{
+  "source_cache": "/tmp/studio-skills-install-20261031/before-details.json",
+  "repo": "zenstory-ai/drama-skills",
+  "path": "skills/short-drama-storyboard",
+  "name": "short-drama-storyboard",
+  "revision": "fdb7b7c58017e3eae64eca382c2a85ede368dab0",
+  "file_count": 14,
+  "main_sha256": "fec0a090c48b8939cdd5302937446faf2ffbbca26bf596e69e2b32dd8153067e",
+  "scope": "Cached public bundle fixture installed only into this new QA database; does not establish the user current enabled version. No skill instructions or scripts executed."
+}

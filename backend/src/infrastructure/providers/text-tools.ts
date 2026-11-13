@@ -1,7 +1,8 @@
 import { createTextToolTransport, type GenerationModel, type GenerationProvider, type TextRequestMetrics } from './providers.js'
 import { compactToolHistory, contextPressureShare, deduplicateToolHistory } from './text-tool-history.js'
 import { estimateTextRequestTokens } from './text-context.js'
-import { textContextSettings } from '@video-studio/shared/models/text-context-settings'
+import { resolveTextApiSettings, textOutputMode } from '@video-studio/shared/models/text-api-settings'
+import { resolveTextCapabilities, scopeTextCapabilities } from '@video-studio/shared/models/text-capabilities'
 import { retryReadOnlyRequest } from '../../modules/generation/read-only-retry.js'
 import { runModelStep } from '../../modules/generation/model-execution.js'
 import { generationStepBudgets } from '@video-studio/shared/script/script-stream-policy'
@@ -13,13 +14,22 @@ export type ToolTurn = { text: string; calls: ToolCall[]; history: unknown[]; in
 
 /** True when the estimated complete request plus the reserved output exceeds a share of the stated context window.
  * Unknown capacity is never guessed: without a configured window this is always false. */
-function contextPressure(model: GenerationModel, prompt: string, tools: TextTool[], history: unknown[], outputs: ToolOutput[], continuation?: string): boolean {
+function contextPressure(model: GenerationModel, provider: GenerationProvider, prompt: string, tools: TextTool[], history: unknown[], outputs: ToolOutput[], continuation?: string): boolean {
   try {
-    const settings = typeof model.settings === 'string' ? JSON.parse(model.settings) as Record<string, unknown> : model.settings
-    const { context_window_tokens: window, output_reserve_tokens: reserve } = textContextSettings(settings ?? {})
-    if (!window) return false
-    const estimate = estimateTextRequestTokens({ prompt, tools, history, outputs, continuation }) + (reserve ?? 0)
-    return estimate > window * contextPressureShare
+    const raw = typeof model.settings === 'string' ? JSON.parse(model.settings) as Record<string, unknown> : model.settings
+    const settings = resolveTextApiSettings(scopeTextCapabilities(raw ?? {}, {
+      base_url: typeof raw?.api_base_url === 'string' ? raw.api_base_url : provider.base_url ?? '', protocol: model.protocol ?? '', remote_id: model.remote_id ?? '',
+    }), model.protocol ?? '')
+    const { limits } = resolveTextCapabilities(settings)
+    const template = settings.stream_request_template ?? settings.request_template
+    const body = template && typeof template === 'object' && !Array.isArray(template) ? template as Record<string, unknown> : {}
+    const cap = model.protocol === 'responses' ? body.max_output_tokens : body.max_completion_tokens ?? body.max_tokens
+    const reserve = textOutputMode(settings) === 'auto' ? Math.min(8192, limits.output_tokens ?? 8192)
+      : typeof cap === 'number' && Number.isSafeInteger(cap) && cap > 0 ? cap : typeof settings.output_reserve_tokens === 'number' ? settings.output_reserve_tokens : 0
+    const estimate = estimateTextRequestTokens({ prompt, tools, history, outputs, continuation })
+    if (limits.input_tokens !== undefined && estimate > limits.input_tokens * contextPressureShare) return true
+    return limits.budget_mode === 'shared' && limits.context_tokens !== undefined
+      && estimate + reserve > limits.context_tokens * contextPressureShare
   } catch { return false }
 }
 
@@ -32,13 +42,16 @@ export function textToolSession(model: GenerationModel, provider: GenerationProv
   let initialLength = 0
   return async (outputs: ToolOutput[] = [], continuation?: string): Promise<ToolTurn> => {
     signal?.throwIfAborted()
-    const uniqueHistory = history ? deduplicateToolHistory(history, outputs) : undefined
+    // Native Messages history includes signed thinking and nested tool pairs.
+    // The OpenAI compactor cannot rewrite those authenticated content blocks.
+    const nativeMessages = model.protocol === 'anthropic_messages'
+    const uniqueHistory = history ? nativeMessages ? structuredClone(history) : deduplicateToolHistory(history, outputs) : undefined
     // Bounded precision-edit sessions retain exact read evidence. Summarizing
     // their document bodies would invalidate their read/patch relationship.
     // The decision uses the complete next request (prompt, tool definitions, relayed history), not just the tool
     // history: when it approaches the stated context window, compact locally first. No model call is added.
-    const pressure = uniqueHistory !== undefined && contextPressure(model, prompt, tools, uniqueHistory, outputs, continuation)
-    const preparedHistory = uniqueHistory && options.compactHistory !== false
+    const pressure = uniqueHistory !== undefined && contextPressure(model, provider, prompt, tools, uniqueHistory, outputs, continuation)
+    const preparedHistory = uniqueHistory && !nativeMessages && options.compactHistory !== false
       ? await compactToolHistory(uniqueHistory, initialLength, model, provider, key, signal, onMetrics, pressure) : uniqueHistory
     // Retry only the pending model decision. Tool execution is outside this
     // session, and neither partial calls nor failed histories are committed.

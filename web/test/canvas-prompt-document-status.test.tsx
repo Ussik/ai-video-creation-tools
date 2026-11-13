@@ -139,3 +139,39 @@ test('disabled source history keeps comparison available and prevents every reco
     assert.deepEqual(decisions, [])
   } finally { await act(() => root.unmount()); container.remove() }
 })
+
+test('dialog history keeps status counts visible and returns from comparison without changing source content', async () => {
+  const style = '【项目画风约束】\n木刻。\n【项目画风约束结束】'
+  const image = '【图片生成要求】\n画面比例：16:9\n【图片生成要求结束】'
+  const sections = parsePromptSectionDocument(`${style}\n\n${image}`, { sourceText: `${style}\n\n${image}` })
+  const removed = sections.blocks.find(block => block.name === '项目画风约束')!
+  removed.deleted = true; removed.text = ''
+  const pending = sections.blocks.find(block => block.name === '图片生成要求')!
+  pending.pendingSourceText = image.replace('16:9', '9:16'); pending.sourceStatus = 'source_changed'
+  const before = structuredClone(sections), decisions: string[] = []
+  const container = document.createElement('div'); document.body.append(container)
+  const root = createRoot(container)
+  try {
+    await act(() => root.render(<MantineProvider env="test"><Status document={sections} references={[]} disabled presentation="dialog"
+      onResolve={id => { decisions.push(id) }} /></MantineProvider>))
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="查看来源与修改记录"]')!
+    assert.match(trigger.textContent!, /来源记录1 项待确认1 项已移除/)
+    assert.equal(container.querySelector('.workspace-disclosure'), null)
+    assert.equal(document.querySelector('[role="dialog"]'), null)
+    await act(() => trigger.click())
+    let dialog = document.querySelector('[role="dialog"]')!
+    assert.match(dialog.textContent!, /已移除 1 项要求，生成时不会发送/)
+    assert.equal(dialog.querySelector<HTMLButtonElement>('[aria-label="恢复来源内容：项目画风约束"]')!.disabled, true)
+    await act(() => dialog.querySelector<HTMLButtonElement>('[aria-label="查看区块差异：图片生成要求"]')!.click())
+    dialog = document.querySelector('[role="dialog"]')!
+    assert.match(dialog.textContent!, /图片生成要求 · 内容对比/)
+    assert.match(dialog.querySelector('[aria-label="来源更新"]')!.textContent!, /9:16/)
+    await act(() => dialog.querySelector<HTMLButtonElement>('.mantine-Modal-close')!.click())
+    dialog = document.querySelector('[role="dialog"]')!
+    assert.match(dialog.textContent!, /来源与修改记录/)
+    await act(() => dialog.querySelector<HTMLButtonElement>('[aria-label="关闭来源与修改记录"]')!.click())
+    assert.equal(document.querySelector('[role="dialog"]'), null)
+    assert.deepEqual(decisions, [])
+    assert.deepEqual(sections, before)
+  } finally { await act(() => root.unmount()); container.remove() }
+})

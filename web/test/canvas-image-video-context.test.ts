@@ -2,10 +2,12 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { CanvasGraph, CanvasNode } from '../src/features/canvas/ProjectCanvas'
 import type { ProjectDetail, ShotVisualBinding } from '../src/shared/api/api'
-import { applyImageVideoContext, imageVideoContentSignature, imageVideoSourceContext } from '../src/features/canvas/canvas-image-video-context'
+import { applyImageVideoContext, imageVideoContentSignature, imageVideoSourceContext, type ImageVideoSemanticPlan } from '../src/features/canvas/canvas-image-video-context'
+import type { VideoAudioPlan } from '@video-studio/shared/media/video-prompt-audio'
 import { parsePromptSectionDocument, reconcilePromptSectionDocument } from '@video-studio/shared/visuals/prompt-section-document'
 import { extractPromptReferenceIds } from '@video-studio/shared/visuals/prompt-references'
 import { extractPromptBody } from '@video-studio/shared/visuals/prompt-document'
+import { shotVideoPrompt } from '@video-studio/shared/storyboard/shot-prompts'
 
 function fixture() {
   const source = { id: 'image', type: 'generation', title: '新画面', prompt: '旧人物独自站在门前', text: '',
@@ -37,6 +39,128 @@ test('unchanged automatic sources retain the original video node without introdu
   const context = imageVideoSourceContext(f.graph, f.source, f.detail, [])
   assert.equal(context.customized, false)
   assert.equal(applyImageVideoContext(f.video, context, f.detail, []), f.video)
+})
+
+function speechPlan(line: string, sourceText: string, mode: 'dialogue' | 'voiceover' = 'dialogue'): VideoAudioPlan {
+  return { version: 1, speech: [{ speaker: '许知夜', text: line, delivery: '低沉平稳', mode, source_text: sourceText }],
+    sound_effects: ['雨声'], music: '', silent: false }
+}
+
+for (const mode of ['first_frame', 'reference'] as const) test(`${mode} handoff keeps the shot's audible dialogue with the latest image design`, () => {
+  const f = fixture(), line = '刘叔，这两天自来水管没洗吧？煮出来的汤底，隐隐带着股烂鱼死水腥泥味。'
+  const sourceText = `许知夜嘴唇微动沉声开口，声音平稳而带着洞察感：“${line}”`
+  const audio = speechPlan(line, sourceText)
+  const detail = { ...f.detail, shots: [{ ...f.detail.shots[0],
+    video_prompt: `旧人物在旧门前转身。${sourceText}音调平稳，说话间揉起纸巾。`, audio_plan: audio }] }
+  const source = { ...f.source, settings: { ...f.source.settings,
+    prompt_body: '许知夜坐在红色塑料桌前，穿黑色风衣，身侧是沸腾铁锅。' } }
+  const video = { ...f.video, settings: { ...f.video.settings, mode } }
+  const context = imageVideoSourceContext({ ...f.graph, nodes: [source] }, source, detail, [])
+  assert.deepEqual(context.audioPlan, audio)
+  const semantic: ImageVideoSemanticPlan = { audio_plan: audio, motion_prompt: '许知夜擦过嘴角后收回纸巾，镜头微拉。' }
+  const result = applyImageVideoContext(video, context, detail, [], semantic)
+  assert.ok(result.settings.prompt_body!.includes(line))
+  assert.match(result.text, /说话者：许知夜/)
+  assert.match(result.text, /必须生成可听见的人声/)
+  assert.match(result.text, /坐在红色塑料桌前/)
+  assert.match(result.text, /擦过嘴角后收回纸巾，镜头微拉/)
+  assert.doesNotMatch(result.text, /旧人物|旧门前|音调平稳，说话间揉起纸巾/)
+})
+
+test('historical shot audio is scoped to its image and excludes dialogue from a connected full script', () => {
+  const f = fixture(), shot = { ...f.detail.shots[0], video_prompt: '许知夜低沉开口：“本镜的台词。”' }
+  const detail = { ...f.detail, shots: [], historical_shots: [shot], script: { ...f.detail.script,
+    scenes: [{ heading: '另一个场次', dialogue: '旁人说：“其他场次的台词。”', duration: 5 }] } } as ProjectDetail
+  const script = { ...f.input, id: 'script', type: 'project_script_ref' as const, settings: {} }
+  const graph = { ...f.graph, nodes: [f.source, script], edges: [{ id: 'script', source: script.id, target: f.source.id }] }
+  const context = imageVideoSourceContext(graph, f.source, detail, [])
+  assert.equal(context.audioPlan, null)
+  assert.equal(context.audioPrompt, '')
+  assert.equal(context.audioSource.shotPrompt, shotVideoPrompt(shot))
+  assert.doesNotMatch(context.audioSource.imageBody, /其他场次/)
+  const semantic = { audio_plan: speechPlan('本镜的台词。', shot.video_prompt), motion_prompt: '保持当前动作。' }
+  assert.match(applyImageVideoContext(f.video, context, detail, [], semantic).text, /本镜的台词/)
+})
+
+test('explicit connected text survives in the model source instead of being discarded as a whole script', () => {
+  const f = fixture(), text = { ...f.input, id: 'line', type: 'text' as const, text: '本镜补充：许知夜轻声提醒，早点关门。', settings: {} }
+  const context = imageVideoSourceContext({ ...f.graph, nodes: [f.source, text],
+    edges: [{ id: 'line-edge', source: text.id, target: f.source.id }] }, f.source, f.detail, [])
+  assert.ok(context.audioSource.imageBody.includes(text.text))
+  assert.equal(context.audioPlan, null, 'connected prose is input for the model, never a program-inferred speech plan')
+})
+
+test('image dialogue changes and removal use the explicit model plan instead of a prose fallback', () => {
+  const f = fixture(), detail = { ...f.detail, shots: [{ ...f.detail.shots[0], video_prompt: '许知夜说：“分镜旧台词。”' }] }
+  const cases: Array<{ body: string; audio: VideoAudioPlan; expected: RegExp }> = [
+    { body: '许知夜坐在桌前，低声说：“修改后的台词。”', audio: speechPlan('修改后的台词。', '低声说：“修改后的台词。”'), expected: /修改后的台词/ },
+    { body: '许知夜坐在桌前。本镜无对白。', audio: { version: 1, speech: [], sound_effects: ['雨声'], music: '', silent: false }, expected: /没有人物对白或旁白/ },
+  ]
+  for (const { body, audio, expected } of cases) {
+    const source = { ...f.source, settings: { ...f.source.settings, prompt_body: body } }
+    const context = imageVideoSourceContext({ ...f.graph, nodes: [source] }, source, detail, [])
+    assert.equal(context.audioPlan, null)
+    assert.equal(context.audioSource.imageBody, body)
+    const result = applyImageVideoContext(f.video, context, detail, [], { audio_plan: audio, motion_prompt: '许知夜维持坐姿。' })
+    assert.doesNotMatch(result.text, /分镜旧台词/)
+    assert.match(result.text, expected)
+  }
+})
+
+test('free prose leaves audio unknown and retains complete local source for model interpretation', () => {
+  const f = fixture(), shotPrompt = '画外传来他低沉平淡却极有分量的声线：“请早点收摊。”'
+  const detail = { ...f.detail, shots: [{ ...f.detail.shots[0], video_prompt: shotPrompt }] }
+  for (const body of ['人在桌前。音效：雨声。', '保留对白，不要删除台词。', '许知夜说：“无对白是怎么回事？”',
+    '他没有开口，只在心里反复默念。', '招牌写着：“早点收摊。”']) {
+    const source = { ...f.source, settings: { ...f.source.settings, prompt_body: body } }
+    const context = imageVideoSourceContext({ ...f.graph, nodes: [source] }, source, detail, [])
+    assert.equal(context.audioPlan, null)
+    assert.equal(context.audioPrompt, '')
+    assert.deepEqual(context.audioSource, { shotId: 'shot', shotPrompt: shotVideoPrompt(detail.shots[0]!), imageBody: body })
+  }
+})
+
+test('the pure handoff layer renders explicit audio and motion verbatim without classifying cue wording', () => {
+  const f = fixture(), body = '许知夜坐在桌前，衣领边挂着一滴雨水。'
+  const source = { ...f.source, settings: { ...f.source.settings, prompt_body: body } }
+  const detail = { ...f.detail, shots: [{ ...f.detail.shots[0], video_prompt: '这一秒，雨棚下只有他留给耳朵的三个字：别回头。' }] }
+  const context = imageVideoSourceContext({ ...f.graph, nodes: [source] }, source, detail, [])
+  const plan = { audio_plan: speechPlan('别回头。', detail.shots[0]!.video_prompt, 'voiceover'), motion_prompt: '许知夜停下擦嘴的手，视线仍朝向雨棚外。' }
+  const result = applyImageVideoContext(f.video, context, detail, [], plan)
+  assert.match(result.text, /画外人声；说话者：许知夜/)
+  assert.match(result.text, /必须逐字生成可听见的人声：“别回头。”/)
+  assert.match(result.text, /停下擦嘴的手，视线仍朝向雨棚外/)
+  assert.doesNotMatch(result.text, /留给耳朵|旧人物|自然展开与当前情境一致/)
+})
+
+test('all stored shot states consumed by model analysis invalidate the source signature', () => {
+  const f = fixture(), initial = imageVideoSourceContext(f.graph, f.source, f.detail, []).signature
+  for (const update of [{ title: '新镜头标题' }, { start_state: '站起身' }, { end_state: '收回手' },
+    { cut_note: '改接门外视线' }, { duration: 8 }]) {
+    const detail = { ...f.detail, shots: [{ ...f.detail.shots[0], ...update }] }
+    assert.notEqual(imageVideoSourceContext(f.graph, f.source, detail, []).signature, initial, JSON.stringify(update))
+  }
+})
+
+test('neighbor camera and cut edits invalidate handoff reuse while alternate designs and nonadjacent shots do not', () => {
+  const f = fixture(), current = { ...f.detail.shots[0]!, project_id: 'project', position: 10, design_id: 'design', source_scene_id: 'inside' }
+  const previous = { ...current, id: 'previous', position: 5, end_state: '右脚刚到门槛', video_prompt: '跟拍向右，在右脚触地时停住' }
+  const next = { ...current, id: 'next', position: 20, source_scene_id: 'outside', start_state: '右脚落地后继续向右', video_prompt: '门外侧面固定机位' }
+  const distant = { ...next, id: 'distant', position: 30 }, alternative = { ...next, id: 'alternative', position: 11, design_id: 'other' }
+  const deleted = { ...next, id: 'deleted', position: 12, deleted_at: 'deleted' }, superseded = { ...next, id: 'superseded', position: 13, superseded_by: 'other' }
+  const foreign = { ...next, id: 'foreign', position: 14, project_id: 'other-project' }
+  const detail = { ...f.detail, shots: [current, next, distant, alternative, deleted, superseded, foreign], historical_shots: [previous] }
+  const initial = imageVideoSourceContext(f.graph, f.source, detail, [])
+  assert.equal(initial.hasAdjacentShots, true)
+  for (const changed of [{ ...next, start_state: '改成左脚先落地' }, { ...next, video_prompt: '镜头向左横移' }, { ...next, cut_note: '改成时间跳切' }]) {
+    assert.notEqual(imageVideoSourceContext(f.graph, f.source, { ...detail, shots: detail.shots.map(shot => shot.id === next.id ? changed : shot) }, []).signature, initial.signature)
+  }
+  assert.notEqual(imageVideoSourceContext(f.graph, f.source, { ...detail, historical_shots: [{ ...previous, end_state: '停在门内' }] }, []).signature, initial.signature)
+  for (const id of [distant.id, alternative.id, deleted.id, superseded.id, foreign.id]) {
+    assert.equal(imageVideoSourceContext(f.graph, f.source, { ...detail, shots: detail.shots.map(shot => shot.id === id ? { ...shot, video_prompt: '无关修改' } : shot) }, []).signature, initial.signature)
+  }
+  assert.notEqual(imageVideoSourceContext(f.graph, f.source, { ...detail, shots: detail.shots.filter(shot => shot.id !== next.id) }, []).signature, initial.signature)
+  assert.equal(imageVideoSourceContext(f.graph, f.source, { ...detail, shots: [current], historical_shots: [] }, []).hasAdjacentShots, false)
 })
 
 test('unavailable fixed source images block handoff instead of silently dropping a selected reference', () => {

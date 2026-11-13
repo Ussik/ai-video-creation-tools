@@ -29,7 +29,8 @@ export function claimModelAttempt() {
   if (!isUnrestrictedScriptExecution() && step && step.attempts >= maxModelStepAttempts) throw Object.assign(new Error('当前步骤已达到模型请求上限（含网络重试与格式修正共 3 次），已保留完成部分，请检查后继续。'), { code: 'model_attempts_exhausted' })
   if (step) step.attempts++
 }
-export function modelAttemptNumber() { return currentStep.getStore()?.attempts }
+/** No attempt number exists until a request has actually claimed one. */
+export function modelAttemptNumber() { return currentStep.getStore()?.attempts || undefined }
 export function remainingModelAttempts() { return isUnrestrictedScriptExecution() ? Infinity : maxModelStepAttempts - (currentStep.getStore()?.attempts || 0) }
 export function remainingModelStepMs() { return (currentStep.getStore()?.deadline ?? Infinity) - Date.now() }
 

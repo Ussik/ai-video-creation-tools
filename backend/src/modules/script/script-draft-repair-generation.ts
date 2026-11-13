@@ -6,8 +6,10 @@ import { generateStructuredOutput, isStructuredOutputError, type StructuredGener
 import { draftRepairOutput } from './script-draft-resolution.js'
 import { scriptDraftFindingLimit } from './script-finding-state.js'
 import type { GenerationSteps } from './script-generation-steps.js'
+import { scriptSceneDurationRepairInstructions } from './script-workflow.js'
 
 export type DraftRepairOutput = z.infer<typeof draftRepairOutput>
+type RepairTiming = { unit: 'seconds'; estimated_total: number; target_duration?: number }
 
 function repairIssueIds(value: readonly string[]): string[] {
   const ids = z.array(z.string().min(1)).min(1).max(scriptDraftFindingLimit).parse(value)
@@ -51,11 +53,14 @@ export const scriptDraftRepairEditsSchema = z.object({
  * budget and cancellation scope. Failed/partial whole patches are never used. */
 export async function generateScriptDraftRepairOutput(prompt: string, issueIds: readonly string[], generate: StructuredGenerator,
   options: { signal?: AbortSignal; steps?: GenerationSteps; parentId?: string; validate?: (value: DraftRepairOutput) => void;
-    onRecovery?: () => void } = {}): Promise<DraftRepairOutput> {
+    onRecovery?: () => void; timing?: RepairTiming } = {}): Promise<DraftRepairOutput> {
   const ids = repairIssueIds(issueIds), schema = createScriptDraftRepairOutputSchema(ids)
   const { steps, parentId } = options
-  const input = { prompt } // Retain the identity of already validated whole-repair checkpoints.
-  const recoveryInput = { version: 1, prompt, issue_ids: ids }
+  // Keep non-timing checkpoint identities compatible; scene timing context
+  // must bind new repairs so a changed target cannot reuse an old decision.
+  const timingInput = options.timing ? { timing: options.timing } : {}
+  const input = { prompt, ...timingInput }
+  const recoveryInput = { version: 1, prompt, issue_ids: ids, ...timingInput }
   const previous = steps?.checkpoint.steps['repair:recovery']
   const recoveryHash = createHash('sha256').update(JSON.stringify(recoveryInput)).digest('hex')
   const recovery = previous?.input_hash === recoveryHash && previous.value === 'decisions-then-edits'
@@ -65,7 +70,12 @@ export async function generateScriptDraftRepairOutput(prompt: string, issueIds: 
     return result
   }
   const label = '补齐候选设定'
-  const issueInstructions = `本次共有 ${ids.length} 项问题，必须逐项覆盖，不合并、遗漏或新增问题。\n本次问题身份：${JSON.stringify(ids)}\n`
+  const issueInstructions = `本次共有 ${ids.length} 项问题，必须逐项覆盖，不合并、遗漏或新增问题。\n本次问题身份：${JSON.stringify(ids)}\n` +
+    scriptSceneDurationRepairInstructions + (options.timing
+      ? `\n本集时长上下文（只读）：${JSON.stringify(options.timing)}\n` +
+        'estimated_total 是候选逐场估时的只读合计，target_duration 是本集明确时长目标；仅供核对，不是可替换来源，不能作为 source_key、quote 或补丁目标。' +
+        '按下方每场完整对白、旁白、动作、人物反应和必要停顿核对估时。估时修补应保留完整对白与动作；时长修订在对应 scene:N:duration 来源写入合理整数，由程序重新计算合计。不能删减对白或遗漏动作凑目标；内容与明确目标确实冲突时说明具体冲突。\n'
+      : '')
   if (!recovery) {
     try {
       const wholePrompt = '【本次补齐的精确对应要求】\n' + issueInstructions +

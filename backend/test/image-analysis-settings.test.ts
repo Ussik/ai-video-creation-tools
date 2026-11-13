@@ -51,11 +51,11 @@ test('model validation preserves old settings and confines analysis config to im
   const image = { request_path: 'images/generations', request_template: { prompt: '{{prompt}}' }, image_url_path: 'data.0.url' }
   const text = { request_path: 'responses', request_template: { input: '{{prompt}}' }, text_path: 'output_text' }
   const video = { create_path: 'tasks', get_path: 'tasks/{id}', request_template: { prompt: '{{prompt}}' } }
-  assert.doesNotThrow(() => validateSettings('image', image))
-  assert.doesNotThrow(() => validateSettings('image', { ...image, image_analysis: config }))
-  assert.doesNotThrow(() => validateSettings('text', text))
-  assert.doesNotThrow(() => validateSettings('video', video))
-  assert.throws(() => validateSettings('text', { ...text, image_analysis: config }), /仅适用于图片模型/)
-  assert.throws(() => validateSettings('video', { ...video, image_analysis: config }), /仅适用于图片模型/)
-  assert.throws(() => validateSettings('image', { ...image, image_analysis: { ...config, enabled: 'true' } }), /布尔值/)
+  assert.doesNotThrow(() => validateSettings('image', image, 'image_generations'))
+  assert.doesNotThrow(() => validateSettings('image', { ...image, image_analysis: config }, 'image_generations'))
+  assert.doesNotThrow(() => validateSettings('text', text, 'responses'))
+  assert.doesNotThrow(() => validateSettings('video', video, 'async_video'))
+  assert.throws(() => validateSettings('text', { ...text, image_analysis: config }, 'responses'), /仅适用于图片模型/)
+  assert.throws(() => validateSettings('video', { ...video, image_analysis: config }, 'async_video'), /仅适用于图片模型/)
+  assert.throws(() => validateSettings('image', { ...image, image_analysis: { ...config, enabled: 'true' } }, 'image_generations'), /布尔值/)
 })

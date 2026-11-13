@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { compileCanvasPrompt, type CanvasPromptCompilerInput } from '../src/features/canvas/canvas-prompt-compiler'
-import { getManagedPromptBlocks } from '@video-studio/shared/visuals/prompt-document'
+import { getManagedPromptBlocks, validateManagedPromptDocument } from '@video-studio/shared/visuals/prompt-document'
+import { parsePromptSectionDocument, reconcilePromptSectionDocument, recoverLegacyPromptSectionDocument, serializePromptSectionDocument } from '@video-studio/shared/visuals/prompt-section-document'
 
 const profile = {
   kind: 'character' as const, name: '林晚', variant: '雨衣', definition: '蓝色雨衣，保持人物身份。',
@@ -12,6 +13,30 @@ const input = (): CanvasPromptCompilerInput => ({
   ratio: '16:9', resolution: '4K', clarity: '4K', quality: 'high', background: 'auto', duration: 6,
   durationFollowsSource: false, mode: 'text', bindings: [{ ...profile, revision: 1, board_asset_id: 'hero-board', profile_id: 'hero' }],
   visualReferenceMode: 'profiles', style: { version: 'v1', label: '水墨', source: 'settings', details: {} },
+})
+
+test('shot image and video compilation and saved legacy recovery retain two reference definitions without nested sections', () => {
+  const body = '许知夜从铁皮围挡缺口迈入站台。'
+  const settings = { ...input(), referenceIds: ['hero-board', 'station-board'], referenceNames: ['许知夜', '站台'], bindings: [
+    { ...profile, revision: 1, profile_id: 'hero', name: '许知夜', board_asset_id: 'hero-board', definition: '【项目画风约束】冷灰色，黑色风衣。' },
+    { ...profile, kind: 'location' as const, revision: 1, profile_id: 'station', name: '站台', board_asset_id: 'station-board', definition: '【项目画风约束】浓雾与铁轨。' },
+  ] }
+  for (const config of [settings, { ...settings, model: { modality: 'video' as const, settings: {} }, mode: 'reference', videoOptions: { mode: 'reference' } }]) {
+    const prompt = compileCanvasPrompt(body, config)
+    assert.doesNotThrow(() => validateManagedPromptDocument(prompt))
+    assert.match(prompt, /冷灰色，黑色风衣/)
+    assert.match(prompt, /浓雾与铁轨/)
+    assert.match(prompt, /\[\[ref:hero-board\]\]/)
+    assert.match(prompt, /\[\[ref:station-board\]\]/)
+    assert.equal(getManagedPromptBlocks(prompt, ['镜头视觉设定']).length, 1)
+    assert.equal(getManagedPromptBlocks(prompt, ['项目画风约束']).length, 1)
+    const legacy = prompt.replaceAll('［项目画风约束］', '【项目画风约束】')
+    const saved = parsePromptSectionDocument(legacy, { sourceText: legacy })
+    const recovered = recoverLegacyPromptSectionDocument(saved, legacy)
+    const reconciled = reconcilePromptSectionDocument(recovered, prompt, { body })
+    assert.equal(serializePromptSectionDocument(reconciled), prompt)
+    assert.ok(reconciled.blocks.every(section => section.pendingSourceText === undefined))
+  }
 })
 
 test('profile and reference-template boards retain multiple views without shot-only restrictions', () => {

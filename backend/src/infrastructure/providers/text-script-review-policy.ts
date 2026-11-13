@@ -1,3 +1,4 @@
+import { resolveTextApiSettings } from '@video-studio/shared/models/text-api-settings'
 import type { OutputContract } from '../../modules/generation/model-output.js'
 import type { GenerationModel, GenerationProvider } from './providers.js'
 
@@ -24,7 +25,8 @@ function officialDeepSeekEndpoint({ url, remoteId, protocol }: ReviewRequest): b
  * This is capability detection only and never makes an upstream request. */
 export function supportsScriptReviewPolicy(model: GenerationModel, provider: GenerationProvider): boolean {
   try {
-    const settings = typeof model.settings === 'string' ? JSON.parse(model.settings) as Record<string, unknown> : model.settings
+    const raw = typeof model.settings === 'string' ? JSON.parse(model.settings) as Record<string, unknown> : model.settings
+    const settings = resolveTextApiSettings(raw, model.protocol ?? '')
     const base = typeof settings.api_base_url === 'string' && settings.api_base_url ? settings.api_base_url : provider.base_url
     const path = settings.request_path
     if (provider.adapter !== 'http' || model.modality !== 'text' || typeof path !== 'string' || !path || /^https?:\/\//i.test(path)) return false

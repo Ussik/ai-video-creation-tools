@@ -21,15 +21,16 @@ const reasoningExhausted = (issue: unknown): issue is TextOutputLimitError => is
 
 /** An incomplete review is never a pass, including syntactically valid partial
  * text. A single, durable strategy change avoids repeating an exhausted whole
- * review on every continuation. Focused failures propagate without recursion,
- * keeping successful checks reusable and unfinished checks resumable. */
-export async function recoverScriptDraftReview<T>(prompt: string, review: (prompt: string, mode?: 'answer') => Promise<T>,
+ * review on every continuation. Focused failures can switch once to paged
+ * reports; completed checks and pages remain reusable on continuation. */
+export async function recoverScriptDraftReview<T>(prompt: string, review: (prompt: string, mode?: 'answer' | 'paged' | 'paged_answer') => Promise<T>,
   validate: (value: unknown) => T, combine: (results: T[]) => unknown,
-  options: { signal?: AbortSignal; steps?: GenerationSteps; parentId?: string; validateCombined?: (value: unknown) => T; answerModeSupported?: boolean } = {}): Promise<T> {
+  options: { signal?: AbortSignal; steps?: GenerationSteps; parentId?: string; validateCombined?: (value: unknown) => T;
+    answerModeSupported?: boolean; pagedReviewSupported?: boolean; retainedReview?: () => Promise<T | undefined> } = {}): Promise<T> {
   const { steps, parentId } = options
   const validateCombined = options.validateCombined || validate
   const runReview = (id: string, label: string, input: unknown, text: string, check: (value: unknown) => T) => {
-    const work = async () => {
+    const ordinaryReview = async () => {
       const policyId = `review:reasoning:${id}`, policyInput = { version: 1, input }
       const hash = createHash('sha256').update(JSON.stringify(policyInput)).digest('hex')
       const saved = steps?.checkpoint.steps[policyId]
@@ -57,6 +58,36 @@ export async function recoverScriptDraftReview<T>(prompt: string, review: (promp
         steps?.retain(policyId, '推理耗尽，改为直接返回核对结果', policyInput,
           { mode: 'answer', reason: issue.reason, usage: issue.usage }, validatePolicy, parentId)
         return review(text, 'answer')
+      }
+    }
+    const work = async () => {
+      const pagingId = `review:paging:${id}`, pagingInput = { version: 1, input }
+      const pagingHash = createHash('sha256').update(JSON.stringify(pagingInput)).digest('hex')
+      const saved = steps?.checkpoint.steps[pagingId]
+      const policyId = `review:reasoning:${id}`, policyInput = { version: 1, input }
+      const policyHash = createHash('sha256').update(JSON.stringify(policyInput)).digest('hex')
+      const policy = steps?.checkpoint.steps[policyId]
+      const validatePaging = (value: unknown) => {
+        if (value !== 'paged' && value !== 'paged_answer') throw new Error('审读分页恢复策略无效')
+        return value
+      }
+      if (options.pagedReviewSupported && saved?.input_hash === pagingHash) {
+        const mode = validatePaging(saved.value)
+        if (mode === 'paged_answer' && policy?.input_hash === policyHash && (policy.value as { mode?: string })?.mode === 'blocked') {
+          steps?.retain(policyId, '继续尚未完成的直接答复核对', policyInput,
+            { ...(policy.value as object), mode: 'answer' }, value => value, parentId)
+        }
+        return review(text, mode === 'paged_answer' && !options.answerModeSupported ? 'paged' : mode)
+      }
+      try { return await ordinaryReview() }
+      catch (issue) {
+        modelStepSignal(options.signal)?.throwIfAborted()
+        if (!options.pagedReviewSupported || !id.startsWith('review:dimension:') || !(issue instanceof TextOutputLimitError)) throw issue
+        const currentPolicy = steps?.checkpoint.steps[policyId]
+        const answer = options.answerModeSupported && currentPolicy?.input_hash === policyHash
+        const mode = answer ? 'paged_answer' : 'paged'
+        steps?.retain(pagingId, '分项审读超限，继续分批返回结果', pagingInput, mode, validatePaging, parentId)
+        return review(text, mode)
       }
     }
     return steps ? steps.run(id, label, input, work, check, parentId) : work()
@@ -94,6 +125,9 @@ export async function recoverScriptDraftReview<T>(prompt: string, review: (promp
     results.push(await runReview(`review:dimension:${dimension.id}`, dimension.label,
       { version: 1, prompt: focusedPrompt }, focusedPrompt, validate))
   }
+  modelStepSignal(options.signal)?.throwIfAborted()
+  const retained = await options.retainedReview?.()
+  if (retained) results.push(validate(retained))
   modelStepSignal(options.signal)?.throwIfAborted()
   // Do not store an overall success until every independent pass has produced
   // a complete, validated result. Never clip findings to satisfy a size bound.

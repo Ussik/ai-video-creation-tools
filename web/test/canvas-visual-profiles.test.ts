@@ -305,6 +305,67 @@ test('missing required boards expose exact existing profile nodes and leave opti
   assert.deepEqual(missingVisualReferences(fixture.graph, fixture.target.id, fixture.detail, [{ id: 'text-model', modality: 'text' }]), [])
 })
 
+function pendingReferenceFixture(modality: 'image' | 'video' = 'video') {
+  const fixture = referenceFixture()
+  fixture.target.settings = { modality, mode: 'reference', visual_reference_mode: 'profiles' }
+  fixture.detail.visual_profiles![0].board_asset_id = null
+  fixture.detail.shot_visual_bindings![0].board_asset_id = null
+  fixture.graph.nodes[0].asset_id = null
+  fixture.graph.nodes[0].settings.visual_profile_revision = profile.revision
+  return fixture
+}
+
+for (const modality of ['image', 'video'] as const) test(`saved ${modality} nodes show pending references through generation and confirmation without persisting inputs`, () => {
+  const f = pendingReferenceFixture(modality), before = structuredClone(f)
+  const pending = () => automaticVisualReferenceEdges(f.graph, f.detail).filter(edge => edge.source === 'linwan')
+  assert.deepEqual(pending(), [{ id: `auto-visual-dependency:${JSON.stringify([f.target.id, profile.id])}`,
+    source: 'linwan', target: f.target.id }])
+  assert.deepEqual(f, before, 'displaying a pending dependency never changes the saved graph or binding')
+  assert.equal(missingVisualReferences(f.graph, f.target.id, f.detail)[0]?.action, 'generate')
+
+  f.graph.nodes[0].asset_id = 'candidate'
+  assert.equal(pending().length, 1)
+  assert.equal(pending()[0].reference_asset_id, undefined, 'an unconfirmed generated image is not an input')
+  assert.equal(missingVisualReferences(f.graph, f.target.id, f.detail)[0]?.action, 'confirm')
+
+  f.detail.visual_profiles![0].board_asset_id = 'candidate'
+  f.detail.shot_visual_bindings![0].board_asset_id = 'candidate'
+  assert.deepEqual(pending(), [{ id: `auto-visual:${JSON.stringify([f.target.id, 'candidate'])}`,
+    source: 'linwan', target: f.target.id, reference_asset_id: 'candidate' }])
+  assert.deepEqual(missingVisualReferences(f.graph, f.target.id, f.detail), [])
+  assert.deepEqual(f.graph.edges, [], 'confirmation still leaves reference selection with the shot binding')
+})
+
+test('pending reference connections respect opt-out, video modes, binding scope and definition revisions', () => {
+  const scenarios: Array<(f: ReturnType<typeof pendingReferenceFixture>) => void> = [
+    f => { f.target.settings.visual_dependencies = false },
+    f => { f.target.settings.visual_reference_mode = 'text_only' },
+    f => { f.target.settings.visual_reference_mode = 'keyframe' },
+    f => { f.target.settings.mode = 'first_frame' },
+    f => { f.target.settings.mode = 'first_last_frame' },
+    f => { f.target.settings.mode = 'text' },
+    f => { f.detail.shot_visual_bindings![0].usage = 'image' },
+    f => { f.detail.shot_visual_bindings![0].usage = 'none' },
+    f => { f.detail.shot_visual_bindings![0].required = false },
+    f => { f.detail.shot_visual_bindings![0].shot_id = 'another-shot' },
+    f => { f.graph.nodes[0].settings.visual_profile_revision = profile.revision + 1 },
+  ]
+  for (const [index, change] of scenarios.entries()) {
+    const f = pendingReferenceFixture()
+    change(f)
+    assert.equal(automaticVisualReferenceEdges(f.graph, f.detail).some(edge => edge.source === 'linwan'), false, `scenario ${index}`)
+  }
+})
+
+test('explicit pending and confirmed reference connections suppress duplicate automatic edges', () => {
+  const f = pendingReferenceFixture()
+  f.graph.edges.push({ id: 'manual', source: 'linwan', target: f.target.id })
+  assert.equal(automaticVisualReferenceEdges(f.graph, f.detail).some(edge => edge.source === 'linwan'), false)
+  f.detail.visual_profiles![0].board_asset_id = 'approved'
+  f.detail.shot_visual_bindings![0].board_asset_id = 'approved'
+  assert.equal(automaticVisualReferenceEdges(f.graph, f.detail).some(edge => edge.source === 'linwan'), false)
+})
+
 test('manual unconfirmed profile inputs remain actionable in text-only mode and deduplicate shot dependencies', () => {
   const fixture = referenceFixture()
   fixture.detail.visual_profiles![0].board_asset_id = null

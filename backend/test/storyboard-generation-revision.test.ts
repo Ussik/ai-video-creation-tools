@@ -24,7 +24,9 @@ async function fixture() {
   const context = await call('POST', `/api/projects/${project.id}/script/storyboard/context`, { scene_ids: [scene.id] })
   await call('POST', `/api/projects/${project.id}/script/storyboard/commit`, { request_id: randomUUID(), signature: context.signature,
     scenes: [{ scene_id: scene.id, scene_duration: 5, shots: [{ shot_id: shot.id, title: '天台远景', prompt: '主角看向远方',
-      image_prompt: '天台远景首帧', video_prompt: '主角转头看向远方', duration: 5, start_state: '站立', end_state: '远眺', cut_note: '' }] }] })
+      image_prompt: '天台远景首帧', video_prompt: '主角转头看向远方',
+      audio_plan: { version: 1, speech: [], sound_effects: [], music: '', silent: true },
+      duration: 5, start_state: '站立', end_state: '远眺', cut_note: '' }] }] })
   const detail = await call('GET', `/api/projects/${project.id}`)
   const provider = await call('POST', '/api/providers', { name: '隔离测试', base_url: 'https://generation.invalid/v1' })
   const model = await call('POST', '/api/models', { provider_id: provider.id, name: '测试图片模型', remote_id: 'image', modality: 'image',

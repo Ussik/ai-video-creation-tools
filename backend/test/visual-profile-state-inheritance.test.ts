@@ -149,7 +149,8 @@ test('script canvas commit includes base dependencies without adding them as dup
   const checked = await call<{ signature: string; scene_ids: string[] }>('POST', `/api/projects/${id}/script/canvas/check`, { scene_ids: [scene.id] })
   const result = await call<Visuals>('POST', `/api/projects/${id}/script/canvas/commit`, { signature: checked.signature, scene_ids: checked.scene_ids, profiles: [draft('右手背擦伤', {
     base_profile_id: base.id, state_delta: '仅右手背增加一道浅擦伤', scene_ids: [scene.id],
-  })] })
+  })], coverage_version: 1, visual_coverage: [{ scene_id: scene.id, shot_id: null, source_excerpt: '右手背又出现一道擦伤',
+    objects: [{ kind: 'character', name: '姜望', variant: '右手背擦伤', usage: 'both', requires_profile: true, reason: '姜望手背的局部状态需要与基础外貌保持一致。' }], no_reference_reason: '' }] })
   assert.ok(result.visual_profiles.some(profile => profile.id === base.id))
   assert.equal(result.shot_visual_bindings.length, 1)
   assert.notEqual(result.shot_visual_bindings[0]!.profile_id, base.id)

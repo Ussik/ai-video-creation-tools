@@ -78,6 +78,56 @@ test('completed, reused, notice and missing terminal states retain truthful labe
   }
 })
 
+test('restored results show the original elapsed time and never infer it from replay timestamps', () => {
+  const restored: ScriptActivity = { ...phase, status: 'succeeded', reused: true, duration_ms: 82_400, ended_at: 1002 }
+  assert.equal(activityDuration(restored, 99_000), 82_400)
+  for (const duration_ms of [undefined, 0, -1, NaN, Infinity]) {
+    assert.equal(activityDuration({ ...restored, duration_ms }, 99_000), undefined)
+  }
+  assert.equal(activityDuration({ ...restored, status: 'running' }, 99_000, true), undefined)
+})
+
+test('elapsed time falls back to recorded boundaries only when they are valid and not a replay', () => {
+  const finished: ScriptActivity = { ...phase, status: 'succeeded', ended_at: 6250 }
+  assert.equal(activityDuration(finished, 99_000), 5250)
+  assert.equal(activityDuration({ ...finished, duration_ms: 0 }, 99_000), 0, 'a recorded instant operation remains valid')
+  assert.equal(activityDuration({ ...finished, ended_at: 900 }, 99_000), undefined)
+  assert.equal(activityDuration({ ...finished, started_at: 0 }, 99_000), undefined)
+  assert.equal(activityDuration({ ...phase, started_at: 0 }, 99_000, true), undefined)
+  for (const duration_ms of [-1, NaN, Infinity]) {
+    assert.equal(activityDuration({ ...finished, duration_ms }, 99_000), undefined)
+  }
+})
+
+test('legacy cached task wrappers use exact sibling checkpoint evidence without changing saved traces or inventing time', () => {
+  for (const stepId of ['work:document:outline:outline/draft', 'work:outline:outline/draft']) {
+    const task: ScriptActivity = { ...base, parent_id: 'stage', status: 'succeeded', step_id: 'work:outline:outline', duration_ms: 2, ended_at: 1002 }
+    const checkpoint: ScriptActivity = { ...phase, parent_id: 'stage', step_id: stepId, status: 'succeeded', reused: true, duration_ms: 1 }
+    const events = [task, checkpoint], original = structuredClone(events)
+    const shown = activitySequence(events).tasks[0]
+    assert.equal(activityPresentation(shown).label, '已复用')
+    assert.equal(activityDuration(shown.event, 99_000), undefined, 'the replay clock is not the original authoring time')
+    assert.notEqual(shown.event, task, 'compatibility applies only to a display copy')
+    assert.deepEqual(events, original)
+
+    for (const evidence of [
+      { ...checkpoint, parent_id: 'other-stage' },
+      { ...checkpoint, step_id: `${stepId}:partial` },
+      { ...checkpoint, reused: undefined },
+      { ...checkpoint, status: 'failed' as const },
+      { ...checkpoint, scope: 'notice' as const },
+    ]) {
+      assert.equal(activitySequence([task, evidence]).tasks[0].event, task, 'unrelated evidence leaves the original task intact')
+    }
+    const ambiguous = activitySequence([task, checkpoint, { ...checkpoint, id: 'another-checkpoint' }]).tasks[0]
+    assert.equal(ambiguous.event, task, 'ambiguous checkpoint identities cannot establish reuse')
+    const measured = { ...task, reused: true, duration_ms: 82_400 }
+    assert.equal(activityDuration(activitySequence([measured, checkpoint]).tasks[0].event, 99_000), 82_400, 'explicit current metadata takes precedence')
+    const fresh = { ...task, reused: false, duration_ms: 2400 }
+    assert.equal(activitySequence([fresh, checkpoint]).tasks[0].event, fresh)
+  }
+})
+
 for (const parentId of ['task', 'draft']) {
   test(`continuation notice under ${parentId} does not duplicate the active draft step or its calls`, () => {
     const draft = { ...phase, id: 'draft', label: '编写阶段草稿', started_at: 2000 }

@@ -1,0 +1,624 @@
+{
+  "status": "browser_save_first_canvas_and_reuse_evidence_complete_responsive_theme_review_owned_by_root",
+  "verified_at": "2026-11-03T17:29:37.298985+00:00",
+  "scope": "Read-only inspection of isolated browser snapshots, isolated SQLite database, and existing mock/API request logs. No source edits, tests, paid model calls, or service changes.",
+  "project_id": "51b2aff017e34f8091df0433d737e299",
+  "model_id": "5d73b5c8bf5546f2a7dfa2921cefb20b",
+  "design_id": "53ce1675-1184-4ecf-bbc9-33ddf40a6648",
+  "target_canvas_id": "73c06353a3d446c9ac875a69b7b13ca0",
+  "input_snapshots": {
+    "browser-before.json": {
+      "sha256": "224eab47fc555ca3348358bd384052457d12fb1c336f486e2111b64216634939",
+      "api_requests": 93,
+      "mock_requests": 4
+    },
+    "browser-after-save.json": {
+      "sha256": "eedf852c0dfd00ee798ccded291b3bc2cdc93f414b4c2adb1c4859847f481f10",
+      "api_requests": 156,
+      "mock_requests": 7
+    },
+    "browser-after-canvas.json": {
+      "sha256": "6ba56ee6ab8d8452f5ca987a7c6ac864e260cf19489487343c03448b103502da",
+      "api_requests": 256,
+      "mock_requests": 7
+    },
+    "browser-after-reuse.json": {
+      "sha256": "293d088f0b3930b5f0a73b95f5ae967ca0006881d81da816542e12460f53a99e",
+      "api_requests": 281,
+      "mock_requests": 7
+    }
+  },
+  "checks": {
+    "snapshot_api_logs_form_append_only_prefix": true,
+    "snapshot_mock_logs_form_append_only_prefix": true,
+    "save_adds_exactly_three_shots": true,
+    "save_adds_exactly_one_design_and_clip_plan": true,
+    "save_creates_no_scenes_profiles_jobs_canvases_or_nodes": true,
+    "save_leaves_existing_shots_unchanged": true,
+    "save_leaves_existing_designs_unchanged": true,
+    "new_design_is_pending_without_canvas_at_save": true,
+    "all_new_shots_have_null_scene_and_own_design": true,
+    "manual_title_edit_is_saved": true,
+    "saved_clip_plan_contains_exact_three_original_shot_ids": true,
+    "browser_auto_plan_omits_skill_ids": true,
+    "browser_manual_plan_sends_actual_skill_id": true,
+    "auto_model_called_real_skill_selection": true,
+    "automatic_and_manual_generation_include_skill_header_and_all_body_markers": true,
+    "dedicated_canvas_created_only_on_explicit_add": true,
+    "first_canvas_request_contains_only_selected_first_shot": true,
+    "dedicated_canvas_has_only_selected_shot_node": true,
+    "canvas_shot_node_has_no_job_or_asset": true,
+    "first_canvas_added_one_image_generation_and_empty_project_reference": true,
+    "no_script_canvas_preparation_requests_during_browser_flow": true,
+    "actual_document_scene_reference_media_job_tables_remain_empty": true,
+    "cached_real_skill_revision_and_files_installed_in_isolated_db": true,
+    "cached_real_skill_main_body_hash_matches_provenance": true,
+    "reuse_api_log_is_append_only_prefix": true,
+    "reuse_creates_no_new_canvas_design_shot_clipplan_or_jobs": true,
+    "reuse_canvas_request_contains_only_selected_second_shot": true,
+    "reuse_has_exactly_first_and_second_shot_no_third": true,
+    "reuse_keeps_original_first_shot_node_without_duplicate": true,
+    "reuse_adds_only_one_new_node": true,
+    "reuse_uses_same_dedicated_canvas": true,
+    "no_script_canvas_preparation_requests_through_reuse": true
+  },
+  "counts": {
+    "before": {
+      "projects": 2,
+      "script_scenes": 0,
+      "script_documents": null,
+      "shots": 3,
+      "storyboard_designs": 1,
+      "storyboard_clip_plans": 1,
+      "project_canvases": 2,
+      "canvas_nodes": 1,
+      "visual_profiles": 0,
+      "jobs": 0
+    },
+    "after_save": {
+      "projects": 2,
+      "script_scenes": 0,
+      "script_documents": null,
+      "shots": 6,
+      "storyboard_designs": 2,
+      "storyboard_clip_plans": 2,
+      "project_canvases": 2,
+      "canvas_nodes": 1,
+      "visual_profiles": 0,
+      "jobs": 0
+    },
+    "after_first_canvas": {
+      "projects": 2,
+      "script_scenes": 0,
+      "script_documents": null,
+      "shots": 6,
+      "storyboard_designs": 2,
+      "storyboard_clip_plans": 2,
+      "project_canvases": 3,
+      "canvas_nodes": 3,
+      "visual_profiles": 0,
+      "jobs": 0
+    },
+    "save_delta": {
+      "projects": 0,
+      "script_scenes": 0,
+      "script_documents": null,
+      "shots": 3,
+      "storyboard_designs": 1,
+      "storyboard_clip_plans": 1,
+      "project_canvases": 0,
+      "canvas_nodes": 0,
+      "visual_profiles": 0,
+      "jobs": 0
+    },
+    "first_canvas_delta": {
+      "projects": 0,
+      "script_scenes": 0,
+      "script_documents": null,
+      "shots": 0,
+      "storyboard_designs": 0,
+      "storyboard_clip_plans": 0,
+      "project_canvases": 1,
+      "canvas_nodes": 2,
+      "visual_profiles": 0,
+      "jobs": 0
+    }
+  },
+  "independent_save": {
+    "new_shots": [
+      {
+        "id": "0d8fde4e2d114873b7ab0ef79abfaf7e",
+        "title": "纸船启程 · 手动编辑",
+        "duration": 4,
+        "source_scene_id": null,
+        "design_id": "53ce1675-1184-4ecf-bbc9-33ddf40a6648",
+        "superseded_by": null,
+        "deleted_at": null
+      },
+      {
+        "id": "be66ae7fb43742659abd184ccbd9b60c",
+        "title": "纸船绕过石块",
+        "duration": 4,
+        "source_scene_id": null,
+        "design_id": "53ce1675-1184-4ecf-bbc9-33ddf40a6648",
+        "superseded_by": null,
+        "deleted_at": null
+      },
+      {
+        "id": "b2cfe7d154264d919a9d8e0e4ea179f3",
+        "title": "暖光落在船沿",
+        "duration": 4,
+        "source_scene_id": null,
+        "design_id": "53ce1675-1184-4ecf-bbc9-33ddf40a6648",
+        "superseded_by": null,
+        "deleted_at": null
+      }
+    ],
+    "new_design": {
+      "id": "53ce1675-1184-4ecf-bbc9-33ddf40a6648",
+      "name": "片段方案 1",
+      "canvas_id": null,
+      "canvas_pending": 1
+    },
+    "new_clip_plan": {
+      "design_id": "53ce1675-1184-4ecf-bbc9-33ddf40a6648",
+      "project_id": "51b2aff017e34f8091df0433d737e299",
+      "source_text": "雨后石板巷口，一只白色纸船顺着浅水漂流，绕过小石块，最后停在暖灯倒影里。无对白，保持纸船造型与光线连续。",
+      "total_duration": 12,
+      "source_signature": "f60c78bf96e19c6d3cad404e8f1158c156cc3bd21e1b40201b1619a6f96d5d0a",
+      "payload_hash": "e5866b336c17a1546d1484bedbe40b11efc3e29f74f229127e8e87e5c3af3381",
+      "shot_ids": "[\"0d8fde4e2d114873b7ab0ef79abfaf7e\",\"be66ae7fb43742659abd184ccbd9b60c\",\"b2cfe7d154264d919a9d8e0e4ea179f3\"]",
+      "created_at": "2026-11-03T17:22:24.957Z"
+    },
+    "write_requests": [
+      {
+        "method": "POST",
+        "path": "/api/projects/51b2aff017e34f8091df0433d737e299/storyboard/clip/plan",
+        "timestamp": "2026-11-03T17:19:04.544Z",
+        "keys": [
+          "signature",
+          "source_text",
+          "total_duration",
+          "instructions",
+          "model_id",
+          "shots_count"
+        ],
+        "source_text_length": 52,
+        "total_duration": 12
+      },
+      {
+        "method": "POST",
+        "path": "/api/projects/51b2aff017e34f8091df0433d737e299/storyboard/clip/plan",
+        "timestamp": "2026-11-03T17:22:03.465Z",
+        "keys": [
+          "signature",
+          "source_text",
+          "total_duration",
+          "instructions",
+          "model_id",
+          "shots_count",
+          "skill_ids"
+        ],
+        "skill_ids": [
+          "3dbf783e076b109a1f385c2f10006983"
+        ],
+        "source_text_length": 52,
+        "total_duration": 12
+      },
+      {
+        "method": "POST",
+        "path": "/api/projects/51b2aff017e34f8091df0433d737e299/storyboard/clip/commit",
+        "timestamp": "2026-11-03T17:22:24.942Z",
+        "keys": [
+          "request_id",
+          "signature",
+          "source_text",
+          "total_duration",
+          "instructions",
+          "shots"
+        ],
+        "source_text_length": 52,
+        "total_duration": 12
+      }
+    ]
+  },
+  "first_canvas": {
+    "exact_selection": [
+      "0d8fde4e2d114873b7ab0ef79abfaf7e"
+    ],
+    "write_requests": [
+      {
+        "method": "PATCH",
+        "path": "/api/projects/51b2aff017e34f8091df0433d737e299/canvases/51b2aff017e34f8091df0433d737e299",
+        "timestamp": "2026-11-03T17:24:10.294Z",
+        "keys": [
+          "viewport"
+        ]
+      },
+      {
+        "method": "PATCH",
+        "path": "/api/projects/51b2aff017e34f8091df0433d737e299/canvases/51b2aff017e34f8091df0433d737e299",
+        "timestamp": "2026-11-03T17:24:10.308Z",
+        "keys": [
+          "viewport"
+        ]
+      },
+      {
+        "method": "PATCH",
+        "path": "/api/projects/51b2aff017e34f8091df0433d737e299/canvases/51b2aff017e34f8091df0433d737e299",
+        "timestamp": "2026-11-03T17:24:10.313Z",
+        "keys": [
+          "viewport"
+        ]
+      },
+      {
+        "method": "POST",
+        "path": "/api/projects/51b2aff017e34f8091df0433d737e299/storyboard/clip/canvas",
+        "timestamp": "2026-11-03T17:26:29.955Z",
+        "keys": [
+          "design_id",
+          "shot_ids"
+        ],
+        "design_id": "53ce1675-1184-4ecf-bbc9-33ddf40a6648",
+        "shot_ids": [
+          "0d8fde4e2d114873b7ab0ef79abfaf7e"
+        ]
+      },
+      {
+        "method": "PUT",
+        "path": "/api/projects/51b2aff017e34f8091df0433d737e299/canvases/73c06353a3d446c9ac875a69b7b13ca0",
+        "timestamp": "2026-11-03T17:26:30.066Z",
+        "keys": [
+          "nodes",
+          "edges",
+          "revision"
+        ]
+      },
+      {
+        "method": "PATCH",
+        "path": "/api/projects/51b2aff017e34f8091df0433d737e299/canvases/73c06353a3d446c9ac875a69b7b13ca0",
+        "timestamp": "2026-11-03T17:26:33.089Z",
+        "keys": [
+          "viewport"
+        ]
+      }
+    ],
+    "node_summary": {
+      "total": 2,
+      "shot_nodes": 1,
+      "project_reference_nodes": 1
+    },
+    "design_in_current_db": {
+      "id": "53ce1675-1184-4ecf-bbc9-33ddf40a6648",
+      "project_id": "51b2aff017e34f8091df0433d737e299",
+      "canvas_id": "73c06353a3d446c9ac875a69b7b13ca0",
+      "name": "片段方案 1",
+      "scene_ids": "[]",
+      "instructions": "镜头之间保持纸船形状和运动方向一致，结尾停留在暖灯倒影。",
+      "created_at": "2026-11-03T17:22:24.957Z",
+      "canvas_pending": 0,
+      "source_fingerprints": "{}"
+    },
+    "observed_dedicated_canvas_nodes_before_reuse": [
+      {
+        "id": "project-script:73c06353a3d446c9ac875a69b7b13ca0",
+        "type": "project_script_ref",
+        "title": "片段分镜 Skills 隔离验收",
+        "shot_id": null,
+        "model_id": null,
+        "job_id": null,
+        "asset_id": null,
+        "text": ""
+      },
+      {
+        "id": "8744853c-d67e-4189-ac99-2fe3c76073bb",
+        "type": "generation",
+        "title": "纸船启程 · 手动编辑",
+        "shot_id": "0d8fde4e2d114873b7ab0ef79abfaf7e",
+        "model_id": null,
+        "job_id": null,
+        "asset_id": null,
+        "modality": "image",
+        "duration": 4
+      }
+    ],
+    "db_observation_source": "Initial read-only SQLite query during this verification returned these two nodes. A subsequent query raced with the root browser second import; later rows are separated in reuse below."
+  },
+  "skills": {
+    "provenance": {
+      "source_cache": "/tmp/studio-skills-install-20261031/before-details.json",
+      "repo": "zenstory-ai/drama-skills",
+      "path": "skills/short-drama-storyboard",
+      "name": "short-drama-storyboard",
+      "revision": "fdb7b7c58017e3eae64eca382c2a85ede368dab0",
+      "file_count": 14,
+      "main_sha256": "fec0a090c48b8939cdd5302937446faf2ffbbca26bf596e69e2b32dd8153067e",
+      "scope": "Cached public bundle fixture installed only into this new QA database; does not establish the user current enabled version. No skill instructions or scripts executed."
+    },
+    "installed": {
+      "id": "3dbf783e076b109a1f385c2f10006983",
+      "repo": "zenstory-ai/drama-skills",
+      "path": "skills/short-drama-storyboard",
+      "name": "short-drama-storyboard",
+      "revision": "fdb7b7c58017e3eae64eca382c2a85ede368dab0",
+      "enabled": 1,
+      "stages": "[\"storyboard\"]"
+    },
+    "installed_file_count": 14,
+    "main_sha256": "fec0a090c48b8939cdd5302937446faf2ffbbca26bf596e69e2b32dd8153067e",
+    "browser_mock_requests": [
+      {
+        "type": "skill-selection",
+        "timestamp": "2026-11-03T17:19:04.564Z",
+        "stream": false,
+        "remote_model": "qa-clip-text",
+        "prompt_bytes": 3203,
+        "prompt_sha256": "17915b4c371202279289e8d789befe5a21300480c60086c2efd603158ce9177f",
+        "selected_skill_id": "3dbf783e076b109a1f385c2f10006983",
+        "skill_revision": "fdb7b7c58017e3eae64eca382c2a85ede368dab0",
+        "skill_header_seen": false,
+        "body_markers": {
+          "起点 → 唯一动作 → 终点": false,
+          "冻结关键帧只投影镜头起点": false,
+          "切镜必须带来信息、权力、情绪、空间或节奏变化": false,
+          "视频模型不会删掉多出来的动作，而是把它们压到看不清": false
+        },
+        "base_contract_seen": true,
+        "fixture_text_seen": true
+      },
+      {
+        "type": "clip-plan",
+        "timestamp": "2026-11-03T17:19:04.573Z",
+        "stream": false,
+        "remote_model": "qa-clip-text",
+        "prompt_bytes": 40520,
+        "prompt_sha256": "7e3f0a003e4d40cb815983ea1ef92624e91a81e028ee17c8adf86084910a0083",
+        "skill_revision": "fdb7b7c58017e3eae64eca382c2a85ede368dab0",
+        "skill_header_seen": true,
+        "body_markers": {
+          "起点 → 唯一动作 → 终点": true,
+          "冻结关键帧只投影镜头起点": true,
+          "切镜必须带来信息、权力、情绪、空间或节奏变化": true,
+          "视频模型不会删掉多出来的动作，而是把它们压到看不清": true
+        },
+        "base_contract_seen": true,
+        "fixture_text_seen": true
+      },
+      {
+        "type": "clip-plan",
+        "timestamp": "2026-11-03T17:22:03.479Z",
+        "stream": false,
+        "remote_model": "qa-clip-text",
+        "prompt_bytes": 40520,
+        "prompt_sha256": "7e3f0a003e4d40cb815983ea1ef92624e91a81e028ee17c8adf86084910a0083",
+        "skill_revision": "fdb7b7c58017e3eae64eca382c2a85ede368dab0",
+        "skill_header_seen": true,
+        "body_markers": {
+          "起点 → 唯一动作 → 终点": true,
+          "冻结关键帧只投影镜头起点": true,
+          "切镜必须带来信息、权力、情绪、空间或节奏变化": true,
+          "视频模型不会删掉多出来的动作，而是把它们压到看不清": true
+        },
+        "base_contract_seen": true,
+        "fixture_text_seen": true
+      }
+    ]
+  },
+  "actual_empty_tables_read_from_sqlite": {
+    "scripts": {
+      "global": 0,
+      "project": 0
+    },
+    "script_source_documents": {
+      "global": 0,
+      "project": 0
+    },
+    "script_artifacts": {
+      "global": 0,
+      "project": 0
+    },
+    "script_scenes": {
+      "global": 0,
+      "project": 0
+    },
+    "script_canvas_preparations": {
+      "global": 0,
+      "project": 0
+    },
+    "visual_profiles": {
+      "global": 0,
+      "project": 0
+    },
+    "asset_tasks": {
+      "global": 0,
+      "project": 0
+    },
+    "assets": {
+      "global": 0,
+      "project": 0
+    },
+    "jobs": {
+      "global": 0,
+      "project": 0
+    }
+  },
+  "limitations": [
+    "Snapshots label script_documents as null because no table of that name exists. Real document tables scripts, script_source_documents and script_artifacts were independently read from the isolated database and are empty; browser save-stage writes comprise only two plan requests and one commit.",
+    "The database changed concurrently between two read-only queries as root imported the second shot. The initial two-node observation is preserved separately; browser-after-reuse.json and a fresh read confirm reuse on the same dedicated canvas. Mobile/theme visual review remains owned by root.",
+    "The dedicated canvas contains one image generation node for the selected shot plus the existing canvas project_script_ref convention; this reference has empty script content and does not represent a script document or scene.",
+    "Model output is served by the isolated mock provider. Real cached skill prompt loading is established, while output quality from a real paid model is outside this verification."
+  ],
+  "reuse": {
+    "after_reuse_counts": {
+      "projects": 2,
+      "script_scenes": 0,
+      "script_documents": null,
+      "shots": 6,
+      "storyboard_designs": 2,
+      "storyboard_clip_plans": 2,
+      "project_canvases": 3,
+      "canvas_nodes": 4,
+      "visual_profiles": 0,
+      "jobs": 0
+    },
+    "delta_from_first_canvas": {
+      "projects": 0,
+      "script_scenes": 0,
+      "script_documents": null,
+      "shots": 0,
+      "storyboard_designs": 0,
+      "storyboard_clip_plans": 0,
+      "project_canvases": 0,
+      "canvas_nodes": 1,
+      "visual_profiles": 0,
+      "jobs": 0
+    },
+    "write_requests": [
+      {
+        "method": "POST",
+        "path": "/api/projects/51b2aff017e34f8091df0433d737e299/storyboard/clip/canvas",
+        "timestamp": "2026-11-03T17:27:42.708Z",
+        "keys": [
+          "design_id",
+          "shot_ids"
+        ],
+        "design_id": "53ce1675-1184-4ecf-bbc9-33ddf40a6648",
+        "shot_ids": [
+          "be66ae7fb43742659abd184ccbd9b60c"
+        ]
+      },
+      {
+        "method": "PUT",
+        "path": "/api/projects/51b2aff017e34f8091df0433d737e299/canvases/73c06353a3d446c9ac875a69b7b13ca0",
+        "timestamp": "2026-11-03T17:27:42.765Z",
+        "keys": [
+          "nodes",
+          "edges",
+          "revision"
+        ]
+      }
+    ],
+    "dedicated_canvas_nodes": [
+      {
+        "id": "project-script:73c06353a3d446c9ac875a69b7b13ca0",
+        "type": "project_script_ref",
+        "title": "片段分镜 Skills 隔离验收",
+        "shot_id": null,
+        "job_id": null,
+        "asset_id": null,
+        "settings": {}
+      },
+      {
+        "id": "8744853c-d67e-4189-ac99-2fe3c76073bb",
+        "type": "generation",
+        "title": "纸船启程 · 手动编辑",
+        "shot_id": "0d8fde4e2d114873b7ab0ef79abfaf7e",
+        "job_id": null,
+        "asset_id": null,
+        "settings": {
+          "visual_dependencies": true,
+          "storyboard_revision": 0,
+          "group_id": "0d8fde4e2d114873b7ab0ef79abfaf7e",
+          "group_title": "镜头 01 · 纸船启程 · 手动编辑",
+          "modality": "image",
+          "resolution": "4K",
+          "quality": "extreme",
+          "clarity": "4K",
+          "background": "auto",
+          "duration": 4,
+          "ratio": "16:9",
+          "candidate_count": 1
+        }
+      },
+      {
+        "id": "71a346f8-5ed6-4783-821c-df07c69705ea",
+        "type": "generation",
+        "title": "纸船绕过石块",
+        "shot_id": "be66ae7fb43742659abd184ccbd9b60c",
+        "job_id": null,
+        "asset_id": null,
+        "settings": {
+          "visual_dependencies": true,
+          "storyboard_revision": 0,
+          "group_id": "be66ae7fb43742659abd184ccbd9b60c",
+          "group_title": "镜头 02 · 纸船绕过石块",
+          "modality": "image",
+          "resolution": "4K",
+          "quality": "extreme",
+          "clarity": "4K",
+          "background": "auto",
+          "duration": 4,
+          "ratio": "16:9",
+          "candidate_count": 1
+        }
+      }
+    ],
+    "node_summary": {
+      "total": 3,
+      "shot_nodes": 2,
+      "project_reference_nodes": 1
+    },
+    "expected_first_two_shot_ids": [
+      "0d8fde4e2d114873b7ab0ef79abfaf7e",
+      "be66ae7fb43742659abd184ccbd9b60c"
+    ],
+    "later_live_db_observation_in_initial_artifact": [
+      {
+        "id": "project-script:73c06353a3d446c9ac875a69b7b13ca0",
+        "type": "project_script_ref",
+        "title": "片段分镜 Skills 隔离验收",
+        "shot_id": null,
+        "model_id": null,
+        "job_id": null,
+        "asset_id": null,
+        "settings": {}
+      },
+      {
+        "id": "8744853c-d67e-4189-ac99-2fe3c76073bb",
+        "type": "generation",
+        "title": "纸船启程 · 手动编辑",
+        "shot_id": "0d8fde4e2d114873b7ab0ef79abfaf7e",
+        "model_id": null,
+        "job_id": null,
+        "asset_id": null,
+        "settings": {
+          "visual_dependencies": true,
+          "storyboard_revision": 0,
+          "group_id": "0d8fde4e2d114873b7ab0ef79abfaf7e",
+          "group_title": "镜头 01 · 纸船启程 · 手动编辑",
+          "modality": "image",
+          "resolution": "4K",
+          "quality": "extreme",
+          "clarity": "4K",
+          "background": "auto",
+          "duration": 4,
+          "ratio": "16:9",
+          "candidate_count": 1
+        }
+      },
+      {
+        "id": "71a346f8-5ed6-4783-821c-df07c69705ea",
+        "type": "generation",
+        "title": "纸船绕过石块",
+        "shot_id": "be66ae7fb43742659abd184ccbd9b60c",
+        "model_id": null,
+        "job_id": null,
+        "asset_id": null,
+        "settings": {
+          "visual_dependencies": true,
+          "storyboard_revision": 0,
+          "group_id": "be66ae7fb43742659abd184ccbd9b60c",
+          "group_title": "镜头 02 · 纸船绕过石块",
+          "modality": "image",
+          "resolution": "4K",
+          "quality": "extreme",
+          "clarity": "4K",
+          "background": "auto",
+          "duration": 4,
+          "ratio": "16:9",
+          "candidate_count": 1
+        }
+      }
+    ]
+  }
+}

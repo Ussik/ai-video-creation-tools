@@ -10,6 +10,16 @@ function draft(stage: ScriptStage) {
     scenes: stage === 'episode' ? [{ heading: '修车铺', action: '林照收起报纸', duration: 10 }] : [] }
 }
 
+test('outline and episode templates allow genre-appropriate endings and finale resolution', () => {
+  for (const stage of ['outline', 'episode'] as const) {
+    const prompt = workflowContentInstructions(workflowRequest.parse({ stage, episode_number: 8 }))
+    assert.match(prompt, /是否设置悬念由题材、叙事阶段与创作者明确要求决定/)
+    assert.match(prompt, /当集结果与情感落点/)
+    assert.match(prompt, /终集完成主线、人物弧光和关键伏笔的兑现/)
+    assert.doesNotMatch(prompt, /各集结尾悬念|结尾悬念与下一集承接|结尾钩子以及留给下一集的状态/)
+  }
+})
+
 test('new drafts require every deliverable and report the specific missing document', () => {
   assert.equal(scriptStageArtifacts.outline.length, 9)
   assert.equal(scriptStageArtifacts.characters.length, 2)
@@ -39,6 +49,19 @@ test('complete drafts reject empty bodies, duplicate types, other stages and inc
     { ...draft('episode'), scenes: [] },
   ]
   for (const value of invalid) assert.equal(workflowGenerationDraftSchema.safeParse(value).success, false)
+})
+
+test('missing episode scenes and extra project scenes report distinct actionable errors', () => {
+  const episode = workflowGenerationDraftSchema.safeParse({ ...draft('episode'), scenes: [] })
+  assert.equal(episode.success, false)
+  if (!episode.success) assert.deepEqual(episode.error.issues.map(issue => ({ path: issue.path, message: issue.message })), [
+    { path: ['scenes'], message: '分集正文缺少对应分场，请保留正文并补齐 scenes' },
+  ])
+  const project = workflowGenerationDraftSchema.safeParse({ ...draft('outline'), scenes: [{ heading: '越界分场', duration: 10 }] })
+  assert.equal(project.success, false)
+  if (!project.success) assert.deepEqual(project.error.issues.map(issue => ({ path: issue.path, message: issue.message })), [
+    { path: ['scenes'], message: '当前项目资料阶段不应包含分场剧本，scenes 必须为空数组' },
+  ])
 })
 
 test('generated documents require explicit nonblank titles and accept bodies without repeated headings', () => {

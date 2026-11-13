@@ -1,6 +1,7 @@
 import { Select } from '@mantine/core'
 import { Film, Image as ImageIcon, Type } from 'lucide-react'
 import { api, type Model, type Modality, type Provider } from '../../shared/api/api'
+import { rememberModelSelection } from './model-selection-store'
 
 type Props = {
   providers: Provider[]
@@ -27,12 +28,13 @@ export default function DefaultModelSettings({ providers, models, busy, refresh,
     if (!target) return
     await action(async () => {
       await api(`/models/${target.id}/default`, { method: value === automatic ? 'DELETE' : 'PUT' })
+      rememberModelSelection(modality, value === automatic ? null : target.id)
       await refresh()
     }, value === automatic ? `已取消默认${modalities.find(item => item.value === modality)?.label}模型` : `默认${modalities.find(item => item.value === modality)?.label}模型已设置`)
   }
 
   return <section className="ms-defaults" aria-labelledby="ms-defaults-title">
-    <div className="ms-section-heading"><div><h2 id="ms-defaults-title">默认模型</h2><p>在所有提供商中，每类可设置一个默认模型。新任务优先使用默认模型，已有选择保持不变。</p></div></div>
+    <div className="ms-section-heading"><div><h2 id="ms-defaults-title">默认模型</h2><p>每类可设置一个默认模型。各处手动选择会在当前浏览器中同步并记住，下次优先沿用；没有可用的最近选择时使用这里的默认模型。正在执行的任务保留原模型。</p></div></div>
     <div className="ms-default-fields">
       {modalities.map(({ value, label, Icon }) => {
         const candidates = available.filter(model => model.modality === value)
@@ -40,7 +42,7 @@ export default function DefaultModelSettings({ providers, models, busy, refresh,
         return <Select key={value} label={`默认${label}模型`} aria-label={`默认${label}模型`}
           leftSection={<Icon size={15} />} value={current?.id || automatic}
           data={[{ value: automatic, label: '自动选择' }, ...candidates.map(model => ({ value: model.id, label: `${model.name} · ${providers.find(provider => provider.id === model.provider_id)?.name || ''}` }))]}
-          description={candidates.length ? '自动选择时使用首个可用模型' : `暂无已启用的${label}模型`}
+          description={candidates.length ? '自动选择且没有可用的最近选择时，使用首个可用模型' : `暂无已启用的${label}模型`}
           allowDeselect={false} searchable disabled={busy || !candidates.length}
           onChange={next => void changeDefault(value, next)} />
       })}

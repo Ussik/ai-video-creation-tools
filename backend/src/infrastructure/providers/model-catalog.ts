@@ -1,5 +1,7 @@
 import type { Provider } from '../database/db.js'
+import type { TextCapabilityDiscovery } from '@video-studio/shared/models/text-capabilities'
 import { decryptKey } from '../security/secrets.js'
+import { discoverCatalogCapabilities, type CatalogCapabilityContext } from './model-catalog-capabilities.js'
 
 export interface ModelCatalogConfig {
   path: string
@@ -13,6 +15,7 @@ export interface CatalogModel {
   remote_id: string
   name: string
   modality_hint: 'text' | 'image' | 'video' | null
+  capabilities?: TextCapabilityDiscovery
 }
 
 const maxResponseBytes = 2 * 1024 * 1024
@@ -79,7 +82,7 @@ function explicitModality(entry: unknown, configuredPath?: string): CatalogModel
   return null
 }
 
-export function parseCatalog(payload: unknown, config: ModelCatalogConfig): CatalogModel[] {
+export function parseCatalog(payload: unknown, config: ModelCatalogConfig, context?: CatalogCapabilityContext): CatalogModel[] {
   const list = atPath(payload, config.list_path)
   if (!Array.isArray(list)) throw catalogError(`获取模型响应中的 ${config.list_path || '根节点'} 不是数组`)
   if (list.length > maxModels) throw catalogError(`获取模型响应超过 ${maxModels} 项，请缩小目录范围`)
@@ -92,20 +95,25 @@ export function parseCatalog(payload: unknown, config: ModelCatalogConfig): Cata
     if (seen.has(remoteId)) continue
     seen.add(remoteId)
     const rawName = config.name_path ? atPath(entry, config.name_path) : undefined
+    const hint = explicitModality(entry, config.modality_path)
+    const capabilities = context && hint !== 'image' && hint !== 'video' ? discoverCatalogCapabilities(entry, remoteId, context) : undefined
     models.push({
       remote_id: remoteId,
       name: typeof rawName === 'string' && rawName.trim() ? rawName.trim() : remoteId,
-      modality_hint: explicitModality(entry, config.modality_path),
+      modality_hint: hint,
+      ...(capabilities ? { capabilities } : {}),
     })
   }
   return models
 }
 
-export async function fetchModelCatalog(provider: Provider, config: ModelCatalogConfig): Promise<CatalogModel[]> {
+export async function fetchModelCatalog(provider: Provider, config: ModelCatalogConfig, apiKeyOverride?: string): Promise<CatalogModel[]> {
   const url = relativeCatalogUrl(provider.base_url, config.path)
-  const key = decryptKey(provider.key_ciphertext)
-  const header = provider.auth_header || 'Authorization'
-  const prefix = provider.auth_prefix ?? 'Bearer '
+  const key = apiKeyOverride ?? decryptKey(provider.key_ciphertext)
+  const customAuth = provider.auth_header && (provider.auth_header.toLowerCase() !== 'authorization' || (provider.auth_prefix ?? 'Bearer ') !== 'Bearer ')
+  const nativeMessages = provider.protocol === 'anthropic_messages'
+  const header = nativeMessages && !customAuth ? 'x-api-key' : provider.auth_header || 'Authorization'
+  const prefix = nativeMessages && !customAuth ? '' : provider.auth_prefix ?? 'Bearer '
   if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(header) || /[\r\n]/.test(prefix)) {
     throw catalogError('提供商鉴权配置无效', 422)
   }
@@ -113,7 +121,7 @@ export async function fetchModelCatalog(provider: Provider, config: ModelCatalog
   try {
     response = await fetch(url, {
       method: 'GET',
-      headers: key ? { [header]: `${prefix}${key}` } : {},
+      headers: { ...(nativeMessages ? { 'anthropic-version': '2023-06-01' } : {}), ...(key ? { [header]: `${prefix}${key}` } : {}) },
       redirect: 'manual',
       signal: AbortSignal.timeout(20_000),
     })
@@ -156,5 +164,7 @@ export async function fetchModelCatalog(provider: Provider, config: ModelCatalog
       ? `模型列表接口返回网页而非 JSON：${url}，请填写 API 根地址`
       : `模型列表接口没有返回有效 JSON：${url}`)
   }
-  return parseCatalog(payload, config)
+  return parseCatalog(payload, config, provider.protocol ? {
+    base_url: provider.base_url, protocol: provider.protocol, fetched_at: new Date().toISOString(),
+  } : undefined)
 }

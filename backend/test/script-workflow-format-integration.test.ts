@@ -64,8 +64,9 @@ test('actual workflow retries upgrade empty legacy requests and preserve nonempt
       assert.deepEqual(Object.keys(context.script.artifacts[0]), ['artifact_type', 'title', 'content'])
       assert.equal(context.script.saved_document_metadata[0].status, 'ready')
       assert.match(context.script.artifacts[0].content, /type\/status 原样对白/)
-      assert.deepEqual(body.text.format.schema.properties.artifacts.items.properties.artifact_type.enum, scriptStageArtifacts.props)
-      return Response.json({ output_text: JSON.stringify({ artifacts: documents('props'), scenes: [] }) })
+      const types = body.text.format.schema.properties.artifacts.items.properties.artifact_type.enum as string[]
+      assert.equal(types.length, 1, 'a stage retry still authors one document per model request')
+      return Response.json({ output_text: JSON.stringify({ artifacts: documents('props').filter(document => types.includes(document.artifact_type)), scenes: [] }) })
     })
     const failed = await app.inject({ method: 'POST', url, payload })
     assert.equal(failed.statusCode, 422, failed.body)
@@ -94,7 +95,7 @@ test('actual workflow retries upgrade empty legacy requests and preserve nonempt
     run('UPDATE script_generation_checkpoints SET cache_key=?,payload=? WHERE project_id=?', hash({ version: 1, identity: { ...identity, prompt: legacyPrompt } }), JSON.stringify(checkpoint), project.id)
     succeed = true; calls = 0
     const generated = await call('POST', url, payload)
-    assert.equal(calls, 1, 'retry does not replay a complete stage against preserved prose')
+    assert.equal(calls, retained ? 1 : 4, 'retained prose resumes only its unfinished document; an empty attempt authors the four documents separately')
     assert.ok(useTools ? generated.tool_draft : generated.draft)
     if (retained) {
       const draftDocuments = (useTools ? generated.tool_draft.documents : generated.draft.artifacts) as Array<{ artifact_type: string; content: string }>

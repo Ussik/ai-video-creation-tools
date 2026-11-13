@@ -1,0 +1,54 @@
+.storyboard-production-modal { background: var(--fc-panel); }
+.storyboard-production-body { padding: 4px 22px 22px; }
+.storyboard-production-summary { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+.storyboard-production-summary strong { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.storyboard-production-summary span { color: var(--fc-text-muted); font-size: 13px; }
+.storyboard-production-description, .storyboard-production-help { color: var(--fc-text-muted); font-size: 13px; line-height: 1.8; }
+.storyboard-production-description { margin: 0 0 20px; }
+.storyboard-production-help { margin: 0; }
+.storyboard-production-error { margin-top: 18px; }
+.storyboard-production-progress { display: flex; align-items: center; gap: 9px; margin-top: 18px; color: var(--fc-text-secondary); font-size: 13px; }
+.storyboard-production-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--fc-border-soft);
+}
+.storyboard-production-actions .mantine-Button-root {
+  min-height: 40px;
+  border-radius: 10px;
+  font-weight: 650;
+}
+.storyboard-production-actions .mantine-Button-root[data-variant='default'] { min-width: 82px; }
+.storyboard-production-primary {
+  min-width: 176px;
+  border: 1px solid var(--fc-primary);
+  background: var(--fc-primary);
+  color: var(--fc-on-primary);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--fc-primary) 22%, transparent);
+  transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+.storyboard-production-primary:hover:not(:disabled):not([data-loading]) {
+  border-color: var(--fc-primary-hover);
+  background: var(--fc-primary-hover);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--fc-primary) 28%, transparent);
+  transform: translateY(-1px);
+}
+.storyboard-production-primary:focus-visible { outline: 2px solid var(--fc-focus); outline-offset: 3px; }
+.storyboard-production-primary:disabled,
+.storyboard-production-primary[data-disabled] {
+  border-color: var(--fc-primary);
+  background: var(--fc-primary);
+  color: var(--fc-on-primary);
+  opacity: .78;
+}
+.storyboard-production-primary .mantine-Button-section { color: currentColor; }
+
+@media (max-width: 480px) {
+  .storyboard-production-actions { justify-content: stretch; }
+  .storyboard-production-actions .mantine-Button-root { flex: 1 1 0; }
+  .storyboard-production-primary { min-width: 0; }
+}

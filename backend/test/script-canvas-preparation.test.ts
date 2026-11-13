@@ -6,13 +6,14 @@ import { after, test } from 'node:test'
 import Fastify from 'fastify'
 import type { ScriptScene, ScriptArtifact } from '../src/infrastructure/database/db.js'
 import type { OutputContract } from '../src/modules/generation/model-output.js'
+import { withFixtureVisualCoverage } from './helpers/visual-coverage.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'script-canvas-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
 const { buildApp } = await import('../src/app.js')
 const { all, db, now, one, run } = await import('../src/infrastructure/database/db.js')
 const { registerScriptCanvasRoutes } = await import('../src/modules/canvas/script-canvas-preparation.js')
-const { installSkillBundle, configureSkill, removeInstalledSkill, setSkillDefault } = await import('../src/modules/skills/skills.js')
+const { installSkillBundle, configureSkill, removeInstalledSkill, setSkillDefault, resetSkillTaskDefault } = await import('../src/modules/skills/skills.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 async function call(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, payload?: unknown) {
@@ -20,7 +21,7 @@ async function call(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, pa
   assert.equal(response.statusCode, 200, response.body)
   return response.json()
 }
-async function setup(t: { after: (fn: () => Promise<unknown>) => void }, generator: (prompt: string, contract: OutputContract) => Promise<string> = async () => JSON.stringify({ profiles: [] })) {
+async function setup(t: { after: (fn: () => Promise<unknown>) => void }, generator: (prompt: string, contract: OutputContract) => Promise<string> = async () => JSON.stringify({ profiles: [] }), rawCoverage = false) {
   const project = await call('POST', '/api/projects', { name: '加入画布隔离测试' })
   const scene = await call('POST', `/api/projects/${project.id}/script/scenes`, { heading: '车站', characters: '林晚', action: '拿起钥匙', episode_number: 1 })
   const other = await call('POST', `/api/projects/${project.id}/script/scenes`, { heading: '码头', episode_number: 2 })
@@ -34,14 +35,9 @@ async function setup(t: { after: (fn: () => Promise<unknown>) => void }, generat
     scenePrompt: scene => `${scene.heading}\n${scene.characters}\n${scene.action}`,
     generateText: async (_id, model, prompt, contract) => {
       assert.equal(model, 'mock-text'); assert.ok(contract)
-      // Without an injected native selector, automatic skill selection is its own structured request (not a profile
-      // analysis). It chooses nothing here, so the project/temporary skill settings under test decide what loads.
-      if (contract.name === 'creation_skill_selection') {
-        // A model that has no better idea adopts the project default shown to it (defaults are references, not locks).
-        const shown = /"default_ids":(\[[^\]]*\])/.exec(prompt)
-        return JSON.stringify({ skill_ids: shown ? JSON.parse(shown[1]!) : [], reason: '测试：沿用目录中给出的项目默认技能。' })
-      }
-      assert.equal(contract.name, 'visual_profiles'); calls++; return generator(prompt, contract)
+      assert.equal(contract.name, 'visual_profiles'); calls++;
+      const raw = await generator(prompt, contract)
+      return rawCoverage ? raw : withFixtureVisualCoverage(raw, prompt)
     },
   })
   const invoke = async (action: string, payload: object, status = 200) => {
@@ -57,8 +53,8 @@ function profile(sceneId: string, name = '林晚') {
 }
 async function plan(f: Awaited<ReturnType<typeof setup>>) {
   const checked = await f.check()
-  const { signature, scene_ids, profiles } = await f.invoke('prepare', { scene_ids: checked.scene_ids, signature: checked.signature, model_id: 'mock-text' })
-  return { signature, scene_ids, profiles }
+  const { signature, scene_ids, profiles, coverage_version, visual_coverage } = await f.invoke('prepare', { scene_ids: checked.scene_ids, signature: checked.signature, model_id: 'mock-text' })
+  return { signature, scene_ids, profiles, coverage_version, visual_coverage }
 }
 
 test('read-only preparation then atomic drafts, required bindings and shot prompts without image generation', async t => {
@@ -77,6 +73,23 @@ test('read-only preparation then atomic drafts, required bindings and shot promp
   assert.equal(result.shots[0].source_scene_id, sceneId)
   assert.equal(all('SELECT * FROM jobs WHERE project_id=?', f.project.id).length, 0)
   assert.equal(all('SELECT * FROM asset_tasks WHERE project_id=?', f.project.id).length, 0)
+})
+
+test('long scenes require planned shots before canvas preparation and cannot create oversized templates', async t => {
+  const f = await setup(t)
+  await call('PATCH', `/api/script-scenes/${f.scene.id}`, { duration: 120 })
+  const checked = await f.check(), base = { scene_ids: checked.scene_ids, signature: checked.signature }
+  const rejected = await f.invoke('prepare', { ...base, model_id: 'mock-text' }, 422)
+  assert.match(rejected.message, /先规划分镜/)
+  await f.invoke('commit', { ...base, profiles: [profile(f.scene.id)] }, 422)
+  assert.equal(f.calls(), 0)
+  assert.deepEqual(all('SELECT * FROM shots WHERE project_id=?', f.project.id), [])
+  assert.deepEqual(all('SELECT * FROM visual_profiles WHERE project_id=?', f.project.id), [])
+
+  const shot = await call('POST', `/api/projects/${f.project.id}/shots`, { title: '已规划镜头', duration: 15, source_scene_id: f.scene.id })
+  const result = await f.invoke('commit', await plan(f))
+  assert.equal(result.created_shots, 0)
+  assert.deepEqual(result.shots.map((item: any) => [item.id, item.duration]), [[shot.id, 15]])
 })
 
 test('retries reuse all shots, confirmed profiles and optional bindings without calling the model again', async t => {
@@ -179,13 +192,14 @@ test('preparation honors project defaults, temporary visual skill selections and
     configureSkill(value.id, true, ['visual_assets']); return value.id
   }
   const main = install('visual-primary'), alternate = install('visual-alternate')
-  t.after(async () => { removeInstalledSkill(main); removeInstalledSkill(alternate) })
+  t.after(async () => { removeInstalledSkill(main); removeInstalledSkill(alternate); resetSkillTaskDefault('visual_assets') })
   let captured = ''
   const f = await setup(t, async prompt => { captured = prompt; return JSON.stringify({ profiles: [] }) })
   setSkillDefault('visual_assets', { primary_id: alternate, auxiliary_ids: [] }, f.project.id)
   const checked = await f.check(), request = { signature: checked.signature, scene_ids: checked.scene_ids, model_id: 'mock-text' }
   const inherited = await f.invoke('prepare', request)
   assert.deepEqual(inherited.used_skills.map((value: { id: string }) => value.id), [alternate])
+  assert.equal(inherited.skill_assignment.source, 'fixed'); assert.match(inherited.skill_assignment.reason, /视觉设定整理.*项目绑定/)
   assert.match(captured, /RULE_visual-alternate/); assert.doesNotMatch(captured, /RULE_visual-primary/)
   assert.ok(inherited.loaded_files.length > 0)
   const switched = await f.invoke('prepare', { ...request, skill_ids: [main] })
@@ -195,7 +209,8 @@ test('preparation honors project defaults, temporary visual skill selections and
   assert.deepEqual(base.used_skills, []); assert.deepEqual(base.loaded_files, []); assert.doesNotMatch(captured, /RULE_visual-/)
   await f.invoke('prepare', { ...request, skill_ids: ['foreign'] }, 422)
   assert.equal(f.calls(), 3)
-  await f.invoke('commit', { signature: base.signature, scene_ids: base.scene_ids, profiles: base.profiles })
+  await f.invoke('commit', { signature: base.signature, scene_ids: base.scene_ids, profiles: base.profiles,
+    coverage_version: base.coverage_version, visual_coverage: base.visual_coverage })
   const next = await f.check()
   assert.deepEqual(next.needs_analysis, [], 'a deliberate empty dependency list is also prepared')
   const cached = await f.invoke('prepare', { signature: next.signature, scene_ids: next.scene_ids })
@@ -239,7 +254,7 @@ test('scoped preparation keeps scene candidates separate from each images and vi
   await f.invoke('commit', { signature: draft.signature, scene_ids: draft.scene_ids, reference_usage_version: 1,
     profiles: draft.profiles.map(({ shot_usage: _usage, ...profile }: any) => profile) }, 422)
   const saved = await f.invoke('commit', { signature: draft.signature, scene_ids: draft.scene_ids, profiles: draft.profiles,
-    reference_usage_version: draft.reference_usage_version })
+    reference_usage_version: draft.reference_usage_version, coverage_version: draft.coverage_version, visual_coverage: draft.visual_coverage })
   assert.equal(saved.shot_visual_bindings.find((binding: any) => binding.profile_id === unused.id).usage, 'none')
   assert.equal(saved.shot_visual_bindings.find((binding: any) => binding.name === '技术人员').usage, 'video')
   assert.equal(saved.scene_visual_bindings, undefined)
@@ -264,20 +279,32 @@ function independentShot(projectId: string, sceneId: string, designId: string) {
   return id
 }
 
+type ProfileWireBranch = { properties: Record<string, Record<string, unknown>>; required: string[] }
+function profileWireBranches(contract: OutputContract) {
+  const items = (contract.schema.properties as { profiles: { items: { anyOf: ProfileWireBranch[] } } }).profiles.items
+  assert.equal(items.anyOf.length, 3, 'model schema distinguishes independent, saved-base and draft-base profiles')
+  return items.anyOf
+}
+function strictProfileDraft(draft: Record<string, unknown>, branches: ProfileWireBranch[]) {
+  const branch = branches.find(value => draft.base_draft_key ? value.properties.base_draft_key!.minLength === 1
+    : draft.base_profile_id ? value.properties.base_profile_id!.minLength === 1
+      : value.properties.base_profile_id!.minLength === undefined && value.properties.base_draft_key!.minLength === undefined)
+  assert.ok(branch, 'profile must match its explicit relation branch')
+  // Strict providers emit every required wire field, using null for absent optional values.
+  return Object.fromEntries([...Object.entries(draft), ...branch.required.filter(key => !(key in draft)).map(key => [key, null])])
+}
+
 test('strict model output with nullable optional fields prepares and commits legacy and independent design references', async t => {
   for (const redesign of [false, true]) await t.test(redesign ? 'independent design' : 'legacy design', async t => {
-    let sceneId = '', shotId = '', profileContract: { properties: Record<string, unknown>; required: string[] } | undefined
+    let sceneId = '', shotId = '', profileContracts: ProfileWireBranch[] = []
     const f = await setup(t, async (_prompt, contract) => {
-      profileContract = (contract.schema.properties as { profiles: { items: typeof profileContract } }).profiles.items
-      assert.ok(profileContract)
+      profileContracts = profileWireBranches(contract)
       const drafts: Array<Record<string, unknown>> = [
         { ...profile(sceneId), draft_key: 'base', shot_usage: [{ shot_id: shotId, usage: 'none' }] },
         { ...profile(sceneId), variant: '蓝衣', draft_key: 'derived', base_draft_key: 'base', state_delta: '换蓝衣',
           shot_usage: [{ shot_id: shotId, usage: 'both' }] },
       ]
-      // Strict providers emit every required wire field, using null for absent optional values.
-      for (const draft of drafts) for (const key of profileContract.required) if (!(key in draft)) draft[key] = null
-      return JSON.stringify({ profiles: drafts })
+      return JSON.stringify({ profiles: drafts.map(draft => strictProfileDraft(draft, profileContracts)) })
     })
     sceneId = f.scene.id
     const designId = redesign ? independentDesign(f.project.id, [sceneId], '严格输出新方案') : null
@@ -285,8 +312,7 @@ test('strict model output with nullable optional fields prepares and commits leg
       : (await call('POST', `/api/projects/${f.project.id}/shots`, { title: '原方案镜头', source_scene_id: sceneId })).id
     const draft = await plan(f)
     assert.equal(f.calls(), 1, 'valid strict output must not need a format correction')
-    assert.ok(profileContract)
-    assert.ok(!('design_id' in profileContract.properties), 'model output cannot choose the server-owned design scope')
+    for (const branch of profileContracts) assert.ok(!('design_id' in branch.properties), 'model output cannot choose the server-owned design scope')
     assert.ok(draft.profiles.every((value: any) => (value.design_id || null) === designId))
     assert.equal(all('SELECT * FROM visual_profiles WHERE project_id=?', f.project.id).length, 0, 'analysis remains read-only')
     const saved = await f.invoke('commit', { ...draft, reference_usage_version: 1 })
@@ -303,6 +329,136 @@ test('strict model output with nullable optional fields prepares and commits leg
     assert.deepEqual((await f.check()).needs_analysis, [])
     assert.equal(all('SELECT * FROM jobs WHERE project_id=?', f.project.id).length, 0)
   })
+})
+
+test('four-shot preparation corrects missing or blank derived-state changes once and commits the exact relation', async t => {
+  for (const missing of [undefined, '   ']) await t.test(missing === undefined ? 'missing state delta' : 'blank state delta', async t => {
+    let sceneId = '', shotIds: string[] = [], attempts = 0
+    const f = await setup(t, async prompt => {
+      attempts++
+      const drafts = [
+        { ...profile(sceneId), draft_key: 'base', shot_usage: shotIds.map(shot_id => ({ shot_id, usage: 'none' })) },
+        { ...profile(sceneId), variant: '蓝色雨衣', draft_key: 'raincoat', base_draft_key: 'base',
+          shot_usage: shotIds.map(shot_id => ({ shot_id, usage: 'both' })),
+          ...(attempts > 1 ? { state_delta: '仅将蓝色夹克换成蓝色雨衣，其余外貌保持不变。' } : missing === undefined ? {} : { state_delta: missing }) },
+      ]
+      if (attempts > 1) {
+        assert.match(prompt, /一次格式修正/)
+        assert.match(prompt, /\$\.profiles\[1\]/)
+        assert.match(prompt, /state_delta 中写出相对基础设定的具体变化/)
+        assert.match(prompt, /不得为通过校验删除真实派生关系或编造变化/)
+      }
+      return JSON.stringify({ profiles: drafts })
+    })
+    sceneId = f.scene.id
+    for (let index = 0; index < 4; index++) shotIds.push((await call('POST', `/api/projects/${f.project.id}/shots`, {
+      title: `雨衣镜头${index + 1}`, source_scene_id: sceneId,
+    })).id)
+    const shotsBefore = all('SELECT * FROM shots WHERE project_id=? ORDER BY position, id', f.project.id)
+    const draft = await plan(f)
+    assert.equal(f.calls(), 2, 'one rejected output receives exactly one correction')
+    assert.equal(all('SELECT * FROM visual_profiles WHERE project_id=?', f.project.id).length, 0, 'correcting the model output remains read-only')
+    assert.deepEqual(all('SELECT * FROM shots WHERE project_id=? ORDER BY position, id', f.project.id), shotsBefore)
+    const saved = await f.invoke('commit', { ...draft, reference_usage_version: 1 })
+    assert.equal(saved.created_profiles, 2); assert.equal(saved.created_shots, 0)
+    assert.deepEqual(saved.shots.map((value: any) => value.id), shotIds)
+    const base = saved.visual_profiles.find((value: any) => !value.base_profile_id)
+    const derived = saved.visual_profiles.find((value: any) => value.base_profile_id)
+    assert.equal(derived.base_profile_id, base.id)
+    assert.equal(derived.state_delta, '仅将蓝色夹克换成蓝色雨衣，其余外貌保持不变。')
+    assert.equal(saved.shot_visual_bindings.filter((value: any) => value.profile_id === derived.id && value.usage === 'both').length, 4)
+    assert.deepEqual((await f.check()).needs_analysis, [])
+    assert.equal(all('SELECT * FROM jobs WHERE project_id=?', f.project.id).length, 0)
+  })
+})
+
+test('persistent missing derived-state changes stop after one correction without writing partial preparation', async t => {
+  let sceneId = ''
+  const f = await setup(t, async () => JSON.stringify({ profiles: [
+    { ...profile(sceneId), draft_key: 'base' },
+    { ...profile(sceneId), variant: '蓝色雨衣', base_draft_key: 'base' },
+  ] }))
+  sceneId = f.scene.id
+  const checked = await f.check()
+  const rejected = await f.invoke('prepare', { scene_ids: checked.scene_ids, signature: checked.signature, model_id: 'mock-text' }, 422)
+  assert.match(JSON.stringify(rejected), /已修正一次.*\$\.profiles\[1\]/)
+  assert.equal(f.calls(), 2)
+  assert.equal(all('SELECT * FROM visual_profiles WHERE project_id=?', f.project.id).length, 0)
+  assert.equal(all('SELECT * FROM shots WHERE project_id=?', f.project.id).length, 0)
+  assert.equal(all('SELECT * FROM scene_visual_bindings WHERE scene_id=?', sceneId).length, 0)
+  assert.equal(all('SELECT * FROM script_canvas_preparations WHERE scene_id=?', sceneId).length, 0)
+  assert.deepEqual((await f.check()).needs_analysis, [sceneId])
+})
+
+test('strict saved-base model output requires a nonempty delta and commits an existing base without duplicating it', async t => {
+  let sceneId = '', baseId = '', shotId = ''
+  const f = await setup(t, async (_prompt, contract) => {
+    const branches = profileWireBranches(contract)
+    const savedBase = branches.find(branch => branch.properties.base_profile_id!.minLength === 1)!
+    assert.equal(savedBase.properties.state_delta!.minLength, 1)
+    assert.ok(savedBase.required.includes('state_delta'))
+    return JSON.stringify({ profiles: [strictProfileDraft({ ...profile(sceneId), variant: '蓝色雨衣',
+      base_profile_id: baseId, state_delta: '仅将蓝色夹克换成蓝色雨衣。', shot_usage: [{ shot_id: shotId, usage: 'both' }],
+    }, branches)] })
+  })
+  sceneId = f.scene.id
+  baseId = (await call('POST', `/api/projects/${f.project.id}/visual-profiles`, { profiles: [profile(sceneId)] })).visual_profiles[0].id
+  shotId = (await call('POST', `/api/projects/${f.project.id}/shots`, { title: '雨衣镜头', source_scene_id: sceneId })).id
+  const saved = await f.invoke('commit', { ...await plan(f), reference_usage_version: 1 })
+  assert.equal(f.calls(), 1)
+  assert.equal(saved.created_profiles, 1); assert.equal(saved.created_shots, 0)
+  assert.equal(saved.visual_profiles.length, 2)
+  const derived = saved.visual_profiles.find((value: any) => value.base_profile_id)
+  assert.equal(derived.base_profile_id, baseId)
+  assert.equal(derived.state_delta, '仅将蓝色夹克换成蓝色雨衣。')
+  assert.equal(saved.shot_visual_bindings.find((value: any) => value.profile_id === baseId).usage, 'none')
+  assert.equal(saved.shot_visual_bindings.find((value: any) => value.profile_id === derived.id).usage, 'both')
+})
+
+test('strict model preparation reuses a confirmed derived profile with its saved relation, delta and board intact', async t => {
+  let sceneId = '', shotIds: string[] = [], savedDerived: Record<string, any> | undefined
+  const f = await setup(t, async (prompt, contract) => {
+    assert.ok(savedDerived)
+    assert.match(prompt, /复用已有派生档案时逐字保留其基础关系和state_delta/)
+    return JSON.stringify({ profiles: [strictProfileDraft({ ...profile(sceneId), variant: savedDerived.variant,
+      definition: savedDerived.definition, view_requirements: savedDerived.view_requirements,
+      base_profile_id: savedDerived.base_profile_id, state_delta: savedDerived.state_delta,
+      shot_usage: shotIds.map(shot_id => ({ shot_id, usage: 'both', reference_view: null })),
+    }, profileWireBranches(contract))] })
+  })
+  sceneId = f.scene.id
+  const original = await call('POST', `/api/projects/${f.project.id}/visual-profiles`, { profiles: [
+    { ...profile(sceneId), draft_key: 'base' },
+    { ...profile(sceneId), variant: '蓝色雨衣', draft_key: 'raincoat', base_draft_key: 'base',
+      definition: '日漫风格，黑色短发，蓝色雨衣，人物外貌与基础设定一致。', state_delta: '仅将蓝色夹克换成蓝色雨衣。' },
+  ] })
+  const base = original.visual_profiles.find((value: any) => !value.base_profile_id)
+  const derived = original.visual_profiles.find((value: any) => value.base_profile_id)
+  for (const saved of [base, derived]) {
+    const boardId = `reused-derived-board-${saved.id}`
+    run("INSERT INTO assets (id,project_id,kind,filename,path,source,created_at) VALUES (?,?,'image','board.png','/tmp/board.png','upload',?)", boardId, f.project.id, now())
+    await call('PATCH', `/api/visual-profiles/${saved.id}`, { expected_revision: saved.revision, board_asset_id: boardId })
+  }
+  savedDerived = one<Record<string, any>>('SELECT * FROM visual_profiles WHERE id=?', derived.id)!
+  for (let index = 0; index < 2; index++) shotIds.push((await call('POST', `/api/projects/${f.project.id}/shots`, {
+    title: `复用雨衣镜头${index + 1}`, source_scene_id: sceneId,
+  })).id)
+  const before = all('SELECT * FROM visual_profiles WHERE project_id=? ORDER BY id', f.project.id)
+  const saved = await f.invoke('commit', { ...await plan(f), reference_usage_version: 1 })
+  assert.equal(f.calls(), 1, 'an explicit saved relation with strict null placeholders needs no correction')
+  assert.equal(saved.created_profiles, 0); assert.equal(saved.created_shots, 0)
+  assert.equal(saved.visual_profiles.length, 2)
+  assert.deepEqual(all('SELECT * FROM visual_profiles WHERE project_id=? ORDER BY id', f.project.id), before)
+  const reused = saved.visual_profiles.find((value: any) => value.id === derived.id)
+  assert.equal(reused.base_profile_id, base.id)
+  assert.equal(reused.state_delta, savedDerived.state_delta)
+  assert.equal(reused.revision, savedDerived.revision)
+  assert.equal(reused.board_asset_id, savedDerived.board_asset_id)
+  assert.deepEqual(saved.shot_visual_bindings.filter((value: any) => value.profile_id === derived.id)
+    .map((value: any) => [value.shot_id, value.usage, value.revision, value.board_asset_id]),
+  shotIds.map(shotId => [shotId, 'both', savedDerived!.revision, savedDerived!.board_asset_id]))
+  assert.deepEqual((await f.check()).needs_analysis, [])
+  assert.equal(all('SELECT * FROM jobs WHERE project_id=?', f.project.id).length, 0)
 })
 
 test('independent designs create fresh same-name characters, locations and props without old boards or historical shot bindings', async t => {
@@ -403,7 +559,8 @@ test('mixed current designs are analyzed separately and duplicate draft keys sta
   const draft = await f.invoke('prepare', { scene_ids, signature: checked.signature, model_id: 'mock-text' })
   assert.equal(f.calls(), 2)
   assert.equal(new Set(draft.profiles.map((value: any) => value.draft_key)).size, 4)
-  const saved = await f.invoke('commit', { scene_ids, signature: draft.signature, profiles: draft.profiles, reference_usage_version: 1 })
+  const saved = await f.invoke('commit', { scene_ids, signature: draft.signature, profiles: draft.profiles, reference_usage_version: 1,
+    coverage_version: draft.coverage_version, visual_coverage: draft.visual_coverage })
   assert.equal(saved.created_profiles, 4)
   for (const derived of saved.visual_profiles.filter((value: any) => value.base_profile_id)) {
     assert.equal(derived.design_id, saved.visual_profiles.find((value: any) => value.id === derived.base_profile_id).design_id)
@@ -466,4 +623,103 @@ test('deleting every current shot keeps the scene design and template preparatio
   assert.ok(saved.shot_visual_bindings.every((binding: any) => binding.profile_id === saved.visual_profiles[0].id))
   assert.equal(one<any>('SELECT * FROM shots WHERE id=?', oldShot.id).superseded_by, designId)
   assert.deepEqual((await f.check()).needs_analysis, [])
+})
+
+test('unexplained empty and all-none model outputs cannot erase bindings or cache preparation success', async t => {
+  for (const empty of [true, false]) await t.test(empty ? 'empty profiles' : 'all none', async t => {
+    let sceneId = '', shotId = ''
+    const f = await setup(t, async () => JSON.stringify({ profiles: empty ? [] : [{ ...profile(sceneId),
+      shot_usage: [{ shot_id: shotId, usage: 'none' }] }] }), true)
+    sceneId = f.scene.id
+    const p = (await call('POST', `/api/projects/${f.project.id}/visual-profiles`, { profiles: [profile(sceneId)] })).visual_profiles[0]
+    shotId = (await call('POST', `/api/projects/${f.project.id}/shots`, { title: '林晚拿起钥匙', source_scene_id: sceneId, image_prompt: '林晚拿起钥匙' })).id
+    const before = all('SELECT * FROM shot_visual_bindings WHERE shot_id=?', shotId)
+    assert.ok(before.some((binding: any) => binding.profile_id === p.id && binding.usage === 'both'))
+    const checked = await f.check()
+    const rejected = await f.invoke('prepare', { scene_ids: checked.scene_ids, signature: checked.signature, model_id: 'mock-text' }, 422)
+    assert.match(JSON.stringify(rejected), /已修正一次.*(?:逐镜视觉覆盖|visual_coverage)/)
+    assert.equal(f.calls(), 2)
+    await f.invoke('commit', { signature: checked.signature, scene_ids: checked.scene_ids, profiles: [], reference_usage_version: 1 }, 422)
+    assert.deepEqual(all('SELECT * FROM shot_visual_bindings WHERE shot_id=?', shotId), before)
+    assert.deepEqual(all('SELECT * FROM script_canvas_preparations WHERE scene_id=?', sceneId), [])
+    assert.deepEqual((await f.check()).needs_analysis, [sceneId])
+  })
+})
+
+test('declared visible objects require exact profile identity and matching image/video usage before any write', async t => {
+  const f = await setup(t)
+  const shot = await call('POST', `/api/projects/${f.project.id}/shots`, { title: '人物近景', source_scene_id: f.scene.id,
+    image_prompt: '林晚握住钥匙', video_prompt: '林晚举起钥匙' })
+  const checked = await f.check()
+  const subject = { kind: 'character', name: '林晚', variant: '默认', usage: 'both', requires_profile: true, reason: '镜头主体林晚需要维持固定外貌。' }
+  const entry = { scene_id: f.scene.id, shot_id: shot.id, source_excerpt: '林晚握住钥匙', objects: [subject], no_reference_reason: '' }
+  const base = { signature: checked.signature, scene_ids: checked.scene_ids, coverage_version: 1, reference_usage_version: 1 }
+  for (const profiles of [[], [{ ...profile(f.scene.id, '林婉'), shot_usage: [{ shot_id: shot.id, usage: 'both' }] }],
+    [{ ...profile(f.scene.id), shot_usage: [{ shot_id: shot.id, usage: 'none' }] }],
+    [{ ...profile(f.scene.id), shot_usage: [{ shot_id: shot.id, usage: 'video' }] }]]) {
+    const rejected = await f.invoke('commit', { ...base, profiles, visual_coverage: [entry] }, 422)
+    assert.match(JSON.stringify(rejected), /缺少对应档案或镜头用途/)
+    assert.deepEqual(all('SELECT * FROM visual_profiles WHERE project_id=?', f.project.id), [])
+    assert.deepEqual(all('SELECT * FROM script_canvas_preparations WHERE scene_id=?', f.scene.id), [])
+  }
+  for (const entries of [[], [entry, entry], [{ ...entry, shot_id: 'foreign-shot' }], [{ ...entry, source_excerpt: '虚构摘录' }]]) {
+    await f.invoke('commit', { ...base, profiles: [{ ...profile(f.scene.id), shot_usage: [{ shot_id: shot.id, usage: 'both' }] }], visual_coverage: entries }, 422)
+  }
+  const saved = await f.invoke('commit', { ...base, profiles: [{ ...profile(f.scene.id), shot_usage: [{ shot_id: shot.id, usage: 'both' }] }], visual_coverage: [entry] })
+  assert.equal(saved.created_profiles, 1)
+  assert.equal(saved.shot_visual_bindings[0].usage, 'both')
+})
+
+test('reasoned empty shots remain valid and only explicitly covered shots keep references', async t => {
+  let sceneId = '', emptyId = '', visibleId = ''
+  const f = await setup(t, async () => JSON.stringify({ profiles: [{ ...profile(sceneId), shot_usage: [
+    { shot_id: emptyId, usage: 'none' }, { shot_id: visibleId, usage: 'video' },
+  ] }], visual_coverage: [
+    { scene_id: sceneId, shot_id: emptyId, source_excerpt: '纯黑画面，仅有画外对白', objects: [], no_reference_reason: '纯黑画面没有人物、场景或道具出镜，画外对白不需要形象参考。' },
+    { scene_id: sceneId, shot_id: visibleId, source_excerpt: '林晚从画外走入', objects: [{ kind: 'character', name: '林晚', variant: '默认',
+      usage: 'video', requires_profile: true, reason: '人物仅在视频过程中进入，开镜图片不出现。' }], no_reference_reason: '' },
+  ] }), true)
+  sceneId = f.scene.id
+  emptyId = (await call('POST', `/api/projects/${f.project.id}/shots`, { title: '林晚的画外声音', source_scene_id: sceneId,
+    image_prompt: '纯黑画面，仅有画外对白' })).id
+  visibleId = (await call('POST', `/api/projects/${f.project.id}/shots`, { title: '人物入画', source_scene_id: sceneId,
+    image_prompt: '纯黑画面', video_prompt: '林晚从画外走入' })).id
+  const saved = await f.invoke('commit', await plan(f))
+  assert.equal(f.calls(), 1)
+  assert.equal(saved.shot_visual_bindings.find((binding: any) => binding.shot_id === emptyId).usage, 'none')
+  assert.equal(saved.shot_visual_bindings.find((binding: any) => binding.shot_id === visibleId).usage, 'video')
+  assert.deepEqual((await f.check()).needs_analysis, [])
+  const calls = f.calls()
+  await f.invoke('commit', await plan(f))
+  assert.equal(f.calls(), calls, 'valid coverage cache avoids another paid request')
+})
+
+test('reasoned empty scene templates exclude old scene candidates without deleting them', async t => {
+  let sceneId = ''
+  const f = await setup(t, async () => JSON.stringify({ profiles: [], visual_coverage: [{ scene_id: sceneId, shot_id: null,
+    source_excerpt: '黑屏转场', objects: [], no_reference_reason: '本场只有黑屏转场与画外声音，无可见对象，不需要参考图。' }] }), true)
+  sceneId = f.scene.id
+  await call('PATCH', `/api/script-scenes/${sceneId}`, { action: '黑屏转场' })
+  const historical = (await call('POST', `/api/projects/${f.project.id}/visual-profiles`, { profiles: [profile(sceneId)] })).visual_profiles[0]
+  const saved = await f.invoke('commit', await plan(f))
+  assert.equal(saved.created_shots, 1)
+  assert.equal(saved.shot_visual_bindings.find((binding: any) => binding.profile_id === historical.id).usage, 'none')
+  assert.ok(one('SELECT 1 FROM scene_visual_bindings WHERE scene_id=? AND profile_id=?', sceneId, historical.id))
+  assert.deepEqual((await f.check()).needs_analysis, [])
+})
+
+test('scene template coverage preserves image-only and video-only reference decisions after creating shot IDs', async t => {
+  for (const usage of ['image', 'video'] as const) await t.test(usage, async t => {
+    let sceneId = ''
+    const f = await setup(t, async () => JSON.stringify({ profiles: [{ ...profile(sceneId), shot_usage: [] }], visual_coverage: [{
+      scene_id: sceneId, shot_id: null, source_excerpt: '拿起钥匙', objects: [{ kind: 'character', name: '林晚', variant: '默认',
+        usage, requires_profile: true, reason: usage === 'video' ? '开镜黑屏，林晚只在动作过程中入画。' : '林晚仅在开镜画面出现，动作后离开画面。' }], no_reference_reason: '',
+    }] }), true)
+    sceneId = f.scene.id
+    const saved = await f.invoke('commit', await plan(f))
+    assert.equal(saved.created_shots, 1)
+    assert.equal(saved.shot_visual_bindings[0].shot_id, saved.shots[0].id)
+    assert.equal(saved.shot_visual_bindings[0].usage, usage)
+    assert.deepEqual((await f.check()).needs_analysis, [])
+  })
 })

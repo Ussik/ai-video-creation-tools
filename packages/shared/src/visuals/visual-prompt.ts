@@ -2,7 +2,7 @@ import { videoReferenceManifest, visualBindingReferenceAssetIds, type VideoRefer
 import { visualReferenceViewLabels, type VisualReferencePurpose, type VisualReferenceSnapshot } from './visual-reference-types.js'
 import type { VisualBindingUsage } from './visual-binding-usage.js'
 import { videoReferenceUsageInstructions, videoReferenceShotGuidance, type VideoReferenceUsageSelection } from '../media/video-reference-usage.js'
-import { stripManagedPromptBlocks } from './prompt-document.js'
+import { composeManagedPromptBlock, stripManagedPromptBlocks } from './prompt-document.js'
 import { withImageReferenceMapping } from './image-reference-prompt.js'
 export { withImageReferenceMapping } from './image-reference-prompt.js'
 
@@ -57,7 +57,7 @@ export function withVideoReferenceMapping(prompt: string, bindings: PromptVisual
   const instructions = `${context}\n图片编号严格对应本次实际提交的顺序。${videoReferenceShotGuidance}\n` +
     '正文中始终使用已定义的同一对象名称，明确谁执行动作以及动作的对象；同一人物的面部与身体视角属于同一身份，不生成重复人物或分身。\n' +
     '仅继承每张图指定用途范围内的信息；身份参考保持同一人物，空间参考保持位置与视线关系。不要复制参考图的多视角拼版、文字、标签、色板或无关人物，不把不同视角同时放进故事画面。'
-  return `${base}\n\n【视频参考图用途】\n${instructions}\n【视频参考图用途结束】`
+  return `${base}\n\n${composeManagedPromptBlock('视频参考图用途', instructions)}`
 }
 
 export const synchronizeVideoReferencePrompt = withVideoReferenceMapping
@@ -82,5 +82,5 @@ export function visualGenerationPrompt(prompt: string, bindings: PromptVisualBin
     const referenceLabel = options.mode === undefined ? '参考图' : '图片'
     return `${labels[binding.kind]}：${binding.name}（${binding.variant}，版本 ${binding.revision}）${indexes.length ? `；${referenceLabel} ${indexes.join('、')}` : ''}\n${binding.definition}${views}`
   }).join('\n\n')
-  return mapReferences(`${base}\n\n【镜头视觉设定】\n${context}\n保持上述对象的外观、比例、服装、材质与空间关系。只生成当前镜头的一幅完整画面或连续视频；不要复制设定板的多视角拼版、文字、标签或色板。\n【镜头视觉设定结束】`)
+  return mapReferences(`${base}\n\n${composeManagedPromptBlock('镜头视觉设定', `${context}\n保持上述对象的外观、比例、服装、材质与空间关系。只生成当前镜头的一幅完整画面或连续视频；不要复制设定板的多视角拼版、文字、标签或色板。`)}`)
 }

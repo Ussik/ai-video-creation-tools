@@ -913,8 +913,8 @@ body,
   width: 100%;
   min-width: 0;
   max-width: none;
-  height: min(760px, calc(100dvh - 80px));
-  max-height: none;
+  height: auto;
+  max-height: min(760px, calc(100dvh - 80px));
   padding: 22px 24px 18px;
   border-radius: 24px;
   background: var(--fc-surface-muted);
@@ -927,7 +927,7 @@ body,
 .pc-composer-modal-content .pc-prompt-composer-body {
   display: flex;
   flex-direction: column;
-  flex: 1;
+  flex: 0 1 auto;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -944,7 +944,7 @@ body,
 .pc-composer-modal-content .pc-prompt-composer-input textarea { flex: 1; }
 @media (max-width: 700px) {
   .project-canvas .pc-composer-modal-content .pc-prompt-composer.is-expanded {
-    height: calc(100dvh - 48px);
+    max-height: calc(100dvh - 48px);
     padding: 16px 14px 12px;
     border-radius: 20px;
   }

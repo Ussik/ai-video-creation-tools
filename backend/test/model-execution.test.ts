@@ -7,6 +7,19 @@ import { TextProviderError, textRetryAfter } from '../src/infrastructure/provide
 import { claimModelAttempt, isUnrestrictedScriptExecution, modelAttemptNumber, modelStepSignal, remainingModelAttempts,
   remainingModelStepMs, runGenerationDeadline, runModelStep, withUnrestrictedScriptExecution } from '../src/modules/generation/model-execution.js'
 
+test('an unclaimed model counter has no public attempt number and claimed requests remain one-based', async () => {
+  assert.equal(modelAttemptNumber(), undefined)
+  await runModelStep('workflow_draft', undefined, async () => {
+    assert.equal(modelAttemptNumber(), undefined, 'opening a step does not claim a provider request')
+    await runModelStep('nested_context', undefined, async () => assert.equal(modelAttemptNumber(), undefined))
+    claimModelAttempt()
+    assert.equal(modelAttemptNumber(), 1)
+    claimModelAttempt()
+    assert.equal(modelAttemptNumber(), 2)
+  })
+  assert.equal(modelAttemptNumber(), undefined)
+})
+
 test('network retries and contract correction together never exceed three actual calls', async () => {
   let calls = 0
   const generate = retryReadOnlyGeneration(async () => {

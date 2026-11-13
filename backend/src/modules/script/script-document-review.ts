@@ -34,7 +34,7 @@ export function documentHealth(projectId: string, documents: ToolDocument[]): Do
     const stale = !!review && review.documents.some(source => documents.find(item => item.id === source.id)?.version !== source.version)
     const findings = row?.document_version === doc.version && !stale ? review!.findings.filter(item => item.document_id === doc.id) : []
     return { document_id: doc.id, version: doc.version, pending_markers, findings,
-      status: stale || row && row.document_version !== doc.version ? 'stale' : row ? findings.length ? 'needs_attention' : 'reviewed' : pending_markers.length ? 'needs_attention' : 'unreviewed' }
+      status: stale || row && row.document_version !== doc.version ? 'stale' : row ? findings.length ? 'needs_attention' : 'reviewed' : 'unreviewed' }
   })
 }
 export function saveDocumentReview(projectId: string, documents: ToolDocument[], input: z.infer<typeof documentReviewInput>) {

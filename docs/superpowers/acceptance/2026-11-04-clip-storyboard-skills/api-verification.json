@@ -1,0 +1,227 @@
+{
+  "project_id": "d1515fd3e6f74f769683b4aa39ed3eea",
+  "model_id": "5d73b5c8bf5546f2a7dfa2921cefb20b",
+  "skill_id": "3dbf783e076b109a1f385c2f10006983",
+  "skill_revision": "fdb7b7c58017e3eae64eca382c2a85ede368dab0",
+  "automatic_assignment": {
+    "ids": [
+      "3dbf783e076b109a1f385c2f10006983"
+    ],
+    "source": "automatic",
+    "reason": "片段需要空间连续、唯一动作与冻结首帧，使用已启用的分镜技能。"
+  },
+  "manual_assignment": {
+    "ids": [
+      "3dbf783e076b109a1f385c2f10006983"
+    ],
+    "source": "manual",
+    "reason": "使用本次手动选择的技能。"
+  },
+  "base_assignment": {
+    "ids": [],
+    "source": "manual",
+    "reason": "本次手动选择基础创作规则。"
+  },
+  "independent_save": {
+    "scene_ids": [],
+    "design_id": "176c0963-a231-48c0-8183-ffe089dd735f",
+    "target_canvas_id": null,
+    "shots": [
+      {
+        "id": "ebcab3b34688436b9bc584bdfed1960d",
+        "project_id": "d1515fd3e6f74f769683b4aa39ed3eea",
+        "position": 0,
+        "title": "雨巷里的纸船",
+        "prompt": "雨停后的巷口，一只折好的白色纸船浮在浅水洼，建立安静空间与纸船位置。",
+        "duration": 4,
+        "selected_asset_id": null,
+        "created_at": "2026-11-03T17:05:09.406Z",
+        "source_scene_id": null,
+        "storyboard_revision": 0,
+        "start_state": "白色纸船停在水洼中央，船头朝右，左侧暖灯反光稳定。",
+        "end_state": "纸船漂至水洼右侧边缘，船头仍朝右。",
+        "cut_note": "按纸船向右的运动接下一镜，保持暖光来自左侧。",
+        "image_prompt": "单幅首帧，雨后石板巷口，低机位中景，白色纸船停在浅水洼中央，左侧暖灯光映在湿石板上，无人物，无字幕。",
+        "video_prompt": "固定低机位，细小水流推动白色纸船缓缓朝画面右侧漂移，船身保持完整，远处轻微滴水声。",
+        "design_id": "176c0963-a231-48c0-8183-ffe089dd735f",
+        "superseded_by": null,
+        "deleted_at": null
+      },
+      {
+        "id": "7b0e64e268924e8087d1015e6948d37d",
+        "project_id": "d1515fd3e6f74f769683b4aa39ed3eea",
+        "position": 1,
+        "title": "纸船绕过石块",
+        "prompt": "沿纸船运动方向切近景，水流带着纸船绕过水洼边的小石块，动作推进。",
+        "duration": 4,
+        "selected_asset_id": null,
+        "created_at": "2026-11-03T17:05:09.406Z",
+        "source_scene_id": null,
+        "storyboard_revision": 0,
+        "start_state": "纸船处于水洼右缘，右前方小石块尚未绕过。",
+        "end_state": "纸船绕过小石块，停在更靠右的一束暖光里。",
+        "cut_note": "保留纸船朝向和暖光方向，以船停住的瞬间切特写。",
+        "image_prompt": "单幅首帧，雨后石板水洼右侧，近景低机位，完整白色纸船船头朝右，右前方一颗深灰小石块，左侧暖光。",
+        "video_prompt": "镜头轻缓向右跟随，纸船随细流绕过右前方小石块，船头稍向右前方转动，水面轻微涟漪，无其他物体加入。",
+        "design_id": "176c0963-a231-48c0-8183-ffe089dd735f",
+        "superseded_by": null,
+        "deleted_at": null
+      },
+      {
+        "id": "450263aeb5bc4609a42cd0e3691d2f6f",
+        "project_id": "d1515fd3e6f74f769683b4aa39ed3eea",
+        "position": 2,
+        "title": "暖光落在船沿",
+        "prompt": "纸船停在暖光中，水面倒影轻轻摇曳，以静止细节收束。",
+        "duration": 4,
+        "selected_asset_id": null,
+        "created_at": "2026-11-03T17:05:09.406Z",
+        "source_scene_id": null,
+        "storyboard_revision": 0,
+        "start_state": "纸船停在暖光中，水面仍有小幅涟漪。",
+        "end_state": "涟漪减弱，纸船稳定停留，暖光保持一致。",
+        "cut_note": "静止结束，不增加字幕或新的叙事事件。",
+        "image_prompt": "单幅首帧，雨后浅水洼，白色纸船的船沿特写，船头朝右，纸面沾着细小水珠，暖光从左侧照亮折痕，背景石板柔化。",
+        "video_prompt": "固定特写，纸船只随水面轻轻起伏，左侧暖光在纸沿与水面形成微小变化，滴水声渐弱，平稳停留结束。",
+        "design_id": "176c0963-a231-48c0-8183-ffe089dd735f",
+        "superseded_by": null,
+        "deleted_at": null
+      }
+    ],
+    "visual_profiles": [],
+    "shot_visual_bindings": [],
+    "created_profiles": 0,
+    "created_shots": 3,
+    "updated_shot_ids": [],
+    "replayed": false
+  },
+  "repeated_save": {
+    "replayed": true,
+    "counts_unchanged": true
+  },
+  "selected_import": {
+    "scene_ids": [],
+    "design_id": "176c0963-a231-48c0-8183-ffe089dd735f",
+    "target_canvas_id": "b5f604d4bd6848c2adaeaf98d6d4eec8",
+    "shots": [
+      {
+        "id": "ebcab3b34688436b9bc584bdfed1960d",
+        "project_id": "d1515fd3e6f74f769683b4aa39ed3eea",
+        "position": 0,
+        "title": "雨巷里的纸船",
+        "prompt": "雨停后的巷口，一只折好的白色纸船浮在浅水洼，建立安静空间与纸船位置。",
+        "duration": 4,
+        "selected_asset_id": null,
+        "created_at": "2026-11-03T17:05:09.406Z",
+        "source_scene_id": null,
+        "storyboard_revision": 0,
+        "start_state": "白色纸船停在水洼中央，船头朝右，左侧暖灯反光稳定。",
+        "end_state": "纸船漂至水洼右侧边缘，船头仍朝右。",
+        "cut_note": "按纸船向右的运动接下一镜，保持暖光来自左侧。",
+        "image_prompt": "单幅首帧，雨后石板巷口，低机位中景，白色纸船停在浅水洼中央，左侧暖灯光映在湿石板上，无人物，无字幕。",
+        "video_prompt": "固定低机位，细小水流推动白色纸船缓缓朝画面右侧漂移，船身保持完整，远处轻微滴水声。",
+        "design_id": "176c0963-a231-48c0-8183-ffe089dd735f",
+        "superseded_by": null,
+        "deleted_at": null
+      }
+    ],
+    "visual_profiles": [],
+    "shot_visual_bindings": [],
+    "created_profiles": 0,
+    "created_shots": 0,
+    "updated_shot_ids": []
+  },
+  "counts_before_save": {
+    "projects": 2,
+    "script_scenes": 0,
+    "script_documents": null,
+    "shots": 0,
+    "storyboard_designs": 0,
+    "storyboard_clip_plans": 0,
+    "project_canvases": 0,
+    "canvas_nodes": 0,
+    "visual_profiles": 0,
+    "jobs": 0
+  },
+  "counts_after_save": {
+    "projects": 2,
+    "script_scenes": 0,
+    "script_documents": null,
+    "shots": 3,
+    "storyboard_designs": 1,
+    "storyboard_clip_plans": 1,
+    "project_canvases": 0,
+    "canvas_nodes": 0,
+    "visual_profiles": 0,
+    "jobs": 0
+  },
+  "counts_after_import": {
+    "projects": 2,
+    "script_scenes": 0,
+    "script_documents": null,
+    "shots": 3,
+    "storyboard_designs": 1,
+    "storyboard_clip_plans": 1,
+    "project_canvases": 1,
+    "canvas_nodes": 0,
+    "visual_profiles": 0,
+    "jobs": 0
+  },
+  "generation_skill_checks": [
+    {
+      "type": "clip-plan",
+      "timestamp": "2026-11-03T17:05:09.362Z",
+      "stream": false,
+      "remote_model": "qa-clip-text",
+      "prompt_bytes": 40496,
+      "prompt_sha256": "894dd9333b91dc8017d45598a9169c49df1fdbc80811376e1a0f177630addd98",
+      "skill_revision": "fdb7b7c58017e3eae64eca382c2a85ede368dab0",
+      "skill_header_seen": true,
+      "body_markers": {
+        "起点 → 唯一动作 → 终点": true,
+        "冻结关键帧只投影镜头起点": true,
+        "切镜必须带来信息、权力、情绪、空间或节奏变化": true,
+        "视频模型不会删掉多出来的动作，而是把它们压到看不清": true
+      },
+      "base_contract_seen": true,
+      "fixture_text_seen": true
+    },
+    {
+      "type": "clip-plan",
+      "timestamp": "2026-11-03T17:05:09.382Z",
+      "stream": false,
+      "remote_model": "qa-clip-text",
+      "prompt_bytes": 40496,
+      "prompt_sha256": "894dd9333b91dc8017d45598a9169c49df1fdbc80811376e1a0f177630addd98",
+      "skill_revision": "fdb7b7c58017e3eae64eca382c2a85ede368dab0",
+      "skill_header_seen": true,
+      "body_markers": {
+        "起点 → 唯一动作 → 终点": true,
+        "冻结关键帧只投影镜头起点": true,
+        "切镜必须带来信息、权力、情绪、空间或节奏变化": true,
+        "视频模型不会删掉多出来的动作，而是把它们压到看不清": true
+      },
+      "base_contract_seen": true,
+      "fixture_text_seen": true
+    },
+    {
+      "type": "clip-plan",
+      "timestamp": "2026-11-03T17:05:09.394Z",
+      "stream": false,
+      "remote_model": "qa-clip-text",
+      "prompt_bytes": 2346,
+      "prompt_sha256": "2a2e2772995ee95ba3e93e91fc987cf590f45e43ca11c810e93160b0fed74ef4",
+      "skill_revision": "fdb7b7c58017e3eae64eca382c2a85ede368dab0",
+      "skill_header_seen": false,
+      "body_markers": {
+        "起点 → 唯一动作 → 终点": false,
+        "冻结关键帧只投影镜头起点": false,
+        "切镜必须带来信息、权力、情绪、空间或节奏变化": false,
+        "视频模型不会删掉多出来的动作，而是把它们压到看不清": false
+      },
+      "base_contract_seen": true,
+      "fixture_text_seen": true
+    }
+  ],
+  "verified_at": "2026-11-03T17:05:09.415Z"
+}

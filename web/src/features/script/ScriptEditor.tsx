@@ -11,9 +11,10 @@ import { api, json } from '../../shared/api/api'
 import type { Model, PlannedScene, PlannedShot, PlannedShotCreationResult, ProjectDetail, Provider, ScriptArtifactType, ScriptGenerationOptions, ShotPlanResult } from '../../shared/api/api'
 import { scriptArtifactLabels, scriptStageArtifacts, scriptStageForArtifact, type ScriptStage } from '@video-studio/shared/script/script-stage-content'
 import { workflowProgress } from '@video-studio/shared/script/script-stage-access'
+import { maxScriptSceneDuration } from '@video-studio/shared/script/script-duration'
 import './script-editor.css'
 import StoryboardPlanner from '../storyboard/StoryboardPlanner'
-import { preferredModel } from '../models/model-defaults'
+import { useSharedModelSelection } from '../models/useSharedModelSelection'
 import { useAppDialog } from '../../shared/ui/AppDialog'
 import ThemeToggle from '../../shared/ui/ThemeToggle'
 import { applyTextFormat, type TextFormat } from '../../shared/lib/editor/text-editor'
@@ -185,6 +186,7 @@ export interface ScriptEditorProps {
   onRefresh: () => Promise<ProjectDetail | undefined>
   onOpenModels: () => void
   onOpenCanvas: () => void
+  onOpenShotManager?: (sceneIds?: string[]) => void
   onNotice: (message: string) => void
   onDirtyChange?: (dirty: boolean) => void
   onSupplementStage?: (stage: Exclude<ScriptStage, 'episode'>) => void
@@ -201,7 +203,7 @@ function sceneFields(scene: Partial<SceneFields>): SceneFields {
     dialogue: typeof scene.dialogue === 'string' ? scene.dialogue : '',
     narration: typeof scene.narration === 'string' ? scene.narration : '',
     duration: typeof scene.duration === 'number' && Number.isFinite(scene.duration)
-      ? Math.min(30, Math.max(1, Math.round(scene.duration))) : 5,
+      ? Math.min(maxScriptSceneDuration, Math.max(1, Math.round(scene.duration))) : 5,
   }
 }
 
@@ -254,7 +256,7 @@ function plannedSceneIssue(scene: PlannedScene): string | null {
   return null
 }
 
-function ScriptEditor({ detail, models, providers, busy = false, initialSection, onRefresh, onOpenModels, onOpenCanvas, onNotice, onDirtyChange, onSupplementStage }: ScriptEditorProps) {
+function ScriptEditor({ detail, models, providers, busy = false, initialSection, onRefresh, onOpenModels, onOpenCanvas, onOpenShotManager, onNotice, onDirtyChange, onSupplementStage }: ScriptEditorProps) {
   const { confirm, dialog } = useAppDialog()
   const [draft, setDraft] = useState<ScriptDraft>(() => fromDetail(detail))
   const [saved, setSaved] = useState<ScriptDraft>(() => fromDetail(detail))
@@ -316,9 +318,9 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
   const planPromptEditedRef = useRef(false)
   const planPromptRequestId = useRef(0)
   const [planPromptRefresh, setPlanPromptRefresh] = useState(0)
-  const [planModelId, setPlanModelId] = useState('')
   const [shotsPerScene, setShotsPerScene] = useState<number | string>(3)
   const [plannedScenes, setPlannedScenes] = useState<PlannedScene[] | null>(null)
+  const [planSourceModelId, setPlanSourceModelId] = useState('')
   const [planRequestId, setPlanRequestId] = useState<string | null>(null)
   const [planError, setPlanError] = useState<string | null>(null)
   const [planRawOutput, setPlanRawOutput] = useState<string | null>(null)
@@ -344,17 +346,16 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
   }, [detail.shots])
   const linkedSceneIds = useMemo(() => new Set(existingDurationByScene.keys()), [existingDurationByScene])
   const availableModels = models.filter((model) => model.modality === 'text' && model.enabled && providers.some((provider) => provider.id === model.provider_id && provider.enabled && provider.adapter !== 'demo'))
-  useEffect(() => {
-    setPlanModelId(current => availableModels.some(model => model.id === current)
-      ? current : preferredModel(availableModels)?.id || '')
-  }, [models, providers])
+  const { modelId: planModelId, selectModel: selectPlanModel } = useSharedModelSelection('text', availableModels,
+    { locked: busy || !!working, active: showPlan })
   const selectedScenes = draft.scenes.filter((scene) => scene.id && selectedSceneIds.includes(scene.id))
   const quickConvertScenes = selectedScenes.filter((scene) => !linkedSceneIds.has(scene.id!))
   const selectedPlanModelAvailable = availableModels.some((model) => model.id === planModelId)
   const validShotsPerScene = Number.isInteger(Number(shotsPerScene)) && Number(shotsPerScene) >= 2 && Number(shotsPerScene) <= 5
   const shortScenes = selectedScenes.filter((scene) => scene.duration < Number(shotsPerScene))
   const planIssues = plannedScenes?.map(plannedSceneIssue) || []
-  const planReady = !!planRequestId && !!plannedScenes?.length && plannedScenes.length === selectedScenes.length && new Set(plannedScenes.map((scene) => scene.scene_id)).size === selectedScenes.length && plannedScenes.every((scene) => selectedScenes.some((selected) => selected.id === scene.scene_id && selected.duration === scene.scene_duration)) && planIssues.every((issue) => !issue)
+  const planModelChanged = !!plannedScenes && planSourceModelId !== planModelId
+  const planReady = !planModelChanged && !!planRequestId && !!plannedScenes?.length && plannedScenes.length === selectedScenes.length && new Set(plannedScenes.map((scene) => scene.scene_id)).size === selectedScenes.length && plannedScenes.every((scene) => selectedScenes.some((selected) => selected.id === scene.scene_id && selected.duration === scene.scene_duration)) && planIssues.every((issue) => !issue)
   const totalDuration = draft.scenes.reduce((sum, scene) => sum + scene.duration, 0)
   const disabled = busy || !!working
   const canUndo = historyRevision >= 0 && historyRef.current.past.length > 0
@@ -537,10 +538,10 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
       setError(`第 ${emptyHeading + 1} 场需要填写场景标题`)
       return
     }
-    const invalidDuration = draft.scenes.findIndex((scene) => !Number.isInteger(scene.duration) || scene.duration < 1 || scene.duration > 30)
+    const invalidDuration = draft.scenes.findIndex((scene) => !Number.isInteger(scene.duration) || scene.duration < 1 || scene.duration > maxScriptSceneDuration)
     if (invalidDuration >= 0) {
       setActiveSceneId(draft.scenes[invalidDuration].clientId)
-      setError(`第 ${invalidDuration + 1} 场的预计时长应为 1-30 秒的整数`)
+      setError(`第 ${invalidDuration + 1} 场的预计时长应为 1-${maxScriptSceneDuration} 秒的整数`)
       return
     }
     setWorking('save')
@@ -664,6 +665,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
         }
       })
       setPlannedScenes(plan)
+      setPlanSourceModelId(planModelId)
       setPlanRequestId(crypto.randomUUID())
       setPlanRawOutput(null)
     } catch (issue) {
@@ -804,7 +806,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
       </div>
       <div className="script-page-actions">
         <ActionIcon type="button" className={`script-editor-search-toggle ${search.opened ? 'is-active' : ''}`} aria-label="全文搜索" title="全文搜索（Ctrl/Cmd + F）" aria-expanded={search.opened} aria-controls="script-full-text-search" onClick={search.open} data-workspace-control=""><Search size={16} /></ActionIcon>
-        <Button className="script-canvas-action" variant="subtle" title="规划并确认分镜后加入画布" leftSection={<Plus size={15} />} disabled={disabled || dirty || !productionSceneCandidates.length} onClick={() => { setPlanningSceneIds(productionSceneCandidates.flatMap(scene => scene.id ? [scene.id] : [])); setStoryboardOpen(true) }}>加入画布</Button>
+        <Button className="script-canvas-action" variant="subtle" title="规划并保存分镜方案" leftSection={<Plus size={15} />} disabled={disabled || dirty || !productionSceneCandidates.length} onClick={() => { const ids = productionSceneCandidates.flatMap(scene => scene.id ? [scene.id] : []); if (onOpenShotManager) onOpenShotManager(ids); else { setPlanningSceneIds(ids); setStoryboardOpen(true) } }}>规划分镜</Button>
         <Button leftSection={working === 'save' ? <LoaderCircle size={15} className="spin" /> : <Save size={15} />} onClick={saveScript} disabled={!dirty || disabled}>保存</Button>
         <ActionIcon type="button" className="script-editor-exit" onClick={onOpenCanvas} aria-label="退出编辑器" title="退出编辑器" data-workspace-control=""><Minimize2 size={16} /></ActionIcon>
         <ThemeToggle />
@@ -925,7 +927,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
       <div className="script-modal-stack">
         <p className="script-confirm-copy">将所选 {selectedScenes.length} 场规划为多个镜头。已有分镜的场次会追加新镜头，原有镜头和素材保持不变；新增镜头会增加项目总时长。</p>
         <div className="script-plan-settings">
-          <Select label="文本模型" placeholder="选择已添加的模型" searchable allowDeselect={false} value={planModelId || null} disabled={disabled} data={availableModels.map((model) => ({ value: model.id, label: model.name }))} onChange={(value) => { if (value !== planModelId) void (async () => { if (await discardPlanPreview()) setPlanModelId(value || '') })() }} />
+          <Select label="文本模型" placeholder="选择已添加的模型" searchable allowDeselect={false} value={planModelId || null} disabled={disabled} data={availableModels.map((model) => ({ value: model.id, label: model.name }))} onChange={(value) => { if (value !== planModelId) void (async () => { if (await discardPlanPreview()) selectPlanModel(value || '') })() }} />
           <NumberInput label="每场目标镜头数" min={2} max={5} value={shotsPerScene} disabled={disabled} onChange={(value) => { if (value !== shotsPerScene) void (async () => { if (await discardPlanPreview()) setShotsPerScene(value) })() }} />
         </div>
         <div className="script-prompt-editor">
@@ -937,6 +939,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
         {!availableModels.length && <Button className="script-model-link" onClick={() => void (async () => { if (await closePlan()) onOpenModels() })()} data-workspace-control="" variant="subtle">前往模型设置添加文本模型 <ArrowRight size={15} /></Button>}
         {shortScenes.length > 0 && validShotsPerScene && <div className="script-plan-hint">{shortScenes.length === 1 ? `「${shortScenes[0].heading}」` : `${shortScenes.length} 个短场次`}少于目标镜头数。规划时会减少镜头，确保每个镜头至少 1 秒。</div>}
         {planError && <div className="script-error" role="alert">{planError}</div>}
+        {planModelChanged && <div className="script-error" role="alert">文本模型已变化，当前预览已保留，请重新规划后创建分镜。</div>}
         {planRawOutput && <div className="script-raw-output"><strong>模型原始输出</strong><pre>{planRawOutput}</pre></div>}
         {plannedScenes ? <div className="script-plan-preview">
           <div className="script-plan-heading"><strong>镜头规划</strong><span>{plannedScenes.reduce((sum, scene) => sum + scene.shots.length, 0)} 个镜头 · 可修改后创建</span></div>
@@ -978,7 +981,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
     <Modal opened={!!sceneForDeletion} onClose={() => setDeleteSceneId(null)} title="删除场次" classNames={{ content: 'script-modal-content', body: 'script-modal-body' }}>
       {sceneForDeletion && <div className="script-modal-stack"><p className="script-confirm-copy">删除「{sceneForDeletion.heading || '未命名场次'}」？保存剧本后才会移除该场次。已制作的镜头和素材会保留，但镜头会失去与该场次的关联。</p><div className="script-modal-actions"><Button variant="default" onClick={() => setDeleteSceneId(null)}>取消</Button><Button className="script-danger-button" color="red" onClick={() => removeScene(sceneForDeletion.clientId)} leftSection={<Trash2 size={16} />}>删除场次</Button></div></div>}
     </Modal>
-    <StoryboardPlanner opened={storyboardOpen} onClose={() => setStoryboardOpen(false)} detail={detail} models={availableModels} initialSceneIds={planningSceneIds}
+    <StoryboardPlanner intent="plan" opened={storyboardOpen} onClose={() => setStoryboardOpen(false)} detail={detail} models={availableModels} initialSceneIds={planningSceneIds}
       onRefresh={onRefresh} onOpenCanvas={onOpenCanvas} onNotice={onNotice} />
     {dialog}
   </section>

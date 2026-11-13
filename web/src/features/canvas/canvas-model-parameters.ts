@@ -178,6 +178,8 @@ export function imagePreferencePrompt(model: Pick<Model, 'modality' | 'settings'
 }
 
 export function modelDefaultResolution(model: Model | undefined, resolutions: string[]): string {
+  if (model?.modality === 'video' && typeof model.settings.default_resolution === 'string'
+    && resolutions.includes(model.settings.default_resolution)) return model.settings.default_resolution
   if (model?.modality === 'video' && model.settings.video_reference_profile === 'seedance_2_5') {
     const configured = model.settings.default_resolution
     return typeof configured === 'string' && resolutions.includes(configured) ? configured

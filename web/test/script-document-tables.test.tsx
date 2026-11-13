@@ -43,6 +43,18 @@ test('director document reader renders accessible scene tables with header, rows
   } finally { dom.window.close() }
 })
 
+test('director document previews preserve deep chapter heading levels without Markdown markers', () => {
+  const text = '#### 第一篇章：幽冥专列篇\n#####冲突与对决\n######1、结算与交接'
+  const dom = new JSDOM(renderToStaticMarkup(<MantineProvider env="test"><DirectorDocumentBody text={text} /></MantineProvider>))
+  try {
+    const doc = dom.window.document
+    assert.equal(doc.querySelector('h4')?.textContent, '第一篇章：幽冥专列篇')
+    assert.equal(doc.querySelector('h5')?.textContent, '冲突与对决')
+    assert.equal(doc.querySelector('h6')?.textContent, '1、结算与交接')
+    assert.doesNotMatch(doc.body.textContent || '', /#/)
+  } finally { dom.window.close() }
+})
+
 test('unsafe HTML remains literal table text and ordinary document paragraphs stay readable', () => {
   const dom = new JSDOM(renderToStaticMarkup(<MantineProvider env="test"><DirectorDocumentBody text={'说明正文。\n| 人物 | 说明 |\n| --- | --- |\n| 林晚\\|奶奶 | <img src=x onerror=alert(1)> |\n\n结尾正文。'} /></MantineProvider>))
   try {

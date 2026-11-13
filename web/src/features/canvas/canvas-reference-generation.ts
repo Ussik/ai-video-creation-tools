@@ -11,7 +11,7 @@ import { disconnectedPromptReferenceIds } from './canvas-prompt-references'
 import { stripVisualProfileBaseReference, withVisualProfileBaseReference } from './canvas-profile-reference-prompt'
 import { resolveCanvasVisualBoardReferences } from './canvas-visual-board-references'
 import { hasVisualBoardPromptContent, preserveAbsentVisualBoardPrimary } from '@video-studio/shared/visuals/visual-board-document'
-import { isPromptSectionDocument, parsePromptSectionDocument, reconcilePromptSectionDocument, serializePromptSectionDocument } from '@video-studio/shared/visuals/prompt-section-document'
+import { isPromptSectionDocument, parsePromptSectionDocument, reconcilePromptSectionDocument, recoverLegacyPromptSectionDocument, serializePromptSectionDocument } from '@video-studio/shared/visuals/prompt-section-document'
 import { findPromptParameterConflicts } from '@video-studio/shared/visuals/prompt-parameter-conflicts'
 import { rewriteCanvasPromptSections } from './canvas-prompt-composition'
 import { withVisualProfilePrompt } from '@video-studio/shared/visuals/visual-profile-prompt'
@@ -73,7 +73,8 @@ export async function prepareCanvasVisualBoard(node: CanvasNode, profile: Visual
     const tokenize = (value: string) => tokenizePromptReferenceNumbers(value, references.assetIds)
     const current = rewriteCanvasPromptSections(savedSections, tokenize)
       ?? parsePromptSectionDocument(tokenize(document), { sourceText: tokenize(node.settings.prompt_template || '') })
-    const sections = reconcilePromptSectionDocument(preserveAbsentVisualBoardPrimary(current, tokenize(nextTemplate)), tokenize(nextTemplate))
+    const recovered = recoverLegacyPromptSectionDocument(current, tokenize(node.settings.prompt_template || ''))
+    const sections = reconcilePromptSectionDocument(preserveAbsentVisualBoardPrimary(recovered, tokenize(nextTemplate)), tokenize(nextTemplate))
     if (sections.blocks.some(block => !block.deleted && block.pendingSourceText !== undefined)) {
       throw new Error('设定来源已更新，请打开此节点，在「来源与修改记录」中确认保留本节点修改或跟随项目')
     }

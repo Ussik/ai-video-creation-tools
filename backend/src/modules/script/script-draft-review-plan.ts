@@ -26,7 +26,7 @@ const acceptance: Record<StageArtifactType, string> = {
   prop_visuals: '已要求的辨识信息与具体道具事实相容。',
   prop_functions: '剧情实际依赖的道具功能和使用条件能解释事件，不强加普通物件的能力。',
   prop_continuity: '持有、转移、使用与最终去向符合已写事件。',
-  episode_script: '本集事件因果、人物行动、正文与分场一致，承接已有大纲；必要动作和表达可理解。',
+  episode_script: '本集事件因果、人物行动、正文与分场一致，承接已有大纲；必要动作和表达可理解。逐场核对估计秒数能否容纳完整对白、旁白、动作、人物反应与必要停顿，再核对本集合计及明确时长要求。按实际表演语义判断，不按固定字速、关键词、统一每场秒数或仅因2秒就判错；2秒无声短动作可以成立，明显无法在估时内完成的完整对话或动作链属于 blocking。区分严格时长与约略目标，不能因合理估计误差阻断；明确无法兼容时引用具体场次时长或正文证据，说明冲突，不删除对白、旁白或必要动作来凑时长。',
 }
 
 export function draftReviewAcceptance(sources: DraftReviewSource[]): string {
@@ -87,32 +87,9 @@ export function draftReviewTaskSteps(steps: GenerationSteps | undefined, id: str
   }
 }
 
-/** Only known task-specific repair decisions are scoped. Full manuscript,
- * creator messages, shared facts and saved documents remain intact. The final
- * consistency task receives the original context without this projection. */
-export function draftReviewTaskContext(context: unknown, sources: DraftReviewSource[]): unknown {
-  if (!context || typeof context !== 'object' || Array.isArray(context)) return context
-  const record = context as Record<string, unknown>, history = record.resolved_findings
-  if (!history || typeof history !== 'object' || Array.isArray(history)) return context
-  const resolution = history as Record<string, unknown>
-  if (!Array.isArray(resolution.decisions) || !Array.isArray(resolution.summaries)) return context
-  const keys = new Set(sources.map(source => source.key))
-  const decisions = resolution.decisions.filter(item => !item || typeof item !== 'object' ||
-    !('source_key' in item) || keys.has(String(item.source_key)))
-  // A reply such as “use option two / same as above” can depend on another
-  // document's history. Prefer a larger exact input over breaking that link.
-  const referencesHistory = /(?:方案|选项)\s*[一二三四五六七八九十百零〇两\dA-Za-z]+|同上|同前|前述|上述|上文|(?:原|之前|此前|上次)(?:的)?(?:方案|建议|约定|决定|规则|设定|答案)|\b(?:option|plan)\s*[a-z\d]+\b/i
-  if (decisions.some(item => item && typeof item === 'object' &&
-    ['decision', 'answer'].some(key => key in item && typeof (item as Record<string, unknown>)[key] === 'string' &&
-      referencesHistory.test((item as Record<string, unknown>)[key] as string)))) return context
-  const summaryIds = new Set(decisions.flatMap(item => item && typeof item === 'object' && 'summary_id' in item ? [item.summary_id] : []))
-  const summaries = resolution.summaries.filter(item => !item || typeof item !== 'object' || !('id' in item) || summaryIds.has(item.id))
-  // A group with no decision of its own sees exactly what it saw before any
-  // decision existed. Otherwise an unrelated document's repair would change this
-  // group's input and force it to be reviewed again.
-  if (!decisions.length && !summaries.length) {
-    const { resolved_findings: _unrelated, ...withoutHistory } = record
-    return withoutHistory
-  }
-  return { ...record, resolved_findings: { ...resolution, decisions, summaries } }
+/** A source_key locates a finding; it does not prove that the adopted decision
+ * is independent of other documents. Retain history until planning supplies
+ * explicit, validated dependency metadata. Candidate review groups stay scoped. */
+export function draftReviewTaskContext(context: unknown, _sources: DraftReviewSource[]): unknown {
+  return context
 }

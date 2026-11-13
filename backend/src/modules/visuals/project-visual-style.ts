@@ -4,7 +4,7 @@ import type { EffectiveVisualStyle, ProjectVisualStyle, VisualStyleDetails } fro
 import { effectiveVisualStyleOrigin, isEffectiveVisualStyle, withProjectStyle, styleReferenceWarning } from '@video-studio/shared/visuals/visual-style'
 import { getManagedPromptBlocks } from '@video-studio/shared/visuals/prompt-document'
 
-export function projectVisualStyle(projectId: string): ProjectVisualStyle {
+export function projectVisualStyle(projectId: string, options: { includeConfirmedContext?: boolean } = {}): ProjectVisualStyle {
   const row = one<{ generation_options: string }>('SELECT generation_options FROM scripts WHERE project_id=?', projectId)
   let settings: Record<string, unknown> = {}
   try { settings = JSON.parse(row?.generation_options || '{}') } catch { /* Old projects may have no settings. */ }
@@ -17,9 +17,10 @@ export function projectVisualStyle(projectId: string): ProjectVisualStyle {
   }))
   if (rawDetails.exclusions?.length) details.exclusions = rawDetails.exclusions
   // Compatibility is verbatim confirmed context, not a keyword guess or a global anime default.
-  const decisions = !label ? all<{ topic: string; content: string }>('SELECT topic, content FROM script_story_decisions WHERE project_id=? ORDER BY updated_at DESC, id LIMIT 30', projectId) : []
+  const includeConfirmedContext = options.includeConfirmedContext !== false
+  const decisions = !label && includeConfirmedContext ? all<{ topic: string; content: string }>('SELECT topic, content FROM script_story_decisions WHERE project_id=? ORDER BY updated_at DESC, id LIMIT 30', projectId) : []
   const genre = typeof settings.genre === 'string' ? settings.genre.trim() : ''
-  const context = !label && (genre || decisions.length) ? JSON.stringify({ genre,
+  const context = !label && includeConfirmedContext && (genre || decisions.length) ? JSON.stringify({ genre,
     decisions: decisions.map(item => ({ topic: item.topic, content: item.content.slice(0, 600) })) }) : ''
   const source = label ? 'settings' as const : context ? 'confirmed_context' as const : 'unspecified' as const
   const version = createHash('sha256').update(JSON.stringify([source, label, details, context])).digest('hex')

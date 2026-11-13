@@ -56,7 +56,7 @@ test('HTTP character generation recovers an oversized unfinished relationship un
     const review = draftCompletenessFixtureResponse(init)
     if (review) {
       reviewCalls++
-      assert.equal(writerCalls, 4, 'independent review waits until the complete relationship document exists')
+      assert.equal(writerCalls, 5, 'independent review waits until both individual documents and every relationship block are complete')
       assert.ok(prompt.includes(JSON.stringify(sourceText)), 'review receives the complete uploaded manuscript')
       assert.ok(prompt.includes(JSON.stringify(creatorRequest)), 'review receives the exact creator request')
       assert.ok(prompt.includes(JSON.stringify(retainedCharacters.content)), 'review includes the retained character document verbatim')
@@ -74,22 +74,34 @@ test('HTTP character generation recovers an oversized unfinished relationship un
     const contract = body.response_format.json_schema
     if (writerCalls === 1) {
       assert.equal(contract.name, 'workflow_draft')
-      return modelReply('{"artifacts":[' + JSON.stringify(retainedCharacters) + ',{"artifact_type":"relationships","title":"人物关系","content":"' + incompleteMarker, 'length')
+      const artifacts = contract.schema.properties.artifacts
+      const type = artifacts.items.properties.artifact_type
+      assert.deepEqual(type.enum || [type.const], ['characters'], 'the first model subtask authors only character biographies')
+      assert.equal(artifacts.maxItems, 1)
+      return modelReply(JSON.stringify({ artifacts: [retainedCharacters], scenes: [] }))
+    }
+    assert.ok(prompt.includes(JSON.stringify(retainedCharacters)), 'the relationship subtask and every continuation receive the completed character document verbatim')
+    if (writerCalls === 2) {
+      assert.equal(contract.name, 'workflow_draft')
+      const artifacts = contract.schema.properties.artifacts
+      const type = artifacts.items.properties.artifact_type
+      assert.deepEqual(type.enum || [type.const], ['relationships'], 'the second model subtask authors only character relationships')
+      assert.equal(artifacts.maxItems, 1)
+      return modelReply('{"artifacts":[{"artifact_type":"relationships","title":"人物关系","content":"' + incompleteMarker, 'length')
     }
     assert.equal(contract.name, 'script_stage_blocks')
     const blocks = contract.schema.properties.blocks
-    assert.ok(prompt.includes(JSON.stringify(retainedCharacters)), 'continuation preserves completed character text')
     assert.equal(blocks.items.properties.scenes.maxItems, 0, 'relationship blocks cannot request episode scenes')
-    if (writerCalls === 2) {
+    if (writerCalls === 3) {
       assert.equal(blocks.maxItems, 200)
       return modelReply('{"blocks":[{"id":"relationships:all","title":"人物关系","content":"' + incompleteMarker.repeat(2000), 'length')
     }
-    if (writerCalls === 3) {
+    if (writerCalls === 4) {
       assert.equal(blocks.maxItems, 1, 'a truncated first block focuses the next native schema')
       assert.match(prompt, /本轮至多返回一个尚未完成的最小完整语义单元/)
       return modelReply(JSON.stringify({ blocks: [first], complete: false }))
     }
-    assert.equal(writerCalls, 4, 'a completed block prevents another identical stalled request')
+    assert.equal(writerCalls, 5, 'a completed block prevents another identical stalled request')
     assert.equal(blocks.maxItems, 200, 'successful focused progress restores batching')
     assert.ok(prompt.includes(JSON.stringify(first)), 'the next round receives the accepted relationship block verbatim')
     return modelReply(JSON.stringify({ blocks: [second], complete: true }))
@@ -132,7 +144,7 @@ test('HTTP character generation recovers an oversized unfinished relationship un
   const response = await pending
   assert.equal(response.statusCode, 200, response.body)
   const result = response.json()
-  assert.equal(writerCalls, 4)
+  assert.equal(writerCalls, 5)
   assert.equal(reviewCalls, 1)
   assert.equal(analysisCalls, 3, 'ready source analysis does not repeat during generation or review')
   assert.equal(result.tool_draft.status, 'pending')

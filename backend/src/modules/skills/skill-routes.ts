@@ -19,18 +19,20 @@ import { resolvePromptReferences, tokenizePromptReferenceNumbers } from '@video-
 import { parseVisualReferenceSnapshots } from '../visuals/visual-reference-assets.js'
 import { enrichExplicitReferenceBindings } from '@video-studio/shared/visuals/explicit-reference-context'
 import { explicitReferenceProfiles } from '../visuals/explicit-reference-context.js'
-import { seedance2PromptGuidance } from '../generation/seedance-prompt.js'
+import { configuredVideoPromptDialect, seedance2PromptGuidance } from '../generation/seedance-prompt.js'
 import type { TextImageInput } from '../../infrastructure/providers/text-image-input.js'
 import { localImagePixels } from '../canvas/image-prompt-analysis.js'
-import { dialoguePreservation } from '@video-studio/shared/media/video-prompt-checks'
-import { videoContentReviewSchema, videoContentReviewInstructions, videoPromptDiagnostics } from './video-prompt-checks.js'
+import { videoPromptDiagnostics } from './video-prompt-checks.js'
 import { videoReferenceConfigError } from '@video-studio/shared/media/video-reference-config'
 import { normalizeSeedance25Request } from '@video-studio/shared/media/seedance25-request'
 import { MAX_AUXILIARY_SKILLS } from '@video-studio/shared/skills/skill-limits'
-import { addedReferenceCharacterIssue, compileRefinementReferences, referenceIdentityAssignmentIssue, requestedReferenceCharacters, type RefinementReferenceIdentity } from './prompt-refinement-references.js'
+import { skillTaskDefinitions } from '@video-studio/shared/skills/skill-recommendation'
+import { compileRefinementReferences, type RefinementReferenceIdentity } from './prompt-refinement-references.js'
+import { promptRefinementDialogue, promptRefinementSemanticIssues, promptRefinementSemanticSnapshot, reviewPromptRefinement,
+  type PromptRefinementSemanticReview } from './prompt-refinement-semantics.js'
 import { configureSkill, discoverRepository, initSkills, installedSkillDetail, installedSkills, installSkillBundle, loadSkillBundle,
   normalizeSkillRepo, removeInstalledSkill, searchSkillCatalog, skillStages, skillStageLabels, skillUpdateStatus,
-  skillPolicy, setSkillDefault, resetProjectSkillDefault, skillIdsInput, syncInstalledSkills } from './skills.js'
+  skillPolicy, setSkillTaskDefault, resetProjectSkillTaskDefault, resetSkillTaskDefault, skillTaskPolicies, skillIdsInput, syncInstalledSkills } from './skills.js'
 import { resolveCreationSkillContext, type CreationSkillSelector } from './model-skill-selection.js'
 
 const source = z.object({ repo: z.string().min(3).max(220), path: z.string().max(500).default('') }).strict()
@@ -48,16 +50,38 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
   app.get('/api/skills', async () => ({ skills: installedSkills(), stages: skillStages.map(value => ({ value, label: skillStageLabels[value] })) }))
   const selection = z.object({ primary_id: z.string().min(1).nullable(), auxiliary_ids: z.array(z.string().min(1)).max(MAX_AUXILIARY_SKILLS).default([]) }).strict()
   const stageParams = z.object({ stage: z.enum(skillStages), id: z.string().min(1).optional() })
-  app.get('/api/skills/defaults', async () => ({ policies: skillPolicy() }))
-  app.put('/api/skills/defaults/:stage', async request => ({ policies: setSkillDefault(stageParams.parse(request.params).stage, selection.parse(request.body)) }))
-  app.get('/api/projects/:id/skills/defaults', async request => ({ policies: skillPolicy(idParams.parse(request.params).id) }))
+  const taskParams = z.object({ task: z.enum(skillTaskDefinitions.map(task => task.kind)), id: z.string().min(1).optional() })
+  const defaultTask = (stage: typeof skillStages[number]) => stage === 'script' ? 'script_write' as const : stage
+  app.get('/api/skills/defaults', async () => ({ policies: skillPolicy(), task_policies: skillTaskPolicies() }))
+  app.put('/api/skills/defaults/:stage', async request => {
+    setSkillTaskDefault(defaultTask(stageParams.parse(request.params).stage), selection.parse(request.body))
+    return { policies: skillPolicy(), task_policies: skillTaskPolicies() }
+  })
+  app.get('/api/projects/:id/skills/defaults', async request => {
+    const { id } = idParams.parse(request.params)
+    return { policies: skillPolicy(id), task_policies: skillTaskPolicies(id) }
+  })
   app.put('/api/projects/:id/skills/defaults/:stage', async request => {
     const { id, stage } = stageParams.parse(request.params)
-    return { policies: setSkillDefault(stage, selection.parse(request.body), id!) }
+    setSkillTaskDefault(defaultTask(stage), selection.parse(request.body), id!)
+    return { policies: skillPolicy(id), task_policies: skillTaskPolicies(id) }
   })
   app.delete('/api/projects/:id/skills/defaults/:stage', async request => {
     const { id, stage } = stageParams.parse(request.params)
-    return { policies: resetProjectSkillDefault(id!, stage) }
+    resetProjectSkillTaskDefault(id!, defaultTask(stage))
+    return { policies: skillPolicy(id), task_policies: skillTaskPolicies(id) }
+  })
+  app.get('/api/skills/task-defaults', async () => ({ policies: skillTaskPolicies() }))
+  app.get('/api/projects/:id/skills/task-defaults', async request => ({ policies: skillTaskPolicies(idParams.parse(request.params).id) }))
+  app.put('/api/skills/task-defaults/:task', async request => ({ policies: setSkillTaskDefault(taskParams.parse(request.params).task, selection.parse(request.body)) }))
+  app.delete('/api/skills/task-defaults/:task', async request => ({ policies: resetSkillTaskDefault(taskParams.parse(request.params).task) }))
+  app.put('/api/projects/:id/skills/task-defaults/:task', async request => {
+    const { id, task } = taskParams.parse(request.params)
+    return { policies: setSkillTaskDefault(task, selection.parse(request.body), id!) }
+  })
+  app.delete('/api/projects/:id/skills/task-defaults/:task', async request => {
+    const { id, task } = taskParams.parse(request.params)
+    return { policies: resetProjectSkillTaskDefault(id!, task) }
   })
   app.get('/api/skills/search', async request => {
     const input = z.object({ q: z.string().trim().min(2).max(120), offset: z.coerce.number().int().min(0).max(5000).default(0) }).parse(request.query)
@@ -260,9 +284,6 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
         suppliedReferenceIds, overrides: resolvedReferences.replacements, referenceLabel: input.stage === 'video_prompt' ? '图片' : '参考图',
       })
     } catch (issue) { fail(issue instanceof Error ? issue.message : '调整要求中的图片引用无效') }
-    const assignmentIssue = referenceIdentityAssignmentIssue(adjustmentRequest, identities)
-    if (assignmentIssue) fail(assignmentIssue)
-    const addedCharacters = profile ? [] : requestedReferenceCharacters(adjustmentRequest, body, identities)
     const style = projectVisualStyle(id)
     const referenceMode = input.visual_reference_mode || 'profiles'
     const targetSettings: Record<string, unknown> = targetModel ? JSON.parse(targetModel.settings) : {}
@@ -274,6 +295,8 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
     const actualParameters = { ...configuration, modality: input.stage === 'image_prompt' ? 'image' as const : 'video' as const }
     const parameterIssue = promptParameterConflictMessage(isDocument ? originalDocument : body, actualParameters)
     if (parameterIssue) fail(parameterIssue)
+    const adjustmentParameterIssue = promptParameterConflictMessage(adjustmentRequest, actualParameters)
+    if (adjustmentParameterIssue) fail(`调整要求与当前固定参数冲突：${adjustmentParameterIssue}`)
     const relevantProfileIds = [...new Set([...(profile ? [profile.id, ...(profile.base_profile_id ? [profile.base_profile_id] : [])] : []),
       ...promptBindings.flatMap(binding => binding.profile_id || []), ...referenceProfiles.map(reference => reference.id)])].sort()
     // A model result is a draft of the current creative content. Freeze the structured context used
@@ -323,13 +346,13 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
       }) } : null
     const task = `为当前${profile || boardDocument ? '视觉设定图' : input.stage === 'image_prompt' ? '图片' : '视频'}节点整理${boardDocument ? '设定图内容' : '提示词正文'}。保留创作者原有意图，不增加其他镜头。` +
       (isDocument ? `\n画风、${boardDocument ? '其他视觉约束' : '视觉设定'}和参考用途以当前文档的只读结构上下文为准，未提供的区块表示创作者已移除，不得从旧项目设定补回。\n` : `\n${projectStyleInstructions(style)}\n`) +
-      (boardDocument ? '原提示词包含创作者当前的设定图内容及可选补充要求，两者共同构成本次待整理的创作基稿。将补充要求落实进同一份完整设定图内容，只返回一份可编辑内容，不另写一份正文，不复制原文或重复设定；设定图内容中的定义、视图和版式允许按本次要求整理，其余只读区块必须保留。\n' : '') +
+      (boardDocument ? '原提示词包含创作者当前的设定图内容及可选补充要求，两者共同构成本次待整理的创作基稿。只整理语言表达、句子顺序和重复描述，返回一份完整内容，不另写一份正文或重复设定。可以润色人物、场景、道具外观与展示视图的描述表达，但不能改变既定事实、身份、版本、状态、结构、材质、配色和展示要求；所需视图、细节、版式与标注要求均须保留，不新增或删除要求。调整要求及技能建议也不能授权突破此边界；冲突时保留既定事实与展示要求，不自行选择新设定。其余只读区块必须原样保留。\n' : '') +
       '不要改变比例、时长、生成模式或参考图顺序。不得伪造已提供参考图的可见内容。' +
       (images.length ? `本次已附带前 ${images.length} 张实际参考图像素，按原编号诊断姿势、拼版和空间；其余图片只能依据设定文字，不得声称看过。` : '只根据设定文字和明确的参考用途写要求。') +
       '不生成媒体，不添加工作流说明、文件路径、Markdown 文档结构或第二次确认。输出中文；原有逐字对白保持原文。\n' +
       '当前提示词是本次修改基稿；镜头和设定资料用于理解与一致性校验，不得用其中的旧提示词替换本次基稿。' +
       '优先落实明确的本次调整要求，其优先于通用整理建议和 Skill 写作偏好；仅修改要求涉及的方面，保留其余剧情、人物身份、人物关系和逐字对白，不增加无依据的剧情。' +
-      '当调整要求明确加入新角色时，允许相应更新本镜头的人物参与、站位和动作；必须让该角色实际出现在当前画面正文中，并以正确图片编号关联人物参考，不能仅在结尾追加参考用途或以不入镜等否定句代替落实。没有新增人物要求时不强制补写其他人物。' +
+      (boardDocument ? '本次为设定图表达整理，不新增角色或其他独立主体，不改变现有对象的同框、互动和尺度对比要求。' : '当调整要求明确加入新角色时，允许相应更新本镜头的人物参与、站位和动作；必须让该角色实际出现在当前画面正文中，并以正确图片编号关联人物参考，不能仅在结尾追加参考用途或以不入镜等否定句代替落实。没有新增人物要求时不强制补写其他人物。') +
       `调整要求不能覆盖${isDocument ? '当前有效画风' : '项目画风'}、比例、时长、生成模式、实际参考图顺序及输出格式；未填写要求时，沿用原有整理规则。\n` +
       '以下配置、视觉设定和参考图对应关系是只读上下文，仅用于理解正文与检查一致性，不属于待改写文本。' +
       (isDocument ? '只读结构上下文来自创作者当前完整文档，仅供理解和一致性检查，不属于待改写的原提示词。系统会在整理完成后原样放回这些区块，不允许改写、复制或重新生成；空区块列表也不得以旧资料兜底。' : '系统会在整理完成后重新拼接这些固定要求；') +
@@ -346,7 +369,6 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
           view: entry?.view, reference_purpose: entry?.reference_purpose, reference_label: entry?.reference_label, reference_details: entry?.reference_details }
       }))}\n` +
       `已选图片身份标签（仅用于识别素材归属，不是恢复已删除设定或默认用途的依据）：${JSON.stringify(isDocument ? identities.filter(identity => explicitReferenceIds.includes(identity.asset_id)) : identities)}\n` +
-      (addedCharacters.length ? `本次明确新增的画面人物：${JSON.stringify(addedCharacters)}。每个人物必须在正文写明当前画面中的位置或动作，并在同一句中明确其实际参考图编号。\n` : '') +
       (input.stage === 'video_prompt' ? isDocument
         ? '使用“图片N”引用实际图片，N严格对应上述顺序；参考用途以当前文档只读区块为准，不根据旧设定推断或补写用途。\n'
         : `使用“图片N”引用实际图片，N严格对应上述顺序；逐图usage_instruction优先于素材的默认用途。${videoReferenceShotGuidance}不复制信息图拼版、标签或其他角色。\n` : '') +
@@ -359,50 +381,56 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
     const rules = await resolveCreationSkillContext({ stage: input.stage, task, selectedIds: input.skill_ids,
       projectId: id, modelId: input.model_id, select: context.selectSkills, signal: controller.signal, generate,
       assignmentTask: { text: adjustmentRequest, purpose: 'refine', profile_kind: profile?.kind,
-        target_model: target ? `${target.name} ${target.remote_id}` : undefined },
+        target_model: target ? `${target.name} ${target.remote_id}` : undefined, target_dialect: configuredVideoPromptDialect(target) },
     })
-    const result = await generateStructuredOutput('refined_prompt', z.object({ prompt: z.string().trim().min(1).max(80_000) }).strict(),
-      generate, rules.text + '\n【本次任务与输出格式】\n' + task, {
-        signal: controller.signal,
-        validate: value => {
-          const prose = stripManagedPromptBlocks(value.prompt)
-          if (!prose.trim()) fail('整理结果缺少提示词正文，只能返回正文，不能只返回系统固定区块')
-          if (/【(?:镜头视觉设定|图片参考图用途|视频参考图用途|项目画风约束|设定图固定要求|基础身份参考|基础版本与本次状态变化|生成参考图|生成参数约束|图片生成要求|视频生成要求)(?:结束)?】/.test(prose)) {
-            fail('整理结果包含未闭合的系统固定区块，请仅返回正文，不要输出系统区块或标题')
-          }
-          const parameterIssue = promptParameterConflictMessage(prose, actualParameters)
-          if (parameterIssue) fail(parameterIssue)
-          const compiled = compileRefinementReferences(prose, input.reference_asset_ids, { referenceLabel: input.stage === 'video_prompt' ? '图片' : '参考图' })
-          const referenceIssue = referenceIdentityAssignmentIssue(compiled, identities) || addedReferenceCharacterIssue(compiled, addedCharacters)
-          if (referenceIssue) fail(referenceIssue)
-          if (input.stage === 'video_prompt') {
-            const dialogue = dialoguePreservation(body, prose, adjustmentRequest)
-            if (dialogue.missing.length) fail(`整理结果丢失当前基稿的逐字对白：${dialogue.missing.join('；')}。请恢复原话。`)
-          }
-        },
-      })
+    let result!: { prompt: string }, semanticReview!: PromptRefinementSemanticReview, semanticCorrection = ''
+    for (let semanticAttempt = 0; semanticAttempt < 2; semanticAttempt++) {
+      result = await generateStructuredOutput('refined_prompt', z.object({ prompt: z.string().trim().min(1).max(80_000) }).strict(),
+        generate, rules.text + '\n【本次任务与输出格式】\n' + task + semanticCorrection, {
+          signal: controller.signal,
+          validate: value => {
+            const prose = stripManagedPromptBlocks(value.prompt)
+            if (!prose.trim()) fail('整理结果缺少提示词正文，只能返回正文，不能只返回系统固定区块')
+            if (/【(?:镜头视觉设定|图片参考图用途|视频参考图用途|项目画风约束|设定图固定要求|基础身份参考|基础版本与本次状态变化|生成参考图|生成参数约束|图片生成要求|视频生成要求)(?:结束)?】/.test(prose)) {
+              fail('整理结果包含未闭合的系统固定区块，请仅返回正文，不要输出系统区块或标题')
+            }
+            const parameterIssue = promptParameterConflictMessage(prose, actualParameters)
+            if (parameterIssue) fail(parameterIssue)
+            compileRefinementReferences(prose, input.reference_asset_ids, { referenceLabel: input.stage === 'video_prompt' ? '图片' : '参考图' })
+          },
+        })
+      if (contextVersion() !== version) throw Object.assign(new Error('镜头、视觉设定、参考图或生成配置已更新，请重新整理提示词'), { statusCode: 409 })
+      const candidate = compileRefinementReferences(stripManagedPromptBlocks(result.prompt).trim(), input.reference_asset_ids,
+        { referenceLabel: input.stage === 'video_prompt' ? '图片' : '参考图' })
+      semanticReview = await reviewPromptRefinement({ source: body, candidate, adjustment: adjustmentRequest,
+        board: boardDocument || !!profile, stage: input.stage, identities,
+        readonly_context: documentContext || { profile: profileContext, bindings: bindingContext },
+        ...(input.stage === 'video_prompt' && input.check_video_content ? { video_context: { shot: shotContext,
+          generation_duration: configuration.duration, edit_duration: shot?.duration,
+          inspected_asset_ids: inspectedIds, reference_asset_ids: input.reference_asset_ids } } : {}) }, generate, controller.signal)
+      if (contextVersion() !== version) throw Object.assign(new Error('镜头、视觉设定、参考图或生成配置已更新，请重新整理提示词'), { statusCode: 409 })
+      if (semanticReview.request_conflicts.length) fail(semanticReview.request_conflicts.map(conflict => conflict.message).join('\n'))
+      const issues = promptRefinementSemanticIssues(semanticReview, candidate)
+      if (!issues.length) break
+      if (semanticAttempt === 1) fail(`整理草稿语义核对未通过（已修正一次）：${issues.join('\n')}`)
+      semanticCorrection = '\n【独立语义核对修正】\n上次候选未采用。保留当前基稿和本次要求，仅修正以下有依据的问题，返回完整正文：\n'
+        + JSON.stringify({ issues, previous_candidate: candidate })
+    }
     if (contextVersion() !== version) throw Object.assign(new Error('镜头、视觉设定、参考图或生成配置已更新，请重新整理提示词'), { statusCode: 409 })
     const promptBody = compileRefinementReferences(stripManagedPromptBlocks(result.prompt).trim(), input.reference_asset_ids, { referenceLabel: input.stage === 'video_prompt' ? '图片' : '参考图' })
     if (!promptBody) fail('整理结果缺少提示词正文，请重新整理')
-    const contentReview = input.stage === 'video_prompt' && input.check_video_content
-      ? await generateStructuredOutput('video_prompt_content_review', videoContentReviewSchema, generate,
-        videoContentReviewInstructions({ source: body, candidate: promptBody, adjustment: adjustmentRequest, shot: shotContext,
-          generation_duration: configuration.duration, edit_duration: shot?.duration, inspected_asset_ids: inspectedIds, reference_asset_ids: input.reference_asset_ids }), {
-          signal: controller.signal, validate: value => {
-            if (value.reference_findings.some(finding => !inspectedIds.includes(input.reference_asset_ids[finding.image_number - 1] || ''))) {
-              fail('参考图诊断引用了没有提供实际像素的图片')
-            }
-          },
-        }) : undefined
     controller.signal.throwIfAborted()
     if (contextVersion() !== version) throw Object.assign(new Error('镜头、视觉设定、参考图或生成配置已更新，请重新整理提示词'), { statusCode: 409 })
     const diagnostics = input.stage === 'video_prompt' ? videoPromptDiagnostics({ source: body, candidate: promptBody,
       adjustment: adjustmentRequest, generationDuration: configuration.duration, editDuration: shot?.duration,
-      referenceIds: input.reference_asset_ids, inspectedIds, review: contentReview }) : undefined
+      referenceIds: input.reference_asset_ids, inspectedIds, review: semanticReview.content_review || undefined,
+      dialogue: promptRefinementDialogue(semanticReview, promptBody) }) : undefined
+    const semanticSnapshot = promptRefinementSemanticSnapshot(semanticReview, { source: body, candidate: promptBody,
+      adjustment: adjustmentRequest, board: boardDocument || !!profile, stage: input.stage, identities, readonly_context: documentContext })
     if (isDocument) {
       const prompt = boardDocument ? replaceVisualBoardPromptContent(originalDocument, promptBody) : restoreManagedPromptBlocks(promptBody, originalDocument)
       if (prompt.length > 80_000) fail('整理后的提示词过长，请缩短补充要求后重试')
-      return { prompt, prompt_body: boardDocument ? stripManagedPromptBlocks(prompt) : promptBody, prompt_document: true, reference_asset_ids: input.reference_asset_ids, skills: rules.skills, loaded_files: rules.files, skill_assignment: rules.assignment, ...(diagnostics ? { diagnostics } : {}) }
+      return { prompt, prompt_body: boardDocument ? stripManagedPromptBlocks(prompt) : promptBody, prompt_document: true, reference_asset_ids: input.reference_asset_ids, skills: rules.skills, loaded_files: rules.files, skill_assignment: rules.assignment, semantic_review: semanticSnapshot, ...(diagnostics ? { diagnostics } : {}) }
     }
     let refined: string
     if (profile) {
@@ -433,7 +461,7 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
       configuration.background && `背景要求：${configuration.background}。`].filter(Boolean).join('\n')
     const prompt = withProjectStyle(`${refined}\n\n【生成参数约束】\n${parameters}\n【生成参数约束结束】`, style)
     if (prompt.length > 80_000) fail('整理后的提示词过长，请缩短补充要求后重试')
-    return { prompt, prompt_body: promptBody, reference_asset_ids: input.reference_asset_ids, skills: rules.skills, loaded_files: rules.files, skill_assignment: rules.assignment, ...(diagnostics ? { diagnostics } : {}) }
+    return { prompt, prompt_body: promptBody, reference_asset_ids: input.reference_asset_ids, skills: rules.skills, loaded_files: rules.files, skill_assignment: rules.assignment, semantic_review: semanticSnapshot, ...(diagnostics ? { diagnostics } : {}) }
     } catch (error) {
       if (controller.signal.aborted) throw Object.assign(new Error('提示词整理已取消'), { statusCode: 499 })
       throw error

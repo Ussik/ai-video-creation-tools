@@ -1,3 +1,4 @@
+import { sourceScopeResponse } from './helpers/source-scope-response.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -104,6 +105,8 @@ test('a hard requirement spoken early in a normal chat stays in force past the 3
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as NativeBody
     prompts.push(prompt(body))
+    const scope = sourceScopeResponse(prompt(body))
+    if (scope) return textResponse('chat_completions', scope)
     if (prompt(body).includes('本次独立调用只理解创作者意图')) return intentResponse('chat_completions')
     return textResponse('chat_completions', '好的。')
   })
@@ -131,6 +134,8 @@ test('the fixed no-tool path keeps the same earlier creator wording', async t =>
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as NativeBody
     prompts.push(prompt(body))
+    const scope = sourceScopeResponse(prompt(body))
+    if (scope) return textResponse('chat_completions', scope)
     if (prompt(body).includes('本次独立调用只理解创作者意图')) return intentResponse('chat_completions')
     return textResponse('chat_completions', '好的。')
   })
@@ -147,6 +152,8 @@ test('a requirement recorded by the model in a normal task is bound to the real 
   let turn = 0
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as NativeBody
+    const scope = sourceScopeResponse(prompt(body))
+    if (scope) return textResponse('chat_completions', scope)
     if (prompt(body).includes('本次独立调用只理解创作者意图')) return intentResponse('chat_completions')
     turn++
     if (turn === 1) {
@@ -223,6 +230,8 @@ test('after the visible conversation rolls past 80 messages the first creator wo
   globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as NativeBody
     prompts.push(prompt(body))
+    const scope = sourceScopeResponse(prompt(body))
+    if (scope) return textResponse('chat_completions', scope)
     return prompt(body).includes('本次独立调用只理解创作者意图') ? intentResponse('chat_completions') : textResponse('chat_completions', '好的。')
   }) as typeof fetch
   try {
@@ -246,6 +255,8 @@ test('the model itself can read an omitted earlier message back by id with the p
   const seen: Array<{ id: string; value: any }> = []
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as NativeBody
+    const scope = sourceScopeResponse(prompt(body))
+    if (scope) return textResponse('chat_completions', scope)
     if (prompt(body).includes('本次独立调用只理解创作者意图')) return intentResponse('chat_completions')
     turn++
     for (const item of history(body).filter(entry => entry.role === 'tool')) if (!seen.some(entry => entry.id === item.tool_call_id)) seen.push({ id: item.tool_call_id!, value: JSON.parse(item.content!) })
@@ -281,6 +292,8 @@ test('when earlier creator wording does not fit, generation refuses with a clear
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as NativeBody
     prompts.push(prompt(body))
+    const scope = sourceScopeResponse(prompt(body))
+    if (scope) return textResponse('chat_completions', scope)
     if (prompt(body).includes('本次独立调用只理解创作者意图')) return intentResponse('chat_completions')
     return textResponse('chat_completions', '好的。')
   })
@@ -313,6 +326,8 @@ test('a tool conversation under the same pressure still proceeds, with the omitt
   let toolPrompt = ''
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as NativeBody
+    const scope = sourceScopeResponse(prompt(body))
+    if (scope) return textResponse('chat_completions', scope)
     if (prompt(body).includes('本次独立调用只理解创作者意图')) return intentResponse('chat_completions')
     toolPrompt = prompt(body); return textResponse('chat_completions', '好的。')
   })
