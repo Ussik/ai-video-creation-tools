@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { safeModelResult, modelOperationStages, type ModelOperationStage, type ModelResultEvent } from './model-result-observation.js'
 import { getLangfuseTracer, type LangfuseTracer } from '../../infrastructure/observability/langfuse-tracing.js'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { all, db, now, required, type Project } from '../../infrastructure/database/db.js'
@@ -6,7 +7,7 @@ import { createScriptRequestUsage, withTextRequestUsage, type ScriptRequestUsage
 import { currentModelRequestContext, modelTaskPolicies, withModelRequestContext, type ModelTaskPolicy, type ModelUnitProgress } from './model-task-policy.js'
 
 type Owner = 'request' | 'job' | 'director'
-type ObservationOptions = { taskId?: string; projectId?: string; modelId?: string; label: string; owner: Owner; signal?: AbortSignal; policy?: ModelTaskPolicy }
+type ObservationOptions = { taskId?: string; projectId?: string; modelId?: string; label: string; owner: Owner; signal?: AbortSignal; policy?: ModelTaskPolicy; operationStage?: ModelOperationStage }
 const active = new Map<string, AbortController>()
 // Only a live observation may write a reusable durable task ID. Entries are
 // removed on finish/abort, so historical task IDs do not accumulate here.
@@ -21,7 +22,7 @@ export function stopObservedModelTask(id: string): boolean {
   return true
 }
 const numericFields = ['request_bytes', 'response_chars', 'first_event_ms', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'output_limit',
-  'cache_read_tokens', 'cache_write_tokens', 'estimated_input_tokens', 'context_window_tokens', 'reserved_output_tokens', 'http_status', 'framing_reserve_tokens']
+  'cache_read_tokens', 'cache_write_tokens', 'estimated_input_tokens', 'context_window_tokens', 'reserved_output_tokens', 'http_status', 'framing_reserve_tokens', 'unit_index', 'unit_count']
 const stringFields = ['kind', 'transport_kind', 'task_id', 'step_id', 'attempt_id', 'request_id', 'model_id', 'remote_id', 'failure_reason', 'raw_reason', 'delivery',
   'output_parameter', 'budget_mode', 'input_count_method', 'capacity_status', 'output_source', 'capability_source', 'request_purpose', 'upstream_request_id', 'output_limit_reason', 'output_limit_kind', 'estimate_source', 'context_source']
 /** Store diagnostics only; prompts, media, API keys and private reasoning never
@@ -31,6 +32,8 @@ export function safeModelMetrics(value: unknown): Record<string, unknown> {
   const source = value as Record<string, unknown>, result: Record<string, unknown> = {}
   for (const key of numericFields) if (typeof source[key] === 'number' && Number.isFinite(source[key]) && source[key] >= 0) result[key] = source[key]
   for (const key of stringFields) if (typeof source[key] === 'string') result[key] = source[key].slice(0, 300)
+  if (source.usage_admitted === true) result.usage_admitted = true
+  if (modelOperationStages.includes(source.operation_stage as ModelOperationStage)) result.operation_stage = source.operation_stage
   if (typeof source.output_started === 'boolean') result.output_started = source.output_started
   if (typeof source.endpoint === 'string') { try { const url = new URL(source.endpoint); result.endpoint = url.origin + url.pathname } catch { /* no arbitrary text */ } }
   return result
@@ -48,6 +51,9 @@ export function initModelRequestObservation() {
   if (!(db.prepare('PRAGMA table_info(model_request_tasks)').all() as Array<{ name: string }>).some(column => column.name === 'progress')) {
     db.exec("ALTER TABLE model_request_tasks ADD COLUMN progress TEXT NOT NULL DEFAULT '[]'")
   }
+  if (!(db.prepare('PRAGMA table_info(model_request_tasks)').all() as Array<{ name: string }>).some(column => column.name === 'results')) {
+    db.exec("ALTER TABLE model_request_tasks ADD COLUMN results TEXT NOT NULL DEFAULT '[]'")
+  }
 }
 export function createModelRequestObservation(options: ObservationOptions, tracer: LangfuseTracer = getLangfuseTracer()) {
   const id = options.taskId || randomUUID()
@@ -56,7 +62,7 @@ export function createModelRequestObservation(options: ObservationOptions, trace
   const quietTrace = (work: () => void) => { try { work() } catch { /* Tracing never owns execution. */ } }
   let trace: ReturnType<LangfuseTracer['observation']> | undefined
   quietTrace(() => { trace = tracer.observation({ taskId: id, projectId: options.projectId, modelId: options.modelId, owner: options.owner, label: options.label }) })
-  const previous = options.taskId ? db.prepare('SELECT usage,progress FROM model_request_tasks WHERE id=?').get(id) as {usage: string; progress: string} | undefined : undefined
+  const previous = options.taskId ? db.prepare('SELECT usage,progress,results FROM model_request_tasks WHERE id=?').get(id) as {usage: string; progress: string; results: string} | undefined : undefined
   let usage = createScriptRequestUsage()
   if (previous) { try { usage = JSON.parse(previous.usage) as ScriptRequestUsage } catch { throw new Error('任务用量记录损坏，不能丢弃后重新派发') } }
   const countedMediaRequests = new Set(previous ? (db.prepare(`SELECT id FROM model_request_attempts WHERE task_id=?
@@ -64,6 +70,7 @@ export function createModelRequestObservation(options: ObservationOptions, trace
     .all(id) as Array<{ id: string }>).map(row => row.id) : [])
   const progress = new Map<string, ModelUnitProgress>()
   if (previous) for (const item of JSON.parse(previous.progress) as ModelUnitProgress[]) progress.set(item.phase_id, item)
+  const results: ModelResultEvent[] = previous ? (JSON.parse(previous.results || '[]') as unknown[]).map(safeModelResult).filter((value): value is ModelResultEvent => !!value).slice(-128) : []
   const owner = Symbol(id)
   observationOwners.set(id, owner)
   const dispatchedRequests = new Set<string>()
@@ -74,14 +81,14 @@ export function createModelRequestObservation(options: ObservationOptions, trace
     if (!isCurrent()) return
     if (!recorded && !usage.requests && !usage.transport_requests) return
     recorded = true
-    db.prepare(`INSERT INTO model_request_tasks (id,project_id,model_id,label,owner,state,usage,created_at,updated_at,progress) VALUES (?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(id) DO UPDATE SET state=excluded.state,usage=excluded.usage,updated_at=excluded.updated_at,progress=excluded.progress`)
-      .run(id, options.projectId || null, options.modelId || null, options.label, options.owner, state, JSON.stringify(usage), now(), now(), JSON.stringify([...progress.values()]))
+    db.prepare(`INSERT INTO model_request_tasks (id,project_id,model_id,label,owner,state,usage,created_at,updated_at,progress,results) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET state=excluded.state,usage=excluded.usage,updated_at=excluded.updated_at,progress=excluded.progress,results=excluded.results`)
+      .run(id, options.projectId || null, options.modelId || null, options.label, options.owner, state, JSON.stringify(usage), now(), now(), JSON.stringify([...progress.values()]), JSON.stringify(results))
   }
   const observe = (value: unknown, complete: boolean) => {
     if (!canObserve()) return
     const metrics = safeModelMetrics(value), requestId = typeof metrics.request_id === 'string' ? metrics.request_id : undefined
-    if (!complete && requestId && mediaTransports.has(String(metrics.transport_kind)) && !countedMediaRequests.has(requestId)) {
+    if (!complete && metrics.usage_admitted !== true && requestId && mediaTransports.has(String(metrics.transport_kind)) && !countedMediaRequests.has(requestId)) {
       countedMediaRequests.add(requestId)
       const bytes = Number.isSafeInteger(metrics.request_bytes) ? Number(metrics.request_bytes) : 0
       if (metrics.kind === 'generation') { usage.requests++; usage.request_bytes += bytes }
@@ -106,7 +113,7 @@ export function createModelRequestObservation(options: ObservationOptions, trace
   }
   const aborted = () => {
     const code = (options.signal?.reason as { code?: unknown } | undefined)?.code
-    finish(code === 'storyboard_planning_budget_exceeded' || code === 'text_request_budget_exceeded' ? 'failed' : 'cancelled')
+    finish(code === 'storyboard_planning_budget_exceeded' || code === 'text_request_budget_exceeded' || code === 'model_workflow_budget_exceeded' ? 'failed' : 'cancelled')
   }
   options.signal?.addEventListener('abort', aborted, { once: true })
   if (options.signal?.aborted) aborted()
@@ -114,13 +121,23 @@ export function createModelRequestObservation(options: ObservationOptions, trace
     id,
     run<T>(work: () => T): T {
       options.signal?.throwIfAborted()
-      return withModelRequestContext({ taskId: id, policy: options.policy || modelTaskPolicies.text, signal: options.signal,
+      const inherited = currentModelRequestContext()
+      return withModelRequestContext({ operationStage: options.operationStage || inherited?.operationStage,
+        operationStartedAt: inherited?.operationStartedAt ?? Date.now(), operationUnit: inherited?.operationUnit,
+        onResult: value => {
+          if (!canObserve()) return
+          const event = safeModelResult(value); if (!event) return
+          results.push(event); if (results.length > 128) results.shift()
+          recorded = true; safely(persist); quietTrace(() => trace?.result?.(event))
+        }, taskId: id, policy: options.policy || modelTaskPolicies.text, signal: options.signal,
         onProgress: value => { if (canObserve()) safely(() => { progress.set(value.phase_id, value); recorded = true; persist() }) },
         onDispatch: value => {
           if (!canObserve()) return
-          const metrics = safeModelMetrics(value)
+          const context = currentModelRequestContext()
+          const metrics = safeModelMetrics({ ...safeModelMetrics(value), operation_stage: context?.operationStage,
+            unit_index: context?.operationUnit?.unit_index, unit_count: context?.operationUnit?.unit_count })
           if (typeof metrics.request_id === 'string') dispatchedRequests.add(metrics.request_id)
-          safely(() => observe(value, false)); quietTrace(() => { const stage = currentModelRequestContext()?.traceStage; trace?.dispatch({ ...metrics, ...(stage ? { trace_stage: stage } : {}) }) })
+          safely(() => observe(metrics, false)); quietTrace(() => { const stage = currentModelRequestContext()?.traceStage; trace?.dispatch({ ...metrics, ...(stage ? { trace_stage: stage } : {}) }) })
         },
         onMetrics: value => {
           const metrics = safeModelMetrics(value)
@@ -160,10 +177,23 @@ export async function observeModelTask<T>(options: ObservationOptions, work: () 
     // are failures rather than a creator's cancellation. Keep this generic
     // observer independent of the owning business workflow.
     const code = (signal.reason as { code?: unknown } | undefined)?.code
-    const budgetStopped = code === 'storyboard_planning_budget_exceeded' || code === 'text_request_budget_exceeded'
+    const budgetStopped = code === 'storyboard_planning_budget_exceeded' || code === 'text_request_budget_exceeded' || code === 'model_workflow_budget_exceeded'
     observation.finish(signal.aborted && !budgetStopped ? 'cancelled' : 'failed'); throw error
   }
   finally { signal.removeEventListener('abort', releaseActive); releaseActive() }
+}
+function requestStage(path: string, body: unknown): ModelOperationStage | undefined {
+  if (/speech/.test(path)) return 'speech_generation'
+  if (/source/.test(path)) return 'source_analysis'
+  if (/visual-profiles|themes\/visuals|canvas\/prepare/.test(path)) return 'visual_organization'
+  if (/refine-prompt|optimize-prompt|asset-prompt/.test(path)) return 'prompt_optimization'
+  if (/continuity/.test(path)) return 'continuity_review'
+  if (/video-reviews|video-prompt-analysis/.test(path)) return 'video_understanding'
+  if (/image-prompt-analysis/.test(path)) return 'image_understanding'
+  if (/node-proposals/.test(path)) return 'canvas_adjustment'
+  const stage = body && typeof body === 'object' ? (body as { stage?: string; task?: { stage?: string } }).stage || (body as { task?: { stage?: string } }).task?.stage : undefined
+  if (/script/.test(path) && ['outline', 'characters', 'locations', 'props', 'episode'].includes(stage || '')) return `script_${stage}` as ModelOperationStage
+  return undefined
 }
 function requestLabel(path: string) {
   const names: Array<[string,string]> = [['plan-shots','场次分镜'], ['storyboard','分镜规划'], ['visual','视觉设定'], ['prepare','画布准备'], ['refine','提示词精炼'], ['optim','提示词优化'], ['video','视频分析'], ['image','图片分析'], ['source','原稿分析'], ['classif','回复分类'], ['continuity','连续性检查'], ['script','剧本处理'], ['skill','创作技能'], ['generate','素材生成']]
@@ -193,6 +223,7 @@ export function registerModelRequestObservation(app: FastifyInstance, tracer: La
     const controller = new AbortController()
     const body = request.body as { model_id?: unknown } | undefined
     const observation = createModelRequestObservation({ projectId: projectId(request), modelId: typeof body?.model_id === 'string' ? body.model_id : undefined,
+      operationStage: requestStage(request.routeOptions.url || request.url, request.body),
       label: requestLabel(request.routeOptions.url || request.url), owner: 'request', signal: controller.signal }, tracer)
     const abort = () => { if (!reply.raw.writableEnded) { controller.abort(new DOMException('请求已停止；远端计费结果仍以提供商记录为准', 'AbortError')); observation.finish('cancelled'); active.delete(observation.id) } }
     request.raw.once('aborted', abort); reply.raw.once('close', abort)
@@ -210,8 +241,8 @@ export function registerModelRequestObservation(app: FastifyInstance, tracer: La
   app.get('/api/projects/:id/model-requests', async request => {
     const id = (request.params as { id: string }).id
     required<Project>('projects', id)
-    return all<{ id: string; model_id: string | null; label: string; owner: Owner; state: string; usage: string; progress: string; created_at: string; updated_at: string }>(
-      'SELECT * FROM model_request_tasks WHERE project_id=? ORDER BY created_at DESC LIMIT 50', id).map(row => ({ ...row, usage: JSON.parse(row.usage) as ScriptRequestUsage, progress: JSON.parse(row.progress) as ModelUnitProgress[],
+    return all<{ id: string; model_id: string | null; label: string; owner: Owner; state: string; usage: string; progress: string; results: string; created_at: string; updated_at: string }>(
+      'SELECT * FROM model_request_tasks WHERE project_id=? ORDER BY created_at DESC LIMIT 50', id).map(row => ({ ...row, usage: JSON.parse(row.usage) as ScriptRequestUsage, progress: JSON.parse(row.progress) as ModelUnitProgress[], results: JSON.parse(row.results || '[]') as ModelResultEvent[],
         state: row.state === 'running' && !active.has(row.id) ? 'interrupted' : row.state,
         can_cancel: active.has(row.id), attempts: all<{ id: string; state: string; metrics: string }>('SELECT id,state,metrics FROM model_request_attempts WHERE task_id=? ORDER BY updated_at,id', row.id)
           .map(attempt => ({ ...attempt, metrics: JSON.parse(attempt.metrics) as Record<string, unknown> })) }))

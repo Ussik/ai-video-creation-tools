@@ -1,3 +1,4 @@
+import { ProviderExecutionError } from '../providers/provider-failure.js'
 import { spawn } from 'node:child_process'
 import { setTimeout, clearTimeout } from 'node:timers'
 import ffmpegPath from 'ffmpeg-static'
@@ -9,7 +10,7 @@ export async function validateVideoResult(path: string, options: { signal?: Abor
   const signal = options.signal || mediaExecutionSignal()
   signal?.throwIfAborted()
   const binary = ffmpegPath as unknown as string | null
-  if (!binary) throw new Error('无法校验视频，请检查后端 FFmpeg 依赖。')
+  if (!binary) throw new ProviderExecutionError('无法校验视频，请检查后端 FFmpeg 依赖。', { reason: 'configuration', stage: 'validate', delivery: 'completed' })
   return new Promise((resolve, reject) => {
     const child = spawn(binary, ['-nostdin', '-hide_banner', '-loglevel', 'error', '-xerror', '-err_detect', 'explode',
       '-i', path, '-map', '0:v:0', '-an', '-sn', '-dn', '-progress', 'pipe:1', '-f', 'null', '-'], { stdio: ['ignore', 'pipe', 'pipe'] })
@@ -29,11 +30,11 @@ export async function validateVideoResult(path: string, options: { signal?: Abor
       const frames = Number([...progress.matchAll(/^frame=(\d+)/gm)].at(-1)?.[1] || 0)
       const duration = Number([...progress.matchAll(/^out_time_us=(\d+)/gm)].at(-1)?.[1] || 0) / 1000
       if (!Number.isFinite(duration) || duration <= 0 || !frames || !progress.includes('progress=end') || /invalid|error|corrupt|partial file/i.test(stderr)) {
-        reject(new Error('模型返回的文件无法完整解码为有效视频，已保留原任务和恢复信息。')); return
+        reject(new ProviderExecutionError('模型返回的文件无法完整解码为有效视频，已保留原任务和恢复信息。', { reason: 'media_validation', stage: 'validate', delivery: 'completed' })); return
       }
       resolve({ duration_ms: Math.round(duration), frames })
     }
-    child.once('error', () => finish(new Error('无法校验视频，请检查后端 FFmpeg 依赖。')))
-    child.once('close', code => finish(timedOut ? new Error('视频校验超时，尚未保存为可用成果。') : code !== 0 ? new Error('模型返回的文件无法完整解码为有效视频，已保留原任务和恢复信息。') : undefined))
+    child.once('error', () => finish(new ProviderExecutionError('无法校验视频，请检查后端 FFmpeg 依赖。', { reason: 'configuration', stage: 'validate', delivery: 'completed' })))
+    child.once('close', code => finish(timedOut ? new ProviderExecutionError('视频校验超时，尚未保存为可用成果。', { reason: 'media_validation', stage: 'validate', delivery: 'completed' }) : code !== 0 ? new ProviderExecutionError('模型返回的文件无法完整解码为有效视频，已保留原任务和恢复信息。', { reason: 'media_validation', stage: 'validate', delivery: 'completed' }) : undefined))
   })
 }

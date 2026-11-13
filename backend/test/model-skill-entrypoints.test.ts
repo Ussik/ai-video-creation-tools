@@ -45,7 +45,7 @@ for (const stage of ['image_prompt', 'storyboard', 'visual_assets'] as const) {
     const beforeDefaults = skillPolicy(project.id)
     const isolated = Fastify()
     t.after(() => isolated.close())
-    let selectionCalls = 0, generationCalls = 0
+    let selectionCalls = 0, generationCalls = 0, outlineReviews = 0
     let expected: 'default' | 'manual' | 'base' = 'default'
     const selectSkills = async (): Promise<never> => {
       selectionCalls++
@@ -54,11 +54,16 @@ for (const stage of ['image_prompt', 'storyboard', 'visual_assets'] as const) {
     const generateText = async (_projectId: string, _modelId: string, prompt: string, contract?: OutputContract) => {
       if (contract?.name === 'prompt_refinement_semantic_review') return JSON.stringify(semanticReviewFixture())
       if (contract?.name === 'storyboard_directing_review') return JSON.stringify({ issues: [] })
-      generationCalls++
       if (expected === 'manual') assert.match(prompt, /MODEL_CHOSEN_RULE_MARKER/)
       else assert.doesNotMatch(prompt, /MODEL_CHOSEN_RULE_MARKER/)
       if (expected === 'default') assert.match(prompt, /DEFAULT_RULE_MARKER/)
       else assert.doesNotMatch(prompt, /DEFAULT_RULE_MARKER/)
+      if (contract?.name === 'storyboard_outline_review') {
+        outlineReviews++; assert.match(prompt, /规则服从本次创作者要求、项目事实、正式来源和JSON契约/)
+        assert.match(prompt, /本次自动提供的最新正式分集正文优先于旧场次和已有镜头/)
+        return JSON.stringify({ issues: [] })
+      }
+      generationCalls++
       const fixture = withStoryboardDirecting(stage === 'image_prompt' ? { prompt: '门外的人影落在走廊地面，阿宁等待门开。' }
         : stage === 'visual_assets' ? { profiles: [] }
         : { scenes: [{ scene_id: scene.id, scene_duration: 20, shots: [{ shot_id: null, title: '等待', duration: 20,
@@ -103,6 +108,7 @@ for (const stage of ['image_prompt', 'storyboard', 'visual_assets'] as const) {
     assert.deepEqual(manual.json().skill_assignment.ids, [])
     assert.equal(manual.json().skill_assignment.source, 'manual')
     assert.equal(selectionCalls, 0); assert.equal(generationCalls, stage === 'storyboard' ? 6 : 3)
+    assert.equal(outlineReviews, stage === 'storyboard' ? 3 : 0)
     assert.deepEqual(skillPolicy(project.id), beforeDefaults)
     assert.equal(all('SELECT id FROM shots WHERE project_id=?', project.id).length, 0)
     assert.equal(all('SELECT id FROM visual_profiles WHERE project_id=?', project.id).length, 0)

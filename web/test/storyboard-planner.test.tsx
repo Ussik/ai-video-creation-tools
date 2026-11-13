@@ -1564,3 +1564,31 @@ test('confirmed storyboard issues retain evidence after edits and targeted repai
     assert.equal(button('保存分镜方案').disabled, false)
   } finally { await view.destroy() }
 })
+
+
+test('repeated problems disable paid repair until an edited candidate receives a new review', async t => {
+  const stopped = { status: 'needs_work', repaired: true, review_id: 'stopped-review', issues: [],
+    error: { code: 'storyboard_repeated_issues', message: '相同问题仍存在，已停止重复模型请求。请修改后复查。' } }
+  const fresh = { status: 'needs_work', repaired: false, review_id: 'fresh-review', issues: [] }
+  let repairs = 0, reviews = 0
+  mockPlanningFetch(t, async url => {
+    if (String(url).endsWith('/context')) return Response.json(context)
+    if (String(url).endsWith('/plan')) return Response.json({ ...draft, directing_review: stopped })
+    if (String(url).endsWith('/review')) { reviews++; return Response.json(fresh) }
+    if (String(url).endsWith('/repair')) { repairs++; return Response.json({ scenes: draft.scenes, directing_review: acceptedReview }) }
+    throw new Error(`Unexpected ${url}`)
+  }, true)
+  const view = await mount({ intent: 'plan' })
+  try {
+    await act(async () => button('开始规划').click())
+    assert.match(document.body.textContent!, /相同问题仍存在，已停止重复模型请求/)
+    assert.equal(button('仅修复已确认问题').disabled, true); assert.equal(button('保存分镜方案').disabled, true)
+    assert.equal(button('复查当前草稿').disabled, false)
+    await fillTextarea('镜头描述', '人物保持站定，仅转头反应')
+    assert.doesNotMatch(document.body.textContent!, /相同问题仍存在，已停止重复模型请求/)
+    await act(async () => button('复查当前草稿').click())
+    assert.equal(reviews, 1); assert.equal(button('仅修复已确认问题').disabled, false)
+    await act(async () => button('仅修复已确认问题').click()); assert.equal(repairs, 1)
+    assert.equal(button('保存分镜方案').disabled, false)
+  } finally { await view.destroy() }
+})

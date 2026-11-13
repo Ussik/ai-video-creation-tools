@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { sourceAnalysisFixture } from './fixtures/script-source-analysis.js'
+import { modelTaskPolicies, withModelRequestContext } from '../src/modules/generation/model-task-policy.js'
+import type { ModelResultEvent } from '../src/modules/generation/model-result-observation.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'studio-source-analysis-'))
 process.env.VIDEO_STUDIO_DATA_DIR = testData
@@ -20,6 +22,28 @@ function project(content: string) {
   return id
 }
 const mapReply = (prompt: string) => sourceAnalysisFixture(prompt)!
+test('a failed source recheck reports inconclusive while retaining previous verified findings', async () => {
+  const content = '林舟返乡。资源已经用尽。', id = project(content), outcomes: ModelResultEvent[] = []
+  let reviews = 0
+  await assert.rejects(withModelRequestContext({ policy: modelTaskPolicies.generation, onResult: event => { outcomes.push(event) } }, () =>
+    analyzeSourceSnapshot({ project_id: id, filename: '剧本.txt', content, updated_at: now() }, 'model', async prompt => {
+      const marker = '【原稿分析核对资料】\n'
+      if (prompt.includes(marker)) {
+        if (++reviews > 1) throw new Error('独立复核暂不可用')
+        const input = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length))
+        return JSON.stringify({ checked_section_ids: input.sections.map((section: { id: number }) => section.id),
+          findings: [{ kind: 'omission', explanation: '遗漏资源已经用尽', unit_ids: [input.units[0].id] }] })
+      }
+      if (prompt.includes('【原稿分析定点修补资料】')) return JSON.stringify({ status: 'requires_full_rebuild', reason: '需要完整重建。', changes: [] })
+      return mapReply(prompt)
+    }, new AbortController().signal)), /独立复核暂不可用/)
+  const quality = outcomes.filter(event => event.phase === 'quality')
+  assert.deepEqual(quality.map(event => event.status), ['needs_work', 'inconclusive'])
+  assert.equal(quality.at(-1)!.repair_effect, undefined, 'an unavailable recheck cannot claim unchanged or improved content')
+  const saved = db.prepare('SELECT payload FROM script_step_checkpoints WHERE project_id=? AND namespace=?').get(id, 'source-proposal') as { payload: string }
+  assert.equal(JSON.parse(saved.payload).quality.status, 'issues')
+  assert.equal(JSON.parse(saved.payload).quality.findings.length, 1)
+})
 async function terminal(id: string) {
   for (let attempt = 0; attempt < 200; attempt++) {
     const state = scriptSourceAnalysis(id)
@@ -162,6 +186,7 @@ test('service restart resumes saved analysis progress instead of leaving running
     return mapReply(prompt)
   })
   first.start(id, 'model'); await started; await first.close(); release()
+  await new Promise<void>(resolve => setImmediate(resolve))
   assert.equal(scriptSourceAnalysis(id)!.status, 'queued')
   assert.equal(scriptSourceAnalysis(id)!.started_at, undefined, 'service shutdown ends the current execution clock before requeueing')
   assert.equal(scriptSourceAnalysis(id)!.completed_chunks, 1)
@@ -181,7 +206,7 @@ test('service restart resumes saved analysis progress instead of leaving running
     const ready = await terminal(id)
     assert.ok(Date.parse(ready.started_at!) >= restartedAt)
     assert.equal(ready.status, 'ready')
-    assert.equal(resumedCalls, ready.total_chunks - saved.completed_chunks + 2, 'only unfinished directory pages, story synthesis and independent review are requested')
+    assert.equal(resumedCalls, ready.total_chunks - saved.completed_chunks + 1, 'a late accepted synthesis response is recovered; only unfinished directory pages and independent review dispatch again')
     assert.deepEqual(resumedMapPages, Array.from({ length: ready.total_chunks - saved.completed_chunks }, (_, index) => saved.completed_chunks + index + 1))
     assert.deepEqual(ready.sections.slice(0, saved.sections.length), saved.sections, 'saved directory pages survive the restart unchanged')
   } finally { await second.close() }
@@ -368,7 +393,7 @@ test('format corrections can exceed legacy time budgets and pending transport st
   try {
     analyzer.start(id, 'model'); const ready = await terminal(id)
     assert.equal(ready.status, 'ready', ready.error || ''); assert.equal(mapCalls, 2)
-    assert.ok(signals.every(signal => !signal.aborted), 'elapsed legacy budgets cannot cancel useful source analysis')
+    assert.equal(signals.length, 4, 'legacy step clocks do not interrupt map correction, synthesis or independent review')
     assert.ok(ready.story)
   } finally { await analyzer.close() }
   const pendingId = project('短文无需继续细分。')

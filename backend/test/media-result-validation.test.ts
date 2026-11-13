@@ -1,3 +1,4 @@
+import { ProviderExecutionError } from '../src/infrastructure/providers/provider-failure.js'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { mkdtemp, writeFile, rm, readdir } from 'node:fs/promises'
@@ -22,7 +23,7 @@ test('HTML, JSON, empty, corrupt, truncated and audio-only results cannot be del
  for (const [name, bytes] of [['html', Buffer.from('<html>gateway error</html>')], ['json', Buffer.from('{"error":"not ready"}')],
   ['empty', Buffer.alloc(0)], ['corrupt', Buffer.from('bad video')], ['truncated', validVideo.subarray(0, validVideo.length / 2)], ['audio', wav]] as const) {
   t.mock.method(globalThis, 'fetch', async () => new Response(bytes, { headers: { 'Content-Type': 'video/mp4' } }))
-  await assert.rejects(recoverVideo(name, 'https://cdn.invalid/result.mp4?signature=secret'))
+  await assert.rejects(recoverVideo(name, 'https://cdn.invalid/result.mp4?signature=secret'), issue => issue instanceof ProviderExecutionError && issue.reason === 'media_validation' && issue.delivery === 'completed')
   assert.deepEqual(await readdir(join(directory, 'media', name)), [])
   t.mock.restoreAll()
  }

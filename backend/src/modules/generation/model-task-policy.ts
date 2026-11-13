@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { modelContractStage, type ModelOperationStage, type ModelResultEvent } from '../../infrastructure/observability/model-results.js'
 
 export type ModelRecovery = 'atomic' | 'units' | 'tool' | 'paid'
 export type ModelTaskPolicy = Readonly<{
@@ -9,6 +10,8 @@ export type ModelUnitProgress = Readonly<{ phase_id: string; label: string; comp
 export type ModelRequestContext = Readonly<{
   policy: ModelTaskPolicy; taskId?: string; stepId?: string; attemptId?: string
   traceStage?: 'generation' | 'review' | 'repair' | 'classification' | 'prompt' | 'tool' | 'text' | 'media_generation'
+  operationStage?: ModelOperationStage; operationStartedAt?: number; operationUnit?: { unit_index?: number; unit_count?: number }
+  onResult?: (result: ModelResultEvent) => void
   signal?: AbortSignal; onProgress?: (progress: ModelUnitProgress) => void; onDispatch?: (metrics: unknown) => void; onMetrics?: (metrics: unknown) => void
 }>
 const context = new AsyncLocalStorage<ModelRequestContext>()
@@ -70,8 +73,8 @@ function traceStageFor(name: string | undefined, policy: ModelTaskPolicy): Model
 }
 export function modelContextFor(contractName?: string, explicit?: ModelRequestContext): ModelRequestContext {
   const inherited = currentModelRequestContext()
-  if (explicit) return { ...inherited, ...explicit, traceStage: explicit.traceStage || traceStageFor(contractName, explicit.policy) }
+  if (explicit) return { ...inherited, ...explicit, operationStage: explicit.operationStage || (inherited?.operationStage === 'recheck' ? 'recheck' : modelContractStage(contractName) || inherited?.operationStage), operationStartedAt: explicit.operationStartedAt ?? inherited?.operationStartedAt, traceStage: explicit.traceStage || traceStageFor(contractName, explicit.policy) }
   // Keep task identity, but a nested classification/review has its own purpose.
   const policy = contractName && contracts.has(contractName) ? contracts.get(contractName)! : inherited?.policy ?? modelTaskPolicies.text
-  return { ...inherited, policy, traceStage: traceStageFor(contractName, policy) }
+  return { ...inherited, policy, operationStage: inherited?.operationStage === 'recheck' ? 'recheck' : modelContractStage(contractName) || inherited?.operationStage, operationStartedAt: inherited?.operationStartedAt, traceStage: traceStageFor(contractName, policy) }
 }

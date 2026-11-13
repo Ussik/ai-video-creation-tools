@@ -1,4 +1,9 @@
 import { createHash } from 'node:crypto'
+import { Annotation, END, START, StateGraph } from '@langchain/langgraph'
+import { runIsolatedModelGraph } from '../generation/isolated-model-graph.js'
+import { runCreativeWorkflowBudget } from '../generation/creative-workflow-budget.js'
+import { reportModelResult, withModelOperationStage } from '../generation/model-result-observation.js'
+import { withModelAdmission } from '../generation/model-admission.js'
 import { stat } from 'node:fs/promises'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
@@ -124,68 +129,92 @@ export function registerVideoPromptAnalysisRoutes(app: FastifyInstance, dependen
       const selectedDuration = range.end_ms - range.start_ms
       if (video.duration_ms !== selectedDuration || video.fps !== input.fps) fail('视频预处理结果与所选范围不一致', 502)
       const identity = { version: 1, source: signature, range, fps: input.fps, instructions: input.instructions, model: creativeModelIdentity(model.id) }
-      const steps = creativeGenerationSteps(projectId, `video-analysis:${asset.id}:${range.start_ms}:${range.end_ms}`, identity, controller.signal)
-      const prompt = videoPromptAnalysisInstructions(selectedDuration, input.fps, input.instructions)
-      const requestModel = (prompt: string, contract?: import('../generation/model-output.js').OutputContract) => generate(model, provider, { prompt, video, structured_output: contract }, controller.signal)
-      let content: Content
-      if (selectedDuration <= 90_000) {
-        content = await steps.run('analysis', '反推视频镜头', identity, () => generateStructuredOutput('video_prompt_analysis', videoPromptAnalysisContentSchema,
-          requestModel, prompt, { signal: controller.signal, budgetMs: 240_000, validate: value => validateVideoPromptAnalysisContent(value, 0, selectedDuration) }),
-          raw => { const value = videoPromptAnalysisContentSchema.parse(raw); validateVideoPromptAnalysisContent(value, 0, selectedDuration); return value })
-      } else {
-        // Identify actual cuts before writing long per-shot prompts. Generation
-        // units follow this verified map, never arbitrary time-chunk boundaries.
-        const mapSchema = z.object({ global_style: videoPromptAnalysisContentSchema.shape.global_style, uncertainties: videoPromptAnalysisContentSchema.shape.uncertainties,
-          shots: z.array(z.object({ title: z.string().trim().min(1).max(200), start_ms: z.number().int().nonnegative(), end_ms: z.number().int().positive() }).strict()).min(1).max(40) }).strict()
-        const validateMap = (raw: unknown) => {
-          const value = mapSchema.parse(raw)
-          let end = 0
-          for (const shot of value.shots) {
-            if (shot.start_ms !== end || shot.end_ms <= shot.start_ms || shot.end_ms > selectedDuration) fail('实际镜头地图必须连续覆盖所选视频，不能重叠、漏空或超出范围', 502)
-            end = shot.end_ms
-          }
-          if (end !== selectedDuration) fail('实际镜头地图没有覆盖完整视频', 502)
-          return value
-        }
-        const map = await steps.run('shot-map', '识别真实切镜与整体画风', identity, () => generateStructuredOutput('video_prompt_analysis_map', mapSchema, requestModel,
-          prompt + '\n【当前步骤】仅识别真实切镜并给出完整时间地图和global_style、uncertainties；不要写逐镜长提示词。shots只含title、start_ms、end_ms。连续机位不因生成单元而拆开；全部时间连续覆盖0至duration_ms。',
-          { signal: controller.signal, context: { policy: modelTaskPolicies.generation }, validate: validateMap }), validateMap)
-        const units = map.shots.map((shot, index) => `${index}:${shot.start_ms}:${shot.end_ms}`)
-        const byUnit = new Map(units.map((key, index) => [key, map.shots[index]!]))
-        const values = await executeGenerationUnits<Content['shots'][number]>({ identity: { ...identity, map }, units, steps, signal: controller.signal,
-          label: key => `反推${byUnit.get(key)!.title}`,
-          generate: async key => {
-            controller.signal.throwIfAborted()
-            if (signature !== await videoSignature(projectVideo(projectId, input.asset_id))) fail('来源视频在反推期间已变化，请重新反推', 409)
-            const shot = byUnit.get(key)!
-            const result = await generateStructuredOutput('video_prompt_analysis', videoPromptAnalysisContentSchema.extend({ shots: videoPromptAnalysisContentSchema.shape.shots.length(1) }), requestModel,
-              prompt + '\n【当前完整镜头单元】只分析下列真实镜头，所有时间仍以本次完整片段起点为0；严格沿用start_ms/end_ms，不把范围边缘当作新的真实切镜。仅返回该镜头，其他时段只供理解连续性：' + JSON.stringify(shot)
-                + '\n已确认整体画风：' + map.global_style, { signal: controller.signal, budgetMs: 240_000 })
-            return result.shots[0]
-          },
-          validate: (raw, key) => {
-            const value = videoPromptAnalysisContentSchema.shape.shots.element.parse(raw), source = byUnit.get(key)!
-            if (value.start_ms !== source.start_ms || value.end_ms !== source.end_ms) fail('逐镜反推不能改变已确认的真实切镜范围', 502)
-            validateVideoPromptAnalysisContent({ global_style: map.global_style, uncertainties: [], shots: [value] }, source.start_ms, source.end_ms)
+      return await withModelAdmission(`creative:video-analysis:${projectId}:${asset.id}:${range.start_ms}:${range.end_ms}`, controller.signal, async () => {
+        const steps = creativeGenerationSteps(projectId, `video-analysis:${asset.id}:${range.start_ms}:${range.end_ms}`, identity, controller.signal)
+        const prompt = videoPromptAnalysisInstructions(selectedDuration, input.fps, input.instructions)
+        let operationSignal = controller.signal
+        const requestModel = (prompt: string, contract?: import('../generation/model-output.js').OutputContract) => generate(model, provider, { prompt, video, structured_output: contract }, operationSignal)
+        let content!: Content
+        // Media preparation has its own deadline. Multi-shot inference uses a
+        // size-scaled durable execution clock rather than a five-minute total.
+        clearTimeout(timeout)
+        await withModelOperationStage('video_understanding', () => runCreativeWorkflowBudget(steps, { kind: 'video_understanding',
+          units: Math.ceil(selectedDuration / 5000), inputChars: prompt.length, signal: controller.signal }, async budgetSignal => {
+        operationSignal = budgetSignal
+        if (selectedDuration <= 90_000) {
+          content = await steps.run('analysis', '反推视频镜头', identity, () => generateStructuredOutput('video_prompt_analysis', videoPromptAnalysisContentSchema,
+            requestModel, prompt, { signal: budgetSignal, budgetMs: 240_000, validate: value => validateVideoPromptAnalysisContent(value, 0, selectedDuration) }),
+            raw => { const value = videoPromptAnalysisContentSchema.parse(raw); validateVideoPromptAnalysisContent(value, 0, selectedDuration); return value })
+        } else {
+          // Identify actual cuts before writing long per-shot prompts. Generation
+          // units follow this verified map, never arbitrary time-chunk boundaries.
+          const mapSchema = z.object({ global_style: videoPromptAnalysisContentSchema.shape.global_style, uncertainties: videoPromptAnalysisContentSchema.shape.uncertainties,
+            shots: z.array(z.object({ title: z.string().trim().min(1).max(200), start_ms: z.number().int().nonnegative(), end_ms: z.number().int().positive() }).strict()).min(1).max(40) }).strict()
+          const validateMap = (raw: unknown) => {
+            const value = mapSchema.parse(raw)
+            let end = 0
+            for (const shot of value.shots) {
+              if (shot.start_ms !== end || shot.end_ms <= shot.start_ms || shot.end_ms > selectedDuration) fail('实际镜头地图必须连续覆盖所选视频，不能重叠、漏空或超出范围', 502)
+              end = shot.end_ms
+            }
+            if (end !== selectedDuration) fail('实际镜头地图没有覆盖完整视频', 502)
             return value
-          },
-          validateAll: values => validateVideoPromptAnalysisContent({ global_style: map.global_style, uncertainties: map.uncertainties, shots: [...values.values()] }, 0, selectedDuration),
-        })
-        content = { global_style: map.global_style, uncertainties: map.uncertainties, shots: [...values.values()] }
-      }
-      controller.signal.throwIfAborted()
-      const current = projectVideo(projectId, input.asset_id)
-      if (signature !== await videoSignature(current)) fail('来源视频在反推期间已变化，本次结果未保存，请重新反推', 409)
-      const result: VideoPromptAnalysisResult = {
-        asset_id: asset.id, model_id: model.id, duration_ms: duration,
-        start_ms: range.start_ms, end_ms: range.end_ms, fps: input.fps,
-        global_style: content.global_style,
-        shots: content.shots.map(shot => ({ ...shot, start_ms: shot.start_ms + range.start_ms, end_ms: shot.end_ms + range.start_ms })),
-        uncertainties: [...new Set([...content.uncertainties, AUDIO_LIMITATION, SAMPLING_LIMITATION])].slice(-16),
-      }
-      validateVideoPromptAnalysisContent(result, range.start_ms, range.end_ms)
-      steps.clear() // The caller persists the successful result in its analysis node.
-      return result
+          }
+          let map!: z.infer<typeof mapSchema>
+          const graph = new StateGraph(Annotation.Root({})).addNode('map_actual_cuts', async () => {
+          map = await steps.run('shot-map', '识别真实切镜与整体画风', identity, () => generateStructuredOutput('video_prompt_analysis_map', mapSchema, requestModel,
+            prompt + '\n【当前步骤】仅识别真实切镜并给出完整时间地图和global_style、uncertainties；不要写逐镜长提示词。shots只含title、start_ms、end_ms。连续机位不因生成单元而拆开；全部时间连续覆盖0至duration_ms。',
+            { signal: budgetSignal, context: { policy: modelTaskPolicies.generation }, validate: validateMap }), validateMap)
+          return {}
+          }).addNode('analyze_shots', async () => {
+          const units = map.shots.map((shot, index) => `${index}:${shot.start_ms}:${shot.end_ms}`)
+          const byUnit = new Map(units.map((key, index) => [key, map.shots[index]!]))
+          const values = await executeGenerationUnits<Content['shots'][number]>({ identity: { ...identity, map }, units, steps, signal: budgetSignal,
+            label: key => `反推${byUnit.get(key)!.title}`,
+            generate: async key => {
+              budgetSignal.throwIfAborted()
+              if (signature !== await videoSignature(projectVideo(projectId, input.asset_id))) fail('来源视频在反推期间已变化，请重新反推', 409)
+              const shot = byUnit.get(key)!
+              const result = await generateStructuredOutput('video_prompt_analysis', videoPromptAnalysisContentSchema.extend({ shots: videoPromptAnalysisContentSchema.shape.shots.length(1) }), requestModel,
+                prompt + '\n【当前完整镜头单元】只分析下列真实镜头，所有时间仍以本次完整片段起点为0；严格沿用start_ms/end_ms，不把范围边缘当作新的真实切镜。仅返回该镜头，其他时段只供理解连续性：' + JSON.stringify(shot)
+                  + '\n已确认整体画风：' + map.global_style, { signal: budgetSignal, budgetMs: 240_000 })
+              return result.shots[0]
+            },
+            validate: (raw, key) => {
+              const value = videoPromptAnalysisContentSchema.shape.shots.element.parse(raw), source = byUnit.get(key)!
+              if (value.start_ms !== source.start_ms || value.end_ms !== source.end_ms) fail('逐镜反推不能改变已确认的真实切镜范围', 502)
+              validateVideoPromptAnalysisContent({ global_style: map.global_style, uncertainties: [], shots: [value] }, source.start_ms, source.end_ms)
+              return value
+            },
+            validateAll: values => validateVideoPromptAnalysisContent({ global_style: map.global_style, uncertainties: map.uncertainties, shots: [...values.values()] }, 0, selectedDuration),
+          })
+          content = { global_style: map.global_style, uncertainties: map.uncertainties, shots: [...values.values()] }
+          return {}
+          }).addNode('validate_full_video', () => {
+            validateVideoPromptAnalysisContent(content, 0, selectedDuration)
+            return {}
+          }).addEdge(START, 'map_actual_cuts').addEdge('map_actual_cuts', 'analyze_shots').addEdge('analyze_shots', 'validate_full_video')
+            .addEdge('validate_full_video', END).compile()
+          await runIsolatedModelGraph(graph, {}, { signal: budgetSignal, recursionLimit: 5 })
+        }
+        reportModelResult({ phase: 'structure', status: 'valid' })
+        reportModelResult({ phase: 'quality', status: 'inconclusive' })
+        }))
+        operationSignal = controller.signal
+        controller.signal.throwIfAborted()
+        const current = projectVideo(projectId, input.asset_id)
+        if (signature !== await videoSignature(current)) fail('来源视频在反推期间已变化，本次结果未保存，请重新反推', 409)
+        const result: VideoPromptAnalysisResult = {
+          asset_id: asset.id, model_id: model.id, duration_ms: duration,
+          start_ms: range.start_ms, end_ms: range.end_ms, fps: input.fps,
+          global_style: content.global_style,
+          shots: content.shots.map(shot => ({ ...shot, start_ms: shot.start_ms + range.start_ms, end_ms: shot.end_ms + range.start_ms })),
+          uncertainties: [...new Set([...content.uncertainties, AUDIO_LIMITATION, SAMPLING_LIMITATION])].slice(-16),
+        }
+        validateVideoPromptAnalysisContent(result, range.start_ms, range.end_ms)
+        steps.clear() // The caller persists the successful result in its analysis node.
+        return result
+      })
     } catch (error) {
       if (controller.signal.aborted) throw Object.assign(new Error(controller.signal.reason instanceof Error ? controller.signal.reason.message : '视频反推已取消'), { statusCode: 499 })
       if (isStructuredOutputError(error)) throw Object.assign(new Error(error.message), { statusCode: 502 })

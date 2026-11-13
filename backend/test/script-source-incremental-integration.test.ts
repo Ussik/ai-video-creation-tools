@@ -282,6 +282,7 @@ test('an analyzer restart recovers a revised-source map and completes its global
     await started
     await first.close()
     release()
+    await new Promise<void>(resolve => setImmediate(resolve))
     assert.equal(scriptSourceAnalysis(id)!.status, 'queued')
     const prompts: string[] = []
     const second = createScriptSourceAnalyzer(async (_id, _model, prompt) => { prompts.push(prompt); return reply(prompt) }, limits, { configuration })
@@ -290,7 +291,8 @@ test('an analyzer restart recovers a revised-source map and completes its global
       const ready = await terminal(id, scriptSourceVersion(effectiveScriptSource(id)!))
       assert.equal(ready.status, 'ready', ready.error || '')
       assert.equal(prompts.filter(prompt => prompt.includes(mapMarker)).length, 0)
-      assertFullSynthesis(prompts, revised)
+      assert.equal(prompts.filter(prompt => prompt.includes(storyMarker)).length, 0, 'the known complete late synthesis is recovered without another paid dispatch')
+      assert.equal(prompts.filter(prompt => prompt.includes(reviewMarker)).length, 1, 'the reconstructed run still completes an independent full-source review')
       assert.equal(snapshot(id).revision_reuse!.status, 'verified')
       assertEvidence(revised, ready.sections)
     } finally { await second.close() }

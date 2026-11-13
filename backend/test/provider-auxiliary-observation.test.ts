@@ -1,3 +1,4 @@
+import { createScriptRequestUsage, scriptRequestUsageTokens, withTextRequestUsage, isTextRequestBudgetError } from '../src/infrastructure/providers/text-request-usage.js'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { observeProviderFetch } from '../src/infrastructure/providers/text-request-plan.js'
@@ -91,4 +92,34 @@ test('omitting an explicit mode cannot bypass confirmed reasoning modes', () => 
     text_capabilities: { version: 1, override: { compatibility: { reasoning: { mode: 'adaptive', effort_values: ['low'] } } } } }
   assert.match(textApiConfigError(legacy, 'responses')!, /显式推理模式/)
   assert.equal(textApiConfigError(legacy, 'anthropic_messages'), null)
+})
+
+
+test('auxiliary dispatch admission shares nested budgets without inventing media tokens', async () => {
+  const usage = createScriptRequestUsage(), inner = createScriptRequestUsage(), seen: any[] = []
+  let calls = 0
+  await withTextRequestUsage({ usage, limits: { max_requests: 1, max_total_requests: 2, max_tokens: 1 } }, () =>
+    withTextRequestUsage({ usage: inner, limits: { max_requests: 2 } }, () =>
+      withModelRequestContext({ policy: modelTaskPolicies.paid, onDispatch: value => seen.push(value) }, async () => {
+        const fake: typeof fetch = async () => { calls++; return new Response('done') }
+        await (await observeProviderFetch('https://aux.invalid/create', { method: 'POST', body: '123' }, 'media_create', fake)).text()
+        await (await observeProviderFetch('https://aux.invalid/count', { method: 'POST', body: '12' }, 'input_count', fake)).text()
+        await assert.rejects(observeProviderFetch('https://aux.invalid/poll', {}, 'media_poll', fake), isTextRequestBudgetError)
+        assert.equal(calls, 2)
+      })))
+  assert.equal(usage.requests, 1); assert.equal(inner.requests, 1)
+  assert.equal(usage.transport_requests, 1); assert.equal(inner.transport_requests, 1)
+  assert.equal(scriptRequestUsageTokens(usage), 0); assert.equal(usage.uncertain_requests, 0)
+  assert.deepEqual(usage.pending_requests, [])
+  assert.deepEqual(seen.map(item => [item.kind, item.usage_admitted]), [['generation', true], ['transport', true]])
+})
+
+test('a request-cap rejection precedes paid dispatch ownership and wire access', async () => {
+  const usage = createScriptRequestUsage(); usage.requests = 1
+  let ownership = 0, calls = 0
+  await withTextRequestUsage({ usage, limits: { max_requests: 1 } }, () =>
+    assert.rejects(observeProviderFetch('https://aux.invalid/create', { method: 'POST' }, 'speech_create', async () => {
+      calls++; return new Response('done')
+    }, {}, () => { ownership++ }), isTextRequestBudgetError))
+  assert.equal(ownership, 0); assert.equal(calls, 0); assert.equal(usage.requests, 1)
 })

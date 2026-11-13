@@ -1,5 +1,14 @@
-import type { AiOperationError, AiOutcomeCertainty, AiRecoveryAction } from '@video-studio/shared/api/ai-operations'
+import { providerFailureReasons } from '../../infrastructure/providers/provider-failure.js'
+import type { AiOperationError, AiOutcomeCertainty, AiRecoveryAction, AiFailureReason, AiFailureStage } from '@video-studio/shared/api/ai-operations'
 const categories = new Set(['authentication', 'configuration', 'capacity', 'rate_limit', 'transport', 'refusal', 'output_limit', 'contract', 'source_conflict', 'quality', 'cancelled', 'unknown_result', 'media_validation', 'internal'])
+const reasons = new Set<string>(providerFailureReasons)
+const stages = new Set(['prepare', 'create', 'query', 'download', 'decode', 'validate', 'store'])
+function failureFacts(issue: Record<string, unknown>) {
+  return { ...(reasons.has(String(issue.reason)) ? { reason: issue.reason as AiFailureReason } : {}),
+    ...(stages.has(String(issue.failure_stage)) ? { failure_stage: issue.failure_stage as AiFailureStage } : {}),
+    ...(typeof issue.upstreamStatus === 'number' && Number.isInteger(issue.upstreamStatus) && issue.upstreamStatus >= 100 && issue.upstreamStatus <= 599 ? { upstream_status: issue.upstreamStatus } : {}),
+    ...(typeof issue.upstreamCode === 'string' && /^[a-zA-Z0-9_.:-]{1,120}$/.test(issue.upstreamCode) ? { upstream_code: issue.upstreamCode } : {}) }
+}
 const recoveries = new Set(['observe', 'edit_candidate', 'review_candidate', 'query_upstream', 'download_result', 'verify_upstream', 'none'])
 export function aiOperationError(value: unknown, status: number, operationId?: string): AiOperationError {
   const issue = value && typeof value === 'object' ? value as Record<string, unknown> : {}
@@ -17,12 +26,12 @@ export function aiOperationError(value: unknown, status: number, operationId?: s
     ...(operationId ? { operation_id: operationId } : {}),
     ...(typeof rawRecovery.task_id === 'string' && /^[\w.:-]{1,160}$/.test(rawRecovery.task_id) ? { task_id: rawRecovery.task_id } : {}) }
   const message = typeof issue.detail === 'string' ? issue.detail : typeof issue.message === 'string' ? issue.message : status === 500 ? '服务器处理失败' : '模型处理未完成'
-  return { code, category, message: status === 500 ? '服务器处理失败' : message.slice(0, 4000), retryable: issue.retryable === true, outcome_certainty: certainty, recovery }
+  return { code, category, message: status === 500 ? '服务器处理失败' : message.slice(0, 4000), retryable: issue.retryable === true, outcome_certainty: certainty, recovery, ...failureFacts(issue) }
 }
 /** Only machine fields are added. Provider raw text never becomes an action or
  * an arbitrary external URL, and credentials/private reasoning are not copied. */
 export function aiErrorFields(value: unknown, status: number) {
   const error = aiOperationError(value, status)
   const issue = value && typeof value === 'object' ? value as Record<string, unknown> : {}
-  return { code: error.code, category: error.category, retryable: error.retryable, outcome_certainty: error.outcome_certainty, recovery: error.recovery, ...(typeof issue.retryAfterMs === 'number' && Number.isFinite(issue.retryAfterMs) && issue.retryAfterMs >= 0 ? { retry_after_ms: Math.ceil(issue.retryAfterMs) } : {}) }
+  return { code: error.code, category: error.category, retryable: error.retryable, outcome_certainty: error.outcome_certainty, recovery: error.recovery, ...failureFacts(issue), ...(typeof issue.retryAfterMs === 'number' && Number.isFinite(issue.retryAfterMs) && issue.retryAfterMs >= 0 ? { retry_after_ms: Math.ceil(issue.retryAfterMs) } : {}) }
 }

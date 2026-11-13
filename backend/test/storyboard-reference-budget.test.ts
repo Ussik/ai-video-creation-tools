@@ -204,6 +204,7 @@ test('the storyboard director receives the reference budget before planning shot
       assert.match(prompt, /视频最多 9 张.*预留 1 张.*各最多使用 8 张/)
       assert.match(prompt, /面部图和身体图是两张/)
       assert.match(prompt, /拆成有叙事意义.*保留原有剧情、对白和关键对象/)
+      if (contract?.name === 'storyboard_outline_review') return JSON.stringify({ issues: [] })
       const plan = withStoryboardDirecting({ scenes: [{ scene_id: f.scene.id, scene_duration: 20,
         shots: [f.first, f.second].map(shot => ({ shot_id: shot.id, title: shot.title, prompt: '保留当前叙事',
           image_prompt: shot.image_prompt, video_prompt: shot.video_prompt, duration: 10,

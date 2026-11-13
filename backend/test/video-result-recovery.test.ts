@@ -244,7 +244,7 @@ test('terminal vendor failure and repeated poll network errors never submit a re
   t.mock.method(globalThis, 'fetch', async (_url: unknown, options?: RequestInit) => {
     assert.equal(options?.method, 'GET')
     failures++
-    throw new Error('mock temporary network failure')
+    throw new TypeError('fetch failed')
   })
   await assert.rejects(generate(model(), provider, { prompt: '动作', _external_id: 'network-id' }, [], 'poll-network-failure', () => {}), /查询视频任务 network-id 失败/)
   assert.equal(gets, statuses.length)

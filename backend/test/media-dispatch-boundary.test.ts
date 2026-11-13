@@ -44,7 +44,7 @@ test('TTS failure retains safe correlation and dispatch evidence without provide
  const fake: typeof fetch = async () => new Response('private-key-or-script', { status: 503 })
  await assert.rejects(synthesizeSpeech({ api_key: 'fixture-key', text: '台词', speaker: 'speaker', request_id: 'failed-request-id' }, fake), issue => {
   const error = issue as Error & { provider_request_id?: string; delivery?: string }
-  assert.equal(error.provider_request_id, 'failed-request-id'); assert.equal(error.delivery, 'unknown')
+  assert.equal(error.provider_request_id, 'failed-request-id'); assert.equal(error.delivery, 'rejected')
   assert.match(error.message, /failed-request-id/); assert.equal(error.message.includes('private-key-or-script'), false)
   return true
  })

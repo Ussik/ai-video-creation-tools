@@ -93,7 +93,7 @@ export function storyboardWireOutputContract(body: Record<string, any>, protocol
   if (!schemaLine) return undefined
   try {
     const schema = JSON.parse(schemaLine), properties = schema.properties
-    const name = properties?.repairs ? 'storyboard_structure_repair' : properties?.issues ? 'storyboard_directing_review' : properties?.scene_id && properties?.shots ? 'storyboard_shot_batch'
+    const name = properties?.repairs ? 'storyboard_structure_repair' : properties?.issues ? (prompt.includes('你是分镜大纲的独立动作与接镜复核员') ? 'storyboard_outline_review' : 'storyboard_directing_review') : properties?.scene_id && properties?.shots ? 'storyboard_shot_batch'
       : properties?.scenes ? (properties.scenes.items?.properties?.shots?.items?.properties?.image_prompt ? 'controlled_storyboard' : 'storyboard_scene_plan') : undefined
     return name ? { name, schema } : undefined
   } catch { return undefined }
@@ -102,4 +102,14 @@ export function storyboardWireOutputContract(body: Record<string, any>, protocol
 /** Names come from wire contract metadata, or its serialized schema for prompt-only providers. */
 export function storyboardWireContract(body: Record<string, any>, protocol: 'responses' | 'chat_completions') {
   return storyboardWireOutputContract(body, protocol)?.name
+}
+
+/** Exact repair responses carry field values only; paths remain application-owned. */
+export function storyboardExactRepairFixture(value: any, prompt: string) {
+  const { targets } = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1))
+  return { repairs: Object.fromEntries(targets.map((target: any) => {
+    const scene = value.scenes.find((scene: any) => scene.scene_id === target.scene_id)
+    const root = target.shot_index === null ? scene : scene.shots[target.shot_index]
+    return [target.key, target.field.split('.').reduce((current: any, part: string) => current[part], root)]
+  })) }
 }

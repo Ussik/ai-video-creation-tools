@@ -1,6 +1,5 @@
-import { CallbackManager } from '@langchain/core/callbacks/manager'
-import { AsyncLocalStorageProviderSingleton } from '@langchain/core/singletons'
-import { LangChainTracer } from '@langchain/core/tracers/tracer_langchain'
+import { withModelOperationStage } from '../generation/model-result-observation.js'
+import { runIsolatedModelGraph } from '../generation/isolated-model-graph.js'
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph'
 import type { StoryboardPlanningResult } from '@video-studio/shared/storyboard/storyboard-planning-types'
 import { isStoryboardPlanningBudgetError } from './storyboard-planning-budget.js'
@@ -11,18 +10,6 @@ const PlanningGraphState = Annotation.Root({
   repaired: Annotation<boolean>({ reducer: (_current, next) => next, default: () => false }),
   completed: Annotation<boolean>({ reducer: (_current, next) => next, default: () => false }),
 })
-
-/** Core 1.3.4 clears a disabled tracing context while advancing graph streams.
- * Supply a local tracer explicitly so environment flags cannot install a cloud
- * exporter. This instance never posts runs or creates a tracing parent; copies
- * must remain local too. Existing Langfuse observation owns all telemetry. */
-class LocalPlanningGraphTracer extends LangChainTracer {
-  override async onRunCreate() {}
-  override async onRunUpdate() {}
-  override getRunTreeWithTracingConfig(_id: string) { return undefined }
-  override updateFromRunTree() {}
-  override copyWithTracingConfig() { return this }
-}
 
 /** Each accepted stage is durable before the next paid request. Recovery
  * revalidates the existing task checkpoints. The graph only routes stages;
@@ -67,10 +54,10 @@ export async function runStoryboardPlanningWorkflow<Preparation, Candidate, Repo
     })
     .addNode('review', async () => {
       assertActive()
-      if ('report' in steps) report = options.restoreReport(steps.report, candidate)
+      if ('report' in steps) report = withModelOperationStage('director_review', () => options.restoreReport(steps.report, candidate))
       else {
         control.stage('reviewing')
-        try { report = await options.review(candidate); assertActive(); control.retain('report', report) }
+        try { report = await withModelOperationStage('director_review', () => options.review(candidate)); assertActive(); control.retain('report', report) }
         catch (error) { return recoverReview(error, false) }
       }
       return { needsRepair: options.hasErrors(report) }
@@ -89,10 +76,10 @@ export async function runStoryboardPlanningWorkflow<Preparation, Candidate, Repo
     })
     .addNode('recheck', async () => {
       assertActive()
-      if ('revised_report' in steps) report = options.restoreReport(steps.revised_report, candidate)
+      if ('revised_report' in steps) report = withModelOperationStage('recheck', () => options.restoreReport(steps.revised_report, candidate))
       else {
         control.stage('rechecking')
-        try { report = await options.review(candidate); assertActive(); control.retain('revised_report', report) }
+        try { report = await withModelOperationStage('recheck', () => options.review(candidate)); assertActive(); control.retain('revised_report', report) }
         catch (error) { return recoverReview(error, true, report) }
       }
       return {}
@@ -111,12 +98,7 @@ export async function runStoryboardPlanningWorkflow<Preparation, Candidate, Repo
     .addEdge('finish', END)
     .compile()
   assertActive()
-  const callbacks = new CallbackManager()
-  callbacks.addHandler(new LocalPlanningGraphTracer(), true)
-  // Clear inherited runnable metadata and handlers for this invocation only.
-  // Business checkpoints and results stay outside the graph's boolean state.
-  await AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () =>
-    graph.invoke({}, { signal: control.signal, recursionLimit: 8, callbacks }))
+  await runIsolatedModelGraph(graph, {}, { signal: control.signal, recursionLimit: 8 })
   assertActive()
   if (!result) throw new Error('分镜规划流程未返回结果')
   return result

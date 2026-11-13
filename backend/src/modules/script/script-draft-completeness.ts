@@ -1,3 +1,4 @@
+import { aiErrorFields } from '../generation/ai-operation-errors.js'
 import { z } from 'zod'
 import { maxStageArtifacts, scriptArtifactLabels, scriptArtifactTypes, type StageArtifactType } from '@video-studio/shared/script/script-stage-content'
 import { scriptCreativeAuthorityGuidance } from '@video-studio/shared/script/script-setting-completeness'
@@ -38,6 +39,22 @@ export class ScriptDraftReviewError extends Error {
     super(`${label}：${issue instanceof Error ? issue.message : String(issue)}`, { cause: issue })
     this.name = 'ScriptDraftReviewError'
     this.statusCode = typeof (issue as { statusCode?: unknown })?.statusCode === 'number' ? (issue as { statusCode: number }).statusCode : 502
+    // Preserve safe machine facts across the creator-facing review label.
+    // The original object stays in cause; payloads/reasoning are never copied.
+    const source = issue && typeof issue === 'object' ? issue as Record<string, unknown> : {}
+    const fields = aiErrorFields(source, this.statusCode)
+    Object.assign(this, {
+      ...(typeof source.code === 'string' && fields.code === source.code ? { code: source.code } : {}),
+      ...(typeof source.category === 'string' && fields.category === source.category ? { category: source.category } : {}),
+      ...(fields.reason ? { reason: fields.reason } : {}), ...(fields.failure_stage ? { failure_stage: fields.failure_stage } : {}),
+      ...(fields.upstream_status !== undefined ? { upstreamStatus: fields.upstream_status } : {}),
+      ...(fields.upstream_code ? { upstreamCode: fields.upstream_code } : {}),
+      ...(typeof source.delivery === 'string' && ['not_sent', 'rejected', 'accepted', 'output_started', 'completed', 'unknown'].includes(source.delivery) ? { delivery: source.delivery } : {}),
+      ...(typeof source.retryable === 'boolean' ? { retryable: source.retryable } : {}),
+      ...(fields.retry_after_ms !== undefined ? { retryAfterMs: fields.retry_after_ms } : {}),
+      ...(typeof source.provider_request_id === 'string' && /^[a-zA-Z0-9_.:-]{1,160}$/.test(source.provider_request_id) ? { provider_request_id: source.provider_request_id } : {}),
+      ...(typeof source.failureReason === 'string' && ['output_limit', 'context_overflow', 'disconnected', 'refusal', 'invalid_tool', 'invalid_response', 'upstream_error', 'cancelled'].includes(source.failureReason) ? { failureReason: source.failureReason } : {}),
+    })
   }
 }
 export const draftCompletenessInput = z.object({

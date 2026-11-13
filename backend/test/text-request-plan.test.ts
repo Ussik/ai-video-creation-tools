@@ -7,7 +7,7 @@ import { prepareTextRequest } from '../src/infrastructure/providers/text-request
 import { TextContextCapacityError } from '../src/infrastructure/providers/text-context.js'
 import { withTextResponseRecovery, type BackgroundResponse } from '../src/infrastructure/providers/text-background.js'
 import { createScriptRequestUsage } from '@video-studio/shared/script/script-request-usage'
-import { withTextRequestUsage } from '../src/infrastructure/providers/text-request-usage.js'
+import { withTextRequestUsage, isTextRequestBudgetError } from '../src/infrastructure/providers/text-request-usage.js'
 import type { GenerationModel, TextRequestMetrics } from '../src/infrastructure/providers/providers.js'
 
 const directory = await mkdtemp(join(tmpdir(), 'text-capacity-plan-'))
@@ -37,7 +37,7 @@ test('near-limit same-channel count rescues a conservative rejection without con
   })
   const result = await withTextRequestUsage({ usage }, () => prepareTextRequest({ ...settings, text_token_counter: 'responses' }, body, 'responses', options))
   assert.equal(result.capacity.estimated_input_tokens, 800); assert.equal(result.capacity.input_count_method, 'provider')
-  assert.equal(result.body.max_output_tokens, 65536); assert.equal(usage.requests, 0)
+  assert.equal(result.body.max_output_tokens, 65536); assert.equal(usage.requests, 0); assert.equal(usage.transport_requests, 1)
   assert.deepEqual(body, before)
 })
 
@@ -161,4 +161,14 @@ test('provider counting can recover automatic generation when only the minimum u
   assert.equal(calls, 1); assert.equal(plan.capacity.input_count_method, 'provider')
   assert.equal(plan.body.max_output_tokens, 8872)
   assert.equal(plan.capacity.framing_reserve_tokens, 128)
+})
+
+
+test('native input-count transport budgets cannot be swallowed as estimate fallback', async t => {
+  const usage = createScriptRequestUsage(); usage.transport_requests = 1
+  let calls = 0
+  t.mock.method(globalThis, 'fetch', async () => { calls++; return Response.json({ input_tokens: 100 }) })
+  await assert.rejects(withTextRequestUsage({ usage, limits: { max_total_requests: 1 } }, () =>
+    prepareTextRequest({ ...settings, text_token_counter: 'responses' }, { model: 'same', input: '汉'.repeat(500), max_output_tokens: 65536 }, 'responses', options)), isTextRequestBudgetError)
+  assert.equal(calls, 0); assert.equal(usage.transport_requests, 1); assert.equal(usage.requests, 0)
 })

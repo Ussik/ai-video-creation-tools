@@ -7,6 +7,9 @@ import { stageArtifactType } from './script-stage-artifact-repair.js'
 import type { GenerationSteps } from './script-generation-steps.js'
 import { workflowGenerationDraftSchema, type WorkflowDraft, type workflowRequest } from './script-workflow.js'
 import type { z } from 'zod'
+import { Annotation, END, START, StateGraph } from '@langchain/langgraph'
+import { runIsolatedModelGraph } from '../generation/isolated-model-graph.js'
+import { withModelOperationStage, type ModelOperationStage } from '../generation/model-result-observation.js'
 
 type Request = z.infer<typeof workflowRequest>
 export type ScriptWorkTask = {
@@ -185,7 +188,7 @@ export async function executeScriptWorkPlan(options: ScriptWorkOptions): Promise
   }
   const completed = new Map<string, WorkflowDraft>()
   const pending = new Map(plan.map(task => [task.id, task]))
-  while (pending.size) {
+  const executeReadyDocuments = async () => {
     options.signal?.throwIfAborted()
     const ready = [...pending.values()].filter(task => task.depends_on.every(id => completed.has(id)))
     if (!ready.length) throw new Error('创作任务依赖无法继续，已完成成果仍保留。')
@@ -212,10 +215,10 @@ export async function executeScriptWorkPlan(options: ScriptWorkOptions): Promise
           const continuation = legacyWork.continuations[task.artifact_types[0]!]
           if (fresh && continuation) steps.retain('draft:stream:state', '迁移已完成创作单元',
             { strategy: 'stage-semantic-stream-v1', request: generationRequest, prompt }, continuation, value => stageContinuationStateSchema.parse(value))
-          const value = await generateStageDraftWithContinuation(generationRequest, prompt, options.generate({ ...task, artifact_types: missing }), {
+          const value = await withModelOperationStage(`script_${options.request.stage}` as ModelOperationStage, () => generateStageDraftWithContinuation(generationRequest, prompt, options.generate({ ...task, artifact_types: missing }), {
             steps, signal: options.signal, contextRetrieval: options.contextRetrieval, contextSource: options.contextSource, onProgress: message => options.onProgress?.(task, message),
             onRetry: (attempt, delayMs) => options.onRetry?.(task, attempt, delayMs),
-          })
+          }), { unit_index: plan.findIndex(item => item.id === task.id), unit_count: plan.length })
           return restorePreservedScriptDraft(workflowGenerationDraftSchema.parse({ ...value, ...request, artifacts: [...preserved, ...value.artifacts] }), preserved)
         }, value => restorePreservedScriptDraft(workflowGenerationDraftSchema.parse({ ...(value as WorkflowDraft), ...request }), preserved))
         options.signal?.throwIfAborted()
@@ -228,7 +231,21 @@ export async function executeScriptWorkPlan(options: ScriptWorkOptions): Promise
     // branch. Resuming only repeats unfinished or input-invalidated work.
     const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
     if (failed) throw failed.reason
+    return { remaining: pending.size }
   }
+  const State = Annotation.Root({ remaining: Annotation<number>({ reducer: (_old, next) => next, default: () => plan.length }) })
+  const graph = new StateGraph(State)
+    .addNode('author_ready_documents', executeReadyDocuments)
+    .addNode('validate_dependencies', () => {
+      options.signal?.throwIfAborted()
+      if (completed.size !== plan.length) throw new Error('创作任务仍有未完成依赖，已完成成果仍保留。')
+      return {}
+    })
+    .addEdge(START, 'author_ready_documents')
+    .addConditionalEdges('author_ready_documents', state => state.remaining ? 'author_ready_documents' : 'validate_dependencies',
+      ['author_ready_documents', 'validate_dependencies'])
+    .addEdge('validate_dependencies', END).compile()
+  await runIsolatedModelGraph(graph, {}, { signal: options.signal || new AbortController().signal, recursionLimit: plan.length + 3 })
   const drafts = [...completed.values()]
   const types = scriptTaskArtifactTypes(options.request)
   return restorePreservedScriptDraft(workflowGenerationDraftSchema.parse({ ...options.request,

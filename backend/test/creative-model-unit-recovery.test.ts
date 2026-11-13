@@ -46,7 +46,7 @@ test('three-scene durable planning resumes only unfinished scenes, while a fresh
   registerStoryboardPlanningRoutes(isolated, { script, scenePrompt: value => value.heading,
     generateText: async (_id, _model, _prompt, contract) => {
       if (contract?.name === 'storyboard_scene_plan') { outlines++; return JSON.stringify(storyboardOutlineFixture(full)) }
-      if (contract?.name === 'storyboard_directing_review') return JSON.stringify({ issues: [] })
+      if (contract?.name === 'storyboard_directing_review' || contract?.name === 'storyboard_outline_review') return JSON.stringify({ issues: [] })
       assert.equal(contract?.name, 'storyboard_shot_batch')
       const batch = storyboardBatchFixture(full, contract!)
       calls.push(batch.scene_id)

@@ -334,3 +334,29 @@ test('legacy pairs from another outline cannot supply expansions even when the p
   await generateStoryboardPlanningBatches({ ...resumed.options, batchSize: 1 })
   assert.deepEqual(resumed.calls, ['scene-a:0', 'scene-a:1', 'scene-a:2', 'scene-b:0'])
 })
+
+test('a repaired scene boundary invalidates the next scene first shot and keeps only matching paid contexts', async () => {
+  const f = fixture()
+  const expansionPrompt = (scene: z.infer<typeof outlineSchema>['scenes'][number], offset: number, count: number, outline: z.infer<typeof outlineSchema>) => {
+    const sequence = outline.scenes.flatMap(item => item.shots.map((shot, shot_index) => ({ scene_id: item.scene_id, shot_index, shot })))
+    const start = sequence.findIndex(item => item.scene_id === scene.scene_id && item.shot_index === offset)
+    return JSON.stringify({ scene_direction: scene.scene_direction, shot_window: sequence.slice(Math.max(0, start - 1), start + count + 1) })
+  }
+  const options = { ...f.options, batchSize: 1 as const, expansionPrompt }
+  await generateStoryboardPlanningBatches(options)
+  f.calls.length = 0
+  const revised = await generateStoryboardPlanningBatches({ ...options, resolveOutline: async outline => {
+    const result = structuredClone(outline); result.scenes[0]!.shots[2]!.prompt = '已修正跨场交接动作'; return result
+  } })
+  assert.deepEqual(f.calls, ['scene-a:1', 'scene-a:2', 'scene-b:0'])
+  assert.equal(revised.scenes[0]!.shots[0]!.image_prompt, '首帧0')
+})
+
+test('default expansion includes the full outline so any repaired outline change invalidates its old paid contexts', async () => {
+  const f = fixture(), options = { ...f.options, batchSize: 1 as const }
+  await generateStoryboardPlanningBatches(options); f.calls.length = 0
+  await generateStoryboardPlanningBatches({ ...options, resolveOutline: async outline => {
+    const result = structuredClone(outline); result.scenes[0]!.shots[2]!.prompt = '新的交接动作'; return result
+  } })
+  assert.deepEqual(f.calls, ['scene-a:0', 'scene-a:1', 'scene-a:2', 'scene-b:0'])
+})

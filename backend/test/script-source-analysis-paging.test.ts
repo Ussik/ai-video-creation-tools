@@ -168,6 +168,9 @@ test('service shutdown and recovery of a persisted running task both resume afte
       run('UPDATE script_source_analyses SET status=?,snapshot=? WHERE project_id=?', 'running', JSON.stringify(interrupted), id)
     }
     release()
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal((db.prepare("SELECT COUNT(*) AS count FROM source_model_requests WHERE project_id=? AND state='completed'").get(id) as { count: number }).count, 3,
+      'the exact late response is durable before a reconstructed run consumes it')
     const second = createScriptSourceAnalyzer(async (_id, _model, prompt) => {
       if (prompt.includes(mapMarker)) resumedPages.push(inputFor<MapInput>(prompt, mapMarker).output_window.page)
       return reply(prompt)
@@ -176,7 +179,7 @@ test('service shutdown and recovery of a persisted running task both resume afte
       second.recover(); const ready = await terminal(id)
       assertReady(id, ready)
       assert.deepEqual(firstPages, [1, 2, 3])
-      assert.deepEqual(resumedPages, plan.slice(2).map((_, index) => index + 3))
+      assert.deepEqual(resumedPages, plan.slice(3).map((_, index) => index + 4), 'the known complete third page is recovered instead of dispatched again')
       assert.deepEqual(ready.sections.slice(0, interrupted.sections.length), interrupted.sections)
       assert.ok(Date.parse(ready.started_at!) > Date.parse('2000-01-01T00:00:00.000Z'))
     } finally { await second.close() }

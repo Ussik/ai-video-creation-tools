@@ -1,3 +1,4 @@
+import { ProviderExecutionError, providerFailureWithMessage } from './infrastructure/providers/provider-failure.js'
 import { registerAiOperations } from './modules/generation/ai-operations.js'
 import { aiErrorFields } from './modules/generation/ai-operation-errors.js'
 import { withMediaExecution, mediaExecutionSignal, localMediaWriting, localMediaReady, expiredMediaDownload } from './infrastructure/providers/media-execution.js'
@@ -7,6 +8,10 @@ import { generateLongFormDocument, generateLongFormObject } from './modules/gene
 import { creativeGenerationSteps, creativeInputHash, creativeModelIdentity, withCreativeRequest } from './modules/skills/creative-model-state.js'
 import { registerModelRequestObservation, observeModelTask } from './modules/generation/model-request-observation.js'
 import { currentModelRequestContext, modelTaskPolicies, withModelRequestContext } from './modules/generation/model-task-policy.js'
+import { reportModelResult, withModelOperationStage } from './modules/generation/model-result-observation.js'
+import { observeModelQualityReview } from './modules/generation/model-quality-review.js'
+import { isModelWorkflowBudgetError } from './modules/generation/model-workflow-budget.js'
+import { runDirectorExecutionBudget } from './modules/script/director-execution-budget.js'
 import { withModelAdmission } from './modules/generation/model-admission.js'
 import { generationUnitStore } from './modules/generation/generation-unit-store.js'
 import { executeGenerationUnits } from './modules/generation/generation-unit-execution.js'
@@ -1586,6 +1591,13 @@ function resolutionSourceVersion(project: Project) {
     creationState(project.id, projectScript(project.id)).version, currentScriptSourceVersion(project.id)])).digest('hex')
 }
 
+function directorBudgetScale(project: Project, data: DirectorInput) {
+  const pending = pendingScriptDraft(project.id), source = scriptSourceDocument(project.id)
+  return { units: Math.max(1, pending?.draft.artifacts.length || data.workflow?.artifact_types?.length || 1),
+    inputChars: (pending?.source_update?.content || source?.content || '').length + JSON.stringify(data.messages).length +
+      (pending ? JSON.stringify(pending.draft).length : projectDocuments(project.id, projectScript(project.id)).reduce((sum, doc) => sum + doc.content.length, 0)) }
+}
+
 function directorRecoveryKey(project: Project, model: Model, provider: Provider, data: DirectorInput, legacyWorkflowOrder = false) {
   const selectedStages = (Object.keys(data.skill_selections || {}) as SkillStage[])
     .filter(stage => stage !== 'script' && data.skill_selections?.[stage] !== undefined).sort()
@@ -1689,10 +1701,10 @@ async function resumeScriptDraftOnce(project: Project, data: DirectorInput, mode
       activity.update(step, { summary: proposalAnalysisSummary('正在补齐候选稿并保留已完成结果', proposedSource?.analysis || null) })
     }) : null
     if (repairBudget) publishDirectorUsage(activity, repairBudget.usage)
-    const generateRepair = (text: string, contract?: OutputContract) => {
+    const generateRepair = (text: string, contract?: OutputContract) => withModelOperationStage('content_repair', () => {
       const generate = () => streamText(model, provider, { prompt: text, structured_output: contract }, item => decryptKey(item.key_ciphertext || null), () => {}, signal)
       return repairBudget ? repairBudget.run(generate) : generate()
-    }
+    })
     // The repair consumes the full current manuscript directly, never its map.
     // Analyze the resulting candidate once in reviewDirectorDraft after edits.
     const priorDiagnostic = claimed.repair_history?.diagnostic
@@ -1755,7 +1767,7 @@ async function resumeScriptDraftOnce(project: Project, data: DirectorInput, mode
         !!repairTiming && (repairStore.checkpoint.steps.repair?.input_hash === legacyTimingInputHash ||
           repairStore.checkpoint.steps['repair:recovery']?.input_hash === legacyTimingRecoveryHash)
       const repairToolEntries = new Map<string, ScriptActivity>()
-      const runTools = () => runScriptDraftRepairTools({
+      const runTools = () => withModelOperationStage('content_repair', () => runScriptDraftRepairTools({
         workspace: createScriptDraftRepairContext({ candidateId: pending.id, candidateVersion: pending.version,
           sourceVersion, draft: pending.draft, findings: pending.findings, currentSource: proposedSource?.content, assertCurrent: ensureCurrent }),
         prompt: toolPrompt, issueIds: pending.findings.map(findingIdentity), model, provider,
@@ -1770,7 +1782,7 @@ async function resumeScriptDraftOnce(project: Project, data: DirectorInput, mode
             if (entry) activity.finish(entry, event.status, { summary: event.summary })
           }
         },
-      })
+      }))
       const patch = legacy ? await generateScriptDraftRepairOutput(prompt, pending.findings.map(findingIdentity), generateRepair,
         { signal, steps: repairSteps, validate: validateRepair, onRecovery: recovery, timing: repairTiming })
         : await (repairBudget ? repairBudget.run(runTools) : runTools())
@@ -1789,9 +1801,10 @@ async function resumeScriptDraftOnce(project: Project, data: DirectorInput, mode
     const resolutions = rememberFindingResolutions(pending.resolutions || [], pending.findings, input.strategy,
       answers.map(item => item.decision!), repairSummary!, repairDecisions)
     try {
-      await reviewDirectorDraft(project, continued, repaired!, model, provider, signal, activity,
+      await withModelOperationStage('recheck', () => reviewDirectorDraft(project, continued, repaired!, model, provider, signal, activity,
         repaired!.operation === 'regenerate' ? [] : projectDocuments(project.id, projectScript(project.id)),
-        source && sourceUpdate ? { ...source, content: sourceUpdate.content } : source, repairSteps, resolutions, Boolean(sourceUpdate))
+        source && sourceUpdate ? { ...source, content: sourceUpdate.content } : source, repairSteps, resolutions, Boolean(sourceUpdate),
+        pending.findings.map(findingIdentity)))
     } catch (error) {
       if (!(error instanceof ScriptDraftNeedsResolution)) throw error
       ensureCurrent()
@@ -2147,6 +2160,7 @@ async function generateTextOutput(model: Model, provider: Provider, prompt: stri
       error.message = `文本模型生成失败：${error.message}`
       throw error
     }
+    if (error instanceof ProviderExecutionError) throw providerFailureWithMessage(error, `文本模型生成失败：${error.message}`)
     const diagnostics = error && typeof error === 'object' && 'diagnostics' in error && typeof error.diagnostics === 'string' ? error.diagnostics : undefined
     throw Object.assign(new Error(`文本模型生成失败：${error instanceof Error ? error.message : String(error)}`), { statusCode: 502, ...(diagnostics ? { diagnostics } : {}) })
   }
@@ -2192,6 +2206,9 @@ async function tracedDirectorRequest(model: Model, provider: Provider, text: str
 
 type DirectorUsageState = { tracker: ReturnType<typeof createScriptExecutionUsage>; entry: ScriptActivity; cumulative?: ScriptRequestUsage }
 const directorUsageStates = new WeakMap<ReturnType<typeof activityRecorder>, DirectorUsageState>()
+// A UI continuation may renew an exhausted source-analysis budget once per
+// exact source during this execution. Automatic review/repair loops cannot.
+const directorSourceResumes = new WeakMap<ReturnType<typeof activityRecorder>, Set<string>>()
 function publishDirectorUsage(activity?: ReturnType<typeof activityRecorder>, cumulative?: ScriptRequestUsage) {
   const state = activity && directorUsageStates.get(activity)
   if (!activity || !state) return
@@ -2201,8 +2218,9 @@ function publishDirectorUsage(activity?: ReturnType<typeof activityRecorder>, cu
 
 async function reviewDirectorDraft(project: Project, data: DirectorInput, draft: WorkflowDraft, model: Model, provider: Provider,
   signal?: AbortSignal, activity?: ReturnType<typeof activityRecorder>, preserved: Parameters<typeof draftCompletenessSources>[1] = [],
-  sourceOverride?: ScriptSourceDocument | null, steps?: GenerationSteps, resolutions?: FindingResolutionRecord[], verifySourceSync = false) {
+  sourceOverride?: ScriptSourceDocument | null, steps?: GenerationSteps, resolutions?: FindingResolutionRecord[], verifySourceSync = false, previousIssues?: readonly string[]) {
   if (!draftCompletenessSources(draft, preserved).length) return
+  return observeModelQualityReview(currentModelRequestContext()?.operationStage === 'recheck' ? 'recheck' : 'script_review', async () => {
   const parent = activity && [...activity.entries].reverse().find(entry => entry.scope === 'task' && entry.status === 'running')
   let step: ScriptActivity | undefined
   let phase: ScriptDraftReviewError['phase'] = 'review'
@@ -2229,9 +2247,13 @@ async function reviewDirectorDraft(project: Project, data: DirectorInput, draft:
         summary: '准备当前文稿的剧情目录与人物、事件关系，完成后再独立核对阶段设定' })
       currentMessage = source.analysis?.phase === 'synthesis' ? '正在整合全剧人物、事件与伏笔' : '正在准备全文目录与证据校验'
       report(source.analysis || undefined)
+      const resumeSources = activity && directorSourceResumes.get(activity)
+      const sourceIdentity = scriptSourceVersion(source)
+      const explicitResume = !!resumeSources && !resumeSources.has(sourceIdentity)
+      resumeSources?.add(sourceIdentity)
       source.analysis = await budget!.run(() => analyzeSourceSnapshot(source, model.id,
         (text, contract, requestSignal) => generateTextOutput(model, provider, text, contract, requestSignal),
-        signal || new AbortController().signal, sourceAnalysisConfiguration(model, provider), { base: source, onProgress: report }))
+        signal || new AbortController().signal, sourceAnalysisConfiguration(model, provider), { base: source, onProgress: report, explicitResume }))
       if (step) activity!.finish(step, 'succeeded', { summary: proposalAnalysisSummary('当前文稿分析已完成，开始独立核对阶段设定', source.analysis) })
     }
     phase = 'review'
@@ -2272,8 +2294,10 @@ async function reviewDirectorDraft(project: Project, data: DirectorInput, draft:
       : '新写设定已核对，草稿等待创作者预览确认', ...combineTextMetrics(measurements) })
   } catch (error) {
     if (step) activity!.finish(step, error instanceof ScriptDraftNeedsResolution ? 'succeeded' : signal?.aborted && signal.reason?.name === 'AbortError' ? 'cancelled' : 'failed', { summary: (error instanceof Error ? error.message : String(error)).slice(0, 3000), ...combineTextMetrics(measurements) })
-    throw error instanceof ScriptToolProblem || signal?.aborted ? error : new ScriptDraftReviewError(error, phase)
+    throw error instanceof ScriptToolProblem || signal?.aborted || isModelWorkflowBudgetError(error) || isTextRequestBudgetError(error)
+      ? error : new ScriptDraftReviewError(error, phase)
   }
+  }, { previousIssues, issues: error => error instanceof ScriptDraftNeedsResolution ? error.findings.map(findingIdentity) : undefined })
 }
 
 function proposalAnalysisSummary(message: string, state: ScriptSourceDocument['analysis']) {
@@ -2711,24 +2735,28 @@ export function buildApp(): FastifyInstance {
   } })
   const executePreparedDirector = async (project: Project, data: DirectorInput, model: Model, provider: Provider,
     send: (event: Record<string, unknown>) => void, signal: AbortSignal, activity = activityRecorder(send), onStyleSaved?: () => void,
-    onRepairRequestAdvanced?: (request: DirectorInput) => void, restoredActivities: ScriptActivity[] = []) => {
-    const pending = pendingScriptDraft(project.id), source = scriptSourceDocument(project.id)
-    const contextChars = (pending?.source_update?.content || source?.content || '').length + JSON.stringify(data.messages).length +
-      (pending ? JSON.stringify(pending.draft).length : projectDocuments(project.id, projectScript(project.id)).reduce((sum, doc) => sum + doc.content.length, 0))
+    onRepairRequestAdvanced?: (request: DirectorInput) => void, restoredActivities: ScriptActivity[] = [], executionOptions: { explicitResume?: boolean; durableTask?: boolean } = {}) => {
+    const pending = pendingScriptDraft(project.id)
+    const budgetScale = directorBudgetScale(project, data), contextChars = budgetScale.inputChars
     const tracker = createScriptExecutionUsage({ activities: restoredActivities, contextChars,
       onUpdate: () => publishDirectorUsage(activity) })
     const latest = restoredActivities.filter(entry => entry.usage).sort((a, b) => (b.sequence || 0) - (a.sequence || 0) || b.started_at - a.started_at)[0]
     const entry = activity.start({ kind: 'context', scope: 'notice', label: scriptExecutionUsageLabel,
       summary: '记录本轮全部模型请求；实际用量与待结算估算分别展示，恢复任务继续累计。', usage: tracker.snapshot(latest?.usage?.cumulative) })
     directorUsageStates.set(activity, { tracker, entry, cumulative: latest?.usage?.cumulative })
+    if (executionOptions.explicitResume || data.draft_resolution?.strategy === 'continue') directorSourceResumes.set(activity, new Set())
     try {
       const observe = <T>(work: () => Promise<T>) => currentModelRequestContext()?.taskId ? work() : observeModelTask({ projectId: project.id, modelId: model.id, label: '剧本创作', owner: 'director', signal, policy: modelTaskPolicies.generation }, work)
-      const result = await observe(() => withUnrestrictedScriptExecution(() => tracker.run(async () => {
+      const result = await observe(() => runDirectorExecutionBudget({ projectId: project.id,
+        identity: { source: resolutionSourceVersion(project), request: data, model: creativeModelIdentity(model.id),
+          pending: pending && { id: pending.id, version: pending.version }, preview: getToolDraft(project.id)?.version },
+        ...budgetScale,
+        signal, ...executionOptions, explicitResume: executionOptions.explicitResume || data.draft_resolution?.strategy === 'continue' }, budgetSignal => withUnrestrictedScriptExecution(() => tracker.run(async () => {
         // Source indexing is a separate upload task, not a prerequisite for
         // every chat. Intent resolution and outline extraction can read the
         // full manuscript directly; design review prepares analysis if needed.
-        return executeDirectorChat(project, data, model, provider, send, signal, activity, onStyleSaved, onRepairRequestAdvanced)
-      })))
+        return executeDirectorChat(project, data, model, provider, send, budgetSignal, activity, onStyleSaved, onRepairRequestAdvanced)
+      }))))
       activity.finish(entry, 'succeeded', { usage: tracker.snapshot(directorUsageStates.get(activity)?.cumulative) })
       return { ...result, activity: activity.entries }
     } catch (error) {
@@ -2736,6 +2764,7 @@ export function buildApp(): FastifyInstance {
       throw error
     } finally {
       directorUsageStates.delete(activity)
+      directorSourceResumes.delete(activity)
     }
   }
   registerPromptOptimizationRoutes(app, { generateText: creativeText })
@@ -4030,7 +4059,7 @@ export function buildApp(): FastifyInstance {
     return directorTasks.continue(id, taskId, newKey, async (signal, send) => {
       const execute=()=>executePreparedDirector(project, data, model, provider, send, signal, undefined,
         () => directorTasks.refreshRecoveryKey(id, taskId, directorRecoveryKey(project, model, provider, data)),
-        next => directorTasks.refreshRecoveryRequest(id, taskId, next, directorRecoveryKey(project, model, provider, next)), restoredActivities)
+        next => directorTasks.refreshRecoveryRequest(id, taskId, next, directorRecoveryKey(project, model, provider, next)), restoredActivities, { explicitResume: true, durableTask: true })
       try { return await (migration?withScriptCheckpointModelMigration(migration,execute):execute()) }
       catch(error){
         if(migration) run('UPDATE script_director_tasks SET request_payload=?,resume_key=? WHERE id=? AND project_id=?',JSON.stringify(originalRequest),oldKey,taskId,id)
@@ -4060,8 +4089,9 @@ export function buildApp(): FastifyInstance {
       const snapshot = directorTasks.start(id, task, bound, async (signal, send) => {
         return executePreparedDirector(project, prepared, model, provider, send, signal, undefined,
           () => directorTasks.refreshRecoveryKey(id, task.id, directorRecoveryKey(project, model, provider, prepared)),
-          next => directorTasks.refreshRecoveryRequest(id, task.id, next, directorRecoveryKey(project, model, provider, next)))
-      }, { key: directorRecoveryKey(project, model, provider, prepared), resumable: Boolean(prepared.workflow || prepared.draft_resolution || !prepared.use_tools) })
+          next => directorTasks.refreshRecoveryRequest(id, task.id, next, directorRecoveryKey(project, model, provider, next)), [], { durableTask: true })
+      }, { key: directorRecoveryKey(project, model, provider, prepared), resumable: Boolean(prepared.workflow || prepared.draft_resolution || !prepared.use_tools),
+        budgetScale: directorBudgetScale(project, prepared) })
       await directorTasks.subscribe(id, snapshot.id, reply)
       return
     }
@@ -4130,6 +4160,10 @@ export function buildApp(): FastifyInstance {
       validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>, model.protocol, { base_url: provider.base_url, protocol: model.protocol, remote_id: model.remote_id })
       if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
       const source = legacyScriptSourceVersion(id), modelVersion = creativeModelIdentity(model.id)
+      return runDirectorExecutionBudget({ projectId: id, identity: { route: 'artifact', source, model: modelVersion, request: data },
+        units: 1, inputChars: JSON.stringify(data).length + JSON.stringify(projectScript(id)).length, signal }, budgetSignal =>
+        withModelOperationStage(({ outline: 'script_outline', characters: 'script_characters', locations: 'script_locations', props: 'script_props', episode: 'script_episode' } as const)[scriptStageForArtifact(data.artifact_type) || 'episode'], async () => {
+      const signal = budgetSignal
       const base = baseScriptArtifactPrompt(project, data)
       const rules = await creativeRules('script', id, data.model_id, base, data.skill_selections,
         { workflow_stage: scriptStageForArtifact(data.artifact_type), purpose: 'create' })
@@ -4150,9 +4184,12 @@ export function buildApp(): FastifyInstance {
         checkCurrent()
         const content = raw.trim()
         if (!content) return reply.code(502).send({ detail: '文本模型未返回产物内容' })
+        reportModelResult({ phase: 'structure', status: 'valid' })
+        reportModelResult({ phase: 'quality', status: 'inconclusive' })
         steps.clear()
         return { artifact_type: data.artifact_type, title: defaultArtifactTitles[data.artifact_type], content, skill_assignment: rules.assignment }
       })
+      }))
     })))
   app.post('/api/projects/:id/script/generate', (request, reply) => withCreativeRequest(request, reply, '剧本生成', signal =>
     withModelRequestContext({ ...currentModelRequestContext(), policy: modelTaskPolicies.generation, signal: modelStepSignal(signal) }, async () => {
@@ -4166,6 +4203,10 @@ export function buildApp(): FastifyInstance {
       validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>, model.protocol, { base_url: provider.base_url, protocol: model.protocol, remote_id: model.remote_id })
       if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
       const source = legacyScriptSourceVersion(id), modelVersion = creativeModelIdentity(model.id)
+      return runDirectorExecutionBudget({ projectId: id, identity: { route: 'complete_script', source, model: modelVersion, request: data },
+        units: 1, inputChars: JSON.stringify(data).length + JSON.stringify(projectScript(id)).length, signal }, budgetSignal =>
+        withModelOperationStage('script_episode', async () => {
+      const signal = budgetSignal
       const base = (data.prompt_override ? appendMissingScriptSettings(data.prompt_override, data.generation_options)
         : baseScriptGenerationPrompt(project, data)) + referenceContext([{ role: 'user', text: data.idea || '生成完整剧本草稿', reference_documents: data.reference_documents }])
       const rules = await creativeRules('script', id, data.model_id, base, data.skill_selections,
@@ -4195,9 +4236,11 @@ export function buildApp(): FastifyInstance {
             collections: [{ key: 'artifacts', label: '剧本文档', catalog, identityKey: 'artifact_type', contentKey: 'content', maxLength: 100000 }] },
           generate: (text, contract) => { checkCurrent(); return generateTextOutput(model, provider, text, contract, signal) }, steps, signal })
         checkCurrent()
+        reportModelResult({ phase: 'quality', status: 'inconclusive' })
         steps.clear()
         return { ...draft, skill_assignment: rules.assignment, used_skills: rules.skills }
       })
+      }))
     })))
   app.post('/api/projects/:id/shots', async request => {
     const { id } = parse(idParams, request.params)

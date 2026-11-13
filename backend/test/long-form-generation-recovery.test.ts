@@ -34,7 +34,8 @@ function response(protocol: 'responses' | 'chat_completions', text: string, limi
     : { choices: [{ message: { content: text }, finish_reason: limited ? 'length' : 'stop' }] })
 }
 const blocked = () => Response.json({ error: { code: 'invalid_request_error', message: '离线模拟中断，稍后继续' } }, { status: 422 })
-const checkpointCount = (id: string) => all('SELECT * FROM model_unit_checkpoints WHERE project_id=?', id).length
+const checkpointCount = (id: string) => all("SELECT * FROM model_unit_checkpoints WHERE project_id=? AND namespace NOT LIKE 'director-execution:%'", id).length
+const budgetCount = (id: string) => all("SELECT * FROM model_unit_checkpoints WHERE project_id=? AND namespace LIKE 'director-execution:%'", id).length
 const scene = { heading: '第1场 门边', duration: 10, action: '林晚走到门边等待', dialogue: '请进。' }
 
 test('paragraph recovery accepts only complete bounded units, and changed input cannot inherit semantic mode', async () => {
@@ -87,6 +88,7 @@ test('Chat Completions legacy artifact resumes completed paragraphs and clears s
   const payload = { ...f.payload, artifact_type: 'world', prompt_override: '编写完整世界设定。' }
   const first = await app.inject({ method: 'POST', url, payload }); assert.equal(first.statusCode, 502, first.body)
   assert.equal(checkpointCount(f.project.id), 1)
+  assert.equal(budgetCount(f.project.id), 1, 'failed output retains one separate cumulative budget without a second content store')
   failed = false
   const second = await app.inject({ method: 'POST', url, payload }); assert.equal(second.statusCode, 200, second.body)
   assert.equal(second.json().content, '保留的第一段。\n\n继续完成第二段。')
@@ -94,6 +96,7 @@ test('Chat Completions legacy artifact resumes completed paragraphs and clears s
   assert.equal(checkpointCount(f.project.id), 0)
   const third = await app.inject({ method: 'POST', url, payload }); assert.equal(third.statusCode, 200, third.body)
   assert.equal(third.json().content, '全新生成2。')
+  assert.equal(budgetCount(f.project.id), 1, 'clearing completed content never erases the exact-request consumption ledger')
   assert.equal(checkpointCount(f.project.id), 0)
   assert.equal(all('SELECT id FROM script_artifacts WHERE project_id=?', f.project.id).length, 0, 'preview must not insert formal documents')
 })

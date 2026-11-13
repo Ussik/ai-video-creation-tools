@@ -130,10 +130,10 @@ export function registerVideoContinuityReviewRoutes(app: FastifyInstance, contex
       }
       const sources = { final_prompt: input.prompt, generation_duration: input.generation_duration,
         generation_mode: input.mode, generate_audio: input.generate_audio, ...before.publicSource }
-      const result = await generateStructuredOutput('video_continuity_review', resultSchema,
+      const result = await withModelOperationStage('continuity_review', () => generateStructuredOutput('video_continuity_review', resultSchema,
         (prompt, contract) => context.generateText(projectId, input.model_id, prompt, contract, controller.signal, images),
         videoContinuityReviewInstructions(sources, evidence, input.modify_audio),
-        { signal: controller.signal, validate: value => validateVideoContinuityFindings(value.findings, sources, images.length) })
+        { signal: controller.signal, validate: value => validateVideoContinuityFindings(value.findings, sources, images.length) }))
       if ((await snapshot(projectId, input)).signature !== before.signature) fail('分镜、选用素材或取段已在核对期间变化，请重新核对', 409)
       // This known source text does not need a model to decide whether it is
       // present. Meaning, speaker attribution and voice mode still need review.
@@ -149,6 +149,7 @@ export function registerVideoContinuityReviewRoutes(app: FastifyInstance, contex
         result.findings = [...missing, ...result.findings.filter(item => !missing.some(required => item.category === required.category
           && item.quotes.includes(required.quotes[0]!)))].slice(0, 30)
       }
+      reportModelResult({ phase: 'quality', stage: 'continuity_review', status: result.findings.some(item => item.severity === 'error') ? 'needs_work' : 'inconclusive', issue_count: result.findings.length })
       return { ...result, source_signature: input.source_signature, context_signature: before.signature, images: evidence,
         uncertainties: [...new Set([...result.uncertainties, ...limitations, '本次未验证实际音轨、连续动作与逐字口型；仍需播放确认。'])] } satisfies VideoContinuityReview
     } finally {
@@ -156,3 +157,4 @@ export function registerVideoContinuityReviewRoutes(app: FastifyInstance, contex
     }
   })
 }
+import { reportModelResult, withModelOperationStage } from '../generation/model-result-observation.js'

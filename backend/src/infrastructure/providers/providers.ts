@@ -1,3 +1,6 @@
+import { ProviderExecutionError, providerHttpFailure, providerFieldFailure, isProviderExecutionError } from './provider-failure.js'
+import { pollExistingProviderTask } from './provider-poll.js'
+import { resolveMediaTaskCapabilities } from '@video-studio/shared/models/media-task-capabilities'
 import { validateVideoResult } from '../media/media-result-validation.js'
 import { beforeMediaDispatch, localMediaWriting, localMediaReady, mediaExecutionSignal, MediaDownloadError } from './media-execution.js'
 import { acquireModelChannel, modelChannelIdentity, type ModelChannelLease } from './model-channel.js'
@@ -140,8 +143,10 @@ const maxVideoBytes = 600 * 1024 * 1024
 const badResponseBodyDetail = '上游未能返回有效的模型响应体（bad_response_body）'
 
 function asSettings(model: GenerationModel, provider: GenerationProvider): Settings {
-  const parsed: unknown = typeof model.settings === 'string' ? JSON.parse(model.settings) : model.settings ?? {}
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('模型设置必须是 JSON 对象')
+  let parsed: unknown
+  try { parsed = typeof model.settings === 'string' ? JSON.parse(model.settings) : model.settings ?? {} }
+  catch { throw new ProviderExecutionError('模型设置不是有效 JSON', { reason: 'configuration', stage: 'prepare', delivery: 'not_sent' }) }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new ProviderExecutionError('模型设置必须是 JSON 对象', { reason: 'configuration', stage: 'prepare', delivery: 'not_sent' })
   if (model.modality === 'text') { const issue = textCapabilitiesConfigError(parsed as Settings); if (issue) throw new Error(issue) }
   return model.modality === 'text' ? resolveTextApiSettings(scopeTextCapabilities(parsed as Settings, {
     base_url: typeof (parsed as Settings).api_base_url === 'string' ? (parsed as Settings).api_base_url as string : provider.base_url,
@@ -153,7 +158,7 @@ function settingString(settings: Settings, key: string, fallback?: string): stri
   const value = settings[key]
   if (typeof value === 'string' && value) return value
   if (fallback !== undefined) return fallback
-  throw new Error(`模型设置缺少 ${key}`)
+  throw new ProviderExecutionError(`模型设置缺少 ${key}`, { reason: 'configuration', stage: 'prepare', delivery: 'not_sent' })
 }
 
 function apiUrl(base: string, path: string): string {
@@ -167,6 +172,11 @@ function httpUrl(value: string): string {
   const url = new URL(value)
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('模型结果不是有效的 HTTP 地址')
   return url.toString()
+}
+
+function providerResultUrl(value: string): string {
+  try { return httpUrl(value) }
+  catch { throw providerFieldFailure('模型结果不是有效的 HTTP 地址') }
 }
 
 function networkCode(error: unknown): string | null {
@@ -184,24 +194,29 @@ function isNetworkFailure(error: unknown): boolean {
   return error instanceof TypeError || networkCode(error) !== null
 }
 
-function imageNetworkError(stage: '厂商请求' | '结果图片下载', startedAt: number, error: unknown, timeoutMs?: number): Error {
+function imageNetworkError(stage: '厂商请求' | '结果图片下载', startedAt: number, error: unknown, timeoutMs?: number, response?: Response): Error {
   const code = networkCode(error) ?? 'UNKNOWN'
   const seconds = ((Date.now() - startedAt) / 1000).toFixed(1)
   const advice = stage === '厂商请求'
     ? '厂商可能已计费，请先核对厂商记录，再手动创建新的生成任务。'
     : '图片已生成，可重试下载现有结果，不会再次请求厂商生成。'
   const timeout = code === 'TIMEOUT' && timeoutMs ? `；最长等待：${Math.round(timeoutMs / 1000)} 秒` : ''
-  return new Error(`图片任务网络失败（阶段：${stage}；错误码：${code}；耗时：${seconds} 秒${timeout}）。${advice}`)
+  return new ProviderExecutionError(`图片任务网络失败（阶段：${stage}；错误码：${code}；耗时：${seconds} 秒${timeout}）。${advice}`,
+    { reason: 'network', stage: stage === '厂商请求' ? 'create' : 'download', delivery: response ? response.ok ? 'accepted' : 'rejected' : stage === '厂商请求' ? 'unknown' : 'accepted', upstreamStatus: response?.status, retryable: stage !== '厂商请求' }, { cause: error })
 }
 
-function textHttpError(response: Response, raw: string, url: string, startedAt: number, model: string,
-  authValues: string[] = []): Error & { diagnostics: string; statusCode: number } {
+function redactProviderDetail(value: string, authValues: string[] = []): string {
   const secrets = authValues.flatMap(value => [value, value.replace(/^\S+\s+/, '')]).filter(value => value.length >= 6)
-  const clean = (value: string) => secrets.reduce((text, secret) => text.split(secret).join('[已隐藏]'), value)
+  return secrets.reduce((text, secret) => text.split(secret).join('[已隐藏]'), value)
     .replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [已隐藏]')
     .replace(/([?&](?:api_key|key|token)=)[^&\s"'<>]+/gi, '$1[已隐藏]')
     .replace(/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+/gi, '[图片数据已隐藏]')
     .replace(/data:video\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+/gi, '[视频数据已隐藏]')
+}
+
+function textHttpError(response: Response, raw: string, url: string, startedAt: number, model: string,
+  authValues: string[] = []): Error & { diagnostics: string; statusCode: number } {
+  const clean = (value: string) => redactProviderDetail(value, authValues)
   let message = raw.trim(), upstreamCode = ''
   try {
     const payload = JSON.parse(message) as Record<string, unknown>
@@ -231,7 +246,7 @@ function textHttpError(response: Response, raw: string, url: string, startedAt: 
     `上游请求编号：${requestId ? requestId.replace(/[\r\n\t]/g, ' ').slice(0, 160) : '未返回'}`,
   ].join('\n'))
   const failure = Object.assign(new TextProviderError(`模型接口返回 ${response.status}: ${clean(message).slice(0, 800)}\n${diagnostics}`,
-    transientTextStatus(response.status, upstreamCode) && !confirmedContextOverflow(response.status, upstreamCode, message), upstreamCode || undefined, response.status, undefined, textRetryAfter(response.headers.get('retry-after'))), { diagnostics, delivery: 'rejected' as const })
+    transientTextStatus(response.status, upstreamCode) && !confirmedContextOverflow(response.status, upstreamCode, message), clean(upstreamCode) || undefined, response.status, undefined, textRetryAfter(response.headers.get('retry-after'))), { diagnostics, delivery: 'rejected' as const })
   if (confirmedContextOverflow(response.status, upstreamCode, message)) { failure.failureReason = 'context_overflow' }
   return failure
 }
@@ -241,45 +256,49 @@ async function requestJson(method: 'GET' | 'POST', url: string, headers: Record<
   const startedAt = Date.now()
   parentSignal = modelStepSignal(parentSignal ?? mediaExecutionSignal())
   parentSignal?.throwIfAborted()
-  let response: Response
+  let response: Response | undefined
   let raw: string
   try {
     const serialized = body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body)
-    if (method === 'POST' && modality !== 'text') beforeMediaDispatch()
     response = await observeProviderFetch(url, {
       method,
       headers: { ...headers, ...(body === undefined || body instanceof FormData ? {} : { 'Content-Type': 'application/json' }) },
       body: serialized,
       signal: parentSignal ? AbortSignal.any([parentSignal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
-    }, method === 'GET' ? 'media_poll' : 'media_create', fetch, { ...identity, ...(body && typeof body === 'object' && !(body instanceof FormData) && typeof (body as Settings).model === 'string' ? { remote_id: (body as Settings).model as string } : {}) })
+    }, method === 'GET' ? 'media_poll' : 'media_create', fetch, { ...identity, ...(body && typeof body === 'object' && !(body instanceof FormData) && typeof (body as Settings).model === 'string' ? { remote_id: (body as Settings).model as string } : {}) }, method === 'POST' && modality !== 'text' ? () => beforeMediaDispatch() : undefined)
     raw = response.ok ? await response.text() : await readTextErrorBody(response)
   } catch (error) {
     parentSignal?.throwIfAborted()
-    if (modality === 'image' && isNetworkFailure(error)) throw imageNetworkError('厂商请求', startedAt, error, timeoutMs)
+    if (isTextRequestBudgetError(error) || isProviderExecutionError(error)) throw error
+    if (isNetworkFailure(error) && modality !== 'text') {
+      if (modality === 'image' && method === 'POST') throw imageNetworkError('厂商请求', startedAt, error, timeoutMs, response)
+      throw new ProviderExecutionError(`模型${method === 'GET' ? '任务查询' : '创建请求'}连接失败（错误码：${networkCode(error) ?? 'UNKNOWN'}）`,
+        { reason: 'network', stage: method === 'GET' ? 'query' : 'create', delivery: response ? response.ok ? 'accepted' : 'rejected' : 'unknown', upstreamStatus: response?.status, retryable: method === 'GET' }, { cause: error })
+    }
     if (modality === 'text' && networkCode(error) === 'TIMEOUT') {
       throw new Error(`文本模型请求超时（最长等待 ${Math.round(textRequestTimeoutMs / 60_000)} 分钟），请稍后重试或切换文本模型。`)
     }
     throw error
   }
-  let parsed: unknown
-  try { parsed = JSON.parse(raw) } catch { parsed = null }
+  const stage = method === 'GET' ? 'query' as const : 'create' as const
   if (!response.ok) {
-    if (modality === 'image') {
-      const detail = textHttpError(response, raw, url, startedAt, model, Object.values(headers))
-      throw new Error(`图片生成请求失败（阶段：厂商请求；HTTP ${response.status}）。\n${detail.message}\n厂商可能已计费，请先核对厂商记录。`)
-    }
-    if (modality === 'text') throw textHttpError(response, raw, url, startedAt, model, Object.values(headers))
-    const message = parsed && typeof parsed === 'object' ? JSON.stringify(parsed) : raw
-    throw new Error(`模型接口返回 ${response.status}: ${message.slice(0, 800)}`)
+    const detail = textHttpError(response, raw, url, startedAt, model, Object.values(headers))
+    if (modality === 'text') throw detail
+    const upstream = detail as Error & { upstreamCode?: string }
+    throw providerHttpFailure(response, stage, modality === 'image'
+      ? `图片生成请求失败（阶段：厂商请求；HTTP ${response.status}）。\n${detail.message}\n请先核对厂商记录。` : detail.message, upstream.upstreamCode)
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('模型接口没有返回 JSON 对象')
+  let parsed: unknown
+  try { parsed = JSON.parse(raw) }
+  catch { throw new ProviderExecutionError('模型接口没有返回有效 JSON', { reason: 'json_syntax', stage, delivery: 'accepted' }) }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw providerFieldFailure('模型接口没有返回 JSON 对象', stage)
   return parsed as Record<string, unknown>
 }
 
 function nested(value: unknown, dotted: string): unknown {
   let current = value
   for (const part of dotted.split('.')) {
-    if (!current || typeof current !== 'object' || !(part in current)) throw new Error(`模型响应缺少 ${dotted}`)
+    if (!current || typeof current !== 'object' || !(part in current)) throw providerFieldFailure(`模型响应缺少 ${dotted}`)
     current = (current as Record<string, unknown>)[part]
   }
   return current
@@ -964,10 +983,10 @@ export async function streamText(
 
 function base64Bytes(value: string): Buffer {
   const encoded = value.replace(/^data:[^,]*;base64,/, '').replace(/\s/g, '')
-  if (!encoded || !/^[a-zA-Z0-9+/]*={0,2}$/.test(encoded)) throw new Error('模型返回的图片 Base64 无效')
-  if (encoded.length > maxImageBytes * 1.4) throw new Error('模型返回的图片超过 30 MB')
+  if (!encoded || !/^[a-zA-Z0-9+/]*={0,2}$/.test(encoded)) throw providerFieldFailure('模型返回的图片 Base64 无效')
+  if (encoded.length > maxImageBytes * 1.4) throw new ProviderExecutionError('模型返回的图片超过 30 MB', { reason: 'media_validation', stage: 'validate', delivery: 'completed' })
   const bytes = Buffer.from(encoded, 'base64')
-  if (!bytes.length || bytes.length > maxImageBytes) throw new Error('模型返回的图片无效或过大')
+  if (!bytes.length || bytes.length > maxImageBytes) throw new ProviderExecutionError('模型返回的图片无效或过大', { reason: 'media_validation', stage: 'validate', delivery: 'completed' })
   return bytes
 }
 
@@ -990,13 +1009,15 @@ async function saveBytes(projectId: string, suffix: string, bytes: Buffer): Prom
 }
 
 async function saveImage(projectId: string, bytes: Buffer): Promise<string> {
-  if (bytes.length > maxImageBytes) throw new Error('图片超过 30 MB')
+  if (bytes.length > maxImageBytes) throw new ProviderExecutionError('图片超过 30 MB', { reason: 'media_validation', stage: 'validate', delivery: 'completed' })
   const path = await targetPath(projectId, '.png')
   try {
     await sharp(bytes).rotate().png().toFile(path)
   } catch (error) {
     await rm(path, { force: true })
-    throw error
+    const localFailure = !!error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
+    throw new ProviderExecutionError(localFailure ? '图片已生成，但保存本地文件失败，已保留恢复信息。' : '模型返回的图片无法解码为有效图片，已保留原任务和恢复信息。',
+      { reason: localFailure ? 'unknown_result' : 'media_validation', stage: localFailure ? 'store' : 'validate', delivery: 'completed' }, { cause: error })
   }
   await localMediaReady({ path, kind: 'image' })
   return path
@@ -1010,13 +1031,13 @@ async function download(projectId: string, url: string, suffix: '.mp4' | '.png')
     if (!response.ok || !response.body) { void response.body?.cancel().catch(() => {}); throw new MediaDownloadError(response.status) }
     const limit = suffix === '.png' ? maxImageBytes : maxVideoBytes
     const length = Number(response.headers.get('content-length'))
-    if (length > limit) throw new Error(`模型结果超过 ${Math.round(limit / 1024 / 1024)} MB`)
+    if (length > limit) throw new ProviderExecutionError(`模型结果超过 ${Math.round(limit / 1024 / 1024)} MB`, { reason: 'media_validation', stage: 'download', delivery: 'accepted' })
     const file = await open(target, 'w', 0o600)
     let total = 0
     try {
       for await (const chunk of response.body) {
         total += chunk.length
-        if (total > limit) throw new Error(`模型结果超过 ${Math.round(limit / 1024 / 1024)} MB`)
+        if (total > limit) throw new ProviderExecutionError(`模型结果超过 ${Math.round(limit / 1024 / 1024)} MB`, { reason: 'media_validation', stage: 'download', delivery: 'accepted' })
         let offset = 0
         while (offset < chunk.length) {
           const { bytesWritten } = await file.write(chunk, offset, chunk.length - offset)
@@ -1027,7 +1048,7 @@ async function download(projectId: string, url: string, suffix: '.mp4' | '.png')
     } finally {
       await file.close()
     }
-    if (!total) throw new Error('模型结果为空')
+    if (!total) throw new ProviderExecutionError('模型结果为空', { reason: 'media_validation', stage: 'validate', delivery: 'completed' })
     if (suffix === '.png') return await saveImage(projectId, await readFile(target))
     await validateVideoResult(target)
   } catch (error) {
@@ -1086,12 +1107,12 @@ export async function validateVideoReferenceAssets(settings: Settings, reference
 function imageResult(payload: Record<string, unknown>, settings: Settings): { base64?: string; url?: string } {
   const base64Path = typeof settings.image_base64_path === 'string' ? settings.image_base64_path : null
   const urlPath = typeof settings.image_url_path === 'string' ? settings.image_url_path : null
-  if (!base64Path && !urlPath) throw new Error('图片模型必须配置 image_base64_path 或 image_url_path')
+  if (!base64Path && !urlPath) throw new ProviderExecutionError('图片模型必须配置 image_base64_path 或 image_url_path', { reason: 'configuration', stage: 'prepare', delivery: 'not_sent' })
   const base64 = base64Path ? optionalNested(payload, base64Path) : undefined
   const url = urlPath ? optionalNested(payload, urlPath) : undefined
   if (typeof base64 === 'string' && base64) return { base64 }
   if (typeof url === 'string' && url) return { url }
-  throw new Error('图片模型没有返回图片地址或 Base64')
+  throw providerFieldFailure('图片模型没有返回图片地址或 Base64')
 }
 
 async function downloadImage(projectId: string, url: string): Promise<string> {
@@ -1099,26 +1120,28 @@ async function downloadImage(projectId: string, url: string): Promise<string> {
   try { return await download(projectId, url, '.png') }
   catch (error) {
     mediaExecutionSignal()?.throwIfAborted()
-    if (error instanceof MediaDownloadError) throw error
+    if (error instanceof MediaDownloadError || isProviderExecutionError(error) || isTextRequestBudgetError(error)) throw error
     if (isNetworkFailure(error)) throw imageNetworkError('结果图片下载', startedAt, error)
-    throw new Error(`图片已生成，但结果图片下载失败（阶段：结果图片下载；耗时：${((Date.now() - startedAt) / 1000).toFixed(1)} 秒）。可重试下载现有结果，不会再次请求厂商生成。`)
+    throw new ProviderExecutionError(`图片已生成，但结果图片下载失败（阶段：结果图片下载；耗时：${((Date.now() - startedAt) / 1000).toFixed(1)} 秒）。可重试下载现有结果，不会再次请求厂商生成。`,
+      { reason: 'unknown_result', stage: 'store', delivery: 'completed' })
   }
 }
 
 export async function recoverImage(projectId: string, url: string): Promise<GenerationResult> {
-  return { path: await downloadImage(projectId, httpUrl(url)), remoteUrl: url }
+  return { path: await downloadImage(projectId, providerResultUrl(url)), remoteUrl: url }
 }
 
 /** Download an already generated video without any model or provider access. */
 export async function recoverVideo(projectId: string, url: string): Promise<GenerationResult> {
-  const validatedUrl = httpUrl(url)
+  const validatedUrl = providerResultUrl(url)
   try { return { path: await download(projectId, validatedUrl, '.mp4'), remoteUrl: validatedUrl } }
   catch (error) {
     mediaExecutionSignal()?.throwIfAborted()
-    if (error instanceof MediaDownloadError) throw error
+    if (error instanceof MediaDownloadError || isProviderExecutionError(error) || isTextRequestBudgetError(error)) throw error
     // A signed result URL can contain credentials. Keep the transport's raw
     // message out of persisted/public job errors while retaining a safe code.
-    throw new Error(`视频已生成，但结果视频下载失败（错误码：${networkCode(error) ?? 'UNKNOWN'}）。可重试下载现有结果，不会再次请求厂商生成。`)
+    throw new ProviderExecutionError(`视频已生成，但结果视频下载失败（错误码：${networkCode(error) ?? 'UNKNOWN'}）。可重试下载现有结果，不会再次请求厂商生成。`,
+      { reason: isNetworkFailure(error) ? 'network' : 'unknown_result', stage: isNetworkFailure(error) ? 'download' : 'store', delivery: 'completed' })
   }
 }
 
@@ -1128,13 +1151,16 @@ async function consumeImage(projectId: string, payload: Record<string, unknown>,
   if (result.base64) {
     try { return { path: await saveImage(projectId, base64Bytes(result.base64)), remoteUrl: null } }
     catch (error) {
-      throw new Error(`图片已由厂商返回 Base64，但保存本地文件失败（错误码：${networkCode(error) ?? 'UNKNOWN'}）。本次结果没有可恢复链接；请先核对厂商记录，再手动创建新的生成任务。`)
+      mediaExecutionSignal()?.throwIfAborted()
+      if (isProviderExecutionError(error) || isTextRequestBudgetError(error)) throw error
+      throw new ProviderExecutionError(`图片已由厂商返回 Base64，但保存本地文件失败（错误码：${networkCode(error) ?? 'UNKNOWN'}）。本次结果没有可恢复链接；请先核对厂商记录，再手动创建新的生成任务。`, { reason: 'unknown_result', stage: 'store', delivery: 'completed' })
     }
   }
-  const url = httpUrl(result.url!)
+  const url = providerResultUrl(result.url!)
   try { await onImageUrl(url) }
   catch {
-    throw new Error('图片已生成，但保存可恢复链接失败。厂商可能已计费，请先核对厂商记录，再手动创建新的生成任务。')
+    throw new ProviderExecutionError('图片已生成，但保存可恢复链接失败。厂商可能已计费，请先核对厂商记录，再手动创建新的生成任务。',
+      { reason: 'unknown_result', stage: 'store', delivery: 'completed' })
   }
   return recoverImage(projectId, url)
 }
@@ -1170,34 +1196,26 @@ async function pollTask(
   seconds: number,
   projectId: string,
   onVideoUrl: (url: string) => void | Promise<void>,
+  authValues: string[] = [],
 ): Promise<GenerationResult> {
-  const interval = Math.max(1, Math.min(seconds, 60)) * 1000
-  const deadline = Date.now() + 30 * 60_000
-  let transientErrors = 0
-  while (Date.now() < deadline) {
-    await waitForProviderPoll(interval)
-    let result: Record<string, unknown>
-    try {
-      result = await getResult()
-      transientErrors = 0
-    } catch (error) {
-      mediaExecutionSignal()?.throwIfAborted()
-      if (++transientErrors < 3) continue
-      throw new Error(`查询视频任务 ${id} 失败: ${error instanceof Error ? error.message : String(error)}`)
-    }
-    const { status, videoUrl } = parseResult(result)
-    if (status === 'succeeded' || status === 'completed') {
-      if (!videoUrl) throw new Error('视频任务成功，但没有返回视频地址')
-      const url = httpUrl(videoUrl)
-      try { await onVideoUrl(url) }
-      catch { throw new Error('视频已生成，但保存可恢复链接失败。厂商可能已计费，请先核对厂商记录，不要重复提交。') }
-      return recoverVideo(projectId, url)
-    }
-    if (status === 'failed' || status === 'expired' || status === 'cancelled' || status === 'canceled') {
-      throw new Error(`视频任务 ${id} 失败: ${JSON.stringify(result.error ?? status).slice(0, 800)}`)
-    }
-  }
-  throw new Error(`视频任务 ${id} 超过 30 分钟仍未完成，可凭任务 ID 在厂商控制台查询`)
+  const url = await pollExistingProviderTask<Record<string, unknown>, string>({ taskId: id, label: '视频', signal: mediaExecutionSignal(),
+    intervalMs: Math.max(1, Math.min(Number.isFinite(seconds) && seconds > 0 ? seconds : 10, 60)) * 1000, immediate: false, query: getResult, wait: waitForProviderPoll,
+    timeoutMessage: `视频任务 ${id} 超过 30 分钟仍未完成，可凭任务 ID 在厂商控制台查询`,
+    decode(result) {
+      const { status, videoUrl } = parseResult(result)
+      if (status === 'succeeded' || status === 'completed') {
+        if (!videoUrl) throw providerFieldFailure('视频任务成功，但没有返回视频地址', 'query')
+        return { state: 'succeeded', value: providerResultUrl(videoUrl) }
+      }
+      if (['failed', 'expired', 'cancelled', 'canceled'].includes(status)) return {
+        state: status === 'cancelled' || status === 'canceled' ? 'cancelled' : 'failed',
+        message: `视频任务 ${id} 失败: ${redactProviderDetail(JSON.stringify(result.error ?? status), authValues).slice(0, 800)}` }
+      return { state: 'pending' }
+    } })
+  try { await onVideoUrl(url) }
+  catch { throw new ProviderExecutionError('视频已生成，但保存可恢复链接失败。厂商可能已计费，请先核对厂商记录，不要重复提交。',
+    { reason: 'unknown_result', stage: 'store', delivery: 'completed' }) }
+  return recoverVideo(projectId, url)
 }
 
 function renderTemplate(value: unknown, variables: Variables): unknown {
@@ -1378,11 +1396,13 @@ function pollConfiguredVideo(
   return pollTask(externalId,
     () => requestJson('GET', apiUrl(provider.base_url, getPath), headers, undefined, undefined, '', undefined, undefined, identity),
     (result) => {
-      const status = String(nested(result, settingString(settings, 'status_path', 'status')))
+      const rawStatus = nested(result, settingString(settings, 'status_path', 'status'))
+      if (!['string', 'number'].includes(typeof rawStatus) || !String(rawStatus).trim()) throw providerFieldFailure('查询视频任务未返回有效任务状态', 'query')
+      const status = String(rawStatus)
       const videoUrl = success.includes(status) ? String(nested(result, settingString(settings, 'result_path', 'output.url'))) : undefined
-      return { status: success.includes(status) ? 'succeeded' : failure.includes(status) ? 'failed' : status, videoUrl }
+      return { status: success.includes(status) ? 'succeeded' : failure.includes(status) ? ['cancelled', 'canceled'].includes(status) ? 'cancelled' : 'failed' : status, videoUrl }
     },
-    Number(settings.poll_seconds ?? 10), projectId, onVideoUrl)
+    Number(settings.poll_seconds ?? 10), projectId, onVideoUrl, Object.values(headers))
 }
 
 async function pollConfiguredImage(
@@ -1397,38 +1417,28 @@ async function pollConfiguredImage(
   const success = Array.isArray(settings.success_statuses) ? settings.success_statuses.map(String) : ['succeeded', 'completed']
   const failure = Array.isArray(settings.failure_statuses) ? settings.failure_statuses.map(String) : ['failed', 'expired', 'cancelled', 'canceled']
   const getPath = settingString(settings, 'get_path').replaceAll('{id}', encodeURIComponent(externalId))
-  const interval = Math.max(1, Math.min(Number(settings.poll_seconds) || 5, 60)) * 1000
-  const deadline = Date.now() + 30 * 60_000
-  let transientErrors = 0
-  while (Date.now() < deadline) {
-    let result: Record<string, unknown>
-    try {
-      result = await requestJson('GET', apiUrl(settingString(settings, 'image_task_base_url', provider.base_url), getPath), headers, undefined, undefined, '', undefined, undefined, identity)
-      transientErrors = 0
-    } catch (error) {
-      mediaExecutionSignal()?.throwIfAborted()
-      if (++transientErrors >= 3) throw new Error(`查询图片任务 ${externalId} 失败，可继续查询原任务：${error instanceof Error ? error.message : String(error)}`)
-      await waitForProviderPoll(interval)
-      continue
-    }
-    const status = optionalNested(result, settingString(settings, 'status_path', 'status'))
-    if (failure.includes(String(status))) {
-      const message = optionalNested(result, settingString(settings, 'error_path', 'error.message')) ?? result.error ?? status
-      throw new Error(`图片任务 ${externalId} 失败：${String(typeof message === 'string' ? message : JSON.stringify(message)).slice(0, 800)}`)
-    }
-    // RightAPI's completed Images response can omit status and return only
-    // the usual data array. Pending responses must never consume old results.
-    const hasImage = [settings.image_base64_path, settings.image_url_path].some(path => {
-      const value = typeof path === 'string' ? optionalNested(result, path) : undefined
-      return typeof value === 'string' && !!value
-    })
-    if (success.includes(String(status)) || status === undefined && hasImage) {
-      return consumeImage(projectId, result, settings, onImageUrl)
-    }
-    if (typeof status !== 'string' || !status) throw new Error(`查询图片任务 ${externalId} 未返回任务状态或图片结果`)
-    await waitForProviderPoll(interval)
-  }
-  throw new Error(`图片任务 ${externalId} 超过 30 分钟仍未完成，可继续查询原任务或凭任务编号到厂商查看`)
+  const result = await pollExistingProviderTask<Record<string, unknown>, Record<string, unknown>>({ taskId: externalId, label: '图片', signal: mediaExecutionSignal(),
+    intervalMs: Math.max(1, Math.min(Number(settings.poll_seconds) || 5, 60)) * 1000, immediate: true,
+    query: () => requestJson('GET', apiUrl(settingString(settings, 'image_task_base_url', provider.base_url), getPath), headers, undefined, undefined, '', undefined, undefined, identity),
+    wait: waitForProviderPoll,
+    timeoutMessage: `图片任务 ${externalId} 超过 30 分钟仍未完成，可继续查询原任务或凭任务编号到厂商查看`,
+    decode(result) {
+      const status = optionalNested(result, settingString(settings, 'status_path', 'status'))
+      if (failure.includes(String(status))) {
+        const message = optionalNested(result, settingString(settings, 'error_path', 'error.message')) ?? result.error ?? status
+        return { state: ['cancelled', 'canceled'].includes(String(status)) ? 'cancelled' : 'failed',
+          message: `图片任务 ${externalId} 失败：${redactProviderDetail(String(typeof message === 'string' ? message : JSON.stringify(message)), Object.values(headers)).slice(0, 800)}` }
+      }
+      // Documented Images responses may omit status but return the data array.
+      // A pending response must never consume an old result URL.
+      const hasImage = [settings.image_base64_path, settings.image_url_path].some(path => {
+        const value = typeof path === 'string' ? optionalNested(result, path) : undefined
+        return typeof value === 'string' && !!value })
+      if (success.includes(String(status)) || status === undefined && hasImage) return { state: 'succeeded', value: result }
+      if (typeof status !== 'string' || !status) throw providerFieldFailure(`查询图片任务 ${externalId} 未返回任务状态或图片结果`, 'query')
+      return { state: 'pending' }
+    } })
+  return consumeImage(projectId, result, settings, onImageUrl)
 }
 
 async function configuredNetwork(
@@ -1447,7 +1457,7 @@ async function configuredNetwork(
   let settings = asSettings(model, provider)
   const identity = { model_id: model.id, remote_id: model.remote_id }
   const hasExternalId = request._external_id !== undefined && request._external_id !== null
-  if (hasExternalId && model.modality !== 'video' && !(model.modality === 'image' && settings.async_image === true)) {
+  if (hasExternalId && (model.modality === 'text' || !resolveMediaTaskCapabilities(model.modality, settings).query_existing)) {
     throw new Error('现有厂商任务编号与当前模型配置不兼容，无法安全继续查询。请先核对厂商记录，不要重复提交。')
   }
   if (hasExternalId && (typeof request._external_id !== 'string' || !request._external_id.trim() || ['undefined', 'null'].includes(request._external_id.trim()))) {
@@ -1472,6 +1482,13 @@ async function configuredNetwork(
     const issue = documentedImageConfigError(settings)
     if (issue) throw new Error(issue)
     settings = documentedImageSettings(settings, provider.base_url)
+  }
+  const mediaCapabilities = resolveMediaTaskCapabilities(model.modality, settings)
+  if (mediaCapabilities.asynchronous && !mediaCapabilities.query_existing) throw new ProviderExecutionError('异步媒体模型必须配置 get_path，未发送生成请求。',
+    { reason: 'configuration', stage: 'prepare', delivery: 'not_sent' })
+  if (model.modality === 'image' && ![settings.image_base64_path, settings.image_url_path].some(value => typeof value === 'string' && !!value.trim())) {
+    throw new ProviderExecutionError('图片模型必须配置 image_base64_path 或 image_url_path，未发送生成请求。',
+      { reason: 'configuration', stage: 'prepare', delivery: 'not_sent' })
   }
   provider = { ...provider, base_url: settingString(settings, 'api_base_url', provider.base_url) }
   const authHeader = provider.auth_header || 'Authorization'
@@ -1511,10 +1528,10 @@ async function configuredNetwork(
     const payload = await requestJson('POST', apiUrl(provider.base_url, path), headers, body,
       model.modality, model.remote_id, model.modality === 'image' ? timeoutSeconds * 1000 : textRequestTimeoutMs, undefined, identity)
     if (settings.async_image === true) {
-      const externalId = nested(payload, settingString(settings, 'id_path', 'id'))
-      if (typeof externalId !== 'string' || !externalId.trim()) throw new Error('图片模型没有返回有效任务编号')
+      const externalId = optionalNested(payload, settingString(settings, 'id_path', 'id'))
+      if (typeof externalId !== 'string' || !externalId.trim()) throw providerFieldFailure('图片模型没有返回有效任务编号', 'create')
       try { await onExternalId(externalId) }
-      catch { throw new Error(`图片任务 ${externalId} 已提交，但保存任务编号失败，请凭此编号查询厂商结果`) }
+      catch { throw new ProviderExecutionError(`图片任务 ${externalId} 已提交，但保存任务编号失败，请凭此编号查询厂商结果`, { reason: 'unknown_result', stage: 'store', delivery: 'accepted' }) }
       return pollConfiguredImage(externalId, settings, provider, headers, projectId, onImageUrl, identity)
     }
     return consumeImage(projectId, payload, settings, onImageUrl)
@@ -1530,11 +1547,11 @@ async function configuredNetwork(
     // into a fabricated task identity.
     const returnedId = typeof rawId === 'number' && Number.isSafeInteger(rawId) ? String(rawId) : rawId
     if (typeof returnedId !== 'string' || !returnedId.trim() || ['undefined', 'null'].includes(returnedId.trim())) {
-      throw new Error('视频模型没有返回有效任务 ID，厂商可能已接受或计费。请先核对厂商记录，不要重复提交。')
+      throw providerFieldFailure('视频模型没有返回有效任务 ID，厂商可能已接受或计费。请先核对厂商记录，不要重复提交。', 'create')
     }
     externalId = returnedId
     try { await onExternalId(externalId) }
-    catch { throw new Error(`视频任务 ${externalId} 已提交，但保存任务编号失败。厂商可能已计费，请凭此编号查询厂商结果，不要重复提交。`) }
+    catch { throw new ProviderExecutionError(`视频任务 ${externalId} 已提交，但保存任务编号失败。厂商可能已计费，请凭此编号查询厂商结果，不要重复提交。`, { reason: 'unknown_result', stage: 'store', delivery: 'accepted' }) }
   }
   return pollConfiguredVideo(externalId, settings, provider, headers, projectId, onVideoUrl, identity)
 }

@@ -72,17 +72,18 @@ function storyboardStructuralFixture(value: unknown, prompt: string, wireSchema?
   return wireSchema ? fillNullable(patch, wireSchema) : patch
 }
 
-type PlanningFetchCalls = { outline: number; expansion: number; review: number; legacy: number }
+type PlanningFetchCalls = { outline: number; outline_review: number; expansion: number; review: number; legacy: number }
 /** Full authored fixtures are adapted to the actual outline and single-shot
  * wire contracts. Error responses and incomplete streams remain unmodified. */
 function mockPlanningFetch(t: TestContext, generate: (url: unknown, init: RequestInit) => Promise<Response>, fixture?: unknown) {
-  const calls: PlanningFetchCalls = { outline: 0, expansion: 0, review: 0, legacy: 0 }
+  const calls: PlanningFetchCalls = { outline: 0, outline_review: 0, expansion: 0, review: 0, legacy: 0 }
   t.mock.method(globalThis, 'fetch', async (url: unknown, init: RequestInit) => {
     const body = JSON.parse(String(init.body))
     const protocol = Array.isArray(body.messages) ? 'chat_completions' : 'responses'
     const contract = storyboardWireOutputContract(body, protocol)
-    if (contract?.name === 'storyboard_directing_review') {
-      calls.review++
+    if (contract?.name === 'storyboard_directing_review' || contract?.name === 'storyboard_outline_review') {
+      if (contract.name === 'storyboard_outline_review') calls.outline_review++
+      else calls.review++
       return body.stream === false
         ? Response.json(protocol === 'responses' ? { output_text: JSON.stringify({ issues: [] }) }
           : { choices: [{ message: { content: JSON.stringify({ issues: [] }) } }] })
@@ -125,7 +126,7 @@ test('storyboard planning requests streams and validates the collected result fo
     assert.equal(response.statusCode, 200, response.body)
     assertCompiledStoryboardSources(response.json().scenes, [{ ...f.draft.scenes[0], scene_heading: f.scene.heading }])
     assert.equal(calls, 1, 'one outline request precedes two independent expansions')
-    assert.deepEqual(fetches.calls, { outline: 1, expansion: 2, review: 1, legacy: 0 })
+    assert.deepEqual(fetches.calls, { outline: 1, outline_review: 1, expansion: 2, review: 1, legacy: 0 })
     assert.equal(all('SELECT id FROM shots WHERE project_id=?', f.project.id).length, 0)
   })
 })
@@ -351,6 +352,7 @@ async function setup(t: { after: (fn: () => Promise<unknown>) => void },
     scenePrompt: (scene: ScriptScene) => `${scene.heading}\n${scene.action}\n${scene.dialogue}`,
     generateText: async (_id: string, model: string, prompt: string, contract?: import('../src/modules/generation/model-output.js').OutputContract) => {
       assert.equal(model, 'mock-text')
+      if (contract?.name === 'storyboard_outline_review') return JSON.stringify({ issues: [] })
       if (contract?.name === 'visual_profiles') { visualCalls++; return withFixtureVisualCoverage(await generateVisual(prompt), prompt) }
       if (contract?.name === 'storyboard_directing_review') { reviewPrompts.push(prompt); return JSON.stringify({ issues: [] }) }
       if (contract?.name === 'storyboard_shot_batch') { calls++; expansionCalls++; return JSON.stringify(storyboardBatchFixture(batchPlan, contract)) }

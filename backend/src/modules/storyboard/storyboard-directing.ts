@@ -2,6 +2,7 @@ import { z } from 'zod'
 import type { StoryboardContinuityPlan } from '@video-studio/shared/storyboard/storyboard-continuity'
 import type { VideoAudioPlan } from '@video-studio/shared/media/video-prompt-audio'
 import { sceneSoundPlanSchema } from '../canvas/video-audio-plan.js'
+import { storyboardEvidenceReferenceSchema, storyboardRepairScopeSchema, validateStoryboardRepairEvidence } from './storyboard-review-scope.js'
 
 const text = (max: number) => z.string().trim().min(1).max(max)
 
@@ -47,7 +48,7 @@ type ShotText = {
 }
 export type DirectedSceneSequence = Array<{
   scene_id: string; scene_direction?: DirectingScene
-  shots: Array<ShotText & { directing?: DirectingShot }>
+  shots: Array<ShotText & { directing?: DirectingShot; continuity_plan?: z.infer<typeof storyboardContinuityPlanSchema> | null }>
 }>
 
 export const storyboardDirectingInstructions = `【场面调度、摄影与剪辑设计】
@@ -118,6 +119,8 @@ export const storyboardDirectingReviewSchema = z.object({
     scene_id: text(120), shot_index: z.number().int().min(0).max(29),
     related_scene_id: text(120).nullable(), related_shot_index: z.number().int().min(0).max(29).nullable(),
     timing_change: z.boolean().optional(), severity: z.enum(['error', 'warning']), message: text(1500), evidence: text(2000), repair: text(1500),
+    evidence_refs: z.array(storyboardEvidenceReferenceSchema).min(1).max(6).optional(),
+    repair_scope: z.array(storyboardRepairScopeSchema).min(1).max(4).optional(),
   }).strict()).max(100),
 }).strict()
 export type StoryboardDirectingReview = z.infer<typeof storyboardDirectingReviewSchema>
@@ -135,7 +138,8 @@ export function buildStoryboardDirectingReviewContext(scenes: DirectedSceneSeque
 
 /** Validate references only. Continuity is a semantic decision made with the
  * supplied evidence; words such as “左” or “转场” never trigger a defect. */
-export function validateStoryboardDirectingReview(value: StoryboardDirectingReview, scenes: DirectedSceneSequence): StoryboardDirectingReview {
+export function validateStoryboardDirectingReview(value: StoryboardDirectingReview, scenes: DirectedSceneSequence,
+  options: { strictEvidence?: boolean; sourceTexts?: string[] } = {}): StoryboardDirectingReview {
   const parsed = storyboardDirectingReviewSchema.parse(value)
   const ordered = scenes.flatMap(scene => scene.shots.map((_shot, shot_index) => `${scene.scene_id}:${shot_index}`))
   for (const issue of parsed.issues) {
@@ -148,6 +152,8 @@ export function validateStoryboardDirectingReview(value: StoryboardDirectingRevi
       const related = ordered.indexOf(`${issue.related_scene_id}:${issue.related_shot_index}`)
       if (related < 0 || Math.abs(related - index) !== 1) throw Object.assign(new Error('导演复核只能关联本次序列中直接相邻的镜头'), { statusCode: 422 })
     }
+    validateStoryboardRepairEvidence(issue, scenes.map(scene => ({ ...scene, scene_direction: scene.scene_direction || scene.shots.find(shot => shot.continuity_plan)?.continuity_plan?.scene,
+      shots: scene.shots.map(shot => ({ ...shot, directing: shot.directing || shot.continuity_plan?.shot })) })), options.sourceTexts, options.strictEvidence)
   }
   return parsed
 }
@@ -158,5 +164,6 @@ export function storyboardDirectingReviewPrompt(context: unknown): string {
     `必须核对完整image_prompt正文及其追加约束，而非只看摘要：首帧已出鞘、已爆发金芒，而起点仍未出鞘、尚在暗处，属于有证据的first_frame_conflict；逐对核对同一道具由右手到左手是否有换手或允许省略的依据。不要按左右关键词机械报错。共同场景声音、单镜变化与配乐政策应相容；明确的音乐留白、声音撤出可以成立，不要求每镜同响度，不声称听过音轨。\n` +
     `按本次source_policy规定的资料优先级核对剧情与台词来源，最新正式正文优先于滞后的场次摘要和旧镜头，不因新方案正确采用最新设定而报来源漂移。固定镜头、留白、反打、换景别、明确省略/换场、蒙太奇和有意重复都可以成立；不能只因风格偏好、左右关键词或缺少花哨运镜报错。只有无依据的状态跳变、互相矛盾的摄影要求、时长内不可执行的运动、无叙事职责的重复镜头等具体缺陷才报issue。信息不足时不臆造穿帮；不要把需要创作者选择的口味问题当成error。\n` +
     `error用于必须修复的执行矛盾、动作断裂或来源漂移；warning用于有证据但可由创作者判断的节奏或动机风险。每项给出message、逐字引用当前设计或来源的evidence、最小repair；不能要求改动未选场次、已接受事实或新增台词。单镜问题关联字段均为null；跨镜问题只能引用pairs中的直接相邻镜头。shot_index从0开始。只有证据明确表明当前镜头时长不足且需要调整时才写timing_change:true；普通画面或连接问题不授权改时长。明确省略或换场按其允许的变化判断，不强迫起止状态逐字相同。无问题返回{"issues":[]}。\n` +
+    `每个独立缺陷只报一次，message/evidence/repair简短直接，不复述整场；同一原因涉及相邻镜头合并一项。repair只能要求替换错误值，不能删除或清空任何必填字段。每项error必须提供evidence_refs精确引用scene_id、shot_index、field和逐字quote，并以repair_scope限定replace字段，每个待改字段都有同位置证据；warning可用evidence原文；场面调度的shot_index为null，字段为scene_direction的具体子项。无足够证据不授权改动。\n` +
     `本次复核上下文：\n${JSON.stringify(context)}`
 }

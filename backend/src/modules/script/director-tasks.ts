@@ -7,12 +7,15 @@ import { withTextResponseRecovery, type BackgroundResponse } from '../../infrast
 import { invalid } from '../../infrastructure/http/request.js'
 import { conversationTimestamp, insertConversationMessage, saveConversation, type ConversationMessage } from './script-conversations.js'
 import { normalizeScriptEventActivities } from './script-activity-attempt.js'
+import { isModelWorkflowBudgetError, modelWorkflowAllowance, runModelWorkflowBudget } from '../generation/model-workflow-budget.js'
 
 type Event = Record<string, unknown>
 type Status = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'paused'
+export type DirectorTaskBudgetScale = Readonly<{ units: number; inputChars: number }>
 export type DirectorTaskSnapshot = {
   id: string; project_id: string; conversation_id: string; message_id: string; status: Status;
   started_at: number; sequence?: number; can_resume?: boolean; active_duration_ms?: number; execution: ScriptExecution; events: Event[];
+  budget_steps?: Record<string, unknown>; budget_scale?: DirectorTaskBudgetScale;
 }
 type TaskRow = { id: string; project_id: string; conversation_id: string; message_id: string; request_hash: string; snapshot: string; status: Status; request_payload?: string; resume_key?: string }
 export type DirectorTaskInput = { id: string; conversation: { id: string; label?: string; messages: ConversationMessage[] }; execution: ScriptExecution }
@@ -89,7 +92,7 @@ export function createDirectorTasks() {
     settle(snapshot, 'interrupted', '后端服务已重启，本轮任务已中断。已完成的草稿和操作仍保留，请检查后继续。')
   }
   function emit(task: Running, event: Event) {
-    if (task.snapshot.status !== 'running') return
+    if (task.snapshot.status !== 'running' || running.get(task.snapshot.id) !== task) return
     event = normalizeScriptEventActivities({ ...event, task_id: task.snapshot.id, sequence: task.snapshot.sequence = (task.snapshot.sequence || 0) + 1 })
     const events = task.snapshot.events
     const kind = String(event.type)
@@ -127,7 +130,7 @@ export function createDirectorTasks() {
     }
     for (const listener of task.listeners) listener(event)
   }
-  function start(projectId: string, input: DirectorTaskInput, request: unknown, execute: (signal: AbortSignal, emit: (event: Event) => void) => Promise<Event>, recovery?: { key: string; resumable: boolean }) {
+  function start(projectId: string, input: DirectorTaskInput, request: unknown, execute: (signal: AbortSignal, emit: (event: Event) => void) => Promise<Event>, recovery?: { key: string; resumable: boolean; budgetScale?: DirectorTaskBudgetScale }) {
     const hash = createHash('sha256').update(JSON.stringify({ projectId, input, request })).digest('hex')
     const existing = one<TaskRow>('SELECT * FROM script_director_tasks WHERE id=?', input.id)
     if (existing) {
@@ -138,9 +141,11 @@ export function createDirectorTasks() {
     if (one("SELECT id FROM script_director_tasks WHERE project_id=? AND status='running'", projectId)) problem('当前项目还有创作任务正在运行，请先查看或停止该任务')
     const user = input.conversation.messages.at(-1)
     if (!user?.id || user.role !== 'user' || input.conversation.messages.some(item => item.id === input.id)) invalid('任务需关联最后一条创作者消息与独立的回复 ID')
+    const budgetScale = { ...(recovery?.budgetScale || { units: Math.max(1, input.execution.targets?.length || 1), inputChars: JSON.stringify(request ?? {}).length }) }
+    modelWorkflowAllowance('script', budgetScale) // Validate before creating the durable task.
     const started_at = Date.now()
     const snapshot: DirectorTaskSnapshot = { id: input.id, project_id: projectId, conversation_id: input.conversation.id,
-      message_id: input.id, status: 'running', started_at, sequence: 0, can_resume: recovery?.resumable, active_duration_ms: 0, execution: { ...input.execution, started_at }, events: [] }
+      message_id: input.id, status: 'running', started_at, sequence: 0, can_resume: recovery?.resumable, active_duration_ms: 0, budget_scale: budgetScale, execution: { ...input.execution, started_at }, events: [] }
     db.transaction(() => {
       saveConversation(projectId, input.conversation)
       run('INSERT INTO script_director_tasks (id, project_id, conversation_id, user_message_id, message_id, request_hash, status, snapshot, created_at, updated_at, request_payload, resume_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -149,27 +154,35 @@ export function createDirectorTasks() {
       insertConversationMessage(input.conversation.id, { id: input.id, role: 'assistant', text: '正在处理创作任务…',
         reply_metadata: { execution: snapshot.execution, task_id: input.id, task_status: 'running' } }, position)
     })()
-    launch(snapshot, execute)
+    launch(snapshot, execute, request)
     return snapshot
   }
-  function launch(snapshot: DirectorTaskSnapshot, execute: (signal: AbortSignal, emit: (event: Event) => void) => Promise<Event>) {
+  function launch(snapshot: DirectorTaskSnapshot, execute: (signal: AbortSignal, emit: (event: Event) => void) => Promise<Event>, request: unknown, explicitResume = false) {
+    // The initial source/candidate scope fixes this task's allowance scale.
+    // Legacy snapshots fall back once; existing ledgers retain their allowance.
+    snapshot.budget_scale ??= { units: Math.max(1, snapshot.execution.targets?.length || 1), inputChars: JSON.stringify(request ?? {}).length }
     const task: Running = { snapshot, controller: new AbortController(), listeners: new Set() }
     const sessionStarted = Date.now(), previousDuration = snapshot.active_duration_ms || 0
     const progressTimer = setInterval(() => { snapshot.active_duration_ms = previousDuration + Date.now() - sessionStarted; persist(snapshot) }, directorStreamHeartbeatMs)
     progressTimer.unref()
     running.set(snapshot.id, task)
+    let launchActive = true
     task.work = (async () => {
       const scope = createStreamScope(task.controller.signal, { totalMs: null })
       const softTimer = setTimeout(() => emit(task, { type: 'progress', stage: 'long_running', text: '任务执行较久，已完成步骤持续保留；仍在处理，可继续等待或停止。' }), directorTaskSoftTimeoutMs)
       softTimer.unref()
       try {
-        const result = await withTextResponseRecovery({
+        const activities = snapshot.events.find(event => event.type === 'activity')?.activity as ScriptActivity[] | undefined
+        const legacyUsage = activities?.filter(entry => entry.usage).sort((a, b) => (b.sequence || 0) - (a.sequence || 0) || b.started_at - a.started_at)[0]?.usage?.current
+        const result = await runModelWorkflowBudget({ kind: 'script', scale: snapshot.budget_scale!, steps: snapshot.budget_steps ??= {}, signal: scope.signal, explicitResume,
+        activeDurationMs: previousDuration, legacyUsage, persist() { if (launchActive && running.get(snapshot.id) === task) persist(snapshot) } }, budgetSignal => withTextResponseRecovery({
           read: key => { const row = one<{ payload: string }>('SELECT payload FROM script_text_responses WHERE task_id=? AND request_key=?', snapshot.id, key); return row ? JSON.parse(row.payload) as BackgroundResponse : undefined },
           save: (key, value) => {
+            if (!launchActive || running.get(snapshot.id) !== task) return
             if (!value) run('DELETE FROM script_text_responses WHERE task_id=? AND request_key=?', snapshot.id, key)
             else run('INSERT INTO script_text_responses (task_id,request_key,payload,updated_at) VALUES (?,?,?,?) ON CONFLICT(task_id,request_key) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at', snapshot.id, key, JSON.stringify(value), now())
           },
-        }, () => scope.wait(execute(scope.signal, event => emit(task, event))))
+        }, () => scope.wait(execute(budgetSignal, event => emit(task, event)))))
         emit(task, { type: 'done', ...result })
         snapshot.status = 'succeeded'
         snapshot.can_resume = false
@@ -178,7 +191,9 @@ export function createDirectorTasks() {
         db.transaction(() => { persist(snapshot); saveReply(snapshot) })()
       } catch (error) {
         snapshot.active_duration_ms = previousDuration + Date.now() - sessionStarted
-        const status = shuttingDown ? 'interrupted' : task.controller.signal.aborted ? 'cancelled' : scope.signal.aborted && error instanceof StreamWaitTimeoutError && error.kind === 'total' ? 'paused' : 'failed'
+        const budgetStop = isModelWorkflowBudgetError(error)
+        if (budgetStop && !error.canResume) snapshot.can_resume = false
+        const status = shuttingDown ? 'interrupted' : task.controller.signal.aborted ? 'cancelled' : budgetStop || scope.signal.aborted && error instanceof StreamWaitTimeoutError && error.kind === 'total' ? 'paused' : 'failed'
         settle(snapshot, status, status === 'interrupted' ? '后端服务已关闭，本轮任务已中断。已完成的草稿和操作仍保留。'
           : status === 'cancelled' ? '已停止生成。已完成的草稿和操作仍保留。' : String(error instanceof Error ? error.message : error).slice(0, 3000),
           // A structured code and technical detail ride alongside the creator-facing message, never inside it.
@@ -190,12 +205,13 @@ export function createDirectorTasks() {
           listener(snapshot.events.find(event => event.type === 'error')!)
         }
       } finally {
+        launchActive = false
         clearTimeout(softTimer)
         clearInterval(progressTimer)
         if (task.timer) clearTimeout(task.timer)
         scope.close()
         for (const listener of task.listeners) listener({ type: 'close' })
-        task.listeners.clear(); running.delete(snapshot.id)
+        task.listeners.clear(); if (running.get(snapshot.id) === task) running.delete(snapshot.id)
       }
     })()
     return snapshot
@@ -260,7 +276,7 @@ export function createDirectorTasks() {
         else run('UPDATE script_director_tasks SET resume_key=? WHERE id=? AND project_id=?', key, id, projectId)
         persist(snapshot)
       })()
-      launch(snapshot, execute)
+      launch(snapshot, execute, migration?.request ?? JSON.parse(row.request_payload || '{}'), true)
       return snapshot
     },
     active(projectId: string) { return all<TaskRow>("SELECT * FROM script_director_tasks WHERE project_id=? AND status='running'", projectId).map(row => read(projectId, row.id)) },

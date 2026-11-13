@@ -352,6 +352,9 @@ test('contradictory opening results are returned with evidence instead of silent
   assert.match(result.detail, /镜头边界需要确认/)
   assert.match(result.detail, /双眼已爆发金芒/)
   assert.equal(f.prompts.length, 1)
+  const repeated = await f.invoke({ shot_video_prompt: f.currentPrompt(), image_body: '首帧中双眼已爆发金芒。' }, 422)
+  assert.equal(repeated.detail, result.detail)
+  assert.equal(f.prompts.length, 1, 'an unchanged unresolved boundary reuses its complete retained candidate instead of paying for the same diagnosis')
   assert.deepEqual(f.resources(), before)
 })
 

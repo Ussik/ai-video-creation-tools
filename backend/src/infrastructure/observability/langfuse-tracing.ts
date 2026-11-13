@@ -1,7 +1,8 @@
+import { safeModelResult, modelOperationStages, modelOperationStageLabels, type ModelOperationStage } from './model-results.js'
 import { createHmac, randomBytes } from 'node:crypto'
 
 export type LangfuseTracer = { observation(options: { taskId: string; projectId?: string; modelId?: string; owner: string; label?: string }): {
-  dispatch(value: unknown): void; metrics(value: unknown): void; finish(state: 'succeeded' | 'failed' | 'cancelled'): void
+  dispatch(value: unknown): void; metrics(value: unknown): void; result?(value: unknown): void; finish(state: 'succeeded' | 'failed' | 'cancelled'): void
 } }
 export type LangfuseConfig = { enabled: boolean; publicKey?: string; secretKey?: string; baseUrl: string;
   sampleRate: number; timeoutMs: number; maxPending: number; reason?: 'disabled' | 'missing_credentials' | 'invalid_endpoint' | 'invalid_configuration' }
@@ -16,9 +17,9 @@ type Dependencies = { clientFactory?: (config: LangfuseConfig, safeFetch: typeof
 export type LangfuseStatus = { enabled: boolean; pending: number; dropped: number; failed: number; sent: number; lastTraceId?: string; lastRootSpanId?: string; incomplete: number }
 export type ConfiguredLangfuseTracer = LangfuseTracer & { status(): LangfuseStatus; flush(timeoutMs?: number): Promise<void> }
 const noop = () => {}
-const emptyObservation = { dispatch: noop, metrics: noop, finish: noop }
+const emptyObservation = { dispatch: noop, metrics: noop, result: noop, finish: noop }
 const numbers = ['request_bytes', 'response_chars', 'first_event_ms', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'output_limit', 'cache_read_tokens',
-  'cache_write_tokens', 'estimated_input_tokens', 'context_window_tokens', 'reserved_output_tokens', 'http_status', 'framing_reserve_tokens'] as const
+  'cache_write_tokens', 'estimated_input_tokens', 'context_window_tokens', 'reserved_output_tokens', 'http_status', 'framing_reserve_tokens', 'unit_index', 'unit_count'] as const
 const purposes = new Set(['generation', 'review', 'classification', 'prompt', 'tool_decision', 'text', 'media_generation', 'image_analysis'])
 const stages = new Set(['generation', 'review', 'repair', 'classification', 'prompt', 'tool', 'text', 'media_generation'])
 const transports = new Set(['text', 'input_count', 'model_catalog', 'background_create', 'background_poll', 'background_cancel', 'media_create', 'media_poll', 'media_download', 'speech_create'])
@@ -128,6 +129,7 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
     const result: Record<string, unknown> = {}
     for (const key of numbers) if (finite(source[key])) result[key] = source[key]
     for (const [key, values] of [['trace_stage', stages], ['request_purpose', purposes], ['transport_kind', transports], ['failure_reason', failures], ['delivery', deliveries]] as const) if (typeof source[key] === 'string' && values.has(source[key])) result[key] = source[key]
+    if (modelOperationStages.includes(source.operation_stage as ModelOperationStage)) result.operation_stage = source.operation_stage
     if (typeof source.output_started === 'boolean') result.output_started = source.output_started
     const model = opaque('model', source.model_id); if (model) result.model_ref = model
     return result
@@ -148,6 +150,7 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
       try { sampled = random() < valid.sampleRate } catch { return emptyObservation }
       if (!sampled) return emptyObservation
       const children = new Map<string, { id: string; name: string; generation: boolean; startedAt: number; metadata: Record<string, unknown>; settled: boolean; incomplete: boolean }>()
+      let resultCount = 0
       let root: { id: string; spanId: string; startedAt: number; metadata: Record<string, unknown> } | undefined, finished = false, suppressed = false
       const identity = () => ({ owner: owners.has(options.owner) ? options.owner : 'unknown', task_ref: opaque('task', options.taskId),
         ...(options.projectId ? { project_ref: opaque('project', options.projectId) } : {}), ...(options.modelId ? { model_ref: opaque('model', options.modelId) } : {}) })
@@ -163,7 +166,8 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
           const id = randomBytes(8).toString('hex'), metadata = { ...safeMetadata(source), request_ref: key }
           const purpose = stages.has(String(source.trace_stage)) ? String(source.trace_stage) : purposes.has(String(source.request_purpose)) ? String(source.request_purpose) : 'text'
           const transport = transports.has(String(source.transport_kind)) ? String(source.transport_kind) : 'text', generation = transport === 'text'
-          children.set(key, { id, name: purpose + ':' + transport, generation, startedAt: at, metadata, settled: false, incomplete: false })
+          children.set(key, { id, name: (modelOperationStages.includes(source.operation_stage as ModelOperationStage)
+            ? modelOperationStageLabels[source.operation_stage as ModelOperationStage] + (finite(source.unit_index) ? ` ${source.unit_index + 1}` : '') : purpose) + ':' + transport, generation, startedAt: at, metadata, settled: false, incomplete: false })
         }) },
         metrics(value) { safely(() => {
           const source = record(value), key = opaque('request', source.request_id), child = key ? children.get(key) : undefined
@@ -174,6 +178,33 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
           const complete = span({ traceId: root.id, id: child.id, parentId: root.spanId, name: child.name, startedAt: child.startedAt, generation: child.generation,
             metadata, issue, ...(child.generation && used ? { usage: used } : {}), firstEvent })
           if (enqueue([complete])) { child.settled = true; if (child.incomplete) { child.incomplete = false; state.incomplete-- } }
+        }) },
+        result(value) { safely(() => {
+          if (finished || suppressed) return
+          const event = safeModelResult(value); if (!event) return
+          const at = clock()
+          if (!root) { root = { id: randomBytes(16).toString('hex'), spanId: randomBytes(8).toString('hex'), startedAt: at, metadata: identity() }; state.lastTraceId = root.id; state.lastRootSpanId = root.spanId }
+          root.startedAt = Math.min(root.startedAt, Math.max(0, at - (event.duration_ms || 0)))
+          if (event.phase === 'quality') { root.metadata.latest_quality_status = event.status; if (event.stage) root.metadata.latest_quality_stage = event.stage }
+          else root.metadata.latest_structure_status = event.status
+          // Long executions remain bounded without freezing their root at an
+          // early passed substep when the final review later needs work.
+          if (resultCount >= 128) { root.metadata.omitted_result_count = Number(root.metadata.omitted_result_count || 0) + 1; return }
+          resultCount++
+          const operation = event.stage ? modelOperationStageLabels[event.stage] : '模型结果'
+          const metadata: Record<string, unknown> = { result_phase: event.phase, result_status: event.status,
+            ...(event.stage ? { operation_stage: event.stage } : {}),
+            ...(event.issue_count === undefined ? {} : { issue_count: event.issue_count }),
+            ...(event.repaired === undefined ? {} : { repaired: event.repaired }),
+            ...(event.repair_effect === undefined ? {} : { repair_effect: event.repair_effect }),
+            ...(event.duration_ms === undefined ? {} : { duration_ms: event.duration_ms }),
+            ...(event.unit_index === undefined ? {} : { unit_index: event.unit_index }),
+            ...(event.unit_count === undefined ? {} : { unit_count: event.unit_count }) }
+          // Transport completion and execution state do not grant this quality
+          // result. This immutable application span records the validator.
+          enqueue([span({ traceId: root.id, id: randomBytes(8).toString('hex'), parentId: root.spanId,
+            name: operation + (event.phase === 'structure' ? ':结构校验' : ':质量结果'), startedAt: Math.max(0, at - (event.duration_ms || 0)),
+            generation: false, metadata, issue: event.status.startsWith('invalid_') ? event.status : undefined })])
         }) },
         finish(next) { safely(() => {
           if (finished) return; finished = true

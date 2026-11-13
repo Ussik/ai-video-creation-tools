@@ -94,9 +94,9 @@ export function registerImagePromptAnalysisRoutes(app: FastifyInstance, dependen
       const data_url = await localImagePixels(asset, controller.signal)
       const analyze = model.modality === 'image' ? generateGemini : generate
       const output = await withModelRequestContext({ ...currentModelRequestContext(), policy: modelTaskPolicies.prompt, signal: controller.signal },
-        () => runModelStep('image_prompt_analysis', controller.signal, () => retryReadOnlyRequest(
+        () => withModelOperationStage('image_understanding', () => runModelStep('image_prompt_analysis', controller.signal, () => retryReadOnlyRequest(
           () => analyze(model, provider, { prompt: imagePromptAnalysisInstructions(input.instructions), images: [{ data_url, detail: 'high' }] }, modelStepSignal(controller.signal)!),
-          { signal: controller.signal })))
+          { signal: controller.signal }))))
       controller.signal.throwIfAborted()
       const prompt = output.trim().replace(/^```(?:text|markdown)?\s*\n([\s\S]*?)\n```$/i, '$1').trim()
       if (!prompt) fail('模型未返回可用提示词，请重试或更换图片理解模型', 502)
@@ -107,6 +107,8 @@ export function registerImagePromptAnalysisRoutes(app: FastifyInstance, dependen
       try { currentPixels = await localImagePixels(current, controller.signal) }
       catch { controller.signal.throwIfAborted(); return fail('来源图片在反推期间已变化，请重新反推', 409) }
       if (currentPixels !== data_url) fail('来源图片在反推期间已变化，请重新反推', 409)
+      reportModelResult({ phase: 'structure', stage: 'image_understanding', status: 'valid' })
+      reportModelResult({ phase: 'quality', stage: 'image_understanding', status: 'inconclusive' })
       return { prompt, asset_id: input.asset_id, model_id: input.model_id }
     } catch (error) {
       if (controller.signal.aborted) throw Object.assign(new Error('图片反推已取消'), { statusCode: 499 })
@@ -118,3 +120,4 @@ export function registerImagePromptAnalysisRoutes(app: FastifyInstance, dependen
     }
   })
 }
+import { reportModelResult, withModelOperationStage } from '../generation/model-result-observation.js'

@@ -94,7 +94,7 @@ function notifyTarget(target: UsageTarget, phase: 'reservation' | 'settlement' =
 
 export type TextRequestUsageDetails = {
   /** Cancellation is transport that may finish after its execution aborts. */
-  kind?: 'generation' | 'transport' | 'cancellation'
+  kind?: 'generation' | 'auxiliary_generation' | 'transport' | 'cancellation'
   request_bytes: number
   estimated_input_tokens: number
   reserved_output_tokens?: number
@@ -111,11 +111,12 @@ export type TextRequestUsageMetrics = {
 /** Call once immediately before an actual generation HTTP request, never at a
  * model-step/format/retry wrapper. Missing scope keeps other tasks unchanged. */
 export function beginTextRequest(details: TextRequestUsageDetails): {
+  admitted: boolean
   identify: (id: string) => boolean
   complete: (metrics: TextRequestUsageMetrics) => void
 } {
   const targets = activeTargets()
-  if (!targets.length) return { identify: () => false, complete() {} }
+  if (!targets.length) return { admitted: false, identify: () => false, complete() {} }
   if (!integer(details.request_bytes) || !integer(details.estimated_input_tokens)) throw new Error('模型请求用量估算无效')
   const kind = details.kind === 'cancellation' ? 'transport' : details.kind ?? 'generation'
   // Only the explicit provider cancellation endpoint may outlive execution.
@@ -124,7 +125,7 @@ export function beginTextRequest(details: TextRequestUsageDetails): {
   const reservations = targets.map(target => {
     // Identical ledger objects share one conservative reservation while every
     // enclosing scope retains its independently configured limit.
-    const reserve = kind === 'transport' ? 0 : details.reserved_output_tokens ??
+    const reserve = kind !== 'generation' ? 0 : details.reserved_output_tokens ??
       Math.max(...target.scopes.map(scope => scope.limits?.unknown_output_tokens ?? 4096))
     if (!integer(reserve) || (kind === 'generation' && reserve < 1)) throw new Error('模型请求输出预留必须为正整数')
     return { target, reserve, requestId: undefined as string | undefined }
@@ -135,7 +136,7 @@ export function beginTextRequest(details: TextRequestUsageDetails): {
     if (limits?.max_total_requests !== undefined && usage.requests + usage.transport_requests + 1 > limits.max_total_requests) {
       throw new TextRequestBudgetError('requests', structuredClone(usage), { ...limits }, budgetLabel)
     }
-    if (kind === 'generation' && limits?.max_requests !== undefined && usage.requests + 1 > limits.max_requests) {
+    if (kind !== 'transport' && limits?.max_requests !== undefined && usage.requests + 1 > limits.max_requests) {
       throw new TextRequestBudgetError('requests', structuredClone(usage), { ...limits }, budgetLabel)
     }
     if (kind === 'generation' && limits?.max_tokens !== undefined && scriptRequestUsageTokens(usage) + details.estimated_input_tokens + reserve > limits.max_tokens) {
@@ -149,14 +150,17 @@ export function beginTextRequest(details: TextRequestUsageDetails): {
     } else {
       usage.requests++
       usage.request_bytes += details.request_bytes
-      usage.estimated_input_tokens += details.estimated_input_tokens
-      usage.estimated_output_tokens += reserve
-      usage.uncertain_requests++
+      if (kind === 'generation') {
+        usage.estimated_input_tokens += details.estimated_input_tokens
+        usage.estimated_output_tokens += reserve
+        usage.uncertain_requests++
+      }
     }
   }
   for (const target of targets) notifyTarget(target, 'reservation')
   let completed = false
   return {
+    admitted: true,
     identify(id) {
       if (kind !== 'generation' || !id || id.length > 160) return false
       let identified = true
@@ -176,7 +180,7 @@ export function beginTextRequest(details: TextRequestUsageDetails): {
     complete(metrics) {
       if (completed) return
       completed = true
-      if (kind === 'transport') { for (const target of targets) notifyTarget(target); return }
+      if (kind !== 'generation') { for (const target of targets) notifyTarget(target); return }
       for (const { target, reserve, requestId } of reservations) {
         const { usage } = target
         if (requestId && settlePending(target, requestId, metrics)) continue
@@ -203,6 +207,15 @@ export function beginTextRequest(details: TextRequestUsageDetails): {
       }
     },
   }
+}
+
+/** Actual auxiliary dispatches share every enclosing task's request budget.
+ * Media generation has request cost, but never invents text-token reservations
+ * or a resumable text response. Dispatch ownership remains with its caller. */
+export function beginProviderDispatch(details: { kind: 'generation' | 'transport' | 'cancellation'; request_bytes: number }) {
+  const reservation = beginTextRequest({ ...details, kind: details.kind === 'generation' ? 'auxiliary_generation' : details.kind,
+    estimated_input_tokens: 0 })
+  return { admitted: reservation.admitted, complete: () => reservation.complete({}) }
 }
 
 export function settlePendingTextRequest(id: string, metrics: TextRequestUsageMetrics): boolean {

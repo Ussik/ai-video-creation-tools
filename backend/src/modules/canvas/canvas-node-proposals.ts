@@ -167,7 +167,7 @@ export function registerCanvasNodeProposalRoutes(app: FastifyInstance, dependenc
         + JSON.stringify({ creator_instructions: input.instructions, modality: source.modality, mode: source.mode,
           prompt: source.prompt, parameters: source.parameters, allowed_parameter_changes: initial.capabilities,
           references: source.reference_assets.map((value, index) => ({ order: index + 1, usage: value.usage })), has_reference_video: !!source.reference_video_asset_id })
-      const generated = await generateStructuredOutput('canvas_node_proposal', proposalSchema(initial.capabilities),
+      const generated = await withModelOperationStage('canvas_adjustment', () => generateStructuredOutput('canvas_node_proposal', proposalSchema(initial.capabilities),
         (prompt, contract) => dependencies.generateText(projectId, input.text_model_id, prompt, contract, modelStepSignal(controller.signal)), task,
         { signal: controller.signal, budgetMs: 120_000, validate: value => {
           validateManagedPromptDocument(value.prompt)
@@ -178,13 +178,14 @@ export function registerCanvasNodeProposalRoutes(app: FastifyInstance, dependenc
             ...(source.modality === 'video' && initial.capabilities.duration === null && source.mode === 'edit' ? { duration: null } : {}) })
           if (issue) fail(issue)
           if (value.prompt === source.prompt && canvasNodeProposalSourceKey(parameters) === canvasNodeProposalSourceKey(source.parameters)) fail('方案未提出提示词或参数修改，请说明需要调整的内容')
-        } })
+        } }))
       controller.signal.throwIfAborted()
       const current = await sourceState(projectId, canvasId, source, dependencies)
       if (initial.fingerprint !== current.fingerprint) fail('生成方案期间来源、模型或参考素材已变化，请重新读取', 409)
       const patch = generated.parameter_changes as CanvasNodeProposalParameterPatch
       const proposal: CanvasNodeProposal = { id: newId(), created_node_id: newId(), source, validation_fingerprint: initial.fingerprint,
         before: { prompt: source.prompt, parameters: source.parameters }, after: { prompt: generated.prompt, parameters: { ...source.parameters, ...patch } }, changes: generated.changes }
+      reportModelResult({ phase: 'quality', stage: 'canvas_adjustment', status: 'inconclusive' })
       return proposal
     } catch (error) {
       if (controller.signal.aborted) fail('节点方案已取消', 499)
@@ -193,3 +194,4 @@ export function registerCanvasNodeProposalRoutes(app: FastifyInstance, dependenc
     } finally { request.raw.removeListener('aborted', abort); reply.raw.removeListener('close', abort) }
   })
 }
+import { reportModelResult, withModelOperationStage } from '../generation/model-result-observation.js'

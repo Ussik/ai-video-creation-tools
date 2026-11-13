@@ -414,7 +414,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
   function editResult(edit: (current: PlanningResult) => PlanningResult) {
     setPlanningTask(current => current && { ...current, can_resume: false })
     setResult(current => current && { ...edit(current), directing_review: current.directing_review
-      ? { ...current.directing_review, status: 'edited', review_id: undefined } : undefined })
+      ? { ...current.directing_review, status: 'edited', review_id: undefined, error: undefined } : undefined })
   }
   async function reviewDraft(repair = false) {
     if (!result || pending || guarding || applied.current || planIssue(result)) return
@@ -667,12 +667,12 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
               {result.directing_review.status === 'pending_review' ? '分镜草稿已保存，等待完成运镜与接镜复核。'
                 : result.directing_review.status === 'edited' ? '分镜已修改，当前版本尚未复核运镜与接镜；以下保留上次问题供修改参考。'
                 : result.directing_review.status === 'inconclusive' ? `草稿已保留，本次复查未能得出结论。${result.directing_review.error?.message || '可修改或重新复查。'}`
-                : result.directing_review.status === 'needs_work' ? '当前版本有需要修复的起止、首帧或接镜冲突，请查看依据并修改。'
+                : result.directing_review.status === 'needs_work' ? result.directing_review.error?.message || '当前版本有需要修复的起止、首帧或接镜冲突，请查看依据并修改。'
                 : result.directing_review.status === 'warnings' ? '运镜与接镜文字复核已完成，以下节奏或动机问题需要你判断。'
                   : `运镜与接镜文字复核已完成${result.directing_review.repaired ? '，已自动修订并复查' : ''}。`}
               {result.directing_review.issues.map((item, index) => <p key={index}>{context.scenes.find(scene => scene.id === item.scene_id)?.heading || '所选场次'} · 第{item.shot_index + 1}镜：{item.message} 依据：{item.evidence} 建议：{item.repair}</p>)}
               {!planIsSaved && <Button variant="default" size="xs" loading={pending === 'review'} disabled={!!pending || !!planIssue(result)} onClick={() => void reviewDraft()}>复查当前草稿</Button>}
-              {!planIsSaved && result.directing_review.review_id && result.directing_review.status === 'needs_work' && <Button variant="light" size="xs" loading={pending === 'repair'} disabled={!!pending || !!planIssue(result)} onClick={() => void reviewDraft(true)}>仅修复已确认问题</Button>}
+              {!planIsSaved && result.directing_review.review_id && result.directing_review.status === 'needs_work' && <Button variant="light" size="xs" loading={pending === 'repair'} disabled={!!pending || !!planIssue(result) || result.directing_review.error?.code === 'storyboard_repeated_issues'} onClick={() => void reviewDraft(true)}>仅修复已确认问题</Button>}
             </div>}
             {result && !result.directing_review && !planIsSaved && <Button variant="default" size="xs" loading={pending === 'review'} disabled={!!pending || !!planIssue(result)} onClick={() => void reviewDraft()}>复查当前草稿</Button>}
             {issue && <p className="storyboard-planner-error" role="status">{issue}</p>}

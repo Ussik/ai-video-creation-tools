@@ -1,3 +1,4 @@
+import { beginProviderDispatch, isTextRequestBudgetError } from './text-request-usage.js'
 import { randomUUID } from 'node:crypto'
 import { currentModelRequestContext } from '../../modules/generation/model-task-policy.js'
 import { resolveTextCapabilities, scopeTextCapabilities, type TextCapabilities } from '@video-studio/shared/models/text-capabilities'
@@ -86,7 +87,7 @@ export async function prepareTextRequest(settings: Settings, body: unknown, prot
       } catch (error) {
         options.signal?.throwIfAborted()
         // A count-based capacity rejection is authoritative for this attempt.
-        if (error instanceof TextContextCapacityError) throw error
+        if (error instanceof TextContextCapacityError || isTextRequestBudgetError(error)) throw error
       }
     }
     if (plan) return { ...plan, capacity: { ...plan.capacity, input_count_method: 'estimated_fallback' as const } }
@@ -126,10 +127,17 @@ export function completeObservedProviderResponse(response: Response): void {
  * Returning a streaming Response retains pull/cancel behavior and never buffers
  * successful media or prose just for diagnostics. */
 export async function observeProviderFetch(url: string, init: RequestInit, transportKind: string, fetchImpl: typeof fetch = fetch,
-  identity: ProviderRequestIdentity = {}): Promise<Response> {
+  identity: ProviderRequestIdentity = {}, beforeDispatch?: () => void, usageReservation?: { admitted: boolean }): Promise<Response> {
   init.signal?.throwIfAborted()
   const target = new URL(url)
-  const metrics = { ...textRequestTrace(), ...identity, kind: transportKind.endsWith('_create') ? 'generation' as const : 'transport' as const, transport_kind: transportKind,
+  const kind = transportKind.endsWith('_create') ? 'generation' as const : 'transport' as const
+  // Background text already owns a token reservation at this exact dispatch.
+  // Reuse its admission marker without settling its tokens at transport EOF.
+  const admission = usageReservation ? { admitted: usageReservation.admitted, complete() {} }
+    : beginProviderDispatch({ kind, request_bytes: typeof init.body === 'string' ? Buffer.byteLength(init.body) : 0 })
+  beforeDispatch?.()
+  init.signal?.throwIfAborted()
+  const metrics = { ...textRequestTrace(), ...identity, kind, usage_admitted: admission.admitted, transport_kind: transportKind,
     endpoint: target.origin + target.pathname, ...(typeof init.body === 'string' ? { request_bytes: Buffer.byteLength(init.body) } : {}),
     delivery: 'unknown', http_status: undefined as number | undefined, upstream_request_id: undefined as string | undefined,
     failure_reason: undefined as string | undefined, raw_reason: undefined as string | undefined }
@@ -140,6 +148,7 @@ export async function observeProviderFetch(url: string, init: RequestInit, trans
   const finish = (kind: 'complete' | 'cancel' | 'error') => {
     if (settled) return
     settled = true
+    admission.complete()
     init.signal?.removeEventListener('abort', aborted)
     if (kind === 'complete' && metrics.delivery === 'accepted') metrics.delivery = 'completed'
     if (kind !== 'complete') {

@@ -26,3 +26,15 @@ test('recovery serialization only permits known actions and safe identity fields
   assert.equal(aiErrorFields({ retryAfterMs: 1.2 }, 429).retry_after_ms, 2)
   assert.equal(aiErrorFields({ retryAfterMs: Infinity }, 429).retry_after_ms, undefined)
 })
+
+
+test('typed provider failure detail survives public mapping with a bounded machine vocabulary', () => {
+  const error = aiOperationError({ reason: 'json_syntax', failure_stage: 'query', upstreamStatus: 502, upstreamCode: 'bad_response_body',
+    category: 'contract', delivery: 'accepted' }, 502)
+  assert.equal(error.reason, 'json_syntax'); assert.equal(error.failure_stage, 'query')
+  assert.equal(error.upstream_status, 502); assert.equal(error.upstream_code, 'bad_response_body')
+  assert.equal(error.outcome_certainty, 'accepted')
+  const unsafe = aiErrorFields({ reason: 'private text', failure_stage: 'secret', upstreamStatus: 3.2, upstreamCode: 'echoed credential\nvalue' }, 502)
+  assert.equal(unsafe.reason, undefined); assert.equal(unsafe.failure_stage, undefined)
+  assert.equal(unsafe.upstream_status, undefined); assert.equal(unsafe.upstream_code, undefined)
+})

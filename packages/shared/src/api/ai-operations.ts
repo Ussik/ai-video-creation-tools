@@ -2,7 +2,9 @@ export const aiOperationHeader = 'x-ai-operation-id'
 export type AiOperationState = 'running' | 'completed' | 'failed' | 'interrupted'
 export type AiOutcomeCertainty = 'not_dispatched' | 'unknown' | 'accepted' | 'completed'
 export type AiRecoveryAction = { kind: 'observe' | 'edit_candidate' | 'review_candidate' | 'query_upstream' | 'download_result' | 'verify_upstream' | 'none'; operation_id?: string; task_id?: string }
-export type AiOperationError = { code: string; category: string; message: string; retryable: boolean; outcome_certainty: AiOutcomeCertainty; recovery: AiRecoveryAction }
+export type AiFailureReason = 'configuration' | 'authentication' | 'capacity' | 'rate_limit' | 'network' | 'protocol' | 'json_syntax' | 'field_contract' | 'business' | 'quality' | 'cancelled' | 'unknown_result' | 'media_validation'
+export type AiFailureStage = 'prepare' | 'create' | 'query' | 'download' | 'decode' | 'validate' | 'store'
+export type AiOperationError = { code: string; category: string; message: string; retryable: boolean; outcome_certainty: AiOutcomeCertainty; recovery: AiRecoveryAction; reason?: AiFailureReason; failure_stage?: AiFailureStage; upstream_status?: number; upstream_code?: string }
 export type AiOperationRecord = {
   id: string; project_id: string; route: string; state: AiOperationState; status_code: number | null;
   result?: unknown; candidate?: unknown; error?: AiOperationError; model_task_id?: string; created_at: string; updated_at: string;

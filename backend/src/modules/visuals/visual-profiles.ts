@@ -33,6 +33,11 @@ import { explicitReferenceProfiles } from './explicit-reference-context.js'
 import { persistResolvedVisualBindings, resolveShotVisualBindings, resolveVisualBinding, synchronizeProjectVisualBindings, synchronizeVisualProfileBindings,
   type VisualBindingReferenceSelection, type VisualBindingSyncMode } from './visual-binding-sync.js'
 import { scopeVisualReferenceCoverage, validateVisualReferenceCoverage, visualReferenceCoverageInstructions, visualReferenceCoverageSchema } from './visual-reference-coverage.js'
+import { Annotation, END, START, StateGraph } from '@langchain/langgraph'
+import { runIsolatedModelGraph } from '../generation/isolated-model-graph.js'
+import { runCreativeWorkflowBudget } from '../generation/creative-workflow-budget.js'
+import { reportModelResult, withModelOperationStage } from '../generation/model-result-observation.js'
+import { withModelAdmission } from '../generation/model-admission.js'
 
 export type VisualKind = 'character' | 'location' | 'prop'
 export interface VisualProfile {
@@ -850,108 +855,134 @@ export async function analyzeVisualProfiles(id: string, data: { retain_checkpoin
           shots: scopedShots,
         })
   }
-  const identity = { version: 1, prompt, rules: rules.text, model: creativeModelIdentity(data.model_id) }
-  const steps = creativeGenerationSteps(id, `visual-profiles:${creativeInputHash([designId, data.scene_ids])}`, identity, signal, data.restart)
-  let draft: z.infer<typeof profileAnalysisDraft>
-  if (scenes.length < 10 && prompt.length < 60_000) {
-    draft = await steps.run('profiles', '整理视觉设定', identity,
-      () => generateStructuredOutput('visual_profiles', analysisSchema,
-        (text, contract) => context.generateText(id, data.model_id, text, contract, signal), rules.text + '\n【本次任务】\n' + prompt, { signal, validate, correctionInstructions: '逐项检查 profiles：填写 base_profile_id 或 base_draft_key 的派生设定，必须在同一对象的 state_delta 中写出相对基础设定的具体变化，不能为 null、空字符串或空白，也不能只写在 definition 或 variant 中。依据原任务、场次和已有设定补全；已有派生设定保留原基础关系与变化说明，不得为通过校验删除真实派生关系或编造变化。独立设定的两个基础字段省略或为 null，state_delta 省略或为空。保留全部设定与每个镜头的 shot_usage，返回完整 profiles。' + (data.require_visual_coverage ? visualReferenceCoverageInstructions : '') }),
-      value => { const result = analysisSchema.parse(value); validate(result); return result })
-  } else {
-    // First lock shared object identities and base relationships. Definitions
-    // and per-shot usage are then generated in dependency order, never per
-    // scene independently (which would duplicate the same character).
-    const catalogItem = profileDraft.shape.profiles.element.omit({ design_id: true, definition: true, view_requirements: true, shot_usage: true })
-      .extend({ draft_key: z.string().trim().min(1).max(160) })
-    const catalogSchema = z.object({ profiles: z.array(catalogItem).max(100) }).strict()
-    const validateCatalog = (raw: unknown) => {
-      const value = catalogSchema.parse(raw), byKey = new Map(value.profiles.map(profile => [profile.draft_key, profile]))
-      if (byKey.size !== value.profiles.length) invalid('视觉对象目录的草稿键不可重复')
-      for (const profile of value.profiles) {
-        if (!profile.scene_ids.length || profile.scene_ids.some(sceneId => !data.scene_ids.includes(sceneId))) invalid('视觉对象目录引用了范围外的场次')
-        if (profile.base_profile_id && profile.base_draft_key) invalid('视觉对象的基础关系只能选择一个')
-        const visiting = new Set<string>([profile.draft_key])
-        let base = profile.base_draft_key
-        while (base) {
-          if (visiting.has(base) || !byKey.has(base)) invalid('视觉对象目录的基础关系存在循环或缺失')
-          visiting.add(base); base = byKey.get(base)!.base_draft_key
+  return withModelAdmission(`creative:visual-profiles:${id}:${creativeInputHash([designId, data.scene_ids])}`, signal, async () => {
+    const identity = { version: 1, prompt, rules: rules.text, model: creativeModelIdentity(data.model_id) }
+    const steps = creativeGenerationSteps(id, `visual-profiles:${creativeInputHash([designId, data.scene_ids])}`, identity, signal, data.restart)
+    let draft!: z.infer<typeof profileAnalysisDraft>
+    const requestSignal = signal || new AbortController().signal
+    await withModelOperationStage('visual_organization', () => runCreativeWorkflowBudget(steps, { kind: 'visual_organization',
+      units: Math.max(scenes.length, plannedShots.length), inputChars: prompt.length, signal: requestSignal }, async budgetSignal => {
+    signal = budgetSignal
+    if (scenes.length < 10 && prompt.length < 60_000) {
+      draft = await steps.run('profiles', '整理视觉设定', identity,
+        () => generateStructuredOutput('visual_profiles', analysisSchema,
+          (text, contract) => context.generateText(id, data.model_id, text, contract, signal), rules.text + '\n【本次任务】\n' + prompt, { signal, validate, correctionInstructions: '逐项检查 profiles：填写 base_profile_id 或 base_draft_key 的派生设定，必须在同一对象的 state_delta 中写出相对基础设定的具体变化，不能为 null、空字符串或空白，也不能只写在 definition 或 variant 中。依据原任务、场次和已有设定补全；已有派生设定保留原基础关系与变化说明，不得为通过校验删除真实派生关系或编造变化。独立设定的两个基础字段省略或为 null，state_delta 省略或为空。保留全部设定与每个镜头的 shot_usage，返回完整 profiles。' + (data.require_visual_coverage ? visualReferenceCoverageInstructions : '') }),
+        value => { const result = analysisSchema.parse(value); validate(result); return result })
+    } else {
+      // First lock shared object identities and base relationships. Definitions
+      // and per-shot usage are then generated in dependency order, never per
+      // scene independently (which would duplicate the same character).
+      const catalogItem = profileDraft.shape.profiles.element.omit({ design_id: true, definition: true, view_requirements: true, shot_usage: true })
+        .extend({ draft_key: z.string().trim().min(1).max(160) })
+      const catalogSchema = z.object({ profiles: z.array(catalogItem).max(100) }).strict()
+      const validateCatalog = (raw: unknown) => {
+        const value = catalogSchema.parse(raw), byKey = new Map(value.profiles.map(profile => [profile.draft_key, profile]))
+        if (byKey.size !== value.profiles.length) invalid('视觉对象目录的草稿键不可重复')
+        for (const profile of value.profiles) {
+          if (!profile.scene_ids.length || profile.scene_ids.some(sceneId => !data.scene_ids.includes(sceneId))) invalid('视觉对象目录引用了范围外的场次')
+          if (profile.base_profile_id && profile.base_draft_key) invalid('视觉对象的基础关系只能选择一个')
+          const visiting = new Set<string>([profile.draft_key])
+          let base = profile.base_draft_key
+          while (base) {
+            if (visiting.has(base) || !byKey.has(base)) invalid('视觉对象目录的基础关系存在循环或缺失')
+            visiting.add(base); base = byKey.get(base)!.base_draft_key
+          }
+          if (profile.base_profile_id && !one('SELECT 1 FROM visual_profiles WHERE id=? AND project_id=? AND design_id IS ?', profile.base_profile_id, id, designId)) invalid('基础视觉设定不属于当前设计方案')
         }
-        if (profile.base_profile_id && !one('SELECT 1 FROM visual_profiles WHERE id=? AND project_id=? AND design_id IS ?', profile.base_profile_id, id, designId)) invalid('基础视觉设定不属于当前设计方案')
+        return value
       }
-      return value
-    }
-    const catalog = await steps.run('object-catalog', '确定共享对象与基础关系', identity, () => generateStructuredOutput('visual_profile_catalog', catalogSchema,
-      (text, contract) => context.generateText(id, data.model_id, text, contract, signal), rules.text + '\n' + prompt
-        + '\n【本步骤】只返回所需对象、版本、scene_ids和基础关系目录。不要生成definition、view_requirements或shot_usage。锁定跨场次共享身份，每个对象版本只一项。',
-      { signal, context: { policy: modelTaskPolicies.decision }, validate: validateCatalog }), validateCatalog)
-    checkCurrent()
-    const ordered: typeof catalog.profiles = [], pending = [...catalog.profiles]
-    while (pending.length) {
-      const index = pending.findIndex(profile => !profile.base_draft_key || ordered.some(base => base.draft_key === profile.base_draft_key))
-      if (index < 0) invalid('视觉对象目录无法按基础依赖执行')
-      ordered.push(pending.splice(index, 1)[0]!)
-    }
-    const byKey = new Map(ordered.map(profile => [profile.draft_key, profile]))
-    const completed = new Map<string, z.infer<typeof profileAnalysisDraft>['profiles'][number]>()
-    if (!ordered.length) draft = { profiles: [] }
-    else {
-      const values = await executeGenerationUnits<z.infer<typeof profileAnalysisDraft>['profiles'][number]>({
-        identity: { ...identity, catalog }, units: ordered.map(profile => profile.draft_key), steps, signal,
-        label: key => `整理${byKey.get(key)!.name} · ${byKey.get(key)!.variant}`,
-        generate: async key => {
+      let catalog!: z.infer<typeof catalogSchema>
+      const ordered: z.infer<typeof catalogSchema>['profiles'] = []
+      const GraphState = Annotation.Root({})
+      const graph = new StateGraph(GraphState).addNode('catalog_objects', async () => {
+      catalog = await steps.run('object-catalog', '确定共享对象与基础关系', identity, () => generateStructuredOutput('visual_profile_catalog', catalogSchema,
+        (text, contract) => context.generateText(id, data.model_id, text, contract, signal), rules.text + '\n' + prompt
+          + '\n【本步骤】只返回所需对象、版本、scene_ids和基础关系目录。不要生成definition、view_requirements或shot_usage。锁定跨场次共享身份，每个对象版本只一项。',
+        { signal, context: { policy: modelTaskPolicies.decision }, validate: validateCatalog }), validateCatalog)
+      checkCurrent()
+      const pending = [...catalog.profiles]
+      while (pending.length) {
+        const index = pending.findIndex(profile => !profile.base_draft_key || ordered.some(base => base.draft_key === profile.base_draft_key))
+        if (index < 0) invalid('视觉对象目录无法按基础依赖执行')
+        ordered.push(pending.splice(index, 1)[0]!)
+      }
+      return {}
+      }).addNode('expand_profiles', async () => {
+      const byKey = new Map(ordered.map(profile => [profile.draft_key, profile]))
+      const completed = new Map<string, z.infer<typeof profileAnalysisDraft>['profiles'][number]>()
+      if (!ordered.length) draft = { profiles: [] }
+      else {
+        const values = await executeGenerationUnits<z.infer<typeof profileAnalysisDraft>['profiles'][number]>({
+          identity: { ...identity, catalog }, units: ordered.map(profile => profile.draft_key), steps, signal,
+          label: key => `整理${byKey.get(key)!.name} · ${byKey.get(key)!.variant}`,
+          generate: async key => {
+            checkCurrent()
+            const item = byKey.get(key)!, base = item.base_draft_key ? completed.get(item.base_draft_key) : undefined
+            const value = await generateStructuredOutput('visual_profiles', profileAnalysisDraft.extend({ profiles: z.array(profileAnalysisDraft.shape.profiles.element).length(1) }),
+              (text, contract) => context.generateText(id, data.model_id, text, contract, signal), rules.text + '\n' + prompt
+                + '\n【当前完整对象单元】仅生成以下目录项的完整档案与逐镜用途，不更改目录身份、场次或基础关系，不重新设计基础形象：' + JSON.stringify(item)
+                + '\n已完成基础版本（只读，派生项只改变state_delta所述状态）：' + JSON.stringify(base || null), { signal, correctionInstructions: '逐项检查 profiles：填写 base_profile_id 或 base_draft_key 的派生设定，必须在同一对象的 state_delta 中写出相对基础设定的具体变化，不能为 null、空字符串或空白，也不能只写在 definition 或 variant 中。依据原任务、场次和已有设定补全；已有派生设定保留原基础关系与变化说明，不得为通过校验删除真实派生关系或编造变化。独立设定的两个基础字段省略或为 null，state_delta 省略或为空。保留全部设定与每个镜头的 shot_usage，返回完整 profiles。' })
+            return value.profiles[0]
+          },
+          validate: (raw, key) => {
+            const item = byKey.get(key)!, value = profileAnalysisDraft.shape.profiles.element.parse(raw)
+            if (value.draft_key !== key || value.kind !== item.kind || value.name !== item.name || value.variant !== item.variant
+              || JSON.stringify([...value.scene_ids].sort()) !== JSON.stringify([...item.scene_ids].sort())
+              || (value.base_profile_id || null) !== (item.base_profile_id || null) || (value.base_draft_key || null) !== (item.base_draft_key || null)
+              || (value.state_delta || '') !== (item.state_delta || '')) invalid('完整视觉档案不能改变已锁定的对象目录或基础关系')
+            const scope = scopeVisualProfileDrafts(id, [value], sceneDesigns)[0]!
+            validateProfileShotUsage(id, scope)
+            const expected = plannedShots.filter(shot => value.scene_ids.includes(shot.scene_id || ''))
+            if (expected.some(shot => !value.shot_usage?.some(usage => usage.shot_id === shot.shot_id))) invalid('完整视觉档案缺少逐镜参考用途')
+            completed.set(key, value)
+            return value
+          },
+          validateAll: values => {
+            if (!data.require_visual_coverage) validate({ profiles: [...values.values()] })
+          },
+        })
+        draft = { profiles: [...values.values()] }
+      }
+      return {}
+      }).addNode('check_coverage', async () => {
+      if (data.require_visual_coverage) {
+        const coverageSchema = z.object({ visual_coverage: visualReferenceCoverageSchema }).strict()
+        const coverageInput = { ...identity, profiles: draft.profiles }
+        const validateCoverage = (raw: unknown) => {
           checkCurrent()
-          const item = byKey.get(key)!, base = item.base_draft_key ? completed.get(item.base_draft_key) : undefined
-          const value = await generateStructuredOutput('visual_profiles', profileAnalysisDraft.extend({ profiles: z.array(profileAnalysisDraft.shape.profiles.element).length(1) }),
-            (text, contract) => context.generateText(id, data.model_id, text, contract, signal), rules.text + '\n' + prompt
-              + '\n【当前完整对象单元】仅生成以下目录项的完整档案与逐镜用途，不更改目录身份、场次或基础关系，不重新设计基础形象：' + JSON.stringify(item)
-              + '\n已完成基础版本（只读，派生项只改变state_delta所述状态）：' + JSON.stringify(base || null), { signal, correctionInstructions: '逐项检查 profiles：填写 base_profile_id 或 base_draft_key 的派生设定，必须在同一对象的 state_delta 中写出相对基础设定的具体变化，不能为 null、空字符串或空白，也不能只写在 definition 或 variant 中。依据原任务、场次和已有设定补全；已有派生设定保留原基础关系与变化说明，不得为通过校验删除真实派生关系或编造变化。独立设定的两个基础字段省略或为 null，state_delta 省略或为空。保留全部设定与每个镜头的 shot_usage，返回完整 profiles。' })
-          return value.profiles[0]
-        },
-        validate: (raw, key) => {
-          const item = byKey.get(key)!, value = profileAnalysisDraft.shape.profiles.element.parse(raw)
-          if (value.draft_key !== key || value.kind !== item.kind || value.name !== item.name || value.variant !== item.variant
-            || JSON.stringify([...value.scene_ids].sort()) !== JSON.stringify([...item.scene_ids].sort())
-            || (value.base_profile_id || null) !== (item.base_profile_id || null) || (value.base_draft_key || null) !== (item.base_draft_key || null)
-            || (value.state_delta || '') !== (item.state_delta || '')) invalid('完整视觉档案不能改变已锁定的对象目录或基础关系')
-          const scope = scopeVisualProfileDrafts(id, [value], sceneDesigns)[0]!
-          validateProfileShotUsage(id, scope)
-          const expected = plannedShots.filter(shot => value.scene_ids.includes(shot.scene_id || ''))
-          if (expected.some(shot => !value.shot_usage?.some(usage => usage.shot_id === shot.shot_id))) invalid('完整视觉档案缺少逐镜参考用途')
-          completed.set(key, value)
-          return value
-        },
-        validateAll: values => {
-          if (!data.require_visual_coverage) validate({ profiles: [...values.values()] })
-        },
-      })
-      draft = { profiles: [...values.values()] }
-    }
-    if (data.require_visual_coverage) {
-      const coverageSchema = z.object({ visual_coverage: visualReferenceCoverageSchema }).strict()
-      const coverageInput = { ...identity, profiles: draft.profiles }
-      const validateCoverage = (raw: unknown) => {
-        checkCurrent()
-        const result = coverageSchema.parse(raw)
-        validateVisualReferenceCoverage(result.visual_coverage, scenes, scopedShots, draft.profiles)
-        return result
+          const result = coverageSchema.parse(raw)
+          validateVisualReferenceCoverage(result.visual_coverage, scenes, scopedShots, draft.profiles)
+          return result
+        }
+        const coverage = await steps.run('visual-coverage', '核对逐镜视觉参考覆盖', coverageInput,
+          () => generateStructuredOutput('visual_reference_coverage', coverageSchema,
+            (text, contract) => context.generateText(id, data.model_id, text, contract, signal),
+            rules.text + '\n' + prompt + '\n【已完成视觉档案，只读】' + JSON.stringify(draft.profiles)
+            + '\n只返回完整 visual_coverage，核对这些档案对选定场次与镜头的覆盖。不得改写档案。',
+            { signal, validate: validateCoverage }), validateCoverage)
+        draft = { ...draft, visual_coverage: coverage.visual_coverage }
       }
-      const coverage = await steps.run('visual-coverage', '核对逐镜视觉参考覆盖', coverageInput,
-        () => generateStructuredOutput('visual_reference_coverage', coverageSchema,
-          (text, contract) => context.generateText(id, data.model_id, text, contract, signal),
-          rules.text + '\n' + prompt + '\n【已完成视觉档案，只读】' + JSON.stringify(draft.profiles)
-          + '\n只返回完整 visual_coverage，核对这些档案对选定场次与镜头的覆盖。不得改写档案。',
-          { signal, validate: validateCoverage }), validateCoverage)
-      draft = { ...draft, visual_coverage: coverage.visual_coverage }
+      return {}
+      }).addNode('validate_profiles', () => {
+      validate(draft)
+      return {}
+      }).addEdge(START, 'catalog_objects').addEdge('catalog_objects', 'expand_profiles').addEdge('expand_profiles', 'check_coverage')
+        .addEdge('check_coverage', 'validate_profiles').addEdge('validate_profiles', END).compile()
+      await runIsolatedModelGraph(graph, {}, { signal: budgetSignal, recursionLimit: 6 })
     }
-    validate(draft)
-  }
-  checkCurrent()
-  if (!data.retain_checkpoint) steps.clear()
-  const scopedProfiles = scopeVisualProfileDrafts(id, draft.profiles, sceneDesigns)
-  return { ...draft, profiles: scopedProfiles,
-    ...(draft.visual_coverage ? { visual_coverage: scopeVisualReferenceCoverage(draft.visual_coverage, draft.profiles, scopedProfiles) } : {}),
-    skills: rules.skills, loaded_files: rules.files, skill_assignment: rules.assignment }
+    reportModelResult({ phase: 'structure', status: 'valid' })
+    // Domain validation does not prove that every creative pixel/identity claim
+    // is semantically correct; the creator still reviews the returned draft.
+    reportModelResult({ phase: 'quality', status: 'inconclusive' })
+    }))
+    signal = requestSignal
+    checkCurrent()
+    if (!data.retain_checkpoint) steps.clear()
+    const scopedProfiles = scopeVisualProfileDrafts(id, draft.profiles, sceneDesigns)
+    return { ...draft, profiles: scopedProfiles,
+      ...(draft.visual_coverage ? { visual_coverage: scopeVisualReferenceCoverage(draft.visual_coverage, draft.profiles, scopedProfiles) } : {}),
+      skills: rules.skills, loaded_files: rules.files, skill_assignment: rules.assignment }
+  })
 }
 
 export function registerVisualProfileRoutes(app: FastifyInstance, context: {

@@ -42,7 +42,7 @@ export async function backgroundTextResponse(url: string, body: Record<string, u
       ...(typeof limit === 'number' && Number.isSafeInteger(limit) && limit > 0 ? { reserved_output_tokens: limit } : {}) })
     store.save(key, { state: 'creating' })
     let response: Response
-    try { response = await wait(observeProviderFetch(url, { method: 'POST', headers, body: serialized, signal }, 'background_create', fetch, identity)) }
+    try { response = await wait(observeProviderFetch(url, { method: 'POST', headers, body: serialized, signal }, 'background_create', fetch, identity, undefined, generation)) }
     catch (error) { generation.complete({}); throw error }
     touch()
     if (!response.ok) { store.save(key); generation.complete(await failedUsage(response, wait)); return response }
@@ -70,7 +70,7 @@ export async function backgroundTextResponse(url: string, body: Record<string, u
     signal.throwIfAborted()
     const poll = beginTextRequest({ kind: 'transport', request_bytes: Buffer.byteLength(responseUrl), estimated_input_tokens: 0 })
     let response: Response
-    try { response = await wait(observeProviderFetch(responseUrl, { headers, signal }, 'background_poll', fetch, identity)) }
+    try { response = await wait(observeProviderFetch(responseUrl, { headers, signal }, 'background_poll', fetch, identity, undefined, poll)) }
     catch (error) { poll.complete({}); throw error }
     touch()
     if (!response.ok) {
@@ -97,6 +97,6 @@ export async function backgroundTextResponse(url: string, body: Record<string, u
 export async function cancelBackgroundTextResponses(url: string, id: string, headers: Record<string, string>, identity: ProviderRequestIdentity = {}) {
   const cancelUrl = `${url.replace(/\/$/, '')}/${encodeURIComponent(id)}/cancel`
   const request = beginTextRequest({ kind: 'cancellation', request_bytes: Buffer.byteLength(cancelUrl), estimated_input_tokens: 0 })
-  try { return await observeProviderFetch(cancelUrl, { method: 'POST', headers, signal: AbortSignal.timeout(10_000) }, 'background_cancel', fetch, identity) }
+  try { return await observeProviderFetch(cancelUrl, { method: 'POST', headers, signal: AbortSignal.timeout(10_000) }, 'background_cancel', fetch, identity, undefined, request) }
   finally { request.complete({}) }
 }

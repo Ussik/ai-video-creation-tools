@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import { withModelAdmission } from '../generation/model-admission.js'
 import { recoverVideoAudioPlanSourceText, videoAudioPlanSourceIssue, type VideoAudioPlan, type SceneSoundPlan } from '@video-studio/shared/media/video-prompt-audio'
 import { shotVideoPrompt } from '@video-studio/shared/storyboard/shot-prompts'
 import { storyboardSelectedMedia } from '@video-studio/shared/storyboard/storyboard-media-context'
@@ -181,29 +182,41 @@ export function registerVideoAudioPlanRoutes(app: FastifyInstance, context: Cont
           shot: shot ? { title: shot.title, source_scene_id: shot.source_scene_id, start_state: shot.start_state, end_state: shot.end_state, cut_note: shot.cut_note, duration: shot.duration, audio_plan: shot.audio_plan,
             continuity_plan: shot.continuity_plan || null } : null,
           neighbors, scene_sound_context: sharedSound, modify_audio: input.modify_audio })
-      const result = await generateStructuredOutput('video_handoff_plan', videoHandoffPlanSchema,
-        (prompt, contract) => context.generateText(id, input.model_id, prompt, contract, controller.signal), task, {
-          signal: controller.signal, validate: value => {
-            value.audio_plan = recoverGeneratedVideoAudioPlanSources(value.audio_plan,
-              [input.shot_video_prompt, input.image_body, ...(shot?.audio_plan?.speech.map(line => line.source_text) || [])])
-            if (!input.modify_audio) preserveConfirmedSpeech(value.audio_plan, shot?.audio_plan)
-            const evidenceSources = [input.shot_video_prompt, input.image_body, shot?.start_state || '', shot?.end_state || '',
-              neighbors.previous?.end_state || '', neighbors.next?.start_state || '']
-            if (value.boundary_conflicts?.some(issue => issue.evidence.some(quote => !evidenceSources.some(source => source.includes(quote))))) {
-              fail('边界冲突必须逐字引用当前图片、分镜或相邻交接状态，不能编造证据')
-            }
-            if (!input.modify_audio && sharedSound.status === 'conflict' && value.audio_plan.scene_sound) {
-              fail('同场已确认的共同声场存在冲突，不能替创作者挑选或混合；请省略scene_sound并保留本镜已确认声音，待创作者明确修订')
-            }
-          },
-        })
-      if (shotState(currentShot()) !== before) fail('本镜或相邻分镜状态已在分析期间更新，请重新分析', 409)
-      if (result.boundary_conflicts?.length) fail('镜头边界需要确认：' + result.boundary_conflicts.map(issue =>
-        `${issue.message}；依据：${issue.evidence.join(' / ')}；建议：${issue.suggestion}`).join('\n'))
-      // The accepted bed is source data, not a suggestion that the model may
-      // omit or reinterpret. Explicit sound revisions still remain available.
-      if (sharedSound.status === 'accepted' && !input.modify_audio) result.audio_plan.scene_sound = sharedSound.plan
-      return { ...result, source_signature: input.source_signature }
+      const identity = { version: 1, task, model: creativeModelIdentity(input.model_id) }
+      return await withModelAdmission(`creative:video-handoff:${id}:${creativeInputHash([input.shot_id, input.source_signature])}`, controller.signal, async () => {
+        const steps = creativeGenerationSteps(id, `video-handoff:${creativeInputHash([input.shot_id, input.source_signature])}`, identity, controller.signal)
+        const validatePlan = (value: z.infer<typeof videoHandoffPlanSchema>) => {
+              value.audio_plan = recoverGeneratedVideoAudioPlanSources(value.audio_plan,
+                [input.shot_video_prompt, input.image_body, ...(shot?.audio_plan?.speech.map(line => line.source_text) || [])])
+              if (!input.modify_audio) preserveConfirmedSpeech(value.audio_plan, shot?.audio_plan)
+              const evidenceSources = [input.shot_video_prompt, input.image_body, shot?.start_state || '', shot?.end_state || '',
+                neighbors.previous?.end_state || '', neighbors.next?.start_state || '']
+              if (value.boundary_conflicts?.some(issue => issue.evidence.some(quote => !evidenceSources.some(source => source.includes(quote))))) {
+                fail('边界冲突必须逐字引用当前图片、分镜或相邻交接状态，不能编造证据')
+              }
+              if (!input.modify_audio && sharedSound.status === 'conflict' && value.audio_plan.scene_sound) {
+                fail('同场已确认的共同声场存在冲突，不能替创作者挑选或混合；请省略scene_sound并保留本镜已确认声音，待创作者明确修订')
+              }
+        }
+        const result = await withModelOperationStage('continuity_review', () => steps.run('candidate', '保留镜头运动与声音候选', identity,
+          () => generateStructuredOutput('video_handoff_plan', videoHandoffPlanSchema,
+            (prompt, contract) => context.generateText(id, input.model_id, prompt, contract, controller.signal), task, {
+              signal: controller.signal, validate: validatePlan,
+            }), raw => { const value = videoHandoffPlanSchema.parse(raw); validatePlan(value); return value }))
+        if (shotState(currentShot()) !== before) fail('本镜或相邻分镜状态已在分析期间更新，请重新分析', 409)
+        if (result.boundary_conflicts?.length) {
+          reportModelResult({ phase: 'quality', stage: 'continuity_review', status: 'needs_work', issue_count: result.boundary_conflicts.length })
+          throw Object.assign(new Error('镜头边界需要确认：' + result.boundary_conflicts.map(issue =>
+            `${issue.message}；依据：${issue.evidence.join(' / ')}；建议：${issue.suggestion}`).join('\n')),
+          { statusCode: 422, code: 'video_handoff_boundary_conflict', retained_candidate: true })
+        }
+        // The accepted bed is source data, not a suggestion that the model may
+        // omit or reinterpret. Explicit sound revisions still remain available.
+        if (sharedSound.status === 'accepted' && !input.modify_audio) result.audio_plan.scene_sound = sharedSound.plan
+        reportModelResult({ phase: 'quality', stage: 'continuity_review', status: 'inconclusive' })
+        steps.clear()
+        return { ...result, source_signature: input.source_signature }
+      })
     } catch (error) {
       if (controller.signal.aborted) fail('镜头承接分析已取消', 499)
       if (isStructuredOutputError(error)) fail(error.message, 502)
@@ -213,3 +226,5 @@ export function registerVideoAudioPlanRoutes(app: FastifyInstance, context: Cont
     }
   })
 }
+import { reportModelResult, withModelOperationStage } from '../generation/model-result-observation.js'
+import { creativeGenerationSteps, creativeInputHash, creativeModelIdentity } from '../skills/creative-model-state.js'

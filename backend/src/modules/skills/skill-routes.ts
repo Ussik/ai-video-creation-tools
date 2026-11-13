@@ -1,4 +1,10 @@
 import { randomUUID } from 'node:crypto'
+import { Annotation, END, START, StateGraph } from '@langchain/langgraph'
+import { runIsolatedModelGraph } from '../generation/isolated-model-graph.js'
+import { runCreativeWorkflowBudget } from '../generation/creative-workflow-budget.js'
+import { reportModelResult, withModelOperationStage } from '../generation/model-result-observation.js'
+import { isTextRequestBudgetError } from '../../infrastructure/providers/text-request-usage.js'
+import { withModelAdmission } from '../generation/model-admission.js'
 import type { CandidateEvidenceResolution, CandidateQuality } from '@video-studio/shared/api/ai-candidate-quality'
 import { currentAiOperationId } from '../generation/ai-operations.js'
 import { retainCandidateReview } from '../generation/candidate-review-evidence.js'
@@ -352,9 +358,10 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
         inspectedIds.push(reference.id)
       }
     }
+    let operationSignal = controller.signal
     const generate = (text: string, contract?: OutputContract) => images.length
-      ? context.generateWithImages!(id, input.model_id, text, images, contract, controller.signal)
-      : context.generateText(id, input.model_id, text, contract, controller.signal)
+      ? context.generateWithImages!(id, input.model_id, text, images, contract, operationSignal)
+      : context.generateText(id, input.model_id, text, contract, operationSignal)
     const shotContext = shot ? { title: shot.title, start_state: shot.start_state, end_state: shot.end_state, cut_note: shot.cut_note } : null
     const bindingContext = promptBindings.map(({ kind, name, variant, revision, definition, view_requirements }) => ({ kind, name, variant, revision, definition, view_requirements }))
     const profileContext = profile ? { kind: profile.kind, name: profile.name, variant: profile.variant,
@@ -405,125 +412,164 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
     })
     const candidateSchema = z.object({ prompt: z.string().trim().min(1).max(80_000) }).strict()
     const candidateIdentity = { version: 4, context: version, model: modelIdentity, task, rules: rules.text }
-    const steps = creativeGenerationSteps(id, `prompt-refinement:${creativeInputHash([input.shot_id, input.profile_id, input.stage, body, adjustmentRequest, publicOperationId || (input.action === 'review' ? operationId : null), input.action === 'review' ? input.candidate_prompt : null])}`, candidateIdentity, controller.signal, input.restart)
-    const validateCandidate = (value: { prompt: string }) => {
-      const prose = stripManagedPromptBlocks(value.prompt)
-      if (!prose.trim()) fail('整理结果缺少提示词正文，只能返回正文，不能只返回系统固定区块')
-      if (/【(?:镜头视觉设定|图片参考图用途|视频参考图用途|项目画风约束|设定图固定要求|基础身份参考|基础版本与本次状态变化|生成参考图|生成参数约束|图片生成要求|视频生成要求)(?:结束)?】/.test(prose)) {
-        fail('整理结果包含未闭合的系统固定区块，请仅返回正文，不要输出系统区块或标题')
+    const namespace = `prompt-refinement:${creativeInputHash([input.shot_id, input.profile_id, input.stage, body, adjustmentRequest, publicOperationId || (input.action === 'review' ? operationId : null), input.action === 'review' ? input.candidate_prompt : null])}`
+    return await withModelAdmission(`creative:${id}:${namespace}`, controller.signal, async () => {
+      const steps = creativeGenerationSteps(id, namespace, candidateIdentity, controller.signal, input.restart)
+      const validateCandidate = (value: { prompt: string }) => {
+        const prose = stripManagedPromptBlocks(value.prompt)
+        if (!prose.trim()) fail('整理结果缺少提示词正文，只能返回正文，不能只返回系统固定区块')
+        if (/【(?:镜头视觉设定|图片参考图用途|视频参考图用途|项目画风约束|设定图固定要求|基础身份参考|基础版本与本次状态变化|生成参考图|生成参数约束|图片生成要求|视频生成要求)(?:结束)?】/.test(prose)) {
+          fail('整理结果包含未闭合的系统固定区块，请仅返回正文，不要输出系统区块或标题')
+        }
+        const parameterIssue = promptParameterConflictMessage(prose, actualParameters)
+        if (parameterIssue) fail(parameterIssue)
+        compileRefinementReferences(prose, input.reference_asset_ids, { referenceLabel: input.stage === 'video_prompt' ? '图片' : '参考图' })
       }
-      const parameterIssue = promptParameterConflictMessage(prose, actualParameters)
-      if (parameterIssue) fail(parameterIssue)
-      compileRefinementReferences(prose, input.reference_asset_ids, { referenceLabel: input.stage === 'video_prompt' ? '图片' : '参考图' })
-    }
-    let result: { prompt: string } | undefined, semanticReview: PromptRefinementSemanticReview | undefined, semanticCorrection = ''
-    let evidence: CandidateEvidenceResolution[] = [], qualityStatus: CandidateQuality['status'] = 'passed', reviewError: unknown
-    for (let semanticAttempt = 0; semanticAttempt < (input.action === 'review' ? 1 : 2); semanticAttempt++) {
-      const candidateTask = rules.text + '\n【本次任务与输出格式】\n' + task + semanticCorrection
-      const attemptIdentity = { ...candidateIdentity, semanticCorrection }
-      try {
-        result = input.action === 'review' ? candidateSchema.parse({ prompt: input.candidate_prompt })
-          : await steps.run(`candidate:${semanticAttempt}`, '整理提示词候选', attemptIdentity, () => body.length > 12_000
-            ? generateExactPromptEdits({ source: body, prompt: candidateTask, generate, steps, signal: controller.signal,
-              validate: prompt => validateCandidate({ prompt }) })
-            : generateStructuredOutput('refined_prompt', candidateSchema, generate, candidateTask, {
-              signal: controller.signal, validate: validateCandidate,
-            }), value => { const candidate = candidateSchema.parse(value); validateCandidate(candidate); return candidate })
-        validateCandidate(result)
-      } catch (error) {
+      let result: { prompt: string } | undefined, semanticReview: PromptRefinementSemanticReview | undefined, semanticCorrection = ''
+      let evidence: CandidateEvidenceResolution[] = [], qualityStatus: CandidateQuality['status'] = 'passed', reviewError: unknown
+      let semanticAttempt = 0
+      await runCreativeWorkflowBudget(steps, { kind: 'prompt_optimization', units: 1, inputChars: task.length + rules.text.length,
+        signal: controller.signal }, async budgetSignal => {
+      operationSignal = budgetSignal
+      let previousIssues: Set<string> | undefined
+      const reportReview = (status: 'passed' | 'needs_work' | 'inconclusive', issues?: readonly string[]) => {
+        const current = issues && new Set(issues)
+        reportModelResult({ phase: 'quality', status, repaired: semanticAttempt > 0,
+          ...(current ? { issue_count: current.size } : {}),
+          ...(semanticAttempt > 0 && previousIssues && current ? { repair_effect: [...current].some(issue => !previousIssues!.has(issue)) ? 'regressed'
+            : current.size < previousIssues.size ? 'improved' : 'unchanged' } : {}) })
+        if (!semanticAttempt && current) previousIssues = current
+      }
+      const GraphState = Annotation.Root({ reviewable: Annotation<boolean>({ reducer: (_old, next) => next, default: () => false }),
+        correct: Annotation<boolean>({ reducer: (_old, next) => next, default: () => false }) })
+      const graph = new StateGraph(GraphState).addNode('prepare_candidate', async () => withModelOperationStage(
+        semanticAttempt ? 'content_repair' : 'prompt_optimization', async () => {
+        budgetSignal.throwIfAborted()
+        const candidateTask = rules.text + '\n【本次任务与输出格式】\n' + task + semanticCorrection
+        const attemptIdentity = { ...candidateIdentity, semanticCorrection }
+        try {
+          result = input.action === 'review' ? candidateSchema.parse({ prompt: input.candidate_prompt })
+            : await steps.run(`candidate:${semanticAttempt}`, '整理提示词候选', attemptIdentity, () => body.length > 12_000
+              ? generateExactPromptEdits({ source: body, prompt: candidateTask, generate, steps, signal: budgetSignal,
+                validate: prompt => validateCandidate({ prompt }) })
+              : generateStructuredOutput('refined_prompt', candidateSchema, generate, candidateTask, {
+                signal: budgetSignal, validate: validateCandidate,
+              }), value => { const candidate = candidateSchema.parse(value); validateCandidate(candidate); return candidate })
+          validateCandidate(result)
+        } catch (error) {
+          budgetSignal.throwIfAborted()
+          if (isTextRequestBudgetError(error)) throw error
+          assertCurrent()
+          if (!result || (error as { statusCode?: number }).statusCode === 409 || input.action === 'review') throw error
+          qualityStatus = 'inconclusive'; reviewError = error; reportReview('inconclusive'); return { reviewable: false }
+        }
+        return { reviewable: true }
+      })).addNode('independent_review', async () => withModelOperationStage(semanticAttempt ? 'recheck' : 'prompt_review', async () => {
+        budgetSignal.throwIfAborted()
         assertCurrent()
-        if (!result || (error as { statusCode?: number }).statusCode === 409 || input.action === 'review') throw error
-        qualityStatus = 'inconclusive'; reviewError = error; break
-      }
-      assertCurrent()
-      const candidate = compileRefinementReferences(stripManagedPromptBlocks(result!.prompt).trim(), input.reference_asset_ids,
-        { referenceLabel: input.stage === 'video_prompt' ? '图片' : '参考图' })
-      const semanticInput: PromptRefinementSemanticInput = { source: body, candidate, adjustment: adjustmentRequest,
-        board: boardDocument || !!profile, stage: input.stage, identities,
-        readonly_context: documentContext || { profile: profileContext, bindings: bindingContext },
-        ...(input.stage === 'video_prompt' && input.check_video_content ? { video_context: { shot: shotContext,
-          generation_duration: configuration.duration, edit_duration: shot?.duration,
-          inspected_asset_ids: inspectedIds, reference_asset_ids: input.reference_asset_ids } } : {}) }
-      try {
-        const checked = await reviewPromptRefinementDetailed(semanticInput, generate, controller.signal,
-          { steps, id: `semantic-review:${semanticAttempt}`, reassess: true })
-        semanticReview = checked.review; evidence = checked.evidence
-      } catch (error) {
+        const candidate = compileRefinementReferences(stripManagedPromptBlocks(result!.prompt).trim(), input.reference_asset_ids,
+          { referenceLabel: input.stage === 'video_prompt' ? '图片' : '参考图' })
+        const semanticInput: PromptRefinementSemanticInput = { source: body, candidate, adjustment: adjustmentRequest,
+          board: boardDocument || !!profile, stage: input.stage, identities,
+          readonly_context: documentContext || { profile: profileContext, bindings: bindingContext },
+          ...(input.stage === 'video_prompt' && input.check_video_content ? { video_context: { shot: shotContext,
+            generation_duration: configuration.duration, edit_duration: shot?.duration,
+            inspected_asset_ids: inspectedIds, reference_asset_ids: input.reference_asset_ids } } : {}) }
+        try {
+          const checked = await reviewPromptRefinementDetailed(semanticInput, generate, budgetSignal,
+            { steps, id: `semantic-review:${semanticAttempt}`, reassess: true })
+          semanticReview = checked.review; evidence = checked.evidence
+        } catch (error) {
+          budgetSignal.throwIfAborted()
+          if (isTextRequestBudgetError(error)) throw error
+          assertCurrent()
+          if ((error as { statusCode?: number }).statusCode === 409) throw error
+          const retained = error as { retainedReview?: PromptRefinementSemanticReview; evidence?: CandidateEvidenceResolution[] }
+          semanticReview = retained.retainedReview; evidence = retained.evidence || []
+          qualityStatus = 'inconclusive'; reviewError = error; reportReview('inconclusive'); return { correct: false }
+        }
         assertCurrent()
-        if ((error as { statusCode?: number }).statusCode === 409) throw error
-        const retained = error as { retainedReview?: PromptRefinementSemanticReview; evidence?: CandidateEvidenceResolution[] }
-        semanticReview = retained.retainedReview; evidence = retained.evidence || []
-        qualityStatus = 'inconclusive'; reviewError = error; break
-      }
+        if (semanticReview.request_conflicts.length) {
+          qualityStatus = 'needs_work'; reportReview('needs_work', semanticReview.request_conflicts.map(conflict => conflict.evidence)); return { correct: false }
+        }
+        // Uncertainty cannot authorize a creative correction. Keep the current
+        // complete draft and let the creator retry the independent review.
+        if (semanticReview.checks.some(check => check.status === 'uncertain')) {
+          qualityStatus = 'inconclusive'
+          reviewError = Object.assign(new Error('部分语义结论尚不确定，请复查当前候选'), { code: 'prompt_refinement_semantic_uncertain' })
+          reportReview('inconclusive')
+          return { correct: false }
+        }
+        const issues = promptRefinementSemanticIssues(semanticReview, candidate)
+        reportReview(issues.length ? 'needs_work' : 'passed', issues)
+        if (!issues.length) return { correct: false }
+        qualityStatus = 'needs_work'
+        if (semanticAttempt === 1 || input.action === 'review') return { correct: false }
+        semanticCorrection = '\n【独立语义核对修正】\n保留当前基稿和本次要求，仅修正以下已核实的问题，返回完整正文：\n'
+          + JSON.stringify({ issues, previous_candidate: candidate })
+        qualityStatus = 'passed'
+        return { correct: true }
+      })).addNode('authorize_one_correction', () => { semanticAttempt++; return {} })
+        .addEdge(START, 'prepare_candidate')
+        .addConditionalEdges('prepare_candidate', value => value.reviewable ? 'independent_review' : END, ['independent_review', END])
+        .addConditionalEdges('independent_review', value => value.correct ? 'authorize_one_correction' : END, ['authorize_one_correction', END])
+        .addEdge('authorize_one_correction', 'prepare_candidate').compile()
+      await runIsolatedModelGraph(graph, {}, { signal: budgetSignal, recursionLimit: 7 })
+      })
+      operationSignal = controller.signal
       assertCurrent()
-      if (semanticReview.request_conflicts.length) { qualityStatus = 'needs_work'; break }
-      // Uncertainty cannot authorize a creative correction. Keep the current
-      // complete draft and let the creator retry the independent review.
-      if (semanticReview.checks.some(check => check.status === 'uncertain')) {
-        qualityStatus = 'inconclusive'
-        reviewError = Object.assign(new Error('部分语义结论尚不确定，请复查当前候选'), { code: 'prompt_refinement_semantic_uncertain' })
-        break
+      const promptBody = compileRefinementReferences(stripManagedPromptBlocks(result!.prompt).trim(), input.reference_asset_ids, { referenceLabel: input.stage === 'video_prompt' ? '图片' : '参考图' })
+      if (!promptBody) fail('整理结果缺少提示词正文，请重新整理')
+      controller.signal.throwIfAborted()
+      if (contextVersion() !== version) throw Object.assign(new Error('镜头、视觉设定、参考图或生成配置已更新，请重新整理提示词'), { statusCode: 409 })
+      const diagnostics = input.stage === 'video_prompt' && semanticReview && (qualityStatus as CandidateQuality['status']) !== 'inconclusive' ? videoPromptDiagnostics({ source: body, candidate: promptBody,
+        adjustment: adjustmentRequest, generationDuration: configuration.duration, editDuration: shot?.duration,
+        referenceIds: input.reference_asset_ids, inspectedIds, review: semanticReview.content_review || undefined,
+        dialogue: promptRefinementDialogue(semanticReview, promptBody) }) : undefined
+      const semanticSnapshot = semanticReview ? promptRefinementSemanticSnapshot(semanticReview, { source: body, candidate: promptBody,
+        adjustment: adjustmentRequest, board: boardDocument || !!profile, stage: input.stage, identities, readonly_context: documentContext }) : undefined
+      const diagnostic = reviewError ? { code: String((reviewError as { code?: string })?.code || 'candidate_review_inconclusive'), message: reviewError instanceof Error ? reviewError.message : String(reviewError), retryable: true } : undefined
+      const quality: CandidateQuality = { ...retainCandidateReview({ projectId: id, family: 'prompt_refinement', candidate: promptBody,
+        source: sourceSignature, modelId: input.model_id, status: qualityStatus, report: { review: semanticSnapshot, evidence, error: diagnostic } }), evidence, ...(diagnostic ? { error: diagnostic } : {}) }
+      const clearAccepted = () => { if (['passed', 'warnings'].includes(quality.status)) steps.clear() }
+      if (isDocument) {
+        const prompt = boardDocument ? replaceVisualBoardPromptContent(originalDocument, promptBody) : restoreManagedPromptBlocks(promptBody, originalDocument)
+        if (prompt.length > 80_000) fail('整理后的提示词过长，请缩短补充要求后重试')
+        clearAccepted()
+        return { operation_id: operationId, quality, prompt, prompt_body: promptBody, prompt_document: true, reference_asset_ids: input.reference_asset_ids, skills: rules.skills, loaded_files: rules.files, skill_assignment: rules.assignment, semantic_review: semanticSnapshot, ...(diagnostics ? { diagnostics } : {}) }
       }
-      const issues = promptRefinementSemanticIssues(semanticReview, candidate)
-      if (!issues.length) break
-      qualityStatus = 'needs_work'
-      if (semanticAttempt === 1 || input.action === 'review') break
-      semanticCorrection = '\n【独立语义核对修正】\n保留当前基稿和本次要求，仅修正以下已核实的问题，返回完整正文：\n'
-        + JSON.stringify({ issues, previous_candidate: candidate })
-      qualityStatus = 'passed'
-    }
-    assertCurrent()
-    const promptBody = compileRefinementReferences(stripManagedPromptBlocks(result!.prompt).trim(), input.reference_asset_ids, { referenceLabel: input.stage === 'video_prompt' ? '图片' : '参考图' })
-    if (!promptBody) fail('整理结果缺少提示词正文，请重新整理')
-    controller.signal.throwIfAborted()
-    if (contextVersion() !== version) throw Object.assign(new Error('镜头、视觉设定、参考图或生成配置已更新，请重新整理提示词'), { statusCode: 409 })
-    const diagnostics = input.stage === 'video_prompt' && semanticReview && qualityStatus !== 'inconclusive' ? videoPromptDiagnostics({ source: body, candidate: promptBody,
-      adjustment: adjustmentRequest, generationDuration: configuration.duration, editDuration: shot?.duration,
-      referenceIds: input.reference_asset_ids, inspectedIds, review: semanticReview.content_review || undefined,
-      dialogue: promptRefinementDialogue(semanticReview, promptBody) }) : undefined
-    const semanticSnapshot = semanticReview ? promptRefinementSemanticSnapshot(semanticReview, { source: body, candidate: promptBody,
-      adjustment: adjustmentRequest, board: boardDocument || !!profile, stage: input.stage, identities, readonly_context: documentContext }) : undefined
-    const diagnostic = reviewError ? { code: String((reviewError as { code?: string })?.code || 'candidate_review_inconclusive'), message: reviewError instanceof Error ? reviewError.message : String(reviewError), retryable: true } : undefined
-    const quality: CandidateQuality = { ...retainCandidateReview({ projectId: id, family: 'prompt_refinement', candidate: promptBody,
-      source: sourceSignature, modelId: input.model_id, status: qualityStatus, report: { review: semanticSnapshot, evidence, error: diagnostic } }), evidence, ...(diagnostic ? { error: diagnostic } : {}) }
-    const clearAccepted = () => { if (['passed', 'warnings'].includes(quality.status)) steps.clear() }
-    if (isDocument) {
-      const prompt = boardDocument ? replaceVisualBoardPromptContent(originalDocument, promptBody) : restoreManagedPromptBlocks(promptBody, originalDocument)
+      let refined: string
+      if (profile) {
+        const textContext = visualProfileTextContext(profile)
+        const base = baseProfile
+        refined = withVisualProfilePrompt(promptBody, { ...profile,
+          definition: resolveVisualProfileDisplayText(profile.definition, textContext).text,
+          view_requirements: resolveVisualProfileDisplayText(profile.view_requirements, textContext).text,
+          state_delta: resolveVisualProfileDisplayText(profile.state_delta || '', textContext).text,
+        }, references.map(reference => {
+          const owner = referenceProfiles.find(owner => owner.board_asset_id === reference.id)
+          return { asset_id: reference.id, name: owner?.name || reference.name, variant: owner?.variant,
+            definition: owner ? resolveVisualProfileDisplayText(owner.definition, visualProfileTextContext(owner)).text : undefined,
+            role: base?.board_asset_id === reference.id ? 'base' as const : 'manual' as const }
+        }))
+      } else {
+        refined = visualGenerationPrompt(promptBody, promptBindings, input.reference_asset_ids, referenceMode, {
+          mode: input.stage === 'video_prompt' ? input.mode || 'text' : undefined, storyboard_reference_asset_id: input.storyboard_reference_asset_id,
+          excluded_visual_profile_ids: input.excluded_visual_profile_ids, video_reference_usages: input.video_reference_usages,
+        })
+      }
+      const parameters = [configuration.ratio && (configuration.ratio === 'adaptive' ? '画面比例：自适应，依据输入素材与内容确定画幅。' : `画面比例：${configuration.ratio}（宽:高）。`),
+        configuration.duration && input.stage === 'video_prompt' && `视频时长：${configuration.duration} 秒，动作与运镜安排在此时长内。`,
+        input.stage === 'video_prompt' && ['first_frame', 'first_last_frame'].includes(input.mode || '') &&
+          '首帧要求：以提交的第一张参考图作为开镜画面，保持人物、服装、场景与动作起始状态，按所选画幅安排构图，再连续展开动作。',
+        configuration.mode && `生成模式：${configuration.mode}。`, configuration.resolution && `输出分辨率：${configuration.resolution}。`,
+        configuration.clarity && `清晰度要求：${configuration.clarity}。`, configuration.quality && `画质要求：${configuration.quality}。`,
+        configuration.background && `背景要求：${configuration.background}。`].filter(Boolean).join('\n')
+      const prompt = withProjectStyle(`${refined}\n\n【生成参数约束】\n${parameters}\n【生成参数约束结束】`, style)
       if (prompt.length > 80_000) fail('整理后的提示词过长，请缩短补充要求后重试')
       clearAccepted()
-      return { operation_id: operationId, quality, prompt, prompt_body: promptBody, prompt_document: true, reference_asset_ids: input.reference_asset_ids, skills: rules.skills, loaded_files: rules.files, skill_assignment: rules.assignment, semantic_review: semanticSnapshot, ...(diagnostics ? { diagnostics } : {}) }
-    }
-    let refined: string
-    if (profile) {
-      const textContext = visualProfileTextContext(profile)
-      const base = baseProfile
-      refined = withVisualProfilePrompt(promptBody, { ...profile,
-        definition: resolveVisualProfileDisplayText(profile.definition, textContext).text,
-        view_requirements: resolveVisualProfileDisplayText(profile.view_requirements, textContext).text,
-        state_delta: resolveVisualProfileDisplayText(profile.state_delta || '', textContext).text,
-      }, references.map(reference => {
-        const owner = referenceProfiles.find(owner => owner.board_asset_id === reference.id)
-        return { asset_id: reference.id, name: owner?.name || reference.name, variant: owner?.variant,
-          definition: owner ? resolveVisualProfileDisplayText(owner.definition, visualProfileTextContext(owner)).text : undefined,
-          role: base?.board_asset_id === reference.id ? 'base' as const : 'manual' as const }
-      }))
-    } else {
-      refined = visualGenerationPrompt(promptBody, promptBindings, input.reference_asset_ids, referenceMode, {
-        mode: input.stage === 'video_prompt' ? input.mode || 'text' : undefined, storyboard_reference_asset_id: input.storyboard_reference_asset_id,
-        excluded_visual_profile_ids: input.excluded_visual_profile_ids, video_reference_usages: input.video_reference_usages,
-      })
-    }
-    const parameters = [configuration.ratio && (configuration.ratio === 'adaptive' ? '画面比例：自适应，依据输入素材与内容确定画幅。' : `画面比例：${configuration.ratio}（宽:高）。`),
-      configuration.duration && input.stage === 'video_prompt' && `视频时长：${configuration.duration} 秒，动作与运镜安排在此时长内。`,
-      input.stage === 'video_prompt' && ['first_frame', 'first_last_frame'].includes(input.mode || '') &&
-        '首帧要求：以提交的第一张参考图作为开镜画面，保持人物、服装、场景与动作起始状态，按所选画幅安排构图，再连续展开动作。',
-      configuration.mode && `生成模式：${configuration.mode}。`, configuration.resolution && `输出分辨率：${configuration.resolution}。`,
-      configuration.clarity && `清晰度要求：${configuration.clarity}。`, configuration.quality && `画质要求：${configuration.quality}。`,
-      configuration.background && `背景要求：${configuration.background}。`].filter(Boolean).join('\n')
-    const prompt = withProjectStyle(`${refined}\n\n【生成参数约束】\n${parameters}\n【生成参数约束结束】`, style)
-    if (prompt.length > 80_000) fail('整理后的提示词过长，请缩短补充要求后重试')
-    clearAccepted()
-    return { operation_id: operationId, quality, prompt, prompt_body: promptBody, reference_asset_ids: input.reference_asset_ids, skills: rules.skills, loaded_files: rules.files, skill_assignment: rules.assignment, semantic_review: semanticSnapshot, ...(diagnostics ? { diagnostics } : {}) }
+      return { operation_id: operationId, quality, prompt, prompt_body: promptBody, reference_asset_ids: input.reference_asset_ids, skills: rules.skills, loaded_files: rules.files, skill_assignment: rules.assignment, semantic_review: semanticSnapshot, ...(diagnostics ? { diagnostics } : {}) }
+    })
     } catch (error) {
       if (controller.signal.aborted) throw Object.assign(new Error('提示词整理已取消'), { statusCode: 499 })
       throw error
