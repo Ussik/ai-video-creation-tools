@@ -1,6 +1,6 @@
 # AI 接入可靠性与结果恢复
 
-本轮基于已合并并推送的 main `2c2b700`，增强分支为 `codex/ai-integration-reliability`。继续使用现有 Fastify、SQLite 和模型适配器，没有引入 LangChain、LangGraph 或自动外传追踪数据。
+首轮增强基于已合并并推送的 main `2c2b700`，原增强分支为 `codex/ai-integration-reliability`。后续在 `codex/langfuse-observability` 接入本机 Langfuse，并引入 LangGraph 编排场次分镜；继续使用现有 Fastify、SQLite 和模型适配器。LangChain Core 仅为图运行依赖，不替换现有模型适配器；未接入 LangSmith。详见 [LangGraph 分镜可靠性](./langgraph-storyboard-reliability.md) 和 [Langfuse 配置](./langfuse-observability.md)。
 
 ## 已实现的行为
 

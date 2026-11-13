@@ -11,7 +11,9 @@ export type TextRequestUsageScope = {
   usage: ScriptRequestUsage
   limits?: ScriptRequestUsageLimits
   budgetLabel?: string
-  onUpdate?: (usage: ScriptRequestUsage) => void
+  /** Prevent detached work from dispatching after its owning budget closes. */
+  signal?: AbortSignal
+  onUpdate?: (usage: ScriptRequestUsage, phase: 'reservation' | 'settlement') => void
 }
 // A phase ledger and the execution ledger can both observe the same HTTP
 // dispatch. Keeping the complete chain prevents a nested phase from hiding
@@ -24,10 +26,11 @@ export class TextRequestBudgetError extends Error {
   readonly retryable = false
   readonly statusCode = 422
   constructor(public readonly reason: 'requests' | 'tokens', public readonly usage: ScriptRequestUsage,
-    public readonly limits: ScriptRequestUsageLimits, budgetLabel = '本次任务') {
+    public readonly limits: ScriptRequestUsageLimits, public readonly budgetLabel = '本次任务') {
     const count = scriptRequestUsageTokens(usage)
+    const totalLimited = limits.max_total_requests !== undefined && usage.requests + usage.transport_requests >= limits.max_total_requests
     super(reason === 'requests'
-      ? `${budgetLabel}已达到模型请求预算（已发起 ${usage.requests} 次，上限 ${limits.max_requests} 次），已保留完成部分。请检查用量后调整预算再继续。`
+      ? `${budgetLabel}已达到模型请求预算（已发起 ${totalLimited ? usage.requests + usage.transport_requests : usage.requests} 次，上限 ${totalLimited ? limits.max_total_requests : limits.max_requests} 次），已保留完成部分。请检查用量后调整预算再继续。`
       : `下一次模型请求将超过${budgetLabel}的 token 预算（当前实际及保守估算合计 ${count}，上限 ${limits.max_tokens}），已保留完成部分。请检查用量后调整预算再继续。`)
     this.name = 'TextRequestBudgetError'
   }
@@ -83,14 +86,15 @@ function activeTargets(): UsageTarget[] {
   }
   return [...targets.values()]
 }
-function notifyTarget(target: UsageTarget) {
+function notifyTarget(target: UsageTarget, phase: 'reservation' | 'settlement' = 'settlement') {
   // Re-entering the same ledger must neither charge nor persist it twice.
   const callbacks = new Set(target.scopes.map(scope => scope.onUpdate))
-  for (const callback of callbacks) callback?.(structuredClone(target.usage))
+  for (const callback of callbacks) callback?.(structuredClone(target.usage), phase)
 }
 
 export type TextRequestUsageDetails = {
-  kind?: 'generation' | 'transport'
+  /** Cancellation is transport that may finish after its execution aborts. */
+  kind?: 'generation' | 'transport' | 'cancellation'
   request_bytes: number
   estimated_input_tokens: number
   reserved_output_tokens?: number
@@ -113,7 +117,10 @@ export function beginTextRequest(details: TextRequestUsageDetails): {
   const targets = activeTargets()
   if (!targets.length) return { identify: () => false, complete() {} }
   if (!integer(details.request_bytes) || !integer(details.estimated_input_tokens)) throw new Error('模型请求用量估算无效')
-  const kind = details.kind ?? 'generation'
+  const kind = details.kind === 'cancellation' ? 'transport' : details.kind ?? 'generation'
+  // Only the explicit provider cancellation endpoint may outlive execution.
+  // It still consumes the combined dispatch cap; ordinary polling never does.
+  if (details.kind !== 'cancellation') for (const { scopes } of targets) for (const { signal } of scopes) signal?.throwIfAborted()
   const reservations = targets.map(target => {
     // Identical ledger objects share one conservative reservation while every
     // enclosing scope retains its independently configured limit.
@@ -125,6 +132,9 @@ export function beginTextRequest(details: TextRequestUsageDetails): {
   // Check every budget before mutating any ledger. A rejected phase request
   // must not consume an outer execution request, or vice versa.
   for (const { target: { usage, scopes }, reserve } of reservations) for (const { limits, budgetLabel } of scopes) {
+    if (limits?.max_total_requests !== undefined && usage.requests + usage.transport_requests + 1 > limits.max_total_requests) {
+      throw new TextRequestBudgetError('requests', structuredClone(usage), { ...limits }, budgetLabel)
+    }
     if (kind === 'generation' && limits?.max_requests !== undefined && usage.requests + 1 > limits.max_requests) {
       throw new TextRequestBudgetError('requests', structuredClone(usage), { ...limits }, budgetLabel)
     }
@@ -144,7 +154,7 @@ export function beginTextRequest(details: TextRequestUsageDetails): {
       usage.uncertain_requests++
     }
   }
-  for (const target of targets) notifyTarget(target)
+  for (const target of targets) notifyTarget(target, 'reservation')
   let completed = false
   return {
     identify(id) {

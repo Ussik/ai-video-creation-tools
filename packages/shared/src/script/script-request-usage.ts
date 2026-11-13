@@ -28,6 +28,8 @@ export type ScriptRequestUsage = {
 
 export type ScriptRequestUsageLimits = {
   max_requests?: number
+  /** Generation plus background polling/cancel dispatches. */
+  max_total_requests?: number
   max_tokens?: number
   /** Conservative reserve when the actual request has no output cap. */
   unknown_output_tokens?: number

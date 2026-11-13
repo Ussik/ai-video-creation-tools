@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 import Fastify from 'fastify'
 import type { ScriptScene, Shot } from '../src/infrastructure/database/db.js'
-import { withStoryboardDirecting } from './helpers/storyboard-directing.js'
+import { storyboardBatchFixture, storyboardOutlineFixture, withStoryboardDirecting } from './helpers/storyboard-directing.js'
 import { fixtureVisualCoverage, withFixtureVisualCoverage } from './helpers/visual-coverage.js'
 
 const directory = await mkdtemp(join(tmpdir(), 'storyboard-reference-budget-'))
@@ -204,11 +204,13 @@ test('the storyboard director receives the reference budget before planning shot
       assert.match(prompt, /视频最多 9 张.*预留 1 张.*各最多使用 8 张/)
       assert.match(prompt, /面部图和身体图是两张/)
       assert.match(prompt, /拆成有叙事意义.*保留原有剧情、对白和关键对象/)
-      return JSON.stringify(withStoryboardDirecting({ scenes: [{ scene_id: f.scene.id, scene_duration: 20,
+      const plan = withStoryboardDirecting({ scenes: [{ scene_id: f.scene.id, scene_duration: 20,
         shots: [f.first, f.second].map(shot => ({ shot_id: shot.id, title: shot.title, prompt: '保留当前叙事',
           image_prompt: shot.image_prompt, video_prompt: shot.video_prompt, duration: 10,
           audio_plan: { version: 1, speech: [], sound_effects: [], music: '', silent: true },
-          start_state: shot.start_state, end_state: '人物动作完成，保持原有站位关系', cut_note: '按人物反应承接并收束' })) }] }))
+          start_state: shot.start_state, end_state: '人物动作完成，保持原有站位关系', cut_note: '按人物反应承接并收束' })) }] })
+      return JSON.stringify(contract?.name === 'storyboard_scene_plan' ? storyboardOutlineFixture(plan)
+        : contract?.name === 'storyboard_shot_batch' ? storyboardBatchFixture(plan, contract) : plan)
     },
   })
   try {

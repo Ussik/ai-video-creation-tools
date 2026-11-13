@@ -57,6 +57,12 @@ function fixture(steps: Record<string, unknown> = {}) {
   }
   return { options, calls, progress, reply, controller, steps, finalized: () => finalized }
 }
+function savedBatchKey(steps: Record<string, unknown>, sceneId: string, offset: number) {
+  const entry = Object.entries(steps).find(([key, value]) => key.endsWith(`:${offset}`)
+    && (value as { scene_id?: string })?.scene_id === sceneId)
+  assert.ok(entry, `missing saved ${sceneId}:${offset} batch`)
+  return entry[0]
+}
 
 test('a complete outline locks timing and dialogue while each expansion contains at most two shots', async () => {
   const f = fixture(), result = await generateStoryboardPlanningBatches(f.options)
@@ -180,10 +186,12 @@ test('repair, task prompt, outline prompt and schema changes never borrow initia
   for (const changed of [
     { namespace: 'repair' as const }, { prompt: '已修订运动规则' }, { outlinePrompt: '已修订分镜规则' },
     { expansionSchema: expansionSchema.describe('new contract revision') },
-  ]) {
+  ]) for (const batchSize of [2, 1] as const) {
     const resumed = fixture(structuredClone(f.steps))
-    await generateStoryboardPlanningBatches({ ...resumed.options, ...changed })
-    assert.deepEqual(resumed.calls, ['outline', 'scene-a:0,1', 'scene-a:2', 'scene-b:0'])
+    await generateStoryboardPlanningBatches({ ...resumed.options, ...changed, batchSize })
+    assert.deepEqual(resumed.calls, batchSize === 1
+      ? ['outline', 'scene-a:0', 'scene-a:1', 'scene-a:2', 'scene-b:0']
+      : ['outline', 'scene-a:0,1', 'scene-a:2', 'scene-b:0'])
   }
 })
 
@@ -194,4 +202,135 @@ test('full-plan validation remains mandatory after all batches complete', async 
   }), /最终完整方案未通过连续性约束/)
   assert.equal(Object.keys(f.steps).length, 4, 'complete batches survive a final validation failure for diagnosis')
   assert.equal(f.calls.length, 4)
+})
+
+
+test('single-shot expansion reuses a validated outline and never replays a completed shot after failure', async () => {
+  const f = fixture()
+  const calls: string[] = []
+  const options = { ...f.options, batchSize: 1 as const, structuralRepair: true, generate: async (prompt: string, contract?: any) => {
+    const result = f.reply(prompt, contract)
+    calls.push(f.calls.at(-1)!)
+    if (calls.at(-1) === 'scene-a:1') throw new Error('offline expansion stopped')
+    if (contract?.name === 'storyboard_scene_plan') assert.match(prompt, /anchors、blocking、axis、dramatic_progression、sound/)
+    else assert.equal((result as any).shots.length, 1)
+    return JSON.stringify(result)
+  } }
+  await assert.rejects(generateStoryboardPlanningBatches(options), /offline expansion stopped/)
+  assert.deepEqual(calls, ['outline', 'scene-a:0', 'scene-a:1'])
+  const resumed = fixture(structuredClone(f.steps))
+  const result = await generateStoryboardPlanningBatches({ ...resumed.options, batchSize: 1 })
+  assert.deepEqual(resumed.calls, ['scene-a:1', 'scene-a:2', 'scene-b:0'])
+  assert.equal(result.scenes.flatMap(scene => scene.shots).length, 4)
+})
+
+test('single-shot recovery validates legacy pairs and retains every paid shot without a model request', async () => {
+  const legacy = fixture(), expected = await generateStoryboardPlanningBatches(legacy.options)
+  const original = structuredClone(legacy.steps), resumed = fixture(structuredClone(legacy.steps))
+  const checks: Array<[string, number, number]> = []
+  const result = await generateStoryboardPlanningBatches({ ...resumed.options, batchSize: 1,
+    validateBatch(shots, scene, offset) {
+      resumed.options.validateBatch(shots)
+      checks.push([scene.scene_id, offset, shots.length])
+    },
+  })
+  assert.deepEqual(resumed.calls, [])
+  assert.deepEqual(result, expected)
+  assert.deepEqual(checks.slice(0, 3), [['scene-a', 0, 2], ['scene-a', 2, 1], ['scene-b', 0, 1]])
+  const singles = Object.entries(resumed.steps).filter(([key]) => key.endsWith(':single'))
+  assert.equal(singles.length, 4, 'legacy pairs and odd scene tails become durable single-shot checkpoints')
+  assert.ok(singles.every(([, value]) => (value as { shots: unknown[] }).shots.length === 1))
+  for (const [key, value] of Object.entries(original)) assert.deepEqual(resumed.steps[key], value)
+  const again = fixture(structuredClone(resumed.steps))
+  assert.deepEqual(await generateStoryboardPlanningBatches({ ...again.options, batchSize: 1 }), expected)
+  assert.deepEqual(again.calls, [])
+})
+
+test('partly completed legacy runs reuse the paid pair and request only the missing single shots', async () => {
+  const legacy = fixture()
+  legacy.options.generate = async (prompt, contract) => {
+    const value = legacy.reply(prompt, contract)
+    if (legacy.calls.at(-1) === 'scene-a:2') throw new Error('legacy run stopped')
+    return JSON.stringify(value)
+  }
+  await assert.rejects(generateStoryboardPlanningBatches(legacy.options), /legacy run stopped/)
+  const resumed = fixture(structuredClone(legacy.steps))
+  await generateStoryboardPlanningBatches({ ...resumed.options, batchSize: 1 })
+  assert.deepEqual(resumed.calls, ['scene-a:2', 'scene-b:0'])
+  assert.equal(Object.keys(resumed.steps).filter(key => key.endsWith(':single')).length, 4)
+})
+
+test('a newer single-shot checkpoint wins while its missing sibling is restored from the legacy pair', async () => {
+  const legacy = fixture()
+  await generateStoryboardPlanningBatches(legacy.options)
+  const modern = fixture()
+  modern.options.generate = async (prompt, contract) => {
+    const value = modern.reply(prompt, contract)
+    if (modern.calls.at(-1) === 'scene-a:1') throw new Error('single-shot run stopped')
+    if ('shots' in value) value.shots[0]!.expansion.image_prompt = '更新并已验收的单镜首帧'
+    return JSON.stringify(value)
+  }
+  await assert.rejects(generateStoryboardPlanningBatches({ ...modern.options, batchSize: 1 }), /single-shot run stopped/)
+  const resumed = fixture({ ...structuredClone(legacy.steps), ...structuredClone(modern.steps) })
+  const result = await generateStoryboardPlanningBatches({ ...resumed.options, batchSize: 1 })
+  assert.deepEqual(resumed.calls, [])
+  assert.equal(result.scenes[0]!.shots[0]!.image_prompt, '更新并已验收的单镜首帧')
+  assert.equal(result.scenes[0]!.shots[1]!.image_prompt, '首帧1')
+})
+
+test('cancelling legacy migration retains only complete single shots and recovery still makes no paid request', async () => {
+  const legacy = fixture()
+  const expected = await generateStoryboardPlanningBatches(legacy.options)
+  const interrupted = fixture(structuredClone(legacy.steps)), retain = interrupted.options.control.retain
+  interrupted.options.control.retain = (key, value) => {
+    retain(key, value)
+    if (key.endsWith(':single')) interrupted.controller.abort(new Error('migration cancelled'))
+  }
+  await assert.rejects(generateStoryboardPlanningBatches({ ...interrupted.options, batchSize: 1 }), /migration cancelled/)
+  assert.deepEqual(interrupted.calls, [])
+  assert.equal(Object.keys(interrupted.steps).filter(key => key.endsWith(':single')).length, 1)
+  const resumed = fixture(structuredClone(interrupted.steps))
+  assert.deepEqual(await generateStoryboardPlanningBatches({ ...resumed.options, batchSize: 1 }), expected)
+  assert.deepEqual(resumed.calls, [])
+})
+
+test('corrupt legacy pairs fail strict shape, order and semantic checks before any new expansion request', async t => {
+  const legacy = fixture()
+  await generateStoryboardPlanningBatches(legacy.options)
+  for (const mode of ['type', 'extra', 'missing', 'duplicate', 'reordered', 'foreign', 'locked', 'semantic', 'later'] as const) {
+    await t.test(mode, async () => {
+      const resumed = fixture(structuredClone(legacy.steps))
+      const key = savedBatchKey(resumed.steps, 'scene-a', mode === 'later' ? 2 : 0)
+      const value = resumed.steps[key] as { scene_id: string; shots: Array<{ shot_index: number; expansion: z.infer<typeof expansionSchema> }> }
+      if (mode === 'type' || mode === 'later') Object.assign(value.shots[0]!.expansion, { video_prompt: 42 })
+      if (mode === 'extra') Object.assign(value, { extra: 'unexpected' })
+      if (mode === 'missing') value.shots.pop()
+      if (mode === 'duplicate') value.shots[1]!.shot_index = 0
+      if (mode === 'reordered') value.shots.reverse()
+      if (mode === 'foreign') value.scene_id = 'another-scene'
+      if (mode === 'locked') Object.assign(value.shots[0]!.expansion, { duration: 30 })
+      if (mode === 'semantic') value.shots[1]!.expansion.video_prompt = '违反来源约束'
+      if (mode === 'later') delete resumed.steps[savedBatchKey(resumed.steps, 'scene-a', 0)]
+      await assert.rejects(generateStoryboardPlanningBatches({ ...resumed.options, batchSize: 1,
+        validateBatch(shots) {
+          resumed.options.validateBatch(shots)
+          if (shots.some(shot => shot.video_prompt === '违反来源约束')) throw new Error('旧镜头来源校验失败')
+        },
+      }))
+      assert.deepEqual(resumed.calls, [], 'damaged saved work is never silently replaced by paid generation')
+      assert.equal(Object.keys(resumed.steps).filter(key => key.endsWith(':single')).length, 0)
+      assert.equal(resumed.finalized(), 0)
+    })
+  }
+})
+
+test('legacy pairs from another outline cannot supply expansions even when the prompt prefix matches', async () => {
+  const legacy = fixture()
+  await generateStoryboardPlanningBatches(legacy.options)
+  const resumed = fixture(structuredClone(legacy.steps))
+  const outlineKey = Object.keys(resumed.steps).find(key => key.endsWith(':outline'))!
+  const outline = resumed.steps[outlineKey] as z.infer<typeof outlineSchema>
+  outline.scenes[0]!.scene_direction.axis = '已重新确认的东侧轴线'
+  await generateStoryboardPlanningBatches({ ...resumed.options, batchSize: 1 })
+  assert.deepEqual(resumed.calls, ['scene-a:0', 'scene-a:1', 'scene-a:2', 'scene-b:0'])
 })

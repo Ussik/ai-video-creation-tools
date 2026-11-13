@@ -4,11 +4,11 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Fastify from 'fastify'
-import type { LangfuseTracer } from '../src/infrastructure/observability/langfuse-tracing.js'
+import type { LangfuseTracer, LangfuseBatch } from '../src/infrastructure/observability/langfuse-tracing.js'
 const dataDir = await mkdtemp(join(tmpdir(),'model-observation-'))
 process.env.VIDEO_STUDIO_DATA_DIR = dataDir
 const { initDb, db } = await import('../src/infrastructure/database/db.js')
-const { registerModelRequestObservation, createModelRequestObservation, observeModelTask, safeModelMetrics, activeModelRequestUsesModel } = await import('../src/modules/generation/model-request-observation.js')
+const { registerModelRequestObservation, createModelRequestObservation, observeModelTask, safeModelMetrics, activeModelRequestUsesModel, stopObservedModelTask } = await import('../src/modules/generation/model-request-observation.js')
 const { currentModelRequestContext, reportModelUnitProgress } = await import('../src/modules/generation/model-task-policy.js')
 const { beginTextRequest } = await import('../src/infrastructure/providers/text-request-usage.js')
 const { observeProviderFetch } = await import('../src/infrastructure/providers/text-request-plan.js')
@@ -222,4 +222,124 @@ test('a media request whose connection fails is still counted once without inven
   const attempt = db.prepare('SELECT state,metrics FROM model_request_attempts WHERE task_id=?').get(taskId) as { state: string; metrics: string }
   assert.equal(attempt.state, 'settled'); assert.equal(JSON.parse(attempt.metrics).delivery, 'unknown')
   assert.equal(JSON.parse(attempt.metrics).failure_reason, 'disconnected')
+})
+
+test('budget scope abort is a failed observation while preserving the original reason and cumulative ledger', async () => {
+  for (const code of ['storyboard_planning_budget_exceeded', 'text_request_budget_exceeded']) {
+    const controller = new AbortController(), reason = Object.assign(new Error('operational budget reached'), { code })
+    const taskId = `job:budget-stop:${code}`
+    const pending = observeModelTask({ taskId, projectId: 'p', owner: 'job', label: 'budget', signal: controller.signal }, async () => {
+      beginTextRequest({ request_bytes: 10, estimated_input_tokens: 2, reserved_output_tokens: 5 }).complete({ input_tokens: 2, output_tokens: 1 })
+      await new Promise<void>((_resolve, reject) => currentModelRequestContext()!.signal!.addEventListener('abort', () => reject(reason), { once: true }))
+    })
+    controller.abort(reason)
+    await assert.rejects(pending, issue => issue === reason)
+    const row = db.prepare('SELECT state,usage FROM model_request_tasks WHERE id=?').get(taskId) as { state: string; usage: string }
+    assert.equal(row.state, 'failed'); assert.equal(JSON.parse(row.usage).requests, 1)
+    assert.equal(JSON.parse(row.usage).input_tokens, 2)
+  }
+})
+
+test('an old observation finishing late cannot remove the resumed task cancellation owner', async () => {
+  const taskId = 'job:late-observation-owner', firstController = new AbortController()
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const first = observeModelTask({ taskId, projectId: 'p', owner: 'job', label: 'old', signal: firstController.signal }, async () => {
+    const request = beginTextRequest({ request_bytes: 10, estimated_input_tokens: 2, reserved_output_tokens: 5 })
+    await gate
+    request.complete({ input_tokens: 2, output_tokens: 1 })
+    return 'late old result'
+  })
+  firstController.abort(new DOMException('first launch stopped', 'AbortError'))
+  assert.equal(stopObservedModelTask(taskId), false, 'aborted work releases its active entry even if the provider never returns')
+  const second = observeModelTask({ taskId, projectId: 'p', owner: 'job', label: 'resumed' }, async () => {
+    beginTextRequest({ request_bytes: 10, estimated_input_tokens: 2, reserved_output_tokens: 5 })
+    const signal = currentModelRequestContext()!.signal!
+    await new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))
+  })
+  try {
+    release(); await first
+    assert.equal(stopObservedModelTask(taskId), true, 'the older finally must not delete the newer active controller')
+    await assert.rejects(second, (issue: unknown) => (issue as Error).name === 'AbortError')
+    const row = db.prepare('SELECT state,usage FROM model_request_tasks WHERE id=?').get(taskId) as { state: string; usage: string }
+    assert.equal(row.state, 'cancelled'); assert.equal(JSON.parse(row.usage).requests, 2)
+    assert.equal(JSON.parse(row.usage).uncertain_requests, 2, 'a closed observation cannot silently settle its stale ledger')
+    assert.equal(stopObservedModelTask(taskId), false)
+  } finally { release(); stopObservedModelTask(taskId); await Promise.allSettled([first, second]) }
+})
+
+test('reservation writes block dispatch while a settlement write failure preserves the completed result', () => {
+  const original = console.error; console.error = () => {}
+  const failed = createModelRequestObservation({ taskId: 'job:reservation-write-failure', projectId: 'p', owner: 'job', label: 'reservation' })
+  const completed = createModelRequestObservation({ taskId: 'job:settlement-write-failure', projectId: 'p', owner: 'job', label: 'settlement' })
+  db.exec("CREATE TEMP TRIGGER fail_observation_reservation BEFORE INSERT ON model_request_tasks WHEN NEW.id='job:reservation-write-failure' BEGIN SELECT RAISE(FAIL,'reservation storage unavailable'); END")
+  db.exec("CREATE TEMP TRIGGER fail_observation_settlement BEFORE INSERT ON model_request_tasks WHEN NEW.id='job:settlement-write-failure' AND json_extract(NEW.usage,'$.input_tokens')>0 BEGIN SELECT RAISE(FAIL,'settlement storage unavailable'); END")
+  let dispatches = 0
+  try {
+    assert.throws(() => failed.run(() => {
+      beginTextRequest({ request_bytes: 10, estimated_input_tokens: 2, reserved_output_tokens: 5 }); dispatches++
+    }), /reservation storage unavailable/)
+    const result = completed.run(() => {
+      const request = beginTextRequest({ request_bytes: 10, estimated_input_tokens: 2, reserved_output_tokens: 5 }); dispatches++
+      request.complete({ input_tokens: 2, output_tokens: 1 })
+      return 'completed without retry'
+    })
+    completed.finish('succeeded')
+    assert.equal(result, 'completed without retry'); assert.equal(dispatches, 1)
+    const row = db.prepare('SELECT usage FROM model_request_tasks WHERE id=?').get(completed.id) as { usage: string }
+    assert.equal(JSON.parse(row.usage).uncertain_requests, 1, 'the persisted reservation remains conservative when settlement cannot be saved')
+  } finally {
+    failed.finish('failed'); completed.finish('succeeded')
+    console.error = original; db.exec('DROP TRIGGER fail_observation_reservation'); db.exec('DROP TRIGGER fail_observation_settlement')
+  }
+})
+
+test('late metrics settle their dispatched attempt and original trace without replacing a resumed task aggregate', async () => {
+  const { createLangfuseTracer, readLangfuseConfig } = await import('../src/infrastructure/observability/langfuse-tracing.js')
+  const batches: LangfuseBatch[] = []
+  const tracer = createLangfuseTracer(readLangfuseConfig({ LANGFUSE_TRACING: 'true', LANGFUSE_PUBLIC_KEY: 'pk-test',
+    LANGFUSE_SECRET_KEY: 'sk-test', LANGFUSE_BASE_URL: 'http://localhost:3035' }), {
+    salt: 'late-integration-test', random: () => 0,
+    clientFactory: () => ({ async send(batch) { batches.push(structuredClone(batch)) } }),
+  })
+  const taskId = 'job:late-trace-integration', controller = new AbortController()
+  let oldContext!: NonNullable<ReturnType<typeof currentModelRequestContext>>
+  const old = createModelRequestObservation({ taskId, projectId: 'p', owner: 'job', label: 'old', signal: controller.signal }, tracer)
+  old.run(() => {
+    oldContext = currentModelRequestContext()!
+    beginTextRequest({ request_bytes: 10, estimated_input_tokens: 2, reserved_output_tokens: 5 })
+    oldContext.onDispatch?.({ request_id: 'known-old-request', request_purpose: 'generation' })
+  })
+  controller.abort(new DOMException('creator stopped old launch', 'AbortError'))
+  await tracer.flush()
+  const resumed = createModelRequestObservation({ taskId, projectId: 'p', owner: 'job', label: 'resumed' }, tracer)
+  resumed.run(() => {
+    const context = currentModelRequestContext()!, request = beginTextRequest({ request_bytes: 10, estimated_input_tokens: 2, reserved_output_tokens: 5 })
+    context.onDispatch?.({ request_id: 'resumed-request', request_purpose: 'review' })
+    request.complete({ input_tokens: 2, output_tokens: 1 })
+    context.onMetrics?.({ request_id: 'resumed-request', input_tokens: 2, output_tokens: 1, delivery: 'completed' })
+  })
+  resumed.finish('succeeded'); await tracer.flush()
+  const before = db.prepare('SELECT state,usage,progress FROM model_request_tasks WHERE id=?').get(taskId)
+  oldContext.onProgress?.({ phase_id: 'old', label: 'stale', completed_units: 1, total_units: 1 })
+  oldContext.onDispatch?.({ request_id: 'rejected-late-request' })
+  oldContext.onMetrics?.({ request_id: 'rejected-late-request', input_tokens: 99, delivery: 'completed' })
+  oldContext.onMetrics?.({ request_id: 'known-old-request', input_tokens: 8, output_tokens: 3, delivery: 'completed' })
+  oldContext.onMetrics?.({ request_id: 'known-old-request', delivery: 'unknown' })
+  old.finish('failed'); await tracer.flush()
+  assert.deepEqual(db.prepare('SELECT state,usage,progress FROM model_request_tasks WHERE id=?').get(taskId), before)
+  const lateAttempt = db.prepare('SELECT state,metrics FROM model_request_attempts WHERE task_id=? AND id=?').get(taskId, 'known-old-request') as { state: string; metrics: string }
+  assert.equal(lateAttempt.state, 'settled'); assert.equal(JSON.parse(lateAttempt.metrics).input_tokens, 8)
+  assert.equal(db.prepare('SELECT 1 FROM model_request_attempts WHERE task_id=? AND id=?').get(taskId, 'rejected-late-request'), undefined)
+  const spans = batches.flatMap(batch => batch.resourceSpans.flatMap(resource => resource.scopeSpans.flatMap(scope => scope.spans)))
+  const value = (span: typeof spans[number], key: string) => span.attributes.find(attribute => attribute.key === key)?.value.stringValue
+  const roots = spans.filter(span => !span.parentSpanId), children = spans.filter(span => span.parentSpanId)
+  assert.equal(roots.length, 2); assert.equal(children.length, 2)
+  const originalRoot = roots.find(span => value(span, 'langfuse.observation.metadata.state') === '"cancelled"')!
+  const lateChild = children.find(span => span.name === 'generation:text')!
+  assert.ok(originalRoot); assert.ok(lateChild)
+  assert.equal(lateChild.traceId, originalRoot.traceId); assert.equal(lateChild.parentSpanId, originalRoot.spanId)
+  assert.deepEqual(JSON.parse(value(lateChild, 'langfuse.observation.usage_details')!), { input: 8, output: 3, total: 11 })
+  assert.equal(value(originalRoot, 'langfuse.observation.metadata.incomplete_children'), '1')
+  assert.equal(tracer.status().incomplete, 0)
 })

@@ -277,3 +277,149 @@ test('HTTP acceptance and resume never inherit durable planning usage while its 
     assert.equal(executions, 2)
   } finally { first(); second(); await tasks.close(); await http.close() }
 })
+
+test('task budget persists cumulative real dispatches, buys at most two explicit continuations, and never clears the candidate', async () => {
+  const { storyboardPlanningBudgetKey } = await import('../src/modules/storyboard/storyboard-planning-budget.js')
+  const projectId = await project(), input = { scene_ids: ['fixture-scene'], shots_per_scene: 2 }
+  let dispatches = 0, executions = 0
+  const tasks = createStoryboardPlanningTasks({ identity: (_projectId, value) => hash(value), execute: async (_projectId, _input, control) => {
+    executions++
+    control.stage('reviewing'); control.retain('candidate', 'validated candidate', projection)
+    for (;;) {
+      const request = beginTextRequest({ request_bytes: 12, estimated_input_tokens: 5, reserved_output_tokens: 10 })
+      dispatches++
+      request.complete({ input_tokens: 4, output_tokens: 3 })
+    }
+  } })
+  try {
+    const id = randomUUID(), task = tasks.start(projectId, input, id)
+    for (let round = 1; round <= 3; round++) {
+      await until(() => tasks.read(projectId, task.id).status === 'failed')
+      const snapshot = tasks.read(projectId, task.id)
+      assert.equal(snapshot.error?.code, 'storyboard_planning_budget_exceeded')
+      assert.equal(snapshot.can_resume, round < 3); assert.ok(snapshot.candidate)
+      assert.equal(dispatches, 27 * round)
+      const record = JSON.parse(one<{ payload: string }>('SELECT payload FROM script_step_checkpoints WHERE project_id=? AND namespace=?',
+        projectId, `storyboard-planning-task:${id}`)!.payload)
+      assert.equal(record.steps[storyboardPlanningBudgetKey].usage.requests, 27 * round)
+      assert.equal(record.steps[storyboardPlanningBudgetKey].grants, round)
+      assert.equal(tasks.start(projectId, input, randomUUID()).id, id)
+      assert.equal(executions, round, 'idempotent start cannot buy another run')
+      if (round < 3) tasks.resume(projectId, id)
+    }
+    assert.throws(() => tasks.resume(projectId, id), /不能继续/)
+    assert.equal(executions, 3)
+    const observation = JSON.parse(one<{ usage: string }>('SELECT usage FROM model_request_tasks WHERE id=?', `storyboard:${id}`)!.usage)
+    assert.equal(observation.requests, 81, 'the independent durable display ledger records each real dispatch once')
+  } finally { await tasks.close() }
+})
+
+test('an exhausted accumulated duration fails before work and explicit resume continues with the saved budget', async () => {
+  const { storyboardPlanningBudgetKey } = await import('../src/modules/storyboard/storyboard-planning-budget.js')
+  const projectId = await project(), input = { scene_ids: ['fixture-scene'], shots_per_scene: 2 }
+  let executions = 0
+  const options = { identity: (_projectId: string, value: unknown) => hash(value), execute: async (_projectId: string, _input: unknown,
+    control: import('../src/modules/storyboard/storyboard-planning-tasks.js').StoryboardPlanningControl) => {
+    executions++
+    if (executions === 1) { control.retain('candidate', 'saved', projection); throw new Error('network failure') }
+    return { ...projection, directing_review: { status: 'passed' as const, repaired: false, issues: [] } }
+  } }
+  const first = createStoryboardPlanningTasks(options)
+  const id = randomUUID()
+  first.start(projectId, input, id)
+  await until(() => first.read(projectId, id).status === 'failed')
+  await first.close()
+  const row = one<{ payload: string }>('SELECT payload FROM script_step_checkpoints WHERE project_id=? AND namespace=?', projectId, `storyboard-planning-task:${id}`)!
+  const record = JSON.parse(row.payload)
+  record.steps[storyboardPlanningBudgetKey].allowance.max_active_ms = 60_000
+  record.snapshot.active_duration_ms = 60_000
+  run('UPDATE script_step_checkpoints SET payload=? WHERE project_id=? AND namespace=?', JSON.stringify(record), projectId, `storyboard-planning-task:${id}`)
+  const second = createStoryboardPlanningTasks(options)
+  try {
+    second.resume(projectId, id)
+    await until(() => second.read(projectId, id).status === 'failed')
+    const stopped = second.read(projectId, id)
+    assert.equal(executions, 1, 'no work may start after the accumulated allowance expires')
+    assert.equal(stopped.error?.code, 'storyboard_planning_budget_exceeded')
+    assert.equal(stopped.can_resume, true); assert.ok(stopped.candidate)
+    second.resume(projectId, id)
+    await second.wait(projectId, id)
+    assert.equal(executions, 2)
+    const finished = JSON.parse(one<{ payload: string }>('SELECT payload FROM script_step_checkpoints WHERE project_id=? AND namespace=?',
+      projectId, `storyboard-planning-task:${id}`)!.payload)
+    assert.equal(finished.steps[storyboardPlanningBudgetKey].grants, 2, 'success retains the cumulative budget metadata')
+    assert.equal(finished.steps.candidate, undefined)
+  } finally { await second.close() }
+})
+
+test('pre-budget durable tasks recover their existing observation usage instead of restarting the cumulative counters', async () => {
+  const { storyboardPlanningBudgetKey } = await import('../src/modules/storyboard/storyboard-planning-budget.js')
+  const projectId = await project(), id = randomUUID(), input = { scene_ids: ['fixture-scene'], shots_per_scene: 2 }
+  let executions = 0
+  const options = { identity: (_projectId: string, value: unknown) => hash(value), execute: async () => {
+    executions++
+    beginTextRequest({ request_bytes: 10, estimated_input_tokens: 4, reserved_output_tokens: 5 }).complete({ input_tokens: 3, output_tokens: 2 })
+    if (executions === 1) throw new Error('connection failed')
+    return projection
+  } }
+  const first = createStoryboardPlanningTasks(options)
+  first.start(projectId, input, id)
+  await until(() => first.read(projectId, id).status === 'failed')
+  await first.close()
+  const record = JSON.parse(one<{ payload: string }>('SELECT payload FROM script_step_checkpoints WHERE project_id=? AND namespace=?',
+    projectId, `storyboard-planning-task:${id}`)!.payload)
+  delete record.steps[storyboardPlanningBudgetKey]
+  run('UPDATE script_step_checkpoints SET payload=? WHERE project_id=? AND namespace=?', JSON.stringify(record), projectId, `storyboard-planning-task:${id}`)
+  const second = createStoryboardPlanningTasks(options)
+  try {
+    second.resume(projectId, id)
+    await second.wait(projectId, id)
+    const restored = JSON.parse(one<{ payload: string }>('SELECT payload FROM script_step_checkpoints WHERE project_id=? AND namespace=?',
+      projectId, `storyboard-planning-task:${id}`)!.payload)
+    assert.equal(restored.steps[storyboardPlanningBudgetKey].usage.requests, 2)
+    assert.equal(restored.steps[storyboardPlanningBudgetKey].usage.input_tokens, 6)
+    assert.equal(restored.steps[storyboardPlanningBudgetKey].grants, 1, 'legacy network resume cannot buy a fresh allowance')
+  } finally { await second.close() }
+})
+
+test('a cancelled launch cannot overwrite a resumed successful task when its old request settles late', async () => {
+  const { storyboardPlanningBudgetKey } = await import('../src/modules/storyboard/storyboard-planning-budget.js')
+  const projectId = await project(), id = randomUUID(), input = { scene_ids: ['fixture-scene'], shots_per_scene: 2 }
+  let executions = 0, release!: () => void, settled!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const lateSettlement = new Promise<void>(resolve => { settled = resolve })
+  const tasks = createStoryboardPlanningTasks({ identity: (_projectId, value) => hash(value), execute: async () => {
+    const round = ++executions, context = currentModelRequestContext()!
+    const request = beginTextRequest({ request_bytes: 12, estimated_input_tokens: 5, reserved_output_tokens: 10 })
+    context.onDispatch?.({ request_id: `late-round-${round}`, request_bytes: 12 })
+    if (round === 1) await gate // Reproduce a provider that ignores cancellation.
+    request.complete({ input_tokens: 4, output_tokens: 3 })
+    context.onMetrics?.({ request_id: `late-round-${round}`, input_tokens: 4, output_tokens: 3, delivery: 'completed' })
+    if (round === 1) settled()
+    return { ...projection, directing_review: { status: 'passed' as const, repaired: false, issues: [] } }
+  } })
+  const stored = () => JSON.parse(one<{ payload: string }>('SELECT payload FROM script_step_checkpoints WHERE project_id=? AND namespace=?',
+    projectId, `storyboard-planning-task:${id}`)!.payload)
+  try {
+    tasks.start(projectId, input, id)
+    await tasks.cancel(projectId, id)
+    assert.equal(tasks.read(projectId, id).status, 'cancelled')
+    tasks.resume(projectId, id)
+    await tasks.wait(projectId, id)
+    const successful = stored()
+    assert.equal(successful.snapshot.status, 'succeeded')
+    assert.equal(successful.steps[storyboardPlanningBudgetKey].usage.requests, 2)
+    release(); await lateSettlement; await new Promise<void>(resolve => setImmediate(resolve))
+    assert.deepEqual(stored(), successful, 'the old scope must not replace the newly parsed durable task record')
+    assert.equal(tasks.read(projectId, id).status, 'succeeded')
+    const observed = one<{ state: string; usage: string }>('SELECT state,usage FROM model_request_tasks WHERE id=?', `storyboard:${id}`)!
+    assert.equal(observed.state, 'succeeded')
+    const usage = JSON.parse(observed.usage)
+    assert.equal(usage.requests, 2); assert.equal(usage.input_tokens, 4); assert.equal(usage.output_tokens, 3)
+    assert.equal(usage.uncertain_requests, 1, 'the abandoned reservation stays conservative until explicitly recoverable')
+    const lateAttempt = one<{ state: string; metrics: string }>('SELECT state,metrics FROM model_request_attempts WHERE task_id=? AND id=?',
+      `storyboard:${id}`, 'late-round-1')!
+    assert.equal(lateAttempt.state, 'settled', 'late exact usage can settle its own attempt without replacing the resumed task')
+    assert.equal(JSON.parse(lateAttempt.metrics).input_tokens, 4)
+  } finally { release(); await tasks.close() }
+})

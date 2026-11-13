@@ -6,7 +6,7 @@ import { after, test, type TestContext } from 'node:test'
 import Fastify from 'fastify'
 import type { ScriptArtifact, ScriptScene } from '../src/infrastructure/database/db.js'
 import { scriptArtifactTypes, scriptStageForArtifact } from '@video-studio/shared/script/script-stage-content'
-import { assertCompiledStoryboardSources, storyboardWireContract, withStoryboardDirecting, storyboardOutlineFixture, storyboardBatchFixture } from './helpers/storyboard-directing.js'
+import { assertCompiledStoryboardSources, storyboardWireOutputContract, withStoryboardDirecting, storyboardOutlineFixture, storyboardBatchFixture } from './helpers/storyboard-directing.js'
 import { withFixtureVisualCoverage } from './helpers/visual-coverage.js'
 
 const testData = await mkdtemp(join(tmpdir(), 'controlled-storyboard-'))
@@ -54,26 +54,59 @@ function planningStream(draft: unknown, protocol: 'responses' | 'chat_completion
   } }), { headers: { 'Content-Type': 'text/event-stream' } })
 }
 
-/** Review is a separate read-only model step; generation retry counters below count generation only. */
-function mockPlanningFetch(t: TestContext, generate: (url: unknown, init: RequestInit) => Promise<Response>) {
-  return t.mock.method(globalThis, 'fetch', async (url: unknown, init: RequestInit) => {
+function storyboardStructuralFixture(value: unknown, prompt: string, wireSchema?: any) {
+  const targets = JSON.parse(prompt.split('目标由程序指定：')[1]!.split('\n')[0]!) as Array<{ key: string; path: Array<string | number> }>
+  const patch = { repairs: Object.fromEntries(targets.map(({ key, path }) => {
+    let selected: any = value
+    for (const item of path) selected = selected?.[item]
+    return [key, selected]
+  })) }
+  const fillNullable = (item: any, schema: any): any => {
+    if (Array.isArray(item)) return item.map(child => fillNullable(child, schema?.items))
+    if (!item || typeof item !== 'object') return item
+    const output = { ...item }
+    for (const key of schema?.required || []) if (!(key in output) && schema.properties[key]?.anyOf?.some((branch: any) => branch.type === 'null')) output[key] = null
+    for (const key of Object.keys(output)) output[key] = fillNullable(output[key], schema?.properties?.[key])
+    return output
+  }
+  return wireSchema ? fillNullable(patch, wireSchema) : patch
+}
+
+type PlanningFetchCalls = { outline: number; expansion: number; review: number; legacy: number }
+/** Full authored fixtures are adapted to the actual outline and single-shot
+ * wire contracts. Error responses and incomplete streams remain unmodified. */
+function mockPlanningFetch(t: TestContext, generate: (url: unknown, init: RequestInit) => Promise<Response>, fixture?: unknown) {
+  const calls: PlanningFetchCalls = { outline: 0, expansion: 0, review: 0, legacy: 0 }
+  t.mock.method(globalThis, 'fetch', async (url: unknown, init: RequestInit) => {
     const body = JSON.parse(String(init.body))
     const protocol = Array.isArray(body.messages) ? 'chat_completions' : 'responses'
-    if (storyboardWireContract(body, protocol) === 'storyboard_directing_review') {
+    const contract = storyboardWireOutputContract(body, protocol)
+    if (contract?.name === 'storyboard_directing_review') {
+      calls.review++
       return body.stream === false
         ? Response.json(protocol === 'responses' ? { output_text: JSON.stringify({ issues: [] }) }
           : { choices: [{ message: { content: JSON.stringify({ issues: [] }) } }] })
         : planningStream({ issues: [] }, protocol)
     }
+    if (contract?.name === 'storyboard_shot_batch' && fixture) {
+      calls.expansion++
+      const value = storyboardBatchFixture(withStoryboardDirecting(fixture), contract)
+      return body.stream === false ? Response.json(protocol === 'responses' ? { output_text: JSON.stringify(value) }
+        : { choices: [{ message: { content: JSON.stringify(value) } }] }) : planningStream(value, protocol, true, false)
+    }
+    if (contract?.name === 'storyboard_scene_plan' || contract?.name.includes('structure_repair')) calls.outline++
+    else if (contract?.name === 'storyboard_shot_batch') calls.expansion++
+    else calls.legacy++
     return generate(url, init)
   })
+  return { calls }
 }
 
 test('storyboard planning requests streams and validates the collected result for both text protocols', async t => {
   for (const protocol of ['responses', 'chat_completions'] as const) await t.test(protocol, async t => {
     const f = await upstreamPlanning(protocol, { structured_output_mode: 'json_schema' })
     let calls = 0
-    mockPlanningFetch(t, async (url: unknown, init: RequestInit) => {
+    const fetches = mockPlanningFetch(t, async (url: unknown, init: RequestInit) => {
       calls++
       const body = JSON.parse(String(init.body)), headers = new Headers(init.headers)
       assert.equal(String(url), `https://gateway.invalid/v1/${protocol === 'responses' ? 'responses' : 'chat/completions'}`)
@@ -81,17 +114,18 @@ test('storyboard planning requests streams and validates the collected result fo
       assert.equal(headers.get('Authorization'), 'Bearer storyboard-test-key')
       assert.match(headers.get('Accept') || '', /text\/event-stream/)
       const format = protocol === 'responses' ? body.text.format : body.response_format.json_schema
-      assert.equal(format.name, 'controlled_storyboard'); assert.equal(format.strict, true)
+      assert.equal(format.name, 'storyboard_scene_plan'); assert.equal(format.strict, true)
       const scenes = format.schema.properties.scenes
       assert.equal(scenes.minItems, 1); assert.equal(scenes.maxItems, 1)
       assert.deepEqual(scenes.items.properties.scene_id.enum || [scenes.items.properties.scene_id.const], [f.scene.id])
       assert.match(protocol === 'responses' ? body.input : body.messages[0].content, /本次结构化返回契约/)
-      return planningStream(f.draft, protocol)
-    })
+      return planningStream(storyboardOutlineFixture(withStoryboardDirecting(f.draft)), protocol, true, false)
+    }, f.draft)
     const response = await f.plan()
     assert.equal(response.statusCode, 200, response.body)
     assertCompiledStoryboardSources(response.json().scenes, [{ ...f.draft.scenes[0], scene_heading: f.scene.heading }])
-    assert.equal(calls, 1)
+    assert.equal(calls, 1, 'one outline request precedes two independent expansions')
+    assert.deepEqual(fetches.calls, { outline: 1, expansion: 2, review: 1, legacy: 0 })
     assert.equal(all('SELECT id FROM shots WHERE project_id=?', f.project.id).length, 0)
   })
 })
@@ -102,9 +136,9 @@ test('storyboard planning preserves an explicit non-streaming template and accep
     assert.equal(JSON.parse(String(init.body)).stream, false)
     return Response.json({ output: [
       { type: 'reasoning', content: [{ type: 'summary_text', text: '这段不是分镜方案正文' }] },
-      { type: 'message', content: [{ type: 'output_text', text: JSON.stringify(withStoryboardDirecting(f.draft)) }] },
+      { type: 'message', content: [{ type: 'output_text', text: JSON.stringify(storyboardOutlineFixture(withStoryboardDirecting(f.draft))) }] },
     ] })
-  })
+  }, f.draft)
   const response = await f.plan()
   assert.equal(response.statusCode, 200, response.body)
   assertCompiledStoryboardSources(response.json().scenes, [{ ...f.draft.scenes[0], scene_heading: f.scene.heading }])
@@ -158,8 +192,8 @@ test('storyboard planning still checks timing and requests one correction after 
   mockPlanningFetch(t, async (_url: unknown, init: RequestInit) => {
     const body = JSON.parse(String(init.body)); assert.equal(body.stream, true)
     if (++calls === 2) assert.match(body.input, /一次格式修正[\s\S]*镜头时长总和必须等于本场规划时长/)
-    return planningStream(calls === 1 ? invalid : f.draft)
-  })
+    return planningStream(storyboardOutlineFixture(withStoryboardDirecting(calls === 1 ? invalid : f.draft)), 'responses', true, false)
+  }, f.draft)
   const response = await f.plan()
   assert.equal(response.statusCode, 200, response.body)
   assertCompiledStoryboardSources(response.json().scenes, [{ ...f.draft.scenes[0], scene_heading: f.scene.heading }])
@@ -232,8 +266,9 @@ for (const problem of ['readable scene code', 'unselected extra scene', 'missing
         storyboardBatchFixture(fullPlan, body.text.format), 'responses', true, false)
       calls++
       if (calls === 2) {
-        const correction = body.input.split('【一次格式修正】')[1]?.split('【原始任务与资料】')[0]
-        assert.ok(correction, 'invalid scene mapping triggers the one correction request')
+        const structural = body.text.format.name.endsWith('_structure_repair')
+        const correction = body.input.split(structural ? '【一次结构定向修复】' : '【一次格式修正】')[1]?.split('【原始任务与资料】')[0]
+        assert.ok(correction, 'invalid scene mapping triggers the one bounded correction request')
         assert.match(correction, /scene_id/)
         assert.match(correction, /逐字|内部/)
         for (const id of selectedIds) assert.ok(correction.includes(id), 'correction contains every selected internal scene ID')
@@ -242,7 +277,8 @@ for (const problem of ['readable scene code', 'unselected extra scene', 'missing
         if (problem === 'duplicate selected scene') assert.match(correction, /重复/)
       }
       const value = withStoryboardDirecting(calls === 1 ? invalid : fullPlan)
-      return planningStream(multiple ? storyboardOutlineFixture(value) : value, 'responses', true, false)
+      const outline = storyboardOutlineFixture(value)
+      return planningStream(body.text.format.name.endsWith('_structure_repair') ? storyboardStructuralFixture(outline, body.input, body.text.format.schema) : outline, 'responses', true, false)
     })
     const response = await app.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/plan`, payload: {
       signature: context.signature, scene_ids: selectedIds, model_id: f.model.id, skill_ids: [],
@@ -258,15 +294,17 @@ test('an uncorrected scene alias is rejected after one correction and cannot sav
   const f = await upstreamPlanning('responses')
   const before = storyboardFormalState(f.project.id)
   let calls = 0
-  mockPlanningFetch(t, async () => {
+  mockPlanningFetch(t, async (_url, init) => {
     calls++
-    return planningStream({ scenes: [{ ...f.draft.scenes[0], scene_id: 'EP001-SC001' }] })
+    const body = JSON.parse(String(init.body)), contract = storyboardWireOutputContract(body, 'responses')!
+    const outline = storyboardOutlineFixture(withStoryboardDirecting({ scenes: [{ ...f.draft.scenes[0], scene_id: 'EP001-SC001' }] }))
+    return planningStream(contract.name.includes('structure_repair') ? storyboardStructuralFixture(outline, body.input, contract.schema) : outline, 'responses', true, false)
   })
   const response = await f.plan()
   assert.equal(response.statusCode, 422, response.body)
   assert.match(response.json().detail, /已修正一次/)
-  assert.match(response.json().detail, /scene_id/)
-  assert.match(response.json().raw_output, /EP001-SC001/)
+  assert.match(response.json().detail, /定向修复必须只返回本次固定 repair 字段/)
+  assert.equal(JSON.parse(response.json().raw_output).scenes[0].scene_id, 'EP001-SC001', 'a rejected repair retains the unresolved internal scene mapping')
   assert.equal(calls, 2)
   assert.deepEqual(storyboardFormalState(f.project.id), before)
 })
@@ -303,7 +341,7 @@ async function setup(t: { after: (fn: () => Promise<unknown>) => void },
   const scene = await call('POST', `/api/projects/${project.id}/script/scenes`, { heading: '车站场次', duration: 30, dialogue: '快走', episode_number: 1 })
   const other = await call('POST', `/api/projects/${project.id}/script/scenes`, { heading: '码头场次', duration: 30, action: '隐藏场次动作', episode_number: 2 })
   run('INSERT INTO scripts (project_id, outline, characters, updated_at) VALUES (?, ?, ?, ?)', project.id, '大纲选中内容', '人物未选择内容', now())
-  const routes = Fastify(); t.after(() => routes.close()); let calls = 0, visualCalls = 0
+  const routes = Fastify(); t.after(() => routes.close()); let calls = 0, outlineCalls = 0, expansionCalls = 0, visualCalls = 0
   const reviewPrompts: string[] = []
   let batchPlan: any
   const context = {
@@ -315,12 +353,13 @@ async function setup(t: { after: (fn: () => Promise<unknown>) => void },
       assert.equal(model, 'mock-text')
       if (contract?.name === 'visual_profiles') { visualCalls++; return withFixtureVisualCoverage(await generateVisual(prompt), prompt) }
       if (contract?.name === 'storyboard_directing_review') { reviewPrompts.push(prompt); return JSON.stringify({ issues: [] }) }
-      if (contract?.name === 'storyboard_shot_batch') return JSON.stringify(storyboardBatchFixture(batchPlan, contract))
-      if (contract?.name === 'storyboard_scene_plan') {
-        calls++; batchPlan = withStoryboardDirecting(JSON.parse(await generate(prompt)))
-        return JSON.stringify(storyboardOutlineFixture(batchPlan))
+      if (contract?.name === 'storyboard_shot_batch') { calls++; expansionCalls++; return JSON.stringify(storyboardBatchFixture(batchPlan, contract)) }
+      if (contract?.name === 'storyboard_scene_plan' || contract?.name === 'storyboard_scene_plan_structure_repair') {
+        calls++; outlineCalls++; batchPlan = withStoryboardDirecting(JSON.parse(await generate(prompt)))
+        const outline = storyboardOutlineFixture(batchPlan)
+        return JSON.stringify(contract.name.endsWith('_structure_repair') ? storyboardStructuralFixture(outline, prompt) : outline)
       }
-      assert.equal(contract?.name, 'controlled_storyboard'); calls++; return JSON.stringify(withStoryboardDirecting(JSON.parse(await generate(prompt))))
+      assert.fail(`unexpected generation contract: ${contract?.name}`)
     },
   }
   registerStoryboardPlanningRoutes(routes, context)
@@ -346,7 +385,7 @@ async function setup(t: { after: (fn: () => Promise<unknown>) => void },
       coverage_version: prepared.coverage_version, visual_coverage: prepared.visual_coverage })
   }
   return { project, scene, other, invoke, reference, prepareReferences, reviewPrompts,
-    context: () => invoke('context', { scene_ids: [scene.id] }), calls: () => calls, visualCalls: () => visualCalls }
+    context: () => invoke('context', { scene_ids: [scene.id] }), calls: () => calls, outlineCalls: () => outlineCalls, expansionCalls: () => expansionCalls, visualCalls: () => visualCalls }
 }
 function shot(shotId: string | null, duration: number, title = '推近镜头') {
   return { shot_id: shotId, title, duration, prompt: '人物沿通道移动', image_prompt: '日漫，人物站在通道左侧，近景', video_prompt: '人物向前移动，镜头跟随',
@@ -368,7 +407,8 @@ test('generated speech restores a unique source punctuation variant before revie
   run('UPDATE script_scenes SET dialogue=? WHERE id=?', source, sceneId)
   const context = await f.context(), before = storyboardFormalState(f.project.id)
   const planned = await f.invoke('plan', { signature: context.signature, scene_ids: [sceneId], model_id: 'mock-text', skill_ids: [] })
-  assert.equal(f.calls(), 1, 'deterministic recovery does not need a model correction')
+  assert.equal(f.outlineCalls(), 1, 'deterministic recovery does not need a model correction')
+  assert.equal(f.expansionCalls(), 1); assert.equal(f.calls(), 2)
   assert.equal(planned.scenes[0].shots[0].audio_plan.speech[0].text, original)
   assert.equal(planned.scenes[0].shots[0].audio_plan.speech[0].source_text, source)
   assert.ok(f.reviewPrompts[0]!.includes(original))
@@ -395,15 +435,17 @@ test('completed storyboard previews recover matching inputs without model calls 
   assert.equal(f.calls(), 0)
   const planned = await f.invoke('plan', input)
   assert.deepEqual((await f.invoke('preview', input)).preview, planned)
-  assert.equal(f.calls(), 1)
+  assert.equal(f.outlineCalls(), 1)
   for (const change of [{ instructions: '改用新的调度' }, { target_duration: 31 }, { duration_mode: 'reestimate' },
     { mode: 'redesign' }, { shots_per_scene: 3 }, { model_id: 'another-model' }, { document_ids: [] }]) {
     assert.equal((await f.invoke('preview', { ...input, ...change })).preview, null)
   }
-  assert.equal(f.calls(), 1, 'cache lookups never invoke generation')
+  assert.equal(f.outlineCalls(), 1, 'cache lookups never invoke generation')
+  assert.equal(f.calls(), 2, 'the cached outline and its single expansion are both reused')
   assert.deepEqual(storyboardFormalState(f.project.id), before)
   await f.invoke('plan', input)
-  assert.equal(f.calls(), 2, 'explicit generation still creates a fresh preview')
+  assert.equal(f.outlineCalls(), 2, 'explicit generation still creates a fresh preview')
+  assert.equal(f.expansionCalls(), 2); assert.equal(f.calls(), 4)
   run('UPDATE script_scenes SET action=? WHERE id=?', '人物改在另一侧入场', sceneId)
   await f.invoke('preview', input, 409)
   assert.equal((await f.invoke('preview', { ...input, signature: (await f.context()).signature })).preview, null)
@@ -428,12 +470,12 @@ test('damaged, expired and semantically invalid cached storyboard previews are n
   invalid.scenes[0].shots[0].image_prompt += ' 未经复核的首帧调整'
   update(JSON.stringify(invalid))
   assert.equal((await f.invoke('preview', input)).preview, null, 'cached edits cannot reuse a review of different text')
-  assert.equal(f.calls(), 1)
+  assert.equal(f.outlineCalls(), 1)
 })
 
 test('changing the selected text model or provider configuration invalidates a completed preview', async t => {
   const f = await upstreamPlanning()
-  mockPlanningFetch(t, async () => planningStream(f.draft))
+  mockPlanningFetch(t, async () => planningStream(storyboardOutlineFixture(withStoryboardDirecting(f.draft)), 'responses', true, false), f.draft)
   const generated = await f.plan()
   assert.equal(generated.statusCode, 200, generated.body)
   const input = { signature: f.context.signature, scene_ids: [f.scene.id], model_id: f.model.id, skill_ids: [] }
@@ -866,7 +908,7 @@ test('redesign rejects old shot IDs, stale sources and changed mode or instructi
   const context = await f.context(), input = { signature: context.signature, scene_ids: [sceneId], model_id: 'mock-text', mode: 'redesign', instructions: '换一种设计' }
   const invalid = await f.invoke('plan', input, 422)
   assert.match(invalid.message, /不能复用已有镜头/)
-  assert.equal(f.calls(), 2)
+  assert.equal(f.outlineCalls(), 2)
   outputShotId = null
   const plan = await f.invoke('plan', input)
   const request = { signature: plan.signature, mode: plan.mode, instructions: plan.instructions, request_id: crypto.randomUUID(),
@@ -1023,7 +1065,7 @@ test('planning accepts one primary and five auxiliaries and forwards every selec
   assert.deepEqual(result.used_skills.map((item: { id: string }) => item.id), selected)
   assert.deepEqual(result.used_skills.map((item: { role: string }) => item.role), ['primary', ...Array(5).fill('auxiliary')])
   for (let index = 0; index < 6; index++) assert.match(captured, new RegExp(`RULE_planner_${index}`))
-  assert.equal(f.calls(), 1)
+  assert.equal(f.outlineCalls(), 1)
 })
 
 test('metadata is read-only and canvas import rejects both missing plans and direct scene conversion', async t => {
@@ -1083,7 +1125,7 @@ test('planning always reads the selected episodes latest saved body, even withou
   assert.deepEqual(context.default_document_ids, [body.id])
   const planned = await f.invoke('plan', { signature: context.signature, scene_ids: [sceneId], model_id: 'mock-text', document_ids: [] })
   assert.deepEqual(planned.source_documents.map((document: { id: string }) => document.id), [body.id])
-  assert.equal(f.calls(), 1)
+  assert.equal(f.outlineCalls(), 1)
 })
 
 test('saved source fingerprints ignore timestamps, canvas deletion and unrelated episodes but reject changed episode body', async t => {
@@ -1408,7 +1450,8 @@ test('planning submits only selected documents, skills and scenes, supports no s
   assert.deepEqual((await f.invoke('plan', { ...input, skill_ids: [] })).used_skills, [])
   await f.invoke('plan', { ...input, document_ids: ['foreign'] }, 422)
   await f.invoke('plan', { ...input, skill_ids: ['foreign'] }, 422)
-  assert.equal(f.calls(), 3)
+  assert.equal(f.outlineCalls(), 3)
+  assert.equal(f.expansionCalls(), 6); assert.equal(f.calls(), 9)
 })
 
 test('an omitted or null shot count lets the model choose different counts for each scene without a default', async t => {
@@ -1434,7 +1477,8 @@ test('an omitted or null shot count lets the model choose different counts for e
     assert.deepEqual(result.scenes.map((scene: { shots: unknown[] }) => scene.shots.length), [1, 9])
     assert.deepEqual(result.used_skills.map((skill: { id: string }) => skill.id), [selected])
   }
-  assert.equal(f.calls(), 2)
+  assert.equal(f.outlineCalls(), 2)
+  assert.equal(f.expansionCalls(), 20); assert.equal(f.calls(), 22)
   assert.equal(all('SELECT * FROM shots WHERE project_id=?', f.project.id).length, 0)
 })
 
@@ -1450,7 +1494,8 @@ test('an explicit shot count remains a suggestion and does not force the output 
   const context = await f.context()
   const result = await f.invoke('plan', { signature: context.signature, scene_ids: [sceneId], model_id: 'mock-text', shots_per_scene: 5, skill_ids: [] })
   assert.equal(result.scenes[0].shots.length, 2)
-  assert.equal(f.calls(), 1)
+  assert.equal(f.outlineCalls(), 1)
+  assert.equal(f.expansionCalls(), 2); assert.equal(f.calls(), 3)
 })
 
 test('automatic counts still require a nonempty plan with valid per-scene timing', async t => {

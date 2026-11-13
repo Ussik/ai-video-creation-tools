@@ -459,3 +459,39 @@ test('failed provider responses retain returned usage instead of estimates when 
 function begin() {
   return beginTextRequest({ request_bytes: 120, estimated_input_tokens: 40, reserved_output_tokens: 60 })
 }
+
+test('combined dispatch limit includes transport and rejects every nested reservation atomically', () => {
+  const outer = createScriptRequestUsage(), inner = createScriptRequestUsage()
+  withTextRequestUsage({ usage: outer, limits: { max_total_requests: 1 } }, () => {
+    beginTextRequest({ kind: 'transport', request_bytes: 15, estimated_input_tokens: 0 }).complete({})
+    withTextRequestUsage({ usage: inner }, () => {
+      assert.throws(() => beginTextRequest({ kind: 'transport', request_bytes: 15, estimated_input_tokens: 0 }), isTextRequestBudgetError)
+      assert.throws(() => begin(), isTextRequestBudgetError)
+    })
+  })
+  assert.equal(outer.transport_requests, 1); assert.equal(outer.requests, 0)
+  assert.equal(inner.transport_requests, 0); assert.equal(inner.requests, 0)
+})
+
+test('only explicit provider cancellation may dispatch after scope abort and it still consumes the combined cap', async t => {
+  const { cancelBackgroundTextResponses } = await import('../src/infrastructure/providers/text-background.js')
+  const usage = createScriptRequestUsage(), controller = new AbortController()
+  let dispatches = 0
+  t.mock.method(globalThis, 'fetch', async (url: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(url), 'https://fixture.invalid/responses/resp_cancel_test/cancel')
+    assert.equal(init?.method, 'POST'); assert.equal(init?.signal?.aborted, false)
+    dispatches++
+    return Response.json({ status: 'cancelled' })
+  })
+  await withTextRequestUsage({ usage, limits: { max_requests: 1, max_total_requests: 2 }, signal: controller.signal }, async () => {
+    begin().complete({})
+    const reason = new DOMException('creator stopped work', 'AbortError')
+    controller.abort(reason)
+    assert.throws(() => begin(), issue => issue === reason)
+    assert.throws(() => beginTextRequest({ kind: 'transport', request_bytes: 12, estimated_input_tokens: 0 }), issue => issue === reason)
+    await cancelBackgroundTextResponses('https://fixture.invalid/responses', 'resp_cancel_test', {})
+    await assert.rejects(cancelBackgroundTextResponses('https://fixture.invalid/responses', 'resp_cancel_test', {}), isTextRequestBudgetError)
+  })
+  assert.equal(dispatches, 1); assert.equal(usage.requests, 1); assert.equal(usage.transport_requests, 1)
+  assert.equal(usage.uncertain_requests, 1, 'cancellation never erases the unresolved generation cost')
+})

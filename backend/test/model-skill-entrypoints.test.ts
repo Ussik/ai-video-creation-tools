@@ -8,7 +8,7 @@ import type { ScriptScene } from '../src/infrastructure/database/db.js'
 import type { SkillStage } from '../src/modules/skills/skills.js'
 import type { OutputContract } from '../src/modules/generation/model-output.js'
 import { semanticReviewFixture } from './helpers/prompt-refinement-semantics.js'
-import { withStoryboardDirecting } from './helpers/storyboard-directing.js'
+import { storyboardBatchFixture, storyboardOutlineFixture, withStoryboardDirecting } from './helpers/storyboard-directing.js'
 
 const directory = await mkdtemp(join(tmpdir(), 'model-skill-entrypoints-'))
 process.env.VIDEO_STUDIO_DATA_DIR = directory
@@ -59,12 +59,14 @@ for (const stage of ['image_prompt', 'storyboard', 'visual_assets'] as const) {
       else assert.doesNotMatch(prompt, /MODEL_CHOSEN_RULE_MARKER/)
       if (expected === 'default') assert.match(prompt, /DEFAULT_RULE_MARKER/)
       else assert.doesNotMatch(prompt, /DEFAULT_RULE_MARKER/)
-      return JSON.stringify(withStoryboardDirecting(stage === 'image_prompt' ? { prompt: '门外的人影落在走廊地面，阿宁等待门开。' }
+      const fixture = withStoryboardDirecting(stage === 'image_prompt' ? { prompt: '门外的人影落在走廊地面，阿宁等待门开。' }
         : stage === 'visual_assets' ? { profiles: [] }
         : { scenes: [{ scene_id: scene.id, scene_duration: 20, shots: [{ shot_id: null, title: '等待', duration: 20,
           prompt: '阿宁等待门开', image_prompt: '阿宁站在走廊', video_prompt: '门缓慢打开',
           audio_plan: { version: 1, speech: [], sound_effects: [], music: '', silent: true },
-          start_state: '门关闭', end_state: '门打开', cut_note: '连续' }] }] }))
+          start_state: '门关闭', end_state: '门打开', cut_note: '连续' }] }] })
+      return JSON.stringify(contract?.name === 'storyboard_scene_plan' ? storyboardOutlineFixture(fixture)
+        : contract?.name === 'storyboard_shot_batch' ? storyboardBatchFixture(fixture, contract) : fixture)
     }
     const script = () => ({ outline: '走廊等候', characters: '阿宁', scenes: [scene] })
     let endpoint: string, payload: Record<string, unknown>
@@ -100,7 +102,7 @@ for (const stage of ['image_prompt', 'storyboard', 'visual_assets'] as const) {
     assert.equal(manual.statusCode, 200, manual.body)
     assert.deepEqual(manual.json().skill_assignment.ids, [])
     assert.equal(manual.json().skill_assignment.source, 'manual')
-    assert.equal(selectionCalls, 0); assert.equal(generationCalls, 3)
+    assert.equal(selectionCalls, 0); assert.equal(generationCalls, stage === 'storyboard' ? 6 : 3)
     assert.deepEqual(skillPolicy(project.id), beforeDefaults)
     assert.equal(all('SELECT id FROM shots WHERE project_id=?', project.id).length, 0)
     assert.equal(all('SELECT id FROM visual_profiles WHERE project_id=?', project.id).length, 0)

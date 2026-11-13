@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { now, one, run } from '../../infrastructure/database/db.js'
 import { withDetachedTextRequestUsage } from '../../infrastructure/providers/text-request-usage.js'
+import { runStoryboardPlanningBudget, storyboardPlanningBudgetKey, StoryboardPlanningBudgetError } from './storyboard-planning-budget.js'
 import { observeModelTask } from '../generation/model-request-observation.js'
 import { currentModelRequestContext, modelTaskPolicies, withModelRequestContext } from '../generation/model-task-policy.js'
 import type { StoryboardPlanningProgress, StoryboardPlanningResult, StoryboardPlanningStage, StoryboardPlanningTask } from '@video-studio/shared/storyboard/storyboard-planning-types'
@@ -100,22 +101,23 @@ export function createStoryboardPlanningTasks(options: Options) {
   function assertIdentity(state: RecordState) {
     if (options.identity(state.snapshot.project_id, state.input) !== state.snapshot.input_key) problem('规划资料、模型或技能配置已更新，不能继续旧任务，请重新规划')
   }
-  function launch(state: RecordState, background: boolean) {
+  function launch(state: RecordState, background: boolean, explicitResume = false) {
     if (closing) problem('服务正在关闭，请稍后继续', 503)
     const key = taskKey(state.snapshot.project_id, state.snapshot.id)
     const live: Running = { state, controller: new AbortController(), phaseStarted: Date.now(), background, promise: Promise.resolve() }
     state.snapshot.status = 'running'; state.snapshot.can_resume = false; delete state.snapshot.error
     state.snapshot.updated_at = Date.now(); persist(state); running.set(key, live); owned.add(key)
-    const save = () => { state.snapshot.updated_at = Date.now(); persist(state) }
+    let launchActive = true
+    const save = () => { if (!launchActive) return; state.snapshot.updated_at = Date.now(); persist(state) }
     live.timer = setInterval(() => { settleTime(live); save() }, 15_000)
     live.timer.unref()
     const control: StoryboardPlanningControl = { signal: live.controller.signal, steps: state.steps,
-      stage(stage) { live.controller.signal.throwIfAborted(); assertIdentity(state); settleTime(live)
+      stage(stage) { control.signal.throwIfAborted(); assertIdentity(state); settleTime(live)
         if (state.snapshot.stage !== stage || stage !== 'generating' && stage !== 'repairing') delete state.snapshot.progress
         state.snapshot.stage = stage; state.snapshot.stage_duration_ms = state.snapshot.timings[stage] || 0; save() },
-      retain(name, value, candidate) { live.controller.signal.throwIfAborted(); assertIdentity(state); state.steps[name] = value;
+      retain(name, value, candidate) { control.signal.throwIfAborted(); assertIdentity(state); state.steps[name] = value;
         if (candidate) state.snapshot.candidate = candidate; save() },
-      progress(value) { live.controller.signal.throwIfAborted(); assertIdentity(state)
+      progress(value) { control.signal.throwIfAborted(); assertIdentity(state)
         state.snapshot.progress = progressSchema.parse(value); save() },
     }
     live.promise = (async () => {
@@ -125,17 +127,30 @@ export function createStoryboardPlanningTasks(options: Options) {
         // detaching the HTTP subscriber's identity, callbacks, abort signal
         // and usage ledger. Its admission/resume request owns no model calls.
         const policy = currentModelRequestContext()?.policy || modelTaskPolicies.generation
-        const result = await withDetachedTextRequestUsage(() => withModelRequestContext({ policy, signal: live.controller.signal }, () =>
-          observeModelTask({ taskId: `storyboard:${state.snapshot.id}`, projectId: state.snapshot.project_id,
-            label: '分镜规划', owner: 'request', signal: live.controller.signal, policy },
-          () => options.execute(state.snapshot.project_id, state.input, control))))
+        const legacy = !(storyboardPlanningBudgetKey in state.steps)
+          ? one<{ usage: string }>('SELECT usage FROM model_request_tasks WHERE id=?', `storyboard:${state.snapshot.id}`) : undefined
+        let legacyUsage: unknown
+        if (legacy) {
+          try { legacyUsage = JSON.parse(legacy.usage) }
+          catch { throw Object.assign(new Error('分镜规划历史用量记录损坏，不能清空后重新派发，请重新规划。'), { statusCode: 409 }) }
+        }
+        const result = await withDetachedTextRequestUsage(() => runStoryboardPlanningBudget({ input: state.input, steps: state.steps,
+          activeDurationMs: state.snapshot.active_duration_ms, signal: live.controller.signal, persist: save, explicitResume, legacyUsage }, signal => {
+          control.signal = signal
+          return withModelRequestContext({ policy, signal }, () =>
+            observeModelTask({ taskId: `storyboard:${state.snapshot.id}`, projectId: state.snapshot.project_id,
+              label: '分镜规划', owner: 'request', signal, policy },
+            () => options.execute(state.snapshot.project_id, state.input, control)))
+        }))
         live.controller.signal.throwIfAborted(); assertIdentity(state); settleTime(live)
         state.snapshot.stage = 'completed'; state.snapshot.stage_duration_ms = 0
         state.snapshot.status = 'succeeded'; state.snapshot.can_resume = false
         state.snapshot.result = result; delete state.snapshot.candidate; delete state.snapshot.progress
         // Completed tasks need only the final preview and request identities.
         // Keep intermediate rules/plans only while they can save paid work.
-        if (!['needs_work', 'inconclusive', 'pending_review'].includes(result.directing_review?.status || '')) state.steps = {}
+        if (!['needs_work', 'inconclusive', 'pending_review'].includes(result.directing_review?.status || '')) {
+          state.steps = { [storyboardPlanningBudgetKey]: state.steps[storyboardPlanningBudgetKey] }
+        }
       } catch (issue) {
         settleTime(live)
         if (state.snapshot.status !== 'interrupted') state.snapshot.status = live.controller.signal.aborted ? 'cancelled' : 'failed'
@@ -145,8 +160,12 @@ export function createStoryboardPlanningTasks(options: Options) {
           ...(typeof error?.retryable === 'boolean' ? { retryable: error.retryable } : {}),
           ...(error?.diagnostics ? { diagnostics: error.diagnostics } : {}), ...(error?.raw_output ? { raw_output: error.raw_output } : {}),
           ...(error?.statusCode ? { status_code: error.statusCode } : {}) }
-        state.snapshot.can_resume = error?.statusCode !== 409 && !('revised_report' in state.steps)
-      } finally { clearInterval(live.timer); live.controller.abort(); save(); running.delete(key); owned.delete(key) }
+        state.snapshot.can_resume = issue instanceof StoryboardPlanningBudgetError ? issue.canResume
+          : error?.statusCode !== 409 && !('revised_report' in state.steps)
+      } finally {
+        clearInterval(live.timer); live.controller.abort(); save(); launchActive = false
+        if (running.get(key) === live) { running.delete(key); owned.delete(key) }
+      }
     })()
   }
   function active(projectId: string) { return [...running.values()].find(live => live.state.snapshot.project_id === projectId) }
@@ -196,7 +215,7 @@ export function createStoryboardPlanningTasks(options: Options) {
       if (state.snapshot.status === 'running' || state.snapshot.status === 'succeeded') return snapshot(state)
       if (!state.snapshot.can_resume) problem('该任务需要重新规划，不能继续原阶段')
       if (active(projectId)) problem('当前项目还有分镜规划任务正在运行，请先查看或停止它')
-      launch(state, true); return snapshot(state)
+      launch(state, true, true); return snapshot(state)
     },
     async cancel(projectId: string, id: string, synchronousOnly = false) {
       const state = read(projectId, id), live = running.get(taskKey(projectId, id))

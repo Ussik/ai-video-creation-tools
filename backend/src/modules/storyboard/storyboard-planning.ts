@@ -403,10 +403,6 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
     const outlineSchema = schema.extend({ scenes: z.array(schema.shape.scenes.element.extend({
       shots: z.array(fullShotSchema.omit({ image_prompt: true, video_prompt: true, directing: true })).min(1).max(30),
     })).length(state.scenes.length) })
-    // A multi-scene request or a scene longer than one maximum-length shot
-    // should not depend on one complete production JSON surviving the gateway.
-    const useBatches = input.duration_mode === 'reestimate' || state.scenes.length > 1 ||
-      (input.target_duration ?? state.scenes[0]!.duration) > 30 || state.shots.length > 2 || (input.shots_per_scene ?? 0) > 2
     const generate = (prompt: string, contract?: OutputContract) => {
       controller.signal.throwIfAborted()
       return context.generateText(id, input.model_id, prompt, contract, controller.signal)
@@ -431,7 +427,8 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       validatePlan(value, state, input.target_duration, input.mode, input.instructions, input.duration_mode)
     }
     const makePlan = async (prompt: string, namespace: 'initial' | 'repair', outlinePrompt: string) => {
-      if (useBatches) return generateStoryboardPlanningBatches({
+      return generateStoryboardPlanningBatches({
+        batchSize: 1, structuralRepair: true,
         namespace, prompt, outlinePrompt, outlineSchema, correctionInstructions: sceneScopeInstruction,
         expansionSchema: fullShotSchema.pick({ image_prompt: true, video_prompt: true, directing: true }),
         generate, control,
@@ -444,13 +441,6 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
         },
         finalize: value => { checkCurrent(); return compilePlan(schema.parse(value)) },
       })
-      const planned = await generateStructuredOutput('controlled_storyboard', schema, generate, prompt,
-        { signal: controller.signal, validate: value => {
-          validateSchedule(value)
-          compilePlan(value)
-        }, correctionInstructions: sceneScopeInstruction })
-      checkCurrent()
-      return compilePlan(planned)
     }
     const reviewPlan = async (candidate: Awaited<ReturnType<typeof makePlan>>) => {
       const report = await generateStructuredOutput('storyboard_directing_review', storyboardDirectingReviewSchema, generate,

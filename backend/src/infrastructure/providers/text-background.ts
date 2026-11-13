@@ -96,7 +96,7 @@ export async function backgroundTextResponse(url: string, body: Record<string, u
 
 export async function cancelBackgroundTextResponses(url: string, id: string, headers: Record<string, string>, identity: ProviderRequestIdentity = {}) {
   const cancelUrl = `${url.replace(/\/$/, '')}/${encodeURIComponent(id)}/cancel`
-  const request = beginTextRequest({ kind: 'transport', request_bytes: Buffer.byteLength(cancelUrl), estimated_input_tokens: 0 })
+  const request = beginTextRequest({ kind: 'cancellation', request_bytes: Buffer.byteLength(cancelUrl), estimated_input_tokens: 0 })
   try { return await observeProviderFetch(cancelUrl, { method: 'POST', headers, signal: AbortSignal.timeout(10_000) }, 'background_cancel', fetch, identity) }
   finally { request.complete({}) }
 }

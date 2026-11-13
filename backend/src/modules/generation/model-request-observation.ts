@@ -8,6 +8,9 @@ import { currentModelRequestContext, modelTaskPolicies, withModelRequestContext,
 type Owner = 'request' | 'job' | 'director'
 type ObservationOptions = { taskId?: string; projectId?: string; modelId?: string; label: string; owner: Owner; signal?: AbortSignal; policy?: ModelTaskPolicy }
 const active = new Map<string, AbortController>()
+// Only a live observation may write a reusable durable task ID. Entries are
+// removed on finish/abort, so historical task IDs do not accumulate here.
+const observationOwners = new Map<string, symbol>()
 // These auxiliary requests do not enter the text token-reservation ledger.
 const mediaTransports = new Set(['media_create', 'media_poll', 'media_download', 'speech_create'])
 /** Stops local execution only; provider cancellation/charging is independent. */
@@ -61,8 +64,14 @@ export function createModelRequestObservation(options: ObservationOptions, trace
     .all(id) as Array<{ id: string }>).map(row => row.id) : [])
   const progress = new Map<string, ModelUnitProgress>()
   if (previous) for (const item of JSON.parse(previous.progress) as ModelUnitProgress[]) progress.set(item.phase_id, item)
-  let state = 'running', recorded = false
+  const owner = Symbol(id)
+  observationOwners.set(id, owner)
+  const dispatchedRequests = new Set<string>()
+  let state = 'running', recorded = false, closed = false
+  const isCurrent = () => !closed && observationOwners.get(id) === owner
+  const canObserve = () => isCurrent() && !options.signal?.aborted
   const persist = () => {
+    if (!isCurrent()) return
     if (!recorded && !usage.requests && !usage.transport_requests) return
     recorded = true
     db.prepare(`INSERT INTO model_request_tasks (id,project_id,model_id,label,owner,state,usage,created_at,updated_at,progress) VALUES (?,?,?,?,?,?,?,?,?,?)
@@ -70,6 +79,7 @@ export function createModelRequestObservation(options: ObservationOptions, trace
       .run(id, options.projectId || null, options.modelId || null, options.label, options.owner, state, JSON.stringify(usage), now(), now(), JSON.stringify([...progress.values()]))
   }
   const observe = (value: unknown, complete: boolean) => {
+    if (!canObserve()) return
     const metrics = safeModelMetrics(value), requestId = typeof metrics.request_id === 'string' ? metrics.request_id : undefined
     if (!complete && requestId && mediaTransports.has(String(metrics.transport_kind)) && !countedMediaRequests.has(requestId)) {
       countedMediaRequests.add(requestId)
@@ -88,16 +98,51 @@ export function createModelRequestObservation(options: ObservationOptions, trace
   // Logging after a remote side effect must never turn a valid result into a
   // retryable failure. Reservations are persisted by onUpdate before dispatch.
   const safely = (work: () => void) => { try { work() } catch (error) { console.error('模型请求记录保存失败', error) } }
+  const finish = (next: 'succeeded' | 'failed' | 'cancelled') => {
+    if (closed) return
+    state = next; safely(persist); quietTrace(() => trace?.finish(next)); closed = true
+    if (observationOwners.get(id) === owner) observationOwners.delete(id)
+    options.signal?.removeEventListener('abort', aborted)
+  }
+  const aborted = () => {
+    const code = (options.signal?.reason as { code?: unknown } | undefined)?.code
+    finish(code === 'storyboard_planning_budget_exceeded' || code === 'text_request_budget_exceeded' ? 'failed' : 'cancelled')
+  }
+  options.signal?.addEventListener('abort', aborted, { once: true })
+  if (options.signal?.aborted) aborted()
   return {
     id,
     run<T>(work: () => T): T {
+      options.signal?.throwIfAborted()
       return withModelRequestContext({ taskId: id, policy: options.policy || modelTaskPolicies.text, signal: options.signal,
-        onProgress: value => safely(() => { progress.set(value.phase_id, value); recorded = true; persist() }),
-        onDispatch: value => { safely(() => observe(value, false)); quietTrace(() => { const stage = currentModelRequestContext()?.traceStage; trace?.dispatch({ ...safeModelMetrics(value), ...(stage ? { trace_stage: stage } : {}) }) }) },
-        onMetrics: value => { safely(() => observe(value, true)); quietTrace(() => trace?.metrics(safeModelMetrics(value))) } },
-      () => withTextRequestUsage({ usage, onUpdate: () => persist() }, work))
+        onProgress: value => { if (canObserve()) safely(() => { progress.set(value.phase_id, value); recorded = true; persist() }) },
+        onDispatch: value => {
+          if (!canObserve()) return
+          const metrics = safeModelMetrics(value)
+          if (typeof metrics.request_id === 'string') dispatchedRequests.add(metrics.request_id)
+          safely(() => observe(value, false)); quietTrace(() => { const stage = currentModelRequestContext()?.traceStage; trace?.dispatch({ ...metrics, ...(stage ? { trace_stage: stage } : {}) }) })
+        },
+        onMetrics: value => {
+          const metrics = safeModelMetrics(value)
+          if (canObserve()) safely(() => observe(value, true))
+          else {
+            // A finished root may still receive a dispatched child's final
+            // usage. Settle only that attempt; never save the stale aggregate
+            // over a resumed execution or create a new rejected dispatch.
+            if (typeof metrics.request_id !== 'string' || !dispatchedRequests.has(metrics.request_id)) return
+            safely(() => db.prepare(`UPDATE model_request_attempts SET state='settled',metrics=?,updated_at=?
+              WHERE task_id=? AND id=? AND (state='dispatched' OR json_extract(metrics,'$.delivery')='unknown')`)
+              .run(JSON.stringify(metrics), now(), id, metrics.request_id))
+          }
+          quietTrace(() => trace?.metrics(metrics))
+        } },
+      () => withTextRequestUsage({ usage, signal: options.signal, onUpdate(_usage, phase) {
+        if (!canObserve()) return
+        if (phase === 'reservation') persist()
+        else safely(persist)
+      } }, work))
     },
-    finish(next: 'succeeded' | 'failed' | 'cancelled') { state = next; safely(persist); quietTrace(() => trace?.finish(next)) },
+    finish,
   }
 }
 export async function observeModelTask<T>(options: ObservationOptions, work: () => Promise<T>): Promise<T> {
@@ -106,9 +151,19 @@ export async function observeModelTask<T>(options: ObservationOptions, work: () 
   const signal = AbortSignal.any(signals)
   const observation = createModelRequestObservation({ ...options, signal })
   active.set(observation.id, controller)
+  const releaseActive = () => { if (active.get(observation.id) === controller) active.delete(observation.id) }
+  signal.addEventListener('abort', releaseActive, { once: true })
+  if (signal.aborted) releaseActive()
   try { const result = await observation.run(work); observation.finish('succeeded'); return result }
-  catch (error) { observation.finish(signal.aborted ? 'cancelled' : 'failed'); throw error }
-  finally { active.delete(observation.id) }
+  catch (error) {
+    // Execution guardrails abort their signal to stop the provider, but they
+    // are failures rather than a creator's cancellation. Keep this generic
+    // observer independent of the owning business workflow.
+    const code = (signal.reason as { code?: unknown } | undefined)?.code
+    const budgetStopped = code === 'storyboard_planning_budget_exceeded' || code === 'text_request_budget_exceeded'
+    observation.finish(signal.aborted && !budgetStopped ? 'cancelled' : 'failed'); throw error
+  }
+  finally { signal.removeEventListener('abort', releaseActive); releaseActive() }
 }
 function requestLabel(path: string) {
   const names: Array<[string,string]> = [['plan-shots','场次分镜'], ['storyboard','分镜规划'], ['visual','视觉设定'], ['prepare','画布准备'], ['refine','提示词精炼'], ['optim','提示词优化'], ['video','视频分析'], ['image','图片分析'], ['source','原稿分析'], ['classif','回复分类'], ['continuity','连续性检查'], ['script','剧本处理'], ['skill','创作技能'], ['generate','素材生成']]

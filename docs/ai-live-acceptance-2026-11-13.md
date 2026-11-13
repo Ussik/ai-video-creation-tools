@@ -6,6 +6,8 @@
 
 本轮发现并修正媒体请求漏计、成功语音追踪误报和后台分镜用量归属问题；同时加强原生结构化输出的唯一一次格式修正。分镜上游仍会返回不合约或非法 JSON，需要继续解决，不能用测试通过代替真实生成成功。
 
+本报告保留首轮基线。后续 LangGraph 分镜增强及同模型复验见 [LangGraph 分镜真实验收](./langgraph-storyboard-live-acceptance-2026-11-13.md)。
+
 ## 环境和隔离
 
 - 工作分支：`codex/langfuse-observability`，验收起点 `30c1017036fc6fb470ce5ddc68b6ec44b258d183`。

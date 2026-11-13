@@ -83,16 +83,23 @@ export function withClipDirecting<T extends { shots: Array<Record<string, unknow
     shots: rich.shots.map(shot => ({ ...shot, group_id: 'clip-main' })) }
 }
 
-/** Names come from wire contract metadata, or its serialized schema for prompt-only providers. */
-export function storyboardWireContract(body: Record<string, any>, protocol: 'responses' | 'chat_completions') {
-  const name = protocol === 'responses' ? body.text?.format?.name : body.response_format?.json_schema?.name
-  if (name) return name as string
+/** Read the exact contract from the request, including prompt-only providers. */
+export function storyboardWireOutputContract(body: Record<string, any>, protocol: 'responses' | 'chat_completions'): OutputContract | undefined {
+  const wire = protocol === 'responses' ? body.text?.format : body.response_format?.json_schema
+  if (wire?.name && wire.schema) return { name: wire.name, schema: wire.schema }
   const prompt = protocol === 'responses' ? body.input : body.messages?.[0]?.content
   if (typeof prompt !== 'string') return undefined
   const schemaLine = prompt.split('【本次结构化返回契约】')[1]?.split('\n').find(line => line.trim().startsWith('{'))
   if (!schemaLine) return undefined
   try {
-    const schema = JSON.parse(schemaLine)
-    return schema.properties?.issues ? 'storyboard_directing_review' : schema.properties?.scenes ? 'controlled_storyboard' : undefined
+    const schema = JSON.parse(schemaLine), properties = schema.properties
+    const name = properties?.repairs ? 'storyboard_structure_repair' : properties?.issues ? 'storyboard_directing_review' : properties?.scene_id && properties?.shots ? 'storyboard_shot_batch'
+      : properties?.scenes ? (properties.scenes.items?.properties?.shots?.items?.properties?.image_prompt ? 'controlled_storyboard' : 'storyboard_scene_plan') : undefined
+    return name ? { name, schema } : undefined
   } catch { return undefined }
+}
+
+/** Names come from wire contract metadata, or its serialized schema for prompt-only providers. */
+export function storyboardWireContract(body: Record<string, any>, protocol: 'responses' | 'chat_completions') {
+  return storyboardWireOutputContract(body, protocol)?.name
 }
