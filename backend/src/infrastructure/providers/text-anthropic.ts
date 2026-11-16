@@ -86,7 +86,8 @@ export async function requestAnthropicText(input: Input): Promise<{ text: string
   if (typeof cap !== 'number' || !Number.isSafeInteger(cap) || cap <= 0) throw new Error('Anthropic Messages 必须明确填写最大输出 token 数')
   const rawBody = JSON.stringify(planned.body)
   const metrics: TextRequestMetrics = { ...textRequestTrace(), model_id: model.id, remote_id: typeof planned.body.model === 'string' ? planned.body.model : model.remote_id, output_parameter: 'max_tokens', endpoint: new URL(input.url).origin + new URL(input.url).pathname, delivery: 'not_sent', request_bytes: Buffer.byteLength(rawBody), output_limit: cap,
-    request_purpose: currentModelRequestContext()?.policy.purpose ?? (tool ? 'tool_decision' : requestPurpose(input.request.structured_output?.name)), ...capacity }
+    request_purpose: currentModelRequestContext()?.policy.purpose ?? (tool ? 'tool_decision' : requestPurpose(input.request.structured_output?.name)), ...capacity,
+    ...(input.request.structured_output ? { structured_enforcement: settings.structured_output_mode === 'json_schema' ? 'native_json_schema_unverified' : 'prompt_only' } : {}) }
   const started = Date.now()
   const scope = createStreamScope(modelStepSignal(input.signal), {
     totalMs: isUnrestrictedScriptExecution() ? null : input.request.structured_output ? textRequestTimeoutMs : generationStepBudgets.discussion,

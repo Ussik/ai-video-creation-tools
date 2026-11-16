@@ -4,7 +4,6 @@ import { now, one, run } from '../../infrastructure/database/db.js'
 import { scriptDocumentVersion, scriptSourceVersion } from './script-source-identity.js'
 import { originalScriptSource, effectiveScriptSource } from './script-source-versions.js'
 import { planScriptSourceMapReuse, type ScriptSourceMapReusePlan } from './script-source-map-reuse.js'
-import { hasPassedSourceQuality } from './script-source-quality.js'
 import { sourceAnalysisPipelineVersion, validateSourceCoverage } from './script-source-map.js'
 import { validateSourceStory } from './script-source-story.js'
 
@@ -23,7 +22,7 @@ function validateBase(document: Source, analysis: ScriptSourceAnalysis, modelId:
     analysis.model_id !== modelId || analysis.configuration_hash !== configurationHash ||
     analysis.source_version !== scriptSourceVersion(document) || analysis.pipeline_version !== sourceAnalysisPipelineVersion ||
     !Number.isSafeInteger(analysis.total_chunks) || analysis.total_chunks < 1 || analysis.completed_chunks !== analysis.total_chunks ||
-    analysis.completed_characters !== document.content.length || !hasPassedSourceQuality(analysis)) return false
+    analysis.completed_characters !== document.content.length) return false
   try {
     validateSourceCoverage(document.content, analysis.sections)
     validateSourceStory(analysis, analysis.story)

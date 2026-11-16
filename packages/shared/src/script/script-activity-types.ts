@@ -19,6 +19,8 @@ export type ScriptActivity = {
   round?: number; name?: string; skill_id?: string; revision?: string; files?: string[];
   scope?: 'task' | 'step' | 'notice'; parent_id?: string; reused?: boolean;
   input?: string; output?: string; input_truncated?: boolean; output_truncated?: boolean;
+  request_has_tools?: boolean; request_tool_count?: number; request_tool_names?: string[]; request_tool_choice?: string;
+  response_block_types?: string[]; finish_reason?: string; structured_enforcement?: string;
   request_bytes?: number; response_chars?: number; first_event_ms?: number;
   input_tokens?: number; output_tokens?: number; reasoning_tokens?: number; output_limit?: number;
   output_limit_reason?: 'max_output_tokens' | 'length'; output_limit_kind?: 'text' | 'reasoning' | 'tool_arguments';

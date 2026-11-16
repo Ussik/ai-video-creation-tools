@@ -20,7 +20,7 @@ export function textFailureReason(raw?: string): TextFailureReason {
   if (/^(?:context_length_exceeded|context_window_exceeded|input_too_long|prompt_too_long|context_capacity_exceeded)$/.test(raw || '')) return 'context_overflow'
   if (/^(?:stream_disconnected|connection_error|headers_timeout|first_event_timeout|event_idle_timeout)$/.test(raw || '')) return 'disconnected'
   if (/^(?:content_filter|refusal|SAFETY|RECITATION|PROHIBITED_CONTENT)$/.test(raw || '')) return 'refusal'
-  if (/^(?:invalid_tool_call|malformed_function_call|MALFORMED_FUNCTION_CALL)$/.test(raw || '')) return 'invalid_tool'
+  if (/^(?:invalid_tool_call|malformed_function_call|MALFORMED_FUNCTION_CALL|unexpected_tool_call)$/.test(raw || '')) return 'invalid_tool'
   if (raw === 'bad_response_body' || raw === 'response_frame_too_large') return 'invalid_response'
   if (raw === 'cancelled') return 'cancelled'
   return 'upstream_error'

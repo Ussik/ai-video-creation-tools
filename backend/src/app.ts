@@ -100,11 +100,12 @@ import { planScriptChatSourceContext } from './modules/script/script-chat-source
 import { createGenerationSteps, type GenerationSteps } from './modules/script/script-generation-steps.js'
 import { hasRetainedGenerationWork, workflowDocumentContext } from './modules/script/script-workflow-context.js'
 import { generationCheckpointStore, clearGenerationCheckpoint } from './modules/script/script-generation-checkpoints.js'
+import { scriptGenerationCheckpointAttempt } from './modules/script/script-generation-attempt.js'
 import { bindScriptGenerationProgressSource, discardScriptGenerationProgress, scriptGenerationProgress, scriptGenerationProgressCheckpoint } from './modules/script/script-generation-progress.js'
 import { completeSourceEvidence } from './modules/script/script-source-material.js'
 import { analyzeSourceSnapshot, scriptSourceVersion, sourceAnalysisConfiguration } from './modules/script/script-source-analysis.js'
 import { sourceProposalBudget, scriptProposalBudgetScope } from './modules/script/script-proposal-budget.js'
-import { startScriptDraftRepairRounds, completedScriptDraftRepairRounds, completeScriptDraftRepairRound } from './modules/script/script-draft-repair-rounds.js'
+import { startScriptDraftRepairRounds, completeScriptDraftRepairRound } from './modules/script/script-draft-repair-rounds.js'
 import { prepareConfirmedScriptContext, type PreparedScriptContext } from './modules/script/script-confirmed-context.js'
 import { findingIdentity, rememberFindingResolutions, reconcileFindingResolutions, resolutionContext, type FindingResolutionRecord } from './modules/script/script-finding-state.js'
 import { semanticContinuitySchema, semanticContinuityPrompt, parseSemanticContinuity } from './modules/storyboard/continuity-semantics.js'
@@ -1188,7 +1189,7 @@ function resolveCreationAction(project: Project, data: DirectorInput): DirectorI
 
 async function toolDirectorChat(project: Project, data: DirectorInput, model: Model, provider: Provider,
   onEvent: (event: Record<string, unknown>) => void = () => {}, signal?: AbortSignal,
-  activity = activityRecorder(onEvent), styleSync?: StyleSyncHooks) {
+  activity = activityRecorder(onEvent), styleSync?: StyleSyncHooks, generationAttemptId?: string, resumeCheckpoint = false) {
   let creativeBrief: string | undefined
   let settingsChanged = false
   if (!data.workflow && !data.document_action && !data.question_response && !getToolDraft(project.id) && !data.intent_context?.pending_draft) {
@@ -1212,7 +1213,8 @@ async function toolDirectorChat(project: Project, data: DirectorInput, model: Mo
     if (issue) invalid(issue)
   }
   if (data.workflow && data.workflow.operation !== 'revise') {
-    const result = await directStageDirectorChat(project, data, model, provider, onEvent, signal, activity, creativeBrief, styleSync)
+    const result = await directStageDirectorChat(project, data, model, provider, onEvent, signal, activity, creativeBrief, styleSync,
+      generationAttemptId, resumeCheckpoint)
     return { ...result, ...(settingsChanged ? { project_changed: true } : {}) }
   }
   clearCreationProposal(project.id)
@@ -1290,7 +1292,8 @@ async function toolDirectorChat(project: Project, data: DirectorInput, model: Mo
     discussionOnly: Boolean(data.question_response), legacyPending: Boolean(data.intent_context?.pending_draft), revisionTaskId: data.revision_task_id, signal, onEvent,
     sourceVersion: sourceContext.source_version, sourceContextMode: sourceContext.mode,
     resolveKey: item => decryptKey(item.key_ciphertext || null),
-    validateCreation: (draft, preserved) => reviewDirectorDraft(project, data, draft, model, provider, signal, activity, preserved),
+    // Ordinary creation publishes a structurally validated preview. Explicit
+    // document review remains available, but approval is not a production gate.
     authorizeResource: async (summary, changes) => {
       const step = activity.start({ kind: 'model', label: '核验视觉或分镜操作', name: model.name, summary: '检查创作者是否明确要求处理这些对象与范围' })
       try {
@@ -1337,7 +1340,8 @@ async function toolDirectorChat(project: Project, data: DirectorInput, model: Mo
 
 async function directStageDirectorChat(project: Project, data: DirectorInput, model: Model, provider: Provider,
   onEvent: (event: Record<string, unknown>) => void, signal: AbortSignal | undefined,
-  activity: ReturnType<typeof activityRecorder>, creativeBrief?: string, styleSync?: StyleSyncHooks) {
+  activity: ReturnType<typeof activityRecorder>, creativeBrief?: string, styleSync?: StyleSyncHooks,
+  generationAttemptId?: string, resumeCheckpoint = false) {
   // Intent resolution and a later typed resume must serialize the same scope.
   const declared = workflowRequest.parse(data.workflow)
   data = { ...data, workflow: workflowRequest.parse({ ...declared, intent: declared.intent || 'stage_design', artifact_types: scriptTaskArtifactTypes(declared) }) }
@@ -1371,7 +1375,7 @@ async function directStageDirectorChat(project: Project, data: DirectorInput, mo
     const raw = await directorTextOutput(project, model, provider, data, prompt, event => onEvent(event), signal, activity, redesign?.validate, false,
       metrics => measurements.push(metrics), checkpointContext, legacyCheckpointContext,
       legacyWorkflowCheckpointContexts(workflow, (variant, legacy) => buildScriptDirectorChatPrompt(project, { ...data, workflow: variant },
-        { ...promptTask, legacyArtifactContext: legacy }) + (redesign?.prompt || '')))
+        { ...promptTask, legacyArtifactContext: legacy }) + (redesign?.prompt || '')), generationAttemptId, resumeCheckpoint)
     generated = directorResult(raw, data)
     activity.finish(generation, 'succeeded', { summary: '模型已返回有效的阶段草稿', ...combineTextMetrics(measurements) })
   } catch (error) {
@@ -1625,24 +1629,14 @@ function draftResolutionResult(project: Project, pending: PendingScriptDraft, ac
 
 async function resumeScriptDraft(project: Project, data: DirectorInput, model: Model, provider: Provider,
   send: (event: Record<string, unknown>) => void, signal: AbortSignal, activity: ReturnType<typeof activityRecorder>,
-  onRepairRequestAdvanced?: (request: DirectorInput) => void) {
-  let request = data
-  // Continue only the same authorized decisions, with an independent review
-  // after every repair. The creator can stop at any point.
-  for (let round = 0; ; round++) {
-    signal.throwIfAborted()
-    const result = await resumeScriptDraftOnce(project, request, model, provider, send, signal, activity, true, round > 0, onRepairRequestAdvanced)
-    if (!('retry_resolution' in result) || !result.retry_resolution) return result
-    const pending = result.retry_resolution
-    const step = activity.start({ kind: 'context', label: '继续落实已有处理方案', summary: `第 ${completedScriptDraftRepairRounds(pending) + 1} 轮：沿用同一决定，同步仍未落实的段落并再次独立复核` })
-    activity.finish(step, 'succeeded')
-    request = { ...data, draft_resolution: { id: pending.id, version: pending.version, strategy: 'continue' } }
-  }
+  _onRepairRequestAdvanced?: (request: DirectorInput) => void) {
+  // An explicit repair is one operation. Findings remain available to the
+  // creator; they never authorize another automatic repair/review round.
+  return resumeScriptDraftOnce(project, data, model, provider, send, signal, activity)
 }
 
 async function resumeScriptDraftOnce(project: Project, data: DirectorInput, model: Model, provider: Provider,
-  send: (event: Record<string, unknown>) => void, signal: AbortSignal, activity: ReturnType<typeof activityRecorder>,
-  allowKnownRetry: boolean, reuseMessages = false, onRepairRequestAdvanced?: (request: DirectorInput) => void) {
+  send: (event: Record<string, unknown>) => void, signal: AbortSignal, activity: ReturnType<typeof activityRecorder>) {
   const sourceVersion = resolutionSourceVersion(project)
   const { pending: claimed, release } = claimScriptDraft(project.id, data.draft_resolution!, sourceVersion)
   // Mutable run metadata is deliberately excluded from checkpoint identity.
@@ -1662,7 +1656,7 @@ async function resumeScriptDraftOnce(project: Project, data: DirectorInput, mode
     const reviewMessages = data.draft_resolution!.strategy === 'continue'
       ? previousRun?.review_messages || original.messages
       : [...original.messages.slice(-30), data.messages.at(-1)!]
-    const continued = scriptDirectorChatInput.parse({ ...original, messages: reuseMessages ? original.messages : reviewMessages })
+    const continued = scriptDirectorChatInput.parse({ ...original, messages: reviewMessages })
     const ensureCurrent = () => {
       signal.throwIfAborted()
       if (resolutionSourceVersion(project) !== sourceVersion) throw Object.assign(new Error('项目资料或原剧本已变化，候选稿仍保留，请重新检查来源'), { statusCode: 409 })
@@ -1817,7 +1811,6 @@ async function resumeScriptDraftOnce(project: Project, data: DirectorInput, mode
         beforeSource: proposedSource?.content, afterSource: sourceUpdate?.content || source?.content,
         beforeFindings: pending.findings, findings: error.findings, resolutions, history: repairHistory })
       repairHistory = progress.history
-      const canRetry = known && progress.action !== 'needs_decision'
       const remainingRun: PendingScriptDraft['run'] = known ? { strategy: input.strategy, review_messages: continued.messages,
         completed_rounds: repairRun!.completed_rounds,
         answers: error.findings.map(finding => {
@@ -1829,15 +1822,8 @@ async function resumeScriptDraftOnce(project: Project, data: DirectorInput, mode
       const updated = db.transaction(() => {
         const retained = retainScriptDraft(project.id, { ...pending, draft: repaired!, source_update: sourceUpdate, findings: error.findings,
           resolutions: reconcileFindingResolutions(resolutions, error.findings), repair_history: repairHistory, request: continued, run: remainingRun }, pending)
-        // Candidate identity and its durable continuation must commit together.
-        // A restart must never leave a new version behind an old recovery key.
-        if (allowKnownRetry && canRetry) onRepairRequestAdvanced?.({ ...data,
-          draft_resolution: { id: retained.id, version: retained.version, strategy: 'continue' } })
         return retained
       })()
-      if (allowKnownRetry && canRetry) {
-        return { retry_resolution: updated }
-      }
       return draftResolutionResult(project, updated, activity)
     }
     ensureCurrent()
@@ -1864,10 +1850,8 @@ async function resumeScriptDraftOnce(project: Project, data: DirectorInput, mode
 
 async function executeDirectorChat(project: Project, data: DirectorInput, model: Model, provider: Provider,
   send: (event: Record<string, unknown>) => void, signal: AbortSignal, activity = activityRecorder(send), onStyleSaved?: () => void,
-  onRepairRequestAdvanced?: (request: DirectorInput) => void): Promise<Record<string, unknown>> {
+  onRepairRequestAdvanced?: (request: DirectorInput) => void, generationAttemptId?: string, resumeCheckpoint = false): Promise<Record<string, unknown>> {
   if (data.draft_resolution) return resumeScriptDraft(project, data, model, provider, send, signal, activity, onRepairRequestAdvanced)
-  const pending = data.focus_artifact === 'all' && pendingScriptDraft(project.id)
-  if (pending) return draftResolutionResult(project, pending, activity)
   let sourceVersion = resolutionSourceVersion(project), styleSaved = false
   const styleSync: StyleSyncHooks = {
     onSkillsSelected: request => {
@@ -1882,7 +1866,8 @@ async function executeDirectorChat(project: Project, data: DirectorInput, model:
       onStyleSaved?.()
     },
   }
-  try { return await executeDirectorChatRequest(project, data, model, provider, send, signal, activity, styleSync) }
+  try { return await executeDirectorChatRequest(project, data, model, provider, send, signal, activity, styleSync,
+    generationAttemptId, resumeCheckpoint) }
   catch (error) {
     if (!(error instanceof ScriptDraftNeedsResolution)) throw error
     signal.throwIfAborted()
@@ -1897,10 +1882,12 @@ async function executeDirectorChat(project: Project, data: DirectorInput, model:
 }
 
 async function executeDirectorChatRequest(project: Project, data: DirectorInput, model: Model, provider: Provider,
-  send: (event: Record<string, unknown>) => void, signal: AbortSignal, activity = activityRecorder(send), styleSync?: StyleSyncHooks): Promise<Record<string, unknown>> {
+  send: (event: Record<string, unknown>) => void, signal: AbortSignal, activity = activityRecorder(send), styleSync?: StyleSyncHooks,
+  generationAttemptId?: string, resumeCheckpoint = false): Promise<Record<string, unknown>> {
   send({ type: 'progress', stage: 'preparing', text: '正在整理项目设定和对话内容…' })
   send({ type: 'progress', stage: 'intent', text: '正在理解本次创作意图…' })
-  if (data.use_tools && data.focus_artifact === 'all' && !data.adopt_source) return toolDirectorChat(project, data, model, provider, send, signal, activity, styleSync)
+  if (data.use_tools && data.focus_artifact === 'all' && !data.adopt_source) return toolDirectorChat(project, data, model, provider, send, signal, activity, styleSync,
+    generationAttemptId, resumeCheckpoint)
   const sourceVersion = currentScriptSourceVersion(project.id)
   const intent = activity.start({ kind: 'context', label: '检查创作请求', summary: '识别本轮讨论、生成或修订要求' })
   const resolved = await resolveDirectorIntent(project, data, model, provider, signal, false, send, activity, styleSync)
@@ -1934,7 +1921,7 @@ async function executeDirectorChatRequest(project: Project, data: DirectorInput,
   const fullText = await directorTextOutput(project, model, provider, resolved.data, prompt, send, signal, activity, redesign?.validate, Boolean(resolved.sourceText), undefined, checkpointContext, legacyCheckpointContext,
     resolved.data.workflow ? legacyWorkflowCheckpointContexts(resolved.data.workflow, (variant, legacy) => buildScriptDirectorChatPrompt(project,
       { ...resolved.data, workflow: variant }, { ...resolved, brief: undefined, savedContext, redesignEpisode: redesign?.episodeNumber,
-        legacyArtifactContext: legacy }) + (redesign?.prompt || '')) : [])
+        legacyArtifactContext: legacy }) + (redesign?.prompt || '')) : [], generationAttemptId, resumeCheckpoint)
   signal.throwIfAborted()
   const generated = directorResult(fullText, resolved.data, resolved.sourceText, preserved)
   if (generated.draft && currentScriptSourceVersion(project.id) !== sourceVersion) {
@@ -2333,9 +2320,9 @@ function directorGenerationSteps(store: ReturnType<typeof generationCheckpointSt
 }
 
 async function directorTextOutput(project: Project, model: Model, provider: Provider, data: DirectorInput, prompt: string,
-  onEvent: (event: Record<string, unknown>) => void = () => {}, signal?: AbortSignal, activity?: ReturnType<typeof activityRecorder>, validate?: (draft: Parameters<typeof validateWorkflowScenes>[1]) => void, preserveSource = false,
+  onEvent: (event: Record<string, unknown>) => void = () => {}, signal?: AbortSignal, activity?: ReturnType<typeof activityRecorder>, validate?: (draft: Parameters<typeof validateWorkflowScenes>[1]) => void, _preserveSource = false,
   onMetrics?: (metrics: TextRequestMetrics) => void, checkpointContext?: string, legacyCheckpointContext?: string,
-  legacyWorkflowContexts: readonly WorkflowCheckpointContext[] = []) {
+  legacyWorkflowContexts: readonly WorkflowCheckpointContext[] = [], generationAttemptId = newId(), resumeCheckpoint = false) {
   data = { ...data }
   const source = scriptSourceDocument(project.id)
   if (source) completeSourceEvidence(source)
@@ -2359,11 +2346,14 @@ async function directorTextOutput(project: Project, model: Model, provider: Prov
     model: { id: model.id, remote_id: model.remote_id, protocol: model.protocol, settings: model.settings },
     provider: { id: provider.id, adapter: provider.adapter, base_url: provider.base_url, auth_header: provider.auth_header, auth_prefix: provider.auth_prefix },
   }
-  let store = generationCheckpointStore(project.id, checkpointIdentity, 'generation',
-    legacyCheckpointContext ? [{ ...checkpointIdentity, prompt: legacyCheckpointContext }] : [])
+  const legacyIdentity = legacyCheckpointContext ? [{ ...checkpointIdentity, prompt: legacyCheckpointContext }] : []
+  const attemptIdentity = scriptGenerationCheckpointAttempt(checkpointIdentity, generationAttemptId, resumeCheckpoint, legacyIdentity)
+  let store = generationCheckpointStore(project.id, attemptIdentity.identity, 'generation', attemptIdentity.compatibleIdentities)
   if (!hasRetainedGenerationWork(store.checkpoint)) for (const context of legacyWorkflowContexts) {
     const identity = { ...checkpointIdentity, prompt: context.prompt, workflow: context.workflow }
-    const retained = generationCheckpointStore(project.id, identity, 'generation', [{ ...identity, prompt: context.legacyPrompt }])
+    const legacy = [{ ...identity, prompt: context.legacyPrompt }]
+    const scopedIdentity = scriptGenerationCheckpointAttempt(identity, generationAttemptId, resumeCheckpoint, legacy)
+    const retained = generationCheckpointStore(project.id, scopedIdentity.identity, 'generation', scopedIdentity.compatibleIdentities)
     if (!hasRetainedGenerationWork(retained.checkpoint)) continue
     // Preserve the original request order as well as its complete prompt:
     // individual writing-step hashes include both. Keep this legacy identity
@@ -2440,7 +2430,7 @@ async function directorTextOutput(project: Project, model: Model, provider: Prov
         const entry = taskEntries.get(task.id)
         if (entry) activity.finish(entry, status === 'succeeded' ? 'succeeded' : signal?.aborted ? 'cancelled' : 'failed', {
           ...timing,
-          summary: candidate ? timing?.reused ? '已复用本项成果，可预览；任务完成后核对一致性' : '本项成果已保留，可预览；任务完成后核对一致性' : error instanceof Error ? error.message.slice(0, 3000) : '本项任务未完成，已完成成果仍保留',
+          summary: candidate ? timing?.reused ? '已复用本项成果，可预览并确认保存' : '本项成果已保留，可预览并确认保存' : error instanceof Error ? error.message.slice(0, 3000) : '本项任务未完成，已完成成果仍保留',
           ...(candidate ? { artifact_preview: { stage: candidate.stage, scope: candidate.scope, episode_number: candidate.episode_number,
             artifacts: candidate.artifacts, scenes: candidate.scenes } } : {}),
         })
@@ -2465,8 +2455,8 @@ async function directorTextOutput(project: Project, model: Model, provider: Prov
   if ((source ? scriptDocumentVersion(source) : null) !== currentScriptSourceVersion(project.id)) {
     throw Object.assign(new Error('上传剧本已变化，请重新生成；已有文档未修改'), { statusCode: 409 })
   }
-  if (!data.adopt_source && !preserveSource) await reviewDirectorDraft(project, data, draft, model, provider, signal, activity,
-    data.workflow.operation === 'regenerate' ? [] : projectDocuments(project.id, projectScript(project.id)), undefined, steps)
+  // Keep source identity, field contracts and scene validation above. A
+  // separate model quality verdict must not delay the completed candidate.
   return JSON.stringify({ artifacts: draft.artifacts, scenes: draft.scenes })
 }
 
@@ -2735,7 +2725,10 @@ export function buildApp(): FastifyInstance {
   } })
   const executePreparedDirector = async (project: Project, data: DirectorInput, model: Model, provider: Provider,
     send: (event: Record<string, unknown>) => void, signal: AbortSignal, activity = activityRecorder(send), onStyleSaved?: () => void,
-    onRepairRequestAdvanced?: (request: DirectorInput) => void, restoredActivities: ScriptActivity[] = [], executionOptions: { explicitResume?: boolean; durableTask?: boolean } = {}) => {
+    onRepairRequestAdvanced?: (request: DirectorInput) => void, restoredActivities: ScriptActivity[] = [],
+    executionOptions: { explicitResume?: boolean; durableTask?: boolean; generationAttemptId?: string; resumeCheckpoint?: boolean } = {}) => {
+    const generationAttemptId = executionOptions.generationAttemptId || newId()
+    const resumeCheckpoint = executionOptions.resumeCheckpoint === true || executionOptions.explicitResume === true || data.draft_resolution?.strategy === 'continue'
     const pending = pendingScriptDraft(project.id)
     const budgetScale = directorBudgetScale(project, data), contextChars = budgetScale.inputChars
     const tracker = createScriptExecutionUsage({ activities: restoredActivities, contextChars,
@@ -2755,7 +2748,8 @@ export function buildApp(): FastifyInstance {
         // Source indexing is a separate upload task, not a prerequisite for
         // every chat. Intent resolution and outline extraction can read the
         // full manuscript directly; design review prepares analysis if needed.
-        return executeDirectorChat(project, data, model, provider, send, budgetSignal, activity, onStyleSaved, onRepairRequestAdvanced)
+        return executeDirectorChat(project, data, model, provider, send, budgetSignal, activity, onStyleSaved, onRepairRequestAdvanced,
+          generationAttemptId, resumeCheckpoint)
       }))))
       activity.finish(entry, 'succeeded', { usage: tracker.snapshot(directorUsageStates.get(activity)?.cumulative) })
       return { ...result, activity: activity.entries }
@@ -3990,7 +3984,8 @@ export function buildApp(): FastifyInstance {
   app.post('/api/projects/:id/script/director/chat', { bodyLimit: 3 * 1024 * 1024 }, async request => {
     const { id } = parse(idParams, request.params)
     const project = required<Project>('projects', id)
-    const data = resolveCreationAction(project, parse(scriptDirectorChatInput, request.body))
+    const { task, ...input } = parse(scriptDirectorChatInput, request.body)
+    const data = resolveCreationAction(project, input)
     const model = required<Model>('models', data.model_id)
     if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
     checkProtocol(model.modality, model.protocol)
@@ -3999,7 +3994,8 @@ export function buildApp(): FastifyInstance {
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
     const scope = createStreamScope(undefined, { totalMs: null })
     try {
-      return await scope.wait(executePreparedDirector(project, data, model, provider, () => {}, scope.signal))
+      return await scope.wait(executePreparedDirector(project, data, model, provider, () => {}, scope.signal, undefined, undefined,
+        undefined, [], { ...(task ? { generationAttemptId: task.id } : {}) }))
     } finally { scope.close() }
   })
   app.get('/api/projects/:id/script/director/tasks/:taskId', async request => {
@@ -4059,7 +4055,8 @@ export function buildApp(): FastifyInstance {
     return directorTasks.continue(id, taskId, newKey, async (signal, send) => {
       const execute=()=>executePreparedDirector(project, data, model, provider, send, signal, undefined,
         () => directorTasks.refreshRecoveryKey(id, taskId, directorRecoveryKey(project, model, provider, data)),
-        next => directorTasks.refreshRecoveryRequest(id, taskId, next, directorRecoveryKey(project, model, provider, next)), restoredActivities, { explicitResume: true, durableTask: true })
+        next => directorTasks.refreshRecoveryRequest(id, taskId, next, directorRecoveryKey(project, model, provider, next)), restoredActivities,
+        { explicitResume: true, durableTask: true, generationAttemptId: taskId, resumeCheckpoint: true })
       try { return await (migration?withScriptCheckpointModelMigration(migration,execute):execute()) }
       catch(error){
         if(migration) run('UPDATE script_director_tasks SET request_payload=?,resume_key=? WHERE id=? AND project_id=?',JSON.stringify(originalRequest),oldKey,taskId,id)
@@ -4089,7 +4086,8 @@ export function buildApp(): FastifyInstance {
       const snapshot = directorTasks.start(id, task, bound, async (signal, send) => {
         return executePreparedDirector(project, prepared, model, provider, send, signal, undefined,
           () => directorTasks.refreshRecoveryKey(id, task.id, directorRecoveryKey(project, model, provider, prepared)),
-          next => directorTasks.refreshRecoveryRequest(id, task.id, next, directorRecoveryKey(project, model, provider, next)), [], { durableTask: true })
+          next => directorTasks.refreshRecoveryRequest(id, task.id, next, directorRecoveryKey(project, model, provider, next)), [],
+          { durableTask: true, generationAttemptId: task.id })
       }, { key: directorRecoveryKey(project, model, provider, prepared), resumable: Boolean(prepared.workflow || prepared.draft_resolution || !prepared.use_tools),
         budgetScale: directorBudgetScale(project, prepared) })
       await directorTasks.subscribe(id, snapshot.id, reply)

@@ -7,6 +7,7 @@ import { MantineProvider } from '@mantine/core'
 import type { Model, Provider, ProjectDetail } from '../src/shared/api/api'
 import type { ScriptSourceAnalysis, ScriptSourceDocument } from '@video-studio/shared/script/script-source-document'
 import { skillStageOptions } from '../src/shared/api/skills-api'
+import type { ScriptDraftResolution } from '@video-studio/shared/script/script-draft-resolution'
 import { scriptStageArtifacts } from '@video-studio/shared/script/script-stage-content'
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
@@ -68,7 +69,7 @@ async function chooseFile(name: string, size?: number) {
   await act(async () => input.dispatchEvent(new dom.window.Event('change', { bubbles: true })))
   await settle()
 }
-function mockApi(t: TestContext, initialSource: ScriptSourceDocument | null = null, sourceRead?: Promise<void>) {
+function mockApi(t: TestContext, initialSource: ScriptSourceDocument | null = null, sourceRead?: Promise<void>, historicalResolution?: ScriptDraftResolution) {
   let saved = initialSource, uploads = 0, calls: Record<string, unknown>[] = [], failUpload = false, analysisStarts = 0, analysisPauses = 0, analysisReads = 0, failPause = false
   let deferredAnalysisRead: { wait: Promise<void>; started: () => void } | undefined
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
@@ -107,7 +108,7 @@ function mockApi(t: TestContext, initialSource: ScriptSourceDocument | null = nu
       return Response.json(saved)
     }
     if (path.endsWith('/skills/defaults')) return Response.json(policies)
-    if (path.endsWith('/tools-state')) return Response.json({ draft: null, decisions: [], creation: { status: 'direction' } })
+    if (path.endsWith('/tools-state')) return Response.json({ draft: null, decisions: [], creation: { status: 'direction' }, draft_resolution: historicalResolution })
     if (path.endsWith('/conversations') && init?.method === 'PUT') return Response.json({})
     if (path.endsWith('/conversations')) return Response.json({ conversations: [], tasks: [], task_persistence: true })
     if (path.endsWith('/chat/stream')) {
@@ -439,21 +440,21 @@ test('independent quality review remains active until completion and the prepare
       timeline: [], threads: [{ setup: '失落的钥匙', payoff: '终场归还', section_ids: [0] }], ending: { summary: '伙伴重聚', section_ids: [0] }, uncertainties: [] } }
   try {
     await act(() => root.render(<MantineProvider env="test"><ScriptSourceAnalysisStatus source={{ ...source, analysis: { ...ready, status: 'running', phase: 'synthesis' } }} starting={false} unavailable={false} pollError={false} onStart={() => {}} /></MantineProvider>))
-    assert.match(container.textContent!, /正在独立核对分析结果/)
+    assert.match(container.textContent!, /正在整理分析结果/)
     assert.doesNotMatch(container.textContent!, /92%/)
     assert.doesNotMatch(container.textContent!, /完成后可发送，不会自动发送/)
     assert.equal(container.querySelector('[role="progressbar"]'), null)
     const steps = [...container.querySelectorAll('[aria-label="剧本分析步骤"] li')]
-    for (const [index, label] of ['全文分析', '全剧整合', '质量核对'].entries()) assert.ok(steps[index]?.textContent?.includes(label))
-    assert.deepEqual(steps.map(step => step.getAttribute('data-state')), ['completed', 'completed', 'active'])
-    assert.equal(steps[2]!.getAttribute('aria-current'), 'step')
+    for (const [index, label] of ['全文分析', '全剧整合'].entries()) assert.ok(steps[index]?.textContent?.includes(label))
+    assert.deepEqual(steps.map(step => step.getAttribute('data-state')), ['completed', 'completed'])
+    assert.equal(steps.length, 2)
     await act(() => root.render(<MantineProvider env="test"><ScriptSourceAnalysisStatus source={{ ...source, analysis: { ...ready,
       status: 'running', phase: 'synthesis', progress: { stage: 'repairing', message: '正在修补第 2/3 项核对问题，已保存的分析保持可恢复' } } }}
       starting={false} unavailable={false} pollError={false} onStart={() => {}} /></MantineProvider>))
-    assert.match(container.textContent!, /正在修补分析问题/)
+    assert.match(container.textContent!, /正在整理分析结果/)
     assert.match(container.textContent!, /正在修补第 2\/3 项核对问题/)
     assert.doesNotMatch(container.textContent!, /正在独立核对分析结果/)
-    assert.deepEqual([...container.querySelectorAll('[aria-label="剧本分析步骤"] li')].map(step => step.getAttribute('data-state')), ['completed', 'completed', 'active'])
+    assert.deepEqual([...container.querySelectorAll('[aria-label="剧本分析步骤"] li')].map(step => step.getAttribute('data-state')), ['completed', 'completed'])
     await act(() => root.render(<MantineProvider env="test"><ScriptSourcePreview source={{ ...source, analysis: ready }} /></MantineProvider>))
     await act(() => [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(item => item.textContent === '全剧信息')!.click())
     assert.match(container.textContent!, /阿舟/); assert.match(container.textContent!, /终场归还/); assert.match(container.textContent!, /来源：剧情段落 1/)
@@ -481,7 +482,7 @@ test('full-source analysis shows stages without partial reading percentages and 
     await render(current, true)
     assert.match(container.textContent!, /暂时无法读取进度，正在重试/)
     assert.equal(container.querySelector('[aria-label="剧本分析步骤"] [aria-current="step"]'), null)
-    assert.deepEqual([...container.querySelectorAll('[aria-label="剧本分析步骤"] li')].map(step => step.getAttribute('data-state')), ['pending', 'pending', 'pending'])
+    assert.deepEqual([...container.querySelectorAll('[aria-label="剧本分析步骤"] li')].map(step => step.getAttribute('data-state')), ['pending', 'pending'])
     await render({ ...current, total_chunks: 6, progress: { stage: 'splitting', message: '已缩小范围继续分析' } })
     assert.equal(container.querySelector('[role="progressbar"]'), null)
     assert.match(container.textContent!, /AI 正在阅读全文分析/)
@@ -520,7 +521,7 @@ test('revised effective source explains the map update and a prepared map stays 
     const running: ScriptSourceAnalysis = { ...analysis, status: 'running', phase: 'reading', started_at: new Date(Date.now() - 30_000).toISOString() }
     await render(running)
     assert.match(container.textContent!, /有效稿已修订，正在更新剧本地图，供后续阶段使用/)
-    assert.deepEqual([...container.querySelectorAll('[aria-label="剧本分析步骤"] li')].map(step => step.textContent?.match(/全文分析|全剧整合|质量核对/)?.[0]), ['全文分析', '全剧整合', '质量核对'])
+    assert.deepEqual([...container.querySelectorAll('[aria-label="剧本分析步骤"] li')].map(step => step.textContent?.match(/全文分析|全剧整合|质量核对/)?.[0]), ['全文分析', '全剧整合'])
     assert.match(container.querySelector('[aria-current="step"]')!.textContent!, /全文分析/)
     assert.ok(container.querySelector('[role="timer"]'), 'the revision explanation must not replace live elapsed time')
     await act(() => button('暂停分析').click())
@@ -561,40 +562,40 @@ test('analysis steps distinguish the live phase from queued and stale polling st
     await render({ ...analysis, queue_position: 2 })
     assert.match(container.textContent!, /队列第 2 项/)
     assert.equal(currentStep(), undefined)
-    assert.deepEqual(stepStates(), ['pending', 'pending', 'pending'])
+    assert.deepEqual(stepStates(), ['pending', 'pending'])
     assert.equal(container.querySelector('[role="progressbar"]'), null)
 
     await render({ ...analysis, status: 'running', phase: 'reading', progress: { stage: 'validating', message: '核对剧情覆盖情况' } })
     assert.equal(currentStep(), '全文分析', 'coverage validation belongs to full-source analysis')
-    assert.deepEqual(stepStates(), ['active', 'pending', 'pending'])
+    assert.deepEqual(stepStates(), ['active', 'pending'])
     await render({ ...analysis, status: 'running', completed_characters: source.content.length, progress: { stage: 'validating', message: '核对剧情覆盖情况' } })
     assert.equal(currentStep(), '全文分析', 'a legacy snapshot without phase still waits for coverage validation')
-    assert.deepEqual(stepStates(), ['active', 'pending', 'pending'], 'character counts do not certify completed analysis')
+    assert.deepEqual(stepStates(), ['active', 'pending'], 'character counts do not certify completed analysis')
 
     await render({ ...analysis, status: 'running', phase: 'synthesis', completed_chunks: 1, progress: { stage: 'synthesis', message: '整合人物与全剧因果' } })
     assert.match(container.textContent!, /正在整理全剧信息/)
     assert.equal(currentStep(), '全剧整合')
-    assert.deepEqual(stepStates(), ['completed', 'active', 'pending'])
+    assert.deepEqual(stepStates(), ['completed', 'active'])
 
     await render({ ...analysis, status: 'running', phase: 'synthesis', completed_chunks: 1, story, progress: { stage: 'validating', message: '检查遗漏及因果关系' } })
-    assert.match(container.textContent!, /正在独立核对分析结果/)
-    assert.equal(currentStep(), '质量核对')
-    assert.deepEqual(stepStates(), ['completed', 'completed', 'active'])
+    assert.match(container.textContent!, /正在整理分析结果/)
+    assert.equal(currentStep(), undefined)
+    assert.deepEqual(stepStates(), ['completed', 'completed'])
 
     await render({ ...analysis, status: 'running', phase: 'synthesis', completed_chunks: 1, story }, true)
     assert.match(container.textContent!, /暂时无法获取分析状态/)
     assert.match(container.textContent!, /暂时无法读取进度，正在重试/)
     assert.equal(currentStep(), undefined, 'a stale snapshot must not claim a step is currently executing')
-    assert.deepEqual(stepStates(), ['completed', 'completed', 'pending'], 'completed work remains visible during a polling error')
+    assert.deepEqual(stepStates(), ['completed', 'completed'], 'completed work remains visible during a polling error')
     await render({ ...analysis, status: 'queued', phase: 'synthesis', story })
     assert.equal(currentStep(), undefined, 'a resumed analysis has no active step while awaiting its queue turn')
-    assert.deepEqual(stepStates(), ['completed', 'completed', 'pending'])
+    assert.deepEqual(stepStates(), ['completed', 'completed'])
 
     for (const status of ['ready', 'paused', 'failed'] as const) {
       await render({ ...analysis, status, phase: 'synthesis', story })
       if (status === 'ready') assert.equal(container.querySelector('[aria-label="剧本分析步骤"]'), null)
       else {
-        assert.deepEqual(stepStates(), ['completed', 'completed', status])
+        assert.deepEqual(stepStates(), ['completed', 'completed'])
         assert.equal(currentStep(), undefined, 'an interrupted task must not claim a live step')
         assert.ok(button('继续未完成步骤'))
       }
@@ -613,7 +614,7 @@ test('interrupted analysis identifies the unfinished step and describes only reu
     await render({ ...analysis, status: 'failed', phase: 'reading', completed_characters: source.content.length,
       progress: { stage: 'reading', message: '正在生成全文目录' }, error: '当前步骤处理超时',
       resume: { available: false, message: '尚无校验通过的目录，重试将重新进行全文分析。' } })
-    assert.deepEqual(stepStates(), ['failed', 'pending', 'pending'])
+    assert.deepEqual(stepStates(), ['failed', 'pending'])
     assert.match(container.textContent!, /上次处理项：正在生成全文目录/)
     assert.match(container.textContent!, /尚无校验通过的目录/)
     assert.ok(button('重试分析'))
@@ -627,21 +628,21 @@ test('interrupted analysis identifies the unfinished step and describes only reu
       progress: { stage: 'reading', message: '正在整理第 2 页全文目录' }, error: '当前步骤处理超时',
       resume: { available: true, message: '已校验第 1 页目录，继续生成后续目录；原文仍将完整提供。' } }
     await render(partial)
-    assert.deepEqual(stepStates(), ['failed', 'pending', 'pending'], 'a saved directory page does not certify completed full-source analysis')
+    assert.deepEqual(stepStates(), ['failed', 'pending'], 'a saved directory page does not certify completed full-source analysis')
     assert.ok(button('继续未完成步骤'))
     assert.match(container.textContent!, /已校验第 1 页目录/)
     assert.match(container.textContent!, /上次处理项：正在整理第 2 页全文目录/)
 
     await render({ ...partial, phase: 'synthesis', completed_chunks: 1, progress: { stage: 'synthesis', message: '正在整理全剧事件，第 2 页' },
       resume: { available: true, message: '全文目录和第 1 页全剧信息已保存，继续整合剩余信息。' } })
-    assert.deepEqual(stepStates(), ['completed', 'failed', 'pending'])
+    assert.deepEqual(stepStates(), ['completed', 'failed'])
     assert.match(container.textContent!, /全文目录和第 1 页全剧信息已保存/)
     assert.ok(button('继续未完成步骤'))
 
     await render({ ...partial, status: 'paused', phase: 'synthesis', completed_chunks: 1,
       progress: { stage: 'synthesis', message: '正在整合人物与因果' },
       resume: { available: true, message: '全文目录已校验，可继续全剧整合。' } })
-    assert.deepEqual(stepStates(), ['completed', 'paused', 'pending'])
+    assert.deepEqual(stepStates(), ['completed', 'paused'])
     assert.match(container.textContent!, /上次处理项：正在整合人物与因果/)
     assert.ok(button('继续未完成步骤'))
     assert.equal(container.querySelector('[aria-current="step"]'), null)
@@ -649,7 +650,7 @@ test('interrupted analysis identifies the unfinished step and describes only reu
 
     await render({ ...partial, status: 'queued', phase: 'synthesis', completed_chunks: 1,
       resume: { available: true, message: '全文目录已校验，等待继续整合。' } })
-    assert.deepEqual(stepStates(), ['completed', 'pending', 'pending'], 'a queued resumed synthesis retains completed full-source analysis')
+    assert.deepEqual(stepStates(), ['completed', 'pending'], 'a queued resumed synthesis retains completed full-source analysis')
     assert.match(container.textContent!, /全文目录已校验，等待继续整合/)
     assert.equal(container.querySelector('[aria-current="step"]'), null)
 
@@ -699,5 +700,46 @@ test('analysis elapsed time follows the server execution start across ticks, att
       await render({ ...running, status })
       assert.equal(elapsed(), undefined, 'only a running execution has a live elapsed clock')
     }
+  } finally { await act(() => root.unmount()); container.remove() }
+})
+
+
+test('historical quality findings stay available without opening a gate or blocking new creation', async t => {
+  dom.window.localStorage.clear()
+  const resolution: ScriptDraftResolution = { id: 'historical', version: 'v1', stage: 'outline', episode_number: 0, document_count: 1,
+    findings: [{ source_key: 'outline', kind: 'contradiction', quote: '旧候选文本', explanation: '历史诊断', suggestion: '供参考' }] }
+  const api = mockApi(t, { ...source, analysis: { ...analysis, status: 'ready', completed_chunks: 1 } }, undefined, resolution)
+  const view = await mount()
+  try {
+    assert.equal(document.querySelector('[role="dialog"]'), null, 'historical diagnostics never open a mandatory modal')
+    const field = view.container.querySelector<HTMLTextAreaElement>('textarea[aria-label="剧本创作对话"]')!
+    const send = view.container.querySelector<HTMLButtonElement>('button[aria-label="发送消息"]')!
+    await act(() => typeMessage(field, '按原稿继续生成大纲。'))
+    assert.equal(send.disabled, false)
+    await act(() => send.click()); await settle()
+    assert.equal(api.calls.length, 1)
+    assert.equal(api.calls[0]!.draft_resolution, undefined, 'normal creation is independent of the retained repair candidate')
+    assert.equal(document.querySelector('[role="dialog"]'), null)
+  } finally { await view.destroy() }
+})
+
+test('saved analysis displays settings, episode identity and the exact original span', async () => {
+  const { ScriptSourcePreview } = await import('../src/features/script/ScriptSourceAnalysisView')
+  const content = '世界规则：夜巡只在午夜行动。\n第1集：林舟点灯。'
+  const split = content.indexOf('第1集')
+  const sections = [
+    { offset: 0, length: split, title: '世界与规则', episode_number: null, summary: '夜巡只在午夜行动。', characters: [], events: [] },
+    { offset: split, length: content.length - split, title: '点灯', episode_number: 1, summary: '林舟点灯。', characters: [], events: [] },
+  ]
+  const container = document.createElement('div'); document.body.append(container); const root = createRoot(container)
+  try {
+    await act(() => root.render(<MantineProvider env="test"><ScriptSourcePreview source={{ ...source, content, analysis: { ...analysis, status: 'ready', sections } }} /></MantineProvider>))
+    await act(() => [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(item => item.textContent === '剧本地图')!.click())
+    assert.match(container.textContent!, /世界与规则/); assert.match(container.textContent!, /夜巡只在午夜行动/)
+    assert.match(container.textContent!, /第 1 集/)
+    assert.ok(container.textContent!.includes(`原文位置：第 ${split + 1}–${content.length} 字符`))
+    const disclosures = [...container.querySelectorAll<HTMLButtonElement>('button')].filter(item => item.textContent?.includes('查看这段原文'))
+    await act(() => disclosures[1]!.click())
+    assert.equal(container.querySelectorAll('.sd-source-map-original')[1]!.textContent, content.slice(split))
   } finally { await act(() => root.unmount()); container.remove() }
 })

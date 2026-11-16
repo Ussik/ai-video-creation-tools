@@ -64,6 +64,27 @@ test('server shutdown and restart retain candidate and timings without replay un
   } finally { await second.close() }
 })
 
+test('legacy failed outline exposes actual retained counts without rewriting its checkpoint', async () => {
+  const projectId = await project(), id = randomUUID(), input = { source: 'outline' }
+  const outline = { scenes: [{ scene_id: 'scene-a', scene_duration: 120,
+    shots: Array.from({ length: 18 }, (_, index) => ({ duration: index < 14 ? 7 : 6 })) }] }
+  const state = { version: 1, input, request_ids: [id], steps: { 'storyboard_batches:v1:initial:hash:outline:unvalidated': outline }, snapshot: {
+    id, project_id: projectId, input_key: hash(input), status: 'failed', stage: 'generating', started_at: Date.now(), updated_at: Date.now(),
+    active_duration_ms: 1200, stage_duration_ms: 200, timings: {}, can_resume: true,
+    progress: { phase: 'outline', completed_shots: 0, total_shots: 0 },
+  } }
+  const payload = JSON.stringify(state), namespace = `storyboard-planning-task:${id}`
+  run('INSERT INTO script_step_checkpoints VALUES (?,?,?,?,?)', projectId, namespace, hash(input), payload, new Date().toISOString())
+  const tasks = createStoryboardPlanningTasks({ identity: (_projectId, value) => hash(value), execute: async () => { throw new Error('must not dispatch') } })
+  try {
+    const task = tasks.read(projectId, id)
+    assert.deepEqual(task.outline_checkpoint, { validated: false, scenes: [{ scene_id: 'scene-a', scene_duration: 120, shot_count: 18, shot_duration_sum: 122 }] })
+    assert.equal(task.candidate, undefined)
+    assert.equal(task.can_resume, true)
+    assert.equal(one<{ payload: string }>('SELECT payload FROM script_step_checkpoints WHERE project_id=? AND namespace=?', projectId, namespace)!.payload, payload)
+  } finally { await tasks.close() }
+})
+
 test('orphan running records become interrupted on read and foreign project tasks stay private', async () => {
   const projectId = await project(), foreignId = await project(), id = randomUUID(), input = { source: 'old' }
   const state = { version: 1, input, request_ids: [id], steps: { candidate: 'saved' }, snapshot: {
@@ -168,7 +189,7 @@ test('validated batch progress survives failure and restart without becoming a s
   const second = createStoryboardPlanningTasks(options)
   try {
     const saved = second.read(projectId, requestId)
-    assert.deepEqual(saved.progress, { phase: 'shots', completed_shots: 2, total_shots: 6 })
+    assert.deepEqual(saved.progress, { phase: 'shots', completed_shots: 2, total_shots: 6, recovery: 'none' })
     assert.equal(saved.can_resume, true)
     assert.equal(saved.candidate, undefined)
     resume = true
@@ -307,7 +328,7 @@ test('task budget persists cumulative real dispatches, buys at most two explicit
       assert.equal(executions, round, 'idempotent start cannot buy another run')
       if (round < 3) tasks.resume(projectId, id)
     }
-    assert.throws(() => tasks.resume(projectId, id), /不能继续/)
+    assert.throws(() => tasks.resume(projectId, id), /自动恢复预算已耗尽|不能继续/)
     assert.equal(executions, 3)
     const observation = JSON.parse(one<{ usage: string }>('SELECT usage FROM model_request_tasks WHERE id=?', `storyboard:${id}`)!.usage)
     assert.equal(observation.requests, 81, 'the independent durable display ledger records each real dispatch once')
@@ -422,4 +443,23 @@ test('a cancelled launch cannot overwrite a resumed successful task when its old
     assert.equal(lateAttempt.state, 'settled', 'late exact usage can settle its own attempt without replacing the resumed task')
     assert.equal(JSON.parse(lateAttempt.metrics).input_tokens, 4)
   } finally { release(); await tasks.close() }
+})
+
+test('dialogue source errors persist typed scene, shot, field and reference coordinates', async () => {
+  const projectId = await project(), requestId = randomUUID()
+  const tasks = createStoryboardPlanningTasks({ identity: (_projectId, input) => hash(input), execute: async () => {
+    throw Object.assign(new Error('台词引用属于其他场次'), { code: 'dialogue_ref_wrong_scene', statusCode: 422, retryable: false,
+      scene_id: 'scene-a', shot_id: 'shot-b', field_path: 'scenes.0.shots.1.audio_plan.speech.0.source_ref', ref_id: 'ds_ab12', correction_error_code: 'model_field_contract' })
+  } })
+  try {
+    const task = tasks.start(projectId, { source: 'dialogue' }, requestId)
+    await until(() => tasks.read(projectId, task.id).status === 'failed')
+    const error = tasks.read(projectId, task.id).error!
+    assert.equal(error.failure_type, 'dialogue_ref_wrong_scene')
+    assert.equal(error.code, 'dialogue_ref_wrong_scene')
+    assert.equal(error.correction_error_code, 'model_field_contract')
+    assert.equal(error.scene_id, 'scene-a'); assert.equal(error.shot_id, 'shot-b')
+    assert.equal(error.field_path, 'scenes.0.shots.1.audio_plan.speech.0.source_ref'); assert.equal(error.ref_id, 'ds_ab12')
+    await assert.rejects(tasks.wait(projectId, task.id), (issue: any) => issue.code === 'dialogue_ref_wrong_scene' && issue.field_path === error.field_path)
+  } finally { await tasks.close() }
 })

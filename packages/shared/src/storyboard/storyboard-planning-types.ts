@@ -63,7 +63,7 @@ export interface StoryboardPlanningResult {
   motion_skill_assignment?: unknown
   /** Text design review only; manual preview edits invalidate this snapshot. */
   directing_review?: {
-    status: 'passed' | 'warnings' | 'edited' | 'needs_work' | 'pending_review' | 'inconclusive'
+    status: 'passed' | 'warnings' | 'edited' | 'needs_work' | 'pending_review' | 'inconclusive' | 'review_inconclusive_no_action' | 'review_inconclusive_needs_user'
     review_id?: string
     source_signature?: string
     reviewed_at?: string
@@ -81,7 +81,14 @@ export interface StoryboardPlanningProgress {
   phase: 'outline' | 'shots'
   completed_shots: number
   total_shots: number
+  current_scene_id?: string
+  current_shot_index?: number
+  recovery?: 'none' | 'automatic' | 'manual_review'
 }
+export type StoryboardFailureType = 'invalid_json' | 'invalid_schema' | 'invalid_business' | 'invalid_citation' |
+  'dialogue_source_mismatch' | 'dialogue_ref_wrong_scene' | 'dialogue_ref_ambiguous' | 'dialogue_source_correction_contract' |
+  'timing_mismatch' | 'timing_repair_contract' |
+  'transport' | 'budget_exhausted' | 'identity_conflict' | 'unknown'
 export interface StoryboardPlanningTask {
   id: string
   project_id: string
@@ -94,11 +101,17 @@ export interface StoryboardPlanningTask {
   stage_duration_ms: number
   timings: Partial<Record<StoryboardPlanningStage, number>>
   can_resume: boolean
+  attempt?: number
+  recovery_budget?: number
+  checkpoint_version?: number
   /** Complete validated generation batches; not a saveable candidate. */
   progress?: StoryboardPlanningProgress
+  /** Read-only outline checkpoint; these shots are not a complete saveable preview. */
+  outline_checkpoint?: { validated: boolean; scenes: Array<{ scene_id: string; shot_count: number; scene_duration: number; shot_duration_sum: number }> }
   /** Complete retained text awaiting review; editable after execution stops, but not ready to save. */
   candidate?: StoryboardPlanningResult
   result?: StoryboardPlanningResult
-  error?: { message: string; stage: StoryboardPlanningStage; code?: string; retryable?: boolean;
-    diagnostics?: string; raw_output?: string; status_code?: number }
+  error?: { message: string; stage: StoryboardPlanningStage; failure_type?: StoryboardFailureType; attempt?: number; recovery_budget?: number; code?: string; correction_error_code?: string; retryable?: boolean;
+    diagnostics?: string; raw_output?: string; status_code?: number; scene_id?: string; shot_id?: string; field_path?: string; ref_id?: string;
+    scene_duration?: number; shot_duration_sum?: number; delta?: number }
 }

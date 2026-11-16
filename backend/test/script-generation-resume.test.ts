@@ -26,6 +26,20 @@ async function post(url: string, payload: unknown) {
   return response.json()
 }
 
+function directorTask(text: string, title: string) {
+  return { id: crypto.randomUUID(), conversation: { id: crypto.randomUUID(), messages: [{ id: crypto.randomUUID(), role: 'user' as const, text }] },
+    execution: { title, request: text, started_at: Date.now(), mode: 'script' as const } }
+}
+
+async function continueTask(projectId: string, taskId: string) {
+  const taskUrl = `/api/projects/${projectId}/script/director/tasks/${taskId}`
+  const continued = await app.inject({ method: 'POST', url: `${taskUrl}/continue`, payload: {} })
+  assert.equal(continued.statusCode, 200, continued.body)
+  const response = await app.inject({ method: 'GET', url: `${taskUrl}/stream` })
+  assert.equal(response.statusCode, 200, response.body)
+  return response.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)))
+}
+
 function outlineEnvelope(episodes: number) {
   return { artifacts: scriptStageArtifacts.outline.map(artifact_type => ({ artifact_type, title: scriptArtifactLabels[artifact_type],
     content: artifact_type === 'episode_outline'
@@ -72,7 +86,7 @@ function assertFullMaterial(prompt: string, content: string, creatorMessage: str
   assert.ok(prompt.includes(creatorMessage), 'creator original wording must survive intent routing and resume')
 }
 
-test('stream retry reuses the complete long-source draft after audit failure and reviews before offering a preview', async t => {
+test('durable long-source creation publishes directly and duplicate task requests reuse the preview', async t => {
   const project = await post('/api/projects', { name: '全文长稿恢复' })
   const provider = await post('/api/providers', { name: 'fixture', base_url: 'https://fixture.invalid' })
   const model = await post('/api/models', { provider_id: provider.id, name: 'fixture', remote_id: 'fixture', modality: 'text', protocol: 'chat_completions', settings: {
@@ -109,7 +123,6 @@ test('stream retry reuses the complete long-source draft after audit failure and
       return reviewed
     }
     assert.equal(contract.name, 'workflow_draft')
-    assert.match(prompt, /BRIEF_FROM_INTENT/)
     draftPrompts.push(prompt)
     return Response.json({ choices: [{ message: { content: JSON.stringify(outlineForContract(contract, outlineEnvelope(9))) }, finish_reason: 'stop' }] })
   })
@@ -117,38 +130,24 @@ test('stream retry reuses the complete long-source draft after audit failure and
   const discussionEvents = discussion.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)))
   assert.ok(discussionEvents.some(event => event.type === 'delta' && event.text.includes('淡墨远景')), 'ordinary discussion must retain streaming text for long uploads')
   assert.equal(getToolDraft(project.id), null, 'discussion must not acquire creation or saving authorization')
-  const payload = { model_id: model.id, mode: 'script', use_tools: true, workflow: outlineWorkflow, messages: [{ role: 'user', text: creatorMessage }] }
+  const task = directorTask(creatorMessage, '全文长稿大纲生成')
+  const payload = { model_id: model.id, mode: 'script', use_tools: true, workflow: outlineWorkflow, messages: [{ role: 'user', text: creatorMessage }], task }
   const stream = async (explicitWorkflow = true) => {
     const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat/stream`, payload: { ...payload, workflow: explicitWorkflow ? payload.workflow : undefined } })
     assert.equal(response.statusCode, 200, response.body)
     return response.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)))
   }
-  const first = await stream(false)
-  assert.match(first.find(event => event.type === 'error')?.message || '', /核对未完成.*fixture upstream interrupted/)
-  assert.equal(getToolDraft(project.id), null, 'failed independent review must not publish a candidate')
-  assert.equal(draftPrompts.length, 9, 'the nine-document stage contract runs nine document tasks')
-  assert.equal(reviews, 2, 'only the interrupted review receives one bounded transport retry')
-  const firstActivities = first.filter(event => event.type === 'activity').map(event => event.activity)
-  assert.ok(firstActivities.some(entry => entry.step_id === 'work:outline:outline' && entry.scope === 'task'))
-  assert.ok(firstActivities.some(entry => entry.kind === 'model' && entry.status === 'failed' && entry.parent_id))
-  const checkpoint = one<{ payload: string }>('SELECT payload FROM script_generation_checkpoints WHERE project_id=?', project.id)!
-  assert.ok(checkpoint)
-  const savedSteps = JSON.parse(checkpoint.payload).steps
-  assertCompletedOutlineGroups(savedSteps, outlineEnvelope(9), source)
-  assert.equal(one<{ content: string }>('SELECT content FROM script_source_documents WHERE project_id=?', project.id)!.content, content)
-  const before = contracts.length
-  failAudit = false
-  const second = await stream(), done = second.find(event => event.type === 'done')
-  assert.ok(done, JSON.stringify(second.filter(event => event.type === 'error')))
-  assert.deepEqual(contracts.slice(before), ['script_draft_completeness'], 'resume must review the retained complete draft without regenerating it')
-  assert.equal(draftPrompts.length, 9)
-  assert.equal(reviews, 3)
-  assert.equal(reviewPrompts.at(-1), reviewPrompts[0], 'resume must audit the same source, candidate and creator requirements')
+  const first = await stream(), done = first.find(event => event.type === 'done')
+  assert.ok(done, JSON.stringify(first.filter(event => event.type === 'error')))
+  assert.equal(draftPrompts.length, 9); assert.equal(reviews, 0)
+  assert.deepEqual(contracts, Array(9).fill('workflow_draft'))
   assert.equal(done.tool_draft.documents.length, 9)
-  assertReusedOutlineTiming(done.activity, savedSteps)
-  const task = done.activity.find((entry: { scope?: string }) => entry.scope === 'task')
-  scriptActivitiesSchema.parse(done.activity)
-  assert.equal(task.status, 'succeeded')
+  const before = contracts.length, second = await stream()
+  assert.ok(second.some(event => event.type === 'done'))
+  assert.equal(contracts.length, before, 'duplicate completed tasks never regenerate or audit the preview')
+  const taskActivity = done.activity.find((entry: { scope?: string }) => entry.scope === 'task')
+  assert.equal(scriptActivitiesSchema.safeParse(done.activity).success, true, JSON.stringify(scriptActivitiesSchema.safeParse(done.activity).error?.issues))
+  assert.equal(taskActivity.status, 'succeeded')
   assert.ok(done.activity.filter((entry: { kind: string }) => entry.kind === 'model').every((entry: { status: string; parent_id?: string; request_bytes?: number }) => entry.status === 'succeeded' && entry.parent_id && entry.request_bytes! > 0))
   assert.ok(!second.some(event => event.type === 'delta'), 'internal structured JSON must not accumulate in the chat body')
   assert.equal(one('SELECT * FROM script_generation_checkpoints WHERE project_id=?', project.id), undefined)
@@ -157,7 +156,7 @@ test('stream retry reuses the complete long-source draft after audit failure and
   assert.equal(one<{ content: string }>('SELECT content FROM script_source_documents WHERE project_id=?', project.id)!.content, content)
 })
 
-test('whole-source Responses authoring retries once and audit recovery reuses the validated full draft before preview', async t => {
+test('whole-source Responses authoring retries transport once and publishes the full preview without an audit', async t => {
   const project = await post('/api/projects', { name: '完整原文与核对恢复' })
   const provider = await post('/api/providers', { name: 'medium fixture', base_url: 'https://fixture.invalid' })
   const model = await post('/api/models', { provider_id: provider.id, name: 'medium', remote_id: 'medium', modality: 'text', protocol: 'responses', settings: {
@@ -196,40 +195,30 @@ test('whole-source Responses authoring retries once and audit recovery reuses th
     if (failAuthor) { failAuthor = false; return failure() }
     return Response.json({ status: 'completed', output_text: JSON.stringify(outlineForContract(contract, outlineEnvelope(1))) })
   })
-  const payload = { model_id: model.id, mode: 'script', use_tools: true, workflow: outlineWorkflow, messages: [{ role: 'user', text: creatorMessage }] }
+  const task = directorTask(creatorMessage, '中篇原文大纲生成')
+  const payload = { model_id: model.id, mode: 'script', use_tools: true, workflow: outlineWorkflow, messages: [{ role: 'user', text: creatorMessage }], task }
   const stream = async () => {
     const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat/stream`, payload })
     assert.equal(response.statusCode, 200, response.body)
     return response.body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)))
   }
-  const first = await stream()
-  assert.match(first.find(event => event.type === 'error')?.message || '', /核对未完成.*模型服务中断/)
-  assert.equal(auditFailures, 2, 'one retry, then preserve the failure instead of looping')
-  assert.equal(authoring.length, 10, 'nine document tasks and one interrupted task retry complete the declared stage')
-  assert.equal(authoring[0], authoring[1], 'transient failure retry must retain all original inputs')
-  assert.equal(getToolDraft(project.id), null)
-  const payloadRow = one<{ payload: string }>('SELECT payload FROM script_generation_checkpoints WHERE project_id=?', project.id)!
-  assertCompletedOutlineGroups(JSON.parse(payloadRow.payload).steps, outlineEnvelope(1), source)
-  const authoringBefore = authoring.length, callsBefore = contracts.length
-  failAudit = false
-  const second = await stream(), done = second.find(event => event.type === 'done')
-  assert.ok(done, JSON.stringify(second.filter(event => event.type === 'error')))
-  assert.equal(authoring.length, authoringBefore, 'retry after audit failure must not regenerate completed documents')
-  assert.deepEqual(contracts.slice(callsBefore), ['script_draft_completeness'])
-  assert.equal(auditPrompts.length, 3)
-  assert.ok(auditPrompts.every(prompt => prompt === auditPrompts[0]), 'all review attempts must see the same complete source and candidate')
-  assertReusedOutlineTiming(done.activity, JSON.parse(payloadRow.payload).steps)
+  const first = await stream(), done = first.find(event => event.type === 'done')
+  assert.ok(done, JSON.stringify(first.filter(event => event.type === 'error')))
+  assert.equal(auditFailures, 0); assert.equal(auditPrompts.length, 0)
+  assert.equal(authoring.length, 10, 'nine document tasks plus one transient transport retry')
+  assert.equal(authoring[0], authoring[1], 'a transport retry preserves the full original inputs')
+  assert.equal(getToolDraft(project.id)!.documents.length, 9)
   const entries = first.filter(event => event.type === 'activity').map(event => event.activity)
   assert.ok(entries.some(entry => entry.label === '当前步骤自动重试' && entry.scope === 'step' && entry.summary.includes('此前完成结果保留')))
   assert.ok(entries.some(entry => entry.kind === 'model' && entry.status === 'failed'))
-  scriptActivitiesSchema.parse(done.activity)
+  assert.equal(scriptActivitiesSchema.safeParse(done.activity).success, true, JSON.stringify(scriptActivitiesSchema.safeParse(done.activity).error?.issues))
   assert.equal(done.tool_draft.documents.length, 9)
   assert.equal(one('SELECT * FROM script_generation_checkpoints WHERE project_id=?', project.id), undefined)
   for (const table of ['script_artifacts', 'script_source_revisions']) assert.equal(one<{ count: number }>(`SELECT COUNT(*) count FROM ${table} WHERE project_id=?`, project.id)!.count, 0)
   assert.equal(one<{ content: string }>('SELECT content FROM script_source_documents WHERE project_id=?', project.id)!.content, content)
 })
 
-test('Responses output-limit continuation preserves eight complete documents and resumes only audit after its failure', async t => {
+test('Responses output-limit continuation preserves eight complete documents and completes the ninth without an audit', async t => {
   const project = await post('/api/projects', { name: '输出截断语义接续与核对恢复' })
   const provider = await post('/api/providers', { name: 'continuation fixture', base_url: 'https://fixture.invalid' })
   const model = await post('/api/models', { provider_id: provider.id, name: 'continuation', remote_id: 'continuation', modality: 'text', protocol: 'responses', settings: {
@@ -292,7 +281,8 @@ test('Responses output-limit continuation preserves eight complete documents and
     const raw = JSON.stringify({ blocks, complete: true })
     return sse([{ type: 'response.output_text.delta', delta: raw }, { type: 'response.completed', response: { status: 'completed', output_text: raw } }])
   })
-  const payload = { model_id: model.id, mode: 'script', use_tools: true, workflow: outlineWorkflow, messages: [{ role: 'user', text: creatorMessage }] }
+  const task = directorTask(creatorMessage, '八份大纲断点续写')
+  const payload = { model_id: model.id, mode: 'script', use_tools: true, workflow: outlineWorkflow, messages: [{ role: 'user', text: creatorMessage }], task }
   const stream = async () => {
     const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat/stream`, payload })
     assert.equal(response.statusCode, 200, response.body)
@@ -302,12 +292,15 @@ test('Responses output-limit continuation preserves eight complete documents and
     assert.deepEqual(one('SELECT * FROM script_source_documents WHERE project_id=?', project.id), sourceBefore, 'creation and review must preserve the effective source until confirmation')
     for (const table of ['script_artifacts', 'script_source_revisions']) assert.equal(one<{ count: number }>(`SELECT COUNT(*) count FROM ${table} WHERE project_id=?`, project.id)!.count, 0)
   }
-  const first = await stream()
-  assert.match(first.find(event => event.type === 'error')?.message || '', /核对未完成.*模型服务中断/)
-  assert.equal(authoring.length, 9); assert.equal(continuations.length, 1); assert.equal(reviewPrompts.length, 2)
-  assert.ok(!first.some(event => event.type === 'delta'), 'initial and continuation JSON must not leak into chat text even when the independent audit fails')
-  assert.deepEqual(contracts, [...Array(9).fill('workflow_draft'), 'script_stage_blocks', 'script_draft_completeness', 'script_draft_completeness'])
-  const activities = scriptActivitiesSchema.parse([...new Map(first.filter(event => event.type === 'activity').map(event => [event.activity.id, event.activity] as const)).values()])
+  const first = await stream(), done = first.find(event => event.type === 'done')
+  assert.ok(done, JSON.stringify(first.filter(event => event.type === 'error')))
+  assert.equal(authoring.length, 9); assert.equal(continuations.length, 1); assert.equal(reviewPrompts.length, 0)
+  assert.ok(!first.some(event => event.type === 'delta'), 'internal structured output never leaks into chat text')
+  assert.deepEqual(contracts, [...Array(9).fill('workflow_draft'), 'script_stage_blocks'])
+  const activityEntries = first.filter(event => event.type === 'activity').flatMap(event => Array.isArray(event.activity) ? event.activity : [event.activity])
+  const rawActivities = [...new Map(activityEntries.map(activity => [activity.id, activity] as const)).values()]
+  assert.equal(scriptActivitiesSchema.safeParse(rawActivities).success, true, JSON.stringify(scriptActivitiesSchema.safeParse(rawActivities).error?.issues))
+  const activities = rawActivities
   const draftStep = activities.find(entry => entry.kind === 'context' && entry.scope === 'task' && entry.step_id === 'work:outline:episode_outline')
   assert.ok(draftStep)
   assert.ok(first.some(event => event.type === 'activity' && event.activity.id === draftStep.id && /正在从已保留内容继续/.test(event.activity.summary)),
@@ -319,25 +312,14 @@ test('Responses output-limit continuation preserves eight complete documents and
   ], 'both actual model calls remain under the same draft step')
   assert.equal(activities.filter(entry => entry.scope === 'task' && entry.step_id === 'work:outline:episode_outline').length, 1,
     'output-limit continuation must retain one business task')
-  assert.equal(getToolDraft(project.id), null, 'failed independent audit must not publish a candidate')
-  const checkpoint = JSON.parse(one<{ payload: string }>('SELECT payload FROM script_generation_checkpoints WHERE project_id=?', project.id)!.payload)
-  assertCompletedOutlineGroups(checkpoint.steps, full, source)
   assertUncommitted()
-  const callsBefore = contracts.length
-  failReview = false
-  const second = await stream(), done = second.find(event => event.type === 'done')
-  assert.ok(done, JSON.stringify(second.filter(event => event.type === 'error')))
-  assert.deepEqual(contracts.slice(callsBefore), ['script_draft_completeness'], 'recovery must only repeat the independent audit')
-  assert.equal(authoring.length, 9); assert.equal(continuations.length, 1); assert.equal(reviewPrompts.length, 3)
-  assert.ok(reviewPrompts.every(prompt => prompt === reviewPrompts[0]))
   const documents = done.tool_draft.documents.map((document: { artifact_type: string; title: string; content: string }) => ({ artifact_type: document.artifact_type, title: document.title, content: document.content }))
   assert.deepEqual(documents, full.artifacts, 'eight retained originals and the complete ninth document must appear exactly once')
   assert.equal(new Set(documents.map((document: { artifact_type: string }) => document.artifact_type)).size, 9)
   assert.ok(!JSON.stringify(documents).includes('TRUNCATED_TAIL_MUST_NOT_SURVIVE'))
-  assertReusedOutlineTiming(done.activity, checkpoint.steps)
-  assert.ok(!second.some(event => event.type === 'delta'), 'internal structured outputs must not leak into chat text')
+  assert.ok(!first.some(event => event.type === 'delta'), 'internal structured outputs must not leak into chat text')
   assert.equal(one('SELECT * FROM script_generation_checkpoints WHERE project_id=?', project.id), undefined)
-  scriptActivitiesSchema.parse(done.activity)
+  assert.equal(scriptActivitiesSchema.safeParse(done.activity).success, true, JSON.stringify(scriptActivitiesSchema.safeParse(done.activity).error?.issues))
   assertUncommitted()
 })
 
@@ -408,7 +390,8 @@ test('Responses disconnected streams checkpoint complete documents through onPar
     const raw = JSON.stringify({ blocks: [{ id: `artifact:${target}`, title: document.title, content: document.content, scenes: [] }], complete: true })
     return sse([{ type: 'response.output_text.delta', delta: raw }, { type: 'response.completed', response: { status: 'completed', output_text: raw } }])
   })
-  const payload = { model_id: model.id, mode: 'script', use_tools: true, workflow: outlineWorkflow, messages: [{ role: 'user', text: creatorMessage }] }
+  const task = directorTask(creatorMessage, '流断连文档续写')
+  const payload = { model_id: model.id, mode: 'script', use_tools: true, workflow: outlineWorkflow, messages: [{ role: 'user', text: creatorMessage }], task }
   const stream = async () => {
     const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat/stream`, payload })
     assert.equal(response.statusCode, 200, response.body)
@@ -435,18 +418,18 @@ test('Responses disconnected streams checkpoint complete documents through onPar
   assert.ok(!JSON.stringify(checkpoint).includes('DISCONNECTED_TAIL_MUST_NOT_SURVIVE'))
   assertUncommitted()
   const callsBefore = contracts.length
-  const second = await stream(), done = second.find(event => event.type === 'done')
+  const second = await continueTask(project.id, task.id), done = second.find(event => event.type === 'done')
   assert.ok(done, JSON.stringify(second.filter(event => event.type === 'error')))
   assert.deepEqual([...groupCalls.values()], Array(9).fill(1), 'each document is generated once and retained world prose is never regenerated')
-  assert.deepEqual(contracts.slice(callsBefore), [...Array(6).fill('workflow_draft'), 'script_draft_completeness'])
+  assert.deepEqual(contracts.slice(callsBefore), Array(6).fill('workflow_draft'))
   assert.deepEqual(continuationTargets, [])
-  assert.equal(reviews, 1)
+  assert.equal(reviews, 0)
   const documents = done.tool_draft.documents.map((document: { artifact_type: string; title: string; content: string }) => ({ artifact_type: document.artifact_type, title: document.title, content: document.content }))
   assert.deepEqual(documents, full.artifacts)
   assert.equal(new Set(documents.map((document: { artifact_type: string }) => document.artifact_type)).size, 9)
   assert.ok(!JSON.stringify(documents).includes('DISCONNECTED_TAIL_MUST_NOT_SURVIVE'))
   assert.ok(!second.some(event => event.type === 'delta'))
   assert.equal(one('SELECT * FROM script_generation_checkpoints WHERE project_id=?', project.id), undefined)
-  scriptActivitiesSchema.parse(done.activity)
+  assert.equal(scriptActivitiesSchema.safeParse(done.activity).success, true, JSON.stringify(scriptActivitiesSchema.safeParse(done.activity).error?.issues))
   assertUncommitted()
 })

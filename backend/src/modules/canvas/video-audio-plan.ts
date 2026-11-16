@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { withModelAdmission } from '../generation/model-admission.js'
-import { recoverVideoAudioPlanSourceText, videoAudioPlanSourceIssue, type VideoAudioPlan, type SceneSoundPlan } from '@video-studio/shared/media/video-prompt-audio'
+import { recoverVideoAudioPlanSourceText, videoAudioPlanSourceIssue, videoAudioSourceMatches, type VideoAudioPlan, type SceneSoundPlan } from '@video-studio/shared/media/video-prompt-audio'
 import { shotVideoPrompt } from '@video-studio/shared/storyboard/shot-prompts'
 import { storyboardSelectedMedia } from '@video-studio/shared/storyboard/storyboard-media-context'
 import { all, one, required, type Asset, type Shot, type TimelineClip } from '../../infrastructure/database/db.js'
@@ -13,12 +13,15 @@ export const sceneSoundPlanSchema = z.object({
   music_policy: z.enum(['timeline', 'source']),
 }).strict()
 
+export const videoAudioSourceRefSchema = z.object({ id: z.string().min(1).max(120), scene_id: z.string().min(1).max(120),
+  version: z.string().min(1).max(64), start: z.number().int().min(0), end: z.number().int().min(1) }).strict()
+export const videoAudioSpeechSchema = z.object({
+  speaker: z.string().max(160), text: z.string().min(1).max(5000), delivery: z.string().max(4000),
+  mode: z.enum(['dialogue', 'voiceover']), source_text: z.string().min(1).max(20000), source_ref: videoAudioSourceRefSchema.optional(),
+}).strict()
 export const videoAudioPlanSchema = z.object({
   version: z.literal(1),
-  speech: z.array(z.object({
-    speaker: z.string().max(160), text: z.string().min(1).max(5000), delivery: z.string().max(4000),
-    mode: z.enum(['dialogue', 'voiceover']), source_text: z.string().min(1).max(20000),
-  }).strict()).max(100),
+  speech: z.array(videoAudioSpeechSchema).max(100),
   sound_effects: z.array(z.string().trim().min(1).max(4000)).max(100),
   music: z.string().max(4000), silent: z.boolean(),
   scene_sound: sceneSoundPlanSchema.optional(), ambience_change: z.string().max(4000).optional(),
@@ -46,7 +49,15 @@ export const videoAudioPlanInstructions =
 
 export function validateVideoAudioPlanSources(plan: VideoAudioPlan, sources: readonly string[]): void {
   const issue = videoAudioPlanSourceIssue(plan, sources)
-  if (issue) throw Object.assign(new Error(issue), { statusCode: 422 })
+  if (issue) {
+    const index = plan.speech.findIndex(line => videoAudioPlanSourceIssue({ ...plan, speech: [line] }, sources))
+    const line = plan.speech[index]!
+    const ambiguous = videoAudioSourceMatches(line.source_text, sources).length > 1
+      || videoAudioSourceMatches(line.text, [line.source_text]).length > 1
+    throw Object.assign(new Error(issue), { statusCode: 422, retryable: false,
+      code: ambiguous ? 'dialogue_ref_ambiguous' : 'dialogue_source_mismatch', speech_index: index,
+      field_path: `audio_plan.speech.${index}.source_text`, ...(line.source_ref ? { ref_id: line.source_ref.id } : {}) })
+  }
 }
 
 /** Recover only generated typography, then enforce the unchanged exact-source contract. */

@@ -89,9 +89,8 @@ function reply(prompt: string) {
 function assertFullSynthesis(prompts: string[], content: string) {
   const stories = prompts.filter(prompt => prompt.includes(storyMarker)), reviews = prompts.filter(prompt => prompt.includes(reviewMarker))
   assert.equal(stories.length, 1)
-  assert.equal(reviews.length, 1)
+  assert.equal(reviews.length, 0)
   assert.equal(inputFor<{ source: { content: string } }>(stories[0]!, storyMarker).source.content, content)
-  assert.equal(inputFor<{ units: Unit[] }>(reviews[0]!, reviewMarker).units.map(unit => unit.text).join(''), content)
 }
 
 function assertEvidence(content: string, sections: ScriptSourceSection[]) {
@@ -102,7 +101,7 @@ function assertEvidence(content: string, sections: ScriptSourceSection[]) {
   }
 }
 
-test('confirmed revision reuses safe prefix and shifted suffix directory pages, then rebuilds the whole story and independent audit', async () => {
+test('confirmed revision reuses safe prefix and shifted suffix directory pages, then rebuilds the whole story without an audit gate', async () => {
   const id = project(), original = effectiveScriptSource(id)!, prompts: string[] = []
   const analyzer = createScriptSourceAnalyzer(async (_id, _model, prompt) => { prompts.push(prompt); return reply(prompt) }, limits, { configuration })
   try {
@@ -138,7 +137,7 @@ test('confirmed revision reuses safe prefix and shifted suffix directory pages, 
     assert.equal(after.sections.at(-1)!.events[0]!.evidence.offset, before.sections.at(-1)!.events[0]!.evidence.offset + delta)
     assert.equal(after.sections.at(-1)!.events[0]!.evidence.quote, before.sections.at(-1)!.events[0]!.evidence.quote)
     assert.match(after.sections.find(section => section.episode_number === 6)!.summary, /新发现.*两份完整/)
-    assert.notEqual(after.quality!.input_hash, before.quality!.input_hash)
+    assert.equal(after.quality, undefined)
     assert.equal(originalScriptSource(id)!.content, original.content, 'the uploaded original remains preserved')
   } finally { await analyzer.close() }
 })
@@ -265,7 +264,7 @@ test('paused revised-source synthesis resumes its validated map without repeatin
   } finally { release(); await analyzer.close() }
 })
 
-test('an analyzer restart recovers a revised-source map and completes its global synthesis and review', async () => {
+test('an analyzer restart recovers a revised-source map and completes its global synthesis', async () => {
   const id = project(), original = effectiveScriptSource(id)!, revised = revisedContent(original.content)
   let began: () => void = () => {}, release: () => void = () => {}
   const started = new Promise<void>(resolve => { began = resolve })
@@ -292,82 +291,26 @@ test('an analyzer restart recovers a revised-source map and completes its global
       assert.equal(ready.status, 'ready', ready.error || '')
       assert.equal(prompts.filter(prompt => prompt.includes(mapMarker)).length, 0)
       assert.equal(prompts.filter(prompt => prompt.includes(storyMarker)).length, 0, 'the known complete late synthesis is recovered without another paid dispatch')
-      assert.equal(prompts.filter(prompt => prompt.includes(reviewMarker)).length, 1, 'the reconstructed run still completes an independent full-source review')
+      assert.equal(prompts.filter(prompt => prompt.includes(reviewMarker)).length, 0, 'recovery does not add an independent review')
       assert.equal(snapshot(id).revision_reuse!.status, 'verified')
       assertEvidence(revised, ready.sections)
     } finally { await second.close() }
   } finally { release(); await first.close() }
 })
 
-test('an independent finding on reused directory candidates triggers one complete rebuild before publishing the revision', async () => {
+test('revised directory candidates publish after complete synthesis without independent review or forced rebuild', async () => {
   const id = project(), original = effectiveScriptSource(id)!, revised = revisedContent(original.content), prompts: string[] = []
-  let reported = false
   const analyzer = createScriptSourceAnalyzer(async (_id, _model, prompt) => {
-    prompts.push(prompt)
-    if (!reported && prompt.includes(reviewMarker)) {
-      const input = inputFor<{ units: Unit[]; sections: Array<{ id: number }> }>(prompt, reviewMarker)
-      if (input.units.map(unit => unit.text).join('') === revised) {
-        reported = true
-        return JSON.stringify({ checked_section_ids: input.sections.map(section => section.id), findings: [{ kind: 'omission',
-          explanation: '复用目录仍可能沿用旧事实，需要依据完整修订稿重新建立目录。', unit_ids: [input.units.find(unit => unit.text.includes('新发现'))!.id] }] })
-      }
-    }
+    prompts.push(prompt); assert.doesNotMatch(prompt, /【原稿分析核对资料】|【原稿分析定点修补资料】/)
     return reply(prompt)
   }, limits, { configuration })
   try {
-    analyzer.start(id, 'model')
-    assert.equal((await terminal(id)).status, 'ready')
-    prompts.length = 0
-    const committed = commit(id, revised)
-    const ready = await terminal(id, scriptSourceVersion(committed))
+    analyzer.start(id, 'model'); assert.equal((await terminal(id)).status, 'ready'); prompts.length = 0
+    const committed = commit(id, revised), ready = await terminal(id, scriptSourceVersion(committed))
     assert.equal(ready.status, 'ready', ready.error || '')
-    assert.equal(reported, true)
-    const plan = sourceWorkPlan(scriptSourcePassages(revised))
-    const maps = prompts.filter(prompt => prompt.includes(mapMarker)).map(prompt => inputFor<MapInput>(prompt, mapMarker))
-    assert.ok(maps.length > plan.length, 'one incremental map pass is followed by the complete standard output plan')
-    assert.deepEqual(maps.slice(-plan.length).map(input => ({ offset: input.output_window.offset, length: input.output_window.length })),
-      plan.map(item => ({ offset: item.offset, length: item.length })))
-    assert.equal(prompts.filter(prompt => prompt.includes(storyMarker)).length, 2)
-    assert.equal(prompts.filter(prompt => prompt.includes(reviewMarker)).length, 2)
-    assert.equal(ready.quality!.status, 'passed')
-    assert.notEqual(snapshot(id).revision_reuse?.status, 'pending')
-    assertEvidence(revised, ready.sections)
-  } finally { await analyzer.close() }
-})
-
-test('a second independent finding is repaired automatically without rebuilding the completed revision a third time', async () => {
-  const id = project(), original = effectiveScriptSource(id)!, revised = revisedContent(original.content), prompts: string[] = []
-  const repairMarker = '【原稿分析定点修补资料】\n'
-  let revisedReviews = 0, repairs = 0
-  const analyzer = createScriptSourceAnalyzer(async (_id, _model, prompt) => {
-    prompts.push(prompt)
-    if (prompt.includes(repairMarker)) {
-      repairs++
-      const input = inputFor<{ story: NonNullable<ScriptSourceAnalysis['story']>; finding: { explanation: string } }>(prompt, repairMarker)
-      return JSON.stringify({ status: 'patched', reason: '依据完整原文修正重建后发现的理解问题。', changes: [{ target: 'story.summary',
-        section_id: null, operation: 'replace', index: null, expected: input.story.summary, value: `${input.story.summary}；${input.finding.explanation}` }] })
-    }
-    if (prompt.includes(reviewMarker)) {
-      const input = inputFor<{ units: Unit[]; sections: Array<{ id: number }> }>(prompt, reviewMarker)
-      if (input.units.map(unit => unit.text).join('') === revised) return JSON.stringify({ checked_section_ids: input.sections.map(section => section.id), findings: ++revisedReviews <= 2 ? [{ kind: 'omission',
-        explanation: '完整重建之后仍需保留沈月保管两份完整副本的事实。', unit_ids: [input.units.find(unit => unit.text.includes('新发现'))!.id] }] : [] })
-    }
-    return reply(prompt)
-  }, limits, { configuration })
-  try {
-    analyzer.start(id, 'model')
-    assert.equal((await terminal(id)).status, 'ready')
-    prompts.length = 0
-    const committed = commit(id, revised)
-    const ready = await terminal(id, scriptSourceVersion(committed))
-    assert.equal(ready.status, 'ready', ready.error || '')
-    assert.equal(prompts.filter(prompt => prompt.includes(reviewMarker)).length, 3)
-    assert.equal(prompts.filter(prompt => prompt.includes(storyMarker)).length, 2)
-    assert.equal(prompts.filter(prompt => prompt.includes(mapMarker)).length, sourceWorkPlan(scriptSourcePassages(revised)).length + 1)
-    assert.equal(repairs, 1)
-    assert.equal(snapshot(id).revision_reuse!.status, 'discarded')
-    assert.equal(ready.quality!.status, 'passed')
-    assert.match(ready.story!.summary, /保管两份完整副本/)
+    assert.equal(prompts.filter(prompt => prompt.includes(mapMarker)).length, 1)
+    assertFullSynthesis(prompts, revised)
+    assert.equal(snapshot(id).revision_reuse!.status, 'verified')
     assertEvidence(revised, ready.sections)
     assert.equal(effectiveScriptSource(id)!.content, revised)
     assert.equal(originalScriptSource(id)!.content, original.content)
@@ -475,37 +418,27 @@ test('ordinary generation checkpoint cleanup preserves the committed revision ba
   } finally { await first.close() }
 })
 
-test('an independent-review transport failure resumes only the review and does not force a complete directory rebuild', async () => {
+test('synthesis transport failure resumes only synthesis without a review or directory rebuild', async () => {
   const id = project(), original = effectiveScriptSource(id)!, revised = revisedContent(original.content), prompts: string[] = []
   let fail = true
   const analyzer = createScriptSourceAnalyzer(async (_id, _model, prompt) => {
     prompts.push(prompt)
-    if (fail && prompt.includes(reviewMarker) && inputFor<{ units: Unit[] }>(prompt, reviewMarker).units.map(unit => unit.text).join('') === revised) {
-      throw new Error('独立核对请求连接中断')
-    }
+    assert.doesNotMatch(prompt, /【原稿分析核对资料】|【原稿分析定点修补资料】/)
+    if (fail && prompt.includes(storyMarker) && inputFor<{ source: { content: string } }>(prompt, storyMarker).source.content === revised) throw new Error('全剧整合连接中断')
     return reply(prompt)
   }, limits, { configuration })
   try {
-    analyzer.start(id, 'model')
-    assert.equal((await terminal(id)).status, 'ready')
-    prompts.length = 0
-    const committed = commit(id, revised)
-    const failed = await terminal(id, scriptSourceVersion(committed))
-    assert.equal(failed.status, 'failed')
-    assert.match(failed.error!, /连接中断/)
+    analyzer.start(id, 'model'); assert.equal((await terminal(id)).status, 'ready'); prompts.length = 0
+    const committed = commit(id, revised), failed = await terminal(id, scriptSourceVersion(committed))
+    assert.equal(failed.status, 'failed'); assert.match(failed.error!, /连接中断/)
     assert.equal(snapshot(id).revision_reuse!.status, 'pending')
     assert.equal(prompts.filter(prompt => prompt.includes(mapMarker)).length, 1)
-    assert.equal(prompts.filter(prompt => prompt.includes(storyMarker)).length, 1)
-    assert.equal(prompts.filter(prompt => prompt.includes(reviewMarker)).length, 1)
     fail = false; prompts.length = 0
-    analyzer.start(id, 'model')
-    const ready = await terminal(id, scriptSourceVersion(committed))
+    analyzer.start(id, 'model'); const ready = await terminal(id, scriptSourceVersion(committed))
     assert.equal(ready.status, 'ready', ready.error || '')
     assert.equal(prompts.filter(prompt => prompt.includes(mapMarker)).length, 0)
-    assert.equal(prompts.filter(prompt => prompt.includes(storyMarker)).length, 0)
-    assert.equal(prompts.filter(prompt => prompt.includes(reviewMarker)).length, 1)
-    assert.equal(snapshot(id).revision_reuse!.status, 'verified')
-    assertEvidence(revised, ready.sections)
+    assertFullSynthesis(prompts, revised)
+    assert.equal(snapshot(id).revision_reuse!.status, 'verified'); assertEvidence(revised, ready.sections)
   } finally { await analyzer.close() }
 })
 

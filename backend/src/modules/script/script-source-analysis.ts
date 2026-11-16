@@ -22,9 +22,7 @@ import { persistScriptSourceProposalBase, planScriptSourceProposalReuse } from '
 import { validScriptSourceMapReuseState } from './script-source-map-reuse.js'
 export { scriptSourceVersion } from './script-source-identity.js'
 import { synthesizeSourceStory, validateSourceStory } from './script-source-story.js'
-import { hasPassedSourceQuality, reviewSourceQuality } from './script-source-quality.js'
-import { repairSourceQuality } from './script-source-quality-repair.js'
-import { sourceAnalysisDiagnosisFingerprint, sourceAnalysisProgressFingerprint, sourceAnalysisRebuildFingerprint, sourceAnalysisStalledError, withSourceAnalysisRecovery } from './script-source-recovery.js'
+import { sourceAnalysisDiagnosisFingerprint, sourceAnalysisProgressFingerprint, withSourceAnalysisRecovery } from './script-source-recovery.js'
 import { prepareSourceWork, sourceAnalysisResume, sourceAnalysisStepLabel } from './script-source-checkpoints.js'
 import { resolveSourceSections, scriptSourcePassages, sourceAnalysisPipelineVersion, sourceMapSchema, sourceSectionRanges,
   sourcePromptUnits, sourceWorkPlan, validateSourceCoverage, workPassages, type SourcePassage } from './script-source-map.js'
@@ -49,30 +47,32 @@ function rememberPreparedSnapshot(key: string, state: ScriptSourceAnalysis) {
   preparedSnapshots.set(key, structuredClone(state))
 }
 
-function validatedPreparedSnapshot(document: Source, modelId: string, input: unknown, configurationHash: string): ScriptSourceAnalysis | null {
+/** Completed analysis belongs to the exact manuscript, not the model selected
+ * for its next creative task. Partial checkpoints still bind model/config. */
+function completedSourceSnapshot(document: Source, input: unknown): ScriptSourceAnalysis | null {
   try {
     const state = input as ScriptSourceAnalysis
-    if (state.status !== 'ready' || state.phase !== 'ready' || state.model_id !== modelId ||
-      state.configuration_hash !== undefined && state.configuration_hash !== configurationHash ||
-      state.source_version !== scriptSourceVersion(document) || state.pipeline_version !== sourceAnalysisPipelineVersion ||
+    if (!state || state.source_version !== scriptSourceVersion(document) ||
+      ![sourceAnalysisPipelineVersion, 5].includes(state.pipeline_version!) ||
       !Number.isSafeInteger(state.total_chunks) || state.total_chunks < 1 || state.completed_chunks !== state.total_chunks ||
-      state.completed_characters !== document.content.length || !Array.isArray(state.sections) || !state.sections.length ||
+      state.completed_characters !== undefined && state.completed_characters !== document.content.length ||
+      !Array.isArray(state.sections) || !state.sections.length ||
       state.sections.some(section => !Number.isSafeInteger(section.offset) || !Number.isSafeInteger(section.length))) return null
     validateSourceCoverage(document.content, state.sections)
     validateSourceStory(state, state.story)
-    if (!hasPassedSourceQuality(state)) return null
     return structuredClone(state)
   } catch { return null }
 }
 
-function preparedSnapshot(document: Source, modelId: string, key: string, configurationHash: string): ScriptSourceAnalysis | null {
-  const memory = validatedPreparedSnapshot(document, modelId, preparedSnapshots.get(key), configurationHash)
+function preparedSnapshot(document: Source, key: string, modelId: string): ScriptSourceAnalysis | null {
+  const memory = completedSourceSnapshot(document, preparedSnapshots.get(key))
   if (memory) return memory
   preparedSnapshots.delete(key)
   const row = one<{ cache_key: string; payload: string }>('SELECT cache_key,payload FROM script_step_checkpoints WHERE project_id=? AND namespace=?', document.project_id, 'source-proposal')
   if (row?.cache_key !== key) return null
   try {
-    const saved = validatedPreparedSnapshot(document, modelId, JSON.parse(row.payload), configurationHash)
+    const candidate = JSON.parse(row.payload) as ScriptSourceAnalysis
+    const saved = candidate.status === 'ready' && candidate.model_id === modelId ? completedSourceSnapshot(document, candidate) : null
     if (saved) rememberPreparedSnapshot(key, saved)
     return saved
   } catch { return null }
@@ -87,12 +87,7 @@ export function scriptSourceAnalysis(projectId: string): ScriptSourceAnalysis | 
   if (!document || row?.source_version !== scriptSourceVersion(document)) return null
   const state = JSON.parse(row.snapshot) as ScriptSourceAnalysis
   if (state.pipeline_version !== sourceAnalysisPipelineVersion && state.pipeline_version !== 5) return state.status === 'failed' ? state : null
-  if (state.pipeline_version === 5 && state.status === 'ready') {
-    try {
-      validateSourceCoverage(document.content, state.sections); validateSourceStory(state, state.story)
-      if (!hasPassedSourceQuality(state)) return null
-    } catch { return null }
-  }
+  if (state.status === 'ready' && !completedSourceSnapshot(document, state)) return null
   if (state.status === 'queued') {
     const queue = all<{ project_id: string }>("SELECT project_id FROM script_source_analyses WHERE status='queued' ORDER BY updated_at, project_id")
     return { ...state, queue_position: queue.findIndex(item => item.project_id === projectId) + 1 }
@@ -113,20 +108,6 @@ function discardRevisionDirectory(state: ScriptSourceAnalysis) {
   state.quality_rebuild_for = undefined; state.quality_repair = undefined
 }
 
-function rebuildSourceQualityIssues(document: Source, state: ScriptSourceAnalysis) {
-  if (state.quality?.status !== 'issues') return
-  if (state.quality_rebuild_for === state.quality.input_hash) return
-  // Reconstruct only after unsafe revision reuse or an explicit finding that
-  // cannot be repaired within stable section boundaries. Keep review evidence
-  // and this marker so an interrupted reconstruction resumes its saved pages.
-  state.sections = []; state.story = undefined; state.story_work = undefined; state.synthesis = undefined
-  state.quality_repair = undefined
-  if (state.revision_reuse) state.revision_reuse.status = 'discarded'
-  state.quality_rebuild_for = state.quality.input_hash
-  state.work = sourceWorkPlan(scriptSourcePassages(document.content))
-  state.completed_chunks = 0; state.completed_characters = 0; state.total_chunks = state.work.length; state.phase = 'reading'
-}
-
 function sourceMapPrompt(document: Source, passages: SourcePassage[], state: ScriptSourceAnalysis) {
   const work = state.work![state.completed_chunks]!, selected = workPassages(passages, work), units = selected.flatMap(passage => sourcePromptUnits(passage.units))
   return '你只为创作者上传的原剧本建立检索地图，不生成、改编、评审或保存正式剧本文档，不推断项目画风或创作者决定。\n' +
@@ -137,7 +118,6 @@ function sourceMapPrompt(document: Source, passages: SourcePassage[], state: Scr
     '尤其保留会约束后续创作的事实：数量总额与分配、容量是否已满、资源是否用尽、规则的前提与例外、人物动机中的否定和转折、事件先后及最终状态。数量相等不等于已经用尽，一个动作完成不等于后续动作也已发生，不因概括而删掉这些差别；只记录原文真实给出的条件。\n' +
     '每条人物或事件的evidence.unit_id必须属于本页对应章节，不能引用本页以外原文。同一连续剧情跨目录节点或跨页时用continues_previous=true，不同集数、地点或独立设定章节不合并。分页边界落在场戏中时标记真实延续关系。尚未结束的事件放入open_threads；结合全文判断是否有回收，不把悬念自动判成作者缺口。\n' +
     '目录密度按全文真实结构决定，逐集、逐场或逐设定章节保留重要事实和证据，不为减少节点而把长篇压成少量泛化章节。\n' +
-    (state.quality?.status === 'issues' ? `上次独立核对发现以下遗漏或误读，须结合完整原文纠正，不补写故事：${JSON.stringify(state.quality.findings)}\n` : '') +
     `【原文片段】\n${JSON.stringify({ filename: document.filename, document_kind: '结合全文判断文档形态，不依据个别关键词预设类型', complete_source: true,
       output_window: { page: state.completed_chunks + 1, total: state.total_chunks, first_unit: units[0]!.id, last_unit: units.at(-1)!.id,
         offset: work.offset, length: work.length, previous_section: state.sections.at(-1) ? { title: state.sections.at(-1)!.title, episode_number: state.sections.at(-1)!.episode_number } : null },
@@ -160,20 +140,9 @@ function appendSourceSections(state: ScriptSourceAnalysis, sections: ScriptSourc
   }
 }
 
-type SourceRecoveryState = { rebuilds: number; rebuilt?: Set<string> }
-function rebuildAfterQualityIssues(document: Source, state: ScriptSourceAnalysis, recovery: SourceRecoveryState) {
-  const signature = sourceAnalysisRebuildFingerprint(state)
-  const rebuilt = recovery.rebuilt ??= new Set<string>()
-  if (rebuilt.has(signature)) throw sourceAnalysisStalledError(new Error('完整重建后仍得到相同分析和相同核对问题：' +
-    state.quality?.findings.map(finding => finding.explanation).join('；')))
-  rebuilt.add(signature)
-  rebuildSourceQualityIssues(document, state)
-  recovery.rebuilds++
-}
-
 async function processSource(document: Source, state: ScriptSourceAnalysis, generate: SourceAnalyzer, persist: () => void,
   signal: AbortSignal, limits: SourceAnalysisBudgets, onProgress?: (state: ScriptSourceAnalysis) => void,
-  proposalReuse?: ReturnType<typeof planScriptSourceProposalReuse>, recovery: SourceRecoveryState = { rebuilds: state.quality_rebuild_for ? 1 : 0 }) {
+  proposalReuse?: ReturnType<typeof planScriptSourceProposalReuse>) {
   const reuse = proposalReuse || (state.revision_reuse?.status === 'pending'
     ? sourceRevisionMapReuse(document, state.model_id, state.configuration_hash) : null)
   if (state.revision_reuse?.status === 'pending' && (!reuse || !validScriptSourceMapReuseState(state, reuse))) {
@@ -274,56 +243,6 @@ async function processSource(document: Source, state: ScriptSourceAnalysis, gene
       message => progress('synthesis', message || '正在结合完整原文与完整目录，整合全剧人物、因果、伏笔和结局'), limits.synthesis, { filename: document.filename, content: document.content })
     validateSourceCoverage(document.content, state.sections)
     return {}
-  }).addNode('repair_findings', async () => {
-    signal.throwIfAborted()
-    if (state.quality?.status === 'issues' && state.quality_rebuild_for !== state.quality.input_hash) {
-      try {
-        await repairSourceQuality(document, state, request('repairing'), persist, signal,
-          message => progress('repairing', message), limits.repairing)
-      } catch (error) {
-        signal.throwIfAborted()
-        if (!(error instanceof Error) || !('sourceQualityRepairNeedsRebuild' in error) || error.sourceQualityRepairNeedsRebuild !== true) throw error
-        // The next pass retains the same review marker, skips local repairs and
-        // performs a fresh independent review exactly once after reconstruction.
-        rebuildAfterQualityIssues(document, state, recovery)
-        progress('reading', `部分问题无法安全局部修补，正在依据核对证据第 ${recovery.rebuilds} 次重建目录；已完成的新目录页将继续保存，可随时停止。${error.message}`)
-        return { rebuild: true }
-      }
-    }
-    return { rebuild: false }
-  }).addNode('review_source', async () => {
-    signal.throwIfAborted()
-    const previousIssues = state.quality?.status === 'issues' ? new Set(state.quality.findings.map(finding =>
-      `${finding.kind}:${[...finding.unit_ids].sort((a, b) => a - b).join(',')}`)) : undefined
-    const reviewStage = previousIssues ? 'recheck' : 'source_review'
-    progress('validating', '正在独立核对人物、事件、因果、伏笔与结局是否遗漏或误读')
-    try {
-      await withModelOperationStage(reviewStage, async () => {
-        await reviewSourceQuality(document, state, (prompt, contract) =>
-          generate(document.project_id, state.model_id, prompt, contract, modelStepSignal(signal)!), persist, signal, limits.synthesis)
-        reportModelResult({ phase: 'quality', status: 'passed', issue_count: 0,
-          ...(previousIssues ? { repaired: true, repair_effect: 'improved' } : {}) })
-      })
-    }
-    catch (error) {
-      signal.throwIfAborted()
-      if (isModelWorkflowBudgetError(error) || isTextRequestBudgetError(error)) throw error
-      const completedReview = error instanceof Error && 'sourceQualityIssues' in error && error.sourceQualityIssues === true
-      const currentIssues = completedReview && state.quality?.status === 'issues' ? new Set(state.quality.findings.map(finding =>
-        `${finding.kind}:${[...finding.unit_ids].sort((a, b) => a - b).join(',')}`)) : undefined
-      reportModelResult({ phase: 'quality', stage: reviewStage, status: currentIssues ? 'needs_work' : 'inconclusive',
-        ...(currentIssues ? { issue_count: currentIssues.size } : {}), ...(previousIssues ? { repaired: true } : {}),
-        ...(previousIssues && currentIssues ? { repair_effect: [...currentIssues].some(issue => !previousIssues.has(issue)) ? 'regressed'
-          : currentIssues.size < previousIssues.size ? 'improved' : 'unchanged' } : {}) })
-      if (!completedReview || state.revision_reuse?.status !== 'pending' || !state.revision_reuse.reused_pages.length || state.quality?.status !== 'issues') throw error
-      // A local text change may invalidate distant interpretations. One full
-      // reconstruction replaces all candidate semantics. Further quality issues
-      // keep their saved evidence and continue through normal recovery.
-      rebuildAfterQualityIssues(document, state, recovery)
-      progress('reading', `新稿全文核对发现目录理解已变化，正在依据核对证据第 ${recovery.rebuilds} 次完整重建；可随时停止`)
-      return { rebuild: true }
-    }
-    return { rebuild: false }
   }).addNode('finish_analysis', async () => {
     signal.throwIfAborted()
     if (state.revision_reuse?.status === 'pending') state.revision_reuse.status = 'verified'
@@ -331,9 +250,11 @@ async function processSource(document: Source, state: ScriptSourceAnalysis, gene
     state.work = undefined; state.progress = undefined
     persist()
     return {}
-  }).addEdge(START, 'map_source').addEdge('map_source', 'synthesize_story').addEdge('synthesize_story', 'repair_findings')
-    .addConditionalEdges('repair_findings', value => value.rebuild ? 'map_source' : 'review_source', ['map_source', 'review_source'])
-    .addConditionalEdges('review_source', value => value.rebuild ? 'map_source' : 'finish_analysis', ['map_source', 'finish_analysis'])
+  }).addEdge(START, 'map_source').addEdge('map_source', 'synthesize_story')
+    // The durable manuscript map and story context are publishable on their
+    // own. Quality review remains a separate diagnostic capability and never
+    // gates progress, result display, or reuse of a complete analysis.
+    .addEdge('synthesize_story', 'finish_analysis')
     .addEdge('finish_analysis', END).compile()
   await withModelOperationStage('source_analysis', () => runIsolatedModelGraph(graph, {}, { signal, recursionLimit: Math.max(64, state.total_chunks * 16) }))
 }
@@ -347,7 +268,8 @@ export async function analyzeSourceSnapshot(document: Source, modelId: string,
   const configurationHash = sourceAnalysisConfigurationHash(configuration)
   const cacheKey = preparedKey(document.project_id, modelId, sourceVersion, configuration)
   return withModelAdmission(`source-proposal:${document.project_id}`, signal, async () => {
-    const prepared = preparedSnapshot(document, modelId, cacheKey, configurationHash)
+    const published = scriptSourceAnalysis(document.project_id)
+    const prepared = (published?.status === 'ready' ? completedSourceSnapshot(document, published) : null) || preparedSnapshot(document, cacheKey, modelId)
     if (prepared) {
       persistScriptSourceProposalBase(document, prepared, configurationHash)
       options.onProgress?.(structuredClone(prepared))
@@ -368,12 +290,12 @@ export async function analyzeSourceSnapshot(document: Source, modelId: string,
           if (saved.status === 'ready') {
             validateSourceCoverage(document.content, saved.sections)
             validateSourceStory(saved, saved.story)
-            if (validatedPreparedSnapshot(document, modelId, saved, configurationHash)) {
+            if (completedSourceSnapshot(document, saved)) {
               rememberPreparedSnapshot(cacheKey, saved)
               return saved
             }
-            // The source/map/story are valid, but a missing or stale review is
-            // not proof of completion. Reuse the validated map and recheck it.
+            // Retain a validated directory even if completion counters need
+            // normalization; no historical quality review is required.
             saved.status = 'running'; saved.phase = 'synthesis'
             saved.work = sourceWorkPlan(scriptSourcePassages(document.content))
             saved.total_chunks = saved.work.length; saved.completed_chunks = saved.work.length
@@ -411,12 +333,11 @@ export async function analyzeSourceSnapshot(document: Source, modelId: string,
         document.project_id, 'source-proposal', cacheKey, JSON.stringify(state), now())
     }
     options.onProgress?.(structuredClone(state))
-    const recovery = { rebuilds: state.quality_rebuild_for ? 1 : 0 }
     await runModelWorkflowBudget({ kind: 'source_analysis', scale: { units: sourceWorkPlan(scriptSourcePassages(document.content)).length,
       inputChars: document.content.length }, steps: state.budget_steps ??= {}, signal, persist, explicitResume: options.explicitResume }, budgetSignal =>
       withUnrestrictedScriptExecution(() => withSourceAnalysisRecovery(() => processSource(document, state,
       (_project, _model, prompt, contract, requestSignal) => generate(prompt, contract, requestSignal),
-      persist, budgetSignal, budgets, options.onProgress, proposalReuse, recovery), { signal: budgetSignal,
+      persist, budgetSignal, budgets, options.onProgress, proposalReuse), { signal: budgetSignal,
       progressFingerprint: () => sourceAnalysisProgressFingerprint(state), diagnosisFingerprint: issue => sourceAnalysisDiagnosisFingerprint(state, issue), onRecovery: ({ message }) => {
         state.progress = { stage: 'repairing', message }; persist(); options.onProgress?.(structuredClone(state))
       } })))
@@ -467,14 +388,13 @@ export function createScriptSourceAnalyzer(generate: SourceAnalyzer, limits: Sou
         assertConfiguration()
         return result
       }
-      const recovery = { rebuilds: state.quality_rebuild_for ? 1 : 0 }
       initModelRequestObservation()
       await observeModelTask({ taskId: `source:${state.id}`, projectId, modelId: state.model_id, label: '原稿分析', owner: 'request', signal: scope.signal, policy: modelTaskPolicies.generation }, () => scope.wait(runModelWorkflowBudget({
         kind: 'source_analysis', scale: { units: sourceWorkPlan(scriptSourcePassages(document.content)).length, inputChars: document.content.length },
         steps: state.budget_steps ??= {}, signal: scope.signal,
         persist: () => { if (!controller.signal.aborted) persist(projectId, state) }, explicitResume: explicitResumes.delete(state.id),
       }, budgetSignal => withUnrestrictedScriptExecution(() => withSourceAnalysisRecovery(() => processSource(document, state, checkedGenerate,
-        () => persist(projectId, state), budgetSignal, limits, undefined, undefined, recovery), {
+        () => persist(projectId, state), budgetSignal, limits), {
         signal: budgetSignal, progressFingerprint: () => sourceAnalysisProgressFingerprint(state), diagnosisFingerprint: issue => sourceAnalysisDiagnosisFingerprint(state, issue), onRecovery: ({ message }) => {
           state.progress = { stage: 'repairing', message }; persist(projectId, state)
         },
@@ -515,12 +435,22 @@ export function createScriptSourceAnalyzer(generate: SourceAnalyzer, limits: Sou
       configurationHash = sourceAnalysisConfigurationHash(configuration)
     } catch { /* The worker reports unavailable configuration; do not reuse it. */ }
     const previous = scriptSourceAnalysis(projectId)
+    const completed = previous && completedSourceSnapshot(document, previous)
+    if (completed && ['ready', 'failed', 'paused'].includes(previous!.status)) {
+      if (previous!.status === 'ready') return previous!
+      // Historical audit failures do not invalidate complete source facts.
+      // Publish locally, keeping the original model provenance and findings.
+      completed.status = 'ready'; completed.phase = 'ready'; completed.error = null
+      delete completed.progress; delete completed.started_at
+      persist(projectId, completed)
+      return completed
+    }
     const compatiblePrevious = previous && [sourceAnalysisPipelineVersion, 5].includes(previous.pipeline_version!) && previous.model_id === modelId && (!previous.configuration_hash || previous.configuration_hash === configurationHash) ? previous : null
     if (compatiblePrevious && !['failed', 'paused'].includes(compatiblePrevious.status)) return compatiblePrevious
     active.get(projectId)?.controller.abort(new Error('剧本分析已被替换'))
     let cached: ScriptSourceAnalysis | null = null
     try {
-      if (configurationHash) cached = preparedSnapshot(document, modelId, preparedKey(projectId, modelId, scriptSourceVersion(document), configuration), configurationHash)
+      cached = preparedSnapshot(document, preparedKey(projectId, modelId, scriptSourceVersion(document), configuration), modelId)
     } catch {
       // A model/provider may be removed while a reviewed candidate is awaiting
       // confirmation. Do not adopt an unknown configuration or throw from the
@@ -584,6 +514,14 @@ export function createScriptSourceAnalyzer(generate: SourceAnalyzer, limits: Sou
     recover() {
       for (const row of all<Row>("SELECT * FROM script_source_analyses WHERE status IN ('queued','ready','failed','paused')")) {
         ownedProjects.add(row.project_id)
+        const document = source(row.project_id)
+        const complete = document && completedSourceSnapshot(document, JSON.parse(row.snapshot))
+        if (complete && row.status !== 'ready') {
+          complete.status = 'ready'; complete.phase = 'ready'; complete.error = null
+          delete complete.started_at; delete complete.progress
+          persist(row.project_id, complete)
+          continue
+        }
         if (row.status === 'queued') {
           const state = JSON.parse(row.snapshot) as ScriptSourceAnalysis
           if (!hasSourceModelRun(row.project_id, state.id)) {
@@ -598,6 +536,14 @@ export function createScriptSourceAnalyzer(generate: SourceAnalyzer, limits: Sou
       for (const row of all<Row>("SELECT * FROM script_source_analyses WHERE status='running'")) {
         const state = JSON.parse(row.snapshot) as ScriptSourceAnalysis
         ownedProjects.add(row.project_id)
+        const document = source(row.project_id)
+        const complete = document && completedSourceSnapshot(document, state)
+        if (complete) {
+          complete.status = 'ready'; complete.phase = 'ready'; complete.error = null
+          delete complete.started_at; delete complete.progress
+          persist(row.project_id, complete)
+          continue
+        }
         if (!hasSourceModelRun(row.project_id, state.id)) {
           state.status = 'failed'; state.error = '旧版本分析在请求受理状态未知时中断，已保留完成步骤；请核对提供商记录后明确继续。'
         } else state.status = 'queued'

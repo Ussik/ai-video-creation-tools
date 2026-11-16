@@ -21,10 +21,10 @@ export function stopObservedModelTask(id: string): boolean {
   controller.abort(new DOMException('已请求停止本地处理，上游状态仍需核对提供商记录', 'AbortError'))
   return true
 }
-const numericFields = ['request_bytes', 'response_chars', 'first_event_ms', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'output_limit',
+const numericFields = ['request_bytes', 'response_chars', 'first_event_ms', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'output_limit', 'queue_latency_ms', 'model_latency_ms',
   'cache_read_tokens', 'cache_write_tokens', 'estimated_input_tokens', 'context_window_tokens', 'reserved_output_tokens', 'http_status', 'framing_reserve_tokens', 'unit_index', 'unit_count']
 const stringFields = ['kind', 'transport_kind', 'task_id', 'step_id', 'attempt_id', 'request_id', 'model_id', 'remote_id', 'failure_reason', 'raw_reason', 'delivery',
-  'output_parameter', 'budget_mode', 'input_count_method', 'capacity_status', 'output_source', 'capability_source', 'request_purpose', 'upstream_request_id', 'output_limit_reason', 'output_limit_kind', 'estimate_source', 'context_source']
+  'output_parameter', 'budget_mode', 'input_count_method', 'capacity_status', 'output_source', 'capability_source', 'request_purpose', 'upstream_request_id', 'output_limit_reason', 'output_limit_kind', 'estimate_source', 'context_source', 'scene_id', 'shot_id', 'field_path']
 /** Store diagnostics only; prompts, media, API keys and private reasoning never
  * enter the task history. Unknown token use remains in the estimate ledger. */
 export function safeModelMetrics(value: unknown): Record<string, unknown> {
@@ -33,8 +33,10 @@ export function safeModelMetrics(value: unknown): Record<string, unknown> {
   for (const key of numericFields) if (typeof source[key] === 'number' && Number.isFinite(source[key]) && source[key] >= 0) result[key] = source[key]
   for (const key of stringFields) if (typeof source[key] === 'string') result[key] = source[key].slice(0, 300)
   if (source.usage_admitted === true) result.usage_admitted = true
+  if (source.checkpoint_reused === true) result.checkpoint_reused = true
   if (modelOperationStages.includes(source.operation_stage as ModelOperationStage)) result.operation_stage = source.operation_stage
   if (typeof source.output_started === 'boolean') result.output_started = source.output_started
+  if (typeof source.structured_enforcement === 'string' && /^[a-z0-9_.-]{1,80}$/i.test(source.structured_enforcement)) result.structured_enforcement = source.structured_enforcement
   if (typeof source.endpoint === 'string') { try { const url = new URL(source.endpoint); result.endpoint = url.origin + url.pathname } catch { /* no arbitrary text */ } }
   return result
 }
@@ -53,6 +55,9 @@ export function initModelRequestObservation() {
   }
   if (!(db.prepare('PRAGMA table_info(model_request_tasks)').all() as Array<{ name: string }>).some(column => column.name === 'results')) {
     db.exec("ALTER TABLE model_request_tasks ADD COLUMN results TEXT NOT NULL DEFAULT '[]'")
+  }
+  if (!(db.prepare('PRAGMA table_info(model_request_tasks)').all() as Array<{ name: string }>).some(column => column.name === 'trace_context')) {
+    db.exec("ALTER TABLE model_request_tasks ADD COLUMN trace_context TEXT NOT NULL DEFAULT '{}'")
   }
 }
 export function createModelRequestObservation(options: ObservationOptions, tracer: LangfuseTracer = getLangfuseTracer()) {
@@ -77,6 +82,10 @@ export function createModelRequestObservation(options: ObservationOptions, trace
   let state = 'running', recorded = false, closed = false
   const isCurrent = () => !closed && observationOwners.get(id) === owner
   const canObserve = () => isCurrent() && !options.signal?.aborted
+  const persistTrace = () => {
+    const correlation = trace?.correlation?.()
+    if (correlation && isCurrent()) db.prepare('UPDATE model_request_tasks SET trace_context=? WHERE id=?').run(JSON.stringify(correlation), id)
+  }
   const persist = () => {
     if (!isCurrent()) return
     if (!recorded && !usage.requests && !usage.transport_requests) return
@@ -107,7 +116,7 @@ export function createModelRequestObservation(options: ObservationOptions, trace
   const safely = (work: () => void) => { try { work() } catch (error) { console.error('模型请求记录保存失败', error) } }
   const finish = (next: 'succeeded' | 'failed' | 'cancelled') => {
     if (closed) return
-    state = next; safely(persist); quietTrace(() => trace?.finish(next)); closed = true
+    state = next; safely(persist); quietTrace(() => { trace?.finish(next); persistTrace() }); closed = true
     if (observationOwners.get(id) === owner) observationOwners.delete(id)
     options.signal?.removeEventListener('abort', aborted)
   }
@@ -128,16 +137,18 @@ export function createModelRequestObservation(options: ObservationOptions, trace
           if (!canObserve()) return
           const event = safeModelResult(value); if (!event) return
           results.push(event); if (results.length > 128) results.shift()
-          recorded = true; safely(persist); quietTrace(() => trace?.result?.(event))
+          recorded = true; safely(persist); quietTrace(() => { trace?.result?.(event); persistTrace() })
         }, taskId: id, policy: options.policy || modelTaskPolicies.text, signal: options.signal,
         onProgress: value => { if (canObserve()) safely(() => { progress.set(value.phase_id, value); recorded = true; persist() }) },
         onDispatch: value => {
           if (!canObserve()) return
           const context = currentModelRequestContext()
           const metrics = safeModelMetrics({ ...safeModelMetrics(value), operation_stage: context?.operationStage,
-            unit_index: context?.operationUnit?.unit_index, unit_count: context?.operationUnit?.unit_count })
+            unit_index: context?.operationUnit?.unit_index, unit_count: context?.operationUnit?.unit_count,
+            scene_id: context?.operationUnit?.scene_id, shot_id: context?.operationUnit?.shot_id, field_path: context?.operationUnit?.field_path,
+            checkpoint_reused: context?.operationUnit?.checkpoint_reused })
           if (typeof metrics.request_id === 'string') dispatchedRequests.add(metrics.request_id)
-          safely(() => observe(metrics, false)); quietTrace(() => { const stage = currentModelRequestContext()?.traceStage; trace?.dispatch({ ...metrics, ...(stage ? { trace_stage: stage } : {}) }) })
+          safely(() => observe(metrics, false)); quietTrace(() => { const stage = currentModelRequestContext()?.traceStage; trace?.dispatch({ ...metrics, ...(stage ? { trace_stage: stage } : {}) }); persistTrace() })
         },
         onMetrics: value => {
           const metrics = safeModelMetrics(value)
@@ -215,6 +226,10 @@ export function activeModelRequestUsesModel(modelId: string): boolean {
 }
 export function registerModelRequestObservation(app: FastifyInstance, tracer: LangfuseTracer = getLangfuseTracer()) {
   initModelRequestObservation()
+  app.get('/api/diagnostics/langfuse', async () => {
+    const current = tracer as LangfuseTracer & { status?: () => unknown }
+    return current.status?.() || { enabled: false, reason: 'status_unavailable' }
+  })
   const observations = new WeakMap<FastifyRequest, { observation: ReturnType<typeof createModelRequestObservation>; controller: AbortController; cleanup: () => void }>()
   app.addHook('preHandler', (request, reply, done) => {
     // Durable tasks own their controller. Losing an SSE subscriber must not
@@ -242,7 +257,7 @@ export function registerModelRequestObservation(app: FastifyInstance, tracer: La
     const id = (request.params as { id: string }).id
     required<Project>('projects', id)
     return all<{ id: string; model_id: string | null; label: string; owner: Owner; state: string; usage: string; progress: string; results: string; created_at: string; updated_at: string }>(
-      'SELECT * FROM model_request_tasks WHERE project_id=? ORDER BY created_at DESC LIMIT 50', id).map(row => ({ ...row, usage: JSON.parse(row.usage) as ScriptRequestUsage, progress: JSON.parse(row.progress) as ModelUnitProgress[], results: JSON.parse(row.results || '[]') as ModelResultEvent[],
+      'SELECT * FROM model_request_tasks WHERE project_id=? ORDER BY created_at DESC LIMIT 50', id).map(row => ({ ...row, usage: JSON.parse(row.usage) as ScriptRequestUsage, progress: JSON.parse(row.progress) as ModelUnitProgress[], results: JSON.parse(row.results || '[]') as ModelResultEvent[], trace_context: JSON.parse((row as unknown as { trace_context?: string }).trace_context || '{}'),
         state: row.state === 'running' && !active.has(row.id) ? 'interrupted' : row.state,
         can_cancel: active.has(row.id), attempts: all<{ id: string; state: string; metrics: string }>('SELECT id,state,metrics FROM model_request_attempts WHERE task_id=? ORDER BY updated_at,id', row.id)
           .map(attempt => ({ ...attempt, metrics: JSON.parse(attempt.metrics) as Record<string, unknown> })) }))

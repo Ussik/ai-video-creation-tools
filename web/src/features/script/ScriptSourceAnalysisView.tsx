@@ -31,18 +31,17 @@ export function ScriptSourceAnalysisStatus({ source, starting, unavailable, poll
   const pending = analysis?.status === 'queued' || analysis?.status === 'running'
   const interrupted = analysis?.status === 'failed' || analysis?.status === 'paused'
   const mapReady = analysis?.phase === 'synthesis' || !!analysis?.story
-  const step = analysis?.story ? 2 : analysis?.phase === 'synthesis' ? 1 : 0
+  const step = analysis?.story ? 1 : analysis?.phase === 'synthesis' ? 1 : 0
   const resume = analysis?.resume ?? {
     available: !!analysis?.story || !!analysis?.sections.length || (analysis?.completed_chunks || 0) > 0,
-    message: analysis?.story ? '全文分析和全剧整合已完成，可继续质量核对。'
-      : mapReady && !!analysis?.sections.length ? '全文分析已完成，可继续全剧整合和质量核对。'
+    message: analysis?.story ? '全文分析和全剧整合已完成，可继续创作。'
+      : mapReady && !!analysis?.sections.length ? '全文分析已完成，可继续全剧整合。'
         : analysis?.sections.length || (analysis?.completed_chunks || 0) > 0 ? '已完成的分析步骤已保留，可继续处理未完成部分。'
           : '当前尚无可复用的分析结果，重试将重新进行全文分析。',
   }
   const pendingLabel = pollError ? '暂时无法获取分析状态'
     : analysis?.status === 'queued' ? `等待分析剧本${analysis.queue_position ? ` · 队列第 ${analysis.queue_position} 项` : ''}`
-    : analysis?.progress?.stage === 'repairing' && !!analysis.story ? '正在修补分析问题'
-    : step === 2 ? '正在独立核对分析结果'
+    : !!analysis?.story ? '正在整理分析结果'
     : analysis?.progress?.stage === 'repairing' || analysis?.progress?.stage === 'validating' ? '正在校验全文分析'
       : analysis?.phase === 'synthesis' ? '正在整理全剧信息' : 'AI 正在阅读全文分析'
   const sourceLabel = revised ? '当前有效稿' : '原剧本'
@@ -61,7 +60,7 @@ export function ScriptSourceAnalysisStatus({ source, starting, unavailable, poll
       : analysis.status === 'queued' ? '有效稿已修订，等待更新剧本地图，供后续阶段使用。'
         : '有效稿已修订，正在更新剧本地图，供后续阶段使用。'}</small>}
     {(pending || interrupted) && <List type="ordered" listStyleType="none" className="sd-source-analysis-steps" aria-label="剧本分析步骤" role="list">
-      {['全文分析', '全剧整合', '质量核对'].map((label, index) => {
+      {['全文分析', '全剧整合'].map((label, index) => {
         const completed = index === 0 ? mapReady : index === 1 && !!analysis.story
         const active = !completed && !pollError && analysis.status === 'running' && index === step
         const stopped = !completed && interrupted && index === step
@@ -72,7 +71,7 @@ export function ScriptSourceAnalysisStatus({ source, starting, unavailable, poll
         </List.Item>
       })}
     </List>}
-    {(pending || interrupted) && mapReady && <small>剧情目录已完成；全剧整合与质量核对仍以各步骤状态为准。</small>}
+    {(pending || interrupted) && mapReady && <small>剧情目录已完成；全剧整合仍以当前步骤状态为准。</small>}
     {analysis?.status === 'running' && !pollError && <SourceAnalysisElapsed key={analysis.id} startedAt={analysis.started_at} />}
     {pending && !pollError && analysis.progress && <small>{analysis.progress.stage === 'splitting' ? '将完整读取当前文稿，重新进行全文分析。' : scriptDiagnosticDisplayText(analysis.progress.message).replace(/；全文一次提交$/, '')}</small>}
     {pending && !pollError && <small>按实际处理步骤更新，单步耗时不代表剩余时间。</small>}
@@ -113,7 +112,9 @@ export function ScriptSourcePreview({ source }: { source: ScriptSourceDocument }
     <Tabs.Panel value="map"><div className="sd-source-map">
       <p className="sd-source-preview-hint">{analysis?.status === 'ready' ? '以下是 AI 整理的检索资料，可展开原文核对。' : '分析仍在进行，以下只显示已完成部分。'}正式创作以原文和你的要求为准。</p>
       {analysis?.sections.map((section, index) => <section className="sd-source-map-section" key={`${section.offset}:${index}`}>
-        <h3>{section.title}{section.continues_previous ? ' · 承接上一段剧情' : ''}</h3><p>{section.summary}</p>
+        <h3>{section.title}{section.continues_previous ? ' · 承接上一段剧情' : ''}</h3>
+        <small>{section.episode_number != null ? `第 ${section.episode_number} 集 · ` : ''}原文位置：第 {section.offset + 1}–{section.offset + section.length} 字符</small>
+        <p>{section.summary}</p>
         {!!section.characters.length && <div className="sd-source-map-characters"><strong>人物</strong>{section.characters.map((character, characterIndex) => <p key={characterIndex}><b>{character.name}</b> · {character.description}<small>原文：“{character.evidence.quote}”</small></p>)}</div>}
         {!!section.events.length && <div className="sd-source-map-events"><strong>主要事件</strong>{section.events.map((event, eventIndex) => <p key={eventIndex}>{event.summary}<small>原文：“{event.evidence.quote}”</small></p>)}</div>}
         <WorkspaceDisclosure label="查看这段原文"><div className="sd-source-map-original">{source.content.slice(section.offset, section.offset + section.length)}</div></WorkspaceDisclosure>

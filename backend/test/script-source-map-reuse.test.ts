@@ -143,7 +143,7 @@ test('invalid map coordinates or evidence prevent any reuse even when the saved 
   }
 })
 
-test('ready state, supported pipeline, exact base identity and a current passed review are mandatory', () => {
+test('ready state and a complete map are mandatory; quality diagnostics never gate reuse', () => {
   const { source, analysis, at } = fixture()
   const current = revised(source, at(23), 0, '雨停，')
   for (const [overrides, reason] of [
@@ -153,12 +153,13 @@ test('ready state, supported pipeline, exact base identity and a current passed 
     [{ completed_characters: source.content.length - 1 }, 'base_analysis_incomplete'],
     [{ completed_chunks: analysis.total_chunks - 1 }, 'base_analysis_incomplete'],
     [{ pipeline_version: 4 }, 'unsupported_pipeline'],
-    [{ quality: undefined }, 'base_quality_unverified'],
-    [{ quality: { status: 'passed', input_hash: 'stale', findings: [] } }, 'base_quality_unverified'],
-    [{ quality: { ...analysis.quality!, status: 'issues' } }, 'base_quality_unverified'],
   ] as Array<[Partial<ScriptSourceAnalysis>, string]>) {
     const plan = planScriptSourceMapReuse(source, { ...analysis, ...overrides }, current)
     assert.equal(plan.mode, 'full'); assert.equal(plan.reason, reason)
+  }
+  for (const quality of [undefined, { status: 'passed', input_hash: 'stale', findings: [] }, { ...analysis.quality!, status: 'issues' }]) {
+    const plan = planScriptSourceMapReuse(source, { ...analysis, quality } as ScriptSourceAnalysis, current)
+    assert.equal(plan.mode, 'incremental')
   }
   assert.equal(planScriptSourceMapReuse(source, { ...analysis, pipeline_version: 5 }, current).mode, 'incremental')
 })

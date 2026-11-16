@@ -84,18 +84,34 @@ test('missing, extra, wrong-type, free-path and unsafe repair envelopes fail wit
   assert.equal(({} as any).polluted, undefined)
 })
 
-test('unparseable JSON, recovered syntax and broad root errors retain the existing full-object correction', async () => {
+test('unparseable JSON uses a syntax-only correction without replaying the full task prompt', async () => {
   for (const initial of ['{"scenes":[', '{"scenes":null}', '{"scenes":[]', JSON.stringify(badFixture()).replace(/}$/, ',}')]) {
     let calls = 0
     const result = await generateStructuredOutput('storyboard_shot_batch', schema, async (prompt, contract) => {
       if (++calls === 1) return initial
       assert.equal(contract!.name, 'storyboard_shot_batch')
-      assert.match(prompt, /一次格式修正/)
+      const syntaxOnly = initial === '{"scenes":[' || initial === '{"scenes":[]'
+      if (syntaxOnly) assert.match(prompt, /一次 JSON 语法修正/)
+      else assert.match(prompt, /一次格式修正/)
       assert.doesNotMatch(prompt, /一次结构定向修复/)
+      if (syntaxOnly) {
+        assert.doesNotMatch(prompt, /原始任务与资料/)
+        assert.doesNotMatch(prompt, /完整项目正文与创作者指令/)
+      }
       return JSON.stringify(fixture())
-    }, '资料', { structuralRepair: true })
+    }, '完整项目正文与创作者指令，不应在语法修正中重复发送', { structuralRepair: true })
     assert.equal(calls, 2); assert.deepEqual(result, fixture())
   }
+})
+
+test('local quote recovery accepts a complete root without a paid format-correction call', async () => {
+  let calls = 0
+  const raw = JSON.stringify({ scenes: [{ scene_id: 'scene-a', scene_direction: goodDirection, shots: [goodShot('shot-a', true)] }] })
+    .replace('不可重写正文', '他说"快走"')
+    .replaceAll('\\"', '"')
+  const result = await generateStructuredOutput('storyboard_shot_batch', schema, async () => { calls++; return raw }, '完整项目正文', { structuralRepair: true })
+  assert.equal(calls, 1)
+  assert.equal(result.scenes[0]!.shots[0]!.title, 'shot-a 他说"快走"')
 })
 
 test('default callers retain their original full-object repair behavior', async () => {

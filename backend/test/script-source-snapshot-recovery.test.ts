@@ -16,14 +16,6 @@ assert.ok(db.name.startsWith(testData), 'source snapshot tests must never use th
 initDb()
 after(async () => { db.close(); await rm(testData, { recursive: true, force: true }) })
 const signal = () => new AbortController().signal
-const qualityMarker = '【原稿分析核对资料】\n'
-const repairMarker = '【原稿分析定点修补资料】\n'
-type RepairInput = { story: NonNullable<ScriptSourceAnalysis['story']>; finding: { explanation: string }; finding_index: number }
-function repairReply(prompt: string) {
-  const input = JSON.parse(prompt.slice(prompt.lastIndexOf(repairMarker) + repairMarker.length)) as RepairInput
-  return JSON.stringify({ status: 'patched', reason: '依据原文补充已核对的事实。', changes: [{ target: 'story.summary', section_id: null,
-    operation: 'replace', index: null, expected: input.story.summary, value: `${input.story.summary}；${input.finding.explanation}` }] })
-}
 function source(label: string): ScriptSourceDocument {
   const id = newId(), timestamp = now()
   run('INSERT INTO projects (id,name,created_at,updated_at) VALUES (?,?,?,?)', id, label, timestamp, timestamp)
@@ -38,8 +30,8 @@ function installSource(document: ScriptSourceDocument) {
   run('INSERT INTO script_source_documents (project_id,filename,content,updated_at) VALUES (?,?,?,?)', document.project_id, document.filename, document.content, document.updated_at)
 }
 async function evictPreparedMemory() {
-  const document = source('内存缓存淘汰')
   for (let index = 0; index < 11; index++) {
+    const document = source(`内存缓存淘汰_${index}`)
     await analyzeSourceSnapshot(document, 'eviction-model', async prompt => sourceAnalysisFixture(prompt)!, signal(), { index })
   }
 }
@@ -52,51 +44,21 @@ async function finished(projectId: string) {
   throw new Error('source analysis did not finish')
 }
 
-test('private proposed-source analysis retains its map/story and repairs known omissions before a new independent review', async () => {
-  const document = source('私有修订稿恢复'), explanation = '目录遗漏沈月是林舟妹妹的身份'
-  let maps = 0, stories = 0, reviews = 0, repairs = 0
-  let original: ScriptSourceAnalysis | undefined
-  const generate = async (prompt: string) => {
-    if (prompt.includes(repairMarker)) {
-      repairs++
-      original = checkpoint(document.project_id)
-      assert.equal(original.quality!.status, 'issues', 'the review finding is durable before automatic repair')
-      assert.ok(prompt.includes(explanation), 'targeted repair receives durable original findings and complete source')
-      assert.ok(prompt.includes(document.content.split('\n')[1]!))
-      return repairReply(prompt)
-    }
-    if (prompt.includes(qualityMarker)) {
-      reviews++
-      const input = JSON.parse(prompt.slice(prompt.lastIndexOf(qualityMarker) + qualityMarker.length))
-      return JSON.stringify({ checked_section_ids: input.sections.map((section: { id: number }) => section.id),
-        findings: reviews === 1 ? [{ kind: 'omission', explanation, unit_ids: [input.units.find((unit: { text: string }) => unit.text.includes('沈月')).id] }] : [] })
-    }
-    if (prompt.includes('【原文片段】')) {
-      maps++
-    }
-    if (prompt.includes('【全剧整合资料】')) stories++
+test('private proposed-source analysis saves full map and story without a quality-review loop', async () => {
+  const document = source('私有修订稿保存'), calls: string[] = []
+  const result = await analyzeSourceSnapshot(document, 'model', async prompt => {
+    calls.push(prompt); assert.doesNotMatch(prompt, /【原稿分析核对资料】|【原稿分析定点修补资料】/)
     return sourceAnalysisFixture(prompt)!
-  }
-  const result = await analyzeSourceSnapshot(document, 'model', generate, signal())
-  assert.equal(result.status, 'ready'); assert.equal(result.quality!.status, 'passed')
-  assert.deepEqual([maps, stories, repairs, reviews], [1, 1, 1, 2], 'one call repairs the completed analysis rather than regenerating its map and story')
-  assert.deepEqual(result.sections, original!.sections)
-  assert.deepEqual({ ...result.story, summary: original!.story!.summary }, original!.story)
-  assert.ok(result.story!.summary.includes(explanation))
-  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM script_source_documents WHERE project_id=?').get(document.project_id)!.count, 0, 'private source analysis never publishes the proposed manuscript')
+  }, signal())
+  assert.equal(result.status, 'ready'); assert.equal(result.quality, undefined); assert.equal(calls.length, 2)
+  assert.deepEqual(checkpoint(document.project_id).story, result.story)
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM script_source_documents WHERE project_id=?').get(document.project_id)!.count, 0)
 })
 
-test('disk ready checkpoints require valid story provenance and a current passed review before reuse', async t => {
+test('disk complete snapshots reuse facts regardless of historical quality diagnostics; invalid story references require synthesis', async t => {
   for (const defect of ['missing_review', 'stale_hash', 'contradictory_review', 'known_issues', 'invented_story_reference'] as const) await t.test(defect, async () => {
     const document = source(defect)
-    // An interrupted review leaves valid map/story checkpoints without adding
-    // an in-memory ready cache, as happens across a service restart.
-    await assert.rejects(analyzeSourceSnapshot(document, 'model', async prompt => {
-      if (prompt.includes(qualityMarker)) throw new Error('复核连接中断')
-      return sourceAnalysisFixture(prompt)!
-    }, signal()), /复核连接中断/)
-    const saved = checkpoint(document.project_id)
-    saved.status = 'ready'; saved.phase = 'ready'; delete saved.work
+    const saved = await analyzeSourceSnapshot(document, 'model', async prompt => sourceAnalysisFixture(prompt)!, signal())
     saved.quality = { status: 'passed', input_hash: sourceQualityInputHash(saved), findings: [] }
     if (defect === 'missing_review') delete saved.quality
     if (defect === 'stale_hash') saved.quality!.input_hash = 'obsolete-review-hash'
@@ -104,20 +66,20 @@ test('disk ready checkpoints require valid story provenance and a current passed
       saved.quality!.findings = [{ kind: 'omission', explanation: '遗漏尾声身份关系', unit_ids: [0] }]
       if (defect === 'known_issues') saved.quality!.status = 'issues'
     }
-    if (defect === 'invented_story_reference') {
-      saved.story!.ending.section_ids = [999]
-      saved.quality!.input_hash = sourceQualityInputHash(saved)
-    }
+    if (defect === 'invented_story_reference') saved.story!.ending.section_ids = [999]
     run("UPDATE script_step_checkpoints SET payload=? WHERE project_id=? AND namespace='source-proposal'", JSON.stringify(saved), document.project_id)
+    await evictPreparedMemory()
     const calls: string[] = []
     const ready = await analyzeSourceSnapshot(document, 'model', async prompt => {
-      calls.push(prompt.includes(repairMarker) ? 'repair' : prompt.includes(qualityMarker) ? 'review' : prompt.includes('【全剧整合资料】') ? 'story' : 'map')
-      if (prompt.includes(repairMarker)) return repairReply(prompt)
+      calls.push(prompt); assert.doesNotMatch(prompt, /【原稿分析核对资料】|【原稿分析定点修补资料】/)
       return sourceAnalysisFixture(prompt)!
     }, signal())
-    assert.equal(ready.status, 'ready'); assert.equal(ready.quality!.status, 'passed')
-    assert.equal(ready.quality!.input_hash, sourceQualityInputHash(ready))
-    assert.deepEqual(calls, defect === 'known_issues' ? ['repair', 'review'] : defect === 'invented_story_reference' ? ['map', 'story', 'review'] : ['review'])
+    assert.equal(ready.status, 'ready')
+    if (defect === 'invented_story_reference') {
+      assert.ok(calls.length > 0); assert.ok(ready.story!.ending.section_ids.every(id => id < ready.sections.length))
+    } else {
+      assert.deepEqual(calls, []); assert.deepEqual(ready.story, saved.story); assert.deepEqual(ready.quality, saved.quality)
+    }
   })
 })
 
@@ -149,7 +111,7 @@ test('completed source proposals survive candidate cleanup and memory eviction a
 
 test('public analysis never publishes mismatched, incomplete or damaged private snapshots as ready', async t => {
   const defects = ['remote_model', 'settings', 'protocol', 'provider', 'content', 'project', 'pipeline', 'model',
-    'incomplete', 'running', 'missing_review', 'stale_review', 'known_issues', 'contradictory_review', 'coverage', 'evidence', 'story', 'invalid_json'] as const
+    'incomplete', 'running', 'coverage', 'evidence', 'story', 'invalid_json'] as const
   const candidates: Array<{ defect: typeof defects[number]; document: ScriptSourceDocument; config: unknown }> = []
   for (const defect of defects) {
     let document = source(`拒绝复用_${defect}`)
@@ -164,20 +126,13 @@ test('public analysis never publishes mismatched, incomplete or damaged private 
       run('INSERT INTO script_step_checkpoints (project_id,namespace,cache_key,payload,updated_at) VALUES (?,?,?,?,?)', other.project_id, 'source-proposal', stored.cache_key, stored.payload, stored.updated_at)
       document = { ...document, project_id: other.project_id }
     }
-    if (defect === 'pipeline') prepared.pipeline_version = prepared.pipeline_version! - 1
+    if (defect === 'pipeline') prepared.pipeline_version = prepared.pipeline_version! - 2
     if (defect === 'model') prepared.model_id = 'another-model'
     if (defect === 'incomplete') prepared.completed_chunks = 0
     if (defect === 'running') prepared.status = 'running'
-    if (defect === 'missing_review') delete prepared.quality
-    if (defect === 'stale_review') prepared.quality!.input_hash = 'old-hash'
-    if (defect === 'known_issues' || defect === 'contradictory_review') {
-      prepared.quality!.status = defect === 'known_issues' ? 'issues' : 'passed'
-      prepared.quality!.findings = [{ kind: 'omission', explanation: '存在尚未解决的人物关系遗漏', unit_ids: [0] }]
-    }
     if (defect === 'coverage') prepared.sections[0]!.length--
     if (defect === 'evidence') prepared.sections[0]!.events[0]!.evidence.quote = '原文没有的句子'
     if (defect === 'story') prepared.story!.ending.section_ids = [999]
-    if (['coverage', 'evidence', 'story'].includes(defect)) prepared.quality!.input_hash = sourceQualityInputHash(prepared)
     if (!['remote_model', 'settings', 'protocol', 'provider', 'content', 'project'].includes(defect)) {
       run("UPDATE script_step_checkpoints SET payload=? WHERE project_id=? AND namespace='source-proposal'", defect === 'invalid_json' ? '{broken' : JSON.stringify(prepared), document.project_id)
     }
@@ -192,9 +147,8 @@ test('public analysis never publishes mismatched, incomplete or damaged private 
       assert.equal(analyzer.start(document.project_id, 'model').status, 'queued', 'unverified private data cannot become a published ready analysis')
       const state = await finished(document.project_id)
       assert.equal(state.status, 'ready', state.error || '')
-      assert.equal(calls, 3, 'mismatched or invalid data triggers a full read, synthesis and independent quality check')
-      assert.equal(state.quality!.status, 'passed')
-      assert.equal(state.quality!.input_hash, sourceQualityInputHash(state))
+      assert.ok(calls > 0, 'mismatched or invalid data cannot be published from a complete cache')
+      assert.equal(state.quality, undefined)
       assert.equal(state.completed_characters, document.content.length)
     } finally { await analyzer.close() }
   })

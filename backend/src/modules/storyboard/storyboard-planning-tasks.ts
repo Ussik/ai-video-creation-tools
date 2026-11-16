@@ -4,19 +4,21 @@ import { withDetachedTextRequestUsage } from '../../infrastructure/providers/tex
 import { runStoryboardPlanningBudget, storyboardPlanningBudgetKey, StoryboardPlanningBudgetError } from './storyboard-planning-budget.js'
 import { observeModelTask } from '../generation/model-request-observation.js'
 import { currentModelRequestContext, modelTaskPolicies, withModelRequestContext } from '../generation/model-task-policy.js'
-import type { StoryboardPlanningProgress, StoryboardPlanningResult, StoryboardPlanningStage, StoryboardPlanningTask } from '@video-studio/shared/storyboard/storyboard-planning-types'
+import type { StoryboardFailureType, StoryboardPlanningProgress, StoryboardPlanningResult, StoryboardPlanningStage, StoryboardPlanningTask } from '@video-studio/shared/storyboard/storyboard-planning-types'
 
 const prefix = 'storyboard-planning-task:'
 const cancellationNamespace = (requestId: string) => `${prefix}cancel-request:${requestId}`
 const statuses = ['running', 'succeeded', 'failed', 'cancelled', 'interrupted'] as const
 const stages = ['preparing', 'generating', 'reviewing', 'repairing', 'rechecking', 'completed'] as const
 const progressSchema = z.object({ phase: z.enum(['outline', 'shots']), completed_shots: z.number().int().min(0),
-  total_shots: z.number().int().min(0) }).strict().refine(value => value.completed_shots <= value.total_shots,
+  total_shots: z.number().int().min(0), current_scene_id: z.string().min(1).max(120).optional(),
+  current_shot_index: z.number().int().min(0).max(1000).optional(), recovery: z.enum(['none', 'automatic', 'manual_review']).default('none') }).strict().refine(value => value.completed_shots <= value.total_shots,
   '已完成镜头数不能超过总镜头数')
 const recordSchema = z.object({ version: z.literal(1), input: z.unknown(), request_ids: z.array(z.uuid()),
   snapshot: z.object({ id: z.uuid(), project_id: z.string(), input_key: z.string().length(64), status: z.enum(statuses),
     stage: z.enum(stages), started_at: z.number(), updated_at: z.number(), active_duration_ms: z.number(),
     stage_duration_ms: z.number(), timings: z.record(z.string(), z.number()), can_resume: z.boolean(),
+    attempt: z.number().int().min(0).default(0), recovery_budget: z.number().int().min(0).default(3), checkpoint_version: z.number().int().min(1).default(1),
     progress: progressSchema.optional(), candidate: z.unknown().optional(), result: z.unknown().optional(), error: z.unknown().optional() }).passthrough(),
   steps: z.record(z.string(), z.unknown()),
 })
@@ -28,6 +30,19 @@ type Running = { state: RecordState; controller: AbortController; phaseStarted: 
 const running = new Map<string, Running>()
 const taskKey = (projectId: string, id: string) => `${projectId}:${id}`
 const problem = (message: string, statusCode = 409): never => { throw Object.assign(new Error(message), { statusCode }) }
+function failureType(issue: unknown): StoryboardFailureType {
+  const value = issue as { code?: string; upstreamCode?: string; statusCode?: number; retryable?: boolean }
+  const code = String(value?.code || value?.upstreamCode || '')
+  if (['dialogue_source_mismatch', 'dialogue_ref_wrong_scene', 'dialogue_ref_ambiguous', 'dialogue_source_correction_contract', 'timing_mismatch', 'timing_repair_contract'].includes(code)) return code as StoryboardFailureType
+  if (/json|syntax/i.test(code)) return 'invalid_json'
+  if (/contract|schema|field/i.test(code)) return 'invalid_schema'
+  if (/citation|evidence|ref/i.test(code)) return 'invalid_citation'
+  if (/business|continuity|source|scene|shot|outline/i.test(code) || value?.statusCode === 422 && value?.retryable === false) return 'invalid_business'
+  if (/budget|timeout/i.test(code) || value?.statusCode === 429) return 'budget_exhausted'
+  if (value?.statusCode === 409) return 'identity_conflict'
+  if (value?.retryable === true || /transport|stream|upstream|network|disconnect/i.test(code)) return 'transport'
+  return 'unknown'
+}
 export type StoryboardPlanningControl = {
   signal: AbortSignal
   steps: Record<string, unknown>
@@ -78,6 +93,23 @@ function read(projectId: string, id: string): RecordState {
 }
 function snapshot(state: RecordState): StoryboardPlanningTask {
   const result = structuredClone(state.snapshot)
+  // Derive from durable steps on every read, including legacy failed tasks
+  // whose progress was recorded as 0/0. Never promote an outline to candidate.
+  if (!result.result && !result.candidate && ['generating', 'repairing'].includes(result.stage)) {
+    const namespace = result.stage === 'repairing' ? 'repair' : 'initial'
+    const entries = Object.entries(state.steps).filter(([key]) => key.startsWith(`storyboard_batches:v1:${namespace}:`)
+      && /:outline(?::unvalidated|:candidate)?$/.test(key))
+    const latest = entries.at(-1)?.[0].replace(/:outline(?::unvalidated|:candidate)?$/, ':outline')
+    if (latest) {
+      const key = Object.hasOwn(state.steps, latest) ? latest : Object.hasOwn(state.steps, latest + ':unvalidated') ? latest + ':unvalidated' : latest + ':candidate'
+      const parsed = z.object({ scenes: z.array(z.object({ scene_id: z.string(), scene_duration: z.number().finite().positive(),
+        shots: z.array(z.object({ duration: z.number().finite().positive() })).min(1) })).min(1) }).safeParse(state.steps[key])
+      if (parsed.success) result.outline_checkpoint = { validated: key === latest, scenes: parsed.data.scenes.map(scene => ({
+        scene_id: scene.scene_id, shot_count: scene.shots.length, scene_duration: scene.scene_duration,
+        shot_duration_sum: scene.shots.reduce((sum, shot) => sum + shot.duration, 0),
+      })) }
+    }
+  }
   const live = running.get(taskKey(result.project_id, result.id))
   if (live && result.status === 'running') {
     const elapsed = Math.max(0, Date.now() - live.phaseStarted)
@@ -105,7 +137,9 @@ export function createStoryboardPlanningTasks(options: Options) {
     if (closing) problem('服务正在关闭，请稍后继续', 503)
     const key = taskKey(state.snapshot.project_id, state.snapshot.id)
     const live: Running = { state, controller: new AbortController(), phaseStarted: Date.now(), background, promise: Promise.resolve() }
-    state.snapshot.status = 'running'; state.snapshot.can_resume = false; delete state.snapshot.error
+    state.snapshot.status = 'running'; state.snapshot.can_resume = false
+    state.snapshot.attempt = (state.snapshot.attempt || 0) + (explicitResume ? 1 : 0)
+    delete state.snapshot.error
     state.snapshot.updated_at = Date.now(); persist(state); running.set(key, live); owned.add(key)
     let launchActive = true
     const save = () => { if (!launchActive) return; state.snapshot.updated_at = Date.now(); persist(state) }
@@ -148,20 +182,29 @@ export function createStoryboardPlanningTasks(options: Options) {
         state.snapshot.result = result; delete state.snapshot.candidate; delete state.snapshot.progress
         // Completed tasks need only the final preview and request identities.
         // Keep intermediate rules/plans only while they can save paid work.
-        if (!['needs_work', 'inconclusive', 'pending_review'].includes(result.directing_review?.status || '')) {
+        if (!['needs_work', 'inconclusive', 'review_inconclusive_needs_user', 'pending_review'].includes(result.directing_review?.status || '')) {
           state.steps = { [storyboardPlanningBudgetKey]: state.steps[storyboardPlanningBudgetKey] }
         }
       } catch (issue) {
         settleTime(live)
         if (state.snapshot.status !== 'interrupted') state.snapshot.status = live.controller.signal.aborted ? 'cancelled' : 'failed'
-        const error = issue as { message?: string; code?: string; upstreamCode?: string; retryable?: boolean; diagnostics?: string; raw_output?: string; statusCode?: number }
-        state.snapshot.error = { message: error?.message || String(issue), stage: state.snapshot.stage,
+        const error = issue as { message?: string; code?: string; upstreamCode?: string; retryable?: boolean; diagnostics?: string; raw_output?: string; statusCode?: number; scene_id?: string; field_path?: string; ref_id?: string; shot_id?: string; correction_error_code?: string; scene_duration?: number; shot_duration_sum?: number; delta?: number }
+        const type = failureType(issue)
+        if (type !== 'identity_conflict') state.snapshot.recovery_budget = Math.max(0, (state.snapshot.recovery_budget ?? 3) - 1)
+        state.snapshot.error = { message: error?.message || String(issue), stage: state.snapshot.stage, failure_type: type,
+          attempt: state.snapshot.attempt, recovery_budget: state.snapshot.recovery_budget,
           ...(error?.code || error?.upstreamCode ? { code: error.code || error.upstreamCode } : {}),
+          ...(error?.correction_error_code ? { correction_error_code: error.correction_error_code } : {}),
           ...(typeof error?.retryable === 'boolean' ? { retryable: error.retryable } : {}),
           ...(error?.diagnostics ? { diagnostics: error.diagnostics } : {}), ...(error?.raw_output ? { raw_output: error.raw_output } : {}),
+          ...(error?.scene_id ? { scene_id: error.scene_id } : {}), ...(error?.field_path ? { field_path: error.field_path } : {}),
+          ...(error?.ref_id ? { ref_id: error.ref_id } : {}), ...(error?.shot_id ? { shot_id: error.shot_id } : {}),
+          ...(typeof error?.scene_duration === 'number' ? { scene_duration: error.scene_duration } : {}),
+          ...(typeof error?.shot_duration_sum === 'number' ? { shot_duration_sum: error.shot_duration_sum } : {}),
+          ...(typeof error?.delta === 'number' ? { delta: error.delta } : {}),
           ...(error?.statusCode ? { status_code: error.statusCode } : {}) }
         state.snapshot.can_resume = issue instanceof StoryboardPlanningBudgetError ? issue.canResume
-          : error?.statusCode !== 409 && !('revised_report' in state.steps)
+          : (state.snapshot.recovery_budget ?? 0) > 0 && error?.statusCode !== 409 && !('revised_report' in state.steps)
       } finally {
         clearInterval(live.timer); live.controller.abort(); save(); launchActive = false
         if (running.get(key) === live) { running.delete(key); owned.delete(key) }
@@ -206,14 +249,14 @@ export function createStoryboardPlanningTasks(options: Options) {
       }
       const state: RecordState = { version: 1, input, request_ids: [requestId], steps: {}, snapshot: { id: requestId, project_id: projectId, input_key: key,
         status: 'running', stage: 'preparing', started_at: Date.now(), updated_at: Date.now(), active_duration_ms: 0,
-        stage_duration_ms: 0, timings: {}, can_resume: false } }
+        stage_duration_ms: 0, timings: {}, can_resume: false, attempt: 0, recovery_budget: 3, checkpoint_version: 1 } }
       launch(state, optionsInput.background !== false)
       return snapshot(state)
     },
     resume(projectId: string, id: string) {
       const state = read(projectId, id); assertIdentity(state)
       if (state.snapshot.status === 'running' || state.snapshot.status === 'succeeded') return snapshot(state)
-      if (!state.snapshot.can_resume) problem('该任务需要重新规划，不能继续原阶段')
+      if (!state.snapshot.can_resume || (state.snapshot.recovery_budget ?? 0) <= 0) problem('自动恢复预算已耗尽，请重新规划或进入人工处理')
       if (active(projectId)) problem('当前项目还有分镜规划任务正在运行，请先查看或停止它')
       launch(state, true, true); return snapshot(state)
     },

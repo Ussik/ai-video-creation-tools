@@ -425,7 +425,7 @@ test('long upload-to-outline returns a complete unsaved preview for JSON and nat
     assert.equal(result.statusCode, 200, result.body)
     const preview = useTools ? result.json().tool_draft?.workflow : result.json().draft
     assert.ok(preview, result.body); assert.equal(preview.artifacts.length, 1)
-    assert.equal(writers, 1); assert.equal(reviews, 1)
+    assert.equal(writers, 1); assert.equal(reviews, 0)
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM script_artifacts WHERE project_id=?').get(project.id)!.count, 0)
     assert.equal(readScriptSource(project.id, 0, original.length).content, original)
     t.mock.restoreAll()

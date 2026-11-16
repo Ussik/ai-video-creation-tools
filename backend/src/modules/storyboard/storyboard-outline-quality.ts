@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { generateStructuredOutput, type StructuredGenerator } from '../generation/model-output.js'
 import { reportModelResult, withModelOperationStage } from '../generation/model-result-observation.js'
 import { storyboardDirectingReviewSchema, validateStoryboardDirectingReview, type StoryboardDirectingReview } from './storyboard-directing.js'
-import { storyboardField, storyboardIssueFingerprint, storyboardValueSignature, storyboardRepairEffect } from './storyboard-review-scope.js'
+import { storyboardField, storyboardIssueFingerprint, storyboardValueSignature, storyboardRepairEffect, normalizeStoryboardEvidenceReferences, storyboardEvidenceCatalog } from './storyboard-review-scope.js'
 import { modelTaskPolicies } from '../generation/model-task-policy.js'
 import type { StoryboardPlanningControl } from './storyboard-planning-tasks.js'
 
@@ -10,15 +10,25 @@ type Outline = { scenes: Array<{ scene_id: string; scene_direction: unknown; sho
 const editable = new Set(['prompt', 'start_state', 'end_state', 'cut_note', 'scene_direction.anchors', 'scene_direction.blocking',
   'scene_direction.axis', 'scene_direction.dramatic_progression'])
 const invalid = (message: string): never => { throw Object.assign(new Error(message), { statusCode: 422, code: 'storyboard_outline_review_invalid' }) }
-function validateReport(report: StoryboardDirectingReview, outline: Outline, sourceTexts: string[]) {
-  validateStoryboardDirectingReview(report, outline.scenes as Parameters<typeof validateStoryboardDirectingReview>[1], { strictEvidence: true, sourceTexts })
-  for (const issue of report.issues.filter(issue => issue.severity === 'error')) {
-    const refs = issue.evidence_refs || [], scopes = issue.repair_scope || []
-    if (!refs.length || !scopes.length) invalid('大纲错误必须提供精确原文证据和替换范围')
-    for (const scope of scopes) for (const field of scope.fields) {
-      if (!editable.has(field) || !refs.some(reference => reference.scene_id === scope.scene_id
-        && reference.shot_index === scope.shot_index && reference.field === field)) invalid('大纲修复只能替换有对应原文证据的动作、状态、接镜或场面调度字段')
+function validateReport(report: StoryboardDirectingReview, outline: Outline, sourceTexts: string[], stage: 'outline_review' | 'recheck' = 'outline_review') {
+  try {
+    const normalized = report.issues.map(issue => normalizeStoryboardEvidenceReferences(issue, outline.scenes as Parameters<typeof validateStoryboardDirectingReview>[1], true))
+    const canonical = { ...report, issues: normalized } as StoryboardDirectingReview
+    validateStoryboardDirectingReview(canonical, outline.scenes as Parameters<typeof validateStoryboardDirectingReview>[1], { strictEvidence: true, sourceTexts })
+    for (const issue of canonical.issues.filter(issue => issue.severity === 'error')) {
+      const refs = issue.evidence_refs || [], scopes = issue.repair_scope || []
+      if (!refs.length || !scopes.length) invalid('大纲错误必须提供精确原文证据和替换范围')
+      for (const scope of scopes) for (const field of scope.fields) {
+        if (!editable.has(field) || !refs.some(reference => reference.scene_id === scope.scene_id
+          && reference.shot_index === scope.shot_index && reference.field === field)) invalid('大纲修复只能替换有对应原文证据的动作、状态、接镜或场面调度字段')
+      }
     }
+    report.issues.splice(0, report.issues.length, ...canonical.issues)
+  } catch (error) {
+    reportModelResult({ phase: 'structure', status: 'invalid_business', stage, issue_count: report.issues.length,
+      failure_code: 'storyboard_review_invalid', evidence_ref_ids: report.issues.flatMap(issue => (issue.evidence_refs || []).map(reference => reference.ref_id).filter((value): value is string => !!value)),
+      evidence_fields: report.issues.flatMap(issue => (issue.evidence_refs || []).map(reference => `${reference.scene_id}:${reference.shot_index ?? 'scene'}:${reference.field}`)), evidence_validation: 'failed' })
+    throw error
   }
 }
 
@@ -37,7 +47,7 @@ export async function ensureStoryboardOutlineQuality<T extends Outline>(input: {
     active()
     const saved = restore(key)
     if (saved !== undefined) {
-      const report = storyboardDirectingReviewSchema.parse(saved); validateReport(report, outline, sourceTexts)
+      const report = storyboardDirectingReviewSchema.parse(saved); validateReport(report, outline, sourceTexts, stage)
       reportModelResult({ stage, phase: 'quality', status: report.issues.some(issue => issue.severity === 'error') ? 'needs_work' : 'passed', issue_count: report.issues.length })
       return report
     }
@@ -51,8 +61,9 @@ export async function ensureStoryboardOutlineQuality<T extends Outline>(input: {
       '只报具体矛盾，每个原因一次；message/evidence/repair简短。禁止删除或清空必填字段。每项error必须提供evidence_refs，逐字quote所引用field的现有值，' +
       '并以repair_scope给出operation:replace及精确fields；镜头字段只允许prompt/start_state/end_state/cut_note，场面调度只允许scene_direction.anchors/blocking/axis/dramatic_progression且shot_index:null。' +
       '每个待改字段必须有对应evidence_ref。不能改镜头数、顺序、ID、台词、声音计划或未经授权的时长。关联只允许直接相邻镜头；没有错误返回{"issues":[]}。\n' +
-      JSON.stringify({ source_context: input.context, outline }),
-      { context: { policy: modelTaskPolicies.review }, signal: control.signal, validate: value => validateReport(value, outline, sourceTexts) }))
+      'evidence_refs必须优先返回程序提供的ref_id、scene_id、shot_index和field，禁止自行改写quote；程序会按ref_id回填当前字段原文。\n' +
+      JSON.stringify({ source_context: input.context, outline, evidence_catalog: storyboardEvidenceCatalog(outline.scenes as Parameters<typeof validateStoryboardDirectingReview>[1]) }),
+      { context: { policy: modelTaskPolicies.review }, signal: control.signal, stopOnBusinessError: true, validate: value => validateReport(value, outline, sourceTexts, stage) }))
     active(); control.retain(key, report)
     reportModelResult({ stage, phase: 'quality', status: report.issues.some(issue => issue.severity === 'error') ? 'needs_work' : 'passed', issue_count: report.issues.length })
     return report

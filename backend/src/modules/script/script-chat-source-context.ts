@@ -3,7 +3,6 @@ import { generateStructuredOutput, type StructuredGenerator } from '../generatio
 import type { ScriptSourceDocument, ScriptSourceSection } from '@video-studio/shared/script/script-source-document'
 import { scriptDocumentVersion, scriptSourceVersion } from './script-source-identity.js'
 import { validateSourceCoverage } from './script-source-map.js'
-import { hasPassedSourceQuality } from './script-source-quality.js'
 
 type ChatMessage = { role: string; text: string }
 const semanticScopeSchema = z.object({
@@ -98,7 +97,6 @@ export function buildScriptChatSourceContext(source: ScriptSourceDocument | null
   if (analysis?.status !== 'ready' || !analysis.story) return full('analysis_not_ready')
   if (analysis.source_version !== scriptSourceVersion(source)) return full('analysis_version_mismatch')
   try {
-    if (!hasPassedSourceQuality(analysis)) return full('analysis_quality_stale')
     validateSourceCoverage(source.content, analysis.sections)
     if (!analysis.sections.length) return full('invalid_source_map')
     if (!options.semantic_scope) return full('semantic_scope_required')

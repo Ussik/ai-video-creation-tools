@@ -3,7 +3,7 @@ import { test } from 'node:test'
 
 import { z } from 'zod'
 
-import { parseStructuredOutput } from '../src/modules/generation/structured-output.js'
+import { parseStructuredOutput, repairUnescapedStringQuotes } from '../src/modules/generation/structured-output.js'
 
 const scriptSchema = z.object({
   outline: z.string().min(1),
@@ -65,6 +65,16 @@ test('recovers unescaped line breaks without changing CR, LF, quotes or escaped 
   const raw = JSON.stringify(value).replaceAll('\\r', '\r').replaceAll('\\n', '\n')
   assert.deepEqual(parseStructuredOutput(raw, scriptSchema), value)
   assert.deepEqual(parseStructuredOutput(`${raw}\n${JSON.stringify(script)}`, scriptSchema), script, 'a later exact response still wins')
+})
+
+test('repairs only clearly unescaped dialogue quotes and preserves nested Chinese speech', () => {
+  const raw = '{"outline":"他说"快走"，然后关门","scenes":[{"heading":"街角","action":"她回答"知道了""}]}'
+  const repaired = repairUnescapedStringQuotes(raw)
+  assert.equal(repaired.applied, true)
+  assert.equal(repaired.changes, 4)
+  assert.deepEqual(parseStructuredOutput(raw, scriptSchema), {
+    outline: '他说"快走"，然后关门', scenes: [{ heading: '街角', action: '她回答"知道了"' }],
+  })
 })
 
 test('syntax recovery never fills missing values, guesses quotes or completes truncated roots', () => {

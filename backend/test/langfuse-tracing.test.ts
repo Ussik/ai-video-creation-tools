@@ -173,3 +173,18 @@ test('validated TTS terminal success exports one successful child despite cancel
   assert.equal(metadata(c.spans().find(span => !span.parentSpanId)!).state, 'succeeded')
   assert.equal(attribute(child[0]!, 'langfuse.observation.usage_details'), undefined)
 })
+
+test('disabled, unsampled and HTTP-rejected exports expose safe diagnosable state', async () => {
+  const disabled = createLangfuseTracer(readLangfuseConfig({}))
+  assert.deepEqual(disabled.observation({ taskId: 'a', owner: 'request' }).correlation?.(), { enabled: false, sampled: false, reason: 'disabled' })
+  const unsampled = createLangfuseTracer(enabled({ LANGFUSE_TRACING_SAMPLING_RATE: '0' }))
+  assert.equal(unsampled.observation({ taskId: 'a', owner: 'request' }).correlation?.().reason, 'not_sampled')
+  const rejected = createLangfuseTracer(enabled(), { fetch: async () => new Response('PRIVATE_BODY', { status: 401 }) })
+  const observation = rejected.observation({ taskId: 'a', owner: 'request' })
+  observation.dispatch({ request_id: 'r' }); observation.metrics({ request_id: 'r', http_status: 200 }); observation.finish('failed')
+  await rejected.flush()
+  assert.equal(rejected.status().last_failure, 'trace_export_http_error')
+  assert.equal(rejected.status().last_http_status, 401)
+  assert.ok(rejected.status().failed > 0)
+  assert.ok(!JSON.stringify(rejected.status()).includes('PRIVATE_BODY'))
+})

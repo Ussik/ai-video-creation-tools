@@ -93,12 +93,13 @@ test('explicit operations and invalid analysis cannot narrow source even with a 
     assert.equal(buildScriptChatSourceContext(source, options(source, override)).mode, 'full')
   }
   for (const change of [(value: ScriptSourceDocument) => { value.analysis!.status = 'running' },
-    (value: ScriptSourceDocument) => { value.analysis!.quality!.status = 'issues' },
-    (value: ScriptSourceDocument) => { value.analysis!.sections[5]!.offset++ },
-    (value: ScriptSourceDocument) => { value.analysis!.story!.summary = '未复核变化' }]) {
+    (value: ScriptSourceDocument) => { value.analysis!.sections[5]!.offset++ }]) {
     const changed = sourceFixture(); change(changed)
     assert.equal(buildScriptChatSourceContext(changed, options(changed)).mode, 'full')
   }
+  const diagnosticOnly = sourceFixture()
+  diagnosticOnly.analysis!.quality!.status = 'issues'
+  assert.equal(buildScriptChatSourceContext(diagnosticOnly, options(diagnosticOnly)).mode, 'targeted')
 })
 
 test('empty, missing literal subjects and excessive selected ranges fall back to full original', () => {

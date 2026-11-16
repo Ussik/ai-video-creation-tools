@@ -174,8 +174,12 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
   const automaticShotCount = String(shotsPerScene).trim() === ''
   const invalidShotCount = !automaticShotCount && (!Number.isInteger(Number(shotsPerScene)) || Number(shotsPerScene) < 2 || Number(shotsPerScene) > 8)
   const awaitingReview = result?.directing_review?.status === 'pending_review'
+  const reviewStatus = result?.directing_review?.status
+  const needsManualReview = reviewStatus === 'review_inconclusive_needs_user' || reviewStatus === 'inconclusive'
+  const saveableReview = ['passed', 'warnings', 'review_inconclusive_no_action', 'review_inconclusive_needs_user', 'inconclusive'].includes(reviewStatus || '')
   const issue = result && !applied.current && resultModelId !== modelId ? '文本模型已切换，当前分镜预览仍保留，请重新规划后保存。'
-    : result ? planIssue(result) || (!applied.current && (!result.directing_review?.review_id || !['passed', 'warnings'].includes(result.directing_review.status)) ? '当前分镜尚未通过复查，请修改或复查当前草稿后保存。' : '') : ''
+    : result ? planIssue(result) || (!applied.current && (!result.directing_review?.review_id || !saveableReview) ?
+      reviewStatus === 'needs_work' ? '复核发现待修复问题，请先修复并复查当前草稿。' : '当前草稿尚未完成复核，请先复查后保存。' : '') : ''
   const previewScenes = selected.map(scene => result?.scenes.find(item => item.scene_id === scene.id) || {
     scene_id: scene.id, scene_heading: scene.heading, scene_duration: scene.duration,
     shots: (context?.existing_shots || []).filter(shot => shot.scene_id === scene.id),
@@ -185,6 +189,9 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
   const focusedHasResult = !!result?.scenes.some(scene => scene.scene_id === focusedScene?.scene_id)
   const focusedIsDraft = focusedHasResult && !planIsSaved
   const previewCount = previewScenes.reduce((sum, scene) => sum + scene.shots.length, 0)
+  const retainedOutline = !result && !applied.current ? planningTask?.outline_checkpoint : undefined
+  const focusedOutline = retainedOutline?.scenes.find(scene => scene.scene_id === focusedScene?.scene_id)
+  const retainedCount = retainedOutline?.scenes.reduce((sum, scene) => sum + scene.shot_count, 0) || 0
   const skillPolicy: SkillPolicy | null = context ? context.skill_policy || {
     stage: 'storyboard', label: '分镜规划', primary_id: context.default_skill_ids?.[0] || null,
     auxiliary_ids: context.default_skill_ids?.slice(1) || [], source: 'global', warning: '', skills: context.skills,
@@ -555,12 +562,13 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
         <div className="storyboard-planner-scene-list">
           {rangeIds.map((id, index) => {
             const meta = context?.scenes.find(scene => scene.id === id), checked = sceneIds.includes(id), draftScene = result?.scenes.find(scene => scene.scene_id === id)
-            const count = draftScene?.shots.length || meta?.shot_count || 0
+            const checkpointScene = retainedOutline?.scenes.find(scene => scene.scene_id === id)
+            const count = draftScene?.shots.length || checkpointScene?.shot_count || meta?.shot_count || 0
             return <div key={id} className={`storyboard-planner-scene-item${checked ? ' is-selected' : ''}${view === 'preview' && focusedScene?.scene_id === id ? ' is-focused' : ''}`}>
               <Checkbox aria-label={`选择场次：${sceneLabel(id)}`} checked={checked} disabled={locked || !checked && sceneIds.length >= batchLimit} onChange={event => chooseScene(id, event.currentTarget.checked)} />
               <UnstyledButton type="button" className="storyboard-planner-scene-button" disabled={locked || !checked && sceneIds.length >= batchLimit} title={!checked && sceneIds.length >= batchLimit ? '本批已选满，可清空选择或切换已规划场次' : undefined} onClick={() => { if (checked && hasPreview) { setFocusedSceneId(id); setView('preview') } else chooseScene(id, !checked) }}>
                 <span className="storyboard-planner-scene-number">{String(index + 1).padStart(2, '0')}</span>
-                <strong>{sceneLabel(id)}</strong><small>{draftScene?.scene_duration || meta?.duration || detail.script.scenes.find(scene => scene.id === id)?.duration || 0} 秒<span>{draftScene ? `${planIsSaved ? '已保存' : '草稿'} · ${count} 镜` : meta?.requires_redesign ? '画布已删除，需重新设计' : meta?.needs_replan ? replanLabel(meta) : meta && planned(meta) ? `${typeof meta.canvas_shot_count !== 'number' ? '已规划' : needsCanvasNodes(meta) ? meta.canvas_shot_count ? '待补齐' : '待加入' : '已加入'} · ${count} 镜` : '待规划'}</span></small>
+                <strong>{sceneLabel(id)}</strong><small>{draftScene?.scene_duration || meta?.duration || detail.script.scenes.find(scene => scene.id === id)?.duration || 0} 秒<span>{draftScene ? `${planIsSaved ? '已保存' : '草稿'} · ${count} 镜` : checkpointScene ? `已保留大纲 · ${count} 镜` : meta?.requires_redesign ? '画布已删除，需重新设计' : meta?.needs_replan ? replanLabel(meta) : meta && planned(meta) ? `${typeof meta.canvas_shot_count !== 'number' ? '已规划' : needsCanvasNodes(meta) ? meta.canvas_shot_count ? '待补齐' : '待加入' : '已加入'} · ${count} 镜` : '待规划'}</span></small>
               </UnstyledButton>
             </div>
           })}
@@ -575,8 +583,8 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
         <div key={settingsRevision} className="storyboard-planner-scroll">
           {planningTask && !planIsSaved && <div className="storyboard-planner-task-progress" role="status" aria-label="分镜规划进度">
             <strong>{taskLabel}</strong><span>本阶段 {stageSeconds} 秒 · 累计 {taskSeconds} 秒</span>
-            {planningTask.progress && <p>{planningTaskProgressLabel(planningTask)}</p>}
-            {awaitingReview && <p>完整分镜草稿已保留；处理结束后可修改并复查，通过后保存。</p>}
+            {(planningTask.progress || retainedOutline) && <p>{planningTaskProgressLabel(planningTask)}</p>}
+            {awaitingReview && <p>复核进行中，完整分镜草稿已保存；你可以离开页面，后台会继续处理，回来后可继续复核。</p>}
             {planningTask.status === 'running' && <p>可以返回其他页面，后台会继续处理；重新打开时会恢复进度。</p>}
             {taskConnection && <p>{taskConnection}</p>}
           </div>}
@@ -657,21 +665,27 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
               <Select label="整理设定的文本模型" aria-label="整理参考设定文本模型" data={eligibleModels.map(model => ({ value: model.id, label: model.name }))} value={modelId || null} allowDeselect={false} disabled={!!pending || guarding || !!imported.current} onChange={value => { if (value && value !== modelId) selectModel(value) }} comboboxProps={{ zIndex: 350 }} />
               {!eligibleModels.length && referenceNeedsAnalysis.length > 0 && <p className="storyboard-planner-error">这些场次还需要整理参考设定，请先启用一个文本模型。</p>}
             </div>}
-            <header className="storyboard-planner-section-title"><h3>{focusedScene.scene_heading}</h3><p>{focusedScene.shots.length} 个镜头 · {focusedScene.scene_duration} 秒 · {focusedIsDraft ? awaitingReview ? '草稿已暂存，处理结束后可修改与复查' : '未保存草稿，可修改后确认' : focusedHasResult && planIsSaved ? '已保存分镜' : '复用已保存分镜'}</p></header>
+            <header className="storyboard-planner-section-title"><h3>{focusedScene.scene_heading}</h3><p>{focusedOutline ? `已保留大纲 ${focusedOutline.shot_count} 镜 · 镜头合计 ${focusedOutline.shot_duration_sum} 秒 / 目标 ${focusedOutline.scene_duration} 秒 · 等待继续规划` : <>{focusedScene.shots.length} 个镜头 · {focusedScene.scene_duration} 秒 · {focusedIsDraft ? awaitingReview ? '草稿已暂存，处理结束后可修改与复查' : '未保存草稿，可修改后确认' : focusedHasResult && planIsSaved ? '已保存分镜' : focusedScene.shots.length ? '复用已保存分镜' : '尚无完整分镜'}</>}</p></header>
             {result && <WorkspaceDisclosure className="storyboard-planner-used-sources" label={<><Puzzle size={13} /><span>已使用：{result.used_skills[0]?.name || '基础分镜规则'}<small>辅助技能 {Math.max(0, result.used_skills.length - 1)} 个<span>·</span>参考资料 {result.source_documents.length} 份</small></span><ChevronRight size={13} /></>}>
 
               <div className="storyboard-planner-used-details">{result.skill_assignment?.reason && <p>选择理由：{result.skill_assignment.reason}</p>}<p>参考文档：{result.source_documents.map(document => document.title).join(' · ') || '未选择额外文档'}</p>{result.used_skills.map((skill, index) => <p key={skill.id}><strong>{index === 0 ? '主技能' : '辅助技能'} · {skill.name}</strong><small>版本 {skill.revision.slice(0, 8)} · {skill.files.join(' · ')}</small></p>)}</div>
               {result.motion_skills && <div className="storyboard-planner-used-details"><p>视频运动说明：{result.motion_skills.length ? result.motion_skills.map(skill => skill.name).join(' · ') : '基础运动规则'}</p>{result.motion_skill_assignment?.reason && <p>{result.motion_skill_assignment.reason}</p>}{result.motion_skills.map(skill => <p key={skill.id}><strong>{skill.name}</strong><small>版本 {skill.revision.slice(0, 8)} · {skill.files.join(' · ')}</small></p>)}</div>}
             </WorkspaceDisclosure>}
             {result?.directing_review && <div className="storyboard-planner-note" role="status">
-              {result.directing_review.status === 'pending_review' ? '分镜草稿已保存，等待完成运镜与接镜复核。'
+              {result.directing_review.status === 'pending_review' ? '分镜生成已完成，导演复核仍在进行；草稿已保留。'
                 : result.directing_review.status === 'edited' ? '分镜已修改，当前版本尚未复核运镜与接镜；以下保留上次问题供修改参考。'
-                : result.directing_review.status === 'inconclusive' ? `草稿已保留，本次复查未能得出结论。${result.directing_review.error?.message || '可修改或重新复查。'}`
-                : result.directing_review.status === 'needs_work' ? result.directing_review.error?.message || '当前版本有需要修复的起止、首帧或接镜冲突，请查看依据并修改。'
-                : result.directing_review.status === 'warnings' ? '运镜与接镜文字复核已完成，以下节奏或动机问题需要你判断。'
-                  : `运镜与接镜文字复核已完成${result.directing_review.repaired ? '，已自动修订并复查' : ''}。`}
-              {result.directing_review.issues.map((item, index) => <p key={index}>{context.scenes.find(scene => scene.id === item.scene_id)?.heading || '所选场次'} · 第{item.shot_index + 1}镜：{item.message} 依据：{item.evidence} 建议：{item.repair}</p>)}
+                : result.directing_review.status === 'review_inconclusive_no_action' ? `分镜生成已完成，复核未定且没有待处理问题；可以保存草稿。${result.directing_review.error?.message || ''}`
+                : result.directing_review.status === 'review_inconclusive_needs_user' || result.directing_review.status === 'inconclusive' ? `分镜生成已完成，复核未定，存在待确认问题；草稿已保留，可以保存草稿或稍后复核。${result.directing_review.error?.message || ''}`
+                : result.directing_review.status === 'needs_work' ? `分镜生成已完成，复核发现待修复问题。${result.directing_review.error?.message || '请查看问题并修复当前草稿。'}`
+                : result.directing_review.status === 'warnings' ? '分镜生成已完成，导演复核通过，但有以下节奏或动机提醒。'
+                  : `分镜生成已完成，导演复核通过${result.directing_review.repaired ? '，已自动修订并复查' : ''}。`}
+              {result.directing_review.issues.map((item, index) => {
+                const unverified = result.directing_review?.status === 'review_inconclusive_no_action'
+                  || result.directing_review?.status === 'review_inconclusive_needs_user' || result.directing_review?.status === 'inconclusive'
+                return <p key={index}>{context.scenes.find(scene => scene.id === item.scene_id)?.heading || '所选场次'} · 第{item.shot_index + 1}镜：{unverified ? '未核实复核意见：' : ''}{item.message}{unverified ? ' 建议：' : ` 依据：${item.evidence} 建议：`}{item.repair}</p>
+              })}
               {!planIsSaved && <Button variant="default" size="xs" loading={pending === 'review'} disabled={!!pending || !!planIssue(result)} onClick={() => void reviewDraft()}>复查当前草稿</Button>}
+              {!planningOnly && !planIsSaved && needsManualReview && <Button variant="light" size="xs" loading={pending === 'save'} disabled={!!pending || guarding || !!planIssue(result)} onClick={() => void savePlan()}>保存草稿，稍后复核</Button>}
               {!planIsSaved && result.directing_review.review_id && result.directing_review.status === 'needs_work' && <Button variant="light" size="xs" loading={pending === 'repair'} disabled={!!pending || !!planIssue(result) || result.directing_review.error?.code === 'storyboard_repeated_issues'} onClick={() => void reviewDraft(true)}>仅修复已确认问题</Button>}
             </div>}
             {result && !result.directing_review && !planIsSaved && <Button variant="default" size="xs" loading={pending === 'review'} disabled={!!pending || !!planIssue(result)} onClick={() => void reviewDraft()}>复查当前草稿</Button>}
@@ -694,7 +708,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
     </div>
     <footer className="storyboard-planner-actions">
       <div className="storyboard-planner-footer-status" role="status">{pending ? <><LoaderCircle size={14} />{pending === 'context' ? '正在读取资料' : pending === 'preview' ? '正在查找上次完成的预览' : pending === 'save' ? saveLabel : pending === 'references' ? `正在整理参考设定 · ${elapsed} 秒` : planningTask ? `${taskLabel} · ${taskSeconds} 秒` : `正在设计并复核运镜与接镜 · ${elapsed} 秒`}</> : <>
-        {hasPreview ? `${sceneIds.length} 场 · ${previewCount} 个镜头` : `${sceneIds.length} 场已选`}
+        {retainedOutline ? `${sceneIds.length} 场 · 已保留大纲 ${retainedCount} 镜` : hasPreview ? `${sceneIds.length} 场 · ${previewCount} 个镜头` : `${sceneIds.length} 场已选`}
         <small><span>{planningOnly ? planIsSaved ? '分镜已保存，可重试刷新后返回管理' : result ? '草稿尚未保存，确认后保存到分镜管理' : hasPreview ? '当前为已保存镜头，可返回分镜管理继续编辑' : '先规划，再保存分镜方案' : planIsSaved ? imported.current ? '分镜与设定已保存，继续打开画布' : '分镜已保存，继续准备参考设定' : hasPreview ? '先补齐参考图，再生成分镜' : '先规划，再确认加入'}</span>
           {!planningOnly && hasPreview && <Popover position="top-start" offset={6} width="min(360px, calc(100vw - 32px))" withinPortal zIndex={350} returnFocus>
             <Popover.Target><ActionIcon className="storyboard-planner-info-button" variant="subtle" size={20} aria-label="查看参考设定说明" title="查看参考设定说明"><Info size={14} /></ActionIcon></Popover.Target>
@@ -710,7 +724,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
       {(result || planningTask?.can_resume || error) && !planIsSaved && <Button variant="default" disabled={locked || !planningIds.length || invalidTarget || invalidShotCount || !eligibleModels.some(model => model.id === modelId)} onClick={() => void startPlanning(true)}>重新规划</Button>}
       {planningTask?.can_resume ? <Button className="storyboard-planner-primary" leftSection={<Clapperboard size={14} />} disabled={locked || taskInputRef.current?.model_id !== modelId} onClick={() => void continuePlanning()}>继续规划</Button>
         : planningOnly && hasPreview ? result || planIsSaved ? <Button className="storyboard-planner-primary" leftSection={<Save size={14} />} disabled={!!pending || guarding || !!issue} onClick={() => void savePlan()}>{planIsSaved ? '重试刷新' : '保存分镜方案'}</Button> : <Button className="storyboard-planner-primary" disabled={!!pending || guarding} onClick={() => void requestClose()}>返回分镜管理</Button>
-        : hasPreview ? <Button className="storyboard-planner-primary" leftSection={<Plus size={14} />} disabled={!!pending || referenceReloading || !!issue} onClick={() => void addToCanvas()}>{planIsSaved ? '继续加入画布' : '确认加入画布'}</Button>
+        : hasPreview ? <Button className="storyboard-planner-primary" leftSection={<Plus size={14} />} disabled={!!pending || referenceReloading || !!issue || needsManualReview} onClick={() => void addToCanvas()}>{planIsSaved ? '继续加入画布' : '确认加入画布'}</Button>
         : <Button className="storyboard-planner-primary" leftSection={<Clapperboard size={14} />} disabled={locked || !context || !planningIds.length || invalidTarget || invalidShotCount || !eligibleModels.some(model => model.id === modelId)} onClick={() => void startPlanning()}>{error ? '继续规划' : '开始规划'}</Button>}
     </footer>
   </Modal>{opened && dialog.dialog}</>

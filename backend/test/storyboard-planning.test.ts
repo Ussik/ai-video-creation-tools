@@ -186,19 +186,20 @@ test('storyboard planning rejects a stream without completion after one bounded 
   assert.equal((await call('POST', `/api/projects/${f.project.id}/script/storyboard/context`, { scene_ids: [f.scene.id] })).signature, f.context.signature)
 })
 
-test('storyboard planning still checks timing and requests one correction after a completed stream', async t => {
+test('storyboard planning deterministically repairs a small timing mismatch after a completed stream', async t => {
   const f = await upstreamPlanning()
   const invalid = structuredClone(f.draft); invalid.scenes[0]!.shots[0]!.duration = 9
   let calls = 0
   mockPlanningFetch(t, async (_url: unknown, init: RequestInit) => {
     const body = JSON.parse(String(init.body)); assert.equal(body.stream, true)
-    if (++calls === 2) assert.match(body.input, /一次格式修正[\s\S]*镜头时长总和必须等于本场规划时长/)
+    if (++calls === 2) assert.fail('small timing mismatch should not dispatch a second model request')
     return planningStream(storyboardOutlineFixture(withStoryboardDirecting(calls === 1 ? invalid : f.draft)), 'responses', true, false)
   }, f.draft)
   const response = await f.plan()
   assert.equal(response.statusCode, 200, response.body)
-  assertCompiledStoryboardSources(response.json().scenes, [{ ...f.draft.scenes[0], scene_heading: f.scene.heading }])
-  assert.equal(calls, 2)
+  assertCompiledStoryboardSources(response.json().scenes, [{ ...f.draft.scenes[0], scene_heading: f.scene.heading,
+    shots: f.draft.scenes[0].shots.map((shot, index) => index === 0 ? { ...shot, duration: 9 } : { ...shot, duration: 11 }) }])
+  assert.equal(calls, 1)
   assert.equal(all('SELECT id FROM shots WHERE project_id=?', f.project.id).length, 0)
 })
 
@@ -1507,8 +1508,8 @@ test('automatic counts still require a nonempty plan with valid per-scene timing
   const context = await f.context(), input = { signature: context.signature, scene_ids: [sceneId], model_id: 'mock-text', skill_ids: [] }
   await f.invoke('plan', input, 422)
   shots = [shot(null, 16), shot(null, 15)]
-  const invalidDuration = await f.invoke('plan', input, 422)
-  assert.match(invalidDuration.message, /镜头时长总和必须等于本场规划时长/)
+  const repairedDuration = await f.invoke('plan', input)
+  assert.equal(repairedDuration.scenes[0].shots.reduce((sum: number, item: { duration: number }) => sum + item.duration, 0), 30)
   shots = Array.from({ length: 31 }, (_, index) => shot(null, 1, `镜头${index + 1}`))
   await f.invoke('plan', input, 422)
   assert.equal(all('SELECT * FROM shots WHERE project_id=?', f.project.id).length, 0)
@@ -1785,4 +1786,20 @@ test('replanning with changed documents refreshes all setting types and only the
   }
   assert.equal(all('SELECT 1 FROM jobs WHERE project_id=?', f.project.id).length, 0)
   assert.equal(all('SELECT 1 FROM asset_tasks WHERE project_id=?', f.project.id).length, 0)
+})
+
+test('outline source and speech punctuation errors recover locally without repeating or rewriting the outline', async t => {
+  const original = '别抬头！你刚上来吧？拿着这个。', source = `林清晏：${original}`
+  const wrongSource = `林清晏:${original.replace('！', '!').replace('？', '?')}`
+  const wrongText = original.replace('！', '!').replace('？', '?')
+  let sceneId = ''
+  const f = await setup(t, async () => JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [{ ...shot(null, 30),
+    audio_plan: { version: 1, speech: [{ speaker: '林清晏', text: wrongText, source_text: wrongSource, delivery: '急促', mode: 'dialogue' }],
+      sound_effects: [], music: '', silent: false } }] }] }))
+  sceneId = f.scene.id
+  run('UPDATE script_scenes SET dialogue=? WHERE id=?', source, sceneId)
+  const context = await f.context(), result = await f.invoke('plan', { signature: context.signature, scene_ids: [sceneId], model_id: 'mock-text', skill_ids: [] })
+  assert.equal(f.outlineCalls(), 1); assert.equal(f.expansionCalls(), 1); assert.equal(f.calls(), 2)
+  assert.equal(result.scenes[0].shots[0].audio_plan.speech[0].text, original)
+  assert.equal(result.scenes[0].shots[0].audio_plan.speech[0].source_text, source)
 })

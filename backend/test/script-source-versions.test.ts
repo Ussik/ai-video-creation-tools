@@ -242,7 +242,7 @@ test('revision save invalidates old maps and late results; rebuilt maps use revi
     const map = scriptSourceAnalysis(project.id)!
     assert.equal(map.status, 'ready', map.error || '')
     assert.doesNotMatch(JSON.stringify(map), /旧地图|旧内容/)
-    assert.ok(calls >= 3, 'confirmed revision rebuilds the map and full-story information')
+    assert.ok(calls >= 2, 'confirmed revision rebuilds the map and full-story information')
     const evidence = map.sections[0]!.events[0]!.evidence
     assert.equal(proposed.content.slice(evidence.offset, evidence.offset + evidence.quote.length), evidence.quote)
     commitScriptSourceUpdate(project.id, { ...update(project.id), content: proposed.content.replace('伙伴重聚', '伙伴在河岸重聚') })
@@ -258,12 +258,14 @@ test('confirmed save reuses server-analyzed identical proposed content; rollback
   const analyzer = createScriptSourceAnalyzer(async (_id, _model, prompt) => { calls++; return mapReply(prompt) }, undefined, { configuration: () => configuration })
   // Start from a confirmed source whose current map is already ready.
   const current = effectiveScriptSource(project.id)!
-  const existing = { id: newId(), source_version: (await import('../src/modules/script/script-source-analysis.js')).scriptSourceVersion(current), model_id: 'mock', status: 'ready', phase: 'ready', pipeline_version: sourceAnalysisPipelineVersion, completed_chunks: 1, total_chunks: 1, sections: [], error: null, updated_at: current.updated_at }
-  db.prepare('INSERT OR REPLACE INTO script_source_analyses (project_id,id,source_version,status,snapshot,updated_at) VALUES (?,?,?,?,?,?)').run(project.id, existing.id, existing.source_version, 'ready', JSON.stringify(existing), current.updated_at)
+  const existing = saveReviewedAnalysis(project.id, sourceAnalysisConfigurationHash(configuration))
+  existing.model_id = 'mock'
+  db.prepare('UPDATE script_source_analyses SET snapshot=? WHERE project_id=?').run(JSON.stringify(existing), project.id)
   analyzer.start(project.id, 'mock')
+  calls = 0
   try {
     const prepared = await analyzeSourceSnapshot({ ...current, content: proposed.content }, 'mock', async prompt => { calls++; return mapReply(prompt) }, new AbortController().signal, configuration)
-    assert.equal(calls, 3)
+    assert.equal(calls, 2)
     assert.throws(() => db.transaction(() => { commitScriptSourceUpdate(project.id, proposed); throw new Error('rollback') })(), /rollback/)
     await new Promise(resolve => setTimeout(resolve, 0))
     assert.equal(scriptSourceAnalysis(project.id)!.id, existing.id)
@@ -271,7 +273,7 @@ test('confirmed save reuses server-analyzed identical proposed content; rollback
     commitScriptSourceUpdate(project.id, proposed); await new Promise(resolve => setTimeout(resolve, 0))
     assert.equal(scriptSourceAnalysis(project.id)!.status, 'ready')
     assert.deepEqual(scriptSourceAnalysis(project.id)!.story, prepared.story)
-    assert.equal(calls, 3, 'confirmed identical source reuses validated private snapshot without another AI call')
+    assert.equal(calls, 2, 'confirmed identical source reuses validated private snapshot without another AI call')
     assert.equal(originalScriptSource(project.id)!.content, originalText)
   } finally { await analyzer.close() }
 })
@@ -347,7 +349,7 @@ test('committed revision candidates bind exact source, upload, model and configu
   assert.deepEqual(revisionSeed(project.id), seed)
 })
 
-test('unknown configuration, unreviewed analyses and damaged snapshots cannot become revision seeds or block confirmation', async t => {
+test('unknown configuration and damaged analyses cannot become revision seeds, while quality diagnostics remain non-blocking', async t => {
   for (const issue of ['unknown_configuration', 'quality_issues', 'partial', 'damaged_json', 'invalid_model'] as const) await t.test(issue, async () => {
     const { project, analysis, proposed } = await longRevisionFixture()
     const notifications: string[] = []
@@ -361,8 +363,9 @@ test('unknown configuration, unreviewed analyses and damaged snapshots cannot be
         .run(analysis.status, issue === 'damaged_json' ? '{invalid snapshot' : JSON.stringify(analysis), project.id)
       const saved = commitScriptSourceUpdate(project.id, proposed)
       assert.equal(saved.content, proposed.content)
-      assert.equal(revisionSeed(project.id), undefined)
+      assert.equal(!!revisionSeed(project.id), issue === 'quality_issues')
       await new Promise<void>(resolve => setImmediate(resolve))
+      if (issue === 'quality_issues') assert.deepEqual(notifications, ['revision-fixture-model'])
       if (issue === 'damaged_json' || issue === 'invalid_model') assert.deepEqual(notifications, [])
     } finally { unsubscribe() }
   })

@@ -125,7 +125,7 @@ test('pausing an active synthesis aborts its request, retains the completed map,
     assert.equal(result.id, resumed.id)
     assert.deepEqual(result.sections, before.sections)
     assert.equal(mapCalls, 1, 'resuming reuses the full-source map already saved before pause')
-    assert.equal(synthesisCalls, 2); assert.equal(reviewCalls, 1)
+    assert.equal(synthesisCalls, 2); assert.equal(reviewCalls, 0)
     lateResult.resolve(); await tick(); await tick()
     assert.equal(scriptSourceAnalysis(item.id)!.id, resumed.id)
     assert.equal(scriptSourceAnalysis(item.id)!.status, 'ready', 'the cancelled request cannot overwrite the resumed task')
@@ -157,7 +157,7 @@ test('service recovery preserves paused progress without starting a model until 
     assert.equal(calls, 0, 'a conversation readiness check also leaves the task paused')
     second.start(item.id, 'model'); const result = await ready(item.id)
     assert.deepEqual(result.sections, paused.sections)
-    assert.equal(mapCalls, 0); assert.equal(calls, 2, 'only synthesis and independent review remain after restart')
+    assert.equal(mapCalls, 0); assert.equal(calls, 1, 'only synthesis remains after restart')
   } finally { await second.close(); run('DELETE FROM projects WHERE id=?', item.id) }
 })
 

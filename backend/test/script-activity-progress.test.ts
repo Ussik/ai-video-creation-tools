@@ -158,3 +158,13 @@ test('long-running execution records persist beyond former count, size, round an
   assert.equal(parsed.at(-1)!.attempt, 12)
   assert.equal(scriptActivitiesSchema.safeParse([...entries, entries[0]]).success, false, 'identity validation still applies')
 })
+
+
+test('provider diagnostics survive strict execution-record persistence without admitting private payloads', () => {
+  const entry = { id: 'diagnostic-model', kind: 'model', label: '模型处理', summary: '已返回', status: 'succeeded', started_at: 1,
+    request_has_tools: false, request_tool_count: 0, request_tool_names: ['get_source'], request_tool_choice: 'none',
+    structured_enforcement: 'json_schema', response_block_types: ['message'], finish_reason: 'stop' }
+  assert.deepEqual(scriptActivitiesSchema.parse(JSON.parse(JSON.stringify([entry]))), [entry])
+  assert.equal(scriptActivitiesSchema.safeParse([{ ...entry, request_tool_count: -1 }]).success, false)
+  assert.equal(scriptActivitiesSchema.safeParse([{ ...entry, private_reasoning: 'must not be stored' }]).success, false)
+})

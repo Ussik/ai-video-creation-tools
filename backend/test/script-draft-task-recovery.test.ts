@@ -36,7 +36,7 @@ const response = (content: unknown) => Response.json({ choices: [{ message: { co
   usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 } })
 const events = (body: string) => body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)))
 
-async function fixture(t: TestContext, strategy: 'manual' | 'ai', requiredRounds = 2, failRecoveryAdvance = false) {
+async function fixture(t: TestContext, strategy: 'manual' | 'ai', requiredRounds = 2, failFirst = false) {
   const project = await api('POST', '/api/projects', { name: '已授权修订恢复' })
   const provider = await api('POST', '/api/providers', { name: 'task fixture', base_url: 'https://draft-task-fixture.invalid/v1' })
   const model = await api('POST', '/api/models', { provider_id: provider.id, name: '文本模型', remote_id: 'fixture', modality: 'text', protocol: 'chat_completions',
@@ -58,12 +58,7 @@ async function fixture(t: TestContext, strategy: 'manual' | 'ai', requiredRounds
       execution: { title: '补齐大纲', request: message, started_at: Date.now(), focus_artifact: 'all', mode: 'script' } } }
   const url = `/api/projects/${project.id}/script/director/tasks/${id}`
   let patchCalls = 0, successfulPatches = 0, audits = 0, failSecond = true
-  let recoveryInTransaction = false, originalRecoveryKey: string | undefined
-  if (failRecoveryAdvance) {
-    db.function('test_recovery_transaction', () => { recoveryInTransaction = db.inTransaction; return 1 })
-    db.exec(`CREATE TEMP TRIGGER test_fail_recovery_advance BEFORE UPDATE OF request_payload ON script_director_tasks
-      BEGIN SELECT test_recovery_transaction(); SELECT RAISE(ABORT, '模拟恢复资料写入失败'); END`)
-  }
+  let originalRecoveryKey: string | undefined
   const observed: string[] = []
   t.mock.method(globalThis, 'fetch', async (_url, init) => {
     const prompt = JSON.parse(String(init?.body)).messages[0].content as string
@@ -79,127 +74,70 @@ async function fixture(t: TestContext, strategy: 'manual' | 'ai', requiredRounds
     patchCalls++
     originalRecoveryKey ??= one<{ resume_key: string }>('SELECT resume_key FROM script_director_tasks WHERE id=?', id)!.resume_key
     observed.push(prompt)
-    if (patchCalls > 1 && failSecond) return Response.json({ error: { message: '第二轮提供商配置暂不可用' } }, { status: 400 })
+    if (failFirst && patchCalls === 1 && failSecond) return Response.json({ error: { message: '第二轮提供商配置暂不可用' } }, { status: 400 })
     successfulPatches++
     const find = successfulPatches === 1 ? quote : adopted + '钥匙暂时失效。'.repeat(successfulPatches - 2)
     return response({ decisions: [answer], summary: '落实原有记忆代价方案。', source_edits: [],
       edits: [{ source_key: 'outline', find, replace: adopted + '钥匙暂时失效。'.repeat(successfulPatches - 1), reason: '沿用已授权方案补齐因果。' }] })
   })
-  let first: Awaited<ReturnType<typeof app.inject>>
-  try {
-    first = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat/stream`, payload: body })
-  } finally {
-    if (failRecoveryAdvance) db.exec('DROP TRIGGER test_fail_recovery_advance')
-  }
+  const first = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat/stream`, payload: body })
   assert.equal(first.statusCode, 200, first.body)
-  assert.match(first.body, failRecoveryAdvance ? /模拟恢复资料写入失败/ : /第二轮提供商配置暂不可用/)
-  assert.equal((await api('GET', url)).status, 'failed')
-  assert.equal(successfulPatches, 1)
-  const current = pendingScriptDraft(project.id)!
-  assert.equal(current.id, pending.id)
-  if (failRecoveryAdvance) {
-    assert.equal(recoveryInTransaction, true, 'the durable recovery update must execute inside the candidate transaction')
-    assert.equal(current.version, pending.version, 'failed recovery persistence rolls back the candidate version')
-    assert.deepEqual(current.draft, pending.draft, 'a rolled-back candidate cannot expose only half the version advance')
-  } else assert.notEqual(current.version, pending.version)
-  assert.equal(current.completed_rounds, 1)
-  assert.equal(current.run?.strategy, strategy)
-  if (strategy === 'manual') assert.deepEqual(current.run?.answers, [answer])
-  const row = one<{ request_payload: string; resume_key: string; request_hash: string }>('SELECT request_payload,resume_key,request_hash FROM script_director_tasks WHERE id=?', id)!
-  const retainedRequest = JSON.parse(row.request_payload)
-  assert.deepEqual(retainedRequest.draft_resolution, failRecoveryAdvance ? body.draft_resolution : { id: current.id, version: current.version, strategy: 'continue' })
-  if (failRecoveryAdvance) assert.equal(row.resume_key, originalRecoveryKey, 'a rolled-back candidate retains its matching recovery key')
-  // The server binds each message to its stored id (provenance); wording and order are what must stay exact.
-  assert.deepEqual(retainedRequest.messages.map(({ id: _id, ...rest }: { id?: string }) => rest), body.messages, 'persist the actual authorized creator context')
   const scope = scriptProposalBudgetScope(draft)
-  return { project, model, url, body, current, row, observed,
+  return { project, model, url, body, first, observed,
     usage: () => sourceProposalBudget(project.id, scope).usage,
     recover: () => { failSecond = false },
     counts: () => ({ patchCalls, successfulPatches, audits }) }
 }
 
-test('durable known-issue retries resume the new version with the same authorization and retain usage without obsolete caps', async t => {
+test('one explicit repair stops after one review, retains findings and waits for a new explicit request', async t => {
   for (const strategy of ['manual', 'ai'] as const) await t.test(strategy, async t => {
     const f = await fixture(t, strategy)
-    const usage = f.usage()
-    assert.ok(usage.requests > 0)
-    const beforeDuplicate = f.counts()
-    const duplicate = await app.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/director/chat/stream`, payload: f.body })
-    assert.equal(duplicate.statusCode, 200, duplicate.body)
-    assert.match(duplicate.body, /第二轮提供商配置暂不可用/)
-    assert.deepEqual(f.counts(), beforeDuplicate, 'the original request remains an idempotent task lookup after recovery advances')
-    const oldLimit = process.env.VIDEO_STUDIO_SCRIPT_ANALYSIS_MAX_REQUESTS
-    try {
-      process.env.VIDEO_STUDIO_SCRIPT_ANALYSIS_MAX_REQUESTS = String(usage.requests)
-      const before = f.counts()
-      await api('POST', f.url + '/continue', {})
-      const retried = await app.inject({ method: 'GET', url: f.url + '/stream' })
-      assert.match(retried.body, /第二轮提供商配置暂不可用/)
-      assert.doesNotMatch(retried.body, /已达到模型请求预算/)
-      assert.ok(f.counts().patchCalls > before.patchCalls, 'the old cumulative request cap does not prevent a provider dispatch')
-      assert.equal(f.counts().successfulPatches, before.successfulPatches)
-      assert.equal(f.counts().audits, before.audits, 'a genuine provider failure still stops before independent review')
-      assert.equal(pendingScriptDraft(f.project.id)!.completed_rounds, 1)
-    } finally {
-      if (oldLimit === undefined) delete process.env.VIDEO_STUDIO_SCRIPT_ANALYSIS_MAX_REQUESTS
-      else process.env.VIDEO_STUDIO_SCRIPT_ANALYSIS_MAX_REQUESTS = oldLimit
-    }
-    f.recover()
-    await api('POST', f.url + '/continue', {})
-    const completed = await app.inject({ method: 'GET', url: f.url + '/stream' })
-    const done = events(completed.body).find(event => event.type === 'done')
-    assert.ok(done, completed.body)
-    assert.equal(done.draft_resolution, null)
-    assert.equal(f.counts().successfulPatches, 2, 'the first validated repair is retained rather than replayed')
-    assert.equal(f.counts().audits, 2)
-    assert.ok(f.usage().requests > usage.requests)
-    assert.equal(one<{ request_hash: string }>('SELECT request_hash FROM script_director_tasks WHERE id=?', f.body.task.id)!.request_hash, f.row.request_hash)
-    assert.equal((await api('GET', f.url)).status, 'succeeded')
+    const done = events(f.first.body).find(event => event.type === 'done')
+    assert.ok(done?.draft_resolution, f.first.body)
+    assert.deepEqual(f.counts(), { patchCalls: 1, successfulPatches: 1, audits: 1 }, 'unresolved findings never schedule a second round')
+    const retained = pendingScriptDraft(f.project.id)!
+    assert.equal(retained.completed_rounds, 1); assert.ok(retained.draft.artifacts[0]!.content.includes(adopted))
     assert.equal((await api('GET', `/api/projects/${f.project.id}/script/source`)).content, original)
-    assert.equal((await api('GET', `/api/projects/${f.project.id}`)).script.outline, '')
-    const lastPrompt = f.observed.at(-1)!
-    assert.match(lastPrompt, strategy === 'manual' ? /只失去一天记忆，保留60集和回家结局/ : /沿用|只失去一天记忆/)
+    assert.equal((await api('GET', `/api/projects/${f.project.id}`)).script.outline, '', 'no formal write without confirmation')
+    const before = f.counts()
+    await app.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/director/chat/stream`, payload: f.body })
+    assert.deepEqual(f.counts(), before, 'replaying a completed task must not authorize another repair')
+    f.recover()
+    const explicit = { ...f.body, task: { ...f.body.task, id: crypto.randomUUID() },
+      draft_resolution: { id: retained.id, version: retained.version, strategy: 'continue' } }
+    const next = await app.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/director/chat/stream`, payload: explicit })
+    assert.ok(events(next.body).some(event => event.type === 'done' && !event.draft_resolution), next.body)
+    assert.deepEqual(f.counts(), { patchCalls: 2, successfulPatches: 2, audits: 2 })
+    assert.equal(pendingScriptDraft(f.project.id), null)
   })
 })
 
-test('an authorized version advance does not refresh away later source or model configuration changes', async t => {
+test('transport failure retains the original candidate and explicit task recovery completes one repair', async t => {
+  const f = await fixture(t, 'manual', 1, true)
+  assert.ok(events(f.first.body).some(event => event.type === 'error'))
+  assert.deepEqual(f.counts(), { patchCalls: 1, successfulPatches: 0, audits: 0 })
+  const retained = pendingScriptDraft(f.project.id)!
+  assert.equal(retained.version, f.body.draft_resolution.version)
+  assert.ok(retained.draft.artifacts[0]!.content.includes(quote))
+  const requests = f.usage().requests
+  f.recover()
+  await api('POST', f.url + '/continue', {})
+  const result = await app.inject({ method: 'GET', url: f.url + '/stream' })
+  assert.ok(events(result.body).some(event => event.type === 'done' && !event.draft_resolution), result.body)
+  assert.equal(f.counts().successfulPatches, 1); assert.equal(f.counts().audits, 1)
+  assert.ok(f.usage().requests > requests)
+  assert.equal((await api('GET', `/api/projects/${f.project.id}/script/source`)).content, original)
+})
+
+test('explicit task recovery rejects source or model drift and preserves the pending candidate', async t => {
   for (const mutation of ['source', 'model'] as const) await t.test(mutation, async t => {
-    const f = await fixture(t, 'manual'), before = f.counts()
-    if (mutation === 'source') db.prepare('UPDATE script_source_documents SET content=? WHERE project_id=?').run(original + '新增故事要求。', f.project.id)
+    const f = await fixture(t, 'manual', 1, true), before = f.counts()
+    const candidate = pendingScriptDraft(f.project.id)!
+    if (mutation === 'source') db.prepare('UPDATE script_source_documents SET content=? WHERE project_id=?').run(original + '新增要求。', f.project.id)
     else db.prepare('UPDATE models SET remote_id=? WHERE id=?').run('externally-changed-model', f.model.id)
     const result = await app.inject({ method: 'POST', url: f.url + '/continue', payload: {} })
     assert.equal(result.statusCode, 409, result.body)
-    assert.match(result.body, /已变化/)
-    assert.deepEqual(f.counts(), before)
-    assert.equal(pendingScriptDraft(f.project.id)!.version, f.current.version)
+    assert.match(result.body, /已变化/); assert.deepEqual(f.counts(), before)
+    assert.equal(pendingScriptDraft(f.project.id)!.version, candidate.version)
   })
-})
-
-test('continuing an interrupted automatic round can finish after six rounds under the original authorization', async t => {
-  const f = await fixture(t, 'ai', 6)
-  f.recover()
-  await api('POST', f.url + '/continue', {})
-  const continued = await app.inject({ method: 'GET', url: f.url + '/stream' })
-  const done = events(continued.body).find(event => event.type === 'done')
-  assert.ok(done, continued.body)
-  assert.equal(done.draft_resolution, null)
-  assert.equal(f.counts().successfulPatches, 6)
-  assert.equal(f.counts().audits, 6)
-  assert.ok(done.draft.artifacts.find((document: { artifact_type: string }) => document.artifact_type === 'outline').content.includes(adopted + '钥匙暂时失效。'.repeat(5)))
-  assert.ok(f.observed.every(prompt => /只失去一天记忆|已处理事项/.test(prompt)))
-  assert.equal((await api('GET', f.url)).status, 'succeeded')
-  assert.equal((await api('GET', `/api/projects/${f.project.id}`)).script.outline, '')
-})
-
-test('failure while persisting a known repair continuation rolls back the candidate and retains a compatible recoverable task', async t => {
-  const f = await fixture(t, 'manual', 2, true)
-  f.recover()
-  await api('POST', f.url + '/continue', {})
-  const continued = await app.inject({ method: 'GET', url: f.url + '/stream' })
-  const done = events(continued.body).find(event => event.type === 'done')
-  assert.ok(done, continued.body)
-  assert.equal(done.draft_resolution, null)
-  assert.equal(f.counts().successfulPatches, 2, 'recovery reuses the validated pre-transaction patch instead of generating it again')
-  assert.equal(f.counts().audits, 2)
-  assert.equal(one<{ request_hash: string }>('SELECT request_hash FROM script_director_tasks WHERE id=?', f.body.task.id)!.request_hash, f.row.request_hash)
 })

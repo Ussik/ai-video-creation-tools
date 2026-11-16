@@ -231,17 +231,17 @@ test('directing review and motion skill provenance are visible and manual edits 
   const view = await mount({ intent: 'plan' })
   try {
     await act(async () => button('开始规划').click())
-    assert.match(document.body.textContent!, /运镜与接镜文字复核已完成，已自动修订并复查/)
+    assert.match(document.body.textContent!, /分镜生成已完成，导演复核通过，已自动修订并复查/)
     const provenance = document.querySelector<HTMLElement>('.storyboard-planner-used-sources')
     assert.ok(provenance)
     assert.match(provenance.textContent!, /专业视频运镜/)
     await fillTextarea('镜头描述', '人物先看向门口，再转身')
     assert.match(document.body.textContent!, /分镜已修改，当前版本尚未复核运镜与接镜/)
-    assert.doesNotMatch(document.body.textContent!, /运镜与接镜文字复核已完成/)
+    assert.doesNotMatch(document.body.textContent!, /分镜生成已完成，导演复核通过/)
     await act(async () => button('复查当前草稿').click())
     assert.equal(reviewBody.scenes[0].shots[0].prompt, '人物先看向门口，再转身')
     assert.equal(Object.hasOwn(reviewBody.scenes[0], 'scene_heading'), false)
-    assert.match(document.body.textContent!, /运镜与接镜文字复核已完成/)
+    assert.match(document.body.textContent!, /分镜生成已完成，导演复核通过/)
     const prompt = [...document.querySelectorAll<HTMLTextAreaElement>('textarea')].find(node => node.value === '人物先看向门口，再转身')
     assert.ok(prompt, 'review does not rewrite manual text')
   } finally { await view.destroy() }
@@ -1278,6 +1278,34 @@ const taskSnapshot = { id: 'task-id', project_id: 'planner', input_key: 'input-k
   started_at: Date.now(), updated_at: Date.now(), active_duration_ms: 12000, stage_duration_ms: 2000, timings: { generating: 10000 },
   can_resume: false, candidate: taskCandidate }
 
+test('an 18-shot outline checkpoint shows 122 versus 120 seconds and resumes without a saveable preview', async t => {
+  let resumes = 0
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    const path = String(url)
+    if (path.endsWith('/context')) return Response.json({ ...context, planning_task_version: 1 })
+    if (path.endsWith('/preview')) return Response.json({ preview: null })
+    if (path.endsWith('/tasks/lookup')) return Response.json({ task: null })
+    if (path.endsWith('/resume')) { resumes++; assert.equal(init?.method, 'POST') }
+    else if (!path.endsWith('/tasks')) throw new Error(`Unexpected ${path}`)
+    return Response.json({ ...taskSnapshot, candidate: undefined, status: 'failed', stage: 'generating', can_resume: true,
+      progress: { phase: 'outline', completed_shots: 0, total_shots: 0 },
+      outline_checkpoint: { validated: false, scenes: [{ scene_id: 'scene', shot_count: 18, scene_duration: 120, shot_duration_sum: 122 }] },
+      error: { stage: 'generating', failure_type: 'timing_mismatch', message: '时长不符' } })
+  })
+  const view = await mount({ intent: 'plan' })
+  try {
+    await act(async () => button('开始规划').click())
+    assert.match(document.querySelector('[aria-label="分镜规划进度"]')!.textContent!, /已保留大纲 18 镜 · 镜头合计 122 秒 \/ 目标 120 秒/)
+    assert.match(document.querySelector('.storyboard-planner-footer-status')!.textContent!, /已保留大纲 18 镜/)
+    assert.match(document.querySelector('.storyboard-planner-scene-list')!.textContent!, /已保留大纲 · 18 镜/)
+    assert.equal(document.querySelector('fieldset.storyboard-planner-preview'), null)
+    assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '保存分镜方案'), false)
+    assert.equal(button('继续规划').disabled, false)
+    await act(async () => button('继续规划').click())
+    assert.equal(resumes, 1)
+  } finally { await view.destroy() }
+})
+
 test('an interrupted generation shows preserved batch progress without enabling a partial preview or save', async t => {
   t.mock.method(globalThis, 'fetch', async url => {
     const path = String(url)
@@ -1517,23 +1545,70 @@ test('reopening before acceptance only queries the remembered request and keeps 
 })
 
 
-test('complete inconclusive candidates stay editable and require a fresh receipt', async t => {
+test('a complete no-action inconclusive candidate can be saved and edits still require a fresh receipt', async t => {
   let reviews = 0
   mockPlanningFetch(t, async url => {
     if (String(url).endsWith('/context')) return Response.json(context)
-    if (String(url).endsWith('/plan')) return Response.json({ ...draft, directing_review: { status: 'inconclusive', repaired: false, issues: [], error: { code: 'review_unavailable', message: '复查连接中断' } } })
+    if (String(url).endsWith('/plan')) return Response.json({ ...draft, directing_review: { status: 'review_inconclusive_no_action', review_id: 'inconclusive-review', repaired: false, issues: [], error: { code: 'review_unavailable', message: '复查连接中断' } } })
     if (String(url).endsWith('/review')) { reviews++; return Response.json(acceptedReview) }
     throw new Error(`Unexpected ${url}`)
   }, true)
   const view = await mount({ intent: 'plan' })
   try {
     await act(async () => button('开始规划').click())
-    assert.match(document.body.textContent!, /草稿已保留，本次复查未能得出结论/)
+    assert.match(document.body.textContent!, /复核未定且没有待处理问题；可以保存草稿/)
     assert.equal((document.querySelector('fieldset.storyboard-planner-preview') as HTMLFieldSetElement).disabled, false)
-    assert.equal(button('保存分镜方案').disabled, true)
+    assert.equal(button('保存分镜方案').disabled, false)
     await fillTextarea('镜头描述', '完整候选人工修改'); assert.equal(button('保存分镜方案').disabled, true)
     await act(async () => button('复查当前草稿').click()); assert.equal(reviews, 1)
     assert.equal(button('保存分镜方案').disabled, false)
+  } finally { await view.destroy() }
+})
+
+test('invalid review evidence with issues keeps an explicit save-draft path while confirmed errors stay blocked', async t => {
+  const issue = { code: 'action_mismatch', scene_id: 'scene', shot_index: 0, related_scene_id: null, related_shot_index: null,
+    severity: 'error', message: '动作起点需要人工确认', evidence: '引用未能校验', repair: '复核来源后再决定是否调整' }
+  const inconclusive = { status: 'review_inconclusive_needs_user', review_id: 'invalid-evidence-review', repaired: false, issues: [issue],
+    error: { code: 'storyboard_review_invalid', message: '复核证据无效' } }
+  mockPlanningFetch(t, async url => {
+    const path = String(url)
+    if (path.endsWith('/context')) return Response.json(context)
+    if (path.endsWith('/plan')) return Response.json({ ...draft, directing_review: inconclusive })
+    if (path.endsWith('/review')) return Response.json(acceptedReview)
+    throw new Error(`Unexpected ${url}`)
+  })
+  const view = await mount({ intent: 'plan' })
+  try {
+    await act(async () => button('开始规划').click())
+    assert.match(document.body.textContent!, /复核未定，存在待确认问题；草稿已保留，可以保存草稿或稍后复核/)
+    assert.match(document.body.textContent!, /动作起点需要人工确认/)
+    assert.equal(button('保存分镜方案').disabled, false)
+    assert.equal([...document.querySelectorAll('button')].some(item => item.textContent === '仅修复已确认问题'), false)
+  } finally { await view.destroy() }
+})
+
+test('canvas mode saves an inconclusive issue draft separately and blocks direct canvas import', async t => {
+  const issue = { code: 'action_mismatch', scene_id: 'scene', shot_index: 0, related_scene_id: null, related_shot_index: null,
+    severity: 'error', message: '动作起点需要人工确认', evidence: '引用未能校验', repair: '复核来源后再决定是否调整' }
+  const requests: Array<{ path: string; body: any }> = []
+  mockPlanningFetch(t, async (url, init) => {
+    const path = String(url), body = JSON.parse(String(init?.body)); requests.push({ path, body })
+    if (path.endsWith('/context')) return Response.json(context)
+    if (path.endsWith('/plan')) return Response.json({ ...draft, directing_review: { status: 'review_inconclusive_needs_user', review_id: 'invalid-evidence-review', repaired: false, issues: [issue],
+      error: { code: 'storyboard_review_invalid', message: '复核证据无效' } } })
+    if (path.endsWith('/commit')) return Response.json({ scene_ids: ['scene'], shots: [], visual_profiles: [], shot_visual_bindings: [], created_profiles: 0, created_shots: 1 })
+    throw new Error(`Unexpected ${path}`)
+  })
+  const view = await mount({ intent: 'canvas' })
+  try {
+    await act(async () => button('开始规划').click())
+    assert.equal(button('确认加入画布').disabled, true)
+    assert.equal(button('保存草稿，稍后复核').disabled, false)
+    await act(async () => button('保存草稿，稍后复核').click())
+    const commit = requests.find(request => request.path.endsWith('/commit'))
+    assert.ok(commit)
+    assert.equal(commit.body.save_only, true)
+    assert.equal(requests.some(request => request.path.endsWith('/canvas')), false)
   } finally { await view.destroy() }
 })
 

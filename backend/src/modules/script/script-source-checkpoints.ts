@@ -1,6 +1,4 @@
 import type { ScriptSourceAnalysis } from '@video-studio/shared/script/script-source-document'
-import { hasPassedSourceQuality } from './script-source-quality.js'
-import { sourceQualityRepairProgress } from './script-source-quality-repair.js'
 import { validateSourceStory } from './script-source-story.js'
 import { scriptSourcePassages, sourceAnalysisPipelineVersion, sourceMapSchema, sourceSectionRanges, sourceWorkPlan,
   validateSourceCoverage, workPassages, type SourcePassage } from './script-source-map.js'
@@ -22,7 +20,9 @@ export function prepareSourceWork(content: string, state: ScriptSourceAnalysis):
         state.work = plan
         state.completed_chunks = plan.length; state.total_chunks = plan.length
         state.completed_characters = content.length; state.pipeline_version = sourceAnalysisPipelineVersion
-        state.phase = state.status === 'ready' && hasPassedSourceQuality(state) ? 'ready' : 'synthesis'
+        // A complete map and story are usable even when an optional historical
+        // quality diagnostic contains findings. Quality is informational here.
+        state.phase = state.status === 'ready' ? 'ready' : 'synthesis'
         return passages
       }
       const work = state.work
@@ -59,36 +59,26 @@ export function prepareSourceWork(content: string, state: ScriptSourceAnalysis):
 }
 
 export function sourceAnalysisResume(state: ScriptSourceAnalysis): NonNullable<ScriptSourceAnalysis['resume']> {
-  if (state.story && state.quality?.status === 'issues' && state.quality_rebuild_for !== state.quality.input_hash) {
-    const completed = sourceQualityRepairProgress(state) ?? 0, total = state.quality.findings.length
-    return { available: true, message: completed >= total
-      ? '目录、全剧信息及问题修补结果已保存；继续后完成全文独立质量核对。'
-      : `目录和全剧信息已保存${completed ? `，已修补 ${completed}/${total} 项问题` : ''}；继续后逐项修补未完成的问题，再做全文独立核对。` }
-  }
+  if (state.story) return { available: true, message: '全文分析和全剧整合已完成，可继续创作；历史质量诊断仅供参考。' }
   const pageCount = (checkpoint: { steps: Record<string, { value: unknown }> } | undefined) => Object.values(checkpoint?.steps || {}).reduce((count, step) => {
     const value = step.value as { items?: unknown[] } | null
     return count + (Array.isArray(value?.items) ? value.items.length : 0)
   }, 0)
-  const qualityItems = pageCount(state.quality_work?.checkpoint)
-  if (state.story) return { available: true, message: qualityItems
-    ? `目录、全剧信息及 ${qualityItems} 项完整核对结果已保存；继续后只处理剩余核对结果。`
-    : '目录和全剧信息已保存；继续后完成独立质量核对。' }
   const tasks = state.story_work?.tasks || [], completed = tasks.filter(task => task.result !== undefined).length
   const partialItems = tasks.reduce((count, task) => count + pageCount(task.output_checkpoint), 0)
-  if (partialItems) return { available: true, message: `目录、${completed} 项全剧整合任务及 ${partialItems} 个完整条目已保存；继续后处理未完成条目，再独立核对。` }
+  if (partialItems) return { available: true, message: `目录、${completed} 项全剧整合任务及 ${partialItems} 个完整条目已保存；继续后处理未完成条目。` }
   if (completed) return { available: true,
-    message: `目录及 ${completed}/${tasks.length} 项全剧整合结果已保存；继续后处理未完成项，再独立核对。` }
+    message: `目录及 ${completed}/${tasks.length} 项全剧整合结果已保存；继续后处理未完成项。` }
   if (state.total_chunks > 0 && state.completed_chunks === state.total_chunks) return { available: true,
-    message: `已保存完整目录（${state.sections.length} 段）；继续后整理全剧信息，再独立核对。` }
+    message: `已保存完整目录（${state.sections.length} 段）；继续后整理全剧信息。` }
   const savedMap = !!state.work?.[state.completed_chunks]?.result
   if (state.completed_chunks > 0 || savedMap) return { available: true,
     message: `已保存 ${state.completed_chunks}/${state.total_chunks} 页目录（${state.sections.length} 段）${savedMap ? '及当前页待修复目录' : ''}；继续后从未完成处处理。` }
-  return { available: false, message: '原稿已保留，尚无校验通过的分析结果；重试将从目录开始。' }
+  return { available: false, message: '原稿已保留，尚无完整分析结果；重试将从目录开始。' }
 }
 
 export function sourceAnalysisStepLabel(state: ScriptSourceAnalysis) {
-  if (state.progress?.stage === 'repairing' && state.story) return '分析问题修补'
-  if (state.story) return '独立质量核对'
+  if (state.story) return '全剧整合'
   if (state.phase === 'synthesis') return '全剧整合'
   return `目录第 ${Math.min(state.completed_chunks + 1, state.total_chunks || 1)}/${state.total_chunks || 1} 页${state.progress?.stage === 'repairing' ? '证据修复' : '生成'}`
 }

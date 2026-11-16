@@ -108,13 +108,13 @@ test('version 5 ready migration preserves source identity, sections, story and t
   assert.equal(saved.completed_chunks, plan.length)
 })
 
-test('resume retains complete analyses for targeted quality repair and preserves legacy corrective pages', () => {
+test('resume treats a complete map and story as usable while preserving historical findings', () => {
   const findings: NonNullable<ScriptSourceAnalysis['quality']> = { status: 'issues', input_hash: 'reviewed-old-map-and-story',
     findings: [{ kind: 'omission', explanation: '遗漏终场伙伴身份。', unit_ids: [0] }] }
   const old = state({ phase: 'synthesis', completed_chunks: plan.length, sections: structuredClone(fullSections), story: fullStory(), quality: findings })
   assert.equal(sourceAnalysisResume(old).available, true)
-  assert.match(sourceAnalysisResume(old).message, /目录和全剧信息已保存/)
-  assert.match(sourceAnalysisResume(old).message, /修补未完成的问题/)
+  assert.match(sourceAnalysisResume(old).message, /可继续创作/)
+  assert.match(sourceAnalysisResume(old).message, /历史质量诊断/)
 
   const correcting = state({ completed_chunks: 1, sections: structuredClone(fullSections.slice(0, 1)), quality: structuredClone(findings),
     quality_rebuild_for: findings.input_hash })
@@ -129,7 +129,7 @@ test('resume retains complete analyses for targeted quality repair and preserves
   assert.match(sourceAnalysisResume(correcting).message, /已保存 1\/\d+ 页目录/)
 })
 
-test('resume reports durable per-finding repairs and a review-only continuation after all findings are repaired', () => {
+test('resume does not re-enter historical quality repair after a complete story exists', () => {
   const saved = state({ phase: 'synthesis', completed_chunks: plan.length, sections: structuredClone(fullSections), story: fullStory(),
     quality: { status: 'issues', input_hash: 'initial-review', findings: [
       { kind: 'omission', explanation: '遗漏伙伴身份。', unit_ids: [0] },
@@ -139,13 +139,11 @@ test('resume reports durable per-finding repairs and a review-only continuation 
     findings_hash: createHash('sha256').update(JSON.stringify(saved.quality!.findings)).digest('hex'),
     current_hash: sourceQualityInputHash(saved), completed_findings: 1 }
   assert.equal(sourceAnalysisResume(saved).available, true)
-  assert.match(sourceAnalysisResume(saved).message, /已修补 1\/2 项问题/)
+  assert.match(sourceAnalysisResume(saved).message, /可继续创作/)
   saved.quality_repair!.completed_findings = 2
-  assert.match(sourceAnalysisResume(saved).message, /问题修补结果已保存/)
-  assert.match(sourceAnalysisResume(saved).message, /全文独立质量核对/)
+  assert.match(sourceAnalysisResume(saved).message, /历史质量诊断/)
   saved.quality_repair.current_hash = 'damaged-analysis-fingerprint'
-  assert.doesNotMatch(sourceAnalysisResume(saved).message, /已修补|问题修补结果已保存/)
-  assert.match(sourceAnalysisResume(saved).message, /修补未完成的问题/)
+  assert.match(sourceAnalysisResume(saved).message, /可继续创作/)
 })
 
 test('a valid partial revision checkpoint preserves candidate provenance while retaining a continuous saved prefix', () => {

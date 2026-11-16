@@ -6,7 +6,7 @@ export const storyboardRepairFields = ['prompt', 'start_state', 'end_state', 'cu
   'scene_direction.axis', 'scene_direction.dramatic_progression'] as const
 export const storyboardEvidenceReferenceSchema = z.object({
   scene_id: z.string().min(1).max(120), shot_index: z.number().int().min(0).max(29).nullable(),
-  field: z.enum(storyboardRepairFields), quote: z.string().trim().min(1).max(2000),
+  field: z.enum(storyboardRepairFields), ref_id: z.string().regex(/^evidence_[a-f0-9]{16}$/).optional(), quote: z.string().trim().min(1).max(2000).optional(),
 }).strict()
 export const storyboardRepairScopeSchema = z.object({
   scene_id: z.string().min(1).max(120), shot_index: z.number().int().min(0).max(29).nullable(),
@@ -15,7 +15,7 @@ export const storyboardRepairScopeSchema = z.object({
 type Evidence = z.infer<typeof storyboardEvidenceReferenceSchema>
 type Scope = z.infer<typeof storyboardRepairScopeSchema>
 export type ScopedReviewIssue = { code: string; scene_id: string; shot_index: number; related_scene_id: string | null;
-  related_shot_index: number | null; severity: string; evidence: string; repair: string; evidence_refs?: Evidence[]; repair_scope?: Scope[] }
+  related_shot_index: number | null; timing_change?: boolean; severity: string; message: string; evidence: string; repair: string; evidence_refs?: Evidence[]; repair_scope?: Scope[] }
 export type ReviewSequence = Array<{ scene_id: string; scene_direction?: unknown; shots: Array<Record<string, unknown>> }>
 const problem = (message: string): never => { throw Object.assign(new Error(message), { statusCode: 422, code: 'storyboard_review_invalid' }) }
 export const storyboardValueSignature = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -25,6 +25,39 @@ export function storyboardField(value: unknown, path: string): unknown {
 }
 function texts(value: unknown): string[] {
   return typeof value === 'string' || typeof value === 'number' ? [String(value)] : value && typeof value === 'object' ? Object.values(value).flatMap(texts) : []
+}
+
+export type StoryboardEvidenceCatalogEntry = Evidence & { ref_id: string; quote: string }
+
+/** Stable, application-owned references for the current outline fields. */
+export function storyboardEvidenceCatalog(scenes: ReviewSequence): StoryboardEvidenceCatalogEntry[] {
+  const entries: StoryboardEvidenceCatalogEntry[] = []
+  const add = (scene_id: string, shot_index: number | null, field: Evidence['field'], value: unknown) => {
+    for (const quote of texts(value).filter(value => value.trim()).slice(0, 8)) {
+      const ref_id = `evidence_${storyboardValueSignature({ scene_id, shot_index, field, quote }).slice(0, 16)}`
+      entries.push({ ref_id, scene_id, shot_index, field, quote })
+    }
+  }
+  for (const scene of scenes) {
+    for (const field of storyboardRepairFields.filter(field => field.startsWith('scene_direction.'))) add(scene.scene_id, null, field, storyboardField(scene.scene_direction, field.replace(/^scene_direction\./, '')))
+    for (const [shot_index, shot] of scene.shots.entries()) for (const field of storyboardRepairFields.filter(field => !field.startsWith('scene_direction.'))) add(scene.scene_id, shot_index, field, storyboardField(shot, field))
+  }
+  return entries
+}
+
+/** Resolve model references to canonical source text before business validation. */
+export function normalizeStoryboardEvidenceReferences(report: ScopedReviewIssue & { evidence_refs?: Evidence[] }, scenes: ReviewSequence, strict = false): ScopedReviewIssue & { evidence_refs?: Evidence[] } {
+  const catalog = storyboardEvidenceCatalog(scenes)
+  const byId = new Map(catalog.map(entry => [entry.ref_id, entry]))
+  const refs = report.evidence_refs || []
+  if (strict && report.severity === 'error' && !refs.length) problem('已核实错误必须提供程序生成的证据引用 ID和替换范围；请重新独立复查当前草稿')
+  const normalized = refs.map(reference => {
+    const entry = reference.ref_id ? byId.get(reference.ref_id) : catalog.find(item => item.scene_id === reference.scene_id && item.shot_index === reference.shot_index && item.field === reference.field && !!reference.quote && item.quote.includes(reference.quote))
+    if (!entry) return problem(reference.ref_id ? '复核证据引用 ID 无效或已不属于当前字段' : '复核证据缺少有效引用 ID，且文本不是当前字段原文')
+    if (entry.scene_id !== reference.scene_id || entry.shot_index !== reference.shot_index || entry.field !== reference.field) problem('复核证据引用 ID 与字段路径不一致')
+    return { ...reference, ref_id: entry.ref_id, quote: entry.quote }
+  })
+  return { ...report, ...(normalized.length ? { evidence_refs: normalized, evidence: normalized.map(reference => reference.quote).join('；') } : {}) }
 }
 /** Evidence locates existing content; it never grants free paths or deletion. */
 export function validateStoryboardRepairEvidence(issue: ScopedReviewIssue, scenes: ReviewSequence, sourceTexts: string[] = [], strict = false) {
@@ -41,7 +74,8 @@ export function validateStoryboardRepairEvidence(issue: ScopedReviewIssue, scene
     const scene = scenes.find(scene => scene.scene_id === reference.scene_id)
     const root = reference.shot_index === null ? scene : scene?.shots[reference.shot_index]
     const value = storyboardField(root, reference.field)
-    if (!texts(value).some(value => value.includes(reference.quote))) problem('复核证据不是所引用字段中的原文，不能授权修复')
+    const quote = reference.quote
+    if (!quote || !texts(value).some(value => value.includes(quote))) problem('复核证据不是所引用字段中的原文，不能授权修复')
   }
   for (const scope of issue.repair_scope || []) {
     if (!allowed(scope.scene_id, scope.shot_index)) problem('修复范围超出了有证据的问题及其直接关联镜头')
@@ -49,7 +83,7 @@ export function validateStoryboardRepairEvidence(issue: ScopedReviewIssue, scene
     const uncovered = scope.fields.filter(field => !issue.evidence_refs?.some(reference => reference.scene_id === scope.scene_id && reference.shot_index === scope.shot_index && reference.field === field))
     if (uncovered.length) problem(`repair_scope中scene_id=${scope.scene_id},shot_index=${scope.shot_index}的字段${uncovered.join('、')}缺少同位置evidence_refs；请逐个补充该field当前原文quote，或从repair_scope移除没有证据的字段，不能改用其他字段或来源的引用。`)
   }
-  if (strict && !issue.evidence_refs?.length) {
+  if (strict && issue.severity === 'error' && !issue.evidence_refs?.length) {
     const relevant = scenes.flatMap(scene => scene.shots.flatMap((shot, index) => allowed(scene.scene_id, index) ? texts(shot) : []))
     const quotes = issue.evidence.split(/[；;。\n]/).map(value => value.replace(/^(?:前镜|后镜|本镜|来源)[:：]/, '').trim()).filter(Boolean)
     if (!quotes.length || !quotes.every(quote => [...relevant, ...sourceTexts].some(text => text.includes(quote)))) problem('复核缺少可核实的当前镜头或来源原文证据，不能授权修复')

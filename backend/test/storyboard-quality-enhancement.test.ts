@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { z } from 'zod'
 import { ensureStoryboardOutlineQuality } from '../src/modules/storyboard/storyboard-outline-quality.js'
 import { repairStoryboardTargets } from '../src/modules/storyboard/storyboard-targeted-repair.js'
-import { storyboardIssueFingerprint, storyboardRepairEffect, validateStoryboardRepairEvidence } from '../src/modules/storyboard/storyboard-review-scope.js'
+import { storyboardEvidenceCatalog, storyboardIssueFingerprint, storyboardRepairEffect, validateStoryboardRepairEvidence } from '../src/modules/storyboard/storyboard-review-scope.js'
 import { currentModelRequestContext, withModelRequestContext, modelTaskPolicies } from '../src/modules/generation/model-task-policy.js'
 import type { StoryboardDirectingReview } from '../src/modules/storyboard/storyboard-directing.js'
 
@@ -55,13 +55,34 @@ test('false quotes, uncovered fields and required-field deletion never authorize
     if (variant === 'missing_scope') delete defect.repair_scope
     if (variant === 'uncovered_field') defect.repair_scope![0]!.fields.push('end_state')
     if (variant === 'delete_required') defect.repair = '删除必填字段 directing.camera 与 cut.carry_over 即可通过'
-    let repairs = 0
+    let repairs = 0, calls = 0
     await assert.rejects(ensureStoryboardOutlineQuality({ outline: outline(), outlineKey: 'outline', schema: outlineSchema, validate, control: ledger(), context: {}, generate: async (_prompt, contract) => {
+      calls++
       if (contract!.name === 'storyboard_outline_repair') repairs++
       return JSON.stringify({ issues: [defect] })
     } }))
     assert.equal(repairs, 0)
+    assert.equal(calls, 1)
   })
+})
+
+test('outline review resolves stable evidence IDs to the current field text and skips business-error format correction', async () => {
+  const original = outline(), control = ledger(), calls: string[] = [], events: any[] = []
+  const entry = storyboardEvidenceCatalog(original.scenes).find(item => item.scene_id === 'scene' && item.shot_index === 1 && item.field === 'start_state')
+  assert.ok(entry)
+  const defect = issue()
+  defect.evidence_refs = [{ scene_id: entry!.scene_id, shot_index: entry!.shot_index, field: entry!.field, ref_id: entry!.ref_id }]
+  const revised = await withModelRequestContext({ policy: modelTaskPolicies.generation, onResult: event => events.push(event) }, () => ensureStoryboardOutlineQuality({ outline: original, outlineKey: 'stable-ref', schema: outlineSchema, validate, control, context: {},
+    generate: async (_prompt, contract) => {
+      calls.push(contract!.name)
+      if (contract!.name === 'storyboard_outline_repair') return JSON.stringify({ repairs: { field_0: '甲已到门前，保持站定' } })
+      return JSON.stringify({ issues: calls.filter(name => name === 'storyboard_outline_review').length === 1 ? [defect] : [] })
+    } }))
+  assert.equal(revised.scenes[0]!.shots[1]!.start_state, '甲已到门前，保持站定')
+  assert.deepEqual(calls, ['storyboard_outline_review', 'storyboard_outline_repair', 'storyboard_outline_review'])
+  const saved = control.steps[Object.keys(control.steps).find(key => key.endsWith(':report'))!] as any
+  assert.equal(saved.issues[0].evidence_refs[0].ref_id, entry.ref_id)
+  assert.equal(saved.issues[0].evidence_refs[0].quote, entry.quote)
 })
 
 const fullShot = shot.extend({ image_prompt: z.string().min(1), video_prompt: z.string().min(1) }).strict()

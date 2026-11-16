@@ -1,4 +1,4 @@
-export type CandidateQualityStatus = 'pending_review' | 'passed' | 'warnings' | 'needs_work' | 'inconclusive' | 'edited'
+export type CandidateQualityStatus = 'pending_review' | 'passed' | 'warnings' | 'needs_work' | 'inconclusive' | 'edited' | 'review_inconclusive_no_action' | 'review_inconclusive_needs_user'
 export interface CandidateEvidenceResolution {
   id: string
   disposition: 'confirmed' | 'withdrawn' | 'unresolved'

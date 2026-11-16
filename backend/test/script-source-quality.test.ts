@@ -149,72 +149,19 @@ async function terminal(id: string) {
   throw new Error('analysis did not finish')
 }
 
-test('substantive omissions are automatically repaired while reusing the completed map and story before independent review', async () => {
-  const content = '开场林舟许下约定。\n尾声：沈月是林舟的妹妹，她归还信物。', projectId = newId(), stamp = now()
-  run('INSERT INTO projects (id,name,created_at,updated_at) VALUES (?,?,?,?)', projectId, '独立核对测试', stamp, stamp)
+test('ordinary source analysis does not automatically invoke the explicit quality-review or repair tools', async () => {
+  const content = '开场林舟许下约定。\n尾声沈月归还信物。', stamp = now(), projectId = newId()
+  run('INSERT INTO projects (id,name,created_at,updated_at) VALUES (?,?,?,?)', projectId, '无审核门槛', stamp, stamp)
   run('INSERT INTO script_source_documents (project_id,filename,content,updated_at) VALUES (?,?,?,?)', projectId, '剧本.txt', content, stamp)
-  let maps = 0, stories = 0, reviews = 0, repairs = 0
-  let completed: ScriptSourceAnalysis | undefined
-  const explanation = '全剧人物和目录遗漏尾声沈月是林舟妹妹的身份'
-  const repairMarker = '【原稿分析定点修补资料】\n'
-  const analyzer = createScriptSourceAnalyzer(async (_projectId, _model, prompt, contract) => {
-    if (prompt.includes(marker)) {
-      reviews++; const input = reviewed(prompt), tail = input.units.find(unit => unit.text.includes('沈月'))!
-      assert.ok(tail)
-      return JSON.stringify({ checked_section_ids: input.sections.map(section => section.id),
-        findings: reviews === 1 ? [{ kind: 'omission', explanation, unit_ids: [tail.id] }] : [] })
-    }
-    if (prompt.includes(repairMarker)) {
-      repairs++
-      completed = scriptSourceAnalysis(projectId)!
-      assert.equal(completed.status, 'running', 'quality findings remain internal while automatic repair is in progress')
-      assert.equal(completed.quality!.status, 'issues')
-      assert.equal(scriptSourceIndex(projectId)!.story_map, undefined, 'analysis with unresolved quality findings cannot publish its story map')
-      assert.equal(contract?.name, 'script_source_quality_repair')
-      const input = JSON.parse(prompt.slice(prompt.lastIndexOf(repairMarker) + repairMarker.length))
-      assert.equal(input.complete_source, true)
-      assert.equal(input.units.map((unit: { text: string }) => unit.text).join(''), content)
-      assert.equal(input.finding.explanation, explanation, 'retry receives the durable independent-review finding')
-      assert.equal(input.finding_index, 0); assert.equal(input.total_findings, 1)
-      assert.equal(input.sections.length, 2)
-      assert.equal(input.sections[0].characters[0].name, '林舟', 'completed analysis is available to the repair')
-      const tail = input.units.find((unit: { text: string }) => unit.text.includes('沈月'))!
-      return JSON.stringify({ status: 'patched', reason: '补充尾声已经明示的沈月身份，保留原有分析', changes: [
-        { target: 'section.characters', section_id: 1, operation: 'append', index: null, expected: null,
-          value: { name: '沈月', description: '林舟的妹妹，尾声归还信物', evidence: { unit_id: tail.id } } },
-        { target: 'story.characters', section_id: null, operation: 'append', index: null, expected: null,
-          value: { name: '沈月', aliases: [], description: '林舟的妹妹，尾声归还信物', section_ids: [1] } },
-      ] })
-    }
-    if (prompt.includes('【全剧整合资料】')) stories++
-    if (prompt.includes('【原文片段】')) {
-      maps++
-      const mapMarker = '【原文片段】\n', input = JSON.parse(prompt.slice(prompt.lastIndexOf(mapMarker) + mapMarker.length))
-      const units = input.passages.flatMap((passage: { units: Array<{ id: number; text: string }> }) => passage.units)
-      const first = units[0]!, tail = units.find((unit: { text: string }) => unit.text.includes('沈月'))!
-      return JSON.stringify({ sections: [
-        { start_unit: first.id, title: '开场', episode_number: null, summary: '林舟许下约定。',
-          characters: [{ name: '林舟', description: '许下约定的主角', evidence: { unit_id: first.id } }],
-          events: [{ summary: '林舟许下约定。', evidence: { unit_id: first.id } }] },
-        { start_unit: tail.id, title: '尾声', episode_number: null, summary: '有人归还信物。', characters: [],
-          events: [{ summary: '归还信物。', evidence: { unit_id: tail.id } }] },
-      ] })
-    }
+  const prompts: string[] = []
+  const analyzer = createScriptSourceAnalyzer(async (_id, _model, prompt) => {
+    prompts.push(prompt); assert.doesNotMatch(prompt, /【原稿分析核对资料】|【原稿分析定点修补资料】/)
     return sourceAnalysisFixture(prompt)!
   })
   try {
-    analyzer.start(projectId, 'quality-model')
-    const ready = await terminal(projectId)
-    assert.equal(ready.status, 'ready', ready.error || '')
-    assert.equal(ready.quality!.status, 'passed')
-    assert.deepEqual([maps, stories, repairs, reviews], [1, 1, 1, 2], 'one execution repairs the finding and reruns review without regenerating completed stages')
-    assert.deepEqual(ready.sections[0], completed!.sections[0], 'unrelated directory entries remain unchanged')
-    assert.deepEqual(ready.sections[1], { ...completed!.sections[1], characters: [{ name: '沈月', description: '林舟的妹妹，尾声归还信物',
-      evidence: { offset: content.indexOf('尾声'), quote: content.slice(content.indexOf('尾声')) } }] })
-    assert.deepEqual(ready.story, { ...completed!.story, characters: [...completed!.story!.characters,
-      { name: '沈月', aliases: [], description: '林舟的妹妹，尾声归还信物', section_ids: [1] }] }, 'unrelated story facts remain unchanged')
-    assert.equal(ready.completed_chunks, completed!.completed_chunks)
-    assert.equal(ready.completed_characters, content.length)
+    analyzer.start(projectId, 'model'); const ready = await terminal(projectId)
+    assert.equal(ready.status, 'ready', ready.error || ''); assert.equal(ready.quality, undefined)
+    assert.equal(prompts.length, 2); assert.ok(scriptSourceIndex(projectId)!.story_map?.length)
     assert.equal(db.prepare('SELECT content FROM script_source_documents WHERE project_id=?').get(projectId)!.content, content)
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM script_artifacts WHERE project_id=?').get(projectId)!.count, 0)
   } finally { await analyzer.close() }
