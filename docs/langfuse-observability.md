@@ -50,7 +50,9 @@ VIDEO_STUDIO_LANGFUSE_TIMEOUT_MS=3000
 VIDEO_STUDIO_LANGFUSE_MAX_PENDING=256
 ```
 
-共享 `.env.example` 只放空凭据与默认关闭的开关。项目不会自动读取任意 `.env` 文件，命令需要显式加载配置。使用远端自部署时，在独立本机配置中填写该实例提供的 HTTPS 地址和项目 Keys。
+共享 `.env.example` 只放空凭据与默认关闭的开关。`npm run dev` 仅自动读取当前仓库根目录 `.env.langfuse.local` 中上述 Langfuse 字段，不读取其他 `.env` 文件或 Docker 凭据。已有进程环境优先，包括显式的 `LANGFUSE_TRACING=false`；没有本机文件时仍可正常启动。使用远端自部署时，在这份本机配置中填写该实例提供的 HTTPS 地址和项目 Keys。
+
+本机配置被 Git 忽略，不会随分支或 worktree 自动迁移。切换工作区时，安全保留并复用已有应用配置，权限设为 `0600`；不要为此重新初始化或轮换已有部署的凭据。
 
 ## 检查连接并启动应用
 
@@ -68,11 +70,13 @@ npm run langfuse:smoke -- --config=.env.langfuse.local
 
 烟雾检查写入合成追踪并读取同一记录确认入库，不调用付费模型、不读取或修改正式项目。只有读取验证成功才算接入连通。在 Langfuse 中选择初始化的 **AI Video Studio Local** 项目查看记录。
 
-使用 Node.js 22 或更新版本，从仓库根目录带配置启动开发环境：
+使用 Node.js 22 或更新版本，从仓库根目录正常启动开发环境：
 
 ```bash
-node --env-file=.env.langfuse.local scripts/dev.mjs
+npm run dev
 ```
+
+启动时会显示追踪配置已启用、已关闭或配置不完整；启用配置不代表已验证服务连接，仍应通过上述烟雾检查确认。启用但配置不完整时追踪保持关闭，不阻止业务启动。文件不可读取、不是普通文件或存在损坏的配置语法时，启动器只显示固定错误并停止，不输出文件内容或凭据。
 
 已有构建产物时可启动后端：
 
@@ -80,7 +84,7 @@ node --env-file=.env.langfuse.local scripts/dev.mjs
 node --env-file=.env.langfuse.local backend/dist/server.js
 ```
 
-开发启动器的子进程会继承环境。不要把 `--env-file` 放入 `NODE_OPTIONS`，Node.js 不允许这种用法。接入代码不会自动重启现有应用服务；正在运行的进程只有在按正常启动流程加载新配置后才会启用追踪。
+开发启动器的子进程会继承环境。直接运行构建后的后端仍需显式传入 `--env-file`；不要把它放入 `NODE_OPTIONS`，Node.js 不允许这种用法。修改本机配置后需要按正常流程重启应用，现有进程不会自动加载新配置。
 
 ## 停止、再次启动与备份
 
@@ -111,7 +115,21 @@ Langfuse v4 的观察记录不可变，因此请求只有在收到最终指标�
 
 修复范围复核只为已有错误补齐精确字段证据，结构有效不能解释为候选质量通过；它仍需后续内容修改与完整复查。只有实际独立质量核对可产生相应通过结论；只有结构校验、未新增语义复核的理解或方案接口使用 `inconclusive`。修复效果记录为 `improved / unchanged / regressed`，失败历史不因后续成功而删除。结果 span 每任务最多导出 128 项，超过上限后仍更新 root 最新质量和省略计数；诊断数量上限不增加业务请求。
 
+原稿质量修补初次结果标为content_repair，后续格式纠正仍为format_correction，独立复核的recheck不被覆盖。此映射只影响后续记录，不重写历史追踪。
+
 请求已结算与实际费用完整可知是不同事实。accepted 后断流即使账本没有 pending/uncertain，也仍需按 delivery 和 failure_reason 判断最终输出与计费是否未知，不能将未报告输出的 0 当成零费用。真实样本与这些边界见[本轮验收报告](./ai-workflow-quality-expansion-acceptance-2026-11-13.md)。
+
+## 原稿分析断流诊断（2026-11-14）
+
+新记录细分目录分析、全剧整合、人物整合、时间线、伏笔线索与未决问题；格式修正仍保留独立阶段。`completion_start_time` 使用实际首正文耗时 `first_text_ms`，首 SSE 事件仍单独记录为 `first_event_ms`，不能将上游已接收或思考事件当成正文开始。
+
+`upstream_error_code` 只导出固定白名单错误码，例如 `stream_read_error`；`response_terminated` 表示收到上游明确终止事件，普通连接断开不会设置为真。二者与交付状态一起判断恢复资格，不能只根据 HTTP 200 推断成功。
+
+请求在 `accepted / output_started / unknown` 状态结束且输出 token 报为 0 时，导出隐藏该 0，并记录 `output_usage_complete=false`；仅思考后断流也适用。已有非零用量可保留，但不代表最终费用已知。旧追踪不会被改写；新增诊断需在后续真实请求完成后查看。
+
+上述断流补丁验收通过模拟协议和临时数据库核对指标采集、持久化、严格接口 Schema 与导出链路，没有调用真实模型或补造业务追踪。实现及验证范围见[断流恢复验收记录](./source-stream-recovery-2026-11-14.md)。
+
+后续真实Ego原稿验证另核对过一轮14个completed请求/16个结果，以及一轮5个请求/5个结果，均与本地唯一对应。后一轮最后请求因累计预算被本地取消，仅收到969个字符、delivery=accepted；generation虽已ERROR并结算，仍无上游最终完成证据。root的incomplete_children=0只表示本地观测已关闭，不能解释为上游已取消、零费用或可以自动重发。完整业务验收尚未完成。
 
 ## 官方依据
 

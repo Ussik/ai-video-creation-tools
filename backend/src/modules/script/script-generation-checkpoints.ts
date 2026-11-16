@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { db, now, one, run } from '../../infrastructure/database/db.js'
 import { currentScriptCheckpointModelMigration, migrateCompleteScriptDrafts, legacyScriptCheckpointIdentity } from './script-checkpoint-model-migration.js'
 import type { GenerationCheckpoint } from './script-generation-steps.js'
+import { isGenerationPrivateSlot, mergeGenerationPrivateResponse, preserveGenerationPrivateResponses, type SaveGenerationPrivateResponse } from '../generation/generation-private-response.js'
 
 const checkpointSchema = z.object({ prompt: z.string().optional(), steps: z.record(z.string(), z.object({
   input_hash: z.string(), value: z.unknown(), duration_ms: z.number().nonnegative().optional(),
@@ -20,7 +21,7 @@ export function generationCheckpointStore(projectId: string, identity: unknown, 
   const identityKey = (value: unknown) => createHash('sha256').update(JSON.stringify({ version: 1, identity: value })).digest('hex')
   const key = identityKey(identity)
   db.exec(`CREATE TABLE IF NOT EXISTS script_checkpoint_versions (project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,namespace TEXT NOT NULL,cache_key TEXT NOT NULL,payload TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(project_id,namespace,cache_key))`)
-  const historicalRow = (cacheKey: string) => one<CheckpointRow>('SELECT cache_key,payload,updated_at FROM script_step_checkpoints WHERE project_id=? AND namespace=? AND cache_key=?', projectId, historyNamespace(cacheKey), cacheKey)
+  const historicalRow = (cacheKey: string) => (namespace === 'generation' ? one<CheckpointRow>('SELECT cache_key,payload,updated_at FROM script_step_checkpoints WHERE project_id=? AND namespace=? AND cache_key=?', projectId, historyNamespace(cacheKey), cacheKey) : undefined)
     || one<CheckpointRow>('SELECT cache_key,payload,updated_at FROM script_checkpoint_versions WHERE project_id=? AND namespace=? AND cache_key=?', projectId, namespace, cacheKey)
   const row = namespace === 'generation'
     ? one<CheckpointRow>('SELECT cache_key,payload,updated_at FROM script_generation_checkpoints WHERE project_id=?', projectId)
@@ -42,9 +43,7 @@ export function generationCheckpointStore(projectId: string, identity: unknown, 
   // next ordinary save moves its outer key without rewriting step hashes.
   const acceptedKeys = [...new Set([key, ...compatibleIdentities.map(identityKey), ...(historicalSerialization && row ? [row.cache_key] : [])])]
   for (const acceptedKey of acceptedKeys) {
-    const candidate = row?.cache_key === acceptedKey ? row : namespace === 'generation'
-      ? historicalRow(acceptedKey)
-      : undefined
+    const candidate = row?.cache_key === acceptedKey ? row : historicalRow(acceptedKey)
     if (!candidate) continue
     try {
       checkpoint = checkpointSchema.parse(JSON.parse(candidate.payload)) as GenerationCheckpoint
@@ -80,25 +79,79 @@ export function generationCheckpointStore(projectId: string, identity: unknown, 
       run('INSERT INTO script_generation_checkpoints (project_id,cache_key,payload,updated_at) VALUES (?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET cache_key=excluded.cache_key,payload=excluded.payload,updated_at=excluded.updated_at', projectId, key, JSON.stringify(checkpoint), now())
     })()
   }
+  let observedActiveKey = row?.cache_key
+  let detachedPrivateWriter = false
+  let privateSnapshot = structuredClone(checkpoint)
+  const readActive = () => namespace === 'generation'
+    ? one<CheckpointRow>('SELECT cache_key,payload,updated_at FROM script_generation_checkpoints WHERE project_id=?', projectId)
+    : one<CheckpointRow>('SELECT cache_key,payload,updated_at FROM script_step_checkpoints WHERE project_id=? AND namespace=?', projectId, namespace)
+  const durableForBusinessSave = (current: CheckpointRow | undefined): GenerationCheckpoint => {
+    if (current) {
+      try { return checkpointSchema.parse(JSON.parse(current.payload)) as GenerationCheckpoint }
+      catch { /* Keep the existing explicit business-save recovery behavior. */ }
+    }
+    return { steps: {} }
+  }
+  const archive = (previous: CheckpointRow) => {
+    if (namespace === 'generation') run('INSERT INTO script_step_checkpoints (project_id,namespace,cache_key,payload,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(project_id,namespace) DO UPDATE SET cache_key=excluded.cache_key,payload=excluded.payload,updated_at=excluded.updated_at',
+      projectId, historyNamespace(previous.cache_key), previous.cache_key, previous.payload, previous.updated_at)
+    else run('INSERT INTO script_checkpoint_versions (project_id,namespace,cache_key,payload,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(project_id,namespace,cache_key) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at',
+      projectId, namespace, previous.cache_key, previous.payload, previous.updated_at)
+  }
   return {
-    checkpoint,
+    key, checkpoint,
     reusedCompatibleIdentity, migratedStepIds,
+    savePrivateResponse: ((id, entry, expected) => db.transaction(() => {
+      const active = readActive()
+      const ownsActive = active?.cache_key === key || !detachedPrivateWriter && active?.cache_key === observedActiveKey
+      if (!ownsActive) detachedPrivateWriter = true
+      const current = active?.cache_key === key ? active : historicalRow(key)
+      // A missing row can use only this store's own identity snapshot, never
+      // the active snapshot of another task.
+      const seed = current ? checkpointSchema.parse(JSON.parse(current.payload)) as GenerationCheckpoint : privateSnapshot
+      const state = mergeGenerationPrivateResponse(seed, id, entry, expected)
+      if (ownsActive) {
+        if (active && active.cache_key !== key) archive(active)
+        if (namespace === 'generation') run('INSERT INTO script_generation_checkpoints (project_id,cache_key,payload,updated_at) VALUES (?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET cache_key=excluded.cache_key,payload=excluded.payload,updated_at=excluded.updated_at',
+          projectId, key, JSON.stringify(state), now())
+        else run('INSERT INTO script_step_checkpoints (project_id,namespace,cache_key,payload,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(project_id,namespace) DO UPDATE SET cache_key=excluded.cache_key,payload=excluded.payload,updated_at=excluded.updated_at',
+          projectId, namespace, key, JSON.stringify(state), now())
+        if (namespace === 'generation' && compatibleSourceKey) {
+          run('DELETE FROM script_step_checkpoints WHERE project_id=? AND namespace=? AND cache_key=?', projectId, historyNamespace(compatibleSourceKey), compatibleSourceKey)
+          run('DELETE FROM script_checkpoint_versions WHERE project_id=? AND namespace=? AND cache_key=?', projectId, namespace, compatibleSourceKey)
+          compatibleSourceKey = undefined
+        }
+        observedActiveKey = key
+      } else archive({ cache_key: key, payload: JSON.stringify(state), updated_at: now() })
+      privateSnapshot = structuredClone(state)
+      return state
+    })()) satisfies SaveGenerationPrivateResponse,
     save(state: GenerationCheckpoint) {
       checkpointSchema.parse(state)
       if (namespace !== 'generation') {
-        run('INSERT INTO script_step_checkpoints (project_id,namespace,cache_key,payload,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(project_id,namespace) DO UPDATE SET cache_key=excluded.cache_key,payload=excluded.payload,updated_at=excluded.updated_at', projectId, namespace, key, JSON.stringify(state), now())
+        db.transaction(() => {
+          const active = readActive(), current = active?.cache_key === key ? active : historicalRow(key)
+          if (active && active.cache_key !== key && Object.keys(durableForBusinessSave(active).steps).some(isGenerationPrivateSlot)) archive(active)
+          const merged = preserveGenerationPrivateResponses(state, durableForBusinessSave(current))
+          run('INSERT INTO script_step_checkpoints (project_id,namespace,cache_key,payload,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(project_id,namespace) DO UPDATE SET cache_key=excluded.cache_key,payload=excluded.payload,updated_at=excluded.updated_at', projectId, namespace, key, JSON.stringify(merged), now())
+          privateSnapshot = structuredClone(merged)
+        })()
+        observedActiveKey = key; detachedPrivateWriter = false
         return
       }
       db.transaction(() => {
         // Read at save time: another identity may have become active since this
         // store was opened. Archive that exact durable snapshot before replacing it.
         const previous = one<CheckpointRow>('SELECT cache_key,payload,updated_at FROM script_generation_checkpoints WHERE project_id=?', projectId)
+        const current = previous?.cache_key === key ? previous : historicalRow(key)
+        const merged = preserveGenerationPrivateResponses(state, durableForBusinessSave(current))
         if (previous && previous.cache_key !== key && /^[a-f0-9]{64}$/.test(previous.cache_key)) {
           run('INSERT INTO script_step_checkpoints (project_id,namespace,cache_key,payload,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(project_id,namespace) DO UPDATE SET cache_key=excluded.cache_key,payload=excluded.payload,updated_at=excluded.updated_at',
             projectId, historyNamespace(previous.cache_key), previous.cache_key, previous.payload, previous.updated_at)
         }
         run('INSERT INTO script_generation_checkpoints (project_id, cache_key, payload, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET cache_key=excluded.cache_key, payload=excluded.payload, updated_at=excluded.updated_at',
-          projectId, key, JSON.stringify(state), now())
+          projectId, key, JSON.stringify(merged), now())
+        privateSnapshot = structuredClone(merged)
         // A compatible identity is the same workspace under a new serializer,
         // not another task. Consume only the validated source actually reused,
         // so clearing the migrated task cannot revive its pre-migration copy.
@@ -108,6 +161,7 @@ export function generationCheckpointStore(projectId: string, identity: unknown, 
         }
       })()
       compatibleSourceKey = undefined
+      observedActiveKey = key; detachedPrivateWriter = false
     },
   }
 }
@@ -131,9 +185,10 @@ export function clearGenerationCheckpoint(projectId: string, options: { keepRevi
       run('DELETE FROM script_checkpoint_versions WHERE project_id=? AND namespace=? AND cache_key=?', projectId, 'generation', current.cache_key)
     }
     run('DELETE FROM script_generation_checkpoints WHERE project_id=?', projectId)
+    run(`DELETE FROM script_checkpoint_versions WHERE project_id=? AND namespace<>'generation' AND namespace NOT IN (${kept.map(() => '?').join(',')}) AND namespace NOT LIKE 'storyboard-planning-task:%' AND namespace NOT LIKE 'source-production:%'`, projectId, ...kept)
     // Only generated, exact hash namespaces receive history protection.
     run(`DELETE FROM script_step_checkpoints WHERE project_id=? AND namespace NOT IN (${kept.map(() => '?').join(',')})
-      AND namespace NOT LIKE 'storyboard-planning-task:%'
+      AND namespace NOT LIKE 'storyboard-planning-task:%' AND namespace NOT LIKE 'source-production:%'
       AND NOT (namespace GLOB ? AND length(namespace)=? AND substr(namespace,?) NOT GLOB '*[^0-9a-f]*')`,
     projectId, ...kept, `${historyPrefix}*`, historyPrefix.length + 64, historyPrefix.length + 1)
   })()

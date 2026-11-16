@@ -14,11 +14,13 @@ export function compileRefinementReferences(text: string, referenceAssetIds: str
 } = {}): string {
   const tokenized = tokenizePromptReferenceNumbers(text, options.suppliedReferenceIds || referenceAssetIds)
   const ids = extractPromptReferenceIds(tokenized)
+  // The shared resolver validates and collapses replacement chains. Check the
+  // final asset identity, not an intermediate image which is no longer selected.
+  const resolved = resolvePromptReferences({ prompt: tokenized, referenceAssetIds, overrides: options.overrides, referenceLabel: options.referenceLabel })
   for (const id of ids) {
-    const target = Object.hasOwn(options.overrides || {}, id) ? options.overrides![id] : id
+    const target = Object.hasOwn(resolved.replacements, id) ? resolved.replacements[id] : id
     if (!target || !referenceAssetIds.includes(target)) throw new Error('调整要求或整理结果中的参考已断开或未在当前模式生效，请重新选择图片')
   }
-  const resolved = resolvePromptReferences({ prompt: tokenized, referenceAssetIds, overrides: options.overrides, referenceLabel: options.referenceLabel })
   if (resolved.referenceAssetIds.length !== referenceAssetIds.length || resolved.referenceAssetIds.some((id, index) => id !== referenceAssetIds[index])) {
     throw new Error('整理提示词不能新增未连接的图片，请先加入参考')
   }

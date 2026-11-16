@@ -2,7 +2,7 @@ import { missingStageArtifacts, scriptStageOrder, type ScriptStage } from './scr
 
 export const stageOperations = ['generate', 'revise', 'supplement', 'regenerate'] as const
 export type StageOperation = typeof stageOperations[number]
-export type StageTarget = { stage: ScriptStage; episode_number: number; operation?: StageOperation }
+export type StageTarget = { stage: ScriptStage; episode_number: number; operation?: StageOperation; intent?: 'source_outline' | 'source_episode' | 'stage_design' }
 export type WorkflowProgressInput = {
   outline?: string; characters?: string;
   artifacts?: Array<{ artifact_type: string; content: string; episode_number?: number; status?: string }>;
@@ -55,7 +55,8 @@ export function stageOperationError(script: WorkflowProgressInput, target: Stage
   const progress = workflowProgress(script)
   const saved = target.stage === 'episode' ? progress.episodes.includes(target.episode_number) : progress.completed[target.stage]
   const operation = target.operation || 'generate'
-  if (!saved && (target.stage !== progress.next_stage || target.stage === 'episode' && target.episode_number !== progress.next_episode)) {
+  if (target.intent === 'source_episode' && target.stage !== 'episode') return '原稿单集制作只能用于分集正文'
+  if (!saved && target.intent !== 'source_episode' && (target.stage !== progress.next_stage || target.stage === 'episode' && target.episode_number !== progress.next_episode)) {
     return progress.next_stage ? `请先完成并保存${progress.next_stage === 'episode' ? `第 ${progress.next_episode} 集正文` : stageLabels[progress.next_stage]}，再生成后续阶段`
       : '已设定阶段均已保存，请选择已有成果进行修改'
   }

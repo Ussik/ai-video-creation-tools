@@ -1,17 +1,9 @@
 /** Browser intent identity is saved before dispatch. Response recovery only
  * observes that identity; it never creates another paid request. */
 import { aiOperationHeader, canonicalAiValue, type AiOperationRecord } from '@video-studio/shared/api/ai-operations'
-type Intent = { id: string; fingerprint: string; route: string; created_at: string }
+import { aiOperationStorage, type AiOperationIntent as Intent } from './ai-operation-storage'
 type Transport = (path: string, options?: RequestInit) => Promise<Response>
-const prefix = 'ai-operation-intent:v1:'
-const completedPrefix = 'ai-operation-completed:v1:'
 const inFlight = new Map<string, Promise<Response>>()
-const memory = new Map<string, string>()
-function storage(): Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> {
-  if (typeof window === 'undefined') return { getItem: key => memory.get(key) || null,
-    setItem: (key, value) => { memory.set(key, value) }, removeItem: key => { memory.delete(key) } }
-  return window.localStorage
-}
 async function fingerprint(path: string, options: RequestInit) {
   let body: unknown = options.body ?? null
   if (typeof body === 'string') { try { body = JSON.parse(body) } catch { /* Non-JSON body retains its exact bytes. */ } }
@@ -80,21 +72,15 @@ async function observe(intent: Intent, transport: Transport, signal?: AbortSigna
   }
 }
 async function executeOperation(path: string, options: RequestInit, transport: Transport, hash: string): Promise<Response> {
-  const key = prefix + hash
-  let intent: Intent, existing = false
-  try {
-    const saved = storage().getItem(key)
-    const parsed = saved ? JSON.parse(saved) as Intent : undefined
-    existing = !!parsed && parsed.fingerprint === hash && parsed.route === path && typeof parsed.id === 'string'
-    intent = existing ? parsed! : { id: crypto.randomUUID(), fingerprint: hash, route: path, created_at: new Date().toISOString() }
-    // Never dispatch if the browser cannot durably retain this identity.
-    storage().setItem(key, JSON.stringify(intent))
-  } catch { throw new Error('浏览器无法保存本次请求身份，请恢复本地存储后再开始处理。') }
-  const clear = () => { options.signal?.throwIfAborted(); try { if (JSON.parse(storage().getItem(key) || '{}').id === intent.id) { storage().setItem(completedPrefix + hash, JSON.stringify(intent)); storage().removeItem(key) } } catch { /* A retained ID is safer than losing uncertain work. */ } }
+  const storage = aiOperationStorage()
+  const { intent, existing } = await storage.prepare(hash, path, () => ({ id: crypto.randomUUID(), fingerprint: hash, route: path, created_at: new Date().toISOString() }))
+  // The transaction commits before dispatch. A failed terminal write retains
+  // the original identity so a later invocation observes it instead of POSTing.
+  const clear = async () => { options.signal?.throwIfAborted(); try { await storage.complete(hash, path, intent.id) } catch { /* Preserve uncertain work. */ } }
   if (existing) {
     try {
       const recovered = await observe(intent, transport, options.signal)
-      if (recovered !== 'absent') { if (recovered.status !== 409 || (await recovered.clone().json()).code !== 'ai_operation_uncertain') clear(); return recovered }
+      if (recovered !== 'absent') { if (recovered.status !== 409 || (await recovered.clone().json()).code !== 'ai_operation_uncertain') await clear(); return recovered }
     } catch (error) { if (options.signal?.aborted) throw error; return uncertain(intent) }
     // An explicit retry after an authoritative absence keeps the exact same ID.
   }
@@ -108,17 +94,17 @@ async function executeOperation(path: string, options: RequestInit, transport: T
     if (body?.code === 'ai_operation_running') {
       const recovered = await observe(intent, transport, options.signal)
       if (recovered === 'absent') return uncertain(intent)
-      if ((await recovered.clone().json()).code !== 'ai_operation_uncertain') clear()
+      if ((await recovered.clone().json()).code !== 'ai_operation_uncertain') await clear()
       return recovered
     }
-    if (body?.code !== 'ai_operation_interrupted' && body?.code !== 'ai_operation_uncertain') clear()
+    if (body?.code !== 'ai_operation_interrupted' && body?.code !== 'ai_operation_uncertain') await clear()
     return new Response(raw, { status: response.status, statusText: response.statusText, headers: response.headers })
   } catch (error) {
     if (options.signal?.aborted) throw error
     try {
       const recovered = await observe(intent, transport, options.signal)
       if (recovered !== 'absent') {
-        if ((await recovered.clone().json()).code !== 'ai_operation_uncertain') clear()
+        if ((await recovered.clone().json()).code !== 'ai_operation_uncertain') await clear()
         return recovered
       }
     } catch { /* Keep the saved intent through observation outages. */ }
@@ -158,11 +144,11 @@ export function operationResponse(path: string, options: RequestInit, transport:
     // The initial lock probe proved another invocation was active. Capture its
     // identity before queueing; completed metadata carries no creative content.
     const hash = await fingerprint(path, options)
-    let prior: Intent | undefined
-    try { prior = JSON.parse(storage().getItem(prefix + hash) || storage().getItem(completedPrefix + hash) || 'null') as Intent | undefined } catch { /* Execute still checks durable storage. */ }
+    const storage = aiOperationStorage(), captured = await storage.read(hash, path)
+    const prior = captured.pending || captured.completed
     return locks.request(name, options.signal ? { signal: options.signal } : {}, async () => {
-      let original = prior
-      try { original ||= JSON.parse(storage().getItem(completedPrefix + hash) || 'null') as Intent | undefined } catch { /* Missing identity never authorizes blind replay. */ }
+      const current = prior ? undefined : await storage.read(hash, path)
+      const original = prior || current?.pending || current?.completed
       if (original?.fingerprint === hash && original.route === path) {
         try { const response = await observe(original, transport, options.signal); return response === 'absent' ? uncertain(original) : response }
         catch (issue) { if (options.signal?.aborted) throw issue; return uncertain(original) }

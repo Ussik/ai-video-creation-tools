@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import type { ScriptSourceAnalysis, ScriptSourceSection, ScriptSourceStory } from '@video-studio/shared/script/script-source-document'
 import { scriptSourceVersion } from './script-source-identity.js'
 import { validateSourceCoverage } from './script-source-map.js'
+import { createSourceCharacterEvidence } from './script-source-character-evidence.js'
 
 type Character = ScriptSourceStory['characters'][number]
 type Overview = Pick<ScriptSourceStory, 'summary' | 'ending'>
@@ -105,6 +106,7 @@ export function buildScriptCharacterSourceContext(state: Pick<ScriptSourceAnalys
   const selected = new Set<number>(options.overview.ending.section_ids)
   const matches = new Map<string, ScriptCharacterSourceContext['literal_matches'][number]>()
   const seedIdentities = new Map<string, Character>()
+  const evidence = createSourceCharacterEvidence(state, source)
   for (const character of options.seedCharacters) {
     const identity = [...new Set([character.name, ...character.aliases].map(normalize))].sort()
     // Identical repeated representations are harmless; overlapping but
@@ -131,7 +133,7 @@ export function buildScriptCharacterSourceContext(state: Pick<ScriptSourceAnalys
     // both forms so no matching name occurrence silently falls between ranges.
     if (literalCount(fullText, key) !== sectionText.reduce((count, text) => count + literalCount(text, key), 0)) return full('cross_section_literal_match')
     if (!raw.length) return full('name_without_source_evidence')
-    const identities = [...seedIdentities.values()].filter(character => [character.name, ...character.aliases].some(name => normalize(name) === key))
+    const identities = [...seedIdentities.values()].filter(character => evidence.coversDirectoryName(character, display))
     if (identities.length > 1) return full('ambiguous_seed_identity')
     // A directory entry is only a location clue. If the complete-manuscript
     // discovery did not establish a corresponding hypothesis, read the full

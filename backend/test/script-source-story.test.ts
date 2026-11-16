@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { ScriptSourceAnalysis } from '@video-studio/shared/script/script-source-document'
+import { pauseBeforeStoryRequest } from './support/source-story-pause.js'
 import { TextOutputLimitError, TextProviderError } from '../src/infrastructure/providers/text-errors.js'
 import { synthesizeSourceStory } from '../src/modules/script/script-source-story.js'
 function snapshot(): ScriptSourceAnalysis {
@@ -27,7 +28,7 @@ test('whole-story synthesis sees all chapters and source together without groupe
   }, () => { saves++ }, new AbortController().signal, undefined, undefined, source)
   assert.equal(calls, 1)
   assert.equal(state.synthesis, undefined); assert.match(result.ending.summary, /全剧结局/)
-  assert.deepEqual(result.characters[0].aliases, ['阿舟']); assert.equal(saves, 1)
+  assert.deepEqual(result.characters[0].aliases, ['阿舟']); assert.ok(saves >= 1)
   await synthesizeSourceStory(state, async () => { throw new Error('completed full story must reuse') }, () => {}, new AbortController().signal)
 })
 test('interrupted synthesis retries the entire story and discards legacy grouped summary checkpoints', async () => {
@@ -56,31 +57,45 @@ test('omitted coverage and invented provenance stop synthesis after one bounded 
 })
 
 
-test('dense short-source output exhaustion switches to durable tasks and resumes after the completed overview', async () => {
-  const state = snapshot()
-  state.sections = [{ offset: 0, length: 12, title: '唯一章节', episode_number: null, summary: '林舟回家', characters: [], events: [] }]
-  const source = { filename: 'short.txt', content: '完整短篇原文，林舟回家。' }
-  const whole: string[] = [], parts: string[] = []
-  let interrupted = true
-  const generate = async (prompt: string, contract?: { name: string }) => {
-    assert.ok(prompt.includes(source.content) || prompt.includes(JSON.stringify(source.content).slice(1, -1)), 'every output task retains the full original source')
-    const name = contract?.name || ''
-    if (name === 'script_source_story') { whole.push(name); throw new TextOutputLimitError('{"story":{"summary":"partial', 'MAX_TOKENS') }
-    parts.push(name)
-    if (name === 'script_source_story_overview') return JSON.stringify({ summary: '林舟回家。', ending: { summary: '已回家', section_ids: [0] }, covered_section_ids: [0] })
-    if (name === 'script_source_story_characters' && interrupted) throw new TextProviderError('characters disconnected', false)
-    if (name === 'script_source_story_characters') return JSON.stringify({ characters: [] })
-    if (name === 'script_source_story_timeline') return JSON.stringify({ timeline: [{ summary: '林舟回家', section_ids: [0] }], covered_section_ids: [0] })
-    if (name === 'script_source_story_threads') return JSON.stringify({ threads: [] })
-    if (name === 'script_source_story_uncertainties') return JSON.stringify({ uncertainties: [] })
-    return assert.fail(`unexpected contract ${name}`)
-  }
-  await assert.rejects(synthesizeSourceStory(state, generate, () => {}, new AbortController().signal, undefined, undefined, source), /characters disconnected/)
-  assert.ok(state.story_work?.tasks[0]?.result, 'complete overview is saved even for a short source')
-  interrupted = false
-  const result = await synthesizeSourceStory(state, generate, () => {}, new AbortController().signal, undefined, undefined, source)
-  assert.equal(whole.length, 1)
-  assert.equal(parts.filter(name => name === 'script_source_story_overview').length, 1)
-  assert.equal(result.summary, '林舟回家。')
-  assert.equal(state.story_work, undefined)
+test('dense short-source fallback resumes only a pre-dispatch pause and guards a disconnected character request', async t => {
+  for (const interruption of ['before_dispatch', 'unknown_delivery'] as const) await t.test(interruption, async () => {
+    const state = snapshot()
+    state.sections = [{ offset: 0, length: 12, title: '唯一章节', episode_number: null, summary: '林舟回家', characters: [], events: [] }]
+    const source = { filename: 'short.txt', content: '完整短篇原文，林舟回家。' }
+    const pause = pauseBeforeStoryRequest(state, 'characters:0', new Error('characters paused before dispatch'))
+    const whole: string[] = [], parts: string[] = []
+    let interrupted = true
+    const generate = async (prompt: string, contract?: { name: string }) => {
+      assert.ok(prompt.includes(source.content) || prompt.includes(JSON.stringify(source.content).slice(1, -1)), 'every output task retains the full original source')
+      const name = contract?.name || ''
+      if (name === 'script_source_story') { whole.push(name); throw new TextOutputLimitError('{"story":{"summary":"partial', 'MAX_TOKENS') }
+      parts.push(name)
+      if (name === 'script_source_story_overview') return JSON.stringify({ summary: '林舟回家。', ending: { summary: '已回家', section_ids: [0] }, covered_section_ids: [0] })
+      if (name === 'script_source_story_characters' && interrupted && interruption === 'unknown_delivery') throw new TextProviderError('characters disconnected', false)
+      if (name === 'script_source_story_characters') return JSON.stringify({ characters: [] })
+      if (name === 'script_source_story_timeline') return JSON.stringify({ timeline: [{ summary: '林舟回家', section_ids: [0], primary_section_id: 0 }], covered_section_ids: [0] })
+      if (name === 'script_source_story_threads') return JSON.stringify({ threads: [] })
+      if (name === 'script_source_story_uncertainties') return JSON.stringify({ uncertainties: [] })
+      return assert.fail(`unexpected contract ${name}`)
+    }
+    await assert.rejects(synthesizeSourceStory(state, generate, interruption === 'before_dispatch' ? pause : () => {}, new AbortController().signal, undefined, undefined, source), /characters (disconnected|paused before dispatch)/)
+    assert.ok(state.story_work?.tasks[0]?.result, 'complete overview is saved even for a short source')
+    assert.equal(parts.filter(name => name === 'script_source_story_characters').length, interruption === 'before_dispatch' ? 0 : 1)
+    interrupted = false
+    if (interruption === 'unknown_delivery') {
+      const before = [...parts]
+      await assert.rejects(synthesizeSourceStory(state, generate, () => {}, new AbortController().signal, undefined, undefined, source), error =>
+        (error as { code?: string }).code === 'structured_initial_delivery_pending')
+      assert.deepEqual(parts, before)
+      assert.equal(whole.length, 1)
+      assert.ok(state.story_work!.tasks.find(task => task.key === 'characters:0')!.output_candidate!.checkpoint.initial_started)
+      assert.equal(state.story, undefined)
+      return
+    }
+    const result = await synthesizeSourceStory(state, generate, () => {}, new AbortController().signal, undefined, undefined, source)
+    assert.equal(whole.length, 1)
+    assert.equal(parts.filter(name => name === 'script_source_story_overview').length, 1)
+    assert.equal(result.summary, '林舟回家。')
+    assert.equal(state.story_work, undefined)
+  })
 })

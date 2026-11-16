@@ -217,3 +217,25 @@ test('an unreducible context rejection is never replayed unchanged', async t => 
   await assert.rejects(textToolSession(model('chat_completions', false), provider, 'full creator requirements', functions, () => '')(), (error: unknown) => error instanceof TextProviderError && error.failureReason === 'context_overflow')
   assert.equal(requests, 1)
 })
+
+test('dynamic tools are snapshotted once per decision and reused unchanged across transport retries', async t => {
+  const submit = { name: 'submit_patch', description: '提交', parameters: { type: 'object', properties: {} } }
+  let selected = functions, selections = 0, requests = 0
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    const body = JSON.parse(String(init.body)); requests++
+    assert.equal(body.tools[0].function.name, requests < 3 ? 'read_documents' : 'submit_patch')
+    if (requests === 1) {
+      selected = [submit]
+      return Response.json({ error: { message: '暂时不可用', type: 'server_error' } }, { status: 503 })
+    }
+    return Response.json({ choices: [{ message: { content: '已完成' }, finish_reason: 'stop' }] })
+  })
+  const session = textToolSession(model('chat_completions', false), provider, 'request', functions, () => '', undefined, undefined, undefined,
+    { compactHistory: false, availableTools: () => { selections++; return selected } })
+  assert.equal((await session()).text, '已完成')
+  assert.equal(selections, 1)
+  assert.equal(requests, 2)
+  assert.equal((await session()).text, '已完成')
+  assert.equal(selections, 2)
+  assert.equal(requests, 3)
+})

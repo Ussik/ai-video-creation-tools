@@ -45,8 +45,10 @@ async function docxFixture() {
 
 async function upload(projectId: string, filename: string, content: Buffer, modelId?: string) {
   const boundary = 'script-source-boundary'
-  return app.inject({ method: 'POST', url: `/api/projects/${projectId}/script/source${modelId ? `?model_id=${modelId}` : ''}`, headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+  const result = await app.inject({ method: 'POST', url: `/api/projects/${projectId}/script/source${modelId ? `?model_id=${modelId}` : ''}`, headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
     payload: Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: application/octet-stream\r\n\r\n`), content, Buffer.from(`\r\n--${boundary}--\r\n`)]) })
+  if (!modelId || result.statusCode !== 200) return result
+  return app.inject({ method: 'GET', url: `/api/projects/${projectId}/script/source` })
 }
 
 test('TXT, Markdown, DOCX and PDF extract full readable text including dialogue and final paragraphs', async () => {
@@ -58,7 +60,7 @@ test('TXT, Markdown, DOCX and PDF extract full readable text including dialogue 
   assert.match(await extractScriptText('script.pdf', pdfFixture('Opening scene and final dialogue.')), /Opening scene and final dialogue\./)
 })
 
-test('upload returns before background analysis completes and the next conversation receives the full source and story', async t => {
+test('uploaded source analysis is preserved and reused by a new conversation without quality audit', async t => {
   const project = (await app.inject({ method: 'POST', url: '/api/projects', payload: { name: '后台分析上传' } })).json()
   const provider = (await app.inject({ method: 'POST', url: '/api/providers', payload: { name: '分析', base_url: 'https://analysis.example/v1' } })).json()
   const model = (await app.inject({ method: 'POST', url: '/api/models', payload: { provider_id: provider.id, name: '文本', remote_id: 'test', modality: 'text', protocol: 'chat_completions', settings: {
@@ -84,10 +86,10 @@ test('upload returns before background analysis completes and the next conversat
     if (scope) return Response.json({ choices: [{ message: { content: scope }, finish_reason: 'stop' }] })
     chatCalls++
     assert.ok(prompt.includes('INPUT_VISUAL_STYLE: 日漫二维画风'))
-    if (prompt.includes('本次独立调用只理解创作者意图')) assert.ok(prompt.includes('MAP_STORY_SUMMARY'))
+    if (prompt.includes('本次独立调用只理解创作者意图')) assert.ok(!prompt.includes('MAP_STORY_SUMMARY'))
     else {
       assert.equal(prompt.split(JSON.stringify(content)).length - 1, 1, 'discussion receives the complete source once without a locator request')
-      assert.equal(prompt.split('主角返乡，保留全剧事实与结局。').length - 1, 1, 'discussion retains whole-story understanding without duplicating it in project metadata')
+      assert.equal(prompt.split('主角返乡，保留全剧事实与结局。').length - 1, 1, 'new tasks reuse the completed story extraction')
     }
     return Response.json({ choices: [{ message: { content: prompt.includes('本次独立调用只理解创作者意图') ? JSON.stringify({ action: 'discuss', settings_patch: {} }) : '收到你的画风要求。' }, finish_reason: 'stop' }] })
   })
@@ -425,7 +427,7 @@ test('long upload-to-outline returns a complete unsaved preview for JSON and nat
     assert.equal(result.statusCode, 200, result.body)
     const preview = useTools ? result.json().tool_draft?.workflow : result.json().draft
     assert.ok(preview, result.body); assert.equal(preview.artifacts.length, 1)
-    assert.equal(writers, 1); assert.equal(reviews, 1)
+    assert.equal(writers, 1); assert.equal(reviews, 0)
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM script_artifacts WHERE project_id=?').get(project.id)!.count, 0)
     assert.equal(readScriptSource(project.id, 0, original.length).content, original)
     t.mock.restoreAll()

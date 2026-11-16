@@ -28,11 +28,11 @@ function deferred() {
   return { promise, resolve }
 }
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
-async function ready(projectId: string) {
+async function ready(projectId: string, expected: 'ready' | 'failed' = 'ready') {
   for (let attempt = 0; attempt < 200; attempt++) {
     const state = scriptSourceAnalysis(projectId)
     if (state?.status === 'ready' || state?.status === 'failed') {
-      assert.equal(state.status, 'ready', state.error || '')
+      assert.equal(state.status, expected, state.error || '')
       return state
     }
     await new Promise(resolve => setTimeout(resolve, 5))
@@ -76,6 +76,7 @@ test('two analyses run together, the third reports its queue position, and queue
     assert.equal(scriptSourceAnalysis(third.id)!.queue_position, 1)
     analyzer.pause(third.id, queued.id)
     assert.equal(scriptSourceAnalysis(third.id)!.status, 'paused')
+    assert.equal(scriptSourceAnalysis(third.id)!.pause_reason, 'user')
     assert.equal(scriptSourceAnalysis(third.id)!.queue_position, undefined)
     release.get(first.id)!.resolve(); await ready(first.id)
     release.get(second.id)!.resolve(); await ready(second.id)
@@ -94,7 +95,7 @@ test('two analyses run together, the third reports its queue position, and queue
   }
 })
 
-test('pausing an active synthesis aborts its request, retains the completed map, and immediate resume ignores a late old result', async () => {
+test('pausing synthesis preserves unknown request protection and only reuses the exact late complete response', async () => {
   const item = project('运行暂停'), entered = deferred(), lateResult = deferred()
   let mapCalls = 0, synthesisCalls = 0, reviewCalls = 0, interruptedSignal: AbortSignal | undefined
   const analyzer = createScriptSourceAnalyzer(async (_project, _model, prompt, _contract, signal) => {
@@ -119,15 +120,20 @@ test('pausing an active synthesis aborts its request, retains the completed map,
     assert.equal(paused.completed_characters, before.completed_characters)
     const resumed = analyzer.start(item.id, 'model')
     assert.equal(resumed.started_at, undefined, 'resume queues a new execution without reusing the paused clock')
+    const blocked = await ready(item.id, 'failed')
+    assert.equal(synthesisCalls, 1, 'immediate resume must not repurchase an in-flight unknown response')
+    assert.deepEqual(blocked.sections, before.sections)
+    lateResult.resolve(); await tick(); await tick()
+    const continued = analyzer.start(item.id, 'model')
     const result = await ready(item.id)
     assert.ok(Date.parse(result.started_at!) >= Date.parse(before.started_at!))
     assert.notEqual(resumed.id, original.id)
-    assert.equal(result.id, resumed.id)
+    assert.equal(result.id, continued.id)
     assert.deepEqual(result.sections, before.sections)
     assert.equal(mapCalls, 1, 'resuming reuses the full-source map already saved before pause')
-    assert.equal(synthesisCalls, 2); assert.equal(reviewCalls, 1)
+    assert.equal(synthesisCalls, 1); assert.equal(reviewCalls, 1)
     lateResult.resolve(); await tick(); await tick()
-    assert.equal(scriptSourceAnalysis(item.id)!.id, resumed.id)
+    assert.equal(scriptSourceAnalysis(item.id)!.id, continued.id)
     assert.equal(scriptSourceAnalysis(item.id)!.status, 'ready', 'the cancelled request cannot overwrite the resumed task')
   } finally {
     lateResult.resolve(); await analyzer.close(); run('DELETE FROM projects WHERE id=?', item.id)
@@ -157,7 +163,7 @@ test('service recovery preserves paused progress without starting a model until 
     assert.equal(calls, 0, 'a conversation readiness check also leaves the task paused')
     second.start(item.id, 'model'); const result = await ready(item.id)
     assert.deepEqual(result.sections, paused.sections)
-    assert.equal(mapCalls, 0); assert.equal(calls, 2, 'only synthesis and independent review remain after restart')
+    assert.equal(mapCalls, 0); assert.equal(calls, 1, 'a completed late upstream reply is reused, leaving only independent review after explicit resume')
   } finally { await second.close(); run('DELETE FROM projects WHERE id=?', item.id) }
 })
 
@@ -200,49 +206,36 @@ test('pause HTTP endpoint rejects stale analysis IDs without cancelling the curr
   } finally { release.resolve(); await app.close(); run('DELETE FROM projects WHERE id=?', item.id) }
 })
 
-test('journaled recovery clears obsolete run clocks while preserving queued order and starts fresh clocks only when slots open', async () => {
+test('restart pauses journaled tasks without model calls and explicit continuation preserves saved work', async () => {
   const items = [project('恢复队首'), project('遗留排队'), project('遗留运行')]
-  const obsoleteStart = '2000-01-01T00:00:00.000Z'
-  const queuedStamps = ['2001-01-01T00:00:00.000Z', '2002-01-01T00:00:00.000Z']
   for (const [index, item] of items.entries()) {
     const state = { id: newId(), source_version: scriptSourceVersion(scriptSourceDocument(item.id, false)!), model_id: 'model',
-      status: index === 2 ? 'running' : 'queued', completed_chunks: 0, total_chunks: 0, sections: [], error: null,
-      updated_at: queuedStamps[index] || obsoleteStart, pipeline_version: sourceAnalysisPipelineVersion,
-      ...(index ? { started_at: obsoleteStart } : {}) }
+      analysis_mode: 'extract', status: index === 2 ? 'running' : 'queued', completed_chunks: 0, total_chunks: 0, sections: [], error: null,
+      updated_at: now(), started_at: '2000-01-01T00:00:00.000Z', pipeline_version: sourceAnalysisPipelineVersion }
     markSourceModelRun(item.id, state.id)
     run('INSERT INTO script_source_analyses (project_id,id,source_version,status,snapshot,updated_at) VALUES (?,?,?,?,?,?)',
       item.id, state.id, state.source_version, state.status, JSON.stringify(state), state.updated_at)
   }
-  const entered = new Map(items.map(item => [item.id, deferred()]))
-  const release = new Map(items.map(item => [item.id, deferred()]))
-  const analyzer = createScriptSourceAnalyzer(async (projectId, _model, prompt) => {
-    if (prompt.includes('【原文片段】')) {
-      entered.get(projectId)!.resolve()
-      await release.get(projectId)!.promise
-    }
-    return sourceAnalysisFixture(prompt)!
+  let calls = 0
+  const analyzer = createScriptSourceAnalyzer(async (_id, _model, prompt) => {
+    calls++; return sourceAnalysisFixture(prompt)!
   }, limits, { concurrency: 1 })
   try {
-    const recoveredAt = Date.now()
-    analyzer.recover(); await entered.get(items[0]!.id)!.promise
-    assert.ok(Date.parse(scriptSourceAnalysis(items[0]!.id)!.started_at!) >= recoveredAt, 'a legacy snapshot without a timestamp obtains its real start on execution')
-    for (const item of items.slice(1)) {
-      const queued = scriptSourceAnalysis(item.id)!
-      assert.equal(queued.status, 'queued')
-      assert.equal(queued.started_at, undefined)
-    }
-    assert.equal(scriptSourceAnalysis(items[1]!.id)!.updated_at, queuedStamps[1], 'clock cleanup must not reorder the existing queue')
-    assert.equal(scriptSourceAnalysis(items[1]!.id)!.queue_position, 1)
-    assert.equal(scriptSourceAnalysis(items[2]!.id)!.queue_position, 2)
+    analyzer.recover(); await tick()
+    assert.equal(calls, 0, 'restart never authorizes redispatch')
     for (const item of items) {
-      await entered.get(item.id)!.promise
-      const running = scriptSourceAnalysis(item.id)!
-      assert.equal(running.status, 'running')
-      assert.ok(Date.parse(running.started_at!) >= recoveredAt)
-      release.get(item.id)!.resolve(); await ready(item.id)
+      const paused = scriptSourceAnalysis(item.id)!
+      assert.equal(paused.status, 'paused')
+      assert.equal(paused.started_at, undefined)
+      assert.match(paused.error!, /不自动重发/)
     }
+    const resumedAt = Date.now()
+    analyzer.start(items[0]!.id, 'model', { extractionOnly: true })
+    const completed = await ready(items[0]!.id)
+    assert.ok(Date.parse(completed.started_at!) >= resumedAt)
+    assert.equal(calls, 2, 'only map and synthesis, no quality review')
+    for (const item of items.slice(1)) assert.equal(scriptSourceAnalysis(item.id)!.status, 'paused')
   } finally {
-    for (const gate of release.values()) gate.resolve()
     await analyzer.close()
     for (const item of items) run('DELETE FROM projects WHERE id=?', item.id)
   }
@@ -261,4 +254,157 @@ test('a prepared full-source cache hit publishes ready data without an execution
     await tick()
     assert.equal(calls, 0)
   } finally { await analyzer.close(); run('DELETE FROM projects WHERE id=?', item.id) }
+})
+
+
+test('explicit continuation repairs a saved character omission without regenerating the directory or whole story', async t => {
+  for (const legacyResponseOnly of [false, true]) await t.test(legacyResponseOnly ? 'legacy completed response' : 'durable private candidate', async () => {
+    const item = project('人物续修'), manuscript = '林舟将钥匙交给车夫。\n车夫：我等你回家。'
+    run('UPDATE script_source_documents SET content=? WHERE project_id=?', manuscript, item.id)
+    let mapCalls = 0, storyCalls = 0, repairCalls = 0, reviewCalls = 0, failRepair = true
+    const analyzer = createScriptSourceAnalyzer(async (_project, _model, prompt, contract) => {
+      if (contract?.name === 'script_source_story_character_repair') {
+        repairCalls++
+        if (failRepair) throw new Error('人物补丁连接中断')
+        assert.ok(prompt.includes(manuscript.replaceAll('\n', '\\n')), 'the targeted repair still receives complete source for identity checks')
+        return JSON.stringify({ add_characters: [{ name: '车夫', aliases: [], description: '收下钥匙，等待林舟回家。', section_ids: [0] }], add_aliases: [] })
+      }
+      const value = JSON.parse(sourceAnalysisFixture(prompt)!)
+      if (contract?.name === 'script_source_map') {
+        mapCalls++
+        value.sections[0].characters = [{ name: '车夫', description: '等待林舟回家的人。', evidence: { unit_id: value.sections[0].start_unit } }]
+      }
+      if (contract?.name === 'script_source_story') { storyCalls++; value.story.characters = [] }
+      if (prompt.includes('【原稿分析核对资料】')) reviewCalls++
+      return JSON.stringify(value)
+    }, limits)
+    try {
+      const first = analyzer.start(item.id, 'model')
+      let failed: ReturnType<typeof scriptSourceAnalysis> = null
+      for (let attempt = 0; attempt < 200; attempt++) {
+        failed = scriptSourceAnalysis(item.id)
+        if (failed?.status === 'failed') break
+        await new Promise(resolve => setTimeout(resolve, 5))
+      }
+      assert.ok(failed)
+      assert.equal(failed.status, 'failed', failed.error || 'analysis did not reach the interrupted repair')
+      assert.match(failed.error!, /人物补丁连接中断/)
+      assert.ok(failed.story_candidate?.result)
+      assert.equal(failed.story_candidate.character_repair?.status, 'failed')
+      assert.equal(failed.story, undefined)
+      assert.equal(mapCalls, 1); assert.equal(storyCalls, 1); assert.equal(repairCalls, 1); assert.equal(reviewCalls, 0)
+      const before = structuredClone(failed.sections), candidate = structuredClone(failed.story_candidate.result.story)
+      const publicFailed = scriptSourceDocument(item.id)!.analysis!
+      assert.equal(publicFailed.story_candidate, undefined)
+      assert.equal(publicFailed.story, undefined, 'a failed private candidate cannot appear as completed story data')
+      assert.match(publicFailed.resume!.message, /全剧整合候选已保存/)
+
+      if (legacyResponseOnly) {
+        delete failed.story_candidate
+        run('UPDATE script_source_analyses SET snapshot=? WHERE project_id=?', JSON.stringify(failed), item.id)
+      }
+      failRepair = false
+      const priorRuns = [first.id]
+      if (legacyResponseOnly) {
+        for (let cycle = 0; cycle < 2; cycle++) {
+          const queued = analyzer.start(item.id, 'model')
+          assert.equal(queued.status, 'queued')
+          assert.deepEqual(queued.story_response_run_ids, priorRuns, 'every compatible execution retains the original response owner before model work begins')
+          const paused = analyzer.pause(item.id, queued.id)
+          assert.equal(paused.status, 'paused')
+          assert.deepEqual(paused.story_response_run_ids, priorRuns)
+          priorRuns.push(queued.id)
+          assert.equal(scriptSourceDocument(item.id)!.analysis!.story_response_run_ids, undefined)
+        }
+        assert.equal(storyCalls, 1, 'synchronous queue pauses cannot consume or overwrite the original completed story response')
+        assert.equal(repairCalls, 1)
+      }
+      const resumed = analyzer.start(item.id, 'model')
+      assert.notEqual(resumed.id, first.id)
+      assert.deepEqual(resumed.story_response_run_ids, priorRuns)
+      assert.equal(scriptSourceDocument(item.id)!.analysis!.story_response_run_ids, undefined, 'internal response lineage is hidden from public task state')
+      const result = await ready(item.id)
+
+      assert.deepEqual(result.sections, before)
+      assert.equal(mapCalls, 1, 'the complete evidence directory is reused')
+      assert.equal(storyCalls, 1, 'continuation adopts the retained candidate or its exact legacy response without another whole-story request')
+      assert.equal(repairCalls, 2, 'only the failed character patch receives one explicit retry')
+      assert.equal(reviewCalls, 1, 'a repaired story still requires independent quality review')
+      assert.equal(result.quality!.status, 'passed')
+      assert.equal(result.story_candidate, undefined)
+      assert.equal(result.story_response_run_ids, undefined)
+      assert.deepEqual(result.story, { ...candidate, characters: [{ name: '车夫', aliases: [], description: '收下钥匙，等待林舟回家。', section_ids: [0] }] },
+        'targeted repair leaves the saved summary, timeline, threads, ending and uncertainties untouched')
+    } finally { await analyzer.close(); run('DELETE FROM projects WHERE id=?', item.id) }
+  })
+})
+
+
+test('public analysis marks uncertain dispatch as blocked without changing the ledger on reads', () => {
+  const item = project('未知请求恢复状态'), runId = 'ui-blocked-run'
+  markSourceModelRun(item.id, runId)
+  const document = { project_id: item.id, filename: '未知请求恢复状态.txt', content: '未知请求恢复状态：林舟得到钥匙，调查结束后回家。', updated_at: item.stamp }
+  const state = { id: runId, source_version: scriptSourceVersion(document), model_id: 'model', status: 'failed',
+    phase: 'synthesis', pipeline_version: sourceAnalysisPipelineVersion, completed_chunks: 1, total_chunks: 1,
+    sections: [{ offset: 0, length: document.content.length, title: '完整剧情', episode_number: null, summary: '调查后回家', characters: [], events: [] }],
+    error: '未知断线', updated_at: now() }
+  run('INSERT INTO script_source_analyses (project_id,id,source_version,status,snapshot,updated_at) VALUES (?,?,?,?,?,?)',
+    item.id, runId, state.source_version, state.status, JSON.stringify(state), state.updated_at)
+  run('INSERT INTO source_model_requests (project_id,scope,request_key,run_id,state,delivery,result,updated_at) VALUES (?,?,?,?,?,?,?,?)',
+    item.id, 'scope-ui', 'request-ui', runId, 'dispatched', 'unknown', null, now())
+  const before = JSON.stringify(db.prepare('SELECT * FROM source_model_requests WHERE project_id=?').all(item.id))
+  for (let i = 0; i < 2; i++) {
+    const analysis = scriptSourceDocument(item.id)!.analysis!
+    assert.equal(analysis.resume?.available, false); assert.equal(analysis.resume?.blocked, true)
+    assert.match(analysis.resume!.message, /核对提供商记录/)
+    assert.equal(analysis.sections.length, 1)
+  }
+  assert.equal(JSON.stringify(db.prepare('SELECT * FROM source_model_requests WHERE project_id=?').all(item.id)), before)
+  const analyzer = createScriptSourceAnalyzer(async () => { throw new Error('blocked continuation must not run') })
+  assert.throws(() => analyzer.start(item.id, 'model'), { code: 'source_request_unknown' })
+  assert.equal(scriptSourceAnalysis(item.id)!.id, runId, 'a blocked POST cannot replace the retained failed analysis')
+  void analyzer.close()
+  run("UPDATE source_model_requests SET state='failed',delivery='output_started' WHERE project_id=?", item.id)
+  assert.equal(scriptSourceDocument(item.id)!.analysis!.resume?.blocked, undefined)
+  assert.equal(scriptSourceDocument(item.id)!.analysis!.resume?.available, true)
+})
+
+for (const incomplete of [false,true]) test(`explicit continue preserves ${incomplete?'uncertain intent':'completed paid correction'} and cannot buy another whole correction`, async()=>{
+  const item=project(incomplete?'不确定纠正保护':'完成纠正本地重验')
+  let initial=0, corrections=0
+  const generator=async(_project:string,_model:string,prompt:string,contract:any)=>{
+    if(contract?.name==='script_source_map_local_repair') {
+      corrections++
+      if(incomplete) throw Object.assign(new Error('unknown correction delivery'),{delivery:'unknown'})
+      return '{"repairs":{}}'
+    }
+    if(contract?.name==='script_source_map') {
+      initial++
+      const value=JSON.parse(sourceAnalysisFixture(prompt)!)
+      value.sections[0].events[0].evidence.unit_id=[value.sections[0].events[0].evidence.unit_id]
+      return JSON.stringify(value)
+    }
+    throw new Error('unexpected downstream generation')
+  }
+  let analyzer=createScriptSourceAnalyzer(generator,limits)
+  async function failed(){
+    for(let i=0;i<200;i++){
+      const state=scriptSourceAnalysis(item.id)
+      if(state?.status==='failed')return state
+      await new Promise(resolve=>setTimeout(resolve,5))
+    }
+    assert.fail('did not fail')
+  }
+  try{
+    analyzer.start(item.id,'model');const first=await failed()
+    const before=structuredClone(first.work![0]!.output_checkpoint)
+    assert.ok((before as any).correction_started)
+    assert.equal(!!before!.correction,!incomplete)
+    assert.equal(initial,1);assert.equal(corrections,1)
+    await analyzer.close();analyzer=createScriptSourceAnalyzer(generator,limits)
+    analyzer.start(item.id,'model');const resumed=await failed()
+    assert.equal(initial,1);assert.equal(corrections,1,'continue cannot reset dispatch intent or completed correction')
+    assert.deepEqual(resumed.work![0]!.output_checkpoint,before)
+    assert.equal(resumed.status,'failed');assert.equal(resumed.story,undefined)
+  }finally{await analyzer.close();run('DELETE FROM projects WHERE id=?',item.id)}
 })

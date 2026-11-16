@@ -13,6 +13,11 @@ const unitFor = (name: string) => units.find(unit => unit.text.includes(name))!
 const evidence = (name: string) => ({ offset: unitFor(name).offset, quote: unitFor(name).text })
 const signal = () => new AbortController().signal
 const body = (changes: unknown[]) => JSON.stringify({ status: 'patched', reason: '按原文修补当前问题', changes })
+const rejectedBody = (changes: unknown[], prompt: string, name?: string) => {
+  if (!name?.endsWith('_local_repair')) return body(changes)
+  const marker = '【局部纠正资料】\n', index = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length)).change_index
+  return JSON.stringify({ repairs: { [`change_${index}`]: changes[index] } })
+}
 function stateFor(findings = 1): ScriptSourceAnalysis {
   const split = content.indexOf('第二集')
   const state: ScriptSourceAnalysis = { id: 'analysis', source_version: 'source-v1', model_id: 'text', status: 'failed', phase: 'synthesis',
@@ -49,12 +54,14 @@ test('one finding receives the complete source and analysis, atomically appends 
     assert.equal(input.complete_source, true)
     assert.equal(input.units.map((unit: { text: string }) => unit.text).join(''), content)
     assert.equal(input.finding_index, 0); assert.equal(input.total_findings, 1)
-    assert.deepEqual(input.story, original.story)
+    assert.deepEqual({ ...input.story, ...Object.fromEntries(['characters', 'timeline', 'threads', 'uncertainties'].map(field => [field, Object.values(input.story[field])])) }, original.story)
     assert.deepEqual(input.sections[0].characters[0].evidence, { unit_id: unitFor('林舟').id })
     for (const privateKey of ['quality_repair', 'story_work', 'synthesis', 'configuration_hash', 'error', 'model_id']) assert.equal(input[privateKey], undefined)
     return body(characterChanges())
   }, () => { snapshots.push(structuredClone(state)) }, signal())
-  assert.equal(calls, 1); assert.equal(snapshots.length, 2)
+  assert.equal(calls, 1); assert.ok(snapshots.length >= 2)
+  assert.equal(snapshots.filter(snapshot => snapshot.quality_repair?.completed_findings === 1).length, 1, 'business change commits once; private response snapshots do not advance the finding')
+  assert.ok(snapshots.slice(0, -1).every(snapshot => JSON.stringify(snapshot.sections) === JSON.stringify(original.sections) && JSON.stringify(snapshot.story) === JSON.stringify(original.story)))
   assert.equal(sourceQualityRepairProgress(state), 1)
   assert.deepEqual(state.sections[0], original.sections[0])
   assert.deepEqual(state.sections[1]!.events, original.sections[1]!.events)
@@ -71,7 +78,7 @@ test('successful findings survive a later transport failure and resume only unfi
   const first = async (prompt: string) => {
     const input = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length))
     requests.push(input.finding_index)
-    if (input.finding_index === 1) throw new Error('transport failed')
+    if (input.finding_index === 1) throw Object.assign(new Error('transport failed'), { delivery: 'not_sent' })
     return body(characterChanges())
   }
   await assert.rejects(repairSourceQuality(document, state, first, () => {}, signal()), /transport failed/)
@@ -119,12 +126,12 @@ test('ending repair corrects string payloads into complete objects without losin
 test('a rejected multi-edit finding commits neither the earlier edit nor its progress', async () => {
   const state = stateFor(), original = structuredClone(state)
   let calls = 0
-  await assert.rejects(repairSourceQuality(document, state, async () => {
+  await assert.rejects(repairSourceQuality(document, state, async (prompt, contract) => {
     calls++
-    return body([
+    return rejectedBody([
       { target: 'story.summary', section_id: null, operation: 'replace', index: null, expected: state.story!.summary, value: '沈月归还信物' },
       { target: 'section.events', section_id: 1, operation: 'replace', index: 0, expected: { summary: '并非当前原值', evidence: { unit_id: unitFor('沈月').id } }, value: { summary: '补充归还原因', evidence: { unit_id: unitFor('沈月').id } } },
-    ])
+    ], prompt, contract?.name)
   }, () => {}, signal()), /原值不匹配/)
   assert.equal(calls, 2)
   assert.deepEqual(state.sections, original.sections); assert.deepEqual(state.story, original.story)
@@ -143,7 +150,7 @@ test('guards reject unsupported names, foreign evidence and invalid story refere
   ]
   for (const item of cases) await t.test(item.label, async () => {
     const state = stateFor(), original = structuredClone(state)
-    await assert.rejects(repairSourceQuality(document, state, async () => body(item.changes), () => {}, signal()), item.pattern)
+    await assert.rejects(repairSourceQuality(document, state, async (prompt, contract) => rejectedBody(item.changes, prompt, contract?.name), () => {}, signal()), item.pattern)
     assert.deepEqual(state.sections, original.sections); assert.deepEqual(state.story, original.story)
     assert.equal(sourceQualityRepairProgress(state), 0)
   })
@@ -200,7 +207,7 @@ test('empty, no-op, cancelling and forbidden coordinate changes cannot count as 
   ]
   for (const item of cases) await t.test(item.name, async () => {
     const state = stateFor(), original = structuredClone(state)
-    await assert.rejects(repairSourceQuality(document, state, async () => body(item.changes), () => {}, signal()), item.pattern)
+    await assert.rejects(repairSourceQuality(document, state, async (prompt, contract) => rejectedBody(item.changes, prompt, contract?.name), () => {}, signal()), item.pattern)
     assert.deepEqual(state.sections, original.sections); assert.deepEqual(state.story, original.story)
     assert.equal(sourceQualityRepairProgress(state), 0)
   })
@@ -221,13 +228,16 @@ test('checkpoint integrity binds the original review, finding list, committed an
   })
 })
 
-test('stale unbound findings are skipped, while a corrupt existing checkpoint restarts safely at zero', async () => {
+test('stale findings stay unbound even with a corrupt checkpoint, while a current review restarts safely at zero', async () => {
   const state = stateFor()
   state.story!.summary += ' externally changed'
   let calls = 0
   await repairSourceQuality(document, state, async () => { calls++; return body(characterChanges()) }, () => {}, signal())
   assert.equal(calls, 0); assert.equal(state.quality_repair, undefined)
   state.quality_repair = { review_hash: 'corrupt', findings_hash: 'corrupt', current_hash: 'corrupt', completed_findings: 999 }
+  await repairSourceQuality(document, state, async () => { calls++; return body(characterChanges()) }, () => {}, signal())
+  assert.equal(calls, 0, 'the mere presence of a corrupt marker cannot authorize stale findings')
+  state.quality!.input_hash = sourceQualityInputHash(state)
   await repairSourceQuality(document, state, async prompt => {
     calls++; const input = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length)); assert.equal(input.finding_index, 0)
     return body(characterChanges())
@@ -238,7 +248,7 @@ test('stale unbound findings are skipped, while a corrupt existing checkpoint re
 test('an explicit unsafe-repair result retains analysis and explains that no local repair completed', async () => {
   const state = stateFor(), original = structuredClone(state)
   await assert.rejects(repairSourceQuality(document, state, async () => JSON.stringify({ status: 'requires_full_rebuild', reason: '必须调整章节边界。', changes: [] }), () => {}, signal()), error => {
-    assert.equal((error as Error & { statusCode: number }).statusCode, 422)
+    assert.equal((error as Error & { statusCode: number }).statusCode, 409)
     assert.match((error as Error).message, /无法安全定点修补.*章节边界。\n需要依据原文重新整理目录/)
     assert.equal((error as Error & { sourceQualityRepairNeedsRebuild: boolean }).sourceQualityRepairNeedsRebuild, true)
     assert.doesNotMatch((error as Error).message, /。。/)
@@ -253,4 +263,112 @@ test('cancellation after a late model response cannot commit its edits', async (
   await assert.rejects(repairSourceQuality(document, state, async () => { control.abort(new Error('paused')); return body(characterChanges()) }, () => {}, control.signal), /paused/)
   assert.deepEqual(state.sections, original.sections); assert.deepEqual(state.story, original.story)
   assert.equal(sourceQualityRepairProgress(state), 0)
+})
+
+const longTimelineChange = (state: ScriptSourceAnalysis) => ({ target: 'story.timeline', section_id: null, operation: 'replace', index: 0,
+  expected: state.story!.timeline[0], value: { summary: '补'.repeat(621), section_ids: [1] } })
+const leafEnvelope = () => JSON.stringify({ repairs: { repair_0: '沈月归还信物，杜铮受到细线操控' } })
+
+test('one over-limit union leaf repairs only that value and preserves all valid guarded changes', async () => {
+  const state = stateFor(), original = structuredClone(state)
+  let calls = 0
+  await repairSourceQuality(document, state, async (prompt, contract) => {
+    if (++calls === 1) return body([...characterChanges(), longTimelineChange(original)])
+    assert.equal(contract!.name, 'script_source_quality_repair_structure_repair')
+    const repairs = (contract!.schema.properties as any).repairs
+    assert.deepEqual(Object.keys(repairs.properties), ['repair_0'])
+    assert.deepEqual(repairs.properties.repair_0, { type: 'string', minLength: 1, maxLength: 600 })
+    assert.match(prompt, /"path":\["changes",2,"value","summary"\]/)
+    assert.doesNotMatch(prompt, /【一次格式修正】/)
+    assert.deepEqual(state.story, original.story)
+    return leafEnvelope()
+  }, () => {}, signal())
+  assert.equal(calls, 2); assert.equal(sourceQualityRepairProgress(state), 1)
+  assert.deepEqual(state.story, { ...original.story, characters: [...original.story!.characters, characterChanges()[1]!.value], timeline: [{ summary: '沈月归还信物，杜铮受到细线操控', section_ids: [1] }] })
+  assert.deepEqual(state.sections[0], original.sections[0])
+  assert.deepEqual(state.sections[1], { ...original.sections[1], characters: [{ ...characterChanges()[0]!.value, evidence: evidence('沈月') }] })
+  assert.deepEqual(state.quality, original.quality)
+})
+
+test('local correction preserves stale-expected and semantic-reference guards without partial commit', async t => {
+  for (const mode of ['stale expected', 'unknown section'] as const) await t.test(mode, async () => {
+    const state = stateFor(), original = structuredClone(state), change = longTimelineChange(original)
+    if (mode === 'stale expected') change.expected = { summary: '外部旧值', section_ids: [1] }
+    else change.value.section_ids = [999]
+    let calls = 0
+    await assert.rejects(repairSourceQuality(document, state, async (_prompt, contract) => {
+      if (++calls === 1) return body([...characterChanges(), change])
+      assert.equal(contract!.name, 'script_source_quality_repair_structure_repair')
+      return leafEnvelope()
+    }, () => {}, signal()), mode === 'stale expected' ? /原值不匹配/ : /不存在的章节/)
+    assert.equal(calls, 2)
+    assert.deepEqual(state.story, original.story); assert.deepEqual(state.sections, original.sections)
+    assert.equal(sourceQualityRepairProgress(state), 0)
+  })
+})
+
+test('explicit retain repairs only an over-limit reason while evidence and analysis stay unchanged', async () => {
+  const state = stateFor(), original = structuredClone(state), ids = [unitFor('沈月').id]
+  let calls = 0
+  await repairSourceQuality(document, state, async (prompt, contract) => {
+    if (++calls === 1) { const data = JSON.parse(prompt.slice(prompt.lastIndexOf('【原稿分析定点修补资料】\n') + '【原稿分析定点修补资料】\n'.length)); return JSON.stringify({ decision: 'retain_analysis', finding_hash: data.finding_hash, reason: '证'.repeat(1601), changes: [], analysis_refs: [{ path: 'story.summary' }], source_refs: ids.map(unit_id => ({ unit_id })) }) }
+    assert.equal(contract!.name, 'script_source_quality_repair_structure_repair')
+    assert.match(prompt, /"path":\["reason"\]/)
+    return JSON.stringify({ repairs: { repair_0: '既有时间线已保留信物归还，无需重复新增。' } })
+  }, () => {}, signal())
+  assert.equal(calls, 2); assert.equal(sourceQualityRepairProgress(state), 1)
+  assert.deepEqual(state.story, original.story); assert.deepEqual(state.sections, original.sections)
+  assert.deepEqual(state.quality_repair!.decisions!.map(({ finding_index, source_refs, reason }) => ({ finding_index, unit_ids: source_refs.map(ref => ref.unit_id), reason })),
+    [{ finding_index: 0, unit_ids: ids, reason: '既有时间线已保留信物归还，无需重复新增。' }])
+  assert.deepEqual(state.quality, original.quality)
+})
+
+test('a local envelope cannot change status or add unauthorized fields', async () => {
+  const state = stateFor(), original = structuredClone(state)
+  let calls = 0
+  await assert.rejects(repairSourceQuality(document, state, async (_prompt, contract) => {
+    if (++calls === 1) return body([longTimelineChange(original)])
+    assert.equal(contract!.name, 'script_source_quality_repair_structure_repair')
+    return JSON.stringify({ status: 'withdrawn', repairs: { repair_0: '沈月归还信物' } })
+  }, () => {}, signal()), /定向修复必须只返回本次固定 repair 字段/)
+  assert.equal(calls, 2)
+  assert.deepEqual(state.story, original.story); assert.deepEqual(state.sections, original.sections)
+  assert.equal(sourceQualityRepairProgress(state), 0)
+})
+
+test('an unknown union target retains one full correction instead of guessing a repair branch', async () => {
+  const state = stateFor()
+  let calls = 0
+  await repairSourceQuality(document, state, async (prompt, contract) => {
+    if (++calls === 1) return body([{ target: 'story.unknown', section_id: null, operation: 'replace', index: null, expected: '', value: '' }])
+    assert.equal(contract!.name, 'script_source_quality_repair')
+    assert.match(prompt, /【一次格式修正】/); assert.doesNotMatch(prompt, /【一次结构定向修复】/)
+    return body(characterChanges())
+  }, () => {}, signal())
+  assert.equal(calls, 2); assert.equal(sourceQualityRepairProgress(state), 1)
+})
+
+test('concurrent analysis drift during local correction cannot commit the reconstructed candidate', async () => {
+  const state = stateFor(), original = structuredClone(state)
+  let calls = 0, persists = 0
+  await assert.rejects(repairSourceQuality(document, state, async (_prompt, contract) => {
+    if (++calls === 1) return body([longTimelineChange(original)])
+    assert.equal(contract!.name, 'script_source_quality_repair_structure_repair')
+    state.story!.summary = '另一任务保存的新摘要'
+    return leafEnvelope()
+  }, () => { persists++ }, signal()), /修补期间发生变化/)
+  assert.equal(calls, 2); assert.ok(persists >= 1, 'only private output snapshots were added')
+  assert.ok((state as any).quality_repair_output.checkpoint.raw)
+  assert.deepEqual(state.story, { ...original.story, summary: '另一任务保存的新摘要' })
+  assert.deepEqual(state.sections, original.sections); assert.equal(state.quality_repair!.completed_findings, 0)
+})
+
+test('quality repair preserves remote character facts only with exact chapter occurrence and keeps supporting chain',async()=>{
+ const state=stateFor(),primary=unitFor('林舟'),occurrence=unitFor('沈月')
+ const changes=characterChanges();(changes[0] as any).value.evidence={unit_id:primary.id,occurrence_unit_id:occurrence.id,supporting_unit_ids:[occurrence.id]}
+ await repairSourceQuality(document,state,async()=>body(changes),()=>{},signal())
+ const cited=state.sections[1]!.characters[0]!.evidence
+ assert.equal(cited.offset,primary.offset);assert.equal(cited.occurrence!.offset,occurrence.offset)
+ assert.equal(cited.supporting![0]!.quote,occurrence.text)
+ assert.equal(state.quality!.status,'issues','new coordinate links are not semantic acceptance')
 })

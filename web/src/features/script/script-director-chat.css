@@ -125,9 +125,6 @@
 .sd-composer-context .sd-reference-list.is-composing .sd-reference-open { gap: 3px; padding: 8px 30px 8px 10px; }
 .sd-composer-context .sd-reference-list.is-composing .sd-reference-preview { display: none; }
 .sd-composer-context:has(.sd-source-context-status.needs-attention) .sd-script-source-container { display: flex; flex-direction: column; gap: 8px; }
-.sd-composer-context:has(.sd-source-context-status.needs-attention) .sd-source-analysis { display: contents; }
-.sd-composer-context:has(.sd-source-context-status.needs-attention) .sd-source-analysis-status { order: -1; }
-.sd-composer-context:has(.sd-source-context-status.needs-attention) .sd-source-analysis > :not(.sd-source-analysis-status) { order: 1; }
 .sd-composer-area:has(.sd-question-panel) { max-height: 60%; }
 .sd-composer-area:has(.sd-question-panel.is-input-request) { max-height: 72%; }
 .sd-chat.is-reviewing .sd-composer-area { max-height: 64%; }

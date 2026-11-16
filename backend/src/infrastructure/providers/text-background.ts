@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { estimateTextRequestTokens, textRequestInput } from './text-context.js'
 import { parseTextUsage } from './text-usage-parse.js'
-import { beginTextRequest, settlePendingTextRequest, type TextRequestUsageMetrics } from './text-request-usage.js'
+import { beginTextRequest, beginAcceptedTextResponsePoll, settlePendingTextRequest, type TextRequestUsageMetrics } from './text-request-usage.js'
 
 export type BackgroundResponse = { id?: string; state: 'creating' | 'accepted'; sequence?: number }
 type Recovery = { read: (key: string) => BackgroundResponse | undefined; save: (key: string, value?: BackgroundResponse) => void }
@@ -68,7 +68,7 @@ export async function backgroundTextResponse(url: string, body: Record<string, u
   try {
   for (;;) {
     signal.throwIfAborted()
-    const poll = beginTextRequest({ kind: 'transport', request_bytes: Buffer.byteLength(responseUrl), estimated_input_tokens: 0 })
+    const poll = beginAcceptedTextResponsePoll(saved.id!, Buffer.byteLength(responseUrl))
     let response: Response
     try { response = await wait(observeProviderFetch(responseUrl, { headers, signal }, 'background_poll', fetch, identity, undefined, poll)) }
     catch (error) { poll.complete({}); throw error }

@@ -367,6 +367,52 @@ test('draft edits persist, preserve originals, invalidate old approvals and save
   assert.match(script().characters, /独立调查记者/); assert.match(script().characters, /陈默：外科医生/); assert.equal(script().characters, script().artifacts![0].content)
 })
 
+test('ordinary pending draft reads expose compact document-bound anchors and only replace the selected repeated paragraph', async () => {
+  const f = await fixture(), source = '标记旧。\r\n\r\n重复🚆段落。\r\n\r\n重复🚆段落。'
+  for (const type of ['characters', 'relationships']) await artifact(f.project.id, type, source)
+  const documents = f.script().artifacts!, tools = f.makeTools()
+  const reads = await Promise.all(documents.map(document => readDoc(tools, document.id)))
+  await tools.execute('propose_document_patch', { summary: '保留重复段落供继续修改', changes: reads.map(read => ({
+    document_id: read!.id, base_version: read!.version, replacements: [{ find: '标记旧。', replace: '标记新。', reason: '保留正文排版' }],
+  })) })
+  const initial = getToolDraft(f.project.id)!, continued = f.makeTools()
+  type DraftRead = ScriptToolDraft & { documents: Array<ScriptToolDraft['documents'][number] & {
+    locator_version: string; paragraphs: Array<{ id: string; start: number; end: number }>
+  }> }
+  const read = await continued.execute('manage_document_draft', { operation: 'read' }) as DraftRead
+  assert.equal(read.version, initial.version)
+  assert.equal(read.documents.length, 2)
+  const first = read.documents[0]!, other = read.documents[1]!
+  assert.equal(first.content, other.content)
+  assert.notEqual(first.locator_version, other.locator_version)
+  assert.notEqual(first.paragraphs[2]!.id, other.paragraphs[2]!.id)
+  assert.deepEqual(Object.keys(first.paragraphs[0]!).sort(), ['end', 'id', 'start'])
+  assert.equal(first.content, initial.documents[0]!.content)
+  assert.equal(first.original_content, source)
+  assert.equal(first.content.slice(first.paragraphs[2]!.start, first.paragraphs[2]!.end), '重复🚆段落。')
+  assert.ok(!Object.hasOwn(getToolDraft(f.project.id)!.documents[0]!, 'paragraphs'), 'read-only metadata is never persisted')
+  const update = (id: string, paragraph_id: string, version = read.version) => ({ operation: 'update', version, changes: [{
+    document_id: id, base_version: version, replacements: [{ paragraph_id, replace: '仅改第二段🚂。   ', reason: '精确修改重复段' }],
+  }] })
+  await assert.rejects(continued.execute('manage_document_draft', update(other.id, first.paragraphs[2]!.id)),
+    (error: any) => error.diagnostic.code === 'anchor_stale')
+  assert.deepEqual(getToolDraft(f.project.id), initial)
+  await continued.execute('manage_document_draft', update(first.id, first.paragraphs[2]!.id))
+  const changed = getToolDraft(f.project.id)!
+  assert.equal(changed.documents[0]!.content, '标记新。\r\n\r\n重复🚆段落。\r\n\r\n仅改第二段🚂。   ')
+  assert.equal(changed.documents[1]!.content, other.content)
+  assert.equal(f.script().artifacts![0]!.content, source, 'editing the draft does not save project documents')
+  const freshRead = await continued.execute('manage_document_draft', { operation: 'read' }) as DraftRead
+  assert.notEqual(freshRead.documents[1]!.locator_version, other.locator_version, 'a draft-version change expires even unchanged document anchors')
+  await assert.rejects(continued.execute('manage_document_draft', update(first.id, first.paragraphs[2]!.id, freshRead.version)),
+    (error: any) => error.diagnostic.code === 'anchor_stale')
+  const beforeUnicode = getToolDraft(f.project.id)!
+  await assert.rejects(continued.execute('manage_document_draft', { operation: 'update', version: freshRead.version, changes: [{
+    document_id: first.id, base_version: freshRead.version, replacements: [{ find: '\ud83d', replace: '不应写入', reason: '验证边界' }],
+  }] }), (error: any) => error.diagnostic.code === 'invalid_passage_boundary')
+  assert.deepEqual(getToolDraft(f.project.id), beforeUnicode)
+})
+
 test('stale base rejects saves; discard and manual edits are versioned and project bound', async () => {
   const a = await fixture(), b = await fixture(); await artifact(a.project.id)
   const doc = a.script().artifacts![0], tools = a.makeTools(), read = await readDoc(tools, doc.id)

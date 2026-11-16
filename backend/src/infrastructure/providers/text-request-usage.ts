@@ -13,6 +13,14 @@ export type TextRequestUsageScope = {
   budgetLabel?: string
   /** Prevent detached work from dispatching after its owning budget closes. */
   signal?: AbortSignal
+  /** Close new dispatch admission without cancelling an accepted response. */
+  admissionSignal?: AbortSignal
+  /** Refresh an owning deadline synchronously before any dispatch is charged. */
+  beforeAdmission?: () => void
+  /** Track this execution's admitted work, not historical unknown ledger rows.
+   * Accepted GETs share a remote owner across polling intervals; generation
+   * reservations retain their own owners. These keys are never serialized. */
+  onRequestPending?: (owner: object | string, pending: () => boolean) => (() => void) | void
   onUpdate?: (usage: ScriptRequestUsage, phase: 'reservation' | 'settlement') => void
 }
 // A phase ledger and the execution ledger can both observe the same HTTP
@@ -110,18 +118,39 @@ export type TextRequestUsageMetrics = {
 
 /** Call once immediately before an actual generation HTTP request, never at a
  * model-step/format/retry wrapper. Missing scope keeps other tasks unchanged. */
-export function beginTextRequest(details: TextRequestUsageDetails): {
+type TextRequestReservation = {
   admitted: boolean
   identify: (id: string) => boolean
   complete: (metrics: TextRequestUsageMetrics) => void
-} {
+}
+export function beginTextRequest(details: TextRequestUsageDetails): TextRequestReservation {
+  return reserveTextRequest(details)
+}
+
+/** Only the background response wrapper calls this for a GET of its already
+ * accepted ID. A matching pending identity is required in every budget ledger
+ * before it may outlive duration admission; arbitrary transport never may. */
+export function beginAcceptedTextResponsePoll(id: string, requestBytes: number): TextRequestReservation {
+  if (!/^resp_[a-zA-Z0-9_-]+$/.test(id)) throw new Error('后台响应查询必须引用真实已受理的响应ID')
+  return reserveTextRequest({ kind: 'transport', request_bytes: requestBytes, estimated_input_tokens: 0 }, id)
+}
+
+function reserveTextRequest(details: TextRequestUsageDetails, acceptedResponseId?: string): TextRequestReservation {
   const targets = activeTargets()
   if (!targets.length) return { admitted: false, identify: () => false, complete() {} }
   if (!integer(details.request_bytes) || !integer(details.estimated_input_tokens)) throw new Error('模型请求用量估算无效')
   const kind = details.kind === 'cancellation' ? 'transport' : details.kind ?? 'generation'
   // Only the explicit provider cancellation endpoint may outlive execution.
   // It still consumes the combined dispatch cap; ordinary polling never does.
+  if (details.kind !== 'cancellation') {
+    for (const { scopes } of targets) for (const { beforeAdmission } of scopes) beforeAdmission?.()
+  }
   if (details.kind !== 'cancellation') for (const { scopes } of targets) for (const { signal } of scopes) signal?.throwIfAborted()
+  const continuingAccepted = kind === 'transport' && !!acceptedResponseId &&
+    targets.every(({ usage }) => usage.pending_requests.some(item => item.id === acceptedResponseId))
+  if (details.kind !== 'cancellation' && !continuingAccepted) {
+    for (const { scopes } of targets) for (const { admissionSignal } of scopes) admissionSignal?.throwIfAborted()
+  }
   const reservations = targets.map(target => {
     // Identical ledger objects share one conservative reservation while every
     // enclosing scope retains its independently configured limit.
@@ -132,15 +161,22 @@ export function beginTextRequest(details: TextRequestUsageDetails): {
   })
   // Check every budget before mutating any ledger. A rejected phase request
   // must not consume an outer execution request, or vice versa.
+  // A fresh dispatch rejected here was never sent. A poll for an already
+  // accepted response retains that acceptance; its budget failure cannot
+  // authorize buying the generation again.
+  const budgetFailure = (reason: 'requests' | 'tokens', usage: ScriptRequestUsage, limits: ScriptRequestUsageLimits, label?: string) =>
+    Object.assign(new TextRequestBudgetError(reason, structuredClone(usage), { ...limits }, label), {
+      delivery: kind === 'transport' && acceptedResponseId ? 'accepted' as const : 'not_sent' as const,
+    })
   for (const { target: { usage, scopes }, reserve } of reservations) for (const { limits, budgetLabel } of scopes) {
     if (limits?.max_total_requests !== undefined && usage.requests + usage.transport_requests + 1 > limits.max_total_requests) {
-      throw new TextRequestBudgetError('requests', structuredClone(usage), { ...limits }, budgetLabel)
+      throw budgetFailure('requests', usage, limits, budgetLabel)
     }
     if (kind !== 'transport' && limits?.max_requests !== undefined && usage.requests + 1 > limits.max_requests) {
-      throw new TextRequestBudgetError('requests', structuredClone(usage), { ...limits }, budgetLabel)
+      throw budgetFailure('requests', usage, limits, budgetLabel)
     }
     if (kind === 'generation' && limits?.max_tokens !== undefined && scriptRequestUsageTokens(usage) + details.estimated_input_tokens + reserve > limits.max_tokens) {
-      throw new TextRequestBudgetError('tokens', structuredClone(usage), { ...limits }, budgetLabel)
+      throw budgetFailure('tokens', usage, limits, budgetLabel)
     }
   }
   for (const { target: { usage }, reserve } of reservations) {
@@ -157,8 +193,18 @@ export function beginTextRequest(details: TextRequestUsageDetails): {
       }
     }
   }
-  for (const target of targets) notifyTarget(target, 'reservation')
   let completed = false
+  const completedCallbacks: (() => void)[] = []
+  if (details.kind !== 'cancellation') for (const reservation of reservations) {
+    const pending = () => !completed || !!(acceptedResponseId || reservation.requestId) &&
+      reservation.target.usage.pending_requests.some(item => item.id === (acceptedResponseId || reservation.requestId))
+    const callbacks = new Set(reservation.target.scopes.map(scope => scope.onRequestPending))
+    for (const callback of callbacks) {
+      const onCompleted = callback?.(acceptedResponseId ?? reservation, pending)
+      if (onCompleted) completedCallbacks.push(onCompleted)
+    }
+  }
+  for (const target of targets) notifyTarget(target, 'reservation')
   return {
     admitted: true,
     identify(id) {
@@ -180,6 +226,7 @@ export function beginTextRequest(details: TextRequestUsageDetails): {
     complete(metrics) {
       if (completed) return
       completed = true
+      for (const callback of completedCallbacks) callback()
       if (kind !== 'generation') { for (const target of targets) notifyTarget(target); return }
       for (const { target, reserve, requestId } of reservations) {
         const { usage } = target

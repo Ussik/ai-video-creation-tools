@@ -45,7 +45,7 @@ export function validateSettings(mod: Model['modality'], settings: Record<string
   for (const key of keys) if (settings[key] === undefined || settings[key] === null || settings[key] === '') invalid(`模型配置缺少 ${key}`)
   if (mod === 'video' && !String(settings.get_path).includes('{id}')) invalid('get_path 必须包含 {id}')
   if (mod === 'text' && !settings.text_path && !Array.isArray(settings.text_paths)) invalid('文本模型需配置 text_path 或 text_paths')
-  if (mod === 'text' && settings.structured_output_mode !== undefined && !['prompt', 'json_object', 'json_schema'].includes(String(settings.structured_output_mode))) invalid('结构化输出模式必须为 prompt、json_object 或 json_schema')
+  if (mod === 'text' && settings.structured_output_mode !== undefined && !['prompt', 'json_object', 'json_schema', 'tool_call'].includes(String(settings.structured_output_mode))) invalid('结构化输出模式必须为 prompt、json_object、json_schema 或 tool_call')
   if (mod === 'text' && settings.supports_vision !== undefined && typeof settings.supports_vision !== 'boolean') invalid('supports_vision 必须为布尔值')
   if (mod === 'text' && settings.supports_video !== undefined && typeof settings.supports_video !== 'boolean') invalid('supports_video 必须为布尔值')
   if (settings.video_input_format !== undefined && mod !== 'text') invalid('video_input_format 视频理解配置仅适用于文本模型')

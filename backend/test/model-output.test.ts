@@ -304,6 +304,24 @@ test('enveloped union diagnostics resolve referenced branches and retain the wir
   assert.deepEqual(result, { action: 'count', amount: 2 })
 })
 
+test('ambiguous strict unions retain separate actionable branch diagnostics and wrapped field paths', async () => {
+  const schema = z.union([
+    z.object({ operation: z.literal('replace_ref'), ref_id: z.string(), replace: z.string() }).strict(),
+    z.object({ find: z.string(), replace: z.string() }).strict(),
+  ])
+  let calls = 0
+  await assert.rejects(generateStructuredOutput('ambiguous_union', schema, async () => {
+    calls++; return JSON.stringify({ result: { replace: '完整修订正文' } })
+  }, '保留全部正文，不推测采用哪种定位方式'), error => {
+    assert.ok(isStructuredOutputError(error))
+    assert.match(error.message, /\$\.result: 允许格式 1（必填字段：operation、ref_id、replace）.*\$\.result\.operation: 缺少必填字段.*\$\.result\.ref_id: 缺少必填字段/)
+    assert.match(error.message, /\$\.result: 允许格式 2（必填字段：find、replace）.*\$\.result\.find: 缺少必填字段/)
+    assert.doesNotMatch(error.message, /字段结构不符合任一允许格式/)
+    return true
+  })
+  assert.equal(calls, 2)
+})
+
 test('generic corrections keep their own schema field names and do not introduce workflow-specific aliases', async () => {
   const schema = z.object({ type: z.string(), count: z.number() }).strict()
   let calls = 0

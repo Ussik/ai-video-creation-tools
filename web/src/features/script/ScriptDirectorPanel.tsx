@@ -1,7 +1,8 @@
+import SourceRuntimeActivity from './SourceRuntimeActivity'
 import ScriptStageActions from './ScriptStageActions'
 import { stageOperationError, missingSavedStageArtifacts, stageLabels, type StageOperation, type StageTarget } from '@video-studio/shared/script/script-stage-access'
 import { WorkspaceDisclosure } from '../../shared/ui/WorkspaceDisclosure'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Menu, UnstyledButton, Slider, Button, TextInput, Textarea, ActionIcon, NumberInput, Popover, Modal, Switch, Select, FileButton } from '@mantine/core'
 import {
@@ -71,8 +72,10 @@ import type { DirectorMode } from '@video-studio/shared/script/script-creation-m
 import { scriptArtifactLabels, scriptStageArtifacts } from '@video-studio/shared/script/script-stage-content'
 import { scriptTaskDeliverables } from '@video-studio/shared/script/script-task-contract'
 import { maxScriptSceneDuration } from '@video-studio/shared/script/script-duration'
-import { scriptSourceExtensions, scriptSourceFileLimit, type ScriptSourceDocument, type ScriptSourceUpdate, type ScriptSourceAnalysis } from '@video-studio/shared/script/script-source-document'
-import { ScriptSourceAnalysisStatus, ScriptSourcePreview } from './ScriptSourceAnalysisView'
+import { scriptSourceExtensions, scriptSourceFileLimit, type ScriptSourceDocument, type ScriptSourceUpdate } from '@video-studio/shared/script/script-source-document'
+import ScriptSourceRequestRecovery, { type SourceRecoveryPresentation } from './ScriptSourceRequestRecovery'
+import { ScriptSourcePreview, ScriptSourceAnalysisStatus, SourceRequestDetails } from './ScriptSourceAnalysisView'
+import { type SourceQualityCreationScope } from '@video-studio/shared/script/script-source-quality-access'
 import type { CreationNextStep, ScriptCreationState } from '@video-studio/shared/script/script-creation-state-types'
 import type { ResourceChange } from '@video-studio/shared/script/script-resource-types'
 import type { DocumentReview } from '@video-studio/shared/script/script-review-types'
@@ -88,7 +91,7 @@ import ScriptMessageContent from './ScriptMessageContent'
 import { clampDirectorWindow, defaultDirectorWindow, shouldSendDirectorMessage, type DirectorWindowRect } from './director-window'
 import { ScriptThemeWaterCanvas as WebGLScriptThemeWaterCanvas } from './ScriptThemeWaterCanvas'
 import { artifactKey, workflowLabels, workflowStages, workflowProgress, directorStageContext, type DirectorStageContext } from './script-workflow'
-import { workflowInstruction, workflowRequestForStage, workflowRequestSnapshot, outlineGenerationIssue, exploreStoryDirectionMessage, type WorkflowDraft, type WorkflowRequest, type WorkflowStage } from './script-workflow'
+import { workflowRequestForStage, workflowRequestSnapshot, outlineGenerationIssue, exploreStoryDirectionMessage, type WorkflowDraft, type WorkflowRequest, type WorkflowStage } from './script-workflow'
 import { canAdoptReply, classificationBatch, classificationKey, followingMessages, replyRecognitionState, activeReplyChoice, replyChoices, replyDisplayText, replyClassificationVersion, contextualReplyTypes, type ReplyClassification } from './script-reply'
 import { regenerationSource } from './director-regeneration'
 import { directorChatContext } from './director-chat-context'
@@ -869,9 +872,16 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const [scriptSource, setScriptSource] = useState<ScriptSourceDocument | null>(null)
   const [sourceLoading, setSourceLoading] = useState(true)
   const [sourceUploading, setSourceUploading] = useState(false)
-  const [sourceAnalysisStarting, setSourceAnalysisStarting] = useState(false)
-  const [sourceAnalysisPollError, setSourceAnalysisPollError] = useState(false)
+  const [sourceAnalysisActing, setSourceAnalysisActing] = useState(false)
+  const [sourcePollError, setSourcePollError] = useState('')
+  const sourceAnalysisLock = useRef(false)
   const [sourcePreviewOpen, setSourcePreviewOpen] = useState(false)
+  const [sourceRecoveryConfirming, setSourceRecoveryConfirming] = useState(false)
+  const [sourceRecoveryOpen, setSourceRecoveryOpen] = useState(false)
+  const [sourceRecoveryState, setSourceRecoveryState] = useState<SourceRecoveryPresentation | null>(null)
+  useEffect(() => { setSourceRecoveryOpen(false); setSourceRecoveryConfirming(false); setSourceRecoveryState(null) }, [scriptSource?.updated_at, scriptSource?.analysis?.id])
+  const [sourceRequestDetailsOpen, setSourceRequestDetailsOpen] = useState(false)
+  useEffect(() => setSourceRequestDetailsOpen(false), [scriptSource?.updated_at, scriptSource?.analysis?.id])
   const [pendingSourceFile, setPendingSourceFile] = useState<File | null>(null)
   const [sourceRemovalOpen, setSourceRemovalOpen] = useState(false)
   const sourceReadVersion = useRef(0)
@@ -902,7 +912,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const [working, setWorking] = useState<'chat' | 'prompt' | 'save' | 'shots' | null>(null)
   const [canvasNodeProposalBusy, setCanvasNodeProposalBusy] = useState(false)
   const { modelId, selectModel } = useSharedModelSelection('text', availableModels, {
-    locked: working !== null || sourceUploading || sourceAnalysisStarting || canvasNodeProposalBusy, active: !hidden,
+    locked: working !== null || sourceUploading || canvasNodeProposalBusy, active: !hidden,
   })
   const [activeFocus, setActiveFocus] = useState<ScriptAction>(focusArtifact)
   const [creation, setCreation] = useState<ScriptCreationState | null>(null)
@@ -1001,7 +1011,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
             label: model.name,
           }))}
           allowDeselect={false}
-          disabled={working !== null || sourceUploading || sourceAnalysisStarting || canvasNodeProposalBusy}
+          disabled={working !== null || sourceUploading || canvasNodeProposalBusy}
           size="xs"
           comboboxProps={{ withinPortal: true, zIndex: 400, position: 'top-start', width: 320 }}
           styles={{ dropdown: { maxWidth: 'calc(100vw - 24px)' }, option: { whiteSpace: 'normal', overflowWrap: 'anywhere' } }}
@@ -1017,14 +1027,10 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const optionsSyncKey = `${detail.id}:${detail.brief}:${persistedOptionsKey}`
   const syncedOptionsKey = useRef(optionsSyncKey)
   const busy = working !== null
-  // Reading the source decides which version a task binds to, so it blocks every
-  // task. Background analysis only blocks tasks that depend on its result: an
-  // original-manuscript outline reads the persisted full text directly.
+  // Loading only binds the current file version. Historical analysis never gates a task.
   const sourceLoadingReason = sourceLoading ? '正在读取剧本来源，可先填写要求' : ''
-  const sourceAnalysisReason = sourceAnalysisStarting || scriptSource?.analysis?.status === 'queued' || scriptSource?.analysis?.status === 'running' ? '剧本分析中，可先填写要求，完成后再发送'
-      : scriptSource?.analysis?.status === 'paused' ? '剧本分析已暂停，请继续分析后再发送；输入已保留'
-        : scriptSource?.analysis?.status === 'failed' ? '剧本分析未完成，请重试分析后再发送；输入已保留'
-        : scriptSource && scriptSource.analysis?.status !== 'ready' ? '请先开始剧本分析，完成后再发送；可先填写要求' : ''
+  const sourceReasonForScope = (_scope?: SourceQualityCreationScope) => ''
+  const sourceAnalysisReason = sourceReasonForScope(stageTask || undefined)
   const sourceSendBlockReason = sourceLoadingReason || sourceAnalysisReason
   const sourceOutlineBlocked = activeFocus === 'all' && Boolean(sourceLoadingReason)
   const sourceChatBlocked = activeFocus === 'all' && Boolean(sourceSendBlockReason)
@@ -1057,11 +1063,13 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     } catch { /* Keep the selected scope in memory. */ }
   }, [stageTask, detail.id, detail.script])
   const nextStep = stageTask || stageContext.mode === 'explicit' && (creation?.next_step?.stage !== stageContext.stage || stageContext.stage === 'episode' && creation?.next_step?.episode_number !== stageContext.episode_number) ? null : creation?.next_step
-  const outlineIssue = outlineGenerationIssue(detail.script, { input, brief: detail.brief, referenceContents: [...references.map(reference => reference.content), ...(scriptSource ? [scriptSource.content] : [])], nextStep })
+  const outlineIssue = scriptSource ? null : outlineGenerationIssue(detail.script, { input, brief: detail.brief, referenceContents: references.map(reference => reference.content), nextStep })
   const workflowTarget = workflowRequestForStage(workflowStage, episodeNumber, episodeDuration, workflowOperation, {
     hasSource: Boolean(scriptSource), script: detail.script, ...workflowContract,
     ...(workflowStage === 'outline' && workflowOperation === 'generate' ? { intent: 'stage_design', artifact_types: [...scriptStageArtifacts.outline] } : {}),
   })
+  const workflowSourceBlockReason = activeFocus === 'all' ? sourceLoadingReason || (workflowTarget.intent === 'source_outline' ? '' : sourceReasonForScope(workflowTarget)) : ''
+  const nextStageSourceBlockReason = activeFocus === 'all' && progress.next_stage ? sourceLoadingReason || sourceReasonForScope({ stage: progress.next_stage, episode_number: progress.next_episode || 0 }) : ''
   const currentSkillStage = activeFocus === 'all' ? 'script' : 'visual_assets'
   const skillTask: SkillTaskContext | undefined = activeFocus !== 'all' ? { selection_mode: 'model' }
     : scriptOperationSkillTask(workflowOpen ? null : documentTask, workflowOpen ? workflowTarget : stageTask, detail.script.artifacts || [])
@@ -1111,26 +1119,29 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     return () => { active = false }
   }, [detail.id])
   useEffect(() => {
-    if (!scriptSource || hidden || sourceUploading || sourceAnalysisStarting || !['queued', 'running'].includes(scriptSource.analysis?.status || '')) return
+    if (hidden || !scriptSource?.analysis || !['queued', 'running'].includes(scriptSource.analysis.status)) return
     let active = true
-    const version = sourceReadVersion.current, sourceUpdatedAt = scriptSource.updated_at, analysisId = scriptSource.analysis!.id
-    let timer: number
+    const controller = new AbortController()
+    const version = sourceReadVersion.current, sourceUpdatedAt = scriptSource.updated_at, analysisId = scriptSource.analysis.id
+    let timer: ReturnType<typeof setTimeout>
     const poll = async () => {
+      let nextDelay = 1000
       try {
-        const analysis = await api<ScriptSourceAnalysis | null>(`/projects/${detail.id}/script/source/analysis`)
-        if (!active || version !== sourceReadVersion.current) return
-        setSourceAnalysisPollError(false)
-        if (analysis?.id === analysisId) setScriptSource(current => current?.updated_at === sourceUpdatedAt ? { ...current, analysis } : current)
-        else {
-          const latest = await api<ScriptSourceDocument | null>(`/projects/${detail.id}/script/source`)
-          if (active && version === sourceReadVersion.current) setScriptSource(latest)
-        }
-      } catch { if (active && version === sourceReadVersion.current) setSourceAnalysisPollError(true) }
-      if (active && version === sourceReadVersion.current) timer = window.setTimeout(poll, 2000)
+        const analysis = await api<NonNullable<ScriptSourceDocument['analysis']>>(`/projects/${detail.id}/script/source/analysis`, { signal: controller.signal })
+        if (!active || version !== sourceReadVersion.current || !analysis || analysis.id !== analysisId) return
+        setSourcePollError('')
+        setScriptSource(current => current?.updated_at === sourceUpdatedAt && current.analysis?.id === analysisId ? { ...current, analysis } : current)
+        if (!['queued', 'running'].includes(analysis.status)) return
+      } catch (issue) {
+        if (!active || controller.signal.aborted) return
+        setSourcePollError(readableError(issue)); nextDelay = 5000
+      }
+      if (active) timer = setTimeout(() => void poll(), nextDelay)
     }
-    timer = window.setTimeout(poll, 1000)
-    return () => { active = false; window.clearTimeout(timer) }
-  }, [detail.id, scriptSource?.updated_at, scriptSource?.analysis?.id, scriptSource?.analysis?.status, hidden, sourceUploading, sourceAnalysisStarting])
+    timer = setTimeout(() => void poll(), 1000)
+    return () => { active = false; clearTimeout(timer); controller.abort() }
+  }, [detail.id, scriptSource?.updated_at, scriptSource?.analysis?.id, scriptSource?.analysis?.status, hidden])
+
   useEffect(() => {
     try { window.localStorage.setItem(`script-director-references:${detail.id}`, JSON.stringify(references)) } catch { /* Keep references in memory when storage is full. */ }
   }, [detail.id, references])
@@ -2219,39 +2230,30 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     setPendingSourceFile(null); setSourceUploading(true); setError(null)
     try {
       const form = new FormData(); form.append('file', file)
-      const source = await api<ScriptSourceDocument>(`/projects/${detail.id}/script/source${selectedModel ? `?model_id=${encodeURIComponent(modelId)}` : ''}`, { method: 'POST', body: form })
+      const source = await api<ScriptSourceDocument>(`/projects/${detail.id}/script/source${selectedModel ? `?model_id=${encodeURIComponent(selectedModel.id)}` : ''}`, { method: 'POST', body: form })
       if (!mountedRef.current) return
-      setScriptSource(source); setSourceAnalysisPollError(false)
-      onNotice(source.analysis ? '原剧本已保存，正在后台分析；可以继续填写创作要求' : '原剧本已保存，选择文本模型后可开始分析')
+      setScriptSource(source)
+      setSourcePollError('')
+      onNotice(source.analysis?.status === 'ready' ? '原稿未变，已复用保存的分析资料' : source.analysis ? '原稿已保存，正在分析故事资料' : '原稿已保存；选择文本模型后可开始原稿分析')
     } catch (issue) { if (mountedRef.current) setError(`上传剧本失败：${readableError(issue)}`) }
     finally { sourceUploadLock.current = false; if (mountedRef.current) { setSourceUploading(false); setSourceLoading(false) } }
   }
 
-  async function startSourceAnalysis() {
-    if (!scriptSource || !selectedModel || sourceAnalysisStarting || sourceUploading) return
-    const sourceUpdatedAt = scriptSource.updated_at, version = ++sourceReadVersion.current
-    setSourceAnalysisStarting(true); setError(null)
+  async function actOnSourceAnalysis(action: 'start' | 'pause' | 'revalidate') {
+    if (!scriptSource || sourceAnalysisLock.current || sourceUploading || (action === 'start' && !selectedModel)) return
+    sourceAnalysisLock.current = true; setSourceAnalysisActing(true); setError(null)
+    const currentSource = scriptSource, version = sourceReadVersion.current
+    const suffix = action === 'start' ? '' : action === 'pause' ? '/pause' : '/revalidate'
     try {
-      const analysis = await api<ScriptSourceAnalysis>(`/projects/${detail.id}/script/source/analysis`, json('POST', { model_id: modelId, source_updated_at: sourceUpdatedAt }))
-      if (mountedRef.current && version === sourceReadVersion.current) {
-        setScriptSource(current => current?.updated_at === sourceUpdatedAt ? { ...current, analysis } : current)
-        setSourceAnalysisPollError(false)
-      }
-    } catch (issue) { if (mountedRef.current && version === sourceReadVersion.current) setError(`开始剧本分析失败：${readableError(issue)}`) }
-    finally { if (mountedRef.current) setSourceAnalysisStarting(false) }
-  }
-
-  async function pauseSourceAnalysis() {
-    if (!scriptSource?.analysis || sourceAnalysisStarting || sourceUploading) return
-    const analysisId = scriptSource.analysis.id, version = ++sourceReadVersion.current
-    setSourceAnalysisStarting(true); setError(null)
-    try {
-      const analysis = await api<ScriptSourceAnalysis>(`/projects/${detail.id}/script/source/analysis/pause`, json('POST', { analysis_id: analysisId }))
-      if (mountedRef.current && version === sourceReadVersion.current) {
-        setScriptSource(current => current?.analysis?.id === analysisId ? { ...current, analysis } : current)
-      }
-    } catch (issue) { if (mountedRef.current && version === sourceReadVersion.current) setError(`暂停剧本分析失败：${readableError(issue)}`) }
-    finally { if (mountedRef.current) setSourceAnalysisStarting(false) }
+      const analysis = await api<NonNullable<ScriptSourceDocument['analysis']>>(`/projects/${detail.id}/script/source/analysis${suffix}`,
+        json('POST', action === 'start' ? { model_id: selectedModel!.id, source_updated_at: currentSource.updated_at }
+          : action === 'pause' ? { analysis_id: currentSource.analysis!.id }
+            : { analysis_id: currentSource.analysis!.id, source_updated_at: currentSource.updated_at }))
+      if (!mountedRef.current || version !== sourceReadVersion.current) return
+      setScriptSource(current => current?.updated_at === currentSource.updated_at ? { ...current, analysis } : current)
+      setSourcePollError('')
+    } catch (issue) { if (mountedRef.current && version === sourceReadVersion.current) setError(`原稿分析操作失败：${readableError(issue)}`) }
+    finally { sourceAnalysisLock.current = false; if (mountedRef.current) setSourceAnalysisActing(false) }
   }
 
   async function removeScriptSource() {
@@ -2269,6 +2271,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   function handleStageAction(target: StageTarget & Pick<WorkflowRequest, 'intent' | 'artifact_types'>) {
     if (sourceUploading) return
     if (draftResolution) { setResolutionOpen(true); return }
+    const sourceIssue = activeFocus === 'all' ? sourceLoadingReason || (target.intent === 'source_outline' ? '' : sourceReasonForScope(target)) : ''
+    if (sourceIssue) { setError(sourceIssue); return }
     const issue = stageOperationError(detail.script, target)
     if (issue) { setError(issue); return }
     setWorkflowStage(target.stage); setWorkflowOperation(target.operation || 'generate')
@@ -2299,9 +2303,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       || (stage === 'outline' && operation === 'generate' ? outlineIssue : null)
     if (issue) { setError(issue); return }
     const prefix = operation === 'regenerate' ? '重新设计' : operation === 'supplement' ? '补齐' : operation === 'revise' ? '修订' : '生成'
-    const instruction = workflowInstruction(request, label || `${prefix}${stage === 'episode' ? `第 ${targetEpisode} 集正文` : stageLabels[stage]}`)
-    const sourceInstruction = scriptSource ? `\n基于${scriptSource.revision ? '项目的当前有效稿（含已确认修订）' : '项目中已上传的原剧本'}整理本阶段，忠实保留原文的主线、人物、事件、对白与集数。${request.intent === 'stage_design' ? '新增设计限于本次约定的栏目及已授权范围，保持与原稿及已保存设定一致；不改写已有原稿。' : '原文已有内容以提取和整理为主，必要的缺失信息明确说明，不擅自另写故事。'}` : ''
-    const message = (input.trim() ? `${input.trim()}\n\n${instruction}` : instruction) + sourceInstruction
+    const action = label || `${prefix}${stage === 'episode' ? `第 ${targetEpisode} 集正文` : stageLabels[stage]}`
+    const message = input.trim() ? `${input.trim()}\n\n${action}` : action
     void sendChatMessage(message, false, request, false, undefined, undefined, undefined, undefined, step?.id)
   }
 
@@ -2360,9 +2363,10 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     if (draftResolution && requestFocus === 'all' && !resolutionInput) { setResolutionOpen(true); return null }
     // Candidate completion uses its saved source context and must remain recoverable.
     const directSourceOutline = workflowOverride?.intent === 'source_outline'
-    if (requestFocus === 'all' && (directSourceOutline ? sourceLoadingReason : sourceSendBlockReason) && !(resolutionInput && draftResolution)) return null
-    const requestMode = previousExecution?.mode || mode
     const workflow = requestFocus === 'all' && !questionResponse ? workflowOverride || usesComposer && stageTask || undefined : undefined
+    const sourceRequestIssue = sourceLoadingReason || (directSourceOutline ? '' : sourceReasonForScope(workflow || (adoptSource ? { stage: 'episode', episode_number: adoptSource.episode_number } : undefined)))
+    if (requestFocus === 'all' && sourceRequestIssue && !(resolutionInput && draftResolution)) { setError(sourceRequestIssue); return null }
+    const requestMode = previousExecution?.mode || mode
     if ((workflow || adoptSource) && generated && !scriptSaved) { setPreviewOpen(true); setError('请先确认保存或放弃当前草稿'); return null }
     if (!modelId || !selectedModel) { setError('请选择文本模型'); return null }
     const userMessage: Message = retry ? { ...retry.question, failed: false } : { id: crypto.randomUUID(), role: 'user', text: message, ...(questionResponse ? { question_response: questionResponse } : {}), ...(attached.length ? { reference_documents: attached } : {}) }
@@ -2864,6 +2868,73 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     onClose()
   }
 
+  const sourceTaskMessage = (activeFocus === 'all' && scriptSource && <div className="script-director-message assistant" data-source-analysis={scriptSource.analysis?.id}>
+        <ScriptSourceAnalysisStatus source={scriptSource} extractionOnly starting={sourceAnalysisActing} unavailable={!selectedModel || sourceUploading || busy} pollError={Boolean(sourcePollError)}
+        onStart={() => void actOnSourceAnalysis('start')} onPause={() => void actOnSourceAnalysis('pause')}
+        recovery={sourceRecoveryState} onRevalidate={() => void actOnSourceAnalysis('revalidate')} onResolveRequest={() => { setSourceRecoveryConfirming(sourceRecoveryState?.state === 'risk_required'); setSourceRecoveryOpen(true) }}
+        onRequestDetails={() => setSourceRequestDetailsOpen(true)} />
+        {scriptSource.analysis && <SourceRuntimeActivity analysis={scriptSource.analysis} />}
+    {scriptSource && <SourceRequestDetails source={scriptSource} opened={sourceRequestDetailsOpen && !hidden && !minimized} onClose={() => setSourceRequestDetailsOpen(false)}
+      /> }
+    {scriptSource?.analysis && <ScriptSourceRequestRecovery source={scriptSource} selectedModelId={scriptSource.analysis.model_id}
+      inlinePreparation confirmationOpen={sourceRecoveryConfirming} opened={sourceRecoveryOpen && !hidden && !minimized} unavailable={busy || sourceUploading || sourceAnalysisActing}
+      onClose={() => { setSourceRecoveryOpen(false); setSourceRecoveryConfirming(false) }} onStateChange={setSourceRecoveryState}
+      onRecovered={analysis => { setScriptSource(current => current?.updated_at === scriptSource.updated_at ? { ...current, analysis } : current); setSourcePollError('') }}
+      onRefreshed={analysis => setScriptSource(current => current?.updated_at === scriptSource.updated_at ? { ...current, analysis } : current)}
+      onInvalidated={async () => { const latest = await api<ScriptSourceDocument | null>(`/projects/${detail.id}/script/source`);
+        if (mountedRef.current && latest?.updated_at === scriptSource.updated_at) setScriptSource(latest) }} />}
+      </div>)
+  const renderConversationMessage = (message: Message) => {
+        const failure = directorMessageFailure(message)
+        const parsedChoices = failure ? null : replyChoices(message)
+        const semanticChoices = contextualReplyTypes.includes(message.classification?.type || '') && !parseMessageChoices(message.text)
+        const dismissed = Boolean(choiceDismissed[message.id])
+        const storedAnswer = choiceAnswers[message.id]
+        const answer = storedAnswer?.status === 'skipped' ? undefined : storedAnswer?.status === 'answered'
+          ? parsedChoices ? choiceAnswerText(parsedChoices, storedAnswer) : storedAnswer.text
+          : undefined
+        if (parsedChoices) return <div className="script-director-message assistant" data-message-id={message.id} key={message.id}>
+          {renderActivity(message)}
+          <div className="sd-choice-explanation">
+            {semanticChoices ? <DirectorMessageText text={replyDisplayText(message)} /> : <>
+            {parsedChoices.intro && <DirectorMessageText text={parsedChoices.intro} />}
+            {parsedChoices.confirmation && <DirectorMessageText text={parsedChoices.question} />}
+            {(parsedChoices.questions || [parsedChoices]).map((item, index) => <div key={index}>
+            {parsedChoices.questions && <DirectorMessageText text={item.question} />}
+            {!item.confirmation && item.options.filter(option => option.kind !== 'custom').map(option => <div className="sd-choice-direction" key={option.label}>
+              {!option.text.replace(/[*#`]/g, '').startsWith(option.title.split(/[｜|]/)[0].trim()) && <strong>{option.title}</strong>}
+              <DirectorMessageText text={option.text} />
+            </div>)}</div>)}
+            {parsedChoices.trailing && <DirectorMessageText text={parsedChoices.trailing} />}
+            </>}
+          </div>
+          {activeChoice?.messageId === message.id ? <span className="sd-question-status">请在下方回答</span>
+            : <WorkspaceDisclosure className="sd-answered-question" label={<>{storedAnswer?.status === 'skipped' ? '已跳过' : answer || message.classification && 'status' in message.classification && message.classification.status === 'answered' ? '已回答' : dismissed ? '已结束' : '历史问题'}</>}><p>{parsedChoices.question}</p>{answer && <p>{answer}</p>}</WorkspaceDisclosure>}
+          <DirectorMessageTiming {...message} />
+          {replyRecognition(message)}
+          {replyActions(message)}
+        </div>
+        return <div className={`script-director-message ${message.role}`} data-message-id={message.id} key={message.id}>
+          <DirectorReferences documents={readReferences(message.reference_documents)} onOpen={setReaderReference} />
+          {message.role === 'assistant' && renderActivity(message)}
+          {(!failure || failure.body) && (!message.pending || message.has_reply_text || !message.execution && !message.activity?.length) && <div className={`script-director-bubble${message.pending && !message.has_reply_text ? ' is-pending' : ''}`}>
+            {message.pending && !message.has_reply_text ? <><LoaderCircle size={13} className="script-director-spinner" /><span>{message.text}</span></> : message.role === 'assistant' ? <DirectorMessageText text={failure?.body || replyDisplayText(message)} /> : message.text}
+          </div>}
+          {failure && <DirectorMessageFailure detail={failure.detail} processing_duration_ms={message.processing_duration_ms} />}
+          {message.review && !message.pending && <DirectorReviewReport review={message.review} />}
+          {message.role === 'assistant' && !failure && <DirectorMessageTiming {...message} />}
+          {activeFocus === 'all' && stageContext.stage === 'episode' && stageContext.mode !== 'review' && canAdoptReply(message) && <div className="sd-message-adopt">
+            {adoptingMessageId === message.id ? <>
+              <label>采用为第 <NumberInput  min={1} max={200} value={episodeNumber} aria-label="采用为第几集" onChange={value => setEpisodeNumber(Math.max(1, Math.min(200, Number(value) || 1)))} clampBehavior="none" /> 集</label>
+              <Button type="button" disabled={busy || sourceChatBlocked} onClick={() => void adoptMessage(message)} data-workspace-control="" variant="subtle">整理为分集草稿</Button>
+              <Button type="button" onClick={() => setAdoptingMessageId(null)} data-workspace-control="" variant="subtle">取消</Button>
+            </> : <Button type="button" disabled={busy || Boolean(generated && !scriptSaved)} onClick={() => { if (message.classification?.type === 'episode_script' && message.classification.episode_number) setEpisodeNumber(message.classification.episode_number); setAdoptingMessageId(message.id) }} data-workspace-control="" variant="subtle">采用为分集剧本</Button>}
+          </div>}
+          {replyRecognition(message)}
+          {replyActions(message)}
+        </div>
+  }
+
   return <aside
     hidden={hidden}
     className={`script-director-panel sd-chat${previewOpen && generated ? ' is-reviewing' : ''}${windowLayout.docked ? ' is-docked' : ''}${minimized ? ' is-minimized' : ''}${compactComposer ? ' is-compact' : ''}`}
@@ -2947,56 +3018,10 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       onCopy={copyAssetPrompt}
       onOpenModels={onOpenModels}
     />}
-      {messages.map((message) => {
-        const failure = directorMessageFailure(message)
-        const parsedChoices = failure ? null : replyChoices(message)
-        const semanticChoices = contextualReplyTypes.includes(message.classification?.type || '') && !parseMessageChoices(message.text)
-        const dismissed = Boolean(choiceDismissed[message.id])
-        const storedAnswer = choiceAnswers[message.id]
-        const answer = storedAnswer?.status === 'skipped' ? undefined : storedAnswer?.status === 'answered'
-          ? parsedChoices ? choiceAnswerText(parsedChoices, storedAnswer) : storedAnswer.text
-          : undefined
-        if (parsedChoices) return <div className="script-director-message assistant" data-message-id={message.id} key={message.id}>
-          {renderActivity(message)}
-          <div className="sd-choice-explanation">
-            {semanticChoices ? <DirectorMessageText text={replyDisplayText(message)} /> : <>
-            {parsedChoices.intro && <DirectorMessageText text={parsedChoices.intro} />}
-            {parsedChoices.confirmation && <DirectorMessageText text={parsedChoices.question} />}
-            {(parsedChoices.questions || [parsedChoices]).map((item, index) => <div key={index}>
-            {parsedChoices.questions && <DirectorMessageText text={item.question} />}
-            {!item.confirmation && item.options.filter(option => option.kind !== 'custom').map(option => <div className="sd-choice-direction" key={option.label}>
-              {!option.text.replace(/[*#`]/g, '').startsWith(option.title.split(/[｜|]/)[0].trim()) && <strong>{option.title}</strong>}
-              <DirectorMessageText text={option.text} />
-            </div>)}</div>)}
-            {parsedChoices.trailing && <DirectorMessageText text={parsedChoices.trailing} />}
-            </>}
-          </div>
-          {activeChoice?.messageId === message.id ? <span className="sd-question-status">请在下方回答</span>
-            : <WorkspaceDisclosure className="sd-answered-question" label={<>{storedAnswer?.status === 'skipped' ? '已跳过' : answer || message.classification && 'status' in message.classification && message.classification.status === 'answered' ? '已回答' : dismissed ? '已结束' : '历史问题'}</>}><p>{parsedChoices.question}</p>{answer && <p>{answer}</p>}</WorkspaceDisclosure>}
-          <DirectorMessageTiming {...message} />
-          {replyRecognition(message)}
-          {replyActions(message)}
-        </div>
-        return <div className={`script-director-message ${message.role}`} data-message-id={message.id} key={message.id}>
-          <DirectorReferences documents={readReferences(message.reference_documents)} onOpen={setReaderReference} />
-          {message.role === 'assistant' && renderActivity(message)}
-          {(!failure || failure.body) && (!message.pending || message.has_reply_text || !message.execution && !message.activity?.length) && <div className={`script-director-bubble${message.pending && !message.has_reply_text ? ' is-pending' : ''}`}>
-            {message.pending && !message.has_reply_text ? <><LoaderCircle size={13} className="script-director-spinner" /><span>{message.text}</span></> : message.role === 'assistant' ? <DirectorMessageText text={failure?.body || replyDisplayText(message)} /> : message.text}
-          </div>}
-          {failure && <DirectorMessageFailure detail={failure.detail} processing_duration_ms={message.processing_duration_ms} />}
-          {message.review && !message.pending && <DirectorReviewReport review={message.review} />}
-          {message.role === 'assistant' && !failure && <DirectorMessageTiming {...message} />}
-          {activeFocus === 'all' && stageContext.stage === 'episode' && stageContext.mode !== 'review' && canAdoptReply(message) && <div className="sd-message-adopt">
-            {adoptingMessageId === message.id ? <>
-              <label>采用为第 <NumberInput  min={1} max={200} value={episodeNumber} aria-label="采用为第几集" onChange={value => setEpisodeNumber(Math.max(1, Math.min(200, Number(value) || 1)))} clampBehavior="none" /> 集</label>
-              <Button type="button" disabled={busy || sourceChatBlocked} onClick={() => void adoptMessage(message)} data-workspace-control="" variant="subtle">整理为分集草稿</Button>
-              <Button type="button" onClick={() => setAdoptingMessageId(null)} data-workspace-control="" variant="subtle">取消</Button>
-            </> : <Button type="button" disabled={busy || Boolean(generated && !scriptSaved)} onClick={() => { if (message.classification?.type === 'episode_script' && message.classification.episode_number) setEpisodeNumber(message.classification.episode_number); setAdoptingMessageId(message.id) }} data-workspace-control="" variant="subtle">采用为分集剧本</Button>}
-          </div>}
-          {replyRecognition(message)}
-          {replyActions(message)}
-        </div>
-      })}
+      {messages.map((message, index) => <Fragment key={message.id}>
+        {renderConversationMessage(message)}
+        {(message.id === 'welcome' || index === 0 && !messages.some(item => item.id === 'welcome')) && sourceTaskMessage}
+      </Fragment>)}
     {(!!artifactCards.length || hasSavedScript && detail.script.scenes.length > 0) && <section className="sd-deliverables" aria-label="创作成果">
       <header><span>创作成果</span><UnstyledButton type="button" onClick={() => { setArtifactsOpen(true); setWorkflowOpen(false); setReaderKey(null) }}>文档库 <span>{artifactCards.length}</span><ChevronRight size={13} /></UnstyledButton></header>
       {generated && !scriptSaved ? <div className="sd-current-deliverable">
@@ -3038,7 +3063,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         onClick={() => void sendChatMessage(exploreStoryDirectionMessage)} data-workspace-control="" variant="subtle">
         <Lightbulb size={14} aria-hidden="true" />探索故事方向
       </Button>}
-      <ScriptStageActions script={detail.script} hasSource={Boolean(scriptSource)} outlineIssue={outlineIssue} analysisWait={activeFocus === 'all' ? sourceAnalysisReason : ''} disabled={busy || sourceUploading || sourceOutlineBlocked || closing || !selectedModel || Boolean(generated && !scriptSaved) || Boolean(draftResolution)} onAction={handleStageAction} />
+      <ScriptStageActions script={detail.script} hasSource={Boolean(scriptSource)} outlineIssue={outlineIssue} analysisWait={activeFocus === 'all' ? target => sourceReasonForScope(target) : ''} disabled={busy || sourceUploading || sourceOutlineBlocked || closing || !selectedModel || Boolean(generated && !scriptSaved) || Boolean(draftResolution)} onAction={handleStageAction} />
       {outlineIssue && !busy && !closing && progress.next_stage === 'outline' && !(generated && !scriptSaved) && <span className="sd-creation-progress" role="status">{outlineIssue}</span>}
     </nav>}
     </div>
@@ -3073,7 +3098,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         {generated && !scriptSaved ? <div className="script-director-workflow-actions">
           <Button type="button" onClick={() => { setWorkflowOpen(false); setPreviewOpen(true) }} data-workspace-control="" variant="subtle">查看待确认草稿</Button>
           <Button type="button" disabled={busy} onClick={() => void discardGenerated()} data-workspace-control="" variant="subtle">放弃草稿</Button>
-        </div> : <Button type="button" className="script-director-workflow-generate" disabled={busy || sourceUploading || (workflowTarget.intent === 'source_outline' ? sourceOutlineBlocked : sourceChatBlocked) || Boolean(workflowIssue) || !selectedModel} title={(workflowTarget.intent === 'source_outline' ? sourceOutlineBlocked : sourceChatBlocked) ? sourceSendBlockReason : undefined} onClick={() => handleStageAction(workflowTarget)} data-workspace-control="" variant="subtle"><FileText size={13} />{`${workflowOperation === 'regenerate' ? '重新设计' : workflowOperation === 'supplement' ? '补齐' : workflowOperation === 'revise' ? '填写修改要求' : '生成'}${workflowStage === 'episode' ? `第 ${episodeNumber} 集正文` : stageLabels[workflowStage]}`}</Button>}
+        </div> : <Button type="button" className="script-director-workflow-generate" disabled={busy || sourceUploading || Boolean(workflowSourceBlockReason) || Boolean(workflowIssue) || !selectedModel} title={workflowSourceBlockReason || undefined} onClick={() => handleStageAction(workflowTarget)} data-workspace-control="" variant="subtle"><FileText size={13} />{`${workflowOperation === 'regenerate' ? '重新设计' : workflowOperation === 'supplement' ? '补齐' : workflowOperation === 'revise' ? '填写修改要求' : '生成'}${workflowStage === 'episode' ? `第 ${episodeNumber} 集正文` : stageLabels[workflowStage]}`}</Button>}
         {workflowIssue && <p className="sd-utility-empty" role="status">{workflowIssue}</p>}
       </div>
     </section>}
@@ -3096,13 +3121,11 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       {canvasNodeSource?.project_id === detail.id && onApplyCanvasNodeProposal && <DirectorCanvasNodeProposal source={canvasNodeSource}
         modelId={selectedModel?.id || ''} modelName={selectedModel?.name} composerInput={input} initialContext={initialContext}
         disabled={busy || closing} hidden={hidden || minimized} onBusyChange={setCanvasNodeProposalBusy} onApply={onApplyCanvasNodeProposal} />}
-      {activeFocus === 'all' && scriptSource && <DirectorSourceContext source={scriptSource} starting={sourceAnalysisStarting} pollError={sourceAnalysisPollError}><div className="sd-script-source-container" aria-label="原剧本来源"><div className="sd-script-source">
+      {activeFocus === 'all' && scriptSource && <DirectorSourceContext source={scriptSource} starting={sourceAnalysisActing} pollError={Boolean(sourcePollError)}><div className="sd-script-source-container" aria-label="原剧本来源"><div className="sd-script-source">
           <UnstyledButton className="sd-script-source-open" onClick={() => setSourcePreviewOpen(true)} aria-label={`查看${scriptSource.revision ? '当前有效稿' : '原剧本'}：${scriptSource.filename}`}><FileText size={16} /><span><strong>{scriptSource.filename}</strong><small>{scriptSource.revision ? `当前有效稿 · 第 ${scriptSource.revision} 次修订` : '原剧本'} · {scriptSource.content.length.toLocaleString()} 字 · 用于各阶段生成</small></span></UnstyledButton>
           <FileButton onChange={chooseScriptFile} accept={scriptSourceExtensions.join(',')}>{fileProps => <Button {...fileProps} type="button" variant="subtle" size="xs" loading={sourceUploading} disabled={busy || sourceUploading}>替换</Button>}</FileButton>
           <ActionIcon aria-label="移除原剧本来源" disabled={busy || sourceUploading} onClick={() => setSourceRemovalOpen(true)} variant="subtle"><X size={14} /></ActionIcon>
-      </div><ScriptSourceAnalysisStatus source={scriptSource} starting={sourceAnalysisStarting} unavailable={!selectedModel || sourceUploading} pollError={sourceAnalysisPollError}
-        hasPreviousFailure={messages.some(message => message.role === 'assistant' && !message.pending && (message.failed || message.execution?.outcome?.kind === 'failed'))}
-        onStart={() => void startSourceAnalysis()} onPause={() => void pauseSourceAnalysis()} /></div></DirectorSourceContext>}
+      </div></div></DirectorSourceContext>}
       <DirectorReferences documents={references} disabled={busy} onOpen={setReaderReference} onRemove={key => setReferences(current => current.filter(document => document.key !== key))} />
       {stageTask && <div className="sd-document-task"><span>修订：{stageTask.stage === 'episode' ? `第 ${stageTask.episode_number} 集正文` : stageLabels[stageTask.stage]}</span><ActionIcon type="button" aria-label="取消阶段修订" disabled={busy} onClick={cancelStageRevision} data-workspace-control=""><X size={13} /></ActionIcon></div>}
       {documentTask && <div className="sd-document-task"><span>修订：{documentTask.title}</span><ActionIcon type="button" aria-label="取消定向修订" disabled={busy} onClick={cancelDocumentRevision} data-workspace-control=""><X size={13} /></ActionIcon></div>}
@@ -3167,7 +3190,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       <p className="sd-source-preview-hint">后续生成与工具读取使用当前有效稿；上传原稿保留供追溯。每个阶段仍需预览并确认保存。</p>
       {scriptSource && <ScriptSourcePreview source={scriptSource} />}
       <div className="sd-source-dialog-actions"><Button variant="default" onClick={() => setSourcePreviewOpen(false)}>关闭</Button>
-        {progress.next_stage && <Button disabled={busy || sourceUploading || sourceChatBlocked || !selectedModel || Boolean(generated && !scriptSaved)} title={sourceChatBlocked ? sourceSendBlockReason : undefined} onClick={() => { setSourcePreviewOpen(false); handleStageAction({ stage: progress.next_stage!, episode_number: progress.next_stage === 'episode' ? progress.next_episode || 1 : 0, operation: 'generate' }) }}>生成{progress.next_stage === 'episode' ? `第 ${progress.next_episode} 集正文` : stageLabels[progress.next_stage]}</Button>}
+        {progress.next_stage && <Button disabled={busy || sourceUploading || Boolean(nextStageSourceBlockReason) || !selectedModel || Boolean(generated && !scriptSaved)} title={nextStageSourceBlockReason || undefined} onClick={() => { setSourcePreviewOpen(false); handleStageAction({ stage: progress.next_stage!, episode_number: progress.next_stage === 'episode' ? progress.next_episode || 1 : 0, operation: 'generate' }) }}>生成{progress.next_stage === 'episode' ? `第 ${progress.next_episode} 集正文` : stageLabels[progress.next_stage]}</Button>}
       </div>
     </Modal>
     <Modal opened={!!pendingSourceFile && !hidden} onClose={() => setPendingSourceFile(null)} title="替换原剧本来源" centered zIndex={300}>

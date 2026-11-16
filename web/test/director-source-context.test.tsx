@@ -69,3 +69,15 @@ test('unanalysed sources and polling failures expand required actions and revisi
     assert.match(view.toggle().textContent!, /状态获取失败/)
   } finally { await view.destroy() }
 })
+
+test('historical quality never overrides source analysis readiness or gates the restored source disclosure', async () => {
+  const scoped: ScriptSourceDocument = { ...source, analysis: { ...source.analysis!, quality_summary: {
+    handled: 4, total: 4, modified: 0, retained: 4, uncertain: 0, review: 'issues', access: 'scoped', blocking: 0, advisory: 0, section_ids: [1],
+  } } }
+  const view = await mount(scoped)
+  try {
+    assert.equal(view.toggle().getAttribute('aria-expanded'), 'false')
+    assert.match(view.toggle().textContent!, /地图已就绪/)
+    assert.doesNotMatch(view.toggle().textContent!, /部分范围待核对/)
+  } finally { await view.destroy() }
+})

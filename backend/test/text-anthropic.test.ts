@@ -105,6 +105,70 @@ test('native image blocks and structured output format preserve configured reaso
   assert.equal(await streamText(configured, provider, { prompt: '原稿', images: [{ data_url: 'data:image/png;base64,AQID' }], structured_output: { name: 'fixture', schema } }), '{"ok":true}')
 })
 
+test('unexpected tool call in native JSON mode retries once without tools or native schema', async t => {
+  const schema = { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: false }
+  const configured = { ...model, settings: { text_api: { mode: 'custom' }, structured_output_mode: 'json_schema', request_path: 'messages',
+    request_template: { model: '{{model}}', max_tokens: 65536, messages: [{ role: 'user', content: '{{prompt}}' }],
+      tools: [{ name: 'stale_template_tool' }], tool_choice: { type: 'auto' } } } }
+  const bodies: Record<string, any>[] = [], metrics: any[] = [], events: any[] = []
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    const body = JSON.parse(String(init.body)); bodies.push(body)
+    if (bodies.length === 1) return Response.json(message([{ type: 'tool_use', id: 'unexpected-1', name: 'read_document', input: { id: 'source' } }], 'tool_use'))
+    return Response.json(message([{ type: 'text', text: '{"ok":true}' }]))
+  })
+
+  const result = await streamText(configured, provider, { prompt: '按 Schema 返回完整 JSON', structured_output: { name: 'fixture', schema } },
+    undefined, event => { events.push(event) }, undefined, metric => { metrics.push(metric) })
+
+  assert.equal(result, '{"ok":true}')
+  assert.equal(bodies.length, 2)
+  assert.equal(bodies[0]!.output_config.format.type, 'json_schema')
+  assert.equal(bodies[0]!.tools, undefined); assert.equal(bodies[0]!.tool_choice, undefined)
+  assert.equal(bodies[1]!.tools, undefined); assert.equal(bodies[1]!.tool_choice, undefined)
+  assert.equal(bodies[1]!.output_config?.format, undefined)
+  assert.deepEqual(bodies[1]!.messages, [{ role: 'user', content: '按 Schema 返回完整 JSON' }])
+  assert.deepEqual(events, [{ type: 'delta', text: '{"ok":true}' }])
+  assert.equal(metrics.length, 2)
+  assert.equal(metrics[0]!.raw_reason, 'unexpected_tool_call'); assert.equal(metrics[0]!.failure_reason, 'invalid_tool')
+  assert.equal(metrics[1]!.delivery, 'completed')
+})
+
+test('unexpected tool recovery is bounded to one attempt', async t => {
+  const schema = { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: false }
+  const configured = { ...model, settings: { ...settings, structured_output_mode: 'json_schema' } }
+  let calls = 0
+  t.mock.method(globalThis, 'fetch', async () => {
+    calls++
+    return Response.json(message([{ type: 'tool_use', id: `unexpected-${calls}`, name: 'read_document', input: {} }], 'tool_use'))
+  })
+
+  await assert.rejects(streamText(configured, provider, { prompt: '输出 JSON', structured_output: { name: 'fixture', schema } }), issue => {
+    assert.ok(issue instanceof TextProviderError)
+    assert.equal(issue.upstreamCode, 'unexpected_tool_call')
+    assert.equal(issue.failureReason, 'invalid_tool')
+    return true
+  })
+  assert.equal(calls, 2)
+})
+
+test('mixed text and unexpected tool call is rejected without a duplicate-output retry', async t => {
+  const schema = { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: false }
+  const configured = { ...model, settings: { ...settings, structured_output_mode: 'json_schema' } }
+  let calls = 0; const events: any[] = []
+  t.mock.method(globalThis, 'fetch', async () => {
+    calls++
+    return Response.json(message([
+      { type: 'text', text: '部分文本' },
+      { type: 'tool_use', id: 'unexpected-1', name: 'read_document', input: {} },
+    ], 'tool_use'))
+  })
+
+  await assert.rejects(streamText(configured, provider, { prompt: '输出 JSON', structured_output: { name: 'fixture', schema } },
+    undefined, event => { events.push(event) }), issue => issue instanceof TextProviderError && issue.upstreamCode === 'unexpected_tool_call')
+  assert.equal(calls, 1)
+  assert.deepEqual(events, [{ type: 'delta', text: '部分文本' }])
+})
+
 test('storyboard contracts negotiate native JSON schema without changing saved settings or reasoning', async t => {
   const configured = { ...model, id: 'native-storyboard-schema', settings: { ...settings,
     text_api: { ...settings.text_api, reasoning: { enabled: true, default_level: 'high', levels: [{ level: 'high', api_value: 'high' }] } } } }

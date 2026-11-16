@@ -82,14 +82,14 @@ async function confirm(projectId: string, draft: { id: string; version: string }
 }
 
 test('ordinary stage drafts reject a replaced, removed or newly added source and preserve pending work', async () => {
-  for (const mutation of ['replace', 'replace_identically', 'remove', 'add', 'revise'] as const) {
+  for (const mutation of ['replace', 'remove', 'add', 'revise'] as const) {
     const project = mutation === 'add' ? (await app.inject({ method: 'POST', url: '/api/projects', payload: { name: '尚无原稿' } })).json() : await fixture()
     const source = effectiveScriptSource(project.id)
     const draft = await nativeDraft(project)
     assert.equal(draft.source_version, source ? scriptDocumentVersion(source) : null)
     if (mutation === 'remove') assert.equal((await app.inject({ method: 'DELETE', url: `/api/projects/${project.id}/script/source` })).statusCode, 200)
     else if (mutation === 'revise') commitScriptSourceUpdate(project.id, update(project.id))
-    else await upload(project.id, mutation === 'replace_identically' ? originalText : '作者的新原稿，保留真实结局。')
+    else await upload(project.id, '作者的新原稿，保留真实结局。')
     const before = (await app.inject({ method: 'GET', url: `/api/projects/${project.id}` })).json().script
     const edited = editToolDraft(project.id, draft.id, { version: draft.version, documents: [{ id: draft.documents[0]!.id, content: '保留的手动草稿内容' }] })
     assert.equal(edited.source_version, draft.source_version, 'editing never rebinds the source to the latest upload')
@@ -192,8 +192,11 @@ test('revisions survive reload, preserve upload bytes, support idempotence and r
   commitScriptSourceUpdate(project.id, second); assert.equal(effectiveScriptSource(project.id)!.revision, 2)
   assert.throws(() => commitScriptSourceUpdate(project.id, proposed), /修订已变化/)
   const other = await fixture(); assert.throws(() => commitScriptSourceUpdate(other.id, second), /修订已变化/)
+  const beforeReupload = effectiveScriptSource(project.id)!
   await upload(project.id, uploadText)
-  assert.equal(effectiveScriptSource(project.id)!.revision, undefined); assert.equal(effectiveScriptSource(project.id)!.content, uploadText)
+  assert.deepEqual(effectiveScriptSource(project.id), beforeReupload, 'same original upload retains the effective revision')
+  await upload(project.id, uploadText + '\n新的原稿内容。')
+  assert.equal(effectiveScriptSource(project.id)!.revision, undefined); assert.equal(effectiveScriptSource(project.id)!.content, uploadText + '\n新的原稿内容。')
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM script_source_revisions WHERE project_id=?').get(project.id)!.count, 2)
 })
 test('successive source repair rounds use proposed text without committing and reject invented source edits', async () => {
@@ -238,6 +241,9 @@ test('revision save invalidates old maps and late results; rebuilt maps use revi
     analyzer.start(project.id, 'mock'); await started; commitScriptSourceUpdate(project.id, proposed)
     assert.equal(scriptSourceAnalysis(project.id), null)
     release()
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(scriptSourceAnalysis(project.id), null, 'a revision does not authorize new model use')
+    analyzer.start(project.id, 'mock', { extractionOnly: true })
     for (let attempt = 0; attempt < 100 && scriptSourceAnalysis(project.id)?.status !== 'ready'; attempt++) await new Promise(resolve => setTimeout(resolve, 5))
     const map = scriptSourceAnalysis(project.id)!
     assert.equal(map.status, 'ready', map.error || '')
@@ -258,7 +264,13 @@ test('confirmed save reuses server-analyzed identical proposed content; rollback
   const analyzer = createScriptSourceAnalyzer(async (_id, _model, prompt) => { calls++; return mapReply(prompt) }, undefined, { configuration: () => configuration })
   // Start from a confirmed source whose current map is already ready.
   const current = effectiveScriptSource(project.id)!
-  const existing = { id: newId(), source_version: (await import('../src/modules/script/script-source-analysis.js')).scriptSourceVersion(current), model_id: 'mock', status: 'ready', phase: 'ready', pipeline_version: sourceAnalysisPipelineVersion, completed_chunks: 1, total_chunks: 1, sections: [], error: null, updated_at: current.updated_at }
+  const existing: ScriptSourceAnalysis = { id: newId(), source_version: scriptSourceVersion(current), model_id: 'mock',
+    configuration_hash: sourceAnalysisConfigurationHash(configuration), status: 'ready', phase: 'ready', pipeline_version: sourceAnalysisPipelineVersion,
+    completed_chunks: 1, total_chunks: 1, completed_characters: current.content.length, error: null, updated_at: current.updated_at,
+    sections: [{ offset: 0, length: current.content.length, title: '原稿', episode_number: null, summary: '龟龙合作，起因未展开，结局伙伴重聚。', characters: [], events: [] }],
+    story: { summary: '龟龙合作，起因未展开，结局伙伴重聚。', characters: [], timeline: [], threads: [],
+      ending: { summary: '伙伴重聚。', section_ids: [0] }, uncertainties: [] } }
+  existing.quality = { input_hash: sourceQualityInputHash(existing), status: 'passed', findings: [] }
   db.prepare('INSERT OR REPLACE INTO script_source_analyses (project_id,id,source_version,status,snapshot,updated_at) VALUES (?,?,?,?,?,?)').run(project.id, existing.id, existing.source_version, 'ready', JSON.stringify(existing), current.updated_at)
   analyzer.start(project.id, 'mock')
   try {
@@ -298,6 +310,10 @@ test('a model configuration removed before confirmation cannot escape the revisi
     const beforeConfirmation = calls, beforeConfigurationReads = configurationReads
     configurationRemoved = true
     commitScriptSourceUpdate(project.id, proposed)
+    assert.equal(scriptSourceAnalysis(project.id), null, 'revision remains unanalysed until explicitly requested')
+    assert.equal(calls, beforeConfirmation)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    analyzer.start(project.id, 'mock', { extractionOnly: true })
     for (let attempt = 0; attempt < 100 && scriptSourceAnalysis(project.id)?.status !== 'failed'; attempt++) await new Promise(resolve => setTimeout(resolve, 5))
     const result = scriptSourceAnalysis(project.id)!
     assert.equal(result.status, 'failed')
@@ -410,7 +426,7 @@ test('generation cleanup preserves source namespaces, and replacing or removing 
     assert.deepEqual(revisionSeed(project.id), seed)
     assert.ok(db.prepare("SELECT 1 FROM script_step_checkpoints WHERE project_id=? AND namespace='source-proposal'").get(project.id))
     assert.equal(db.prepare("SELECT 1 FROM script_step_checkpoints WHERE project_id=? AND namespace='unrelated-generation-step'").get(project.id), undefined)
-    if (action === 'replace') await upload(project.id, proposed.original_content)
+    if (action === 'replace') await upload(project.id, proposed.original_content + '\n替换的新原稿。')
     else assert.equal((await app.inject({ method: 'DELETE', url: `/api/projects/${project.id}/script/source` })).statusCode, 200)
     assert.equal(revisionSeed(project.id), undefined)
     assert.equal(db.prepare("SELECT 1 FROM script_step_checkpoints WHERE project_id=? AND namespace='source-proposal'").get(project.id), undefined)

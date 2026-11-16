@@ -198,7 +198,7 @@ export function createDirectorTasks() {
           : status === 'cancelled' ? '已停止生成。已完成的草稿和操作仍保留。' : String(error instanceof Error ? error.message : error).slice(0, 3000),
           // A structured code and technical detail ride alongside the creator-facing message, never inside it.
           error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
-            ? { code: (error as { code: string }).code, ...((error as { diagnostic?: unknown }).diagnostic ? { detail: (error as { diagnostic: unknown }).diagnostic } : {}) } : undefined)
+            ? { code: (error as { code: string }).code, ...((error as { diagnostic?: unknown; diagnostics?: unknown }).diagnostic ?? (error as { diagnostics?: unknown }).diagnostics ? { detail: (error as { diagnostic?: unknown }).diagnostic ?? (error as { diagnostics?: unknown }).diagnostics } : {}) } : undefined)
         for (const listener of task.listeners) {
           const activity = snapshot.events.find(event => event.type === 'activity')
           if (activity) listener(activity)

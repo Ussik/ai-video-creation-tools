@@ -33,7 +33,7 @@ export function captureSourceRevisionBase(current: Source, original: Source, rev
       analysis.completed_chunks !== analysis.total_chunks || !analysis.total_chunks ||
       analysis.completed_characters !== current.content.length || !hasPassedSourceQuality(analysis)) { discard(); return }
     validateSourceCoverage(current.content, analysis.sections)
-    validateSourceStory(analysis, analysis.story)
+    validateSourceStory(analysis, analysis.story, current)
     const payload: RevisionBase = { version: 1, project_id: projectId, upload_version: scriptDocumentVersion(original), revision_id: revisionId,
       base_document_version: scriptDocumentVersion(current), base_source_version: row.source_version,
       source_version: scriptSourceVersion(revised), document_version: scriptDocumentVersion(revised),

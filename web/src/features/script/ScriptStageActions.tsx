@@ -8,36 +8,41 @@ import type { ScriptTaskContract } from '@video-studio/shared/script/script-task
 type StageActionTarget = StageTarget & Pick<ScriptTaskContract, 'intent' | 'artifact_types'>
 
 export default function ScriptStageActions({ script, disabled, outlineIssue, analysisWait = '', onAction }: {
-  script: WorkflowProgressInput; disabled: boolean; outlineIssue?: string | null; hasSource?: boolean; analysisWait?: string; onAction: (target: StageActionTarget) => void;
+  script: WorkflowProgressInput; disabled: boolean; outlineIssue?: string | null; hasSource?: boolean; analysisWait?: string | ((target: StageActionTarget) => string); onAction: (target: StageActionTarget) => void;
 }) {
   const progress = workflowProgress(script)
+  const waitFor = (target: StageActionTarget) => typeof analysisWait === 'function' ? analysisWait(target) : analysisWait
+  const menuAction = (target: StageActionTarget) => ({ disabled: disabled || Boolean(waitFor(target)), title: waitFor(target) || undefined, onClick: () => onAction(target) })
   return <div className="sd-stage-actions" aria-label="阶段处理">
     {scriptStageOrder.map(stage => {
       const saved = stage === 'episode' ? progress.episodes.length > 0 : progress.completed[stage]
       const current = progress.next_stage === stage
       const target = { stage, episode_number: stage === 'episode' ? progress.next_episode || 1 : 0 }
+      const analysisReason = stage === 'episode' && saved
+        ? [...progress.episodes.map(episode_number => waitFor({ stage, episode_number })), ...(current ? [waitFor(target)] : [])].every(Boolean) ? waitFor({ stage, episode_number: progress.episodes[0] || target.episode_number }) : ''
+        : waitFor(target)
       if (saved) return <Menu key={stage} position="bottom-start" withinPortal zIndex={400}>
-        <Menu.Target><Button variant="subtle" className="sd-stage-button is-saved" disabled={disabled || Boolean(analysisWait)} title={analysisWait || undefined}
+        <Menu.Target><Button variant="subtle" className="sd-stage-button is-saved" disabled={disabled || Boolean(analysisReason)} title={analysisReason || undefined}
           aria-label={`处理已保存的${stageLabels[stage]}`}>{stageLabels[stage]}<ChevronDown size={12} /></Button></Menu.Target>
         <Menu.Dropdown>
           <Menu.Label>{stage === 'episode' ? '已保存分集' : `${stageLabels[stage]} · 已保存`}</Menu.Label>
           {stage === 'episode' ? <>
             {progress.episodes.map(episode => <Fragment key={episode}>
-              <Menu.Item leftSection={<Pencil size={14} />} onClick={() => onAction({ stage, episode_number: episode, operation: 'revise' })}>修改第 {episode} 集正文</Menu.Item>
-              <Menu.Item leftSection={<RotateCcw size={14} />} onClick={() => onAction({ stage, episode_number: episode, operation: 'regenerate' })}>重新设计第 {episode} 集正文</Menu.Item>
+              <Menu.Item leftSection={<Pencil size={14} />} {...menuAction({ stage, episode_number: episode, operation: 'revise' })}>修改第 {episode} 集正文</Menu.Item>
+              <Menu.Item leftSection={<RotateCcw size={14} />} {...menuAction({ stage, episode_number: episode, operation: 'regenerate' })}>重新设计第 {episode} 集正文</Menu.Item>
             </Fragment>)}
-            {current && <Menu.Item leftSection={<FileText size={14} />} onClick={() => onAction({ ...target, operation: 'generate' })}>生成第 {progress.next_episode} 集正文</Menu.Item>}
+            {current && <Menu.Item leftSection={<FileText size={14} />} {...menuAction({ ...target, operation: 'generate' })}>生成第 {progress.next_episode} 集正文</Menu.Item>}
           </> : <>
-            <Menu.Item leftSection={<Pencil size={14} />} onClick={() => onAction({ ...target, operation: 'revise' })}>局部修改</Menu.Item>
-            {stage !== 'outline' && !!missingSavedStageArtifacts(script, target).length && <Menu.Item leftSection={<Plus size={14} />} onClick={() => onAction({ ...target, operation: 'supplement' })}>补齐栏目 · 缺 {missingSavedStageArtifacts(script, target).length} 项</Menu.Item>}
-            <Menu.Item leftSection={<RotateCcw size={14} />} onClick={() => onAction({ ...target, operation: 'regenerate', ...(stage === 'outline' ? { intent: 'stage_design' as const } : {}) })}>重新设计</Menu.Item>
+            <Menu.Item leftSection={<Pencil size={14} />} {...menuAction({ ...target, operation: 'revise' })}>局部修改</Menu.Item>
+            {stage !== 'outline' && !!missingSavedStageArtifacts(script, target).length && <Menu.Item leftSection={<Plus size={14} />} {...menuAction({ ...target, operation: 'supplement' })}>补齐栏目 · 缺 {missingSavedStageArtifacts(script, target).length} 项</Menu.Item>}
+            <Menu.Item leftSection={<RotateCcw size={14} />} {...menuAction({ ...target, operation: 'regenerate', ...(stage === 'outline' ? { intent: 'stage_design' as const } : {}) })}>重新设计</Menu.Item>
           </>}
         </Menu.Dropdown>
       </Menu>
       const issue = stage === 'outline' && current ? outlineIssue : null
       return <Box key={stage} component="span" w="100%" style={{ minWidth: 0 }}>
           <Button variant="subtle" className={`sd-stage-button${current ? ' is-current' : ''}`}
-            disabled={disabled || !current || Boolean(issue) || Boolean(analysisWait)} title={issue || analysisWait || (current ? '生成后确认保存，再继续下一阶段' : '完成并保存前面的阶段后开放')}
+            disabled={disabled || !current || Boolean(issue) || Boolean(analysisReason)} title={issue || analysisReason || (current ? '生成后确认保存，再继续下一阶段' : '完成并保存前面的阶段后开放')}
             onClick={() => onAction({ ...target, operation: 'generate', ...(stage === 'outline' ? { intent: 'stage_design' as const } : {}) })}>{current ? <FileText size={13} /> : <Lock size={12} />}{stageLabels[stage]}</Button>
       </Box>
     })}

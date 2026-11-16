@@ -18,9 +18,9 @@ export type TextDeliveryState = 'not_sent' | 'rejected' | 'accepted' | 'output_s
 export function textFailureReason(raw?: string): TextFailureReason {
   if (/^(?:max_output_tokens|length|max_tokens|MAX_TOKENS)$/.test(raw || '')) return 'output_limit'
   if (/^(?:context_length_exceeded|context_window_exceeded|input_too_long|prompt_too_long|context_capacity_exceeded)$/.test(raw || '')) return 'context_overflow'
-  if (/^(?:stream_disconnected|connection_error|headers_timeout|first_event_timeout|event_idle_timeout)$/.test(raw || '')) return 'disconnected'
+  if (/^(?:stream_read_error|stream_disconnected|connection_error|headers_timeout|first_event_timeout|event_idle_timeout)$/.test(raw || '')) return 'disconnected'
   if (/^(?:content_filter|refusal|SAFETY|RECITATION|PROHIBITED_CONTENT)$/.test(raw || '')) return 'refusal'
-  if (/^(?:invalid_tool_call|malformed_function_call|MALFORMED_FUNCTION_CALL)$/.test(raw || '')) return 'invalid_tool'
+  if (/^(?:invalid_tool_call|unexpected_tool_call|malformed_function_call|MALFORMED_FUNCTION_CALL)$/.test(raw || '')) return 'invalid_tool'
   if (raw === 'bad_response_body' || raw === 'response_frame_too_large') return 'invalid_response'
   if (raw === 'cancelled') return 'cancelled'
   return 'upstream_error'
@@ -39,6 +39,8 @@ export class TextProviderError extends Error {
   delivery: TextDeliveryState = 'unknown'
   partialText?: string
   outputStarted = false
+  /** True only after an explicit upstream terminal error, never inferred from EOF. */
+  responseTerminated = false
   constructor(message: string, public readonly retryable: boolean, public readonly upstreamCode?: string,
     public readonly upstreamStatus?: number, options?: ErrorOptions, public readonly retryAfterMs?: number) {
     super(message, options)

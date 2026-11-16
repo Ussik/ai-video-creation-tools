@@ -1,3 +1,5 @@
+import { frozenPassageReplacementFields } from './script-frozen-locators.js'
+import { createDraftRepairReferences } from './script-draft-repair-references.js'
 import { z } from 'zod'
 import type { ScriptDraftResolution, ScriptDraftFinding, ScriptDraftRepairRun } from '@video-studio/shared/script/script-draft-resolution'
 import { newId, now, one, run } from '../../infrastructure/database/db.js'
@@ -85,11 +87,13 @@ export function discardScriptDraft(projectId: string, id: string, version: strin
   clearScriptDraft(projectId, id, version)
 }
 
+const draftPassageEdit = z.object({ find: z.string().min(1).max(100000).optional(), paragraph_id: z.string().min(1).max(160).optional(), ...frozenPassageReplacementFields }).strict()
+  .refine(edit => (edit.find !== undefined) !== (edit.paragraph_id !== undefined), '每条编辑只使用find或paragraph_id之一')
+
 export const draftRepairOutput = z.object({
   decisions: z.array(z.string().trim().min(1).max(2000)).min(1).max(scriptDraftFindingLimit), summary: z.string().trim().min(1).max(3000),
-  source_edits: z.array(z.object({ find: z.string().min(1).max(100000), replace: z.string().max(100000), reason: z.string().trim().min(1).max(2000) }).strict()).max(200),
-  edits: z.array(z.object({ source_key: z.string().min(1).max(160), find: z.string().min(1).max(100000),
-    replace: z.string().max(100000), reason: z.string().trim().min(1).max(2000) }).strict()).max(200) }).strict()
+  source_edits: z.array(draftPassageEdit).max(200),
+  edits: z.array(draftPassageEdit.safeExtend({ source_key: z.string().min(1).max(160) })).max(200) }).strict()
   .refine(value => value.edits.length > 0 || value.source_edits.length > 0, '至少提交一处候选草稿或文稿修订')
 
 export type DraftPassageChanges = Array<{ source_key: string; changes: ReturnType<typeof resolvePassageEdits> }>
@@ -102,7 +106,8 @@ export function repairScriptSource(pending: PendingScriptDraft, source: ScriptSo
   }
   if (!edits.length) return pending.source_update
   const content = pending.source_update?.content || source.content
-  const changes = resolvePassageEdits(content, pending.version, edits, [[0, content.length]], { id: 'script-source', title: '当前有效稿' })
+  const references = createDraftRepairReferences([{ key: 'script-source', content }], { candidate_id: pending.id, candidate_version: pending.version, source_version: pending.source_version })
+  const changes = references.resolveEdits('script-source', edits)
   return applyScriptSourceChanges(pending, source, changes)
 }
 
@@ -122,10 +127,11 @@ export function applyScriptSourceChanges(pending: PendingScriptDraft, source: Sc
 /** Exact replacements retain every byte outside the affected passages. */
 export function repairScriptDraft(pending: PendingScriptDraft, edits: z.infer<typeof draftRepairOutput>['edits']): WorkflowDraft {
   const sources = draftCompletenessSources(pending.draft)
+  const references = createDraftRepairReferences(sources, { candidate_id: pending.id, candidate_version: pending.version, source_version: pending.source_version })
   return applyScriptDraftChanges(pending.draft, [...new Set(edits.map(edit => edit.source_key))].map(key => {
     const source = sources.find(item => item.key === key)
     if (!source) throw new Error('补齐位置不属于当前候选草稿')
-    const changes = resolvePassageEdits(source.content, pending.version, edits.filter(edit => edit.source_key === key), [[0, source.content.length]], { id: key, title: key })
+    const changes = references.resolveEdits(key, edits.filter(edit => edit.source_key === key))
     return { source_key: key, changes }
   }))
 }

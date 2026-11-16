@@ -17,7 +17,7 @@ export function creativeModelIdentity(modelId: string): string {
 export function creativeGenerationSteps(projectId: string, namespace: string, identity: unknown, signal?: AbortSignal, restart = false) {
   const store = generationUnitStore(projectId, namespace, identity)
   if (restart) store.clear()
-  return Object.assign(createGenerationSteps({ checkpoint: restart ? undefined : store.checkpoint, save: store.save, signal }), { clear: store.clear })
+  return Object.assign(createGenerationSteps({ checkpoint: restart ? undefined : store.checkpoint, save: store.save, savePrivateResponse: store.savePrivateResponse, signal }), { clear: store.clear })
 }
 
 /** Request-driven work owns its cancellation. A disconnected request retains

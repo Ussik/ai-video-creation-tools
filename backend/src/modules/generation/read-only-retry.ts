@@ -6,8 +6,10 @@ import { claimModelAttempt, modelStepSignal, remainingModelAttempts, remainingMo
 const managedRetry = Symbol('readOnlyRetry')
 type RetryOptions = {
   signal?: AbortSignal; onRetry?: (attempt: number, delayMs: number) => void;
-  /** Only validated atomic read-only output may discard an incomplete draft. */
+  /** Validated atomic output may discard a draft only after a known-safe failure. */
   discardIncompleteOutput?: boolean;
+  /** Source analysis can replay only a response explicitly terminated upstream. */
+  retryTerminatedOutput?: boolean;
   wait?: (ms: number, signal?: AbortSignal) => Promise<void>;
   random?: () => number;
 }
@@ -24,7 +26,13 @@ export async function retryReadOnlyRequest<T>(request: () => Promise<T>, options
     try { return await request() }
     catch (issue) {
       signal?.throwIfAborted()
-      if (issue instanceof TextProviderError && ((!options.discardIncompleteOutput && (issue.outputStarted || issue.partialText)) || ['context_overflow', 'output_limit', 'refusal', 'invalid_tool', 'invalid_response', 'cancelled'].includes(issue.failureReason))) throw issue
+      // Neither zero visible text nor permission to discard a draft proves that
+      // an accepted request stopped upstream. This barrier applies to every
+      // caller, protocol and failure reason before any local retry policy.
+      if (issue instanceof TextProviderError && !issue.responseTerminated &&
+        ['accepted', 'unknown', 'output_started'].includes(issue.delivery)) throw issue
+      const discardOutput = options.discardIncompleteOutput || options.retryTerminatedOutput && issue instanceof TextProviderError && issue.responseTerminated
+      if (issue instanceof TextProviderError && ((!discardOutput && (issue.outputStarted || issue.partialText)) || ['context_overflow', 'output_limit', 'refusal', 'invalid_tool', 'invalid_response', 'cancelled'].includes(issue.failureReason))) throw issue
       if (attempt >= 2 || !remainingModelAttempts() || (!Number.isFinite(remainingModelStepMs()) && Date.now() - started > 10 * 60_000) || !(issue instanceof TextProviderError) || !issue.retryable) throw issue
       const jitter = 0.75 + (options.random || Math.random)() * 0.5
       const delayMs = Math.max(issue.retryAfterMs || 0, Math.round(2000 * jitter))

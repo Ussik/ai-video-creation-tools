@@ -9,6 +9,17 @@ import { scriptSourcePassages } from './script-source-map.js'
 type Evidence = { source_key: string; quote: string }
 type Review = { findings: Evidence[]; facts: Evidence[] }
 type Source = { key: string; title: string; content: string }
+/** The numbered sources already contain every candidate character. Replace
+ * only the unique, byte-exact candidate envelope in the wire representation;
+ * preserve all instructions/background and the original cache/audit input. */
+function originalContextWithCandidateReferences(prompt: string, sources: Source[]) {
+  const marker = '待核对草稿原文（资料）：', end = '\n【本轮候选正文结束】'
+  const material = marker + JSON.stringify(sources) + end, at = prompt.indexOf(material)
+  if (at < 0 || prompt.indexOf(material, at + material.length) >= 0 || new Set(sources.map(source => source.key)).size !== sources.length) return prompt
+  const references = sources.map(({ content: _content, ...source }) => ({ ...source,
+    content_reference: { source_key: source.key, location: '证据结论复核资料.sources同key的units按顺序拼接text' } }))
+  return prompt.slice(0, at) + marker + JSON.stringify(references) + end + prompt.slice(at + material.length)
+}
 function reassessmentSchema(ids: string[]) {
   const verdictBase = { id: z.enum(ids), reason: z.string().trim().min(1).max(2000) }
   return z.object({ reassessments: z.array(z.discriminatedUnion('verdict', [
@@ -40,6 +51,7 @@ export async function reassessDraftReviewEvidence<T extends Review>(prompt: stri
     '即使全部原问题均不成立，也必须逐条返回 withdrawn 和具体 reason，source_key、first_unit、last_unit 为 null；禁止返回空数组。无法判断时逐条返回 unresolved 和理由，不得猜测撤回。' +
     '下方原始审读任务仅提供验收范围和事实背景，其中 findings、facts、checked_artifacts 的返回要求不适用于本轮；本轮只返回 reassessments。'
   const documents = sources.map(source => ({ ...source, units: scriptSourcePassages(source.content).flatMap(passage => passage.units) }))
+  const originalContext = originalContextWithCandidateReferences(prompt, sources)
   const quoteFor = (decision: z.infer<typeof schema>['reassessments'][number]) => {
     const issue = issues.find(issue => issue.id === decision.id)
     if (!issue) throw new Error('证据结论复核只能处理所列索引，不能新增或替换问题')
@@ -71,10 +83,11 @@ export async function reassessDraftReviewEvidence<T extends Review>(prompt: stri
     '【资料位置与用途】紧随其后的 issues 已逐条提供原问题的完整内容，包括原引文和原判定理由；sources 是实际送审的完整候选正文，按连续原文单元编号。' +
     '先逐项阅读问题和候选，再对照后面的完整原始任务与背景。saved_documents 是历史已保存文档，候选无需出现在其中；不能因历史中没有同名文档而判断本轮正文缺失。' +
     '原问题若声称资料缺失，应核对本轮实际提供的 issues 和 sources，不能直接沿用该声称。\n' +
+    '若后面的原始任务含content_reference，它指向前方sources同key的完整units；按数组顺序拼接text就是逐字原content，不是摘要或省略。验收范围、完整原稿和其他事实背景均保留。\n' +
     '【证据结论复核资料】\n' + JSON.stringify({
       issues: issues.map(issue => ({ ...issue.item, id: issue.id })),
       sources: documents.map(source => ({ key: source.key, title: source.title, units: source.units.map(({ id, text }) => ({ id, text })) })),
-    }) + '\n【本轮复核资料结束】\n【完整原始审读任务与资料】\n' + prompt +
+    }) + '\n【本轮复核资料结束】\n【完整原始审读任务与资料】\n' + originalContext +
     '\n【本轮复核返回协议（再次确认）】\n' + responseInstructions
   const reviewGenerate: StructuredGenerator = (text, contract) => generate(text, contract && {
     ...contract, request_policy: options.answerMode ? 'script_review_answer' : 'script_review',

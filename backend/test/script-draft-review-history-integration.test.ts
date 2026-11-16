@@ -1,3 +1,5 @@
+import { draftReviewFixtureSources } from './fixtures/script-draft-coordinate-response.js'
+import { reviewLegacyDraftEvidenceFixture } from './fixtures/script-draft-legacy-evidence.js'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { test } from 'node:test'
@@ -20,11 +22,7 @@ const taskStart = '\n【原始任务与资料】\n'
 function contextFrom(prompt: string): Record<string, any> {
   return JSON.parse(prompt.slice(prompt.lastIndexOf(materialStart) + materialStart.length).split('\n【审读结果分页协议】')[0]!)
 }
-function candidatesFrom(prompt: string) {
-  return JSON.parse(prompt.slice(prompt.lastIndexOf(sourceStart) + sourceStart.length).split('\n【本轮候选正文结束】')[0]!) as Array<{
-    key: string; artifact_type: string; title: string; content: string
-  }>
-}
+const candidatesFrom = draftReviewFixtureSources
 /** Reconstruct the canonical task including the complete-history contract. */
 function canonicalPrompt(wire: string, context: unknown) {
   const task = wire.slice(wire.indexOf(taskStart) + taskStart.length)
@@ -87,14 +85,14 @@ test('actual completeness wire retains history evidence and provides interpretat
   const f = fixture(), before = structuredClone(f.context)
   let wire = ''
   await reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
-    wire = prompt; assert.equal(contract?.name, 'script_draft_completeness'); assertWire(prompt, f)
+    wire = prompt; assert.equal(contract?.name, 'script_draft_completeness_coordinates'); assertWire(prompt, f)
     return resultText()
   }, { context: f.context, steps: f.steps() })
   const canonical = canonicalPrompt(wire, f.context)
   assert.ok(canonical.includes(f.context.resolved_findings.decisions[0]!.problem))
   assert.ok(canonical.includes(f.context.resolved_findings.summaries[0]!.text))
   assert.ok(canonical.includes(scriptDraftReviewHistoryGuidance), 'history contract participates in cache identity')
-  assert.equal(f.snapshot().steps['review:whole']!.input_hash, hash({ version: 3, prompt: canonical }),
+  assert.equal(f.snapshot().steps['review:coordinates:v1:review:whole']!.input_hash, hash({ version: 3, prompt: canonical }),
     'the successful checkpoint includes the complete-history interpretation contract')
   assert.deepEqual(f.context, before, 'stored history and its old evidence remain unchanged')
   await reviewScriptDraftCompleteness(f.draft, async () => assert.fail('identical successful canonical input is cached'),
@@ -102,7 +100,7 @@ test('actual completeness wire retains history evidence and provides interpretat
 })
 
 async function interruptAfterSettings(f: ReturnType<typeof fixture>) {
-  const interrupted = new TextProviderError('provider temporarily unavailable', false, 'provider_error')
+  const interrupted = Object.assign(new TextProviderError('provider temporarily unavailable', false, 'provider_error'), { delivery: 'not_sent' as const })
   let settingsWire = ''
   await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => {
     const scope = dimension(prompt); assertWire(prompt, f)
@@ -112,9 +110,9 @@ async function interruptAfterSettings(f: ReturnType<typeof fixture>) {
   }, { context: f.context, steps: f.steps() }), issue => issue === interrupted)
   assert.ok(settingsWire)
   const canonical = canonicalPrompt(settingsWire, f.context)
-  assert.equal(f.snapshot().steps['review:dimension:settings']!.input_hash, hash({ version: 1, prompt: canonical }),
+  assert.equal(f.snapshot().steps['review:coordinates:v1:review:dimension:settings']!.input_hash, hash({ version: 1, prompt: canonical }),
     'existing dimension checkpoint identity includes complete original history')
-  return f.snapshot().steps['review:dimension:settings']!
+  return f.snapshot().steps['review:coordinates:v1:review:dimension:settings']!
 }
 
 test('legacy settings checkpoint survives wire projection and only unfinished dimensions are dispatched', async () => {
@@ -123,7 +121,7 @@ test('legacy settings checkpoint survives wire projection and only unfinished di
     calls.push(dimension(prompt)); assertWire(prompt, f); return resultText()
   }, { context: f.context, steps: f.steps() })
   assert.deepEqual(calls, ['consistency', 'requirements'])
-  assert.deepEqual(f.snapshot().steps['review:dimension:settings'], settings)
+  assert.deepEqual(f.snapshot().steps['review:coordinates:v1:review:dimension:settings'], settings)
   await reviewScriptDraftCompleteness(f.draft, async () => assert.fail('all validated dimensions remain reusable'),
     { context: f.context, steps: f.steps() })
 })
@@ -141,7 +139,7 @@ test('source, creator, adopted decision and complete historical material remain 
       calls.push(dimension(prompt)); assertWire(prompt, f); return resultText()
     }, { context: f.context, steps: f.steps() })
     assert.deepEqual(calls, ['whole'], 'a changed canonical input cannot reuse a previous partial audit')
-    assert.deepEqual(f.snapshot().steps['review:dimension:settings'], oldSettings,
+    assert.deepEqual(f.snapshot().steps['review:coordinates:v1:review:dimension:settings'], oldSettings,
       'changing inputs does not destructively rewrite the historical result')
   })
 })
@@ -149,7 +147,7 @@ test('source, creator, adopted decision and complete historical material remain 
 test('pending evidence stored under the full legacy prompt resumes only its locator after history projection', async () => {
   const f = fixture(), interrupted = new TextProviderError('capture without completed request', false, 'provider_error')
   let observed = ''
-  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => {
+  await assert.rejects(reviewLegacyDraftEvidenceFixture(f.draft, async prompt => {
     observed = prompt; throw interrupted
   }, { context: f.context, steps: f.steps() }), issue => issue === interrupted)
   const canonical = canonicalPrompt(observed, f.context), source = f.draft.artifacts[0]!
@@ -187,7 +185,7 @@ test('pending evidence stored under the full legacy prompt resumes only its loca
   }, { context: f.context, steps: f.steps() }), preservesFinding)
   assert.deepEqual(calls, ['script_draft_evidence_repair'])
   assert.equal(f.snapshot().steps[responseId], undefined)
-  assert.ok(f.snapshot().steps['review:whole'], 'only the completed, exact-evidence result becomes reusable')
+  assert.ok(f.snapshot().steps['review:coordinates:v1:review:whole'], 'only the completed, exact-evidence result becomes reusable')
   await assert.rejects(reviewScriptDraftCompleteness(f.draft, async () => assert.fail('validated evidence is durable'),
     { context: f.context, steps: f.steps() }), preservesFinding)
 })
@@ -195,7 +193,7 @@ test('pending evidence stored under the full legacy prompt resumes only its loca
 test('a changed complete input cannot reuse a pending evidence checkpoint from a previous source version', async () => {
   const f = fixture(), interrupted = new TextProviderError('capture task', false, 'provider_error')
   let observed = ''
-  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => { observed = prompt; throw interrupted },
+  await assert.rejects(reviewLegacyDraftEvidenceFixture(f.draft, async prompt => { observed = prompt; throw interrupted },
     { context: f.context, steps: f.steps() }), issue => issue === interrupted)
   const canonical = canonicalPrompt(observed, f.context)
   const responseId = `review:response:${createHash('sha256').update(canonical).digest('hex')}`
@@ -208,7 +206,7 @@ test('a changed complete input cannot reuse a pending evidence checkpoint from a
   await reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
     calls.push(contract?.name || ''); assertWire(prompt, f); return resultText()
   }, { context: f.context, steps: f.steps() })
-  assert.deepEqual(calls, ['script_draft_completeness'])
+  assert.deepEqual(calls, ['script_draft_completeness_coordinates'])
 })
 
 

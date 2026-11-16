@@ -18,7 +18,7 @@ export function runDirectorExecutionBudget<T>(options: {
   const key = `${options.projectId}:${hash}`, active = activeExecutions.get(key)
   if (active) return active.then(value => { options.signal.throwIfAborted(); return value as T })
   const store = generationUnitStore(options.projectId, `director-execution:${hash}`, identity)
-  const steps = createGenerationSteps({ checkpoint: store.checkpoint, save: store.save, signal: options.signal })
+  const steps = createGenerationSteps({ checkpoint: store.checkpoint, save: store.save, savePrivateResponse: store.savePrivateResponse, signal: options.signal })
   const execution = runCreativeWorkflowBudget(steps, { kind: 'script', units: options.units, inputChars: options.inputChars,
     signal: options.signal, explicitResume: options.explicitResume }, work)
   activeExecutions.set(key, execution)

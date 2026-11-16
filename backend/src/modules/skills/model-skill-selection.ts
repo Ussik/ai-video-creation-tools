@@ -251,7 +251,7 @@ export async function resolveCreationSkillContext(options: {
     const skillIds = context.skills.map(skill => skill.id), catalog = optionalSkillReferenceCatalog(stage, skillIds, assignmentTask)
     if (!catalog.length) return context
     const input: CreationSkillReferenceSelectionInput = { stage, task, task_context: assignmentTask, skill_ids: skillIds,
-      loaded_rules: context.text, catalog, available_characters: Math.max(0, 100_000 - context.text.length) }
+      loaded_rules: JSON.stringify({ files: context.files, already_loaded: true }), catalog, available_characters: Math.max(0, 100_000 - context.text.length) }
     const cacheKey = options.reuseKey ? createHash('sha256').update(JSON.stringify([projectId, modelId, options.reuseKey, input])).digest('hex') : undefined
     const remembered = cacheKey ? referenceCache.get(cacheKey) : undefined
     const choice = validateReferenceChoice(input, remembered || (options.select?.references

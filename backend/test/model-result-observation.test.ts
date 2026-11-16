@@ -64,7 +64,7 @@ test('format correction records syntax, field and business failures independentl
     }, 'source', { validate: validation })))
     f.observation.finish('succeeded')
     const results = JSON.parse((db.prepare('SELECT results FROM model_request_tasks WHERE id=?').get(id) as any).results)
-    assert.deepEqual(results.map((event: any) => [event.phase, event.status, event.stage]), [['structure', expected, 'prompt_optimization'], ['structure', 'valid', 'format_correction']])
+    assert.deepEqual(results.map((event: any) => [event.phase, event.status, event.stage]), [['structure', expected, 'prompt_optimization'], ['structure', 'valid', expected === 'invalid_business' ? 'content_repair' : 'format_correction']])
     assert.deepEqual(stages, [['prompt_optimization', 'prompt_optimization'], ['format_correction', 'format_correction']])
     assert.equal(calls, 2)
     await f.tracer.flush()
@@ -140,4 +140,24 @@ test('recheck dispatch keeps its fine stage even with an explicit review policy'
     'source', { context: { policy: modelTaskPolicies.review } })))
   f.observation.finish('succeeded'); await f.tracer.flush()
   assert.deepEqual(observed, ['recheck', 'recheck'])
+})
+
+
+test('source terminal and first-text diagnostics survive local observation before Langfuse export', async () => {
+  const f = fixture('source-diagnostic-propagation')
+  f.observation.run(() => withModelOperationStage('source_synthesis', () => {
+    const context = currentModelRequestContext()!
+    context.onDispatch?.({ request_id: 'source-diagnostic-request', request_purpose: 'generation' })
+    context.onMetrics?.({ request_id: 'source-diagnostic-request', first_event_ms: 0, first_text_ms: 0,
+      response_terminated: true, delivery: 'output_started', failure_reason: 'disconnected', raw_reason: 'stream_read_error',
+      request_bytes: 100, response_chars: 10, input_tokens: 20, output_tokens: 0, output_started: true })
+  }))
+  f.observation.finish('failed'); await f.tracer.flush()
+  const stored = db.prepare('SELECT metrics FROM model_request_attempts WHERE task_id=?').get(f.observation.id) as { metrics: string }
+  const metrics = JSON.parse(stored.metrics)
+  assert.equal(metrics.first_text_ms, 0); assert.equal(metrics.response_terminated, true)
+  const child = f.spans().find(span => span.parentSpanId)!, data = metadata(child)
+  assert.equal(child.name, '全剧整合:text')
+  assert.equal(data.first_text_ms, 0); assert.equal(data.response_terminated, true)
+  assert.equal(data.upstream_error_code, 'stream_read_error'); assert.equal(data.output_tokens, undefined)
 })

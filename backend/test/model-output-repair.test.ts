@@ -27,6 +27,30 @@ const badFixture = () => {
 }
 const repaired = () => ({ repairs: { repair_0: structuredClone(goodDirection), repair_1: '下一镜接甲停步后的视线' } })
 
+test('structural correction restores nested optional wire fields before validating the local patch', async () => {
+  const schema = z.object({ items: z.array(z.object({ text: z.string(), evidence: z.object({
+    unit_id: z.number().int(), occurrence: z.number().int().optional(), supports: z.array(z.number().int()).optional(),
+  }).strict() }).strict()) }).strict()
+  for (const wireNulls of [false, true]) {
+    const expected = { items: [{ text: '程序持有的完整事实', evidence: { unit_id: 1 } }] }
+    const initial = structuredClone(expected) as any
+    initial.items[0].unknown_fact = '不能静默清除'
+    const checkpoint: import('../src/modules/generation/model-output.js').StructuredOutputCheckpoint = {}
+    let calls = 0
+    const actual = await generateStructuredOutput('optional_structure', schema, async (_prompt, contract) => {
+      if (++calls === 1) return JSON.stringify(initial)
+      assert.equal(contract!.name, 'optional_structure_structure_repair')
+      const evidence = wireNulls ? { unit_id: 99, occurrence: null, supports: null } : { unit_id: 99 }
+      return JSON.stringify({ repairs: { repair_0: { text: '未经授权的文字', evidence } } })
+    }, 'full source', { structuralRepair: true, checkpoint })
+    assert.equal(calls, 2)
+    assert.deepEqual(actual, expected)
+    assert.ok(checkpoint.original_raw!.includes('unknown_fact'))
+    assert.deepEqual(await generateStructuredOutput('optional_structure', schema,
+      async () => assert.fail('completed local replay cannot dispatch'), 'full source', { structuralRepair: true, checkpoint }), expected)
+  }
+})
+
 test('structural correction fixes scene direction and one empty carry-over while preserving every other shot, ID and audio value', async () => {
   const candidate = badFixture(), before = structuredClone(candidate), contexts: Array<ModelRequestContext | undefined> = [], contracts: OutputContract[] = [], rounds: number[] = []
   let calls = 0, validated = 0
@@ -126,7 +150,7 @@ test('structure patches share the original three-attempt transport budget and tw
   const rounds: number[] = []
   const generate = retryReadOnlyGeneration(async () => {
     calls++
-    if (calls === 1) throw new TextProviderError('temporary offline failure', true)
+    if (calls === 1) throw Object.assign(new TextProviderError('temporary HTTP rejection', true, 'server_error', 503), { delivery: 'rejected' as const })
     return JSON.stringify(calls === 2 ? badFixture() : repaired())
   }, { wait: async () => {} })
   assert.deepEqual(await generateStructuredOutput('storyboard_shot_batch', schema, generate, '资料', { structuralRepair: true, onAttempt: round => rounds.push(round) }), fixture())
@@ -135,9 +159,9 @@ test('structure patches share the original three-attempt transport budget and tw
   const exhausted = retryReadOnlyGeneration(async () => {
     calls++
     if (calls === 2) return JSON.stringify(badFixture())
-    throw new TextProviderError('persistent offline failure', true)
+    throw Object.assign(new TextProviderError('persistent HTTP rejection', true, 'server_error', 503), { delivery: 'rejected' as const })
   }, { wait: async () => {} })
-  await assert.rejects(generateStructuredOutput('storyboard_shot_batch', schema, exhausted, '资料', { structuralRepair: true }), /persistent offline failure/)
+  await assert.rejects(generateStructuredOutput('storyboard_shot_batch', schema, exhausted, '资料', { structuralRepair: true }), /persistent HTTP rejection/)
   assert.equal(calls, 3)
 })
 

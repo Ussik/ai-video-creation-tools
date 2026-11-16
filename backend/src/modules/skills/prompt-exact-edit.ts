@@ -34,6 +34,7 @@ export function applyExactPromptPatches(source: string, patches: readonly Prompt
     ids.add(patch.id)
     if (!patch.find || patch.find.length > 4000 || patch.replace.length > 6000) invalid('每次只替换一个不超过 4000 字的原文片段，替换结果最多 6000 字')
     if (patch.find === patch.replace) invalid('补丁没有实际修改')
+    if (/[\uD800-\uDFFF]/u.test(patch.replace)) invalid('replace 必须包含完整字符，不能含未配对的 Unicode 代理字符')
     let start = 0, end = source.length
     if (patch.anchor) {
       const paragraph = paragraphs.find(item => item.id === patch.anchor!.paragraph_id)
@@ -43,7 +44,12 @@ export function applyExactPromptPatches(source: string, patches: readonly Prompt
     const scope = source.slice(start, end), index = scope.indexOf(patch.find)
     if (index < 0) invalid('find 必须逐字匹配原文，不得改写、归一化空白或补省略号')
     if (scope.indexOf(patch.find, index + 1) >= 0) invalid('find 在目标范围内出现多次，请扩大上下文或指定唯一段落锚点')
-    return { start: start + index, end: start + index + patch.find.length, replace: patch.replace }
+    const from = start + index, to = from + patch.find.length
+    const splitsCharacter = (offset: number) => offset > 0 && offset < source.length
+      && source.charCodeAt(offset - 1) >= 0xd800 && source.charCodeAt(offset - 1) <= 0xdbff
+      && source.charCodeAt(offset) >= 0xdc00 && source.charCodeAt(offset) <= 0xdfff
+    if (splitsCharacter(from) || splitsCharacter(to)) invalid('find 必须包含完整字符，不能切开 Unicode 代理对')
+    return { start: from, end: to, replace: patch.replace }
   }).sort((left, right) => left.start - right.start)
   for (let index = 1; index < edits.length; index++) if (edits[index]!.start < edits[index - 1]!.end) invalid('补丁范围不能重叠，所有 find 均针对同一份原文')
   let candidate = source

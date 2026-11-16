@@ -62,6 +62,8 @@ test('optional reference loading is available to manual, fixed and automatic sel
     const select: CreationSkillSelector = Object.assign(async () => { selections++; return { skill_ids: [skillId], reason: '理解人物选择。' } }, {
       references: async (_project: string, _model: string, input: CreationSkillReferenceSelectionInput) => {
         references++; assert.deepEqual(input.skill_ids, [skillId]); assert.ok(input.catalog.some(file => file.id === chosen.id))
+        assert.doesNotMatch(input.loaded_rules, /MANDATORY_CONTRACT|MAIN_RULE/)
+        assert.match(input.loaded_rules, /stage-contract\.md/)
         assert.doesNotMatch(JSON.stringify(input), /DEEP_REFERENCE_RULE/)
         return { reference_ids: [chosen.id], reason: '参考人物选择的后果。' }
       },

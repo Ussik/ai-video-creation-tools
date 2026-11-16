@@ -29,7 +29,7 @@ test('partial stream failure preserves diagnostics for business recovery and nev
   assert.deepEqual(retries, []); assert.deepEqual(waits, []); assert.equal(bodies.length,1)
 })
 
-test('HTTP gateway, rate limit and dropped connections recover, but never beyond one local retry', async t => {
+test('HTTP rejections retain one bounded retry while unknown connections and EOF are never replayed', async t => {
   for (const failure of ['gateway', 'rate', 'network', 'eof', 'persistent'] as const) await t.test(failure, async t => {
     let calls = 0
     t.mock.method(globalThis, 'fetch', async () => {
@@ -43,9 +43,10 @@ test('HTTP gateway, rate limit and dropped connections recover, but never beyond
     })
     const generate = retryReadOnlyGeneration(prompt => streamText(model, provider, { prompt }), { wait: async () => {} })
     if (failure === 'eof') await assert.rejects(generate('test'), issue => issue instanceof TextProviderError && issue.partialText === 'partial')
+    else if (failure === 'network') await assert.rejects(generate('test'), issue => issue instanceof TextProviderError && issue.delivery === 'unknown' && !issue.responseTerminated)
     else if (failure === 'persistent') await assert.rejects(generate('test'), issue => issue instanceof TextProviderError && issue.retryable)
     else assert.equal(await generate('test'), 'complete')
-    assert.equal(calls, failure === 'eof' ? 1 : 2)
+    assert.equal(calls, ['eof', 'network'].includes(failure) ? 1 : 2)
   })
 })
 
@@ -73,9 +74,9 @@ test('auth, quota, schema, content limits, ordinary errors and cancellation do n
 test('abort during backoff and already slow requests stop without another provider call', async t => {
   let calls = 0
   const controller = new AbortController()
-  const aborted = retryReadOnlyGeneration(async () => { calls++; throw new TextProviderError('temporary', true) }, { signal: controller.signal, onRetry: () => controller.abort() })
+  const aborted = retryReadOnlyGeneration(async () => { calls++; throw Object.assign(new TextProviderError('temporary', true, 'server_error', 503), { delivery: 'rejected' as const }) }, { signal: controller.signal, onRetry: () => controller.abort() })
   await assert.rejects(aborted('test'), /abort/i); assert.equal(calls, 1)
   t.mock.timers.enable({ apis: ['Date'], now: 1000 })
-  const slow = retryReadOnlyGeneration(async () => { calls++; t.mock.timers.tick(11 * 60_000); throw new TextProviderError('temporary', true) }, { wait: async () => { throw new Error('must not wait') } })
+  const slow = retryReadOnlyGeneration(async () => { calls++; t.mock.timers.tick(11 * 60_000); throw Object.assign(new TextProviderError('temporary', true, 'server_error', 503), { delivery: 'rejected' as const }) }, { wait: async () => { throw new Error('must not wait') } })
   await assert.rejects(slow('test'), /temporary/); assert.equal(calls, 2)
 })

@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
-import { createStreamScope } from '@video-studio/shared/script/script-stream-policy'
+import { test, type TestContext } from 'node:test'
+import { createStreamScope, StreamWaitTimeoutError, textReasoningIdleTimeoutMs, textRequestTimeoutMs } from '@video-studio/shared/script/script-stream-policy'
 import { TextProviderError } from '../src/infrastructure/providers/text-errors.js'
 import { createTextTransportBoundary, readTextErrorBody, textErrorBodyByteLimit, textHeadersTimeoutMs } from '../src/infrastructure/providers/text-transport-boundary.js'
 import { textFrameByteLimit } from '../src/infrastructure/providers/text-frame-boundary.js'
 import { streamText, type GenerationModel } from '../src/infrastructure/providers/providers.js'
 import { fetchModelCatalogSnapshot, modelCatalogTtlMs } from '../src/infrastructure/providers/model-catalog.js'
 import type { Provider } from '../src/infrastructure/database/db.js'
+import { textToolSession } from '../src/infrastructure/providers/text-tools.js'
+import { runGenerationDeadline, withUnrestrictedScriptExecution } from '../src/modules/generation/model-execution.js'
+import { createScriptRequestUsage } from '../src/infrastructure/providers/text-request-usage.js'
+import { ModelWorkflowBudgetError, modelWorkflowBudgetKey, modelWorkflowBudgetDrainMs, runModelWorkflowBudget, type ModelWorkflowBudgetCheckpoint } from '../src/modules/generation/model-workflow-budget.js'
 
 const flush = () => new Promise<void>(resolve => setImmediate(resolve))
 const catalogConfig = { path: 'models', list_path: 'data', id_path: 'id', name_path: 'name', modality_path: '' }
@@ -18,6 +22,45 @@ function model(protocol: 'responses' | 'chat_completions' | 'anthropic_messages'
   return { id: 'boundary-' + protocol, remote_id: 'actual', modality: 'text', protocol, settings: {
     text_api: { mode: 'standard', output_mode: 'fixed', max_output_tokens: 8192 }, structured_output_mode: 'prompt',
   } }
+}
+
+function reasoningModel(protocol: Parameters<typeof model>[0], stream = true): GenerationModel {
+  return { ...model(protocol), settings: { stream, structured_output_mode: 'prompt',
+    text_api: { mode: 'standard', output_mode: 'fixed', max_output_tokens: 8192, reasoning_effort: 'medium' } } }
+}
+
+function delayedHeaders(t: TestContext) {
+  let release!: (response: Response) => void, wireSignal!: AbortSignal, body!: Record<string, unknown>, calls = 0
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    calls++; wireSignal = init.signal!; body = JSON.parse(String(init.body))
+    return new Promise<Response>((resolve, reject) => {
+      release = resolve
+      wireSignal.addEventListener('abort', () => reject(wireSignal.reason), { once: true })
+    })
+  })
+  return { release: (response: Response) => release(response), signal: () => wireSignal, body: () => body, calls: () => calls }
+}
+
+function completedStream(protocol: Parameters<typeof model>[0]) {
+  const events = protocol === 'responses' ? [
+    { type: 'response.output_text.delta', delta: 'complete' },
+    { type: 'response.completed', response: { status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'complete' }] }] } },
+  ] : protocol === 'chat_completions' ? [
+    { choices: [{ delta: { content: 'complete' }, finish_reason: 'stop' }] },
+  ] : [
+    { type: 'message_start', message: { content: [] } },
+    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'complete' } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'message_delta', delta: { stop_reason: 'end_turn' } }, { type: 'message_stop' },
+  ]
+  return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'Content-Type': 'text/event-stream' } })
+}
+
+function assertReasoningBody(protocol: Parameters<typeof model>[0], body: Record<string, unknown>) {
+  assert.equal(body.stream, true)
+  if (protocol === 'anthropic_messages') assert.deepEqual(body.thinking, { type: 'adaptive' })
+  else if (protocol === 'responses') assert.deepEqual(body.reasoning, { effort: 'medium' })
+  else assert.equal(body.reasoning_effort, 'medium')
 }
 
 test('catalog TTL, conditional refresh and deep copies preserve authoritative discovery freshness', async t => {
@@ -180,4 +223,106 @@ test('an unclosed SSE event stops before a trailing partial line receives its ne
   }, cancel() { cancelled = true } }), { headers: { 'Content-Type': 'text/event-stream' } }))
   await assert.rejects(streamText(model('responses'), provider, { prompt: 'source', structured_output: contract }), issue => issue instanceof TextProviderError && issue.upstreamCode === 'response_frame_too_large')
   assert.equal(cancelled, true)
+})
+
+for (const protocol of ['responses', 'chat_completions', 'anthropic_messages'] as const) {
+  test(`${protocol}: reasoning stream accepts late headers beyond two minutes and completes normally`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const wire = delayedHeaders(t)
+    const pending = streamText(reasoningModel(protocol), provider, { prompt: 'source', structured_output: contract })
+    await flush(); assertReasoningBody(protocol, wire.body())
+    t.mock.timers.tick(textHeadersTimeoutMs + 60_000)
+    assert.equal(wire.signal().aborted, false)
+    wire.release(completedStream(protocol))
+    assert.equal(await pending, 'complete'); assert.equal(wire.calls(), 1)
+  })
+
+  test(`${protocol}: reasoning headers still stop at ten minutes with one unknown dispatch`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const wire = delayedHeaders(t)
+    const pending = streamText(reasoningModel(protocol), provider, { prompt: 'source', structured_output: contract })
+    const rejected = assert.rejects(pending, issue => issue instanceof TextProviderError &&
+      issue.upstreamCode === 'headers_timeout' && issue.delivery === 'unknown' && issue.responseTerminated !== true)
+    await flush(); assertReasoningBody(protocol, wire.body())
+    t.mock.timers.tick(textReasoningIdleTimeoutMs - 1); assert.equal(wire.signal().aborted, false)
+    t.mock.timers.tick(1); await rejected
+    assert.equal(wire.signal().aborted, true); assert.equal(wire.calls(), 1)
+  })
+
+  test(`${protocol}: nonstream headers retain their thirty-minute boundary`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const wire = delayedHeaders(t)
+    // Remove only the outer script clock so the transport's own nonstream
+    // boundary is observable rather than racing the equal request deadline.
+    const pending = withUnrestrictedScriptExecution(() => streamText(reasoningModel(protocol, false), provider,
+      { prompt: 'source', structured_output: contract }))
+    const rejected = assert.rejects(pending, issue => issue instanceof TextProviderError && issue.upstreamCode === 'headers_timeout')
+    await flush(); assert.notEqual(wire.body().stream, true)
+    t.mock.timers.tick(textRequestTimeoutMs - 1); assert.equal(wire.signal().aborted, false)
+    t.mock.timers.tick(1); await rejected; assert.equal(wire.calls(), 1)
+  })
+
+  test(`${protocol}: parent cancellation interrupts the extended reasoning headers wait immediately`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const wire = delayedHeaders(t), controller = new AbortController(), reason = new Error('author cancelled')
+    const pending = streamText(reasoningModel(protocol), provider, { prompt: 'source', structured_output: contract }, undefined, undefined, controller.signal)
+    const rejected = assert.rejects(pending, issue => issue === reason)
+    await flush(); t.mock.timers.tick(textHeadersTimeoutMs + 1); assert.equal(wire.signal().aborted, false)
+    controller.abort(reason); await rejected
+    assert.equal(wire.signal().reason, reason); assert.equal(wire.calls(), 1)
+  })
+
+  test(`${protocol}: a shorter workflow deadline still wins over reasoning headers`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const wire = delayedHeaders(t), deadline = textHeadersTimeoutMs + 60_000
+    const pending = runGenerationDeadline(undefined, deadline, () => streamText(reasoningModel(protocol), provider,
+      { prompt: 'source', structured_output: contract }))
+    const rejected = assert.rejects(pending, issue => issue instanceof StreamWaitTimeoutError && issue.kind === 'total')
+    await flush(); t.mock.timers.tick(deadline - 1); assert.equal(wire.signal().aborted, false)
+    t.mock.timers.tick(1); await rejected
+    assert.equal(wire.signal().aborted, true); assert.equal(wire.calls(), 1)
+  })
+
+  test(`${protocol}: native tool decisions use the same reasoning headers allowance`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const wire = delayedHeaders(t)
+    const pending = withUnrestrictedScriptExecution(() => textToolSession(reasoningModel(protocol), provider, 'source',
+      [{ name: 'submit', description: 'submit result', parameters: contract.schema }], () => '')())
+    await flush(); assertReasoningBody(protocol, wire.body()); assert.equal((wire.body().tools as unknown[]).length, 1)
+    t.mock.timers.tick(textHeadersTimeoutMs + 60_000); assert.equal(wire.signal().aborted, false)
+    wire.release(completedStream(protocol))
+    const result = await pending
+    assert.equal(result.text, 'complete'); assert.deepEqual(result.calls, []); assert.equal(wire.calls(), 1)
+  })
+
+  test(`${protocol}: native reasoning tool headers retain a finite ten-minute deadline`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const wire = delayedHeaders(t)
+    const pending = withUnrestrictedScriptExecution(() => textToolSession(reasoningModel(protocol), provider, 'source',
+      [{ name: 'submit', description: 'submit result', parameters: contract.schema }], () => '')())
+    const rejected = assert.rejects(pending, issue => issue instanceof TextProviderError &&
+      issue.upstreamCode === 'headers_timeout' && issue.delivery === 'unknown' && issue.responseTerminated !== true)
+    await flush(); t.mock.timers.tick(textReasoningIdleTimeoutMs - 1); assert.equal(wire.signal().aborted, false)
+    t.mock.timers.tick(1); await rejected
+    assert.equal(wire.signal().aborted, true); assert.equal(wire.calls(), 1)
+  })
+}
+
+test('a workflow active-time budget still drains then aborts an in-flight reasoning headers wait before ten minutes', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout', 'setInterval'], now: 1000 })
+  const wire = delayedHeaders(t), activeMs = textHeadersTimeoutMs + 60_000
+  const checkpoint: ModelWorkflowBudgetCheckpoint = { version: 1, kind: 'script', grants: 1, active_ms: 0,
+    allowance: { max_requests: 20, max_total_requests: 100, max_tokens: 1000000, max_active_ms: activeMs }, usage: createScriptRequestUsage() }
+  const steps: Record<string, unknown> = { [modelWorkflowBudgetKey]: checkpoint }
+  const pending = runModelWorkflowBudget({ kind: 'script', scale: { units: 1, inputChars: 10 }, steps,
+    signal: new AbortController().signal, persist() {} }, signal => streamText(reasoningModel('anthropic_messages'), provider,
+    { prompt: 'source', structured_output: contract }, undefined, undefined, signal))
+  const rejected = assert.rejects(pending, issue => issue instanceof ModelWorkflowBudgetError && issue.reason === 'duration')
+  await flush(); t.mock.timers.tick(activeMs); assert.equal(wire.signal().aborted, false, 'admitted work keeps its existing bounded drain')
+  t.mock.timers.tick(modelWorkflowBudgetDrainMs - 1); assert.equal(wire.signal().aborted, false)
+  t.mock.timers.tick(1); await rejected
+  assert.equal(wire.signal().aborted, true); assert.equal(wire.calls(), 1)
+  const saved = steps[modelWorkflowBudgetKey] as ModelWorkflowBudgetCheckpoint
+  assert.equal(saved.exhausted, 'duration'); assert.equal(saved.grants, 1)
+  assert.equal(saved.usage.requests, 1); assert.equal(saved.usage.uncertain_requests, 1)
 })

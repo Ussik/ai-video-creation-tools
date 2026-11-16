@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { ScriptSourceAnalysis, ScriptSourceSection, ScriptSourceStory } from '@video-studio/shared/script/script-source-document'
+import { pauseBeforeStoryRequest } from './support/source-story-pause.js'
 import { modelStepSignal } from '../src/modules/generation/model-execution.js'
 import { scriptSourceVersion } from '../src/modules/script/script-source-identity.js'
 import { reviewSourceQuality } from '../src/modules/script/script-source-quality.js'
@@ -217,7 +218,7 @@ test('two schema-only local failures do not trigger a full-source request', asyn
   assert.ok(state.story_work!.tasks.find(task => task.key === 'characters:0')!.result)
 })
 
-test('a targeted request deadline rejects late results without expanding scope or saving their output', async () => {
+test('a targeted request deadline keeps a late complete response private without adopting it or expanding scope', async () => {
   const { state, source } = manuscript(), calls: boolean[] = []
   let saves = 0, requestSignal: AbortSignal | undefined
   let lateRequest: Promise<string> | undefined
@@ -236,10 +237,24 @@ test('a targeted request deadline rejects late results without expanding scope o
   }, () => { saves++ }, freshSignal(), undefined, 40, source), /超时/)
   assert.equal(requestSignal!.aborted, true)
   const savesAtDeadline = saves
+  const atDeadline = structuredClone(state)
   await lateRequest
   await new Promise<void>(resolve => setImmediate(resolve))
   assert.deepEqual(calls, [false])
-  assert.equal(saves, savesAtDeadline)
+  // Keeping the complete paid response is a private durability write, not
+  // permission to adopt it or act on its request for wider source context.
+  assert.equal(saves, savesAtDeadline + 1)
+  const late = state.story_work!.tasks.find(task => task.key === 'characters:1')!.output_candidate!.checkpoint
+  const before = atDeadline.story_work!.tasks.find(task => task.key === 'characters:1')!.output_candidate!.checkpoint
+  assert.ok(before.initial_started)
+  assert.equal(before.raw, undefined)
+  assert.equal(late.raw, await lateRequest)
+  assert.equal(late.original_raw, late.raw)
+  assert.equal(late.initial_started, undefined)
+  assert.equal(late.correction, undefined)
+  const privateCheckpoint = structuredClone(state)
+  privateCheckpoint.story_work!.tasks.find(task => task.key === 'characters:1')!.output_candidate!.checkpoint = before
+  assert.deepEqual(privateCheckpoint, atDeadline, 'only private completed bytes and their dispatch marker may change after the deadline')
   assert.equal(state.story, undefined)
   assert.equal(state.story_work!.tasks.find(task => task.key === 'characters:1')!.result, undefined)
   assert.ok(state.story_work!.tasks.find(task => task.key === 'characters:0')!.result)
@@ -276,49 +291,63 @@ test('full-source format correction cannot reset the character batch request bud
   assert.ok(state.story_work!.tasks.find(task => task.key === 'characters:0')!.result)
 })
 
-test('a failed full-source fallback resumes directly with full evidence and preserves completed sibling tasks', async () => {
-  const { state, source } = manuscript(), calls = new Map<string, boolean[]>()
-  let interrupt = true
-  const generate = async (prompt: string) => {
-    const input = inputFrom(prompt)
-    calls.set(input.part.key, [...calls.get(input.part.key) || [], input.complete_source])
-    if (input.part.key === 'characters:1') {
-      if (!input.complete_source) return JSON.stringify({ characters: [], needs_full_source: true, reason: '需要扩大资料范围核验身份。' })
-      if (interrupt) throw new Error('全文核验请求被中断')
+test('full-source fallback resumes a pre-dispatch pause and protects an unknown delivery while retaining completed siblings', async t => {
+  for (const interruption of ['before_dispatch', 'unknown_delivery'] as const) await t.test(interruption, async () => {
+    const { state, source } = manuscript(), calls = new Map<string, boolean[]>()
+    const interrupted = new Error('全文核验请求被中断')
+    const pause = pauseBeforeStoryRequest(state, task => task.key === 'characters:1' && !!task.context?.fallback_from_hash, interrupted)
+    let interrupt = true
+    const generate = async (prompt: string) => {
+      const input = inputFrom(prompt)
+      calls.set(input.part.key, [...calls.get(input.part.key) || [], input.complete_source])
+      if (input.part.key === 'characters:1') {
+        if (!input.complete_source) return JSON.stringify({ characters: [], needs_full_source: true, reason: '需要扩大资料范围核验身份。' })
+        if (interrupt && interruption === 'unknown_delivery') throw interrupted
+      }
+      return JSON.stringify(response(input))
     }
-    return JSON.stringify(response(input))
-  }
-  await assert.rejects(synthesizeSourceStory(state, generate, () => {}, freshSignal(), undefined, 1000, source), /全文核验请求被中断/)
-  const restored = JSON.parse(JSON.stringify(state)) as ScriptSourceAnalysis
-  const failed = restored.story_work!.tasks.find(task => task.key === 'characters:1')! as { result?: unknown; context?: { strategy: string; fallback_from_hash?: string } }
-  assert.equal(failed.result, undefined)
-  assert.equal(failed.context!.strategy, 'whole-source-v1')
-  assert.ok(failed.context!.fallback_from_hash)
-  interrupt = false
-  const story = await synthesizeSourceStory(restored, generate, () => {}, freshSignal(), undefined, 1000, source)
-  assert.equal(story.characters.length, names.length)
-  assert.deepEqual(calls.get('characters:1'), [false, true, true])
-  assert.deepEqual(calls.get('overview'), [true])
-  assert.deepEqual(calls.get('characters:0'), [true])
-  assert.deepEqual(calls.get('characters:2'), [false])
+    await assert.rejects(synthesizeSourceStory(state, generate, interruption === 'before_dispatch' ? pause : () => {}, freshSignal(), undefined, 1000, source), error => error === interrupted)
+    const restored = JSON.parse(JSON.stringify(state)) as ScriptSourceAnalysis
+    const failed = restored.story_work!.tasks.find(task => task.key === 'characters:1')!
+    assert.equal(failed.result, undefined)
+    assert.equal(failed.context!.strategy, 'whole-source-v1')
+    assert.ok(failed.context!.fallback_from_hash)
+    assert.deepEqual(calls.get('characters:1'), interruption === 'before_dispatch' ? [false] : [false, true])
+    interrupt = false
+    if (interruption === 'unknown_delivery') {
+      const before = new Map(calls), protectedCandidate = structuredClone(failed.output_candidate!)
+      await assert.rejects(synthesizeSourceStory(restored, generate, () => {}, freshSignal(), undefined, 1000, source), error =>
+        (error as { code?: string }).code === 'structured_initial_delivery_pending')
+      for (const [key, attempts] of before) assert.deepEqual(calls.get(key), attempts, `previously invoked task ${key} cannot be resent`)
+      assert.deepEqual(failed.output_candidate!.checkpoint.initial_started, protectedCandidate.checkpoint.initial_started)
+      assert.equal(failed.output_candidate!.context_hash, protectedCandidate.context_hash)
+      assert.equal(restored.story, undefined)
+      return
+    }
+    const story = await synthesizeSourceStory(restored, generate, () => {}, freshSignal(), undefined, 1000, source)
+    assert.equal(story.characters.length, names.length)
+    assert.deepEqual(calls.get('characters:1'), [false, true])
+    assert.deepEqual(calls.get('overview'), [true])
+    assert.deepEqual(calls.get('characters:0'), [true])
+    assert.deepEqual(calls.get('characters:2'), [false])
+  })
 })
 
 test('a changed targeted context hash invalidates only the affected cached result', async () => {
   const { state, source } = manuscript(), calls = new Map<string, boolean[]>()
-  let interrupt = true
+  const pause = pauseBeforeStoryRequest(state, 'timeline:0', new Error('暂停以检查人物检查点'))
   const generate = async (prompt: string) => {
     const input = inputFrom(prompt)
     calls.set(input.part.key, [...calls.get(input.part.key) || [], input.complete_source])
-    if (interrupt && input.part.key === 'timeline:0') throw new Error('暂停以检查人物检查点')
     return JSON.stringify(response(input))
   }
-  await assert.rejects(synthesizeSourceStory(state, generate, () => {}, freshSignal(), undefined, 1000, source), /暂停以检查/)
+  await assert.rejects(synthesizeSourceStory(state, generate, pause, freshSignal(), undefined, 1000, source), /暂停以检查/)
+  assert.equal(calls.has('timeline:0'), false, 'cache inspection pauses before dispatch')
   const restored = JSON.parse(JSON.stringify(state)) as ScriptSourceAnalysis
   const cached = restored.story_work!.tasks.find(task => task.key === 'characters:1')! as { result?: unknown; context?: { strategy: string; input_hash: string } }
   assert.ok(cached.result)
   assert.equal(cached.context!.strategy, 'character-evidence-v1')
   cached.context!.input_hash = 'a-different-targeted-evidence-context'
-  interrupt = false
   const story = await synthesizeSourceStory(restored, generate, () => {}, freshSignal(), undefined, 1000, source)
   assert.equal(story.characters.length, names.length)
   assert.deepEqual(calls.get('characters:1'), [false, false])
@@ -330,20 +359,19 @@ test('a changed targeted context hash invalidates only the affected cached resul
 
 test('a cached local result with an unread citation is regenerated even when its context hash still matches', async () => {
   const { state, source } = manuscript(), calls = new Map<string, number>()
-  let interrupt = true
+  const pause = pauseBeforeStoryRequest(state, 'timeline:0', new Error('暂停以检查人物结果'))
   const generate = async (prompt: string) => {
     const input = inputFrom(prompt)
     calls.set(input.part.key, (calls.get(input.part.key) || 0) + 1)
-    if (interrupt && input.part.key === 'timeline:0') throw new Error('暂停以检查人物结果')
     return JSON.stringify(response(input))
   }
-  await assert.rejects(synthesizeSourceStory(state, generate, () => {}, freshSignal(), undefined, 1000, source), /暂停以检查人物/)
+  await assert.rejects(synthesizeSourceStory(state, generate, pause, freshSignal(), undefined, 1000, source), /暂停以检查人物/)
+  assert.equal(calls.has('timeline:0'), false, 'cache inspection pauses before dispatch')
   const restored = JSON.parse(JSON.stringify(state)) as ScriptSourceAnalysis
   const cached = restored.story_work!.tasks.find(task => task.key === 'characters:1')!
   const originalContext = JSON.stringify((cached as { context?: unknown }).context)
   ;(cached.result as { characters: Character[] }).characters[0]!.section_ids = [0, 12]
   assert.equal(JSON.stringify((cached as { context?: unknown }).context), originalContext)
-  interrupt = false
   const story = await synthesizeSourceStory(restored, generate, () => {}, freshSignal(), undefined, 1000, source)
   assert.equal(calls.get('characters:1'), 2)
   assert.equal(calls.get('characters:0'), 1)
@@ -358,16 +386,15 @@ test('either rollback switch replaces cached targeted results with full-source w
     try {
       delete process.env[setting]
       const { state, source } = manuscript(), calls = new Map<string, boolean[]>()
-      let interrupt = true
+      const pause = pauseBeforeStoryRequest(state, 'timeline:0', new Error('暂停以切换回全文模式'))
       const generate = async (prompt: string) => {
         const input = inputFrom(prompt)
         calls.set(input.part.key, [...calls.get(input.part.key) || [], input.complete_source])
-        if (interrupt && input.part.key === 'timeline:0') throw new Error('暂停以切换回全文模式')
         return JSON.stringify(response(input))
       }
-      await assert.rejects(synthesizeSourceStory(state, generate, () => {}, freshSignal(), undefined, 1000, source), /暂停以切换/)
+      await assert.rejects(synthesizeSourceStory(state, generate, pause, freshSignal(), undefined, 1000, source), /暂停以切换/)
+      assert.equal(calls.has('timeline:0'), false, 'cache inspection pauses before dispatch')
       process.env[setting] = '0'
-      interrupt = false
       const story = await synthesizeSourceStory(state, generate, () => {}, freshSignal(), undefined, 1000, source)
       assert.equal(story.characters.length, names.length)
       assert.deepEqual(calls.get('overview'), [true])
@@ -387,21 +414,20 @@ test('a successful full-source fallback remains reusable after targeted mode is 
   try {
     delete process.env[setting]
     const { state, source } = manuscript(), calls = new Map<string, boolean[]>()
-    let interrupt = true
+    const pause = pauseBeforeStoryRequest(state, 'timeline:0', new Error('暂停以检查全文回退结果'))
     const generate = async (prompt: string) => {
       const input = inputFrom(prompt)
       calls.set(input.part.key, [...calls.get(input.part.key) || [], input.complete_source])
       if (input.part.key === 'characters:1' && !input.complete_source) return JSON.stringify({ characters: [], needs_full_source: true, reason: '需要完整原文核实。' })
-      if (interrupt && input.part.key === 'timeline:0') throw new Error('暂停以检查全文回退结果')
       return JSON.stringify(response(input))
     }
-    await assert.rejects(synthesizeSourceStory(state, generate, () => {}, freshSignal(), undefined, 1000, source), /暂停以检查全文/)
+    await assert.rejects(synthesizeSourceStory(state, generate, pause, freshSignal(), undefined, 1000, source), /暂停以检查全文/)
+    assert.equal(calls.has('timeline:0'), false, 'cache inspection pauses before dispatch')
     const restored = JSON.parse(JSON.stringify(state)) as ScriptSourceAnalysis
     const completed = restored.story_work!.tasks.find(task => task.key === 'characters:1')!
     assert.ok(completed.result)
     assert.ok(completed.context!.fallback_from_hash)
     process.env[setting] = '0'
-    interrupt = false
     const story = await synthesizeSourceStory(restored, generate, () => {}, freshSignal(), undefined, 1000, source)
     assert.equal(story.characters.length, names.length)
     assert.deepEqual(calls.get('characters:1'), [false, true], 'the completed fallback is a validated full-source result')
@@ -417,20 +443,19 @@ test('a successful full-source fallback remains reusable after targeted mode is 
 
 test('changed discovery seeds rebuild dependent local results while preserving completed full-source results', async () => {
   const { state, source } = manuscript(), calls = new Map<string, boolean[]>()
-  let interrupt = true
+  const pause = pauseBeforeStoryRequest(state, 'timeline:0', new Error('暂停以检查发现任务依赖'))
   const generate = async (prompt: string) => {
     const input = inputFrom(prompt)
     calls.set(input.part.key, [...calls.get(input.part.key) || [], input.complete_source])
     if (input.part.key === 'characters:1' && !input.complete_source) return JSON.stringify({ characters: [], needs_full_source: true, reason: '本批需要全文核实。' })
-    if (interrupt && input.part.key === 'timeline:0') throw new Error('暂停以检查发现任务依赖')
     return JSON.stringify(response(input))
   }
-  await assert.rejects(synthesizeSourceStory(state, generate, () => {}, freshSignal(), undefined, 1000, source), /暂停以检查发现/)
+  await assert.rejects(synthesizeSourceStory(state, generate, pause, freshSignal(), undefined, 1000, source), /暂停以检查发现/)
+  assert.equal(calls.has('timeline:0'), false, 'cache inspection pauses before dispatch')
   const restored = JSON.parse(JSON.stringify(state)) as ScriptSourceAnalysis
   const originalInputHash = restored.story_work!.input_hash
   const discovery = restored.story_work!.tasks.find(task => task.key === 'characters:0')!.result as { characters: Character[] }
   discovery.characters[0]!.description += '已核对其独立调查记录。'
-  interrupt = false
   const story = await synthesizeSourceStory(restored, generate, () => {}, freshSignal(), undefined, 1000, source)
   assert.equal(originalInputHash, createHash('sha256').update(JSON.stringify(['source-story-parts-v4', state.source_version, source, state.sections])).digest('hex'))
   assert.deepEqual(calls.get('characters:0'), [true])

@@ -62,3 +62,18 @@ test('a completed write or unknown operation still prevents replay even if the f
     }), /不能继续/)
   }
 })
+
+
+test('structured validation diagnostics survive task persistence without exposing raw failed tool parameters', async () => {
+  const projectId = newId(), id = newId(), timestamp = now()
+  run('INSERT INTO projects (id,name,created_at,updated_at) VALUES (?,?,?,?)', projectId, '失败诊断', timestamp, timestamp)
+  tasks.start(projectId, { id, conversation: { id: newId(), messages: [{ id: newId(), role: 'user', text: '定位修复' }] },
+    execution: { title: '定位修复', request: '定位修复', started_at: Date.now() } }, {}, async () => {
+    throw Object.assign(new Error('工作集未通过'), { code: 'model_business_validation', diagnostics: '$.edits[1]: anchor_stale', raw_output: 'PRIVATE_FULL_FAILED_TOOL_PARAMETERS' })
+  }, { key: 'diagnostics-fixture', resumable: true })
+  await nextTurn()
+  const snapshot = tasks.read(projectId, id), event = snapshot.events.find(event => event.type === 'error')!
+  assert.equal(snapshot.status, 'failed'); assert.equal(event.detail, '$.edits[1]: anchor_stale')
+  const serialized = db.prepare('SELECT snapshot FROM script_director_tasks WHERE id=?').get(id) as { snapshot: string }
+  assert.match(serialized.snapshot, /anchor_stale/); assert.ok(!serialized.snapshot.includes('PRIVATE_FULL_FAILED_TOOL_PARAMETERS'))
+})

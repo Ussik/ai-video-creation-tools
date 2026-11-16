@@ -1,4 +1,19 @@
-import type { ScriptSourceAnalysis, ScriptSourceCharacterEvidenceIssue } from '@video-studio/shared/script/script-source-document'
+import type { ScriptSourceAnalysis, ScriptSourceCharacterEvidenceIssue, ScriptSourceStory } from '@video-studio/shared/script/script-source-document'
+
+const nameKey = (name: string) => name.normalize('NFKC').trim()
+// Only a pair of complete name-shaped labels can be represented as name + alias.
+// Ages, lists, nested annotations and explicit unknowns are not alias labels.
+// This syntax check never establishes an identity; the model supplies that
+// interpretation in one character record, and the independent audit retains it.
+export function compoundNames(label: string): [string, string] | undefined {
+  const match = /^([^()/]+)\(([^()/]+)\)$/u.exec(label) || /^([^()/]+)\/([^()/]+)$/u.exec(label)
+  if (!match) return
+  const pair = [match[1]!.trim(), match[2]!.trim()] as [string, string]
+  const name = /^[\p{L}\p{M}·・.'’\-]+(?: [\p{L}\p{M}·・.'’\-]+)*$/u
+  if (pair.some(value => value.length < 2 || !name.test(value) ||
+    /^(?:[零〇一二三四五六七八九十百两]+(?:余|多)?岁(?:半)?|(?:身份|姓名|本名|原名|真名|年龄)(?:不明|不详|未知|待定)|不明|未知|待定)$/u.test(value))) return
+  return pair[0] !== pair[1] ? pair : undefined
+}
 
 /** Directory mentions and the exact source ranges are alternative evidence.
  * A directory omission must never hide a name actually present in that range.
@@ -25,6 +40,25 @@ export function createSourceCharacterEvidence(state: Pick<ScriptSourceAnalysis, 
     const candidates = new Set(sectionsFor(name))
     return sectionIds.some(id => candidates.has(id))
   }
+  const directoryNames = new Set(state.sections.flatMap(section => section.characters.map(character => nameKey(character.name))))
+  const coversDirectoryName = (character: Pick<ScriptSourceStory['characters'][number], 'name' | 'aliases' | 'section_ids'>, target: string) => {
+    const key = nameKey(target), names = new Set([character.name, ...character.aliases].map(nameKey))
+    if (names.has(key)) return true
+    if (!directoryNames.has(key)) return false
+    const role = /^([^()/]+)\(([^()/]+)\)$/u.exec(key)
+    // Exact head + exact source heading in the record's own cited section.
+    // Only explicit occupational suffixes qualify; real aliases, ages, unknown
+    // identities and generic parentheses keep the stricter compound-name rule.
+    if (role && /(?:列车长|当铺主|掌柜|科长|调查员|巡夜官|馆主|店主|队长|局长)$/.test(role[2]!.trim()) &&
+      !/又名|真名|本名|化名|实为|即为|未知|不详/.test(role[2]!) && names.has(role[1]!.trim()) &&
+      supports(role[1]!.trim(), character.section_ids) && character.section_ids.some(id => sections[id]?.text.includes(key))) return true
+    const pair = compoundNames(key)
+    // Do not split targets or combine different characters. The entire label
+    // must be literal source in this model record's own cited sections, and
+    // both complete spellings must already occur in that same record.
+    return !!pair && pair.every(name => names.has(name) && supports(name, character.section_ids)) &&
+      character.section_ids.some(id => sections[id]?.text.includes(key))
+  }
   const describe = (ids: number[]) => ids.slice(0, 8).map(id => `${id}「${state.sections[id]?.title.slice(0, 48) || '未知章节'}」`).join('、') +
     (ids.length > 8 ? `等共 ${ids.length} 处` : '')
   const issue = (taskKey: string, characterName: string, name: string, sectionIds: number[]) => {
@@ -37,5 +71,5 @@ export function createSourceCharacterEvidence(state: Pick<ScriptSourceAnalysis, 
         : '完整原文与目录中均未找到该名称，请核对名称写法、来源和身份关系。')
     return { message, details }
   }
-  return { sectionsFor, supports, issue }
+  return { sectionsFor, supports, coversDirectoryName, issue }
 }

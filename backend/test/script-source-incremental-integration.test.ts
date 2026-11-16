@@ -86,8 +86,8 @@ function reply(prompt: string) {
   return prompt.includes(mapMarker) ? JSON.stringify(mapReply(inputFor<MapInput>(prompt, mapMarker))) : sourceAnalysisFixture(prompt)!
 }
 
-function assertFullSynthesis(prompts: string[], content: string) {
-  const stories = prompts.filter(prompt => prompt.includes(storyMarker)), reviews = prompts.filter(prompt => prompt.includes(reviewMarker))
+function assertFullSynthesis(prompts: string[], content: string, retainedStories: string[] = []) {
+  const stories = [...retainedStories, ...prompts.filter(prompt => prompt.includes(storyMarker))], reviews = prompts.filter(prompt => prompt.includes(reviewMarker))
   assert.equal(stories.length, 1)
   assert.equal(reviews.length, 1)
   assert.equal(inputFor<{ source: { content: string } }>(stories[0]!, storyMarker).source.content, content)
@@ -250,6 +250,9 @@ test('paused revised-source synthesis resumes its validated map without repeatin
     await started
     const active = scriptSourceAnalysis(id)!
     assert.equal(active.completed_chunks, active.total_chunks)
+    const retainedStories = prompts.filter(prompt => prompt.includes(storyMarker) &&
+      inputFor<{ source: { content: string } }>(prompt, storyMarker).source.content === revised)
+    assert.equal(retainedStories.length, 1)
     analyzer.pause(id, active.id)
     release()
     await new Promise<void>(resolve => setImmediate(resolve))
@@ -259,7 +262,8 @@ test('paused revised-source synthesis resumes its validated map without repeatin
     const ready = await terminal(id, scriptSourceVersion(effectiveScriptSource(id)!))
     assert.equal(ready.status, 'ready', ready.error || '')
     assert.equal(prompts.filter(prompt => prompt.includes(mapMarker)).length, 0)
-    assertFullSynthesis(prompts, revised)
+    assert.equal(prompts.filter(prompt => prompt.includes(storyMarker)).length, 0, 'the complete late response is reused without another paid synthesis request')
+    assertFullSynthesis(prompts, revised, retainedStories)
     assert.equal(snapshot(id).revision_reuse!.status, 'verified')
     assertEvidence(revised, ready.sections)
   } finally { release(); await analyzer.close() }
@@ -407,6 +411,7 @@ test('disabling incremental analysis before confirmation or before resuming cand
     delete process.env[setting]
     const id = project(), original = effectiveScriptSource(id)!, revised = revisedContent(original.content), prompts: string[] = []
     let began: () => void = () => {}, release: () => void = () => {}, hold = mode === 'pending_resume'
+    let retainedStories: string[] = []
     const started = new Promise<void>(resolve => { began = resolve })
     const analyzer = createScriptSourceAnalyzer(async (_id, _model, prompt) => {
       prompts.push(prompt)
@@ -426,6 +431,8 @@ test('disabling incremental analysis before confirmation or before resuming cand
         const current = scriptSourceAnalysis(id)!
         assert.equal(snapshot(id).revision_reuse!.status, 'pending')
         assert.ok(snapshot(id).revision_reuse!.reused_pages.length > 0)
+        retainedStories = prompts.filter(prompt => prompt.includes(storyMarker))
+        assert.equal(retainedStories.length, 1)
         analyzer.pause(id, current.id)
         release()
         await new Promise<void>(resolve => setImmediate(resolve))
@@ -435,7 +442,9 @@ test('disabling incremental analysis before confirmation or before resuming cand
       const ready = await terminal(id, scriptSourceVersion(committed))
       assert.equal(ready.status, 'ready', ready.error || '')
       assert.equal(prompts.filter(prompt => prompt.includes(mapMarker)).length, sourceWorkPlan(scriptSourcePassages(revised)).length)
-      assertFullSynthesis(prompts, revised)
+      if (mode === 'pending_resume') assert.equal(prompts.filter(prompt => prompt.includes(storyMarker)).length, 0,
+        'rebuilding unchanged full-source directory pages may still reuse the exact completed whole-story response')
+      assertFullSynthesis(prompts, revised, retainedStories)
       assert.notEqual(snapshot(id).revision_reuse?.status, 'pending')
       assertEvidence(revised, ready.sections)
     } finally {

@@ -61,35 +61,28 @@ function outputs(body: Record<string, unknown>, protocol: Protocol) {
 }
 
 for (const protocol of protocols) for (const failure of ['terminated', 'eof'] as const) {
-  test(`${protocol} retries one interrupted decision without replaying tools or retaining partial function arguments (${failure})`, async t => {
-    const bodies: Array<Record<string, unknown>> = []
-    const executed: string[] = []
+  test(`${protocol} retains an interrupted pending decision without replay or partial tool adoption (${failure})`, async t => {
+    const bodies: Array<Record<string, unknown>> = [], executed: string[] = [], diagnostics: string[] = []
     const readCall = { id: 'read-complete', name: 'read_documents', arguments: '{"document_ids":["episode-1"]}' }
-    const finalCall = { id: 'draft-complete', name: 'create_document_draft', arguments: '{"content":"完整的新设计正文"}' }
     t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
       bodies.push(JSON.parse(String(init?.body)))
       if (bodies.length === 1) return completed(protocol, [readCall])
       if (bodies.length === 2) return interrupted(protocol, failure)
-      if (bodies.length === 3) return completed(protocol, [finalCall])
-      if (bodies.length === 4) return completed(protocol, [], '草稿已准备，等待确认')
-      assert.fail('no further request may replay an already completed operation')
+      assert.fail('unknown upstream state must never cause another dispatch')
     })
-    const turn = textToolSession(settings(protocol), provider, '重新设计第一集，保留创作要求', tools, () => '')
+    const turn = textToolSession(settings(protocol), provider, '重新设计第一集，保留创作要求', tools, () => '', undefined, text => diagnostics.push(text))
     const first = await turn()
     assert.deepEqual(first.calls, [readCall]); executed.push(...first.calls.map(call => call.id))
-    const result = await turn([{ id: readCall.id, output: '{"ok":true,"result":{"content":"当前有效原文","version":"v1"}}' }])
-    assert.deepEqual(result.calls, [finalCall]); executed.push(...result.calls.map(call => call.id))
-    assert.deepEqual(bodies[1], bodies[2], 'retry sends the same authorized context and real completed outputs')
-    assert.equal(outputs(bodies[2], protocol).length, 1, 'completed read is relayed exactly once')
-    assert.ok(!JSON.stringify(result.history).includes('UNSAFE_PARTIAL'), 'incomplete arguments are never adopted into history')
-    assert.ok(!JSON.stringify(result.history).includes('unsafe-partial'))
-    const done = await turn([{ id: finalCall.id, output: '{"ok":true,"saved":false,"draft_id":"draft-1"}' }])
-    assert.equal(done.text, '草稿已准备，等待确认')
-    assert.deepEqual(executed, ['read-complete', 'draft-complete'], 'only complete final calls are executable')
-    assert.equal(bodies.length, 4)
-    const relayed = outputs(bodies[3], protocol)
-    assert.deepEqual(relayed.map(item => item.call_id || item.tool_call_id), ['read-complete', 'draft-complete'])
-    assert.ok(!JSON.stringify(bodies[3]).includes('UNSAFE_PARTIAL'))
+    await assert.rejects(turn([{ id: readCall.id, output: '{"ok":true,"result":{"content":"当前有效原文","version":"v1"}}' }]), issue => {
+      assert.ok(issue instanceof TextProviderError)
+      assert.equal(issue.responseTerminated, false)
+      assert.ok(['accepted', 'unknown', 'output_started'].includes(issue.delivery))
+      return true
+    })
+    assert.equal(bodies.length, 2); assert.deepEqual(executed, ['read-complete'])
+    assert.equal(outputs(bodies[1]!, protocol).length, 1, 'the completed read output belongs only to the one pending decision')
+    assert.ok(!JSON.stringify(bodies[1]).includes('UNSAFE_PARTIAL'))
+    assert.ok(!diagnostics.some(message => message.includes('正在重试')), 'no retry event is emitted')
   })
 }
 
@@ -106,7 +99,7 @@ for (const protocol of protocols) {
     assert.equal(bodies.length, 2); assert.equal(bodies[0], bodies[1])
   })
 
-  test(`${protocol} a persistent connection failure stops after one retry with a usable Chinese error`, async t => {
+  test(`${protocol} a persistent unknown connection failure stops immediately with a usable Chinese error`, async t => {
     let requests = 0
     t.mock.method(globalThis, 'fetch', async () => { requests++; return interrupted(protocol, 'terminated') })
     await assert.rejects(textToolSession(settings(protocol), provider, '重试当前决策', tools, () => '')(), issue => {
@@ -114,7 +107,7 @@ for (const protocol of protocols) {
       assert.notEqual(issue.message, 'terminated'); assert.match(issue.message, /[\u4e00-\u9fff]/)
       return true
     })
-    assert.equal(requests, 2, 'transport recovery cannot create an unbounded model loop')
+    assert.equal(requests, 1, 'a socket failure without an upstream terminal response cannot be replayed')
   })
 
   test(`${protocol} cancellation during reception never retries or returns partial calls`, async t => {

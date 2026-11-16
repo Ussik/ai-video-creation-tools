@@ -74,13 +74,13 @@ test('private quality repair saves each finding, resumes the interrupted finding
       assert.equal(input.complete_source, true)
       assert.equal(input.units.map(unit => unit.text).join(''), source.content)
       repaired.push(input.finding_index)
-      if (input.finding_index === 1 && failSecondRepair) throw new Error('第二项修补连接中断')
+      if (input.finding_index === 1 && failSecondRepair) throw Object.assign(new Error('第二项修补连接中断'), { delivery: 'not_sent' })
       return repairReply(prompt)
     }
     if (prompt.includes(reviewMarker)) {
       reviews++
       if (reviews === 1) baseline = checkpoint(source.project_id)
-      if (reviews === 2 && failFinalReview) throw new Error('修补后的全文复核连接中断')
+      if (reviews === 2 && failFinalReview) throw Object.assign(new Error('修补后的全文复核连接中断'), { delivery: 'not_sent' })
       return reviewReply(prompt, reviews === 1)
     }
     if (prompt.includes(mapMarker)) maps++
@@ -111,31 +111,52 @@ test('private quality repair saves each finding, resumes the interrupted finding
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM script_source_documents WHERE project_id=?').get(source.project_id)!.count, 0)
 })
 
-test('two invalid ending patches recover in the same task without rereading the source or asking for a creator decision', async () => {
-  const source = document('结局修补格式自动恢复'), progress: string[] = []
+test('an invalid ending proposal and failed correction remain durable across exact continuation without a third paid call', async () => {
+  const source = document('结局修补格式自动恢复')
   let maps = 0, stories = 0, repairs = 0, reviews = 0
-  const ready = await analyzeSourceSnapshot(source, 'model', async prompt => {
+  let baseline: ScriptSourceAnalysis | undefined
+  const returned: string[] = []
+  const generate = async (prompt: string) => {
     if (prompt.includes(repairMarker)) {
       const input = inputFor<RepairInput>(prompt, repairMarker), ending = input.story.ending
-      const summary = `${ending.summary}；${facts[1]}`
+      if (!baseline) baseline = checkpoint(source.project_id)
       repairs++
-      return JSON.stringify({ status: 'patched', reason: '保留原文结局状态', changes: [{
+      assert.ok(repairs <= 2, 'a failed paid proposal and its correction cannot be repurchased')
+      const invalid = JSON.stringify({ status: 'patched', reason: '保留原文结局状态', changes: [{
         target: 'story.ending', section_id: null, operation: 'replace', index: null,
-        expected: repairs <= 2 ? ending.summary : ending,
-        value: repairs <= 2 ? summary : { ...ending, summary },
+        expected: ending.summary, value: `${ending.summary}；${facts[1]}`,
       }] })
+      returned.push(invalid)
+      return invalid
     }
     if (prompt.includes(reviewMarker)) return reviewReply(prompt, ++reviews === 1)
     if (prompt.includes(mapMarker)) maps++
     if (prompt.includes(storyMarker)) stories++
     return sourceAnalysisFixture(prompt)!
-  }, signal(), undefined, { onProgress: state => { if (state.progress) progress.push(state.progress.message) } })
-  assert.equal(ready.status, 'ready')
-  assert.equal(ready.quality!.status, 'passed')
-  assert.ok(ready.story!.ending.summary.includes(facts[1]!))
-  assert.deepEqual([maps, stories, repairs, reviews], [1, 1, 4, 2], 'format recovery resumes only unfinished findings, including the second quality finding')
-  assert.ok(progress.some(message => /输出格式.*恢复当前步骤/.test(message)))
-  assert.equal(ready.quality_repair, undefined)
+  }
+  await assert.rejects(analyzeSourceSnapshot(source, 'model', generate, signal()), error => {
+    assert.equal((error as { code?: string }).code, 'source_quality_decision_mismatch')
+    assert.match((error as Error).message, /changes\[0\]\.expected.*要求 object/); return true
+  })
+  const failed = checkpoint(source.project_id) as ScriptSourceAnalysis & { quality_repair_output: { checkpoint: {
+    raw: string; correction: { raw: string }; correction_started: unknown
+  } } }
+  assert.deepEqual([maps, stories, repairs, reviews], [1, 1, 2, 1])
+  assert.deepEqual(failed.sections, baseline!.sections); assert.deepEqual(failed.story, baseline!.story)
+  assert.equal(failed.quality_repair!.completed_findings, 0)
+  assert.equal(failed.quality_repair_output.checkpoint.raw, returned[0])
+  assert.equal(failed.quality_repair_output.checkpoint.correction.raw, returned[1])
+  assert.ok(failed.quality_repair_output.checkpoint.correction_started)
+  const before = JSON.parse(JSON.stringify(failed.quality_repair_output))
+  await assert.rejects(analyzeSourceSnapshot(source, 'model', generate, signal()), error => {
+    assert.equal((error as { code?: string }).code, 'source_quality_decision_mismatch')
+    assert.match((error as Error).message, /changes\[0\]\.expected.*要求 object/); return true
+  })
+  const continued = checkpoint(source.project_id) as typeof failed
+  assert.deepEqual([maps, stories, repairs, reviews], [1, 1, 2, 1], 'same-input resume replays and rejects locally without another model call')
+  assert.deepEqual(continued.sections, baseline!.sections); assert.deepEqual(continued.story, baseline!.story)
+  assert.equal(continued.quality_repair!.completed_findings, 0)
+  assert.deepEqual(continued.quality_repair_output, before)
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM script_source_documents WHERE project_id=?').get(source.project_id)!.count, 0)
 })
 
@@ -178,120 +199,71 @@ test('a later independent review starts a new finding-repair round without reusi
   assert.deepEqual([maps, stories, reviews], [1, 1, 3])
 })
 
-test('an explicitly unsafe targeted repair performs one evidence-guided rebuild and automatically repairs later independent findings', async t => {
-  for (const stillHasIssues of [false, true]) await t.test(stillHasIssues ? 'new_issues_repaired' : 'rebuild_passes', async () => {
+test('an explicit full-rebuild decision stops with its evidence and never launches an automatic replacement', async t => {
+  for (const stillHasIssues of [false, true]) await t.test(String(stillHasIssues), async () => {
     const source = document(`不可定点修补-${stillHasIssues}`)
-    let maps = 0, stories = 0, repairs = 0, reviews = 0
+    let maps = 0, stories = 0, repairs = 0, reviews = 0, baseline: ScriptSourceAnalysis | undefined
     const generate = async (prompt: string) => {
       if (prompt.includes(repairMarker)) {
-        repairs++
-        return repairs === 1
-          ? JSON.stringify({ status: 'requires_full_rebuild', reason: '误读涉及章节边界，不能安全修改单个分析条目。', changes: [] })
-          : repairReply(prompt)
+        repairs++; baseline = checkpoint(source.project_id)
+        return JSON.stringify({ status: 'requires_full_rebuild', reason: '误读涉及章节边界，不能安全修改单个分析条目。', changes: [] })
       }
-      if (prompt.includes(reviewMarker)) return reviewReply(prompt, ++reviews === 1 || reviews === 2 && stillHasIssues)
-      if (prompt.includes(mapMarker)) {
-        maps++
-        if (maps === 2) assert.ok(facts.every(fact => prompt.includes(fact)), 'the controlled rebuild retains the quality evidence')
-        const value = JSON.parse(sourceAnalysisFixture(prompt)!)
-        value.sections[0].summary = `第 ${maps} 次目录：依据原文区分控制与自愿行为。`
-        return JSON.stringify(value)
-      }
+      if (prompt.includes(reviewMarker)) return reviewReply(prompt, ++reviews === 1 || stillHasIssues)
+      if (prompt.includes(mapMarker)) maps++
       if (prompt.includes(storyMarker)) stories++
       return sourceAnalysisFixture(prompt)!
     }
-    const ready = await analyzeSourceSnapshot(source, 'model', generate, signal())
-    assert.equal(ready.status, 'ready'); assert.equal(ready.quality!.status, 'passed')
-    const saved = checkpoint(source.project_id)
-    assert.equal(saved.quality_rebuild_for, undefined)
-    assert.equal(saved.quality_repair, undefined)
-    assert.deepEqual([maps, stories, repairs, reviews], stillHasIssues ? [2, 2, 3, 3] : [2, 2, 1, 2],
-      'later findings use targeted repairs while the completed fallback directory and story remain reusable')
-    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM script_source_documents WHERE project_id=?').get(source.project_id)!.count, 0)
+    await assert.rejects(analyzeSourceSnapshot(source, 'model', generate, signal()), /无法安全定点修补/)
+    const stopped = checkpoint(source.project_id)
+    assert.deepEqual(stopped.sections, baseline!.sections); assert.deepEqual(stopped.story, baseline!.story)
+    assert.equal(stopped.quality_repair!.completed_findings, 0)
+    assert.equal(stopped.quality_repair!.decisions![0]!.decision, 'requires_full_rebuild')
+    assert.equal(stopped.quality_rebuild_for, undefined); assert.match(stopped.quality_repair_output!.checkpoint.original_raw!, /requires_full_rebuild/)
+    await assert.rejects(analyzeSourceSnapshot(source, 'model', generate, signal()), /重建决定|无法安全定点修补/)
+    assert.deepEqual([maps, stories, repairs, reviews], [1, 1, 1, 1])
   })
 })
 
-test('unsafe targeted repairs can rebuild beyond former reconstruction and quality-round ceilings before completing', async () => {
-  const source = document('反复质量问题允许继续重建')
-  let maps = 0, stories = 0, repairs = 0, reviews = 0
+test('repeated continuations cannot turn one terminal rebuild decision into an unbounded reconstruction loop', async () => {
+  const source = document('重复续接不重建'); const calls: string[] = []
   const generate = async (prompt: string) => {
-    if (prompt.includes(repairMarker)) {
-      repairs++
-      return JSON.stringify({ status: 'requires_full_rebuild', reason: '章节边界仍无法通过定点修改安全修复。', changes: [] })
-    }
-    if (prompt.includes(reviewMarker)) return reviewReply(prompt, ++reviews <= 5)
-    if (prompt.includes(mapMarker)) {
-      maps++
-      const value = JSON.parse(sourceAnalysisFixture(prompt)!)
-      value.sections[0].summary = `第 ${maps} 次完整目录，已保存用于后续处理。`
-      return JSON.stringify(value)
-    }
-    if (prompt.includes(storyMarker)) stories++
-    return sourceAnalysisFixture(prompt)!
+    const kind = prompt.includes(repairMarker) ? 'repair' : prompt.includes(reviewMarker) ? 'review' : prompt.includes(mapMarker) ? 'map' : 'story'
+    calls.push(kind)
+    if (kind === 'repair') return JSON.stringify({ status: 'requires_full_rebuild', reason: '当前没有安全局部修改。', changes: [] })
+    return kind === 'review' ? reviewReply(prompt, true) : sourceAnalysisFixture(prompt)!
   }
-  const ready = await analyzeSourceSnapshot(source, 'model', generate, signal())
-  assert.equal(ready.status, 'ready')
-  assert.deepEqual([maps, stories, repairs, reviews], [6, 6, 5, 6])
-  const saved = checkpoint(source.project_id)
-  assert.match(saved.sections[0]!.summary, /第 6 次完整目录/)
-  assert.equal(saved.completed_chunks, saved.total_chunks)
-  assert.equal(saved.quality!.status, 'passed')
-  assert.ok(saved.story, 'the completed replacement map and synthesis remain durable')
-  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM script_source_documents WHERE project_id=?').get(source.project_id)!.count, 0)
+  for (let attempt = 0; attempt < 5; attempt++) await assert.rejects(analyzeSourceSnapshot(source, 'model', generate, signal()), /定点修补|重建决定/)
+  assert.deepEqual(calls, ['map', 'story', 'review', 'repair'])
+  const stopped = checkpoint(source.project_id)
+  assert.equal(stopped.quality_repair!.decisions!.length, 1); assert.equal(stopped.completed_chunks, stopped.total_chunks)
+  assert.ok(stopped.story); assert.equal(stopped.quality!.status, 'issues')
 })
 
-test('a controlled fallback rebuild interrupted on its second page resumes saved replacement pages without repeating the repair decision', async () => {
-  const source = document('受控重建中断续跑')
+test('a terminal rebuild decision preserves all completed directory pages without starting replacement pages', async () => {
+  const source = document('多页目录不擅自重建')
   source.content += Array.from({ length: 24 }, (_, index) => `第${index + 60}集\n${'人们沿着旧街寻找仍然亮着的灯火。'.repeat(70)}\n`).join('')
-  installSource(source)
-  const plan = sourceWorkPlan(scriptSourcePassages(source.content)), originalPages: number[] = [], rebuiltPages: number[] = []
-  assert.ok(plan.length > 1, 'the real fallback exercises a multi-page replacement directory')
-  let repairs = 0, reviews = 0, interruptSecondPage = true
-  let initial: ScriptSourceAnalysis | undefined
-  const analyzer = createScriptSourceAnalyzer(async (_project, _model, prompt) => {
+  const plan = sourceWorkPlan(scriptSourcePassages(source.content)), pages: number[] = []
+  assert.ok(plan.length > 1)
+  let repairs = 0, reviews = 0, baseline: ScriptSourceAnalysis | undefined
+  const generate = async (prompt: string) => {
     if (prompt.includes(repairMarker)) {
-      repairs++
-      initial = scriptSourceAnalysis(source.project_id)!
+      repairs++; baseline = checkpoint(source.project_id)
       return JSON.stringify({ status: 'requires_full_rebuild', reason: '需要重新区分章节边界与对应事实。', changes: [] })
     }
     if (prompt.includes(reviewMarker)) return reviewReply(prompt, ++reviews === 1)
-    if (prompt.includes(mapMarker)) {
-      const { output_window: window } = inputFor<{ output_window: { page: number } }>(prompt, mapMarker)
-      const pages = repairs ? rebuiltPages : originalPages
-      pages.push(window.page)
-      if (repairs && window.page === 2 && interruptSecondPage) throw new Error('受控重建第二页连接中断')
-      const value = JSON.parse(sourceAnalysisFixture(prompt)!)
-      value.sections[0].summary = `${repairs ? '依据核对证据重建' : '初始目录'}第 ${window.page} 页。`
-      return JSON.stringify(value)
-    }
+    if (prompt.includes(mapMarker)) pages.push(inputFor<{ output_window: { page: number } }>(prompt, mapMarker).output_window.page)
     return sourceAnalysisFixture(prompt)!
-  }, limits)
-  try {
-    analyzer.start(source.project_id, 'model')
-    const interrupted = await terminal(source.project_id)
-    assert.equal(interrupted.status, 'failed'); assert.match(interrupted.error!, /受控重建第二页连接中断/)
-    assert.equal(interrupted.completed_chunks, 1)
-    assert.equal(interrupted.quality_rebuild_for, initial!.quality!.input_hash)
-    assert.equal(interrupted.quality_repair, undefined)
-    assert.equal(repairs, 1); assert.equal(reviews, 1, 'an incomplete fallback cannot enter the independent review')
-    assert.notDeepEqual(interrupted.sections, initial!.sections.slice(0, interrupted.sections.length))
-    const replacementPage = structuredClone(interrupted.sections)
-    interruptSecondPage = false
-    const continuing = analyzer.start(source.project_id, 'model')
-    assert.deepEqual(continuing.sections, replacementPage)
-    const ready = await terminal(source.project_id)
-    assert.equal(ready.status, 'ready', ready.error || '')
-    assert.equal(ready.quality!.status, 'passed'); assert.equal(ready.quality_rebuild_for, undefined)
-    assert.deepEqual(ready.sections.slice(0, replacementPage.length), replacementPage)
-    assert.deepEqual(originalPages, plan.map((_, index) => index + 1))
-    assert.deepEqual(rebuiltPages, [1, 2, ...plan.slice(1).map((_, index) => index + 2)])
-    assert.equal(repairs, 1, 'retry resumes the existing replacement directory without repeating the unsafe-repair decision')
-    assert.equal(reviews, 2)
-    assert.equal(db.prepare('SELECT content FROM script_source_documents WHERE project_id=?').get(source.project_id)!.content, source.content)
-  } finally { await analyzer.close() }
+  }
+  await assert.rejects(analyzeSourceSnapshot(source, 'model', generate, signal()), /无法安全定点修补/)
+  const stopped = checkpoint(source.project_id)
+  assert.deepEqual(stopped.sections, baseline!.sections); assert.deepEqual(stopped.story, baseline!.story)
+  assert.equal(stopped.completed_chunks, stopped.total_chunks); assert.deepEqual(pages, plan.map((_, index) => index + 1))
+  await assert.rejects(analyzeSourceSnapshot(source, 'model', generate, signal()), /重建决定|无法安全定点修补/)
+  assert.equal(repairs, 1); assert.equal(reviews, 1); assert.equal(pages.length, plan.length)
+  assert.equal(stopped.quality_rebuild_for, undefined)
 })
 
-test('pausing an active quality repair preserves completed findings and ignores a late cancelled response after resume', async () => {
+test('pausing an active quality repair preserves completed findings and an unknown response cannot be repurchased', async () => {
   const source = document('修补暂停并继续'); installSource(source)
   const entered = deferred(), release = deferred(), repaired: number[] = []
   let maps = 0, stories = 0, reviews = 0, secondAttempts = 0, interruptedSignal: AbortSignal | undefined
@@ -319,23 +291,21 @@ test('pausing an active quality repair preserves completed findings and ignores 
     const published = scriptSourceDocument(source.project_id)!.analysis!
     assert.equal(published.quality_repair, undefined, 'public snapshots omit private repair checkpoints')
     assert.equal(published.work, undefined); assert.equal(published.story_work, undefined)
-    assert.equal(published.resume!.available, true)
-    assert.match(published.resume!.message, /已修补 1\/2 项问题/)
+    assert.equal(published.resume!.available, false)
+    assert.equal(published.resume!.action, 'reconcile_request')
+    assert.match(published.resume!.message, /已处理 1\/2 项|已修补 1\/2 项|最终结果尚未确认/)
 
     const paused = analyzer.pause(source.project_id, started.id)
     assert.equal(paused.status, 'paused'); assert.equal(interruptedSignal!.aborted, true)
     assert.deepEqual(paused.story, before.story); assert.deepEqual(paused.quality_repair, before.quality_repair)
-    const resumed = analyzer.start(source.project_id, 'model')
-    const ready = await terminal(source.project_id)
-    assert.equal(ready.status, 'ready', ready.error || '')
-    assert.equal(ready.id, resumed.id)
-    assert.ok(facts.every(fact => ready.story!.summary.includes(fact)))
-    assert.equal(ready.story!.summary.includes('过期理解'), false)
-    assert.deepEqual(ready.sections, initial!.sections)
+    analyzer.start(source.project_id, 'model')
+    const blocked = await terminal(source.project_id)
+    assert.equal(blocked.status, 'failed'); assert.match(blocked.error!, /上次初始请求已开始|最终结果尚未确认/)
     release.resolve(); await tick(); await tick()
-    assert.deepEqual(scriptSourceAnalysis(source.project_id)!.story, ready.story, 'the cancelled repair cannot overwrite newer progress')
-    assert.deepEqual(repaired, [0, 1, 1])
-    assert.deepEqual([maps, stories, reviews], [1, 1, 2])
+    const preserved = scriptSourceAnalysis(source.project_id)!
+    assert.deepEqual(preserved.story, before.story, 'a late cancelled response cannot replace the saved prefix')
+    assert.equal(preserved.story!.summary.includes('过期理解'), false); assert.deepEqual(preserved.sections, initial!.sections)
+    assert.deepEqual(repaired, [0, 1]); assert.deepEqual([maps, stories, reviews], [1, 1, 1])
     assert.equal(db.prepare('SELECT content FROM script_source_documents WHERE project_id=?').get(source.project_id)!.content, source.content)
   } finally { release.resolve(); await analyzer.close() }
 })

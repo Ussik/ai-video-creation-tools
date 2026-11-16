@@ -12,3 +12,15 @@ test('adjustment references follow asset identity after scope and replacement ch
   assert.throws(() => compileRefinementReferences('使用[[ref:bad id]]。', ['original']), /无效/)
   assert.throws(() => compileRefinementReferences('使用[[ref:old]]。', ['original'], { overrides: { old: null } }), /已断开/)
 })
+
+
+test('reference refinement resolves full replacement chains before checking current selected identity', () => {
+  const options = { suppliedReferenceIds: ['old'], overrides: { old: 'middle', middle: 'replacement' } }
+  assert.equal(compileRefinementReferences('采用[[ref:old]]中的身份。', ['replacement'], options), '采用参考图 1中的身份。')
+  assert.equal(compileRefinementReferences('采用参考图1中的身份。', ['replacement'], options), '采用参考图 1中的身份。')
+  assert.equal(compileRefinementReferences('采用[[ref:old]]中的身份。', ['other', 'replacement'], { ...options, referenceLabel: '图片' }), '采用图片 2中的身份。')
+  assert.throws(() => compileRefinementReferences('采用[[ref:old]]。', ['other'], options), /已断开|未在当前模式生效/)
+  assert.throws(() => compileRefinementReferences('采用[[ref:old]]。', ['replacement'], { overrides: { old: 'middle', middle: null } }), /已断开/)
+  assert.throws(() => compileRefinementReferences('采用[[ref:old]]。', ['replacement'], { overrides: { old: 'middle', middle: 'old' } }), /循环/)
+  assert.throws(() => compileRefinementReferences('采用[[ref:old]]。', ['replacement'], { overrides: { old: 'middle', middle: 'new-unselected' } }), /已断开|未在当前模式生效/)
+})

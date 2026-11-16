@@ -1,47 +1,31 @@
 import { resolveTextCapabilities, scopeTextCapabilities } from '@video-studio/shared/models/text-capabilities'
-import { currentModelRequestContext } from '../../modules/generation/model-task-policy.js'
-import { claimModelAttempt } from '../../modules/generation/model-execution.js'
-import { createHash } from 'node:crypto'
 import type { GenerationModel, GenerationProvider } from './providers.js'
 import type { OutputContract } from '../../modules/generation/model-output.js'
 
 type Generate = (model: GenerationModel, provider: GenerationProvider, prompt: string, contract?: OutputContract, signal?: AbortSignal) => Promise<string>
-const compatibility = new Map<string, 'json_schema' | 'prompt'>()
-function remember(key: string, mode: 'json_schema' | 'prompt') {
-  if (compatibility.size >= 30 && !compatibility.has(key)) compatibility.delete(compatibility.keys().next().value!)
-  compatibility.set(key, mode)
+/** Selection is configuration, never proof of provider enforcement. Local
+ * validation remains mandatory even after an HTTP 200 with native Schema. */
+export function structuredOutputStrategy(model: GenerationModel, provider: GenerationProvider) {
+  const settings = typeof model.settings === 'string' ? JSON.parse(model.settings) as Record<string, unknown> : model.settings
+  const declared = resolveTextCapabilities(scopeTextCapabilities(settings, { base_url: typeof settings.api_base_url === 'string' ? settings.api_base_url : provider.base_url,
+    protocol: model.protocol ?? '', remote_id: model.remote_id })).compatibility.structured_output
+  const mode = settings.structured_output_mode || (declared ? declared.includes('json_schema') ? 'json_schema'
+    : model.protocol !== 'anthropic_messages' && declared.includes('json_object') ? 'json_object' : declared.includes('tool_call') ? 'tool_call' : 'prompt' : 'json_schema')
+  if (!['json_schema', 'json_object', 'prompt', 'tool_call'].includes(String(mode)) || model.protocol === 'anthropic_messages' && mode === 'json_object')
+    throw new Error('当前协议不支持所配置的结构化输出策略；请明确选择 json_schema 或文本兼容策略')
+  return { mode: mode as 'json_schema' | 'json_object' | 'prompt' | 'tool_call', source: settings.structured_output_mode ? 'configured' : declared ? 'declared' : 'default',
+    enforcement: 'unverified' as const, settings }
 }
-
-/** Detect support on the first useful read-only request. Never change the
- * user's model configuration or retry network/auth/invalid-schema failures. */
 export async function generateCompatibleStructuredText(model: GenerationModel, provider: GenerationProvider, prompt: string, contract: OutputContract,
   signal: AbortSignal | undefined, generate: Generate) {
   return withCompatibleStructuredSettings(model, provider, contract, signal, configured => generate(configured, provider, prompt, contract, signal))
 }
-
-/** Negotiate on an actual useful request; HTTP rejection is the only safe fallback signal. */
+/** One useful request, one fixed strategy. A rejection never authorizes a
+ * probe, hidden downgrade, configuration mutation or another model. */
 export async function withCompatibleStructuredSettings<T>(model: GenerationModel, provider: GenerationProvider, contract: OutputContract | undefined,
   signal: AbortSignal | undefined, generate: (configured: GenerationModel) => Promise<T>): Promise<T> {
-  const settings = typeof model.settings === 'string' ? JSON.parse(model.settings) as Record<string, unknown> : model.settings
-  if (!contract || settings.structured_output_mode || currentModelRequestContext()?.policy.readOnly === false || !['responses', 'chat_completions', 'anthropic_messages'].includes(model.protocol || '')) return generate(model)
-  const key = createHash('sha256').update(JSON.stringify([model.id, model.remote_id, model.protocol, model.settings, provider.base_url, provider.key_ciphertext])).digest('hex')
-  const declared = resolveTextCapabilities(scopeTextCapabilities(settings, { base_url: typeof settings.api_base_url === 'string' ? settings.api_base_url : provider.base_url, protocol: model.protocol ?? '', remote_id: model.remote_id })).compatibility.structured_output
-  const mode = declared ? declared.includes('json_schema') ? 'json_schema' : 'prompt' : compatibility.get(key) || 'json_schema'
-  const configured = { ...model, settings: JSON.stringify({ ...settings, structured_output_mode: mode }) }
-  try {
-    const result = await generate(configured)
-    remember(key, mode)
-    return result
-  } catch (issue) {
-    signal?.throwIfAborted()
-    const message = issue instanceof Error ? issue.message : String(issue)
-    const schemaProblem = /invalid[_ ]schema|schema[^\n]{0,80}(?:invalid|not[_ ]valid|too[_ ]large|too[_ ]long|size|complex|limit|keyword|propert|constraint)|(?:too[_ ]large|too[_ ]long|complex|keyword|constraint)[^\n]{0,80}schema|unsupported[_ ]keyword|无效.*schema/i.test(message)
-    const unsupported = !schemaProblem &&
-      /(?:返回|HTTP)\s*(?:400|422)\b/i.test(message) && /json_schema|response_format|text[. ]format|output_config(?:[. ]format)?|structured.output/i.test(message) &&
-      /not.support|unsupported|unrecognized|unknown.parameter|not.allowed|不支持|无法识别/i.test(message)
-    if (mode !== 'json_schema' || !unsupported) throw issue
-    remember(key, 'prompt')
-    claimModelAttempt()
-    return generate({ ...model, settings: JSON.stringify({ ...settings, structured_output_mode: 'prompt' }) })
-  }
+  signal?.throwIfAborted()
+  if (!contract || !['responses', 'chat_completions', 'anthropic_messages'].includes(model.protocol || '')) return generate(model)
+  const { mode, settings } = structuredOutputStrategy(model, provider)
+  return generate({ ...model, settings: JSON.stringify({ ...settings, structured_output_mode: mode, _structured_strategy_source: structuredOutputStrategy(model, provider).source }) })
 }

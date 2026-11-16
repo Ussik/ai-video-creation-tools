@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { scriptArtifactLabels, scriptStageArtifacts } from '@video-studio/shared/script/script-stage-content'
 import { workflowGenerationDraftSchema } from '../src/modules/script/script-workflow.js'
+import type { Model } from '../src/infrastructure/database/db.js'
+import { sourceAnalysisFixture } from './fixtures/script-source-analysis.js'
 
 const directory = await mkdtemp(join(tmpdir(), 'native-review-recovery-'))
 process.env.VIDEO_STUDIO_DATA_DIR = directory
@@ -12,8 +14,7 @@ const { buildApp } = await import('../src/app.js')
 const { db } = await import('../src/infrastructure/database/db.js')
 assert.equal(db.name, join(directory, 'studio.db'), 'native review fixtures must never open the workspace database')
 const { getToolDraft, projectDocuments } = await import('../src/modules/script/script-document-tools.js')
-const { scriptSourceVersion } = await import('../src/modules/script/script-source-analysis.js')
-const { sourceAnalysisPipelineVersion } = await import('../src/modules/script/script-source-map.js')
+const { createScriptSourceAnalyzer, sourceAnalysisConfiguration, scriptSourceVersion } = await import('../src/modules/script/script-source-analysis.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(directory, { recursive: true, force: true }) })
 
@@ -40,12 +41,16 @@ test('native supplementation tasks durably resume unfinished review dimensions w
     payload: Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="original.txt"\r\nContent-Type: text/plain\r\n\r\n${sourceText}\r\n--${boundary}--\r\n`) })
   assert.equal(uploaded.statusCode, 200, uploaded.body)
   const source = uploaded.json()
-  const analysis = { pipeline_version: sourceAnalysisPipelineVersion, id: crypto.randomUUID(), source_version: scriptSourceVersion(source), model_id: model.id,
-    status: 'ready', phase: 'ready', completed_chunks: 1, total_chunks: 1, error: null, updated_at: source.updated_at,
-    sections: [{ offset: 0, length: source.content.length, title: '完整原文', episode_number: null, summary: source.content, characters: [], events: [] }],
-    story: { summary: source.content, characters: [], timeline: [], threads: [], ending: { summary: '林晚归还铜钥匙。', section_ids: [0] }, uncertainties: [] } }
-  db.prepare('INSERT OR REPLACE INTO script_source_analyses (project_id,id,source_version,status,snapshot,updated_at) VALUES (?,?,?,?,?,?)')
-    .run(project.id, analysis.id, analysis.source_version, 'ready', JSON.stringify(analysis), source.updated_at)
+  const configuration = sourceAnalysisConfiguration(db.prepare('SELECT * FROM models WHERE id=?').get(model.id) as Model, provider)
+  const analyzer = createScriptSourceAnalyzer(async (_projectId, _modelId, prompt) => {
+    const reply = sourceAnalysisFixture(prompt)
+    assert.ok(reply, 'source preparation uses the current directory, story and independent quality contracts')
+    return reply
+  }, undefined, { configuration: () => configuration })
+  const analysis = await analyzer.ensure(project.id, model.id).finally(() => analyzer.close())
+  assert.ok(analysis)
+  assert.equal(analysis.source_version, scriptSourceVersion(source))
+  assert.equal(analysis.quality?.status, 'passed', 'the real analyzer establishes the current quality proof before testing review recovery')
   const draft = workflowGenerationDraftSchema.parse({ stage: 'outline', operation: 'supplement', artifacts: scriptStageArtifacts.outline.map((artifact_type, index) => ({
     artifact_type, title: artifact_type === 'outline' ? historical.title : scriptArtifactLabels[artifact_type],
     content: artifact_type === 'outline' ? historical.content : `第${index}份完整候选文档开头。` + '全部人物动机与因果。'.repeat(100) + `第${index}份文档结尾。`,

@@ -1,8 +1,12 @@
 import { z } from 'zod'
-import { createScriptRequestUsage, isTextRequestBudgetError, withTextRequestUsage,
+import { textStreamIdleTimeoutMs } from '@video-studio/shared/script/script-stream-policy'
+import { createScriptRequestUsage, scriptRequestUsageTokens, isTextRequestBudgetError, withTextRequestUsage,
   type ScriptRequestUsage } from '../../infrastructure/providers/text-request-usage.js'
 
 export const modelWorkflowBudgetKey = 'model_workflow_budget:v1'
+/** A duration limit closes new requests. One bounded drain remains available
+ * for accepted work; its time is charged to the same cumulative active_ms. */
+export const modelWorkflowBudgetDrainMs = textStreamIdleTimeoutMs
 export type ModelWorkflowKind = 'script' | 'source_analysis' | 'visual_organization' | 'prompt_optimization' | 'video_understanding'
 const labels: Record<ModelWorkflowKind, string> = { script: '本次剧本创作', source_analysis: '本次原稿分析',
   visual_organization: '本次视觉素材整理', prompt_optimization: '本次提示词优化', video_understanding: '本次视频理解' }
@@ -63,6 +67,27 @@ function restoreUsage(value: unknown): ScriptRequestUsage {
   try { withTextRequestUsage({ usage }, () => {}) } catch { return invalidCheckpoint() }
   return usage
 }
+/** Validate and persist an explicitly approved continuation before queueing.
+ * The original allowance and every cumulative usage value survive unchanged. */
+export function explicitModelWorkflowBudgetResume(saved: unknown, kind: ModelWorkflowKind): ModelWorkflowBudgetCheckpoint {
+  const parsed = checkpointSchema.safeParse(saved)
+  if (!parsed.success || parsed.data.kind !== kind) return invalidCheckpoint()
+  const checkpoint: ModelWorkflowBudgetCheckpoint = { ...parsed.data, usage: restoreUsage(parsed.data.usage) }
+  if (checkpoint.allowance.max_total_requests < checkpoint.allowance.max_requests) return invalidCheckpoint()
+  checkpoint.exhausted ??= checkpoint.active_ms >= checkpoint.allowance.max_active_ms * checkpoint.grants ? 'duration'
+    : checkpoint.usage.requests >= checkpoint.allowance.max_requests * checkpoint.grants ||
+      checkpoint.usage.requests + checkpoint.usage.transport_requests >= checkpoint.allowance.max_total_requests * checkpoint.grants ? 'requests'
+      : scriptRequestUsageTokens(checkpoint.usage) >= checkpoint.allowance.max_tokens * checkpoint.grants ? 'tokens' : undefined
+  if (checkpoint.exhausted) {
+    if (checkpoint.grants >= maxGrants) throw new ModelWorkflowBudgetError(kind, checkpoint.exhausted, false)
+    checkpoint.grants++; delete checkpoint.exhausted
+  }
+  if (checkpoint.active_ms >= checkpoint.allowance.max_active_ms * checkpoint.grants) {
+    throw new ModelWorkflowBudgetError(kind, 'duration', checkpoint.grants < maxGrants)
+  }
+  return checkpoint
+}
+
 type Options = {
   kind: ModelWorkflowKind; scale: { units: number; inputChars: number }; steps: Record<string, unknown>;
   signal: AbortSignal; persist(): void; explicitResume?: boolean; legacyUsage?: unknown; activeDurationMs?: number
@@ -93,9 +118,10 @@ export async function runModelWorkflowBudget<T>(options: Options, work: (signal:
   const remaining = checkpoint.allowance.max_active_ms * checkpoint.grants - checkpoint.active_ms
   if (remaining <= 0) throw exhaust('duration')
   options.signal.throwIfAborted()
-  const controller = new AbortController(), signal = controller.signal
-  const started = Date.now(), previous = checkpoint.active_ms
+  const controller = new AbortController(), signal = controller.signal, admission = new AbortController()
+  const started = Date.now(), deadline = started + remaining, previous = checkpoint.active_ms
   let active = true
+  const pendingRequests = new Map<object | string, { pending: () => boolean; inFlight: number }>()
   const persist = () => {
     if (!active || options.steps[modelWorkflowBudgetKey] !== checkpoint) return
     checkpoint.active_ms = previous + Math.max(0, Date.now() - started)
@@ -107,9 +133,27 @@ export async function runModelWorkflowBudget<T>(options: Options, work: (signal:
   const stopped = new Promise<never>((_resolve, reject) => { rejectAbort = reject })
   const abort = () => rejectAbort(signal.reason)
   signal.addEventListener('abort', abort, { once: true })
-  const timer = setTimeout(() => {
-    try { persist(); controller.abort(exhaust('duration')) } catch (issue) { controller.abort(issue) }
-  }, remaining)
+  let drainTimer: ReturnType<typeof setTimeout> | undefined
+  const closeDuration = () => {
+    if (!active || signal.aborted) return
+    if (admission.signal.aborted) {
+      if (Date.now() >= deadline + modelWorkflowBudgetDrainMs) controller.abort(admission.signal.reason)
+      return
+    }
+    try {
+      persist()
+      const issue = exhaust('duration')
+      admission.abort(issue)
+      const drainRemaining = deadline + modelWorkflowBudgetDrainMs - Date.now()
+      if (![...pendingRequests.values()].some(owner => owner.inFlight > 0 || owner.pending()) || drainRemaining <= 0) {
+        controller.abort(issue); return
+      }
+      drainTimer = setTimeout(() => controller.abort(issue), drainRemaining)
+      drainTimer.unref()
+    } catch (issue) { controller.abort(issue) }
+  }
+  const beforeAdmission = () => { if (Date.now() >= deadline) closeDuration() }
+  const timer = setTimeout(closeDuration, remaining)
   timer.unref()
   const clock = setInterval(() => { try { persist() } catch (issue) { controller.abort(issue) } }, 5000)
   clock.unref()
@@ -118,7 +162,14 @@ export async function runModelWorkflowBudget<T>(options: Options, work: (signal:
       max_requests: checkpoint.allowance.max_requests * checkpoint.grants,
       max_total_requests: checkpoint.allowance.max_total_requests * checkpoint.grants,
       max_tokens: checkpoint.allowance.max_tokens * checkpoint.grants,
-    }, budgetLabel: labels[options.kind], signal, onUpdate(_usage, phase) {
+    }, budgetLabel: labels[options.kind], signal, admissionSignal: admission.signal, beforeAdmission,
+    onRequestPending(owner, pending) {
+      for (const [key, previous] of pendingRequests) if (!previous.inFlight && !previous.pending()) pendingRequests.delete(key)
+      const current = pendingRequests.get(owner) ?? { pending, inFlight: 0 }
+      current.pending = pending; current.inFlight++
+      pendingRequests.set(owner, current)
+      return () => { current.inFlight-- }
+    }, onUpdate(_usage, phase) {
       if (!active || options.steps[modelWorkflowBudgetKey] !== checkpoint) return
       if (phase === 'reservation') persist()
       else { try { persist() } catch (issue) { console.error('模型任务已完成请求的预算核对保存失败', issue) } }
@@ -131,7 +182,8 @@ export async function runModelWorkflowBudget<T>(options: Options, work: (signal:
     // A stale settlement may update its abandoned ledger but cannot write over
     // a resumed execution. Dispatch admission closes even for detached work.
     try { persist() } finally {
-      active = false; clearTimeout(timer); clearInterval(clock)
+      active = false; clearTimeout(timer); clearTimeout(drainTimer); clearInterval(clock)
+      pendingRequests.clear()
       options.signal.removeEventListener('abort', parentAbort); signal.removeEventListener('abort', abort)
       controller.abort(new DOMException('模型任务执行作用域已结束', 'AbortError'))
     }

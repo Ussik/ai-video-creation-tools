@@ -15,6 +15,19 @@ const reviewDimensions = [
 ] as const
 export const scriptDraftReviewPassLimit = reviewDimensions.length
 
+/** Pure prompt construction is shared with exact legacy cache migration.
+ * Keep these bytes stable; the complete parent prompt remains intact. */
+export function scriptDraftReviewDimensionPrompts(prompt: string) {
+  return reviewDimensions.map(dimension => ({ ...dimension,
+    prompt: '【输出超限后的自动分项核对】\n' +
+      `本轮核查维度：${dimension.id}。${dimension.instruction}\n` +
+      '各恢复维度只能缩小下方固定任务合同的检查职责，不能增加验收条件或要求新成果；若本任务仅核对局部成果或全局一致性，继续遵守该职责范围。非阻断建议不能变为 blocking。\n' +
+      '本轮仍提供全部原稿、候选文档、既有设定与要求。只返回本维度的实质问题，不复述全文，不展开故事，不重复列同一问题。' +
+      'findings 的引文只取定位问题所需的最短连续原文，说明与建议简洁具体；facts 返回空数组。' +
+      'checked_artifacts 仍必须覆盖全部送审文档。本维度无问题只表示此项完成；系统会完成其余维度后统一验收。\n' + prompt
+  }))
+}
+
 const reasoningExhausted = (issue: unknown): issue is TextOutputLimitError => issue instanceof TextOutputLimitError &&
   issue.partialText === '' && Number.isSafeInteger(issue.usage?.output_tokens) && (issue.usage?.output_tokens || 0) > 0 &&
   issue.usage?.reasoning_tokens === issue.usage?.output_tokens
@@ -112,18 +125,13 @@ export async function recoverScriptDraftReview<T>(prompt: string, review: (promp
     }
   }
   const results: T[] = []
-  for (const dimension of reviewDimensions) {
+  for (const dimension of scriptDraftReviewDimensionPrompts(prompt)) {
     modelStepSignal(options.signal)?.throwIfAborted()
     // Put the narrower task before the intact original prompt. Each response
     // must still satisfy full artifact coverage and exact evidence validation.
-    const focusedPrompt = '【输出超限后的自动分项核对】\n' +
-      `本轮核查维度：${dimension.id}。${dimension.instruction}\n` +
-      '各恢复维度只能缩小下方固定任务合同的检查职责，不能增加验收条件或要求新成果；若本任务仅核对局部成果或全局一致性，继续遵守该职责范围。非阻断建议不能变为 blocking。\n' +
-      '本轮仍提供全部原稿、候选文档、既有设定与要求。只返回本维度的实质问题，不复述全文，不展开故事，不重复列同一问题。' +
-      'findings 的引文只取定位问题所需的最短连续原文，说明与建议简洁具体；facts 返回空数组。' +
-      'checked_artifacts 仍必须覆盖全部送审文档。本维度无问题只表示此项完成；系统会完成其余维度后统一验收。\n' + prompt
+
     results.push(await runReview(`review:dimension:${dimension.id}`, dimension.label,
-      { version: 1, prompt: focusedPrompt }, focusedPrompt, validate))
+      { version: 1, prompt: dimension.prompt }, dimension.prompt, validate))
   }
   modelStepSignal(options.signal)?.throwIfAborted()
   const retained = await options.retainedReview?.()

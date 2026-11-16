@@ -26,7 +26,7 @@ function validateBase(document: Source, analysis: ScriptSourceAnalysis, modelId:
     analysis.completed_characters !== document.content.length || !hasPassedSourceQuality(analysis)) return false
   try {
     validateSourceCoverage(document.content, analysis.sections)
-    validateSourceStory(analysis, analysis.story)
+    validateSourceStory(analysis, analysis.story, document)
     return true
   } catch { return false }
 }

@@ -577,6 +577,15 @@ function compatibleSkillReference(path: string, skillName: string, context?: Ski
 }
 function requiredSkillReference(path: string, stage: SkillStage, skillName: string, context: SkillTaskContext = {}): boolean {
   const name = posix.basename(path).toLowerCase()
+  if (skillName === 'short-drama-develop' && stage === 'script' && context.workflow_stage && context.workflow_stage !== 'outline') {
+    const methods: Record<string, string[]> = {
+      characters: ['creative-brief.md', 'story-engine.md', 'serial-character-and-memory.md'],
+      locations: ['creative-brief.md', 'story-craft.md'],
+      props: ['creative-brief.md', 'mechanism-loop.md', 'reveal-reversal-payoff.md'],
+      episode: ['episode-design.md', 'serial-character-and-memory.md', 'reveal-reversal-payoff.md'],
+    }
+    return commonSkillReferences.has(name) || (methods[context.workflow_stage] || []).includes(name)
+  }
   if (commonSkillReferences.has(name) || skillStageReferences[skillName]?.[stage]?.includes(name)) return true
   if (skillName === 'short-drama-review' && ['review-method.md', 'production-quality-gates.md', 'project-calibration.md', 'generated-media.md'].includes(name)) return true
   if (stage === 'video_prompt' && ['motion-recipe.md', 'generability.md', 'production-prompt-grammar.md',

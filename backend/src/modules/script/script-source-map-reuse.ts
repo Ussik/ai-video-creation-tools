@@ -88,21 +88,32 @@ function exactSectionsForPage(sections: ScriptSourceSection[], offset: number, l
   return null
 }
 
-function remapSection(section: ScriptSourceSection, delta: number, content: string): ScriptSourceSection | null {
+function remapSection(section: ScriptSourceSection, delta: number, content: string, change: NonNullable<ScriptSourceMapReusePlan['change']>): ScriptSourceSection | null {
+  if (section.knowledge?.length || section.knowledge_pending?.length) return null // A revision changes stable unit IDs; rebuild this page rather than relabel epistemic evidence.
   const value = structuredClone(section)
   value.offset += delta
   delete value.unit_id
-  // Independently copy evidence objects: fixtures or in-memory callers may
-  // share one quote between a person and an event, and applying the shift
-  // twice through that shared object would corrupt the new coordinates.
-  value.characters = value.characters.map(item => ({ ...item, evidence: { ...item.evidence, offset: item.evidence.offset + delta } }))
-  value.events = value.events.map(item => ({ ...item, evidence: { ...item.evidence, offset: item.evidence.offset + delta } }))
-  if (!Number.isSafeInteger(value.offset) || value.offset < 0 || value.offset + value.length > content.length) return null
-  for (const item of [...value.characters, ...value.events]) {
-    const { offset, quote } = item.evidence
-    if (!Number.isSafeInteger(offset) || offset < value.offset || offset + quote.length > value.offset + value.length ||
-      !quote.trim() || content.slice(offset, offset + quote.length) !== quote) return null
+  const remap = (quote: { offset: number; quote: string }) => {
+    const end = quote.offset + quote.quote.length
+    let shift: number
+    if (end <= change.old_offset) shift = 0
+    else if (quote.offset >= change.old_offset + change.old_length) shift = change.new_length - change.old_length
+    else throw new Error('依赖证据在修订范围内')
+    const next = { ...quote, offset: quote.offset + shift }
+    if (content.slice(next.offset, next.offset + next.quote.length) !== next.quote) throw new Error('依赖证据已变化')
+    return next
   }
+  const links = (evidence: ScriptSourceSection['characters'][number]['evidence']) => ({ ...remap(evidence),
+    ...(evidence.occurrence ? { occurrence: remap(evidence.occurrence) } : {}),
+    ...(evidence.supporting ? { supporting: evidence.supporting.map(remap) } : {}),
+  })
+  try {
+    value.characters = value.characters.map(item => ({ ...item, evidence: links(item.evidence) }))
+    value.events = value.events.map(item => ({ ...item, evidence: links(item.evidence) }))
+  } catch { return null }
+  if (!Number.isSafeInteger(value.offset) || value.offset < 0 || value.offset + value.length > content.length) return null
+  const local = (quote: {offset:number;quote:string}) => quote.offset >= value.offset && quote.offset + quote.quote.length <= value.offset + value.length
+  if (value.characters.some(item => !local(item.evidence.occurrence || item.evidence)) || value.events.some(item => !local(item.evidence))) return null
   return value
 }
 
@@ -137,7 +148,7 @@ export function planScriptSourceMapReuse(previous: Source, previousAnalysis: Scr
       [...section.characters, ...section.events].some(item => !Number.isSafeInteger(item.evidence.offset)))) return full('invalid_base_map')
     validateSourceCoverage(previous.content, previousAnalysis.sections)
     if (!hasPassedSourceQuality(previousAnalysis)) return full('base_quality_unverified')
-    validateSourceStory(previousAnalysis, previousAnalysis.story)
+    validateSourceStory(previousAnalysis, previousAnalysis.story, previous)
   } catch { return full('invalid_base_map') }
   change = changedEnvelope(previous.content, current.content)
   const changedCharacters = Math.max(change.old_length, change.new_length)
@@ -154,7 +165,7 @@ export function planScriptSourceMapReuse(previous: Source, previousAnalysis: Scr
     if (previous.content.slice(oldOffset, oldOffset + page.length) !== current.content.slice(page.offset, stop)) return page
     const ids = exactSectionsForPage(previousAnalysis.sections, oldOffset, page.length)
     if (!ids || ids.some(id => dirty.has(id))) return page
-    const sections = ids.map(id => remapSection(previousAnalysis.sections[id]!, page.offset - oldOffset, current.content))
+    const sections = ids.map(id => remapSection(previousAnalysis.sections[id]!, page.offset - oldOffset, current.content, change!))
     if (sections.some(section => !section)) return page
     return { ...page, reuse_sections: sections as ScriptSourceSection[], base_section_ids: ids }
   })
@@ -169,8 +180,8 @@ const orderedIds = (value: unknown): value is number[] => Array.isArray(value) &
   Number.isSafeInteger(id) && id >= 0 && (!index || id > value[index - 1]!))
 const equalIds = (left: number[], right: number[]) => left.length === right.length && left.every((id, index) => id === right[index])
 const sectionContents = (section: ScriptSourceSection) => [section.offset, section.length, section.title, section.episode_number, section.summary,
-  section.open_threads || [], section.characters.map(item => [item.name, item.description, item.evidence.offset, item.evidence.quote]),
-  section.events.map(item => [item.summary, item.evidence.offset, item.evidence.quote])]
+  section.open_threads || [], ...(section.knowledge === undefined ? [] : [section.knowledge]), ...(section.knowledge_pending === undefined ? [] : [section.knowledge_pending]), section.characters.map(item => [item.name, item.description, item.evidence.offset, item.evidence.quote, ...(item.evidence.occurrence || item.evidence.supporting ? [item.evidence.occurrence, item.evidence.supporting] : [])]),
+  section.events.map(item => [item.summary, item.evidence.offset, item.evidence.quote, ...(item.evidence.supporting ? [item.evidence.supporting] : [])])]
 
 /** Validate the consumed candidate ledger independently of stored work pages.
  * A partial saved map must be a contiguous completed-page prefix, and every
@@ -210,7 +221,7 @@ export function validScriptSourceMapReuseState(state: ScriptSourceAnalysis, plan
       for (const item of [...section.characters, ...section.events]) {
         const evidence = item.evidence
         if (!evidence || !Number.isSafeInteger(evidence.offset) || typeof evidence.quote !== 'string' || !evidence.quote.trim() ||
-          evidence.offset < section.offset || evidence.offset + evidence.quote.length > sectionEnd) return false
+          (evidence.occurrence || evidence).offset < section.offset || (evidence.occurrence || evidence).offset + (evidence.occurrence || evidence).quote.length > sectionEnd) return false
       }
       if (section.characters.some(item => typeof item.name !== 'string' || typeof item.description !== 'string') ||
         section.events.some(item => typeof item.summary !== 'string')) return false

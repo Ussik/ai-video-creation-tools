@@ -1,9 +1,9 @@
+import { reviewCoordinateDraftFixture as reviewScriptDraftCompleteness, draftReviewFixtureSources } from './fixtures/script-draft-coordinate-response.js'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { scriptArtifactLabels, scriptStageArtifacts } from '@video-studio/shared/script/script-stage-content'
 import { TextOutputLimitError, TextProviderError } from '../src/infrastructure/providers/text-errors.js'
 import { createScriptRequestUsage, TextRequestBudgetError } from '../src/infrastructure/providers/text-request-usage.js'
-import { reviewScriptDraftCompleteness } from '../src/modules/script/script-draft-completeness.js'
 import { recoverScriptDraftReview } from '../src/modules/script/script-draft-review-recovery.js'
 import { createGenerationSteps, type GenerationCheckpoint } from '../src/modules/script/script-generation-steps.js'
 import { ReviewPaginationStalledError } from '../src/modules/script/script-review-pagination.js'
@@ -17,7 +17,8 @@ const exhausted = (partialText = '', reasoning = 65_536) => new TextOutputLimitE
   input_tokens: 92_838, output_tokens: 65_536, reasoning_tokens: reasoning,
 })
 const dimension = (prompt: string) => /本轮核查维度：([a-z]+)。/.exec(prompt)?.[1] || 'whole'
-const reasoningId = (scope = 'whole') => `review:reasoning:review:${scope === 'whole' ? scope : `dimension:${scope}`}`
+const legacyReasoningId = (scope = 'whole') => `review:reasoning:review:${scope === 'whole' ? scope : `dimension:${scope}`}`
+const reasoningId = (scope = 'whole') => `review:coordinates:v1:${legacyReasoningId(scope)}`
 const outputLimited = (issue: unknown) => {
   assert.ok(issue instanceof TextOutputLimitError || issue instanceof ReviewPaginationStalledError)
   return true
@@ -40,8 +41,8 @@ test('pure reasoning exhaustion switches one whole review to answer policy and p
   const f = fixture(), policies: unknown[] = [], sent: string[] = []
   await reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
     policies.push(contract?.request_policy); sent.push(prompt)
-    assert.equal(contract?.name, 'script_draft_completeness')
-    for (const artifact of f.draft.artifacts) assert.ok(prompt.includes(artifact.content), 'answer mode still reads every full candidate document')
+    assert.equal(contract?.name, 'script_draft_completeness_coordinates')
+    assert.deepEqual(draftReviewFixtureSources(prompt).map(source => source.content), f.draft.artifacts.map(artifact => artifact.content), 'answer mode still reads every full candidate document')
     assert.ok(prompt.includes(f.context.uploaded_script.content))
     if (policies.length === 1) throw exhausted()
     assert.equal((f.snapshot().steps[reasoningId()]?.value as { mode?: string })?.mode, 'answer',
@@ -50,7 +51,7 @@ test('pure reasoning exhaustion switches one whole review to answer policy and p
   }, { context: f.context, steps: f.steps(), answerModeSupported: true })
   assert.deepEqual(policies, ['script_review', 'script_review_answer'])
   assert.equal(sent.length, 2)
-  assert.ok(f.snapshot().steps['review:whole'])
+  assert.ok(f.snapshot().steps['review:coordinates:v1:review:whole'])
   await reviewScriptDraftCompleteness(f.draft, async () => assert.fail('validated whole result is reusable without a paid call'),
     { context: f.context, steps: f.steps(), answerModeSupported: true })
 })
@@ -66,7 +67,7 @@ test('normal whole output limit retains dimension recovery and only an exhausted
   }, { context: f.context, steps: f.steps(), answerModeSupported: true })
   assert.deepEqual(calls, [['whole', 'script_review'], ['settings', 'script_review'],
     ['consistency', 'script_review'], ['consistency', 'script_review_answer'], ['requirements', 'script_review']])
-  for (const scope of ['settings', 'consistency', 'requirements']) assert.ok(f.snapshot().steps[`review:dimension:${scope}`])
+  for (const scope of ['settings', 'consistency', 'requirements']) assert.ok(f.snapshot().steps[`review:coordinates:v1:review:dimension:${scope}`])
   assert.equal((f.snapshot().steps[reasoningId('consistency')]?.value as { mode?: string })?.mode, 'answer')
   assert.equal(f.snapshot().steps[reasoningId()], undefined, 'ordinary truncation does not acquire an answer marker')
 })
@@ -76,14 +77,14 @@ test('an empty exhausted whole answer switches to focused complete-work checks i
   await reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
     const scope = dimension(prompt); calls.push([scope, contract?.request_policy])
     if (scope === 'whole') throw exhausted()
-    for (const artifact of f.draft.artifacts) assert.ok(prompt.includes(artifact.content))
+    assert.deepEqual(draftReviewFixtureSources(prompt).map(source => source.content), f.draft.artifacts.map(artifact => artifact.content))
     assert.ok(prompt.includes(f.context.uploaded_script.content))
     return resultText(contract)
   }, { context: f.context, steps: f.steps(), answerModeSupported: true })
   assert.deepEqual(calls, [['whole', 'script_review'], ['whole', 'script_review_answer'],
     ['settings', 'script_review'], ['consistency', 'script_review'], ['requirements', 'script_review']])
-  assert.equal(f.snapshot().steps['review:recovery']!.value, 'dimensions')
-  assert.ok(f.snapshot().steps['review:whole'])
+  assert.equal(f.snapshot().steps['review:coordinates:v1:review:recovery']!.value, 'dimensions')
+  assert.ok(f.snapshot().steps['review:coordinates:v1:review:whole'])
 })
 
 test('an unfinished answer stays resumable after repeated reasoning exhaustion and retains completed dimensions', async () => {
@@ -97,18 +98,18 @@ test('an unfinished answer stays resumable after repeated reasoning exhaustion a
   assert.deepEqual(calls, [['whole', 'script_review'], ['settings', 'script_review'],
     ['consistency', 'script_review'], ['consistency', 'script_review_answer'],
     ...Array.from({ length: 4 }, () => ['consistency', 'script_review_answer'])])
-  const saved = f.snapshot(), settings = saved.steps['review:dimension:settings']
+  const saved = f.snapshot(), settings = saved.steps['review:coordinates:v1:review:dimension:settings']
   assert.ok(settings)
   assert.equal((saved.steps[reasoningId('consistency')]?.value as { mode?: string })?.mode, 'answer')
-  assert.equal(saved.steps['review:dimension:consistency'], undefined)
-  assert.equal(saved.steps['review:whole'], undefined, 'failed review cannot become a passed whole-work audit')
+  assert.equal(saved.steps['review:coordinates:v1:review:dimension:consistency'], undefined)
+  assert.equal(saved.steps['review:coordinates:v1:review:whole'], undefined, 'failed review cannot become a passed whole-work audit')
   const resumed: Array<[string, unknown]> = []
   await reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
     resumed.push([dimension(prompt), contract?.request_policy]); return resultText(contract)
   }, { context: f.context, steps: f.steps(), answerModeSupported: true })
   assert.deepEqual(resumed, [['consistency', 'script_review_answer'], ['requirements', 'script_review']])
-  assert.deepEqual(f.snapshot().steps['review:dimension:settings'], settings)
-  assert.ok(f.snapshot().steps['review:whole'])
+  assert.deepEqual(f.snapshot().steps['review:coordinates:v1:review:dimension:settings'], settings)
+  assert.ok(f.snapshot().steps['review:coordinates:v1:review:whole'])
 })
 
 test('unsupported providers preserve existing dimension recovery without injecting an answer policy', async () => {
@@ -121,7 +122,7 @@ test('unsupported providers preserve existing dimension recovery without injecti
     }, { context: f.context, steps: f.steps(), ...(configured === undefined ? {} : { answerModeSupported: configured }) })
     assert.deepEqual(calls.map(([scope]) => scope), ['whole', 'settings', 'consistency', 'requirements'])
     assert.equal(calls.some(([, policy]) => policy === 'script_review_answer'), false)
-    assert.equal(Object.keys(f.snapshot().steps).some(id => id.startsWith('review:reasoning:')), false)
+    assert.equal(Object.keys(f.snapshot().steps).some(id => id.startsWith('review:coordinates:v1:review:reasoning:')), false)
   }
 })
 
@@ -137,7 +138,7 @@ test('truncated text, missing usage and mixed answer output cannot be misclassif
     }, { context: f.context, steps: f.steps(), answerModeSupported: true })
     assert.deepEqual(calls.map(([scope]) => scope), ['whole', 'settings', 'consistency', 'requirements'])
     assert.equal(calls.some(([, policy]) => policy === 'script_review_answer'), false)
-    assert.equal(Object.keys(f.snapshot().steps).some(id => id.startsWith('review:reasoning:')), false)
+    assert.equal(Object.keys(f.snapshot().steps).some(id => id.startsWith('review:coordinates:v1:review:reasoning:')), false)
   })
 })
 
@@ -173,7 +174,7 @@ test('answer-mode transport interruption resumes the saved answer strategy inste
     throw network
   }, value => value, values => values, { steps: f.steps(), answerModeSupported: true }), issue => issue === network)
   assert.deepEqual(modes, [undefined, 'answer'])
-  assert.equal((f.snapshot().steps[reasoningId()]?.value as { mode?: string })?.mode, 'answer')
+  assert.equal((f.snapshot().steps[legacyReasoningId()]?.value as { mode?: string })?.mode, 'answer')
   const resumed: unknown[] = []
   const result = await recoverScriptDraftReview('完整且未变化的稿件', async (_prompt, mode) => {
     resumed.push(mode); return { checked: true }
@@ -183,7 +184,7 @@ test('answer-mode transport interruption resumes the saved answer strategy inste
 })
 
 test('historical whole-review blocked checkpoints resume the selected answer strategy and migrate before dispatch', async () => {
-  const f = fixture(), network = new TextProviderError('interrupted answer', false, 'connection_error')
+  const f = fixture(), network = Object.assign(new TextProviderError('answer dispatch paused before provider call', false, 'connection_error'), { delivery: 'not_sent' as const })
   await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (_prompt, contract) => {
     if (contract?.request_policy === 'script_review') throw exhausted()
     throw network
@@ -198,7 +199,7 @@ test('historical whole-review blocked checkpoints resume the selected answer str
     return resultText(contract)
   }, { context: f.context, steps: f.steps(), answerModeSupported: true })
   assert.deepEqual(policies, ['script_review_answer'])
-  assert.ok(f.snapshot().steps['review:whole'])
+  assert.ok(f.snapshot().steps['review:coordinates:v1:review:whole'])
 })
 
 test('historical blocked dimensions can continue while successful dimensions stay cached', async () => {
@@ -209,7 +210,7 @@ test('historical blocked dimensions can continue while successful dimensions sta
     if (scope === 'consistency') throw exhausted()
     return resultText(contract)
   }, { context: f.context, steps: f.steps(), answerModeSupported: true }), outputLimited)
-  const saved = f.snapshot(), settings = saved.steps['review:dimension:settings']
+  const saved = f.snapshot(), settings = saved.steps['review:coordinates:v1:review:dimension:settings']
   saved.steps[reasoningId('consistency')]!.value = { mode: 'blocked', reason: 'length' }
   f.restore(saved)
   const calls: Array<[string, unknown]> = []
@@ -219,7 +220,7 @@ test('historical blocked dimensions can continue while successful dimensions sta
     return resultText(contract)
   }, { context: f.context, steps: f.steps(), answerModeSupported: true })
   assert.deepEqual(calls, [['consistency', 'script_review_answer'], ['requirements', 'script_review']])
-  assert.deepEqual(f.snapshot().steps['review:dimension:settings'], settings)
+  assert.deepEqual(f.snapshot().steps['review:coordinates:v1:review:dimension:settings'], settings)
 })
 
 test('continued empty focused answers propagate once per continuation without an automatic same-input retry loop', async () => {
@@ -236,7 +237,7 @@ test('continued empty focused answers propagate once per continuation without an
     throw exhausted()
   }, { context: f.context, steps: f.steps(), answerModeSupported: true }), outputLimited)
   assert.equal(resumed, 1)
-  assert.equal(f.snapshot().steps['review:whole'], undefined)
+  assert.equal(f.snapshot().steps['review:coordinates:v1:review:whole'], undefined)
   assert.equal((f.snapshot().steps[reasoningId('settings')]!.value as { mode: string }).mode, 'answer')
 })
 
@@ -258,30 +259,30 @@ test('changed candidate or creator context invalidates the previous exhausted an
 test('enabling answer support does not invalidate an existing successful whole-review cache', async () => {
   const f = fixture()
   await reviewScriptDraftCompleteness(f.draft, async () => resultText(), { context: f.context, steps: f.steps() })
-  const saved = f.snapshot().steps['review:whole']
+  const saved = f.snapshot().steps['review:coordinates:v1:review:whole']
   await reviewScriptDraftCompleteness(f.draft, async () => assert.fail('unchanged successful work has no additional generation'),
     { context: f.context, steps: f.steps(), answerModeSupported: true })
-  assert.deepEqual(f.snapshot().steps['review:whole'], saved)
+  assert.deepEqual(f.snapshot().steps['review:coordinates:v1:review:whole'], saved)
 })
 
 test('enabling answer support reuses successful settings and resumes only the unfinished dimensions', async () => {
-  const f = fixture(), network = new TextProviderError('configuration unavailable', false, 'provider_error')
+  const f = fixture(), network = Object.assign(new TextProviderError('configuration unavailable before dispatch', false, 'provider_error'), { delivery: 'not_sent' as const })
   await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
     const scope = dimension(prompt)
     if (scope === 'whole') throw exhausted('partial', 65_000)
     if (scope === 'consistency') throw network
     return resultText(contract)
   }, { context: f.context, steps: f.steps() }), issue => issue === network)
-  const settings = f.snapshot().steps['review:dimension:settings'], calls: string[] = []
+  const settings = f.snapshot().steps['review:coordinates:v1:review:dimension:settings'], calls: string[] = []
   assert.ok(settings)
   await reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => { calls.push(dimension(prompt)); return resultText(contract) },
     { context: f.context, steps: f.steps(), answerModeSupported: true })
   assert.deepEqual(calls, ['consistency', 'requirements'])
-  assert.deepEqual(f.snapshot().steps['review:dimension:settings'], settings)
+  assert.deepEqual(f.snapshot().steps['review:coordinates:v1:review:dimension:settings'], settings)
 })
 
 test('whole answer text truncated at its normal limit falls back to dimensions and continuation never reissues the whole request', async () => {
-  const f = fixture(), interrupted = new TextProviderError('connection interrupted', false, 'connection_error')
+  const f = fixture(), interrupted = Object.assign(new TextProviderError('dispatch paused before provider call', false, 'connection_error'), { delivery: 'not_sent' as const })
   const calls: Array<[string, unknown]> = []
   await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
     const scope = dimension(prompt), policy = contract?.request_policy
@@ -292,19 +293,19 @@ test('whole answer text truncated at its normal limit falls back to dimensions a
   }, { context: f.context, steps: f.steps(), answerModeSupported: true }), issue => issue === interrupted)
   assert.deepEqual(calls, [['whole', 'script_review'], ['whole', 'script_review_answer'],
     ['settings', 'script_review'], ['consistency', 'script_review']])
-  assert.equal(f.snapshot().steps['review:recovery']!.value, 'dimensions')
+  assert.equal(f.snapshot().steps['review:coordinates:v1:review:recovery']!.value, 'dimensions')
   assert.equal((f.snapshot().steps[reasoningId()]!.value as { mode: string }).mode, 'answer',
     'ordinary answer truncation with actual text does not permanently block a whole-work audit')
-  assert.equal(f.snapshot().steps['review:whole'], undefined, 'even valid JSON from a truncated response cannot pass review')
-  const settings = f.snapshot().steps['review:dimension:settings']
+  assert.equal(f.snapshot().steps['review:coordinates:v1:review:whole'], undefined, 'even valid JSON from a truncated response cannot pass review')
+  const settings = f.snapshot().steps['review:coordinates:v1:review:dimension:settings']
   assert.ok(settings)
   const resumed: Array<[string, unknown]> = []
   await reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
     resumed.push([dimension(prompt), contract?.request_policy]); return resultText(contract)
   }, { context: f.context, steps: f.steps(), answerModeSupported: true })
   assert.deepEqual(resumed, [['consistency', 'script_review'], ['requirements', 'script_review']])
-  assert.deepEqual(f.snapshot().steps['review:dimension:settings'], settings)
-  assert.ok(f.snapshot().steps['review:whole'])
+  assert.deepEqual(f.snapshot().steps['review:coordinates:v1:review:dimension:settings'], settings)
+  assert.ok(f.snapshot().steps['review:coordinates:v1:review:whole'])
 })
 
 test('ordinary answer truncation keeps the failed dimension resumable without rerunning successful checks', async () => {
@@ -320,14 +321,14 @@ test('ordinary answer truncation keeps the failed dimension resumable without re
     ['consistency', 'script_review'], ['consistency', 'script_review_answer'],
     ...Array.from({ length: 4 }, () => ['consistency', 'script_review_answer'])])
   assert.equal((f.snapshot().steps[reasoningId('consistency')]!.value as { mode: string }).mode, 'answer')
-  const settings = f.snapshot().steps['review:dimension:settings'], resumed: Array<[string, unknown]> = []
+  const settings = f.snapshot().steps['review:coordinates:v1:review:dimension:settings'], resumed: Array<[string, unknown]> = []
   assert.ok(settings)
-  assert.equal(f.snapshot().steps['review:whole'], undefined, 'truncated JSON must not count as successful review')
+  assert.equal(f.snapshot().steps['review:coordinates:v1:review:whole'], undefined, 'truncated JSON must not count as successful review')
   await reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
     resumed.push([dimension(prompt), contract?.request_policy]); return resultText(contract)
   }, { context: f.context, steps: f.steps(), answerModeSupported: true })
   assert.deepEqual(resumed, [['consistency', 'script_review_answer'], ['requirements', 'script_review']])
-  assert.deepEqual(f.snapshot().steps['review:dimension:settings'], settings)
+  assert.deepEqual(f.snapshot().steps['review:coordinates:v1:review:dimension:settings'], settings)
 })
 
 test('ordinary focused truncation before any reasoning fallback retains its existing unblocked resume behavior', async () => {

@@ -657,7 +657,7 @@ export async function generateStageDraftWithContinuation(request: z.infer<typeof
             readInitial(raw, undefined, true)
             return raw
           }, prompt,
-          { signal: options.signal, correctionInstructions: workflowDraftFieldInstructions(request.stage, allowed), validate: value => {
+          { signal: options.signal, recoverUniqueSyntax: true, recoverCompletedSyntax: true, recoverContentSyntax: true, correctionInstructions: workflowDraftFieldInstructions(request.stage, allowed), validate: value => {
             let draft: WorkflowDraft
             try { draft = workflowGenerationDraftSchema.parse({ ...value, ...request }) }
             catch (error) {
@@ -687,6 +687,7 @@ export async function generateStageDraftWithContinuation(request: z.infer<typeof
             if (attempt > 1 && terminalValidationFailure) throw terminalValidationFailure.error
             if (attempt > 1 && state.pendingArtifacts.length) throw repairPreservedArtifacts
             if (attempt > 1 && (state.artifacts.length || state.scenes.length)) throw continuePreservedUnits
+            if (attempt > 1) options.onProgress?.('正在纠正输出格式，保留已生成正文；完成后重新校验。')
             options.onAttempt?.(attempt, diagnostics)
           }, onRetry: options.onRetry })
         return done(finalDraft(result))
@@ -747,9 +748,10 @@ export async function generateStageDraftWithContinuation(request: z.infer<typeof
             readTerminalBlocks(raw)
             return raw
           }, continuationPrompt(),
-          { signal: options.signal, onAttempt: (attempt, diagnostics) => {
+          { signal: options.signal, recoverUniqueSyntax: true, recoverCompletedSyntax: true, recoverContentSyntax: true, onAttempt: (attempt, diagnostics) => {
             if (attempt > 1 && state.blockConflicts.some(item => !item.resolved)) throw new StageBlockConflictError()
             if (attempt > 1 && state.blocks.length) throw continuePreservedUnits
+            if (attempt > 1) options.onProgress?.('正在纠正输出格式，保留已生成正文；完成后重新校验。')
             options.onAttempt?.(attempt, diagnostics)
           }, onRetry: options.onRetry })
         appendBlocks(result.blocks, true)

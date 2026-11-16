@@ -154,7 +154,7 @@ export function registerVideoReviewRoutes(app: FastifyInstance, dependencies: De
       const identity = { version: 1, source: startSignature, expected, duration, input_mode, samples: media.sample_times_ms,
         instructions: body.instructions, model: creativeModelIdentity(model.id) }
       const store = generationUnitStore(id, `video-review:${assetId}:${shot?.id || 'asset'}`, identity)
-      const steps = createGenerationSteps({ checkpoint: store.checkpoint, save: store.save, signal: controller.signal })
+      const steps = createGenerationSteps({ checkpoint: store.checkpoint, save: store.save, savePrivateResponse: store.savePrivateResponse, signal: controller.signal })
       const requestModel = (prompt: string, contract?: import('../generation/model-output.js').OutputContract) => generate(model, provider, { prompt, structured_output: contract,
         ...('video' in media ? { video: media.video } : { images: media.images }) }, controller.signal)
       const validate = (value: ReviewResult) => {

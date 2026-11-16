@@ -1,7 +1,7 @@
 import type { ScriptStage, StageArtifactType } from '@video-studio/shared/script/script-stage-content'
 import type { GenerationSteps } from './script-generation-steps.js'
 
-export type ScriptDraftReviewIntent = 'source_outline' | 'stage_design'
+export type ScriptDraftReviewIntent = 'source_outline' | 'source_episode' | 'stage_design'
 export type ScriptDraftReviewScope = 'whole' | 'adaptive' | 'tasks'
 export type DraftReviewSource = { key: string; artifact_type: StageArtifactType; title: string; content: string }
 export type DraftReviewTask = { id: string; label: string; kind: 'deliverable' | 'consistency'; sources: DraftReviewSource[] }
@@ -81,6 +81,7 @@ export function draftReviewTaskSteps(steps: GenerationSteps | undefined, id: str
       return { ...steps.checkpoint, steps: Object.fromEntries(Object.entries(steps.checkpoint.steps)
         .filter(([key]) => key.startsWith(prefix)).map(([key, value]) => [key.slice(prefix.length), value])) }
     },
+    readStructuredResponse: (key, input, name, prompt, schema) => steps.readStructuredResponse?.(prefix + key, input, name, prompt, schema),
     retain: (key, label, input, value, validate, parentId) => steps.retain(prefix + key, label, input, value, validate, parentId),
     forget: key => steps.forget(prefix + key),
     run: (key, label, input, work, validate, parentId) => steps.run(prefix + key, label, input, work, validate, parentId),

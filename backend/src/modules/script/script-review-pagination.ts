@@ -1,9 +1,10 @@
+import { sourceStructuredPolicy } from '../generation/source-structured-policy.js'
 import { reportModelUnitProgress } from '../generation/model-task-policy.js'
 import { createHash } from 'node:crypto'
 import { setImmediate } from 'node:timers/promises'
 import { z } from 'zod'
 import { TextOutputLimitError } from '../../infrastructure/providers/text-errors.js'
-import { generateStructuredOutput, restoreOptionalNulls, type StructuredGenerator } from '../generation/model-output.js'
+import { generateStructuredOutput, restoreOptionalNulls, type StructuredGenerator, type StructuredOutputCheckpoint, type StructuredOutputLocalPlanner } from '../generation/model-output.js'
 import { modelStepSignal } from '../generation/model-execution.js'
 import type { GenerationSteps } from './script-generation-steps.js'
 import { recoverArrayStream } from './script-streamed-units.js'
@@ -27,6 +28,16 @@ export async function generatePagedReviewItems<T>(options: {
   /** A valid unresolved answer (for example null evidence coordinates) is not
    * completed work and cannot make a page or cached report complete. */
   retainItem?: (item: T) => boolean; initialItems?: T[]; maxItems: number;
+  /** A caller may exclude exhaustion modes that output partitioning cannot fix. */
+  recoverOutputLimit?: (issue: TextOutputLimitError) => boolean;
+  /** Apply only caller-owned, lossless wire aliases to closed recovered items. */
+  normalizeRecoveredItem?: (item: unknown) => unknown;
+  /** Optional private raw/correction journal; page identity and defaults stay unchanged. */
+  outputCheckpoint?: (name: string, prompt: string, schema: z.ZodType) => { checkpoint: StructuredOutputCheckpoint; persistCheckpoint: () => void; guardInitialDispatch?: boolean };
+  preserveCheckpointIdentity?: boolean;
+  /** Source synthesis opts into bounded insertion-only text syntax recovery. */
+  syntaxRecovery?: boolean; localRepairOnly?: boolean;
+  localRepairPlanner?: (name: string, prompt: string, schema: z.ZodType) => StructuredOutputLocalPlanner;
 }): Promise<T[]> {
   const label = options.purpose === 'generation' ? '生成' : '审读'
   if (!Number.isSafeInteger(options.maxItems) || options.maxItems < 1) throw new Error(`${label}分页条目上限无效`)
@@ -50,6 +61,7 @@ export async function generatePagedReviewItems<T>(options: {
   const initialItems = [...new Map((options.initialItems || []).map(item => [JSON.stringify(item), item])).values()]
   let state = validateState({ items: initialItems, complete: false, page_size: Math.min(8, options.maxItems) })
   const previous = steps?.checkpoint.steps[options.id]
+  if (previous && previous.input_hash !== hash && options.preserveCheckpointIdentity) throw Object.assign(new Error('分页契约已变化，已保存条目和付费响应均已保留；不能因升级自动重新派发'), { statusCode: 409, code: 'structured_checkpoint_identity_mismatch' })
   if (previous?.input_hash === hash) {
     try { state = validateState(structuredClone(previous.value)) }
     catch { modelStepSignal(signal)?.throwIfAborted(); steps?.forget(options.id) }
@@ -89,7 +101,9 @@ export async function generatePagedReviewItems<T>(options: {
     let incoming: T[] = [], complete = false, failure: unknown
     try {
       const page = await generateStructuredOutput(`${options.name}_page`, pageSchema, options.generate, prompt, {
-        signal, validate: value => {
+        ...(options.syntaxRecovery ? { ...sourceStructuredPolicy(options.localRepairOnly) } : {}),
+        signal, localRepairOnly: options.localRepairOnly, ...options.outputCheckpoint?.(`${options.name}_page`, prompt, pageSchema),
+        planLocalRepair: options.localRepairPlanner?.(`${options.name}_page`, prompt, pageSchema), validate: value => {
           const items = merged(value.items)
           const complete = value.complete && !value.items.some(item => options.retainItem && !options.retainItem(item))
           options.validateItems?.(items, complete)
@@ -98,11 +112,12 @@ export async function generatePagedReviewItems<T>(options: {
       incoming = page.items; complete = page.complete
     } catch (issue) {
       modelStepSignal(signal)?.throwIfAborted()
-      if (!(issue instanceof TextOutputLimitError)) throw issue
+      if (!(issue instanceof TextOutputLimitError) || options.recoverOutputLimit?.(issue) === false) throw issue
       failure = issue
       // A stopped response can contribute closed valid report items, never its
       // completion flag or an unfinished field. Invalid closed items are errors.
-      incoming = recoverArrayStream(issue.partialText, 'items').map(item => options.itemSchema.parse(restoreOptionalNulls(item, itemInputSchema)))
+      incoming = recoverArrayStream(issue.partialText, 'items').map(item => options.itemSchema.parse(
+        restoreOptionalNulls(options.normalizeRecoveredItem ? options.normalizeRecoveredItem(item) : item, itemInputSchema)))
     }
     if (incoming.some(item => options.retainItem && !options.retainItem(item))) complete = false
     const items = merged(incoming), added = items.length - state.items.length

@@ -18,12 +18,15 @@ export type LangfuseStatus = { enabled: boolean; pending: number; dropped: numbe
 export type ConfiguredLangfuseTracer = LangfuseTracer & { status(): LangfuseStatus; flush(timeoutMs?: number): Promise<void> }
 const noop = () => {}
 const emptyObservation = { dispatch: noop, metrics: noop, result: noop, finish: noop }
-const numbers = ['request_bytes', 'response_chars', 'first_event_ms', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'output_limit', 'cache_read_tokens',
+const numbers = ['request_bytes', 'response_chars', 'first_event_ms', 'first_text_ms', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'output_limit', 'cache_read_tokens',
   'cache_write_tokens', 'estimated_input_tokens', 'context_window_tokens', 'reserved_output_tokens', 'http_status', 'framing_reserve_tokens', 'unit_index', 'unit_count'] as const
+const protocolCounts = ['request_tool_count', 'response_text_blocks', 'response_thinking_blocks', 'response_tool_use_blocks', 'response_other_blocks'] as const
+const nativeStopReasons = new Set(['end_turn', 'stop_sequence', 'tool_use', 'max_tokens', 'refusal', 'pause_turn'])
 const purposes = new Set(['generation', 'review', 'classification', 'prompt', 'tool_decision', 'text', 'media_generation', 'image_analysis'])
 const stages = new Set(['generation', 'review', 'repair', 'classification', 'prompt', 'tool', 'text', 'media_generation'])
 const transports = new Set(['text', 'input_count', 'model_catalog', 'background_create', 'background_poll', 'background_cancel', 'media_create', 'media_poll', 'media_download', 'speech_create'])
 const failures = new Set(['output_limit', 'context_overflow', 'disconnected', 'refusal', 'invalid_tool', 'invalid_response', 'upstream_error', 'cancelled'])
+const upstreamErrors = new Set(['stream_read_error', 'stream_disconnected', 'connection_error', 'headers_timeout', 'first_event_timeout', 'event_idle_timeout', 'overloaded_error', 'rate_limit_error', 'api_error', 'timeout_error'])
 const deliveries = new Set(['not_sent', 'rejected', 'accepted', 'output_started', 'completed', 'unknown'])
 const owners = new Set(['request', 'job', 'director', 'diagnostic'])
 function finite(value: unknown): value is number { return typeof value === 'number' && Number.isFinite(value) && value >= 0 }
@@ -128,17 +131,30 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
   const safeMetadata = (source: Record<string, unknown>) => {
     const result: Record<string, unknown> = {}
     for (const key of numbers) if (finite(source[key])) result[key] = source[key]
+    for (const key of protocolCounts) if (finite(source[key]) && Number.isSafeInteger(source[key])) result[key] = source[key]
     for (const [key, values] of [['trace_stage', stages], ['request_purpose', purposes], ['transport_kind', transports], ['failure_reason', failures], ['delivery', deliveries]] as const) if (typeof source[key] === 'string' && values.has(source[key])) result[key] = source[key]
     if (modelOperationStages.includes(source.operation_stage as ModelOperationStage)) result.operation_stage = source.operation_stage
     if (typeof source.output_started === 'boolean') result.output_started = source.output_started
+    if (typeof source.response_terminated === 'boolean') result.response_terminated = source.response_terminated
+    for (const key of ['request_has_tools', 'response_complete', 'response_blocks_closed', 'response_protocol_terminal', 'response_json_valid']) if (typeof source[key] === 'boolean') result[key] = source[key]
+    for (const key of ['request_prompt_hash', 'request_body_hash', 'response_body_hash', 'response_text_hash']) if (typeof source[key] === 'string' && /^[a-f0-9]{64}$/.test(source[key])) result[key] = source[key]
+    if (typeof source.request_structured_mode === 'string' && ['none', 'prompt', 'json_schema', 'json_object', 'tool_call'].includes(source.request_structured_mode)) result.request_structured_mode = source.request_structured_mode
+    const detail = safeModelResult({ ...source, phase: 'structure', status: 'valid' }); if (detail) { const { phase, status, ...fields } = detail; Object.assign(result, fields) }
+    if (['configured', 'declared', 'default'].includes(String(source.structured_strategy_source))) result.structured_strategy_source = source.structured_strategy_source
+    if (source.structured_enforcement === 'unverified') result.structured_enforcement = 'unverified'
+    if (typeof source.raw_reason === 'string' && nativeStopReasons.has(source.raw_reason)) result.raw_reason = source.raw_reason
+    if (upstreamErrors.has(String(source.raw_reason))) result.upstream_error_code = source.raw_reason
+    if (typeof source.delivery === 'string') result.output_usage_complete = source.delivery === 'completed' && finite(source.output_tokens)
+    if (['accepted', 'output_started', 'unknown'].includes(String(source.delivery)) && source.output_tokens === 0) delete result.output_tokens
     const model = opaque('model', source.model_id); if (model) result.model_ref = model
     return result
   }
   const usage = (source: Record<string, unknown>) => {
     const value: Record<string, number> = {}
     if (finite(source.input_tokens)) value.input = source.input_tokens
-    if (finite(source.output_tokens)) value.output = source.output_tokens
-    if (finite(source.input_tokens) && finite(source.output_tokens)) { const total = source.input_tokens + source.output_tokens; if (Number.isFinite(total)) value.total = total }
+    const outputKnown = finite(source.output_tokens) && !(['accepted', 'output_started', 'unknown'].includes(String(source.delivery)) && source.output_tokens === 0)
+    if (outputKnown) value.output = source.output_tokens as number
+    if (finite(source.input_tokens) && outputKnown) { const total = source.input_tokens + (source.output_tokens as number); if (Number.isFinite(total)) value.total = total }
     return Object.keys(value).length ? value : undefined
   }
   return {
@@ -174,7 +190,7 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
           if (!child || !root || child.settled) return
           const metadata = { ...child.metadata, ...safeMetadata(source), settlement: 'settled' }, used = usage(source)
           const issue = typeof source.failure_reason === 'string' && failures.has(source.failure_reason) ? source.failure_reason : finite(source.http_status) && source.http_status >= 400 ? 'http_error' : ['unknown', 'accepted', 'output_started'].includes(String(source.delivery)) ? 'unknown_result' : undefined
-          const firstEvent = child.generation && finite(source.first_event_ms) && Number.isFinite(child.startedAt + source.first_event_ms) && child.startedAt + source.first_event_ms <= clock() ? child.startedAt + source.first_event_ms : undefined
+          const firstEvent = child.generation && finite(source.first_text_ms) && Number.isFinite(child.startedAt + source.first_text_ms) && child.startedAt + source.first_text_ms <= clock() ? child.startedAt + source.first_text_ms : undefined
           const complete = span({ traceId: root.id, id: child.id, parentId: root.spanId, name: child.name, startedAt: child.startedAt, generation: child.generation,
             metadata, issue, ...(child.generation && used ? { usage: used } : {}), firstEvent })
           if (enqueue([complete])) { child.settled = true; if (child.incomplete) { child.incomplete = false; state.incomplete-- } }
@@ -194,6 +210,7 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
           const operation = event.stage ? modelOperationStageLabels[event.stage] : '模型结果'
           const metadata: Record<string, unknown> = { result_phase: event.phase, result_status: event.status,
             ...(event.stage ? { operation_stage: event.stage } : {}),
+            ...Object.fromEntries(['recovery_action', 'recovery_error_type', 'recovery_attempts', 'recovery_input_chars', 'recovery_output_chars', 'task_key', 'section_ids', 'failure_code', 'field_paths', 'correction_items', 'reused_items', 'request_category', 'input_source_chars', 'input_index_chars', 'evidence_expanded', 'repair_type', 'started_at_ms', 'ended_at_ms'].flatMap(key => event[key as keyof typeof event] === undefined ? [] : [[key, event[key as keyof typeof event]]])),
             ...(event.issue_count === undefined ? {} : { issue_count: event.issue_count }),
             ...(event.repaired === undefined ? {} : { repaired: event.repaired }),
             ...(event.repair_effect === undefined ? {} : { repair_effect: event.repair_effect }),
@@ -203,7 +220,7 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
           // Transport completion and execution state do not grant this quality
           // result. This immutable application span records the validator.
           enqueue([span({ traceId: root.id, id: randomBytes(8).toString('hex'), parentId: root.spanId,
-            name: operation + (event.phase === 'structure' ? ':结构校验' : ':质量结果'), startedAt: Math.max(0, at - (event.duration_ms || 0)),
+            name: operation + (event.phase === 'structure' ? ':结构校验' : ':质量结果'), startedAt: event.started_at_ms === undefined ? Math.max(0, at - (event.duration_ms || 0)) : Math.min(at, event.started_at_ms),
             generation: false, metadata, issue: event.status.startsWith('invalid_') ? event.status : undefined })])
         }) },
         finish(next) { safely(() => {

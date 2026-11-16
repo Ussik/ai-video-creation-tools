@@ -279,8 +279,8 @@ export default function ModelAdvancedEditor({model,provider,onApply,onClose}:{mo
           </div>}
         </section>
         {modelDraft.modality === 'text' && <section className="ms-text-capabilities">
-          <Select label="结构化输出" description="按厂商实际支持选择；未知时使用兼容模式" value={String(textCapability('structured_output_mode') || 'prompt')} allowDeselect={false}
-            data={[{ value: 'prompt', label: '兼容模式 · 提示词与本地校验' }, ...(modelDraft.protocol === 'anthropic_messages' ? [] : [{ value: 'json_object', label: 'JSON 模式' }]), { value: 'json_schema', label: 'JSON Schema · 严格结构' }]}
+          <Select label="结构化输出" description="按渠道、协议和模型配置；声明不代表已验证，拒绝后不会自动换策略重发" value={String(textCapability('structured_output_mode') || 'prompt')} allowDeselect={false}
+            data={[{ value: 'prompt', label: '兼容模式 · 提示词与本地校验' }, ...(modelDraft.protocol === 'anthropic_messages' ? [] : [{ value: 'json_object', label: 'JSON 模式' }]), { value: 'json_schema', label: '原生 JSON Schema · 仍需本地校验' }, { value: 'tool_call', label: '工具参数结果 · 单次请求' }]}
             onChange={value => value && changeTextCapability('structured_output_mode', value)} />
           <Select label="视频输入格式" description="豆包视频反推请选择豆包格式，并确认当前服务商支持视频输入" value={String(textCapability('video_input_format') || 'chat_video_url')} allowDeselect={false}
             data={[{ value: 'chat_video_url', label: '通用 Chat Completions · video_url' }, { value: 'doubao_ark', label: '豆包视频理解 · Chat / Responses' }]}

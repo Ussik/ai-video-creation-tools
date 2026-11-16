@@ -50,6 +50,20 @@ test('repeated fragments require one exact paragraph anchor and invalid hashes o
   assert.throws(() => applyExactPromptPatches(source, [patch(source, '第一段。', '扩展'.repeat(30))], 30), /长度上限/)
 })
 
+test('exact prompt edits reject split surrogate boundaries and malformed replacement characters without altering valid emoji', () => {
+  const source = '  前🚆后。\r\n\r\n另一段保持🚆。  '
+  for (const find of ['\ud83d', '\ude86', '前\ud83d', '\ude86后']) {
+    const paragraphs = promptParagraphs(source)
+    assert.throws(() => applyExactPromptPatches(source, [patch(source, find, '完整替换', 'bad',
+      { paragraph_id: paragraphs[0]!.id, paragraph_hash: paragraphs[0]!.hash })]), /完整字符/)
+  }
+  for (const replacement of ['\ud83d', '\ude86', '前\ud83d后', '前\ude86后']) {
+    assert.throws(() => applyExactPromptPatches(source, [patch(source, '前🚆后', replacement)]), /完整字符/)
+  }
+  assert.equal(applyExactPromptPatches(source, [patch(source, '前🚆后', '前🚂后')]), '  前🚂后。\r\n\r\n另一段保持🚆。  ')
+  assert.equal(applyExactPromptPatches(source, [patch(source, '前🚆后', '🚆🚂')]), '  🚆🚂。\r\n\r\n另一段保持🚆。  ')
+})
+
 test('exhausted patch pages shrink to one, preserve complete pages, and resume only unfinished changes', async () => {
   const source = '第一项原动作。\n\n第二项原动作。', steps = createGenerationSteps()
   let calls = 0, fail = true
@@ -127,7 +141,7 @@ test('long route edits resume pages with intact source, rules, ordered pixels an
       if (contract?.name === 'prompt_refinement_semantic_review') {
         reviews++; calls.push('review')
         assert.match(prompt, /清楚抬起右手/); assert.match(prompt, /望向门外/); assert.match(prompt, /我会回来的/)
-        if (failReview) throw Object.assign(new Error('独立审读中断'), { statusCode: 422 })
+        if (failReview) throw Object.assign(new Error('独立审读中断'), { statusCode: 422, delivery: 'not_sent' })
         return JSON.stringify({ ...semanticReviewFixture(), content_review: review })
       }
       assert.equal(contract?.name, 'refined_prompt_page')
@@ -138,7 +152,7 @@ test('long route edits resume pages with intact source, rules, ordered pixels an
       assert.match(prompt, new RegExp(f.asset)); assert.match(prompt, /image_number[^\n]*1/)
       if (page === 1) return JSON.stringify({ items: [patch(f.source, '她缓慢抬手。', '她清楚抬起右手。')], complete: false })
       assert.match(prompt, /她清楚抬起右手/)
-      if (failPage) throw Object.assign(new Error('补丁页中断'), { statusCode: 422 })
+      if (failPage) throw Object.assign(new Error('补丁页中断'), { statusCode: 422, delivery: 'not_sent' })
       return JSON.stringify({ items: [patch(f.source, '结束状态：林晚仍站在门边。', '结束状态：林晚望向门外。', 'end')], complete: true })
     } })
   const invoke = () => instance.inject({ method: 'POST', url: `/api/projects/${f.project.id}/skills/refine-prompt`, payload: f.payload })

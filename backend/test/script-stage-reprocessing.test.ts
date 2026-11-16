@@ -1,5 +1,6 @@
 import { draftCompletenessFixtureResponse } from './fixtures/script-draft-completeness.js'
-import type { ScriptArtifact, ScriptScene } from '../src/infrastructure/database/db.js'
+import { sourceAnalysisFixture } from './fixtures/script-source-analysis.js'
+import type { Model, ScriptArtifact, ScriptScene } from '../src/infrastructure/database/db.js'
 import type { ScriptSnapshot } from '../src/modules/script/script-document-tools.js'
 import assert from 'node:assert/strict'
 import { after, test } from 'node:test'
@@ -16,8 +17,7 @@ process.env.VIDEO_STUDIO_DATA_DIR = testData
 const { buildApp } = await import('../src/app.js')
 const { db, all, one, run } = await import('../src/infrastructure/database/db.js')
 const { documentTools, commitToolDraft, discardToolDraft, getToolDraft, editToolDraft } = await import('../src/modules/script/script-document-tools.js')
-const { scriptSourceVersion } = await import('../src/modules/script/script-source-analysis.js')
-const { sourceAnalysisPipelineVersion } = await import('../src/modules/script/script-source-map.js')
+const { createScriptSourceAnalyzer, sourceAnalysisConfiguration, scriptSourceVersion } = await import('../src/modules/script/script-source-analysis.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(testData, { recursive: true, force: true }) })
 async function call(method: 'POST' | 'PUT' | 'GET', url: string, payload?: unknown): Promise<any> {
@@ -244,12 +244,17 @@ test('redesign context keeps global settings, previous episode, complete uploade
     const model = await call('POST', '/api/models', { provider_id: provider.id, name: '文本', remote_id: 'mock', modality: 'text', protocol: 'chat_completions', settings: {
       request_path: 'chat/completions', request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] }, structured_output_mode: 'json_schema', text_path: 'choices.0.message.content',
     } })
-    const analysis = { pipeline_version: sourceAnalysisPipelineVersion, id: `context-map-${project.id}`, source_version: scriptSourceVersion(uploaded), model_id: model.id,
-      status: 'ready', phase: 'ready', completed_chunks: 1, total_chunks: 1, error: null, updated_at: uploaded.updated_at,
-      sections: [{ offset: 0, length: uploaded.content.length, title: '全剧', episode_number: null, summary: '守护与归属', characters: [], events: [] }],
-      story: { summary: '完整全剧故事', characters: [], timeline: [], threads: [], ending: { summary: '归属揭晓', section_ids: [0] }, uncertainties: [] } }
     run('INSERT INTO script_source_documents (project_id,filename,content,updated_at) VALUES (?,?,?,?)', project.id, uploaded.filename, uploaded.content, uploaded.updated_at)
-    run('INSERT INTO script_source_analyses (project_id,id,source_version,status,snapshot,updated_at) VALUES (?,?,?,?,?,?)', project.id, analysis.id, analysis.source_version, analysis.status, JSON.stringify(analysis), analysis.updated_at)
+    const configuration = sourceAnalysisConfiguration(one<Model>('SELECT * FROM models WHERE id=?', model.id)!, provider)
+    const analyzer = createScriptSourceAnalyzer(async (_projectId, _modelId, prompt) => {
+      const reply = sourceAnalysisFixture(prompt)
+      assert.ok(reply, 'source preparation uses the current directory, story and independent quality contracts')
+      return reply
+    }, undefined, { configuration: () => configuration })
+    const analysis = await analyzer.ensure(project.id, model.id).finally(() => analyzer.close())
+    assert.ok(analysis)
+    assert.equal(analysis.source_version, scriptSourceVersion(uploaded))
+    assert.equal(analysis.quality?.status, 'passed', 'the real analyzer establishes the current quality proof before testing redesign context')
     const before = script(), userMarker = `创作者原始要求_${project.id}`, assistantMarker = `导演历史原文_${project.id}`
     const redesigned = { artifacts: [{ artifact_type: 'episode_script', title: '第二集新设计', content: '第二集完整新正文，揭示车站钥匙的归属。' }],
       scenes: [{ source_scene_id: scene.id, heading: scene.heading, location: scene.location, time_of_day: scene.time_of_day, characters: scene.characters,

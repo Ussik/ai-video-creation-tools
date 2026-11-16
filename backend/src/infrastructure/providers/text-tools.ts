@@ -39,12 +39,17 @@ function contextPressure(model: GenerationModel, provider: GenerationProvider, p
  * Chat Completions reasoning_content are relayed, never displayed to users. */
 export function textToolSession(model: GenerationModel, provider: GenerationProvider, prompt: string,
   tools: TextTool[], key: (provider: GenerationProvider) => string, signal?: AbortSignal, onText?: (text: string) => void,
-  onMetrics?: (metrics: TextRequestMetrics) => void, options: { compactHistory?: boolean; parallelCalls?: boolean; onDispatch?: (metrics: TextRequestMetrics) => void } = {}) {
+  onMetrics?: (metrics: TextRequestMetrics) => void, options: { compactHistory?: boolean; parallelCalls?: boolean; onDispatch?: (metrics: TextRequestMetrics) => void;
+    /** Select the next decision's tools without rewriting authenticated history. */
+    availableTools?: () => readonly TextTool[] } = {}) {
   let history: unknown[] | undefined
   let initialLength = 0
   return async (outputs: ToolOutput[] = [], continuation?: string): Promise<ToolTurn> => {
     signal = modelStepSignal(signal)
     signal?.throwIfAborted()
+    // Snapshot once per pending decision. Its estimates, transport and any
+    // read-only retries must describe the same capabilities.
+    const turnTools = options.availableTools ? structuredClone([...options.availableTools()]) : tools
     // Native Messages history includes signed thinking and nested tool pairs.
     // The OpenAI compactor cannot rewrite those authenticated content blocks.
     const nativeMessages = model.protocol === 'anthropic_messages'
@@ -53,7 +58,7 @@ export function textToolSession(model: GenerationModel, provider: GenerationProv
     // their document bodies would invalidate their read/patch relationship.
     // The decision uses the complete next request (prompt, tool definitions, relayed history), not just the tool
     // history: when it approaches the stated context window, compact locally first. No model call is added.
-    const pressure = uniqueHistory !== undefined && contextPressure(model, provider, prompt, tools, uniqueHistory, outputs, continuation)
+    const pressure = uniqueHistory !== undefined && contextPressure(model, provider, prompt, turnTools, uniqueHistory, outputs, continuation)
     let preparedHistory = uniqueHistory && options.compactHistory !== false
       ? nativeMessages ? compactNativeToolHistory(uniqueHistory, initialLength, pressure)
         : await compactToolHistory(uniqueHistory, initialLength, model, provider, key, signal, onMetrics, pressure) : uniqueHistory
@@ -62,7 +67,7 @@ export function textToolSession(model: GenerationModel, provider: GenerationProv
     const context = { ...modelContextFor(), policy: modelTaskPolicies.tool }
     const result = await withModelRequestContext(context, () => runModelStep('tool_decision', signal, async () => {
       const send = () => retryReadOnlyRequest(
-        () => createTextToolTransport(model, provider, prompt, tools, preparedHistory, outputs, key, modelStepSignal(signal), onText, continuation, onMetrics, { parallelCalls: options.parallelCalls, onDispatch: options.onDispatch }),
+        () => createTextToolTransport(model, provider, prompt, turnTools, preparedHistory, outputs, key, modelStepSignal(signal), onText, continuation, onMetrics, { parallelCalls: options.parallelCalls, onDispatch: options.onDispatch }),
         { signal, onRetry: () => onText?.('模型连接暂时中断，正在重试当前请求；已完成的操作会保留。') },
       )
       try { return await send() }
@@ -74,7 +79,7 @@ export function textToolSession(model: GenerationModel, provider: GenerationProv
           options.compactHistory === false || !preparedHistory) throw error
         const reduced = nativeMessages ? compactNativeToolHistory(preparedHistory, initialLength, true)
           : await compactToolHistory(preparedHistory, initialLength, model, provider, key, signal, onMetrics, true)
-        const bytes = (value: unknown[]) => Buffer.byteLength(JSON.stringify({ prompt, tools, history: value, outputs, continuation }), 'utf8')
+        const bytes = (value: unknown[]) => Buffer.byteLength(JSON.stringify({ prompt, tools: turnTools, history: value, outputs, continuation }), 'utf8')
         if (bytes(reduced) >= bytes(preparedHistory)) throw error
         preparedHistory = reduced
         onText?.('上下文达到渠道上限，已缩减可重读的历史工具结果，正在继续当前决策。')

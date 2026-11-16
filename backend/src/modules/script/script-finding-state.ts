@@ -41,9 +41,11 @@ export function rememberFindingResolutions(previous: FindingResolutionRecord[], 
   const records = new Map(previous.map(item => [item.id, item]))
   findings.forEach((finding, index) => {
     const id = findingIdentity(finding), old = records.get(id)
+    const decision = decisions?.[index]
+    const authoritativeManual = strategy === 'manual' && decision === answers[index] && decision !== undefined && decision.length <= 4000
     records.set(id, { id, topic: finding.topic, source_key: finding.source_key, kind: finding.kind, problem: finding.explanation,
       strategy, answer: strategy === 'manual' ? answers[index]! : old?.answer || '', summary: summary.slice(0, 3000),
-      ...(decisions?.[index] ? { decision: decisions[index]!.slice(0, 3000) } : old?.decision ? { decision: old.decision } : {}),
+      ...(decision ? { decision: authoritativeManual ? decision : decision.slice(0, 3000) } : old?.decision ? { decision: old.decision } : {}),
       attempts: (old?.attempts || 0) + 1, status: 'addressed' })
   })
   return [...records.values()]

@@ -1,3 +1,4 @@
+import { structuredStrategySources, type TextStructuredObservation } from '@video-studio/shared/models/text-observation'
 import { z } from 'zod'
 import { stageOperations } from '@video-studio/shared/script/script-stage-access'
 import { newId } from '../../infrastructure/database/db.js'
@@ -23,7 +24,17 @@ const requestUsageSchema = z.object({
     input_settled: z.boolean(), output_settled: z.boolean(), reasoning_tokens: usageCounter,
   }).strict()),
 }).strict()
+const observationHash = z.string().regex(/^[a-f0-9]{64}$/).optional()
+// Adding a public transport-evidence field requires its HTTP validator too.
+const structuredObservationShape = {
+  structured_strategy_source: z.enum(structuredStrategySources).optional(),
+  structured_enforcement: z.literal('unverified').optional(),
+  request_prompt_hash: observationHash, request_body_hash: observationHash,
+  response_body_hash: observationHash, response_text_hash: observationHash,
+  response_json_valid: z.boolean().optional(),
+} satisfies Record<keyof TextStructuredObservation, z.ZodType>
 export const scriptActivitySchema = z.object({
+  ...structuredObservationShape,
   id: z.string().min(1).max(160),
   task_id: z.string().max(160).optional(), step_id: z.string().max(160).optional(),
   attempt: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(), sequence: z.number().int().min(0).optional(),
@@ -41,10 +52,15 @@ export const scriptActivitySchema = z.object({
   model_id: z.string().max(160).optional(), remote_id: z.string().max(300).optional(), endpoint: z.string().max(2048).optional(),
   failure_reason: z.enum(['output_limit','context_overflow','disconnected','refusal','invalid_tool','invalid_response','upstream_error','cancelled']).optional(),
   raw_reason: z.string().max(300).optional(), delivery: z.enum(['not_sent','rejected','accepted','output_started','completed','unknown']).optional(),
-  output_started: z.boolean().optional(),
+  output_started: z.boolean().optional(), response_terminated: z.boolean().optional(),
+  request_has_tools: z.boolean().optional(), request_tool_count: usageCounter.optional(),
+  request_structured_mode: z.enum(['none', 'prompt', 'json_schema', 'json_object', 'tool_call']).optional(),
+  response_text_blocks: usageCounter.optional(), response_thinking_blocks: usageCounter.optional(),
+  response_tool_use_blocks: usageCounter.optional(), response_other_blocks: usageCounter.optional(),
+  response_complete: z.boolean().optional(), response_blocks_closed: z.boolean().optional(), response_protocol_terminal: z.boolean().optional(),
   output_parameter: z.enum(['max_output_tokens','max_completion_tokens','max_tokens']).optional(), framing_reserve_tokens: z.number().int().min(0).optional(),
   request_bytes: z.number().int().min(0).optional(), response_chars: z.number().int().min(0).optional(),
-  first_event_ms: z.number().int().min(0).optional(), input_tokens: z.number().int().min(0).optional(),
+  first_event_ms: z.number().int().min(0).optional(), first_text_ms: z.number().int().min(0).optional(), input_tokens: z.number().int().min(0).optional(),
   output_tokens: z.number().int().min(0).optional(), reasoning_tokens: z.number().int().min(0).optional(),
   output_limit: z.number().int().min(1).optional(), upstream_request_id: z.string().max(160).optional(),
   output_limit_reason: z.enum(['max_output_tokens', 'length']).optional(),

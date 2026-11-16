@@ -142,3 +142,17 @@ test('only evidence IDs inside their semantic section can become literal source 
   assert.throws(() => resolveSourceSections(result, passages), /不能遗漏、重复或重叠/)
   assert.throws(() => validateSourceCoverage(content, valid.sections.slice(0, 1)), /未分析的原文/)
 })
+
+
+test('dense output windows retain exact UTF-16 coverage and stable unit boundaries', () => {
+  const content = Array.from({ length: 60 }, (_, i) => `第${i + 1}集 河岸😀\r\n${'林舟寻找伙伴。'.repeat(32)}\r\n`).join('')
+  const passages = scriptSourcePassages(content), windows = sourceWorkPlan(passages, true)
+  const starts = new Set(passages.flatMap(p => p.units.map(u => u.offset)))
+  assert.ok(windows.length > sourceWorkPlan(passages).length)
+  assert.deepEqual(sourceWorkPlan(passages, true), windows)
+  assert.ok(windows.every(w => w.length > 0 && w.length <= 4500 && starts.has(w.offset)))
+  assert.equal(windows.map(w => workPassages(passages, w).map(p => p.content).join('')).join(''), content)
+  let end = 0
+  for (const window of windows) { assert.equal(window.offset, end); end += window.length }
+  assert.equal(end, content.length)
+})

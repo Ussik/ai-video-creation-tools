@@ -3,14 +3,16 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import type { ScriptSourceDocument } from '@video-studio/shared/script/script-source-document'
+import type { ScriptSourceAnalysis, ScriptSourceDocument } from '@video-studio/shared/script/script-source-document'
 import { draftCompletenessFixtureResponse } from './fixtures/script-draft-completeness.js'
 const directory = await mkdtemp(join(tmpdir(), 'stage-workset-app-'))
 process.env.VIDEO_STUDIO_DATA_DIR = directory
 const { buildApp } = await import('../src/app.js')
-const { db, one, run, now } = await import('../src/infrastructure/database/db.js')
-const { scriptSourceVersion } = await import('../src/modules/script/script-source-analysis.js')
+const { db, one, run, now, required } = await import('../src/infrastructure/database/db.js')
+const { scriptSourceVersion, sourceAnalysisConfiguration } = await import('../src/modules/script/script-source-analysis.js')
 const { sourceAnalysisPipelineVersion } = await import('../src/modules/script/script-source-map.js')
+const { reviewSourceQuality, hasPassedSourceQuality } = await import('../src/modules/script/script-source-quality.js')
+const { sourceAnalysisConfigurationHash } = await import('../src/modules/script/script-source-revision-reuse.js')
 assert.ok(db.name.startsWith(directory))
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(directory, { recursive: true, force: true }) })
@@ -25,9 +27,27 @@ test('the real stage route dispatches smaller exact-source worksets, keeps full-
   const content = 'FULL_ORIGINAL_START\n' + '林舟沿河追寻铜钥匙，保护伙伴，最终归还。'.repeat(4000) + '\nFULL_ORIGINAL_END'
   const creator = '授权只写概要设计。CREATOR_EXACT：钥匙必须归还伙伴；保留全部故事，不授权保存正式文档。'
   const source: ScriptSourceDocument = { project_id: project.id, filename: 'large.txt', content, updated_at: now() }
-  const analysis = { pipeline_version: sourceAnalysisPipelineVersion, id: 'map', source_version: scriptSourceVersion(source), model_id: model.id, status: 'ready', phase: 'ready', completed_chunks: 1, total_chunks: 1, error: null, updated_at: now(),
+  const storedModel = required<import('../src/infrastructure/database/db.js').Model>('models', model.id)
+  const storedProvider = required<import('../src/infrastructure/database/db.js').Provider>('providers', provider.id)
+  const configuration = sourceAnalysisConfiguration(storedModel, storedProvider)
+  const analysis: ScriptSourceAnalysis = { pipeline_version: sourceAnalysisPipelineVersion, id: 'map', source_version: scriptSourceVersion(source), model_id: model.id,
+    configuration_hash: sourceAnalysisConfigurationHash(configuration), status: 'ready', phase: 'ready', completed_chunks: 1, total_chunks: 1, completed_characters: content.length, error: null, updated_at: now(),
     sections: [{ offset: 0, length: content.length, title: '完整主线', episode_number: null, summary: '取得并归还钥匙', characters: [], events: [] }],
     story: { summary: '归还钥匙', characters: [], timeline: [], threads: [], ending: { summary: '钥匙归还', section_ids: [0] }, uncertainties: [] } }
+  let sourceReviews = 0
+  await reviewSourceQuality(source, analysis, async (prompt, contract) => {
+    sourceReviews++
+    assert.equal(contract?.name, 'script_source_quality')
+    const material = JSON.parse(prompt.split('【原稿分析核对资料】\n')[1]!)
+    assert.equal(material.complete_source, true)
+    assert.equal(material.units.map((unit: { text: string }) => unit.text).join(''), content, 'the reviewed setup retains the complete original source')
+    assert.deepEqual(material.sections.map(({ id, title, episode_number, summary, characters, events }: Record<string, unknown>) =>
+      ({ id, title, episode_number, summary, characters, events })), [{ id: 0, title: '完整主线', episode_number: null, summary: '取得并归还钥匙', characters: [], events: [] }])
+    assert.deepEqual(material.story, analysis.story)
+    return JSON.stringify({ checked_section_ids: [0], findings: [] })
+  }, () => {}, new AbortController().signal)
+  assert.equal(sourceReviews, 1)
+  assert.equal(hasPassedSourceQuality(analysis), true)
   run('INSERT INTO script_source_documents (project_id,filename,content,updated_at) VALUES (?,?,?,?)', project.id, source.filename, content, source.updated_at)
   run('INSERT INTO script_source_analyses (project_id,id,source_version,status,snapshot,updated_at) VALUES (?,?,?,?,?,?)', project.id, analysis.id, analysis.source_version, analysis.status, JSON.stringify(analysis), analysis.updated_at)
   const calls: string[] = [], sizes: number[] = []; let failReview = true

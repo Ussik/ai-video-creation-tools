@@ -1,9 +1,12 @@
+import { reviewLegacyDraftEvidenceFixture as reviewScriptDraftCompleteness } from './fixtures/script-draft-legacy-evidence.js'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { test } from 'node:test'
 import { scriptArtifactLabels, scriptStageArtifacts } from '@video-studio/shared/script/script-stage-content'
 import { TextOutputLimitError, TextProviderError } from '../src/infrastructure/providers/text-errors.js'
-import { reviewScriptDraftCompleteness, ScriptDraftNeedsResolution } from '../src/modules/script/script-draft-completeness.js'
+import { ScriptDraftNeedsResolution } from '../src/modules/script/script-draft-completeness.js'
 import { createGenerationSteps, type GenerationCheckpoint } from '../src/modules/script/script-generation-steps.js'
+import { reassessDraftReviewEvidence } from '../src/modules/script/script-draft-evidence-reassessment.js'
 import type { WorkflowDraft } from '../src/modules/script/script-workflow.js'
 
 type Finding = { source_key: string; kind: 'missing_core_setting' | 'contradiction' | 'unresolved_setting'; quote: string;
@@ -110,7 +113,7 @@ test('an empty reassessment is corrected into explicit decisions for every origi
   assert.deepEqual(audit.reassessments.map(item => [item.id, item.verdict]), [['findings:0', 'withdrawn'], ['findings:1', 'withdrawn']])
 })
 
-test('repeated empty reassessments preserve pending issues and resume without regenerating the review', async () => {
+test('repeated empty reassessments preserve pending issues and replay the exhausted correction without dispatch', async () => {
   const f = fixture(), original = f.finding()
   let attempts = 0
   await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
@@ -123,14 +126,14 @@ test('repeated empty reassessments preserve pending issues and resume without re
   assert.equal(f.checkpoint().steps['review:whole'], undefined)
   assert.deepEqual(provisional(f.checkpoint())[0]!.findings, [original])
   assert.ok(Object.keys(f.checkpoint().steps).some(id => id.endsWith(':evidence:semantic-pending')))
-  const resumed: string[] = []
-  await reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+  const before = structuredClone(f.checkpoint()), resumed: string[] = []
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (_prompt, contract) => {
     resumed.push(contract!.name)
-    assert.equal(contract!.name, 'script_draft_evidence_reassessment')
-    return JSON.stringify({ reassessments: data(prompt, reassessmentMarker).issues.map(item => verdict(item.id, 'withdrawn')) })
-  }, { context: f.context, steps: f.steps() })
-  assert.deepEqual(resumed, ['script_draft_evidence_reassessment'])
-  assert.deepEqual((f.checkpoint().steps['review:whole']!.value as Review).findings, [])
+    assert.fail('an already consumed correction cannot be purchased again')
+  }, { context: f.context, steps: f.steps() }), /script_draft_evidence_reassessment/)
+  assert.deepEqual(resumed, [])
+  assert.deepEqual(f.checkpoint(), before)
+  assert.equal(f.checkpoint().steps['review:whole'], undefined)
 })
 
 test('a null locator triggers reassessment of every finding, including exact quotations with unsupported conclusions', async () => {
@@ -242,7 +245,7 @@ test('mixed reassessment retains corrected findings and withdrawals while contin
 
 test('confirmed decisions stay retained when continuing the remaining semantic issue is interrupted', async t => {
   for (const failure of ['provider', 'cancelled'] as const) await t.test(failure, async () => {
-    const f = fixture(), originals = [f.finding(), f.finding(1)], stopped = new TextProviderError('pending reassessment interrupted', false)
+    const f = fixture(), originals = [f.finding(), f.finding(1)], stopped = Object.assign(new TextProviderError('pending reassessment interrupted', false), { delivery: 'not_sent' as const })
     await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
       if (contract!.name === 'script_draft_completeness') return JSON.stringify({ ...f.clear(), findings: originals })
       if (contract!.name === 'script_draft_evidence_repair') return JSON.stringify(nullRepairs(prompt))
@@ -334,8 +337,9 @@ test('evidence reassessment preserves the answer policy selected after pure reas
     assert.equal(contract!.request_policy, 'script_review_answer', 'semantic recovery does not re-enable the exhausted reasoning strategy')
     assert.ok(prompt.includes(f.context.uploaded_script.content), 'answer reassessment retains the full original context')
     assert.ok(prompt.includes(f.context.creator_messages[0]!.text))
-    for (const artifact of f.draft.artifacts) assert.ok(prompt.includes(JSON.stringify(artifact.content)),
-      'every candidate remains present in the JSON-encoded original review input')
+    const evidenceInput = data(prompt, reassessmentMarker)
+    for (const artifact of f.draft.artifacts) assert.equal(evidenceInput.sources.find(source => source.key === artifact.artifact_type)!.units.map(unit => unit.text).join(''), artifact.content,
+      'every complete candidate remains available once through the numbered evidence units')
     return JSON.stringify({ reassessments: [verdict('findings:0', 'withdrawn')] })
   }, { context: f.context, steps: f.steps(), answerModeSupported: true })
   assert.deepEqual(calls, [['script_draft_completeness', 'script_review'], ['script_draft_completeness', 'script_review_answer'],
@@ -366,8 +370,7 @@ test('repeated unresolved reassessment remains bounded and never turns unfinishe
     assert.equal(f.checkpoint().steps['review:whole'], undefined)
     assert.equal(provisional(f.checkpoint())[0]!.findings.length, 1)
   }
-  assert.deepEqual(calls, ['script_draft_completeness', 'script_draft_evidence_repair', 'script_draft_evidence_reassessment',
-    'script_draft_evidence_reassessment'])
+  assert.deepEqual(calls, ['script_draft_completeness', 'script_draft_evidence_repair', 'script_draft_evidence_reassessment'])
 })
 
 test('a semantically unresolved exact suggestion cannot pass on continuation just because its quotation already matches', async () => {
@@ -397,7 +400,7 @@ test('a semantically unresolved exact suggestion cannot pass on continuation jus
 
 test('failed or cancelled reassessment stays semantically pending and resumes directly without another locator', async t => {
   for (const failure of ['provider', 'cancelled'] as const) await t.test(failure, async () => {
-    const f = fixture(), controller = new AbortController(), stopped = new TextProviderError('reassessment interrupted', false)
+    const f = fixture(), controller = new AbortController(), stopped = Object.assign(new TextProviderError('reassessment interrupted', false), { delivery: 'not_sent' as const })
     const exact = f.finding(1, '第1项规则：林晚使用铜钥匙后失去一天记忆。')
     await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
       if (contract!.name === 'script_draft_completeness') return JSON.stringify({ ...f.clear(), findings: [f.finding(), exact] })
@@ -411,16 +414,24 @@ test('failed or cancelled reassessment stays semantically pending and resumes di
     assert.equal(f.checkpoint().steps['review:whole'], undefined)
     assert.equal(provisional(f.checkpoint())[0]!.findings.length, 2, 'interruption does not apply an unfinished reassessment')
     const resumed: string[] = []
-    const result = await findings(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+    const resume = reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
       resumed.push(contract!.name)
+      assert.equal(failure, 'provider', 'completed cancelled response replays locally')
       assert.equal(contract!.name, 'script_draft_evidence_reassessment')
       const input = data(prompt, reassessmentMarker)
       return JSON.stringify({ reassessments: input.issues.map(item => item.explanation === exact.explanation
         ? confirmed(input, item.id) : verdict(item.id, 'withdrawn')) })
-    }, { context: f.context, steps: f.steps() }))
-    assert.deepEqual(resumed, ['script_draft_evidence_reassessment'])
-    assert.equal(result.length, 1)
-    assert.equal(result[0]!.quote, exact.quote)
+    }, { context: f.context, steps: f.steps() })
+    if (failure === 'provider') {
+      const result = await findings(resume)
+      assert.deepEqual(resumed, ['script_draft_evidence_reassessment'])
+      assert.equal(result.length, 1)
+      assert.equal(result[0]!.quote, exact.quote)
+    } else {
+      await resume
+      assert.deepEqual(resumed, [])
+      assert.deepEqual((f.checkpoint().steps['review:whole']!.value as Review).findings, [])
+    }
   })
 })
 
@@ -471,5 +482,64 @@ test('invalid reassessment verdicts, identities and coordinates fail closed with
     assert.ok(reassessmentCalls >= 1 && reassessmentCalls <= 2,
       'at most one structured format correction is permitted')
     assert.equal(calls.filter(name => name === 'script_draft_completeness').length, 1)
+  })
+})
+
+test('reassessment sends complete candidates once, preserves the surrounding task and binds the audit to the original prompt', async () => {
+  const source = { key: 'outline', artifact_type: 'outline', title: '完整大纲',
+    content: 'CANDIDATE_ONCE_SENTINEL。  \r\n\r\n' + '逐字正文'.repeat(400) + '🚆结尾。\n  ' }
+  const sources = [source], context = { uploaded_script: { content: '完整原稿保留结局，不改写。' },
+    creator_messages: [{ role: 'user', text: '只复核旧结论，不新增能力或代价。' }], saved_documents: [{ title: '历史原文', content: '只读历史🚆。' }] }
+  const head = '固定合同：只核对本轮完整大纲，不要求补齐其他栏目。\n'
+  const material = '待核对草稿原文（资料）：' + JSON.stringify(sources) + '\n【本轮候选正文结束】'
+  const tail = '\n既有事实与创作要求（资料）：' + JSON.stringify(context)
+  const originalPrompt = head + material + tail
+  const finding = { source_key: 'outline', quote: '不存在的引文。', explanation: '旧结论', suggestion: '原建议' }
+  const report = { findings: [finding], facts: [] }, steps = createGenerationSteps(), decisions = { reassessments: [verdict('findings:0', 'withdrawn')] }
+  let calls = 0
+  const result = await reassessDraftReviewEvidence(originalPrompt, report, sources, async (prompt, contract) => {
+    calls++; assert.equal(contract!.name, 'script_draft_evidence_reassessment')
+    const input = data(prompt, reassessmentMarker)
+    assert.equal(input.sources[0]!.units.map(unit => unit.text).join(''), source.content)
+    assert.equal(prompt.split('CANDIDATE_ONCE_SENTINEL').length - 1, 1)
+    assert.ok(prompt.includes(head))
+    assert.ok(prompt.includes(tail), 'original manuscript, creator requirements and history retain every byte')
+    const candidateStart = prompt.lastIndexOf('待核对草稿原文（资料）：') + '待核对草稿原文（资料）：'.length
+    const references = JSON.parse(prompt.slice(candidateStart).split('\n【本轮候选正文结束】')[0]!)
+    assert.equal(references[0].key, source.key)
+    assert.equal(references[0].artifact_type, source.artifact_type)
+    assert.equal(references[0].title, source.title)
+    assert.equal(references[0].content_reference.source_key, source.key)
+    assert.ok(!Object.hasOwn(references[0], 'content'))
+    return JSON.stringify(decisions)
+  }, { id: 'dedup-audit', steps })
+  assert.equal(calls, 1); assert.deepEqual(result.result.findings, [])
+  const audit = Object.entries(steps.checkpoint.steps).find(([id]) => id.startsWith('dedup-audit:'))!
+  assert.ok(audit)
+  const normalizedDecisions = (audit[1].value as { reassessments: Reassessment[] }).reassessments
+  const auditInput = { version: 1, prompt: originalPrompt, issues: [{ id: 'findings:0', ...finding }], reassessments: normalizedDecisions }
+  const hash = createHash('sha256').update(JSON.stringify(auditInput)).digest('hex')
+  assert.equal(audit[0], `dedup-audit:${hash}`)
+  assert.equal(audit[1].input_hash, hash)
+  assert.equal(report.findings[0]!.quote, '不存在的引文。', 'the original report and full audit identity remain immutable')
+})
+
+test('unrecognized, ambiguous or nonmatching original candidate envelopes are preserved without heuristic removal', async t => {
+  const sources = [{ key: 'outline', title: '当前候选', content: '完整正文🚆。\r\n尾声。' }]
+  const material = '待核对草稿原文（资料）：' + JSON.stringify(sources) + '\n【本轮候选正文结束】'
+  for (const [name, originalPrompt] of [
+    ['unrecognized', '另一种任务格式：' + JSON.stringify(sources)],
+    ['ambiguous', material + '\n保留背景\n' + material],
+    ['nonmatching', material.replace('完整正文', '不同正文')],
+  ]) await t.test(name!, async () => {
+    let calls = 0
+    await reassessDraftReviewEvidence(originalPrompt!, { findings: [{ source_key: 'outline', quote: '错误引文' }], facts: [] }, sources,
+      async prompt => {
+        calls++; assert.ok(prompt.includes(originalPrompt!), 'uncertain envelopes keep the complete original task')
+        const input = data(prompt, reassessmentMarker)
+        assert.equal(input.sources[0]!.units.map(unit => unit.text).join(''), sources[0]!.content)
+        return JSON.stringify({ reassessments: [verdict('findings:0', 'withdrawn')] })
+      }, { id: 'dedup-fallback' })
+    assert.equal(calls, 1)
   })
 })

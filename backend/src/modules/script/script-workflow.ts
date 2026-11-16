@@ -14,7 +14,7 @@ const workflowRequestFields = z.object({
   scope: z.enum(['project', 'episode']).optional(),
   episode_number: z.number().int().min(0).max(200).default(1),
   target_duration: z.number().int().min(5).max(600).optional(),
-  intent: z.enum(['source_outline', 'stage_design']).optional(),
+  intent: z.enum(['source_outline', 'source_episode', 'stage_design']).optional(),
   artifact_types: z.array(z.enum(scriptArtifactTypes)).min(1).max(maxStageArtifacts).optional(),
 }).strict()
 
@@ -22,6 +22,7 @@ function validateScope(request: z.infer<typeof workflowRequestFields>, ctx: z.Re
   const scope = request.stage === 'episode' ? 'episode' : 'project'
   if (request.scope && request.scope !== scope) ctx.addIssue({ code: 'custom', message: '创作范围与阶段不一致', path: ['scope'] })
   if (scope === 'episode' && request.episode_number < 1) ctx.addIssue({ code: 'custom', message: '分集正文必须指定目标集数', path: ['episode_number'] })
+  if (request.intent === 'source_episode' && request.stage !== 'episode') ctx.addIssue({ code: 'custom', message: '原稿单集制作只适用于分集正文', path: ['intent'] })
   if (request.intent === 'source_outline' && request.stage !== 'outline') ctx.addIssue({ code: 'custom', message: '原稿大纲任务只适用于故事大纲阶段', path: ['intent'] })
   if (request.artifact_types && (new Set(request.artifact_types).size !== request.artifact_types.length ||
     request.artifact_types.some(type => !(scriptStageArtifacts[request.stage] as readonly string[]).includes(type)))) {
@@ -136,6 +137,7 @@ scenes 按正文顺序对应，覆盖正文事件、动作和对白，不遗漏�
       : stages[request.stage]
   const taskScope = `本次任务只交付：${scriptTaskDeliverables(request)}。未选择的栏目不生成、不作为交付缺失。\n` +
     scriptTaskAcceptance(request).map(item => `- ${item}`).join('\n') + '\n'
+  if (request.intent === 'source_episode') return taskScope + '创作者明确选择只改编目标集，直接交付完整episode_script及对应scenes，不要求先补齐全剧设定。原稿只读，明确对白沿用，身份、剧情结果和对白含义保持；原稿留白、开放结局不作为失败。只生成待确认草稿。\n'
   if (request.intent === 'source_outline') return taskScope +
     '根据完整原稿整理一份完整、可阅读的大纲，写清原稿已有的核心人物、冲突、关键选择与事件因果；原稿写到哪里就整理到哪里，不编造后续结局、能力代价或伏笔答案。允许开放结局和原稿尚未揭示的信息。\n' +
     '每份文档必须有非空title与完整content，正文保留小节标题且不重复总标题。只生成候选稿，正式保存须经创作者确认。\n'

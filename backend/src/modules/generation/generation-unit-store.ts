@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { db, now } from '../../infrastructure/database/db.js'
 import type { GenerationCheckpoint } from '../script/script-generation-steps.js'
+import { mergeGenerationPrivateResponse, preserveGenerationPrivateResponses, type SaveGenerationPrivateResponse } from './generation-private-response.js'
 
 function valid(value: unknown): value is GenerationCheckpoint {
   if (!value || typeof value !== 'object' || !('steps' in value)) return false
@@ -27,11 +28,21 @@ export function generationUnitStore(projectId: string, namespace: string, identi
   }
   return {
     get checkpoint() { return read() }, read,
-    save(state: GenerationCheckpoint) {
-      if (!valid(state)) throw new Error('不能保存未经验证的生成检查点')
+    savePrivateResponse: ((id, entry, expected) => db.transaction(() => {
+      const state = mergeGenerationPrivateResponse(read(), id, entry, expected)
       db.prepare(`INSERT INTO model_unit_checkpoints (project_id,namespace,identity_hash,payload,updated_at) VALUES (?,?,?,?,?)
         ON CONFLICT(project_id,namespace,identity_hash) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at`)
         .run(projectId, namespace, hash, JSON.stringify(state), now())
+      return state
+    })()) satisfies SaveGenerationPrivateResponse,
+    save(state: GenerationCheckpoint) {
+      if (!valid(state)) throw new Error('不能保存未经验证的生成检查点')
+      db.transaction(() => {
+        const merged = preserveGenerationPrivateResponses(state, read())
+        db.prepare(`INSERT INTO model_unit_checkpoints (project_id,namespace,identity_hash,payload,updated_at) VALUES (?,?,?,?,?)
+          ON CONFLICT(project_id,namespace,identity_hash) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at`)
+          .run(projectId, namespace, hash, JSON.stringify(merged), now())
+      })()
     },
     clear() { db.prepare('DELETE FROM model_unit_checkpoints WHERE project_id=? AND namespace=? AND identity_hash=?').run(projectId, namespace, hash) },
   }

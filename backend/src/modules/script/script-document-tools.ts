@@ -26,11 +26,11 @@ import { resourceTools, resourceSchemas, modelResourceSchemas, resourceDescripti
 import type { ResourceChange } from '@video-studio/shared/script/script-resource-types'
 import { applySkillRules, fixedSkillContext, skillContext, skillIdsInput, skillPolicy, skillStages, skillTaskPolicies, optionalSkillReferenceCatalog, readOptionalSkillReference, type SkillReferenceDescriptor, type SkillSelections, type SkillStage } from '../skills/skills.js'
 import type { SkillTaskContext } from '@video-studio/shared/skills/skill-recommendation'
-import { revisionSchemas, revisionLimit, revisionHash, revisionProblem, toolDiagnostic, resolvePassageEdits, applyResolvedEdits, type RevisionTask, type ToolDiagnostic } from './script-revision.js'
+import { revisionSchemas, revisionLimit, revisionHash, revisionProblem, toolDiagnostic, documentParagraphs, resolvePassageEdits, applyResolvedEdits, type RevisionTask, type ToolDiagnostic } from './script-revision.js'
 import { missingStageArtifacts, scriptStageForArtifact } from '@video-studio/shared/script/script-stage-content'
 import { scriptReviewGuidance } from '@video-studio/shared/script/script-quality'
 import { ScriptDraftReviewError, ScriptDraftNeedsResolution } from './script-draft-completeness.js'
-import { readScriptSource, scriptSourceIndex, searchScriptSource } from './script-source-documents.js'
+import { readScriptSource, scriptSourceDocument, scriptSourceIndex, searchScriptSource } from './script-source-documents.js'
 import { commitScriptSourceUpdate, effectiveScriptSource, scriptDocumentVersion } from './script-source-versions.js'
 import type { ScriptSourceUpdate } from '@video-studio/shared/script/script-source-document'
 import { emptyRevisionReads, mergeRevisionRead, nextUnreadOffset, type RevisionRead, type RevisionReads } from './script-revision-reads.js'
@@ -112,6 +112,9 @@ type ToolsContext = {
 }
 function problem(message: string, statusCode = 422): never { throw Object.assign(new Error(message), { statusCode }) }
 function version(value: unknown) { return createHash('sha256').update(JSON.stringify(value)).digest('hex') }
+function draftDocumentLocatorVersion(draft: ScriptToolDraft, document: ToolDraftDocument) {
+  return revisionHash(['draft-document-locator-v1', draft.version, document.id, document.content])
+}
 function dialogueReviewFingerprint(draft: ScriptToolDraft) {
   return version({ contract: 'dialogue-boundary-v1', source_version: draft.source_version,
     kind: draft.kind, documents: draft.documents.map(({ id, version, title, artifact_type, episode_number, original_content, content }) =>
@@ -517,7 +520,7 @@ const descriptions: Record<keyof typeof schemas, string> = {
   find_related_content: '查找人物、场景或道具在其他文档、结构化场次、分镜和视觉档案中的引用，辅助判断修改影响。结果是文本匹配线索，需读取相关文档判断语义。',
   get_document_review_context: '读取文档待定标记、当前版本的专业评审状态和真实关联对象目录。待定标记仅为文字线索，不代表完整性结论，不自动重做已存在阶段。',
   submit_document_review: `阅读完整目标原文后提交专业评审报告：指出待定、缺失、矛盾和下游影响，以及有原文依据的创作质量问题。quote逐字引用当前原文，相关ID使用真实目录。没有问题时findings为空。只记录评审，不修改或保存正文；评审结果随原文版本变化失效。\n${scriptReviewGuidance}`,
-  manage_document_draft: '读取、继续修改或放弃当前草稿。update用changes定位草稿中的片段，base_version传草稿version；discard仅在创作者要求放弃时使用。',
+  manage_document_draft: '读取、继续修改或放弃当前草稿。read保留完整草稿，每份文档另有绑定当前草稿版本、文档身份与正文的locator_version及paragraphs段落定位（id/start/end，不重复正文）；update可使用该文档的paragraph_id或精确find，base_version仍传草稿version。旧段落定位或其他文档的定位无效；discard仅在创作者要求放弃时使用。',
   commit_document_draft: '保存本轮开始前已存在、且创作者明确批准保存的指定版本草稿。只说继续、接受设定或要求生成并非批准保存。程序会验证批准和原文版本；不能同轮创建后自行保存。',
 }
 export const scriptFunctions: TextTool[] = (Object.keys(schemas) as Array<keyof typeof schemas>).map(name => ({ name, description: descriptions[name], access: batchableReadTools.has(name) ? 'read' : 'write', parallelSafe:batchableReadTools.has(name), parameters: z.toJSONSchema(schemas[name], { io: 'input', unrepresentable: 'any' }) }))
@@ -758,7 +761,7 @@ export function documentTools(context: ToolsContext) {
   }
   const canDraft = () => {
     if (context.workflow) {
-      const issue = stageOperationError(context.script(), { stage: context.workflow, episode_number: context.stage.episode_number || 0, operation: context.operation })
+      const issue = stageOperationError(context.script(), { stage: context.workflow, episode_number: context.stage.episode_number || 0, operation: context.operation, intent: context.taskContract?.intent })
       if (issue) problem(issue)
     }
     if (context.discussionOnly || context.action?.operation === 'review') problem('本轮只讨论或评审，不创建或保存文档草稿')
@@ -934,7 +937,7 @@ export function documentTools(context: ToolsContext) {
           return { stage, skill_id, skill_name: selected.name, revision, path, content: file.content, characters: file.content.length,
             reused, context_characters: skillContextCharacters(), skills: rules.skills, files: rules.files }
         }
-        case 'get_creation_state': schemas.get_creation_state.parse(args); return { project: context.project, settings: mergeConfirmedScriptSettings(context.script().generation_options, context.currentSettings), saved_settings: context.script().generation_options, project_visual_style: projectVisualStyle(projectId), uploaded_script: scriptSourceIndex(projectId),
+        case 'get_creation_state': schemas.get_creation_state.parse(args); return { project: context.project, settings: mergeConfirmedScriptSettings(context.script().generation_options, context.currentSettings), saved_settings: context.script().generation_options, project_visual_style: projectVisualStyle(projectId), uploaded_script: scriptSourceIndex(projectId, false, false),
           creation_skills: creationSkills(),
           selected_skills: Object.entries(skillRules).map(([stage, rules]) => ({ stage, skills: rules.skills.map(({ id, name, role }) => ({ id, name, role })) })),
           stage: context.stage, stage_content_requirements: context.stage.stage ? workflowContentInstructions({ stage: context.stage.stage, scope: context.stage.stage === 'episode' ? 'episode' : 'project', episode_number: context.stage.episode_number || 0 }) : null,
@@ -1170,10 +1173,11 @@ export function documentTools(context: ToolsContext) {
           if (context.taskContract?.artifact_types && supplied.artifact_types !== undefined &&
             JSON.stringify(supplied.artifact_types) !== JSON.stringify(context.taskContract.artifact_types)) problem('不能改变本轮已约定的任务成果范围')
           const data = workflowGenerationDraftSchema.parse({ ...supplied, ...context.taskContract }), progress = workflowProgress(context.script())
+          if (data.intent === 'source_episode' && !scriptSourceDocument(projectId, false)) problem('原稿单集制作需要已上传原稿')
           const regenerating = context.operation === 'regenerate'
           if (context.operation === 'revise') problem('本轮为局部修订，请使用propose_document_patch')
           if (regenerating && !context.workflow) problem('重新设计必须明确指定已保存的阶段与集数')
-          const issue = stageOperationError(context.script(), { stage: data.stage, episode_number: data.episode_number, operation: context.operation || (progress.completed[data.stage] && missingStageArtifacts(data.stage, docs().filter(doc => doc.episode_number === data.episode_number)).length ? 'supplement' : 'generate') })
+          const issue = stageOperationError(context.script(), { stage: data.stage, episode_number: data.episode_number, intent: data.intent, operation: context.operation || (progress.completed[data.stage] && missingStageArtifacts(data.stage, docs().filter(doc => doc.episode_number === data.episode_number)).length ? 'supplement' : 'generate') })
           if (issue) problem(issue)
           data.operation = context.operation || 'generate'
           const differentStage = data.stage !== progress.next_stage || data.stage === 'episode' && data.episode_number !== progress.next_episode
@@ -1230,9 +1234,15 @@ export function documentTools(context: ToolsContext) {
             grouped.set(change.document_id, previous ? { ...previous, replacements: [...previous.replacements, ...change.replacements] } : change)
           }
           const changes = [...grouped.values()].map(change => ({ ...change, replacements: [...new Map(change.replacements.map(edit => [version([edit.find, edit.paragraph_id, edit.replace]), edit])).values()] })), documents: ToolDraftDocument[] = []
+          const savedDocuments = docs(), targets = changes.map(change => {
+            checkScope(change.document_id)
+            const source = savedDocuments.find(doc => doc.id === change.document_id)
+            if (!source) problem('文档不存在或不属于当前项目', 404)
+            return source
+          })
           for (let offset = 0; offset < changes.length; offset += 8) for (const change of changes.slice(offset, offset + 8)) {
             checkScope(change.document_id)
-            const source = docs().find(doc => doc.id === change.document_id)
+            const source = savedDocuments.find(doc => doc.id === change.document_id)
             if (!source) problem('文档不存在或不属于当前项目', 404)
             const taskDoc = draft?.revision_task!.documents.find(doc => doc.id === source.id)
             if (draft && !taskDoc) problem('修改超出统一修订任务范围，不能擅自扩大范围')
@@ -1287,7 +1297,14 @@ export function documentTools(context: ToolsContext) {
         case 'manage_document_draft': {
           const data = schemas.manage_document_draft.parse(args), draft = getToolDraft(projectId, data.draft_id)
           if (!draft || draft.status !== 'pending') problem('没有待确认草稿')
-          if (data.operation === 'read') { readDraftVersion = draft.version; resultDraft = draft; return draft }
+          if (data.operation === 'read') {
+            readDraftVersion = draft.version; resultDraft = draft
+            return { ...draft, documents: draft.documents.map(document => {
+              const locator_version = draftDocumentLocatorVersion(draft, document)
+              return { ...document, locator_version, paragraphs: documentParagraphs(document.content, locator_version)
+                .map(({ id, start, end }) => ({ id, start, end })) }
+            }) }
+          }
           canDraft()
           checkDialogueDraft(draft)
           checkDialogueSceneChanges(data.scene_changes)
@@ -1324,7 +1341,7 @@ export function documentTools(context: ToolsContext) {
             const doc = draft.documents.find(item => item.id === change.document_id)
             if (!doc || change.base_version !== draft.version) problem('草稿文档或版本不一致')
             checkScope(doc.id)
-            const edits = resolvePassageEdits(doc.content, draft.version, change.replacements, [[0, doc.content.length]], doc)
+            const edits = resolvePassageEdits(doc.content, draftDocumentLocatorVersion(draft, doc), change.replacements, [[0, doc.content.length]], doc)
             doc.content = applyResolvedEdits(doc.content, edits)
             doc.replacements.push(...edits.map(({ find, replace, reason }) => ({ find, replace, reason })))
           }

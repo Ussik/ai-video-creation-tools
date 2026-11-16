@@ -11,8 +11,12 @@ export type ModelRequestContext = Readonly<{
   policy: ModelTaskPolicy; taskId?: string; stepId?: string; attemptId?: string
   traceStage?: 'generation' | 'review' | 'repair' | 'classification' | 'prompt' | 'tool' | 'text' | 'media_generation'
   operationStage?: ModelOperationStage; operationStartedAt?: number; operationUnit?: { unit_index?: number; unit_count?: number }
+  correctionKind?: 'format' | 'business'
+  resultDetails?: Pick<ModelResultEvent, 'task_key' | 'section_ids' | 'correction_items' | 'reused_items' | 'request_category' | 'input_source_chars' | 'input_index_chars' | 'evidence_expanded' | 'repair_type'>
   onResult?: (result: ModelResultEvent) => void
   signal?: AbortSignal; onProgress?: (progress: ModelUnitProgress) => void; onDispatch?: (metrics: unknown) => void; onMetrics?: (metrics: unknown) => void
+  /** Metadata from an in-flight transport; never settles request use or quality. */
+  onActivity?: (activity: unknown) => void
 }>
 const context = new AsyncLocalStorage<ModelRequestContext>()
 export const currentModelRequestContext = () => context.getStore()
@@ -44,13 +48,13 @@ register(modelTaskPolicies.generation, [
   'workflow_draft', 'script_draft', 'script_stage_draft', 'script_stage_blocks', 'complete_script',
   'controlled_storyboard', 'storyboard_scene_plan', 'storyboard_shot_batch', 'shot_plan', 'clip_storyboard', 'visual_profiles', 'script_stage_artifact_repair',
   'script_stage_scene_repair', 'script_stage_block_repair', 'script_stage_context_exchange', 'script_draft_repair', 'script_draft_repair_decisions',
-  'script_draft_repair_edits', 'script_source_story', 'script_source_map', 'script_source_evidence_repair',
-  'script_source_quality_repair', 'script_source_story_overview', 'script_source_story_characters',
+  'script_draft_repair_edits', 'script_source_story', 'script_source_map', 'script_source_map_boundary_repair', 'script_source_evidence_repair',
+  'script_source_quality_repair', 'script_source_quality_repair_batch', 'script_source_story_character_repair', 'script_source_story_overview', 'script_source_story_characters',
   'script_source_story_characters_merge', 'script_source_story_timeline', 'script_source_story_threads',
   'script_source_story_uncertainties', 'video_prompt_analysis',
 ])
 register(modelTaskPolicies.review, [
-  'script_draft_completeness', 'script_draft_review_grouping', 'script_review', 'script_source_quality',
+  'script_draft_completeness', 'script_draft_completeness_coordinates', 'script_draft_review_grouping', 'script_review', 'script_source_quality',
   'script_draft_evidence_repair', 'script_finding_groups', 'script_document_review', 'video_review',
   'continuity_report', 'storyboard_directing_review', 'prompt_refinement_semantic_review', 'video_prompt_content_review',
 ])

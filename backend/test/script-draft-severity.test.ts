@@ -1,6 +1,7 @@
+import { reviewCoordinateDraftFixture as reviewScriptDraftCompleteness } from './fixtures/script-draft-coordinate-response.js'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { draftCompletenessInput, reviewScriptDraftCompleteness, ScriptDraftNeedsResolution } from '../src/modules/script/script-draft-completeness.js'
+import { draftCompletenessInput, ScriptDraftNeedsResolution } from '../src/modules/script/script-draft-completeness.js'
 import { createGenerationSteps } from '../src/modules/script/script-generation-steps.js'
 import type { WorkflowDraft } from '../src/modules/script/script-workflow.js'
 import { TextOutputLimitError } from '../src/infrastructure/providers/text-errors.js'
@@ -60,7 +61,7 @@ test('explicit blockers and old persisted findings retain their evidence and blo
   const steps = createGenerationSteps()
   await assert.rejects(reviewScriptDraftCompleteness(draft,
     async () => JSON.stringify(report([{ ...finding, severity: 'blocking' }])), { steps }), ScriptDraftNeedsResolution)
-  const cached = steps.checkpoint.steps['review:whole']!.value as { findings: Array<Record<string, unknown>> }
+  const cached = steps.checkpoint.steps['review:coordinates:v1:review:whole']!.value as { findings: Array<Record<string, unknown>> }
   delete cached.findings[0]!.severity
   await assert.rejects(reviewScriptDraftCompleteness(draft, async () => {
     throw new Error('a valid legacy cached report should be reused')
@@ -77,10 +78,10 @@ test('paged review recovery also requires severity before retaining a reported i
   const suggestions: unknown[] = []
   await reviewScriptDraftCompleteness(draft, async (prompt, contract) => {
     const focused = /本轮核查维度：([a-z]+)。/.exec(prompt)?.[1]
-    if (!focused || focused === 'settings' && contract!.name === 'script_draft_completeness') {
+    if (!focused || focused === 'settings' && contract!.name === 'script_draft_completeness_coordinates') {
       throw new TextOutputLimitError('', 'length')
     }
-    if (contract!.name === 'script_draft_completeness_page') {
+    if (contract!.name === 'script_draft_completeness_coordinates_page') {
       pageCalls++
       if (pageCalls === 1) return JSON.stringify({ items: [finding], complete: true })
       assert.match(prompt, /items\[0\]\.severity/)

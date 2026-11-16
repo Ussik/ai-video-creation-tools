@@ -1,16 +1,18 @@
+import { reviewCoordinateDraftFixture as reviewScriptDraftCompleteness, draftReviewFixtureSources, draftReviewCoordinateMaterial } from './fixtures/script-draft-coordinate-response.js'
 import { draftReviewFixtureJson } from './fixtures/script-draft-completeness.js'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { scriptArtifactLabels, scriptStageArtifacts } from '@video-studio/shared/script/script-stage-content'
-import { reviewScriptDraftCompleteness, ScriptDraftNeedsResolution } from '../src/modules/script/script-draft-completeness.js'
+import { ScriptDraftNeedsResolution } from '../src/modules/script/script-draft-completeness.js'
 import { draftReviewTaskContext, planDraftReviewTasks } from '../src/modules/script/script-draft-review-plan.js'
 import { createGenerationSteps, type GenerationCheckpoint } from '../src/modules/script/script-generation-steps.js'
 import type { WorkflowDraft } from '../src/modules/script/script-workflow.js'
 import { TextOutputLimitError } from '../src/infrastructure/providers/text-errors.js'
 
 type Source = { key: string; artifact_type: string; title: string; content: string }
-const sourceMarker = '待核对草稿原文（资料）：'
-function submitted(prompt: string): Source[] { return JSON.parse(prompt.slice(prompt.lastIndexOf(sourceMarker) + sourceMarker.length).split('\n【本轮候选正文结束】')[0]!) }
+// These mock interruptions happen before any provider request is dispatched.
+const beforeDispatch = (message: string) => Object.assign(new Error(message), { delivery: 'not_sent' as const })
+function submitted(prompt: string) { return draftReviewFixtureSources(prompt) }
 function phase(prompt: string) {
   if (prompt.includes('【独立任务：全局一致性】')) return 'consistency'
   const keys = submitted(prompt).map(source => source.key)
@@ -45,13 +47,13 @@ test('source-outline intent accepts a useful outline without demanding the other
   assert.equal(calls, 1)
 })
 
-test('style and optional deepening remain suggestions while genuine and legacy blocking evidence still stop the draft', async () => {
+test('style and optional deepening remain suggestions while genuine blocking evidence still stops the draft', async () => {
   const f = fixture(false), source = f.draft.artifacts[0]!, seen: string[] = []
   const common = { source_key: 'outline', kind: 'contradiction', quote: source.content, suggestion: '保留原稿结局。' }
   await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => draftReviewFixtureJson({ ...clear(prompt), findings: [
     { ...common, severity: 'suggestion', explanation: '可增加更细的动作描写。' },
     { ...common, severity: 'blocking', explanation: '原稿归还钥匙，候选却写成销毁，改变了明确结局。' },
-    { ...common, explanation: '人物先知情后首次得知，同一时序矛盾。' },
+    { ...common, severity: 'blocking', explanation: '人物先知情后首次得知，同一时序矛盾。' },
   ] }), { onSuggestions: findings => seen.push(...findings.map(finding => finding.explanation)) }), issue => {
     assert.ok(issue instanceof ScriptDraftNeedsResolution)
     assert.equal(issue.findings.length, 2)
@@ -64,18 +66,17 @@ test('style and optional deepening remain suggestions while genuine and legacy b
   ] }))
 })
 
-test('a suggestion cannot bypass candidate-source and verbatim-evidence validation', async () => {
+test('a suggestion cannot bypass candidate-source and current-coordinate validation', async () => {
   const f = fixture(false), calls: string[] = []
   await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
     calls.push(contract!.name)
-    if (contract!.name === 'script_draft_evidence_repair') return draftReviewFixtureJson({ repairs: [{ id: 'findings:0', first_unit: null, last_unit: null }] })
-    if (contract!.name === 'script_draft_evidence_reassessment') return draftReviewFixtureJson({ reassessments: [{
-      id: 'findings:0', verdict: 'unresolved', reason: '现有候选原文不足以确认或撤回该建议。', source_key: null, first_unit: null, last_unit: null,
-    }] })
-    return draftReviewFixtureJson({ ...clear(prompt), findings: [{ source_key: 'outline', kind: 'missing_core_setting', severity: 'suggestion',
-      quote: '候选没有这句话。', explanation: '可以深化。', suggestion: '丰富细节。' }] })
-  }), /证据/)
-  assert.deepEqual(calls, ['script_draft_completeness', 'script_draft_evidence_repair', 'script_draft_evidence_reassessment'])
+    const source = draftReviewCoordinateMaterial(prompt).find(source => source.key === 'outline')!
+    return JSON.stringify({ ...clear(prompt), facts: [], findings: [{ source_key: source.key, source_ref: source.source_ref,
+      first_unit: 999999, last_unit: 999999, kind: 'missing_core_setting', severity: 'suggestion',
+      explanation: '可以深化。', suggestion: '丰富细节。' }] })
+  }), /坐标|证据|分段/)
+  assert.deepEqual(calls, ['script_draft_completeness_coordinates', 'script_draft_completeness_coordinates'],
+    'invalid current coordinates get one bounded contract correction and can never become an adopted suggestion')
 })
 
 test('adaptive review keeps a small complete task to one request instead of multiplying reviews', async () => {
@@ -126,16 +127,18 @@ test('a failed final check resumes only that task and cannot silently pass on su
   const f = fixture(), calls: string[] = []
   await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => {
     const kind = phase(prompt); calls.push(kind)
-    if (kind === 'consistency') throw new Error('全文核对连接中断')
+    if (kind === 'consistency') throw beforeDispatch('全文核对发送前中断')
     return draftReviewFixtureJson(clear(prompt))
-  }, { context: f.context, steps: f.steps(), review_scope: 'adaptive' }), /连接中断/)
+  }, { context: f.context, steps: f.steps(), review_scope: 'adaptive' }), /发送前中断/)
   assert.deepEqual(calls, ['story', 'world', 'payoffs', 'consistency'])
-  assert.ok(!f.checkpoint().steps['review:task:consistency:result'])
+  assert.ok(f.checkpoint().steps['review:task:story:review:coordinates:v1:result'])
+  assert.equal(f.checkpoint().steps['review:task:consistency:review:coordinates:v1:result'], undefined)
   calls.length = 0
   await reviewScriptDraftCompleteness(f.draft, async prompt => {
     calls.push(phase(prompt)); return draftReviewFixtureJson(clear(prompt))
   }, { context: f.context, steps: f.steps(), review_scope: 'adaptive' })
   assert.deepEqual(calls, ['consistency'])
+  assert.ok(f.checkpoint().steps['review:task:consistency:review:coordinates:v1:result'])
 })
 
 test('a real cross-document conflict blocks after local success and remains blocking when replayed from checkpoints', async () => {
@@ -188,10 +191,10 @@ test('scoped output-limit recovery keeps successful sibling tasks and resumes on
     const task = phase(prompt), mode = dimension(prompt); calls.push(`${task}:${mode}`)
     assert.ok(prompt.includes(f.context.uploaded_script.content))
     if (task === 'world' && mode === 'whole') throw new TextOutputLimitError('', 'length')
-    if (task === 'world' && mode === 'consistency') throw new Error('当前维度连接中断')
+    if (task === 'world' && mode === 'consistency') throw beforeDispatch('当前维度发送前中断')
     if (task === 'world') assert.match(prompt, /只能缩小下方固定任务合同/)
     return draftReviewFixtureJson(clear(prompt))
-  }, { context: f.context, steps: f.steps(), review_scope: 'adaptive' }), /当前维度连接中断/)
+  }, { context: f.context, steps: f.steps(), review_scope: 'adaptive' }), /当前维度发送前中断/)
   assert.deepEqual(calls, ['story:whole', 'world:whole', 'world:settings', 'world:consistency'])
   calls.length = 0
   await reviewScriptDraftCompleteness(f.draft, async prompt => {
@@ -202,7 +205,7 @@ test('scoped output-limit recovery keeps successful sibling tasks and resumes on
 
 test('cancellation never dispatches remaining tasks and continuation reuses the completed task (serial mode)', async t => {
   process.env.VIDEO_STUDIO_SCRIPT_REVIEW_CONCURRENCY = '1'; t.after(() => { delete process.env.VIDEO_STUDIO_SCRIPT_REVIEW_CONCURRENCY })
-  const f = fixture(), controller = new AbortController(), calls: string[] = [], reason = new Error('创作者停止任务')
+  const f = fixture(), controller = new AbortController(), calls: string[] = [], reason = beforeDispatch('创作者停止任务')
   await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => {
     const task = phase(prompt); calls.push(task)
     if (task === 'world') { controller.abort(reason); throw reason }
@@ -246,9 +249,9 @@ test('a failed group keeps its finished siblings and only the failed group plus 
   const f = fixture(), first: string[] = []
   await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => {
     const task = phase(prompt); first.push(task)
-    if (task === 'world') throw new Error('世界观检查连接中断')
+    if (task === 'world') throw beforeDispatch('世界观检查发送前中断')
     return draftReviewFixtureJson(clear(prompt))
-  }, { context: f.context, steps: f.steps(), review_scope: 'adaptive' }), /世界观检查连接中断/)
+  }, { context: f.context, steps: f.steps(), review_scope: 'adaptive' }), /世界观检查发送前中断/)
   assert.ok(first.includes('story') && first.includes('payoffs'), 'siblings were not abandoned by the failure')
   assert.ok(!first.includes('consistency'), 'the global check never runs on incomplete local results')
   const second: string[] = []
@@ -260,7 +263,7 @@ test('a failed group keeps its finished siblings and only the failed group plus 
 
 test('after cancellation no further group is dispatched, even while a sibling is still running', async t => {
   process.env.VIDEO_STUDIO_SCRIPT_REVIEW_CONCURRENCY = '2'; t.after(() => { delete process.env.VIDEO_STUDIO_SCRIPT_REVIEW_CONCURRENCY })
-  const f = fixture(), controller = new AbortController(), calls: string[] = [], reason = new Error('创作者停止任务')
+  const f = fixture(), controller = new AbortController(), calls: string[] = [], reason = beforeDispatch('创作者停止任务')
   let aborted!: () => void; const abortedSignal = new Promise<void>(resolve => { aborted = resolve })
   await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => {
     const task = phase(prompt); calls.push(task)
@@ -272,8 +275,8 @@ test('after cancellation no further group is dispatched, even while a sibling is
   const resumed: string[] = []
   await reviewScriptDraftCompleteness(f.draft, async prompt => { resumed.push(phase(prompt)); return draftReviewFixtureJson(clear(prompt)) },
     { context: f.context, steps: f.steps(), review_scope: 'adaptive' })
-  // A result that finishes after cancellation is never checkpointed, so the group that was in flight is redone.
-  assert.deepEqual([...new Set(resumed)].sort(), ['consistency', 'payoffs', 'story', 'world'])
+  // The complete sibling raw response is retained before cancellation and revalidated locally on continuation.
+  assert.deepEqual([...new Set(resumed)].sort(), ['consistency', 'payoffs', 'world'])
   assert.equal(resumed.at(-1), 'consistency')
 })
 
@@ -296,4 +299,22 @@ test('cross-document history is retained for arbitrary creator references and in
   calls.length = 0
   await run()
   assert.deepEqual(calls, [], 'unchanged complete evidence still reuses successful checkpoints')
+})
+
+
+test('unknown delivery in one logical group stops continuation without resending or rerunning successful siblings', async () => {
+  const f = fixture(), calls: string[] = [], unknown = new Error('provider accepted then disconnected without a complete response')
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async prompt => {
+    const task = phase(prompt); calls.push(task)
+    if (task === 'world') throw unknown
+    return draftReviewFixtureJson(clear(prompt))
+  }, { context: f.context, steps: f.steps(), review_scope: 'adaptive' }), issue => issue === unknown)
+  assert.deepEqual([...calls].sort(), ['payoffs', 'story', 'world'])
+  let resumed = 0
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async () => {
+    resumed++; assert.fail('unknown provider delivery must not be resent automatically')
+  }, { context: f.context, steps: f.steps(), review_scope: 'adaptive' }), issue => {
+    assert.equal((issue as { code?: string }).code, 'structured_initial_delivery_pending'); return true
+  })
+  assert.equal(resumed, 0)
 })

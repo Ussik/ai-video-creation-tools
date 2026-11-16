@@ -8,7 +8,7 @@ export type TextModelLimits = {
 }
 export type TextCapabilityScope = { base_url: string; protocol: string; remote_id: string }
 export type TextCompatibilityCapabilities = {
-  structured_output?: Array<'json_schema' | 'json_object' | 'prompt'>
+  structured_output?: Array<'json_schema' | 'json_object' | 'prompt' | 'tool_call'>
   tools?: boolean
   stream_usage?: boolean
   encrypted_reasoning?: boolean
@@ -45,7 +45,7 @@ function limitsError(value: unknown, partial: boolean): string | null {
 function compatibilityError(value: unknown): string | null {
   if (!record(value) || Object.keys(value).some(key => !['structured_output', 'tools', 'stream_usage', 'encrypted_reasoning', 'reasoning'].includes(key))) return '文本兼容能力包含未知字段'
   for (const key of ['tools', 'stream_usage', 'encrypted_reasoning']) if (value[key] !== undefined && typeof value[key] !== 'boolean') return '文本兼容能力开关必须为布尔值'
-  if (value.structured_output !== undefined && (!Array.isArray(value.structured_output) || value.structured_output.some(item => !['json_schema', 'json_object', 'prompt'].includes(String(item))))) return '结构化兼容能力必须使用已支持的格式列表'
+  if (value.structured_output !== undefined && (!Array.isArray(value.structured_output) || value.structured_output.some(item => !['json_schema', 'json_object', 'prompt', 'tool_call'].includes(String(item))))) return '结构化兼容能力必须使用已支持的格式列表'
   const thinking = value.reasoning
   if (thinking !== undefined && (!record(thinking) || Object.keys(thinking).some(key => !['mode', 'effort_values', 'minimum_budget_tokens'].includes(key)) || !['fixed', 'adaptive', 'effort'].includes(String(thinking.mode)) ||
     thinking.effort_values !== undefined && (!Array.isArray(thinking.effort_values) || thinking.effort_values.some(item => typeof item !== 'string' || !/^[a-zA-Z0-9_-]{1,40}$/.test(item))) ||

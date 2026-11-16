@@ -129,13 +129,13 @@ test('HTTP 200 partial rejection and malformed confirmations fail without retrie
   assert.equal(errors.mock.calls.length, 0); assert.equal(warnings.mock.calls.length, 0)
 })
 
-test('HTTP errors and TTFT map to fixed status and official completion attribute', async () => {
+test('HTTP errors retain first event timing without claiming a first text token', async () => {
   let at = 1770000000000; const batches: LangfuseBatch[] = []
   const tracer = createLangfuseTracer(enabled(), { now: () => at, clientFactory: () => ({ async send(batch) { batches.push(batch) } }) })
   const o = tracer.observation({ taskId: 'task', owner: 'request' }); o.dispatch({ request_id: 'r' }); at += 100
   o.metrics({ request_id: 'r', first_event_ms: 30, http_status: 503, raw_reason: 'PRIVATE' }); await tracer.flush()
   const child = batches.flatMap(spans)[0]!
-  assert.equal(child.status.message, 'http_error'); assert.equal(child.status.code, 2); assert.equal(attribute(child, 'langfuse.observation.completion_start_time'), new Date(1770000000030).toISOString())
+  assert.equal(child.status.message, 'http_error'); assert.equal(child.status.code, 2); assert.equal(attribute(child, 'langfuse.observation.completion_start_time'), undefined); assert.equal(metadata(child).first_event_ms, 30)
 })
 
 test('stuck transport aborts and shutdown remains bounded', async () => {
@@ -172,4 +172,52 @@ test('validated TTS terminal success exports one successful child despite cancel
   assert.equal(metadata(child[0]!).delivery, 'completed')
   assert.equal(metadata(c.spans().find(span => !span.parentSpanId)!).state, 'succeeded')
   assert.equal(attribute(child[0]!, 'langfuse.observation.usage_details'), undefined)
+})
+
+
+test('terminal stream diagnostics separate first visible text and unknown zero output usage', async () => {
+  let at = 1770000000000; const batches: LangfuseBatch[] = []
+  const tracer = createLangfuseTracer(enabled(), { now: () => at, clientFactory: () => ({ async send(batch) { batches.push(batch) } }) })
+  const o = tracer.observation({ taskId: 'source-task', owner: 'request' })
+  o.dispatch({ request_id: 'source-stream', operation_stage: 'source_synthesis' }); at += 1000
+  o.metrics({ request_id: 'source-stream', first_event_ms: 10, first_text_ms: 250, http_status: 200,
+    input_tokens: 120, output_tokens: 0, response_chars: 200, output_started: true, response_terminated: true,
+    delivery: 'output_started', failure_reason: 'disconnected', raw_reason: 'stream_read_error' })
+  o.finish('failed'); await tracer.flush()
+  const child = batches.flatMap(spans).find(span => span.parentSpanId)!, data = metadata(child)
+  assert.equal(child.name, '全剧整合:text')
+  assert.equal(attribute(child, 'langfuse.observation.completion_start_time'), new Date(1770000000250).toISOString())
+  assert.equal(data.first_event_ms, 10); assert.equal(data.first_text_ms, 250)
+  assert.equal(data.response_terminated, true); assert.equal(data.upstream_error_code, 'stream_read_error')
+  assert.equal(data.output_tokens, undefined); assert.equal(data.output_usage_complete, false)
+  assert.deepEqual(JSON.parse(attribute(child, 'langfuse.observation.usage_details')!), { input: 120 })
+})
+
+
+test('thinking-only interrupted responses keep output usage unknown even before visible text starts', async () => {
+  const c = capture(), o = c.tracer.observation({ taskId: 'thinking-only', owner: 'request' })
+  o.dispatch({ request_id: 'thinking-stream' })
+  o.metrics({ request_id: 'thinking-stream', input_tokens: 5, output_tokens: 0, delivery: 'accepted', output_started: false, failure_reason: 'disconnected' })
+  o.finish('failed'); await c.tracer.flush()
+  const child = c.spans().find(span => span.parentSpanId)!
+  assert.equal(metadata(child).output_tokens, undefined)
+  assert.deepEqual(JSON.parse(attribute(child, 'langfuse.observation.usage_details')!), { input: 5 })
+  assert.equal(attribute(child, 'langfuse.observation.completion_start_time'), undefined)
+})
+
+test('source diagnostics carry input composition and strategy declarations separately from local validation and reuse', async () => {
+  const c = capture(), o = c.tracer.observation({ taskId: 'source-evidence', owner: 'request' })
+  o.dispatch({ request_id: 'evidence-request', task_key: 'threads:4', input_source_chars: 1200, input_index_chars: 300,
+    request_structured_mode: 'json_schema', structured_strategy_source: 'configured', structured_enforcement: 'unverified', source: 'PRIVATE_CONTENT' })
+  o.metrics({ request_id: 'evidence-request', delivery: 'completed', response_json_valid: false,
+    request_structured_mode: 'json_schema', structured_enforcement: 'unverified' })
+  o.result!({ phase: 'structure', status: 'valid', task_key: 'threads:4', input_source_chars: 1200, input_index_chars: 300,
+    request_category: 'local_reuse', reused_items: 1, repair_type: 'syntax_insertions', correction_items: 16, evidence_expanded: false })
+  o.finish('succeeded'); await c.tracer.flush()
+  const result = c.spans().map(metadata).find(m => m.result_phase === 'structure')!
+  assert.equal(result.task_key, 'threads:4'); assert.equal(result.repair_type, 'syntax_insertions'); assert.equal(result.reused_items, 1)
+  assert.equal(result.input_source_chars, 1200); assert.equal(result.input_index_chars, 300)
+  const generation = c.spans().map(metadata).find(m => m.request_structured_mode === 'json_schema')!
+  assert.equal(generation.structured_enforcement, 'unverified'); assert.equal(generation.response_json_valid, false)
+  assert.doesNotMatch(JSON.stringify(c.batches), /PRIVATE_CONTENT/)
 })

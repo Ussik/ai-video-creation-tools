@@ -1,3 +1,4 @@
+import { structuredFixtureJson } from './fixtures/script-draft-coordinate-response.js'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -52,15 +53,16 @@ async function fixture(t: TestContext, updateSource: boolean) {
     let output: unknown
     if (analysis) output = analysis
     else if (prompt.includes('待核对草稿原文（资料）：')) {
-      reviews.push(prompt); output = { checked_artifacts: scriptStageArtifacts.outline, findings: [] }
+      reviews.push(prompt); output = { facts: [], checked_artifacts: scriptStageArtifacts.outline, findings: [] }
     } else {
-      assert.ok(body.tools?.some((tool: { function: { name: string } }) => tool.function.name === 'submit_repair_patch'), 'repairs must exercise the native candidate tool path')
-      repairs++
+      const workset = /【当前工作集：(\[[^\n]+\])】/.exec(prompt)
+      assert.ok(body.tools?.some((tool: { function: { name: string } }) => tool.function.name === 'submit_repair_patch') || workset || prompt.includes('【当前工作集：仅核对当前有效原稿是否确需最小同步】'), 'repairs exercise the declared native or exact workset path')
+      if (workset && (JSON.parse(workset[1]!) as string[]).includes('outline') || body.tools) repairs++
       output = { decisions: ['能力代价采用每次失去一天记忆。'], summary: '落实记忆代价',
         source_edits: updateSource ? [{ find: '每次失去三天记忆', replace: '每次失去一天记忆', reason: '创作者明确调整代价，同步直接冲突原文' }] : [],
         edits: [{ source_key: 'outline', find: quote, replace: fixed, reason: '落实候选决定' }] }
     }
-    return Response.json({ choices: [{ message: { content: typeof output === 'string' ? output : JSON.stringify(output) }, finish_reason: 'stop' }],
+    return Response.json({ choices: [{ message: { content: typeof output === 'string' ? output : structuredFixtureJson(output, prompt) }, finish_reason: 'stop' }],
       usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 } })
   })
   const result = await api('POST', `/api/projects/${project.id}/script/director/chat`, { model_id: model.id, mode: 'script', use_tools: false,

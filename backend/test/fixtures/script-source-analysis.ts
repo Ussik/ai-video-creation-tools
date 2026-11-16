@@ -8,14 +8,16 @@ export function sourceAnalysisFixture(prompt: string): string | undefined {
   const storyMarker = '【全剧整合资料】\n'
   if (prompt.includes(storyMarker)) {
     const input = JSON.parse(prompt.slice(prompt.lastIndexOf(storyMarker) + storyMarker.length))
+    if (input.evidence_input) input.materials = input.evidence_input.facts.map((section: { id: number }) => ({ covered_section_ids: [section.id], section: { ...section, events: input.evidence_input.position_index[section.id].event_locators } }))
     const ids = input.materials.flatMap((item: { covered_section_ids: number[] }) => item.covered_section_ids)
     const characters = new Map<string, { name: string; aliases: string[]; description: string; section_ids: number[] }>()
-    for (const item of input.materials) for (const character of item.section.characters) {
+    for (const item of input.materials) for (const character of (item.section.characters || [])) {
       const existing = characters.get(character.name)
       if (existing) existing.section_ids.push(item.section.id)
-      else characters.set(character.name, { name: character.name, aliases: [], description: character.description, section_ids: [item.section.id] })
+      else characters.set(character.name, { name: character.name, aliases: [], description: character.description || '原文中已经出场的人物。', section_ids: [item.section.id] })
     }
-    const timeline = input.materials.filter((item: { section: { events: unknown[] } }) => item.section.events.length).map((item: { section: { id: number; events: Array<{ summary: string }> } }) => ({
+    const timeline = input.materials.filter((item: { section: { events: unknown[] } }) => item.section.events?.length).map((item: { section: { id: number; events: Array<{ summary: string }> } }) => ({
+      ...(input.part?.scope_version === 2 ? { primary_section_id: item.section.id } : {}),
       summary: item.section.events.map(event => event.summary).join('；').slice(0, 600), section_ids: [item.section.id],
     }))
     const story = { summary: '主角返乡，保留全剧事实与结局。', characters: [...characters.values()], timeline, threads: [],

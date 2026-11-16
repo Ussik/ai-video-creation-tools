@@ -377,3 +377,18 @@ test('recomputed unit IDs and a safely adjusted preceding-continuation flag do n
   actual.continues_previous = false
   assert.equal(validScriptSourceMapReuseState(state, plan), false, 'a damaged continuation cannot erase a genuine retained link')
 })
+
+test('remote identity and supporting quotes shift by their own positions and changed dependencies invalidate reuse',()=>{
+ const {source,analysis,at}=fixture()
+ const base=analysis.sections[0]!.characters[0]!.evidence
+ for(const section of analysis.sections.slice(30)) section.characters[0]!.evidence={...base,occurrence:{...section.characters[0]!.evidence},supporting:[{...section.characters[0]!.evidence}]}
+ analysis.quality={status:'passed',input_hash:sourceQualityInputHash(analysis),findings:[]}
+ const current=revised(source,at(23),0,'雨停之后，'),plan=planScriptSourceMapReuse(source,analysis,current)
+ const suffix=plan.pages.flatMap(p=>p.reuse_sections||[]).find(s=>s.episode_number!>=35)
+ assert.ok(suffix);const evidence=suffix.characters[0]!.evidence
+ assert.equal(evidence.offset,base.offset,'remote identity before edit stays in place')
+ assert.equal(evidence.supporting![0]!.offset,evidence.occurrence!.offset)
+ assert.equal(current.content.slice(evidence.occurrence!.offset,evidence.occurrence!.offset+evidence.occurrence!.quote.length),evidence.occurrence!.quote)
+ const touched=revised(source,base.offset,1,'另'),invalidated=planScriptSourceMapReuse(source,analysis,touched,widePolicy)
+ assert.ok(!invalidated.pages.flatMap(p=>p.reuse_sections||[]).some(s=>s.episode_number!>=31),'untouched chapter cannot reuse changed background evidence')
+})

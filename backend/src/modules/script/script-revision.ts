@@ -22,7 +22,7 @@ export const revisionSchemas = {
 }
 export function revisionHash(value: unknown) { return createHash('sha256').update(JSON.stringify(value)).digest('hex') }
 
-export type ToolDiagnostic = { code: string; message: string; retryable: boolean; repair: string; document_id?: string; title?: string; item_index?: number; path?: string; limit?: number; actual?: number }
+export type ToolDiagnostic = { code: string; message: string; retryable: boolean; repair: string; document_id?: string; title?: string; item_index?: number; conflict_indices?: number[]; path?: string; limit?: number; actual?: number }
 export class ScriptToolProblem extends Error {
   statusCode = 422
   constructor(public diagnostic: ToolDiagnostic) { super(diagnostic.message) }
@@ -57,21 +57,29 @@ export function resolvePassageEdits(content: string, documentVersion: string, ed
   const paragraphs = documentParagraphs(content, documentVersion)
   return edits.map((edit, item_index) => {
     const details = { document_id: document.id, title: document.title, item_index }
+    if (/[\uD800-\uDFFF]/u.test(edit.replace)) revisionProblem('invalid_passage_replacement', `「${document.title}」替换文本含不完整字符`, 'replace必须包含完整字符，不能含未配对的Unicode代理字符。', details)
     const anchor = edit.paragraph_id ? paragraphs.find(p => p.id === edit.paragraph_id) : undefined
     if (edit.paragraph_id && !anchor) revisionProblem('anchor_stale', `「${document.title}」的段落定位已失效`, '重新读取该文档当前版本，使用返回的paragraph_id。', details)
     const find = edit.find || anchor?.text
     if (!find) revisionProblem('missing_locator', '需要原文或段落定位', '填写find或paragraph_id。', details)
-    const start = anchor ? content.indexOf(find, anchor.start) : content.indexOf(find)
-    if (start < 0 || anchor && start + find.length > anchor.end) revisionProblem('passage_not_found', `「${document.title}」找不到修改片段`, '重新read_documents读取原文，逐字复制find或使用paragraph_id；不能使用摘要或改写后的原文。', details)
-    const next = content.indexOf(find, start + 1)
+    const paragraphOnly = !!anchor && !edit.find
+    const start = paragraphOnly ? anchor.start : anchor ? content.indexOf(find, anchor.start) : content.indexOf(find)
+    const end = paragraphOnly ? anchor.end : start + find.length
+    if (start < 0 || anchor && end > anchor.end) revisionProblem('passage_not_found', `「${document.title}」找不到修改片段`, '重新read_documents读取原文，逐字复制find或使用paragraph_id；不能使用摘要或改写后的原文。', details)
+    const splitsCharacter = (offset: number) => offset > 0 && offset < content.length
+      && content.charCodeAt(offset - 1) >= 0xd800 && content.charCodeAt(offset - 1) <= 0xdbff
+      && content.charCodeAt(offset) >= 0xdc00 && content.charCodeAt(offset) <= 0xdfff
+    if (splitsCharacter(start) || splitsCharacter(end)) revisionProblem('invalid_passage_boundary', `「${document.title}」修改片段切开了完整字符`, '使用包含完整字符的精确原文或当前paragraph_id，不能只替换半个Unicode代理对。', details)
+    const next = paragraphOnly ? -1 : content.indexOf(find, start + 1)
     if (next >= 0 && (!anchor || next + find.length <= anchor.end)) revisionProblem('ambiguous_passage', `「${document.title}」原文片段出现多次`, '使用paragraph_id限定段落，并提供段内唯一的原文；不要猜测替换位置。', details)
-    if (!ranges.some(([from, to]) => start >= from && start + find.length <= to)) revisionProblem('unread_passage', `「${document.title}」修改片段尚未读取`, 'read_documents读取完整目标段落后重试。', details)
-    return { find, replace: edit.replace, reason: edit.reason, start, end: start + find.length }
+    if (!ranges.some(([from, to]) => start >= from && end <= to)) revisionProblem('unread_passage', `「${document.title}」修改片段尚未读取`, 'read_documents读取完整目标段落后重试。', details)
+    return { find, replace: edit.replace, reason: edit.reason, start, end }
   })
 }
 export function applyResolvedEdits(content: string, edits: ReturnType<typeof resolvePassageEdits>) {
-  const sorted = [...edits].sort((a, b) => a.start - b.start)
-  for (let i = 1; i < sorted.length; i++) if (sorted[i]!.start < sorted[i - 1]!.end) revisionProblem('overlapping_passages', '修改片段相互重叠', '将重叠修改合并为同一个段落替换后重新提交。')
+  const sorted = edits.map((edit, item_index) => ({ ...edit, item_index })).sort((a, b) => a.start - b.start)
+  for (let i = 1; i < sorted.length; i++) if (sorted[i]!.start < sorted[i - 1]!.end) revisionProblem('overlapping_passages', '修改片段相互重叠', '将重叠修改合并为同一个段落替换后重新提交。',
+    { item_index: sorted[i]!.item_index, conflict_indices: [sorted[i - 1]!.item_index, sorted[i]!.item_index] })
   let result = content
   for (const edit of sorted.reverse()) result = result.slice(0, edit.start) + edit.replace + result.slice(edit.end)
   if (!result.trim() || result.length > 100000) revisionProblem('invalid_document_length', '修改后的文档不能为空或超过 100000 字', '减少单份文档长度并保留完整正文。')

@@ -39,7 +39,7 @@ export function createDocumentReviewRecovery(options: {
   const identity = { version: 2, prompt: options.prompt, targets, context: recoveryContext,
     model: options.model, provider: options.provider }
   const store = generationCheckpointStore(options.projectId, identity, 'document-review-output')
-  const steps = createGenerationSteps({ checkpoint: store.checkpoint, save: state => store.save(state), signal: options.signal })
+  const steps = createGenerationSteps({ checkpoint: store.checkpoint, save: state => store.save(state), savePrivateResponse: store.savePrivateResponse, signal: options.signal })
   const strategyId = 'document-review:strategy'
   const strategy = z.literal('pages')
   const assertCurrent = () => {

@@ -1,3 +1,6 @@
+import { reviewScriptDraftCompleteness as currentReview } from '../src/modules/script/script-draft-completeness.js'
+import { coordinateFixtureJson, reviewCoordinateDraftFixture } from './fixtures/script-draft-coordinate-response.js'
+import { reviewLegacyDraftEvidenceFixture as reviewScriptDraftCompleteness, legacyDraftEvidenceCheckpoint } from './fixtures/script-draft-legacy-evidence.js'
 import { draftReviewFixtureJson } from './fixtures/script-draft-completeness.js'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
@@ -6,7 +9,7 @@ import { scriptArtifactLabels, scriptStageArtifacts } from '@video-studio/shared
 import { TextOutputLimitError, TextProviderError } from '../src/infrastructure/providers/text-errors.js'
 import { beginTextRequest, createScriptRequestUsage, TextRequestBudgetError, withTextRequestUsage } from '../src/infrastructure/providers/text-request-usage.js'
 import type { StructuredGenerator } from '../src/modules/generation/model-output.js'
-import { reviewScriptDraftCompleteness, ScriptDraftNeedsResolution } from '../src/modules/script/script-draft-completeness.js'
+import { ScriptDraftNeedsResolution } from '../src/modules/script/script-draft-completeness.js'
 import { createGenerationSteps, type GenerationCheckpoint } from '../src/modules/script/script-generation-steps.js'
 import type { WorkflowDraft } from '../src/modules/script/script-workflow.js'
 
@@ -70,44 +73,34 @@ function withoutId(value: Record<string, unknown>) {
   return rest
 }
 
-test('a completed review with only optional summary facts passes without locating fabricated quotations', async () => {
+test('an exact old report with only optional summary facts migrates without locating fabricated quotations', async () => {
   const f = fixture(), names: string[] = []
   const report = { ...f.clear(), facts: [
     { source_key: 'outline', quote: '道具清单：必要道具名称、用途及其人物关系一致。', meaning: '模型额外生成的概括性摘要。' },
     { source_key: 'synopsis', quote: '该栏目包含全部道具在全剧时间线中的结构化追踪记录。', meaning: '模型额外生成的非逐字结论。' },
     { source_key: 'uploaded_script', quote: '林晚最终归还铜钥匙。', meaning: '原稿证据不是本候选文档的事实引文。' },
   ] }
-  await reviewScriptDraftCompleteness(f.draft, async (_prompt, contract) => {
+  const steps = createGenerationSteps({ checkpoint: legacyDraftEvidenceCheckpoint(f.draft, report, { context: f.context }) })
+  await currentReview(f.draft, async (_prompt, contract) => {
     names.push(contract!.name)
-    assert.equal(contract!.name, 'script_draft_completeness')
-    return draftReviewFixtureJson(report)
-  }, { context: f.context, steps: f.steps() })
-  assert.deepEqual(names, ['script_draft_completeness'])
-  assert.deepEqual((f.checkpoint().steps['review:whole']!.value as Review).facts, [])
-  assert.equal(provisional(f.checkpoint()).length, 0)
+    assert.fail('a completed exact old report is reused locally')
+  }, { context: f.context, steps })
+  assert.deepEqual(names, [])
+  assert.deepEqual((steps.checkpoint.steps['review:coordinates:v1:review:whole']!.value as Review).facts, [])
+  assert.equal(provisional(steps.checkpoint).length, 0)
 })
 
 test('an existing unresolved response containing only summary facts resumes without another model request', async () => {
   const f = fixture()
-  let semanticPrompt = ''
-  await reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
-    assert.equal(contract!.name, 'script_draft_completeness')
-    semanticPrompt = prompt.slice(prompt.lastIndexOf('【原始任务与资料】\n') + '【原始任务与资料】\n'.length)
-    return draftReviewFixtureJson(f.clear())
-  }, { context: f.context })
-  const id = `review:response:${createHash('sha256').update(semanticPrompt).digest('hex')}`
-  const checkpoint: GenerationCheckpoint = { steps: { [id]: {
-    input_hash: createHash('sha256').update(JSON.stringify({ version: 1, prompt: semanticPrompt })).digest('hex'),
-    value: { ...f.clear(), facts: [
-      { source_key: 'outline', quote: '候选文档的规则和结局均完整。', meaning: '旧版本保留的非逐字摘要。' },
-      { source_key: 'uploaded_script', quote: '林晚最终归还铜钥匙。', meaning: '旧版本额外生成的事实摘要。' },
-    ] },
-  } } }
-  const steps = createGenerationSteps({ checkpoint })
-  await reviewScriptDraftCompleteness(f.draft, async () => assert.fail('the completed retained assessment is reused'),
+  const checkpoint = legacyDraftEvidenceCheckpoint(f.draft, { ...f.clear(), facts: [
+    { source_key: 'outline', quote: '候选文档的规则和结局均完整。', meaning: '旧版本保留的非逐字摘要。' },
+    { source_key: 'uploaded_script', quote: '林晚最终归还铜钥匙。', meaning: '旧版本额外生成的事实摘要。' },
+  ] }, { context: f.context })
+  const id = Object.keys(checkpoint.steps)[0]!, steps = createGenerationSteps({ checkpoint })
+  await currentReview(f.draft, async () => assert.fail('the completed retained assessment is reused'),
     { context: f.context, steps })
   assert.equal(steps.checkpoint.steps[id], undefined)
-  assert.deepEqual((steps.checkpoint.steps['review:whole']!.value as Review).facts, [])
+  assert.deepEqual((steps.checkpoint.steps['review:coordinates:v1:review:whole']!.value as Review).facts, [])
 })
 
 test('one inaccurate quote among six findings uses one whole review and one local locator, preserving all semantic fields', async () => {
@@ -174,18 +167,19 @@ test('a contiguous selected range is reconstructed from the exact original sourc
   assert.equal(result[0]!.quote, f.draft.artifacts[0]!.content.trim())
 })
 
-test('structural, coverage and unknown-source failures keep the strict whole-response contract and do not trigger quote lookup', async t => {
+test('structural, coverage and unknown-source failures keep the strict current contract and do not trigger quote lookup', async t => {
   for (const invalid of ['coverage', 'unknown source', 'invalid kind'] as const) await t.test(invalid, async () => {
     const f = fixture(), names: string[] = []
-    const value: Record<string, unknown> = { ...f.clear(), findings: [f.finding(0, '错误引文。')] }
-    if (invalid === 'coverage') value.checked_artifacts = ['outline']
-    if (invalid === 'unknown source') (value.findings as Finding[])[0]!.source_key = 'uploaded_script'
-    if (invalid === 'invalid kind') (value.findings as Array<Record<string, unknown>>)[0]!.kind = 'invented'
-    await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (_prompt, contract) => {
-      names.push(contract!.name); return draftReviewFixtureJson(value)
+    await assert.rejects(currentReview(f.draft, async (prompt, contract) => {
+      names.push(contract!.name)
+      const value = JSON.parse(coordinateFixtureJson({ ...f.clear(), findings: [f.finding(0)] }, prompt))
+      if (invalid === 'coverage') value.checked_artifacts = ['outline']
+      if (invalid === 'unknown source') value.findings[0].source_key = 'uploaded_script'
+      if (invalid === 'invalid kind') value.findings[0].kind = 'invented'
+      return JSON.stringify(value)
     }, { steps: f.steps() }))
-    assert.deepEqual(names, ['script_draft_completeness', 'script_draft_completeness'])
-    assert.equal(f.checkpoint().steps['review:whole'], undefined)
+    assert.deepEqual(names, ['script_draft_completeness_coordinates', 'script_draft_completeness_coordinates'])
+    assert.equal(f.checkpoint().steps['review:coordinates:v1:review:whole'], undefined)
     assert.equal(provisional(f.checkpoint()).length, 0)
   })
 })
@@ -263,14 +257,14 @@ test('an unlocatable quote retains the assessment and resumes independent reasse
   const retained = provisional(f.checkpoint())[0]![1].value as Review
   assert.deepEqual(retained.facts, [fact], 'discarding optional summaries never discards an unresolved finding')
   assert.equal(retained.findings.length, 1)
-  const resumed: string[] = []
-  const result = await findings(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+  const before = structuredClone(f.checkpoint()), resumed: string[] = []
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (_prompt, contract) => {
     resumed.push(contract!.name)
-    assert.equal(contract!.name, 'script_draft_evidence_reassessment', 'continuation resumes the pending semantic reassessment')
-    return reassessmentResponse(prompt)
-  }, { steps: f.steps() }))
-  assert.deepEqual(resumed, ['script_draft_evidence_reassessment'])
-  assert.equal(result.length, 1, 'unlocatable findings are never silently dropped or turned into a passed audit')
+    assert.fail('a completed unresolved response must replay locally')
+  }, { steps: f.steps() }), issue => (issue as { code?: string }).code === 'script_draft_evidence_unresolved')
+  assert.deepEqual(resumed, [])
+  assert.deepEqual(f.checkpoint(), before)
+  assert.equal(f.checkpoint().steps['review:whole'], undefined)
 })
 
 test('partial locator success is retained while independent reassessment resumes the provisional report', async () => {
@@ -347,13 +341,14 @@ test('a completed locator page containing null remains unfinished and continuati
   const pages = Object.entries(f.checkpoint().steps).filter(([key]) => key.endsWith(':evidence:pages'))
   assert.equal(pages.length, 0, 'null coordinates cannot complete a repair page')
   assert.ok(Object.keys(f.checkpoint().steps).some(key => key.endsWith(':semantic-pending')))
-  const resumed: string[] = []
-  const result = await findings(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
+  const before = structuredClone(f.checkpoint()), resumed: string[] = []
+  await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (_prompt, contract) => {
     resumed.push(contract!.name)
-    return reassessmentResponse(prompt)
-  }, { steps: f.steps() }))
-  assert.deepEqual(resumed, ['script_draft_evidence_reassessment'])
-  assert.equal(result.length, 1); assert.equal(result[0]!.explanation, f.finding(0).explanation)
+    assert.fail('a completed unresolved response must replay locally')
+  }, { steps: f.steps() }), issue => (issue as { code?: string }).code === 'script_draft_evidence_unresolved')
+  assert.deepEqual(resumed, [])
+  assert.deepEqual(f.checkpoint(), before)
+  assert.equal(f.checkpoint().steps['review:whole'], undefined)
 })
 
 test('null repairs in an interrupted partial page never block a later real location and successful quotes stay retained', async () => {
@@ -441,7 +436,7 @@ test('cancelled or budget-blocked evidence lookup never passes review and retain
 test('a dimension is not complete until its provisional evidence is located, and continuation skips prior full reviews', async () => {
   const f = fixture(), seen: string[] = []
   await assert.rejects(reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
-    if (contract!.name === 'script_draft_evidence_reassessment') { seen.push('reassess'); return reassessmentResponse(prompt, ['findings:0']) }
+    if (contract!.name === 'script_draft_evidence_reassessment') { seen.push('reassess'); throw Object.assign(new TextProviderError('reassessment not sent', false), { delivery: 'not_sent' as const }) }
     if (contract!.name === 'script_draft_evidence_repair') {
       seen.push('locate')
       return draftReviewFixtureJson({ repairs: [{ id: 'findings:0', first_unit: null, last_unit: null }] })
@@ -465,13 +460,14 @@ test('a dimension is not complete until its provisional evidence is located, and
   assert.ok(f.checkpoint().steps['review:whole'])
 })
 
-test('already exact evidence adds no locator calls or provisional checkpoints', async () => {
+test('fresh coordinate evidence adds no locator calls or provisional checkpoints', async () => {
   const f = fixture(), names: string[] = []
-  await reviewScriptDraftCompleteness(f.draft, async (_prompt, contract) => {
+  await reviewCoordinateDraftFixture(f.draft, async (_prompt, contract) => {
     names.push(contract!.name)
-    return draftReviewFixtureJson({ ...f.clear(), facts: [{ source_key: 'outline', quote: '夜雨覆盖石桥。', meaning: '开场环境。' }] })
+    return draftReviewFixtureJson(f.clear())
   }, { steps: f.steps() })
-  assert.deepEqual(names, ['script_draft_completeness'])
-  assert.deepEqual(Object.keys(f.checkpoint().steps), ['review:whole'])
-  await reviewScriptDraftCompleteness(f.draft, async () => assert.fail('validated unchanged review is reused'), { steps: f.steps() })
+  assert.deepEqual(names, ['script_draft_completeness_coordinates'])
+  assert.deepEqual(Object.keys(f.checkpoint().steps).filter(key => !key.startsWith('response:')), ['review:coordinates:v1:review:whole'])
+  assert.equal(provisional(f.checkpoint()).length, 0)
+  await currentReview(f.draft, async () => assert.fail('validated unchanged review is reused'), { steps: f.steps() })
 })

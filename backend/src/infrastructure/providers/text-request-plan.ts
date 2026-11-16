@@ -1,5 +1,6 @@
 import { beginProviderDispatch, isTextRequestBudgetError } from './text-request-usage.js'
 import { randomUUID } from 'node:crypto'
+import { safeModelResult } from '../../infrastructure/observability/model-results.js'
 import { currentModelRequestContext } from '../../modules/generation/model-task-policy.js'
 import { resolveTextCapabilities, scopeTextCapabilities, type TextCapabilities } from '@video-studio/shared/models/text-capabilities'
 import { planTextRequest, TextContextCapacityError } from './text-context.js'
@@ -102,7 +103,8 @@ export async function prepareTextRequest(settings: Settings, body: unknown, prot
 export function textRequestTrace() {
   const context = currentModelRequestContext()
   return { request_id: randomUUID(), ...(context ? { request_purpose: context.policy.purpose,
-    task_id: context.taskId, step_id: context.stepId, attempt_id: context.attemptId } : {}) }
+    task_id: context.taskId, step_id: context.stepId, attempt_id: context.attemptId,
+    ...(() => { const value = safeModelResult({ phase: 'structure', status: 'valid', ...context.resultDetails }); if (!value) return {}; const { phase, status, ...details } = value; return details })() } : {}) }
 }
 
 export function notifyTextRequest<T>(phase: 'dispatch' | 'metrics', metrics: T, callback?: (value: T) => void, observe = true) {
@@ -110,6 +112,41 @@ export function notifyTextRequest<T>(phase: 'dispatch' | 'metrics', metrics: T, 
   const context = currentModelRequestContext()
   const observer = phase === 'dispatch' ? context?.onDispatch : context?.onMetrics
   if (observe && observer && observer !== callback) observer(metrics)
+}
+
+/** In-flight metadata is separate from dispatch and settlement. Never pass a
+ * provider payload here: only these code-owned milestones and numeric fields
+ * may reach the observer. Diagnostic failures cannot affect the transport. */
+export function createTextRequestActivity(metrics: {
+  request_id?: string; http_status?: number; delivery?: string; first_event_ms?: number; first_text_ms?: number;
+  response_chars?: number; output_started?: boolean;
+}, startedAt: number, observe = true) {
+  const observer = observe ? currentModelRequestContext()?.onActivity : undefined
+  let headers = false, firstText = false, eventCount = 0, lastSavedEventAt = 0, lastEventMs: number | undefined
+  const publish = (activity: 'headers' | 'first_event' | 'event' | 'first_text') => {
+    if (!observer || !metrics.request_id) return
+    const value: Record<string, unknown> = { request_id: metrics.request_id, activity,
+      activity_elapsed_ms: Math.max(0, Date.now() - startedAt), received_events: eventCount }
+    for (const key of ['http_status', 'first_event_ms', 'first_text_ms', 'response_chars'] as const) {
+      const number = metrics[key]
+      if (typeof number === 'number' && Number.isFinite(number) && number >= 0) value[key] = number
+    }
+    if (lastEventMs !== undefined) value.last_event_ms = lastEventMs
+    if (['accepted', 'rejected', 'unknown'].includes(String(metrics.delivery))) value.delivery = metrics.delivery
+    if (typeof metrics.output_started === 'boolean') value.output_started = metrics.output_started
+    try { observer(value) } catch { /* Observability never owns model execution. */ }
+  }
+  return {
+    headers() { if (!headers) { headers = true; publish('headers') } },
+    event() {
+      const at = Date.now()
+      eventCount++; lastEventMs = Math.max(0, at - startedAt)
+      if (eventCount === 1 || at - lastSavedEventAt >= 15_000) {
+        lastSavedEventAt = at; publish(eventCount === 1 ? 'first_event' : 'event')
+      }
+    },
+    text() { if (!firstText) { firstText = true; publish('first_text') } },
+  }
 }
 
 export type ProviderRequestIdentity = { model_id?: string; remote_id?: string }

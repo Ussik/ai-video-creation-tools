@@ -433,7 +433,7 @@ test('the explicit workflow panel shows fixed skills without making a model requ
 
 test('the story outline button directly submits all nine documents with or without an uploaded source', async t => {
   const source = { project_id: detail.id, filename: '原稿.txt', content: '林晚返回旧车站调查父亲失踪。', updated_at: '2026-11-08T00:00:00Z',
-    analysis: { id: 'source-analysis', status: 'ready', sections: [], completed_chunks: 1, total_chunks: 1 } }
+    analysis: { id: 'source-analysis', status: 'ready', sections: [], completed_chunks: 1, total_chunks: 1, quality: { input_hash: 'fixture-review', status: 'passed', findings: [] } } }
   for (const sourceDocument of [null, source]) {
     const view = await mountAutomaticDirector(t, '保留已确认主线，设计完整故事大纲', detail, sourceDocument)
     try {
@@ -452,7 +452,7 @@ test('the story outline button directly submits all nine documents with or witho
 
 test('the outline panel submits all nine documents with an uploaded source and has no summary-only choice', async t => {
   const source = { project_id: detail.id, filename: '原稿.txt', content: '林晚返回旧车站调查父亲失踪。', updated_at: '2026-11-08T00:00:00Z',
-    analysis: { id: 'source-analysis', status: 'ready', sections: [], completed_chunks: 1, total_chunks: 1 } }
+    analysis: { id: 'source-analysis', status: 'ready', sections: [], completed_chunks: 1, total_chunks: 1, quality: { input_hash: 'fixture-review', status: 'passed', findings: [] } } }
   const view = await mountAutomaticDirector(t, '保留原稿事实整理故事', detail, source)
   try {
     await act(() => view.container.querySelector<HTMLButtonElement>('[aria-label="对话工具"]')!.click())

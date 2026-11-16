@@ -247,6 +247,11 @@ export function initDb(): void {
       duration INTEGER NOT NULL DEFAULT 5,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS script_source_scene_origins (
+      scene_id TEXT PRIMARY KEY REFERENCES script_scenes(id) ON DELETE CASCADE,
+      source_version TEXT NOT NULL, source_offset INTEGER NOT NULL, source_length INTEGER NOT NULL,
+      source_text TEXT NOT NULL, scene_hash TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS script_conversations (
       id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       label TEXT NOT NULL DEFAULT '未命名对话', created_at TEXT NOT NULL, updated_at TEXT NOT NULL

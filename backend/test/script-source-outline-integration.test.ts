@@ -3,6 +3,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
+import type { ScriptSourceAnalysis } from '@video-studio/shared/script/script-source-document'
+import { sourceQualityInputHash } from '../src/modules/script/script-source-quality.js'
 
 const directory = await mkdtemp(join(tmpdir(), 'source-outline-task-'))
 process.env.VIDEO_STUDIO_DATA_DIR = directory
@@ -139,10 +141,12 @@ test('background analysis progress does not invalidate a completed source-outlin
     assert.equal(failed.statusCode, 502, failed.body)
     assert.deepEqual(calls, ['workflow_draft', 'script_draft_completeness'])
     assert.ok(db.prepare('SELECT * FROM script_generation_checkpoints WHERE project_id=?').get(project.id))
-    saveAnalysis({ ...analysis, status: 'ready', phase: 'ready', completed_chunks: 1, completed_characters: sourceText.length,
+    const reviewedAnalysis = { ...analysis, status: 'ready', phase: 'ready', completed_chunks: 1, completed_characters: sourceText.length,
       sections: [{ offset: 0, length: sourceText.length, title: '原稿', episode_number: null, summary: 'BACKGROUND_ANALYSIS_FINISHED', characters: [], events: [] }],
       story: { summary: 'BACKGROUND_ANALYSIS_FINISHED', characters: [], timeline: [], threads: [], ending: { summary: '姐姐去向未知', section_ids: [0] }, uncertainties: [] },
-      progress: undefined }, 'ready')
+      progress: undefined } as ScriptSourceAnalysis
+    reviewedAnalysis.quality = { input_hash: sourceQualityInputHash(reviewedAnalysis), status: 'passed', findings: [] }
+    saveAnalysis(reviewedAnalysis, 'ready')
     const changedAnalysis = await api('GET', `/api/projects/${project.id}/script/source`)
     assert.equal(changedAnalysis.analysis.status, 'ready')
     assert.equal(scriptSourceVersion(changedAnalysis), sourceVersion, 'background progress leaves the source identity intact')

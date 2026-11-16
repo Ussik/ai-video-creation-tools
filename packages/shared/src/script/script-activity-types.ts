@@ -1,3 +1,4 @@
+import type { TextStructuredObservation } from '../models/text-observation.js'
 import type { ScriptRequestUsage, ScriptRequestUsageLimits } from './script-request-usage.js'
 import type { ScriptStage, StageArtifactType } from './script-stage-content.js'
 
@@ -9,7 +10,7 @@ export type ScriptActivityArtifactPreview = {
 }
 
 /** Public execution records shared by API and UI, without server dependencies. */
-export type ScriptActivity = {
+export type ScriptActivity = TextStructuredObservation & {
   task_id?: string; step_id?: string;
   /** One-based claimed request attempt; absent when the counter is unknown. */
   attempt?: number; sequence?: number;
@@ -19,7 +20,7 @@ export type ScriptActivity = {
   round?: number; name?: string; skill_id?: string; revision?: string; files?: string[];
   scope?: 'task' | 'step' | 'notice'; parent_id?: string; reused?: boolean;
   input?: string; output?: string; input_truncated?: boolean; output_truncated?: boolean;
-  request_bytes?: number; response_chars?: number; first_event_ms?: number;
+  request_bytes?: number; response_chars?: number; first_event_ms?: number; first_text_ms?: number;
   input_tokens?: number; output_tokens?: number; reasoning_tokens?: number; output_limit?: number;
   output_limit_reason?: 'max_output_tokens' | 'length'; output_limit_kind?: 'text' | 'reasoning' | 'tool_arguments';
   cache_read_tokens?: number; cache_write_tokens?: number; cache_miss_tokens?: number; request_purpose?: string;
@@ -33,7 +34,11 @@ export type ScriptActivity = {
   attempt_id?: string; request_id?: string; model_id?: string; remote_id?: string; endpoint?: string;
   failure_reason?: 'output_limit'|'context_overflow'|'disconnected'|'refusal'|'invalid_tool'|'invalid_response'|'upstream_error'|'cancelled';
   output_parameter?: 'max_output_tokens'|'max_completion_tokens'|'max_tokens'; framing_reserve_tokens?: number;
-  raw_reason?: string; delivery?: 'not_sent'|'rejected'|'accepted'|'output_started'|'completed'|'unknown'; output_started?: boolean;
+  raw_reason?: string; delivery?: 'not_sent'|'rejected'|'accepted'|'output_started'|'completed'|'unknown'; output_started?: boolean; response_terminated?: boolean;
+  /** Safe protocol shape only; a terminal response can still fail its contract. */
+  request_has_tools?: boolean; request_tool_count?: number; request_structured_mode?: 'none' | 'prompt' | 'json_schema' | 'json_object' | 'tool_call';
+  response_text_blocks?: number; response_thinking_blocks?: number; response_tool_use_blocks?: number; response_other_blocks?: number;
+  response_complete?: boolean; response_blocks_closed?: boolean; response_protocol_terminal?: boolean;
   upstream_request_id?: string; http_status?: number;
   usage?: { current: ScriptRequestUsage; cumulative?: ScriptRequestUsage; limits?: ScriptRequestUsageLimits };
   targets?: ScriptActivityTarget[];

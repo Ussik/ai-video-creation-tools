@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto'
 import type { ScriptDraftFinding } from '@video-studio/shared/script/script-draft-resolution'
 import { draftCompletenessSources } from './script-draft-completeness.js'
-import { applyResolvedEdits, resolvePassageEdits, revisionProblem } from './script-revision.js'
+import { applyResolvedEdits, documentParagraphs, revisionProblem } from './script-revision.js'
+import { createDraftRepairReferences } from './script-draft-repair-references.js'
 import type { DraftRepairOutput } from './script-draft-repair-generation.js'
 import { parseScriptSceneDurationReplacement, scriptSceneDurationRepairInstructions, type WorkflowDraft } from './script-workflow.js'
 
-type RepairDocument = { source_key: string; title: string; version: string; length: number; content: string; source_scene_id?: string }
+type RepairDocument = { paragraphs: Array<{ paragraph_id: string; start: number; end: number; text_sha256: string }>; source_key: string; title: string; version: string; length: number; content: string; source_scene_id?: string }
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 
 /** A read-only snapshot of a pending candidate, never a formal document draft.
@@ -15,9 +16,16 @@ export function createScriptDraftRepairContext(input: {
   candidateId: string; candidateVersion: string; sourceVersion: string; draft: WorkflowDraft;
   findings: ScriptDraftFinding[]; currentSource?: string; assertCurrent?: () => void
 }) {
+  const referenceIdentity = { candidate_id: input.candidateId, candidate_version: input.candidateVersion, source_version: input.sourceVersion }
+  const references = createDraftRepairReferences(draftCompletenessSources(input.draft), referenceIdentity)
+  const sourceReferences = input.currentSource === undefined ? undefined : createDraftRepairReferences([{ key: 'script-source', title: '当前有效稿', content: input.currentSource }], referenceIdentity)
   const documents: RepairDocument[] = draftCompletenessSources(input.draft).map(source => ({
     source_key: source.key, title: source.title, content: source.content, length: source.content.length,
-    version: hash([input.candidateVersion, source.key, source.content]),
+    version: references.locatorVersion(source.key),
+    paragraphs: documentParagraphs(source.content, references.locatorVersion(source.key)).map(paragraph => ({
+      paragraph_id: paragraph.id, start: paragraph.start, end: paragraph.end,
+      text_sha256: createHash('sha256').update(paragraph.text).digest('hex'),
+    })),
     ...(source.key.startsWith('scene:') && input.draft.scenes[Number(source.key.split(':')[1])]?.source_scene_id
       ? { source_scene_id: input.draft.scenes[Number(source.key.split(':')[1])]!.source_scene_id } : {}),
   }))
@@ -41,7 +49,7 @@ export function createScriptDraftRepairContext(input: {
   }
   const initialDocuments = withSceneTimingContext(documents.filter(document => fallback || requested.has(document.source_key)))
   const loaded = new Set(initialDocuments.map(document => document.source_key))
-  const descriptor = ({ content: _content, ...document }: RepairDocument) => document
+  const descriptor = ({ content: _content, paragraphs: _paragraphs, ...document }: RepairDocument) => document
   const directory = documents.map(descriptor)
   const assertVersion = (candidateVersion: string, sourceVersion?: string) => {
     input.assertCurrent?.()
@@ -63,7 +71,28 @@ export function createScriptDraftRepairContext(input: {
     estimated_total: input.draft.scenes.reduce((sum, scene) => sum + scene.duration, 0),
     ...(input.draft.target_duration === undefined ? {} : { target_duration: input.draft.target_duration }),
     instructions: scriptSceneDurationRepairInstructions } : undefined
+  const inspectEdit = (edit: DraftRepairOutput['edits'][number] | DraftRepairOutput['source_edits'][number], sourceOnly = false) => {
+    assertVersion(input.candidateVersion, input.sourceVersion)
+    const key = sourceOnly ? 'script-source' : 'source_key' in edit ? edit.source_key : ''
+    if (sourceOnly) {
+      if (!sourceReferences || input.currentSource === undefined) revisionProblem('missing_repair_source', '当前项目没有可修改的有效稿', 'source_edits 返回空数组。')
+      const [change] = sourceReferences.resolveEdits(key, [edit])
+      return { start: change!.start, end: change!.end, source_key: key }
+    }
+    const document = byKey.get(key)
+    if (!document) revisionProblem('unknown_repair_source', '补齐位置不属于当前候选草稿', '只能修改当前候选目录中的真实来源。')
+    if (!loaded.has(key)) revisionProblem('unread_repair_source', `「${document.title}」尚未完整读取`, '先调用 get_repair_context 读取该文档，再提交精确补丁。')
+    const changes = references.resolveEdits(key, [edit], { version: document.version, content: document.content })
+    if (/^scene:\d+:duration$/.test(key)) parseScriptSceneDurationReplacement(applyResolvedEdits(document.content, changes))
+    return { start: changes[0]!.start, end: changes[0]!.end, source_key: key }
+  }
   return {
+    inspectEdit,
+    sourceParagraphs: () => sourceReferences && documentParagraphs(input.currentSource!, sourceReferences.locatorVersion('script-source')).map(paragraph => ({
+      paragraph_id: paragraph.id, start: paragraph.start, end: paragraph.end,
+      text_sha256: createHash('sha256').update(paragraph.text).digest('hex'),
+    })),
+    legacyIdentity: hash([input.candidateId, input.candidateVersion, input.sourceVersion, documents.map(({ paragraphs: _paragraphs, ...document }) => ({ ...document, version: hash([input.candidateVersion, document.source_key, document.content]) })), input.currentSource, ...(timing ? [timing] : [])]),
     identity: hash([input.candidateId, input.candidateVersion, input.sourceVersion, documents, input.currentSource, ...(timing ? [timing] : [])]),
     candidateId: input.candidateId, candidateVersion: input.candidateVersion, sourceVersion: input.sourceVersion,
     initial: {
@@ -119,8 +148,7 @@ export function createScriptDraftRepairContext(input: {
         const document = byKey.get(key)
         if (!document) revisionProblem('unknown_repair_source', '补齐位置不属于当前候选草稿', '只能修改当前候选目录中的真实来源。')
         if (!loaded.has(key)) revisionProblem('unread_repair_source', `「${document!.title}」尚未完整读取`, '先调用 get_repair_context 读取该文档，再提交精确补丁。')
-        const changes = resolvePassageEdits(document!.content, document!.version, value.edits.filter(edit => edit.source_key === key),
-          [[0, document!.content.length]], { id: key, title: document!.title })
+        const changes = references.resolveEdits(key, value.edits.filter(edit => edit.source_key === key), { version: document!.version, content: document!.content })
         const content = applyResolvedEdits(document!.content, changes)
         if (/^scene:\d+:duration$/.test(key)) parseScriptSceneDurationReplacement(content)
         changed = content !== document!.content || changed
@@ -128,8 +156,7 @@ export function createScriptDraftRepairContext(input: {
       if (value.source_edits.length) {
         if (input.currentSource === undefined) revisionProblem('missing_repair_source', '当前项目没有可修改的有效稿', 'source_edits 返回空数组。')
         const content = input.currentSource!
-        const changes = resolvePassageEdits(content, input.sourceVersion, value.source_edits, [[0, content.length]],
-          { id: 'script-source', title: '当前有效稿' })
+        const changes = sourceReferences!.resolveEdits('script-source', value.source_edits)
         changed = applyResolvedEdits(content, changes) !== content || changed
       }
       if (!changed) revisionProblem('repair_without_changes', '本次补丁没有产生有效正文修改', '根据现有决定修改真实问题；不要提交 find 与 replace 完全相同的补丁。', { retryable: false })

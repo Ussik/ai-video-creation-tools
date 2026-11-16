@@ -20,12 +20,12 @@ test('an unclaimed model counter has no public attempt number and claimed reques
   assert.equal(modelAttemptNumber(), undefined)
 })
 
-test('network retries and contract correction together never exceed three actual calls', async () => {
+test('known HTTP rejection retries and contract correction together never exceed three actual calls', async () => {
   let calls = 0
   const generate = retryReadOnlyGeneration(async () => {
     calls++
     if (calls === 2) return '{"answer":42}'
-    throw new TextProviderError('temporary', true)
+    throw Object.assign(new TextProviderError('temporary', true, 'server_error', 503), { delivery: 'rejected' as const })
   }, { wait: async () => {} })
   await assert.rejects(generateStructuredOutput('workflow_draft', z.object({ answer: z.string() }), generate, '保留故事要求'), /temporary/)
   assert.equal(calls, 3)
@@ -52,7 +52,7 @@ test('provider Retry-After is honored and authorization failures are never retri
   let calls = 0
   const waits: number[] = []
   const generate = retryReadOnlyGeneration(async () => {
-    if (++calls === 1) throw new TextProviderError('rate limited', true, undefined, 429, undefined, 12000)
+    if (++calls === 1) throw Object.assign(new TextProviderError('rate limited', true, undefined, 429, undefined, 12000), { delivery: 'rejected' as const })
     return 'complete'
   }, { wait: async ms => { waits.push(ms) }, random: () => 0 })
   assert.equal(await generate('test'), 'complete')

@@ -34,7 +34,14 @@ test('a failed source recheck reports inconclusive while retaining previous veri
         return JSON.stringify({ checked_section_ids: input.sections.map((section: { id: number }) => section.id),
           findings: [{ kind: 'omission', explanation: '遗漏资源已经用尽', unit_ids: [input.units[0].id] }] })
       }
-      if (prompt.includes('【原稿分析定点修补资料】')) return JSON.stringify({ status: 'requires_full_rebuild', reason: '需要完整重建。', changes: [] })
+      const repairMarker = '【原稿分析定点修补资料】\n'
+      if (prompt.includes(repairMarker)) {
+        const input = JSON.parse(prompt.slice(prompt.lastIndexOf(repairMarker) + repairMarker.length))
+        return JSON.stringify({ decision: 'modify_analysis', finding_hash: input.finding_hash, reason: '将已用尽的资源限制明确补入全剧概要。',
+          analysis_refs: [{ path: 'story.summary' }], source_refs: [{ unit_id: input.finding.unit_ids[0] }],
+          changes: [{ target: 'story.summary', section_id: null, operation: 'replace', index: null,
+            expected: input.story.summary, value: `${input.story.summary}资源已经用尽。` }] })
+      }
       return mapReply(prompt)
     }, new AbortController().signal)), /独立复核暂不可用/)
   const quality = outcomes.filter(event => event.phase === 'quality')
@@ -43,6 +50,10 @@ test('a failed source recheck reports inconclusive while retaining previous veri
   const saved = db.prepare('SELECT payload FROM script_step_checkpoints WHERE project_id=? AND namespace=?').get(id, 'source-proposal') as { payload: string }
   assert.equal(JSON.parse(saved.payload).quality.status, 'issues')
   assert.equal(JSON.parse(saved.payload).quality.findings.length, 1)
+  assert.equal(JSON.parse(saved.payload).quality_repair.completed_findings, 1)
+  assert.equal(JSON.parse(saved.payload).quality_repair.decisions[0].decision, 'modify_analysis')
+  assert.match(JSON.parse(saved.payload).story.summary, /资源已经用尽/)
+  assert.equal(reviews, 2, 'the repair is saved before one independent recheck reports its transport failure')
 })
 async function terminal(id: string) {
   for (let attempt = 0; attempt < 200; attempt++) {
@@ -160,7 +171,7 @@ test('invented evidence IDs stop when exact local correction repeats without pro
   const analyzer = createScriptSourceAnalyzer(async (_id, _model, prompt) => {
     if (prompt.includes('【局部证据修复】')) {
       repairPrompts.push(prompt)
-      return JSON.stringify({ fixes: [{ kind: 'events', index: 0, summary: '林舟回家', unit_id: 999 }] })
+      return JSON.stringify({ fixes: [{ kind: 'events', index: 0, evidence: { unit_id: 999 } }] })
     }
     const value = JSON.parse(mapReply(prompt)); value.sections[0].events[0].evidence.unit_id = 999
     return JSON.stringify(value)
@@ -173,11 +184,11 @@ test('invented evidence IDs stop when exact local correction repeats without pro
     assert.match(state.error!, /unit_id=999/)
     assert.equal(repairPrompts.length, 4, 'two identical failed correction cycles stop without a global request ceiling')
     assert.ok(state.work![0]!.result, 'the parsed map is retained for an explicit resume')
-    assert.ok(repairPrompts.some(prompt => /unit_id=999.*正文范围/.test(prompt)), 'the precise invalid ID is available to the automatic correction')
+    assert.ok(repairPrompts.some(prompt => /unit_id=999.*真实非空原文/.test(prompt)), 'the precise invalid ID is available to the automatic correction')
   } finally { await analyzer.close() }
 })
 
-test('service restart resumes saved analysis progress instead of leaving running status stuck', async () => {
+test('service restart pauses saved progress and only explicit continuation resumes unfinished work', async () => {
   const id = project('剧本原文。\n'.repeat(2500))
   let began: () => void = () => {}, release: () => void = () => {}, calls = 0
   const started = new Promise<void>(resolve => { began = resolve })
@@ -203,6 +214,9 @@ test('service restart resumes saved analysis progress instead of leaving running
   try {
     const restartedAt = Date.now()
     second.recover()
+    assert.equal(scriptSourceAnalysis(id)!.status, 'paused')
+    assert.equal(resumedCalls, 0, 'restart never grants a model request')
+    second.start(id, 'model')
     const ready = await terminal(id)
     assert.ok(Date.parse(ready.started_at!) >= restartedAt)
     assert.equal(ready.status, 'ready')
@@ -268,7 +282,7 @@ test('retry reuses the parsed map and valid siblings, sending only damaged secti
       assert.equal(input.units.map((unit: { text: string }) => unit.text).join(''), '河岸：伙伴归还钥匙。')
       assert.equal(input.issues.length, 1)
       if (unavailable) throw new Error('HTTP 503 provider unavailable')
-      return JSON.stringify({ fixes: [{ kind: 'events', index: 0, summary: '伙伴归还钥匙', unit_id: input.units[0].id }] })
+      return JSON.stringify({ fixes: [{ kind: 'events', index: 0, evidence: { unit_id: input.units[0].id } }] })
     }
     mapCalls++; const units = batchUnits(prompt)
     return JSON.stringify({ sections: [sectionAt(units[0]!.id, '返乡'), sectionAt(units[1]!.id, '河岸', 999), sectionAt(units[2]!.id, '告别')] })
@@ -295,7 +309,7 @@ test('completed local evidence fixes survive a later repair interruption without
       const marker = '【局部证据修复】\n', input = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length))
       repairedTitles.push(input.title)
       if (input.title === '告别' && unavailable) throw new Error('provider interrupted after first exact repair')
-      return JSON.stringify({ fixes: [{ kind: 'events', index: 0, summary: input.title, unit_id: input.units[0].id }] })
+      return JSON.stringify({ fixes: [{ kind: 'events', index: 0, evidence: { unit_id: input.units[0].id } }] })
     }
     mapCalls++; const units = batchUnits(prompt)
     return JSON.stringify({ sections: [sectionAt(units[0]!.id, '返乡'), sectionAt(units[1]!.id, '河岸', 999), sectionAt(units[2]!.id, '告别', 999)] })
@@ -313,7 +327,7 @@ test('persistent evidence problems stop without splitting or re-reading any sour
   let maps = 0, repairs = 0
   const analyzer = createScriptSourceAnalyzer(async (_id, _model, prompt) => {
     if (prompt.includes('【全剧整合资料】') || prompt.includes('【原稿分析核对资料】')) return mapReply(prompt)
-    if (prompt.includes('【局部证据修复】')) { repairs++; return JSON.stringify({ fixes: [{ kind: 'events', index: 0, summary: '行动', unit_id: 999999 }] }) }
+    if (prompt.includes('【局部证据修复】')) { repairs++; return JSON.stringify({ fixes: [{ kind: 'events', index: 0, evidence: { unit_id: 999999 } }] }) }
     maps++; const units = batchUnits(prompt)
     return JSON.stringify({ sections: [sectionAt(units[0]!.id, '返乡'), sectionAt(units[1]!.id, '河岸', 999999), sectionAt(units.at(-1)!.id, '告别')] })
   })
@@ -333,26 +347,29 @@ test('unusable model structure stops on repeated identical diagnosis without sub
   const analyzer = createScriptSourceAnalyzer(async () => { calls++; return '{"sections":[]}' })
   try {
     analyzer.start(id, 'model'); const failed = await terminal(id)
-    assert.equal(failed.status, 'failed'); assert.equal(calls, 4)
+    assert.equal(failed.status, 'failed'); assert.equal(calls, 2, 'complete failed responses replay locally instead of repeating two model calls')
     assert.match(failed.error!, /相同已保存结果.*未取得新进展/)
     assert.equal(failed.work!.length, 1); assert.equal(failed.work![0]!.depth, 0); assert.equal(failed.sections.length, 0)
     assert.equal(failed.story, undefined)
   } finally { await analyzer.close() }
 })
 
-test('identical analysis after a full rebuild stops automatic looping and an explicit resume retains its checkpoint', async () => {
+test('an explicit full-rebuild decision is saved without reconstruction and a resume retains it without another request', async () => {
   const id = project('林舟返乡。资源已经用尽。'), repairMarker = '【原稿分析定点修补资料】\n', reviewMarker = '【原稿分析核对资料】\n'
-  let maps = 0, stories = 0, repairs = 0, reviews = 0, resolved = false
+  let maps = 0, stories = 0, repairs = 0, reviews = 0
   const analyzer = createScriptSourceAnalyzer(async (_id, _model, prompt) => {
     if (prompt.includes(repairMarker)) {
       repairs++
-      return JSON.stringify({ status: 'requires_full_rebuild', reason: '问题涉及章节边界，需要重新核对目录。', changes: [] })
+      const input = JSON.parse(prompt.slice(prompt.lastIndexOf(repairMarker) + repairMarker.length))
+      return JSON.stringify({ decision: 'requires_full_rebuild', finding_hash: input.finding_hash,
+        reason: '问题涉及章节边界，需要重新核对目录。', analysis_refs: [{ path: 'story.summary' }],
+        source_refs: [{ unit_id: input.finding.unit_ids[0] }], changes: [] })
     }
     if (prompt.includes(reviewMarker)) {
       reviews++
       const input = JSON.parse(prompt.slice(prompt.lastIndexOf(reviewMarker) + reviewMarker.length))
       return JSON.stringify({ checked_section_ids: input.sections.map((section: { id: number }) => section.id),
-        findings: resolved ? [] : [{ kind: 'omission', explanation: reviews === 1 ? '遗漏资源已经用尽的限制。' : '资源已经用尽的事实仍未保留。', unit_ids: [input.units.at(-1).id] }] })
+        findings: [{ kind: 'omission', explanation: '遗漏资源已经用尽的限制。', unit_ids: [input.units.at(-1).id] }] })
     }
     if (prompt.includes('【原文片段】')) maps++
     if (prompt.includes('【全剧整合资料】')) stories++
@@ -361,20 +378,29 @@ test('identical analysis after a full rebuild stops automatic looping and an exp
   try {
     analyzer.start(id, 'model'); const failed = await terminal(id)
     assert.equal(failed.status, 'failed')
-    assert.match(failed.error!, /相同已保存结果.*未取得新进展/)
-    assert.match(failed.error!, /资源已经用尽/)
-    assert.deepEqual([maps, stories, repairs, reviews], [2, 2, 1, 2], 'a full reconstruction that reproduces the same diagnosis cannot repeat indefinitely')
+    assert.match(failed.error!, /无法安全定点修补/)
+    assert.match(failed.error!, /章节边界/)
+    assert.deepEqual([maps, stories, repairs, reviews], [1, 1, 1, 1], 'a rebuild decision cannot silently authorize directory reconstruction or another review')
     assert.equal(failed.completed_chunks, failed.total_chunks)
     assert.ok(failed.story); assert.ok(failed.sections.length)
     assert.equal(failed.quality!.status, 'issues')
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM script_artifacts WHERE project_id=?').get(id)!.count, 0)
-    const retained = structuredClone(failed.sections)
-    resolved = true
+    assert.equal(failed.quality_repair!.completed_findings, 0)
+    assert.equal(failed.quality_repair!.decisions!.length, 1)
+    assert.equal(failed.quality_repair!.decisions![0]!.decision, 'requires_full_rebuild')
+    assert.equal(failed.quality_rebuild_for, undefined)
+    const retained = structuredClone({ sections: failed.sections, story: failed.story, quality: failed.quality,
+      decisions: failed.quality_repair!.decisions, output: failed.quality_repair_output })
+    assert.ok(retained.output?.checkpoint.raw, 'the original full-rebuild response remains durable')
     const continuing = analyzer.start(id, 'model')
-    assert.deepEqual(continuing.sections, retained, 'manual resume adopts the exact saved interpretation before continuing its unfinished step')
-    const ready = await terminal(id)
-    assert.equal(ready.status, 'ready', ready.error || '')
-    assert.equal(ready.quality!.status, 'passed')
+    assert.deepEqual(continuing.sections, retained.sections, 'manual resume keeps the exact saved interpretation')
+    const stopped = await terminal(id)
+    assert.equal(stopped.status, 'failed')
+    assert.match(stopped.error!, /已保存无法安全局部处理的重建决定/)
+    assert.deepEqual([maps, stories, repairs, reviews], [1, 1, 1, 1], 'resuming a terminal rebuild decision cannot buy or dispatch another request')
+    assert.deepEqual({ sections: stopped.sections, story: stopped.story, quality: stopped.quality,
+      decisions: stopped.quality_repair!.decisions, output: stopped.quality_repair_output }, retained)
+    assert.equal(stopped.quality!.status, 'issues', 'saving a rebuild decision is never a passed quality review')
     assert.equal(db.prepare('SELECT content FROM script_source_documents WHERE project_id=?').get(id)!.content, '林舟返乡。资源已经用尽。')
   } finally { await analyzer.close() }
 })
@@ -459,9 +485,10 @@ test('legacy ready and recovered running analyses cannot reuse segmented maps as
       if (status === 'ready') analyzer.start(id, 'model')
       else {
         analyzer.recover()
-        const interrupted = await terminal(id)
-        assert.equal(interrupted.status, 'failed')
-        assert.match(interrupted.error || '', /受理状态未知/)
+        const row = db.prepare('SELECT snapshot FROM script_source_analyses WHERE project_id=?').get(id) as { snapshot: string }
+        const interrupted = JSON.parse(row.snapshot)
+        assert.equal(interrupted.status, 'paused')
+        assert.match(interrupted.error || '', /重启后暂停/)
         assert.equal(reads, 0, 'legacy in-flight work cannot be automatically submitted again')
         assert.equal(interrupted.sections[0]!.title, '旧分批目录', 'old partial work remains available for diagnosis')
         analyzer.start(id, 'model')

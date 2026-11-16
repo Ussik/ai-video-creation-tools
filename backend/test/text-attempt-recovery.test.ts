@@ -13,17 +13,17 @@ test('partial output and input overflow never replay the same unchanged request'
 })
 test('a long Retry-After becomes explicit resumable wait without early retry',async()=>{
  let calls=0, waits=0
- const issue=new TextProviderError('rate limit',true,'rate_limit',429,undefined,120000)
+ const issue=Object.assign(new TextProviderError('rate limit',true,'rate_limit',429,undefined,120000),{delivery:'rejected' as const})
  await assert.rejects(retryReadOnlyRequest(async()=>{calls++;throw issue},{wait:async()=>{waits++}}),error=>error===issue)
  assert.equal(calls,1);assert.equal(waits,0)
  assert.ok((issue as TextProviderError & {retryAt:number}).retryAt>Date.now()+100000)
 })
 
 
-test('validated atomic read-only output can explicitly discard one transient incomplete response', async () => {
+test('validated atomic output can discard one explicitly terminated incomplete response', async () => {
  let calls = 0
  const issue = new TextProviderError('disconnected', true, 'stream_disconnected')
- issue.partialText = '{"answer":"partial'; issue.outputStarted = true
+ issue.partialText = '{"answer":"partial'; issue.outputStarted = true; issue.responseTerminated = true; issue.delivery = 'output_started'
  const result = await retryReadOnlyRequest(async () => {
   calls++
   if (calls === 1) throw issue

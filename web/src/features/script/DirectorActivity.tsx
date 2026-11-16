@@ -34,15 +34,21 @@ export default function DirectorActivity({ activity, execution, pending, failed,
   if (!view.events.length && !execution) return null
   const sequence = activitySequence(view.events, { pending, failed: failed || view.state === 'failed' || view.state === 'cancelled' })
   const active = sequence.active?.event
-  const current = sequence.current?.event
+  let taskActivity = active
+  const ancestry = new Set<string>()
+  while (taskActivity && taskActivity.scope !== 'task' && !ancestry.has(taskActivity.id)) {
+    ancestry.add(taskActivity.id)
+    taskActivity = view.events.find(event => event.id === taskActivity?.parent_id)
+  }
+  const current = taskActivity?.scope === 'task' ? taskActivity : sequence.current?.event
   const activeMs = active ? Math.max(0, now - active.started_at) : 0
   const waiting = pending && active?.kind === 'model' && activeMs >= 45_000
   const showStopAction = !!onStop && !suppressStopAction
   const interrupted = view.state === 'failed' || view.state === 'cancelled'
   const compactCompleted = compact && !pending && !failed && !interrupted && view.state !== 'partial' && !onContinue && !onContinueWithModel
   const showDraftAction = onOpenDraft && (!suppressDraftAction || interrupted || view.state === 'partial')
-  const summary = scriptDiagnosticDisplayText(pending ? active?.summary || '正在准备项目资料和对话内容' : view.outcome?.summary || (interrupted ? '本轮没有返回完整结果，可先检查已有成果。' : '本轮回复已返回，可在下方查看。'))
-  const currentLabel = current?.label || active?.label || '准备创作请求'
+  const summary = scriptDiagnosticDisplayText(pending ? current?.summary || active?.summary || '正在准备项目资料和对话内容' : view.outcome?.summary || (interrupted ? '本轮没有返回完整结果，可先检查已有成果。' : '本轮回复已返回，可在下方查看。'))
+  const currentLabel = (current?.label || active?.label || '准备创作请求') + (pending && current?.summary?.startsWith('正在纠正输出格式') ? ' · 格式纠正中' : '')
   const preview = view.events.find(event => event.id === previewId && event.artifact_preview)
   return <section className={`sd-activity is-${view.state}${compactCompleted ? ' is-compact' : ''}`} aria-label="本条回复的任务进度">
     {compactCompleted && <UnstyledButton type="button" className="sd-activity-compact-summary" aria-expanded={detailsExpanded} aria-controls={detailsId} onClick={() => setDetailsExpanded(!detailsExpanded)}>
@@ -53,7 +59,7 @@ export default function DirectorActivity({ activity, execution, pending, failed,
     {!compactCompleted && <header className="sd-activity-head"><div className="sd-activity-heading"><span className="sd-activity-eyebrow">本轮任务</span><strong>{execution?.title || '本轮任务'}</strong></div>
       <span className={`sd-activity-state is-${view.state}`}>{pending && <Clock3 size={11} />}{view.stateLabel}</span>
     </header>}
-    {execution?.targets?.length ? <p className="sd-activity-scope">处理范围：{execution.targets.join('、')}</p> : execution?.request && <p className="sd-activity-request" title={execution.request}>{execution.request}</p>}
+    {execution?.targets?.length ? <p className="sd-activity-scope">处理范围：{execution.targets.join('、')}</p> : null}
     {pending ? <div className="sd-activity-current" role="status"><span className="sd-activity-current-dot" /><div><strong>{currentLabel}</strong><p>{summary}</p></div>
       {active && <time title="当前步骤已用时">{formatProcessingDuration(activeMs)}</time>}
     </div> : <p className="sd-activity-result">{summary}</p>}

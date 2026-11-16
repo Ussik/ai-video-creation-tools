@@ -153,3 +153,21 @@ export function parseStructuredOutput<T>(raw: string, schema: z.ZodType<T>, opti
   })
   return result.lastValid?.value ?? null
 }
+
+/** A single complete root, optionally inside exactly one JSON code fence.
+ * Unlike candidate recovery this never accepts surrounding prose, nested
+ * fragments, multiple roots, unfinished fences or repaired JSON syntax. */
+export function completeStructuredRoot(raw: string, options: { allowFenceExplanation?: boolean } = {}): { value: unknown } | undefined {
+  const text = raw.trim()
+  const fenced = /^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i.exec(text)
+  let payload = fenced ? fenced[1]! : text
+  if (!fenced && options.allowFenceExplanation) {
+    // Exactly one explicit JSON fence with bounded plain-language decoration.
+    // Decoration cannot contain another candidate, code fence or reasoning tag.
+    // This is envelope handling, never arbitrary brace/fragment recovery.
+    const envelope = /^([^`{}\[\]<>]{0,512})```json[ \t]*\r?\n([\s\S]*?)\r?\n```([^`{}\[\]<>]{0,512})$/i.exec(text)
+    if (envelope && !envelope[2]!.includes('```')) payload = envelope[2]!
+  }
+  try { return { value: JSON.parse(payload) } }
+  catch { return undefined }
+}

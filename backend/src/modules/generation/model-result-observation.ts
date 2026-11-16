@@ -12,7 +12,7 @@ export function withModelOperationStage<T>(stage: ModelOperationStage, work: () 
  * validation, quality approval, dispatch or retries. */
 export function reportModelResult(value: ModelResultEvent): void {
   const context = currentModelRequestContext()
-  const event = safeModelResult({ ...value, stage: value.stage || context?.operationStage,
+  const event = safeModelResult({ ...context?.resultDetails, ...value, stage: value.stage || context?.operationStage,
     duration_ms: value.duration_ms ?? (context?.operationStartedAt === undefined ? undefined : Math.max(0, Date.now() - context.operationStartedAt)),
     unit_index: value.unit_index ?? context?.operationUnit?.unit_index, unit_count: value.unit_count ?? context?.operationUnit?.unit_count })
   if (event) { try { context?.onResult?.(event) } catch { /* Diagnostics cannot authorize or invalidate creative work. */ } }

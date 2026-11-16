@@ -31,9 +31,9 @@ test('review presents complete current candidates before long historical backgro
   let calls = 0
   await reviewScriptDraftCompleteness(draft, async (prompt, contract) => {
     calls++
-    assert.equal(contract?.name, 'script_draft_completeness')
-    const submitted = jsonBetween<Array<{ key: string; artifact_type: string; title: string; content: string }>>(prompt, candidateMarker, candidateEnd)
-    assert.deepEqual(submitted, draft.artifacts.map(artifact => ({ key: artifact.artifact_type, ...artifact })))
+    assert.equal(contract?.name, 'script_draft_completeness_coordinates')
+    const submitted = jsonBetween<Array<{ key: string; artifact_type: string; title: string; source_ref: string; units: Array<{ id: number; text: string }> }>>(prompt, candidateMarker, candidateEnd)
+    assert.deepEqual(submitted.map(({ source_ref, units, ...source }) => ({ ...source, content: units.map(unit => unit.text).join('') })), draft.artifacts.map(artifact => ({ key: artifact.artifact_type, ...artifact })))
     assert.ok(prompt.indexOf(candidateEnd) < prompt.indexOf('MANUSCRIPT_START'), 'the entire current candidate packet precedes the long original manuscript')
     assert.ok(prompt.indexOf(candidateEnd) < prompt.indexOf('SAVED_HISTORY_START'), 'historical saved documents cannot obscure the current candidate packet')
     assert.deepEqual(JSON.parse(prompt.slice(prompt.indexOf(backgroundMarker) + backgroundMarker.length)), context,

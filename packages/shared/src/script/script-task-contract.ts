@@ -1,6 +1,6 @@
 import { scriptArtifactLabels, scriptStageArtifacts, type ScriptStage, type StageArtifactType } from './script-stage-content.js'
 
-export type ScriptTaskIntent = 'source_outline' | 'stage_design'
+export type ScriptTaskIntent = 'source_outline' | 'source_episode' | 'stage_design'
 export type ScriptTaskContract = {
   stage: ScriptStage; operation?: 'generate' | 'revise' | 'supplement' | 'regenerate';
   intent?: ScriptTaskIntent; artifact_types?: StageArtifactType[]

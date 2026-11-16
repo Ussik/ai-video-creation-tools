@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { acquireModelChannel, modelChannelIdentity, type ModelChannelLease } from './model-channel.js'
 import { createTextTransportBoundary, textHeadersTimeoutMs, readTextErrorBody, readTextResponseBody } from './text-transport-boundary.js'
 import { assertTextFrameBoundary } from './text-frame-boundary.js'
@@ -5,7 +6,7 @@ import type { GenerationModel, GenerationProvider, TextRequestMetrics, TextStrea
 import type { TextTool, ToolCall, ToolOutput, ToolTurn } from './text-tools.js'
 import { createStreamScope, generationStepBudgets, textRequestTimeoutMs, textReasoningIdleTimeoutMs, textStreamIdleTimeoutMs } from '@video-studio/shared/script/script-stream-policy'
 import { isUnrestrictedScriptExecution, modelStepSignal } from '../../modules/generation/model-execution.js'
-import { prepareTextRequest, textRequestTrace, notifyTextRequest } from './text-request-plan.js'
+import { prepareTextRequest, textRequestTrace, notifyTextRequest, createTextRequestActivity } from './text-request-plan.js'
 import { beginTextRequest } from './text-request-usage.js'
 import { parseTextUsage, requestPurpose } from './text-usage-parse.js'
 import { TextOutputLimitError, TextProviderError, TextToolOutputLimitError, transientTextNetworkError, annotateTextFailure, textRetryAfter } from './text-errors.js'
@@ -20,7 +21,7 @@ type Input = {
   request: TextStreamRequest; signal?: AbortSignal; onEvent?: (event: TextStreamEvent) => void | Promise<void>;
   onMetrics?: (metrics: TextRequestMetrics) => void; onDispatch?: (metrics: TextRequestMetrics) => void;
   httpError: (response: Response, raw: string, url: string, started: number, model: string, secrets: string[]) => Error;
-  tool?: { tools: TextTool[]; previous?: unknown[]; outputs: ToolOutput[]; continuation?: string; parallelCalls?: boolean;
+  tool?: { tools: TextTool[]; previous?: unknown[]; outputs: ToolOutput[]; continuation?: string; parallelCalls?: boolean; resultTool?: string;
     onText?: (text: string) => void };
 }
 
@@ -43,7 +44,7 @@ function withNativeContractPrompt(history: Item[], prompt: string, contract: Non
 
 /** Native Messages keeps signed thinking blocks private in assistant history.
  * Only text blocks become visible; incomplete tool arguments never execute. */
-export async function requestAnthropicText(input: Input): Promise<{ text: string; turn?: ToolTurn }> {
+async function requestAnthropicTextAttempt(input: Input): Promise<{ text: string; turn?: ToolTurn }> {
   if (!record(input.base)) throw new Error('Anthropic Messages 请求模板必须为对象')
   const { settings, model, tool } = input
   if (input.request.video) throw new Error('Anthropic Messages 尚不支持视频输入，请选择已支持的视频理解协议')
@@ -61,10 +62,14 @@ export async function requestAnthropicText(input: Input): Promise<{ text: string
     const strict = settings.strict_tool_arguments === true
     body.tools = tool.tools.map(item => ({ name: item.name, description: item.description,
       input_schema: strict ? strictJsonSchema(item.parameters) : item.parameters, ...(strict ? { strict: true } : {}) }))
-    body.tool_choice = { type: 'auto', disable_parallel_tool_use: tool.parallelCalls !== true }
-  } else if (input.request.structured_output && settings.structured_output_mode && settings.structured_output_mode !== 'prompt') {
-    if (settings.structured_output_mode !== 'json_schema') throw new Error('Anthropic Messages 结构化输出仅支持 prompt 或 json_schema')
-    body.output_config = { ...(record(body.output_config) ? body.output_config : {}), format: { type: 'json_schema', schema: input.request.structured_output.schema } }
+    body.tool_choice = { type: tool.resultTool ? 'tool' : 'auto', ...(tool.resultTool ? { name: tool.resultTool } : {}), disable_parallel_tool_use: tool.parallelCalls !== true }
+  } else {
+    // Tool access is granted by the current invocation, never by a request template.
+    delete body.tools; delete body.tool_choice
+    if (input.request.structured_output && settings.structured_output_mode && settings.structured_output_mode !== 'prompt') {
+      if (settings.structured_output_mode !== 'json_schema') throw new Error('Anthropic Messages 结构化输出仅支持 prompt 或 json_schema')
+      body.output_config = { ...(record(body.output_config) ? body.output_config : {}), format: { type: 'json_schema', schema: input.request.structured_output.schema } }
+    }
   }
   const outgoing = withTextImageInput(body, input.request.images, 'anthropic_messages', settings) as Item
   const customAuth = input.provider.auth_header && (input.provider.auth_header.toLowerCase() !== 'authorization' || (input.provider.auth_prefix ?? 'Bearer ') !== 'Bearer ')
@@ -85,15 +90,23 @@ export async function requestAnthropicText(input: Input): Promise<{ text: string
   const cap = (planned.body as Item).max_tokens
   if (typeof cap !== 'number' || !Number.isSafeInteger(cap) || cap <= 0) throw new Error('Anthropic Messages 必须明确填写最大输出 token 数')
   const rawBody = JSON.stringify(planned.body)
-  const metrics: TextRequestMetrics = { ...textRequestTrace(), model_id: model.id, remote_id: typeof planned.body.model === 'string' ? planned.body.model : model.remote_id, output_parameter: 'max_tokens', endpoint: new URL(input.url).origin + new URL(input.url).pathname, delivery: 'not_sent', request_bytes: Buffer.byteLength(rawBody), output_limit: cap,
+  const wireHash = createHash('sha256')
+  const plannedBody = planned.body as Item
+  const nativeFormat = record(plannedBody.output_config) && record(plannedBody.output_config.format) && plannedBody.output_config.format.type === 'json_schema'
+  const metrics: TextRequestMetrics = { ...textRequestTrace(), ...(settings.structured_output_mode ? { structured_strategy_source: (['configured', 'declared', 'default'].includes(String(settings._structured_strategy_source)) ? settings._structured_strategy_source : 'configured') as 'configured' | 'declared' | 'default', structured_enforcement: 'unverified' as const } : {}), model_id: model.id, remote_id: typeof planned.body.model === 'string' ? planned.body.model : model.remote_id, output_parameter: 'max_tokens', endpoint: new URL(input.url).origin + new URL(input.url).pathname, delivery: 'not_sent', request_bytes: Buffer.byteLength(rawBody), output_limit: cap,
+    request_has_tools: Object.hasOwn(plannedBody, 'tools'), request_tool_count: Array.isArray(plannedBody.tools) ? plannedBody.tools.length : 0,
+    request_structured_mode: nativeFormat ? 'json_schema' : contract ? 'prompt' : 'none',
+    request_prompt_hash: createHash('sha256').update(input.request.prompt).digest('hex'),
+    request_body_hash: createHash('sha256').update(rawBody).digest('hex'),
     request_purpose: currentModelRequestContext()?.policy.purpose ?? (tool ? 'tool_decision' : requestPurpose(input.request.structured_output?.name)), ...capacity }
   const started = Date.now()
+  const activity = createTextRequestActivity(metrics, started)
   const scope = createStreamScope(modelStepSignal(input.signal), {
     totalMs: isUnrestrictedScriptExecution() ? null : input.request.structured_output ? textRequestTimeoutMs : generationStepBudgets.discussion,
     idleMessage: '模型接口长时间没有返回事件，当前步骤已停止，已完成结果保留。', totalMessage: '文本模型请求超时，已保留完成步骤。',
   })
   const eventTimeout = body.thinking || body.stream === false ? textReasoningIdleTimeoutMs : textStreamIdleTimeoutMs
-  const transport = createTextTransportBoundary(scope, { autoStart: false, headersMs: body.stream === true ? textHeadersTimeoutMs : textRequestTimeoutMs,
+  const transport = createTextTransportBoundary(scope, { autoStart: false, headersMs: body.stream !== true ? textRequestTimeoutMs : eventTimeout === textReasoningIdleTimeoutMs ? eventTimeout : textHeadersTimeoutMs,
     firstEventMs: eventTimeout, idleMs: isUnrestrictedScriptExecution() ? undefined : eventTimeout })
   let channel: ModelChannelLease | undefined
   let usage: ReturnType<typeof beginTextRequest> | undefined
@@ -115,12 +128,15 @@ export async function requestAnthropicText(input: Input): Promise<{ text: string
   const emitText = async (delta: string) => {
     text += delta; metrics.response_chars = text.length; metrics.output_started = !!text
     if (!delta) return
+    metrics.first_text_ms ??= Date.now() - started
+    activity.text()
     if (tool) tool.onText?.(text)
     else await input.onEvent?.({ type: 'delta', text: delta })
   }
   const consume = async (payload: unknown) => {
     if (!record(payload)) throw new TextProviderError('上游未返回有效 Messages 响应', false, 'bad_response_body')
     transport.event(); metrics.first_event_ms ??= Date.now() - started
+    activity.event()
     if (payload.type === 'error' || payload.error) {
       const error = record(payload.error) ? payload.error : {}
       const code = typeof error.type === 'string' && /^[a-zA-Z0-9_.:-]{1,100}$/.test(error.type) ? clean(error.type) : 'anthropic_error'
@@ -129,8 +145,11 @@ export async function requestAnthropicText(input: Input): Promise<{ text: string
       // stream_read_error is used by compatible gateways for interrupted reads.
       // Retryability grants no replay here: only read-only callers may recover.
       const retryable = ['overloaded_error', 'rate_limit_error', 'api_error', 'timeout_error', 'stream_read_error'].includes(code)
-      throw new TextProviderError(`上游模型返回错误（${code}）${upstreamMessage ? `：${upstreamMessage}` : ''}。本次响应未完成${tool ? '，未执行本轮工具调用' : ''}。`,
+      const failure = new TextProviderError(`上游模型返回错误（${code}）${upstreamMessage ? `：${upstreamMessage}` : ''}。本次响应未完成${tool ? '，未执行本轮工具调用' : ''}。`,
         retryable, code, metrics.http_status, undefined, retryAfterMs)
+      failure.responseTerminated = true
+      metrics.response_terminated = true
+      throw failure
     }
     if (payload.type === 'message_start') {
       if (!record(payload.message)) throw new TextProviderError('Messages 开始事件无效', false, 'bad_response_body')
@@ -183,6 +202,7 @@ export async function requestAnthropicText(input: Input): Promise<{ text: string
     }, body: rawBody, signal: transport.signal }))
     transport.headers(); channel.response(response); metrics.http_status = response.status; metrics.delivery = response.ok ? 'accepted' : 'rejected'
     metrics.upstream_request_id = requestIdentifier(response.headers.get('request-id')) || requestIdentifier(response.headers.get('x-request-id'))
+    activity.headers()
     retryAfterMs = textRetryAfter(response.headers.get('retry-after'))
     if (!response.ok) throw input.httpError(response, await readTextErrorBody(response, { wait: transport.wait, onChunk: transport.event }), input.url, started, model.remote_id, [input.key, prefix + input.key])
     if (response.headers.get('content-type')?.includes('text/event-stream') && response.body) {
@@ -199,6 +219,7 @@ export async function requestAnthropicText(input: Input): Promise<{ text: string
       try {
         while (!complete && stopReason !== 'max_tokens' && stopReason !== 'refusal') {
           const next = await transport.wait(reader.read())
+          if (next.value) wireHash.update(next.value)
           buffer += decoder.decode(next.value || new Uint8Array(), { stream: !next.done })
           const frames = buffer.split(/\r?\n\r?\n/); buffer = frames.pop() || ''; assertTextFrameBoundary(buffer)
           for (const value of frames) { await frame(value); if (complete || stopReason === 'max_tokens' || stopReason === 'refusal') break }
@@ -208,6 +229,7 @@ export async function requestAnthropicText(input: Input): Promise<{ text: string
       } finally { void reader.cancel().catch(() => {}); reader.releaseLock() }
     } else {
       const raw = await readTextResponseBody(response, { wait: transport.wait, onChunk: transport.event })
+      wireHash.update(raw)
       let payload: unknown
       try { payload = JSON.parse(raw) } catch { throw new TextProviderError('上游未返回有效 Messages 响应', false, 'bad_response_body') }
       await consume(payload)
@@ -222,6 +244,7 @@ export async function requestAnthropicText(input: Input): Promise<{ text: string
     if (stopReason === 'refusal') throw new TextProviderError('模型输出被内容审核中断', false, 'content_filter')
     if (!complete || !stopReason) throw new TextProviderError(`Messages 连接提前结束，未收到完整结束事件${tool ? '，未执行本轮工具调用' : ''}。`, true, 'stream_disconnected', metrics.http_status, undefined, retryAfterMs)
     if ([...blocks.keys()].some(index => !closedBlocks.has(index))) throw new TextProviderError('Messages 响应含未闭合内容单元，未执行工具调用', false, 'bad_response_body')
+    if (!tool && stopReason === 'tool_use') throw new TextProviderError('当前模型请求未授权工具调用，但模型返回了工具调用请求；工具未执行', false, 'unexpected_tool_call')
     if (!['end_turn', 'stop_sequence', ...(tool ? ['tool_use'] : [])].includes(stopReason)) throw new TextProviderError(
       stopReason === 'refusal' ? '模型输出被内容审核中断' : `模型输出异常结束（${stopReason}），未执行工具调用`, false, stopReason === 'refusal' ? 'content_filter' : stopReason)
     const content = [...blocks.entries()].sort(([a], [b]) => a - b).map(([index, block]): Item => {
@@ -231,19 +254,26 @@ export async function requestAnthropicText(input: Input): Promise<{ text: string
       }
       return block
     })
+    if (!tool && content.some(block => block.type === 'tool_use')) throw new TextProviderError(
+      '当前模型请求未授权工具调用，但响应包含工具调用内容；工具未执行', false, 'unexpected_tool_call')
     const calls: ToolCall[] = content.filter(block => block.type === 'tool_use').map(block => ({ id: String(block.id || ''), name: String(block.name || ''), arguments: JSON.stringify(block.input) }))
     if (calls.length > 10 || calls.some(call => !call.id || !call.name || typeof call.arguments !== 'string' || call.arguments.length > 650000) ||
       content.some(block => block.type === 'tool_use' && (!record(block.input) || typeof block.id !== 'string' || typeof block.name !== 'string')) || new Set(calls.map(call => call.id)).size !== calls.length ||
       calls.length && stopReason !== 'tool_use' || stopReason === 'tool_use' && !calls.length) throw new TextProviderError('模型返回了无效的工具调用', false, 'invalid_tool_call')
     metrics.response_chars = text.length + calls.reduce((sum, call) => sum + call.arguments.length, 0)
     metrics.delivery = 'completed'
+    metrics.response_body_hash = wireHash.digest('hex')
+    metrics.response_text_hash = createHash('sha256').update(text).digest('hex')
+    // HTTP acceptance of output_config is not proof the gateway enforced it.
+    if (nativeFormat) { try { JSON.parse(text); metrics.response_json_valid = true } catch { metrics.response_json_valid = false } }
     return { text, ...(tool ? { turn: { text, calls, history: [...history, { role: 'assistant', content }], initial_history_length: initial.length, metrics } } : {}) }
   } catch (issue) {
     channel?.failure(issue)
     if (scope.signal.aborted) { metrics.failure_reason = scope.signal.reason?.name === 'AbortError' ? 'cancelled' : 'disconnected'; metrics.raw_reason = scope.signal.reason?.kind; throw scope.signal.reason }
     const failure = !scope.signal.aborted && !(issue instanceof TextProviderError) && transientTextNetworkError(issue)
       ? new TextProviderError(`模型接口连接中断，未获得完整响应${tool ? '，未执行本轮工具调用' : ''}。`, true, 'connection_error', metrics.http_status, { cause: issue }, retryAfterMs) : issue
-    annotateTextFailure(failure, { delivery: failure instanceof TextOutputLimitError || failure instanceof TextToolOutputLimitError ? 'completed' : text ? 'output_started' : metrics.delivery ?? 'unknown', partialText: clean(text), tool: !!tool, rawReason: stopReason ?? undefined })
+    annotateTextFailure(failure, { delivery: failure instanceof TextOutputLimitError || failure instanceof TextToolOutputLimitError ? 'completed' : text ? 'output_started' : metrics.delivery ?? 'unknown', partialText: clean(text), tool: !!tool,
+      rawReason: failure instanceof TextProviderError && failure.upstreamCode === 'unexpected_tool_call' ? failure.upstreamCode : stopReason ?? undefined })
     if (failure instanceof TextProviderError) Object.assign(metrics, { failure_reason: failure.failureReason, raw_reason: failure.rawReason, delivery: failure.delivery, output_started: failure.outputStarted })
     if (failure instanceof TextProviderError) {
       const { input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens } = metrics
@@ -263,6 +293,34 @@ export async function requestAnthropicText(input: Input): Promise<{ text: string
     }
     throw failure
   } finally {
+    // Inspect block types only. Never copy text, arguments, thinking or signed
+    // history into telemetry; these flags do not change delivery or retry rules.
+    const counts = { text: 0, thinking: 0, tool_use: 0, other: 0 }
+    for (const block of blocks.values()) {
+      if (block.type === 'text' || block.type === 'thinking' || block.type === 'tool_use') counts[block.type]++
+      else counts.other++
+    }
+    const allClosed = [...blocks.keys()].every(index => closedBlocks.has(index))
+    Object.assign(metrics, { response_text_blocks: counts.text, response_thinking_blocks: counts.thinking,
+      response_tool_use_blocks: counts.tool_use, response_other_blocks: counts.other,
+      response_complete: complete, response_blocks_closed: allClosed, response_protocol_terminal: complete && !!stopReason && allClosed })
     try { usage?.complete(metrics); notifyTextRequest('metrics', metrics, input.onMetrics) } finally { channel?.release(); transport.close(); scope.close() }
+  }
+}
+
+/** A complete, text-free unexpected tool call may recover once through a
+ * prompt-only request. The second attempt bypasses this wrapper, so recovery
+ * cannot recurse or execute a tool. */
+export async function requestAnthropicText(input: Input): Promise<{ text: string; turn?: ToolTurn }> {
+  try { return await requestAnthropicTextAttempt(input) }
+  catch (issue) {
+    if (input.tool || !input.request.structured_output || input.settings.structured_output_mode !== 'json_schema' ||
+      !(issue instanceof TextProviderError) || issue.upstreamCode !== 'unexpected_tool_call' ||
+      issue.providerDiagnostics?.response_chars !== 0 || input.signal?.aborted) throw issue
+
+    const base = structuredClone(input.base) as Item
+    delete base.tools; delete base.tool_choice
+    if (record(base.output_config)) { base.output_config = { ...base.output_config }; delete (base.output_config as Item).format }
+    return requestAnthropicTextAttempt({ ...input, base, settings: { ...input.settings, structured_output_mode: 'prompt' } })
   }
 }

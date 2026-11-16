@@ -40,7 +40,7 @@ for (const path of ['tool-draft', 'workflow-draft'] as const) {
       providerCalls++
       const body = JSON.parse(String(init?.body))
       const response = sourceAnalysisFixture(body.messages[0].content)
-      assert.ok(response, 'the source analyzer may only request its three analysis contracts')
+      assert.ok(response, 'the source analyzer may only request extraction contracts')
       return Response.json({ choices: [{ message: { content: response }, finish_reason: 'stop' }] })
     })
     const content = '全剧1集。\n林舟得到钥匙，钥匙的来历尚未展开。\n结局林舟返乡，将钥匙还给父亲。'
@@ -49,13 +49,15 @@ for (const path of ['tool-draft', 'workflow-draft'] as const) {
       headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
       payload: Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="story.md"\r\nContent-Type: text/plain\r\n\r\n${content}\r\n--${boundary}--\r\n`) })
     assert.equal(uploaded.statusCode, 200, uploaded.body)
+  const requestedAudit = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/source/analysis`, payload: { model_id: model.id, source_updated_at: uploaded.json().updated_at } })
+  assert.equal(requestedAudit.statusCode, 200, requestedAudit.body)
     let source: ScriptSourceDocument = uploaded.json()
     for (let attempt = 0; attempt < 100 && source.analysis?.status !== 'ready'; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 5))
       source = (await app.inject({ method: 'GET', url: `/api/projects/${project.id}/script/source` })).json()
     }
     assert.equal(source.analysis?.status, 'ready', source.analysis?.error || '')
-    assert.equal(providerCalls, 3)
+    assert.equal(providerCalls, 2)
     const beforeSaveCalls = providerCalls
     const replacement = { find: '钥匙的来历尚未展开。', replace: '钥匙是父亲临行前所赠，用于打开故乡旧屋。', reason: '落实本轮已确认的钥匙来源' }
     const update: ScriptSourceUpdate = { id: newId(), base_version: scriptDocumentVersion(source), original_content: content,

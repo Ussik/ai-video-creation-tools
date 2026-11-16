@@ -1,7 +1,11 @@
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { loadDevEnvironment, devEnvironmentMessage } from './dev-environment.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
+try { console.log(devEnvironmentMessage(loadDevEnvironment(root))) }
+catch { console.error('Langfuse 本机配置无法读取或格式无效；未启动开发服务，请检查 .env.langfuse.local。'); process.exit(1) }
+
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const children = new Set()
 let stopping = false

@@ -1,3 +1,4 @@
+import { draftReviewFixtureSources } from './fixtures/script-draft-coordinate-response.js'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -5,7 +6,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { draftCompletenessFixtureResponse } from './fixtures/script-draft-completeness.js'
-import type { ScriptSourceDocument } from '@video-studio/shared/script/script-source-document'
+import type { ScriptSourceAnalysis, ScriptSourceDocument } from '@video-studio/shared/script/script-source-document'
+import type { Model, Provider } from '../src/infrastructure/database/db.js'
 import { scriptStageArtifacts, scriptArtifactLabels } from '@video-studio/shared/script/script-stage-content'
 import type { GenerationCheckpoint } from '../src/modules/script/script-generation-steps.js'
 import { scriptDocumentVersion } from '../src/modules/script/script-source-identity.js'
@@ -13,7 +15,11 @@ const dataDir = await mkdtemp(join(tmpdir(), 'studio-generation-resume-'))
 process.env.VIDEO_STUDIO_DATA_DIR = dataDir
 const { buildApp } = await import('../src/app.js')
 const { db, run, one, now } = await import('../src/infrastructure/database/db.js')
-const { scriptSourceVersion } = await import('../src/modules/script/script-source-analysis.js')
+const { scriptSourceVersion, sourceAnalysisConfiguration } = await import('../src/modules/script/script-source-analysis.js')
+const { sourceAnalysisConfigurationHash } = await import('../src/modules/script/script-source-revision-reuse.js')
+const { sourceQualityInputHash, hasPassedSourceQuality } = await import('../src/modules/script/script-source-quality.js')
+const { validateSourceCoverage } = await import('../src/modules/script/script-source-map.js')
+const { validateSourceStory } = await import('../src/modules/script/script-source-story.js')
 const { sourceAnalysisPipelineVersion } = await import('../src/modules/script/script-source-map.js')
 const { getToolDraft } = await import('../src/modules/script/script-document-tools.js')
 const { scriptActivitiesSchema } = await import('../src/modules/script/script-activity.js')
@@ -24,6 +30,20 @@ async function post(url: string, payload: unknown) {
   const response = await app.inject({ method: 'POST', url, payload: payload as object })
   assert.equal(response.statusCode, 200, response.body)
   return response.json()
+}
+
+/** These cases start after source analysis. Seed the current reviewed snapshot
+ * contract, not a legacy ready label that correctly requires a new review. */
+function completeReviewedAnalysisFixture(source: ScriptSourceDocument, state: ScriptSourceAnalysis) {
+  const model = one<Model>('SELECT * FROM models WHERE id=?', state.model_id)!
+  const provider = one<Provider>('SELECT * FROM providers WHERE id=?', model.provider_id)!
+  state.configuration_hash = sourceAnalysisConfigurationHash(sourceAnalysisConfiguration(model, provider))
+  state.completed_characters = source.content.length
+  validateSourceCoverage(source.content, state.sections)
+  validateSourceStory(state, state.story, source)
+  state.quality = { status: 'passed', input_hash: sourceQualityInputHash(state), findings: [] }
+  assert.equal(state.source_version, scriptSourceVersion(source))
+  assert.equal(hasPassedSourceQuality(state), true)
 }
 
 function outlineEnvelope(episodes: number) {
@@ -83,9 +103,10 @@ test('stream retry reuses the complete long-source draft after audit failure and
   assert.ok(content.length > 24000)
   const creatorMessage = '生成全剧大纲，采用水墨画风，保留伙伴身份与归还钥匙的结局。'
   const source: ScriptSourceDocument = { project_id: project.id, filename: 'story.txt', content, updated_at: now() }
-  const analysis = { pipeline_version: sourceAnalysisPipelineVersion, id: 'map', source_version: scriptSourceVersion(source), model_id: model.id, status: 'ready', phase: 'ready', completed_chunks: 1, total_chunks: 1, error: null, updated_at: now(),
+  const analysis: ScriptSourceAnalysis = { pipeline_version: sourceAnalysisPipelineVersion, id: 'map', source_version: scriptSourceVersion(source), model_id: model.id, status: 'ready', phase: 'ready', completed_chunks: 1, total_chunks: 1, error: null, updated_at: now(),
     sections: [{ offset: 0, length: content.length, title: '完整主线', episode_number: null, summary: '得到并归还钥匙', characters: [], events: [] }],
     story: { summary: '9集得到并归还钥匙', characters: [], timeline: [], threads: [], ending: { summary: '归还钥匙', section_ids: [0] }, uncertainties: [] } }
+  completeReviewedAnalysisFixture(source, analysis)
   run('INSERT INTO script_source_documents (project_id, filename, content, updated_at) VALUES (?,?,?,?)', project.id, source.filename, content, source.updated_at)
   run('INSERT INTO script_source_analyses (project_id,id,source_version,status,snapshot,updated_at) VALUES (?,?,?,?,?,?)', project.id, analysis.id, analysis.source_version, analysis.status, JSON.stringify(analysis), analysis.updated_at)
   let failAudit = true, reviews = 0
@@ -96,13 +117,13 @@ test('stream retry reuses the complete long-source draft after audit failure and
     if (!body.response_format) return Response.json({ choices: [{ message: { content: '水墨画风可以采用淡墨远景。' }, finish_reason: 'stop' }] })
     const contract = body.response_format.json_schema
     contracts.push(contract.name)
-    assert.ok(['workflow_draft', 'script_draft_completeness'].includes(contract.name), `source selectors, stage plans and episode batches are forbidden: ${contract.name}`)
+    assert.ok(['workflow_draft', 'script_draft_completeness_coordinates'].includes(contract.name), `source selectors, stage plans and episode batches are forbidden: ${contract.name}`)
     assertFullMaterial(prompt, content, creatorMessage)
     const reviewed = draftCompletenessFixtureResponse(init)
     if (reviewed) {
       reviews++; reviewPrompts.push(prompt)
       const marker = '待核对草稿原文（资料）：'
-      const submitted = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length).split('\n【本轮候选正文结束】')[0]!)
+      const submitted = draftReviewFixtureSources(prompt)
       assert.deepEqual(submitted.map((document: { artifact_type: string }) => document.artifact_type), [...scriptStageArtifacts.outline])
       assert.ok(submitted.every((document: { content: string }, index: number) => document.content === outlineEnvelope(9).artifacts[index]!.content), 'audit must inspect complete candidate bodies')
       if (failAudit) return Response.json({ error: { message: 'fixture upstream interrupted', type: 'server_error' } }, { status: 503 })
@@ -140,7 +161,7 @@ test('stream retry reuses the complete long-source draft after audit failure and
   failAudit = false
   const second = await stream(), done = second.find(event => event.type === 'done')
   assert.ok(done, JSON.stringify(second.filter(event => event.type === 'error')))
-  assert.deepEqual(contracts.slice(before), ['script_draft_completeness'], 'resume must review the retained complete draft without regenerating it')
+  assert.deepEqual(contracts.slice(before), ['script_draft_completeness_coordinates'], 'resume must review the retained complete draft without regenerating it')
   assert.equal(draftPrompts.length, 9)
   assert.equal(reviews, 3)
   assert.equal(reviewPrompts.at(-1), reviewPrompts[0], 'resume must audit the same source, candidate and creator requirements')
@@ -167,9 +188,10 @@ test('whole-source Responses authoring retries once and audit recovery reuses th
   assert.ok(content.length > 12000 && content.length <= 24000)
   const creatorMessage = '生成全剧大纲。CREATOR_STYLE：水墨，保留伙伴身份和钥匙归还结局。'
   const source: ScriptSourceDocument = { project_id: project.id, filename: 'medium.txt', content, updated_at: now() }
-  const analysis = { pipeline_version: sourceAnalysisPipelineVersion, id: 'medium-map', source_version: scriptSourceVersion(source), model_id: model.id, status: 'ready', phase: 'ready', completed_chunks: 1, total_chunks: 1, error: null, updated_at: now(),
+  const analysis: ScriptSourceAnalysis = { pipeline_version: sourceAnalysisPipelineVersion, id: 'medium-map', source_version: scriptSourceVersion(source), model_id: model.id, status: 'ready', phase: 'ready', completed_chunks: 1, total_chunks: 1, error: null, updated_at: now(),
     sections: [{ offset: 0, length: content.length, title: 'DIRECTORY_ONLY_MARKER', episode_number: 1, summary: '完整主线', characters: [], events: [] }],
     story: { summary: 'GLOBAL_FACT：全剧1集，拾到并归还钥匙', characters: [], timeline: [], threads: [], ending: { summary: '归还伙伴', section_ids: [0] }, uncertainties: [] } }
+  completeReviewedAnalysisFixture(source, analysis)
   run('INSERT INTO script_source_documents (project_id,filename,content,updated_at) VALUES (?,?,?,?)', project.id, source.filename, content, source.updated_at)
   run('INSERT INTO script_source_analyses (project_id,id,source_version,status,snapshot,updated_at) VALUES (?,?,?,?,?,?)', project.id, analysis.id, analysis.source_version, analysis.status, JSON.stringify(analysis), analysis.updated_at)
   const contracts: string[] = [], authoring: string[] = [], auditPrompts: string[] = []
@@ -178,14 +200,14 @@ test('whole-source Responses authoring retries once and audit recovery reuses th
   t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)), prompt: string = body.input, contract = body.text.format
     contracts.push(contract.name)
-    assert.ok(['workflow_draft', 'script_draft_completeness'].includes(contract.name), `source selectors, stage plans and episode batches are forbidden: ${contract.name}`)
+    assert.ok(['workflow_draft', 'script_draft_completeness_coordinates'].includes(contract.name), `source selectors, stage plans and episode batches are forbidden: ${contract.name}`)
     assertFullMaterial(prompt, content, creatorMessage)
     const reviewed = draftCompletenessFixtureResponse(init)
     if (reviewed) {
       assert.ok(prompt.includes('GLOBAL_FACT'), 'review retains source analysis alongside the complete original source')
       auditPrompts.push(prompt)
       const marker = '待核对草稿原文（资料）：'
-      const submitted = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length).split('\n【本轮候选正文结束】')[0]!)
+      const submitted = draftReviewFixtureSources(prompt)
       assert.deepEqual(submitted.map((document: { artifact_type: string }) => document.artifact_type), [...scriptStageArtifacts.outline])
       assert.ok(submitted.every((document: { content: string }, index: number) => document.content === outlineEnvelope(1).artifacts[index]!.content))
       if (failAudit) { auditFailures++; return failure() }
@@ -215,7 +237,7 @@ test('whole-source Responses authoring retries once and audit recovery reuses th
   const second = await stream(), done = second.find(event => event.type === 'done')
   assert.ok(done, JSON.stringify(second.filter(event => event.type === 'error')))
   assert.equal(authoring.length, authoringBefore, 'retry after audit failure must not regenerate completed documents')
-  assert.deepEqual(contracts.slice(callsBefore), ['script_draft_completeness'])
+  assert.deepEqual(contracts.slice(callsBefore), ['script_draft_completeness_coordinates'])
   assert.equal(auditPrompts.length, 3)
   assert.ok(auditPrompts.every(prompt => prompt === auditPrompts[0]), 'all review attempts must see the same complete source and candidate')
   assertReusedOutlineTiming(done.activity, JSON.parse(payloadRow.payload).steps)
@@ -240,11 +262,12 @@ test('Responses output-limit continuation preserves eight complete documents and
   assert.ok(content.length > 24000 && content.length < 100000)
   const creatorMessage = '生成全剧九集故事大纲。CREATOR_CONTINUITY：水墨画风，保留伙伴身份、因果和归还钥匙的结局，每集完整展开。'
   const source: ScriptSourceDocument = { project_id: project.id, filename: 'continuation.txt', content, updated_at: now() }
-  const analysis = { pipeline_version: sourceAnalysisPipelineVersion, id: 'continuation-map', source_version: scriptSourceVersion(source), model_id: model.id,
+  const analysis: ScriptSourceAnalysis = { pipeline_version: sourceAnalysisPipelineVersion, id: 'continuation-map', source_version: scriptSourceVersion(source), model_id: model.id,
     status: 'ready', phase: 'ready', completed_chunks: 1, total_chunks: 1, error: null, updated_at: now(),
     sections: [{ offset: 0, length: content.length, title: '完整九集主线', episode_number: null, summary: '拾到并归还钥匙', characters: [], events: [] }],
     story: { summary: 'GLOBAL_CONTINUITY：全剧九集，伙伴身份已确认，钥匙最终归还', characters: [], timeline: [], threads: [],
       ending: { summary: '归还伙伴', section_ids: [0] }, uncertainties: [] } }
+  completeReviewedAnalysisFixture(source, analysis)
   run('INSERT INTO script_source_documents (project_id,filename,content,updated_at) VALUES (?,?,?,?)', project.id, source.filename, content, source.updated_at)
   run('INSERT INTO script_source_analyses (project_id,id,source_version,status,snapshot,updated_at) VALUES (?,?,?,?,?,?)', project.id, analysis.id, analysis.source_version, analysis.status, JSON.stringify(analysis), analysis.updated_at)
   const sourceBefore = one('SELECT * FROM script_source_documents WHERE project_id=?', project.id)
@@ -260,14 +283,14 @@ test('Responses output-limit continuation preserves eight complete documents and
     assert.ok(contract, 'explicit workflow must use structured stage contracts')
     assert.equal(body.max_output_tokens, undefined, 'authoring and continuation must not invent or overwrite the model output budget')
     contracts.push(contract.name)
-    assert.ok(['workflow_draft', 'script_stage_blocks', 'script_draft_completeness'].includes(contract.name), `input splitting and selectors must not return: ${contract.name}`)
+    assert.ok(['workflow_draft', 'script_stage_blocks', 'script_draft_completeness_coordinates'].includes(contract.name), `input splitting and selectors must not return: ${contract.name}`)
     assertFullMaterial(prompt, content, creatorMessage)
     const reviewed = draftCompletenessFixtureResponse(init)
     if (reviewed) {
       assert.ok(prompt.includes('GLOBAL_CONTINUITY'), 'review retains whole-story analysis without replacing the full source')
       reviewPrompts.push(prompt)
       const marker = '待核对草稿原文（资料）：'
-      const submitted = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length).split('\n【本轮候选正文结束】')[0]!)
+      const submitted = draftReviewFixtureSources(prompt)
       assert.deepEqual(submitted.map((document: { artifact_type: string; content: string }) => ({ artifact_type: document.artifact_type, content: document.content })), full.artifacts.map(({ artifact_type, content }) => ({ artifact_type, content })),
         'independent audit must receive all nine complete documents in their original order')
       assert.ok(!prompt.includes('TRUNCATED_TAIL_MUST_NOT_SURVIVE'), 'unclosed JSON tail must never enter review')
@@ -306,7 +329,7 @@ test('Responses output-limit continuation preserves eight complete documents and
   assert.match(first.find(event => event.type === 'error')?.message || '', /核对未完成.*模型服务中断/)
   assert.equal(authoring.length, 9); assert.equal(continuations.length, 1); assert.equal(reviewPrompts.length, 2)
   assert.ok(!first.some(event => event.type === 'delta'), 'initial and continuation JSON must not leak into chat text even when the independent audit fails')
-  assert.deepEqual(contracts, [...Array(9).fill('workflow_draft'), 'script_stage_blocks', 'script_draft_completeness', 'script_draft_completeness'])
+  assert.deepEqual(contracts, [...Array(9).fill('workflow_draft'), 'script_stage_blocks', 'script_draft_completeness_coordinates', 'script_draft_completeness_coordinates'])
   const activities = scriptActivitiesSchema.parse([...new Map(first.filter(event => event.type === 'activity').map(event => [event.activity.id, event.activity] as const)).values()])
   const draftStep = activities.find(entry => entry.kind === 'context' && entry.scope === 'task' && entry.step_id === 'work:outline:episode_outline')
   assert.ok(draftStep)
@@ -327,7 +350,7 @@ test('Responses output-limit continuation preserves eight complete documents and
   failReview = false
   const second = await stream(), done = second.find(event => event.type === 'done')
   assert.ok(done, JSON.stringify(second.filter(event => event.type === 'error')))
-  assert.deepEqual(contracts.slice(callsBefore), ['script_draft_completeness'], 'recovery must only repeat the independent audit')
+  assert.deepEqual(contracts.slice(callsBefore), ['script_draft_completeness_coordinates'], 'recovery must only repeat the independent audit')
   assert.equal(authoring.length, 9); assert.equal(continuations.length, 1); assert.equal(reviewPrompts.length, 3)
   assert.ok(reviewPrompts.every(prompt => prompt === reviewPrompts[0]))
   const documents = done.tool_draft.documents.map((document: { artifact_type: string; title: string; content: string }) => ({ artifact_type: document.artifact_type, title: document.title, content: document.content }))
@@ -352,11 +375,12 @@ test('Responses disconnected streams checkpoint complete documents through onPar
   assert.ok(content.length > 24000 && content.length < 100000)
   const creatorMessage = '生成完整九集大纲。CREATOR_DISCONNECT：采用水墨画风，伙伴身份和归还钥匙的结局都必须保留，已完整写出的文档原样复用。'
   const source: ScriptSourceDocument = { project_id: project.id, filename: 'disconnected.txt', content, updated_at: now() }
-  const analysis = { pipeline_version: sourceAnalysisPipelineVersion, id: 'disconnected-map', source_version: scriptSourceVersion(source), model_id: model.id,
+  const analysis: ScriptSourceAnalysis = { pipeline_version: sourceAnalysisPipelineVersion, id: 'disconnected-map', source_version: scriptSourceVersion(source), model_id: model.id,
     status: 'ready', phase: 'ready', completed_chunks: 1, total_chunks: 1, error: null, updated_at: now(),
     sections: [{ offset: 0, length: content.length, title: '完整主线', episode_number: null, summary: '伙伴与钥匙的归属', characters: [], events: [] }],
     story: { summary: 'GLOBAL_DISCONNECT：全剧九集，保留伙伴身份，林舟最终归还钥匙', characters: [], timeline: [], threads: [],
       ending: { summary: '归还钥匙', section_ids: [0] }, uncertainties: [] } }
+  completeReviewedAnalysisFixture(source, analysis)
   run('INSERT INTO script_source_documents (project_id,filename,content,updated_at) VALUES (?,?,?,?)', project.id, source.filename, content, source.updated_at)
   run('INSERT INTO script_source_analyses (project_id,id,source_version,status,snapshot,updated_at) VALUES (?,?,?,?,?,?)', project.id, analysis.id, analysis.source_version, analysis.status, JSON.stringify(analysis), analysis.updated_at)
   const sourceBefore = one('SELECT * FROM script_source_documents WHERE project_id=?', project.id)
@@ -380,7 +404,7 @@ test('Responses disconnected streams checkpoint complete documents through onPar
       assert.ok(prompt.includes('GLOBAL_DISCONNECT'))
       reviews++
       const marker = '待核对草稿原文（资料）：'
-      const submitted = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length).split('\n【本轮候选正文结束】')[0]!)
+      const submitted = draftReviewFixtureSources(prompt)
       assert.deepEqual(submitted.map((document: { artifact_type: string; content: string }) => ({ artifact_type: document.artifact_type, content: document.content })),
         full.artifacts.map(({ artifact_type, content }) => ({ artifact_type, content })))
       assert.ok(!prompt.includes('DISCONNECTED_TAIL_MUST_NOT_SURVIVE'))
@@ -438,7 +462,7 @@ test('Responses disconnected streams checkpoint complete documents through onPar
   const second = await stream(), done = second.find(event => event.type === 'done')
   assert.ok(done, JSON.stringify(second.filter(event => event.type === 'error')))
   assert.deepEqual([...groupCalls.values()], Array(9).fill(1), 'each document is generated once and retained world prose is never regenerated')
-  assert.deepEqual(contracts.slice(callsBefore), [...Array(6).fill('workflow_draft'), 'script_draft_completeness'])
+  assert.deepEqual(contracts.slice(callsBefore), [...Array(6).fill('workflow_draft'), 'script_draft_completeness_coordinates'])
   assert.deepEqual(continuationTargets, [])
   assert.equal(reviews, 1)
   const documents = done.tool_draft.documents.map((document: { artifact_type: string; title: string; content: string }) => ({ artifact_type: document.artifact_type, title: document.title, content: document.content }))

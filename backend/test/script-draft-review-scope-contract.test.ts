@@ -33,7 +33,7 @@ function fixture() {
 test('local task acceptance names only the submitted artifacts while global consistency retains the whole contract', async () => {
   const f = fixture(), overall = scriptTaskAcceptance(f.draft), seen: string[] = []
   await reviewScriptDraftCompleteness(f.draft, async (prompt, contract) => {
-    assert.equal(contract!.name, 'script_draft_completeness')
+    assert.equal(contract!.name, 'script_draft_completeness_coordinates')
     const sources = submitted(prompt), global = prompt.includes('【独立任务：全局一致性】')
     const expected = global ? overall : scriptTaskAcceptance({ ...f.draft, artifact_types: sources.map(source => source.artifact_type) })
     assert.deepEqual(fixedAcceptance(prompt), expected,
@@ -49,7 +49,7 @@ test('local task acceptance names only the submitted artifacts while global cons
     return JSON.stringify(clear(prompt))
   }, { context: f.context, steps: f.steps(), review_scope: 'tasks', acceptance: overall })
   assert.equal(seen.length, 3)
-  assert.ok(f.checkpoint().steps['review:task:consistency:result'])
+  assert.ok(f.checkpoint().steps['review:task:consistency:review:coordinates:v1:result'])
 })
 
 test('each scoped prompt identifies every candidate by key and title without including unchecked sibling text', async () => {

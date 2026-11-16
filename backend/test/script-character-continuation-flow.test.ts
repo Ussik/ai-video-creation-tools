@@ -24,7 +24,7 @@ async function call(method: 'GET' | 'POST' | 'PUT', url: string, payload?: objec
   return response.json()
 }
 
-test('HTTP character generation recovers an oversized unfinished relationship unit before independent review and preview', async t => {
+test('HTTP character task recovers truncated output directly from the manuscript without original analysis or semantic review', async t => {
   const project = await call('POST', '/api/projects', { name: '人物关系接续隔离回归' })
   const provider = await call('POST', '/api/providers', { name: 'isolated-character-continuation-fixture', base_url: 'https://character-continuation.invalid/v1' })
   const model = await call('POST', '/api/models', { provider_id: provider.id, name: 'fixture', remote_id: 'fixture', modality: 'text', protocol: 'chat_completions', settings: {
@@ -41,32 +41,15 @@ test('HTTP character generation recovers an oversized unfinished relationship un
   const first = { id: 'relationship:林舟:阿禾', title: '人物关系', content: '## 林舟与阿禾\n第1集由钥匙保管约定建立有限信任。阿禾坚持只提供有证据的事实，第2集主动出示守夜记录并归还铜钥匙；林舟接受她的判断，双方成为没有恋爱关系的平等盟友。', scenes: [] }
   const second = { id: 'relationship:林舟:老陈', title: first.title, content: '## 林舟与老陈\n第1集因进入旧屋受阻产生对立。第2集记录证实老陈并非纵火者，老陈承认隐瞒，林舟理解其保护孩子的动机，两人解除误会并修复旧屋。', scenes: [] }
   const incompleteMarker = '未闭合关系正文不得进入草稿'
-  let analysisCalls = 0, writerCalls = 0, reviewCalls = 0, responseSettled = false
-  let releaseReview!: () => void, enteredReview!: () => void
-  const reviewGate = new Promise<void>(resolve => { releaseReview = resolve })
-  const reviewEntered = new Promise<void>(resolve => { enteredReview = resolve })
-  t.after(releaseReview)
+  let analysisCalls = 0, writerCalls = 0, reviewCalls = 0
   const modelReply = (content: string, finish_reason = 'stop') => Response.json({ choices: [{ message: { content }, finish_reason }] })
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
     assert.match(String(url), /^https:\/\/character-continuation\.invalid\//)
     const body = JSON.parse(String(init?.body))
     const prompt: string = body.messages[0].content
     const analysis = sourceAnalysisFixture(prompt)
-    if (analysis) { analysisCalls++; return modelReply(analysis) }
-    const review = draftCompletenessFixtureResponse(init)
-    if (review) {
-      reviewCalls++
-      assert.equal(writerCalls, 5, 'independent review waits until both individual documents and every relationship block are complete')
-      assert.ok(prompt.includes(JSON.stringify(sourceText)), 'review receives the complete uploaded manuscript')
-      assert.ok(prompt.includes(JSON.stringify(creatorRequest)), 'review receives the exact creator request')
-      assert.ok(prompt.includes(JSON.stringify(retainedCharacters.content)), 'review includes the retained character document verbatim')
-      assert.ok(prompt.includes(first.content.replaceAll('\n', '\\n')))
-      assert.ok(prompt.includes(second.content.replaceAll('\n', '\\n')))
-      assert.ok(!prompt.includes(incompleteMarker), 'unfinished strings cannot become reviewable prose')
-      enteredReview()
-      await reviewGate
-      return review
-    }
+    if (analysis) { analysisCalls++; assert.fail('the task must not analyze the uploaded original') }
+    if (draftCompletenessFixtureResponse(init)) { reviewCalls++; assert.fail('the task must not add an original semantic-review loop') }
     writerCalls++
     assert.ok(prompt.includes(JSON.stringify(sourceText)), 'each generation round keeps the full original manuscript')
     assert.ok(prompt.includes(JSON.stringify(creatorRequest)), 'each generation round keeps exact creator requirements')
@@ -112,14 +95,10 @@ test('HTTP character generation recovers an oversized unfinished relationship un
     headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
     payload: Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="story.md"\r\nContent-Type: text/plain\r\n\r\n${sourceText}\r\n--${boundary}--\r\n`) })
   assert.equal(uploaded.statusCode, 200, uploaded.body)
-  let source: ScriptSourceDocument = uploaded.json()
-  for (let attempt = 0; attempt < 100 && source.analysis?.status !== 'ready'; attempt++) {
-    await new Promise(resolve => setTimeout(resolve, 5))
-    source = await call('GET', `/api/projects/${project.id}/script/source`)
-  }
-  assert.equal(source.analysis?.status, 'ready', source.analysis?.error || '')
+  const source: ScriptSourceDocument = uploaded.json()
+  assert.equal(source.analysis, null)
   assert.equal(source.content, sourceText)
-  assert.equal(analysisCalls, 3)
+  assert.equal(analysisCalls, 0)
   await call('PUT', `/api/projects/${project.id}/script/director/draft`, { stage: 'outline', source_version: scriptDocumentVersion(source),
     generation_options: { episode_count: 2 }, artifacts: scriptStageArtifacts.outline.map(artifact_type => ({ artifact_type,
       title: scriptArtifactLabels[artifact_type], content: artifact_type === 'episode_outline'
@@ -127,26 +106,14 @@ test('HTTP character generation recovers an oversized unfinished relationship un
         : `${scriptArtifactLabels[artifact_type]}：林舟查明旧屋失火的现实原因；阿禾主动提供守夜记录，老陈承认隐瞒，终局修复旧屋。铜钥匙没有超自然能力，人物之间没有恋爱线。`,
     })), scenes: [] })
   const before = (await call('GET', `/api/projects/${project.id}`)).script
-  const pending = (async () => {
-    const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload: {
-      model_id: model.id, mode: 'script', use_tools: true, workflow: { stage: 'characters' }, messages: [{ role: 'user', text: creatorRequest }],
-    } })
-    responseSettled = true
-    return response
-  })()
-  await Promise.race([reviewEntered, pending.then(response => {
-    assert.ok(reviewCalls > 0, `request finished before independent review: ${response.body}`)
-  })])
-  assert.equal(responseSettled, false, 'the HTTP response cannot expose a preview while review is still running')
-  assert.equal(getToolDraft(project.id), null, 'no preview draft is persisted before independent review succeeds')
-  assert.deepEqual((await call('GET', `/api/projects/${project.id}`)).script, before, 'generation and review cannot alter saved documents')
-  releaseReview()
-  const response = await pending
+  const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/script/director/chat`, payload: {
+    model_id: model.id, mode: 'script', use_tools: true, workflow: { stage: 'characters' }, messages: [{ role: 'user', text: creatorRequest }],
+  } })
   assert.equal(response.statusCode, 200, response.body)
   const result = response.json()
   assert.equal(writerCalls, 5)
-  assert.equal(reviewCalls, 1)
-  assert.equal(analysisCalls, 3, 'ready source analysis does not repeat during generation or review')
+  assert.equal(reviewCalls, 0)
+  assert.equal(analysisCalls, 0, 'a missing analysis pack must never be filled implicitly')
   assert.equal(result.tool_draft.status, 'pending')
   assert.deepEqual(result.tool_draft.documents.map((document: { artifact_type: string }) => document.artifact_type), ['characters', 'relationships'])
   assert.equal(result.tool_draft.documents[0].content, retainedCharacters.content)

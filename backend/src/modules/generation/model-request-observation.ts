@@ -21,8 +21,9 @@ export function stopObservedModelTask(id: string): boolean {
   controller.abort(new DOMException('已请求停止本地处理，上游状态仍需核对提供商记录', 'AbortError'))
   return true
 }
-const numericFields = ['request_bytes', 'response_chars', 'first_event_ms', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'output_limit',
-  'cache_read_tokens', 'cache_write_tokens', 'estimated_input_tokens', 'context_window_tokens', 'reserved_output_tokens', 'http_status', 'framing_reserve_tokens', 'unit_index', 'unit_count']
+const numericFields = ['request_bytes', 'response_chars', 'first_event_ms', 'first_text_ms', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'output_limit',
+  'cache_read_tokens', 'cache_write_tokens', 'estimated_input_tokens', 'context_window_tokens', 'reserved_output_tokens', 'http_status', 'framing_reserve_tokens', 'input_source_chars', 'input_index_chars', 'correction_items', 'reused_items', 'unit_index', 'unit_count']
+const protocolCountFields = ['request_tool_count', 'response_text_blocks', 'response_thinking_blocks', 'response_tool_use_blocks', 'response_other_blocks']
 const stringFields = ['kind', 'transport_kind', 'task_id', 'step_id', 'attempt_id', 'request_id', 'model_id', 'remote_id', 'failure_reason', 'raw_reason', 'delivery',
   'output_parameter', 'budget_mode', 'input_count_method', 'capacity_status', 'output_source', 'capability_source', 'request_purpose', 'upstream_request_id', 'output_limit_reason', 'output_limit_kind', 'estimate_source', 'context_source']
 /** Store diagnostics only; prompts, media, API keys and private reasoning never
@@ -31,11 +32,35 @@ export function safeModelMetrics(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object') return {}
   const source = value as Record<string, unknown>, result: Record<string, unknown> = {}
   for (const key of numericFields) if (typeof source[key] === 'number' && Number.isFinite(source[key]) && source[key] >= 0) result[key] = source[key]
+  for (const key of protocolCountFields) if (typeof source[key] === 'number' && Number.isSafeInteger(source[key]) && source[key] >= 0) result[key] = source[key]
   for (const key of stringFields) if (typeof source[key] === 'string') result[key] = source[key].slice(0, 300)
   if (source.usage_admitted === true) result.usage_admitted = true
   if (modelOperationStages.includes(source.operation_stage as ModelOperationStage)) result.operation_stage = source.operation_stage
   if (typeof source.output_started === 'boolean') result.output_started = source.output_started
+  if (typeof source.response_terminated === 'boolean') result.response_terminated = source.response_terminated
+  for (const key of ['request_has_tools', 'response_complete', 'response_blocks_closed', 'response_protocol_terminal', 'response_json_valid']) if (typeof source[key] === 'boolean') result[key] = source[key]
+  for (const key of ['request_prompt_hash', 'request_body_hash', 'response_body_hash', 'response_text_hash']) if (typeof source[key] === 'string' && /^[a-f0-9]{64}$/.test(source[key])) result[key] = source[key]
+  if (typeof source.request_structured_mode === 'string' && ['none', 'prompt', 'json_schema', 'json_object', 'tool_call'].includes(source.request_structured_mode)) result.request_structured_mode = source.request_structured_mode
+  const resultDetails = safeModelResult({ ...source, phase: 'structure', status: 'valid' }); if (resultDetails) { const { phase, status, ...details } = resultDetails; Object.assign(result, details) }
+  if (['configured', 'declared', 'default'].includes(String(source.structured_strategy_source))) result.structured_strategy_source = source.structured_strategy_source
+  if (source.structured_enforcement === 'unverified') result.structured_enforcement = 'unverified'
   if (typeof source.endpoint === 'string') { try { const url = new URL(source.endpoint); result.endpoint = url.origin + url.pathname } catch { /* no arbitrary text */ } }
+  return result
+}
+/** Activity deliberately excludes tokens, payloads and arbitrary event types.
+ * It may update only an already-dispatched request, never create or settle one. */
+function safeModelActivity(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object') return
+  const source = value as Record<string, unknown>
+  if (typeof source.request_id !== 'string' || !/^[a-zA-Z0-9_.:-]{1,160}$/.test(source.request_id) ||
+    !['headers', 'first_event', 'event', 'first_text'].includes(String(source.activity))) return
+  const result: Record<string, unknown> = { request_id: source.request_id, activity: source.activity }
+  for (const key of ['activity_elapsed_ms', 'received_events', 'last_event_ms', 'http_status', 'first_event_ms', 'first_text_ms', 'response_chars']) {
+    const number = source[key]
+    if (typeof number === 'number' && Number.isFinite(number) && number >= 0) result[key] = number
+  }
+  if (['accepted', 'rejected', 'unknown'].includes(String(source.delivery))) result.delivery = source.delivery
+  if (typeof source.output_started === 'boolean') result.output_started = source.output_started
   return result
 }
 export function initModelRequestObservation() {
@@ -134,10 +159,18 @@ export function createModelRequestObservation(options: ObservationOptions, trace
         onDispatch: value => {
           if (!canObserve()) return
           const context = currentModelRequestContext()
-          const metrics = safeModelMetrics({ ...safeModelMetrics(value), operation_stage: context?.operationStage,
+          const metrics = safeModelMetrics({ ...safeModelMetrics(value), operation_stage: context?.operationStage === 'format_correction' && context.correctionKind === 'business' ? 'content_repair' : context?.operationStage,
             unit_index: context?.operationUnit?.unit_index, unit_count: context?.operationUnit?.unit_count })
           if (typeof metrics.request_id === 'string') dispatchedRequests.add(metrics.request_id)
           safely(() => observe(metrics, false)); quietTrace(() => { const stage = currentModelRequestContext()?.traceStage; trace?.dispatch({ ...metrics, ...(stage ? { trace_stage: stage } : {}) }) })
+        },
+        onActivity: value => {
+          if (!canObserve()) return
+          const activity = safeModelActivity(value)
+          if (!activity || !dispatchedRequests.has(String(activity.request_id))) return
+          safely(() => db.prepare(`UPDATE model_request_attempts SET metrics=json_patch(metrics,?),updated_at=?
+            WHERE task_id=? AND id=? AND state='dispatched'`)
+            .run(JSON.stringify(activity), now(), id, activity.request_id))
         },
         onMetrics: value => {
           const metrics = safeModelMetrics(value)

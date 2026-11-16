@@ -160,3 +160,19 @@ test('recovered truncations use a neutral status while keeping raw diagnostics a
     assert.ok(failed.querySelector('.sd-activity-icon.is-failed'))
   } finally { await view.destroy() }
 })
+
+
+test('running format correction is visible once and execution detail stays folded', async () => {
+  const current = { ...task, status: 'running' as const, summary: '正在纠正输出格式，保留已生成正文；完成后重新校验。' }
+  const parent = { ...task, id: 'generation', scope: 'step' as const, status: 'running' as const, label: '生成阶段草稿', summary: '正在生成' }
+  const nested = { ...current, parent_id: parent.id }
+  const model = { ...task, id: 'model', kind: 'model' as const, scope: 'step' as const, status: 'running' as const, parent_id: nested.id, label: '请求模型', summary: '等待回答' }
+  const view = await mount({ activity: [parent, nested, model], execution, pending: true })
+  try {
+    assert.match(view.container.querySelector('.sd-activity-current')!.textContent!, /格式纠正中/)
+    assert.equal(view.container.querySelector('.sd-activity-request'), null)
+    assert.equal(view.container.querySelector('.sd-activity-steps'), null)
+    const toggle = view.container.querySelector<HTMLButtonElement>('.sd-activity-toggle')
+    if (toggle) { await act(() => toggle.click()); assert.ok(view.container.querySelector('.sd-activity-steps')) }
+  } finally { await view.destroy() }
+})
