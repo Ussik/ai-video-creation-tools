@@ -69,14 +69,14 @@ function expectedPlan(base: ScriptSourceDocument, target: ScriptSourceDocument) 
   assert.equal(plan?.mode, 'incremental')
   return plan!
 }
-function assertFullReview(prompts: string[], content: string, count = 1, reviewCount = count) {
+function assertFullReview(prompts: string[], content: string, count = 1, reviewCount = 0) {
   const stories = prompts.filter(prompt => prompt.includes(storyMarker)), reviews = prompts.filter(prompt => prompt.includes(reviewMarker))
   assert.equal(stories.length, count); assert.equal(reviews.length, reviewCount)
   for (const prompt of stories) assert.equal(inputFor<{ source: { content: string } }>(prompt, storyMarker).source.content, content)
   for (const prompt of reviews) assert.equal(inputFor<{ units: Unit[] }>(prompt, reviewMarker).units.map(unit => unit.text).join(''), content)
 }
 
-test('candidate edits reuse exact unaffected pages, rebuild the complete story and quality check, and report every phase', async () => {
+test('candidate edits reuse exact unaffected pages, rebuild the complete story without a quality gate, and report every phase', async () => {
   const base = await reviewed(), target = revised(base), prompts: string[] = [], progress: ScriptSourceAnalysis[] = []
   const plan = expectedPlan(base, target)
   const ready = await analyzeSourceSnapshot(target, 'model', async prompt => { prompts.push(prompt); return reply(prompt) }, signal(), configuration,
@@ -85,11 +85,11 @@ test('candidate edits reuse exact unaffected pages, rebuild the complete story a
   assert.equal(prompts.filter(prompt => prompt.includes(mapMarker)).length, plan.pages.filter(page => !page.reuse_sections).length)
   assert.ok(ready.revision_reuse!.reused_pages.length >= 2)
   assertFullReview(prompts, target.content)
-  assert.notEqual(ready.quality!.input_hash, base.analysis.quality!.input_hash)
+  assert.equal(ready.quality, undefined)
   validateSourceCoverage(target.content, ready.sections)
   assert.ok(progress.some(state => state.progress?.message.includes('已沿用')))
   assert.ok(progress.some(state => state.progress?.stage === 'synthesis'))
-  assert.ok(progress.some(state => state.progress?.message.includes('独立核对')))
+  assert.equal(progress.some(state => state.progress?.message.includes('独立核对')), false)
   assert.equal(progress.at(-1)!.status, 'ready')
   const cached = await analyzeSourceSnapshot(target, 'model', async () => { throw new Error('exact completed source must not spend tokens') }, signal(), configuration,
     { onProgress: state => { assert.equal(state.status, 'ready'); state.sections.length = 0 } })
@@ -172,37 +172,16 @@ test('configuration drift, disabled reuse, replaced uploads and forged candidate
   }
 })
 
-test('a substantive independent finding on candidate reused pages triggers one complete rebuild, then later findings are repaired automatically', async () => {
-  const repairMarker = '【原稿分析定点修补资料】\n'
-  for (const failAgain of [false, true]) {
-    const base = await reviewed(), target = revised(base), prompts: string[] = []
-    const plan = expectedPlan(base, target)
-    let reviews = 0, repairs = 0, rebuilt: ScriptSourceAnalysis | undefined
-    const ready = await analyzeSourceSnapshot(target, 'model', async prompt => {
-      prompts.push(prompt)
-      if (prompt.includes(repairMarker)) {
-        repairs++; rebuilt = checkpoint(base.project_id)
-        const input = inputFor<{ story: NonNullable<ScriptSourceAnalysis['story']>; finding: { explanation: string } }>(prompt, repairMarker)
-        return JSON.stringify({ status: 'patched', reason: '依据完整新稿补入重建后发现遗漏的事实。', changes: [{ target: 'story.summary',
-          section_id: null, operation: 'replace', index: null, expected: input.story.summary, value: `${input.story.summary}；${input.finding.explanation}` }] })
-      }
-      if (prompt.includes(reviewMarker) && (++reviews === 1 || failAgain && reviews === 2)) {
-        const input = inputFor<{ sections: Array<{ id: number }>; units: Unit[] }>(prompt, reviewMarker)
-        return JSON.stringify({ checked_section_ids: input.sections.map(section => section.id), findings: [
-          { kind: 'causality', explanation: '旧版人物理解受远处改动影响，需依据完整新稿重建。', unit_ids: [input.units.find(unit => unit.text.trim())!.id] },
-        ] })
-      }
-      return reply(prompt)
-    }, signal(), configuration)
-    assert.equal(ready.status, 'ready'); assert.equal(ready.quality!.status, 'passed')
-    const saved = checkpoint(base.project_id)
-    assert.equal(saved.revision_reuse?.status, 'discarded')
-    assert.equal(reviews, failAgain ? 3 : 2)
-    assert.equal(repairs, failAgain ? 1 : 0)
-    assert.equal(prompts.filter(prompt => prompt.includes(mapMarker)).length, saved.total_chunks + plan.pages.filter(page => !page.reuse_sections).length)
-    assertFullReview(prompts, target.content, 2, failAgain ? 3 : 2)
-    if (rebuilt) assert.deepEqual(ready.sections, rebuilt.sections, 'later finding repair preserves the completed replacement directory')
-    validateSourceCoverage(target.content, ready.sections)
-    assert.equal(effectiveScriptSource(target.project_id)!.content, base.content, 'automatic proposal repair never publishes the candidate manuscript')
-  }
+test('private candidate synthesis preserves reused pages without any automatic review, repair or full rebuild', async () => {
+  const base = await reviewed(), target = revised(base), prompts: string[] = [], plan = expectedPlan(base, target)
+  const ready = await analyzeSourceSnapshot(target, 'model', async prompt => {
+    prompts.push(prompt); assert.doesNotMatch(prompt, /【原稿分析核对资料】|【原稿分析定点修补资料】/)
+    return reply(prompt)
+  }, signal(), configuration)
+  assert.equal(ready.status, 'ready'); assert.equal(ready.quality, undefined)
+  assert.equal(checkpoint(base.project_id).revision_reuse?.status, 'verified')
+  assert.equal(prompts.filter(prompt => prompt.includes(mapMarker)).length, plan.pages.filter(page => !page.reuse_sections).length)
+  assertFullReview(prompts, target.content)
+  validateSourceCoverage(target.content, ready.sections)
+  assert.equal(effectiveScriptSource(target.project_id)!.content, base.content)
 })

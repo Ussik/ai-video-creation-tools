@@ -1,10 +1,10 @@
-export const modelOperationStages = ['outline_generation', 'outline_review', 'shot_expansion', 'format_correction', 'director_review',
+export const modelOperationStages = ['dialogue_source_correction', 'timing_repair', 'outline_generation', 'outline_review', 'shot_expansion', 'format_correction', 'director_review',
   'content_repair', 'repair_scope_review', 'recheck', 'script_outline', 'script_characters', 'script_locations', 'script_props', 'script_episode', 'script_review',
   'source_analysis', 'source_directory', 'source_synthesis', 'source_characters', 'source_timeline', 'source_threads', 'source_uncertainties', 'source_review', 'visual_organization', 'prompt_optimization', 'prompt_review', 'image_understanding',
   'video_understanding', 'continuity_review', 'canvas_adjustment', 'image_generation', 'video_generation', 'speech_generation'] as const
 export type ModelOperationStage = typeof modelOperationStages[number]
 export const modelOperationStageLabels: Record<ModelOperationStage, string> = {
-  outline_generation: '大纲生成', outline_review: '大纲校验', shot_expansion: '镜头扩写', format_correction: '格式修正', director_review: '导演复核',
+  dialogue_source_correction: '台词来源纠正', timing_repair: '时长校正', outline_generation: '大纲生成', outline_review: '大纲校验', shot_expansion: '镜头扩写', format_correction: '格式修正', director_review: '导演复核',
   content_repair: '内容修复', repair_scope_review: '修复范围复核', recheck: '修复复查', script_outline: '剧本大纲', script_characters: '人物设计', script_locations: '场景设计',
   script_props: '道具设计', script_episode: '分集正文', script_review: '剧本复核', source_analysis: '原稿分析', source_directory: '目录分析', source_synthesis: '全剧整合', source_characters: '人物整合',
   source_timeline: '事件整合', source_threads: '伏笔整合', source_uncertainties: '不确定事项整合', source_review: '原稿复核',
@@ -14,14 +14,22 @@ export const modelOperationStageLabels: Record<ModelOperationStage, string> = {
 }
 export type ModelResultStatus = 'valid' | 'invalid_json' | 'invalid_contract' | 'invalid_business' | 'passed' | 'needs_work' | 'inconclusive'
 export type ModelResultEvent = { phase: 'structure' | 'quality'; status: ModelResultStatus; stage?: ModelOperationStage;
+  scene_id?: string; shot_id?: string; field_path?: string;
   issue_count?: number; repaired?: boolean; repair_effect?: 'improved' | 'unchanged' | 'regressed'; duration_ms?: number;
-  unit_index?: number; unit_count?: number; started_at_ms?: number; ended_at_ms?: number;
-  task_key?: string; section_ids?: number[]; failure_code?: string; field_paths?: string[]; correction_items?: number; reused_items?: number;
+  first_pass_status?: ModelResultStatus; repair_count?: number; repaired_units?: string[];
+  validation_latency_ms?: number; repair_latency_ms?: number; structured_enforcement?: string;
+  json_error_position?: number; json_error_line?: number; json_error_column?: number;
+  repair_strategy?: string; repair_applied?: boolean; root_object_detected?: boolean;
+  input_tokens_before_repair?: number; input_tokens_after_repair?: number;
+  unit_index?: number; unit_count?: number; failure_code?: string; evidence_ref_ids?: string[]; evidence_fields?: string[];
+  evidence_validation?: 'passed' | 'failed'; scene_duration?: number; shot_duration_sum?: number; delta?: number; started_at_ms?: number; ended_at_ms?: number;
+  task_key?: string; section_ids?: number[]; field_paths?: string[]; correction_items?: number; reused_items?: number;
   input_source_chars?: number; input_index_chars?: number; evidence_expanded?: boolean; repair_type?: 'syntax_insertions' | 'local_fields' | 'local_reuse';
   recovery_action?: 'started' | 'response_saved' | 'stopped' | 'boundary_transfer'; recovery_error_type?: 'format' | 'reference';
   recovery_attempts?: number; recovery_input_chars?: number; recovery_output_chars?: number;
   request_category?: 'full_source' | 'targeted' | 'local_patch' | 'local_reuse' }
 const integer = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 1_000_000_000
+const signedInteger = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= -1_000_000_000 && Number(value) <= 1_000_000_000
 /** Construct only fixed diagnostics. Creative text and caller-provided metadata
  * never cross this observation boundary. */
 export function safeModelResult(value: unknown): ModelResultEvent | undefined {
@@ -32,7 +40,15 @@ export function safeModelResult(value: unknown): ModelResultEvent | undefined {
   if (!allowed.includes(item.status)) return
   const event: ModelResultEvent = { phase: item.phase, status: item.status }
   if (modelOperationStages.includes(item.stage as ModelOperationStage)) event.stage = item.stage
-  for (const key of ['issue_count', 'duration_ms', 'unit_index', 'unit_count'] as const) if (integer(item[key])) event[key] = item[key]
+  for (const key of ['issue_count', 'duration_ms', 'repair_count', 'validation_latency_ms', 'repair_latency_ms', 'json_error_position', 'json_error_line', 'json_error_column', 'input_tokens_before_repair', 'input_tokens_after_repair', 'unit_index', 'unit_count'] as const) if (integer(item[key])) event[key] = item[key]
+  for (const key of ['scene_duration', 'shot_duration_sum'] as const) if (integer(item[key])) event[key] = item[key]
+  if (signedInteger(item.delta)) event.delta = item.delta
+  if (['valid', 'invalid_json', 'invalid_contract', 'invalid_business', 'passed', 'needs_work', 'inconclusive'].includes(String(item.first_pass_status))) event.first_pass_status = item.first_pass_status
+  if (Array.isArray(item.repaired_units)) { const values = item.repaired_units.filter(value => typeof value === 'string' && /^[a-z0-9_.:-]{1,160}$/i.test(value)).slice(0, 64); if (values.length) event.repaired_units = [...new Set(values)] }
+  if (typeof item.structured_enforcement === 'string' && /^[a-z0-9_.-]{1,80}$/i.test(item.structured_enforcement)) event.structured_enforcement = item.structured_enforcement
+  if (typeof item.repair_strategy === 'string' && /^[a-z0-9_.-]{1,80}$/i.test(item.repair_strategy)) event.repair_strategy = item.repair_strategy
+  if (typeof item.repair_applied === 'boolean') event.repair_applied = item.repair_applied
+  if (typeof item.root_object_detected === 'boolean') event.root_object_detected = item.root_object_detected
   for (const key of ['started_at_ms', 'ended_at_ms'] as const) if (Number.isSafeInteger(item[key]) && Number(item[key]) >= 0) event[key] = item[key]
   for (const key of ['correction_items', 'reused_items', 'input_source_chars', 'input_index_chars'] as const) if (integer(item[key])) event[key] = item[key]
   if (typeof item.task_key === 'string' && /^(?:directory|overview|characters|characters_merge|timeline|threads|uncertainties)(?::[a-f0-9]+)?(?:\/coverage:\d+)?$/.test(item.task_key)) event.task_key = item.task_key
@@ -47,6 +63,13 @@ export function safeModelResult(value: unknown): ModelResultEvent | undefined {
   for (const key of ['recovery_attempts', 'recovery_input_chars', 'recovery_output_chars'] as const) if (integer(item[key])) event[key] = item[key]
   if (typeof item.repaired === 'boolean') event.repaired = item.repaired
   if (['improved', 'unchanged', 'regressed'].includes(String(item.repair_effect))) event.repair_effect = item.repair_effect
+  for (const key of ['scene_id', 'shot_id', 'field_path'] as const) if (typeof item[key] === 'string' && /^[a-z0-9_.:-]{1,180}$/i.test(item[key])) event[key] = item[key]
+  if (typeof item.failure_code === 'string' && /^[a-z0-9_.-]{1,100}$/i.test(item.failure_code)) event.failure_code = item.failure_code
+  for (const key of ['evidence_ref_ids', 'evidence_fields'] as const) if (Array.isArray(item[key])) {
+    const values = item[key].filter(value => typeof value === 'string' && /^[a-z0-9_.:-]{1,160}$/i.test(value)).slice(0, 64)
+    if (values.length) event[key] = [...new Set(values)]
+  }
+  if (item.evidence_validation === 'passed' || item.evidence_validation === 'failed') event.evidence_validation = item.evidence_validation
   return event
 }
 

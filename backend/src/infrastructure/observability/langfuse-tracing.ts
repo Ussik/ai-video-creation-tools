@@ -3,6 +3,7 @@ import { createHmac, randomBytes } from 'node:crypto'
 
 export type LangfuseTracer = { observation(options: { taskId: string; projectId?: string; modelId?: string; owner: string; label?: string }): {
   dispatch(value: unknown): void; metrics(value: unknown): void; result?(value: unknown): void; finish(state: 'succeeded' | 'failed' | 'cancelled'): void
+  correlation?(): { enabled: boolean; sampled: boolean; trace_id?: string; root_span_id?: string; reason?: string }
 } }
 export type LangfuseConfig = { enabled: boolean; publicKey?: string; secretKey?: string; baseUrl: string;
   sampleRate: number; timeoutMs: number; maxPending: number; reason?: 'disabled' | 'missing_credentials' | 'invalid_endpoint' | 'invalid_configuration' }
@@ -14,7 +15,8 @@ export type LangfuseBatch = { resourceSpans: Array<{ resource: { attributes: Arr
   scopeSpans: Array<{ scope: { name: string }; spans: LangfuseSpan[] }> }> }
 type Dependencies = { clientFactory?: (config: LangfuseConfig, safeFetch: typeof fetch) => { send(batch: LangfuseBatch, signal?: AbortSignal): Promise<unknown> };
   fetch?: typeof fetch; now?: () => number; random?: () => number; salt?: string | Buffer }
-export type LangfuseStatus = { enabled: boolean; pending: number; dropped: number; failed: number; sent: number; lastTraceId?: string; lastRootSpanId?: string; incomplete: number }
+export type LangfuseStatus = { enabled: boolean; pending: number; dropped: number; failed: number; sent: number; lastTraceId?: string; lastRootSpanId?: string; incomplete: number;
+  reason?: string; last_failure?: string; last_failure_at?: string; last_http_status?: number }
 export type ConfiguredLangfuseTracer = LangfuseTracer & { status(): LangfuseStatus; flush(timeoutMs?: number): Promise<void> }
 const noop = () => {}
 const emptyObservation = { dispatch: noop, metrics: noop, result: noop, finish: noop }
@@ -56,11 +58,11 @@ export function readLangfuseConfig(env: NodeJS.ProcessEnv = process.env): Langfu
 function bounded<T>(work: Promise<T>, timeoutMs: number, onTimeout?: () => void): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => { onTimeout?.(); reject(new Error('trace_timeout')) }, timeoutMs)
-    work.then(value => { clearTimeout(timer); resolve(value) }, () => { clearTimeout(timer); reject(new Error('trace_export_failed')) })
+    work.then(value => { clearTimeout(timer); resolve(value) }, issue => { clearTimeout(timer); reject(issue) })
   })
 }
 async function confirmation(response: Response, signal?: AbortSignal) {
-  if (response.status !== 200) { void response.body?.cancel().catch(noop); throw new Error('trace_export_failed') }
+  if (response.status !== 200) { void response.body?.cancel().catch(noop); throw Object.assign(new Error('trace_export_http_error'), { httpStatus: response.status }) }
   const reader = response.body?.getReader()
   if (!reader) throw new Error('trace_confirmation_missing')
   const abort = () => { void reader.cancel().catch(noop) }
@@ -85,7 +87,7 @@ async function confirmation(response: Response, signal?: AbortSignal) {
 export function createLangfuseTracer(config: LangfuseConfig, dependencies: Dependencies = {}): ConfiguredLangfuseTracer {
   const valid = readLangfuseConfig({ LANGFUSE_TRACING: String(config.enabled), LANGFUSE_PUBLIC_KEY: config.publicKey, LANGFUSE_SECRET_KEY: config.secretKey,
     LANGFUSE_BASE_URL: config.baseUrl, LANGFUSE_TRACING_SAMPLING_RATE: String(config.sampleRate), VIDEO_STUDIO_LANGFUSE_TIMEOUT_MS: String(config.timeoutMs), VIDEO_STUDIO_LANGFUSE_MAX_PENDING: String(config.maxPending) })
-  const state: LangfuseStatus = { enabled: valid.enabled, pending: 0, dropped: 0, failed: 0, sent: 0, incomplete: 0 }
+  const state: LangfuseStatus = { enabled: valid.enabled, pending: 0, dropped: 0, failed: 0, sent: 0, incomplete: 0, reason: valid.reason }
   const clock = dependencies.now || Date.now, random = dependencies.random || Math.random, salt = dependencies.salt || randomBytes(32)
   const opaque = (kind: string, value: unknown) => typeof value === 'string' && value ? createHmac('sha256', salt).update(kind).update('\0').update(value).digest('hex') : undefined
   const queue: LangfuseBatch[] = []
@@ -103,7 +105,12 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
       while (queue.length) {
         const batch = queue.shift()!, controller = new AbortController()
         try { client ||= dependencies.clientFactory ? dependencies.clientFactory(valid, safeFetch) : defaultClient(); await bounded(Promise.resolve().then(() => client!.send(batch, controller.signal)), valid.timeoutMs, () => controller.abort()); state.sent++ }
-        catch { state.failed++ }
+        catch (issue) {
+          state.failed++; state.last_failure_at = new Date(clock()).toISOString()
+          const known = ['trace_timeout', 'trace_export_http_error', 'trace_confirmation_missing', 'trace_confirmation_invalid', 'trace_export_partially_rejected']
+          state.last_failure = issue instanceof Error && known.includes(issue.message) ? issue.message : 'trace_export_failed'
+          state.last_http_status = typeof (issue as { httpStatus?: unknown })?.httpStatus === 'number' ? (issue as { httpStatus: number }).httpStatus : undefined
+        }
         finally { state.pending-- }
       }
     }).finally(() => { draining = undefined; if (queue.length) drain() })
@@ -135,6 +142,14 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
     for (const [key, values] of [['trace_stage', stages], ['request_purpose', purposes], ['transport_kind', transports], ['failure_reason', failures], ['delivery', deliveries]] as const) if (typeof source[key] === 'string' && values.has(source[key])) result[key] = source[key]
     if (modelOperationStages.includes(source.operation_stage as ModelOperationStage)) result.operation_stage = source.operation_stage
     if (typeof source.output_started === 'boolean') result.output_started = source.output_started
+    for (const key of ['request_tool_names', 'response_block_types'] as const) if (Array.isArray(source[key])) {
+      const values = source[key].filter(value => typeof value === 'string' && /^[a-zA-Z0-9_.:-]{1,120}$/.test(value)).slice(0, 64)
+      if (values.length) result[key] = [...new Set(values)]
+    }
+    for (const key of ['request_tool_choice', 'finish_reason'] as const) if (typeof source[key] === 'string' && /^[a-zA-Z0-9_.:-]{1,120}$/.test(source[key])) result[key] = source[key]
+    for (const key of ['scene_id', 'shot_id', 'field_path'] as const) if (typeof source[key] === 'string' && /^[a-zA-Z0-9_.:-]{1,180}$/.test(source[key])) result[key] = source[key]
+    if (source.checkpoint_reused === true) result.checkpoint_reused = true
+    if (['native_json_schema_unverified', 'prompt_only', 'unverified'].includes(String(source.structured_enforcement))) result.structured_enforcement = source.structured_enforcement
     if (typeof source.response_terminated === 'boolean') result.response_terminated = source.response_terminated
     for (const key of ['request_has_tools', 'response_complete', 'response_blocks_closed', 'response_protocol_terminal', 'response_json_valid']) if (typeof source[key] === 'boolean') result[key] = source[key]
     for (const key of ['request_prompt_hash', 'request_body_hash', 'response_body_hash', 'response_text_hash']) if (typeof source[key] === 'string' && /^[a-f0-9]{64}$/.test(source[key])) result[key] = source[key]
@@ -161,10 +176,10 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
     status: () => ({ ...state }),
     async flush(timeoutMs = valid.timeoutMs) { if (!draining) return; try { await bounded(draining, Math.max(1, Math.min(timeoutMs, 10_000))) } catch { /* Shutdown cannot affect business execution. */ } },
     observation(options) {
-      if (!valid.enabled) return emptyObservation
+      if (!valid.enabled) return { ...emptyObservation, correlation: () => ({ enabled: false, sampled: false, reason: valid.reason }) }
       let sampled = false
       try { sampled = random() < valid.sampleRate } catch { return emptyObservation }
-      if (!sampled) return emptyObservation
+      if (!sampled) return { ...emptyObservation, correlation: () => ({ enabled: true, sampled: false, reason: 'not_sampled' }) }
       const children = new Map<string, { id: string; name: string; generation: boolean; startedAt: number; metadata: Record<string, unknown>; settled: boolean; incomplete: boolean }>()
       let resultCount = 0
       let root: { id: string; spanId: string; startedAt: number; metadata: Record<string, unknown> } | undefined, finished = false, suppressed = false
@@ -172,6 +187,8 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
         ...(options.projectId ? { project_ref: opaque('project', options.projectId) } : {}), ...(options.modelId ? { model_ref: opaque('model', options.modelId) } : {}) })
       const safely = (work: () => void) => { try { work() } catch { state.failed++ } }
       return {
+        correlation: () => ({ enabled: true, sampled: true, ...(root ? { trace_id: root.id, root_span_id: root.spanId } : {}),
+          ...(suppressed ? { reason: 'queue_saturated' } : {}) }),
         dispatch(value) { safely(() => {
           if (finished || suppressed) return
           const source = record(value), key = opaque('request', source.request_id)
@@ -201,8 +218,14 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
           const at = clock()
           if (!root) { root = { id: randomBytes(16).toString('hex'), spanId: randomBytes(8).toString('hex'), startedAt: at, metadata: identity() }; state.lastTraceId = root.id; state.lastRootSpanId = root.spanId }
           root.startedAt = Math.min(root.startedAt, Math.max(0, at - (event.duration_ms || 0)))
-          if (event.phase === 'quality') { root.metadata.latest_quality_status = event.status; if (event.stage) root.metadata.latest_quality_stage = event.stage }
-          else root.metadata.latest_structure_status = event.status
+          if (event.phase === 'quality') {
+            const blockedByBusinessFailure = root.metadata.latest_structure_status === 'invalid_business'
+            root.metadata.latest_quality_status = blockedByBusinessFailure && event.status === 'passed' ? 'needs_work' : event.status
+            if (event.stage) root.metadata.latest_quality_stage = event.stage
+          } else {
+            root.metadata.latest_structure_status = event.status
+            if (event.status === 'invalid_business' && root.metadata.latest_quality_status === 'passed') root.metadata.latest_quality_status = 'needs_work'
+          }
           // Long executions remain bounded without freezing their root at an
           // early passed substep when the final review later needs work.
           if (resultCount >= 128) { root.metadata.omitted_result_count = Number(root.metadata.omitted_result_count || 0) + 1; return }
@@ -210,13 +233,33 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
           const operation = event.stage ? modelOperationStageLabels[event.stage] : '模型结果'
           const metadata: Record<string, unknown> = { result_phase: event.phase, result_status: event.status,
             ...(event.stage ? { operation_stage: event.stage } : {}),
+            ...(event.scene_id ? { scene_id: event.scene_id } : {}), ...(event.shot_id ? { shot_id: event.shot_id } : {}),
+            ...(event.field_path ? { field_path: event.field_path } : {}),
             ...Object.fromEntries(['recovery_action', 'recovery_error_type', 'recovery_attempts', 'recovery_input_chars', 'recovery_output_chars', 'task_key', 'section_ids', 'failure_code', 'field_paths', 'correction_items', 'reused_items', 'request_category', 'input_source_chars', 'input_index_chars', 'evidence_expanded', 'repair_type', 'started_at_ms', 'ended_at_ms'].flatMap(key => event[key as keyof typeof event] === undefined ? [] : [[key, event[key as keyof typeof event]]])),
             ...(event.issue_count === undefined ? {} : { issue_count: event.issue_count }),
             ...(event.repaired === undefined ? {} : { repaired: event.repaired }),
             ...(event.repair_effect === undefined ? {} : { repair_effect: event.repair_effect }),
             ...(event.duration_ms === undefined ? {} : { duration_ms: event.duration_ms }),
             ...(event.unit_index === undefined ? {} : { unit_index: event.unit_index }),
-            ...(event.unit_count === undefined ? {} : { unit_count: event.unit_count }) }
+            ...(event.unit_count === undefined ? {} : { unit_count: event.unit_count }),
+            ...(event.failure_code === undefined ? {} : { failure_code: event.failure_code }),
+            ...(event.evidence_ref_ids === undefined ? {} : { evidence_ref_ids: event.evidence_ref_ids }),
+            ...(event.evidence_fields === undefined ? {} : { evidence_fields: event.evidence_fields }),
+            ...(event.evidence_validation === undefined ? {} : { evidence_validation: event.evidence_validation }),
+            ...(event.first_pass_status === undefined ? {} : { first_pass_status: event.first_pass_status }),
+            ...(event.repair_count === undefined ? {} : { repair_count: event.repair_count }),
+            ...(event.repaired_units === undefined ? {} : { repaired_units: event.repaired_units }),
+            ...(event.validation_latency_ms === undefined ? {} : { validation_latency_ms: event.validation_latency_ms }),
+            ...(event.repair_latency_ms === undefined ? {} : { repair_latency_ms: event.repair_latency_ms }),
+            ...(event.structured_enforcement === undefined ? {} : { structured_enforcement: event.structured_enforcement }),
+            ...(event.json_error_position === undefined ? {} : { json_error_position: event.json_error_position }),
+            ...(event.json_error_line === undefined ? {} : { json_error_line: event.json_error_line }),
+            ...(event.json_error_column === undefined ? {} : { json_error_column: event.json_error_column }),
+            ...(event.repair_strategy === undefined ? {} : { repair_strategy: event.repair_strategy }),
+            ...(event.repair_applied === undefined ? {} : { repair_applied: event.repair_applied }),
+            ...(event.root_object_detected === undefined ? {} : { root_object_detected: event.root_object_detected }),
+            ...(event.input_tokens_before_repair === undefined ? {} : { input_tokens_before_repair: event.input_tokens_before_repair }),
+            ...(event.input_tokens_after_repair === undefined ? {} : { input_tokens_after_repair: event.input_tokens_after_repair }) }
           // Transport completion and execution state do not grant this quality
           // result. This immutable application span records the validator.
           enqueue([span({ traceId: root.id, id: randomBytes(8).toString('hex'), parentId: root.spanId,

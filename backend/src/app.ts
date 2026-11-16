@@ -109,7 +109,7 @@ import { completeSourceEvidence } from './modules/script/script-source-material.
 import { scriptSourceVersion, sourceAnalysisConfiguration } from './modules/script/script-source-analysis.js'
 import { registerSourceProductionRoutes, sourceEpisodeProductionContext } from './modules/script/script-source-production.js'
 import { sourceProposalBudget, scriptProposalBudgetScope } from './modules/script/script-proposal-budget.js'
-import { startScriptDraftRepairRounds, completedScriptDraftRepairRounds, completeScriptDraftRepairRound } from './modules/script/script-draft-repair-rounds.js'
+import { startScriptDraftRepairRounds, completeScriptDraftRepairRound } from './modules/script/script-draft-repair-rounds.js'
 import { prepareConfirmedScriptContext, type PreparedScriptContext } from './modules/script/script-confirmed-context.js'
 import { findingIdentity, rememberFindingResolutions, reconcileFindingResolutions, resolutionContext, type FindingResolutionRecord } from './modules/script/script-finding-state.js'
 import { semanticContinuitySchema, semanticContinuityPrompt, parseSemanticContinuity } from './modules/storyboard/continuity-semantics.js'
@@ -1296,7 +1296,8 @@ async function toolDirectorChat(project: Project, data: DirectorInput, model: Mo
     discussionOnly: Boolean(data.question_response), legacyPending: Boolean(data.intent_context?.pending_draft), revisionTaskId: data.revision_task_id, signal, onEvent,
     sourceVersion: sourceContext.source_version, sourceContextMode: sourceContext.mode,
     resolveKey: item => decryptKey(item.key_ciphertext || null),
-    validateCreation: (draft, preserved) => reviewDirectorDraft(project, data, draft, model, provider, signal, activity, preserved),
+    // Ordinary creation publishes a structurally validated preview. Explicit
+    // document review remains available, but approval is not a production gate.
     authorizeResource: async (summary, changes) => {
       const step = activity.start({ kind: 'model', label: '核验视觉或分镜操作', name: model.name, summary: '检查创作者是否明确要求处理这些对象与范围' })
       try {
@@ -1632,24 +1633,14 @@ function draftResolutionResult(project: Project, pending: PendingScriptDraft, ac
 
 async function resumeScriptDraft(project: Project, data: DirectorInput, model: Model, provider: Provider,
   send: (event: Record<string, unknown>) => void, signal: AbortSignal, activity: ReturnType<typeof activityRecorder>,
-  onRepairRequestAdvanced?: (request: DirectorInput) => void) {
-  let request = data
-  // Continue only the same authorized decisions, with an independent review
-  // after every repair. The creator can stop at any point.
-  for (let round = 0; ; round++) {
-    signal.throwIfAborted()
-    const result = await resumeScriptDraftOnce(project, request, model, provider, send, signal, activity, true, round > 0, onRepairRequestAdvanced)
-    if (!('retry_resolution' in result) || !result.retry_resolution) return result
-    const pending = result.retry_resolution
-    const step = activity.start({ kind: 'context', label: '继续落实已有处理方案', summary: `第 ${completedScriptDraftRepairRounds(pending) + 1} 轮：沿用同一决定，同步仍未落实的段落并再次独立复核` })
-    activity.finish(step, 'succeeded')
-    request = { ...data, draft_resolution: { id: pending.id, version: pending.version, strategy: 'continue' } }
-  }
+  _onRepairRequestAdvanced?: (request: DirectorInput) => void) {
+  // An explicit repair is one operation. Findings remain available to the
+  // creator; they never authorize another automatic repair/review round.
+  return resumeScriptDraftOnce(project, data, model, provider, send, signal, activity)
 }
 
 async function resumeScriptDraftOnce(project: Project, data: DirectorInput, model: Model, provider: Provider,
-  send: (event: Record<string, unknown>) => void, signal: AbortSignal, activity: ReturnType<typeof activityRecorder>,
-  allowKnownRetry: boolean, reuseMessages = false, onRepairRequestAdvanced?: (request: DirectorInput) => void) {
+  send: (event: Record<string, unknown>) => void, signal: AbortSignal, activity: ReturnType<typeof activityRecorder>) {
   const sourceVersion = resolutionSourceVersion(project)
   const { pending: claimed, release } = claimScriptDraft(project.id, data.draft_resolution!, sourceVersion)
   // Mutable run metadata is deliberately excluded from checkpoint identity.
@@ -1669,7 +1660,7 @@ async function resumeScriptDraftOnce(project: Project, data: DirectorInput, mode
     const reviewMessages = data.draft_resolution!.strategy === 'continue'
       ? previousRun?.review_messages || original.messages
       : [...original.messages.slice(-30), data.messages.at(-1)!]
-    const continued = scriptDirectorChatInput.parse({ ...original, messages: reuseMessages ? original.messages : reviewMessages })
+    const continued = scriptDirectorChatInput.parse({ ...original, messages: reviewMessages })
     const ensureCurrent = () => {
       signal.throwIfAborted()
       if (resolutionSourceVersion(project) !== sourceVersion) throw Object.assign(new Error('项目资料或原剧本已变化，候选稿仍保留，请重新检查来源'), { statusCode: 409 })
@@ -1843,7 +1834,6 @@ async function resumeScriptDraftOnce(project: Project, data: DirectorInput, mode
         beforeSource: proposedSource?.content, afterSource: sourceUpdate?.content || source?.content,
         beforeFindings: pending.findings, findings: error.findings, resolutions, history: repairHistory })
       repairHistory = progress.history
-      const canRetry = known && progress.action !== 'needs_decision'
       const remainingRun: PendingScriptDraft['run'] = known ? { strategy: input.strategy, review_messages: continued.messages,
         completed_rounds: repairRun!.completed_rounds,
         answers: error.findings.map(finding => {
@@ -1855,15 +1845,8 @@ async function resumeScriptDraftOnce(project: Project, data: DirectorInput, mode
       const updated = db.transaction(() => {
         const retained = retainScriptDraft(project.id, { ...pending, draft: repaired!, source_update: sourceUpdate, findings: error.findings,
           resolutions: reconcileFindingResolutions(resolutions, error.findings), repair_history: repairHistory, request: continued, run: remainingRun }, pending)
-        // Candidate identity and its durable continuation must commit together.
-        // A restart must never leave a new version behind an old recovery key.
-        if (allowKnownRetry && canRetry) onRepairRequestAdvanced?.({ ...data,
-          draft_resolution: { id: retained.id, version: retained.version, strategy: 'continue' } })
         return retained
       })()
-      if (allowKnownRetry && canRetry) {
-        return { retry_resolution: updated }
-      }
       return draftResolutionResult(project, updated, activity)
     }
     ensureCurrent()
@@ -1892,8 +1875,6 @@ async function executeDirectorChat(project: Project, data: DirectorInput, model:
   send: (event: Record<string, unknown>) => void, signal: AbortSignal, activity = activityRecorder(send), onStyleSaved?: () => void,
   onRepairRequestAdvanced?: (request: DirectorInput) => void, generationAttemptId?: string, resumeCheckpoint = false): Promise<Record<string, unknown>> {
   if (data.draft_resolution) return resumeScriptDraft(project, data, model, provider, send, signal, activity, onRepairRequestAdvanced)
-  const pending = data.focus_artifact === 'all' && pendingScriptDraft(project.id)
-  if (pending) return draftResolutionResult(project, pending, activity)
   let sourceVersion = resolutionSourceVersion(project), styleSaved = false
   const styleSync: StyleSyncHooks = {
     onSkillsSelected: request => {
@@ -2348,7 +2329,7 @@ function directorGenerationSteps(store: ReturnType<typeof generationCheckpointSt
 }
 
 async function directorTextOutput(project: Project, model: Model, provider: Provider, data: DirectorInput, prompt: string,
-  onEvent: (event: Record<string, unknown>) => void = () => {}, signal?: AbortSignal, activity?: ReturnType<typeof activityRecorder>, validate?: (draft: Parameters<typeof validateWorkflowScenes>[1]) => void, preserveSource = false,
+  onEvent: (event: Record<string, unknown>) => void = () => {}, signal?: AbortSignal, activity?: ReturnType<typeof activityRecorder>, validate?: (draft: Parameters<typeof validateWorkflowScenes>[1]) => void, _preserveSource = false,
   onMetrics?: (metrics: TextRequestMetrics) => void, checkpointContext?: string, legacyCheckpointContext?: string,
   legacyWorkflowContexts: readonly WorkflowCheckpointContext[] = [], generationAttemptId = newId(), resumeCheckpoint = false) {
   data = { ...data }
@@ -2475,7 +2456,7 @@ async function directorTextOutput(project: Project, model: Model, provider: Prov
         const entry = taskEntries.get(task.id)
         if (entry) activity.finish(entry, status === 'succeeded' ? 'succeeded' : signal?.aborted ? 'cancelled' : 'failed', {
           ...timing,
-          summary: candidate ? timing?.reused ? '已复用本项成果，可预览；任务完成后核对一致性' : '本项成果已保留，可预览；任务完成后核对一致性' : error instanceof Error ? error.message.slice(0, 3000) : '本项任务未完成，已完成成果仍保留',
+          summary: candidate ? timing?.reused ? '已复用本项成果，可预览并确认保存' : '本项成果已保留，可预览并确认保存' : error instanceof Error ? error.message.slice(0, 3000) : '本项任务未完成，已完成成果仍保留',
           ...(candidate ? { artifact_preview: { stage: candidate.stage, scope: candidate.scope, episode_number: candidate.episode_number,
             artifacts: candidate.artifacts, scenes: candidate.scenes } } : {}),
         })
@@ -2500,8 +2481,8 @@ async function directorTextOutput(project: Project, model: Model, provider: Prov
   if ((source ? scriptDocumentVersion(source) : null) !== currentScriptSourceVersion(project.id)) {
     throw Object.assign(new Error('上传剧本已变化，请重新生成；已有文档未修改'), { statusCode: 409 })
   }
-  if (!data.adopt_source && !preserveSource) await reviewDirectorDraft(project, data, draft, model, provider, signal, activity,
-    data.workflow.operation === 'regenerate' ? [] : projectDocuments(project.id, projectScript(project.id)), undefined, steps)
+  // Keep source identity, field contracts and scene validation above. A
+  // separate model quality verdict must not delay the completed candidate.
   return JSON.stringify({ artifacts: draft.artifacts, scenes: draft.scenes })
 }
 

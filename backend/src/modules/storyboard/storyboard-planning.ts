@@ -16,10 +16,10 @@ import { storyboardReferenceBudget, storyboardReferenceBudgetInstructions } from
 import { savedDesignStoryboardSources, savedStoryboardSources, saveDesignStoryboardSource, saveStoryboardSource, storyboardSourceFingerprint } from './storyboard-freshness.js'
 import { invalidateStoryboardShot } from './storyboard-invalidation.js'
 import { resolveFinalCutScope } from '../final-cut/final-cut-scope.js'
-import { videoAudioPlanInstructions, videoAudioPlanSchema, validateVideoAudioPlanSources, recoverGeneratedVideoAudioPlanSources } from '../canvas/video-audio-plan.js'
-import { buildStoryboardDirectingReviewContext, composeDirectedShot, directingSceneSchema, directingShotSchema,
-  storyboardDirectingInstructions, storyboardDirectingReviewPrompt, storyboardDirectingReviewSchema,
-  validateStoryboardDirectingReview, storyboardContinuityPlanSchema } from './storyboard-directing.js'
+import { videoAudioPlanInstructions, videoAudioPlanSchema } from '../canvas/video-audio-plan.js'
+import { composeDirectedShot, directingSceneSchema, directingShotSchema,
+  buildStoryboardDirectingReviewDigest, storyboardDirectingInstructions, storyboardDirectingReviewPrompt, storyboardDirectingReviewSchema,
+  normalizeStoryboardDirectingReview, storyboardContinuityPlanSchema } from './storyboard-directing.js'
 import { storyboardTargetInstructions, storyboardTargetModel } from './storyboard-target-model.js'
 import { storyboardCreativeAuthority, storyboardCreativeContext, storyboardCreativeContextPrompt, storyboardCreativeContextVersion } from './storyboard-creative-context.js'
 import { readStoryboardPlanningPreview, saveStoryboardPlanningPreview, storyboardPlanningPreviewKey } from './storyboard-planning-preview.js'
@@ -34,7 +34,9 @@ import { ensureStoryboardOutlineQuality } from './storyboard-outline-quality.js'
 import { storyboardIssueFingerprint, storyboardValueSignature, storyboardRepairEffect } from './storyboard-review-scope.js'
 import { reportModelResult, withModelOperationStage } from '../generation/model-result-observation.js'
 import { currentModelRequestContext, modelTaskPolicies, withModelRequestContext } from '../generation/model-task-policy.js'
+import { storyboardDialogueSources, storyboardDialogueInstructions, storyboardAudioInputSchema, resolveStoryboardAudio, repairStoryboardDialogue } from './storyboard-dialogue-sources.js'
 import { isStoryboardPlanningBudgetError } from './storyboard-planning-budget.js'
+import { repairStoryboardTiming, throwTimingMismatch } from './storyboard-timing-repair.js'
 
 const repairHistorySchema = z.object({ attempted: z.array(z.string().length(64)).max(3) }).strict()
 type RepairHistory = z.infer<typeof repairHistorySchema>
@@ -87,7 +89,7 @@ const preview = draft.extend({ signature: z.string().length(64), mode: z.enum(['
   scenes: z.array(sceneDraft.extend({ scene_heading: z.string() })).min(1).max(10),
   used_skills: z.array(previewSkill), skill_assignment: z.unknown().optional(),
   motion_skills: z.array(previewSkill).optional(), motion_skill_assignment: z.unknown().optional(),
-  directing_review: z.object({ status: z.enum(['passed', 'warnings', 'needs_work', 'inconclusive', 'pending_review', 'edited']), repaired: z.boolean(),
+  directing_review: z.object({ status: z.enum(['passed', 'warnings', 'needs_work', 'inconclusive', 'review_inconclusive_no_action', 'review_inconclusive_needs_user', 'pending_review', 'edited']), repaired: z.boolean(),
     review_id: z.string().optional(), source_signature: z.string().optional(), reviewed_at: z.string().optional(),
     error: z.object({ code: z.string(), message: z.string(), retryable: z.boolean().optional() }).optional(),
     content_signature: z.string().length(64), issues: storyboardDirectingReviewSchema.shape.issues }),
@@ -186,14 +188,25 @@ function storyboardSources(state: ReturnType<typeof snapshot>, documentIds: stri
   const episodes = new Set(state.scenes.map(scene => scene.episode_number))
   return state.documents.filter(document => documentIds.includes(document.id) || document.artifact_type === 'episode_script' && episodes.has(document.episode_number))
 }
-function audioSources(state: ReturnType<typeof snapshot>, instructions: string) {
-  return [...state.scenes.flatMap(scene => [scene.action, scene.dialogue, scene.narration]),
-    ...state.documents.map(document => document.content), instructions]
+function boundedContextText(value: unknown, limit: number): string {
+  const text = typeof value === 'string' ? value : JSON.stringify(value)
+  if (!text || text.length <= limit) return text || ''
+  const head = Math.ceil(limit * 0.7), tail = Math.max(0, limit - head - 32)
+  return `${text.slice(0, head)}\n…[中段已裁剪]…\n${text.slice(-tail)}`
+}
+function compactSceneSource(scene: ScriptScene) {
+  return { id: scene.id, episode_number: scene.episode_number, heading: scene.heading, duration: scene.duration,
+    action: boundedContextText(scene.action, 1800), dialogue: boundedContextText(scene.dialogue, 2200), narration: boundedContextText(scene.narration, 1200) }
+}
+function compactStoryboardSource(document: ReturnType<typeof storyboardSources>[number]) {
+  return { id: document.id, title: document.title, artifact_type: document.artifact_type, episode_number: document.episode_number,
+    version: document.version, content: boundedContextText(document.content, 7000) }
 }
 type PlanningSchedule = { scenes: Array<Pick<z.infer<typeof sceneDraft>, 'scene_id' | 'scene_duration'> & {
   shots: Array<Pick<z.infer<typeof shotDraft>, 'shot_id' | 'duration' | 'audio_plan'>>
 }> }
 function validatePlan(value: PlanningSchedule, state: ReturnType<typeof snapshot>, target?: number, mode: DesignMode = 'update', instructions = '', duration: DurationMode = 'preserve') {
+  const dialogueSources = storyboardDialogueSources(state.scenes, state.documents)
   const counts = new Map<string, number>()
   for (const scene of value.scenes) counts.set(scene.scene_id, (counts.get(scene.scene_id) || 0) + 1)
   const missing = state.scenes.filter(scene => !counts.has(scene.id))
@@ -207,9 +220,9 @@ function validatePlan(value: PlanningSchedule, state: ReturnType<typeof snapshot
     ].filter(Boolean).join('；') + '。请按本次所选 scene_id 各返回一次，不使用剧本场号替代内部 ID。')
   }
   if (target !== undefined && value.scenes.reduce((sum, scene) => sum + scene.scene_duration, 0) !== target) fail(`分镜规划总时长必须为 ${target} 秒`)
-  for (const scene of value.scenes) {
-    for (const shot of scene.shots) validateVideoAudioPlanSources(shot.audio_plan, audioSources(state, instructions))
-    if (scene.shots.reduce((sum, shot) => sum + shot.duration, 0) !== scene.scene_duration) fail('镜头时长总和必须等于本场规划时长')
+  for (const [sceneIndex, scene] of value.scenes.entries()) {
+    for (const shot of scene.shots) resolveStoryboardAudio(shot.audio_plan, scene.scene_id, dialogueSources, false)
+    if (scene.shots.reduce((sum, shot) => sum + shot.duration, 0) !== scene.scene_duration) throwTimingMismatch(scene, sceneIndex)
     const existing = state.shots.filter(shot => shot.source_scene_id === scene.scene_id)
     const reused = scene.shots.flatMap(shot => shot.shot_id ? [shot.shot_id] : [])
     if (mode === 'redesign' && reused.length) fail('独立新方案不能复用已有镜头 ID，请为每个新镜头返回空 shot_id')
@@ -367,7 +380,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       (input.mode === 'update' ? '已有镜头只用于保留ID与必要的连续性，不得将其旧情节当作当前原文。' : '不读取或恢复旧方案镜头作为本次设计。') +
       `正文与旧场次不一致时，按最新正文中对应场次内容规划，不引用其他场次剧情。人物年龄、外貌或关系等已变更时，镜头内容必须使用新设定，不能照抄旧值；未变更的内容保持连续。\n` +
       `prompt写镜头叙事。image_prompt只写单幅开镜首帧的景别、机位、主体、姿态、构图和光线；video_prompt写连续动作、表演、运镜与收镜，不写信息图拼版。二者遵守项目画风，不绘制字幕、水印。摄影、空间和声音各在所属字段说明，不在多个字段重复整段相同描述。` +
-      videoAudioPlanInstructions + '\n' +
+      videoAudioPlanInstructions + storyboardDialogueInstructions + '\n' +
       `start_state/end_state/cut_note分别写开镜、收镜状态和接镜方式。相邻镜头空间与动作连续。输出所有选中场次的完整JSON方案。\n` +
       (target ? target.budget ? storyboardReferenceBudgetInstructions(target.budget) : '' : storyboardReferenceBudgetInstructions(state.referenceBudget)) +
       storyboardTargetInstructions(target) +
@@ -376,6 +389,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       storyboardDirectingInstructions + '\n' +
       `创作者补充要求：${input.instructions}\n` +
       `选中参考文档：${JSON.stringify(sources.map(({ id, title, content }) => ({ id, title, content })))}\n` +
+      `允许台词来源 dialogue_sources：${JSON.stringify(storyboardDialogueSources(state.scenes, sources))}\n` +
       `选中场次：${JSON.stringify(state.scenes.map(scene => ({ ...scene, scene_id: scene.id, existing_shots: input.mode === 'redesign' ? [] : state.shots.filter(shot => shot.source_scene_id === scene.id) })))}\n`
     const controller = { signal: control.signal }
     const preparationSchema = z.object({ rules: z.object({ text: z.string(), skills: z.array(previewSkill), assignment: z.unknown() }).passthrough(),
@@ -424,7 +438,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
     const schema = selectedPlanSchema(state.scenes)
     const fullShotSchema = schema.shape.scenes.element.shape.shots.element
     const outlineSchema = schema.extend({ scenes: z.array(schema.shape.scenes.element.extend({
-      shots: z.array(fullShotSchema.omit({ image_prompt: true, video_prompt: true, directing: true })).min(1).max(30),
+      shots: z.array(fullShotSchema.omit({ image_prompt: true, video_prompt: true, directing: true }).extend({ audio_plan: storyboardAudioInputSchema })).min(1).max(30),
     })).length(state.scenes.length) })
     const generate = (prompt: string, contract?: OutputContract) => {
       controller.signal.throwIfAborted()
@@ -443,9 +457,14 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       return { planned, value }
     }
     const validateSchedule = (value: PlanningSchedule) => {
-      const sources = audioSources(state, input.instructions)
-      for (const scene of value.scenes) for (const shot of scene.shots) {
-        shot.audio_plan = recoverGeneratedVideoAudioPlanSources(shot.audio_plan, sources)
+      const sources = storyboardDialogueSources(state.scenes, state.documents)
+      for (const [sceneIndex, scene] of value.scenes.entries()) for (const [shotIndex, shot] of scene.shots.entries()) {
+        try { shot.audio_plan = resolveStoryboardAudio(shot.audio_plan, scene.scene_id, sources) }
+        catch (issue) {
+          const error = issue as { speech_index?: number }
+          throw Object.assign(issue as object, { scene_id: scene.scene_id,
+            field_path: `scenes.${sceneIndex}.shots.${shotIndex}.audio_plan.speech.${error.speech_index ?? 0}` })
+        }
       }
       validatePlan(value, state, input.target_duration, input.mode, input.instructions, input.duration_mode)
     }
@@ -456,6 +475,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
     const historyKey = 'storyboard_quality_repair_history:v1'
     let repairHistory = Object.hasOwn(control.steps, historyKey) ? repairHistorySchema.parse(control.steps[historyKey]) : emptyRepairHistory()
     let reportBeforeRepair = control.steps.revised_candidate && control.steps.report ? storyboardDirectingReviewSchema.parse(control.steps.report) : undefined
+    let lastReviewAttempt: z.infer<typeof storyboardDirectingReviewSchema> | undefined
     const makePlan = async (prompt: string, namespace: 'initial' | 'repair', outlinePrompt: string, prepared: Preparation) => {
       return generateStoryboardPlanningBatches({
         batchSize: 1, structuralRepair: true,
@@ -463,22 +483,43 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
         expansionSchema: fullShotSchema.pick({ image_prompt: true, video_prompt: true, directing: true }),
         generate, control,
         validateOutline: value => { checkCurrent(); validateSchedule(value) },
+        recoverOutline: async (value, issue, key) => {
+          const code = String((issue as { code?: string }).code || '')
+          if (code === 'timing_mismatch') {
+            const sceneIndex = value.scenes.findIndex(scene => scene.scene_id === (issue as { scene_id?: string }).scene_id)
+            if (sceneIndex < 0) throw issue
+            const repaired = await repairStoryboardTiming(value.scenes[sceneIndex]!, sceneIndex, { key, generate, control: {
+              signal: control.signal, steps: control.steps, retain: (name, candidate) => control.retain(name, candidate),
+            } })
+            return { ...value, scenes: value.scenes.map((scene, index) => index === sceneIndex ? repaired : scene) } as typeof value
+          }
+          return repairStoryboardDialogue(value, storyboardDialogueSources(state.scenes, state.documents), {
+            key, steps: control.steps, retain: (name, candidate) => control.retain(name, candidate), generate, signal: control.signal,
+          })
+        },
         resolveOutline: (outline, outlineKey) => ensureStoryboardOutlineQuality({ outline, outlineKey, schema: outlineSchema,
           validate: value => { checkCurrent(); validateSchedule(value) }, generate, control,
-          context: { ...compactContext, source_scenes: state.scenes, source_documents: sources, storyboard_rules: prepared.rules.text,
+          context: { ...compactContext, source_scenes: state.scenes.map(compactSceneSource), source_documents: sources.map(compactStoryboardSource), storyboard_rules: prepared.rules.text,
             reference_budget: target?.budget ? storyboardReferenceBudgetInstructions(target.budget) : storyboardReferenceBudgetInstructions(state.referenceBudget),
             ...(target ? { target_model: storyboardTargetInstructions(target) } : {}) }, sourceTexts }),
         expansionPrompt: (scene, offset, count, outline) => {
           const sequence = outline.scenes.flatMap(item => item.shots.map((shot, shot_index) => ({ scene_id: item.scene_id, shot_index, shot })))
           const start = sequence.findIndex(item => item.scene_id === scene.scene_id && item.shot_index === offset)
-          return storyboardDirectingInstructions + '\n' + videoAudioPlanInstructions + '\n' +
+          const current = sequence[start]?.shot || scene.shots[offset]
+          const previous = sequence[start - 1]?.shot
+          const next = sequence[start + count]?.shot
+          return storyboardDirectingInstructions + '\n' + videoAudioPlanInstructions + storyboardDialogueInstructions + '\n' +
             (target?.budget ? storyboardReferenceBudgetInstructions(target.budget) : storyboardReferenceBudgetInstructions(state.referenceBudget)) + '\n' +
             'image_prompt只写本镜开场单幅首帧；video_prompt只扩写本镜连续动作与运镜，保持大纲的起止状态、时长、声音计划、项目画风和创作者事实。\n' +
             prepared.rules.text + '\n【本镜视频运动参考规则】\n' + prepared.motionRules.text +
-            '\n大纲已经独立复核。以下仅当前场面与本镜及直接邻镜是扩写依据，邻镜只读；不重写原文、不重分台词、不改变镜头边界。\n' +
-            JSON.stringify({ ...compactContext, target_model: target ? storyboardTargetInstructions(target) : undefined,
-              scene_id: scene.scene_id, scene_direction: scene.scene_direction,
-              shot_window: sequence.slice(Math.max(0, start - 1), start + count + 1) }) + '\n'
+            '\n大纲已经独立复核。以下只提供当前镜头、上一镜终点和下一镜起点；邻镜只读，不重写原文、不重分台词、不改变镜头边界。\n' +
+            JSON.stringify({ project: compactContext.project, style: boundedContextText(compactContext.style, 2400),
+              creator_instructions: boundedContextText(compactContext.creator_instructions, 1800), source_policy: compactContext.source_policy,
+              storyboard_rules: boundedContextText(prepared.rules.text, 6000), motion_rules: boundedContextText(prepared.motionRules.text, 6000),
+              target_model: target ? storyboardTargetInstructions(target) : undefined, scene_id: scene.scene_id,
+              scene_direction: boundedContextText(scene.scene_direction, 2400), scene_duration: scene.scene_duration,
+              current_shot: boundedContextText(current, 7000), previous_end_state: previous ? boundedContextText(previous.end_state, 900) : undefined,
+              next_start_state: next ? boundedContextText(next.start_state, 900) : undefined }) + '\n'
         },
         // Check composition limits before retaining a batch, as well as on the
         // final assembled plan. No incomplete batch becomes a usable draft.
@@ -490,30 +531,51 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       })
     }
     const reviewPlan = async (candidate: Awaited<ReturnType<typeof makePlan>>) => {
-      const report = await generateStructuredOutput('storyboard_directing_review', storyboardDirectingReviewSchema, generate,
+      lastReviewAttempt = undefined
+      const reviewStartedAt = Date.now(), reviewTimeoutMs = 120_000
+      control.retain('director_review:started', { started_at: reviewStartedAt, timeout_ms: reviewTimeoutMs,
+        scene_count: candidate.planned.scenes.length, shot_count: candidate.planned.scenes.reduce((sum, scene) => sum + scene.shots.length, 0) })
+      const reviewController = new AbortController()
+      const abortReview = () => reviewController.abort(new Error('导演复核已达到 120 秒上限，已保留完整草稿，可稍后继续复核。'))
+      const timer = setTimeout(abortReview, reviewTimeoutMs); timer.unref()
+      const onParentAbort = () => reviewController.abort(controller.signal.reason)
+      controller.signal.addEventListener('abort', onParentAbort, { once: true })
+      const reviewGenerate = (prompt: string, contract?: OutputContract) => context.generateText(id, input.model_id, prompt, contract, reviewController.signal)
+      try {
+      const reviewDocuments = sources.map(document => ({ ...compactStoryboardSource(document), content: boundedContextText(document.content, 2400) }))
+      const report = await generateStructuredOutput('storyboard_directing_review', storyboardDirectingReviewSchema, reviewGenerate,
         storyboardDirectingReviewPrompt({ project: { name: state.project.name, brief: state.project.brief, ratio: state.project.ratio },
           creative_context: state.creativeContext, creative_authority: storyboardCreativeAuthority,
-          creator_instructions: input.instructions, timing_policy: timingInstruction, source_scenes: state.scenes,
+          creator_instructions: input.instructions, timing_policy: timingInstruction, source_scenes: state.scenes.map(compactSceneSource),
           source_policy: storyboardSourcePolicy,
-          source_documents: sources.map(({ id, title, content, artifact_type, episode_number, version }) => ({ id, title, content, artifact_type, episode_number, version })),
-          // Keep direction metadata separate from one complete compiled text
-          // sequence, rather than sending every prompt twice.
-          scenes: candidate.planned.scenes.map(scene => ({ scene_id: scene.scene_id, scene_direction: scene.scene_direction,
-            shots: scene.shots.map((shot, shot_index) => ({ shot_index, directing: shot.directing })) })),
-          pairs: buildStoryboardDirectingReviewContext(candidate.planned.scenes).pairs,
-          production_scenes: candidate.value.scenes.map(scene => ({ ...scene,
-            shots: scene.shots.map(({ continuity_plan: _plan, ...shot }) => shot) })) }),
-        { signal: controller.signal, validate: value => { validateStoryboardDirectingReview(value, candidate.planned.scenes, { strictEvidence: true, sourceTexts }) } })
+          source_documents: reviewDocuments,
+          // Send one compact compiled digest; avoid duplicating directing fields
+          // and full prompts in a second copy of the candidate.
+          ...buildStoryboardDirectingReviewDigest(candidate.value.scenes as never) }),
+        { signal: controller.signal, validate: value => {
+          lastReviewAttempt = structuredClone(value)
+          Object.assign(value, normalizeStoryboardDirectingReview(value, candidate.planned.scenes as never, sourceTexts, true))
+        } })
       checkCurrent()
       reportModelResult({ phase: 'quality', status: report.issues.some(issue => issue.severity === 'error') ? 'needs_work' : 'passed', issue_count: report.issues.length,
         ...(reportBeforeRepair ? { repaired: true, repair_effect: storyboardRepairEffect(reportBeforeRepair.issues, report.issues) } : {}) })
       return report
+      } catch (error) {
+        if (reviewController.signal.aborted && !controller.signal.aborted) {
+          control.retain('director_review:timeout', { started_at: reviewStartedAt, timeout_ms: reviewTimeoutMs, elapsed_ms: Date.now() - reviewStartedAt })
+          throw Object.assign(new Error('导演复核已达到 120 秒上限，已保留完整草稿，可稍后继续复核。'), { code: 'storyboard_review_timeout', statusCode: 422, retryable: false })
+        }
+        throw error
+      } finally {
+        clearTimeout(timer); controller.signal.removeEventListener('abort', onParentAbort); reviewController.abort()
+      }
     }
     const projectCandidate = (prepared: Preparation, candidate: ReturnType<typeof compilePlan>, repaired: boolean,
       report?: z.infer<typeof storyboardDirectingReviewSchema>, error?: unknown): StoryboardPlanningResult => {
       const { value } = candidate
       const source = planSignature(state.signature, input.mode, input.instructions, target?.signature, input.duration_mode)
-      const status = error ? 'inconclusive' : report ? report.issues.some(issue => issue.severity === 'error') ? 'needs_work' : report.issues.length ? 'warnings' : 'passed' : 'pending_review'
+      const status = error ? report?.issues.length ? 'review_inconclusive_needs_user' : 'review_inconclusive_no_action'
+        : report ? report.issues.some(issue => issue.severity === 'error') ? 'needs_work' : report.issues.length ? 'warnings' : 'passed' : 'pending_review'
       const repeated = report?.issues.some(issue => issue.severity === 'error') && stoppedRepair(repairHistory, report.issues)
       const diagnostic = error ? { code: String((error as { code?: string })?.code || 'candidate_review_inconclusive'), message: error instanceof Error ? error.message : String(error) }
         : repeated ? repeatedRepairDiagnostic : undefined
@@ -535,7 +597,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       serializeCandidate: candidate => ({ planned: candidate.planned }),
       review: reviewPlan,
       restoreReport: (value, candidate) => {
-        const report = validateStoryboardDirectingReview(storyboardDirectingReviewSchema.parse(value), candidate.planned.scenes, { strictEvidence: true, sourceTexts })
+        const report = normalizeStoryboardDirectingReview(storyboardDirectingReviewSchema.parse(value), candidate.planned.scenes as never, sourceTexts, true)
         reportModelResult({ phase: 'quality', status: report.issues.some(issue => issue.severity === 'error') ? 'needs_work' : 'passed', issue_count: report.issues.length })
         return report
       },
@@ -543,8 +605,8 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       repair: async (prepared, candidate, report) => {
         const fingerprint = storyboardIssueFingerprint(report.issues)
         if (repairHistory.attempted.includes(fingerprint) || repairHistory.attempted.length >= 3) throw Object.assign(new Error('同一问题已尝试受限修复，不能重复请求'), { code: 'storyboard_repeated_issues', statusCode: 422 })
-        const repairPrompt = JSON.stringify({ ...compactContext, source_scenes: state.scenes.filter(scene => report.issues.some(issue => issue.scene_id === scene.id)),
-          source_documents: sources }) + '\n' + prepared.rules.text + '\n' + prepared.motionRules.text
+        const repairPrompt = JSON.stringify({ ...compactContext, source_scenes: state.scenes.filter(scene => report.issues.some(issue => issue.scene_id === scene.id)).map(compactSceneSource),
+          source_documents: sources.map(compactStoryboardSource) }) + '\n' + prepared.rules.text + '\n' + prepared.motionRules.text
         const completedScope = await completeStoryboardRepairScope({ candidate: candidate.planned, report, generate,
           prompt: repairPrompt, signal: controller.signal, control, sourceTexts })
         checkCurrent()
@@ -583,7 +645,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
           throw error
         }
       },
-      inconclusive: (prepared, candidate, repaired, error, report) => projectCandidate(prepared, candidate, repaired, report, error),
+      inconclusive: (prepared, candidate, repaired, error, report) => projectCandidate(prepared, candidate, repaired, report || lastReviewAttempt, error),
       projection: projectCandidate,
       finish: (prepared, candidate, report, repaired) => projectCandidate(prepared, candidate, repaired, report),
     })
@@ -638,6 +700,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
     const sources = storyboardSources(state, input.document_ids), sourceTexts = sources.map(source => source.content)
     const repairHistory = unchangedCandidateHistory(id, input.scenes, input.signature, input.model_id)
     const controller = new AbortController()
+    let reviewAttempt: z.infer<typeof storyboardDirectingReviewSchema> | undefined
     const abort = () => { if (!reply.raw.writableEnded) controller.abort(new DOMException('分镜复核已取消', 'AbortError')) }
     request.raw.once('aborted', abort); reply.raw.once('close', abort)
     try {
@@ -647,10 +710,13 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
           timing_policy: input.duration_mode === 'reestimate' ? '当前草稿已按剧情重新估时，以当前场次和逐镜时长判断可执行性；源场次duration是历史估计，不能用它覆盖当前时长。仍须尊重创作者明确要求，不删改台词或遗漏必要动作。' : '复核创作者当前草稿的时长与完整内容是否相容，不重写当前时长。',
           creative_context: state.creativeContext, creative_authority: storyboardCreativeAuthority,
           source_policy: storyboardSourcePolicy + '当前草稿是待审设计，不把附带continuity_plan中的旧摘要当成覆盖手改内容的权威。',
-          source_scenes: state.scenes,
-          source_documents: sources,
-          ...buildStoryboardDirectingReviewContext(input.scenes), production_scenes: input.scenes }),
-        { signal: controller.signal, validate: value => { validateStoryboardDirectingReview(value, input.scenes, { strictEvidence: true, sourceTexts }) } }))
+          source_scenes: state.scenes.map(compactSceneSource),
+          source_documents: sources.map(document => ({ ...compactStoryboardSource(document), content: boundedContextText(document.content, 2400) })),
+          ...buildStoryboardDirectingReviewDigest(input.scenes as never) }),
+        { signal: controller.signal, validate: value => {
+          reviewAttempt = structuredClone(value)
+          Object.assign(value, normalizeStoryboardDirectingReview(value, input.scenes as never, sourceTexts, true))
+        } }))
       if (snapshot(id, sceneIds, context).signature !== state.signature || reviewModelSignature(input.model_id) !== reviewRuntime || target && storyboardTargetModel(target.id)?.signature !== target.signature) fail('复核期间资料或目标视频模型已更新，请重新复核', 409)
       const status = report.issues.some(issue => issue.severity === 'error') ? 'needs_work' : report.issues.length ? 'warnings' : 'passed'
       const diagnostic = status === 'needs_work' && stoppedRepair(repairHistory, report.issues) ? repeatedRepairDiagnostic : undefined
@@ -662,8 +728,10 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       if ((error as { statusCode?: number })?.statusCode === 409) throw error
       if (snapshot(id, sceneIds, context).signature !== state.signature || reviewModelSignature(input.model_id) !== reviewRuntime || target && storyboardTargetModel(target.id)?.signature !== target.signature) fail('复核期间资料或模型已更新，请重新复核', 409)
       const diagnostic = { code: String((error as { code?: string })?.code || 'candidate_review_inconclusive'), message: error instanceof Error ? error.message : String(error) }
+      const status = reviewAttempt?.issues.length ? 'review_inconclusive_needs_user' : 'review_inconclusive_no_action'
       return { ...retainCandidateReview({ projectId: id, family: 'storyboard', candidate: input.scenes, source: input.signature,
-        modelId: input.model_id, status: 'inconclusive', report: { error: diagnostic, repair_history: repairHistory } }), repaired: false, issues: [], error: diagnostic }
+        modelId: input.model_id, status, report: { report: reviewAttempt, error: diagnostic, repair_history: repairHistory } }),
+        repaired: false, issues: reviewAttempt?.issues || [], error: diagnostic }
     } finally { request.raw.off('aborted', abort); reply.raw.off('close', abort) }
   })
   app.post('/api/projects/:id/script/storyboard/repair', async (request, reply) => {
@@ -691,13 +759,13 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
         scene_direction: scene.shots[0]?.continuity_plan?.scene,
         shots: scene.shots.map(({ continuity_plan, ...shot }) => ({ ...shot, directing: continuity_plan?.shot })),
       })) })
-      validateStoryboardDirectingReview(report, raw.scenes, { strictEvidence: true, sourceTexts })
+      const normalizedReport = normalizeStoryboardDirectingReview(report, raw.scenes as never, sourceTexts, true)
       const repairPrompt = storyboardCreativeContextPrompt(state.creativeContext) + '\n本次创作者要求：' + input.instructions + '\n' + JSON.stringify({
         project: { name: state.project.name, brief: state.project.brief, ratio: state.project.ratio },
-        source_scenes: state.scenes.filter(scene => report.issues.some(issue => issue.scene_id === scene.id)), source_documents: sources,
+        source_scenes: state.scenes.filter(scene => report.issues.some(issue => issue.scene_id === scene.id)).map(compactSceneSource), source_documents: sources.map(compactStoryboardSource),
         source_policy: storyboardSourcePolicy, creative_authority: storyboardCreativeAuthority,
       })
-      const completedScope = await completeStoryboardRepairScope({ candidate: raw, report,
+      const completedScope = await completeStoryboardRepairScope({ candidate: raw, report: normalizedReport,
         generate: (prompt, contract) => context.generateText(id, input.model_id, prompt, contract, controller.signal),
         prompt: repairPrompt, signal: controller.signal, sourceTexts })
       controller.signal.throwIfAborted()
@@ -706,11 +774,11 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       // Audit failures never spend the finite content-repair allowance.
       repairHistory = { attempted: [...new Set([...repairHistory.attempted,
         ...unchangedCandidateHistory(id, input.scenes, input.signature, input.model_id).attempted])].slice(0, 3) }
-      if (stoppedRepair(repairHistory, report.issues)) throw Object.assign(new Error(repeatedRepairDiagnostic.message), { ...repeatedRepairDiagnostic, statusCode: 409 })
-      repairHistory = { attempted: [...repairHistory.attempted, storyboardIssueFingerprint(report.issues)] }
+      if (stoppedRepair(repairHistory, normalizedReport.issues)) throw Object.assign(new Error(repeatedRepairDiagnostic.message), { ...repeatedRepairDiagnostic, statusCode: 409 })
+      repairHistory = { attempted: [...repairHistory.attempted, storyboardIssueFingerprint(normalizedReport.issues)] }
       // Consume this exact receipt before dispatch so concurrent or stale requests cannot repeat it.
       retainCandidateReview({ projectId: id, family: 'storyboard', candidate: input.scenes, source: input.signature, modelId: input.model_id,
-        status: 'needs_work', report: { report, repair_history: repairHistory } })
+        status: 'needs_work', report: { report: normalizedReport, repair_history: repairHistory } })
       contentRepairStarted = true
       const planned = await repairStoryboardTargets({ candidate: raw, report: completedScope.report, shotSchema: schema.shape.scenes.element.shape.shots.element,
         generate: (prompt, contract) => context.generateText(id, input.model_id, prompt, contract, controller.signal), signal: controller.signal, allowTimingChange: input.duration_mode === 'reestimate',
@@ -728,11 +796,11 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       validatePlan({ scenes }, state, input.duration_mode === 'reestimate' ? undefined : input.scenes.reduce((sum, scene) => sum + scene.scene_duration, 0), input.mode, input.instructions, input.duration_mode)
       const checked = await withModelOperationStage('recheck', () => generateStructuredOutput('storyboard_directing_review', storyboardDirectingReviewSchema,
         (prompt, contract) => context.generateText(id, input.model_id, prompt, contract, controller.signal),
-        storyboardDirectingReviewPrompt({ creator_instructions: input.instructions, source_scenes: state.scenes,
-          source_documents: sources, source_policy: storyboardSourcePolicy, creative_authority: storyboardCreativeAuthority,
+        storyboardDirectingReviewPrompt({ creator_instructions: input.instructions, source_scenes: state.scenes.map(compactSceneSource),
+          source_documents: sources.map(compactStoryboardSource), source_policy: storyboardSourcePolicy, creative_authority: storyboardCreativeAuthority,
           timing_policy: input.duration_mode === 'reestimate' ? '当前候选按剧情重新估时，按修复后的场次与逐镜时长核对，不以修复前总时长或历史时长覆盖当前结果。' : '保留当前草稿时长。',
-          creative_context: state.creativeContext, ...buildStoryboardDirectingReviewContext(scenes), production_scenes: scenes }),
-        { signal: controller.signal, validate: value => { validateStoryboardDirectingReview(value, scenes, { strictEvidence: true, sourceTexts }) } }))
+          creative_context: state.creativeContext, ...buildStoryboardDirectingReviewDigest(scenes as never) }),
+        { signal: controller.signal, validate: value => { Object.assign(value, normalizeStoryboardDirectingReview(value, scenes as never, sourceTexts, true)) } }))
       controller.signal.throwIfAborted()
       if (snapshot(id, sceneIds, context).signature !== state.signature || reviewModelSignature(input.model_id) !== reviewRuntime || target && storyboardTargetModel(target.id)?.signature !== target.signature) fail('修复期间资料或目标模型已更新，请重新复查', 409)
       const status = checked.issues.some(issue => issue.severity === 'error') ? 'needs_work' : checked.issues.length ? 'warnings' : 'passed'
@@ -746,9 +814,10 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       if ((error as { statusCode?: number })?.statusCode === 409) throw error
       if (snapshot(id, sceneIds, context).signature !== state.signature || reviewModelSignature(input.model_id) !== reviewRuntime || target && storyboardTargetModel(target.id)?.signature !== target.signature) fail('修复期间资料或模型已更新，请重新复查', 409)
       const diagnostic = { code: String((error as { code?: string })?.code || 'candidate_repair_inconclusive'), message: error instanceof Error ? error.message : String(error) }
+      const status = report.issues.length ? 'review_inconclusive_needs_user' : 'review_inconclusive_no_action'
       return { scenes: scenes.map(scene => ({ ...scene, scene_heading: state.scenes.find(source => source.id === scene.scene_id)!.heading })),
         directing_review: { ...retainCandidateReview({ projectId: id, family: 'storyboard', candidate: scenes, source: input.signature,
-          modelId: input.model_id, status: 'inconclusive', report: { report, error: diagnostic, repair_history: repairHistory } }), repaired: contentRepairStarted, issues: report.issues, error: diagnostic } }
+          modelId: input.model_id, status, report: { report, error: diagnostic, repair_history: repairHistory } }), repaired: contentRepairStarted, issues: report.issues, error: diagnostic } }
     } finally { request.raw.removeListener('aborted', abort); reply.raw.removeListener('close', abort) }
   })
   app.post('/api/projects/:id/script/storyboard/commit', async request => {
@@ -771,7 +840,8 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       if (planSignature(state.signature, input.mode, input.instructions, target?.signature, input.duration_mode) !== input.signature) fail('资料、方案模式、时长方式、目标视频模型或规划要求已更新，请重新规划后保存', 409)
       requireAvailableCanvas(state, input.mode)
       validatePlan(input, state, input.scenes.reduce((sum, scene) => sum + scene.scene_duration, 0), input.mode, input.instructions)
-      readCandidateReview({ projectId: id, family: 'storyboard', reviewId: input.review_id, candidate: input.scenes, source: input.signature, accepted: true })
+      readCandidateReview({ projectId: id, family: 'storyboard', reviewId: input.review_id, candidate: input.scenes, source: input.signature,
+        accepted: input.save_only ? ['passed', 'warnings', 'review_inconclusive_no_action', 'review_inconclusive_needs_user', 'inconclusive'] : true })
       const existing = all<Shot>('SELECT * FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position, id', id), ordered = existing.map(shot => shot.id)
       let design: StoryboardDesign | undefined
       if (input.mode === 'redesign') {

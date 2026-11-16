@@ -11,14 +11,16 @@ import { scriptDiagnosticDisplayText } from './script-display-text'
 import DirectorTaskPreview from './DirectorTaskPreview'
 import './director-activity.css'
 
-export default function DirectorActivity({ activity, execution, pending, failed, disabled, compact = false, suppressDraftAction = false, suppressStopAction = false, onOpenDraft, onOpenDocuments, onOpenSource, onRetry, onRecover, onStop, onContinue, onContinueWithModel, continueModelName }: {
+export default function DirectorActivity({ activity, execution, pending, failed, historical = false, disabled, compact = false, suppressDraftAction = false, suppressStopAction = false, onOpenDraft, onOpenDocuments, onOpenSource, onRetry, onRecover, onStop, onContinue, onContinueWithModel, continueModelName }: {
   activity?: ScriptActivity[]; execution?: ScriptExecution; pending?: boolean; failed?: boolean; disabled?: boolean;
+  historical?: boolean;
   compact?: boolean; suppressDraftAction?: boolean; suppressStopAction?: boolean;
   onOpenDraft?: () => void; onOpenDocuments?: () => void; onOpenSource?: (source: ScriptActivityTarget) => void;
   onContinueWithModel?: () => void; continueModelName?: string;
   onContinue?: () => void; onRetry?: () => void; onRecover?: () => void; onStop?: () => void;
 }) {
-  const view = executionView(activity, execution, pending, failed)
+  const displayExecution = historical && execution ? { ...execution, outcome: { ...execution.outcome, kind: 'reply' as const, summary: '该阶段后来已保存，原失败记录仅供查看。' } } : execution
+  const view = executionView(activity, displayExecution, pending, historical ? false : failed)
   const [expanded, setExpanded] = useState(false)
   const [detailsExpanded, setDetailsExpanded] = useState(false)
   const detailsId = useId()
@@ -52,12 +54,12 @@ export default function DirectorActivity({ activity, execution, pending, failed,
   const preview = view.events.find(event => event.id === previewId && event.artifact_preview)
   return <section className={`sd-activity is-${view.state}${compactCompleted ? ' is-compact' : ''}`} aria-label="本条回复的任务进度">
     {compactCompleted && <UnstyledButton type="button" className="sd-activity-compact-summary" aria-expanded={detailsExpanded} aria-controls={detailsId} onClick={() => setDetailsExpanded(!detailsExpanded)}>
-      <span className={`sd-activity-state is-${view.state}`}>{view.stateLabel}</span><span className="sd-activity-compact-title" title={execution?.title}>{execution?.title || '本轮任务'}</span>
+      <span className={`sd-activity-state is-${view.state}`}>{historical ? '历史记录' : view.stateLabel}</span><span className="sd-activity-compact-title" title={execution?.title}>{execution?.title || '本轮任务'}</span>
       <span className="sd-activity-compact-label">{detailsExpanded ? '收起过程' : '查看过程'}</span>{detailsExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
     </UnstyledButton>}
     <div id={detailsId} className="sd-activity-details" hidden={compactCompleted && !detailsExpanded}>
     {!compactCompleted && <header className="sd-activity-head"><div className="sd-activity-heading"><span className="sd-activity-eyebrow">本轮任务</span><strong>{execution?.title || '本轮任务'}</strong></div>
-      <span className={`sd-activity-state is-${view.state}`}>{pending && <Clock3 size={11} />}{view.stateLabel}</span>
+      <span className={`sd-activity-state is-${view.state}`}>{pending && <Clock3 size={11} />}{historical ? '历史记录' : view.stateLabel}</span>
     </header>}
     {execution?.targets?.length ? <p className="sd-activity-scope">处理范围：{execution.targets.join('、')}</p> : null}
     {pending ? <div className="sd-activity-current" role="status"><span className="sd-activity-current-dot" /><div><strong>{currentLabel}</strong><p>{summary}</p></div>

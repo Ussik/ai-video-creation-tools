@@ -7,10 +7,11 @@ export type ModelTaskPolicy = Readonly<{
   readOnly: boolean; recovery: ModelRecovery
 }>
 export type ModelUnitProgress = Readonly<{ phase_id: string; label: string; completed_units: number; total_units: number | null }>
+export type ModelOperationUnit = Readonly<{ unit_index?: number; unit_count?: number; scene_id?: string; shot_id?: string; field_path?: string; checkpoint_reused?: boolean }>
 export type ModelRequestContext = Readonly<{
   policy: ModelTaskPolicy; taskId?: string; stepId?: string; attemptId?: string
   traceStage?: 'generation' | 'review' | 'repair' | 'classification' | 'prompt' | 'tool' | 'text' | 'media_generation'
-  operationStage?: ModelOperationStage; operationStartedAt?: number; operationUnit?: { unit_index?: number; unit_count?: number }
+  operationStage?: ModelOperationStage; operationStartedAt?: number; operationUnit?: ModelOperationUnit
   correctionKind?: 'format' | 'business'
   resultDetails?: Pick<ModelResultEvent, 'task_key' | 'section_ids' | 'correction_items' | 'reused_items' | 'request_category' | 'input_source_chars' | 'input_index_chars' | 'evidence_expanded' | 'repair_type'>
   onResult?: (result: ModelResultEvent) => void

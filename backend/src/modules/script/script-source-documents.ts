@@ -303,6 +303,8 @@ export function registerScriptSourceRoutes(app: FastifyInstance, context: { gene
     catch { reject('剧本文件不能超过 10 MB') }
     if (file.file.truncated || buffer.length > maxFileBytes) reject('剧本文件不能超过 10 MB')
     const content = await extractScriptText(filename, buffer)
+    const effective = effectiveScriptSource(id)
+    const unchanged = effective?.filename === filename && effective.content === content
     const previous = originalScriptSource(id)
     // Same extracted text is the same manuscript, including a filename-only change.
     // Keep the effective revision, source identity, active run and durable checkpoints.
@@ -310,8 +312,8 @@ export function registerScriptSourceRoutes(app: FastifyInstance, context: { gene
       if (query.model_id && !scriptSourceAnalysis(id)) analyzer.start(id, query.model_id, { explicitDispatch: true, extractionOnly: true })
       return scriptSourceDocument(id)
     }
-    const timestamp = new Date(Math.max(Date.now(), previous ? Date.parse(previous.updated_at) + 1 : 0)).toISOString()
-    analyzer.cancel(id)
+    const timestamp = new Date(Math.max(Date.now(), previous ? Date.parse(previous.updated_at) + 1 : 0, effective ? Date.parse(effective.updated_at) + 1 : 0)).toISOString()
+    if (!unchanged) analyzer.cancel(id)
     db.transaction(() => {
       if (previous) {
         const previousAnalysis = scriptSourceAnalysis(id)
@@ -322,8 +324,12 @@ export function registerScriptSourceRoutes(app: FastifyInstance, context: { gene
       run(`INSERT INTO script_source_documents (project_id, filename, content, updated_at) VALUES (?, ?, ?, ?)
         ON CONFLICT(project_id) DO UPDATE SET filename=excluded.filename, content=excluded.content, updated_at=excluded.updated_at`,
         id, filename, content, timestamp)
-      run('DELETE FROM script_source_analyses WHERE project_id=?', id)
-      run("DELETE FROM script_step_checkpoints WHERE project_id=? AND namespace IN ('source-proposal','source-proposal-base','source-proposal-usage','source-revision-base')", id)
+      // Replacement keeps its document-version boundary for pending drafts,
+      // while identical source text retains its independent analysis identity.
+      if (!unchanged) {
+        run('DELETE FROM script_source_analyses WHERE project_id=?', id)
+        run("DELETE FROM script_step_checkpoints WHERE project_id=? AND namespace IN ('source-proposal','source-proposal-base','source-proposal-usage','source-revision-base')", id)
+      }
       run('UPDATE projects SET updated_at=? WHERE id=?', timestamp, id)
     })()
     if (query.model_id) analyzer.start(id, query.model_id, { explicitDispatch: true, extractionOnly: true })

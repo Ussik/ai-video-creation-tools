@@ -16,6 +16,7 @@ process.env.VIDEO_STUDIO_DATA_DIR = directory
 const { buildApp } = await import('../src/app.js')
 const { db, all, run } = await import('../src/infrastructure/database/db.js')
 const { registerStoryboardPlanningRoutes } = await import('../src/modules/storyboard/storyboard-planning.js')
+const { normalizeStoryboardDirectingReview } = await import('../src/modules/storyboard/storyboard-directing.js')
 const { configureSkill, installSkillBundle, setSkillDefault, removeInstalledSkill } = await import('../src/modules/skills/skills.js')
 const app = buildApp()
 after(async () => { await app.close(); db.close(); await rm(directory, { recursive: true, force: true }) })
@@ -125,6 +126,9 @@ test('script planning uses scene and motion rules, reviews the compiled complete
   assert.match(expansion, /不在同一时段要求固定又移动/)
   assert.match(review, /production_scenes/); assert.match(review, /阿宁在门前停住/)
   assert.match(review, /快走/); assert.match(review, /"pairs"/)
+  const reviewContext = JSON.parse(review.slice(review.lastIndexOf('本次复核上下文：') + '本次复核上下文：'.length))
+  assert.equal('scenes' in reviewContext, false, 'review sends one compiled digest instead of duplicating the candidate')
+  assert.equal(reviewContext.production_scenes[0].shots[0].video_prompt.length <= 1600, true)
   assert.match(first.video_prompt, /路径、方向与速度/)
   assert.match(first.prompt, /场景站位/)
   assert.match(first.cut_note, /切点/)
@@ -149,6 +153,16 @@ test('script planning uses scene and motion rules, reviews the compiled complete
   assert.deepEqual(saved[0].continuity_plan, first.continuity_plan)
 })
 
+test('director review evidence is canonicalized from validated field paths', async t => {
+  const f = await fixture(t)
+  const reported = { ...issue(f.scene.id), evidence_refs: [{ scene_id: f.scene.id, shot_index: 1, field: 'start_state', quote: 'model copied an inaccurate quote' }] }
+  const normalized = normalizeStoryboardDirectingReview({ issues: [reported] } as any, f.raw.scenes as never, [], true)
+  assert.deepEqual(normalized.issues[0]!.evidence_refs?.map(reference => reference.quote), [
+    '阿宁在门前停住，右手垂落', '阿宁已停在门前，右手垂落',
+  ])
+  assert.notEqual(normalized.issues[0]!.evidence_refs?.[0]!.quote, 'model copied an inaccurate quote')
+})
+
 test('manual draft review checks the edited full first-frame text without rewriting or saving it', async t => {
   const f = await fixture(t, (name, prompt) => isPlanRequest(name) ? f.raw : {
     issues: prompt.includes('金芒已经爆发，短尺已经出鞘半寸') ? [{ ...issue(f.scene.id), code: 'first_frame_conflict', shot_index: 0,
@@ -170,7 +184,7 @@ test('manual draft review checks the edited full first-frame text without rewrit
   assert.match(response.json().content_signature, /^[a-f0-9]{64}$/)
   assert.deepEqual(scenes, edited)
   assert.equal(f.calls.filter(call => call.name === 'storyboard_scene_plan').length, 1)
-  assert.match(f.calls.at(-1)!.prompt, /完整image_prompt正文/)
+  assert.match(f.calls.at(-1)!.prompt, /提供的image_prompt正文/)
   assertNoWrites(f.project.id)
 })
 
@@ -283,7 +297,7 @@ test('a failed scope audit spends no repair attempt and an explicit repair can c
   const planned = await f.plan()
   assert.equal(planned.statusCode, 200, planned.body)
   const result = planned.json(), scenes = editableScenes(result)
-  assert.equal(result.directing_review.status, 'inconclusive')
+  assert.equal(result.directing_review.status, 'review_inconclusive_needs_user')
   assert.equal(f.calls.filter(call => call.name === 'storyboard_targeted_repair').length, 0)
   const retained = all<{ report: string }>('SELECT report FROM candidate_review_evidence WHERE id=?', result.directing_review.review_id)[0]!
   assert.deepEqual(JSON.parse(retained.report).repair_history.attempted, [])
@@ -318,7 +332,7 @@ test('manual scope uncertainty preserves its candidate and does not count as a c
     signature: result.signature, model_id: 'mock-text', scenes, review_id: review.json().review_id,
   } })
   assert.equal(repaired.statusCode, 200, repaired.body)
-  assert.equal(repaired.json().directing_review.status, 'inconclusive')
+  assert.equal(repaired.json().directing_review.status, 'review_inconclusive_needs_user')
   assert.equal(repaired.json().directing_review.repaired, false)
   assert.deepEqual(editableScenes(repaired.json()), scenes)
   const retained = all<{ report: string }>('SELECT report FROM candidate_review_evidence WHERE id=?', repaired.json().directing_review.review_id)[0]!
@@ -412,7 +426,7 @@ test('a content dispatch before a budget stop keeps the consumed receipt and can
   assert.equal(resumed.statusCode, 200, resumed.body)
   const complete = await taskState(f.routes, f.project.id, id)
   assert.equal(complete.status, 'succeeded')
-  assert.equal(complete.result.directing_review.status, 'inconclusive')
+  assert.equal(complete.result.directing_review.status, 'review_inconclusive_needs_user')
   assert.equal(complete.result.directing_review.error.code, 'storyboard_repeated_issues')
   assert.equal(patchCalls, 1)
   assert.equal(f.calls.filter(call => call.name === 'storyboard_repair_scope_review').length, 1)
@@ -433,8 +447,8 @@ test('review cannot cite shots outside this draft even after its format correcti
   const f = await fixture(t, name => isPlanRequest(name) ? f.raw : { issues: [issue('unselected-scene')] })
   const response = await f.plan()
   assert.equal(response.statusCode, 200, response.body)
-  assert.equal(response.json().directing_review.status, 'inconclusive')
-  assert.match(response.body, /范围之外/)
+  assert.equal(response.json().directing_review.status, 'review_inconclusive_needs_user')
+  assert.match(response.body, /复核证据/)
   assert.equal(f.calls.filter(call => call.name === 'storyboard_scene_plan').length, 1)
   assert.equal(f.calls.filter(call => call.name === 'storyboard_directing_review').length, 2)
   assertNoWrites(f.project.id)
@@ -507,7 +521,7 @@ test('canceling a model request propagates the signal and stops before the revie
   assertNoWrites(f.project.id)
 })
 
-test('metadata compilation limits participate in the existing one format correction', async t => {
+test('metadata compilation limits stop before a format correction', async t => {
   let firstShotExpansions = 0, plan: any
   const f = await fixture(t, (name, prompt, contract) => {
     if (name === 'storyboard_scene_plan') return storyboardOutlineFixture(plan)
@@ -519,19 +533,19 @@ test('metadata compilation limits participate in the existing one format correct
     if (batch.shots[0]!.shot_index === 0) {
       firstShotExpansions++
       if (firstShotExpansions === 1) batch.shots[0]!.expansion.directing.purpose = '职责'.repeat(200)
-      else { assert.match(prompt, /一次格式修正/); assert.match(prompt, /超过 10000 字符/) }
+      else { assert.fail('business validation must not dispatch a format correction') }
     }
     return batch
   }, true)
   plan = structuredClone(f.raw)
   plan.scenes[0].shots[0].prompt = '原'.repeat(9600)
   const response = await f.plan()
-  assert.equal(response.statusCode, 200, response.body)
-  assert.equal(firstShotExpansions, 2)
+  assert.equal(response.statusCode, 422, response.body)
+  assert.match(response.body, /超过 10000 字符/)
+  assert.equal(firstShotExpansions, 1)
   assert.equal(f.calls.filter(call => call.name === 'storyboard_scene_plan').length, 1)
-  assert.equal(f.calls.filter(call => call.name === 'storyboard_shot_batch').length, 3)
-  assert.equal(f.calls.filter(call => call.name === 'storyboard_directing_review').length, 1)
-  assert.ok(response.json().scenes[0].shots[0].prompt.startsWith('原'.repeat(9600)), 'format correction preserves the locked outline narrative')
+  assert.equal(f.calls.filter(call => call.name === 'storyboard_shot_batch').length, 1)
+  assert.equal(f.calls.filter(call => call.name === 'storyboard_directing_review').length, 0)
   assertNoWrites(f.project.id)
 })
 
@@ -634,7 +648,7 @@ test('preserving the source estimate rejects silent retiming while a legitimate 
   const changed = await f.plan()
   assert.equal(changed.statusCode, 422, changed.body)
   assert.match(changed.body, /保留源场次时长/)
-  assert.equal(f.calls.filter(call => call.name === 'storyboard_scene_plan').length, 2)
+  assert.equal(f.calls.filter(call => call.name === 'storyboard_scene_plan').length, 1)
   assertNoWrites(f.project.id)
   run('UPDATE script_scenes SET duration=?,action=?,dialogue=? WHERE id=?', 2, '阿宁抬眼。', '', f.scene.id)
   seconds = 2
@@ -764,7 +778,8 @@ test('a 90-second initial draft retains completed shots and resumes only the int
   assert.equal(failed.status, 'failed'); assert.equal(failed.stage, 'generating')
   assert.equal(failed.error.code, 'stream_read_error', failed.error.message)
   assert.equal(failed.candidate, undefined, 'partial shots never unlock a preview or save')
-  assert.deepEqual(failed.progress, { phase: 'shots', completed_shots: 2, total_shots: 5 })
+  assert.deepEqual(failed.progress, { phase: 'shots', completed_shots: 2, total_shots: 5,
+    current_scene_id: f.scene.id, current_shot_index: 1, recovery: 'none' })
   assert.equal(failed.can_resume, true)
   assert.deepEqual(offsets, [0, 1, 2])
   assertNoWrites(f.project.id)
@@ -875,7 +890,7 @@ test('a failed director review retains an inconclusive result and explicit revie
   const input = await taskInput(f)
   const start = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/tasks`, payload: { ...input, request_id: crypto.randomUUID() } })
   const id = start.json().id, finished = await taskState(f.routes, f.project.id, id)
-  assert.equal(finished.status, 'succeeded'); assert.equal(finished.result.directing_review.status, 'inconclusive')
+  assert.equal(finished.status, 'succeeded'); assert.equal(finished.result.directing_review.status, 'review_inconclusive_no_action')
   assert.equal(finished.can_resume, false)
   const lookup = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/tasks/lookup`, payload: input })
   assert.equal(lookup.json().task.id, id)
@@ -886,6 +901,60 @@ test('a failed director review retains an inconclusive result and explicit revie
   assert.equal(review.statusCode, 200, review.body); assert.equal(review.json().status, 'passed')
   assert.deepEqual(f.calls.map(call => call.name), ['storyboard_scene_plan', 'storyboard_outline_review', 'storyboard_shot_batch', 'storyboard_shot_batch', 'storyboard_directing_review', 'storyboard_directing_review'])
   assertNoWrites(f.project.id)
+})
+
+test('an inconclusive no-issue review keeps the generated draft saveable without regeneration', async t => {
+  const f = await fixture(t, name => {
+    if (isPlanRequest(name)) return f.raw
+    throw Object.assign(new Error('复核证据不是所引用字段中的原文'), { code: 'model_business_validation' })
+  })
+  const start = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/tasks`, payload: {
+    ...await taskInput(f), request_id: crypto.randomUUID(),
+  } })
+  const finished = await taskState(f.routes, f.project.id, start.json().id)
+  assert.equal(finished.status, 'succeeded')
+  assert.equal(finished.result.directing_review.status, 'review_inconclusive_no_action')
+  assert.deepEqual(finished.result.directing_review.issues, [])
+  const saved = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/commit`, payload: {
+    signature: finished.result.signature, request_id: crypto.randomUUID(), review_id: finished.result.directing_review.review_id,
+    save_only: true, mode: finished.result.mode, instructions: finished.result.instructions,
+    scenes: finished.result.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene),
+  } })
+  assert.equal(saved.statusCode, 200, saved.body)
+  assert.equal(all('SELECT id FROM shots WHERE project_id=?', f.project.id).length, 2)
+  assert.equal(f.calls.filter(call => call.name === 'storyboard_scene_plan').length, 1)
+  assert.equal(f.calls.filter(call => call.name === 'storyboard_directing_review').length, 1)
+})
+
+test('invalid evidence with reported issues retains the draft and allows save-only, never repair', async t => {
+  let reviews = 0
+  const f = await fixture(t, name => {
+    if (isPlanRequest(name)) return f.raw
+    if (++reviews === 1) return { issues: [] }
+    return { issues: [{ ...issue(f.scene.id), evidence_refs: undefined,
+      repair_scope: [{ scene_id: 'outside-current-draft', shot_index: 1, operation: 'replace', fields: ['start_state'] }] }] }
+  })
+  const planned = await f.plan()
+  assert.equal(planned.statusCode, 200, planned.body)
+  const review = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/review`, payload: {
+    signature: planned.json().signature, model_id: 'mock-text', mode: planned.json().mode, instructions: planned.json().instructions,
+    scenes: planned.json().scenes.map(({ scene_heading: _heading, ...scene }: any) => scene),
+  } })
+  assert.equal(review.statusCode, 200, review.body)
+  assert.equal(review.json().status, 'review_inconclusive_needs_user')
+  assert.equal(review.json().issues.length, 1)
+  assert.equal(review.json().error.code, 'model_business_validation')
+  const saved = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/commit`, payload: {
+    signature: planned.json().signature, request_id: crypto.randomUUID(), review_id: review.json().review_id, save_only: true,
+    mode: planned.json().mode, instructions: planned.json().instructions,
+    scenes: planned.json().scenes.map(({ scene_heading: _heading, ...scene }: any) => scene),
+  } })
+  assert.equal(saved.statusCode, 200, saved.body)
+  assert.equal(all('SELECT id FROM shots WHERE project_id=?', f.project.id).length, 2)
+  assert.equal(f.calls.filter(call => call.name === 'storyboard_scene_plan').length, 1)
+  assert.equal(f.calls.filter(call => call.name === 'storyboard_targeted_repair').length, 0)
+  assert.equal(f.calls.filter(call => call.name === 'storyboard_directing_review').length, 3,
+    'manual review has only its original request and one contract correction')
 })
 
 test('a failed second review retains the revised draft and re-review never regenerates or repairs', async t => {
@@ -899,7 +968,7 @@ test('a failed second review retains the revised draft and re-review never regen
   })
   const start = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/tasks`, payload: { ...await taskInput(f), request_id: crypto.randomUUID() } })
   const finished = await taskState(f.routes, f.project.id, start.json().id)
-  assert.equal(finished.status, 'succeeded'); assert.equal(finished.result.directing_review.status, 'inconclusive')
+  assert.equal(finished.status, 'succeeded'); assert.equal(finished.result.directing_review.status, 'review_inconclusive_needs_user')
   assert.equal(finished.result.directing_review.repaired, true); assert.equal(finished.result.directing_review.issues.length, 1)
   const review = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/review`, payload: {
     signature: finished.result.signature, model_id: 'mock-text', scenes: finished.result.scenes.map(({ scene_heading: _heading, ...scene }: any) => scene),

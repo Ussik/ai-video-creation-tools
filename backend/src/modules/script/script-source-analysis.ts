@@ -122,7 +122,7 @@ export function scriptSourceAnalysis(projectId: string): ScriptSourceAnalysis | 
   if (!document || row?.source_version !== scriptSourceVersion(document)) return null
   const state = JSON.parse(row.snapshot) as ScriptSourceAnalysis
   if (state.pipeline_version !== sourceAnalysisPipelineVersion && state.pipeline_version !== 5) return state.status === 'failed' ? state : null
-  if (state.pipeline_version === 5 && state.status === 'ready') {
+  if (state.status === 'ready') {
     try {
       validateSourceCoverage(document.content, state.sections); validateSourceStory(state, state.story, document)
     } catch { return null }
@@ -446,6 +446,8 @@ export async function analyzeSourceSnapshot(document: Source, modelId: string,
   assertSourceSize(document)
   const sourceVersion = scriptSourceVersion(document)
   const configurationHash = sourceAnalysisConfigurationHash(configuration)
+  const published = scriptSourceAnalysis(document.project_id)
+  if (hasCompleteSourceAnalysis(document, published)) return { ...structuredClone(published!), status: 'ready' as const, phase: 'ready' as const }
   const cacheKey = preparedKey(document.project_id, modelId, sourceVersion, configuration)
   return withModelAdmission(`source-proposal:${document.project_id}`, signal, async () => {
     const prepared = preparedSnapshot(document, modelId, cacheKey, configurationHash)
@@ -506,6 +508,7 @@ export async function analyzeSourceSnapshot(document: Source, modelId: string,
       state.pipeline_version = sourceAnalysisPipelineVersion
       state.work = sourceWorkPlan(scriptSourcePassages(document.content)); state.total_chunks = state.work.length
     }
+    state.analysis_mode = 'extract'; state.position_index = sourcePositionIndex(document.content)
     const persist = () => {
       signal.throwIfAborted()
       run('INSERT INTO script_step_checkpoints (project_id,namespace,cache_key,payload,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(project_id,namespace) DO UPDATE SET cache_key=excluded.cache_key,payload=excluded.payload,updated_at=excluded.updated_at',
@@ -815,13 +818,20 @@ export function createScriptSourceAnalyzer(generate: SourceAnalyzer, limits: Sou
   }
   function start(projectId: string, modelId: string, request: { reviewFeedback?: string; sourceUpdatedAt?: string; explicitDispatch?: boolean;
     qualityScope?: { analysis_id: string; review_hash: string; findings_hash: string }; confirmNewQualityRound?: boolean; extractionOnly?: boolean } = {}) {
+    request = { ...request, extractionOnly: request.extractionOnly ?? !(request.reviewFeedback || request.qualityScope) }
     ownedProjects.add(projectId)
     const document = source(projectId)
     if (!document) throw Object.assign(new Error('当前项目没有上传剧本'), { statusCode: 422 })
     assertSourceSize(document)
     // Completed extraction belongs to this source, not the current model selection or old review outcome.
     const retained = scriptSourceAnalysis(projectId)
-    if (request.extractionOnly && hasCompleteSourceAnalysis(document, retained)) return retained!
+    if (request.extractionOnly && hasCompleteSourceAnalysis(document, retained)) {
+      if (retained!.status !== 'ready' || retained!.phase !== 'ready') {
+        retained!.status = 'ready'; retained!.phase = 'ready'; retained!.analysis_mode = 'extract'; retained!.error = null; delete retained!.failure
+        persist(projectId, retained!)
+      }
+      return retained!
+    }
     if (request.extractionOnly && retained && ['queued', 'running'].includes(retained.status)) return retained
     let configuration: unknown, configurationHash: string | undefined
     try {
@@ -1106,7 +1116,7 @@ export function createScriptSourceAnalyzer(generate: SourceAnalyzer, limits: Sou
     async ensure(projectId: string, modelId: string, signal?: AbortSignal, onProgress?: (state: ScriptSourceAnalysis) => void) {
       if (!source(projectId)) return null
       let state = scriptSourceAnalysis(projectId)
-      if (!state || state.status === 'ready' && !hasUsableSourceQuality(state)) state = start(projectId, modelId)
+      if (!state || state.status === 'ready' && !hasCompleteSourceAnalysis(source(projectId)!, state)) state = start(projectId, modelId)
       const version = state.source_version
       while (state.status !== 'ready') {
         signal?.throwIfAborted()

@@ -56,6 +56,18 @@ export function structuredOutputDiagnosticText(raw: string): string {
   return content.slice(0, head) + marker + content.slice(-(limit - marker.length - head))
 }
 
+export function jsonParseErrorDetails(raw: string): { position?: number; line?: number; column?: number; context?: string } {
+  try { JSON.parse(raw); return {} } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    const match = message.match(/(?:position|at position)\s+(\d+)/i)
+    const position = match ? Number(match[1]) : undefined
+    if (position === undefined || !Number.isSafeInteger(position)) return { context: message.slice(0, 300) }
+    const before = raw.slice(0, position), line = before.split('\n').length
+    const lastBreak = before.lastIndexOf('\n'), column = position - lastBreak
+    return { position, line, column, context: raw.slice(Math.max(0, position - 120), Math.min(raw.length, position + 120)) }
+  }
+}
+
 /** These syntax repairs preserve string contents and never supply missing data. */
 function recoverJsonSyntax(raw: string): string {
   const parts: string[] = []
@@ -85,6 +97,35 @@ function recoverJsonSyntax(raw: string): string {
     parts.push(character)
   }
   return parts.join('')
+}
+
+/** Escape only quotes that are unambiguously inside a JSON string. A quote is
+ * treated as content when the next non-space character cannot close a JSON
+ * string or separate an object/array value. Ambiguous cases are preserved. */
+export function repairUnescapedStringQuotes(raw: string): { text: string; applied: boolean; changes: number } {
+  const parts: string[] = []
+  let inString = false, escaped = false, stringHasContent = false, changes = 0
+  for (let index = 0; index < raw.length; index++) {
+    const character = raw[index]!
+    if (!inString) {
+      parts.push(character)
+      if (character === '"') { inString = true; stringHasContent = false }
+      continue
+    }
+    if (escaped) { parts.push(character); escaped = false; continue }
+    if (character === '\\') { parts.push(character); escaped = true; continue }
+    if (character !== '"') { parts.push(character); if (!/\s/.test(character)) stringHasContent = true; continue }
+    let next = index + 1
+    while (next < raw.length && /\s/.test(raw[next]!)) next++
+    const after = raw[next]
+    let afterAfter = next + 1
+    while (afterAfter < raw.length && /\s/.test(raw[afterAfter]!)) afterAfter++
+    const quotePairIsContent = after === '"' && stringHasContent && [',', '}', ']', ':', undefined].includes(raw[afterAfter])
+    const closes = !quotePairIsContent && (next >= raw.length || after === ',' || after === '}' || after === ']' || after === ':' || after === '"')
+    if (closes) { parts.push(character); inString = false }
+    else { parts.push('\\"'); changes++ }
+  }
+  return { text: parts.join(''), applied: changes > 0, changes }
 }
 
 export type StructuredOutputCandidate = { start: number; end: number; depth: number; recovered: boolean }
@@ -123,8 +164,10 @@ function scanJsonCandidates(content: string, visit: (value: unknown, candidate: 
         try { candidate = JSON.parse(fragment) }
         catch {
           const restored = recoverJsonSyntax(fragment)
-          if (restored === fragment) continue
-          try { candidate = JSON.parse(restored); recovered = true } catch { continue }
+          const quoted = repairUnescapedStringQuotes(restored)
+          const repaired = quoted.applied ? quoted.text : restored
+          if (repaired === fragment) continue
+          try { candidate = JSON.parse(repaired); recovered = true } catch { continue }
         }
         // Resetting after damaged syntax allows later usable objects, but it
         // cannot establish that a zero-match fragment is the response root.

@@ -10,7 +10,7 @@ export type ScriptActivityArtifactPreview = {
 }
 
 /** Public execution records shared by API and UI, without server dependencies. */
-export type ScriptActivity = TextStructuredObservation & {
+export type ScriptActivity = Omit<TextStructuredObservation, 'structured_enforcement'> & {
   task_id?: string; step_id?: string;
   /** One-based claimed request attempt; absent when the counter is unknown. */
   attempt?: number; sequence?: number;
@@ -20,6 +20,8 @@ export type ScriptActivity = TextStructuredObservation & {
   round?: number; name?: string; skill_id?: string; revision?: string; files?: string[];
   scope?: 'task' | 'step' | 'notice'; parent_id?: string; reused?: boolean;
   input?: string; output?: string; input_truncated?: boolean; output_truncated?: boolean;
+  request_tool_names?: string[]; request_tool_choice?: string;
+  response_block_types?: string[]; finish_reason?: string; structured_enforcement?: string;
   request_bytes?: number; response_chars?: number; first_event_ms?: number; first_text_ms?: number;
   input_tokens?: number; output_tokens?: number; reasoning_tokens?: number; output_limit?: number;
   output_limit_reason?: 'max_output_tokens' | 'length'; output_limit_kind?: 'text' | 'reasoning' | 'tool_arguments';

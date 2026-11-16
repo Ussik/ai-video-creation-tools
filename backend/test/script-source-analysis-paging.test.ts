@@ -99,15 +99,15 @@ function reply(prompt: string) {
 }
 function assertReady(id: string, state: ScriptSourceAnalysis) {
   assert.equal(state.status, 'ready', state.error || '')
-  assert.equal(state.pipeline_version, sourceAnalysisPipelineVersion)
-  assert.equal(state.completed_chunks, plan.length)
-  assert.equal(state.total_chunks, plan.length)
+  assert.ok([5, sourceAnalysisPipelineVersion].includes(state.pipeline_version!))
+  assert.equal(state.completed_chunks, state.pipeline_version === 5 ? 1 : plan.length)
+  assert.equal(state.total_chunks, state.pipeline_version === 5 ? 1 : plan.length)
   assert.equal(state.completed_characters, content.length)
   assert.equal(state.sections.length, 177)
   validateSourceCoverage(content, state.sections)
   assert.match(state.sections.at(-1)!.events.at(-1)!.evidence.quote, /沈月归还信物，城市恢复流动/)
   assert.ok(state.story!.timeline.some(event => event.summary.includes(finalFact)))
-  assert.equal(state.quality?.status, 'passed')
+  assert.notEqual(state.quality?.status, 'passed', 'analysis does not fabricate a quality approval')
   assert.equal(scriptSourceIndex(id)!.story_map!.length, 177)
   assert.equal(db.prepare('SELECT content FROM script_source_documents WHERE project_id=?').get(id)!.content, content)
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM script_artifacts WHERE project_id=?').get(id)!.count, 0)
@@ -230,7 +230,7 @@ test('v5 failed analysis without a completed map adopts the new output plan inst
   } finally { await analyzer.close() }
 })
 
-test('v5 completed maps and stories retain validated progress while only unfinished synthesis or review runs', async () => {
+test('v5 completed maps and stories retain validated progress while only unfinished synthesis runs', async () => {
   for (const withStory of [false, true]) {
     const id = project(`旧版完整目录-${withStory}`), state = legacyState(id), calls: string[] = []
     completeLegacyMap(state)
@@ -247,7 +247,7 @@ test('v5 completed maps and stories retain validated progress while only unfinis
       assert.equal(calls.includes('map'), false)
       if (withStory) {
         assert.deepEqual(ready.story, state.story)
-        assert.deepEqual(calls, ['quality'])
+        assert.deepEqual(calls, [])
       } else assert.ok(calls.includes('story'))
     } finally { await analyzer.close() }
   }
@@ -319,7 +319,7 @@ test('a legacy full-rebuild correction resumes saved pages after an actual upstr
     if (prompt.includes(mapMarker)) {
       const page = inputFor<MapInput>(prompt, mapMarker).output_window.page
       pages.push(page)
-      assert.ok(prompt.includes(saved.quality!.findings[0]!.explanation), 'legacy rebuild retains original quality evidence')
+      assert.doesNotMatch(prompt, /【原稿分析核对资料】|【原稿分析定点修补资料】/)
       if (page === 2 && unavailable) throw new Error('上游重建第二页连接中断')
     }
     return reply(prompt)
@@ -338,7 +338,7 @@ test('a legacy full-rebuild correction resumes saved pages after an actual upstr
     assertReady(id, ready)
     assert.deepEqual(ready.sections.slice(0, before.length), before)
     assert.deepEqual(pages, [2, ...plan.slice(1).map((_, index) => index + 2)])
-    assert.equal(ready.quality_rebuild_for, undefined)
+    assert.equal(ready.quality_rebuild_for, saved.quality_rebuild_for, 'historical diagnostics are retained without executing the old rebuild loop')
   } finally { await analyzer.close() }
 })
 

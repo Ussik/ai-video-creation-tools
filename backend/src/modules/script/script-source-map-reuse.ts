@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto'
 import type { ScriptSourceAnalysis, ScriptSourceSection } from '@video-studio/shared/script/script-source-document'
 import { scriptSourceVersion } from './script-source-identity.js'
 import { scriptSourcePassages, sourceAnalysisPipelineVersion, sourceWorkPlan, validateSourceCoverage } from './script-source-map.js'
-import { hasPassedSourceQuality } from './script-source-quality.js'
 import { validateSourceStory } from './script-source-story.js'
 
 type Source = { filename: string; content: string }
@@ -147,7 +146,6 @@ export function planScriptSourceMapReuse(previous: Source, previousAnalysis: Scr
       !Number.isSafeInteger(section.offset) || !Number.isSafeInteger(section.length) ||
       [...section.characters, ...section.events].some(item => !Number.isSafeInteger(item.evidence.offset)))) return full('invalid_base_map')
     validateSourceCoverage(previous.content, previousAnalysis.sections)
-    if (!hasPassedSourceQuality(previousAnalysis)) return full('base_quality_unverified')
     validateSourceStory(previousAnalysis, previousAnalysis.story, previous)
   } catch { return full('invalid_base_map') }
   change = changedEnvelope(previous.content, current.content)

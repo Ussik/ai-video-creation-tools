@@ -100,18 +100,28 @@ export interface TextStreamRequest {
   mode?: 'text'
 }
 
-export type TextRequestMetrics = TextStructuredObservation & { task_id?: string; step_id?: string; attempt_id?: string; request_id?: string;
+export type TextRequestMetrics = Omit<TextStructuredObservation, 'structured_enforcement'> & { structured_enforcement?: string; task_id?: string; step_id?: string; attempt_id?: string; request_id?: string;
   failure_reason?: TextFailureReason; raw_reason?: string; delivery?: TextDeliveryState; output_started?: boolean; response_terminated?: boolean;
   /** Protocol shape only. A terminal response can still fail its output contract. */
   request_has_tools?: boolean; request_tool_count?: number; request_structured_mode?: 'none' | 'prompt' | 'json_schema' | 'json_object' | 'tool_call';
   response_text_blocks?: number; response_thinking_blocks?: number; response_tool_use_blocks?: number; response_other_blocks?: number;
   response_complete?: boolean; response_blocks_closed?: boolean; response_protocol_terminal?: boolean;
+  response_block_types?: string[]; finish_reason?: string;
+  request_tool_names?: string[]; request_tool_choice?: string;
   model_id?: string; remote_id?: string; endpoint?: string; output_parameter?: 'max_output_tokens' | 'max_completion_tokens' | 'max_tokens';
   request_bytes: number; response_chars?: number; first_event_ms?: number; first_text_ms?: number;
   input_tokens?: number; output_tokens?: number; reasoning_tokens?: number; output_limit?: number;
   output_limit_reason?: TextOutputLimitReason; output_limit_kind?: TextOutputLimitKind;
   cache_read_tokens?: number; cache_write_tokens?: number; cache_miss_tokens?: number; request_purpose?: string; upstream_request_id?: string; http_status?: number;
   estimated_input_tokens?: number; context_window_tokens?: number; reserved_output_tokens?: number } & TextContextEstimate
+
+function structuredEnforcement(settings: Record<string, unknown>, contract?: OutputContract): string | undefined {
+  if (!contract) return undefined
+  const mode = settings.structured_output_mode
+  if (mode === 'json_schema') return 'native_json_schema_unverified'
+  if (mode === 'json_object') return 'json_object_unverified'
+  return 'prompt_only'
+}
 
 function requestId(response: Response) {
   const value = response.headers.get('x-request-id') || response.headers.get('request-id') || ''
@@ -394,6 +404,41 @@ function streamTextValue(payload: Record<string, unknown>, settings: Settings): 
   return null
 }
 
+function hasToolCallPayload(payload: Record<string, unknown>): boolean {
+  const choices = Array.isArray(payload.choices) ? payload.choices : []
+  for (const choice of choices) {
+    if (!choice || typeof choice !== 'object') continue
+    const message = (choice as Record<string, unknown>).message
+    const delta = (choice as Record<string, unknown>).delta
+    for (const value of [message, delta]) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+      const record = value as Record<string, unknown>
+      if (Array.isArray(record.tool_calls) && record.tool_calls.length > 0) return true
+      if (record.function_call && typeof record.function_call === 'object') return true
+    }
+  }
+  const response = payload.response && typeof payload.response === 'object' && !Array.isArray(payload.response)
+    ? payload.response as Record<string, unknown> : payload
+  const output = response.output
+  if (Array.isArray(output) && output.some(item => item && typeof item === 'object' &&
+    ['function_call', 'tool_use'].includes(String((item as Record<string, unknown>).type)))) return true
+  for (const value of [payload.item, payload.output_item]) {
+    if (value && typeof value === 'object' && !Array.isArray(value) &&
+      ['function_call', 'tool_use'].includes(String((value as Record<string, unknown>).type))) return true
+  }
+  return typeof payload.type === 'string' && /(?:function_call|tool_use)$/.test(payload.type)
+}
+
+function rejectUnexpectedToolCall(payload: Record<string, unknown>, toolsAllowed = false): void {
+  if (!toolsAllowed && hasToolCallPayload(payload)) {
+    throw new TextProviderError(
+      '当前文本请求未授权工具调用；模型返回了工具调用请求，工具未执行',
+      false,
+      'unexpected_tool_call',
+    )
+  }
+}
+
 function reasoningSummaryValue(payload: Record<string, unknown>): string | null {
   // Only provider supplied summaries are allowed. Raw reasoning_content/thinking
   // fields are intentionally ignored so private chain-of-thought is not exposed.
@@ -470,30 +515,6 @@ function responseFailureDetail(payload: Record<string, unknown>) {
 
 function responseEnvelope(payload: Record<string, unknown>): Record<string, unknown> {
   return payload.response && typeof payload.response === 'object' ? payload.response as Record<string, unknown> : payload
-}
-
-/** A plain streamText request never grants business tools. Some OpenAI
- * compatible gateways still return tool-call blocks when the model decides to
- * call one; surface that protocol mismatch explicitly instead of treating the
- * response as malformed JSON or ordinary text. */
-function hasToolCallPayload(payload: Record<string, unknown>): boolean {
-  const response = responseEnvelope(payload)
-  const choices = Array.isArray(payload.choices) ? payload.choices as Array<Record<string, unknown>> : []
-  if (choices.some(choice => {
-    const message = choice.message && typeof choice.message === 'object' ? choice.message as Record<string, unknown> : undefined
-    const delta = choice.delta && typeof choice.delta === 'object' ? choice.delta as Record<string, unknown> : undefined
-    return Array.isArray(message?.tool_calls) || !!message?.function_call || Array.isArray(delta?.tool_calls) || !!delta?.function_call
-  })) return true
-  const output = Array.isArray(response.output) ? response.output : Array.isArray(payload.output) ? payload.output : []
-  if (output.some(item => item && typeof item === 'object' && /^(?:function_call|tool_use)$/.test(String((item as Record<string, unknown>).type)))) return true
-  const item = payload.item && typeof payload.item === 'object' ? payload.item as Record<string, unknown> : undefined
-  return /^(?:function_call|tool_use)$/.test(String(item?.type)) || /(?:function_call|tool_use)$/.test(String(payload.type))
-}
-
-function rejectUnexpectedToolCall(payload: Record<string, unknown>, toolsAllowed: boolean) {
-  if (!toolsAllowed && hasToolCallPayload(payload)) {
-    throw new TextProviderError('当前文本请求未授权工具调用；模型返回了工具调用请求，工具未执行', false, 'unexpected_tool_call')
-  }
 }
 
 function terminalTextValue(payload: Record<string, unknown>, settings?: Settings): string | null {
@@ -896,7 +917,12 @@ export async function streamText(
   const capacity = planned.capacity
   const requestBody = JSON.stringify(finalBody)
   if (request.video && settings.video_input_format === 'doubao_ark' && Buffer.byteLength(requestBody) >= 64 * 1024 * 1024) throw new Error('豆包视频理解请求体需小于 64 MB，请缩小视频片段或降低分辨率')
-  const metrics: TextRequestMetrics = { ...textRequestTrace(), ...(settings.structured_output_mode ? { request_structured_mode: settings.structured_output_mode as TextRequestMetrics['request_structured_mode'] } : {}), ...(settings.structured_output_mode ? { structured_strategy_source: (['configured', 'declared', 'default'].includes(String(settings._structured_strategy_source)) ? settings._structured_strategy_source : 'configured') as 'configured' | 'declared' | 'default', structured_enforcement: 'unverified' as const } : {}), model_id: model.id, remote_id: typeof finalBody.model === 'string' ? finalBody.model : model.remote_id, endpoint: new URL(requestUrl).origin + new URL(requestUrl).pathname, delivery: 'not_sent', request_bytes: Buffer.byteLength(requestBody), request_has_tools: Array.isArray((finalBody as Record<string, unknown>).tools), request_tool_count: Array.isArray((finalBody as Record<string, unknown>).tools) ? ((finalBody as Record<string, unknown>).tools as unknown[]).length : 0, request_purpose: currentModelRequestContext()?.policy.purpose ?? requestPurpose(request.structured_output?.name), ...outputLimitMetrics(finalBody, model.protocol), ...capacity }
+  const requestTools = Array.isArray((finalBody as Record<string, unknown>).tools) ? (finalBody as Record<string, unknown>).tools as unknown[] : []
+  const toolNames = requestTools.map(tool => tool && typeof tool === 'object' && typeof (tool as Record<string, unknown>).name === 'string' ? String((tool as Record<string, unknown>).name) : '')
+    .filter(name => /^[a-zA-Z0-9_.-]{1,120}$/.test(name))
+  const toolChoice = typeof (finalBody as Record<string, unknown>).tool_choice === 'string' ? String((finalBody as Record<string, unknown>).tool_choice)
+    : (finalBody as Record<string, unknown>).tool_choice && typeof (finalBody as Record<string, unknown>).tool_choice === 'object' ? 'object' : undefined
+  const metrics: TextRequestMetrics = { ...textRequestTrace(), ...(settings.structured_output_mode ? { request_structured_mode: settings.structured_output_mode as TextRequestMetrics['request_structured_mode'] } : {}), ...(settings.structured_output_mode ? { structured_strategy_source: (['configured', 'declared', 'default'].includes(String(settings._structured_strategy_source)) ? settings._structured_strategy_source : 'configured') as 'configured' | 'declared' | 'default', structured_enforcement: 'unverified' as const } : {}), model_id: model.id, remote_id: typeof finalBody.model === 'string' ? finalBody.model : model.remote_id, endpoint: new URL(requestUrl).origin + new URL(requestUrl).pathname, delivery: 'not_sent', request_bytes: Buffer.byteLength(requestBody), request_has_tools: Array.isArray((finalBody as Record<string, unknown>).tools), request_tool_count: Array.isArray((finalBody as Record<string, unknown>).tools) ? ((finalBody as Record<string, unknown>).tools as unknown[]).length : 0, request_purpose: currentModelRequestContext()?.policy.purpose ?? requestPurpose(request.structured_output?.name), ...(toolNames.length ? { request_tool_names: [...new Set(toolNames)] } : {}), ...(toolChoice ? { request_tool_choice: toolChoice } : {}), ...outputLimitMetrics(finalBody, model.protocol), ...capacity }
   let response: Response
   const startedAt = Date.now()
   const activity = createTextRequestActivity(metrics, startedAt, !background)
@@ -964,6 +990,9 @@ export async function streamText(
       const finish = (payload.choices as Array<{ finish_reason?: string }> | undefined)?.[0]?.finish_reason
       const rawReason = (responseEnvelope(payload).incomplete_details as { reason?: string } | undefined)?.reason ?? finish ?? (status || undefined)
       if (rawReason) metrics.raw_reason = String(rawReason)
+      if (finish) metrics.finish_reason = String(finish)
+      const blocks = responseEnvelope(payload).output
+      if (Array.isArray(blocks)) metrics.response_block_types = [...new Set(blocks.flatMap(item => item && typeof item === 'object' && typeof (item as Record<string, unknown>).type === 'string' ? [String((item as Record<string, unknown>).type)] : []))]
       const reasoning = reasoningSummaryValue(payload)
       if (reasoning) await onEvent({ type: 'reasoning_summary', text: reasoning })
       const snapshot = hasTerminalText(payload) ? terminalTextValue(payload, settings) : null

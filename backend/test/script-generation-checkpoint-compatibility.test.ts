@@ -10,6 +10,7 @@ const dataDir = await mkdtemp(join(tmpdir(), 'studio-checkpoint-compatibility-')
 process.env.VIDEO_STUDIO_DATA_DIR = dataDir
 const { db, initDb, run, one, now } = await import('../src/infrastructure/database/db.js')
 const { generationCheckpointStore } = await import('../src/modules/script/script-generation-checkpoints.js')
+const { scriptGenerationCheckpointAttempt } = await import('../src/modules/script/script-generation-attempt.js')
 assert.ok(db.name.startsWith(dataDir), 'compatibility tests must never use the live database')
 initDb()
 after(async () => { db.close(); await rm(dataDir, { recursive: true, force: true }) })
@@ -71,6 +72,37 @@ test('compatible formatting identities do not match changed source or model inpu
     assert.deepEqual(resumed.checkpoint.steps, {})
   }
   assert.deepEqual(generationCheckpointStore('isolated', oldIdentity).checkpoint, checkpoint)
+})
+
+test('a failed props proposal is isolated from a fresh retry while the original task can resume its private checkpoint', () => {
+  project('props-attempt-isolation')
+  const identity = { source: 'props-source-v1', model: 'model-a', workflow: { stage: 'props', artifact_types: ['prop_visuals'] }, prompt: '道具外观与辨识' }
+  const pendingProps: GenerationCheckpoint = { prompt: '原道具创作任务', steps: {
+    'draft:stream:state': { input_hash: 'a'.repeat(64), value: {
+      target: 'prop_visuals', pendingArtifacts: [{ candidate_id: 'artifact:0', original: {
+        artifact_type: 'prop_visuals', title: '道具外观', content: 'PRIVATE_UNREPAIRED_PROP_CANDIDATE', status: 'invalid' } }],
+    } },
+  } }
+  generationCheckpointStore('props-attempt-isolation', identity).save(pendingProps)
+
+  const freshAttempt = scriptGenerationCheckpointAttempt(identity, 'task-fresh-retry', false)
+  assert.deepEqual(freshAttempt.compatibleIdentities, [], 'fresh retry must not receive the prior attempt as a compatibility alias')
+  const freshStore = generationCheckpointStore('props-attempt-isolation', freshAttempt.identity, 'generation', freshAttempt.compatibleIdentities)
+  assert.deepEqual(freshStore.checkpoint.steps, {}, 'the failed private prop response must not be adopted into the fresh task')
+  assert.doesNotMatch(JSON.stringify(freshStore.checkpoint), /PRIVATE_UNREPAIRED_PROP_CANDIDATE/)
+  const freshCandidate: GenerationCheckpoint = { steps: {
+    'draft:stream:state': { input_hash: 'b'.repeat(64), value: { target: 'prop_visuals', pendingArtifacts: ['FRESH_RETRY_CANDIDATE'] } },
+  } }
+  freshStore.save(freshCandidate)
+
+  const resumedFreshAttempt = scriptGenerationCheckpointAttempt(identity, 'task-fresh-retry', true)
+  const resumedFreshStore = generationCheckpointStore('props-attempt-isolation', resumedFreshAttempt.identity, 'generation', resumedFreshAttempt.compatibleIdentities)
+  assert.deepEqual(resumedFreshStore.checkpoint, freshCandidate, 'continuing a task created after this change retains its own checkpoint')
+
+  const resumedAttempt = scriptGenerationCheckpointAttempt(identity, 'task-original', true)
+  const resumedStore = generationCheckpointStore('props-attempt-isolation', resumedAttempt.identity, 'generation', resumedAttempt.compatibleIdentities)
+  assert.equal(resumedStore.reusedCompatibleIdentity, true, 'explicit resume may bind a pre-attempt-ID checkpoint from history to its original task')
+  assert.match(JSON.stringify(resumedStore.checkpoint), /PRIVATE_UNREPAIRED_PROP_CANDIDATE/)
 })
 
 test('compatibility stays inside the requested namespace and does not reuse a damaged payload', () => {

@@ -107,15 +107,35 @@ export const planningTaskStageLabel: Record<StoryboardPlanningTask['stage'], str
   repairing: '正在修订分镜', rechecking: '正在复查修订结果', completed: '分镜规划已完成',
 }
 export function planningTaskProgressLabel(task: StoryboardPlanningTask): string {
+  if (task.outline_checkpoint) {
+    const scenes = task.outline_checkpoint.scenes
+    return `已保留大纲 ${scenes.reduce((sum, scene) => sum + scene.shot_count, 0)} 镜 · 镜头合计 ${scenes.reduce((sum, scene) => sum + scene.shot_duration_sum, 0)} 秒 / 目标 ${scenes.reduce((sum, scene) => sum + scene.scene_duration, 0)} 秒 · ${task.outline_checkpoint.validated ? '大纲已校验' : '待校验恢复'}${task.progress?.phase === 'shots' ? ` · 已扩写 ${task.progress.completed_shots} / ${task.progress.total_shots} 镜` : ' · 尚未完成扩写'}`
+  }
   if (!task.progress) return ''
-  return task.progress.phase === 'outline' ? '正在设计镜头大纲'
-    : `已完成 ${task.progress.completed_shots} / ${task.progress.total_shots} 镜`
+  if (task.progress.phase === 'outline') return '正在设计镜头大纲'
+  const location = task.progress.current_scene_id
+    ? ` · 当前场次 ${task.progress.current_scene_id}${task.progress.current_shot_index === undefined ? '' : ` · 第 ${task.progress.current_shot_index + 1} 镜`}`
+    : ''
+  const recovery = task.progress.recovery === 'automatic' ? ' · 自动恢复中'
+    : task.progress.recovery === 'manual_review' ? ' · 等待人工处理' : ''
+  return `已完成 ${task.progress.completed_shots} / ${task.progress.total_shots} 镜${location}${recovery}`
 }
 export function planningTaskFailure(task: StoryboardPlanningTask): string {
   const stage = planningTaskStageLabel[task.error?.stage || task.stage].replace(/^正在/, '')
-  const reason = task.error?.message || (task.status === 'cancelled' ? '任务已取消' : '任务已中断')
+  const failureLabels: Record<string, string> = {
+    invalid_json: 'JSON 无效', invalid_schema: '结构不符合契约', invalid_business: '业务校验失败', invalid_citation: '引用无效',
+    dialogue_source_mismatch: '台词原文引用不匹配', dialogue_ref_wrong_scene: '台词引用跨场次', dialogue_ref_ambiguous: '台词引用存在歧义', dialogue_source_correction_contract: '台词纠正返回结构不符合契约', timing_mismatch: '场次时长与镜头合计不一致', timing_repair_contract: '时长校正返回结构不符合契约',
+    transport: '连接或流式响应中断', budget_exhausted: '恢复预算耗尽', identity_conflict: '任务身份冲突', unknown: '未知错误',
+  }
+  const kind = task.error?.failure_type ? `【${failureLabels[task.error.failure_type] || task.error.failure_type}】` : ''
+  const timing = task.error?.failure_type === 'timing_mismatch' && typeof task.error.scene_duration === 'number' && typeof task.error.shot_duration_sum === 'number' && typeof task.error.delta === 'number'
+    ? `本场 ${task.error.scene_duration} 秒，镜头合计 ${task.error.shot_duration_sum} 秒，${task.error.delta > 0 ? `少 ${task.error.delta} 秒` : `多 ${Math.abs(task.error.delta)} 秒`}` : ''
+  const reason = `${kind}${timing || task.error?.message || (task.status === 'cancelled' ? '任务已取消' : '任务已中断')}`
+  const location = [task.error?.scene_id && `场次 ${task.error.scene_id}`, task.error?.shot_id && `镜头 ${task.error.shot_id}`,
+    task.error?.field_path && `字段 ${task.error.field_path}`, task.error?.ref_id && `引用 ${task.error.ref_id}`].filter(Boolean).join(' · ')
   const recovery = task.can_resume ? task.progress && task.progress.completed_shots > 0 ? '已完成的镜头已保存，继续时从未完成部分重试。'
-    : task.candidate ? '分镜草稿已保存，可继续完成剩余步骤。' : '可继续重试当前步骤。'
+    : task.candidate ? '分镜草稿已保存，可继续完成剩余步骤。' : task.outline_checkpoint ? '大纲已保留，继续时校验并恢复该大纲，不重新生成。' : '可继续重试当前步骤。'
+    : task.recovery_budget === 0 ? '自动恢复预算已耗尽，请人工处理或重新规划。'
     : task.candidate ? '分镜草稿已保存供查看，请重新规划。' : '请更新规划资料后重新规划。'
-  return `${stage}未完成：${reason}。${recovery}`
+  return `${stage}未完成：${reason}${location ? `（定位：${location}）` : ''}。${recovery}`
 }

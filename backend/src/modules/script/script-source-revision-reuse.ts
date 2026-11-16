@@ -3,7 +3,6 @@ import type { ScriptSourceAnalysis, ScriptSourceDocument } from '@video-studio/s
 import { now, one, run } from '../../infrastructure/database/db.js'
 import { scriptDocumentVersion, scriptSourceVersion } from './script-source-identity.js'
 import { planScriptSourceMapReuse } from './script-source-map-reuse.js'
-import { hasPassedSourceQuality } from './script-source-quality.js'
 import { validateSourceCoverage, sourceAnalysisPipelineVersion } from './script-source-map.js'
 import { validateSourceStory } from './script-source-story.js'
 
@@ -31,7 +30,7 @@ export function captureSourceRevisionBase(current: Source, original: Source, rev
       typeof analysis.configuration_hash !== 'string' || !analysis.configuration_hash.trim() ||
       ![5, sourceAnalysisPipelineVersion].includes(analysis.pipeline_version!) ||
       analysis.completed_chunks !== analysis.total_chunks || !analysis.total_chunks ||
-      analysis.completed_characters !== current.content.length || !hasPassedSourceQuality(analysis)) { discard(); return }
+      analysis.completed_characters !== current.content.length) { discard(); return }
     validateSourceCoverage(current.content, analysis.sections)
     validateSourceStory(analysis, analysis.story, current)
     const payload: RevisionBase = { version: 1, project_id: projectId, upload_version: scriptDocumentVersion(original), revision_id: revisionId,

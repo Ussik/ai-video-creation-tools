@@ -132,6 +132,24 @@ test('bounded result spans retain the final quality state on long workflows', as
   assert.equal(results.length, 128); assert.equal(results.at(-1).status, 'needs_work')
 })
 
+test('business evidence failure remains visible and blocks later quality approval', async () => {
+  const f = fixture('outline-evidence-invalid')
+  f.observation.run(() => {
+    reportModelResult({ phase: 'structure', stage: 'outline_review', status: 'invalid_business', failure_code: 'storyboard_review_invalid',
+      evidence_ref_ids: ['evidence_0123456789abcdef'], evidence_fields: ['scene:1:start_state'], evidence_validation: 'failed' })
+    reportModelResult({ phase: 'quality', stage: 'outline_review', status: 'passed' })
+  })
+  f.observation.finish('succeeded'); await f.tracer.flush()
+  const spans = f.spans(), root = spans.find(span => !span.parentSpanId)!
+  assert.equal(metadata(root).latest_structure_status, 'invalid_business')
+  assert.equal(metadata(root).latest_quality_status, 'needs_work')
+  const result = spans.find(span => span.name === '大纲校验:结构校验')!
+  assert.equal(metadata(result).failure_code, 'storyboard_review_invalid')
+  assert.deepEqual(metadata(result).evidence_ref_ids, ['evidence_0123456789abcdef'])
+  assert.deepEqual(metadata(result).evidence_fields, ['scene:1:start_state'])
+  assert.equal(metadata(result).evidence_validation, 'failed')
+})
+
 test('recheck dispatch keeps its fine stage even with an explicit review policy', async () => {
   const f = fixture('fine-recheck')
   const observed: unknown[] = []
@@ -140,6 +158,31 @@ test('recheck dispatch keeps its fine stage even with an explicit review policy'
     'source', { context: { policy: modelTaskPolicies.review } })))
   f.observation.finish('succeeded'); await f.tracer.flush()
   assert.deepEqual(observed, ['recheck', 'recheck'])
+})
+
+test('dialogue recovery exports request, validator and final failure under the locally persisted trace ID', async () => {
+  const f = fixture('storyboard:dialogue-linked')
+  await f.observation.run(() => withModelOperationStage('dialogue_source_correction', async () => {
+    const context = currentModelRequestContext()!
+    context.onDispatch?.({ request_id: 'local-fix', request_purpose: 'generation', structured_enforcement: 'native_json_schema_unverified' })
+    context.onMetrics?.({ request_id: 'local-fix', http_status: 200, delivery: 'completed', structured_enforcement: 'native_json_schema_unverified' })
+    reportModelResult({ phase: 'structure', status: 'invalid_business', failure_code: 'dialogue_ref_wrong_scene',
+      repair_strategy: 'local_speech_item_correction', repair_count: 1, evidence_validation: 'failed', evidence_ref_ids: ['ds_abc123'], repaired_units: ['scenes.0.shots.1.audio_plan.speech.0'] })
+  }, { scene_id: 'scene-a', shot_id: 'shot-b', field_path: 'scenes.0.shots.1.audio_plan.speech.0' }))
+  f.observation.finish('failed'); await f.tracer.flush()
+  const row = db.prepare('SELECT trace_context,results FROM model_request_tasks WHERE id=?').get(f.observation.id) as any
+  const correlation = JSON.parse(row.trace_context), root = f.spans().find(span => !span.parentSpanId)!
+  assert.equal(correlation.trace_id, root.traceId); assert.equal(correlation.root_span_id, root.spanId)
+  assert.equal(correlation.enabled, true); assert.equal(correlation.sampled, true)
+  assert.equal(metadata(root).state, 'failed')
+  const validation = f.spans().find(span => metadata(span).failure_code === 'dialogue_ref_wrong_scene')!
+  assert.equal(validation.traceId, root.traceId); assert.equal(validation.parentSpanId, root.spanId)
+  assert.equal(metadata(validation).scene_id, 'scene-a'); assert.equal(metadata(validation).field_path, 'scenes.0.shots.1.audio_plan.speech.0')
+  assert.equal(metadata(validation).repair_count, 1); assert.equal(metadata(validation).repair_strategy, 'local_speech_item_correction')
+  assert.equal(JSON.parse(row.results)[0].failure_code, 'dialogue_ref_wrong_scene')
+  const transport = f.spans().find(span => metadata(span).request_purpose === 'generation')!
+  assert.equal(metadata(transport).structured_enforcement, 'native_json_schema_unverified')
+  assert.equal(transport.status.code, 1, 'HTTP completion must not be relabeled as a disconnect')
 })
 
 

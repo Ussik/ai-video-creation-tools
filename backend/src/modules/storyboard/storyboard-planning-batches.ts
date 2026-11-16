@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { generateStructuredOutput, type StructuredGenerator } from '../generation/model-output.js'
 import type { StoryboardPlanningControl } from './storyboard-planning-tasks.js'
+import type { StoryboardPlanningProgress } from '@video-studio/shared/storyboard/storyboard-planning-types'
 import { withModelOperationStage } from '../generation/model-result-observation.js'
 
 export type StoryboardOutlineShot = {
@@ -12,10 +13,14 @@ export type StoryboardPlanningOutline<Shot extends StoryboardOutlineShot, Direct
   scenes: Array<{ scene_id: string; scene_duration: number; scene_direction: Direction; shots: Shot[] }>
 }
 type BatchControl = Pick<StoryboardPlanningControl, 'signal' | 'steps' | 'retain'> & {
-  progress?(value: { phase: 'outline' | 'shots'; completed_shots: number; total_shots: number }): void
+  progress?(value: StoryboardPlanningProgress): void
 }
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const invalid = (message: string): never => { throw Object.assign(new Error(message), { statusCode: 422 }) }
+const recoverableOutlineIssue = (issue: unknown) => {
+  const code = String((issue as { code?: string }).code || '')
+  return code.startsWith('dialogue_') || code === 'timing_mismatch'
+}
 
 /** A full, validated outline locks the timing, dialogue and cut boundaries.
  * Expansion requests only add image/video/camera detail to at most two shots.
@@ -33,6 +38,7 @@ export async function generateStoryboardPlanningBatches<Shot extends StoryboardO
   expansionSchema: z.ZodType<Expansion>
   generate: StructuredGenerator; control: BatchControl
   validateOutline(value: StoryboardPlanningOutline<Shot, Direction>): void
+  recoverOutline?(value: StoryboardPlanningOutline<Shot, Direction>, issue: unknown, key: string): Promise<StoryboardPlanningOutline<Shot, Direction>>
   validateBatch?(shots: Array<Shot & Expansion>, scene: StoryboardPlanningOutline<Shot, Direction>['scenes'][number], offset: number): void
   finalize(value: StoryboardPlanningOutline<Shot & Expansion, Direction>): Result
 }): Promise<Result> {
@@ -50,14 +56,44 @@ export async function generateStoryboardPlanningBatches<Shot extends StoryboardO
     // because scene identity forms the durable batch namespace.
     if (new Set(value.scenes.map(scene => scene.scene_id)).size !== value.scenes.length) invalid('场面大纲包含重复场次，不能开始镜头扩写')
     for (const scene of value.scenes) if (!scene.shots.length) invalid('场面大纲缺少镜头，不能开始镜头扩写')
-    options.validateOutline(value)
+    try { options.validateOutline(value) }
+    catch (issue) {
+      if (options.recoverOutline && recoverableOutlineIssue(issue)) control.retain(outlineKey + ':unvalidated', value)
+      throw issue
+    }
+  }
+  const validateWithRecovery = async (value: StoryboardPlanningOutline<Shot, Direction>, initialIssue?: unknown) => {
+    const recoveryKey = outlineKey + ':recoveries'
+    const attempts = z.array(z.string()).parse(control.steps[recoveryKey] ?? [])
+    let issue = initialIssue
+    for (;;) {
+      assertActive()
+      if (!issue) {
+        try { validateOutline(value); return value } catch (error) { issue = error }
+      }
+      if (!options.recoverOutline || !recoverableOutlineIssue(issue)) throw issue
+      const failure = issue as { code?: string; scene_id?: string; field_path?: string }
+      const fingerprint = hash({ value, code: failure.code, scene: failure.scene_id, field: failure.field_path })
+      // All recovery kinds share this durable bound. Model-backed recoveries
+      // also remain inside the task's existing request/token/time budget.
+      if (attempts.includes(fingerprint) || attempts.length >= 2 * value.scenes.length + 2) throw issue
+      attempts.push(fingerprint); control.retain(recoveryKey, attempts)
+      value = options.outlineSchema.parse(await options.recoverOutline(value, issue, outlineKey))
+      assertActive(); control.retain(outlineKey + ':unvalidated', value)
+      issue = undefined
+    }
   }
   assertActive()
-  control.progress?.({ phase: 'outline', completed_shots: 0, total_shots: 0 })
+  control.progress?.({ phase: 'outline', completed_shots: 0, total_shots: 0, recovery: 'none' })
   let outline: StoryboardPlanningOutline<Shot, Direction>
   if (Object.hasOwn(control.steps, outlineKey)) {
-    outline = options.outlineSchema.parse(control.steps[outlineKey]); validateOutline(outline)
+    outline = await validateWithRecovery(options.outlineSchema.parse(control.steps[outlineKey]))
+    assertActive(); control.retain(outlineKey, outline)
   } else {
+    try {
+    if (options.recoverOutline && Object.hasOwn(control.steps, outlineKey + ':unvalidated')) {
+      outline = options.outlineSchema.parse(control.steps[outlineKey + ':unvalidated']); validateOutline(outline)
+    } else {
     outline = await withModelOperationStage('outline_generation', () => generateStructuredOutput('storyboard_scene_plan', options.outlineSchema, options.generate,
       (options.outlinePrompt ?? options.prompt) + '\n【本次仅生成完整场面与镜头大纲】\n' +
       '这是分批分镜的第一阶段。先完整设计全部所选场次的调度、镜头顺序、叙事职责、起止状态、接镜和时长。' +
@@ -65,7 +101,14 @@ export async function generateStoryboardPlanningBatches<Shot extends StoryboardO
       'scene_direction仅包含anchors、blocking、axis、dramatic_progression、sound这五个精确字段；不使用staging、emotional_arc或其他同义键。' +
       '所有JSON字符串内的英文双引号必须转义，或在正文表达中使用中文引号；不要输出Markdown代码围栏。' +
       '本次不扩写image_prompt、video_prompt或逐镜directing；后续只会在此大纲上补充画面与摄影，不会重新分配台词或调整镜头边界。只按本次Schema返回完整大纲。',
-    { signal: control.signal, validate: validateOutline, correctionInstructions: options.correctionInstructions, structuralRepair: options.structuralRepair }))
+    { signal: control.signal, validate: validateOutline, correctionInstructions: options.correctionInstructions, structuralRepair: options.structuralRepair, stopOnBusinessError: true }),
+    { field_path: 'scenes', checkpoint_reused: false })
+    }
+    } catch (issue) {
+      const candidate = control.steps[outlineKey + ':unvalidated'] ?? control.steps[outlineKey + ':candidate']
+      if (!options.recoverOutline || !candidate || !recoverableOutlineIssue(issue)) throw issue
+      outline = await validateWithRecovery(options.outlineSchema.parse(candidate), issue)
+    }
     assertActive(); control.retain(outlineKey, outline)
   }
   assertActive()
@@ -130,7 +173,7 @@ export async function generateStoryboardPlanningBatches<Shot extends StoryboardO
     }
   }
   let completedShots = 0
-  control.progress?.({ phase: 'shots', completed_shots: 0, total_shots: totalShots })
+  control.progress?.({ phase: 'shots', completed_shots: 0, total_shots: totalShots, recovery: 'none' })
   const scenes: StoryboardPlanningOutline<Shot & Expansion, Direction>['scenes'] = []
   for (const scene of outline.scenes) {
     const shots: Array<Shot & Expansion> = []
@@ -156,12 +199,14 @@ export async function generateStoryboardPlanningBatches<Shot extends StoryboardO
           'directing仅含purpose、camera、cut；cut.carry_over即使末镜ending也必须说明具体收束状态，不能留空。' +
           'JSON字符串内英文双引号必须转义，或使用中文引号；不输出Markdown代码围栏。\n' +
           (options.expansionPrompt ? '' : `完整大纲：${JSON.stringify(outline)}\n`) + `本批：${JSON.stringify({ scene_id: scene.scene_id, shot_indexes: indexes })}`,
-        { signal: control.signal, validate: value => { merge(value, scene, offset) }, structuralRepair: options.structuralRepair }),
-        { unit_index: completedShots, unit_count: totalShots })
+        { signal: control.signal, validate: value => { merge(value, scene, offset) }, structuralRepair: options.structuralRepair, stopOnBusinessError: true }),
+        { unit_index: completedShots, unit_count: totalShots, scene_id: scene.scene_id, shot_id: scene.shots[offset]?.shot_id || undefined,
+          field_path: `scenes.${scene.scene_id}.shots.${offset}`, checkpoint_reused: false })
         assertActive(); control.retain(key, batch)
       }
       assertActive(); shots.push(...merge(batch, scene, offset)); completedShots += count
-      control.progress?.({ phase: 'shots', completed_shots: completedShots, total_shots: totalShots })
+      control.progress?.({ phase: 'shots', completed_shots: completedShots, total_shots: totalShots, current_scene_id: scene.scene_id,
+        current_shot_index: offset, recovery: 'none' })
     }
     scenes.push({ ...scene, shots })
   }

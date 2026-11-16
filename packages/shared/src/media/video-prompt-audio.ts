@@ -5,7 +5,10 @@ export interface VideoAudioSpeech {
   mode: 'dialogue' | 'voiceover'
   /** Exact source passage containing the spoken text, for provenance checks. */
   source_text: string
+  /** Exact, versioned source coordinates. Legacy plans omit this field. */
+  source_ref?: VideoAudioSourceRef
 }
+export interface VideoAudioSourceRef { id: string; scene_id: string; version: string; start: number; end: number }
 
 /** Shared by shots in one accepted continuous scene; it contains no dialogue. */
 export interface SceneSoundPlan {
@@ -49,10 +52,16 @@ export function isVideoAudioPlan(value: unknown): value is VideoAudioPlan {
   if (value.scene_sound !== undefined && !isSceneSoundPlan(value.scene_sound)) return false
   if (value.ambience_change !== undefined && !text(value.ambience_change, 4000)) return false
   if (!value.speech.every(line => object(line)
-    && Object.keys(line).every(key => ['speaker', 'text', 'delivery', 'mode', 'source_text'].includes(key))
+    && Object.keys(line).every(key => ['speaker', 'text', 'delivery', 'mode', 'source_text', 'source_ref'].includes(key))
     && text(line.speaker, 160) && text(line.text, 5000, true) && text(line.delivery, 4000)
-    && (line.mode === 'dialogue' || line.mode === 'voiceover') && text(line.source_text, 20000, true))) return false
+    && (line.mode === 'dialogue' || line.mode === 'voiceover') && text(line.source_text, 20000, true)
+    && (line.source_ref === undefined || isVideoAudioSourceRef(line.source_ref)))) return false
   return !value.silent || !value.speech.length && !value.sound_effects.length && !value.music.trim()
+}
+export function isVideoAudioSourceRef(value: unknown): value is VideoAudioSourceRef {
+  return object(value) && Object.keys(value).every(key => ['id', 'scene_id', 'version', 'start', 'end'].includes(key))
+    && text(value.id, 120, true) && text(value.scene_id, 120, true) && text(value.version, 64, true)
+    && Number.isSafeInteger(value.start) && Number(value.start) >= 0 && Number.isSafeInteger(value.end) && Number(value.end) > Number(value.start)
 }
 
 /** Exact excerpt checks validate provenance without classifying natural language. */
@@ -68,16 +77,32 @@ export function videoAudioPlanSourceIssue(plan: VideoAudioPlan, sources: readonl
 
 const sourcePunctuation: Record<string, string> = { '，': ',', '：': ':', '；': ';', '？': '?', '！': '!' }
 const canonicalPunctuation = (value: string) => value.replace(/[，：；？！]/gu, mark => sourcePunctuation[mark]!)
+export function videoAudioSourceMatches(excerpt: string, sources: readonly string[]): string[] {
+  if (!excerpt) return []
+  const target = canonicalPunctuation(excerpt), matches: string[] = []
+  for (const source of sources) {
+    const canonical = canonicalPunctuation(source)
+    for (let index = canonical.indexOf(target); index >= 0; index = canonical.indexOf(target, index + 1)) {
+      matches.push(source.slice(index, index + excerpt.length))
+      // Only uniqueness matters; bound work and memory on repetitive input.
+      if (matches.length === 2) return matches
+    }
+  }
+  return matches
+}
 
 /** Restore only an unambiguous punctuation-width copy error from an exact,
  * supplied source. The returned plan still needs the strict provenance check. */
 export function recoverVideoAudioPlanSourceText(plan: VideoAudioPlan, sources: readonly string[]): VideoAudioPlan {
   return { ...plan, speech: plan.speech.map(line => {
-    if (line.source_text.includes(line.text) || !sources.some(source => source.includes(line.source_text))) return { ...line }
-    const source = canonicalPunctuation(line.source_text), target = canonicalPunctuation(line.text)
-    const index = source.indexOf(target)
-    if (index < 0 || source.indexOf(target, index + 1) >= 0) return { ...line }
-    return { ...line, text: line.source_text.slice(index, index + line.text.length) }
+    const exactSource = sources.some(source => source.includes(line.source_text))
+    if (exactSource && line.source_text.includes(line.text)) return { ...line }
+    const passages = exactSource ? [line.source_text] : videoAudioSourceMatches(line.source_text, sources)
+    if (passages.length !== 1) return { ...line }
+    const source_text = passages[0]!
+    const matches = videoAudioSourceMatches(line.text, [source_text])
+    if (matches.length !== 1) return { ...line }
+    return { ...line, source_text, text: matches[0]! }
   }) }
 }
 

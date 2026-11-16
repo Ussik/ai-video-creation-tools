@@ -24,11 +24,13 @@ export function retainCandidateReview(input: { projectId: string; family: string
     input.source, input.modelId, reviewModelSignature(input.modelId), input.status, JSON.stringify(input.report), createdAt)
   return { review_id: id, content_signature: signature, source_signature: input.source, status: input.status, reviewed_at: createdAt }
 }
-export function readCandidateReview(input: { projectId: string; family: string; reviewId?: string; candidate: unknown; source: string; accepted?: boolean }) {
+export function readCandidateReview(input: { projectId: string; family: string; reviewId?: string; candidate: unknown; source: string; accepted?: boolean | CandidateQuality['status'][] }) {
   initialize()
   const row = input.reviewId ? one<ReviewRow>('SELECT * FROM candidate_review_evidence WHERE id=? AND project_id=? AND family=?', input.reviewId, input.projectId, input.family) : undefined
   if (!row || row.candidate_signature !== candidateSignature(input.candidate) || row.source_signature !== input.source
-    || row.model_signature !== reviewModelSignature(row.model_id) || input.accepted && !['passed', 'warnings'].includes(row.status)) {
+    || row.model_signature !== reviewModelSignature(row.model_id)
+    || input.accepted === true && !['passed', 'warnings'].includes(row.status)
+    || Array.isArray(input.accepted) && !input.accepted.includes(row.status)) {
     throw Object.assign(new Error('当前草稿缺少与正文、来源及模型配置一致的通过复核记录，请复查当前草稿后保存。'), { statusCode: 409, code: 'candidate_review_required' })
   }
   return { ...row, report: JSON.parse(row.report) as unknown }

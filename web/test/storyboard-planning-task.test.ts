@@ -93,3 +93,20 @@ test('batch progress explains preserved shots without implying a complete previe
   assert.doesNotMatch(planningTaskFailure({ ...task, can_resume: false }), /继续时/)
   assert.equal(planningTaskProgressLabel(running), '')
 })
+
+test('dialogue provenance failure includes exact location in the task message', () => {
+  const message = planningTaskFailure({ status: 'failed', stage: 'generating', can_resume: false, recovery_budget: 0,
+    error: { stage: 'generating', failure_type: 'dialogue_ref_wrong_scene', message: '台词引用属于其他场次',
+      scene_id: 'scene-a', shot_id: 'shot-b', field_path: 'scenes.0.shots.1.audio_plan.speech.0.source_ref', ref_id: 'ds_ab12' } } as any)
+  assert.match(message, /台词引用跨场次/)
+  assert.match(message, /scene-a/); assert.match(message, /shot-b/); assert.match(message, /audio_plan\.speech\.0\.source_ref/); assert.match(message, /ds_ab12/)
+})
+
+test('timing mismatch failure shows scene and shot totals instead of an unknown error', () => {
+  const message = planningTaskFailure({ status: 'failed', stage: 'generating', can_resume: true, recovery_budget: 2,
+    error: { stage: 'generating', failure_type: 'timing_mismatch', message: '本场 120 秒，镜头合计 111 秒，少 9 秒',
+      scene_id: 'scene-a', field_path: 'scenes.0.shots', scene_duration: 120, shot_duration_sum: 111, delta: 9 } } as any)
+  assert.match(message, /场次时长与镜头合计不一致/)
+  assert.match(message, /本场 120 秒，镜头合计 111 秒，少 9 秒/)
+  assert.match(message, /scenes\.0\.shots/)
+})

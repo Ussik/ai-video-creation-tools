@@ -1,3 +1,4 @@
+import { isSavedDirectorWorkflow, isSupersededDirectorDraft, isSupersededDirectorFailure } from './director-message-history'
 import SourceRuntimeActivity from './SourceRuntimeActivity'
 import ScriptStageActions from './ScriptStageActions'
 import { stageOperationError, missingSavedStageArtifacts, stageLabels, type StageOperation, type StageTarget } from '@video-studio/shared/script/script-stage-access'
@@ -320,13 +321,17 @@ function normaliseArtifact(artifact: Partial<GeneratedArtifact>): GeneratedArtif
   }
 }
 
-function restoreWorkflowDraft(projectId: string): GeneratedScript | null {
+function restoreWorkflowDraft(projectId: string, script?: ProjectDetail['script']): GeneratedScript | null {
   try {
     const source = window.localStorage.getItem(`script-director-draft:${projectId}`)
     if (!source || source.length > 2000000) return null
     const value = JSON.parse(source) as GeneratedScript
     if (((!value.workflow || !workflowStages.includes(value.workflow.stage)) && !value.tool_draft?.id) || !Array.isArray(value.artifacts) || !Array.isArray(value.scenes)) return null
     if (value.workflow?.stage === 'episode' && (!Number.isInteger(value.workflow.episode_number) || value.workflow.episode_number < 1 || value.workflow.episode_number > 200)) return null
+    if (script && isSavedDirectorWorkflow(value.workflow, script)) {
+      window.localStorage.removeItem(`script-director-draft:${projectId}`)
+      return null
+    }
     return {
       ...(value.source_version !== undefined ? { source_version: value.source_version } : {}),
       ...(value.workflow ? { workflow: workflowRequestSnapshot(value.workflow) } : {}),
@@ -907,7 +912,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     const provider = providers.find((item) => item.id === model.provider_id)
     return model.modality === 'image' && model.enabled && !!provider?.enabled && provider.adapter !== 'demo'
   }), [models, providers])
-  const [options, setOptions] = useState<ScriptGenerationOptions>(() => restoreWorkflowDraft(detail.id)?.generation_options || optionsFromDetail(detail))
+  const [options, setOptions] = useState<ScriptGenerationOptions>(() => restoreWorkflowDraft(detail.id, detail.script)?.generation_options || optionsFromDetail(detail))
   const [idea, setIdea] = useState(detail.brief || '')
   const [working, setWorking] = useState<'chat' | 'prompt' | 'save' | 'shots' | null>(null)
   const [canvasNodeProposalBusy, setCanvasNodeProposalBusy] = useState(false)
@@ -941,7 +946,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const [planningSceneIds, setPlanningSceneIds] = useState<string[]>([])
   const [connectionStatus, setConnectionStatus] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [generated, setGenerated] = useState<GeneratedScript | null>(() => restoreWorkflowDraft(detail.id))
+  const [generated, setGenerated] = useState<GeneratedScript | null>(() => restoreWorkflowDraft(detail.id, detail.script))
   const [draftResolution, setDraftResolution] = useState<ScriptDraftResolution | null>(null)
   const [candidatePreviewOpen, setCandidatePreviewOpen] = useState(false)
   const [resolutionOpen, setResolutionOpen] = useState(false)
@@ -949,7 +954,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const resolutionDiscardLock = useRef(false)
   useEffect(() => { setDraftResolution(null); setResolutionOpen(false); resolutionSeen.current = '' }, [detail.id])
   const [liveRevision, setLiveRevision] = useState<RevisionTask | null>(null)
-  const [previewOpen, setPreviewOpen] = useState(() => Boolean(restoreWorkflowDraft(detail.id)))
+  const [previewOpen, setPreviewOpen] = useState(() => Boolean(restoreWorkflowDraft(detail.id, detail.script)))
   const [artifactsOpen, setArtifactsOpen] = useState(false)
   const [scriptSaved, setScriptSaved] = useState(false)
   const [lastSavedArtifactKey, setLastSavedArtifactKey] = useState<string | null>(null)
@@ -2539,9 +2544,13 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     finally { setRecoveringMessageId(null) }
   }
 
-  function renderActivity(message: Message) {
+  function renderActivity(message: Message, historicalFailure = false) {
     let execution = message.execution
-    if (execution?.outcome?.kind === 'failed' && directorMessageFailure(message)) {
+    const currentDraft = generated && (generated.source_message_id === message.id || execution?.outcome?.draft_id && generated.tool_draft?.id === execution.outcome.draft_id)
+    if (!currentDraft && !historicalFailure && isSupersededDirectorDraft(message, detail.script)) {
+      execution = execution ? { ...execution, outcome: { ...execution.outcome, kind: 'saved', summary: '该阶段已保存，原草稿记录仅供查看。' } } : execution
+    }
+    if (!historicalFailure && execution?.outcome?.kind === 'failed' && directorMessageFailure(message)) {
       execution = { ...execution, outcome: { ...execution.outcome, summary: '本轮未返回完整结果，原因见下方提示。' } }
     }
     if (execution?.outcome?.kind === 'reply' && activeChoice?.messageId === message.id) {
@@ -2552,17 +2561,16 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     } else if (execution?.outcome?.kind === 'next_step' && message.id !== messages.at(-1)?.id) {
       execution = { ...execution, outcome: { ...execution.outcome, kind: 'reply', summary: '本轮下一步建议已记录，当前创作进度和操作见对话下方。' } }
     }
-    const currentDraft = generated && (generated.source_message_id === message.id || execution?.outcome?.draft_id && generated.tool_draft?.id === execution.outcome.draft_id)
     const openDraft = currentDraft ? () => { setReaderKey(null); setReaderReference(null); setArtifactsOpen(false); setWorkflowOpen(false); setPreviewOpen(true) }
       : ['draft', 'partial'].includes(execution?.outcome?.kind || '') && execution?.outcome?.draft_id ? () => void recoverExecution(message) : undefined
-    const interrupted = message.failed || execution?.outcome?.kind === 'failed' || execution?.outcome?.kind === 'cancelled'
-    return <DirectorActivity activity={message.activity} execution={execution} pending={message.pending} failed={message.failed}
+    const interrupted = !historicalFailure && (message.failed || execution?.outcome?.kind === 'failed' || execution?.outcome?.kind === 'cancelled')
+    return <DirectorActivity activity={message.activity} execution={execution} pending={message.pending} failed={historicalFailure ? false : message.failed} historical={historicalFailure}
       compact suppressDraftAction={Boolean(currentDraft)} suppressStopAction={working === 'chat' && !artifactsOpen && !workflowOpen}
       disabled={busy || closing || Boolean(recoveringMessageId)} onOpenDraft={openDraft} onOpenDocuments={openExecutionDocuments} onOpenSource={openExecutionSource}
-      onContinueWithModel={message.task_can_resume && interrupted && !sourceChatBlocked && selectedModel ? () => void continueDirectorTask(message,true) : undefined} continueModelName={selectedModel?.name}
-      onContinue={message.task_can_resume && interrupted && !sourceChatBlocked ? () => void continueDirectorTask(message) : undefined}
-      onRetry={!sourceChatBlocked && interrupted && regenerationSource(messages, message.id) && selectedModel ? () => void regenerateReply(message) : undefined}
-      onRecover={() => void recoverExecution(message)} onStop={message.pending ? stopChatGeneration : undefined} />
+      onContinueWithModel={!historicalFailure && message.task_can_resume && interrupted && !sourceChatBlocked && selectedModel ? () => void continueDirectorTask(message,true) : undefined} continueModelName={selectedModel?.name}
+      onContinue={!historicalFailure && message.task_can_resume && interrupted && !sourceChatBlocked ? () => void continueDirectorTask(message) : undefined}
+      onRetry={!historicalFailure && !sourceChatBlocked && interrupted && regenerationSource(messages, message.id) && selectedModel ? () => void regenerateReply(message) : undefined}
+      onRecover={!historicalFailure ? () => void recoverExecution(message) : undefined} onStop={message.pending ? stopChatGeneration : undefined} />
   }
 
   function replyActions(message: Message) {
@@ -2885,7 +2893,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         if (mountedRef.current && latest?.updated_at === scriptSource.updated_at) setScriptSource(latest) }} />}
       </div>)
   const renderConversationMessage = (message: Message) => {
-        const failure = directorMessageFailure(message)
+        const historicalFailure = isSupersededDirectorFailure(message, detail.script)
+        const failure = historicalFailure ? null : directorMessageFailure(message)
         const parsedChoices = failure ? null : replyChoices(message)
         const semanticChoices = contextualReplyTypes.includes(message.classification?.type || '') && !parseMessageChoices(message.text)
         const dismissed = Boolean(choiceDismissed[message.id])
@@ -2894,7 +2903,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
           ? parsedChoices ? choiceAnswerText(parsedChoices, storedAnswer) : storedAnswer.text
           : undefined
         if (parsedChoices) return <div className="script-director-message assistant" data-message-id={message.id} key={message.id}>
-          {renderActivity(message)}
+          {renderActivity(message, historicalFailure)}
           <div className="sd-choice-explanation">
             {semanticChoices ? <DirectorMessageText text={replyDisplayText(message)} /> : <>
             {parsedChoices.intro && <DirectorMessageText text={parsedChoices.intro} />}
@@ -2912,13 +2921,13 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
             : <WorkspaceDisclosure className="sd-answered-question" label={<>{storedAnswer?.status === 'skipped' ? '已跳过' : answer || message.classification && 'status' in message.classification && message.classification.status === 'answered' ? '已回答' : dismissed ? '已结束' : '历史问题'}</>}><p>{parsedChoices.question}</p>{answer && <p>{answer}</p>}</WorkspaceDisclosure>}
           <DirectorMessageTiming {...message} />
           {replyRecognition(message)}
-          {replyActions(message)}
+          {!historicalFailure && replyActions(message)}
         </div>
         return <div className={`script-director-message ${message.role}`} data-message-id={message.id} key={message.id}>
           <DirectorReferences documents={readReferences(message.reference_documents)} onOpen={setReaderReference} />
-          {message.role === 'assistant' && renderActivity(message)}
+          {message.role === 'assistant' && renderActivity(message, historicalFailure)}
           {(!failure || failure.body) && (!message.pending || message.has_reply_text || !message.execution && !message.activity?.length) && <div className={`script-director-bubble${message.pending && !message.has_reply_text ? ' is-pending' : ''}`}>
-            {message.pending && !message.has_reply_text ? <><LoaderCircle size={13} className="script-director-spinner" /><span>{message.text}</span></> : message.role === 'assistant' ? <DirectorMessageText text={failure?.body || replyDisplayText(message)} /> : message.text}
+            {message.pending && !message.has_reply_text ? <><LoaderCircle size={13} className="script-director-spinner" /><span>{message.text}</span></> : message.role === 'assistant' ? <DirectorMessageText text={historicalFailure ? '该阶段后来已保存，原失败记录已归档。' : failure?.body || replyDisplayText(message)} /> : message.text}
           </div>}
           {failure && <DirectorMessageFailure detail={failure.detail} processing_duration_ms={message.processing_duration_ms} />}
           {message.review && !message.pending && <DirectorReviewReport review={message.review} />}
@@ -2931,7 +2940,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
             </> : <Button type="button" disabled={busy || Boolean(generated && !scriptSaved)} onClick={() => { if (message.classification?.type === 'episode_script' && message.classification.episode_number) setEpisodeNumber(message.classification.episode_number); setAdoptingMessageId(message.id) }} data-workspace-control="" variant="subtle">采用为分集剧本</Button>}
           </div>}
           {replyRecognition(message)}
-          {replyActions(message)}
+          {!historicalFailure && replyActions(message)}
         </div>
   }
 

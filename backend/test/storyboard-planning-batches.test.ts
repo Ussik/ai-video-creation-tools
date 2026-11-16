@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { TextProviderError } from '../src/infrastructure/providers/text-errors.js'
 import { generateStoryboardPlanningBatches } from '../src/modules/storyboard/storyboard-planning-batches.js'
 import type { StructuredGenerator } from '../src/modules/generation/model-output.js'
+import { repairStoryboardTiming, throwTimingMismatch } from '../src/modules/storyboard/storyboard-timing-repair.js'
 
 const compactShot = z.object({ shot_id: z.string().nullable(), title: z.string(), prompt: z.string(),
   duration: z.number().int().min(1).max(30), start_state: z.string(), end_state: z.string(), cut_note: z.string(),
@@ -26,6 +27,39 @@ const sourceOutline = () => ({ scenes: [
   { scene_id: 'scene-a', scene_duration: 15, scene_direction: { axis: '北侧' }, shots: [makeShot(0), makeShot(1), makeShot(2)] },
   { scene_id: 'scene-b', scene_duration: 5, scene_direction: { axis: '南侧' }, shots: [makeShot(3)] },
 ] })
+
+test('dialogue recovery chains into local timing repair for an 18-shot 122-second checkpoint', async () => {
+  const f = fixture(), recoveries: string[] = []
+  const outline = { scenes: [{ scene_id: 'scene-a', scene_duration: 120, scene_direction: { axis: '北侧' },
+    shots: Array.from({ length: 18 }, (_, index) => ({ ...makeShot(index), duration: index < 14 ? 7 : 6 })) }] }
+  outline.scenes[0]!.shots[0]!.audio_plan.speech = ['wrong source']
+  const options = { ...f.options, validateBatch: undefined,
+    generate: async (prompt: string, contract?: { name: string }) => contract?.name === 'storyboard_scene_plan'
+      ? (f.calls.push('outline'), JSON.stringify(outline)) : JSON.stringify(f.reply(prompt, contract)),
+    validateOutline(value: z.infer<typeof outlineSchema>) {
+      if (value.scenes[0]!.shots[0]!.audio_plan.speech[0] !== '台词0')
+        throw Object.assign(new Error('台词来源不符'), { code: 'dialogue_source_mismatch', statusCode: 422 })
+      const scene = value.scenes[0]!
+      if (scene.shots.reduce((sum, shot) => sum + shot.duration, 0) !== scene.scene_duration) throwTimingMismatch(scene, 0)
+    },
+    async recoverOutline(value: z.infer<typeof outlineSchema>, issue: unknown, key: string) {
+      const code = (issue as { code: string }).code; recoveries.push(code)
+      const next = structuredClone(value)
+      if (code === 'dialogue_source_mismatch') next.scenes[0]!.shots[0]!.audio_plan.speech = ['台词0']
+      else next.scenes[0] = await repairStoryboardTiming(next.scenes[0]!, 0, { key, control: f.options.control,
+        generate: async () => { throw new Error('local timing repair must not call a model') } })
+      return next
+    },
+  }
+  const result = await generateStoryboardPlanningBatches(options)
+  assert.deepEqual(recoveries, ['dialogue_source_mismatch', 'timing_mismatch'])
+  assert.equal(result.scenes[0]!.shots.length, 18)
+  assert.equal(result.scenes[0]!.shots.reduce((sum, shot) => sum + shot.duration, 0), 120)
+  assert.deepEqual(result.scenes[0]!.shots.map(shot => shot.shot_id), outline.scenes[0]!.shots.map(shot => shot.shot_id))
+  const calls = [...f.calls]
+  await generateStoryboardPlanningBatches(options)
+  assert.deepEqual(f.calls, calls, 'resume must reuse the outline and every completed expansion')
+})
 function fixture(steps: Record<string, unknown> = {}) {
   const controller = new AbortController(), calls: string[] = [], progress: unknown[] = []
   const control = { signal: controller.signal, steps,
@@ -64,6 +98,36 @@ function savedBatchKey(steps: Record<string, unknown>, sceneId: string, offset: 
   return entry[0]
 }
 
+test('unchanged failed recovery is bounded across resumes and never regenerates the outline', async () => {
+  const f = fixture(); let recoveries = 0
+  const options = { ...f.options,
+    validateOutline() { throw Object.assign(new Error('unresolved source'), { code: 'dialogue_source_mismatch' }) },
+    async recoverOutline(value: z.infer<typeof outlineSchema>) { recoveries++; return value },
+  }
+  await assert.rejects(generateStoryboardPlanningBatches(options), /unresolved source/)
+  await assert.rejects(generateStoryboardPlanningBatches(options), /unresolved source/)
+  assert.equal(recoveries, 1)
+  assert.deepEqual(f.calls, ['outline'])
+  assert.equal(f.finalized(), 0)
+})
+
+test('changing recovery candidates still share a durable finite recovery budget', async () => {
+  const f = fixture(); let recoveries = 0
+  const options = { ...f.options,
+    validateOutline() { throw Object.assign(new Error('still invalid'), { code: 'timing_mismatch' }) },
+    async recoverOutline(value: z.infer<typeof outlineSchema>) {
+      const next = structuredClone(value); next.scenes[0]!.shots[0]!.prompt = `attempt ${++recoveries}`; return next
+    },
+  }
+  await assert.rejects(generateStoryboardPlanningBatches(options), /still invalid/)
+  assert.equal(recoveries, 6)
+  const saved = Object.entries(f.steps).find(([key]) => key.endsWith(':outline:unvalidated'))![1] as z.infer<typeof outlineSchema>
+  assert.equal(saved.scenes[0]!.shots[0]!.prompt, 'attempt 6')
+  await assert.rejects(generateStoryboardPlanningBatches(options), /still invalid/)
+  assert.equal(recoveries, 6, 'explicit resume must not reset the recovery ledger')
+  assert.deepEqual(f.calls, ['outline'])
+})
+
 test('a complete outline locks timing and dialogue while each expansion contains at most two shots', async () => {
   const f = fixture(), result = await generateStoryboardPlanningBatches(f.options)
   assert.deepEqual(f.calls, ['outline', 'scene-a:0,1', 'scene-a:2', 'scene-b:0'])
@@ -74,11 +138,11 @@ test('a complete outline locks timing and dialogue while each expansion contains
   assert.deepEqual(result.scenes[0]!.shots[0]!.audio_plan, { speech: ['台词0'] })
   assert.equal(result.scenes[0]!.shots[0]!.image_prompt, '首帧0')
   assert.deepEqual(f.progress, [
-    { phase: 'outline', completed_shots: 0, total_shots: 0 },
-    { phase: 'shots', completed_shots: 0, total_shots: 4 },
-    { phase: 'shots', completed_shots: 2, total_shots: 4 },
-    { phase: 'shots', completed_shots: 3, total_shots: 4 },
-    { phase: 'shots', completed_shots: 4, total_shots: 4 },
+    { phase: 'outline', completed_shots: 0, total_shots: 0, recovery: 'none' },
+    { phase: 'shots', completed_shots: 0, total_shots: 4, recovery: 'none' },
+    { phase: 'shots', completed_shots: 2, total_shots: 4, current_scene_id: 'scene-a', current_shot_index: 0, recovery: 'none' },
+    { phase: 'shots', completed_shots: 3, total_shots: 4, current_scene_id: 'scene-a', current_shot_index: 2, recovery: 'none' },
+    { phase: 'shots', completed_shots: 4, total_shots: 4, current_scene_id: 'scene-b', current_shot_index: 0, recovery: 'none' },
   ])
 })
 
@@ -87,7 +151,7 @@ test('a stream reset retries only its batch, then explicit recovery reuses the v
   f.options.generate = async (prompt, contract) => {
     const value = f.reply(prompt, contract)
     if (f.calls.at(-1) === 'scene-a:2') {
-      const error = new TextProviderError('upstream stream disconnected', true, 'stream_read_error', 200)
+      const error = Object.assign(new TextProviderError('upstream stream disconnected', true, 'stream_read_error', 200), { responseTerminated: true })
       error.raw_output = '{"scene_id":"scene-a","shots":['
       throw error
     }
@@ -116,10 +180,11 @@ test('invalid duplicate, reordered and foreign-scene batches never become checkp
       }
       return JSON.stringify(value)
     }
-    await assert.rejects(generateStoryboardPlanningBatches(f.options), /不符合 storyboard_shot_batch 契约/)
+    await assert.rejects(generateStoryboardPlanningBatches(f.options), /不符合 storyboard_shot_batch 契约|必须按本批指定的镜头序号/)
     assert.equal(Object.keys(f.steps).length, 1)
     assert.equal(f.finalized(), 0)
-    assert.equal(f.calls.length, 3, 'one format correction is bounded to the rejected batch')
+    assert.equal(f.calls.length, mode === 'foreign' ? 3 : 2,
+      mode === 'foreign' ? 'schema rejection may use the single bounded format correction' : 'business validation stops the rejected batch without a format correction')
   })
 })
 
@@ -140,7 +205,7 @@ test('semantic source validation rejects the outline before expansion and revali
   await assert.rejects(generateStoryboardPlanningBatches({ ...f.options,
     validateOutline: () => { throw new Error('台词没有原文来源') },
   }), /台词没有原文来源/)
-  assert.deepEqual(f.calls, ['outline', 'outline'])
+  assert.deepEqual(f.calls, ['outline'])
   assert.equal(Object.keys(f.steps).length, 0)
   const accepted = fixture()
   await generateStoryboardPlanningBatches(accepted.options)
@@ -359,4 +424,28 @@ test('default expansion includes the full outline so any repaired outline change
     const result = structuredClone(outline); result.scenes[0]!.shots[2]!.prompt = '新的交接动作'; return result
   } })
   assert.deepEqual(f.calls, ['scene-a:0', 'scene-a:1', 'scene-a:2', 'scene-b:0'])
+})
+
+test('a dialogue-only recovery never regenerates the complete outline and keeps expanded units on resume', async () => {
+  const f = fixture(); let recovered = false, recoveries = 0, failExpansion = true
+  const options = { ...f.options,
+    validateOutline(value: z.infer<typeof outlineSchema>) {
+      f.options.validateOutline(value)
+      if (!recovered) throw Object.assign(new Error('台词来源不符'), { code: 'dialogue_source_mismatch', statusCode: 422 })
+    },
+    async recoverOutline(value: z.infer<typeof outlineSchema>) { recoveries++; recovered = true; return value },
+    generate: async (prompt: string, contract?: import('../src/modules/generation/model-output.js').OutputContract) => {
+      const value = f.reply(prompt, contract)
+      if (f.calls.at(-1) === 'scene-a:2' && failExpansion) throw Object.assign(new Error('test stopped expansion'), { statusCode: 409 })
+      return JSON.stringify(value)
+    },
+  }
+  await assert.rejects(generateStoryboardPlanningBatches(options), /test stopped expansion/)
+  assert.equal(recoveries, 1); assert.equal(f.calls.filter(call => call === 'outline').length, 1)
+  failExpansion = false
+  const result = await generateStoryboardPlanningBatches(options)
+  assert.equal(result.scenes.length, 2)
+  assert.equal(f.calls.filter(call => call === 'outline').length, 1)
+  assert.equal(f.calls.filter(call => call === 'scene-a:0,1').length, 1)
+  assert.equal(recoveries, 1)
 })
