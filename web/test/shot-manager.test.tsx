@@ -57,11 +57,22 @@ async function confirmDialog(label = '彻底删除') {
   assert.ok(confirm, `dialog action ${label}`)
   await act(async () => confirm.click())
 }
-async function mount(options: { refresh?: () => Promise<unknown>; close?: () => void; add?: (ids: string[], canvas: string) => Promise<void>; notice?: (message: string) => void; plan?: (sceneIds?: string[]) => void; planClip?: () => void; initialDesignId?: string | null; initialSceneIds?: string[] } = {}) {
+async function mount(options: { refresh?: () => Promise<unknown>; close?: () => void; add?: (ids: string[], canvas: string) => Promise<void>; notice?: (message: string) => void; plan?: (sceneIds?: string[]) => void; planClip?: () => void; initialDesignId?: string | null; initialSceneIds?: string[]; preview?: Record<string, unknown> } = {}) {
   const container = document.createElement('div'); document.body.append(container); const root = createRoot(container)
+  const originalFetch=globalThis.fetch
+  const previewFetch: typeof fetch=async(url,init)=>{
+    if(String(url).endsWith('/purge-preview')) {
+      const current=await (await originalFetch('/api/projects/project/shot-management')).json() as ShotManagementSnapshot
+      const ids=JSON.parse(String(init?.body)).shot_ids as string[]
+      const rows=current.shots.filter(entry=>ids.includes(entry.shot.id))
+      return Response.json({revision:'p'.repeat(64),shots:rows.map(entry=>({id:entry.shot.id,title:entry.shot.title})),delete:rows.map(entry=>({kind:'shots',label:entry.shot.title})),files:[],protected:[],blockers:rows.flatMap(entry=>entry.purge_blockers||[]),remote_cancelled:false,...options.preview})
+    }
+    return originalFetch(url,init)
+  }
+  globalThis.fetch=previewFetch
   const render = async (detail = project, opened = true) => act(async () => root.render(<MantineProvider env="test"><ShotManager opened={opened} onClose={options.close || (() => {})} detail={detail} activeCanvasId="canvas-a" onRefresh={options.refresh || (async () => {})} onAddToCanvas={options.add || (async () => {})} onNotice={options.notice} onPlan={options.plan} onPlanClip={options.planClip} initialDesignId={options.initialDesignId} initialSceneIds={options.initialSceneIds} /></MantineProvider>))
   await render()
-  return { render, destroy: async () => { await act(() => root.unmount()); container.remove() } }
+  return { render, destroy: async () => { await act(() => root.unmount()); container.remove(); if(globalThis.fetch===previewFetch)globalThis.fetch=originalFetch } }
 }
 
 test('opening only reads metadata, defaults to current canvas design, and filters across schemes, scenes and text', async t => {
@@ -492,7 +503,7 @@ test('permanent shot deletion requires confirmation, locks filters, and updates 
   t.mock.method(globalThis, 'fetch', async (_url, init) => {
     if (!init?.body) return Response.json(current)
     const body = JSON.parse(String(init.body)); writes.push(body)
-    current = { ...current, revision: 'after-purge', shots: current.shots.filter(entry => entry.shot.id !== body.shot_id) }
+    current = { ...current, revision: 'after-purge', shots: current.shots.filter(entry => !body.shot_ids.includes(entry.shot.id)) }
     return Response.json(current)
   })
   const view = await mount({ refresh: async () => { refreshed++ } })
@@ -501,12 +512,12 @@ test('permanent shot deletion requires confirmation, locks filters, and updates 
     await click('编辑镜头：旧镜头')
     assert.ok(document.querySelector('.shot-manager.is-detail'))
     await click('彻底删除镜头')
-    assert.match(document.querySelector('.app-dialog')!.textContent!, /旧镜头.*不可恢复.*关联素材与生成记录保留/)
+    assert.match(document.querySelector('.app-dialog')!.textContent!, /专属生成资源、参考和历史.*不可恢复/)
     assert.equal((document.querySelector('input[aria-label="分镜方案筛选"]') as HTMLInputElement).disabled, true)
     await click('取消')
     assert.deepEqual(writes, [])
     await click('彻底删除镜头'); await confirmDialog()
-    assert.deepEqual(writes, [{ action: 'purge', shot_id: 'trash', revision: 'revision-1' }])
+    assert.deepEqual(writes, [{ shot_ids: ['trash'], revision: 'p'.repeat(64) }])
     assert.equal(refreshed, 1)
     assert.equal(hasButton('编辑镜头：旧镜头'), false)
     assert.equal(document.querySelector('.shot-manager.is-detail'), null, 'a removed shot must leave the mobile detail view')
@@ -516,46 +527,46 @@ test('permanent shot deletion requires confirmation, locks filters, and updates 
 })
 
 test('recycled shots can be selected and permanently deleted as an exact batch', async t => {
-  const current = snapshot(); const writes: any[] = []
+  let current = snapshot(); const writes: any[] = []
   current.shots.push({ ...current.shots[3], shot: shot('trash-other', '另一旧镜头', 4) })
   t.mock.method(globalThis, 'fetch', async (_url, init) => {
     if (!init?.body) return Response.json(current)
     const body = JSON.parse(String(init.body)); writes.push(body)
-    return Response.json({ ...current, shots: current.shots.filter(entry => !body.shot_ids.includes(entry.shot.id)) })
+    current={...current,shots:current.shots.filter(entry=>!body.shot_ids.includes(entry.shot.id))};return Response.json(current)
   })
   const view = await mount()
   try {
     await openTrash(); await check('选择当前筛选的全部镜头')
     await click('批量彻底删除')
-    assert.match(document.querySelector('.app-dialog')!.textContent!, /2 个镜头/)
+    assert.match(document.querySelector('.app-dialog')!.textContent!, /彻底删除2个分镜/)
     await confirmDialog()
-    assert.deepEqual(writes, [{ action: 'purge_many', shot_ids: ['trash', 'trash-other'], revision: 'revision-1' }])
+    assert.deepEqual(writes, [{ shot_ids: ['trash', 'trash-other'], revision: 'p'.repeat(64) }])
     assert.equal(hasButton('批量彻底删除'), false)
     assert.equal(hasButton('编辑镜头：旧镜头'), false)
     assert.equal(hasButton('编辑镜头：另一旧镜头'), false)
   } finally { await view.destroy() }
 })
 
-test('empty recycle bin confirms all project records even when filters hide some', async t => {
-  const current = snapshot(); const writes: any[] = []
+test('project-wide shot preview includes hidden recycled shots and keeps independent asset records', async t => {
+  let current = snapshot(); const writes: any[] = []
   current.shots.push({ ...current.shots[3], shot: shot('hidden-trash', '别的方案旧镜头', 4, 'design-b', 'scene-b') })
   current.trashed_assets.push({ id: 'hidden-asset', filename: '另一素材.png', kind: 'image', deleted_at: '2026-11-09' })
   t.mock.method(globalThis, 'fetch', async (_url, init) => {
     if (!init?.body) return Response.json(current)
     const body = JSON.parse(String(init.body)); writes.push(body)
-    return Response.json({ ...current, shots: current.shots.filter(entry => !entry.deleted_at), trashed_assets: [] })
+    current={...current,shots:current.shots.filter(entry=>!body.shot_ids.includes(entry.shot.id))};return Response.json(current)
   })
   const view = await mount()
   try {
     await openTrash(); await choose('分镜方案筛选', '方案甲'); await type('搜索分镜', '旧镜头')
     assert.equal(hasButton('编辑镜头：别的方案旧镜头'), false)
     assert.equal(document.body.textContent?.includes('另一素材.png'), false)
-    await click('清空回收站')
-    assert.match(document.querySelector('.app-dialog')!.textContent!, /整个项目.*2 个镜头.*2 个素材.*不受.*筛选.*不可恢复/)
-    await confirmDialog('清空回收站')
-    assert.deepEqual(writes, [{ action: 'empty_trash', revision: 'revision-1' }])
-    assert.equal(button('清空回收站').disabled, true)
-    assert.match([...document.querySelectorAll('[role="tab"]')].find(node => node.textContent?.startsWith('回收站'))!.textContent!, /回收站 · 0/)
+    await click('预览删除回收分镜')
+    assert.match(document.querySelector('.app-dialog')!.textContent!, /彻底删除2个分镜.*不可恢复/)
+    await confirmDialog()
+    assert.deepEqual(writes, [{shot_ids:['trash','hidden-trash'],revision:'p'.repeat(64)}])
+    assert.equal(current.trashed_assets.length,2)
+    assert.match([...document.querySelectorAll('[role="tab"]')].find(node => node.textContent?.startsWith('回收站'))!.textContent!, /回收站 · 2/)
   } finally { await view.destroy() }
 })
 
@@ -568,7 +579,7 @@ test('recycled asset deletion explains retained files and uses its own action', 
   })
   const view = await mount()
   try {
-    await openTrash(); await click('彻底删除素材：已回收视频.mp4')
+    await openTrash(); await click('移除素材记录：已回收视频.mp4')
     assert.match(document.querySelector('.app-dialog')!.textContent!, /移除素材记录.*保留本地文件及生成记录/)
     await confirmDialog()
     assert.deepEqual(writes, [{ action: 'purge_asset', asset_id: 'asset-trash', revision: 'revision-1' }])
@@ -585,14 +596,18 @@ test('permanent deletion shows reference blockers while preserving restore contr
   const view = await mount()
   try {
     await openTrash()
-    assert.equal(button('彻底删除镜头').disabled, true)
-    assert.equal(button('彻底删除素材：已回收视频.mp4').disabled, true)
+    assert.equal(button('彻底删除镜头').disabled, false,'preview remains available to explain current blockers')
+    assert.equal(button('移除素材记录：已回收视频.mp4').disabled, true)
     assert.match(document.querySelector('.shot-manager-detail')!.textContent!, /暂不能彻底删除.*被剪辑稿引用/)
     assert.match(document.querySelector('.shot-manager-asset-trash')!.textContent!, /已保存至素材库/)
     await check('选择镜头：旧镜头')
-    assert.equal(button('批量彻底删除').disabled, true)
+    assert.equal(button('批量彻底删除').disabled, false)
     assert.equal(button('恢复镜头').disabled, false)
     assert.equal(button('恢复素材').disabled, false)
+    await click('批量彻底删除')
+    assert.match(document.querySelector('[role="alert"]')!.textContent!,/本次未删除/)
+    assert.equal(document.querySelector('.app-dialog'),null)
+    assert.ok(document.querySelector('.shot-purge-details'))
     assert.deepEqual(writes, [])
   } finally { await view.destroy() }
 })
@@ -634,9 +649,9 @@ test('a permanent deletion stays locked through the request and a late response 
     await openTrash(); await click('彻底删除镜头'); await confirmDialog()
     assert.equal(writes.length, 1)
     assert.equal(button('彻底删除镜头').disabled, true)
-    assert.equal(button('清空回收站').disabled, true)
+    assert.equal(button('预览删除回收分镜').disabled, true)
     assert.equal((document.querySelector('input[aria-label="显示空场次"]') as HTMLInputElement).disabled, true)
-    await act(async () => { button('彻底删除镜头').click(); button('清空回收站').click() })
+    await act(async () => { button('彻底删除镜头').click(); button('预览删除回收分镜').click() })
     assert.equal(writes.length, 1)
     await view.render({ ...project, id: 'next', name: '下个项目' })
     await act(async () => finish!(Response.json({ ...snapshot(), shots: [], trashed_assets: [] })))
@@ -646,22 +661,53 @@ test('a permanent deletion stays locked through the request and a late response 
   } finally { await view.destroy() }
 })
 
-test('project empty-trash blockers account for references removed in the same purge', async t => {
-  const current = snapshot()
-  Object.assign(current.trashed_assets[0], { purge_blockers: ['待删除镜头的素材复核引用'] })
-  Object.assign(current, { empty_trash_blockers: [] })
-  const writes: any[] = []
-  t.mock.method(globalThis, 'fetch', async (_url, init) => {
-    if (!init?.body) return Response.json(current)
-    writes.push(JSON.parse(String(init.body)))
-    return Response.json({ ...current, shots: current.shots.filter(entry => !entry.deleted_at), trashed_assets: [] })
-  })
-  const view = await mount()
+test('combined shot preview stays available while individual asset-record removal remains protected', async t => {
+  const current=snapshot(),writes:unknown[]=[]
+  Object.assign(current.trashed_assets[0],{purge_blockers:['待删除镜头的素材复核引用']})
+  Object.assign(current,{empty_trash_blockers:[]})
+  t.mock.method(globalThis,'fetch',async(_url,init)=>{if(init?.body)writes.push(init.body);return Response.json(current)})
+  const view=await mount()
   try {
     await openTrash()
-    assert.equal(button('彻底删除素材：已回收视频.mp4').disabled, true, 'single-asset deletion remains protected')
-    assert.equal(button('清空回收站').disabled, false, 'the server permits the combined operation')
-    await click('清空回收站'); await confirmDialog('清空回收站')
-    assert.deepEqual(writes, [{ action: 'empty_trash', revision: 'revision-1' }])
-  } finally { await view.destroy() }
+    assert.equal(button('移除素材记录：已回收视频.mp4').disabled,true)
+    assert.equal(button('预览删除回收分镜').disabled,false)
+    await click('预览删除回收分镜')
+    assert.match(document.querySelector('.app-dialog')!.textContent!,/专属生成资源、参考和历史/)
+    await click('取消');assert.deepEqual(writes,[])
+  } finally {await view.destroy()}
+})
+
+test('ten-shot confirmation summarizes repeated internal records without names or zero-file noise, and cancellation never deletes',async t=>{
+  const current=snapshot(),writes:string[]=[]
+  current.shots=Array.from({length:10},(_,i)=>({...current.shots[3]!,shot:shot(`recycled-${i}`,`第${i+1}镜 · 不应重复列出的名字`,i)}))
+  t.mock.method(globalThis,'fetch',async(url:unknown,init?:RequestInit)=>{if(init?.body)writes.push(String(url));return Response.json(current)})
+  const preview={delete:Array.from({length:102},(_,i)=>({kind:i<10?'shots':'shot_visual_bindings',label:'重复内部关联名字'})),protected:[{kind:'profile',id:'shared',label:'共享人物',reasons:['其他镜头引用']}],files:[]}
+  const view=await mount({preview})
+  try {
+    await openTrash();await click('预览删除回收分镜')
+    const dialog=document.querySelector('.app-dialog')!
+    assert.equal(dialog.querySelector('h2')!.textContent,'彻底删除10个分镜？')
+    const copy=dialog.querySelector('p')!.textContent!
+    assert.match(copy,/专属生成资源、参考和历史.*不可恢复.*1 项共享参考/)
+    assert.doesNotMatch(copy,/102|重复内部|不应重复|0 个|本地媒体文件/)
+    const control=dialog.querySelector<HTMLButtonElement>('.mantine-Accordion-control')!
+    assert.equal(control.getAttribute('aria-expanded'),'false')
+    await act(()=>control.click())
+    assert.equal(dialog.querySelectorAll('dl:first-child>div').length,2)
+    assert.match(dialog.querySelector('dl')!.textContent!,/镜头参考关联92/)
+    assert.doesNotMatch(dialog.textContent!,/重复内部关联名字/)
+    await click('取消');assert.deepEqual(writes,[])
+  } finally {await view.destroy()}
+})
+
+test('confirmation states only nonzero media file impact and keeps blocker reasons accessible without deleting',async t=>{
+  const current=snapshot(),writes:string[]=[]
+  t.mock.method(globalThis,'fetch',async(url:unknown,init?:RequestInit)=>{if(init?.body)writes.push(String(url));return Response.json(current)})
+  const view=await mount({preview:{files:[{name:'内部文件名.png',bytes:1024}]}})
+  try {
+    await openTrash();await click('彻底删除镜头')
+    const copy=document.querySelector('.app-dialog-copy p')!.textContent!
+    assert.match(copy,/同时删除 1 个本地媒体文件/);assert.doesNotMatch(copy,/内部文件名/)
+    await click('取消');assert.deepEqual(writes,[])
+  } finally {await view.destroy()}
 })

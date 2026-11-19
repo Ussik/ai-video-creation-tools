@@ -1,3 +1,5 @@
+import { escapeManagedPromptMarkers } from '@video-studio/shared/visuals/prompt-document'
+import { validateStoryboardReviewRelations } from './storyboard-review-relations.js'
 import { z } from 'zod'
 import type { StoryboardContinuityPlan } from '@video-studio/shared/storyboard/storyboard-continuity'
 import type { VideoAudioPlan } from '@video-studio/shared/media/video-prompt-audio'
@@ -66,7 +68,7 @@ cut描述本镜出镜切点及向下一镜的交接：type为continuity/action_m
 
 function managedSection(base: string, heading: string, content: string): string {
   const start = `【${heading}】`, end = `【${heading}结束】`
-  const section = `${start}\n${content}\n${end}`
+  const section = `${start}\n${escapeManagedPromptMarkers(content)}\n${end}`
   const parts: string[] = []
   let cursor = 0, replaced = false
   while (cursor < base.length) {
@@ -116,7 +118,7 @@ export function composeDirectedShot<T extends ShotText & { directing: DirectingS
 
 export const storyboardDirectingReviewSchema = z.object({
   issues: z.array(z.object({
-    code: z.enum(['camera_conflict', 'unmotivated_movement', 'unfilmable_motion', 'axis_conflict', 'action_mismatch', 'repeated_action', 'weak_cut', 'source_drift', 'first_frame_conflict', 'audio_continuity']),
+    code: z.enum(['camera_conflict', 'unmotivated_movement', 'unfilmable_motion', 'axis_conflict', 'action_mismatch', 'repeated_action', 'weak_cut', 'source_drift', 'first_frame_conflict', 'audio_continuity', 'action_audio_conflict']),
     scene_id: text(120), shot_index: z.number().int().min(0).max(29),
     related_scene_id: text(120).nullable(), related_shot_index: z.number().int().min(0).max(29).nullable(),
     timing_change: z.boolean().optional(), severity: z.enum(['error', 'warning']), message: text(1500), evidence: text(400), repair: text(1500),
@@ -133,6 +135,7 @@ export function normalizeStoryboardDirectingReview(value: StoryboardDirectingRev
     shots: scene.shots.map(shot => ({ ...shot, directing: shot.directing || shot.continuity_plan?.shot })),
   }))
   const catalog = storyboardEvidenceCatalog(evidenceScenes)
+  validateStoryboardReviewRelations(value.issues, evidenceScenes)
   const issues = value.issues.map(issue => {
     const evidence_refs = issue.repair_scope?.flatMap(scope => scope.fields.map(field => {
       const entry = catalog.find(item => item.scene_id === scope.scene_id && item.shot_index === scope.shot_index && item.field === field)
@@ -183,8 +186,8 @@ export function buildStoryboardDirectingReviewDigest(scenes: DirectedSceneSequen
         cut_note: compactText(shot.cut_note, 500),
         prompt: compactText(shot.prompt, 1400),
         image_prompt: compactText(shot.image_prompt, 900),
-        video_prompt: compactText(shot.video_prompt, 1600),
-        audio_plan: compactText(shot.audio_plan, 600),
+        video_prompt: shot.video_prompt,
+        audio_plan: shot.audio_plan,
         directing: compactText(shot.directing, 2000),
       })),
     })),
@@ -197,17 +200,8 @@ export function buildStoryboardDirectingReviewDigest(scenes: DirectedSceneSequen
 export function validateStoryboardDirectingReview(value: StoryboardDirectingReview, scenes: DirectedSceneSequence,
   options: { strictEvidence?: boolean; sourceTexts?: string[] } = {}): StoryboardDirectingReview {
   const parsed = storyboardDirectingReviewSchema.parse(value)
-  const ordered = scenes.flatMap(scene => scene.shots.map((_shot, shot_index) => `${scene.scene_id}:${shot_index}`))
+  validateStoryboardReviewRelations(parsed.issues, scenes)
   for (const issue of parsed.issues) {
-    const index = ordered.indexOf(`${issue.scene_id}:${issue.shot_index}`)
-    if (index < 0) throw Object.assign(new Error('导演复核引用了本次规划范围之外的镜头'), { statusCode: 422 })
-    if ((issue.related_scene_id === null) !== (issue.related_shot_index === null)) {
-      throw Object.assign(new Error('导演复核的关联场次与镜头序号必须同时提供或同时为空'), { statusCode: 422 })
-    }
-    if (issue.related_scene_id !== null) {
-      const related = ordered.indexOf(`${issue.related_scene_id}:${issue.related_shot_index}`)
-      if (related < 0 || Math.abs(related - index) !== 1) throw Object.assign(new Error('导演复核只能关联本次序列中直接相邻的镜头'), { statusCode: 422 })
-    }
     validateStoryboardRepairEvidence(issue, scenes.map(scene => ({ ...scene, scene_direction: scene.scene_direction || scene.shots.find(shot => shot.continuity_plan)?.continuity_plan?.scene,
       shots: scene.shots.map(shot => ({ ...shot, directing: shot.directing || shot.continuity_plan?.shot })) })), options.sourceTexts, options.strictEvidence)
   }
@@ -220,8 +214,11 @@ export function storyboardDirectingReviewPrompt(context: unknown): string {
     `检查提供的image_prompt正文和追加约束；标注为中段已裁剪的字段，不对未显示部分作判断。首帧已出鞘、已爆发金芒，而起点仍未出鞘、尚在暗处，属于first_frame_conflict；逐对核对同一道具由右手到左手是否有换手或允许省略的依据。不要按左右关键词机械报错。共同场景声音、单镜变化与配乐政策应相容；明确的音乐留白、声音撤出可以成立，不要求每镜同响度，不声称听过音轨。\n` +
     `按本次source_policy规定的资料优先级核对剧情与台词来源，最新正式正文优先于滞后的场次摘要和旧镜头，不因新方案正确采用最新设定而报来源漂移。固定镜头、留白、反打、换景别、明确省略/换场、蒙太奇和有意重复都可以成立；不能只因风格偏好、左右关键词或缺少花哨运镜报错。只有无依据的状态跳变、互相矛盾的摄影要求、时长内不可执行的运动、无叙事职责的重复镜头等具体缺陷才报issue。信息不足时不臆造穿帮；不要把需要创作者选择的口味问题当成error。\n` +
     `error用于必须修复的执行矛盾、动作断裂或来源漂移；warning用于有依据但可由创作者判断的节奏或动机风险。每项给出字段路径、message和最小repair；evidence只写字段路径提示，不复制原文，程序会按repair_scope路径生成规范证据。不能要求改动未选场次、已接受事实或新增台词。单镜问题关联字段均为null；跨镜问题只能引用pairs中的直接相邻镜头。shot_index从0开始。只有证据明确表明当前镜头时长不足且需要调整时才写timing_change:true；普通画面或连接问题不授权改时长。明确省略或换场按其允许的变化判断，不强迫起止状态逐字相同。无问题返回{"issues":[]}。\n` +
-    `每个独立缺陷只报一次，message/repair简短直接，不复述整场；同一原因涉及相邻镜头合并一项。repair只能要求替换错误值，不能删除或清空任何必填字段。每项error只需给出准确repair_scope路径（scene_id、shot_index、replace字段）和修复建议；不要生成evidence_refs，程序会从当前候选字段按路径生成canonical证据。warning可简要指出字段路径；场面调度的shot_index为null，字段为scene_direction的具体子项。无足够证据不授权改动。\n` +
+    `每个独立缺陷只报一次，message/repair简短直接，不复述整场；同一原因涉及相邻镜头合并一项。repair只能要求替换错误值，不能删除或清空任何必填字段。每项error只需给出准确repair_scope路径（scene_id、shot_index、replace字段）和修复建议；不要生成evidence_refs，程序会从当前候选字段按路径生成canonical证据。warning可简要指出字段路径；只有repair_scope内的场面调度项shot_index为null，字段为scene_direction的具体子项；issue.shot_index始终填写受影响的本镜序号。无足够证据不授权改动。\n` +
     `按整场所有镜头的联合覆盖对照正式来源中的必要动作链，核对准备、操作、确认与归位是否在序列中明确呈现，每个必要动作只需一个主镜完成，不要求每镜复制整条动作链。不可把结果状态或泛称完成当成中间动作已经发生；例如来源要求先折回再按压时，只写压平不能替代折回步骤。只有遍查本场完整序列后确实没有任何镜头承载来源操作，才可报source_drift并引用现有正文给出最小补全范围；后一镜已明确完成的动作不得要求前镜再做一次，前镜准备/接近而后镜操作是有效拆镜。不要新增来源没有的动作。\n` +
+    `同一事件的次数与时间顺序只有一个事实来源：先比对完整 video_prompt 的前后段、start_state/end_state 和 audio_plan.sound_effects 的触发次数与时点。亮暗亮不能未经来源确认等同两次闪烁；动作写一次、收镜或音效写两次时报告 action_audio_conflict，逐字引用所有相反表达并把 video_prompt 与 audio_plan.sound_effects 的最小相关字段纳入同一次定向修正。来源无唯一权威时必须交创作者选择，不默选一次或两次，不扩展审核轮数。\n` +
     `同一动作或状态矛盾要逐字段核对完整表达：prompt、video_prompt正文及追加约束、image_prompt、start_state、end_state、cut_note、directing.camera和directing.cut。给出统一的最小修复方向，将所有仍承载同一矛盾的错误字段一并纳入证据与repair_scope，不能只改状态和切点而留下视频正文的相反要求。正确的邻镜与对照字段保持原值，不能因为作为证据引用就改动。\n` +
+    `输出根对象只有issues数组；每项必填code、scene_id、shot_index（本镜0起整数，不能为null）、related_scene_id、related_shot_index（无关联时两个都填null）、severity、message、evidence、repair。不得改名或添加其他字段。\n` +
+    `问题结构示例（示例不是实际问题，无问题返回空数组）：${JSON.stringify({ issues: [{ code: 'camera_conflict', scene_id: '<本场scene_id>', shot_index: 0, related_scene_id: null, related_shot_index: null, severity: 'error', message: '<具体矛盾>', evidence: '<字段路径>', repair: '<最小替换建议>', repair_scope: [{ scene_id: '<本场scene_id>', shot_index: 0, operation: 'replace', fields: ['directing.camera'] }] }] })}\n` +
     `本次复核上下文：\n${JSON.stringify(context)}`
 }

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { after, test } from 'node:test'
-import type { StoryboardPlanningResult } from '@video-studio/shared/storyboard/storyboard-planning-types'
+import type { StoryboardPlanningResult, StoryboardPlanningTask } from '@video-studio/shared/storyboard/storyboard-planning-types'
 
 const directory = await mkdtemp(join(tmpdir(), 'storyboard-planning-tasks-'))
 process.env.VIDEO_STUDIO_DATA_DIR = directory
@@ -462,4 +462,213 @@ test('dialogue source errors persist typed scene, shot, field and reference coor
     assert.equal(error.field_path, 'scenes.0.shots.1.audio_plan.speech.0.source_ref'); assert.equal(error.ref_id, 'ds_ab12')
     await assert.rejects(tasks.wait(projectId, task.id), (issue: any) => issue.code === 'dialogue_ref_wrong_scene' && issue.field_path === error.field_path)
   } finally { await tasks.close() }
+})
+
+
+test('failed outline relation correction persists five-shot checkpoint and refuses task resume after restart', async () => {
+  const { z } = await import('zod')
+  const { ensureStoryboardOutlineQuality } = await import('../src/modules/storyboard/storyboard-outline-quality.js')
+  const outline = { scenes: [{ scene_id: 'fixture-scene', scene_duration: 30, scene_direction: {},
+    shots: Array.from({ length: 5 }, (_, index) => ({ shot_id: `shot-${index}`, title: `镜头${index + 1}`, duration: 6,
+      prompt: '动作', start_state: '起点', end_state: '终点', cut_note: '接镜' })) }] }
+  const schema = z.object({ scenes: z.array(z.object({ scene_id: z.string(), scene_duration: z.number(), scene_direction: z.object({}),
+    shots: z.array(z.object({ shot_id: z.string(), title: z.string(), duration: z.number(), prompt: z.string(), start_state: z.string(), end_state: z.string(), cut_note: z.string() })) })) })
+  const calls: string[] = [], projectId = await project(), id = randomUUID()
+  const options = { identity: (_projectId: string, input: unknown) => hash(input),
+    execute: async (_projectId: string, _input: unknown, control: import('../src/modules/storyboard/storyboard-planning-tasks.js').StoryboardPlanningControl) => {
+      control.stage('generating')
+      control.retain('storyboard_batches:v1:initial:isolated:outline', outline)
+      await ensureStoryboardOutlineQuality({ outline, outlineKey: 'storyboard_batches:v1:initial:isolated:outline', schema, validate() {}, control, context: {},
+        generate: async (_prompt, contract) => {
+          calls.push(contract!.name)
+          if (contract!.name === 'storyboard_outline_relation_correction') return JSON.stringify({ repairs: { issue_0: { relation_id: 'unresolved' } } })
+          return JSON.stringify({ issues: [{ code: 'action_mismatch', severity: 'warning', scene_id: 'fixture-scene', shot_index: 0,
+            related_scene_id: 'fixture-scene', related_shot_index: 3, message: '交接不明', evidence: '终点', repair: '确认关联' }] })
+        } })
+      return projection
+    } }
+  const first = createStoryboardPlanningTasks(options)
+  first.start(projectId, { source: 'five-shot-local-fixture' }, id)
+  await until(() => first.read(projectId, id).status === 'failed')
+  const failed = first.read(projectId, id)
+  assert.equal(failed.can_resume, false)
+  assert.equal(failed.error?.code, 'storyboard_outline_relation_correction_failed')
+  assert.equal(failed.error?.field_path, 'issues[0].related_shot_index')
+  assert.deepEqual(failed.outline_checkpoint?.scenes, [{ scene_id: 'fixture-scene', shot_count: 5, scene_duration: 30, shot_duration_sum: 30 }])
+  await first.close()
+  const second = createStoryboardPlanningTasks(options)
+  try {
+    assert.equal(second.read(projectId, id).can_resume, false)
+    assert.throws(() => second.resume(projectId, id))
+    assert.deepEqual(calls, ['storyboard_outline_review', 'storyboard_outline_relation_correction'])
+    const stored = JSON.parse(one<{ payload: string }>('SELECT payload FROM script_step_checkpoints WHERE project_id=? AND namespace=?',
+      projectId, `storyboard-planning-task:${id}`)!.payload)
+    assert.deepEqual(stored.steps['storyboard_batches:v1:initial:isolated:outline'], outline)
+    assert.ok(Object.keys(stored.steps).some(key => key.endsWith(':relation_rejected')))
+  } finally { await second.close() }
+})
+
+
+test('structural validator failure has a typed location and retains both private responses without permitting repeat resume', async () => {
+  const { z } = await import('zod')
+  const { generateStructuredOutput } = await import('../src/modules/generation/model-output.js')
+  const schema = z.object({ scene_duration: z.number(), title: z.string().trim() }).strict()
+  const original = { scene_duration: '30', title: ' 原标题 ' }, patch = { repairs: { repair_0: 30 } }
+  const projectId = await project(), id = randomUUID(), key = 'storyboard_batches:v1:initial:typed:structured_output:v1'
+  let calls = 0
+  const tasks = createStoryboardPlanningTasks({ identity: (_projectId, input) => hash(input), execute: async (_projectId, _input, control) => {
+    control.stage('generating')
+    const checkpoint: import('../src/modules/generation/model-output.js').StructuredOutputCheckpoint = {}
+    await generateStructuredOutput('structural_task_fixture', schema, async () => JSON.stringify(++calls === 1 ? original : patch), 'fixture', {
+      structuralRepair: true, checkpoint, freezeCorrection: true, persistCheckpoint: () => control.retain(key, structuredClone(checkpoint)),
+      stopOnBusinessError: true, validate(value) { value.title = 'unauthorized business rewrite' },
+    })
+    return projection
+  } })
+  try {
+    tasks.start(projectId, { fixture: 'structural-mutation' }, id)
+    await until(() => tasks.read(projectId, id).status === 'failed')
+    const failed = tasks.read(projectId, id)
+    assert.equal(failed.error?.code, 'structural_validator_outside_targets')
+    assert.equal(failed.error?.failure_type, 'invalid_business')
+    assert.equal(failed.error?.field_path, '$.title')
+    assert.equal(failed.can_resume, false)
+    assert.throws(() => tasks.resume(projectId, id)); assert.equal(calls, 2)
+    const stored = JSON.parse(one<{ payload: string }>('SELECT payload FROM script_step_checkpoints WHERE project_id=? AND namespace=?',
+      projectId, `storyboard-planning-task:${id}`)!.payload)
+    assert.deepEqual(JSON.parse(stored.steps[key].original_raw), original)
+    assert.deepEqual(JSON.parse(stored.steps[key].correction.raw), patch)
+    assert.equal(stored.steps[key].structural_repair.changes.at(-1).source, 'business_validation')
+  } finally { await tasks.close() }
+})
+
+
+test('legacy untyped boundary failures are read as unattributed and cannot launch another outline', async () => {
+  const projectId = await project(), id = randomUUID()
+  let executions = 0
+  const tasks = createStoryboardPlanningTasks({ identity: (_projectId, input) => hash(input), execute: async () => {
+    executions++; throw new Error('定向修复改变了授权目标之外的字段，结果未采用')
+  } })
+  try {
+    tasks.start(projectId, { fixture: 'legacy-structural-failure' }, id)
+    await until(() => tasks.read(projectId, id).status === 'failed')
+    const row = one<{ payload: string }>('SELECT payload FROM script_step_checkpoints WHERE project_id=? AND namespace=?',
+      projectId, `storyboard-planning-task:${id}`)!
+    const stored = JSON.parse(row.payload)
+    stored.snapshot.can_resume = true; stored.snapshot.error.failure_type = 'unknown'; delete stored.snapshot.error.code
+    run('UPDATE script_step_checkpoints SET payload=? WHERE project_id=? AND namespace=?', JSON.stringify(stored), projectId, `storyboard-planning-task:${id}`)
+    const before = one<{ payload: string }>('SELECT payload FROM script_step_checkpoints WHERE project_id=? AND namespace=?', projectId, `storyboard-planning-task:${id}`)!.payload
+    const view = tasks.read(projectId, id)
+    assert.equal(view.error?.failure_type, 'invalid_business')
+    assert.equal(view.error?.code, 'structural_boundary_unattributed')
+    assert.equal(view.can_resume, false)
+    assert.throws(() => tasks.resume(projectId, id), /结构纠正已停止/)
+    assert.equal(executions, 1)
+    assert.equal(one<{ payload: string }>('SELECT payload FROM script_step_checkpoints WHERE project_id=? AND namespace=?', projectId, `storyboard-planning-task:${id}`)!.payload, before,
+      'legacy compatibility reads never rewrite the original persisted task')
+  } finally { await tasks.close() }
+})
+
+
+test('outline evidence correction retains private audit on success and refuses failed correction resume after restart', async t => {
+  const { z } = await import('zod')
+  const { ensureStoryboardOutlineQuality } = await import('../src/modules/storyboard/storyboard-outline-quality.js')
+  for (const success of [true, false]) await t.test(success ? 'success audit' : 'failed no replay', async () => {
+    const outline = { scenes: [{ scene_id: 'scope-fixture', scene_duration: 35, scene_direction: {},
+      shots: Array.from({ length: 6 }, (_, index) => ({ shot_id: `scope-${index}`, title: `镜头${index + 1}`, duration: index === 5 ? 5 : 6,
+        prompt: '动作' + index, start_state: '起点' + index, end_state: index === 2 || index === 5 ? '交接完成' : '终点' + index, cut_note: '接镜' + index })) }] }
+    const schema = z.object({ scenes: z.array(z.object({ scene_id: z.string(), scene_duration: z.number(), scene_direction: z.object({}),
+      shots: z.array(z.object({ shot_id: z.string(), title: z.string(), duration: z.number(), prompt: z.string(), start_state: z.string(), end_state: z.string(), cut_note: z.string() })) })) })
+    const report = { issues: [{ code: 'action_mismatch', severity: 'warning', scene_id: 'scope-fixture', shot_index: 2,
+      related_scene_id: 'scope-fixture', related_shot_index: 1, message: '确认状态', evidence: '交接完成', repair: '确认终点',
+      evidence_refs: [{ scene_id: 'scope-fixture', shot_index: 5, field: 'end_state', quote: '交接完成' }] }] }
+    const calls: string[] = [], projectId = await project(), id = randomUUID(), outlineKey = 'storyboard_batches:v1:initial:evidence:outline'
+    const options = { identity: (_projectId: string, input: unknown) => hash(input),
+      execute: async (_projectId: string, _input: unknown, control: import('../src/modules/storyboard/storyboard-planning-tasks.js').StoryboardPlanningControl) => {
+        control.stage('generating'); control.retain(outlineKey, outline)
+        await ensureStoryboardOutlineQuality({ outline, outlineKey, schema, validate() {}, control, context: {},
+          generate: async (_prompt, contract) => {
+            calls.push(contract!.name)
+            return contract!.name === 'storyboard_outline_evidence_correction'
+              ? JSON.stringify({ repairs: { issue_0: { choice_id: success ? 'choice_0' : 'unresolved' } } }) : JSON.stringify(report)
+          } })
+        return { ...projection, directing_review: { status: 'passed' as const, repaired: false, issues: [] } }
+      } }
+    const first = createStoryboardPlanningTasks(options)
+    try {
+      first.start(projectId, { source: 'six-shot-scope-fixture' }, id)
+      await until(() => ['succeeded', 'failed'].includes(first.read(projectId, id).status))
+      const snapshot = first.read(projectId, id)
+      assert.equal(snapshot.status, success ? 'succeeded' : 'failed')
+      assert.equal(snapshot.can_resume, false)
+      if (!success) {
+        assert.equal(snapshot.error?.code, 'storyboard_outline_evidence_correction_failed')
+        assert.equal(snapshot.error?.field_path, 'issues[0].evidence_refs[0]')
+        assert.deepEqual(snapshot.outline_checkpoint?.scenes, [{ scene_id: 'scope-fixture', scene_duration: 35, shot_count: 6, shot_duration_sum: 35 }])
+      }
+      const saved = JSON.parse(one<{ payload: string }>('SELECT payload FROM script_step_checkpoints WHERE project_id=? AND namespace=?',
+        projectId, `storyboard-planning-task:${id}`)!.payload)
+      const rejectedKey = Object.keys(saved.steps).find(key => key.endsWith(':relation_rejected'))!
+      assert.deepEqual(saved.steps[rejectedKey].report, report)
+      const rawKey = Object.keys(saved.steps).find(key => key.includes(':quality:v1:') && key.endsWith(':structured_output:v1'))!
+      assert.equal(saved.steps[rawKey].original_raw || saved.steps[rawKey].raw, JSON.stringify(report))
+      assert.equal(saved.steps[rejectedKey.replace(':relation_rejected', ':relation_correction')].status, success ? 'completed' : 'failed')
+      assert.ok(saved.steps['storyboard_task_budget:v1'])
+      if (!success) assert.deepEqual(saved.steps[outlineKey], outline)
+    } finally { await first.close() }
+    const second = createStoryboardPlanningTasks(options)
+    try {
+      assert.equal(second.read(projectId, id).can_resume, false)
+      if (success) assert.equal(second.resume(projectId, id).status, 'succeeded', 'completed task returns its existing result')
+      else assert.throws(() => second.resume(projectId, id))
+      assert.deepEqual(calls, ['storyboard_outline_review', 'storyboard_outline_evidence_correction'])
+    } finally { await second.close() }
+  })
+})
+
+test('outline recheck unknown outcome projects precise stages from legacy and current durable checkpoints without replay', async t => {
+  const { readFile } = await import('node:fs/promises')
+  const { storyboardValueSignature } = await import('../src/modules/storyboard/storyboard-review-scope.js')
+  const syntheticOutline = { scenes: [{ scene_id: 'legacy-recheck', scene_duration: 35,
+    shots: Array.from({ length: 4 }, (_, i) => ({ duration: i === 3 ? 8 : 9 })) }] }
+  const outlineKey = 'storyboard_batches:v1:initial:recheck:outline', quality = `${outlineKey}:quality:v1:${storyboardValueSignature(syntheticOutline)}`
+  const cases: Array<{ name: string; input?: unknown; steps: Record<string, unknown>; snapshot?: Partial<StoryboardPlanningTask> }> = [{
+    name: 'synthetic legacy shape', steps: { [outlineKey]: syntheticOutline, [quality + ':report']: { issues: [] },
+      [quality + ':repair']: syntheticOutline, [quality + ':recheck:structured_output:v1']: { input_hash: 'a'.repeat(64), initial_started: { input_hash: 'a'.repeat(64) } } },
+  }]
+  if (process.env.STORYBOARD_RECHECK_FIXTURE) {
+    const real = JSON.parse(await readFile(process.env.STORYBOARD_RECHECK_FIXTURE, 'utf8'))
+    cases.push({ name: 'private real checkpoint copy', input: real.input, steps: real.steps, snapshot: real.snapshot })
+  }
+  for (const fixture of cases) await t.test(fixture.name, async () => {
+    const projectId = await project(), id = randomUUID(), input = fixture.input || { source: 'legacy-recheck' }, inputKey = hash(input)
+    const state = { version: 1, input, request_ids: [id], steps: fixture.steps, snapshot: {
+      ...fixture.snapshot, id, project_id: projectId, input_key: inputKey, status: 'failed', stage: 'generating',
+      started_at: Date.now(), updated_at: Date.now(), active_duration_ms: 1000, stage_duration_ms: 1000,
+      timings: { generating: 1000 }, can_resume: true, recovery_budget: 2,
+      progress: { phase: 'outline', completed_shots: 0, total_shots: 0 },
+      error: { stage: 'generating', message: '模型接口连接中断，未获得完整响应。', failure_type: 'transport', code: 'connection_error' },
+    } }
+    const payload = JSON.stringify(state), namespace = `storyboard-planning-task:${id}`
+    run('INSERT INTO script_step_checkpoints VALUES (?,?,?,?,?)', projectId, namespace, inputKey, payload, new Date().toISOString())
+    let calls = 0
+    const options = { identity: (_projectId: string, value: unknown) => hash(value), execute: async () => { calls++; return projection } }
+    const first = createStoryboardPlanningTasks(options)
+    try {
+      const view = first.read(projectId, id)
+      assert.equal(view.stage, 'rechecking'); assert.equal(view.error!.stage, 'rechecking')
+      assert.equal(view.stage_duration_ms, 0, 'do not invent a historical split of generation timings')
+      assert.equal(view.can_resume, false)
+      assert.equal(view.outline_checkpoint!.stage, 'rechecking'); assert.equal(view.outline_checkpoint!.delivery_pending, true)
+      assert.equal(view.outline_checkpoint!.scenes.reduce((sum, scene) => sum + scene.shot_count, 0), 4)
+      assert.equal(view.outline_checkpoint!.scenes.reduce((sum, scene) => sum + scene.shot_duration_sum, 0), 35)
+      assert.throws(() => first.resume(projectId, id), /交付状态尚未确认/)
+      assert.equal(calls, 0)
+      assert.equal(one<{ payload: string }>('SELECT payload FROM script_step_checkpoints WHERE project_id=? AND namespace=?', projectId, namespace)!.payload, payload,
+        'legacy stage correction is read-only; original paid outputs and diagnosis remain intact')
+    } finally { await first.close() }
+    const second = createStoryboardPlanningTasks(options)
+    try { assert.equal(second.read(projectId, id).stage, 'rechecking'); assert.throws(() => second.resume(projectId, id)); assert.equal(calls, 0) }
+    finally { await second.close() }
+  })
 })

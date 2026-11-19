@@ -411,9 +411,60 @@ export interface VisualProjectData {
   scene_visual_bindings: SceneVisualBinding[]
   shot_visual_bindings: ShotVisualBinding[]
 }
-export interface ScriptCanvasCheck { signature: string; scene_ids: string[]; needs_analysis: string[] }
+export interface ScriptCanvasCheck { signature: string; scene_ids: string[]; needs_analysis: string[]; unit_status?: Array<{ unit_key: string; name: string; status: 'complete' | 'missing' | 'blocked' | 'processing'; failure_code: string | null; checkpoint_source: 'original_raw' | 'correction' | 'validated_unit' | 'none'; is_new_model_call: boolean; attempt: number }> }
+/** Prospective action; historical is_new_model_call does not predict retry cost. */
+export interface CanvasUnitRecovery {
+  action: 'continue' | 'retry' | 'inspect' | 'none'
+  model_call: 'none' | 'possible' | 'required' | 'unknown'
+  token?: string
+  reason?: string
+}
+export interface CanvasPreparationRecovery {
+  run_id: string
+  state: 'idle' | 'running' | 'partial' | 'complete' | 'failed' | 'cancelled' | 'unknown'
+  model_id?: string
+  full_scope: boolean
+  can_retry_failed: boolean; retry_reason: string; retryable_unit_keys: string[]
+  can_continue: boolean; continue_reason: string; pending_unit_keys: string[]
+  can_restart_all: boolean; restart_reason: string
+  requires_confirmation: boolean
+  adoption?: {
+    can_adopt: boolean; source_matches: boolean; reason: string
+    completed_profiles: number; missing_shot_ids: string[]
+    can_prepare_current?: boolean; prepare_reason?: string
+    can_discard?: boolean; discarded?: boolean; source_updates?: number; max_source_updates?: number
+  }
+  inspection?: {
+    executor: 'active' | 'retired' | 'none' | 'external'
+    owner_request_id?: string; task_id?: string; started_at?: string; heartbeat_at?: string
+    cancel_requested: boolean; can_cancel: boolean; can_abandon: boolean
+    unresolved_responses: number; pending_requests: number
+    progress?: { label: string; completed_units: number; total_units: number | null }
+    /** Latest real event per phase, ordered by its most recent update. No inferred stages. */
+    steps?: Array<{ phase_id: string; label: string; completed_units: number; total_units: number | null }>
+    message: string
+  }
+  budget: { task_requests: number; task_max_requests: number; run_requests: number; run_max_requests: number; runs: number; max_runs: number }
+}
+export interface CanvasPreparationSnapshot {
+  signature: string; scene_ids: string[]; preparation?: CanvasPreparationRecovery; plan?: ScriptCanvasPlan; retained_plan?: ScriptCanvasPlan
+  retained_results?: Array<{ run_id: string; discarded: boolean; plan: ScriptCanvasPlan }>
+}
+export interface CanvasUnitFailure {
+  stage?: 'profile' | 'coverage'
+  unit_key: string; code: string; message: string; retryable: boolean; recovery_type: 'blocked' | 'none'
+  checkpoint_source: 'original_raw' | 'correction' | 'validated_unit' | 'none'
+  is_new_model_call: boolean; attempt: number
+  model_request_count?: number; local_validation_count?: number; recovery_version?: string
+  name?: string; variant?: string; scene_ids?: string[]; shot_ids?: string[]
+  recovery?: CanvasUnitRecovery
+}
 export interface ScriptCanvasPlan {
   signature: string; scene_ids: string[]; profiles: VisualProfileDraft[]
+  status?: 'partial' | 'complete'
+  preparation?: CanvasPreparationRecovery
+  failed_units?: CanvasUnitFailure[]
+  skipped_units?: Array<{ unit_key: string; reason: string }>
   reference_usage_version?: 1
   coverage_version?: 1
   visual_coverage?: import('../visuals/visual-reference-coverage.js').VisualReferenceCoverage[]

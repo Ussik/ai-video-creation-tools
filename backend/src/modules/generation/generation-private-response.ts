@@ -1,4 +1,5 @@
-import { localRepairProgressSchema, syntaxRepairAuditSchema } from './model-output-checkpoints.js'
+import { catalogCorrectionCandidateSchema } from './catalog-output-candidate.js'
+import { frozenCorrectionRequestSchema, localRepairProgressSchema, syntaxRepairAuditSchema, structuralRepairAuditSchema } from './model-output-checkpoints.js'
 import { z } from 'zod'
 import type { GenerationCheckpoint } from '../script/script-generation-steps.js'
 
@@ -11,7 +12,10 @@ const responseSchema = z.object({ input_hash: z.string().optional(), raw: z.stri
   correction: z.object({ input_hash: z.string(), raw: z.string() }).strict().optional(),
   initial_started: z.object({ input_hash: z.string(), intent_id: z.string().optional() }).strict().optional(),
   correction_started: z.object({ input_hash: z.string(), intent_id: z.string().optional() }).strict().optional(),
+  correction_request: frozenCorrectionRequestSchema.optional(),
+  correction_candidate: catalogCorrectionCandidateSchema.optional(),
   syntax_repair: syntaxRepairAuditSchema.optional(),
+  structural_repair: structuralRepairAuditSchema.optional(),
   local_repair: localRepairProgressSchema.optional() }).strict()
 const proposalSchema = responseSchema.extend({ proposal_state: z.unknown().optional() }).strict()
 const entrySchema = z.object({ input_hash: z.string().regex(/^[a-f0-9]{64}$/), value: z.unknown() }).strict()

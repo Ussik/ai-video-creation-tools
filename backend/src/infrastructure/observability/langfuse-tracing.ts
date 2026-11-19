@@ -21,7 +21,7 @@ export type ConfiguredLangfuseTracer = LangfuseTracer & { status(): LangfuseStat
 const noop = () => {}
 const emptyObservation = { dispatch: noop, metrics: noop, result: noop, finish: noop }
 const numbers = ['request_bytes', 'response_chars', 'first_event_ms', 'first_text_ms', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'output_limit', 'cache_read_tokens',
-  'cache_write_tokens', 'estimated_input_tokens', 'context_window_tokens', 'reserved_output_tokens', 'http_status', 'framing_reserve_tokens', 'unit_index', 'unit_count'] as const
+  'cache_write_tokens', 'estimated_input_tokens', 'context_window_tokens', 'reserved_output_tokens', 'http_status', 'framing_reserve_tokens', 'unit_index', 'unit_count', 'encoded_image_bytes', 'duplicate_image_occurrences'] as const
 const protocolCounts = ['request_tool_count', 'response_text_blocks', 'response_thinking_blocks', 'response_tool_use_blocks', 'response_other_blocks'] as const
 const nativeStopReasons = new Set(['end_turn', 'stop_sequence', 'tool_use', 'max_tokens', 'refusal', 'pause_turn'])
 const purposes = new Set(['generation', 'review', 'classification', 'prompt', 'tool_decision', 'text', 'media_generation', 'image_analysis'])
@@ -89,6 +89,7 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
     LANGFUSE_BASE_URL: config.baseUrl, LANGFUSE_TRACING_SAMPLING_RATE: String(config.sampleRate), VIDEO_STUDIO_LANGFUSE_TIMEOUT_MS: String(config.timeoutMs), VIDEO_STUDIO_LANGFUSE_MAX_PENDING: String(config.maxPending) })
   const state: LangfuseStatus = { enabled: valid.enabled, pending: 0, dropped: 0, failed: 0, sent: 0, incomplete: 0, reason: valid.reason }
   const clock = dependencies.now || Date.now, random = dependencies.random || Math.random, salt = dependencies.salt || randomBytes(32)
+  const jobTraceId = (id: string) => createHmac('sha256', dependencies.salt || config.secretKey || salt).update('job-trace\0').update(id).digest('hex').slice(0, 32)
   const opaque = (kind: string, value: unknown) => typeof value === 'string' && value ? createHmac('sha256', salt).update(kind).update('\0').update(value).digest('hex') : undefined
   const queue: LangfuseBatch[] = []
   let draining: Promise<void> | undefined, client: ReturnType<NonNullable<Dependencies['clientFactory']>> | undefined
@@ -178,7 +179,7 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
     observation(options) {
       if (!valid.enabled) return { ...emptyObservation, correlation: () => ({ enabled: false, sampled: false, reason: valid.reason }) }
       let sampled = false
-      try { sampled = random() < valid.sampleRate } catch { return emptyObservation }
+      try { sampled = (options.owner === 'job' ? parseInt(jobTraceId(options.taskId).slice(0, 8), 16) / 0x100000000 : random()) < valid.sampleRate } catch { return emptyObservation }
       if (!sampled) return { ...emptyObservation, correlation: () => ({ enabled: true, sampled: false, reason: 'not_sampled' }) }
       const children = new Map<string, { id: string; name: string; generation: boolean; startedAt: number; metadata: Record<string, unknown>; settled: boolean; incomplete: boolean }>()
       let resultCount = 0
@@ -195,7 +196,7 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
           if (!key || children.has(key)) return
           if (children.size >= 256 || state.pending >= valid.maxPending) { state.dropped++; suppressed = true; return }
           const at = clock()
-          if (!root) { root = { id: randomBytes(16).toString('hex'), spanId: randomBytes(8).toString('hex'), startedAt: at, metadata: identity() }; state.lastTraceId = root.id; state.lastRootSpanId = root.spanId }
+          if (!root) { root = { id: options.owner === 'job' ? jobTraceId(options.taskId) : randomBytes(16).toString('hex'), spanId: randomBytes(8).toString('hex'), startedAt: at, metadata: identity() }; state.lastTraceId = root.id; state.lastRootSpanId = root.spanId }
           const id = randomBytes(8).toString('hex'), metadata = { ...safeMetadata(source), request_ref: key }
           const purpose = stages.has(String(source.trace_stage)) ? String(source.trace_stage) : purposes.has(String(source.request_purpose)) ? String(source.request_purpose) : 'text'
           const transport = transports.has(String(source.transport_kind)) ? String(source.transport_kind) : 'text', generation = transport === 'text'
@@ -216,8 +217,10 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
           if (finished || suppressed) return
           const event = safeModelResult(value); if (!event) return
           const at = clock()
-          if (!root) { root = { id: randomBytes(16).toString('hex'), spanId: randomBytes(8).toString('hex'), startedAt: at, metadata: identity() }; state.lastTraceId = root.id; state.lastRootSpanId = root.spanId }
+          if (!root) { root = { id: options.owner === 'job' ? jobTraceId(options.taskId) : randomBytes(16).toString('hex'), spanId: randomBytes(8).toString('hex'), startedAt: at, metadata: identity() }; state.lastTraceId = root.id; state.lastRootSpanId = root.spanId }
           root.startedAt = Math.min(root.startedAt, Math.max(0, at - (event.duration_ms || 0)))
+          if (event.business_result) root.metadata.business_result = event.business_result
+          if (event.review_status) root.metadata.review_status = event.review_status
           if (event.phase === 'quality') {
             const blockedByBusinessFailure = root.metadata.latest_structure_status === 'invalid_business'
             root.metadata.latest_quality_status = blockedByBusinessFailure && event.status === 'passed' ? 'needs_work' : event.status
@@ -230,12 +233,16 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
           // early passed substep when the final review later needs work.
           if (resultCount >= 128) { root.metadata.omitted_result_count = Number(root.metadata.omitted_result_count || 0) + 1; return }
           resultCount++
+          if (event.final_state) root.metadata.final_state = event.final_state
+          if (event.cache_hit !== undefined) root.metadata.cache_hit = event.cache_hit
+          if (event.local_reuse !== undefined) root.metadata.local_reuse = event.local_reuse
+          if (event.model_request_count !== undefined) root.metadata.model_request_count = event.model_request_count
           const operation = event.stage ? modelOperationStageLabels[event.stage] : '模型结果'
           const metadata: Record<string, unknown> = { result_phase: event.phase, result_status: event.status,
             ...(event.stage ? { operation_stage: event.stage } : {}),
             ...(event.scene_id ? { scene_id: event.scene_id } : {}), ...(event.shot_id ? { shot_id: event.shot_id } : {}),
             ...(event.field_path ? { field_path: event.field_path } : {}),
-            ...Object.fromEntries(['recovery_action', 'recovery_error_type', 'recovery_attempts', 'recovery_input_chars', 'recovery_output_chars', 'task_key', 'section_ids', 'failure_code', 'field_paths', 'correction_items', 'reused_items', 'request_category', 'input_source_chars', 'input_index_chars', 'evidence_expanded', 'repair_type', 'started_at_ms', 'ended_at_ms'].flatMap(key => event[key as keyof typeof event] === undefined ? [] : [[key, event[key as keyof typeof event]]])),
+            ...Object.fromEntries(['input_transport_chars', 'input_transport_estimated_tokens', 'input_schema_hash', 'input_schema_present', 'input_scene_count', 'input_shot_count', 'input_scope_chars', 'input_rules_chars', 'input_facts_chars', 'input_profiles_chars', 'input_original_chars', 'input_scope_hash', 'input_scope_stage', 'input_boundary', 'input_scope_present', 'business_result', 'review_status', 'recovery_action', 'recovery_error_type', 'recovery_attempts', 'recovery_input_chars', 'recovery_output_chars', 'task_key', 'task_id', 'unit_key', 'checkpoint_source', 'is_new_model_call', 'recovery_type', 'attempt', 'model_request_count', 'local_validation_count', 'section_ids', 'failure_code', 'field_paths', 'structural_changes', 'schema_issue_codes', 'correction_items', 'reused_items', 'request_category', 'input_source_chars', 'input_index_chars', 'evidence_expanded', 'repair_type', 'started_at_ms', 'ended_at_ms'].flatMap(key => event[key as keyof typeof event] === undefined ? [] : [[key, event[key as keyof typeof event]]])),
             ...(event.issue_count === undefined ? {} : { issue_count: event.issue_count }),
             ...(event.repaired === undefined ? {} : { repaired: event.repaired }),
             ...(event.repair_effect === undefined ? {} : { repair_effect: event.repair_effect }),
@@ -255,6 +262,10 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
             ...(event.json_error_position === undefined ? {} : { json_error_position: event.json_error_position }),
             ...(event.json_error_line === undefined ? {} : { json_error_line: event.json_error_line }),
             ...(event.json_error_column === undefined ? {} : { json_error_column: event.json_error_column }),
+            ...(event.cache_hit === undefined ? {} : { cache_hit: event.cache_hit }),
+            ...(event.local_reuse === undefined ? {} : { local_reuse: event.local_reuse }),
+            ...(event.final_state === undefined ? {} : { final_state: event.final_state }),
+            ...(event.model_request_count === undefined ? {} : { model_request_count: event.model_request_count }),
             ...(event.repair_strategy === undefined ? {} : { repair_strategy: event.repair_strategy }),
             ...(event.repair_applied === undefined ? {} : { repair_applied: event.repair_applied }),
             ...(event.root_object_detected === undefined ? {} : { root_object_detected: event.root_object_detected }),
@@ -275,7 +286,7 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
           // A late settlement exports its original child once; unfinished work
           // remains visible as root metadata and a diagnostic counter only.
           enqueue([span({ traceId: root.id, id: root.spanId, name: 'ai_operation', startedAt: root.startedAt, generation: false, root: true,
-            metadata: { ...root.metadata, state: next, incomplete_children: incomplete, duration_ms: Math.max(0, clock() - root.startedAt) }, issue: next === 'succeeded' ? undefined : next })])
+            metadata: { ...root.metadata, state: next, final_state: root.metadata.final_state || next, incomplete_children: incomplete, duration_ms: Math.max(0, clock() - root.startedAt) }, issue: next === 'succeeded' ? undefined : next })])
         }) },
       }
     },

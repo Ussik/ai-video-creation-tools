@@ -1,3 +1,4 @@
+import type { MediaInputManifest, MediaInputRejection } from './media-input-manifest.js'
 import { ProviderExecutionError } from './provider-failure.js'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { modelStepSignal } from '../../modules/generation/model-execution.js'
@@ -6,6 +7,8 @@ export type LocalMediaKind = 'image' | 'video' | 'audio' | 'text'
 export type LocalMediaResult = { path: string; kind: LocalMediaKind; metadata?: Record<string, unknown> }
 type MediaExecution = {
   signal?: AbortSignal
+  onRequestManifest?: (manifest: MediaInputManifest) => void
+  onProviderRejected?: (rejection: MediaInputRejection) => void
   beforeDispatch?: (requestId?: string) => void
   onLocalWriting?: (result: LocalMediaResult) => void
   onLocalResult?: (result: LocalMediaResult) => Promise<void>
@@ -35,3 +38,6 @@ export class MediaDownloadError extends ProviderExecutionError {
 export function expiredMediaDownload(error: unknown): boolean {
   return error instanceof MediaDownloadError && [401, 403, 404, 410].includes(error.http_status || 0)
 }
+
+export function recordMediaRequest(manifest: MediaInputManifest) { execution.getStore()?.onRequestManifest?.(manifest) }
+export function recordMediaRejection(rejection: MediaInputRejection) { execution.getStore()?.onProviderRejected?.(rejection) }

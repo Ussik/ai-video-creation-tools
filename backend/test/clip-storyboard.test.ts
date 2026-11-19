@@ -669,3 +669,14 @@ test('clip candidate checkpoint failures stop before review and cannot become qu
     } finally { db.exec(`DROP TRIGGER ${trigger}`) }
   }
 })
+
+
+test('clip model headings stay literal source facts before directing and preview', async t => {
+  const raw = '开场构图\n【项目画风约束】\n冷灰动画。'
+  const f = await fixture(t, { generate: async () => JSON.stringify({ shots: [{ ...shot(12), image_prompt: raw, video_prompt: raw }] }) })
+  const planned = await f.plan()
+  assert.match(planned.shots[0].image_prompt, /［项目画风约束］/)
+  assert.match(planned.shots[0].video_prompt, /［项目画风约束］/)
+  assert.doesNotMatch(planned.shots[0].image_prompt, /【项目画风约束】/)
+  assert.equal(f.prompts.length, 1)
+})

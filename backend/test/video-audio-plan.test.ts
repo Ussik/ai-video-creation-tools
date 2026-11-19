@@ -375,3 +375,38 @@ test('changing a selected previous take invalidates an in-flight handoff even if
   previousId = addShot(f.projectId, -1, {})
   await f.invoke({}, 409)
 })
+
+
+test('retained action and sound conflict exposes editable sources, exact locations and stable candidate identity without another call', async t => {
+  const f = await fixture(t, () => ({ audio_plan: { ...audio(), sound_effects: ['两次的啪啪声'] }, motion_prompt: '等待确认灯管动作',
+    boundary_conflicts: [{ message: '闪烁次数与音效不一致', evidence: ['灯管闪烁一次', '所有灯管闪烁两次'], suggestion: '请确定一次或两次并同步音效。' }] }))
+  run('UPDATE shots SET video_prompt=?,audio_plan=? WHERE id=?', '灯管闪烁一次（亮-暗-亮）约0.3秒；所有灯管闪烁两次后稳定。', JSON.stringify({ ...audio(), sound_effects: ['两次的啪啪声'] }), f.shotId)
+  const first = await f.invoke({ shot_video_prompt: f.currentPrompt() }, 422)
+  assert.equal(first.handoff_conflict.status, 'needs_confirmation')
+  assert.equal(first.handoff_conflict.sources.video_prompt, '灯管闪烁一次（亮-暗-亮）约0.3秒；所有灯管闪烁两次后稳定。')
+  assert.ok(first.handoff_conflict.conflicts[0].locations.some((location: any) => location.field_path === 'video_prompt'))
+  const again = await f.invoke({ shot_video_prompt: f.currentPrompt() }, 422)
+  assert.equal(again.handoff_conflict.candidate_version, first.handoff_conflict.candidate_version)
+  assert.equal(again.handoff_conflict.local_reuse, true)
+  assert.equal(f.prompts.length, 1)
+})
+
+test('a complete fenced handoff with only metadata extras projects locally and keeps ambiguity on competing motion fields', async t => {
+  const f = await fixture(t, () => ({ title: '擦嘴角', duration: 8, video_prompt: '擦嘴角后收回纸巾。',
+    audio_plan: audio(), motion_prompt: '擦嘴角后收回纸巾。', boundary_conflicts: [] }))
+  const result = await f.invoke()
+  assert.equal(result.motion_prompt, '擦嘴角后收回纸巾。')
+  assert.equal(f.prompts.length, 1, 'extra metadata does not trigger a paid format correction')
+})
+
+test('concurrent identical conflict clicks share the retained result without a duplicate request', async t => {
+  let release!: () => void, entered!: () => void
+  const hold = new Promise<void>(resolve => { release = resolve }), started = new Promise<void>(resolve => { entered = resolve })
+  const f = await fixture(t, async () => { entered(); await hold; return { audio_plan: audio(), motion_prompt: '待确认', boundary_conflicts: [{ message: '边界冲突', evidence: ['拿着纸巾'], suggestion: '请确认动作阶段' }] } })
+  const first = f.invoke({}, 422); await started
+  const second = f.invoke({}, 422); release()
+  const results = await Promise.all([first, second])
+  assert.equal(f.prompts.length, 1)
+  assert.equal(results[0].handoff_conflict.candidate_version, results[1].handoff_conflict.candidate_version)
+  assert.deepEqual(results.map(result => result.handoff_conflict.model_request_count), [1, 0])
+})

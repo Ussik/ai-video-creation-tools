@@ -7,7 +7,7 @@ const reasons: Record<string,string> = { output_limit:'单次输出达到额度'
 const quantity = (value: unknown) => typeof value === 'number' ? value.toLocaleString('zh-CN') : '未知'
 /** Business-specific resume/apply stays on its original screen. This ledger
  * shows only real dispatches and distinguishes actual from unsettled usage. */
-export default function ModelTaskProgress({ projectId }: { projectId: string }) {
+export default function ModelTaskProgress({ projectId, taskIds, excludedIds = [] }: { projectId: string; taskIds?: string[]; excludedIds?: string[] }) {
   const [tasks, setTasks] = useState<ModelRequestTask[]>([]), [error,setError] = useState('')
   useEffect(() => {
     let disposed = false, pending: AbortController | undefined
@@ -25,11 +25,12 @@ export default function ModelTaskProgress({ projectId }: { projectId: string }) 
     try { await api(`/projects/${projectId}/model-requests/${id}/stop`,json('POST',{})); setTasks(await api<ModelRequestTask[]>(`/projects/${projectId}/model-requests`)) }
     catch (issue) { setError(issue instanceof Error ? issue.message : '停止失败') }
   }
-  if (!tasks.length) return error ? <Text size="xs" c="dimmed">模型记录暂不可用：{error}</Text> : null
+  const visible = tasks.filter(task => (!taskIds || taskIds.includes(task.id)) && !excludedIds.includes(task.id))
+  if (!visible.length) return error ? <Text size="xs" c="dimmed">模型记录暂不可用：{error}</Text> : null
   return <Paper withBorder p="md" mb="lg" aria-label="模型处理记录"><Stack gap="sm">
     <div><Text fw={600}>模型处理记录</Text><Text size="xs" c="dimmed">查看实际请求与用量。未完成任务可回到原功能继续；本地停止后，远端计费以提供商记录为准。</Text></div>
     {error && <Alert color="red">{error}</Alert>}
-    <Accordion variant="separated">{tasks.map(task => <Accordion.Item key={task.id} value={task.id}>
+    <Accordion variant="separated">{visible.map(task => <Accordion.Item key={task.id} value={task.id}>
       <Accordion.Control><Group justify="space-between"><Text size="sm">{task.label} · {new Date(task.created_at).toLocaleString('zh-CN')}</Text>
         <Badge color={task.state === 'succeeded' ? 'teal' : task.state === 'running' ? 'blue' : 'orange'}>{states[task.state]}</Badge></Group></Accordion.Control>
       <Accordion.Panel><Stack gap="xs">

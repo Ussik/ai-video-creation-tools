@@ -1,8 +1,9 @@
+import type { HandoffConflict } from '@video-studio/shared/media/video-handoff-conflict'
 import type { VisualReferenceAssetInput, VisualReferenceAssetPatch, VisualReferenceCropInput, VisualReferencePreviewInput, VisualReferencePreview, VisualReferenceGenerationInput, VisualReferenceGenerationResult, VisualProfile } from '@video-studio/shared/api/contracts'
 export type * from '@video-studio/shared/api/contracts'
 import { aiOperationHeader, isAiOperationRoute } from '@video-studio/shared/api/ai-operations'
 import { operationResponse } from './ai-operation-api'
-export type ApiError = Error & { status: number; raw_output?: string; diagnostics?: string;
+export type ApiError = Error & { handoff_conflict?: HandoffConflict; status: number; raw_output?: string; diagnostics?: string;
   code?: string; category?: string; operation_id?: string; task_id?: string; trace_id?: string;
   retryable?: boolean; retry_after_ms?: number; outcome_certainty?: string;
   recovery?: { kind: string; operation_id?: string; task_id?: string; candidate_id?: string; candidate_version?: string };
@@ -22,6 +23,8 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     const message = typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : `请求失败 (${response.status})`
     const error = new Error(message) as ApiError
     error.status = response.status
+    if (response.status === 422 && body.code === 'video_handoff_boundary_conflict' && body.handoff_conflict?.status === 'needs_confirmation'
+      && Array.isArray(body.handoff_conflict.conflicts)) error.handoff_conflict = body.handoff_conflict
     if (typeof body.raw_output === 'string') error.raw_output = body.raw_output
     if (typeof body.diagnostics === 'string') error.diagnostics = body.diagnostics
     for (const key of ['code', 'category', 'operation_id', 'task_id', 'trace_id', 'outcome_certainty'] as const) {

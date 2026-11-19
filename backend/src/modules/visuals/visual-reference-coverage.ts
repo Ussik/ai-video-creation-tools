@@ -12,9 +12,10 @@ export const visualReferenceCoverageSchema = z.array(z.object({
   no_reference_reason: z.string().trim().max(3000),
 }).strict()).max(1000)
 export type ReferenceCoverage = z.infer<typeof visualReferenceCoverageSchema>
-type Profile = { kind: string; name: string; variant: string; scene_ids: string[];
+export type CoverageProfile = { kind: string; name: string; variant: string; scene_ids: string[];
+  draft_key?: string; id?: string; base_draft_key?: string | null; base_profile_id?: string | null; state_delta?: string;
   shot_usage?: Array<{ shot_id: string; usage: string }> }
-const identity = (profile: Pick<Profile, 'kind' | 'name' | 'variant'>) => JSON.stringify([profile.kind, profile.name, profile.variant])
+const identity = (profile: Pick<CoverageProfile, 'kind' | 'name' | 'variant'>) => JSON.stringify([profile.kind, profile.name, profile.variant])
 const modes = (usage: string) => usage === 'both' ? ['image', 'video'] : usage === 'none' ? [] : [usage]
 function invalid(message: string): never { throw Object.assign(new Error(message), { statusCode: 422 }) }
 
@@ -29,7 +30,7 @@ export function referenceCoverageTargets(scenes: ScriptScene[], shots: Shot[]) {
 
 /** Check model-owned identities and source evidence before any binding/cache writes.
  * This enforces declared coverage without guessing identity from prose keywords. */
-export function validateVisualReferenceCoverage(coverage: ReferenceCoverage | undefined, scenes: ScriptScene[], shots: Shot[], profiles: Profile[]) {
+export function validateVisualReferenceCoverage(coverage: ReferenceCoverage | undefined, scenes: ScriptScene[], shots: Shot[], profiles: CoverageProfile[]) {
   if (!coverage) invalid('缺少逐镜视觉覆盖说明，请重新整理参考设定')
   const targets = referenceCoverageTargets(scenes, shots)
   const key = (value: { scene_id: string; shot_id: string | null }) => JSON.stringify([value.scene_id, value.shot_id])
@@ -40,26 +41,33 @@ export function validateVisualReferenceCoverage(coverage: ReferenceCoverage | un
     if (!target.sources.some(source => source.includes(item.source_excerpt))) invalid('视觉覆盖的来源摘录必须逐字取自对应镜头或无分镜场次')
     if (!item.objects.length && item.no_reference_reason.trim().length < 8) invalid('空镜或无需参考设定的镜头必须明确说明原因（至少8字），不能用空结果跳过整理')
     if (new Set(item.objects.map(identity)).size !== item.objects.length) invalid('同一镜头的出镜对象不能重复，请合并图片与视频用途')
-    for (const object of item.objects) {
-      if (!object.requires_profile) continue
-      const matches = profiles.filter(profile => identity(profile) === identity(object) && profile.scene_ids.includes(item.scene_id))
-      const covered = matches.flatMap(profile => item.shot_id ? modes(profile.shot_usage?.find(usage => usage.shot_id === item.shot_id)?.usage || 'none') : ['image', 'video'])
-      if (modes(object.usage).some(mode => !covered.includes(mode))) invalid(`「${object.name}」已声明实际出镜并需要参考设定，但缺少对应档案或镜头用途`)
-    }
-    for (const profile of profiles.filter(profile => profile.scene_ids.includes(item.scene_id))) {
-      // Scene templates have no shot ID yet. Their explicit object decision
-      // supplies the future binding usage; unused base profiles stay unbound.
-      const usage = item.shot_id ? profile.shot_usage?.find(usage => usage.shot_id === item.shot_id)?.usage || 'none'
-        : item.objects.find(object => object.requires_profile && identity(object) === identity(profile))?.usage || 'none'
-      if (modes(usage).some(mode => !item.objects.some(object => object.requires_profile && identity(object) === identity(profile) && modes(object.usage).includes(mode)))) {
-        invalid(`「${profile.name}」的参考用途缺少相应的逐镜出镜对象说明`)
-      }
+  }
+  const differences = visualCoverageDifferences(coverage, scenes, shots, profiles)
+  if (differences.length) throw Object.assign(new Error('逐镜参考用途与出镜说明不一致，缺少对应档案或镜头用途，或参考用途缺少相应的逐镜出镜对象说明：' + JSON.stringify(differences)), {
+    code: 'visual_coverage_conflict', statusCode: 422, retryable: false, differences,
+    diagnostics: JSON.stringify({ stage: 'coverage', differences }),
+  })
+}
+export function visualCoverageDifferences(coverage: ReferenceCoverage, scenes: ScriptScene[], shots: Shot[], profiles: CoverageProfile[]) {
+  const differences: Array<{ object_key: string; shot_id: string | null; scene_id: string; missing_modes: string[]; extra_modes: string[]; expected: string[]; actual: string[]; source_excerpt: string }> = []
+  for (const item of coverage) {
+    const objects = item.objects.filter(object => object.requires_profile)
+    const identities = new Set([...profiles.filter(profile => profile.scene_ids.includes(item.scene_id)).map(identity), ...objects.map(identity)])
+    for (const id of identities) {
+      const profile = profiles.find(profile => identity(profile) === id && profile.scene_ids.includes(item.scene_id))
+      const object = objects.find(object => identity(object) === id)
+      const expected = profile ? item.shot_id ? modes(profile.shot_usage?.find(row => row.shot_id === item.shot_id)?.usage || 'none') : object ? modes(object.usage) : [] : []
+      const actual = object ? modes(object.usage) : []
+      const missing_modes = expected.filter(mode => !actual.includes(mode)), extra_modes = actual.filter(mode => !expected.includes(mode))
+      if (missing_modes.length || extra_modes.length) differences.push({ object_key: profile?.draft_key || profile?.id || id,
+        shot_id: item.shot_id, scene_id: item.scene_id, expected, actual, missing_modes, extra_modes, source_excerpt: item.source_excerpt })
     }
   }
+  return differences
 }
 
 /** Design scoping changes display variants; keep explicit identities aligned. */
-export function scopeVisualReferenceCoverage(coverage: ReferenceCoverage, original: Profile[], scoped: Profile[]): ReferenceCoverage {
+export function scopeVisualReferenceCoverage(coverage: ReferenceCoverage, original: CoverageProfile[], scoped: CoverageProfile[]): ReferenceCoverage {
   return coverage.map(item => ({ ...item, objects: item.objects.map(object => {
     const index = original.findIndex(profile => identity(profile) === identity(object) && profile.scene_ids.includes(item.scene_id))
     return index < 0 ? object : { ...object, variant: scoped[index]!.variant }

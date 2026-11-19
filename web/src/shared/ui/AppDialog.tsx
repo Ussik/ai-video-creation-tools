@@ -6,6 +6,7 @@ type BaseOptions = {
   title: string
   message: string
   details?: ReactNode
+  scrollable?: boolean
   size?: string
   confirmLabel?: string
   cancelLabel?: string
@@ -57,7 +58,7 @@ export function useAppDialog(options: { zIndex?: number } = {}) {
     size={request.size || 'sm'}
     withCloseButton={false}
     closeOnClickOutside={false}
-    classNames={{ content: 'app-dialog', body: 'app-dialog-body' }}
+    classNames={{ content: `app-dialog${request.scrollable ? ' app-dialog-bounded' : ''}`, body: 'app-dialog-body' }}
     aria-label={request.title}
   >
     <div className="app-dialog-copy">

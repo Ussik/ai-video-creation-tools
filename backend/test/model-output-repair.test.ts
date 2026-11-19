@@ -204,11 +204,12 @@ test('the planner bounds targets, retains source refs, restores nullable optiona
   assert.equal(planStructuralRepair(many, manyFailure.error.issues, z.toJSONSchema(manySchema, { io: 'input' })), undefined)
 })
 
-test('a structural patch cannot normalize or mutate unselected fields', async () => {
+test('a structural patch permits trusted schema normalization while retaining raw unselected fields', async () => {
   const normalizing = z.object({ untouched: z.string().trim(), fix: nonempty }).strict()
   let calls = 0
-  await assert.rejects(generateStructuredOutput('bounded_structure', normalizing, async () => JSON.stringify(++calls === 1
-    ? { untouched: ' original spacing ', fix: '' } : { repairs: { repair_0: 'fixed' } }), '资料', { structuralRepair: true }), /授权目标之外/)
+  const result = await generateStructuredOutput('bounded_structure', normalizing, async () => JSON.stringify(++calls === 1
+    ? { untouched: ' original spacing ', fix: '' } : { repairs: { repair_0: 'fixed' } }), '资料', { structuralRepair: true })
+  assert.deepEqual(result, { untouched: 'original spacing', fix: 'fixed' })
   assert.equal(calls, 2)
 })
 

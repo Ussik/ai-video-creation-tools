@@ -1,0 +1,6 @@
+.reference-preparation-activity { display: flex; align-items: center; flex: 1; min-width: 0; gap: 7px; color: var(--fc-text-muted); font-size: 12px; line-height: 1.6; font-variant-numeric: tabular-nums; }
+.reference-preparation-activity > .mantine-Loader-root { flex: none; }
+.reference-preparation-activity > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 720px) {
+  .reference-preparation-activity { flex-basis: 100%; }
+}

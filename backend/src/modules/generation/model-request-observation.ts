@@ -22,7 +22,7 @@ export function stopObservedModelTask(id: string): boolean {
   return true
 }
 const numericFields = ['request_bytes', 'response_chars', 'first_event_ms', 'first_text_ms', 'queue_latency_ms', 'model_latency_ms', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'output_limit',
-  'cache_read_tokens', 'cache_write_tokens', 'estimated_input_tokens', 'context_window_tokens', 'reserved_output_tokens', 'http_status', 'framing_reserve_tokens', 'input_source_chars', 'input_index_chars', 'correction_items', 'reused_items', 'unit_index', 'unit_count']
+  'cache_read_tokens', 'cache_write_tokens', 'estimated_input_tokens', 'context_window_tokens', 'reserved_output_tokens', 'http_status', 'framing_reserve_tokens', 'input_source_chars', 'input_index_chars', 'encoded_image_bytes', 'duplicate_image_occurrences', 'correction_items', 'reused_items', 'unit_index', 'unit_count']
 const protocolCountFields = ['request_tool_count', 'response_text_blocks', 'response_thinking_blocks', 'response_tool_use_blocks', 'response_other_blocks']
 const stringFields = ['kind', 'transport_kind', 'task_id', 'step_id', 'attempt_id', 'request_id', 'model_id', 'remote_id', 'failure_reason', 'raw_reason', 'delivery',
   'output_parameter', 'budget_mode', 'input_count_method', 'capacity_status', 'output_source', 'capability_source', 'request_purpose', 'upstream_request_id', 'output_limit_reason', 'output_limit_kind', 'estimate_source', 'context_source', 'scene_id', 'shot_id', 'field_path']
@@ -164,7 +164,7 @@ export function createModelRequestObservation(options: ObservationOptions, trace
           results.push(event); if (results.length > 128) results.shift()
           recorded = true; safely(persist); quietTrace(() => { trace?.result?.(event); persistTrace() })
         }, taskId: id, policy: options.policy || modelTaskPolicies.text, signal: options.signal,
-        onProgress: value => { if (canObserve()) safely(() => { progress.set(value.phase_id, value); recorded = true; persist() }) },
+        onProgress: value => { if (canObserve()) safely(() => { progress.delete(value.phase_id); progress.set(value.phase_id, value); recorded = true; persist() }) },
         onDispatch: value => {
           if (!canObserve()) return
           const context = currentModelRequestContext()

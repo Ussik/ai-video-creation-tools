@@ -1,3 +1,4 @@
+import { escapeManagedPromptMarkers } from '@video-studio/shared/visuals/prompt-document'
 import { retainCandidateReview, readCandidateReview, reviewModelSignature } from '../generation/candidate-review-evidence.js'
 import { repairStoryboardTargets } from './storyboard-targeted-repair.js'
 import { retainAiOperationCandidate } from '../generation/ai-operations.js'
@@ -34,6 +35,9 @@ const shotDraft = z.object({ title: z.string().trim().min(1).max(120), prompt: z
 const draft = z.object({ shots: z.array(shotDraft).min(1).max(30) }).strict()
 const directedDraft = z.object({ groups: z.array(z.object({ group_id: id, scene_direction: directingSceneSchema }).strict()).min(1).max(30),
   shots: z.array(shotDraft.omit({ continuity_plan: true }).extend({ group_id: id, directing: directingShotSchema,
+    prompt: shotDraft.shape.prompt.overwrite(escapeManagedPromptMarkers),
+    image_prompt: shotDraft.shape.image_prompt.overwrite(escapeManagedPromptMarkers),
+    video_prompt: shotDraft.shape.video_prompt.overwrite(escapeManagedPromptMarkers),
     start_state: z.string().trim().min(1).max(2000), end_state: z.string().trim().min(1).max(2000), cut_note: z.string().trim().min(1).max(2000) })).min(1).max(30) }).strict()
 const targetInput = { target_video_model_id: id.optional() }
 const planInput = source.extend({ signature, model_id: id, shots_count: z.number().int().min(1).max(30).optional(), skill_ids: skillIdsInput.optional(), ...targetInput })

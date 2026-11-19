@@ -204,3 +204,77 @@ test('source terminal and first-text diagnostics survive local observation befor
   assert.equal(data.first_text_ms, 0); assert.equal(data.response_terminated, true)
   assert.equal(data.upstream_error_code, 'stream_read_error'); assert.equal(data.output_tokens, undefined)
 })
+
+
+test('successful generation with timed-out review remains explicitly inconclusive in local and Langfuse results', async () => {
+  const f = fixture('generated-review-timeout')
+  await f.observation.run(async () => {
+    reportModelResult({ phase: 'structure', status: 'invalid_contract', stage: 'shot_expansion', issue_count: 1, field_paths: ['$.shots[0].expansion.directing'], schema_issue_codes: ['invalid_type'] })
+    reportModelResult({ phase: 'structure', status: 'valid', stage: 'format_correction', first_pass_status: 'invalid_contract', repaired: true })
+    reportModelResult({ phase: 'quality', status: 'inconclusive', stage: 'director_review', business_result: 'generated', review_status: 'review_inconclusive_no_action', failure_code: 'storyboard_review_timeout' })
+  })
+  f.observation.finish('succeeded'); await f.tracer.flush()
+  const row = db.prepare('SELECT state,results FROM model_request_tasks WHERE id=?').get(f.observation.id) as any
+  const events = JSON.parse(row.results)
+  assert.equal(row.state, 'succeeded'); assert.equal(events.length, 3)
+  assert.equal(events[0].field_paths[0], '$.shots[0].expansion.directing')
+  assert.deepEqual(events[0].schema_issue_codes, ['invalid_type'])
+  assert.deepEqual(metadata(f.spans().find(span => metadata(span).result_status === 'invalid_contract')!).schema_issue_codes, ['invalid_type'])
+  assert.equal(events[1].first_pass_status, 'invalid_contract')
+  assert.equal(events[2].review_status, 'review_inconclusive_no_action')
+  const root = metadata(f.spans().find(span => !span.parentSpanId)!)
+  assert.equal(root.business_result, 'generated'); assert.equal(root.review_status, 'review_inconclusive_no_action')
+  assert.equal(root.latest_quality_status, 'inconclusive')
+})
+
+
+test('structural repair differences export phase paths and hashes without creative values', async () => {
+  const f = fixture('structural-change-audit')
+  const change = { source: 'schema_normalization' as const, field_path: '$.scenes[0].title', before_hash: 'a'.repeat(64), after_hash: 'b'.repeat(64) }
+  await f.observation.run(async () => reportModelResult({ phase: 'structure', status: 'invalid_business', failure_code: 'structural_validator_outside_targets',
+    structural_changes: [{ ...change, secret: 'never-export', before_value: 'private creative text' } as any] }))
+  f.observation.finish('failed'); await f.tracer.flush()
+  const row = db.prepare('SELECT results FROM model_request_tasks WHERE id=?').get(f.observation.id) as any
+  assert.deepEqual(JSON.parse(row.results)[0].structural_changes, [change])
+  const span = f.spans().find(span => metadata(span).failure_code === 'structural_validator_outside_targets')!
+  assert.deepEqual(metadata(span).structural_changes, [change])
+  assert.ok(!JSON.stringify(f.spans()).includes('private creative text'))
+  assert.ok(!JSON.stringify(f.spans()).includes('never-export'))
+})
+
+test('visual input scope counts and hashes survive local and Langfuse observation without creative text or credentials', async () => {
+  const f = fixture('visual-input-scope'), event = { phase: 'structure' as const, status: 'invalid_business' as const, stage: 'visual_organization' as const,
+    input_scope_stage: 'catalog' as const, input_scope_hash: 'a'.repeat(64), input_scene_count: 1, input_shot_count: 5,
+    input_scope_chars: 4200, input_rules_chars: 900, input_facts_chars: 1800, input_profiles_chars: 40, input_original_chars: 207000,
+    input_boundary: 'transport' as const, input_scope_present: false, failure_code: 'visual_input_transport_missing' }
+  f.observation.run(() => {
+    currentModelRequestContext()!.onDispatch?.({ request_id: 'visual-scope', ...event, evidence: 'secret story bytes', api_key: 'never-export-key' })
+    currentModelRequestContext()!.onMetrics?.({ request_id: 'visual-scope', delivery: 'completed', ...event })
+    reportModelResult({ ...event, evidence: 'secret story bytes', api_key: 'never-export-key' } as any)
+  })
+  f.observation.finish('failed'); await f.tracer.flush()
+  const row = db.prepare('SELECT results FROM model_request_tasks WHERE id=?').get('visual-input-scope') as any
+  const result = JSON.parse(row.results)[0]
+  assert.equal(result.input_shot_count, 5)
+  assert.equal(result.input_scope_hash, event.input_scope_hash)
+  const metas = f.spans().map(metadata)
+  assert.ok(metas.some(meta => meta.input_boundary === 'transport' && meta.input_scope_hash === event.input_scope_hash && meta.input_scope_present === false))
+  assert.ok(!JSON.stringify([row, metas]).includes('secret story bytes'))
+  assert.ok(!JSON.stringify([row, metas]).includes('never-export-key'))
+})
+
+
+test('appearance results export separate local-validation and model-request counts without prose evidence', async () => {
+  const f = fixture('coverage-request-counters')
+  f.observation.run(() => reportModelResult({ phase: 'structure', status: 'invalid_contract', stage: 'visual_organization',
+    unit_key: '@appearance:offline-shot', attempt: 1, model_request_count: 1, local_validation_count: 4,
+    checkpoint_source: 'original_raw', is_new_model_call: false, failure_code: 'visual_coverage_conflict', request_category: 'local_reuse',
+    evidence: 'private evidence must not export' } as any))
+  f.observation.finish('succeeded'); await f.tracer.flush()
+  const event = metadata(f.spans().find(span => span.parentSpanId)!)
+  assert.equal(event.unit_key, '@appearance:offline-shot')
+  assert.equal(event.model_request_count, 1); assert.equal(event.local_validation_count, 4)
+  assert.equal(event.is_new_model_call, false); assert.equal(event.attempt, 1)
+  assert.equal(event.failure_code, 'visual_coverage_conflict')
+  assert.equal(JSON.stringify(f.spans()).includes('private evidence'), false)
+})

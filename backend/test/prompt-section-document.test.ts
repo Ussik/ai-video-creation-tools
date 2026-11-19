@@ -281,3 +281,30 @@ test('pending source changes advance only automatically merged lines and survive
   assert.equal(managed(reverted)[0]!.text, managed(latest)[0]!.text)
   assert.equal(isPromptSectionDocument({ ...first, blocks: first.blocks.map(section => ({ ...section, mergeBaseText: 1 })) }), false)
 })
+
+
+test('exact inherited unfinished shot source recovers without consuming following composition or custom sections', () => {
+  const source = '固定一个开场瞬间；[[ref:hero]]。\n\n【项目画风约束】\n画风：冷灰动画。\n\n【本镜首帧构图约束】\n人物保持原位。\n【本镜首帧构图约束结束】'
+  const style = block('项目画风约束', '项目当前画风')
+  const template = `${source}\n\n${style}`
+  const document = { version: 1 as const, blocks: [
+    { id: 'body-1', kind: 'body' as const, text: source },
+    { id: 'managed-1', kind: 'managed' as const, name: '项目画风约束' as const, text: '', sourceText: '', deleted: true, deletionSource: 'source' as const },
+    { id: 'body-custom', kind: 'body' as const, text: '\n\n手写补充：不要移动道具；[[ref:prop]]。' },
+  ] }
+  const original = structuredClone(document)
+  const recovered = recoverLegacyPromptSectionDocument(document, template, { sourceBody: source, sourceBase: source })
+  const text = serializePromptSectionDocument(recovered)
+  assert.doesNotThrow(() => validateManagedPromptDocument(text))
+  assert.equal(text, serializePromptSectionDocument(document).replace('【项目画风约束】', '［项目画风约束］'))
+  assert.deepEqual(recovered.blocks.map(b => b.id), document.blocks.map(b => b.id))
+  assert.deepEqual(recovered.blocks[1], document.blocks[1])
+  assert.deepEqual(document, original)
+  assert.equal(recoverLegacyPromptSectionDocument(recovered, template, { sourceBody: source, sourceBase: source }), recovered)
+  for (const evidence of [{}, { sourceBody: source }, { sourceBody: source, sourceBase: '手写基础' }]) {
+    assert.equal(recoverLegacyPromptSectionDocument(document, template, evidence), document)
+  }
+  const edited = { ...document, blocks: document.blocks.map(b => b.id === 'body-1' ? { ...b, text: b.text.replace('冷灰', '作者蓝色') } : b) }
+  assert.equal(recoverLegacyPromptSectionDocument(edited, template, { sourceBody: source, sourceBase: source }), edited)
+  assert.equal(recoverLegacyPromptSectionDocument(document, template + '\n【图片参考图用途】未完成', { sourceBody: source, sourceBase: source }), document)
+})

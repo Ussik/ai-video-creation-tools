@@ -661,3 +661,40 @@ for (const protocol of ['responses', 'chat_completions'] as const) for (const tr
   else assert.equal(await streamText(configured, provider, { prompt: '原稿' }), '完整答案')
   assert.equal(calls, 1)
 })
+
+
+test('native storyboard correction wire keeps the complete local response and omits project context', async t => {
+  const bodies: any[] = [], marker = 'UNRELATED_PROJECT_SOURCE_'
+  const original = { shots: [{ image_prompt: '完整首帧'.repeat(5000) }] }
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    bodies.push(JSON.parse(String(init.body)))
+    return Response.json(message([{ type: 'text', text: JSON.stringify(bodies.length === 1 ? original : { shots: [{ ...original.shots[0], video_prompt: '连续动作' }] }) }]))
+  })
+  const localSchema = z.object({ shots: z.array(z.object({ image_prompt: z.string(), video_prompt: z.string() }).strict()) }).strict()
+  await generateStructuredOutput('storyboard_shot_batch', localSchema,
+    (prompt, contract) => streamText({ ...model, id: 'storyboard-local-wire' }, provider, { prompt, structured_output: contract }),
+    marker.repeat(4000), { correctionContext: 'response_only' })
+  assert.equal(bodies.length, 2)
+  assert.equal(bodies[0].output_config.format.type, 'json_schema')
+  const first = JSON.stringify(bodies[0]), repair = JSON.stringify(bodies[1])
+  assert.ok(first.includes(marker)); assert.ok(!repair.includes(marker))
+  assert.ok(repair.includes(original.shots[0]!.image_prompt))
+  assert.ok(Buffer.byteLength(repair) < Buffer.byteLength(first))
+})
+
+
+test('native structural patch wire repairs only local fields without replaying original project material', async t => {
+  const bodies: any[] = [], marker = 'UNRELATED_PROJECT_FOR_PATCH'
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+    bodies.push(JSON.parse(String(init.body)))
+    return Response.json(message([{ type: 'text', text: JSON.stringify(bodies.length === 1
+      ? { image_prompt: '', video_prompt: '既定连续动作' } : { repairs: { repair_0: '既定首帧' } }) }]))
+  })
+  const value = await generateStructuredOutput('storyboard_shot_batch', z.object({ image_prompt: z.string().min(1), video_prompt: z.string().min(1) }).strict(),
+    (prompt, contract) => streamText({ ...model, id: 'storyboard-patch-wire' }, provider, { prompt, structured_output: contract }),
+    marker.repeat(4000), { correctionContext: 'response_only', structuralRepair: true })
+  assert.equal(bodies.length, 2)
+  assert.ok(!JSON.stringify(bodies[1]).includes(marker))
+  assert.ok(Buffer.byteLength(JSON.stringify(bodies[1])) < Buffer.byteLength(JSON.stringify(bodies[0])))
+  assert.deepEqual(value, { image_prompt: '既定首帧', video_prompt: '既定连续动作' })
+})

@@ -28,6 +28,12 @@ function texts(value: unknown): string[] {
 }
 
 export type StoryboardEvidenceCatalogEntry = Evidence & { ref_id: string; quote: string }
+export type StoryboardEvidenceReferenceDiagnostic = Pick<Evidence, 'scene_id' | 'shot_index' | 'field'> & { ref_id?: string; field_path?: string }
+export type StoryboardEvidenceIssueDiagnostic = {
+  issue_index: number; issue_path: string; code: string; attempted_refs: StoryboardEvidenceReferenceDiagnostic[]
+  rejected_refs: StoryboardEvidenceReferenceDiagnostic[]; allowed_refs: StoryboardEvidenceReferenceDiagnostic[]
+  rejected_reason: 'reference_outside_issue_scope'
+}
 
 /** Stable, application-owned references for the current outline fields. */
 export function storyboardEvidenceCatalog(scenes: ReviewSequence): StoryboardEvidenceCatalogEntry[] {
@@ -43,6 +49,30 @@ export function storyboardEvidenceCatalog(scenes: ReviewSequence): StoryboardEvi
     for (const [shot_index, shot] of scene.shots.entries()) for (const field of storyboardRepairFields.filter(field => !field.startsWith('scene_direction.'))) add(scene.scene_id, shot_index, field, storyboardField(shot, field))
   }
   return entries
+}
+
+/** Enumerate the exact evidence locations an issue may cite, without quotes. */
+export function storyboardEvidenceScopeDiagnostics(issues: ScopedReviewIssue[], scenes: ReviewSequence): StoryboardEvidenceIssueDiagnostic[] {
+  const ordered = scenes.flatMap(scene => scene.shots.map((_shot, shot_index) => `${scene.scene_id}:${shot_index}`))
+  const catalog = storyboardEvidenceCatalog(scenes)
+  const descriptor = ({ scene_id, shot_index, field, ref_id }: Evidence): StoryboardEvidenceReferenceDiagnostic => ({ scene_id, shot_index, field, ...(ref_id ? { ref_id } : {}) })
+  return issues.flatMap((issue, issue_index) => {
+    const current = ordered.indexOf(`${issue.scene_id}:${issue.shot_index}`)
+    const related = issue.related_scene_id !== null && issue.related_shot_index !== null
+      ? ordered.indexOf(`${issue.related_scene_id}:${issue.related_shot_index}`) : -1
+    const hasAdjacentRelated = current >= 0 && related >= 0 && Math.abs(current - related) === 1
+    const locations = new Set([`${issue.scene_id}:${issue.shot_index}`,
+      ...(hasAdjacentRelated ? [`${issue.related_scene_id}:${issue.related_shot_index}`] : [])])
+    const sceneIds = new Set([issue.scene_id, ...(hasAdjacentRelated ? [issue.related_scene_id!] : [])])
+    const allowed = (reference: Pick<Evidence, 'scene_id' | 'shot_index' | 'field'>) => reference.shot_index === null
+      ? reference.field.startsWith('scene_direction.') && sceneIds.has(reference.scene_id)
+      : locations.has(`${reference.scene_id}:${reference.shot_index}`)
+    const attempted = issue.evidence_refs || []
+    const rejected = attempted.flatMap((reference, index) => !allowed(reference) ? [{ ...descriptor(reference), field_path: `issues[${issue_index}].evidence_refs[${index}]` }] : [])
+    if (!rejected.length) return []
+    return [{ issue_index, issue_path: `issues[${issue_index}]`, code: issue.code, attempted_refs: attempted.slice(0, 24).map(descriptor), rejected_refs: rejected.slice(0, 24),
+      allowed_refs: catalog.filter(allowed).slice(0, 64).map(descriptor), rejected_reason: 'reference_outside_issue_scope' as const }]
+  })
 }
 
 /** Resolve model references to canonical source text before business validation. */

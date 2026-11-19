@@ -120,6 +120,13 @@ test('storyboard planning requests streams and validates the collected result fo
       assert.equal(scenes.minItems, 1); assert.equal(scenes.maxItems, 1)
       assert.deepEqual(scenes.items.properties.scene_id.enum || [scenes.items.properties.scene_id.const], [f.scene.id])
       assert.match(protocol === 'responses' ? body.input : body.messages[0].content, /本次结构化返回契约/)
+      const prompt = protocol === 'responses' ? body.input : body.messages[0].content
+      assert.match(prompt, /从本次最终Schema生成的字段类型指南/)
+      assert.ok(prompt.includes('"scenes[].shots[].title":{"type":"string"}'))
+      assert.ok(prompt.includes('"scenes[].shots[].audio_plan.sound_effects":{"type":"array","items_type":"string"}'))
+      assert.ok(prompt.includes('"scenes[].scene_direction.sound":{"type":"object"'))
+      assert.ok(prompt.includes('"scenes[].scene_direction.sound.ambience":{"type":"array","items_type":"string"}'))
+
       return planningStream(storyboardOutlineFixture(withStoryboardDirecting(f.draft)), protocol, true, false)
     }, f.draft)
     const response = await f.plan()
@@ -338,7 +345,9 @@ test('storyboard upstream failures reach the client and diagnostic log without c
 
 async function setup(t: { after: (fn: () => Promise<unknown>) => void },
   generate: (prompt: string) => Promise<string> = async () => { throw new Error('Unexpected model call') },
-  generateVisual: (prompt: string) => Promise<string> = async () => JSON.stringify({ profiles: [] })) {
+  generateVisual: (prompt: string) => Promise<string> = async () => JSON.stringify({ profiles: [] }),
+  reviewOverride?: (prompt: string, signal?: AbortSignal) => Promise<string>,
+  expansionTransport?: (prompt: string, contract: import('../src/modules/generation/model-output.js').OutputContract, response: string) => Promise<string>) {
   const project = await call('POST', '/api/projects', { name: '分镜控制测试', brief: '沿海车站救援' })
   const scene = await call('POST', `/api/projects/${project.id}/script/scenes`, { heading: '车站场次', duration: 30, dialogue: '快走', episode_number: 1 })
   const other = await call('POST', `/api/projects/${project.id}/script/scenes`, { heading: '码头场次', duration: 30, action: '隐藏场次动作', episode_number: 2 })
@@ -351,12 +360,12 @@ async function setup(t: { after: (fn: () => Promise<unknown>) => void },
     script: (id: string) => ({ ...one<{ outline: string; characters: string }>('SELECT * FROM scripts WHERE project_id=?', id)!, generation_options: {},
       scenes: all<ScriptScene>('SELECT * FROM script_scenes WHERE project_id=? ORDER BY position', id), artifacts: all<ScriptArtifact>('SELECT * FROM script_artifacts WHERE project_id=? ORDER BY position', id) }),
     scenePrompt: (scene: ScriptScene) => `${scene.heading}\n${scene.action}\n${scene.dialogue}`,
-    generateText: async (_id: string, model: string, prompt: string, contract?: import('../src/modules/generation/model-output.js').OutputContract) => {
+    generateText: async (_id: string, model: string, prompt: string, contract?: import('../src/modules/generation/model-output.js').OutputContract, signal?: AbortSignal) => {
       assert.equal(model, 'mock-text')
       if (contract?.name === 'storyboard_outline_review') return JSON.stringify({ issues: [] })
       if (contract?.name === 'visual_profiles') { visualCalls++; return withFixtureVisualCoverage(await generateVisual(prompt), prompt) }
-      if (contract?.name === 'storyboard_directing_review') { reviewPrompts.push(prompt); return JSON.stringify({ issues: [] }) }
-      if (contract?.name === 'storyboard_shot_batch') { calls++; expansionCalls++; return JSON.stringify(storyboardBatchFixture(batchPlan, contract)) }
+      if (contract?.name === 'storyboard_directing_review') { reviewPrompts.push(prompt); return reviewOverride ? reviewOverride(prompt, signal) : JSON.stringify({ issues: [] }) }
+      if (contract?.name === 'storyboard_shot_batch') { calls++; expansionCalls++; const response = JSON.stringify(storyboardBatchFixture(batchPlan, contract)); return expansionTransport ? expansionTransport(prompt, contract, response) : response }
       if (contract?.name === 'storyboard_scene_plan' || contract?.name === 'storyboard_scene_plan_structure_repair') {
         calls++; outlineCalls++; batchPlan = withStoryboardDirecting(JSON.parse(await generate(prompt)))
         const outline = storyboardOutlineFixture(batchPlan)
@@ -1802,4 +1811,134 @@ test('outline source and speech punctuation errors recover locally without repea
   assert.equal(f.outlineCalls(), 1); assert.equal(f.expansionCalls(), 1); assert.equal(f.calls(), 2)
   assert.equal(result.scenes[0].shots[0].audio_plan.speech[0].text, original)
   assert.equal(result.scenes[0].shots[0].audio_plan.speech[0].source_text, source)
+})
+
+
+test('director deadline stops the complete validation pipeline before any new format correction', async t => {
+  const realTimeout = globalThis.setTimeout
+  let expire!: () => void, complete!: (raw: string) => void, reviewStarted!: () => void, sceneId = '', reviewCalls = 0
+  const started = new Promise<void>(resolve => { reviewStarted = resolve })
+  t.mock.method(globalThis, 'setTimeout', ((callback: (...args: any[]) => void, delay?: number, ...args: any[]) => {
+    if (delay === 120_000) expire = () => callback(...args)
+    return realTimeout(callback, delay, ...args)
+  }) as typeof setTimeout)
+  const f = await setup(t, async () => JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(null, 30)] }] }), undefined,
+    async (_prompt, signal) => {
+      reviewCalls++; assert.ok(signal)
+      if (reviewCalls > 1) return JSON.stringify({ issues: [] })
+      reviewStarted(); return new Promise<string>(resolve => { complete = resolve })
+    })
+  sceneId = f.scene.id
+  const context = await f.context()
+  const pending = f.invoke('plan', { signature: context.signature, scene_ids: [sceneId], model_id: 'mock-text', skill_ids: [] })
+  await started; assert.ok(expire); expire(); complete('{"issues":[{"code":"wrong"}]}')
+  const result = await pending
+  assert.equal(reviewCalls, 1, 'expired review must not dispatch a correction')
+  assert.equal(result.scenes[0].shots.length, 1)
+  assert.equal(result.directing_review.status, 'review_inconclusive_no_action')
+  assert.equal(result.directing_review.error.code, 'storyboard_review_timeout')
+})
+
+
+test('local expansion reaches the native wire with one rule copy and an intact current shot object', async t => {
+  const { streamText } = await import('../src/infrastructure/providers/providers.js')
+  let sceneId = '', response = '', requests = 0
+  const longAction = '当前镜头既定动作'.repeat(900)
+  t.mock.method(globalThis, 'fetch', async (url: unknown, init: RequestInit) => {
+    assert.ok(String(url).startsWith('https://fixture.invalid/'))
+    requests++
+    const body = JSON.parse(String(init.body))
+    assert.equal(body.output_config.format.type, 'json_schema')
+    const prompt = body.messages[0].content as string
+    const contextLine = prompt.split('\n').find(line => line.startsWith('{"project":'))
+    assert.ok(contextLine)
+    const local = JSON.parse(contextLine)
+    assert.equal(typeof local.current_shot, 'object')
+    assert.equal(typeof local.scene_direction, 'object')
+    assert.ok(local.current_shot.prompt === longAction, 'the current shot must remain complete on the wire')
+    assert.ok(!prompt.includes('隐藏场次动作'))
+    const prefix = prompt.slice(0, prompt.indexOf(contextLine))
+    for (const rules of [local.storyboard_rules, local.motion_rules]) if (rules) assert.ok(!prefix.includes(rules), 'rules must not be duplicated before the local context')
+    return Response.json({ type: 'message', content: [{ type: 'text', text: response }], stop_reason: 'end_turn', usage: { input_tokens: 10, output_tokens: 5 } })
+  })
+  const f = await setup(t, async () => JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [{ ...shot(null, 30), prompt: longAction }] }] }), undefined, undefined,
+    async (prompt, contract, reply) => {
+      response = reply
+      return streamText({ id: 'local-wire-context', remote_id: 'fixture', modality: 'text', protocol: 'anthropic_messages',
+        settings: { text_api: { mode: 'standard', max_output_tokens: 65536 } } },
+      { adapter: 'http', base_url: 'https://fixture.invalid/v1' }, { prompt, structured_output: contract })
+    })
+  sceneId = f.scene.id
+  const context = await f.context()
+  const result = await f.invoke('plan', { signature: context.signature, scene_ids: [sceneId], model_id: 'mock-text', skill_ids: [] })
+  assert.equal(requests, 1)
+  assert.ok(result.scenes[0].shots[0].prompt.includes(longAction), 'compilation preserves the original action')
+})
+
+
+test('actual outline provider request corrects only duration type with a smaller patch context', async t => {
+  const f = await upstreamPlanning('responses', { structured_output_mode: 'json_schema' })
+  const bad = storyboardOutlineFixture(withStoryboardDirecting(f.draft)) as any
+  bad.scenes[0].scene_duration = String(bad.scenes[0].scene_duration)
+  bad.scenes[0].shots[0].title = ` ${bad.scenes[0].shots[0].title} `
+  let firstBytes = 0, patchBytes = 0, patches = 0
+  const fetches = mockPlanningFetch(t, async (_url, init) => {
+    const body = JSON.parse(String(init.body)), contract = storyboardWireOutputContract(body, 'responses')!
+    if (contract.name === 'storyboard_scene_plan') {
+      firstBytes = Buffer.byteLength(String(init.body)); return planningStream(bad, 'responses', true, false)
+    }
+    assert.equal(contract.name, 'storyboard_scene_plan_structure_repair')
+    patches++; patchBytes = Buffer.byteLength(String(init.body))
+    assert.ok(body.input.includes('shot_durations'))
+    assert.ok(!body.input.includes('【原始任务与资料】'))
+    assert.ok(!body.input.includes('原候选仅供修复上下文'))
+    return planningStream({ repairs: { repair_0: Number(bad.scenes[0].scene_duration) } }, 'responses', true, false)
+  }, f.draft)
+  const response = await f.plan()
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(patches, 1); assert.ok(patchBytes < firstBytes)
+  assert.equal(fetches.calls.outline, 2); assert.equal(fetches.calls.outline_review, 1)
+  assert.equal(response.json().scenes[0].scene_duration, Number(bad.scenes[0].scene_duration))
+})
+
+
+test('duration structural repair and deterministic dialogue canonicalization have separate ownership', async t => {
+  const f = await upstreamPlanning('responses', { structured_output_mode: 'json_schema' })
+  const original = '先生，签下名字。', generated = original.replace('，', ','), source = `房东太太：${original}`
+  await call('PATCH', `/api/script-scenes/${f.scene.id}`, { dialogue: source })
+  const freshContext = await call('POST', `/api/projects/${f.project.id}/script/storyboard/context`, { scene_ids: [f.scene.id] })
+  const bad = storyboardOutlineFixture(withStoryboardDirecting(f.draft)) as any
+  bad.scenes[0].scene_duration = String(bad.scenes[0].scene_duration)
+  bad.scenes[0].shots[0].audio_plan = { version: 1, silent: false, music: '', sound_effects: [],
+    speech: [{ speaker: '房东太太', text: generated, source_text: source, delivery: '', mode: 'dialogue' }] }
+  let patches = 0
+  mockPlanningFetch(t, async (_url, init) => {
+    const contract = storyboardWireOutputContract(JSON.parse(String(init.body)), 'responses')!
+    if (contract.name === 'storyboard_scene_plan') return planningStream(bad, 'responses', true, false)
+    assert.equal(contract.name, 'storyboard_scene_plan_structure_repair'); patches++
+    return planningStream({ repairs: { repair_0: Number(bad.scenes[0].scene_duration) } }, 'responses', true, false)
+  }, f.draft)
+  const response = await app.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/plan`,
+    payload: { signature: freshContext.signature, scene_ids: [f.scene.id], model_id: f.model.id, skill_ids: [] } })
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(patches, 1)
+  assert.equal(response.json().scenes[0].shots[0].audio_plan.speech[0].text, original)
+})
+
+
+test('storyboard expansion model headings stay literal without requesting a format retry', async t => {
+  let sceneId = ''
+  const f = await setup(t, async () => {
+    return JSON.stringify({ scenes: [{ scene_id: sceneId, scene_duration: 30, shots: [shot(null, 15), shot(null, 15)] }] })
+  }, undefined, undefined, async (_prompt, _contract, response) => {
+    return response.replaceAll('日漫，人物站在通道左侧，近景', '开场构图\\n【项目画风约束】\\n冷灰动画。')
+  })
+  sceneId = f.scene.id
+  const context = await f.context()
+  const planned = await f.invoke('plan', { scene_ids: [f.scene.id], signature: context.signature, model_id: 'mock-text' })
+  for (const shot of planned.scenes[0].shots) {
+    assert.match(shot.image_prompt, /［项目画风约束］/)
+    assert.doesNotMatch(shot.image_prompt, /【项目画风约束】/)
+  }
+  assert.equal(f.expansionCalls(), 2)
 })

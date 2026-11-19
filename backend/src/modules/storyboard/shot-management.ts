@@ -1,3 +1,4 @@
+import { previewShotPurge, executeShotPurge, deletedShotResidualScope, previewShotResidualPurge } from './shot-permanent-deletion.js'
 import { createHash } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
@@ -112,6 +113,7 @@ function resourcePurgeBlockers(shots: Shot[], assets: Asset[]): string[] {
   ]
 }
 function purgeRecycledResources(projectId: string, shots: Shot[], assets: Asset[]): void {
+  if (shots.length) managementFail('彻底删除分镜必须先查看包含素材、参考、历史和文件的精确预览，请刷新后使用彻底删除入口', 409)
   if (shots.some(shot => !shot.deleted_at) || assets.some(asset => !asset.deleted_at)) managementFail('只能彻底删除回收站中的记录', 409)
   const blocked = resourcePurgeBlockers(shots, assets)
   if (blocked.length) managementFail(`以下记录仍被引用，未执行任何彻底删除：${blocked.join('；')}`)
@@ -172,6 +174,33 @@ export function registerShotManagementRoutes(app: FastifyInstance): void {
   app.get(base, async request => {
     const projectId = z.object({ id }).parse(request.params).id
     return db.transaction(() => shotManagementSnapshot(projectId))()
+  })
+  const purgeScope = z.object({ shot_ids: z.array(id).min(1).max(500).refine(values => new Set(values).size === values.length) }).strict()
+  app.post(`${base}/purge-preview`, async request => {
+    const projectId = z.object({ id }).parse(request.params).id
+    required<Project>('projects', projectId)
+    return previewShotPurge(projectId, purgeScope.parse(request.body).shot_ids)
+  })
+  app.post(`${base}/purge`, async request => {
+    const projectId = z.object({ id }).parse(request.params).id
+    required<Project>('projects', projectId)
+    const input = purgeScope.extend({ revision: z.string().length(64) }).parse(request.body)
+    return executeShotPurge(projectId, input.shot_ids, input.revision)
+  })
+  app.get(`${base}/residual-scope`, async request=>{
+    const projectId=z.object({id}).parse(request.params).id;required<Project>('projects',projectId)
+    return deletedShotResidualScope(projectId)
+  })
+  const residualScope=purgeScope.extend({scene_ids:z.array(id).max(500).refine(values=>new Set(values).size===values.length)})
+  app.post(`${base}/residual-purge-preview`,async request=>{
+    const projectId=z.object({id}).parse(request.params).id;required<Project>('projects',projectId)
+    const input=residualScope.parse(request.body)
+    return previewShotResidualPurge(projectId,input.shot_ids,input.scene_ids)
+  })
+  app.post(`${base}/residual-purge`,async request=>{
+    const projectId=z.object({id}).parse(request.params).id;required<Project>('projects',projectId)
+    const input=residualScope.extend({revision:z.string().length(64)}).parse(request.body)
+    return executeShotPurge(projectId,input.shot_ids,input.revision,input.scene_ids)
   })
   app.post(`${base}/actions`, async request => {
     const projectId = z.object({ id }).parse(request.params).id

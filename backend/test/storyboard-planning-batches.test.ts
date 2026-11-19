@@ -69,7 +69,9 @@ function fixture(steps: Record<string, unknown> = {}) {
   const reply = (prompt: string, contract?: { name: string }) => {
     if (contract?.name === 'storyboard_scene_plan') { calls.push('outline'); return sourceOutline() }
     assert.equal(contract?.name, 'storyboard_shot_batch')
-    const batch = JSON.parse(prompt.split('本批：')[1]!) as { scene_id: string; shot_indexes: number[] }
+    const properties = (contract as any)?.schema?.properties
+    const batch = prompt.includes('本批：') ? JSON.parse(prompt.split('本批：')[1]!) as { scene_id: string; shot_indexes: number[] }
+      : { scene_id: properties.scene_id.const, shot_indexes: Array.from({ length: properties.shots.minItems }, (_, index) => properties.shots.items.properties.shot_index.minimum + index) }
     calls.push(`${batch.scene_id}:${batch.shot_indexes.join(',')}`)
     return { scene_id: batch.scene_id, shots: batch.shot_indexes.map(shot_index => ({ shot_index,
       expansion: { image_prompt: `首帧${shot_index}`, video_prompt: `连续动作${shot_index}`, directing: { purpose: `职责${shot_index}` } },
@@ -448,4 +450,88 @@ test('a dialogue-only recovery never regenerates the complete outline and keeps 
   assert.equal(f.calls.filter(call => call === 'outline').length, 1)
   assert.equal(f.calls.filter(call => call === 'scene-a:0,1').length, 1)
   assert.equal(recoveries, 1)
+})
+
+
+test('native batch prompt explicitly names the complete root envelope and locked identities', async () => {
+  const f = fixture()
+  await generateStoryboardPlanningBatches({ ...f.options, batchSize: 1, generate: async (prompt, contract) => {
+    if (contract?.name === 'storyboard_shot_batch') {
+      assert.match(prompt, /scene_id.*shots.*shot_index.*expansion/s)
+      assert.match(prompt, /JSON根对象/)
+    }
+    return JSON.stringify(f.reply(prompt, contract))
+  } })
+})
+
+
+test('one duration-type repair retains original and patch, trims legally, and omits unrelated source context', async () => {
+  const f = fixture(), initial: any = sourceOutline(), source = 'UNRELATED_GLOBAL_SOURCE'.repeat(1000)
+  initial.scenes[0].scene_duration = '15'; initial.scenes[0].shots[0].title = ' 镜头0 '
+  const normalized = outlineSchema.extend({ scenes: z.array(outlineSchema.shape.scenes.element.extend({
+    shots: z.array(compactShot.extend({ title: z.string().trim() })) })) })
+  let initialCalls = 0, patchCalls = 0
+  const options = { ...f.options, outlineSchema: normalized, structuralRepair: true, outlinePrompt: source,
+    generate: async (prompt: string, contract?: { name: string }) => {
+      if (contract?.name === 'storyboard_scene_plan') { initialCalls++; return JSON.stringify(initial) }
+      if (contract?.name === 'storyboard_scene_plan_structure_repair') {
+        patchCalls++
+        assert.ok(!prompt.includes(source)); assert.ok(!prompt.includes('原候选仅供修复上下文'))
+        assert.ok(prompt.includes('shot_durations')); assert.ok(prompt.length < source.length / 2)
+        return JSON.stringify({ repairs: { repair_0: 15 } })
+      }
+      return JSON.stringify(f.reply(prompt, contract))
+    } }
+  const result = await generateStoryboardPlanningBatches(options)
+  assert.equal(result.scenes[0]!.scene_duration, 15); assert.equal(result.scenes[0]!.shots[0]!.title, '镜头0')
+  assert.equal(initialCalls, 1); assert.equal(patchCalls, 1)
+  const saved: any = Object.entries(f.steps).find(([key]) => key.endsWith(':structured_output:v1'))![1]
+  assert.deepEqual(JSON.parse(saved.original_raw), initial)
+  assert.deepEqual(JSON.parse(saved.correction.raw), { repairs: { repair_0: 15 } })
+  assert.ok(saved.structural_repair.changes.some((change: any) => change.source === 'schema_normalization'))
+  const resumed = fixture(structuredClone(f.steps))
+  await generateStoryboardPlanningBatches({ ...options, control: resumed.options.control, generate: async () => assert.fail('all paid work is retained') })
+})
+
+test('failed duration patch retains full private outputs and repeat entry makes no new requests', async () => {
+  const f = fixture(), initial: any = sourceOutline(); initial.scenes[0].scene_duration = '15'
+  let calls = 0
+  const options = { ...f.options, structuralRepair: true, generate: async () => JSON.stringify(++calls === 1 ? initial : { repairs: { repair_0: 'not numeric' } }) }
+  await assert.rejects(generateStoryboardPlanningBatches(options), { code: 'structural_patch_contract' })
+  const saved: any = Object.entries(f.steps).find(([key]) => key.endsWith(':structured_output:v1'))![1]
+  assert.deepEqual(JSON.parse(saved.original_raw), initial)
+  assert.deepEqual(JSON.parse(saved.correction.raw), { repairs: { repair_0: 'not numeric' } })
+  assert.equal(saved.structural_repair.failure_code, 'structural_patch_contract')
+  const resumed = fixture(structuredClone(f.steps))
+  await assert.rejects(generateStoryboardPlanningBatches({ ...options, control: resumed.options.control,
+    generate: async () => assert.fail('failed patch must replay locally') }), { code: 'structural_patch_contract' })
+  assert.equal(calls, 2)
+  assert.ok(!Object.keys(f.steps).some(key => key.endsWith(':outline')), 'invalid private candidate is never promoted to a validated outline')
+})
+
+test('missing duration value retains necessary business context instead of assuming a numeric conversion', async () => {
+  const f = fixture(), initial: any = sourceOutline(); delete initial.scenes[0].scene_duration
+  const source = 'NECESSARY_TIMING_POLICY_AND_SOURCE', prompts: string[] = []
+  await generateStoryboardPlanningBatches({ ...f.options, structuralRepair: true, outlinePrompt: source,
+    generate: async (prompt, contract) => {
+      prompts.push(prompt)
+      if (contract?.name === 'storyboard_scene_plan') return JSON.stringify(initial)
+      if (contract?.name === 'storyboard_scene_plan_structure_repair') { assert.ok(prompt.includes(source)); return JSON.stringify({ repairs: { repair_0: 15 } }) }
+      return JSON.stringify(f.reply(prompt, contract))
+    } })
+  assert.ok(prompts.length > 2)
+})
+
+
+test('short numeric-type correction cannot change the numeric value while business context is omitted', async () => {
+  const f = fixture(), initial: any = sourceOutline(); initial.scenes[0].scene_duration = '15'
+  let calls = 0
+  await assert.rejects(generateStoryboardPlanningBatches({ ...f.options, structuralRepair: true,
+    generate: async (_prompt, contract) => {
+      if (++calls === 1) return JSON.stringify(initial)
+      assert.equal(contract!.name, 'storyboard_scene_plan_structure_repair')
+      assert.equal((contract!.schema.properties as any).repairs.properties.repair_0.const, 15)
+      return JSON.stringify({ repairs: { repair_0: 16 } })
+    } }), { code: 'structural_patch_contract' })
+  assert.equal(calls, 2)
 })

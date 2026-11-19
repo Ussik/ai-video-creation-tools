@@ -1,3 +1,7 @@
+import { registerBusinessTaskHistory } from './modules/jobs/business-task-history.js'
+import { registerJobProviderInputRoutes, recordJobProviderManifest, recordJobProviderRejection } from './modules/jobs/job-provider-inputs.js'
+import { videoSourceVersion } from './modules/canvas/video-source-version.js'
+import { TextInputScopeError } from './infrastructure/providers/text-input-scope.js'
 import { sourceProductionGenerationStore } from './modules/script/script-source-production-checkpoint.js'
 import { ProviderExecutionError, providerFailureWithMessage } from './infrastructure/providers/provider-failure.js'
 import { registerAiOperations } from './modules/generation/ai-operations.js'
@@ -164,6 +168,7 @@ const shotInput = z.object({
   cut_note: z.string().max(2000).default(''),
 })
 const shotPatch = z.object({
+  expected_video_source_version: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   title: z.string().trim().min(1).max(120).optional(), prompt: z.string().optional(),
   image_prompt: z.string().max(20000).optional(), video_prompt: z.string().max(20000).optional(),
   audio_plan: videoAudioPlanSchema.nullable().optional(),
@@ -2165,7 +2170,7 @@ async function generateTextOutput(model: Model, provider: Provider, prompt: stri
     return await generate(model, provider, prompt, contract, signal)
   } catch (error) {
     if (signal?.aborted) throw error
-    if (isTextRequestBudgetError(error)) throw error
+    if (isTextRequestBudgetError(error) || error instanceof TextInputScopeError) throw error
     if (error instanceof TextProviderError) {
       error.message = `文本模型生成失败：${error.message}`
       throw error
@@ -2561,6 +2566,8 @@ async function processJob(job: Job): Promise<void> {
       label: model?.modality === 'text' ? '后台文本生成' : '素材任务', owner: 'job', policy: model?.modality === 'text' ? modelTaskPolicies.generation : modelTaskPolicies.paid },
       () => media ? withMediaExecution({
         beforeDispatch: requestId => markMediaJobDispatch(job, token!, requestId),
+        onRequestManifest: manifest => { assertMediaJobOwner(job, token!); recordJobProviderManifest(job, manifest) },
+        onProviderRejected: rejection => { assertMediaJobOwner(job, token!); recordJobProviderRejection(job, rejection) },
         onLocalWriting: result => stageLocalJobWriting(job, token!, result),
         onLocalResult: result => stageLocalJobReady(job, token!, result),
       }, () => processObservedJob(job, token)) : processObservedJob(job))
@@ -2694,8 +2701,10 @@ export function buildApp(): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 })
   registerModelRequestObservation(app)
   registerAiOperations(app)
+  registerBusinessTaskHistory(app)
   const directorTasks = createDirectorTasks()
   app.addHook('preClose', async () => { await directorTasks.close() })
+  registerJobProviderInputRoutes(app)
   registerJobQueueRoutes(app)
   void app.register(multipart, { limits: { fileSize: 300 * 1024 * 1024, files: 1, fields: 2 } })
   app.setErrorHandler((error, request, reply) => {
@@ -4300,6 +4309,8 @@ export function buildApp(): FastifyInstance {
     const canvasId = finalCutCanvasId(request.query)
     const scope = canvasId === undefined ? undefined : requireFinalCutShot(shot.project_id, canvasId, id)
     const data = parse(shotPatch, request.body)
+    if (data.expected_video_source_version && data.expected_video_source_version !== videoSourceVersion(shot)) throw Object.assign(new Error('分镜来源已变化，请重新定位冲突；当前草稿已保留'), { statusCode: 409 })
+    delete data.expected_video_source_version
     const changedFields = Object.entries(data).filter(([key, value]) => key !== 'position' && JSON.stringify(shot[key as keyof Shot]) !== JSON.stringify(value)).map(([key]) => key)
     if (data.position !== undefined) {
       if (shot.superseded_by && !scope) invalid('历史方案镜头不参与当前制作顺序')
@@ -4328,23 +4339,19 @@ export function buildApp(): FastifyInstance {
     }
     // Visual prose edits do not revoke accepted speech or the scene sound bed.
     // An explicit audio_plan patch is the separate sound revision contract.
-    for (const [key, value] of Object.entries(data)) run(`UPDATE shots SET ${key}=? WHERE id=?`, key === 'audio_plan' && value ? JSON.stringify(value) : value, id)
-    markShotContinuityEdited(shot, changedFields)
-    touchProject(shot.project_id)
+    db.transaction(() => {
+      for (const [key, value] of Object.entries(data)) run(`UPDATE shots SET ${key}=? WHERE id=?`, key === 'audio_plan' && value ? JSON.stringify(value) : value, id)
+      markShotContinuityEdited(shot, changedFields)
+      touchProject(shot.project_id)
+    })()
     return required<Shot>('shots', id)
   })
   app.delete('/api/shots/:id', async request => {
     const { id } = parse(idParams, request.params)
     const shot = required<Shot>('shots', id)
-    const range = projectProductionRange(shot.project_id)
-    if (range.start_shot_id === id || range.end_shot_id === id || one(
-      'SELECT 1 FROM canvas_production_ranges WHERE project_id=? AND (start_shot_id=? OR end_shot_id=?)', shot.project_id, id, id)) {
-      invalid('该镜头是制作范围边界，请先调整制作范围')
-    }
-    run('DELETE FROM shots WHERE id=?', id)
-    all<{ id: string }>('SELECT id FROM shots WHERE project_id=? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY position', shot.project_id).forEach((item, index) => run('UPDATE shots SET position=? WHERE id=?', index, item.id))
-    touchProject(shot.project_id)
-    return { ok: true }
+    const range=projectProductionRange(shot.project_id)
+    if(range.start_shot_id===id||range.end_shot_id===id||one('SELECT 1 FROM canvas_production_ranges WHERE project_id=? AND (start_shot_id=? OR end_shot_id=?)',shot.project_id,id,id))invalid('该镜头是制作范围边界，请先调整制作范围')
+    throw Object.assign(new Error('彻底删除分镜必须先查看派生资源删除预览，请通过分镜管理移入回收站后彻底删除。'), { statusCode:409, code:'shot_purge_preview_required' })
   })
   app.put('/api/shots/:id/assets/:assetId/review', async request => {
     const { id, assetId } = parse(assetReviewParams, request.params)
@@ -4544,7 +4551,10 @@ export function buildApp(): FastifyInstance {
     const asset = required<Asset>('assets', id)
     if (!['image', 'video'].includes(asset.kind)) invalid('仅图片或视频支持预览')
     if (!existsSync(asset.path)) throw Object.assign(new Error('素材文件不存在'), { statusCode: 404 })
-    const preview = await getAssetPreview(asset, Number(size), join(mediaDir, asset.project_id, '.previews'))
+    const preview = await getAssetPreview(asset, Number(size), join(mediaDir, asset.project_id, '.previews'), commit=>db.transaction(()=>{
+      if(!one('SELECT 1 FROM assets WHERE id=? AND deleted_at IS NULL',asset.id))throw Object.assign(new Error('素材已删除，预览不再保存'),{statusCode:410})
+      commit()
+    }).immediate())
     reply.header('ETag', preview.etag).header('Cache-Control', 'private, max-age=0, must-revalidate')
     if (request.headers['if-none-match'] === preview.etag) return reply.code(304).send()
     return reply.type('image/webp').send(preview.bytes)

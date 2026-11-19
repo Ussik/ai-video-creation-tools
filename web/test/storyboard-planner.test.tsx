@@ -32,7 +32,7 @@ const draft = { signature, directing_review: acceptedReview, scenes: [{ scene_id
 function button(text: string) { const node = [...document.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === text || item.getAttribute('aria-label') === text); assert.ok(node, text); return node }
 // Existing scenarios have no cached preview; cache-specific tests supply their own transport.
 function mockPlanningFetch(t: TestContext, handler: typeof fetch, explicitReview = false) {
-  return t.mock.method(globalThis, 'fetch', async (url, init) => String(url).endsWith('/storyboard/preview')
+  return t.mock.method(globalThis, 'fetch', async (url, init) => String(url).endsWith('/canvas/recovery') ? Response.json({ signature, scene_ids: ['scene'] }) : String(url).endsWith('/storyboard/preview')
     ? Response.json({ preview: null }) : !explicitReview && String(url).endsWith('/storyboard/review') ? Response.json(acceptedReview) : handler(url, init))
 }
 async function mount(options: { refresh?: () => Promise<unknown>; openCanvas?: () => void; close?: () => void; project?: ProjectDetail; initialSceneIds?: string[]; models?: Model[]; intent?: 'plan' | 'canvas'; notice?: (message: string) => void; saved?: (result: ScriptCanvasResult) => void | Promise<void> } = {}) {
@@ -421,7 +421,7 @@ test('invalid planning preserves scene diagnostics and remains retryable without
     assert.equal(document.querySelector('[role="alert"] span')!.textContent, `分镜规划结果未通过校验（自动修正后仍未通过）：${diagnostics}`)
     assert.equal(document.body.textContent!.includes('controlled_storyboard'), false)
     assert.equal(button('继续规划').disabled, false)
-    assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '确认加入画布'), false)
+    assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '加入画布'), false)
     assert.equal(document.querySelector('.storyboard-planner-preview'), null)
     assertNoWrites()
 
@@ -433,7 +433,7 @@ test('invalid planning preserves scene diagnostics and remains retryable without
     await act(async () => button('继续规划').click())
     assert.equal(document.querySelector('[role="alert"]'), null)
     assert.ok(document.querySelector('.storyboard-planner-preview'))
-    assert.equal(button('确认加入画布').disabled, false)
+    assert.equal(button('加入画布').disabled, false)
     assert.deepEqual(requests.map(path => path.split('/').at(-1)), ['context', 'plan', 'plan', 'plan'])
     assertNoWrites()
   } finally { await view.destroy() }
@@ -462,7 +462,7 @@ test('metadata does not generate; selected skill/docs are explicit and edited dr
     assert.match(document.querySelector('.storyboard-planner-used-sources .workspace-disclosure-control')!.textContent!, /已使用：分镜技能辅助技能 0 个·参考资料 1 份/)
     await fillTextarea('首帧图片提示词', '修改后的首帧')
     await act(async () => button('复查当前草稿').click())
-    await act(async () => button('确认加入画布').click())
+    await act(async () => button('加入画布').click())
     assert.equal(requests[2].body.scenes[0].shots[0].image_prompt, '修改后的首帧')
     assert.ok(requests[3].path.endsWith('/script/canvas/check')); assert.deepEqual(requests[3].body.scene_ids, ['scene'])
     assert.deepEqual(requests[4].body, { scene_ids: ['scene'], mode: 'existing' })
@@ -485,7 +485,7 @@ test('empty skill selection uses base rules and changing configuration invalidat
     await act(async () => button('开始规划').click())
     assert.deepEqual(planBody.skill_ids, []); assert.deepEqual(planBody.document_ids, [])
     assert.equal(planBody.target_duration, undefined)
-    assert.ok(button('确认加入画布'))
+    assert.ok(button('加入画布'))
     await act(() => button('规划设置').click())
     await chooseDurationMode('指定总时长')
     assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '保存分镜'), false)
@@ -544,7 +544,7 @@ test('refresh failure retries the same saved result without a second commit', as
   const view = await mount({ refresh: async () => { if (++refreshes === 1) throw new Error('刷新失败') } })
   try {
     await act(async () => button('开始规划').click())
-    await act(async () => button('确认加入画布').click())
+    await act(async () => button('加入画布').click())
     assert.match(document.body.textContent!, /分镜已保存，后续操作失败/)
     await act(async () => button('继续加入画布').click())
     assert.equal(commits, 1); assert.equal(refreshes, 2)
@@ -578,7 +578,7 @@ test('updated screenplay scenes must be replanned from the current episode docum
     assert.match(document.querySelector('.storyboard-planner-sidebar')!.textContent!, /正文已更新，需重新规划/)
     assert.match(document.body.textContent!, /旧分镜和素材仍会保留，请先按最新资料重新规划后再加入画布/)
     assert.equal(document.querySelector<HTMLButtonElement>('button[aria-label="分镜预览"]')!.disabled, true)
-    assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '确认加入画布'), false)
+    assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '加入画布'), false)
     assert.equal(document.querySelector('.storyboard-planner-preview'), null, 'historical shots cannot be presented as a ready plan')
     assert.equal(document.querySelector<HTMLInputElement>('.storyboard-planner-source-list input')!.checked, true, 'the current edited episode is selected automatically')
     assert.deepEqual(requests.map(request => request.path.split('/').at(-1)), ['context'])
@@ -589,7 +589,7 @@ test('updated screenplay scenes must be replanned from the current episode docum
     assert.deepEqual(plan.body.document_ids, [updatedDocument.id])
     assert.equal(document.querySelector<HTMLTextAreaElement>('.storyboard-planner-preview textarea')!.value, '按修改后的正文重新规划')
     assert.equal(requests.some(request => /\/(commit|canvas)$/.test(request.path)), false, 'planning still requires explicit save confirmation')
-    await act(async () => button('确认加入画布').click())
+    await act(async () => button('加入画布').click())
     const handoff = JSON.parse(dom.window.sessionStorage.getItem('script-canvas-open:planner')!)
     assert.equal(handoff.result.shots[0].prompt, '按修改后的正文重新规划')
     assert.equal(requests.filter(request => request.path.endsWith('/plan')).length, 1)
@@ -610,7 +610,7 @@ test('a stale scene cannot bypass replanning even if a saved-plan flag remains t
     assert.match(document.querySelector('.storyboard-planner-sidebar')!.textContent!, /资料已更新，需重新规划/)
     assert.equal(button('已规划').disabled, true)
     assert.equal(button('开始规划').disabled, true)
-    assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '确认加入画布'), false)
+    assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '加入画布'), false)
     assert.equal(requests.length, 1, 'no saved-plan import or model work runs implicitly')
   } finally { await view.destroy() }
 })
@@ -681,7 +681,7 @@ test('deleted storyboard nodes take priority and full batches can switch to save
     assert.equal(checkbox(12).checked, false, 'missing saved nodes take priority over unplanned scenes')
     assert.match(checkbox(0).closest('.storyboard-planner-scene-item')!.textContent!, /待加入/)
     assert.match(checkbox(1).closest('.storyboard-planner-scene-item')!.textContent!, /已加入/)
-    assert.equal(button('确认加入画布').disabled, false)
+    assert.equal(button('加入画布').disabled, false)
 
     await act(() => button('待规划').click())
     assert.match(document.querySelector('.storyboard-planner-sidebar')!.textContent!, /已选 10 \/ 24/)
@@ -690,13 +690,13 @@ test('deleted storyboard nodes take priority and full batches can switch to save
     await act(() => button('已规划').click())
     assert.equal(checkbox(0).checked, true); assert.equal(checkbox(11).checked, true)
     assert.equal(checkbox(12).checked, false)
-    assert.equal(button('确认加入画布').disabled, false)
+    assert.equal(button('加入画布').disabled, false)
 
     await act(() => button('清空选择').click())
     assert.equal(checkbox(11).disabled, false)
     await act(() => checkbox(11).click())
     assert.equal(document.querySelector('button[aria-label="分镜预览"]')!.getAttribute('aria-current'), 'step')
-    await act(async () => button('确认加入画布').click())
+    await act(async () => button('加入画布').click())
     assert.equal(opened, 1)
     assert.deepEqual(requests.map(request => request.path.split('/').at(-1)), ['context', 'check', 'canvas'])
     assert.deepEqual(requests[2].body, { scene_ids: ['scene-11'], mode: 'existing' })
@@ -718,7 +718,7 @@ test('saved professional plans can be previewed and reused without a model or a 
   const project = { ...detail, script: { ...detail.script, scenes: [savedScene] } } as ProjectDetail
   const view = await mount({ project, initialSceneIds: ['saved-scene'], models: [], openCanvas: () => opened++ })
   try {
-    assert.equal(button('确认加入画布').disabled, false)
+    assert.equal(button('加入画布').disabled, false)
     const field = document.querySelector<HTMLTextAreaElement>('.storyboard-planner-preview textarea')!
     assert.ok(field.readOnly); assert.equal(field.value, savedShot.prompt)
     await act(() => button('规划设置').click())
@@ -728,9 +728,9 @@ test('saved professional plans can be previewed and reused without a model or a 
     await choosePlanningMode('重新设计新方案')
     assert.equal(button('开始规划').disabled, true, 'redesign still requires a text model')
     await choosePlanningMode('复用已保存分镜')
-    assert.equal(button('确认加入画布').disabled, false)
+    assert.equal(button('加入画布').disabled, false)
     assert.equal(requests.length, 1, 'switching the single mode control never calls a model')
-    await act(async () => button('确认加入画布').click())
+    await act(async () => button('加入画布').click())
     assert.equal(opened, 1)
     assert.deepEqual(requests.map(request => request.path.split('/').at(-1)), ['context', 'check', 'canvas'])
     assert.deepEqual(requests[2].body, { scene_ids: ['saved-scene'], mode: 'existing' })
@@ -760,7 +760,7 @@ test('mixed scope only plans missing scenes and imports both new and saved plans
     const plannedRequest = requests.find(request => request.path.endsWith('/plan'))!
     assert.deepEqual(plannedRequest.body.scene_ids, ['scene']); assert.equal(plannedRequest.body.signature, subsetSignature)
     assert.equal(requests.some(request => /\/(commit|canvas)$/.test(request.path)), false)
-    await act(async () => button('确认加入画布').click())
+    await act(async () => button('加入画布').click())
     assert.deepEqual(requests.find(request => request.path.endsWith('/commit'))!.body.scenes.map((item: any) => item.scene_id), ['scene'])
     assert.deepEqual(requests.find(request => request.path.endsWith('/canvas'))!.body, { scene_ids: ['scene', 'saved-scene'], mode: 'existing' })
   } finally { await view.destroy() }
@@ -785,7 +785,7 @@ test('replanning passes updated shot identities to the canvas even when refresh 
     await act(() => button('规划设置').click())
     await choosePlanningMode('沿用当前方案更新')
     await act(async () => button('开始规划').click())
-    await act(async () => button('确认加入画布').click())
+    await act(async () => button('加入画布').click())
     assert.equal(dom.window.sessionStorage.getItem('script-canvas-open:planner'), null)
     await act(async () => button('继续加入画布').click())
     const handoff = JSON.parse(dom.window.sessionStorage.getItem('script-canvas-open:planner')!)
@@ -832,7 +832,7 @@ test('redesign defaults to fresh shots and a dedicated canvas while retries keep
     assert.ok(button('移除新增镜头'), 'fresh shots remain independently removable')
     await fillTextarea('首帧图片提示词', '只属于新方案的首帧')
     await act(async () => button('复查当前草稿').click())
-    await act(async () => button('确认加入画布').click())
+    await act(async () => button('加入画布').click())
     assert.equal(dom.window.sessionStorage.getItem('script-canvas-open:planner'), null)
     await act(async () => button('继续加入画布').click())
     const commits = requests.filter(request => request.path.endsWith('/storyboard/commit'))
@@ -884,7 +884,7 @@ test('recycled shots and deleted canvases keep redesign available and confirmati
       assert.equal(requests.find(request => request.path.endsWith('/plan'))!.body.mode, 'redesign')
       assert.deepEqual(requests.find(request => request.path.endsWith('/plan'))!.body.scene_ids, sourceScenes.map(source => source.id))
       assert.equal(requests.some(request => request.path.endsWith('/storyboard/commit')), false)
-      await act(async () => button('确认加入画布').click())
+      await act(async () => button('加入画布').click())
       assert.equal(requests.find(request => request.path.endsWith('/storyboard/commit'))!.body.mode, 'redesign')
       assert.equal(opened, 1)
       const handoff = JSON.parse(dom.window.sessionStorage.getItem('script-canvas-open:planner')!)
@@ -948,7 +948,7 @@ test('legacy scene shots are not treated as ready plans and oversized ranges mak
   try {
     assert.match(document.querySelector('.storyboard-planner-sidebar')!.textContent!, /已选 10 \/ 24/)
     assert.equal(document.querySelectorAll('.storyboard-planner-scene-item').length, 24)
-    assert.equal([...document.querySelectorAll('button')].some(item => item.textContent === '确认加入画布'), false)
+    assert.equal([...document.querySelectorAll('button')].some(item => item.textContent === '加入画布'), false)
     assert.ok(button('开始规划'))
   } finally { await view.destroy() }
 })
@@ -960,6 +960,45 @@ const profileDraft = { kind: 'character', name: '林晚', variant: '校服', def
 const referenceCanvas = { ...emptyCanvas, shots: [{ id: 'shot', source_scene_id: 'scene' }], created_profiles: 1,
   visual_profiles: [{ id: 'profile', ...profileDraft, revision: 1, board_asset_id: null }],
   shot_visual_bindings: [{ shot_id: 'shot', profile_id: 'profile', name: '林晚', required: true, board_asset_id: null }] }
+
+test('planner partial references show one result action and close without recommitting saved shots', async t => {
+  const requests: Array<{ path: string; body: any }> = []
+  const failures = [
+    { unit_key: 'PROP-FRIED-NOODLE', name: '炒面', variant: '默认', code: 'visual_profile_locked_field_changed', message: 'private diagnostic', retryable: false,
+      checkpoint_source: 'original_raw', attempt: 1, is_new_model_call: true, recovery_type: 'blocked', recovery: { action: 'retry', model_call: 'required', token: 'd'.repeat(64) } },
+    { unit_key: 'PROP-BRONZE-GONG', name: '铜锣', variant: '默认', code: 'visual_profile_pending', message: 'private pending', retryable: false,
+      checkpoint_source: 'none', attempt: 0, is_new_model_call: false, recovery_type: 'none', recovery: { action: 'continue', model_call: 'possible' } },
+    { unit_key: 'PROP-WOOD-CLAPPER', name: '木梆', variant: '默认', code: 'structured_initial_delivery_pending', message: 'private unknown', retryable: false,
+      checkpoint_source: 'none', attempt: 1, is_new_model_call: false, recovery_type: 'blocked', recovery: { action: 'inspect', model_call: 'unknown' } },
+  ]
+  mockPlanningFetch(t, async (url, init) => {
+    const path = String(url), body = JSON.parse(String(init?.body)); requests.push({ path, body })
+    if (path.endsWith('/context')) return Response.json(referenceContext)
+    if (path.endsWith('/plan')) return Response.json(draft)
+    if (path.endsWith('/storyboard/commit')) return Response.json(emptyCanvas)
+    if (path.endsWith('/check')) return Response.json({ signature, scene_ids: ['scene'], needs_analysis: ['scene'] })
+    if (path.endsWith('/prepare')) return Response.json({ signature, scene_ids: ['scene'], profiles: [profileDraft], status: 'partial', failed_units: failures })
+    throw new Error('Unexpected ' + path)
+  })
+  const view = await mount()
+  try {
+    await act(async () => button('开始规划').click())
+    await act(async () => button('加入画布').click())
+    const panel = document.querySelector('[aria-label="画布准备结果"]')!
+    assert.ok(panel)
+    assert.match(panel.textContent!, /未能加入画布/)
+    assert.doesNotMatch(panel.textContent!, /private|original_raw|attempt|炒面|铜锣/)
+    assert.equal(document.querySelector('.reference-failure-panel'), null)
+    await act(async () => button('重试').click())
+    assert.deepEqual(requests.filter(item => item.path.endsWith('/prepare')).at(-1)!.body.unit_keys, ['PROP-FRIED-NOODLE'])
+    assert.equal(requests.filter(item => item.path.endsWith('/storyboard/commit')).length, 1)
+    const before = requests.length
+    await act(() => button('关闭').click())
+    assert.equal(requests.length, before)
+    assert.match(document.body.textContent!, /未能加入画布/)
+    assert.ok(!requests.some(item => item.path.endsWith('/script/canvas/commit') || item.path.endsWith('/storyboard/canvas')))
+  } finally { await view.destroy() }
+})
 
 test('confirmation uses a fresh source version to prepare references before importing the planned shots', async t => {
   const requests: Array<{ path: string; body: any }> = []; let opened = 0
@@ -988,11 +1027,12 @@ test('confirmation uses a fresh source version to prepare references before impo
     await act(() => button('查看参考设定说明').click())
     assert.equal(document.querySelector('[role="dialog"][aria-label="参考设定说明"]'), null)
     assert.equal(requests.length, 2, 'viewing the reference explanation does not trigger generation')
-    await act(async () => button('确认加入画布').click())
+    await act(async () => button('加入画布').click())
     assert.deepEqual(requests.map(request => request.path.split('/').slice(-2).join('/')), [
       'storyboard/context', 'storyboard/plan', 'storyboard/commit', 'canvas/check', 'canvas/prepare', 'canvas/commit', 'storyboard/canvas',
     ])
-    assert.deepEqual(requests[4].body, { signature: freshSignature, scene_ids: ['scene'], model_id: 'text' })
+    assert.match(requests[4].body.request_id, /^[a-f0-9-]{36}$/)
+    assert.deepEqual({ ...requests[4].body, request_id: undefined }, { signature: freshSignature, scene_ids: ['scene'], model_id: 'text', request_id: undefined })
     assert.deepEqual(requests[5].body, { signature: freshSignature, scene_ids: ['scene'], profiles: [profileDraft], coverage_version: 1, visual_coverage: coverage })
     const handoff = JSON.parse(dom.window.sessionStorage.getItem('script-canvas-open:planner')!).result
     assert.equal(handoff.visual_profiles[0].id, 'profile'); assert.equal(handoff.shot_visual_bindings[0].required, true)
@@ -1020,7 +1060,7 @@ test('failed reference preparation keeps saved shots and retries without another
     await act(async () => button('开始规划').click())
     assert.match(document.querySelector('.storyboard-planner-section-title')!.textContent!, /未保存草稿，可修改后确认/)
     assert.equal(document.querySelector<HTMLTextAreaElement>('.storyboard-planner-preview textarea')!.readOnly, false)
-    await act(async () => button('确认加入画布').click())
+    await act(async () => button('加入画布').click())
     assert.match(document.body.textContent!, /分镜已保存，后续操作失败/)
     assert.match(document.querySelector('.storyboard-planner-section-title')!.textContent!, /已保存分镜/)
     assert.doesNotMatch(document.querySelector('.storyboard-planner-section-title')!.textContent!, /未保存草稿/)
@@ -1060,7 +1100,7 @@ test('a failed reference draft save resumes the saved new design without recreat
     await act(() => button('规划设置').click())
     await choosePlanningMode('重新设计新方案')
     await act(async () => button('开始规划').click())
-    await act(async () => button('确认加入画布').click())
+    await act(async () => button('加入画布').click())
     assert.match(document.querySelector('[role="alert"]')!.textContent!, /分镜已保存.*视觉草稿的设计方案/)
     assert.match(document.querySelector('.storyboard-planner-section-title')!.textContent!, /已保存分镜/)
     assert.equal(document.querySelector<HTMLTextAreaElement>('.storyboard-planner-preview textarea')!.readOnly, true)
@@ -1092,37 +1132,78 @@ test('saved plans still prepare missing references and an explicit empty selecti
   try {
     assert.equal(requests.length, 1)
     await chooseSkill('visual_assets', '__base__')
-    await act(async () => button('确认加入画布').click())
+    await act(async () => button('加入画布').click())
     assert.equal(requests.some(request => /\/storyboard\/(commit|plan)$/.test(request.path)), false)
     assert.deepEqual(requests.find(request => request.path.endsWith('/prepare'))!.body.skill_ids, [])
     assert.ok(dom.window.sessionStorage.getItem('script-canvas-open:planner'))
   } finally { await view.destroy() }
 })
 
-test('cancelling reference analysis prevents a late result from being committed or opening the canvas', async t => {
-  let resolveAnalysis!: (value: Response) => void, opened = 0
+test('closing reference analysis detaches without cancelling work or committing a late result', async t => {
+  let resolveAnalysis!: (value: Response) => void, opened = 0, closed = 0
+  let acceptedSignal: AbortSignal | undefined
   const paths: string[] = []
-  mockPlanningFetch(t, async url => {
+  mockPlanningFetch(t, async (url, init) => {
     const path = String(url); paths.push(path)
     if (path.endsWith('/context')) return Response.json(referenceContext)
     if (path.endsWith('/plan')) return Response.json(draft)
     if (path.endsWith('/storyboard/commit')) return Response.json(emptyCanvas)
     if (path.endsWith('/check')) return Response.json({ signature, scene_ids: ['scene'], needs_analysis: ['scene'] })
-    if (path.endsWith('/prepare')) return new Promise<Response>(resolve => { resolveAnalysis = resolve })
+    if (path.endsWith('/prepare')) { acceptedSignal = init?.signal as AbortSignal; return new Promise<Response>(resolve => { resolveAnalysis = resolve }) }
+    throw new Error(`Unexpected ${path}`)
+  })
+  const view = await mount({ openCanvas: () => opened++, close: () => closed++ })
+  try {
+    await act(async () => button('开始规划').click())
+    await act(async () => { button('加入画布').click(); await new Promise(resolve => setTimeout(resolve, 0)) })
+    const activity = document.querySelector('footer [aria-label="画布准备进度"]')!
+    assert.match(activity.textContent!, /^正在整理参考 · \d+ 秒$/)
+    assert.equal(document.querySelector('.reference-run-status'), null)
+    assert.equal(document.querySelector('.reference-stop-action'), null)
+    assert.equal(document.querySelector('.storyboard-planner-primary'), null)
+    assert.deepEqual([...document.querySelectorAll('.storyboard-planner-actions button')].map(node => node.textContent), ['关闭'])
+    await act(() => button('关闭').click())
+    assert.equal(closed, 1)
+    assert.equal(acceptedSignal?.aborted, false)
+    await view.render(false)
+    assert.equal(acceptedSignal?.aborted, false, 'hiding the dialog must not abort accepted work')
+    await act(async () => { resolveAnalysis(Response.json({ signature, scene_ids: ['scene'], profiles: [profileDraft] })); await new Promise(resolve => setTimeout(resolve, 0)) })
+    assert.equal(paths.some(path => path.endsWith('/script/canvas/commit') || path.endsWith('/storyboard/canvas')), false)
+    assert.equal(opened, 0); assert.equal(dom.window.sessionStorage.getItem('script-canvas-open:planner'), null)
+    assert.ok(!paths.some(path => path.endsWith('/canvas/cancel')), 'close never sends cancellation')
+  } finally { await view.destroy() }
+})
+
+for (const dismissal of ['hide', 'unmount'] as const) test(`directly ${dismissal === 'hide' ? 'hiding' : 'unmounting'} reference analysis preserves accepted work and suppresses late commits`, async t => {
+  let resolveAnalysis!: (value: Response) => void, opened = 0, destroyed = false
+  let acceptedSignal: AbortSignal | undefined
+  const paths: string[] = []
+  mockPlanningFetch(t, async (url, init) => {
+    const path = String(url); paths.push(path)
+    if (path.endsWith('/context')) return Response.json(referenceContext)
+    if (path.endsWith('/plan')) return Response.json(draft)
+    if (path.endsWith('/storyboard/commit')) return Response.json(emptyCanvas)
+    if (path.endsWith('/check')) return Response.json({ signature, scene_ids: ['scene'], needs_analysis: ['scene'] })
+    if (path.endsWith('/prepare')) {
+      acceptedSignal = init?.signal as AbortSignal
+      return new Promise<Response>(resolve => { resolveAnalysis = resolve })
+    }
     throw new Error(`Unexpected ${path}`)
   })
   const view = await mount({ openCanvas: () => opened++ })
   try {
     await act(async () => button('开始规划').click())
-    await act(async () => { button('确认加入画布').click(); await new Promise(resolve => setTimeout(resolve, 0)) })
-    assert.match(document.querySelector('.storyboard-planner-footer-status')!.textContent!, /正在整理参考设定/)
-    assert.equal(button('继续加入画布').disabled, true)
-    await act(() => button('取消整理').click())
+    await act(async () => { button('加入画布').click(); await new Promise(resolve => setTimeout(resolve, 0)) })
+    assert.ok(acceptedSignal)
+    assert.equal(acceptedSignal.aborted, false)
+    if (dismissal === 'hide') await view.render(false)
+    else { await view.destroy(); destroyed = true }
+    assert.equal(acceptedSignal.aborted, false, 'an external dismissal must detach without aborting accepted reference work')
     await act(async () => { resolveAnalysis(Response.json({ signature, scene_ids: ['scene'], profiles: [profileDraft] })); await new Promise(resolve => setTimeout(resolve, 0)) })
-    assert.equal(paths.some(path => path.endsWith('/script/canvas/commit') || path.endsWith('/storyboard/canvas')), false)
-    assert.equal(opened, 0); assert.equal(dom.window.sessionStorage.getItem('script-canvas-open:planner'), null)
-    assert.equal(button('继续加入画布').disabled, false)
-  } finally { await view.destroy() }
+    assert.equal(paths.some(path => path.endsWith('/script/canvas/commit') || path.endsWith('/storyboard/canvas') || path.endsWith('/canvas/cancel')), false)
+    assert.equal(opened, 0)
+    assert.equal(dom.window.sessionStorage.getItem('script-canvas-open:planner'), null)
+  } finally { if (!destroyed) await view.destroy() }
 })
 
 test('saving reference skill defaults reloads only that policy and preserves the edited storyboard preview', async t => {
@@ -1146,7 +1227,7 @@ test('saving reference skill defaults reloads only that policy and preserves the
     assert.equal(requests.filter(path => path.endsWith('/context')).length, 1)
     assert.ok(requests.some(path => path.endsWith('/skills/defaults')))
     assert.ok([...document.querySelectorAll<HTMLTextAreaElement>('textarea')].some(field => field.value === '保留我编辑的首帧'))
-    assert.equal(button('确认加入画布').disabled, true, 'changing reference defaults preserves the edited candidate and its pending review')
+    assert.equal(button('加入画布').disabled, true, 'changing reference defaults preserves the edited candidate and its pending review')
   } finally { await view.destroy() }
 })
 
@@ -1167,7 +1248,7 @@ test('independent planning saves the edited scheme without references, canvas cr
     assert.match(document.querySelector('.mantine-Modal-title')!.textContent!, /规划分镜/)
     await act(async () => button('开始规划').click())
     assert.equal(document.querySelector('.storyboard-planner-reference-preparation'), null)
-    assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '确认加入画布'), false)
+    assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '加入画布'), false)
     await fillTextarea('首帧图片提示词', '独立方案的首帧')
     await act(async () => button('复查当前草稿').click())
     await act(async () => button('保存分镜方案').click())
@@ -1278,7 +1359,7 @@ const taskSnapshot = { id: 'task-id', project_id: 'planner', input_key: 'input-k
   started_at: Date.now(), updated_at: Date.now(), active_duration_ms: 12000, stage_duration_ms: 2000, timings: { generating: 10000 },
   can_resume: false, candidate: taskCandidate }
 
-test('an 18-shot outline checkpoint shows 122 versus 120 seconds and resumes without a saveable preview', async t => {
+test('an 18-shot outline checkpoint keeps a compact summary and resumes without a saveable preview', async t => {
   let resumes = 0
   t.mock.method(globalThis, 'fetch', async (url, init) => {
     const path = String(url)
@@ -1295,7 +1376,7 @@ test('an 18-shot outline checkpoint shows 122 versus 120 seconds and resumes wit
   const view = await mount({ intent: 'plan' })
   try {
     await act(async () => button('开始规划').click())
-    assert.match(document.querySelector('[aria-label="分镜规划进度"]')!.textContent!, /已保留大纲 18 镜 · 镜头合计 122 秒 \/ 目标 120 秒/)
+    assert.equal(document.querySelector('.storyboard-planner-task-progress'), null)
     assert.match(document.querySelector('.storyboard-planner-footer-status')!.textContent!, /已保留大纲 18 镜/)
     assert.match(document.querySelector('.storyboard-planner-scene-list')!.textContent!, /已保留大纲 · 18 镜/)
     assert.equal(document.querySelector('fieldset.storyboard-planner-preview'), null)
@@ -1320,7 +1401,7 @@ test('an interrupted generation shows preserved batch progress without enabling 
   const view = await mount({ intent: 'plan' })
   try {
     await act(async () => button('开始规划').click())
-    assert.match(document.querySelector('[aria-label="分镜规划进度"]')!.textContent!, /已完成 2 \/ 6 镜/)
+    assert.equal(document.querySelector('.storyboard-planner-task-progress'), null)
     assert.match(document.querySelector('[role="alert"]')!.textContent!, /已完成的镜头已保存/)
     assert.equal(document.querySelector('fieldset.storyboard-planner-preview'), null)
     assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '保存分镜方案'), false)
@@ -1345,7 +1426,7 @@ test('a saved candidate is editable after a review failure and can continue only
   try {
     await act(async () => button('开始规划').click())
     assert.match(document.querySelector('[role="alert"]')!.textContent!, /分镜草稿已保存/)
-    assert.match(document.querySelector('[aria-label="分镜规划进度"]')!.textContent!, /本阶段 2 秒 · 累计 12 秒/)
+    assert.equal(document.querySelector('.storyboard-planner-task-progress'), null)
     assert.equal((document.querySelector('fieldset.storyboard-planner-preview') as HTMLFieldSetElement).disabled, false)
     assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '保存分镜方案'), false)
     await act(async () => button('继续规划').click())
@@ -1372,9 +1453,21 @@ test('leaving a running task preserves its identity and reopening observes it wi
   const view = await mount({ intent: 'plan', close: () => { closes++ } })
   try {
     await act(async () => button('开始规划').click())
-    assert.match(document.querySelector('[aria-label="分镜规划进度"]')!.textContent!, /正在复核运镜与接镜/)
+    const footer = document.querySelector('footer.storyboard-planner-actions')!
+    const status = footer.querySelector('[aria-label="分镜规划进度"]')!
+    assert.ok(status, 'the compact progress stays in the fixed footer')
+    assert.equal(footer.firstElementChild, status, 'progress occupies the left footer slot before actions')
+    assert.match(status.textContent!, /^正在复核运镜与接镜 · \d+ 秒$/)
+    assert.ok(status.querySelector('.lucide-loader-circle'))
+    assert.equal(document.querySelectorAll('.storyboard-planner-footer-status').length, 1)
+    assert.equal(document.querySelector('.storyboard-planner-scroll .storyboard-planner-footer-status'), null)
+    assert.equal(document.querySelector('.storyboard-planner-task-progress'), null)
+    assert.doesNotMatch(document.body.textContent!, /本阶段|累计|可以返回其他页面，后台会继续处理/)
+    assert.equal(document.querySelector('.storyboard-planner-error')?.textContent || '', '', 'background review is progress, not a red error')
+    assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '复查当前草稿'), false, 'do not offer duplicate review while background review is running')
     assert.equal((document.querySelector('fieldset.storyboard-planner-preview') as HTMLFieldSetElement).disabled, true)
-    await act(async () => button('后台继续').click())
+    assert.equal([...footer.querySelectorAll('button')].some(node => node.textContent === '后台继续' || node.textContent === '取消规划'), false)
+    await act(async () => button('关闭').click())
     assert.equal(closes, 1)
     await view.render(false)
     await view.render(true)
@@ -1416,33 +1509,44 @@ test('reopening waits for fresh context before restoring a remembered task', asy
   } finally { await view.destroy() }
 })
 
-test('cancelling durable planning requests server cancellation and keeps its validated candidate', async t => {
+test('closing durable planning detaches its observer and preserves the accepted task identity', async t => {
   const requests: string[] = []
+  let requestId = '', closes = 0, observerSignal: AbortSignal | null | undefined
   t.mock.method(globalThis, 'fetch', async (url, options) => {
     const path = String(url); requests.push(`${options?.method || 'GET'} ${path}`)
     if (path.endsWith('/context')) return Response.json({ ...context, planning_task_version: 1 })
     if (path.endsWith('/preview')) return Response.json({ preview: null })
     if (path.endsWith('/tasks/lookup')) return Response.json({ task: null })
-    if (path.endsWith('/tasks')) return Response.json(taskSnapshot)
-    if (path.endsWith('/task-id/cancel')) return Response.json({ ...taskSnapshot, status: 'cancelled', can_resume: true })
+    if (path.endsWith('/tasks')) {
+      requestId = JSON.parse(String(options?.body)).request_id
+      observerSignal = options?.signal
+      return Response.json(taskSnapshot)
+    }
     throw new Error(`Unexpected ${path}`)
   })
-  const view = await mount({ intent: 'plan' })
+  const view = await mount({ intent: 'plan', close: () => { closes++ } })
   try {
     await act(async () => button('开始规划').click())
-    await act(async () => button('取消规划').click())
-    assert.equal(requests.filter(path => path.endsWith('/task-id/cancel')).length, 1)
-    assert.equal(button('继续规划').disabled, false)
+    assert.ok(requestId)
+    assert.ok(observerSignal)
+    assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '取消规划' || node.textContent === '后台继续'), false)
+    await act(async () => button('关闭').click())
+    assert.equal(closes, 1)
+    assert.equal(observerSignal.aborted, true, 'closing releases the browser observer')
+    const remembered = JSON.parse(dom.window.sessionStorage.getItem('storyboard-planning-task:planner')!)
+    assert.equal(remembered.request_id, requestId)
+    assert.equal(remembered.task_id, taskSnapshot.id)
+    assert.equal(requests.some(path => /\/(?:cancel|cancel-request)$/.test(path)), false, 'closing never cancels server-owned planning')
     assert.match(document.querySelector('.storyboard-planner-preview')!.textContent!, /人物反应/)
-    assert.equal((document.querySelector('fieldset.storyboard-planner-preview') as HTMLFieldSetElement).disabled, false)
   } finally { await view.destroy() }
 })
 
-test('cancellation before the acceptance response persists the request identity even when that response is lost', async t => {
+test('closing before acceptance keeps its request identity when that response is lost without cancelling', async t => {
   let rejectStart!: (issue: Error) => void
-  let acceptedId = '', cancelledId = '', starts = 0
+  let acceptedId = '', starts = 0, closes = 0
+  const requests: string[] = []
   t.mock.method(globalThis, 'fetch', async (url, options) => {
-    const path = String(url)
+    const path = String(url); requests.push(path)
     if (path.endsWith('/context')) return Response.json({ ...context, planning_task_version: 1 })
     if (path.endsWith('/tasks/lookup')) return Response.json({ task: null })
     if (path.endsWith('/preview')) return Response.json({ preview: null })
@@ -1450,21 +1554,20 @@ test('cancellation before the acceptance response persists the request identity 
       starts++; acceptedId = JSON.parse(String(options?.body)).request_id
       return new Promise<Response>((_resolve, reject) => { rejectStart = reject })
     }
-    if (path.endsWith('/tasks/cancel-request')) {
-      cancelledId = JSON.parse(String(options?.body)).request_id
-      return Response.json({ cancelled: true, task: null })
-    }
     throw new Error(`Unexpected ${path}`)
   })
-  const view = await mount({ intent: 'plan' })
+  const view = await mount({ intent: 'plan', close: () => { closes++ } })
   try {
     await act(async () => button('开始规划').click())
     assert.ok(acceptedId)
-    await act(async () => button('取消规划').click())
+    await act(async () => button('关闭').click())
+    await view.render(false)
     await act(async () => rejectStart(new TypeError('acceptance response lost')))
-    assert.equal(cancelledId, acceptedId)
+    const remembered = JSON.parse(dom.window.sessionStorage.getItem('storyboard-planning-task:planner')!)
+    assert.equal(remembered.request_id, acceptedId)
+    assert.equal(closes, 1)
     assert.equal(starts, 1)
-    assert.match(document.querySelector('[role="alert"]')!.textContent!, /本次规划已取消/)
+    assert.equal(requests.some(path => /\/(?:cancel|cancel-request)$/.test(path)), false)
     assert.doesNotMatch(document.body.textContent!, /acceptance response lost/)
   } finally { await view.destroy() }
 })
@@ -1530,7 +1633,7 @@ test('reopening before acceptance only queries the remembered request and keeps 
   try {
     await act(async () => button('开始规划').click())
     assert.ok(requestId)
-    await act(async () => button('后台继续').click())
+    await act(async () => button('关闭').click())
     await view.render(false)
     await act(async () => rejectStart(new TypeError('acceptance response lost')))
     await view.render(true)
@@ -1602,7 +1705,7 @@ test('canvas mode saves an inconclusive issue draft separately and blocks direct
   const view = await mount({ intent: 'canvas' })
   try {
     await act(async () => button('开始规划').click())
-    assert.equal(button('确认加入画布').disabled, true)
+    assert.equal(button('加入画布').disabled, true)
     assert.equal(button('保存草稿，稍后复核').disabled, false)
     await act(async () => button('保存草稿，稍后复核').click())
     const commit = requests.find(request => request.path.endsWith('/commit'))
@@ -1665,5 +1768,145 @@ test('repeated problems disable paid repair until an edited candidate receives a
     assert.equal(reviews, 1); assert.equal(button('仅修复已确认问题').disabled, false)
     await act(async () => button('仅修复已确认问题').click()); assert.equal(repairs, 1)
     assert.equal(button('保存分镜方案').disabled, false)
+  } finally { await view.destroy() }
+})
+
+
+test('two review clicks in one render dispatch only one review request', async t => {
+  let reviews = 0, finish!: (response: Response) => void
+  mockPlanningFetch(t, async url => {
+    const path = String(url)
+    if (path.endsWith('/context')) return Response.json(context)
+    if (path.endsWith('/plan')) return Response.json(draft)
+    if (path.endsWith('/review')) { reviews++; return new Promise<Response>(resolve => { finish = resolve }) }
+    throw new Error(`Unexpected ${path}`)
+  }, true)
+  const view = await mount({ intent: 'plan' })
+  try {
+    await act(async () => button('开始规划').click())
+    const review = button('复查当前草稿')
+    await act(async () => { review.click(); review.click() })
+    assert.equal(reviews, 1)
+    await act(async () => finish(Response.json(acceptedReview)))
+  } finally { await view.destroy() }
+})
+
+
+test('outline relation failure shows scene heading and keeps technical coordinates collapsed', async t => {
+  t.mock.method(globalThis, 'fetch', async url => {
+    const path = String(url)
+    if (path.endsWith('/context')) return Response.json({ ...context, planning_task_version: 1 })
+    if (path.endsWith('/preview')) return Response.json({ preview: null })
+    if (path.endsWith('/tasks/lookup')) return Response.json({ task: null })
+    if (!path.endsWith('/tasks')) throw new Error(`Unexpected ${path}`)
+    return Response.json({ ...taskSnapshot, candidate: undefined, status: 'failed', stage: 'reviewing', can_resume: false,
+      outline_checkpoint: { validated: true, scenes: [{ scene_id: 'scene', shot_count: 5, scene_duration: 30, shot_duration_sum: 30 }] },
+      error: { message: '关联字段的一次受限纠正未通过；原报告和大纲已保留，停止重复请求。',
+        code: 'storyboard_outline_relation_correction_failed', scene_id: 'scene', related_scene_id: 'scene', related_shot_index: 3,
+        field_path: 'issues[1].related_shot_index', diagnostics: 'original evidence retained' } })
+  })
+  const view = await mount({ intent: 'plan' })
+  try {
+    await act(async () => button('开始规划').click())
+    const error = document.querySelector('.storyboard-planner-error')!
+    assert.ok(error)
+    const disclosure = error.querySelector('.storyboard-planner-error-details')!
+    assert.ok(disclosure)
+    const toggle = disclosure.querySelector('button')!
+    assert.equal(toggle.getAttribute('aria-expanded'), 'false')
+    const inline = error.cloneNode(true) as HTMLElement
+    inline.querySelector('.storyboard-planner-error-details')?.remove()
+    assert.match(inline.textContent!, /车站.*第 2 条复核问题.*模型关联镜头 4/)
+    assert.doesNotMatch(inline.textContent!, /issues\[1\]|related_shot_index/)
+    assert.match(disclosure.textContent!, /issues\[1\]\.related_shot_index/)
+    assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '继续规划'), false)
+    await act(async () => toggle.click())
+    assert.equal(toggle.getAttribute('aria-expanded'), 'true')
+  } finally { await view.destroy() }
+})
+
+
+test('a stopped structural patch offers explicit replanning without a misleading continue action', async t => {
+  let starts = 0
+  t.mock.method(globalThis, 'fetch', async url => {
+    const path = String(url)
+    if (path.endsWith('/context')) return Response.json({ ...context, planning_task_version: 1 })
+    if (path.endsWith('/preview')) return Response.json({ preview: null })
+    if (path.endsWith('/tasks/lookup')) return Response.json({ task: null })
+    if (!path.endsWith('/tasks')) throw new Error(`Unexpected ${path}`)
+    starts++
+    return Response.json({ ...taskSnapshot, candidate: undefined, status: 'failed', stage: 'generating', can_resume: false,
+      error: { message: '结构修复未采用，原回答和补丁已保留', failure_type: 'invalid_business',
+        code: 'structural_validator_outside_targets', field_path: '$.scenes[0].title' } })
+  })
+  const view = await mount({ intent: 'plan' })
+  try {
+    await act(async () => button('开始规划').click())
+    assert.equal(starts, 1)
+    assert.ok(button('重新规划'))
+    assert.equal([...document.querySelectorAll('button')].some(node => node.textContent === '继续规划'), false)
+    await view.render(); assert.equal(starts, 1)
+  } finally { await view.destroy() }
+})
+
+
+test('dccd canvas reference failure keeps long diagnostics collapsed and footer actions reachable', async t => {
+  const diagnostics = Array.from({ length: 24 }, (_, index) => `$.profiles[${index % 8}].name：缺少目录字段，请核对身份。`).join('\n')
+  const longError = '无法安全定位一次局部纠正目标；已保留完整回答，未重发全文。原因：' + diagnostics
+  const raw = '```json\n{"profiles":[{"category":"prop","name_zh":"测试物件"}]}\n```'
+  const paths: string[] = []
+  mockPlanningFetch(t, async url => {
+    const path = String(url); paths.push(path)
+    if (path.endsWith('/context')) return Response.json({ ...referenceContext, scenes: [{ ...scene, planned: true, shot_count: 1, material_count: 0 }],
+      existing_shots: [{ ...savedShot, scene_id: 'scene' }] })
+    if (path.endsWith('/check')) return Response.json({ signature, scene_ids: ['scene'], needs_analysis: ['scene'] })
+    if (path.endsWith('/prepare')) return Response.json({ detail: longError, code: 'model_field_contract', raw_output: raw, diagnostics }, { status: 422 })
+    throw new Error(`Unexpected ${path}`)
+  })
+  const view = await mount({ project: { ...detail, id: 'dccd-isolated-ui' } })
+  try {
+    await act(async () => button('加入画布').click())
+    const summary = document.querySelector('.storyboard-planner-error-message > span')!.textContent!
+    assert.ok(summary.length < 220, `summary has ${summary.length} characters`)
+    assert.ok(!summary.includes('$.profiles['))
+    assert.match(summary, /保留|保存/)
+    const disclosure = button('查看错误详情')
+    assert.equal(disclosure.getAttribute('aria-expanded'), 'false')
+    const actions = document.querySelector('.storyboard-planner-actions')!
+    assert.ok(actions.querySelector('button'))
+    assert.equal(actions.closest('.storyboard-planner-scroll'), null)
+    assert.equal(button('加入画布').disabled, false)
+    await act(() => disclosure.click())
+    const details = document.querySelector('.storyboard-planner-error-details')!
+    assert.equal(details.querySelectorAll('pre')[0].textContent, diagnostics)
+    assert.equal(details.querySelectorAll('pre')[1].textContent, raw)
+    assert.equal(button('加入画布').disabled, false)
+    assert.equal(paths.some(path => /\/(commit|canvas)$/.test(path)), false)
+  } finally { await view.destroy() }
+})
+
+test('historical visual conflicts block repeated preparation until model or reference input changes', async t => {
+  let prepares = 0
+  mockPlanningFetch(t, async url => {
+    const path = String(url)
+    if (path.endsWith('/context')) return Response.json({ ...referenceContext, scenes: [{ ...scene, planned: true, shot_count: 1, material_count: 0 }], existing_shots: [{ ...savedShot, scene_id: 'scene' }] })
+    if (path.endsWith('/check')) return Response.json({ signature, scene_ids: ['scene'], needs_analysis: ['scene'] })
+    if (path.endsWith('/prepare')) { prepares++; return Response.json({ message: '档案 LOOK 的历史候选需要处理', code: 'visual_profile_history_action_required', retryable: false,
+      recovery: { kind: 'review_candidate' }, diagnostics: '{"unit":"LOOK"}' }, { status: 409 }) }
+    throw new Error(`Unexpected ${path}`)
+  })
+  const view = await mount({ project: { ...detail, id: '922-history-isolated-ui' } })
+  try {
+    await act(async () => button('加入画布').click())
+    assert.equal(prepares, 1)
+    assert.equal(button('加入画布').disabled, true)
+    assert.doesNotMatch(document.querySelector('[role="alert"]')!.textContent!, /可重试/)
+    assert.match(document.body.textContent!, /先处理保留的参考档案/)
+    await act(async () => button('加入画布').click())
+    assert.equal(prepares, 1)
+    await act(async () => button('刷新资料').click())
+    assert.equal(button('加入画布').disabled, true, 'refreshing unchanged sources does not unlock the same failed input')
+    await chooseSkill('visual_assets', '__base__')
+    assert.equal(button('加入画布').disabled, false, 'explicit reference input change permits backend revalidation')
   } finally { await view.destroy() }
 })

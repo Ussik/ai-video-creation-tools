@@ -1,0 +1,15 @@
+.app-dialog-bounded.mantine-Modal-content { max-height: calc(100dvh - 40px); overflow: hidden; }
+.app-dialog-bounded .app-dialog-body { display: flex; flex-direction: column; max-height: calc(100dvh - 42px); padding: 22px; overflow: hidden; }
+.app-dialog-bounded .app-dialog-copy { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.app-dialog-bounded .app-dialog-actions { flex-shrink: 0; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--fc-border-soft); }
+.shot-purge-details { margin-top: 12px; font-size: 12px; }
+.shot-purge-details .mantine-Accordion-item { border: 0; }
+.shot-purge-details .mantine-Accordion-control { padding-inline: 0; font-size: 12px; color: var(--fc-text-muted); }
+.shot-purge-details .mantine-Accordion-label { padding-block: 8px; }
+.shot-purge-details .mantine-Accordion-content { padding: 4px 0; }
+.shot-purge-details-scroll { max-height: min(220px, 32dvh); overflow-y: auto; overscroll-behavior: contain; padding-right: 6px; color: var(--fc-text-secondary); overflow-wrap: anywhere; }
+.shot-purge-details-scroll dl { margin: 0 0 12px; }
+.shot-purge-details-scroll dl>div { display: flex; justify-content: space-between; gap: 16px; padding: 5px 0; border-bottom: 1px solid var(--fc-border-soft); }
+.shot-purge-details-scroll dd { margin: 0; font-variant-numeric: tabular-nums; }
+.shot-purge-details-scroll li { padding-block: 5px; }
+@media(max-width:480px) { .app-dialog-bounded .app-dialog-body { padding: 18px; } .app-dialog-bounded .app-dialog-copy h2 { font-size: 15px; } }

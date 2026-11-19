@@ -1,3 +1,4 @@
+import { generationScopeVersion, assertGenerationScope } from './generation-scope-lifecycle.js'
 import { createHash } from 'node:crypto'
 import { db, now } from '../../infrastructure/database/db.js'
 import type { GenerationCheckpoint } from '../script/script-generation-steps.js'
@@ -17,8 +18,11 @@ export function generationUnitStore(projectId: string, namespace: string, identi
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     namespace TEXT NOT NULL, identity_hash TEXT NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL,
     PRIMARY KEY(project_id, namespace, identity_hash))`)
-  const hash = createHash('sha256').update(JSON.stringify({ version: 1, identity })).digest('hex')
+  const scopeVersion=generationScopeVersion(projectId,namespace)
+  const assertCurrent=()=>assertGenerationScope(projectId,namespace,scopeVersion)
+  const hash = createHash('sha256').update(JSON.stringify({ version: 1, identity, ...(scopeVersion?{scope_version:scopeVersion}:{}) })).digest('hex')
   const read = (): GenerationCheckpoint => {
+    assertCurrent()
     const row = db.prepare('SELECT payload FROM model_unit_checkpoints WHERE project_id=? AND namespace=? AND identity_hash=?').get(projectId, namespace, hash) as { payload: string } | undefined
     if (!row) return { steps: {} }
     let state: unknown
@@ -44,6 +48,6 @@ export function generationUnitStore(projectId: string, namespace: string, identi
           .run(projectId, namespace, hash, JSON.stringify(merged), now())
       })()
     },
-    clear() { db.prepare('DELETE FROM model_unit_checkpoints WHERE project_id=? AND namespace=? AND identity_hash=?').run(projectId, namespace, hash) },
+    clear() { assertCurrent(); db.prepare('DELETE FROM model_unit_checkpoints WHERE project_id=? AND namespace=? AND identity_hash=?').run(projectId, namespace, hash) },
   }
 }

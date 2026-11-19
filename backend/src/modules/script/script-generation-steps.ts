@@ -1,4 +1,5 @@
-import { localRepairProgressSchema, syntaxRepairAuditSchema } from '../generation/model-output-checkpoints.js'
+import { catalogCorrectionCandidateSchema } from '../generation/catalog-output-candidate.js'
+import { frozenCorrectionRequestSchema, localRepairProgressSchema, syntaxRepairAuditSchema, structuralRepairAuditSchema } from '../generation/model-output-checkpoints.js'
 import { z } from 'zod'
 import { withStructuredOutputCheckpoints, type StructuredOutputCheckpoint } from '../generation/model-output-checkpoints.js'
 import { modelStepSignal } from '../generation/model-execution.js'
@@ -10,7 +11,10 @@ const privateOutputSchema = z.object({ input_hash: z.string().optional(), raw: z
   correction: z.object({ input_hash: z.string(), raw: z.string() }).strict().optional(),
   initial_started: z.object({ input_hash: z.string(), intent_id: z.string().optional() }).strict().optional(),
   correction_started: z.object({ input_hash: z.string(), intent_id: z.string().optional() }).strict().optional(),
+  correction_request: frozenCorrectionRequestSchema.optional(),
+  correction_candidate: catalogCorrectionCandidateSchema.optional(),
   syntax_repair: syntaxRepairAuditSchema.optional(),
+  structural_repair: structuralRepairAuditSchema.optional(),
   local_repair: localRepairProgressSchema.optional() }).strict()
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 

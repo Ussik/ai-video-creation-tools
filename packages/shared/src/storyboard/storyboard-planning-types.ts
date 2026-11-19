@@ -107,11 +107,11 @@ export interface StoryboardPlanningTask {
   /** Complete validated generation batches; not a saveable candidate. */
   progress?: StoryboardPlanningProgress
   /** Read-only outline checkpoint; these shots are not a complete saveable preview. */
-  outline_checkpoint?: { validated: boolean; scenes: Array<{ scene_id: string; shot_count: number; scene_duration: number; shot_duration_sum: number }> }
+  outline_checkpoint?: { validated: boolean; stage?: 'reviewing' | 'repairing' | 'rechecking'; delivery_pending?: boolean; scenes: Array<{ scene_id: string; shot_count: number; scene_duration: number; shot_duration_sum: number }> }
   /** Complete retained text awaiting review; editable after execution stops, but not ready to save. */
   candidate?: StoryboardPlanningResult
   result?: StoryboardPlanningResult
   error?: { message: string; stage: StoryboardPlanningStage; failure_type?: StoryboardFailureType; attempt?: number; recovery_budget?: number; code?: string; correction_error_code?: string; retryable?: boolean;
     diagnostics?: string; raw_output?: string; status_code?: number; scene_id?: string; shot_id?: string; field_path?: string; ref_id?: string;
-    scene_duration?: number; shot_duration_sum?: number; delta?: number }
+    scene_duration?: number; shot_duration_sum?: number; delta?: number; related_scene_id?: string | null; related_shot_index?: number | null }
 }

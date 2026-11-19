@@ -1,3 +1,4 @@
+import type { TextInputScopeDiagnostics } from '../providers/text-input-scope.js'
 export const modelOperationStages = ['dialogue_source_correction', 'timing_repair', 'outline_generation', 'outline_review', 'shot_expansion', 'format_correction', 'director_review',
   'content_repair', 'repair_scope_review', 'recheck', 'script_outline', 'script_characters', 'script_locations', 'script_props', 'script_episode', 'script_review',
   'source_analysis', 'source_directory', 'source_synthesis', 'source_characters', 'source_timeline', 'source_threads', 'source_uncertainties', 'source_review', 'visual_organization', 'prompt_optimization', 'prompt_review', 'image_understanding',
@@ -13,8 +14,10 @@ export const modelOperationStageLabels: Record<ModelOperationStage, string> = {
   video_generation: '视频生成', speech_generation: '语音生成',
 }
 export type ModelResultStatus = 'valid' | 'invalid_json' | 'invalid_contract' | 'invalid_business' | 'passed' | 'needs_work' | 'inconclusive'
-export type ModelResultEvent = { phase: 'structure' | 'quality'; status: ModelResultStatus; stage?: ModelOperationStage;
+export type StructuralChangeEvent = { source: 'patch_merge' | 'schema_normalization' | 'business_validation'; field_path: string; before_hash: string; after_hash: string }
+export type ModelResultEvent = Partial<TextInputScopeDiagnostics> & { cache_hit?: boolean; local_reuse?: boolean; final_state?: 'needs_confirmation' | 'ready' | 'provider_rejected'; structural_changes?: StructuralChangeEvent[]; phase: 'structure' | 'quality'; status: ModelResultStatus; stage?: ModelOperationStage;
   scene_id?: string; shot_id?: string; field_path?: string;
+  business_result?: 'generated'; review_status?: 'passed' | 'warnings' | 'needs_work' | 'review_inconclusive_no_action' | 'review_inconclusive_needs_user';
   issue_count?: number; repaired?: boolean; repair_effect?: 'improved' | 'unchanged' | 'regressed'; duration_ms?: number;
   first_pass_status?: ModelResultStatus; repair_count?: number; repaired_units?: string[];
   validation_latency_ms?: number; repair_latency_ms?: number; structured_enforcement?: string;
@@ -23,7 +26,9 @@ export type ModelResultEvent = { phase: 'structure' | 'quality'; status: ModelRe
   input_tokens_before_repair?: number; input_tokens_after_repair?: number;
   unit_index?: number; unit_count?: number; failure_code?: string; evidence_ref_ids?: string[]; evidence_fields?: string[];
   evidence_validation?: 'passed' | 'failed'; scene_duration?: number; shot_duration_sum?: number; delta?: number; started_at_ms?: number; ended_at_ms?: number;
-  task_key?: string; section_ids?: number[]; field_paths?: string[]; correction_items?: number; reused_items?: number;
+  task_key?: string; section_ids?: number[]; field_paths?: string[]; schema_issue_codes?: string[]; correction_items?: number; reused_items?: number;
+  task_id?: string; unit_key?: string; checkpoint_source?: 'original_raw' | 'correction' | 'validated_unit' | 'none'; is_new_model_call?: boolean;
+  recovery_type?: 'local_migration' | 'unit_resume' | 'partial_batch' | 'blocked' | 'none'; model_request_count?: number; local_validation_count?: number; attempt?: number;
   input_source_chars?: number; input_index_chars?: number; evidence_expanded?: boolean; repair_type?: 'syntax_insertions' | 'local_fields' | 'local_reuse';
   recovery_action?: 'started' | 'response_saved' | 'stopped' | 'boundary_transfer'; recovery_error_type?: 'format' | 'reference';
   recovery_attempts?: number; recovery_input_chars?: number; recovery_output_chars?: number;
@@ -39,6 +44,15 @@ export function safeModelResult(value: unknown): ModelResultEvent | undefined {
     : item.phase === 'quality' ? ['passed', 'needs_work', 'inconclusive'] : []
   if (!allowed.includes(item.status)) return
   const event: ModelResultEvent = { phase: item.phase, status: item.status }
+  for (const key of ['input_scene_count', 'input_shot_count', 'input_scope_chars', 'input_rules_chars', 'input_facts_chars', 'input_profiles_chars', 'input_original_chars', 'input_transport_chars', 'input_transport_estimated_tokens'] as const) if (integer(item[key])) event[key] = item[key]
+  if (typeof item.input_schema_hash === 'string' && /^[a-f0-9]{64}$/.test(item.input_schema_hash)) event.input_schema_hash = item.input_schema_hash
+  if (typeof item.input_schema_present === 'boolean') event.input_schema_present = item.input_schema_present
+  if (typeof item.input_scope_hash === 'string' && /^[a-f0-9]{64}$/.test(item.input_scope_hash)) event.input_scope_hash = item.input_scope_hash
+  if (['catalog', 'profile', 'coverage'].includes(String(item.input_scope_stage))) event.input_scope_stage = item.input_scope_stage
+  if (item.input_boundary === 'assembly' || item.input_boundary === 'transport') event.input_boundary = item.input_boundary
+  if (typeof item.input_scope_present === 'boolean') event.input_scope_present = item.input_scope_present
+  if (item.business_result === 'generated') event.business_result = item.business_result
+  if (['passed', 'warnings', 'needs_work', 'review_inconclusive_no_action', 'review_inconclusive_needs_user'].includes(item.review_status || '')) event.review_status = item.review_status
   if (modelOperationStages.includes(item.stage as ModelOperationStage)) event.stage = item.stage
   for (const key of ['issue_count', 'duration_ms', 'repair_count', 'validation_latency_ms', 'repair_latency_ms', 'json_error_position', 'json_error_line', 'json_error_column', 'input_tokens_before_repair', 'input_tokens_after_repair', 'unit_index', 'unit_count'] as const) if (integer(item[key])) event[key] = item[key]
   for (const key of ['scene_duration', 'shot_duration_sum'] as const) if (integer(item[key])) event[key] = item[key]
@@ -48,13 +62,27 @@ export function safeModelResult(value: unknown): ModelResultEvent | undefined {
   if (typeof item.structured_enforcement === 'string' && /^[a-z0-9_.-]{1,80}$/i.test(item.structured_enforcement)) event.structured_enforcement = item.structured_enforcement
   if (typeof item.repair_strategy === 'string' && /^[a-z0-9_.-]{1,80}$/i.test(item.repair_strategy)) event.repair_strategy = item.repair_strategy
   if (typeof item.repair_applied === 'boolean') event.repair_applied = item.repair_applied
+  for (const key of ['cache_hit', 'local_reuse'] as const) if (typeof item[key] === 'boolean') event[key] = item[key]
+  if (['needs_confirmation', 'ready', 'provider_rejected'].includes(String(item.final_state))) event.final_state = item.final_state
   if (typeof item.root_object_detected === 'boolean') event.root_object_detected = item.root_object_detected
   for (const key of ['started_at_ms', 'ended_at_ms'] as const) if (Number.isSafeInteger(item[key]) && Number(item[key]) >= 0) event[key] = item[key]
-  for (const key of ['correction_items', 'reused_items', 'input_source_chars', 'input_index_chars'] as const) if (integer(item[key])) event[key] = item[key]
+  for (const key of ['model_request_count', 'local_validation_count', 'correction_items', 'reused_items', 'input_source_chars', 'input_index_chars'] as const) if (integer(item[key])) event[key] = item[key]
+  if (Array.isArray(item.structural_changes)) event.structural_changes = item.structural_changes.filter(change => change &&
+    ['patch_merge', 'schema_normalization', 'business_validation'].includes(change.source) &&
+    typeof change.field_path === 'string' && change.field_path.length <= 150 && /^\$(?:\.[a-zA-Z_][a-zA-Z_0-9]*|\[\d+\])*$/.test(change.field_path) &&
+    /^[a-f0-9]{64}$/.test(change.before_hash) && /^[a-f0-9]{64}$/.test(change.after_hash)).slice(0, 32)
+    .map(({ source, field_path, before_hash, after_hash }) => ({ source, field_path, before_hash, after_hash }))
   if (typeof item.task_key === 'string' && /^(?:directory|overview|characters|characters_merge|timeline|threads|uncertainties)(?::[a-f0-9]+)?(?:\/coverage:\d+)?$/.test(item.task_key)) event.task_key = item.task_key
+  if (typeof item.task_id === 'string' && /^[a-z0-9_.:-]{1,160}$/i.test(item.task_id)) event.task_id = item.task_id
+  if (typeof item.unit_key === 'string' && /^(?:[a-z0-9_.:-]{1,160}|@appearance:[a-z0-9_.:-]{1,100}|@visual-coverage)$/i.test(item.unit_key)) event.unit_key = item.unit_key
+  if (['original_raw', 'correction', 'validated_unit', 'none'].includes(item.checkpoint_source || '')) event.checkpoint_source = item.checkpoint_source
+  if (typeof item.is_new_model_call === 'boolean') event.is_new_model_call = item.is_new_model_call
+  if (['local_migration', 'unit_resume', 'partial_batch', 'blocked', 'none'].includes(item.recovery_type || '')) event.recovery_type = item.recovery_type
+  if (integer(item.attempt)) event.attempt = item.attempt
   if (Array.isArray(item.section_ids) && item.section_ids.length <= 1000 && item.section_ids.every(integer)) event.section_ids = item.section_ids
   if (typeof item.failure_code === 'string' && /^[a-z][a-z0-9_]{0,79}$/.test(item.failure_code)) event.failure_code = item.failure_code
-  if (Array.isArray(item.field_paths)) event.field_paths = item.field_paths.filter(path => typeof path === 'string' && /^[a-zA-Z_][a-zA-Z_0-9.\[\]]{0,149}$/.test(path)).slice(0, 100)
+  if (Array.isArray(item.schema_issue_codes)) event.schema_issue_codes = [...new Set(item.schema_issue_codes.filter(code => ['invalid_type', 'invalid_value', 'too_big', 'too_small', 'invalid_format', 'not_multiple_of', 'unrecognized_keys', 'invalid_union', 'invalid_key', 'invalid_element', 'custom'].includes(code)))].slice(0, 16)
+  if (Array.isArray(item.field_paths)) event.field_paths = item.field_paths.filter(path => typeof path === 'string' && path.length <= 150 && /^(?:\$(?:\.[a-zA-Z_][a-zA-Z_0-9]*|\[\d+\])*|[a-zA-Z_][a-zA-Z_0-9.\[\]]{0,149})$/.test(path)).slice(0, 100)
   if (['full_source', 'targeted', 'local_patch', 'local_reuse'].includes(item.request_category || '')) event.request_category = item.request_category
   if (typeof item.evidence_expanded === 'boolean') event.evidence_expanded = item.evidence_expanded
   if (['syntax_insertions', 'local_fields', 'local_reuse'].includes(item.repair_type || '')) event.repair_type = item.repair_type
@@ -79,7 +107,7 @@ export function modelContractStage(name?: string): ModelOperationStage | undefin
     storyboard_directing_review: 'director_review', storyboard_outline_review: 'outline_review', storyboard_targeted_repair: 'content_repair', storyboard_repair_scope_review: 'repair_scope_review',
     prompt_refinement_semantic_review: 'prompt_review', refined_prompt: 'prompt_optimization', image_prompt_optimization: 'prompt_optimization',
     asset_prompt: 'prompt_optimization', script_source_map_boundary_repair: 'content_repair', script_source_story_character_repair: 'content_repair', canvas_node_proposal: 'canvas_adjustment', video_review: 'video_understanding',
-    continuity_report: 'continuity_review', video_prompt_analysis: 'video_understanding', visual_profiles: 'visual_organization' }
+    continuity_report: 'continuity_review', video_prompt_analysis: 'video_understanding', visual_profiles: 'visual_organization', visual_profile_content: 'visual_organization', visual_profile_usage: 'visual_organization', visual_profile_catalog: 'visual_organization', visual_reference_coverage: 'visual_organization' }
   if (name && Object.hasOwn(fixed, name)) return fixed[name]
   const sourceName = name?.replace(/_(?:page|structure_repair)$/, '')
   const sourceStages: Record<string, ModelOperationStage> = { script_source_map: 'source_directory', script_source_story: 'source_synthesis',

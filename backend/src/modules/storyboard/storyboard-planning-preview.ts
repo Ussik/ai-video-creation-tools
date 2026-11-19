@@ -1,3 +1,4 @@
+import { generationScopeVersion, assertGenerationScope } from '../generation/generation-scope-lifecycle.js'
 import { createHash } from 'node:crypto'
 import { now, one, run, type Model, type Provider } from '../../infrastructure/database/db.js'
 
@@ -10,7 +11,7 @@ const namespace = 'storyboard-planning-preview'
 const lifetimeMs = 24 * 60 * 60_000
 
 /** Completed previews stay private until the creator commits the accepted draft. */
-export function storyboardPlanningPreviewKey(input: PreviewInput, defaultSkillIds: string[], targetSignature?: string): string {
+export function storyboardPlanningPreviewKey(input: PreviewInput, defaultSkillIds: string[], targetSignature?: string, projectId?:string): string {
   const model = one<Model>('SELECT * FROM models WHERE id=?', input.model_id)
   const provider = model ? one<Provider>('SELECT * FROM providers WHERE id=?', model.provider_id) : null
   const modelSignature = model ? createHash('sha256').update(JSON.stringify({ model: {
@@ -18,7 +19,7 @@ export function storyboardPlanningPreviewKey(input: PreviewInput, defaultSkillId
   }, provider: provider && { id: provider.id, adapter: provider.adapter, base_url: provider.base_url, protocol: provider.protocol,
     auth_header: provider.auth_header, auth_prefix: provider.auth_prefix, key_ciphertext: provider.key_ciphertext,
     enabled: provider.enabled, archived: provider.archived } })).digest('hex') : null
-  return createHash('sha256').update(JSON.stringify({ version: 1, signature: input.signature,
+  return createHash('sha256').update(JSON.stringify({ version: 1, ...(projectId&&generationScopeVersion(projectId,namespace)?{scope_version:generationScopeVersion(projectId,namespace)}:{}), signature: input.signature,
     scene_ids: [...input.scene_ids].sort(), document_ids: [...input.document_ids].sort(),
     model_id: input.model_id, model_signature: modelSignature, skill_ids: input.skill_ids ?? defaultSkillIds, mode: input.mode,
     duration_mode: input.duration_mode, instructions: input.instructions, target_duration: input.target_duration ?? null,
@@ -34,7 +35,8 @@ export function readStoryboardPlanningPreview(projectId: string, key: string): u
   try { return JSON.parse(row.payload) } catch { return null }
 }
 
-export function saveStoryboardPlanningPreview(projectId: string, key: string, preview: unknown): void {
+export function saveStoryboardPlanningPreview(projectId: string, key: string, preview: unknown, expectedVersion=generationScopeVersion(projectId,namespace)): void {
+  assertGenerationScope(projectId,namespace,expectedVersion)
   run(`INSERT INTO script_step_checkpoints (project_id,namespace,cache_key,payload,updated_at) VALUES (?,?,?,?,?)
     ON CONFLICT(project_id,namespace) DO UPDATE SET cache_key=excluded.cache_key,payload=excluded.payload,updated_at=excluded.updated_at`,
   projectId, namespace, key, JSON.stringify(preview), now())

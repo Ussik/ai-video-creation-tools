@@ -1,30 +1,29 @@
-.storyboard-production-modal { background: var(--fc-panel); }
-.storyboard-production-body { padding: 4px 22px 22px; }
+.storyboard-production-modal { display: flex; flex-direction: column; max-height: calc(100dvh - 40px); overflow: hidden; background: var(--fc-panel); }
+.storyboard-production-modal .storyboard-production-header { position: relative; flex: none; padding: 16px 22px; background: var(--fc-panel); }
+.storyboard-production-modal .storyboard-production-body { display: flex; flex: 1; flex-direction: column; min-height: 0; padding: 0; overflow: hidden; }
+.storyboard-production-context { flex: none; padding: 4px 22px 16px; }
+.storyboard-production-content { display: flex; flex: 1; flex-direction: column; min-height: 0; padding: 0 22px; overflow-y: auto; overscroll-behavior: contain; }
+.storyboard-production-content:empty, .storyboard-production-notices:empty { display: none; }
+.storyboard-production-content > .reference-failure-panel { flex: none; margin-top: 0; }
+.storyboard-production-content .reference-failure-list { flex: 1; max-height: none; }
+.storyboard-production-notices { flex: none; padding: 12px 0 0; }
 .storyboard-production-summary { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
 .storyboard-production-summary strong { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .storyboard-production-summary span { color: var(--fc-text-muted); font-size: 13px; }
 .storyboard-production-description, .storyboard-production-help { color: var(--fc-text-muted); font-size: 13px; line-height: 1.8; }
 .storyboard-production-description { margin: 0 0 20px; }
 .storyboard-production-help { margin: 0; }
-.storyboard-production-error { margin-top: 18px; }
-.storyboard-production-progress { display: flex; align-items: center; gap: 9px; margin-top: 18px; color: var(--fc-text-secondary); font-size: 13px; }
-.storyboard-production-actions {
-  display: flex;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 24px;
-  padding-top: 16px;
-  border-top: 1px solid var(--fc-border-soft);
-}
-.storyboard-production-actions .mantine-Button-root {
+.storyboard-production-error { margin: 0; overflow-wrap: anywhere; }
+.storyboard-production-progress { display: flex; align-items: center; gap: 9px; color: var(--fc-text-secondary); font-size: 13px; }
+.storyboard-production-actions { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; flex: none; gap: 8px; margin-top: 12px; padding: 12px 22px; border-top: 1px solid var(--fc-border-soft); }
+.storyboard-production-actions .reference-footer-primary-actions .mantine-Button-root {
   min-height: 40px;
   border-radius: 10px;
   font-weight: 650;
 }
 .storyboard-production-actions .mantine-Button-root[data-variant='default'] { min-width: 82px; }
 .storyboard-production-primary {
-  min-width: 176px;
+  min-width: 112px;
   border: 1px solid var(--fc-primary);
   background: var(--fc-primary);
   color: var(--fc-on-primary);
@@ -43,12 +42,19 @@
   border-color: var(--fc-primary);
   background: var(--fc-primary);
   color: var(--fc-on-primary);
-  opacity: .78;
+  opacity: .45; box-shadow: none;
 }
 .storyboard-production-primary .mantine-Button-section { color: currentColor; }
 
-@media (max-width: 480px) {
-  .storyboard-production-actions { justify-content: stretch; }
-  .storyboard-production-actions .mantine-Button-root { flex: 1 1 0; }
-  .storyboard-production-primary { min-width: 0; }
+.storyboard-production-cost { display: block; color: var(--fc-text-muted); font-size: 11px; padding: 8px 0; }
+@media (max-width: 600px) {
+  .storyboard-production-modal { max-height: calc(100dvh - 16px); }
+  .storyboard-production-modal .storyboard-production-header { padding: 12px 16px; }
+  .storyboard-production-context { padding: 0 16px 12px; }
+  .storyboard-production-content { padding: 0 16px; }
+  .storyboard-production-actions { gap: 8px; padding: 12px 16px; }
+  .storyboard-production-primary { min-width: 100px; max-width: 100%; }
 }
+
+.storyboard-production-modal.is-working .storyboard-production-summary { margin-bottom: 0; }
+.storyboard-production-modal.is-working .storyboard-production-actions { margin-top: 0; }

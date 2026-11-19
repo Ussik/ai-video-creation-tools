@@ -1,3 +1,5 @@
+import { recoverCanvasShotPrompts } from '../../web/src/features/canvas/canvas-shot-prompt-recovery.js'
+import { validateManagedPromptDocument } from '@video-studio/shared/visuals/prompt-document'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -141,4 +143,26 @@ test('malformed handoff metadata rejects both canvas routes without replacing th
       assert.deepEqual(await call('GET', url), saved)
     }
   }
+})
+
+
+test('inherited unfinished shot prompt persists through the formal canvas API and reloads idempotently without generation', async () => {
+  const project = await call('POST', '/api/projects', { name: '来源标记恢复' })
+  const raw = '原始首帧。\n【项目画风约束】\n动画\n【本镜首帧构图约束】\n原站位\n【本镜首帧构图约束结束】'
+  const shot = await call('POST', `/api/projects/${project.id}/shots`, { title: '原镜头', prompt: '叙事', image_prompt: raw, duration: 6 })
+  const sections: PromptSectionDocument = { version: 1, blocks: [{ id: 'body-1', kind: 'body', text: raw },
+    { id: 'managed-1', kind: 'managed', name: '项目画风约束', text: '', sourceText: '', deleted: true, deletionSource: 'source' }] }
+  const url = `/api/projects/${project.id}/canvas`, initial = await call('GET', url)
+  const saved = await call('PUT', url, { ...initial, nodes: [{ ...node('inherited', sections), shot_id: shot.id, prompt: raw,
+    settings: { ...node('inherited', sections).settings, prompt_override: true, prompt_body: raw, prompt_base: raw,
+      prompt_template: `${raw}\n\n【项目画风约束】\n项目画风\n【项目画风约束结束】` } }] })
+  const recovered = recoverCanvasShotPrompts(saved, [shot])
+  assert.notEqual(recovered, saved)
+  const persisted = await call('PUT', url, recovered)
+  const reloaded = await call('GET', url)
+  assert.deepEqual(reloaded, persisted)
+  assert.equal(recoverCanvasShotPrompts(reloaded, [shot]), reloaded)
+  assert.doesNotThrow(() => validateManagedPromptDocument(reloaded.nodes[0].text))
+  assert.deepEqual(reloaded.nodes[0].settings.prompt_sections.blocks.map((b: { id: string }) => b.id), ['body-1', 'managed-1'])
+  assert.equal(all('SELECT * FROM jobs').length, 0)
 })

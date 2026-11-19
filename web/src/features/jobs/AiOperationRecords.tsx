@@ -13,7 +13,7 @@ export function operationLabel(route: string): string {
   if (/script/.test(route)) return '剧本创作处理'
   if (/canvas|node-proposals/.test(route)) return '画布创作处理'
   if (/review/.test(route)) return '素材核对'
-  return 'AI 创作处理'
+  return '未分类技术操作'
 }
 function object(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
@@ -44,7 +44,7 @@ function qualityLabel(value: unknown): string {
     : status === 'needs_work' ? '完整候选已保留，仍需修改并复查' : status === 'inconclusive' ? '完整候选已保留，复查尚无结论'
       : status === 'edited' || status === 'pending_review' ? '完整候选已保留，等待当前版本复查' : ''
 }
-export default function AiOperationRecords({ projectId, refreshKey = 0 }: { projectId: string; refreshKey?: number }) {
+export default function AiOperationRecords({ projectId, refreshKey = 0, operationIds, excludedIds = [] }: { projectId: string; refreshKey?: number; operationIds?: string[]; excludedIds?: string[] }) {
   const [records, setRecords] = useState<AiOperationRecord[]>([]), [error, setError] = useState('')
   const [notice, setNotice] = useState(''), [stopping, setStopping] = useState<string>()
   const [expanded, setExpanded] = useState<string[]>([])
@@ -74,11 +74,12 @@ export default function AiOperationRecords({ projectId, refreshKey = 0 }: { proj
     } catch (issue) { if (project.current === capturedProject) setError(issue instanceof Error ? issue.message : '停止本地处理失败') }
     finally { if (project.current === capturedProject) setStopping(undefined) }
   }
-  if (!records.length) return error ? <Text size="xs" c="dimmed">创作处理记录暂不可用：{error}</Text> : null
-  return <Paper withBorder p="md" mb="lg" aria-label="AI 创作处理记录"><Stack gap="sm">
-    <div><Text fw={600}>AI 创作处理记录</Text><Text size="xs" c="dimmed">请求中断后可核对原结果，回到原功能继续编辑与应用。本地停止后的远端任务与计费以提供商记录为准。</Text></div>
+  const visible = records.filter(record => (!operationIds || operationIds.includes(record.id)) && !excludedIds.includes(record.id))
+  if (!visible.length) return error ? <Text size="xs" c="dimmed">创作处理记录暂不可用：{error}</Text> : null
+  return <Paper withBorder p="md" mb="lg" aria-label="内部操作与恢复记录"><Stack gap="sm">
+    <div><Text fw={600}>内部操作与恢复记录</Text><Text size="xs" c="dimmed">请求中断后可核对原结果，回到原功能继续编辑与应用。本地停止后的远端任务与计费以提供商记录为准。</Text></div>
     {error && <Alert color="red">{error}</Alert>}{notice && <Alert color="blue">{notice}</Alert>}
-    <Accordion multiple value={expanded} onChange={setExpanded}>{records.map(record => {
+    <Accordion multiple value={expanded} onChange={setExpanded}>{visible.map(record => {
       const retained = record.result ?? record.candidate
       const candidate = operationCandidate(retained), quality = qualityLabel(retained)
       return <Accordion.Item key={record.id} value={record.id}>

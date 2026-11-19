@@ -86,18 +86,14 @@
 .storyboard-planner-.workspace-disclosure .workspace-disclosure-control { width: fit-content; cursor: pointer; }
 .storyboard-planner-.workspace-disclosure p { margin: 10px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .storyboard-planner-error { margin: 0; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--fc-danger) 30%, var(--fc-border)); border-radius: 8px; background: var(--fc-danger-soft); color: var(--fc-danger); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
-div.storyboard-planner-error { display: grid; gap: 8px; }
+div.storyboard-planner-error { display: grid; flex-shrink: 0; gap: 8px; }
 .storyboard-planner-error-message { display: flex; align-items: center; gap: 12px; }
 .storyboard-planner-error-message > span { flex: 1; min-width: 0; white-space: pre-wrap; }
 .storyboard-planner-error .mantine-Button-root { flex: none; margin-left: auto; }
-.storyboard-planner-error-details { min-width: 0; }
+.storyboard-planner-error-details { min-width: 0; max-height: min(280px, 34dvh); overflow-y: auto; overscroll-behavior: contain; }
 .storyboard-planner-error-details .workspace-disclosure-control { padding: 4px 0; color: inherit; font-size: 12px; }
 .storyboard-planner-error-details section { margin: 10px 0; }
 .storyboard-planner-error-details pre { max-height: 300px; margin: 6px 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
-.storyboard-planner-task-progress { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; padding: 12px 14px; border: 1px solid var(--fc-border-soft); border-radius: 8px; background: var(--fc-surface); color: var(--fc-text-muted); font-size: 12px; line-height: 1.7; font-variant-numeric: tabular-nums; }
-.storyboard-planner-task-progress strong { color: var(--fc-text); font-weight: 550; }
-.storyboard-planner-task-progress > span { margin-left: auto; color: var(--fc-text-subtle); }
-.storyboard-planner-task-progress p { flex-basis: 100%; margin: 0; }
 .storyboard-planner-preview { display: grid; gap: 16px; min-width: 0; margin: 0; padding: 0; border: 0; }
 .storyboard-planner-preview > .mantine-NumberInput-root { max-width: 180px; }
 .storyboard-planner-shot { min-width: 0; border: 1px solid var(--fc-border); border-radius: 10px; overflow: hidden; }
@@ -110,6 +106,9 @@ div.storyboard-planner-error { display: grid; gap: 8px; }
 .storyboard-planner-empty strong { font-size: 13px; font-weight: 500; color: var(--fc-text-muted); }
 .storyboard-planner-empty p { margin: 0; font-size: 12px; }
 .storyboard-planner-actions { display: flex; align-items: center; flex: none; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--fc-border-soft); background: var(--fc-panel); }
+.storyboard-planner-reference-actions { display: flex; flex: none; flex-wrap: nowrap; gap: 8px; }
+.storyboard-planner-reference-actions { align-items: center; }
+.storyboard-planner-reference-actions > small { color: var(--fc-text-muted); font-size: 11px; }
 .storyboard-planner-footer-status { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; flex: 1; min-width: 0; color: var(--fc-text-muted); font-size: 12px; line-height: 1.6; font-variant-numeric: tabular-nums; }
 .storyboard-planner-footer-status small { display: flex; align-items: center; gap: 4px; width: 100%; color: var(--fc-text-subtle); font-size: 10px; }
 .storyboard-planner-footer-status .lucide-loader-circle, .storyboard-planner-empty > .lucide-loader-circle { animation: storyboard-planner-spin 1.2s linear infinite; }
@@ -141,3 +140,7 @@ div.storyboard-planner-error { display: grid; gap: 8px; }
   .storyboard-planner-footer-status { flex-basis: 100%; }
 }
 @media (prefers-reduced-motion: reduce) { .storyboard-planner-footer-status .lucide-loader-circle, .storyboard-planner-empty > .lucide-loader-circle { animation: none; } }
+
+.storyboard-planner-actions.has-reference-actions { justify-content: flex-end; flex-wrap: wrap; }
+.storyboard-planner-actions.has-reference-actions .storyboard-planner-reference-actions { display: flex; width: auto; margin: 0; }
+.storyboard-planner-actions.has-reference-actions .storyboard-planner-primary { min-width: 112px; }

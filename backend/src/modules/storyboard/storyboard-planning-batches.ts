@@ -1,6 +1,8 @@
+import { storyboardOutlineExecutionKey } from './storyboard-outline-execution.js'
 import { createHash } from 'node:crypto'
+import { storyboardOutlineContractGuide, storyboardOutlineStructuralContext } from './storyboard-outline-contract.js'
 import { z } from 'zod'
-import { generateStructuredOutput, type StructuredGenerator } from '../generation/model-output.js'
+import { generateStructuredOutput, outputShapeExample, type StructuredOutputCheckpoint, type StructuredGenerator } from '../generation/model-output.js'
 import type { StoryboardPlanningControl } from './storyboard-planning-tasks.js'
 import type { StoryboardPlanningProgress } from '@video-studio/shared/storyboard/storyboard-planning-types'
 import { withModelOperationStage } from '../generation/model-result-observation.js'
@@ -12,7 +14,7 @@ export type StoryboardOutlineShot = {
 export type StoryboardPlanningOutline<Shot extends StoryboardOutlineShot, Direction> = {
   scenes: Array<{ scene_id: string; scene_duration: number; scene_direction: Direction; shots: Shot[] }>
 }
-type BatchControl = Pick<StoryboardPlanningControl, 'signal' | 'steps' | 'retain'> & {
+type BatchControl = Pick<StoryboardPlanningControl, 'signal' | 'steps' | 'retain'> & Partial<Pick<StoryboardPlanningControl, 'stage'>> & {
   progress?(value: StoryboardPlanningProgress): void
 }
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -94,14 +96,19 @@ export async function generateStoryboardPlanningBatches<Shot extends StoryboardO
     if (options.recoverOutline && Object.hasOwn(control.steps, outlineKey + ':unvalidated')) {
       outline = options.outlineSchema.parse(control.steps[outlineKey + ':unvalidated']); validateOutline(outline)
     } else {
+    const outputKey = outlineKey + ':structured_output:v1'
+    const outputCheckpoint = options.structuralRepair ? structuredClone((control.steps[outputKey] || {}) as StructuredOutputCheckpoint) : undefined
     outline = await withModelOperationStage('outline_generation', () => generateStructuredOutput('storyboard_scene_plan', options.outlineSchema, options.generate,
       (options.outlinePrompt ?? options.prompt) + '\n【本次仅生成完整场面与镜头大纲】\n' +
       '这是分批分镜的第一阶段。先完整设计全部所选场次的调度、镜头顺序、叙事职责、起止状态、接镜和时长。' +
       '每镜prompt写完整动作与对白节拍，audio_plan把所有有来源的台词、旁白逐字分配到对应镜头，并明确共同声场和必要声音；不能把同一句台词重复分配到相邻镜头。' +
       'scene_direction仅包含anchors、blocking、axis、dramatic_progression、sound这五个精确字段；不使用staging、emotional_arc或其他同义键。' +
       '所有JSON字符串内的英文双引号必须转义，或在正文表达中使用中文引号；不要输出Markdown代码围栏。' +
-      '本次不扩写image_prompt、video_prompt或逐镜directing；后续只会在此大纲上补充画面与摄影，不会重新分配台词或调整镜头边界。只按本次Schema返回完整大纲。',
-    { signal: control.signal, validate: validateOutline, correctionInstructions: options.correctionInstructions, structuralRepair: options.structuralRepair, stopOnBusinessError: true }),
+      '本次不扩写image_prompt、video_prompt或逐镜directing；后续只会在此大纲上补充画面与摄影，不会重新分配台词或调整镜头边界。只按本次Schema返回完整大纲。' + storyboardOutlineContractGuide(options.outlineSchema),
+    { signal: control.signal, validate: validateOutline, correctionInstructions: options.correctionInstructions, structuralRepair: options.structuralRepair, stopOnBusinessError: true,
+      structuralRepairContext: storyboardOutlineStructuralContext,
+      ...(outputCheckpoint ? { checkpoint: outputCheckpoint, guardInitialDispatch: true, freezeCorrection: true, preserveInputIdentity: true,
+        persistCheckpoint: () => control.retain(outputKey, structuredClone(outputCheckpoint)) } : {}) }),
     { field_path: 'scenes', checkpoint_reused: false })
     }
     } catch (issue) {
@@ -114,6 +121,9 @@ export async function generateStoryboardPlanningBatches<Shot extends StoryboardO
   assertActive()
   const originalOutline = outline
   if (options.resolveOutline) { outline = await options.resolveOutline(outline, outlineKey); assertActive(); validateOutline(outline) }
+  // Outline checks may set reviewing/repairing/rechecking; expansion returns to its owning phase.
+  if (options.resolveOutline) control.retain(storyboardOutlineExecutionKey, { outline_key: outlineKey, stage: 'expanding' })
+  control.stage?.(options.namespace === 'repair' ? 'repairing' : 'generating')
   const outlineHash = hash(outline)
   const originalHash = hash(originalOutline)
   const totalShots = outline.scenes.reduce((sum, scene) => sum + scene.shots.length, 0)
@@ -193,13 +203,14 @@ export async function generateStoryboardPlanningBatches<Shot extends StoryboardO
         batch = await withModelOperationStage('shot_expansion', () => generateStructuredOutput('storyboard_shot_batch', batchSchema, options.generate,
           (options.expansionPrompt?.(scene, offset, count, outline) ?? options.prompt) + '\n【仅扩写本批镜头的画面与摄影】\n' +
           '整场大纲已通过校验，是本次镜头身份、时长、台词分配、动作起止与接镜的唯一边界。' +
-          '只返回指定镜头序号的expansion字段；不能重新规划镜头、重分配台词或修改大纲。' +
+          'JSON根对象必须包含scene_id和shots数组；每个shots元素只能包含shot_index和expansion。只扩写指定镜头序号的expansion字段；不能重新规划镜头、重分配台词或修改大纲。' +
           '参考完整大纲中的前后镜头，首帧、连续动作、摄影终点与接镜须相容，不重复相邻镜已经完成的动作。' +
           'audio_plan已锁定，video_prompt不重复下达台词、旁白、声场或音乐指令。' +
           'directing仅含purpose、camera、cut；cut.carry_over即使末镜ending也必须说明具体收束状态，不能留空。' +
           'JSON字符串内英文双引号必须转义，或使用中文引号；不输出Markdown代码围栏。\n' +
+          `结构示例（只示意字段层级，文本须据本镜填写）：${JSON.stringify({ scene_id: scene.scene_id, shots: indexes.map(shot_index => ({ shot_index, expansion: outputShapeExample(options.expansionSchema) })) })}\n` +
           (options.expansionPrompt ? '' : `完整大纲：${JSON.stringify(outline)}\n`) + `本批：${JSON.stringify({ scene_id: scene.scene_id, shot_indexes: indexes })}`,
-        { signal: control.signal, validate: value => { merge(value, scene, offset) }, structuralRepair: options.structuralRepair, stopOnBusinessError: true }),
+        { signal: control.signal, correctionContext: 'response_only', validate: value => { merge(value, scene, offset) }, structuralRepair: options.structuralRepair, stopOnBusinessError: true }),
         { unit_index: completedShots, unit_count: totalShots, scene_id: scene.scene_id, shot_id: scene.shots[offset]?.shot_id || undefined,
           field_path: `scenes.${scene.scene_id}.shots.${offset}`, checkpoint_reused: false })
         assertActive(); control.retain(key, batch)

@@ -1,9 +1,10 @@
+import { ShotPurgeDetails, ShotPurgeBlockers, shotPurgeMessage } from './ShotPurgeDetails'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ActionIcon, Badge, Button, Checkbox, Loader, Modal, NumberInput, Select, Table, Tabs, Textarea, TextInput, Tooltip, UnstyledButton } from '@mantine/core'
 import { ArchiveRestore, ArrowDown, ArrowLeft, ArrowUp, Clapperboard, Copy, ImageIcon, Plus, RefreshCw, Save, Search, Trash2 } from 'lucide-react'
 import { api, json, type ProjectDetail, type Shot } from '../../shared/api/api'
 import { useAppDialog } from '../../shared/ui/AppDialog'
-import type { ShotManagementSnapshot as Snapshot, ShotManagementActionInput } from '@video-studio/shared/storyboard/shot-management'
+import type { ShotManagementSnapshot as Snapshot, ShotManagementActionInput, ShotPurgePreview, ShotPurgeResult } from '@video-studio/shared/storyboard/shot-management'
 import './shot-manager.css'
 
 type Patch = Required<NonNullable<ShotManagementActionInput['patch']>>
@@ -31,6 +32,7 @@ function ShotManagerContent({ opened, onClose, detail, activeCanvasId, onRefresh
   const appliedScope = useRef(initialScopeKey)
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [loading, setLoading] = useState(false), [pending, setPending] = useState<string | null>(null)
+  const [purgeBlockers, setPurgeBlockers] = useState<string[]>([])
   const [error, setError] = useState(''), [conflict, setConflict] = useState(false)
   const [tab, setTab] = useState('shots'), [designId, setDesignId] = useState(allDesigns), [sceneId, setSceneId] = useState(allScenes), [query, setQuery] = useState('')
   const [showEmptyScenes, setShowEmptyScenes] = useState(false)
@@ -202,25 +204,33 @@ function ShotManagerContent({ opened, onClose, detail, activeCanvasId, onRefresh
       }
     }
   }
-  async function purgeShot() {
-    if (!selected?.deleted_at || selected.purge_blockers?.length) return
-    await confirmAction({ action: 'purge', shot_id: selected.shot.id }, {
-      title: `彻底删除「${selected.shot.title}」？`, message: '删除后不可恢复；关联素材与生成记录保留。',
-      confirmLabel: '彻底删除', cancelLabel: '取消', danger: true,
-    }, '镜头已彻底删除')
+  async function purgeShots(shotIds: string[]) {
+    if (!shotIds.length || locked.current || guardLock.current) return
+    const projectId = detail.id, sequence = generation.current, epoch = lifecycle.current
+    guardLock.current = true; setGuarding(true); setError(''); setConflict(false); setPurgeBlockers([])
+    try {
+      const preview = await api<ShotPurgePreview>(`/projects/${projectId}/shot-management/purge-preview`, json('POST', { shot_ids: shotIds }))
+      if (!isCurrent(projectId, sequence)) return
+      if (preview.blockers.length) { setPurgeBlockers(preview.blockers); setError(`本次未删除：仍有 ${new Set(preview.blockers).size} 项条件尚不满足，请先核对原因。`); return }
+      const confirmed = await dialog.confirm({ title: `彻底删除${preview.shots.length}个分镜？`,
+        message: shotPurgeMessage(preview), details: <ShotPurgeDetails preview={preview} />, scrollable: true,
+        confirmLabel: '彻底删除', cancelLabel: '取消', danger: true })
+      if (!confirmed || !isCurrent(projectId, sequence)) return
+      locked.current = true; setPending('purge')
+      const result = await api<ShotPurgeResult>(`/projects/${projectId}/shot-management/purge`, json('POST', { shot_ids: shotIds, revision: preview.revision }))
+      if (!isCurrent(projectId, sequence)) return
+      onNotice?.(result.detail)
+      if (result.pending_file_count) setError(result.detail)
+      await load(); await onRefresh()
+    } catch (issue) { if (live.current.projectId === projectId && live.current.opened) { setError(errorText(issue)); setConflict((issue as Error & {status?:number}).status === 409) } }
+    finally { if (lifecycle.current === epoch) { locked.current = false; guardLock.current = false; setGuarding(false); setPending(null) } }
   }
-  async function purgeSelected() {
-    const entries = trashedEntries.filter(entry => checkedIds.includes(entry.shot.id))
-    if (!entries.length || entries.some(entry => entry.purge_blockers?.length)) return
-    await confirmAction({ action: 'purge_many', shot_ids: entries.map(entry => entry.shot.id) }, {
-      title: `彻底删除选中的 ${entries.length} 个镜头？`, message: '删除后不可恢复；关联素材与生成记录保留。',
-      confirmLabel: '彻底删除', cancelLabel: '取消', danger: true,
-    }, `已彻底删除 ${entries.length} 个镜头`)
-  }
+  async function purgeShot() { if (selected?.deleted_at) await purgeShots([selected.shot.id]) }
+  async function purgeSelected() { await purgeShots(trashedEntries.filter(entry => checkedIds.includes(entry.shot.id)).map(entry => entry.shot.id)) }
   async function purgeAsset(asset: Snapshot['trashed_assets'][number]) {
     if (asset.purge_blockers?.length) return
     await confirmAction({ action: 'purge_asset', asset_id: asset.id }, {
-      title: `彻底删除「${asset.filename}」？`, message: '删除后不可恢复。移除素材记录，保留本地文件及生成记录。',
+      title: `移除「${asset.filename}」素材记录？`, message: '仅移除素材记录，保留本地文件及生成记录；这不是连同文件一起删除。',
       confirmLabel: '彻底删除', cancelLabel: '取消', danger: true,
     }, '素材记录已彻底删除')
   }
@@ -229,7 +239,8 @@ function ShotManagerContent({ opened, onClose, detail, activeCanvasId, onRefresh
     if (!current) return
     const shots = current.shots.filter(entry => entry.deleted_at), assets = current.trashed_assets
     const blockers = current.empty_trash_blockers ?? [...shots.flatMap(entry => entry.purge_blockers || []), ...assets.flatMap(asset => asset.purge_blockers || [])]
-    if ((!shots.length && !assets.length) || blockers.length) return
+    if (!shots.length && (!assets.length || blockers.length)) return
+    if (shots.length) { await purgeShots(shots.map(entry => entry.shot.id)); return }
     await confirmAction({ action: 'empty_trash' }, {
       title: '清空整个项目的回收站？',
       message: `将彻底删除 ${shots.length} 个镜头和 ${assets.length} 个素材，不受当前方案、场次或搜索筛选影响。删除后不可恢复；保留本地文件、未回收的关联素材与生成记录。`,
@@ -240,7 +251,7 @@ function ShotManagerContent({ opened, onClose, detail, activeCanvasId, onRefresh
     if (!selected || selected.delete_blockers.length || locked.current || guardLock.current) return
     const projectId = detail.id, sequence = generation.current
     guardLock.current = true; setGuarding(true)
-    const confirmed = await dialog.confirm({ title: '将镜头移入回收站？', message: `「${selected.shot.title}」将从分镜列表中收起，可在回收站恢复。${dirty ? '当前未保存修改将被放弃。' : ''}`, confirmLabel: '移入回收站', cancelLabel: '取消', danger: true })
+    const confirmed = await dialog.confirm({ title: '将镜头移入回收站？', message: `「${selected.shot.title}」将从分镜列表中收起；图片、视频、参考和历史仍保留，可在回收站恢复。${dirty ? '当前未保存修改将被放弃。' : ''}`, confirmLabel: '移入回收站', cancelLabel: '取消', danger: true })
     guardLock.current = false
     if (!isCurrent(projectId, sequence)) return
     setGuarding(false)
@@ -302,9 +313,8 @@ function ShotManagerContent({ opened, onClose, detail, activeCanvasId, onRefresh
   }
   const checkedEntries = activeEntries.filter(entry => checkedIds.includes(entry.shot.id))
   const checkedRecycleBlockers = checkedEntries.flatMap(entry => entry.delete_blockers.map(reason => `${entry.shot.title}：${reason}`))
-  const checkedPurgeBlockers = trashedEntries.filter(entry => checkedIds.includes(entry.shot.id)).flatMap(entry => (entry.purge_blockers || []).map(reason => `${entry.shot.title}：${reason}`))
-  const trashPurgeBlockers = snapshot?.empty_trash_blockers ?? [...trashedEntries.flatMap(entry => (entry.purge_blockers || []).map(reason => `${entry.shot.title}：${reason}`)),
-    ...(snapshot?.trashed_assets || []).flatMap(asset => (asset.purge_blockers || []).map(reason => `${asset.filename}：${reason}`))]
+  const checkedPurgeBlockers: string[] = []
+  const trashPurgeBlockers = trashedEntries.length ? [] : (snapshot?.trashed_assets || []).flatMap(asset => (asset.purge_blockers || []).map(reason => `${asset.filename}：${reason}`))
   const planEntries = (tab === 'trash' ? trashedEntries : activeEntries)
     .filter(entry => designId !== allDesigns && (entry.shot.design_id || baseDesign) === designId)
   const planRecycleBlockers = tab === 'trash' ? []
@@ -361,13 +371,14 @@ function ShotManagerContent({ opened, onClose, detail, activeCanvasId, onRefresh
         <div className="shot-manager-view-actions">
           <Checkbox label="显示空场次" aria-label="显示空场次" size="xs" checked={showEmptyScenes} disabled={blocked} onChange={event => { const checked = event.currentTarget.checked; filter(() => setShowEmptyScenes(checked)) }} />
           {tab === 'trash' && <Tooltip label={trashPurgeBlockers.length ? `暂不能清空：${trashPurgeBlockers.join('；')}` : '彻底删除整个项目的回收记录，不受当前筛选影响'}>
-            <span><Button size="compact-xs" color="red" variant="subtle" leftSection={<Trash2 size={13} />} disabled={blocked || (!trashedEntries.length && !snapshot?.trashed_assets.length) || !!trashPurgeBlockers.length} loading={pending === 'empty_trash'} onClick={() => void emptyTrash()}>清空回收站</Button></span>
+            <span><Button size="compact-xs" color="red" variant="subtle" leftSection={<Trash2 size={13} />} disabled={blocked || (!trashedEntries.length && !snapshot?.trashed_assets.length) || !!trashPurgeBlockers.length} loading={pending === 'empty_trash'} onClick={() => void emptyTrash()}>{trashedEntries.length ? '预览删除回收分镜' : '清空素材记录'}</Button></span>
           </Tooltip>}
         </div>
         {tab === 'trash' && trashPurgeBlockers.length > 0 && <p className="shot-manager-recycle-blockers shot-manager-trash-blockers" role="status">暂不能清空回收站：{trashPurgeBlockers.slice(0, 3).join('；')}{trashPurgeBlockers.length > 3 ? `；另有 ${trashPurgeBlockers.length - 3} 项引用` : ''}。请先解除引用，也可单独删除未被引用的项目。</p>}
         {planRecycleBlockers.length > 0 && <p className="shot-manager-recycle-blockers" role="status">暂不能回收此方案：{planRecycleBlockers.join('；')}。请先从引用画布或关联流程中解除这些引用。</p>}
       </header>
       {error && <div className="shot-manager-error" role="alert"><span>{error}</span>{conflict && <Button variant="subtle" size="compact-xs" disabled={blocked} onClick={() => void guard(() => load())}>重新读取最新版本</Button>}</div>}
+      {error && purgeBlockers.length > 0 && <ShotPurgeBlockers reasons={purgeBlockers} />}
       {generationDirty && <p className="shot-manager-save-impact" role="status">保存描述、提示词、时长或起止状态后，需要重新制作；当前选片和时间线将取消，历史素材与任务保留。</p>}
       {loading ? <div className="shot-manager-empty" role="status"><Loader size="sm" /><p>正在读取项目分镜…</p></div> : snapshot ? <>
         <div className="shot-manager-workspace">
@@ -400,7 +411,7 @@ function ShotManagerContent({ opened, onClose, detail, activeCanvasId, onRefresh
               {tab === 'trash' && <section className="shot-manager-asset-trash" aria-label="回收站素材"><h3>已回收素材 · {assets.length}</h3>{assets.map(asset => <div className="shot-manager-asset-row" key={asset.id}>
                 <span><strong>{asset.filename}</strong><small>{asset.kind === 'image' ? '图片' : asset.kind === 'video' ? '视频' : asset.kind === 'audio' ? '音频' : '文本'}</small>{!!asset.purge_blockers?.length && <small className="shot-manager-asset-blockers">暂不能彻底删除：{asset.purge_blockers.join('；')}</small>}</span>
                 <div className="shot-manager-asset-actions"><Button size="compact-xs" variant="default" leftSection={<ArchiveRestore size={13} />} disabled={blocked} loading={pending === 'restore_asset'} onClick={() => void act({ action: 'restore_asset', asset_id: asset.id }, '素材已恢复')}>恢复素材</Button>
-                  <Button size="compact-xs" color="red" variant="subtle" aria-label={`彻底删除素材：${asset.filename}`} leftSection={<Trash2 size={13} />} disabled={blocked || !!asset.purge_blockers?.length} loading={pending === 'purge_asset'} onClick={() => void purgeAsset(asset)}>彻底删除</Button></div>
+                  <Button size="compact-xs" color="red" variant="subtle" aria-label={`移除素材记录：${asset.filename}`} leftSection={<Trash2 size={13} />} disabled={blocked || !!asset.purge_blockers?.length} loading={pending === 'purge_asset'} onClick={() => void purgeAsset(asset)}>移除记录</Button></div>
               </div>)}{!assets.length && <p className="shot-manager-help">暂无已回收素材</p>}</section>}
             </div>
             {tab === 'shots' && checkedIds.length > 0 && <div className="shot-manager-batch"><strong>已选 {checkedIds.length} 镜</strong>
@@ -411,7 +422,7 @@ function ShotManagerContent({ opened, onClose, detail, activeCanvasId, onRefresh
               {checkedRecycleBlockers.length > 0 && <p className="shot-manager-batch-help shot-manager-batch-blockers" role="status">暂不能回收：{checkedRecycleBlockers.join('；')}。请先从引用画布或关联流程中解除这些引用。</p>}
             </div>}
             {tab === 'trash' && checkedIds.length > 0 && <div className="shot-manager-batch"><strong>已选 {checkedIds.length} 镜</strong>
-              <Button size="xs" color="red" leftSection={<Trash2 size={14} />} disabled={blocked || !!checkedPurgeBlockers.length} loading={pending === 'purge_many'} onClick={() => void purgeSelected()}>批量彻底删除</Button>
+              <Button size="xs" color="red" leftSection={<Trash2 size={14} />} disabled={blocked} loading={pending === 'purge_many'} onClick={() => void purgeSelected()}>批量彻底删除</Button>
               {checkedPurgeBlockers.length > 0 && <p className="shot-manager-batch-help shot-manager-batch-blockers" role="status">暂不能彻底删除：{checkedPurgeBlockers.join('；')}。请先解除引用。</p>}
             </div>}
           </section>
@@ -423,7 +434,7 @@ function ShotManagerContent({ opened, onClose, detail, activeCanvasId, onRefresh
                 <section className="shot-manager-field-group"><h3>生成提示词</h3><Textarea label="图片提示词" value={draft.image_prompt} minRows={3} autosize disabled={blocked || !!selected.deleted_at} onChange={event => updateDraft({ image_prompt: event.currentTarget.value })} /><Textarea label="视频提示词" value={draft.video_prompt} minRows={3} autosize disabled={blocked || !!selected.deleted_at} onChange={event => updateDraft({ video_prompt: event.currentTarget.value })} /></section>
                 <section className="shot-manager-field-group"><h3>起止状态与接镜</h3><Textarea label="起始状态" value={draft.start_state} minRows={2} autosize disabled={blocked || !!selected.deleted_at} onChange={event => updateDraft({ start_state: event.currentTarget.value })} /><Textarea label="结束状态" value={draft.end_state} minRows={2} autosize disabled={blocked || !!selected.deleted_at} onChange={event => updateDraft({ end_state: event.currentTarget.value })} /><Textarea label="剪辑备注" value={draft.cut_note} minRows={2} autosize disabled={blocked || !!selected.deleted_at} onChange={event => updateDraft({ cut_note: event.currentTarget.value })} /></section>
               </div><div className="shot-manager-reference-summary"><h3>制作与引用</h3><p>{selected.canvas_refs.length ? `引用画布：${selected.canvas_refs.map(canvas => canvas.name).join('、')}` : '目前没有画布引用此镜头。'}</p><p>关联素材 {selected.asset_count} 个{selected.shot.selected_asset_id ? '，已选择成片素材。' : '。'}</p>{!selected.deleted_at && selected.delete_blockers.length > 0 && <div className="shot-manager-blockers"><strong>暂不能移入回收站</strong><ul>{selected.delete_blockers.map(reason => <li key={reason}>{reason}</li>)}</ul></div>}{!!selected.deleted_at && !!selected.purge_blockers?.length && <div className="shot-manager-blockers"><strong>暂不能彻底删除</strong><ul>{selected.purge_blockers.map(reason => <li key={reason}>{reason}</li>)}</ul></div>}</div></div>
-              <footer>{selected.deleted_at ? <><Button size="xs" variant="default" leftSection={<ArchiveRestore size={14} />} disabled={blocked} loading={pending === 'restore'} onClick={() => void act({ action: 'restore', shot_id: selected.shot.id }, '镜头已恢复')}>恢复镜头</Button><Button size="xs" color="red" variant="subtle" aria-label="彻底删除镜头" leftSection={<Trash2 size={14} />} disabled={blocked || !!selected.purge_blockers?.length} loading={pending === 'purge'} onClick={() => void purgeShot()}>彻底删除</Button></> : <><div className="shot-manager-order"><Tooltip label="在同方案、同场次内上移"><ActionIcon variant="default" aria-label="上移镜头" disabled={blocked || dirty || siblingIndex <= 0} onClick={() => void act({ action: 'move', shot_id: selected.shot.id, direction: 'up' }, '镜头顺序已更新')}><ArrowUp size={15} /></ActionIcon></Tooltip><Tooltip label="在同方案、同场次内下移"><ActionIcon variant="default" aria-label="下移镜头" disabled={blocked || dirty || siblingIndex < 0 || siblingIndex >= siblings.length - 1} onClick={() => void act({ action: 'move', shot_id: selected.shot.id, direction: 'down' }, '镜头顺序已更新')}><ArrowDown size={15} /></ActionIcon></Tooltip><Button size="xs" variant="default" leftSection={<Copy size={14} />} disabled={blocked || dirty} loading={pending === 'duplicate'} onClick={() => void act({ action: 'duplicate', shot_id: selected.shot.id }, '镜头已复制')}>复制</Button><Tooltip label={selected.delete_blockers.length ? selected.delete_blockers.join('；') : '移入回收站后可恢复'}><ActionIcon variant="subtle" color="red" aria-label="移入回收站" disabled={blocked || selected.delete_blockers.length > 0} onClick={() => void recycle()}><Trash2 size={16} /></ActionIcon></Tooltip></div><Button size="xs" leftSection={<Save size={14} />} disabled={blocked || !dirty || !validDraft} loading={pending === 'update'} onClick={() => void act({ action: 'update', shot_id: selected.shot.id, patch: { ...draft, title: draft.title.trim() } }, '镜头修改已保存')}>保存修改</Button></>}</footer>
+              <footer>{selected.deleted_at ? <><Button size="xs" variant="default" leftSection={<ArchiveRestore size={14} />} disabled={blocked} loading={pending === 'restore'} onClick={() => void act({ action: 'restore', shot_id: selected.shot.id }, '镜头已恢复')}>恢复镜头</Button><Button size="xs" color="red" variant="subtle" aria-label="彻底删除镜头" leftSection={<Trash2 size={14} />} disabled={blocked} loading={pending === 'purge'} onClick={() => void purgeShot()}>彻底删除</Button></> : <><div className="shot-manager-order"><Tooltip label="在同方案、同场次内上移"><ActionIcon variant="default" aria-label="上移镜头" disabled={blocked || dirty || siblingIndex <= 0} onClick={() => void act({ action: 'move', shot_id: selected.shot.id, direction: 'up' }, '镜头顺序已更新')}><ArrowUp size={15} /></ActionIcon></Tooltip><Tooltip label="在同方案、同场次内下移"><ActionIcon variant="default" aria-label="下移镜头" disabled={blocked || dirty || siblingIndex < 0 || siblingIndex >= siblings.length - 1} onClick={() => void act({ action: 'move', shot_id: selected.shot.id, direction: 'down' }, '镜头顺序已更新')}><ArrowDown size={15} /></ActionIcon></Tooltip><Button size="xs" variant="default" leftSection={<Copy size={14} />} disabled={blocked || dirty} loading={pending === 'duplicate'} onClick={() => void act({ action: 'duplicate', shot_id: selected.shot.id }, '镜头已复制')}>复制</Button><Tooltip label={selected.delete_blockers.length ? selected.delete_blockers.join('；') : '移入回收站会保留素材、参考和历史，可恢复'}><ActionIcon variant="subtle" color="red" aria-label="移入回收站" disabled={blocked || selected.delete_blockers.length > 0} onClick={() => void recycle()}><Trash2 size={16} /></ActionIcon></Tooltip></div><Button size="xs" leftSection={<Save size={14} />} disabled={blocked || !dirty || !validDraft} loading={pending === 'update'} onClick={() => void act({ action: 'update', shot_id: selected.shot.id, patch: { ...draft, title: draft.title.trim() } }, '镜头修改已保存')}>保存修改</Button></>}</footer>
             </> : <div className="shot-manager-empty"><Clapperboard size={28} /><p>选择镜头查看详情</p><small>修改镜头内容与生成提示词，调整起止状态和接镜。</small></div>}
           </section>
         </div>

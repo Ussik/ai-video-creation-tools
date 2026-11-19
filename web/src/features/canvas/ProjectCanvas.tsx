@@ -1,3 +1,7 @@
+import CanvasVideoConflictDialog from './CanvasVideoConflictDialog'
+import type { HandoffSourceEdit } from '@video-studio/shared/media/video-handoff-conflict'
+import type { ApiError } from '../../shared/api/api'
+import { recoverCanvasShotPrompts } from './canvas-shot-prompt-recovery'
 import { WorkspaceDisclosure } from '../../shared/ui/WorkspaceDisclosure'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Tabs, FileButton, UnstyledButton,
@@ -47,7 +51,7 @@ import { importStoryboardGraph } from './canvas-storyboard-import'
 import { shotMediaCandidates } from './canvas-shot-candidates'
 import { canvasJobMatchesStoryboard, storyboardRevision, syncCanvasStoryboardRevision } from './canvas-storyboard-revision'
 import { addVisualProfileNode, automaticVisualReferenceEdges, missingVisualReferences, syncVisualProfileNode, visualBoardJobs, visualBoardReferences, visualCandidateAssets, visualJobRequest, visualNodeAsset } from './canvas-visual-profiles'
-import { connectImageVideoHandoff, createImageVideoHandoff, fixedReferenceAsset, imageVideoConnection, pendingImageVideoHandoff, resolveImageVideoHandoff, pinnedCanvasReference } from './canvas-shot-workflow'
+import { continueImageVideoHandoffAfterSourceEdit, connectImageVideoHandoff, createImageVideoHandoff, fixedReferenceAsset, imageVideoConnection, pendingImageVideoHandoff, resolveImageVideoHandoff, pinnedCanvasReference } from './canvas-shot-workflow'
 import { imageVideoSourceContext, type ImageVideoSemanticPlan } from './canvas-image-video-context'
 import { isVideoAudioPlan } from '@video-studio/shared/media/video-prompt-audio'
 import { enqueueCanvasVisualBoard, prepareCanvasVisualBoard, visualReferenceGenerating } from './canvas-reference-generation'
@@ -987,6 +991,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const previewingRef = useRef(false)
   const handoffAnalysisRef = useRef(false)
   const [videoPreparation, setVideoPreparation] = useState<VideoPreparationRun | null>(null)
+  const [videoConflictOpen, setVideoConflictOpen] = useState(false)
   useEffect(() => {
     if (videoPreparation?.phase !== 'success') return
     const timer = window.setTimeout(() => {
@@ -1026,8 +1031,10 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   placementDetailRef.current = detail
   const storyboardModelsRef = useRef(models)
   storyboardModelsRef.current = models
-  const syncStoryboardGraph = useCallback((value: CanvasGraph) => syncCanvasStoryboardRevision(value,
-    allProjectShots(placementDetailRef.current), storyboardModelsRef.current, placementDetailRef.current.assets), [])
+  const syncStoryboardGraph = useCallback((value: CanvasGraph) => {
+    const current = placementDetailRef.current, shots = allProjectShots(current)
+    return recoverCanvasShotPrompts(syncCanvasStoryboardRevision(value, shots, storyboardModelsRef.current, current.assets), shots)
+  }, [])
   const historyRef = useRef<{ past: CanvasGraph[]; future: CanvasGraph[] }>(canvasSession.history)
   // React Flow emits many position changes while a node is dragged. Keep one
   // undo checkpoint for the complete gesture so history and autosave remain
@@ -1425,8 +1432,10 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           setConflictReview(mergeGraphs(draft.base, draft.graph, remote))
         } else scheduleSave(queue)
       } else if (draft) clearDraft(storageId)
-      const withScript = ensureCanvasScript(syncStoryboardGraph(queue.graph), canvas.id, detail.name)
-      const addedScript = withScript !== queue.graph
+      const recovered = syncStoryboardGraph(queue.graph)
+      const recoveredPrompts = recovered !== queue.graph
+      const withScript = ensureCanvasScript(recovered, canvas.id, detail.name)
+      const addedScript = withScript !== recovered
       queue.graph = withScript
       queueRef.current = queue
       setGraph(queue.graph)
@@ -1442,7 +1451,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       }
       // Persist missing project cards and old script-edge cleanup once. The
       // card references shared project documents; it never imports old shots.
-      if ((removedScriptEdges || addedScript) && !queue.conflict) {
+      if ((removedScriptEdges || addedScript || recoveredPrompts) && !queue.conflict) {
         queue.serial = Math.max(queue.serial, 1)
         keepDraft(queue)
         scheduleSave(queue)
@@ -1689,11 +1698,59 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       if (queueRef.current === queue) setVideoPreparation(current => current && { ...current, phase: 'success',
         message: '本镜动作与台词已恢复到视频提示词，请检查后生成' })
     } catch (issue) {
-      if (queueRef.current === queue) setVideoPreparation(current => current && { ...current, phase: 'error',
+      if (queueRef.current === queue) setVideoPreparation(current => current && { ...current, phase: (issue as ApiError).handoff_conflict ? 'needs_confirmation' : 'error', conflict: (issue as ApiError).handoff_conflict,
         message: issue instanceof Error ? issue.message : String(issue) })
     }
     finally { handoffAnalysisRef.current = false; if (queueRef.current === queue) setBusy(false) }
   }, [busy, detail, models, analyseImageVideoHandoff, changeGraph, flush, setNotice])
+
+  async function applyVideoConflict(edit: HandoffSourceEdit) {
+    const status = videoPreparation, conflict = status?.conflict, queue = queueRef.current
+    if (!status || !conflict?.shot_id || !queue || busy || handoffAnalysisRef.current || queue.conflict) throw new Error('画布状态已变化，请先保存当前草稿')
+    const source = queue.graph.nodes.find(node => node.id === status.sourceNodeId)
+    if (!source || imageVideoSourceContext(queue.graph, source, detail, models).signature !== conflict.source_signature) throw new Error('来源已变化，请重新定位冲突；当前编辑仍保留')
+    handoffAnalysisRef.current = true; setBusy(true)
+    let sourceSaved = false
+    try {
+      await flush(queue)
+      const updated = await api<Shot>(`/shots/${conflict.shot_id}`, json('PATCH', { ...edit, expected_video_source_version: conflict.shot_version }))
+      sourceSaved = true
+      const nextDetail = { ...detail, shots: detail.shots.map(shot => shot.id === updated.id ? updated : shot),
+        historical_shots: detail.historical_shots?.map(shot => shot.id === updated.id ? updated : shot) }
+      const plan = { motion_prompt: edit.video_prompt, audio_plan: edit.audio_plan || conflict.candidate.audio_plan }
+      const liveSource = queue.graph.nodes.find(node => node.id === source.id)
+      if (queueRef.current !== queue || !liveSource) throw new Error('修正已保存；画布已变化，请重新选择来源图片')
+      let next: CanvasGraph, targetId: string
+      if (status.retry.kind === 'quick') {
+        const result = createImageVideoHandoff(queue.graph, liveSource, nextDetail, availableModels,
+          blankNode('generation', source.x + source.width + 170, source.y), crypto.randomUUID(),
+          status.retry.action === 'video-reference' ? 'reference' : 'first_frame', plan)
+        next = result.graph; targetId = result.nodeId
+      } else {
+        targetId = status.retry.kind === 'restore' ? status.retry.nodeId : status.retry.connection.target!
+        let connected = queue.graph
+        if (status.retry.kind === 'connect') {
+          const target = connected.nodes.find(node => node.id === targetId)
+          const handoff = target && imageVideoConnection(liveSource, target, nextDetail, models)
+          if (!handoff) throw new Error('修正已保存；连接目标已变化，请保留当前视频草稿')
+          connected = connectImageVideoHandoff(connected, handoff, detail, availableModels, crypto.randomUUID())
+        }
+        next = continueImageVideoHandoffAfterSourceEdit(connected, targetId, source.id, detail, nextDetail, models, plan)
+        if (next === connected) throw new Error('修正已保存；视频已有手改或来源变化，请保留当前草稿并重新承接')
+      }
+      changeGraph(() => next); await flush(queue)
+      setVideoConflictOpen(false)
+      setVideoPreparation({ ...status, nodeId: targetId, conflict: undefined, phase: 'success', message: '动作与音效修正已保存，视频承接已就绪；未调用模型' })
+      focusSidebarNode(targetId); await onRefresh()
+    } catch (error) {
+      if (sourceSaved && queueRef.current === queue) {
+        setVideoConflictOpen(false)
+        setVideoPreparation({ ...status, conflict: undefined, phase: 'error', message: error instanceof Error ? error.message : String(error) })
+        await onRefresh()
+      }
+      throw error
+    } finally { handoffAnalysisRef.current = false; if (queueRef.current === queue) setBusy(false) }
+  }
 
   const tryNodeAction = useCallback(async (sourceId: string, action: NodeQuickAction) => {
     if (busy || handoffAnalysisRef.current) {
@@ -1727,7 +1784,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           : '已定位使用这张分镜图的视频节点'
         setVideoPreparation(current => current && { ...current, nodeId: handoff.nodeId, phase: 'success', message })
       } catch (issue) {
-        if (queueRef.current === queue) setVideoPreparation(current => current && { ...current, phase: 'error',
+        if (queueRef.current === queue) setVideoPreparation(current => current && { ...current, phase: (issue as ApiError).handoff_conflict ? 'needs_confirmation' : 'error', conflict: (issue as ApiError).handoff_conflict,
           message: issue instanceof Error ? issue.message : String(issue) })
       }
       finally { handoffAnalysisRef.current = false; if (queueRef.current === queue) setBusy(false) }
@@ -3599,7 +3656,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         setVideoPreparation(current => current && { ...current, phase: 'success',
           message: '已连接到现有视频节点，当前图片已固定为输入参考；检查视频提示词后生成' })
       } catch (issue) {
-        if (queueRef.current === queue) setVideoPreparation(current => current && { ...current, phase: 'error',
+        if (queueRef.current === queue) setVideoPreparation(current => current && { ...current, phase: (issue as ApiError).handoff_conflict ? 'needs_confirmation' : 'error', conflict: (issue as ApiError).handoff_conflict,
           message: issue instanceof Error ? issue.message : String(issue) })
       }
       finally { handoffAnalysisRef.current = false; if (queueRef.current === queue) setBusy(false) }
@@ -5413,7 +5470,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
 
     </div>
     {videoPreparation && <CanvasVideoPreparationStatus status={videoPreparation} retryDisabled={busy}
-      onLocate={() => focusSidebarNode(videoPreparation.nodeId)}
+      onLocate={() => { const id = videoPreparation.phase === 'needs_confirmation' ? videoPreparation.sourceNodeId : videoPreparation.nodeId; focusSidebarNode(id); if (videoPreparation.phase === 'needs_confirmation') setComposerNodeId(id) }}
+      onResolve={() => setVideoConflictOpen(true)}
       onDismiss={() => setVideoPreparation(null)}
       onRetry={() => {
         const retry = videoPreparation.retry
@@ -5421,6 +5479,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         else if (retry.kind === 'restore') void restoreImageVideoHandoff(retry.nodeId)
         else void onConnect(retry.connection)
       }} />}
+    {videoConflictOpen && videoPreparation?.conflict && <CanvasVideoConflictDialog key={videoPreparation.conflict.candidate_version} conflict={videoPreparation.conflict} busy={busy} onClose={() => setVideoConflictOpen(false)} onApply={applyVideoConflict} />}
     {notice && <div className="pc-notice" role="status"><span>{notice.message}</span><ActionIcon aria-label="关闭提示" onClick={() => setNotice(null)} data-workspace-control=""><X size={14} /></ActionIcon></div>}
     <FileButton ref={profileUploadInputRef} accept="image/png,image/jpeg,image/webp"  onChange={file => { if (file) void uploadProfileBoard(file); if (profileUploadInputRef.current) profileUploadInputRef.current.value = '' }}>{() => null}</FileButton>
     {candidateProfile && <VisualCandidateManager key={candidateProfile.id} profile={candidateProfile} detail={detail} models={models} displayedAssetId={candidateNode?.asset_id} generating={candidateGenerating} onConfirm={assetId => useProfileBoard(candidateProfile, assetId)} onRefresh={onRefresh} onClose={() => setCandidateProfileId(null)} onError={showError} />}

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   buildStoryboardDirectingReviewContext, composeDirectedShot, directingSceneSchema, directingShotSchema,
-  storyboardDirectingInstructions, storyboardDirectingReviewPrompt, validateStoryboardDirectingReview,
+  normalizeStoryboardDirectingReview, storyboardDirectingInstructions, storyboardDirectingReviewPrompt, validateStoryboardDirectingReview,
   type StoryboardDirectingReview,
 } from '../src/modules/storyboard/storyboard-directing.js'
 
@@ -130,6 +130,16 @@ test('review rejects fabricated or nonadjacent references and half-specified rel
   }
   assert.deepEqual(validateStoryboardDirectingReview(reviewIssue({ related_scene_id: null, related_shot_index: null }), sequence()),
     reviewIssue({ related_scene_id: null, related_shot_index: null }))
+})
+
+test('normalization preserves and rejects a nonadjacent cross-shot finding instead of downgrading it', () => {
+  const report = reviewIssue({ related_shot_index: 3 }), before = structuredClone(report)
+  assert.throws(() => normalizeStoryboardDirectingReview(report, sequence()), (error: any) => {
+    assert.equal(error.field_path, 'issues[0].related_shot_index')
+    assert.equal(error.related_shot_index, 3)
+    return true
+  })
+  assert.deepEqual(report, before)
 })
 
 test('declared ellipsis and fixed cameras do not trigger mechanical continuity findings', () => {

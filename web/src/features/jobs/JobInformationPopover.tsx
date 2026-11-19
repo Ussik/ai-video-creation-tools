@@ -1,10 +1,11 @@
-import { useState } from 'react'
-import { ActionIcon, Popover } from '@mantine/core'
+import { useEffect, useState, type ReactNode } from 'react'
+import { ActionIcon, Button, Popover } from '@mantine/core'
 import { Info } from 'lucide-react'
-import type { Asset, Job, Model, Provider, Shot } from '../../shared/api/api'
+import { api, type Asset, type Job, type Model, type Provider, type Shot } from '../../shared/api/api'
 import { generationRecoveryModality } from '@video-studio/shared/jobs/generation-recovery'
 import { canOptimizeImagePrompt } from '@video-studio/shared/jobs/prompt-optimization'
 import { jobRecoveryPresentation } from './job-recovery'
+import type { JobProviderInputs } from '@video-studio/shared/media/provider-inputs'
 import './job-information.css'
 
 const statusLabels = { queued: '排队中', running: '生成中', succeeded: '已完成', failed: '失败' }
@@ -35,15 +36,27 @@ function readRequest(raw: string): Record<string, unknown> | null {
 
 type Props = {
   job: Job
+  children?: ReactNode
   model?: Model
   provider?: Provider
   shot?: Shot
   projectName: string
   assets: Asset[]
+  onOpenCanvas?: () => void
 }
 
-export default function JobInformationPopover({ job, model, provider, shot, projectName, assets }: Props) {
+export default function JobInformationPopover({ job, model, provider, shot, projectName, assets, onOpenCanvas, children }: Props) {
   const [opened, setOpened] = useState(false)
+  const [providerInputs, setProviderInputs] = useState<JobProviderInputs | null>(null)
+  const [inputError, setInputError] = useState('')
+  useEffect(() => {
+    if (!opened || job.job_type === 'export') return
+    let current = true
+    setProviderInputs(null); setInputError('')
+    void api<JobProviderInputs>(`/jobs/${job.id}/provider-inputs`).then(value => { if (current) setProviderInputs(value) })
+      .catch(error => { if (current) setInputError(error instanceof Error ? error.message : '参考图定位加载失败') })
+    return () => { current = false }
+  }, [opened, job.id, job.status])
   const request = readRequest(job.request)
   const modality = generationRecoveryModality(job, model?.modality)
   const image = modality === 'image'
@@ -97,6 +110,29 @@ export default function JobInformationPopover({ job, model, provider, shot, proj
       <div className="job-info-content" tabIndex={0}>
         {recovery && !knownImageRefusal && <section className="job-info-text"><h2>{recovery.label}</h2><p>{recovery.guidance}</p></section>}
         {job.error && <section className="job-info-text job-info-error"><h2>失败原因</h2><p>{job.error}</p></section>}
+        {inputError && <section className="job-info-text job-info-error"><h2>参考图定位</h2><p>{inputError}</p></section>}
+        {providerInputs?.rejection && <section className="job-info-references">
+          <h2>上游拒绝的输入</h2>
+          {providerInputs.rejection.upstream_code && <p>{providerInputs.rejection.upstream_code}</p>}
+          {providerInputs.rejection.provider_request_id && <p>请求编号：{providerInputs.rejection.provider_request_id}</p>}
+          <ul>{providerInputs.rejection.inputs.map(input => <li key={input.field_path}>
+            <div><strong>{input.content_index === undefined ? input.field_path : `content[${input.content_index}]`}</strong>
+              {input.asset_ids.length > 1 && <p>多个素材使用相同图片内容，无法区分单一素材。</p>}
+              {input.asset_ids.map(id => {
+                const asset = assets.find(item => item.id === id)
+                return <div key={id}>
+                  {asset?.kind === 'image' && <img src={asset.url} alt={asset.filename} loading="lazy" />}
+                  <span>{asset?.filename || '参考素材不可用'}</span><small>{id}</small>
+                  {(providerInputs.source_nodes || []).filter(node => node.asset_id === id).map(node => <p key={node.id}>当前来源节点：{node.title || node.id}</p>)}
+                </div>
+              })}
+            </div>
+          </li>)}</ul>
+          {providerInputs.rejection.mapping_status !== 'matched' && <p>部分上游位置无法映射到图片：{providerInputs.rejection.content_indices.filter(index => !providerInputs.rejection!.inputs.some(input => input.content_index === index)).map(index => `content[${index}]`).join('、') || '未提供可定位的位置'}。</p>}
+          {onOpenCanvas && <Button variant="light" size="xs" onClick={onOpenCanvas}>返回画布检查或替换参考图</Button>}
+        </section>}
+        {providerInputs && !providerInputs.manifest && job.status === 'failed' && !!referenceIds.length && <section className="job-info-text"><h2>参考图定位</h2><p>此历史任务没有最终输入位置记录，无法精确定位被拒图片；下方素材顺序不代表上游 content 位置。</p></section>}
+        {opened && children}
         <dl>
           <div><dt>任务类型</dt><dd>{exported ? '成片导出' : speech ? '配音生成' : image ? '图片生成' : modality === 'video' ? '视频生成' : '生成任务'}</dd></div>
           <div><dt>所属项目</dt><dd>{projectName}</dd></div>

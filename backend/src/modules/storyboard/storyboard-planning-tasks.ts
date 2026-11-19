@@ -1,3 +1,5 @@
+import { generationScopeVersion } from '../generation/generation-scope-lifecycle.js'
+import { storyboardOutlineExecution } from './storyboard-outline-execution.js'
 import { z } from 'zod'
 import { now, one, run } from '../../infrastructure/database/db.js'
 import { withDetachedTextRequestUsage } from '../../infrastructure/providers/text-request-usage.js'
@@ -30,10 +32,15 @@ type Running = { state: RecordState; controller: AbortController; phaseStarted: 
 const running = new Map<string, Running>()
 const taskKey = (projectId: string, id: string) => `${projectId}:${id}`
 const problem = (message: string, statusCode = 409): never => { throw Object.assign(new Error(message), { statusCode }) }
+const legacyStructuralBoundaryFailure = (issue: unknown) => !!issue && typeof issue === 'object' && 'message' in issue &&
+  typeof issue.message === 'string' && issue.message.includes('定向修复改变了授权目标之外的字段，结果未采用')
+const stoppedStructuralCorrection = (issue: unknown) => legacyStructuralBoundaryFailure(issue) || !!issue && typeof issue === 'object' &&
+  'code' in issue && typeof issue.code === 'string' && /^structural_(?:patch_|schema_|validator_|business_|boundary_)/.test(issue.code)
 function failureType(issue: unknown): StoryboardFailureType {
   const value = issue as { code?: string; upstreamCode?: string; statusCode?: number; retryable?: boolean }
   const code = String(value?.code || value?.upstreamCode || '')
   if (['dialogue_source_mismatch', 'dialogue_ref_wrong_scene', 'dialogue_ref_ambiguous', 'dialogue_source_correction_contract', 'timing_mismatch', 'timing_repair_contract'].includes(code)) return code as StoryboardFailureType
+  if (code === 'storyboard_review_invalid' || legacyStructuralBoundaryFailure(issue)) return 'invalid_business'
   if (/json|syntax/i.test(code)) return 'invalid_json'
   if (/contract|schema|field/i.test(code)) return 'invalid_schema'
   if (/citation|evidence|ref/i.test(code)) return 'invalid_citation'
@@ -60,6 +67,7 @@ function findInput(projectId: string, key: string): RecordState | null {
   return row ? parse(row.payload) : null
 }
 function findRequest(projectId: string, requestId: string): RecordState | null {
+  if(one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='purged_resource_ids'")&&one("SELECT 1 FROM purged_resource_ids WHERE project_id=? AND kind='storyboard_request' AND id=?",projectId,requestId))problem('原请求所属分镜已彻底删除，不能重放或恢复',410)
   // Filter inside SQLite: loading every historical prompt/plan into JavaScript
   // makes even an idempotency lookup slower as the project grows.
   const row = one<{ payload: string }>(`SELECT payload FROM script_step_checkpoints
@@ -74,11 +82,13 @@ function parse(raw: string): RecordState | null {
   try { return recordSchema.parse(JSON.parse(raw)) as RecordState } catch { return null }
 }
 function persist(state: RecordState) {
+  if(generationScopeVersion(state.snapshot.project_id,prefix+state.snapshot.id))problem('原分镜已彻底删除，此规划任务不能恢复或写回',410)
   run(`INSERT INTO script_step_checkpoints(project_id,namespace,cache_key,payload,updated_at) VALUES(?,?,?,?,?)
     ON CONFLICT(project_id,namespace) DO UPDATE SET cache_key=excluded.cache_key,payload=excluded.payload,updated_at=excluded.updated_at`,
   state.snapshot.project_id, prefix + state.snapshot.id, state.snapshot.input_key, JSON.stringify(state), now())
 }
 function read(projectId: string, id: string): RecordState {
+  if(generationScopeVersion(projectId,prefix+id))problem('原分镜已彻底删除，此规划任务不能恢复',410)
   const live = running.get(taskKey(projectId, id))
   if (live) return live.state
   const row = one<{ payload: string }>('SELECT payload FROM script_step_checkpoints WHERE project_id=? AND namespace=?', projectId, prefix + id)
@@ -93,22 +103,36 @@ function read(projectId: string, id: string): RecordState {
 }
 function snapshot(state: RecordState): StoryboardPlanningTask {
   const result = structuredClone(state.snapshot)
+  // Historical errors had no stage/code or retained answer. Do not infer a culprit or buy a fresh outline.
+  if (result.error && legacyStructuralBoundaryFailure(result.error)) {
+    result.error.failure_type = 'invalid_business'
+    result.error.code ||= 'structural_boundary_unattributed'
+  }
+  if (stoppedStructuralCorrection(result.error)) result.can_resume = false
   // Derive from durable steps on every read, including legacy failed tasks
   // whose progress was recorded as 0/0. Never promote an outline to candidate.
-  if (!result.result && !result.candidate && ['generating', 'repairing'].includes(result.stage)) {
-    const namespace = result.stage === 'repairing' ? 'repair' : 'initial'
+  const outlineExecution = state.snapshot.progress?.phase === 'shots' ? undefined : storyboardOutlineExecution(state.steps)
+  if (!result.result && !result.candidate && (['generating', 'repairing'].includes(result.stage) || outlineExecution)) {
+    const namespace = outlineExecution?.outlineKey.split(':')[2] || (result.stage === 'repairing' ? 'repair' : 'initial')
     const entries = Object.entries(state.steps).filter(([key]) => key.startsWith(`storyboard_batches:v1:${namespace}:`)
       && /:outline(?::unvalidated|:candidate)?$/.test(key))
-    const latest = entries.at(-1)?.[0].replace(/:outline(?::unvalidated|:candidate)?$/, ':outline')
+    const latest = (outlineExecution?.outlineKey || entries.at(-1)?.[0])?.replace(/:outline(?::unvalidated|:candidate)?$/, ':outline')
     if (latest) {
       const key = Object.hasOwn(state.steps, latest) ? latest : Object.hasOwn(state.steps, latest + ':unvalidated') ? latest + ':unvalidated' : latest + ':candidate'
       const parsed = z.object({ scenes: z.array(z.object({ scene_id: z.string(), scene_duration: z.number().finite().positive(),
         shots: z.array(z.object({ duration: z.number().finite().positive() })).min(1) })).min(1) }).safeParse(state.steps[key])
-      if (parsed.success) result.outline_checkpoint = { validated: key === latest, scenes: parsed.data.scenes.map(scene => ({
+      if (parsed.success) result.outline_checkpoint = { validated: key === latest,
+        ...(outlineExecution ? { stage: outlineExecution.stage, delivery_pending: outlineExecution.delivery_pending } : {}), scenes: parsed.data.scenes.map(scene => ({
         scene_id: scene.scene_id, shot_count: scene.shots.length, scene_duration: scene.scene_duration,
         shot_duration_sum: scene.shots.reduce((sum, shot) => sum + shot.duration, 0),
       })) }
     }
+  }
+  if (result.outline_checkpoint && outlineExecution && result.progress?.phase !== 'shots') {
+    if (result.stage !== outlineExecution.stage) result.stage_duration_ms = result.timings[outlineExecution.stage] || 0
+    result.stage = outlineExecution.stage
+    if (result.error) result.error.stage = outlineExecution.stage
+    if (outlineExecution.delivery_pending && result.status !== 'running') result.can_resume = false
   }
   const live = running.get(taskKey(result.project_id, result.id))
   if (live && result.status === 'running') {
@@ -180,15 +204,16 @@ export function createStoryboardPlanningTasks(options: Options) {
         state.snapshot.stage = 'completed'; state.snapshot.stage_duration_ms = 0
         state.snapshot.status = 'succeeded'; state.snapshot.can_resume = false
         state.snapshot.result = result; delete state.snapshot.candidate; delete state.snapshot.progress
-        // Completed tasks need only the final preview and request identities.
-        // Keep intermediate rules/plans only while they can save paid work.
+        // Retain local review audit and original responses after success.
+        // Other intermediate rules/plans can be released once no paid work remains.
         if (!['needs_work', 'inconclusive', 'review_inconclusive_needs_user', 'pending_review'].includes(result.directing_review?.status || '')) {
-          state.steps = { [storyboardPlanningBudgetKey]: state.steps[storyboardPlanningBudgetKey] }
+          state.steps = { [storyboardPlanningBudgetKey]: state.steps[storyboardPlanningBudgetKey],
+            ...Object.fromEntries(Object.entries(state.steps).filter(([key]) => /:quality:v1:.*:(?:report|recheck|repair)(?::(?:relation_rejected|relation_correction|structured_output:v1))?$/.test(key))) }
         }
       } catch (issue) {
         settleTime(live)
         if (state.snapshot.status !== 'interrupted') state.snapshot.status = live.controller.signal.aborted ? 'cancelled' : 'failed'
-        const error = issue as { message?: string; code?: string; upstreamCode?: string; retryable?: boolean; diagnostics?: string; raw_output?: string; statusCode?: number; scene_id?: string; field_path?: string; ref_id?: string; shot_id?: string; correction_error_code?: string; scene_duration?: number; shot_duration_sum?: number; delta?: number }
+        const error = issue as { message?: string; code?: string; upstreamCode?: string; retryable?: boolean; diagnostics?: string; raw_output?: string; statusCode?: number; scene_id?: string; field_path?: string; ref_id?: string; shot_id?: string; related_scene_id?: string | null; related_shot_index?: number | null; correction_error_code?: string; scene_duration?: number; shot_duration_sum?: number; delta?: number }
         const type = failureType(issue)
         if (type !== 'identity_conflict') state.snapshot.recovery_budget = Math.max(0, (state.snapshot.recovery_budget ?? 3) - 1)
         state.snapshot.error = { message: error?.message || String(issue), stage: state.snapshot.stage, failure_type: type,
@@ -199,12 +224,16 @@ export function createStoryboardPlanningTasks(options: Options) {
           ...(error?.diagnostics ? { diagnostics: error.diagnostics } : {}), ...(error?.raw_output ? { raw_output: error.raw_output } : {}),
           ...(error?.scene_id ? { scene_id: error.scene_id } : {}), ...(error?.field_path ? { field_path: error.field_path } : {}),
           ...(error?.ref_id ? { ref_id: error.ref_id } : {}), ...(error?.shot_id ? { shot_id: error.shot_id } : {}),
+          ...(error?.related_scene_id !== undefined ? { related_scene_id: error.related_scene_id } : {}),
+          ...(error?.related_shot_index !== undefined ? { related_shot_index: error.related_shot_index } : {}),
           ...(typeof error?.scene_duration === 'number' ? { scene_duration: error.scene_duration } : {}),
           ...(typeof error?.shot_duration_sum === 'number' ? { shot_duration_sum: error.shot_duration_sum } : {}),
           ...(typeof error?.delta === 'number' ? { delta: error.delta } : {}),
           ...(error?.statusCode ? { status_code: error.statusCode } : {}) }
         state.snapshot.can_resume = issue instanceof StoryboardPlanningBudgetError ? issue.canResume
           : (state.snapshot.recovery_budget ?? 0) > 0 && error?.statusCode !== 409 && !('revised_report' in state.steps)
+            && !/^storyboard_outline_(?:relation|evidence)_correction_(?:failed|exhausted)$/.test(error?.code || '')
+            && !stoppedStructuralCorrection(error)
       } finally {
         clearInterval(live.timer); live.controller.abort(); save(); launchActive = false
         if (running.get(key) === live) { running.delete(key); owned.delete(key) }
@@ -256,6 +285,8 @@ export function createStoryboardPlanningTasks(options: Options) {
     resume(projectId: string, id: string) {
       const state = read(projectId, id); assertIdentity(state)
       if (state.snapshot.status === 'running' || state.snapshot.status === 'succeeded') return snapshot(state)
+      if (storyboardOutlineExecution(state.steps)?.delivery_pending) problem('大纲请求交付状态尚未确认，检查点已保留；不会自动重发。')
+      if (stoppedStructuralCorrection(state.snapshot.error)) problem('本次结构纠正已停止；不能继续派发或从头生成。已保存的原回答和补丁仍保留供本地检查。')
       if (!state.snapshot.can_resume || (state.snapshot.recovery_budget ?? 0) <= 0) problem('自动恢复预算已耗尽，请重新规划或进入人工处理')
       if (active(projectId)) problem('当前项目还有分镜规划任务正在运行，请先查看或停止它')
       launch(state, true, true); return snapshot(state)

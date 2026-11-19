@@ -1,11 +1,20 @@
+import { existsSync, statSync, renameSync } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import sharp from 'sharp'
 import { extractVideoFrame } from '../../infrastructure/media/render.js'
 
 type PreviewAsset = { id: string; path: string; kind: string }
 type Preview = { bytes: Buffer; etag: string }
+export function assetPreviewKey(asset:PreviewAsset,source:{size:number;mtimeMs:number},size:number) {
+  return createHash('sha256').update(JSON.stringify(['v1',asset.id,asset.kind,asset.path,source.size,source.mtimeMs,size])).digest('hex')
+}
+export const assetPreviewPaths=(asset:PreviewAsset,directory:string)=>{
+  if(!existsSync(asset.path)||!['image','video'].includes(asset.kind))return []
+  const source=statSync(asset.path)
+  return [320,640,960].map(size=>join(directory,assetPreviewKey(asset,source,size)+'.webp'))
+}
 
 /** Disk-backed previews avoid decoding full media in each unselected card. */
 export function createAssetPreviewCache(extractFrame = extractVideoFrame) {
@@ -22,11 +31,11 @@ export function createAssetPreviewCache(extractFrame = extractVideoFrame) {
     }
   }
 
-  return async (asset: PreviewAsset, size: number, directory: string): Promise<Preview> => {
+  return async (asset: PreviewAsset, size: number, directory: string, publish:(commit:()=>void)=>void=commit=>commit()): Promise<Preview> => {
     if (!['image', 'video'].includes(asset.kind)) throw new Error('仅图片或视频支持预览')
     if (![320, 640, 960].includes(size)) throw new Error('预览尺寸无效')
     const source = await stat(asset.path)
-    const key = createHash('sha256').update(JSON.stringify(['v1', asset.id, asset.kind, asset.path, source.size, source.mtimeMs, size])).digest('hex')
+    const key = assetPreviewKey(asset,source,size)
     const etag = `"${key}"`
     const path = join(directory, `${key}.webp`)
     try { return { bytes: await readFile(path), etag } } catch (error) {
@@ -45,7 +54,15 @@ export function createAssetPreviewCache(extractFrame = extractVideoFrame) {
         .webp({ quality: 80, effort: 3 }).toBuffer()
       await mkdir(directory, { recursive: true })
       const temporary = `${path}.${randomUUID()}.tmp`
-      try { await writeFile(temporary, bytes); await rename(temporary, path) } finally { await rm(temporary, { force: true }) }
+      try {
+        await writeFile(temporary, bytes)
+        publish(()=>{
+          const current=statSync(asset.path)
+          if(current.size!==source.size||current.mtimeMs!==source.mtimeMs)throw Object.assign(new Error('素材已更新，预览未保存'),{statusCode:409})
+          // No await between the ownership/source check and publication.
+          renameSync(temporary,path)
+        })
+      } finally { await rm(temporary, { force: true }) }
       return { bytes, etag }
     })
     pending.set(path, task)

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -51,10 +52,12 @@ async function setup(t: { after: (fn: () => Promise<unknown>) => void }, generat
 function profile(sceneId: string, name = '林晚') {
   return { kind: 'character', name, variant: '默认', definition: '日漫风格，黑色短发，蓝色夹克。', view_requirements: '正侧背与服装细节', scene_ids: [sceneId] }
 }
-async function plan(f: Awaited<ReturnType<typeof setup>>) {
+async function plan(f: Awaited<ReturnType<typeof setup>>, restart = false) {
   const checked = await f.check()
-  const { signature, scene_ids, profiles, coverage_version, visual_coverage } = await f.invoke('prepare', { scene_ids: checked.scene_ids, signature: checked.signature, model_id: 'mock-text' })
-  return { signature, scene_ids, profiles, coverage_version, visual_coverage }
+  const recovery = restart ? await f.invoke('recovery', { scene_ids: checked.scene_ids }) : undefined
+  const { signature, scene_ids, profiles, coverage_version, visual_coverage, preparation } = await f.invoke('prepare', { scene_ids: checked.scene_ids, signature: checked.signature, model_id: 'mock-text',
+    ...(restart ? { request_id: randomUUID(), restart_from_run_id: recovery.preparation.run_id } : {}) })
+  return { signature, scene_ids, profiles, coverage_version, visual_coverage, ...(preparation?.full_scope ? { run_id: preparation.run_id } : {}) }
 }
 
 test('read-only preparation then atomic drafts, required bindings and shot prompts without image generation', async t => {
@@ -126,7 +129,7 @@ test('source changes during analysis and before commit reject stale results with
   await f.invoke('prepare', { scene_ids: checked.scene_ids, signature: checked.signature, model_id: 'mock-text' }, 409)
   assert.equal(all('SELECT * FROM visual_profiles WHERE project_id=?', f.project.id).length, 0)
   mutate = false
-  const draft = await plan(f)
+  const draft = await plan(f, true)
   run('UPDATE script_scenes SET action=? WHERE id=?', '再次更新动作', sceneId)
   await f.invoke('commit', draft, 409)
   assert.equal(all('SELECT * FROM shots WHERE project_id=?', f.project.id).length, 0)
@@ -156,7 +159,7 @@ test('fingerprints track same-episode documents and scene bindings, ignoring oth
   assert.deepEqual((await f.check()).needs_analysis, [])
   insert(`current-${f.project.id}`, 1)
   assert.deepEqual((await f.check()).needs_analysis, [f.scene.id])
-  await f.invoke('commit', await plan(f))
+  await f.invoke('commit', await plan(f, true))
   await call('POST', `/api/projects/${f.project.id}/visual-profiles`, { profiles: [profile(f.scene.id)] })
   assert.deepEqual((await f.check()).needs_analysis, [f.scene.id])
 })
@@ -233,7 +236,7 @@ test('reference fingerprints follow planned visual content and ignore media sele
   assert.deepEqual((await f.check()).needs_analysis, [])
   run('UPDATE shots SET image_prompt=? WHERE id=?', '林晚新增红色雨伞', shotId)
   assert.deepEqual((await f.check()).needs_analysis, [f.scene.id])
-  await f.invoke('commit', await plan(f))
+  await f.invoke('commit', await plan(f, true))
   assert.deepEqual((await f.check()).needs_analysis, [])
   run('UPDATE shots SET video_prompt=? WHERE id=?', '拿起新的铜怀表后跑向出口', shotId)
   assert.deepEqual((await f.check()).needs_analysis, [f.scene.id])
@@ -260,7 +263,7 @@ test('scoped preparation keeps scene candidates separate from each images and vi
   assert.equal(saved.scene_visual_bindings, undefined)
   assert.equal(all('SELECT * FROM scene_visual_bindings WHERE scene_id=?', sceneId).length, 2)
   run('UPDATE shots SET video_prompt=? WHERE id=?', '技术人员继续走近', shotId)
-  const next = await plan(f)
+  const next = await plan(f, true)
   run("UPDATE shot_visual_bindings SET usage='image' WHERE shot_id=? AND profile_id=?", shotId, unused.id)
   await f.invoke('commit', next, 409)
   assert.equal(all('SELECT * FROM jobs WHERE project_id=?', f.project.id).length, 0)
@@ -513,7 +516,7 @@ test('independent designs create fresh same-name characters, locations and props
   run("INSERT INTO assets (id,project_id,kind,filename,path,source,created_at) VALUES (?,?,'image','own.png','/tmp/own.png','upload',?)", ownBoard, f.project.id, now())
   await call('PATCH', `/api/visual-profiles/${own.id}`, { expected_revision: 1, board_asset_id: ownBoard })
   run('UPDATE shots SET video_prompt=? WHERE id=?', '新设计动作补充', shotId)
-  const refreshed = await f.invoke('commit', { ...await plan(f), reference_usage_version: 1 })
+  const refreshed = await f.invoke('commit', { ...await plan(f, true), reference_usage_version: 1 })
   assert.equal(refreshed.created_profiles, 0)
   assert.equal(refreshed.visual_profiles.find((value: any) => value.id === own.id).board_asset_id, ownBoard)
   assert.deepEqual(all('SELECT * FROM assets WHERE id IN (?, ?, ?)', ...oldBoardIds).map((value: any) => value.id).sort(), oldBoardIds.sort())
@@ -722,4 +725,21 @@ test('scene template coverage preserves image-only and video-only reference deci
     assert.equal(saved.shot_visual_bindings[0].usage, usage)
     assert.deepEqual((await f.check()).needs_analysis, [])
   })
+})
+
+
+test('an exact reference commit can be retried after its response is lost without rewriting rows', async t => {
+  let sceneId = ''
+  const f = await setup(t, async () => JSON.stringify({ profiles: [profile(sceneId)] }))
+  sceneId = f.scene.id
+  const draft = await plan(f), saved = await f.invoke('commit', draft)
+  const rows = () => ['visual_profiles', 'shots', 'scene_visual_bindings', 'shot_visual_bindings', 'script_canvas_preparations']
+    .map(table => all(`SELECT * FROM ${table} ORDER BY rowid`))
+  const before = rows(), calls = f.calls()
+  assert.deepEqual(await f.invoke('commit', draft), saved)
+  assert.deepEqual(rows(), before)
+  assert.equal(f.calls(), calls)
+  run('UPDATE shots SET prompt=? WHERE id=?', '用户编辑后的镜头', saved.shots[0].id)
+  await f.invoke('commit', draft, 409)
+  assert.equal(one<any>('SELECT prompt FROM shots WHERE id=?', saved.shots[0].id)!.prompt, '用户编辑后的镜头')
 })

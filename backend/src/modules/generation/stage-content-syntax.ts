@@ -4,6 +4,12 @@ import { hasUniqueJsonKeys, type QuotedLineProposal } from './model-output-synta
 /** Content-only insertion recovery. Enumerate complete JSON interpretations;
  * accept exactly one. Other fields, escapes and all prose bytes stay intact. */
 export function recoverStageContentSyntax(raw: string): QuotedLineProposal | undefined {
+  return recoverStringFieldSyntax(raw, ['content'])
+}
+
+/** Private correction candidates may authorize a different code-owned string
+ * field; this never widens ordinary stage-content acceptance. */
+export function recoverStringFieldSyntax(raw: string, fields: readonly string[]): QuotedLineProposal | undefined {
   if (raw.length > 650000) return
   const opening = /^\s*```(?:json)?[ \t]*\r?\n/i.exec(raw)
   const at = opening?.[0].length ?? raw.length - raw.trimStart().length
@@ -58,7 +64,7 @@ export function recoverStageContentSyntax(raw: string): QuotedLineProposal | und
           cursor = space(end)
           if (body[cursor++] !== ':') return
         }
-        for (const child of value(cursor, object && key === 'content', depth + 1)) {
+        for (const child of value(cursor, object && fields.includes(key), depth + 1)) {
           const end = space(child.end), all = [...offsets, ...child.offsets]
           if (body[end] === close) yield { end: end + 1, offsets: all }
           else if (body[end] === ',') yield* entries(end + 1, all, false)

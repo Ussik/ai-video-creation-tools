@@ -57,3 +57,23 @@ export interface CanvasDeletionInput {
   cleanup_shots?: boolean
   cleanup_assets?: boolean
 }
+
+/** Exact preview of a local, irreversible deletion. Shared resources are listed separately. */
+export interface ShotPurgePreview {
+  revision: string
+  shots: Array<{ id: string; title: string }>
+  delete: Array<{ kind: string; label: string }>
+  files: Array<{ name: string; bytes: number }>
+  protected: Array<{ kind: string; id: string; label: string; reasons: string[] }>
+  blockers: string[]
+  remote_cancelled: false
+  retained_records?: Array<{ kind: string; id: string; reason: string }>
+}
+export interface ShotPurgeResult {
+  deleted_shots: number
+  protected: ShotPurgePreview['protected']
+  retained_records?: ShotPurgePreview['retained_records']
+  pending_file_count: number
+  remote_cancelled: false
+  detail: string
+}

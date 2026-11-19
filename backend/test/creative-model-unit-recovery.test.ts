@@ -97,12 +97,12 @@ test('large visual analysis keeps the shared object catalog and base definition 
   const calls: string[] = []; let fail = true
   registerVisualProfileRoutes(isolated, { script, generateText: async (_id, _model, prompt, contract) => {
     if (contract?.name === 'visual_profile_catalog') { calls.push('catalog'); return JSON.stringify({ profiles: [variant, base] }) }
-    assert.equal(contract?.name, 'visual_profiles')
-    const current = JSON.parse(prompt.split('【当前完整对象单元】')[1]!.split('：')[1]!.split('\n')[0]!)
+    assert.equal(contract?.name, 'visual_profile_content')
+    const current = JSON.parse(prompt.split('锁定目录项（不得更改身份、场次或基础关系）：')[1]!.split('\n')[0]!)
     calls.push(current.draft_key)
     if (current.draft_key === 'mud' && fail) throw transient()
-    if (current.draft_key === 'mud') assert.match(prompt, /已完成基础版本.*黑色短发/)
-    return JSON.stringify({ profiles: [{ ...current, definition: '黑色短发，蓝色夹克；派生状态只改变手背。', view_requirements: '正侧背与手背局部', shot_usage: [] }] })
+    if (current.draft_key === 'mud') assert.match(prompt, /只读已确认档案与基础版本.*黑色短发/)
+    return JSON.stringify({ definition: '黑色短发，蓝色夹克；派生状态只改变手背。', view_requirements: '正侧背与手背局部', shot_usage: [] })
   } })
   const invoke = () => isolated.inject({ method: 'POST', url: `/api/projects/${f.id}/visual-profiles/analyze`, payload: { model_id: 'mock', scene_ids, skill_ids: [] } })
   assert.equal((await invoke()).statusCode, 422)

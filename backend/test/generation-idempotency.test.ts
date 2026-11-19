@@ -193,7 +193,12 @@ test('deleted accepted resources retain tombstones; lookup and replay cannot rec
   }
   const url = `/api/projects/${state.project.id}/shots`, body = { title: '可删除镜头' }
   const shot = (await post(url, body, 'deleted-shot-key')).json()
-  assert.equal((await app.inject({ method: 'DELETE', url: `/api/shots/${shot.id}` })).statusCode, 200)
+  const management = `/api/projects/${state.project.id}/shot-management`
+  const snapshot = (await app.inject({ url: management })).json()
+  assert.equal((await post(management + '/actions', { revision: snapshot.revision, action: 'trash', shot_id: shot.id })).statusCode, 200)
+  const preview = (await post(management + '/purge-preview', { shot_ids: [shot.id] })).json()
+  const purged = await post(management + '/purge', { shot_ids: [shot.id], revision: preview.revision })
+  assert.equal(purged.statusCode, 200, purged.body)
   assert.equal((await post(url, body, 'deleted-shot-key')).statusCode, 409)
   assert.equal((await app.inject({ method: 'GET', url: `/api/projects/${state.project.id}/shot-submissions/deleted-shot-key` })).statusCode, 409)
   assert.equal(rows('jobs'), 0)

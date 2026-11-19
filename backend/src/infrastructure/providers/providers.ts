@@ -1,3 +1,7 @@
+import { mediaInputManifest, mediaInputRejection, type MediaInputManifest } from './media-input-manifest.js'
+import { referenceBase64 } from './reference-encoding-cache.js'
+import { recordMediaRequest, recordMediaRejection } from './media-execution.js'
+import { reportModelResult } from '../../modules/generation/model-result-observation.js'
 import type { TextStructuredObservation } from '@video-studio/shared/models/text-observation'
 import { ProviderExecutionError, providerHttpFailure, providerFieldFailure, isProviderExecutionError } from './provider-failure.js'
 import { pollExistingProviderTask } from './provider-poll.js'
@@ -267,14 +271,14 @@ function textHttpError(response: Response, raw: string, url: string, startedAt: 
 }
 
 async function requestJson(method: 'GET' | 'POST', url: string, headers: Record<string, string>, body?: unknown,
-  modality?: Modality, model = '', timeoutMs = modality === 'text' ? textRequestTimeoutMs : 90_000, parentSignal?: AbortSignal, identity: ProviderRequestIdentity = {}): Promise<Record<string, unknown>> {
+  modality?: Modality, model = '', timeoutMs = modality === 'text' ? textRequestTimeoutMs : 90_000, parentSignal?: AbortSignal, identity: ProviderRequestIdentity = {}, manifest?: MediaInputManifest, serializedBody?: string): Promise<Record<string, unknown>> {
   const startedAt = Date.now()
   parentSignal = modelStepSignal(parentSignal ?? mediaExecutionSignal())
   parentSignal?.throwIfAborted()
   let response: Response | undefined
   let raw: string
   try {
-    const serialized = body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body)
+    const serialized = body === undefined ? undefined : body instanceof FormData ? body : serializedBody ?? JSON.stringify(body)
     response = await observeProviderFetch(url, {
       method,
       headers: { ...headers, ...(body === undefined || body instanceof FormData ? {} : { 'Content-Type': 'application/json' }) },
@@ -297,6 +301,10 @@ async function requestJson(method: 'GET' | 'POST', url: string, headers: Record<
   }
   const stage = method === 'GET' ? 'query' as const : 'create' as const
   if (!response.ok) {
+    if (modality !== 'text') {
+      if (manifest && method === 'POST') recordMediaRejection(mediaInputRejection(raw, response, manifest))
+      reportModelResult({ phase: 'quality', status: 'needs_work', final_state: 'provider_rejected', model_request_count: method === 'POST' ? 1 : 0 })
+    }
     const detail = textHttpError(response, raw, url, startedAt, model, Object.values(headers))
     if (modality === 'text') throw detail
     const upstream = detail as Error & { upstreamCode?: string }
@@ -1210,11 +1218,11 @@ async function referenceImage(asset: MediaAsset, settings?: Settings): Promise<s
       tiff: 'image/tiff', heif: metadata.compression === 'av1' ? 'image/avif' : 'image/heic' }
     const mime = metadata.format ? mimes[metadata.format] : undefined
     if (!mime || mime === 'image/avif') throw new Error(`${label} 参考图片格式不支持，请使用 JPEG、PNG、WebP、GIF、TIFF 或 HEIC 图片`)
-    return `data:${mime};base64,${(await readFile(asset.path)).toString('base64')}`
+    return `data:${mime};base64,${await referenceBase64(asset.path)}`
   }
   const extension = extname(asset.path).toLowerCase()
   const mime = extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg' : extension === '.webp' ? 'image/webp' : 'image/png'
-  return `data:${mime};base64,${(await readFile(asset.path)).toString('base64')}`
+  return `data:${mime};base64,${await referenceBase64(asset.path)}`
 }
 
 /** Called before queueing as well as before submission; no generation request is made here. */
@@ -1676,7 +1684,10 @@ async function configuredNetwork(
   let externalId = request._external_id
   if (!externalId) {
     const body = videoPayload(settings, request, images, model.remote_id)
-    const created = await requestJson('POST', apiUrl(provider.base_url, settingString(settings, 'create_path')), headers, body, undefined, '', undefined, undefined, identity)
+    const serializedBody = JSON.stringify(body)
+    const manifest = mediaInputManifest(body, images, references, serializedBody)
+    recordMediaRequest(manifest)
+    const created = await requestJson('POST', apiUrl(provider.base_url, settingString(settings, 'create_path')), headers, body, undefined, '', undefined, undefined, { ...identity, encoded_image_bytes: manifest.encoded_image_bytes, duplicate_image_occurrences: manifest.duplicate_image_occurrences }, manifest, serializedBody)
     const rawId = optionalNested(created, settingString(settings, 'id_path', 'id'))
     // Generic gateways may use numeric database IDs. Preserve exact safe
     // integers, while never turning objects, booleans or imprecise numbers

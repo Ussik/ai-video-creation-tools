@@ -236,3 +236,47 @@ test('source diagnostics carry input composition and strategy declarations separ
   assert.equal(generation.structured_enforcement, 'unverified'); assert.equal(generation.response_json_valid, false)
   assert.doesNotMatch(JSON.stringify(c.batches), /PRIVATE_CONTENT/)
 })
+
+test('one job shares a trace across create, poll and download lifetimes while each child keeps its own parent', async () => {
+  const c = capture()
+  for (const transport_kind of ['media_create', 'media_poll', 'media_download']) {
+    const o = c.tracer.observation({ owner: 'job', taskId: 'one-job' })
+    o.dispatch({ request_id: transport_kind, transport_kind, encoded_image_bytes: 20, duplicate_image_occurrences: 2 })
+    o.metrics({ request_id: transport_kind, delivery: 'completed' }); o.finish('succeeded')
+  }
+  await c.tracer.flush()
+  const all = c.spans(), roots = all.filter(span => !span.parentSpanId)
+  assert.equal(roots.length, 3); assert.equal(new Set(all.map(span => span.traceId)).size, 1)
+  assert.equal(new Set(roots.map(span => span.spanId)).size, 3)
+  for (const child of all.filter(span => span.parentSpanId)) assert.ok(roots.some(root => root.spanId === child.parentSpanId))
+})
+test('default job trace correlation survives tracer restart without exporting the job id or secret', async () => {
+  const ids: string[] = []
+  for (let i = 0; i < 2; i++) {
+    const tracer = createLangfuseTracer(enabled(), { clientFactory: () => ({ async send(batch) { ids.push(...spans(batch).map(span => span.traceId)); assert.ok(!JSON.stringify(batch).includes('PRIVATE_JOB')) } }) })
+    const o = tracer.observation({ owner: 'job', taskId: 'PRIVATE_JOB' }); o.dispatch({ request_id: 'r' }); o.metrics({ request_id: 'r' }); o.finish('succeeded'); await tracer.flush()
+  }
+  assert.equal(new Set(ids).size, 1)
+})
+
+test('a retained conflict exports zero model requests and a confirmation state instead of a network failure', async () => {
+  const c = capture(), o = c.tracer.observation({ owner: 'request', taskId: 'cached-conflict' })
+  o.result!({ phase: 'quality', status: 'needs_work', stage: 'continuity_review', cache_hit: true, local_reuse: true, model_request_count: 0, final_state: 'needs_confirmation' })
+  o.finish('failed'); await c.tracer.flush()
+  const root = c.spans().find(span => !span.parentSpanId)!, value = metadata(root)
+  assert.equal(value.final_state, 'needs_confirmation'); assert.equal(value.cache_hit, true); assert.equal(value.local_reuse, true); assert.equal(value.model_request_count, 0)
+  assert.equal(c.spans().some(span => span.name.endsWith(':text')), false)
+})
+
+
+test('program-only canvas saves and reuse produce result spans without a model generation or usage', async () => {
+  const c = capture(), o = c.tracer.observation({ owner: 'request', taskId: 'canvas-step' })
+  o.result!({ stage: 'canvas_adjustment', phase: 'structure', status: 'valid', task_id: 'canvas_reference_commit',
+    is_new_model_call: false, cache_hit: true, local_reuse: true, reused_items: 8 })
+  o.finish('succeeded'); await c.tracer.flush()
+  const result = c.spans().map(metadata).find(m => m.task_id === 'canvas_reference_commit')!
+  assert.equal(result.is_new_model_call, false); assert.equal(result.reused_items, 8)
+  assert.equal(result.cache_hit, true)
+  assert.ok(c.spans().every(s => attribute(s, 'langfuse.observation.type') !== 'generation'))
+  assert.doesNotMatch(JSON.stringify(c.batches), /usage_details|total_tokens|input_tokens|output_tokens/)
+})

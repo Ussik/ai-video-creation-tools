@@ -1,4 +1,4 @@
-import { composeManagedPromptBlock, managedPromptBlockNames, stripManagedPromptBlocks, validateManagedPromptDocument, type ManagedPromptBlockName } from './prompt-document.js'
+import { escapeManagedPromptMarkers, composeManagedPromptBlock, managedPromptBlockNames, stripManagedPromptBlocks, validateManagedPromptDocument, type ManagedPromptBlockName } from './prompt-document.js'
 
 export type PromptSectionBlock = {
   id: string
@@ -171,7 +171,27 @@ export function parsePromptSectionDocument(text: string, options: {
 /** Older generated templates embedded source headings as document markers.
  * Recover only literal sections still matching that saved template; authored
  * edits and incomplete drafts without template evidence remain untouched. */
-export function recoverLegacyPromptSectionDocument(document: PromptSectionDocument, previousSource: string): PromptSectionDocument {
+export function recoverLegacyPromptSectionDocument(document: PromptSectionDocument, previousSource: string,
+  evidence: { sourceBody?: string; sourceBase?: string } = {}): PromptSectionDocument {
+  const body = evidence.sourceBody
+  if (body && evidence.sourceBase === body && previousSource.startsWith(`${body}\n\n`)
+    && previousSource.indexOf(body, body.length) < 0) {
+    let invalid = false
+    try { validateManagedPromptDocument(body) } catch { invalid = true }
+    const escaped = escapeManagedPromptMarkers(body)
+    const source = escaped + previousSource.slice(body.length)
+    // Only an entire inherited body block is evidence. Do not rewrite edited
+    // prose or infer where an unfinished authored section should end.
+    const inherited = document.blocks.filter(block => block.kind === 'body' && block.text === body)
+    if (invalid && inherited.length === 1) {
+      const recovered = { ...document, blocks: document.blocks.map(block => block === inherited[0] ? { ...block, text: escaped } : block) }
+      try {
+        validateManagedPromptDocument(source)
+        validateManagedPromptDocument(serializePromptSectionDocument(recovered))
+        return recovered
+      } catch { /* Unrelated malformed content still needs an explicit edit. */ }
+    }
+  }
   const replacements: Array<{ before: string; after: string }> = []
   const pattern = new RegExp(`【(${managedPromptBlockNames.join('|')})】\\n([\\s\\S]*?)\\n【\\1结束】`, 'g')
   const source = previousSource.replace(pattern, (before: string, name: ManagedPromptBlockName, content: string) => {

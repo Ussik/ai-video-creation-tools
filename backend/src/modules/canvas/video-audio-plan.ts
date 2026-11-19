@@ -1,3 +1,4 @@
+import { handoffConflictPayload } from './video-handoff-conflict.js'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { withModelAdmission } from '../generation/model-admission.js'
@@ -73,6 +74,7 @@ const sourceInput = z.object({
   source_signature: z.string().regex(/^[a-f0-9]{16}$/),
   /** Only an explicit creator control permits changing confirmed speech. */
   modify_audio: z.boolean().default(false),
+  attempt: z.number().int().min(0).max(2).default(0),
 }).strict()
 export const videoHandoffPlanSchema = z.object({
   audio_plan: videoAudioPlanSchema, motion_prompt: z.string().trim().min(1).max(20000),
@@ -84,7 +86,7 @@ export const videoHandoffPlanSchema = z.object({
 type Context = {
   generateText: (projectId: string, modelId: string, prompt: string, contract?: OutputContract, signal?: AbortSignal) => Promise<string>
 }
-function fail(message: string, statusCode = 422): never { throw Object.assign(new Error(message), { statusCode }) }
+function fail(message: string, statusCode = 422, code?: string): never { throw Object.assign(new Error(message), { statusCode, ...(code ? { code } : {}) }) }
 
 /** Neighbors belong to the same accepted design, never another alternative. */
 function adjacentShotContext(shot: Shot | null) {
@@ -135,7 +137,7 @@ function preserveConfirmedSpeech(plan: VideoAudioPlan, saved: VideoAudioPlan | n
   for (const line of saved?.speech || []) {
     const index = plan.speech.findIndex((candidate, index) => index >= cursor && candidate.text === line.text
       && candidate.speaker === line.speaker && candidate.mode === line.mode)
-    if (index < 0) fail(`已确认台词“${line.text}”必须保留原话、说话者、声源类型与先后顺序；只有创作者明确允许修改声音后才能调整`)
+    if (index < 0) fail(`已确认台词“${line.text}”必须保留原话、说话者、声源类型与先后顺序；只有创作者明确允许修改声音后才能调整`, 422, 'confirmed_speech_changed')
     cursor = index + 1
   }
 }
@@ -193,15 +195,30 @@ export function registerVideoAudioPlanRoutes(app: FastifyInstance, context: Cont
           shot: shot ? { title: shot.title, source_scene_id: shot.source_scene_id, start_state: shot.start_state, end_state: shot.end_state, cut_note: shot.cut_note, duration: shot.duration, audio_plan: shot.audio_plan,
             continuity_plan: shot.continuity_plan || null } : null,
           neighbors, scene_sound_context: sharedSound, modify_audio: input.modify_audio })
-      const identity = { version: 1, task, model: creativeModelIdentity(input.model_id) }
+      const legacyIdentity = { version: 1, task, model: creativeModelIdentity(input.model_id) }
+      const legacy = creativeGenerationSteps(id, `video-handoff:${creativeInputHash([input.shot_id, input.source_signature])}`, legacyIdentity, controller.signal)
+      const retained = input.attempt === 0 && legacy.checkpoint.steps.candidate?.input_hash === creativeInputHash(legacyIdentity)
+        ? legacy.checkpoint.steps.candidate.value : undefined
+      const compactNeighbors = Object.fromEntries(Object.entries(neighbors).map(([side, value]) => [side, value && {
+        id: value.id, title: value.title, scene: value.scene, same_scene: value.same_scene, duration: value.duration,
+        start_state: value.start_state, end_state: value.end_state, cut_note: value.cut_note, selected_media: value.selected_media }]))
+      const payloadStart = task.lastIndexOf('\n') + 1
+      const payload = JSON.parse(task.slice(payloadStart))
+      payload.neighbors = compactNeighbors
+      if (payload.shot) payload.shot.continuity_plan = shot?.continuity_plan ? { status: shot.continuity_plan.status } : null
+      const compactTask = task.slice(0, payloadStart) + JSON.stringify(payload) +
+        '\n输出只含 motion_prompt、audio_plan、boundary_conflicts；禁止额外 title、duration、video_prompt。动作各段与音效的次数及先后关系须一致；无法确定时逐字引用相反表达和音效，不默选任一版本。'
+      const identity = { version: 2, task: compactTask, model: legacyIdentity.model, attempt: input.attempt }
+      let modelRequests = 0, reused = true
       return await withModelAdmission(`creative:video-handoff:${id}:${creativeInputHash([input.shot_id, input.source_signature])}`, controller.signal, async () => {
-        const steps = creativeGenerationSteps(id, `video-handoff:${creativeInputHash([input.shot_id, input.source_signature])}`, identity, controller.signal)
+        const steps = creativeGenerationSteps(id, `video-handoff:${creativeInputHash([input.shot_id, input.source_signature])}:v2:${input.attempt}`, identity, controller.signal)
         const validatePlan = (value: z.infer<typeof videoHandoffPlanSchema>) => {
+              if (creativeModelIdentity(input.model_id) !== legacyIdentity.model) fail('模型配置已变化，请按当前配置重新分析；原候选已保留', 409)
               value.audio_plan = recoverGeneratedVideoAudioPlanSources(value.audio_plan,
                 [input.shot_video_prompt, input.image_body, ...(shot?.audio_plan?.speech.map(line => line.source_text) || [])])
               if (!input.modify_audio) preserveConfirmedSpeech(value.audio_plan, shot?.audio_plan)
               const evidenceSources = [input.shot_video_prompt, input.image_body, shot?.start_state || '', shot?.end_state || '',
-                neighbors.previous?.end_state || '', neighbors.next?.start_state || '']
+                neighbors.previous?.end_state || '', neighbors.next?.start_state || '', ...(shot?.audio_plan?.sound_effects || [])]
               if (value.boundary_conflicts?.some(issue => issue.evidence.some(quote => !evidenceSources.some(source => source.includes(quote))))) {
                 fail('边界冲突必须逐字引用当前图片、分镜或相邻交接状态，不能编造证据')
               }
@@ -209,24 +226,31 @@ export function registerVideoAudioPlanRoutes(app: FastifyInstance, context: Cont
                 fail('同场已确认的共同声场存在冲突，不能替创作者挑选或混合；请省略scene_sound并保留本镜已确认声音，待创作者明确修订')
               }
         }
-        const result = await withModelOperationStage('continuity_review', () => steps.run('candidate', '保留镜头运动与声音候选', identity,
+        const result = retained ? videoHandoffPlanSchema.parse(retained) : await withModelOperationStage('continuity_review', () => steps.run('candidate', '保留镜头运动与声音候选', identity,
           () => generateStructuredOutput('video_handoff_plan', videoHandoffPlanSchema,
-            (prompt, contract) => context.generateText(id, input.model_id, prompt, contract, controller.signal), task, {
-              signal: controller.signal, validate: validatePlan,
+            (prompt, contract) => { reused = false; modelRequests++; return context.generateText(id, input.model_id, prompt, contract, controller.signal) }, compactTask, {
+              signal: controller.signal, validate: validatePlan, businessCorrectionContext: error => {
+                const code = (error as { code?: string }).code
+                return JSON.stringify(code?.startsWith('dialogue_') || code === 'confirmed_speech_changed'
+                  ? { saved_speech: shot?.audio_plan?.speech || [], source_texts: shot?.audio_plan?.speech.length ? shot.audio_plan.speech.map(line => line.source_text) : [input.shot_video_prompt, input.image_body], modify_audio: input.modify_audio }
+                  : { video_prompt: shot?.video_prompt || '', image_body: input.image_body, start_state: shot?.start_state, end_state: shot?.end_state, audio_plan: shot?.audio_plan, neighbors: compactNeighbors, scene_sound_context: sharedSound })
+              }, projectExtraFields: ['title', 'duration', 'video_prompt'], correctionContext: 'response_only', minimalCorrectionContext: true,
             }), raw => { const value = videoHandoffPlanSchema.parse(raw); validatePlan(value); return value }))
+        validatePlan(result)
         if (shotState(currentShot()) !== before) fail('本镜或相邻分镜状态已在分析期间更新，请重新分析', 409)
         if (result.boundary_conflicts?.length) {
-          reportModelResult({ phase: 'quality', stage: 'continuity_review', status: 'needs_work', issue_count: result.boundary_conflicts.length })
-          throw Object.assign(new Error('镜头边界需要确认：' + result.boundary_conflicts.map(issue =>
-            `${issue.message}；依据：${issue.evidence.join(' / ')}；建议：${issue.suggestion}`).join('\n')),
-          { statusCode: 422, code: 'video_handoff_boundary_conflict', retained_candidate: true })
+          reportModelResult({ phase: 'quality', stage: 'continuity_review', status: 'needs_work', issue_count: result.boundary_conflicts.length,
+            cache_hit: reused, local_reuse: reused, model_request_count: modelRequests, final_state: 'needs_confirmation' })
+          const handoff_conflict = handoffConflictPayload(input, shot, result, neighbors, reused, modelRequests)
+          return reply.code(422).send({ code: 'video_handoff_boundary_conflict', category: 'source_conflict', retryable: false,
+            retained_candidate: true, outcome_certainty: 'completed', handoff_conflict,
+            detail: '镜头边界需要确认：' + result.boundary_conflicts.map(issue => `${issue.message}；依据：${issue.evidence.join(' / ')}；建议：${issue.suggestion}`).join('\n') })
         }
         // The accepted bed is source data, not a suggestion that the model may
         // omit or reinterpret. Explicit sound revisions still remain available.
         if (sharedSound.status === 'accepted' && !input.modify_audio) result.audio_plan.scene_sound = sharedSound.plan
-        reportModelResult({ phase: 'quality', stage: 'continuity_review', status: 'inconclusive' })
-        steps.clear()
-        return { ...result, source_signature: input.source_signature }
+        reportModelResult({ phase: 'quality', stage: 'continuity_review', status: 'passed', cache_hit: reused, local_reuse: reused, model_request_count: modelRequests, final_state: 'ready' })
+        return { ...result, source_signature: input.source_signature, attempt: input.attempt, cache_hit: reused, model_request_count: modelRequests }
       })
     } catch (error) {
       if (controller.signal.aborted) fail('镜头承接分析已取消', 499)

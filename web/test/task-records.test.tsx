@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { register } from 'node:module'
-import { after, test } from 'node:test'
+import { after, beforeEach, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
@@ -21,6 +21,10 @@ dom.window.HTMLElement.prototype.scrollIntoView = () => {}
 const { createRoot } = await import('react-dom/client')
 const { default: TaskRecords } = await import('../src/features/jobs/TaskRecords')
 after(() => dom.window.close())
+beforeEach(t => {
+  t.mock.method(globalThis,'fetch',async(url:unknown)=>Response.json(String(url).endsWith('/task-history') ? {tasks:[],legacy_unlinked_count:0} : {concurrency:3,max_concurrency:10,running:0,queued:0}))
+})
+const {projectTaskRecords,filterTaskRecords,taskRecordCounts,taskRecordStatus}=await import('../src/features/jobs/task-records')
 
 const timestamp = '2026-10-11T10:00:00Z'
 const models = [{ id: 'image', name: '图片模型', modality: 'image', provider_id: 'provider' },
@@ -53,7 +57,7 @@ async function mount(data = detail, onRefresh: () => Promise<unknown> = async ()
   return { container, events, async close() { await act(() => root.unmount()); container.remove() } }
 }
 function button(container: Element, label: string) {
-  const found = [...container.querySelectorAll<HTMLButtonElement>('button')].find(node => node.textContent === label)
+  const found = [...container.querySelectorAll<HTMLButtonElement>('button')].find(node => node.textContent === label || node.getAttribute('aria-label') === label)
   assert.ok(found, `button ${label}`); return found
 }
 async function tab(container: Element, label: string) {
@@ -76,7 +80,7 @@ test('status, task type and search compose; clearing filters restores tasks incl
     assert.equal(view.container.querySelectorAll('tbody tr').length, 1)
     assert.match(view.container.querySelector('tbody')!.textContent!, /排队中/)
     await tab(view.container, '失败')
-    assert.equal(view.container.querySelectorAll('tbody tr').length, 5)
+    assert.equal(view.container.querySelectorAll('tbody tr').length, 3)
     await chooseCombobox(view.container.querySelector<HTMLInputElement>('input[aria-label="任务类型"]')!, '配音生成')
     assert.equal(view.container.querySelectorAll('tbody tr').length, 1)
     await search(view.container, ' 林晚 ')
@@ -118,12 +122,12 @@ test('result action opens existing image, video, audio and text assets without n
   }
 })
 
-test('empty history hides table and filters and offers direct canvas navigation', async () => {
+test('empty history keeps available filters and offers direct canvas navigation', async () => {
   const view = await mount({ ...detail, jobs: [] })
   try {
     assert.equal(view.container.querySelector('table'), null)
-    assert.equal(view.container.querySelector('[aria-label="搜索任务"]'), null)
-    assert.match(view.container.textContent!, /还没有素材生成任务记录/)
+    assert.ok(view.container.querySelector('[aria-label="搜索任务"]'))
+    assert.match(view.container.textContent!, /还没有任务记录/)
     await act(() => button(view.container, '进入画布').click())
     assert.deepEqual(view.events, [{ type: 'canvas', id: undefined }])
   } finally { await view.close() }
@@ -153,8 +157,9 @@ test('only content-policy image failures offer optimization and never show conti
   let calls = 0
   globalThis.fetch = async () => { calls++; throw new Error('No automatic requests allowed') }
   try {
-    assert.equal([...view.container.querySelectorAll('button')].filter(node => node.textContent === '优化提示词').length, 1)
-    const row = [...view.container.querySelectorAll('tbody tr')].find(row => row.textContent?.includes('content_policy_violation'))!
+    assert.equal([...view.container.querySelectorAll('button')].filter(node => node.getAttribute('aria-label') === '优化提示词').length, 1)
+    const row = view.container.querySelector('[data-task-id="policy"]')!
+    assert.doesNotMatch(row.textContent!,/content_policy_violation/)
     assert.doesNotMatch(row.textContent!, /继续查询/)
     await act(() => button(view.container, '优化提示词').click())
     assert.match(document.querySelector('[role="dialog"]')!.textContent!, /优化提示词/)
@@ -174,8 +179,8 @@ test('uncertain restarted video tasks show verification and read-only original r
   const view = await mount({ ...detail, jobs: [task] })
   try {
     const row = view.container.querySelector('tbody tr')!
-    assert.match(row.textContent!, /视频生成/); assert.match(row.querySelector('.job-status')!.textContent!, /待核对/)
-    assert.match(row.textContent!, /可能已被接收或计费/)
+    assert.match(row.textContent!, /视频生成/); assert.match(row.querySelector('.task-records-status')!.textContent!, /待核对/)
+    assert.match(row.textContent!, /核对提供商任务记录与账单/)
     assert.doesNotMatch(row.textContent!, /重试|继续查询|恢复下载|优化提示词/)
     await act(() => row.querySelector<HTMLButtonElement>('[aria-label="查看任务信息"]')!.click())
     const dialog = document.querySelector('[role="dialog"][aria-label="任务详情"]')!
@@ -192,7 +197,7 @@ test('video query continuation uses the existing job and exposes no prompt editi
     request: '{"prompt":"原提示词","reference_asset_ids":["fixed"]}' })
   const before = JSON.stringify(task), view = await mount({ ...detail, jobs: [task] })
   try {
-    assert.match(view.container.querySelector('tbody')!.textContent!, /沿用原提示词和参数，不创建新的生成任务/)
+    assert.match(view.container.querySelector('tbody')!.textContent!, /可继续查询已有任务/)
     assert.doesNotMatch(view.container.querySelector('tbody')!.textContent!, /恢复下载|优化提示词|重试/)
     await act(() => button(view.container, '继续查询').click())
     assert.deepEqual(view.events, [{ type: 'retry', id: task.id }])
@@ -260,7 +265,7 @@ test('unrelated export retries and active generation polling labels keep their e
     assert.deepEqual(view.events, [{ type: 'retry', id: 'export-retry' }])
     assert.match(view.container.textContent!, /1 个任务进行中/)
     await tab(view.container, '进行中')
-    assert.match(view.container.querySelector('tbody')!.textContent!, /生成中/)
+    assert.match(view.container.querySelector('tbody')!.textContent!, /进行中/)
     assert.doesNotMatch(view.container.querySelector('tbody')!.textContent!, /待核对|重试/)
   } finally { await view.close() }
 })
@@ -282,6 +287,7 @@ test('AI operation history separates completed execution from candidate quality 
   const original = globalThis.fetch, calls: string[] = []
   globalThis.fetch = async (url, init) => {
     calls.push(`${init?.method || 'GET'} ${url}`)
+    if (String(url).endsWith('/task-history')) return Response.json({tasks:[],legacy_unlinked_count:2})
     if (String(url).endsWith('/ai-operations/running/stop')) return Response.json({ detail: '已请求停止本地处理，上游状态以提供商记录为准。' })
     if (String(url).endsWith('/ai-operations')) return Response.json([
       { id: 'complete', project_id: 'project', route: '/api/projects/project/skills/refine-prompt', state: 'completed', status_code: 200,
@@ -292,7 +298,13 @@ test('AI operation history separates completed execution from candidate quality 
   }
   const view = await mount({ ...detail, jobs: [] })
   try {
-    const history = view.container.querySelector('[aria-label="AI 创作处理记录"]')!
+    assert.equal(view.container.querySelector('[aria-label="内部操作与恢复记录"]'),null)
+    assert.equal(calls.some(call=>call.endsWith('/ai-operations')),false)
+    await act(async()=>button(view.container,'任务更多选项').click())
+    const historyEntry=document.querySelector<HTMLButtonElement>('[role="menuitem"]')!
+    assert.match(historyEntry.textContent!,/历史诊断/)
+    await act(async()=>historyEntry.click())
+    const history = document.querySelector('[aria-label="内部操作与恢复记录"]')!
     assert.ok(history)
     for (const name of ['提示词整理与复查', '分镜规划与复查']) {
       const trigger = [...history.querySelectorAll<HTMLButtonElement>('button')].find(node => node.textContent?.includes(name))!
@@ -310,6 +322,7 @@ test('interrupted clip operation history exposes retained shots for review witho
   const original = globalThis.fetch, calls: string[] = []
   globalThis.fetch = async (url, init) => {
     calls.push(`${init?.method || 'GET'} ${url}`)
+    if (String(url).endsWith('/task-history')) return Response.json({tasks:[],legacy_unlinked_count:2})
     return Response.json(String(url).endsWith('/ai-operations') ? [{ id: 'interrupted-clip', project_id: 'project', route: '/api/projects/project/storyboard/clip/plan',
       state: 'interrupted', status_code: null, created_at: timestamp, updated_at: timestamp,
       candidate: { shots: [{ title: '进站', prompt: '少女进入车站', image_prompt: '少女站在门口', video_prompt: '少女推门，镜头跟随', start_state: '门外', end_state: '月台', cut_note: '接空月台' }],
@@ -318,7 +331,13 @@ test('interrupted clip operation history exposes retained shots for review witho
   }
   const view = await mount({ ...detail, jobs: [] })
   try {
-    const history = view.container.querySelector('[aria-label="AI 创作处理记录"]')!
+    assert.equal(view.container.querySelector('[aria-label="内部操作与恢复记录"]'),null)
+    assert.equal(calls.some(call=>call.endsWith('/ai-operations')),false)
+    await act(async()=>button(view.container,'任务更多选项').click())
+    const historyEntry=document.querySelector<HTMLButtonElement>('[role="menuitem"]')!
+    assert.match(historyEntry.textContent!,/历史诊断/)
+    await act(async()=>historyEntry.click())
+    const history = document.querySelector('[aria-label="内部操作与恢复记录"]')!
     assert.ok(history)
     const trigger = [...history.querySelectorAll<HTMLButtonElement>('button')].find(node => node.textContent?.includes('分镜规划与复查'))!
     assert.ok(trigger); await act(() => trigger.click())
@@ -333,4 +352,62 @@ test('interrupted clip operation history exposes retained shots for review witho
     assert.ok(calls.every(call => call.startsWith('GET ')))
     assert.deepEqual(view.events, [])
   } finally { await view.close(); globalThis.fetch = original }
+})
+
+test('all status filters form a disjoint partition, including an active verification and a terminal refusal', () => {
+  const jobs=Array.from({length:52},(_,i)=>job(`partition-${i}`,i<24?'failed':'succeeded',{
+    model_id:'video',recovery_action:i<4?'verify':null,
+  }))
+  const records=projectTaskRecords({...detail,jobs},models,providers),before=JSON.stringify(jobs)
+  assert.deepEqual(taskRecordCounts(records),{all:52,active:0,failed:20,succeeded:28,interrupted:4})
+  const ids=(['active','failed','succeeded','interrupted'] as const).flatMap(status=>filterTaskRecords(records,status,'all','').map(record=>record.job.id))
+  assert.equal(ids.length,52);assert.equal(new Set(ids).size,52)
+  const active=projectTaskRecords({...detail,jobs:[job('active-query','running',{model_id:'video',recovery_action:'verify'})]},models,providers)[0]!
+  assert.equal(taskRecordStatus(active),'active')
+  const refusal=projectTaskRecords({...detail,jobs:[job('policy','failed',{error:'content_policy_violation',recovery_action:'verify'})]},models,providers)[0]!
+  assert.equal(taskRecordStatus(refusal),'failed')
+  const videoRefusal=projectTaskRecords({...detail,jobs:[job('video-policy','failed',{model_id:'video',error:'content_policy_violation',recovery_action:'verify'})]},models,providers)[0]!
+  assert.equal(taskRecordStatus(videoRefusal),'failed')
+  assert.equal(JSON.stringify(jobs),before)
+})
+
+test('pagination limits rendered rows, searches the full history and resets to the first matching page',async()=>{
+  const jobs=Array.from({length:52},(_,i)=>job(`page-${i}`,'succeeded',{result_asset_id:'result'}))
+  const view=await mount({...detail,jobs})
+  try {
+    assert.equal(view.container.querySelectorAll('tbody tr').length,20)
+    await act(()=>button(view.container,'2').click())
+    assert.match(view.container.querySelector('.task-records-pagination')!.textContent!,/21–40/)
+    await search(view.container,'page-51')
+    assert.equal(view.container.querySelectorAll('tbody tr').length,1)
+    assert.equal(view.container.querySelector('tbody tr')!.getAttribute('data-task-id'),'page-51')
+    assert.match(view.container.querySelector('.task-records-pagination')!.textContent!,/第 1–1 条，共 1 条/)
+  } finally {await view.close()}
+})
+
+test('same-title business tasks remain separate; technical errors and their exact children load only in details',async t=>{
+  const raw='structured_output_validation_failed /Users/local/backend/contract.ts evidence_refs[0] '+('内部诊断；').repeat(35)
+  const tasks=['one','two'].map(id=>({id,project_id:'project',kind:'storyboard',title:'第1集分镜规划',scope:{label:'第1集',shot_ids:[],scene_ids:[],episode_numbers:[1]},status:'failed',summary:raw,operation_ids:[`op-${id}`],model_task_ids:[],job_ids:[],entry:'storyboard',created_at:timestamp,updated_at:timestamp}))
+  const calls:string[]=[]
+  t.mock.method(globalThis,'fetch',async(url:unknown)=>{
+    const path=String(url);calls.push(path)
+    if(path.endsWith('/task-history'))return Response.json({tasks,legacy_unlinked_count:152})
+    if(path.includes('/task-history/'))return Response.json({...tasks.find(task=>path.endsWith(task.id)),details:{models:[],operations:[]}})
+    if(path.endsWith('/ai-operations'))return Response.json(tasks.map(task=>({id:task.operation_ids[0],route:`/api/projects/project/script/storyboard/${task.id}`,state:'completed',project_id:'project',result:{content:`保留结果-${task.id}`},created_at:timestamp,updated_at:timestamp})))
+    return Response.json([])
+  })
+  const view=await mount({...detail,jobs:[]})
+  try {
+    const rows=[...view.container.querySelectorAll('tbody tr')]
+    assert.equal(rows.length,2);assert.deepEqual(rows.map(row=>row.getAttribute('data-task-id')),['one','two'])
+    for(const row of rows){assert.equal(row.textContent!.match(/第1集/g)?.length,1);assert.doesNotMatch(row.textContent!,/structured_output|\/Users\/|evidence_refs|任务步骤与诊断|已完成/)}
+    assert.equal(view.container.textContent?.includes('152'),false)
+    assert.equal(calls.some(path=>path.includes('/task-history/')||path.endsWith('/ai-operations')),false)
+    await act(async()=>rows[0]!.querySelector<HTMLButtonElement>('[aria-label="查看任务步骤与诊断"]')!.click())
+    const dialog=document.querySelector('[aria-label="业务任务详情"]')!
+    assert.match(dialog.textContent!,/structured_output_validation_failed/)
+    assert.ok(calls.some(path=>path.endsWith('/task-history/one')))
+    assert.equal(calls.some(path=>path.endsWith('/task-history/two')),false)
+    assert.equal(dialog.textContent?.includes('/two'),false)
+  } finally {await view.close()}
 })

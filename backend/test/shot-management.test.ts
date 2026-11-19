@@ -413,18 +413,19 @@ test('restoring a recycled last shot reopens its design slot and preserves usabl
   assert.equal(moved.shots.find(item=>item.shot.id===separate.id)!.shot.position,1)
 })
 
-test('permanent shot deletion preserves scene, plan, media files and historical jobs while detaching their shot',async()=>{
+test('legacy permanent deletion requires the exact preview and preserves shot, scene, plan and historical media',async()=>{
   const p=await project(),s=await shot(p,'彻底删除的镜头'),media=await asset(p,s.id,'purge-shot-history')
   const scene=await call<{id:string}>('POST',`/api/projects/${p}/script/scenes`,{heading:'保留的剧本场次'})
   run('INSERT INTO storyboard_designs (id,project_id,name,scene_ids,created_at) VALUES (?,?,?,?,?)','purge-retained-plan',p,'保留的方案',JSON.stringify([scene.id]),now())
   run('UPDATE shots SET source_scene_id=?,design_id=? WHERE id=?',scene.id,'purge-retained-plan',s.id)
   run("INSERT INTO jobs (id,project_id,shot_id,job_type,request,status,result_asset_id,created_at,updated_at) VALUES (?,?,?,'generation','{}','succeeded',?,?,?)",'purge-retained-job',p,s.id,media.id,now(),now())
   await action(p,{action:'trash',shot_id:s.id})
-  const result=await action(p,{action:'purge',shot_id:s.id})
-  assert.equal(result.shots.some(entry=>entry.shot.id===s.id),false)
-  assert.equal(one('SELECT 1 FROM shots WHERE id=?',s.id),undefined)
-  assert.equal(one<{shot_id:string|null}>('SELECT shot_id FROM assets WHERE id=?',media.id)!.shot_id,null)
-  assert.deepEqual(one('SELECT shot_id,result_asset_id,status FROM jobs WHERE id=?','purge-retained-job'),{shot_id:null,result_asset_id:media.id,status:'succeeded'})
+  const state=await call<ShotManagementSnapshot>('GET',management(p))
+  const response=await app.inject({method:'POST',url:management(p)+'/actions',payload:{revision:state.revision,action:'purge',shot_id:s.id}})
+  assert.equal(response.statusCode,409);assert.match(response.body,/精确预览/)
+  assert.ok(one('SELECT 1 FROM shots WHERE id=?',s.id))
+  assert.equal(one<{shot_id:string|null}>('SELECT shot_id FROM assets WHERE id=?',media.id)!.shot_id,s.id)
+  assert.deepEqual(one('SELECT shot_id,result_asset_id,status FROM jobs WHERE id=?','purge-retained-job'),{shot_id:s.id,result_asset_id:media.id,status:'succeeded'})
   assert.ok(one('SELECT 1 FROM script_scenes WHERE id=?',scene.id));assert.ok(one('SELECT 1 FROM storyboard_designs WHERE id=?','purge-retained-plan'))
   assert.ok((await stat(media.path)).isFile());assert.deepEqual(db.pragma('foreign_key_check'),[])
 })
@@ -461,28 +462,31 @@ test('references added after recycling block permanent shot batches and project-
   assert.ok(state.shots.find(entry=>entry.shot.id===blocked.id)!.purge_blockers?.some(reason=>reason.includes('剪辑')))
   for(const input of [{action:'purge_many',shot_ids:[first.id,blocked.id]},{action:'empty_trash'}]) {
     const response=await app.inject({method:'POST',url:management(p)+'/actions',payload:{revision:state.revision,...input}})
-    assert.equal(response.statusCode,422,response.body);assert.match(response.body,/回收后被引用的镜头/)
+    assert.equal(response.statusCode,409,response.body);assert.match(response.body,/精确预览/)
     assert.ok(one('SELECT 1 FROM shots WHERE id=?',first.id));assert.ok(one('SELECT 1 FROM assets WHERE id=?',media.id))
   }
   run('DELETE FROM editing_cuts WHERE id=?','purge-late-reference')
-  const result=await action(p,{action:'empty_trash'})
-  assert.deepEqual(result.shots,[]);assert.deepEqual(result.trashed_assets,[]);assert.ok((await stat(media.path)).isFile())
+  const refreshed=await call<ShotManagementSnapshot>('GET',management(p))
+  const legacy=await app.inject({method:'POST',url:management(p)+'/actions',payload:{revision:refreshed.revision,action:'empty_trash'}})
+  assert.equal(legacy.statusCode,409);assert.match(legacy.body,/精确预览/)
+  assert.ok(one('SELECT 1 FROM shots WHERE id=?',first.id));assert.ok(one('SELECT 1 FROM shots WHERE id=?',blocked.id))
+  assert.ok(one('SELECT 1 FROM assets WHERE id=?',media.id));assert.ok((await stat(media.path)).isFile())
 })
 
-test('batch purge and empty trash cover every project plan while preserving active and foreign-project records',async()=>{
+test('legacy batch purge and empty trash cannot bypass the preview across project plans',async()=>{
   const p=await project(),other=await project(),first=await shot(p,'第一方案'),second=await shot(p,'第二方案'),active=await shot(p,'活动镜头'),foreign=await shot(other,'外项目回收镜头')
   run('INSERT INTO storyboard_designs (id,project_id,name,scene_ids,created_at) VALUES (?,?,?,?,?)','purge-second-plan',p,'第二方案','[]',now())
   run('UPDATE shots SET design_id=? WHERE id=?','purge-second-plan',second.id)
   await action(p,{action:'trash_many',shot_ids:[first.id,second.id]});await action(other,{action:'trash',shot_id:foreign.id})
-  const batch=await action(p,{action:'purge_many',shot_ids:[first.id,second.id]})
-  assert.deepEqual(batch.shots.map(entry=>entry.shot.id),[active.id]);assert.ok(one('SELECT 1 FROM shots WHERE id=?',foreign.id))
-  const next=await shot(p,'新回收镜头'),media=await asset(p,null,'purge-all-plans-media'),foreignMedia=await asset(other,null,'purge-other-project-media')
-  run('UPDATE shots SET design_id=? WHERE id=?','purge-second-plan',next.id)
-  await action(p,{action:'trash',shot_id:next.id})
+  const media=await asset(p,null,'purge-all-plans-media'),foreignMedia=await asset(other,null,'purge-other-project-media')
   for(const item of [media,foreignMedia]) run('UPDATE assets SET deleted_at=? WHERE id=?',now(),item.id)
-  const emptied=await action(p,{action:'empty_trash'})
-  assert.deepEqual(emptied.shots.map(entry=>entry.shot.id),[active.id]);assert.deepEqual(emptied.trashed_assets,[])
-  assert.ok(one('SELECT 1 FROM shots WHERE id=?',foreign.id));assert.ok(one('SELECT 1 FROM assets WHERE id=?',foreignMedia.id))
+  const state=await call<ShotManagementSnapshot>('GET',management(p))
+  for(const input of [{action:'purge_many',shot_ids:[first.id,second.id]},{action:'empty_trash'}]) {
+    const response=await app.inject({method:'POST',url:management(p)+'/actions',payload:{revision:state.revision,...input}})
+    assert.equal(response.statusCode,409);assert.match(response.body,/精确预览/)
+    for(const item of [first,second,active,foreign]) assert.ok(one('SELECT 1 FROM shots WHERE id=?',item.id))
+    for(const item of [media,foreignMedia]) assert.ok(one('SELECT 1 FROM assets WHERE id=?',item.id))
+  }
   assert.ok(one('SELECT 1 FROM storyboard_designs WHERE id=?','purge-second-plan'));assert.ok((await stat(media.path)).isFile())
 })
 
@@ -538,13 +542,13 @@ test('comparison, video review and cut review history added after recycling prot
   for(const item of [first,second]) {
     assert.ok(state.shots.find(entry=>entry.shot.id===item.id)!.purge_blockers?.length)
     const response=await app.inject({method:'POST',url:management(p)+'/actions',payload:{revision:state.revision,action:'purge',shot_id:item.id}})
-    assert.equal(response.statusCode,422,response.body)
+    assert.equal(response.statusCode,409,response.body);assert.match(response.body,/精确预览/)
   }
   assert.ok(one('SELECT 1 FROM video_comparisons WHERE id=?','purge-protected-comparison'))
   assert.ok(one('SELECT 1 FROM video_reviews WHERE id=?','purge-protected-video-review'));assert.deepEqual(db.pragma('foreign_key_check'),[])
 })
 
-test('empty trash removes reviews and bindings owned by the same deleted shots while single asset purge remains protected',async()=>{
+test('legacy empty trash preserves reviews and bindings until the exact shot preview is confirmed',async()=>{
   const p=await project(),s=await shot(p,'同批回收镜头'),media=await asset(p,s.id,'purge-joint-media')
   run('INSERT INTO visual_profiles (id,project_id,kind,name,definition,view_requirements,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)','purge-joint-profile',p,'character','角色','设定','正面',now(),now())
   run('INSERT INTO shot_visual_bindings (shot_id,profile_id,required,revision,kind,name,variant,definition,view_requirements,board_asset_id) VALUES (?,?,1,1,?,?,?,?,?,?)',s.id,'purge-joint-profile','character','角色','默认','镜头设定','正面',media.id)
@@ -555,10 +559,11 @@ test('empty trash removes reviews and bindings owned by the same deleted shots w
   assert.deepEqual(state.empty_trash_blockers,[])
   const response=await app.inject({method:'POST',url:management(p)+'/actions',payload:{revision:state.revision,action:'purge_asset',asset_id:media.id}})
   assert.equal(response.statusCode,422)
-  const emptied=await action(p,{action:'empty_trash'})
-  assert.deepEqual(emptied.shots,[]);assert.deepEqual(emptied.trashed_assets,[])
-  assert.equal(one('SELECT 1 FROM asset_reviews WHERE asset_id=?',media.id),undefined)
-  assert.equal(one('SELECT 1 FROM shot_visual_bindings WHERE shot_id=?',s.id),undefined)
+  const blocked=await app.inject({method:'POST',url:management(p)+'/actions',payload:{revision:state.revision,action:'empty_trash'}})
+  assert.equal(blocked.statusCode,409);assert.match(blocked.body,/精确预览/)
+  assert.ok(one('SELECT 1 FROM shots WHERE id=?',s.id));assert.ok(one('SELECT 1 FROM assets WHERE id=?',media.id))
+  assert.ok(one('SELECT 1 FROM asset_reviews WHERE asset_id=?',media.id))
+  assert.ok(one('SELECT 1 FROM shot_visual_bindings WHERE shot_id=?',s.id))
   assert.ok(one('SELECT 1 FROM visual_profiles WHERE id=?','purge-joint-profile'));assert.ok((await stat(media.path)).isFile())
 })
 
@@ -574,12 +579,12 @@ test('empty trash keeps independent visual profiles and references owned by acti
   const stale=await app.inject({method:'POST',url:management(p)+'/actions',payload:{revision:before.revision,action:'empty_trash'}})
   assert.equal(stale.statusCode,409)
   let response=await app.inject({method:'POST',url:management(p)+'/actions',payload:{revision:current.revision,action:'empty_trash'}})
-  assert.equal(response.statusCode,422);assert.ok(one('SELECT 1 FROM shots WHERE id=?',recycled.id))
+  assert.equal(response.statusCode,409);assert.match(response.body,/精确预览/);assert.ok(one('SELECT 1 FROM shots WHERE id=?',recycled.id))
   run('DELETE FROM shot_visual_bindings WHERE shot_id=?',active.id)
   run('UPDATE visual_profiles SET board_asset_id=? WHERE id=?',media.id,'purge-external-profile')
   current=await call('GET',management(p));assert.ok(current.empty_trash_blockers?.length)
   response=await app.inject({method:'POST',url:management(p)+'/actions',payload:{revision:current.revision,action:'empty_trash'}})
-  assert.equal(response.statusCode,422);assert.ok(one('SELECT 1 FROM assets WHERE id=?',media.id))
+  assert.equal(response.statusCode,409);assert.match(response.body,/精确预览/);assert.ok(one('SELECT 1 FROM assets WHERE id=?',media.id))
 })
 
 test('foreign-project output pointers prevent asset purge without modifying foreign task history',async()=>{

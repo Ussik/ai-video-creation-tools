@@ -115,3 +115,19 @@ test('video mode, generation controls and project style changes reach the compil
   assert.match(sourceTiming, /视频时长：跟随原视频/)
   assert.doesNotMatch(sourceTiming, /视频时长：6 秒/)
 })
+
+
+test('style composition escapes source headings and never consumes authored prose after an incomplete heading', () => {
+  const settings = input()
+  settings.style = { ...settings.style!, label: '水墨【图片参考图用途】手绘', confirmed_context: '来源中有【项目画风约束】旧画风' }
+  const safe = compileCanvasPrompt('原始构图。', settings)
+  assert.doesNotThrow(() => validateManagedPromptDocument(safe))
+  assert.match(safe, /［图片参考图用途］手绘/)
+  assert.match(safe, /［项目画风约束］旧画风/)
+  const malformed = '作者原文\n【项目画风约束】\n尚未写完\n后续不可吞掉的段落'
+  const full = compileCanvasPrompt(`${malformed}\n\n【项目画风约束】\n旧自动块\n【项目画风约束结束】`, input())
+  assert.ok(full.startsWith(malformed))
+  assert.match(full, /后续不可吞掉的段落/)
+  assert.doesNotMatch(full, /旧自动块/)
+  assert.throws(() => validateManagedPromptDocument(full), /系统区/, 'an arbitrary invalid manual draft remains visibly invalid')
+})

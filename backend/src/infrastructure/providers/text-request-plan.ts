@@ -1,3 +1,4 @@
+import { assertTextInputScopeBody, textInputScopeDiagnostics } from './text-input-scope.js'
 import { beginProviderDispatch, isTextRequestBudgetError } from './text-request-usage.js'
 import { randomUUID } from 'node:crypto'
 import { safeModelResult } from '../../infrastructure/observability/model-results.js'
@@ -38,6 +39,7 @@ function counterRequest(url: string, protocol: string, value: unknown): { url: s
 /** Plan the exact wire body. Optional native counting is only used near a known
  * boundary, on the same channel/model, and never claims a generation attempt. */
 export async function prepareTextRequest(settings: Settings, body: unknown, protocol: string | undefined, options: Options) {
+  assertTextInputScopeBody(body)
   const context = currentModelRequestContext()
   options = { ...options, purpose: context?.policy.purpose ?? options.purpose,
     outputTokens: options.outputTokens ?? context?.policy.outputTokens,
@@ -84,25 +86,28 @@ export async function prepareTextRequest(settings: Settings, body: unknown, prot
         const tokens = payload && typeof payload === 'object' ? (payload as Settings).input_tokens : undefined
         if (typeof tokens !== 'number' || !Number.isSafeInteger(tokens) || tokens < 0) throw new Error('Invalid input count')
         options.signal?.throwIfAborted()
-        return planTextRequest(settings, body, protocol, { ...options, inputTokens: tokens, countMethod: 'provider' })
+        const counted = planTextRequest(settings, body, protocol, { ...options, inputTokens: tokens, countMethod: 'provider' })
+        assertTextInputScopeBody(counted.body)
+        return counted
       } catch (error) {
         options.signal?.throwIfAborted()
         // A count-based capacity rejection is authoritative for this attempt.
         if (error instanceof TextContextCapacityError || isTextRequestBudgetError(error)) throw error
       }
     }
-    if (plan) return { ...plan, capacity: { ...plan.capacity, input_count_method: 'estimated_fallback' as const } }
+    if (plan) { assertTextInputScopeBody(plan.body); return { ...plan, capacity: { ...plan.capacity, input_count_method: 'estimated_fallback' as const } } }
     if (failure instanceof TextContextCapacityError && failure.estimate) throw new TextContextCapacityError(
       `当前渠道输入计数不可用，以下按本地估算检查。${failure.message}`, { ...failure.estimate, input_count_method: 'estimated_fallback' })
   }
   if (failure) throw failure
+  assertTextInputScopeBody(plan!.body)
   return plan!
 }
 
 /** Safe metadata only; never persist prompts, credentials or opaque reasoning. */
 export function textRequestTrace() {
   const context = currentModelRequestContext()
-  return { request_id: randomUUID(), ...(context ? { request_purpose: context.policy.purpose,
+  return { ...textInputScopeDiagnostics(), request_id: randomUUID(), ...(context ? { request_purpose: context.policy.purpose,
     task_id: context.taskId, step_id: context.stepId, attempt_id: context.attemptId,
     ...(() => { const value = safeModelResult({ phase: 'structure', status: 'valid', ...context.resultDetails }); if (!value) return {}; const { phase, status, ...details } = value; return details })() } : {}) }
 }
@@ -149,7 +154,7 @@ export function createTextRequestActivity(metrics: {
   }
 }
 
-export type ProviderRequestIdentity = { model_id?: string; remote_id?: string }
+export type ProviderRequestIdentity = { encoded_image_bytes?: number; duplicate_image_occurrences?: number; model_id?: string; remote_id?: string }
 
 const observedResponseCompletions = new WeakMap<Response, () => void>()
 

@@ -150,6 +150,7 @@ function mockApi(t: TestContext, historicalExisting = false, references?: { prep
       saved = true; detail = { ...detail, shots: [newShot], historical_shots: [oldShot] }
       return Response.json({ scene_ids: [scene.id], shot_ids: [newShot.id], design_id: 'new-design', target_canvas_id: null, created_shots: 1, created_profiles: 0, profiles: [], shot_visual_bindings: [] })
     }
+    if (path.endsWith('/script/canvas/recovery')) return Response.json({ signature, scene_ids: body.scene_ids })
     if (path.endsWith('/script/canvas/check')) return Response.json({ signature, scene_ids: [scene.id], needs_analysis: references ? (prepared ? [] : [scene.id]) : historicalExisting ? [scene.id] : [], profiles: [] })
     if (references && path.endsWith('/script/canvas/prepare')) return Response.json({ signature, scene_ids: [scene.id], profiles: [], reference_usage_version: 1 })
     if (references && path.endsWith('/script/canvas/commit')) { prepared = true; installReferences(); return Response.json({}) }
@@ -232,7 +233,7 @@ test('a saved pending scheme enters explicit production preparation without writ
     assert.match(document.querySelector('.storyboard-production-summary')!.textContent!, /1 个镜头/)
     assert.equal(server.requests.some(request => request.path.endsWith('/script/storyboard/canvas')), false)
     assert.equal(server.requests.some(request => request.method === 'PUT'), false)
-    await click('准备并加入画布')
+    await act(async () => { const primary=document.querySelector<HTMLButtonElement>('.storyboard-production-modal .storyboard-production-primary'); assert.ok(primary); assert.equal(primary.disabled,false); primary.click() }); await settle()
     const production = server.requests.find(request => request.path.endsWith('/script/storyboard/canvas'))
     assert.deepEqual(production?.body, { scene_ids: [scene.id], shot_ids: [newShot.id], design_id: 'new-design', mode: 'existing' })
     assert.match(document.querySelector('.storyboard-production-error')!.textContent!, /模拟画布准备暂时不可用/)
@@ -278,7 +279,7 @@ test('preparing references for an existing canvas keeps the complete result duri
   try {
     await check('选择镜头：旧方案回望'); await click('加入画布')
     assert.ok(document.querySelector('.storyboard-production-modal'))
-    await click('准备并加入画布')
+    await act(async () => { const primary=document.querySelector<HTMLButtonElement>('.storyboard-production-modal .storyboard-production-primary'); assert.ok(primary); assert.equal(primary.disabled,false); primary.click() }); await settle()
     assert.equal(document.querySelector('.storyboard-production-modal'), null)
     const save = server.requests.find(request => request.method === 'PUT')!
     assert.ok(save)

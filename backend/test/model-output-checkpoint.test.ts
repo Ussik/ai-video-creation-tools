@@ -209,9 +209,9 @@ test('checkpoint write failure for a correction preserves the original complete 
 
 test('checkpoint write failure after merging a fixed-field patch remains an execution failure', async () => {
   const checkpoint: StructuredOutputCheckpoint = {}, failure = new Error('merged checkpoint persistence failed')
-  let calls = 0, saves = 0
+  let calls = 0
   await assert.rejects(generateStructuredOutput(contractName, schema, async () => JSON.stringify(++calls === 1 ? invalidCandidate() : patch()), prompt, {
-    checkpoint, structuralRepair: true, persistCheckpoint: () => { if (++saves >= 4) throw failure },
+    checkpoint, structuralRepair: true, persistCheckpoint: () => { if (checkpoint.correction && checkpoint.raw === JSON.stringify(candidate())) throw failure },
   }), error => checkpointFailure(error, failure))
   assert.equal(calls, 2)
   assert.deepEqual(JSON.parse(checkpoint.raw!).locked, candidate().locked)

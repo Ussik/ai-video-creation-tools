@@ -282,3 +282,20 @@ export function fixedReferenceAsset(graph: CanvasGraph, targetId: string, assets
     && graph.nodes.some(node => node.id === edge.source && node.type !== 'image_analysis'))
     .map(edge => ({ edge, asset: assets.find(asset => asset.id === edge.reference_asset_id) }))
 }
+
+/** A source edit changes the shot signature, not the user's target draft.
+ * Prove the target was still automatic against the previous source before
+ * applying the explicitly adopted plan using the updated source context. */
+export function continueImageVideoHandoffAfterSourceEdit(graph: CanvasGraph, nodeId: string, sourceId: string,
+  previousDetail: ProjectDetail, nextDetail: ProjectDetail, models: Model[], plan: ImageVideoSemanticPlan): CanvasGraph {
+  const node = graph.nodes.find(item => item.id === nodeId), source = graph.nodes.find(item => item.id === sourceId)
+  if (!node || !source || !automaticVideo(graph, node, previousDetail, sourceId)) return graph
+  const asset = imageAsset(source, nextDetail)
+  const expected = node.settings.image_video_handoff?.source_asset_id || node.settings.storyboard_reference_asset_id
+  if (!asset || expected && expected !== asset.id || !['first_frame', 'reference'].includes(node.settings.mode || '')) return graph
+  const context = imageVideoSourceContext(graph, source, nextDetail, models)
+  const inherited = new Set(node.settings.image_video_handoff?.inherited_reference_asset_ids || [])
+  const next = { ...graph, edges: graph.edges.filter(edge => edge.target !== nodeId || !edge.reference_asset_id
+    || !inherited.has(edge.reference_asset_id) || edge.reference_asset_id === asset.id) }
+  return inheritImageContext(next, node, source, asset, nextDetail, models, context, plan)
+}

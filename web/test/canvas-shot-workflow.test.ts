@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import { rememberModelSelection } from '../src/features/models/model-selection-store'
-import { connectImageVideoHandoff, createImageVideoHandoff, fixedReferenceAsset, imageVideoConnection, pendingImageVideoHandoff, resolveImageVideoHandoff, pinnedCanvasReference } from '../src/features/canvas/canvas-shot-workflow'
+import { continueImageVideoHandoffAfterSourceEdit, connectImageVideoHandoff, createImageVideoHandoff, fixedReferenceAsset, imageVideoConnection, pendingImageVideoHandoff, resolveImageVideoHandoff, pinnedCanvasReference } from '../src/features/canvas/canvas-shot-workflow'
 import type { ImageVideoSemanticPlan } from '../src/features/canvas/canvas-image-video-context'
 import { storyboardItems } from '../src/features/storyboard/storyboard'
 import { visualNodeAsset } from '../src/features/canvas/canvas-visual-profiles'
@@ -771,4 +771,46 @@ test('a second image added to an automatic reference video preserves its primary
   assert.equal(connected.settings.storyboard_reference_asset_id, 'chosen')
   assert.deepEqual(connected.settings.image_video_handoff, video.settings.image_video_handoff)
   assert.deepEqual(next.edges.filter(edge => edge.target === video.id).map(edge => edge.reference_asset_id), ['chosen', 'new'])
+})
+
+test('adopted source edits continue automatic legacy, connected and retained handoffs with the updated signature', () => {
+  for (const kind of ['legacy', 'connect', 'retained'] as const) {
+    const f = fixture(), plan = semanticPlan(), nextDetail = structuredClone(f.detail)
+    nextDetail.shots[0]!.video_prompt = '灯管统一闪烁两次后稳定。'
+    nextDetail.shots[0]!.audio_plan = { ...plan.audio_plan, sound_effects: ['闪烁两次的啪啪声'] }
+    const adopted = { motion_prompt: nextDetail.shots[0]!.video_prompt, audio_plan: nextDetail.shots[0]!.audio_plan! }
+    let graph: CanvasGraph, targetId: string
+    if (kind === 'legacy') {
+      targetId = 'legacy-video'
+      graph = { ...f.graph, nodes: [...f.graph.nodes, { ...f.fresh, id: targetId, prompt: f.detail.shots[0]!.video_prompt, text: '',
+        model_id: 'compatible', shot_id: 'shot', asset_id: null, job_id: null,
+        settings: { modality: 'video', mode: 'first_frame', storyboard_reference_asset_id: 'chosen' } }],
+        edges: [{ id: 'legacy-edge', source: f.source.id, target: targetId, reference_asset_id: 'chosen' }] } as CanvasGraph
+    } else if (kind === 'connect') {
+      targetId = f.fresh.id
+      graph = { ...f.graph, nodes: [...f.graph.nodes, { ...f.fresh, shot_id: null, job_id: null, asset_id: null, prompt: '', text: '', model_id: 'compatible', settings: { modality: 'video', mode: 'first_frame' } }] } as CanvasGraph
+      graph = connectImageVideoHandoff(graph, imageVideoConnection(f.source, graph.nodes[1]!, f.detail, f.models)!, f.detail, f.models, 'edge')
+    } else {
+      const result = createImageVideoHandoff(f.graph, f.source, f.detail, f.models, f.fresh, 'edge')
+      graph = result.graph; targetId = result.nodeId
+    }
+    const result = continueImageVideoHandoffAfterSourceEdit(graph, targetId, f.source.id, f.detail, nextDetail, f.models, adopted)
+    assert.notEqual(result, graph, kind)
+    const target = result.nodes.find(node => node.id === targetId)!
+    assert.equal(pendingImageVideoHandoff(result, target, nextDetail, f.models), undefined)
+    assert.equal(target.settings.image_video_handoff?.source_asset_id, 'chosen')
+    assert.ok(result.edges.some(edge => edge.target === targetId && edge.reference_asset_id === 'chosen'))
+    assert.deepEqual(target.settings.image_video_handoff?.semantic_plan, adopted)
+    const edited = { ...result, nodes: result.nodes.map(node => node.id === targetId ? { ...node, prompt: node.prompt + '保留手写动作。', text: node.text + '手写补充。' } : node) }
+    assert.equal(continueImageVideoHandoffAfterSourceEdit(edited, targetId, f.source.id, nextDetail, f.detail, f.models, plan), edited)
+  }
+})
+test('quick handoff after a source correction preserves a manual video draft and its original reference', () => {
+  const f = fixture(), created = createImageVideoHandoff(f.graph, f.source, f.detail, f.models, f.fresh, 'original')
+  const graph = { ...created.graph, nodes: created.graph.nodes.map(node => node.id === created.nodeId ? { ...node, prompt: '手写视频正文', text: '不可覆盖手稿' } : node) }
+  const detail = structuredClone(f.detail); detail.shots[0]!.video_prompt = '闪烁两次'
+  const result = createImageVideoHandoff(graph, f.source, detail, f.models, { ...f.fresh, id: 'new-video' }, 'new-edge', 'first_frame', semanticPlan())
+  assert.equal(result.preserved, true); assert.equal(result.created, true)
+  assert.equal(result.graph.nodes.find(node => node.id === created.nodeId)?.text, '不可覆盖手稿')
+  assert.equal(result.graph.nodes.find(node => node.id === created.nodeId)?.settings.storyboard_reference_asset_id, 'chosen')
 })

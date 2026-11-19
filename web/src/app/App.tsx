@@ -175,6 +175,7 @@ function App() {
   const canvasLocations = useRef(new Map<string, CanvasLocation>())
   const [optimizedPromptDraft, setOptimizedPromptDraft] = useState<OptimizedPromptDraft | null>(null)
   const [scriptEditorOpen, setScriptEditorOpen] = useState(false)
+  const [storyboardTaskSceneIds, setStoryboardTaskSceneIds] = useState<string[] | null>(null)
   const [storyboardOpen, setStoryboardOpen] = useState(false)
   const [shotManagementRequest, setShotManagementRequest] = useState<{ projectId: string; id: string; sceneIds: string[] } | null>(null)
   const [speechProjectId, setSpeechProjectId] = useState<string | null>(null)
@@ -1282,6 +1283,14 @@ function App() {
           canvasLocations.current.set(detail.id, { view: 'canvas', storyboardId: null })
           setOptimizedPromptDraft({ id: crypto.randomUUID(), projectId: detail.id, job, prompt }); setTab('canvas')
         }}
+        onOpenBusinessTask={task => {
+          if (task.entry === 'storyboard') { setStoryboardTaskSceneIds(task.scope.scene_ids); setStoryboardOpen(true) }
+          else if (task.entry === 'script') setScriptEditorOpen(true)
+          else if (task.entry === 'speech') { setSpeechFocus({ shotId: task.scope.shot_ids[0], sceneId: task.scope.scene_ids[0] }); setSpeechProjectId(detail.id) }
+          else if (task.entry === 'assets') setTab('assets')
+          else if (task.scope.shot_ids[0]) void openShotInCanvas(task.scope.shot_ids[0])
+          else setTab('canvas')
+        }}
         onOpenCanvas={id => { if (id) void openShotInCanvas(id); else setTab('canvas') }}
         onOpenSpeech={() => { setSpeechFocus({}); setSpeechProjectId(detail.id) }}
         onRetry={job => { void action(async () => { await api(`/jobs/${job.id}/retry`, { method: 'POST' }); await refreshDetail() },
@@ -1289,8 +1298,8 @@ function App() {
 
       {tab === 'models' && <ModelSettings providers={providers} models={models} refresh={refreshCatalog} action={action} busy={busy} />}
       {tab === 'skills' && <SkillsCenter projectId={detail?.id} projectName={detail?.name} />}
-      {detail && <StoryboardPlanner key={`storyboard-planner-${detail.id}`} opened={storyboardOpen} onClose={() => setStoryboardOpen(false)} detail={detail} models={models.filter(model => providers.some(provider => provider.id === model.provider_id && provider.enabled))}
-        initialSceneIds={currentScene ? [currentScene.id] : detail.script.scenes.map(scene => scene.id)} onRefresh={() => refreshDetail(detail.id)}
+      {detail && <StoryboardPlanner key={`storyboard-planner-${detail.id}`} opened={storyboardOpen} onClose={() => { setStoryboardOpen(false); setStoryboardTaskSceneIds(null) }} detail={detail} models={models.filter(model => providers.some(provider => provider.id === model.provider_id && provider.enabled))}
+        initialSceneIds={storyboardTaskSceneIds || (currentScene ? [currentScene.id] : detail.script.scenes.map(scene => scene.id))} onRefresh={() => refreshDetail(detail.id)}
         onOpenCanvas={() => setTab('canvas')} onNotice={setNotice} />}
     </main>
 

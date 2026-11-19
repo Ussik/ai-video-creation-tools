@@ -69,6 +69,8 @@ export function registerAiOperations(app: FastifyInstance) {
     const url = new URL(request.url, 'http://local'); url.searchParams.sort()
     const route = url.pathname + url.search
     const fingerprint = createHash('sha256').update(canonicalAiValue([projectId, request.method, route, request.body])).digest('hex')
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='purged_operation_ids'").get()
+      && db.prepare('SELECT 1 FROM purged_operation_ids WHERE id=?').get(id)) return reply.code(410).send({ detail: '原操作所属内容已彻底删除，不能重新派发或恢复。', code: 'ai_operation_purged' })
     const reserve = db.transaction(() => {
       const existing = db.prepare('SELECT * FROM ai_operations WHERE id=?').get(id) as Row | undefined
       if (existing) return existing

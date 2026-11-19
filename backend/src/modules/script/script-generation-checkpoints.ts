@@ -1,3 +1,4 @@
+import { generationScopeVersion, assertGenerationScope } from '../generation/generation-scope-lifecycle.js'
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { db, now, one, run } from '../../infrastructure/database/db.js'
@@ -18,7 +19,9 @@ type CheckpointRow = { cache_key: string; payload: string; updated_at: string }
  * uploaded source are never changed by intermediate generation checkpoints. */
 export function generationCheckpointStore(projectId: string, identity: unknown, namespace = 'generation', compatibleIdentities: readonly unknown[] = []) {
   if (namespace.startsWith(historyPrefix)) throw new Error('生成历史命名空间仅供断点归档使用')
-  const identityKey = (value: unknown) => createHash('sha256').update(JSON.stringify({ version: 1, identity: value })).digest('hex')
+  const scopeVersion=generationScopeVersion(projectId,namespace)
+  const assertCurrent=()=>assertGenerationScope(projectId,namespace,scopeVersion)
+  const identityKey = (value: unknown) => createHash('sha256').update(JSON.stringify({ version: 1, identity: value, ...(scopeVersion?{scope_version:scopeVersion}:{}) })).digest('hex')
   const key = identityKey(identity)
   db.exec(`CREATE TABLE IF NOT EXISTS script_checkpoint_versions (project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,namespace TEXT NOT NULL,cache_key TEXT NOT NULL,payload TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(project_id,namespace,cache_key))`)
   const historicalRow = (cacheKey: string) => (namespace === 'generation' ? one<CheckpointRow>('SELECT cache_key,payload,updated_at FROM script_step_checkpoints WHERE project_id=? AND namespace=? AND cache_key=?', projectId, historyNamespace(cacheKey), cacheKey) : undefined)
@@ -102,6 +105,7 @@ export function generationCheckpointStore(projectId: string, identity: unknown, 
     key, checkpoint,
     reusedCompatibleIdentity, migratedStepIds,
     savePrivateResponse: ((id, entry, expected) => db.transaction(() => {
+      assertCurrent()
       const active = readActive()
       const ownsActive = active?.cache_key === key || !detachedPrivateWriter && active?.cache_key === observedActiveKey
       if (!ownsActive) detachedPrivateWriter = true
@@ -127,6 +131,7 @@ export function generationCheckpointStore(projectId: string, identity: unknown, 
       return state
     })()) satisfies SaveGenerationPrivateResponse,
     save(state: GenerationCheckpoint) {
+      assertCurrent()
       checkpointSchema.parse(state)
       if (namespace !== 'generation') {
         db.transaction(() => {

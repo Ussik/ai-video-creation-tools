@@ -1,3 +1,5 @@
+import { generationScopeVersion } from '../generation/generation-scope-lifecycle.js'
+import { escapeManagedPromptMarkers } from '@video-studio/shared/visuals/prompt-document'
 import { createHash, randomUUID } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
@@ -102,6 +104,9 @@ function selectedPlanSchema(scenes: ScriptScene[]) {
     .describe('逐字复制所选场次的 scene_id，不使用标题中的 EP/SC 场号，不生成新 ID'),
   scene_direction: directingSceneSchema,
   shots: z.array(shotDraft.omit({ continuity_plan: true }).extend({ directing: directingShotSchema,
+    prompt: shotDraft.shape.prompt.overwrite(escapeManagedPromptMarkers),
+    image_prompt: shotDraft.shape.image_prompt.overwrite(escapeManagedPromptMarkers),
+    video_prompt: shotDraft.shape.video_prompt.overwrite(escapeManagedPromptMarkers),
     start_state: z.string().trim().min(1).max(2000), end_state: z.string().trim().min(1).max(2000),
     cut_note: z.string().trim().min(1).max(2000) })).min(1).max(30) })
   return draft.extend({ scenes: z.array(selectedScene).length(scenes.length, `本次必须恰好返回 ${scenes.length} 个所选场次，每场一次`)
@@ -323,7 +328,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
     if (state.signature !== input.signature) fail('资料、镜头或技能配置已更新，请刷新规划资料', 409)
     requireAvailableCanvas(state, input.mode)
     const defaults = state.policy.primary_id ? [state.policy.primary_id, ...state.policy.auxiliary_ids] : []
-    const stored = preview.safeParse(readStoryboardPlanningPreview(id, storyboardPlanningPreviewKey(input, defaults, target?.signature)))
+    const stored = preview.safeParse(readStoryboardPlanningPreview(id, storyboardPlanningPreviewKey(input, defaults, target?.signature,id)))
     if (!stored.success || stored.data.signature !== planSignature(state.signature, input.mode, input.instructions, target?.signature, input.duration_mode)
       || stored.data.mode !== input.mode || stored.data.instructions !== input.instructions
       || (stored.data.duration_mode || 'preserve') !== input.duration_mode
@@ -341,9 +346,10 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
     if (state.signature !== input.signature) fail('资料、镜头或技能配置已更新，请刷新规划资料', 409)
     requireAvailableCanvas(state, input.mode)
     const defaults = state.policy.primary_id ? [state.policy.primary_id, ...state.policy.auxiliary_ids] : []
-    return hash({ workflow: 1, input: storyboardPlanningPreviewKey(input, defaults, target?.signature) })
+    return hash({ workflow: 1, input: storyboardPlanningPreviewKey(input, defaults, target?.signature,id) })
   }
   async function executePlanning(id: string, raw: unknown, control: StoryboardPlanningControl): Promise<StoryboardPlanningResult> {
+    const previewScopeVersion=generationScopeVersion(id,'storyboard-planning-preview')
     const input = planning.parse(raw), identity = planningIdentity(id, input)
     if (input.scene_ids.length > 10) fail('一次最多规划 10 个场次，请缩小范围')
     const state = snapshot(id, input.scene_ids, context)
@@ -482,7 +488,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
         namespace, prompt, outlinePrompt, outlineSchema, correctionInstructions: sceneScopeInstruction,
         expansionSchema: fullShotSchema.pick({ image_prompt: true, video_prompt: true, directing: true }),
         generate, control,
-        validateOutline: value => { checkCurrent(); validateSchedule(value) },
+        validateOutline: value => { checkCurrent(); validateSchedule(structuredClone(value)) },
         recoverOutline: async (value, issue, key) => {
           const code = String((issue as { code?: string }).code || '')
           if (code === 'timing_mismatch') {
@@ -497,11 +503,17 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
             key, steps: control.steps, retain: (name, candidate) => control.retain(name, candidate), generate, signal: control.signal,
           })
         },
-        resolveOutline: (outline, outlineKey) => ensureStoryboardOutlineQuality({ outline, outlineKey, schema: outlineSchema,
-          validate: value => { checkCurrent(); validateSchedule(value) }, generate, control,
+        resolveOutline: (outline, outlineKey) => {
+          // Source-backed dialogue canonicalization is an explicit domain step,
+          // never a hidden mutation inside the structural patch validator.
+          const canonical = structuredClone(outline)
+          validateSchedule(canonical)
+          return ensureStoryboardOutlineQuality({ outline: canonical, outlineKey, schema: outlineSchema,
+          validate: value => { checkCurrent(); validateSchedule(structuredClone(value)) }, generate, control,
           context: { ...compactContext, source_scenes: state.scenes.map(compactSceneSource), source_documents: sources.map(compactStoryboardSource), storyboard_rules: prepared.rules.text,
             reference_budget: target?.budget ? storyboardReferenceBudgetInstructions(target.budget) : storyboardReferenceBudgetInstructions(state.referenceBudget),
-            ...(target ? { target_model: storyboardTargetInstructions(target) } : {}) }, sourceTexts }),
+            ...(target ? { target_model: storyboardTargetInstructions(target) } : {}) }, sourceTexts })
+        },
         expansionPrompt: (scene, offset, count, outline) => {
           const sequence = outline.scenes.flatMap(item => item.shots.map((shot, shot_index) => ({ scene_id: item.scene_id, shot_index, shot })))
           const start = sequence.findIndex(item => item.scene_id === scene.scene_id && item.shot_index === offset)
@@ -511,14 +523,13 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
           return storyboardDirectingInstructions + '\n' + videoAudioPlanInstructions + storyboardDialogueInstructions + '\n' +
             (target?.budget ? storyboardReferenceBudgetInstructions(target.budget) : storyboardReferenceBudgetInstructions(state.referenceBudget)) + '\n' +
             'image_prompt只写本镜开场单幅首帧；video_prompt只扩写本镜连续动作与运镜，保持大纲的起止状态、时长、声音计划、项目画风和创作者事实。\n' +
-            prepared.rules.text + '\n【本镜视频运动参考规则】\n' + prepared.motionRules.text +
             '\n大纲已经独立复核。以下只提供当前镜头、上一镜终点和下一镜起点；邻镜只读，不重写原文、不重分台词、不改变镜头边界。\n' +
             JSON.stringify({ project: compactContext.project, style: boundedContextText(compactContext.style, 2400),
               creator_instructions: boundedContextText(compactContext.creator_instructions, 1800), source_policy: compactContext.source_policy,
               storyboard_rules: boundedContextText(prepared.rules.text, 6000), motion_rules: boundedContextText(prepared.motionRules.text, 6000),
               target_model: target ? storyboardTargetInstructions(target) : undefined, scene_id: scene.scene_id,
-              scene_direction: boundedContextText(scene.scene_direction, 2400), scene_duration: scene.scene_duration,
-              current_shot: boundedContextText(current, 7000), previous_end_state: previous ? boundedContextText(previous.end_state, 900) : undefined,
+              scene_direction: scene.scene_direction, scene_duration: scene.scene_duration,
+              current_shot: current, previous_end_state: previous ? boundedContextText(previous.end_state, 900) : undefined,
               next_start_state: next ? boundedContextText(next.start_state, 900) : undefined }) + '\n'
         },
         // Check composition limits before retaining a batch, as well as on the
@@ -540,6 +551,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       const timer = setTimeout(abortReview, reviewTimeoutMs); timer.unref()
       const onParentAbort = () => reviewController.abort(controller.signal.reason)
       controller.signal.addEventListener('abort', onParentAbort, { once: true })
+      if (controller.signal.aborted) onParentAbort()
       const reviewGenerate = (prompt: string, contract?: OutputContract) => context.generateText(id, input.model_id, prompt, contract, reviewController.signal)
       try {
       const reviewDocuments = sources.map(document => ({ ...compactStoryboardSource(document), content: boundedContextText(document.content, 2400) }))
@@ -552,7 +564,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
           // Send one compact compiled digest; avoid duplicating directing fields
           // and full prompts in a second copy of the candidate.
           ...buildStoryboardDirectingReviewDigest(candidate.value.scenes as never) }),
-        { signal: controller.signal, validate: value => {
+        { signal: reviewController.signal, correctionContext: 'response_only', validate: value => {
           lastReviewAttempt = structuredClone(value)
           Object.assign(value, normalizeStoryboardDirectingReview(value, candidate.planned.scenes as never, sourceTexts, true))
         } })
@@ -579,6 +591,10 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       const repeated = report?.issues.some(issue => issue.severity === 'error') && stoppedRepair(repairHistory, report.issues)
       const diagnostic = error ? { code: String((error as { code?: string })?.code || 'candidate_review_inconclusive'), message: error instanceof Error ? error.message : String(error) }
         : repeated ? repeatedRepairDiagnostic : undefined
+      if (report || error) reportModelResult({ stage: 'director_review', phase: 'quality',
+        status: error ? 'inconclusive' : status === 'needs_work' ? 'needs_work' : 'passed', business_result: 'generated',
+        review_status: status as 'passed' | 'warnings' | 'needs_work' | 'review_inconclusive_no_action' | 'review_inconclusive_needs_user',
+        issue_count: report?.issues.length || 0, ...(diagnostic ? { failure_code: diagnostic.code } : {}) })
       const evidence = report || error ? retainCandidateReview({ projectId: id, family: 'storyboard', candidate: value.scenes, source,
         modelId: input.model_id, status, report: { report, error: diagnostic, repair_history: repairHistory } }) : undefined
       return { signature: planSignature(state.signature, input.mode, input.instructions, target?.signature, input.duration_mode), mode: input.mode, instructions: input.instructions,
@@ -651,7 +667,7 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
     })
     checkCurrent()
     const defaults = state.policy.primary_id ? [state.policy.primary_id, ...state.policy.auxiliary_ids] : []
-    saveStoryboardPlanningPreview(id, storyboardPlanningPreviewKey(input, defaults, target?.signature), completed)
+    saveStoryboardPlanningPreview(id, storyboardPlanningPreviewKey(input, defaults, target?.signature,id), completed,previewScopeVersion)
     return completed
   }
   const tasks = createStoryboardPlanningTasks({ identity: planningIdentity, execute: executePlanning })
@@ -827,11 +843,14 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       ...(input.duration_mode === 'reestimate' ? { duration_mode: input.duration_mode } : {}),
       ...(input.save_only ? { save_only: true } : {}) })
     return db.transaction(() => {
+      if(one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='purged_resource_ids'")&&one("SELECT 1 FROM purged_resource_ids WHERE project_id=? AND kind='storyboard_commit' AND id=?",id,input.request_id))fail('原分镜保存请求已彻底删除，不能重放',410)
       const previous = one<{ project_id: string; payload_hash: string; shot_ids: string }>('SELECT * FROM shot_plan_requests WHERE request_id=?', input.request_id)
       const sceneIds = input.scenes.map(scene => scene.scene_id)
       if (previous) {
         const legacyHash = !input.save_only && input.mode === 'update' && !input.instructions && input.duration_mode === 'preserve' ? hash({ kind: 'controlled_storyboard', signature: input.signature, scenes: input.scenes }) : null
         if (previous.project_id !== id || previous.payload_hash !== payloadHash && previous.payload_hash !== legacyHash) fail('此方案已保存，修改后的预览请重新规划后提交', 409)
+        reportModelResult({ stage: 'canvas_adjustment', phase: 'structure', status: 'valid', task_id: 'storyboard_save',
+          is_new_model_call: false, cache_hit: true, local_reuse: true, reused_items: JSON.parse(previous.shot_ids).length })
         return { ...canvasResult(id, sceneIds, { created_shots: 0, updated_shot_ids: JSON.parse(previous.shot_ids) }, JSON.parse(previous.shot_ids)),
           mode: input.mode, instructions: input.instructions, replayed: true }
       }
@@ -930,6 +949,8 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
       }
       run('INSERT INTO shot_plan_requests VALUES (?, ?, ?, ?, ?)', input.request_id, id, payloadHash, JSON.stringify(saved), now())
       run('UPDATE projects SET updated_at=? WHERE id=?', now(), id)
+      reportModelResult({ stage: 'canvas_adjustment', phase: 'structure', status: 'valid', task_id: 'storyboard_save',
+        is_new_model_call: false, cache_hit: false, reused_items: saved.length - created })
       return { ...canvasResult(id, sceneIds, { created_shots: created, updated_shot_ids: updated }), mode: input.mode, instructions: input.instructions, replayed: false }
     }).immediate()
   })
@@ -954,6 +975,8 @@ export function registerStoryboardPlanningRoutes(app: FastifyInstance, context: 
         fail('所选场次的分镜参考设定尚未整理，请先整理人物、场景与道具引用后加入画布')
       }
       createPendingDesignCanvas(id, state.shots)
+      reportModelResult({ stage: 'canvas_adjustment', phase: 'structure', status: 'valid', task_id: 'canvas_handoff',
+        is_new_model_call: false, request_category: 'local_reuse', reused_items: input.shot_ids?.length ?? state.shots.length })
       return canvasResult(id, input.scene_ids, undefined, input.shot_ids || (input.design_id ? state.shots.map(shot => shot.id) : undefined))
     }).immediate()
   })
